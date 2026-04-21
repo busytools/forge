@@ -95,7 +95,7 @@ pub fn decode_dispatch(line: &str, line_number: u64) -> Result<DecodedLine, Erro
                 .to_string();
             Ok(DecodedLine::ControlCancel { request_id })
         }
-        "assistant" | "user" | "system" | "result" => {
+        "assistant" | "user" | "system" | "result" | "rate_limit_event" => {
             let msg: Message = serde_json::from_value(value).map_err(|e| Error::MessageParse {
                 reason: format!("line {line_number}: {e}"),
             })?;

@@ -46,6 +46,9 @@ async fn memory_session_store_receives_mirrored_entries_via_client() {
                 );
             }
             Message::User { .. } => panic!("unexpected user event in mirror test"),
+            Message::RateLimitEvent { .. } => {
+                panic!("unexpected rate-limit event in mirror test")
+            }
         }
     }
     assert!(saw_assistant, "expected an assistant turn before result");
