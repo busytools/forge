@@ -7,6 +7,8 @@ use tracing::debug;
 use std::collections::HashMap;
 
 use crate::Error;
+use tokio::sync::mpsc;
+
 use crate::control::{
     AllowBehavior, ControlRequest, ControlRequestKind, ControlResponse, ControlResponseKind,
     ControlResponseType,
@@ -21,6 +23,7 @@ use crate::messages::Message;
 use crate::options::Options;
 use crate::permissions::{CanUseToolCallback, PermissionDecision, ToolPermissionContext};
 use crate::session_store::SessionStore;
+use crate::transcript_mirror_batcher::TranscriptMirrorBatcher;
 use crate::transport::codec::{DecodedLine, decode_dispatch, decode_line, encode_user_prompt};
 use crate::transport::process::Subprocess;
 
@@ -38,6 +41,8 @@ pub struct Client {
     hook_callbacks: HashMap<String, Arc<dyn ErasedHookCallback>>,
     session_store: Option<Arc<dyn SessionStore>>,
     projects_dir: Option<std::path::PathBuf>,
+    mirror_batcher: Option<TranscriptMirrorBatcher>,
+    synth_messages: Option<mpsc::UnboundedReceiver<Message>>,
 }
 
 impl std::fmt::Debug for Client {
@@ -60,6 +65,14 @@ impl std::fmt::Debug for Client {
                 &self.session_store.as_ref().map(|_| "<store>"),
             )
             .field("projects_dir", &self.projects_dir)
+            .field(
+                "mirror_batcher",
+                &self.mirror_batcher.as_ref().map(|_| "<batcher>"),
+            )
+            .field(
+                "synth_messages",
+                &self.synth_messages.as_ref().map(|_| "<rx>"),
+            )
             .finish()
     }
 }
@@ -108,6 +121,17 @@ impl Client {
         };
         debug!(session_id, "client init");
 
+        let (mirror_batcher, synth_messages) = if let Some(store) = session_store.clone() {
+            let projects_dir_str = projects_dir_as_string(projects_dir.as_ref());
+            let (tx, rx) = mpsc::unbounded_channel();
+            (
+                Some(TranscriptMirrorBatcher::new(store, projects_dir_str, tx)),
+                Some(rx),
+            )
+        } else {
+            (None, None)
+        };
+
         let mut client = Self {
             sub,
             session_id,
@@ -117,6 +141,8 @@ impl Client {
             hook_callbacks,
             session_store,
             projects_dir,
+            mirror_batcher,
+            synth_messages,
         };
         client
             .send_initialize(hook_payload, skills_payload, exclude_dynamic_sections)
@@ -232,7 +258,23 @@ impl Client {
     /// - [`Error::Io`] on pipe read/write failure.
     pub async fn next_event(&mut self) -> Result<Option<Message>, Error> {
         loop {
+            // Drain any synthesised messages (e.g. MirrorError from the
+            // transcript-mirror batcher) before blocking on the subprocess.
+            if let Some(rx) = self.synth_messages.as_mut() {
+                if let Ok(msg) = rx.try_recv() {
+                    return Ok(Some(msg));
+                }
+            }
             let Some(line) = self.sub.read_line().await? else {
+                // Final flush before stream end — matches Python SDK's
+                // teardown hook in `_internal/query.py`.
+                self.flush_mirror().await;
+                // After flush, the batcher may have pushed a MirrorError.
+                if let Some(rx) = self.synth_messages.as_mut() {
+                    if let Ok(msg) = rx.try_recv() {
+                        return Ok(Some(msg));
+                    }
+                }
                 return Ok(None);
             };
             self.line_number += 1;
@@ -258,70 +300,49 @@ impl Client {
                     tracing::debug!(%request_id, "control_cancel_request received; nothing to cancel");
                 }
                 DecodedLine::TranscriptMirror { file_path, entries } => {
-                    self.handle_transcript_mirror(&file_path, entries).await;
+                    self.handle_transcript_mirror(file_path, entries);
                 }
             }
         }
     }
 
     /// Handle a top-level `{"type":"transcript_mirror","filePath":...,
-    /// "entries":[...]}` frame. Derives a [`SessionKey`] from the `filePath`
-    /// relative to the configured projects directory and forwards entries
-    /// to the attached [`SessionStore`] (if any).
+    /// "entries":[...]}` frame. Enqueues into the batcher when a session
+    /// store is configured; otherwise drops.
     ///
     /// Wire shape verified against Python v0.1.64
     /// `_internal/transcript_mirror_batcher.py` + `_internal/query.py:282-289`.
-    /// Minimum-viable impl: per-frame append (no coalescing, no size
-    /// thresholds). Flush-on-result is handled in [`next_event`].
-    /// `store.append` failures are logged + dropped (at-most-once per the
-    /// Python SDK contract).
-    async fn handle_transcript_mirror(
+    /// Coalescing, eager-flush thresholds, and `on_error`-synthesised
+    /// `MirrorError` frames live in
+    /// [`TranscriptMirrorBatcher`](crate::transcript_mirror_batcher).
+    fn handle_transcript_mirror(
         &self,
-        file_path: &str,
+        file_path: String,
         entries: Vec<crate::session_store::SessionStoreEntry>,
     ) {
-        let Some(store) = self.session_store.as_ref() else {
-            return;
-        };
         if entries.is_empty() {
             return;
         }
-        let projects_dir = self.projects_dir_str();
-        let Some(key) = crate::session_store::file_path_to_session_key(file_path, &projects_dir)
-        else {
-            tracing::warn!(
-                %file_path, %projects_dir,
-                "transcript_mirror filePath outside projects_dir; dropping frame"
-            );
+        let Some(batcher) = self.mirror_batcher.as_ref() else {
             return;
         };
-        if let Err(err) = store.append(&key, &entries).await {
-            tracing::warn!(%err, ?key, "session_store.append failed for transcript_mirror batch");
-        }
+        batcher.enqueue(file_path, entries);
     }
 
-    /// Explicit mirror flush. Currently a no-op — the minimum-viable
-    /// handler appends per-frame, so there's no pending buffer. The call
-    /// site exists so wiring the true batcher (coalesce-by-filePath,
-    /// 500-entry / 1-MiB eager flush per Python's
-    /// `TranscriptMirrorBatcher`) is a mechanical swap.
-    #[allow(clippy::unused_async)] // kept async for future batcher swap
+    /// Flush the transcript-mirror batcher — called on every `result` frame
+    /// and at stream-end / disconnect.
     async fn flush_mirror(&self) {
-        // Intentionally empty — see doc comment.
+        if let Some(batcher) = self.mirror_batcher.as_ref() {
+            batcher.flush().await;
+        }
     }
 
     /// Compute the effective `projects_dir` for `file_path_to_session_key`.
     /// Honours the CLI's `CLAUDE_CONFIG_DIR` override when set, else
     /// defaults to `~/.claude/projects`.
+    #[allow(dead_code)] // retained for diagnostics/tests
     fn projects_dir_str(&self) -> String {
-        if let Some(dir) = &self.projects_dir {
-            return dir.to_string_lossy().into_owned();
-        }
-        if let Ok(custom) = std::env::var("CLAUDE_CONFIG_DIR") {
-            return format!("{}/projects", custom.trim_end_matches('/'));
-        }
-        let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-        format!("{home}/.claude/projects")
+        projects_dir_as_string(self.projects_dir.as_ref())
     }
 
     async fn handle_control(&mut self, req: ControlRequest) -> Result<(), Error> {
@@ -804,6 +825,24 @@ impl Client {
     /// [`Error::Process`] when the subprocess exits non-zero, [`Error::Io`]
     /// for I/O failure.
     pub async fn disconnect(self) -> Result<(), Error> {
+        if let Some(batcher) = &self.mirror_batcher {
+            batcher.close().await;
+        }
         self.sub.shutdown().await
     }
+}
+
+/// Compute the effective `projects_dir` for `file_path_to_session_key`.
+/// Honours the CLI's `CLAUDE_CONFIG_DIR` override when set, else defaults
+/// to `~/.claude/projects`. Shared between [`Client::spawn`] and the
+/// batcher construction path.
+fn projects_dir_as_string(dir: Option<&std::path::PathBuf>) -> String {
+    if let Some(dir) = dir {
+        return dir.to_string_lossy().into_owned();
+    }
+    if let Ok(custom) = std::env::var("CLAUDE_CONFIG_DIR") {
+        return format!("{}/projects", custom.trim_end_matches('/'));
+    }
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+    format!("{home}/.claude/projects")
 }

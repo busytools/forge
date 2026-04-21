@@ -47,6 +47,7 @@ pub mod permissions;
 pub(crate) mod request_id;
 pub mod session_store;
 pub mod tracing_bridge;
+pub(crate) mod transcript_mirror_batcher;
 pub mod transport;
 
 pub use client::Client;
