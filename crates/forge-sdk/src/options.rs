@@ -10,7 +10,10 @@ use std::sync::Arc;
 use crate::hooks::Hooks;
 use std::collections::HashMap;
 
-use crate::agents::AgentDefinition;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+use crate::agents::{AgentDefinition, EffortLevel};
 use crate::mcp::McpServer;
 use crate::permissions::CanUseToolCallback;
 use crate::session_store::SessionStore;
@@ -63,6 +66,7 @@ impl PermissionMode {
 /// callers.
 #[derive(Clone)]
 #[non_exhaustive]
+#[allow(clippy::struct_excessive_bools)] // mirrors Python's `ClaudeAgentOptions` verbatim
 pub struct Options {
     /// Path or name of the `claude` binary to spawn.
     pub binary: String,
@@ -128,6 +132,72 @@ pub struct Options {
     /// the [`AgentDefinition`]. Empty by default — matching Python SDK
     /// v0.1.64 `ClaudeAgentOptions.agents` (`types.py:1355`).
     pub agents: HashMap<String, AgentDefinition>,
+    /// System prompt configuration. `None` = inherit CLI default. `Some`
+    /// emits `--system-prompt`, `--system-prompt-file`, or
+    /// `--append-system-prompt` depending on variant. Ported from Python
+    /// SDK `SystemPromptPreset` / `SystemPromptFile` (`types.py:35-78`).
+    pub system_prompt: Option<SystemPromptKind>,
+    /// Base tool set. `None` = CLI default. `Some(ToolsPreset::Default)`
+    /// emits `--tools default`; `Some(List(...))` emits `--tools <csv>`.
+    pub tools: Option<ToolsPreset>,
+    /// Denylist passed via `--disallowedTools`. Empty = no flag.
+    pub disallowed_tools: Vec<String>,
+    /// Turn limit. `--max-turns <n>`.
+    pub max_turns: Option<u64>,
+    /// USD budget. `--max-budget-usd <n>`.
+    pub max_budget_usd: Option<f64>,
+    /// Backup model when the primary is unavailable. `--fallback-model`.
+    pub fallback_model: Option<String>,
+    /// Experimental beta flags. `--betas <csv>`.
+    pub betas: Vec<String>,
+    /// Resume the most recent conversation. `--continue`.
+    pub continue_conversation: bool,
+    /// Explicit session id for a new session (distinct from `resume`).
+    /// `--session-id <id>`.
+    pub session_id: Option<String>,
+    /// Surface streaming chunks rather than coalesced turns.
+    /// `--include-partial-messages`.
+    pub include_partial_messages: bool,
+    /// Spawn-time fork — duplicate `resume`'s session on the first turn.
+    /// `--fork-session` (distinct from the runtime
+    /// [`Client::fork_session`](crate::Client::fork_session) `control_request`).
+    pub fork_session: bool,
+    /// Extra directories surfaced to the CLI via repeated `--add-dir`.
+    pub add_dirs: Vec<std::path::PathBuf>,
+    /// Local plugins. Python SDK's `list[SdkPluginConfig]` (`types.py:771-778`).
+    pub plugins: Vec<SdkPluginConfig>,
+    /// Environment variables added to the subprocess env.
+    pub env: HashMap<String, String>,
+    /// Override `$USER` in the subprocess env.
+    pub user: Option<String>,
+    /// Arbitrary forward flags — `{"flag": Some("v")}` emits `--flag v`,
+    /// `{"flag": None}` emits a bare `--flag`. Mirrors Python's
+    /// `extra_args: dict[str, str | None]` (`types.py:1417`).
+    pub extra_args: HashMap<String, Option<String>>,
+    /// Reasoning-effort hint. `--effort <level>` — Python's `effort` is a
+    /// literal or integer; forge-sdk reuses [`EffortLevel`].
+    pub effort: Option<EffortLevel>,
+    /// Extended-thinking configuration. Takes precedence over
+    /// `max_thinking_tokens`.
+    pub thinking: Option<ThinkingConfig>,
+    /// Deprecated. Use `thinking` instead. `--max-thinking-tokens <n>`
+    /// when `thinking` is None.
+    pub max_thinking_tokens: Option<u64>,
+    /// Task budget: total sub-agent token budget per turn. `--task-budget`.
+    pub task_budget: Option<u64>,
+    /// Structured output schema. Python's `output_format` accepts
+    /// `{"type": "json_schema", "schema": {...}}`; forge-sdk accepts the
+    /// schema JSON directly for simplicity.
+    pub output_format: Option<Value>,
+    /// Internal stdout buffer upper bound. `None` = default 1 MiB.
+    pub max_buffer_size: Option<usize>,
+    /// Stderr line callback. When set, lines from the subprocess stderr
+    /// are forwarded. Matches Python's
+    /// `stderr: Callable[[str], None] | None`.
+    pub stderr: Option<std::sync::Arc<dyn Fn(String) + Send + Sync>>,
+    /// Internal: upper bound on `session_store.load()` during resume.
+    /// `None` = default 60 s.
+    pub load_timeout_ms: Option<u64>,
 }
 
 impl Default for Options {
@@ -150,8 +220,95 @@ impl Default for Options {
             minimum_cli_version: Some("2.0.0".into()),
             projects_dir: None,
             agents: HashMap::new(),
+            system_prompt: None,
+            tools: None,
+            disallowed_tools: Vec::new(),
+            max_turns: None,
+            max_budget_usd: None,
+            fallback_model: None,
+            betas: Vec::new(),
+            continue_conversation: false,
+            session_id: None,
+            include_partial_messages: false,
+            fork_session: false,
+            add_dirs: Vec::new(),
+            plugins: Vec::new(),
+            env: HashMap::new(),
+            user: None,
+            extra_args: HashMap::new(),
+            effort: None,
+            thinking: None,
+            max_thinking_tokens: None,
+            task_budget: None,
+            output_format: None,
+            max_buffer_size: None,
+            stderr: None,
+            load_timeout_ms: None,
         }
     }
+}
+
+impl Options {
+    /// Return the inner schema JSON of a `{"type":"json_schema","schema":...}`
+    /// `output_format` entry, if present. Mirrors Python's extraction at
+    /// `subprocess_cli.py:366-375`.
+    pub(crate) fn output_format_json_schema(&self) -> Option<String> {
+        let format = self.output_format.as_ref()?;
+        if format.get("type")?.as_str()? != "json_schema" {
+            return None;
+        }
+        serde_json::to_string(format.get("schema")?).ok()
+    }
+}
+
+/// System-prompt configuration. Mirrors Python's discriminated union of
+/// `str | SystemPromptPreset | SystemPromptFile` (`types.py:35-78`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SystemPromptKind {
+    /// Plain override — `--system-prompt <text>`.
+    Inline(String),
+    /// Preset with an append suffix — `--append-system-prompt <text>`.
+    PresetAppend(String),
+    /// File-backed prompt — `--system-prompt-file <path>`.
+    File(std::path::PathBuf),
+}
+
+/// Tool-base selector. Python's `ToolsPreset` is a dict `{"type":"default"}`;
+/// forge-sdk normalises to an enum.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ToolsPreset {
+    /// `claude_code` preset — emits `--tools default`.
+    Default,
+    /// Explicit list — emits `--tools <csv>`.
+    List(Vec<String>),
+}
+
+/// Extended-thinking configuration. Mirrors Python's union of
+/// `Adaptive`, `Enabled`, `Disabled` (`types.py:1325-1338`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ThinkingConfig {
+    /// CLI picks per-turn — `--thinking adaptive`.
+    Adaptive,
+    /// Thinking on with a per-turn token cap —
+    /// `--max-thinking-tokens <n>`.
+    Enabled {
+        /// Per-turn budget.
+        budget_tokens: u64,
+    },
+    /// Thinking off — `--thinking disabled`.
+    Disabled,
+}
+
+/// Plugin config. Mirrors Python's `SdkPluginConfig`
+/// (`{"type": "local", "path": str}`, `types.py:771-778`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum SdkPluginConfig {
+    /// Local filesystem plugin — emits `--plugin-dir <path>`.
+    Local {
+        /// Plugin directory path.
+        path: std::path::PathBuf,
+    },
 }
 
 impl std::fmt::Debug for Options {
@@ -186,6 +343,30 @@ impl std::fmt::Debug for Options {
             .field("minimum_cli_version", &self.minimum_cli_version)
             .field("projects_dir", &self.projects_dir)
             .field("agents", &format!("<{} agents>", self.agents.len()))
+            .field("system_prompt", &self.system_prompt)
+            .field("tools", &self.tools)
+            .field("disallowed_tools", &self.disallowed_tools)
+            .field("max_turns", &self.max_turns)
+            .field("max_budget_usd", &self.max_budget_usd)
+            .field("fallback_model", &self.fallback_model)
+            .field("betas", &self.betas)
+            .field("continue_conversation", &self.continue_conversation)
+            .field("session_id", &self.session_id)
+            .field("include_partial_messages", &self.include_partial_messages)
+            .field("fork_session", &self.fork_session)
+            .field("add_dirs", &self.add_dirs)
+            .field("plugins", &self.plugins)
+            .field("env", &format!("<{} vars>", self.env.len()))
+            .field("user", &self.user)
+            .field("extra_args", &format!("<{} flags>", self.extra_args.len()))
+            .field("effort", &self.effort)
+            .field("thinking", &self.thinking)
+            .field("max_thinking_tokens", &self.max_thinking_tokens)
+            .field("task_budget", &self.task_budget)
+            .field("output_format", &self.output_format)
+            .field("max_buffer_size", &self.max_buffer_size)
+            .field("stderr", &self.stderr.as_ref().map(|_| "<callback>"))
+            .field("load_timeout_ms", &self.load_timeout_ms)
             .finish()
     }
 }
@@ -379,6 +560,205 @@ impl OptionsBuilder {
     #[must_use]
     pub fn agents(mut self, agents: HashMap<String, AgentDefinition>) -> Self {
         self.inner.agents = agents;
+        self
+    }
+
+    /// Set the system prompt.
+    #[must_use]
+    pub fn system_prompt(mut self, sp: SystemPromptKind) -> Self {
+        self.inner.system_prompt = Some(sp);
+        self
+    }
+
+    /// Set the base tool preset / list.
+    #[must_use]
+    pub fn tools(mut self, tools: ToolsPreset) -> Self {
+        self.inner.tools = Some(tools);
+        self
+    }
+
+    /// Override the disallowed-tools list.
+    #[must_use]
+    pub fn disallowed_tools(mut self, tools: Vec<String>) -> Self {
+        self.inner.disallowed_tools = tools;
+        self
+    }
+
+    /// Cap the turn count.
+    #[must_use]
+    pub fn max_turns(mut self, n: u64) -> Self {
+        self.inner.max_turns = Some(n);
+        self
+    }
+
+    /// Cap total USD spend.
+    #[must_use]
+    pub fn max_budget_usd(mut self, usd: f64) -> Self {
+        self.inner.max_budget_usd = Some(usd);
+        self
+    }
+
+    /// Specify the fallback model.
+    #[must_use]
+    pub fn fallback_model(mut self, m: impl Into<String>) -> Self {
+        self.inner.fallback_model = Some(m.into());
+        self
+    }
+
+    /// Set experimental beta flags.
+    #[must_use]
+    pub fn betas(mut self, betas: Vec<String>) -> Self {
+        self.inner.betas = betas;
+        self
+    }
+
+    /// Resume the most recent conversation (`--continue`).
+    #[must_use]
+    pub fn continue_conversation(mut self, yes: bool) -> Self {
+        self.inner.continue_conversation = yes;
+        self
+    }
+
+    /// Set an explicit session id for a new session (distinct from `resume`).
+    #[must_use]
+    pub fn session_id(mut self, id: impl Into<String>) -> Self {
+        self.inner.session_id = Some(id.into());
+        self
+    }
+
+    /// Toggle `--include-partial-messages`.
+    #[must_use]
+    pub fn include_partial_messages(mut self, yes: bool) -> Self {
+        self.inner.include_partial_messages = yes;
+        self
+    }
+
+    /// Toggle `--fork-session` (spawn-time).
+    #[must_use]
+    pub fn fork_session(mut self, yes: bool) -> Self {
+        self.inner.fork_session = yes;
+        self
+    }
+
+    /// Append a directory to `--add-dir` list.
+    #[must_use]
+    pub fn add_dir(mut self, dir: impl Into<std::path::PathBuf>) -> Self {
+        self.inner.add_dirs.push(dir.into());
+        self
+    }
+
+    /// Replace the whole `--add-dir` list.
+    #[must_use]
+    pub fn add_dirs(mut self, dirs: Vec<std::path::PathBuf>) -> Self {
+        self.inner.add_dirs = dirs;
+        self
+    }
+
+    /// Register a local plugin directory.
+    #[must_use]
+    pub fn plugin_dir(mut self, path: impl Into<std::path::PathBuf>) -> Self {
+        self.inner
+            .plugins
+            .push(SdkPluginConfig::Local { path: path.into() });
+        self
+    }
+
+    /// Replace the whole plugin list.
+    #[must_use]
+    pub fn plugins(mut self, plugins: Vec<SdkPluginConfig>) -> Self {
+        self.inner.plugins = plugins;
+        self
+    }
+
+    /// Add one env var to the subprocess environment.
+    #[must_use]
+    pub fn env(mut self, k: impl Into<String>, v: impl Into<String>) -> Self {
+        self.inner.env.insert(k.into(), v.into());
+        self
+    }
+
+    /// Replace the whole env map.
+    #[must_use]
+    pub fn envs(mut self, env: HashMap<String, String>) -> Self {
+        self.inner.env = env;
+        self
+    }
+
+    /// Override `$USER` in the subprocess env.
+    #[must_use]
+    pub fn user(mut self, u: impl Into<String>) -> Self {
+        self.inner.user = Some(u.into());
+        self
+    }
+
+    /// Add one extra argv flag (pass `None` for bare flags).
+    #[must_use]
+    pub fn extra_arg(mut self, flag: impl Into<String>, value: Option<String>) -> Self {
+        self.inner.extra_args.insert(flag.into(), value);
+        self
+    }
+
+    /// Replace the whole extra-args map.
+    #[must_use]
+    pub fn extra_args(mut self, args: HashMap<String, Option<String>>) -> Self {
+        self.inner.extra_args = args;
+        self
+    }
+
+    /// Set the reasoning-effort hint.
+    #[must_use]
+    pub fn effort(mut self, e: EffortLevel) -> Self {
+        self.inner.effort = Some(e);
+        self
+    }
+
+    /// Configure extended thinking.
+    #[must_use]
+    pub fn thinking(mut self, t: ThinkingConfig) -> Self {
+        self.inner.thinking = Some(t);
+        self
+    }
+
+    /// Deprecated — prefer `thinking(ThinkingConfig::Enabled{..})`.
+    #[must_use]
+    pub fn max_thinking_tokens(mut self, n: u64) -> Self {
+        self.inner.max_thinking_tokens = Some(n);
+        self
+    }
+
+    /// Cap total sub-agent token budget per turn.
+    #[must_use]
+    pub fn task_budget(mut self, n: u64) -> Self {
+        self.inner.task_budget = Some(n);
+        self
+    }
+
+    /// Attach a structured-output schema. Python form:
+    /// `{"type":"json_schema","schema":{...}}`.
+    #[must_use]
+    pub fn output_format(mut self, value: Value) -> Self {
+        self.inner.output_format = Some(value);
+        self
+    }
+
+    /// Cap the stdout buffer size (bytes). `None` = default 1 MiB.
+    #[must_use]
+    pub fn max_buffer_size(mut self, n: usize) -> Self {
+        self.inner.max_buffer_size = Some(n);
+        self
+    }
+
+    /// Attach a stderr line callback.
+    #[must_use]
+    pub fn stderr(mut self, cb: impl Fn(String) + Send + Sync + 'static) -> Self {
+        self.inner.stderr = Some(Arc::new(cb));
+        self
+    }
+
+    /// Cap session-store load timeout (ms) during resume.
+    #[must_use]
+    pub fn load_timeout_ms(mut self, n: u64) -> Self {
+        self.inner.load_timeout_ms = Some(n);
         self
     }
 

@@ -63,7 +63,10 @@ pub use hooks::{
     SubagentStartHookSpecificOutput, SubagentStartInput, SubagentStopInput,
     UserPromptSubmitHookSpecificOutput, UserPromptSubmitInput,
 };
-pub use options::{Options, OptionsBuilder, PermissionMode};
+pub use options::{
+    Options, OptionsBuilder, PermissionMode, SdkPluginConfig, SystemPromptKind, ThinkingConfig,
+    ToolsPreset,
+};
 pub use permissions::{
     CanUseToolCallback, PermissionBehavior, PermissionDecision, PermissionRuleValue,
     PermissionUpdate, PermissionUpdateDestination, ToolPermissionContext,

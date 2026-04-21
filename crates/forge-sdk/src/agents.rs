@@ -249,6 +249,23 @@ pub enum EffortLevel {
     Numeric(i64),
 }
 
+impl EffortLevel {
+    /// String form suitable for passing via `--effort <value>` or any
+    /// other CLI surface that expects a Python-style literal-or-int.
+    #[must_use]
+    pub fn as_cli_arg(&self) -> String {
+        match self {
+            Self::Preset(p) => match p {
+                EffortPreset::Low => "low".into(),
+                EffortPreset::Medium => "medium".into(),
+                EffortPreset::High => "high".into(),
+                EffortPreset::Max => "max".into(),
+            },
+            Self::Numeric(n) => n.to_string(),
+        }
+    }
+}
+
 /// Named reasoning-effort presets. Mirrors Python's
 /// `Literal["low","medium","high","max"]`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
