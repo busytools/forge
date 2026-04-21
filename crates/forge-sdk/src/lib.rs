@@ -32,7 +32,7 @@
 //! # Ok(()) }
 //! ```
 
-#![doc(html_root_url = "https://docs.rs/forge-sdk/0.1.1")]
+#![doc(html_root_url = "https://docs.rs/forge-sdk/0.1.2")]
 #![forbid(unsafe_code)]
 
 mod client;
