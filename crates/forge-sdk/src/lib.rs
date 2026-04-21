@@ -37,6 +37,7 @@
 
 pub mod content;
 mod error;
+pub mod messages;
 
 pub use error::Error;
 
