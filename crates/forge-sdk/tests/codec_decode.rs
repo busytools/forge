@@ -72,3 +72,32 @@ fn dispatch_rejects_missing_type() {
     let err = decode_dispatch(line, 5).expect_err("should fail");
     assert!(format!("{err}").contains("missing `type`"));
 }
+
+#[test]
+fn dispatch_detects_control_cancel_request() {
+    // Upstream Python SDK `_internal/query.py:274-280` cancels the in-flight
+    // control handler matching `request_id`. forge-sdk must at minimum
+    // decode the frame without errors so the read loop keeps going.
+    use forge_sdk::transport::codec::{DecodedLine, decode_dispatch};
+
+    let line = r#"{"type":"control_cancel_request","request_id":"req_42"}"#;
+    let decoded = decode_dispatch(line, 1).expect("decode");
+    match decoded {
+        DecodedLine::ControlCancel { request_id } => {
+            assert_eq!(request_id, "req_42");
+        }
+        other => panic!("expected ControlCancel, got: {other:?}"),
+    }
+}
+
+#[test]
+fn dispatch_rejects_control_cancel_missing_request_id() {
+    use forge_sdk::transport::codec::decode_dispatch;
+
+    let line = r#"{"type":"control_cancel_request"}"#;
+    let err = decode_dispatch(line, 1).expect_err("should fail without request_id");
+    assert!(
+        format!("{err}").contains("request_id"),
+        "error should mention the missing field"
+    );
+}
