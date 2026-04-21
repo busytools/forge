@@ -52,10 +52,14 @@ pub mod transport;
 pub use client::Client;
 pub use error::Error;
 pub use hooks::{
-    BaseHookInput, HookCallback, HookContext, HookDecision, HookKind, Hooks, HooksBuilder,
-    NotificationInput, PermissionRequestInput, PostToolUseFailureInput, PostToolUseInput,
-    PreCompactInput, PreToolUseInput, StopInput, SubagentContext, SubagentStartInput,
-    SubagentStopInput, UserPromptSubmitInput,
+    BaseHookInput, HookCallback, HookContext, HookDecision, HookKind, HookSpecificOutput, Hooks,
+    HooksBuilder, NotificationHookSpecificOutput, NotificationInput,
+    PermissionRequestHookSpecificOutput, PermissionRequestInput,
+    PostToolUseFailureHookSpecificOutput, PostToolUseFailureInput, PostToolUseHookSpecificOutput,
+    PostToolUseInput, PreCompactInput, PreToolUseHookSpecificOutput, PreToolUseInput,
+    PreToolUsePermissionDecision, SessionStartHookSpecificOutput, StopInput, SubagentContext,
+    SubagentStartHookSpecificOutput, SubagentStartInput, SubagentStopInput,
+    UserPromptSubmitHookSpecificOutput, UserPromptSubmitInput,
 };
 pub use options::{Options, OptionsBuilder, PermissionMode};
 pub use permissions::{CanUseToolCallback, PermissionDecision, ToolPermissionContext};
