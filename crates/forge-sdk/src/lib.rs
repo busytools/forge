@@ -35,12 +35,14 @@
 #![doc(html_root_url = "https://docs.rs/forge-sdk/0.0.1")]
 #![forbid(unsafe_code)]
 
+mod client;
 pub mod content;
 mod error;
 pub mod messages;
 mod options;
 pub mod transport;
 
+pub use client::Client;
 pub use error::Error;
 pub use options::{Options, OptionsBuilder, PermissionMode};
 
