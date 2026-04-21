@@ -18,6 +18,61 @@ This file is the single source of truth for **where forge-sdk is** relative to P
 
 Each entry below records one weekly parity check.
 
+### 2026-04-22 — major surface sweep (`parity-tier1-wire-risk` branch)
+
+Single-session push through Tiers 1–5 of the 2026-04-21 handoff.
+Branch `parity-tier1-wire-risk` landed 17 commits covering:
+
+- **Tier 1 (wire-risk):** all 7 items — `BaseHookInput` flatten, 4
+  missing hook input types + typed `hookSpecificOutput` wrappers,
+  `control_cancel_request` inbound handling, `rate_limit_event`,
+  task-lifecycle frames (started/progress/notification), and
+  `mirror_error` frames. forge-sdk no longer drops any frame the CLI
+  currently emits.
+- **Tier 2 (behavioural parity):** `TranscriptMirrorBatcher` with
+  coalesce + 500-entry / 1-MiB eager flush + `MirrorError` on-channel
+  emission; `PermissionUpdate` (6 variants) attached to allow
+  decisions via `with_updated_permissions`; `AgentDefinition` + the
+  `agents` field on the initialize control_request.
+- **Tier 3 (option surface):** ~25 new options wired end-to-end:
+  system_prompt / tools / disallowed_tools / max_turns /
+  max_budget_usd / fallback_model / betas / continue_conversation /
+  session_id / include_partial_messages / fork_session / add_dirs /
+  plugins / env / user / extra_args / effort / thinking /
+  max_thinking_tokens / task_budget / output_format /
+  max_buffer_size / stderr / load_timeout_ms /
+  enable_file_checkpointing / settings + sandbox (with JSON merge).
+  `build_args(&Options)` pure function exposed for argv inspection;
+  25 tests exercise flag-by-flag parity.
+- **Tier 4 (public types):** `public_types.rs` module with
+  `SettingSource`, `SdkBeta`, `StreamEvent`, `SDKSessionInfo`,
+  `SessionMessage(Kind)`, `McpServerConnectionStatus`,
+  `McpToolAnnotations`, `McpToolInfo`, `McpServerInfo`,
+  `McpServerStatus`, `McpStatusResponse`, `ContextUsageCategory`,
+  `ContextUsageResponse`, `McpServerConfig` (Stdio/Sse/Http),
+  `SandboxSettings` + `SandboxNetworkConfig` +
+  `SandboxIgnoreViolations`. `InMemorySessionStore` alias added for
+  Python surface parity. `mcp_status()` and `get_context_usage()`
+  return typed; `_raw()` escape hatches retained.
+- **Tier 5 (helpers):** top-level `query()` one-shot; offline
+  `list_sessions` / `get_session_info` / `get_session_messages`;
+  `rename_session` / `tag_session` / `delete_session` (JSONL
+  append / file removal). Includes a JS-style 32-bit path-sanitise
+  hash (for project-key compat with the CLI) and a minimal no-dep
+  ISO-8601 parser.
+
+**Not yet done:** `fork_session` (offline) + `ForkSessionResult`,
+`list_subagents` + `get_subagent_messages`, the `*_from_store` /
+`*_via_store` async variants, `project_key_for_directory` public
+alias. Python's head-only read optimisation
+(`_read_session_lite`) not mirrored; full-file parse used instead —
+correct but slower on huge session dirs.
+
+**Test count:** 205 tests + 2 ignored pass on `just check` (fmt +
+clippy all-targets -D warnings + nextest forge-sdk + docs -D
+warnings). Python SDK's own `tests/` directory not yet mirrored
+(Tier 6, ongoing).
+
 <!-- New entries prepended here. Template:
 
 ### <YYYY-MM-DD> — Python SDK vX.Y.Z
