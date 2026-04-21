@@ -38,8 +38,10 @@
 pub mod content;
 mod error;
 pub mod messages;
+mod options;
 
 pub use error::Error;
+pub use options::{Options, OptionsBuilder, PermissionMode};
 
 /// Convenient alias for `Result<T, forge_sdk::Error>`.
 pub type Result<T, E = Error> = core::result::Result<T, E>;
