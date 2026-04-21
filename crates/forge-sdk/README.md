@@ -4,21 +4,27 @@ Rust port of Anthropic's [`claude-agent-sdk`](https://github.com/anthropics/clau
 
 ## Status
 
-- **v0.0.2** — M0 + M1 + M2 + M3 complete. Core transport, permission
-  callback, in-process MCP tool hosting all working. Not yet published
-  to crates.io.
+- **v0.1.0** — parity with Python `claude-agent-sdk` v0.1.64. All seven
+  milestones (M0 scaffolding → M7 polish) shipped. Not yet published to
+  crates.io.
 
 ## Scope
 
 Targets feature parity with Python `claude-agent-sdk`. Current crate exposes:
 
-- `Client` / `OptionsBuilder` / `PermissionMode`
+- `Client` / `OptionsBuilder` / `PermissionMode` (6 variants)
 - `content::*`, `messages::*` (stream-json types)
 - `permissions::{PermissionDecision, ToolPermissionContext, CanUseToolCallback}`
 - `mcp::{McpServer, McpServerBuilder, Tool, ToolInput, ToolOutput}`
 - `tool!` declarative macro
+- `hooks::*` — 10 hook kinds + `HooksBuilder` + `HookDecision`
+- `session_store::{SessionStore, MemorySessionStore, FsSessionStore}`
+- `tracing_bridge` — turn / tool / hook spans
+- Skills, `allowed_tools`, `setting_sources`, `exclude_dynamic_sections`
+  on `OptionsBuilder`
 
-See the top-level [forge README](../..) for roadmap.
+See the top-level [forge README](../..) for roadmap and
+[`docs/CHANGELOG.md`](../../docs/CHANGELOG.md) for release history.
 
 ## Minimal example
 
