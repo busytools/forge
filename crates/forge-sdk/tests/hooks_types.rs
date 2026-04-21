@@ -3,8 +3,9 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use forge_sdk::hooks::{
-    BaseHookInput, HookDecision, HookKind, PostToolUseInput, PreCompactInput, PreToolUseInput,
-    StopInput, SubagentContext, SubagentStopInput, UserPromptSubmitInput,
+    BaseHookInput, HookDecision, HookKind, NotificationInput, PermissionRequestInput,
+    PostToolUseFailureInput, PostToolUseInput, PreCompactInput, PreToolUseInput, StopInput,
+    SubagentContext, SubagentStartInput, SubagentStopInput, UserPromptSubmitInput,
 };
 use serde_json::json;
 
@@ -161,6 +162,90 @@ fn pre_compact_input_has_trigger_and_custom_instructions() {
     let input: PreCompactInput = serde_json::from_value(raw).expect("parse");
     assert_eq!(input.trigger, "auto");
     assert!(input.custom_instructions.is_none());
+}
+
+#[test]
+fn post_tool_use_failure_input_carries_error_field() {
+    let raw = json!({
+        "hook_event_name": "PostToolUseFailure",
+        "session_id": "s",
+        "transcript_path": "/t",
+        "cwd": "/c",
+        "tool_name": "Bash",
+        "tool_input": {"command": "false"},
+        "tool_use_id": "toolu_x",
+        "error": "exit 1",
+        "is_interrupt": false
+    });
+    let input: PostToolUseFailureInput = serde_json::from_value(raw).expect("parse");
+    assert_eq!(input.error, "exit 1");
+    assert_eq!(input.is_interrupt, Some(false));
+    assert_eq!(input.tool_use_id, "toolu_x");
+}
+
+#[test]
+fn post_tool_use_failure_input_is_interrupt_optional() {
+    // `is_interrupt` is NotRequired upstream — absent frame must parse.
+    let raw = json!({
+        "hook_event_name": "PostToolUseFailure",
+        "session_id": "s",
+        "transcript_path": "/t",
+        "cwd": "/c",
+        "tool_name": "Bash",
+        "tool_input": {"command": "false"},
+        "tool_use_id": "toolu_x",
+        "error": "boom"
+    });
+    let input: PostToolUseFailureInput = serde_json::from_value(raw).expect("parse");
+    assert!(input.is_interrupt.is_none());
+}
+
+#[test]
+fn notification_input_parses() {
+    let raw = json!({
+        "hook_event_name": "Notification",
+        "session_id": "s",
+        "transcript_path": "/t",
+        "cwd": "/c",
+        "message": "Tool needs approval",
+        "title": "Permission",
+        "notification_type": "permission_request"
+    });
+    let input: NotificationInput = serde_json::from_value(raw).expect("parse");
+    assert_eq!(input.message, "Tool needs approval");
+    assert_eq!(input.title.as_deref(), Some("Permission"));
+    assert_eq!(input.notification_type, "permission_request");
+}
+
+#[test]
+fn subagent_start_input_parses() {
+    let raw = json!({
+        "hook_event_name": "SubagentStart",
+        "session_id": "s",
+        "transcript_path": "/t",
+        "cwd": "/c",
+        "agent_id": "agent-1",
+        "agent_type": "code-reviewer"
+    });
+    let input: SubagentStartInput = serde_json::from_value(raw).expect("parse");
+    assert_eq!(input.agent_id, "agent-1");
+    assert_eq!(input.agent_type, "code-reviewer");
+}
+
+#[test]
+fn permission_request_input_parses() {
+    let raw = json!({
+        "hook_event_name": "PermissionRequest",
+        "session_id": "s",
+        "transcript_path": "/t",
+        "cwd": "/c",
+        "tool_name": "Bash",
+        "tool_input": {"command": "rm -rf /"},
+        "permission_suggestions": [{"behavior":"ask"}]
+    });
+    let input: PermissionRequestInput = serde_json::from_value(raw).expect("parse");
+    assert_eq!(input.tool_name, "Bash");
+    assert_eq!(input.permission_suggestions.as_ref().map(Vec::len), Some(1));
 }
 
 #[test]
