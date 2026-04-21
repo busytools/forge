@@ -25,6 +25,13 @@ use crate::public_types::{SDKSessionInfo, SessionMessage, SessionMessageKind};
 
 const MAX_SANITIZED_LENGTH: usize = 200;
 
+/// Re-export of the internal path sanitiser for other modules that need
+/// to derive the same on-disk project-key layout the CLI uses.
+#[must_use]
+pub fn sanitize_path_public(name: &str) -> String {
+    sanitize_path(name)
+}
+
 /// Sanitise a path the same way the `claude` CLI does — non-alphanumerics
 /// become hyphens, and overlong paths are truncated with a base-36 hash
 /// suffix (matching JS's `String.prototype.hashCode` trick). Ported from

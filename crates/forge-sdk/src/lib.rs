@@ -47,6 +47,7 @@ mod options;
 pub mod permissions;
 pub mod public_types;
 pub(crate) mod request_id;
+pub mod session_mutations;
 pub mod session_store;
 pub mod sessions;
 pub mod tracing_bridge;
