@@ -8,6 +8,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::hooks::Hooks;
+use std::collections::HashMap;
+
+use crate::agents::AgentDefinition;
 use crate::mcp::McpServer;
 use crate::permissions::CanUseToolCallback;
 use crate::session_store::SessionStore;
@@ -120,6 +123,11 @@ pub struct Options {
     /// `~/.claude/projects`. Matches Python SDK's `_internal/sessions.py`
     /// `_get_projects_dir()`.
     pub projects_dir: Option<PathBuf>,
+    /// Subagent definitions forwarded via the `initialize` `control_request`'s
+    /// `agents` field. Key is the subagent name the model picks; value is
+    /// the [`AgentDefinition`]. Empty by default — matching Python SDK
+    /// v0.1.64 `ClaudeAgentOptions.agents` (`types.py:1355`).
+    pub agents: HashMap<String, AgentDefinition>,
 }
 
 impl Default for Options {
@@ -141,6 +149,7 @@ impl Default for Options {
             session_store: None,
             minimum_cli_version: Some("2.0.0".into()),
             projects_dir: None,
+            agents: HashMap::new(),
         }
     }
 }
@@ -176,6 +185,7 @@ impl std::fmt::Debug for Options {
             )
             .field("minimum_cli_version", &self.minimum_cli_version)
             .field("projects_dir", &self.projects_dir)
+            .field("agents", &format!("<{} agents>", self.agents.len()))
             .finish()
     }
 }
@@ -353,6 +363,22 @@ impl OptionsBuilder {
     #[must_use]
     pub fn projects_dir(mut self, path: impl Into<PathBuf>) -> Self {
         self.inner.projects_dir = Some(path.into());
+        self
+    }
+
+    /// Register a subagent under `name`. Forwards to the CLI via the
+    /// `initialize` `control_request`'s `agents` field. Mirrors Python
+    /// SDK's `ClaudeAgentOptions.agents` dict (`types.py:1355`).
+    #[must_use]
+    pub fn agent(mut self, name: impl Into<String>, def: AgentDefinition) -> Self {
+        self.inner.agents.insert(name.into(), def);
+        self
+    }
+
+    /// Replace the whole subagent map in one go.
+    #[must_use]
+    pub fn agents(mut self, agents: HashMap<String, AgentDefinition>) -> Self {
+        self.inner.agents = agents;
         self
     }
 
