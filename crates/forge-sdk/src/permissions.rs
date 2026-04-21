@@ -120,6 +120,20 @@ impl PermissionDecision {
 ///
 /// Implementations are typically async closures or plain functions. The
 /// SDK wraps them in a boxed trait object inside `Options`.
+///
+/// # Panics and error handling
+///
+/// Callbacks are expected to never panic. If a callback does panic, the
+/// `tokio` task running the current `next_event` call is aborted; the next
+/// call to `next_event` returns an [`Error::Io`](crate::Error::Io) with a
+/// broken-pipe or similar message. Authors should return
+/// [`PermissionDecision::deny`] to signal rejection rather than panicking.
+///
+/// Callbacks cannot signal I/O or other errors. If your callback performs
+/// fallible work (e.g., consulting a policy server), handle the failure
+/// internally and translate to `allow` or `deny(reason)` — the SDK does not
+/// surface callback errors to the `claude` binary separately from a deny
+/// response.
 pub trait CanUseToolCallback: Send + Sync {
     /// Called by the SDK when the `claude` binary requests permission.
     fn call<'a>(
