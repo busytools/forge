@@ -39,6 +39,7 @@ mod client;
 pub mod content;
 pub mod control;
 mod error;
+pub mod mcp;
 pub mod messages;
 mod options;
 pub mod permissions;
@@ -48,6 +49,9 @@ pub use client::Client;
 pub use error::Error;
 pub use options::{Options, OptionsBuilder, PermissionMode};
 pub use permissions::{CanUseToolCallback, PermissionDecision, ToolPermissionContext};
+
+#[doc(hidden)]
+pub use crate::mcp::macros::__private;
 
 /// Convenient alias for `Result<T, forge_sdk::Error>`.
 pub type Result<T, E = Error> = core::result::Result<T, E>;
