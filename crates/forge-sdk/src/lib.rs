@@ -37,6 +37,7 @@
 
 mod client;
 pub mod content;
+pub mod control;
 mod error;
 pub mod messages;
 mod options;
