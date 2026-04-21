@@ -50,6 +50,7 @@ pub(crate) mod request_id;
 pub mod session_mutations;
 pub mod session_store;
 pub mod sessions;
+pub mod sessions_store;
 pub mod tracing_bridge;
 pub(crate) mod transcript_mirror_batcher;
 pub mod transport;
