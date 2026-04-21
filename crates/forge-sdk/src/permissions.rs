@@ -1,9 +1,13 @@
 //! Permission callback types.
 //!
 //! Mirrors Python SDK's `PermissionResultAllow`, `PermissionResultDeny`,
-//! `ToolPermissionContext`, `CanUseTool` callable.
+//! `ToolPermissionContext`, `CanUseTool` callable, plus the `PermissionUpdate`
+//! family carried on allow results.
 
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
+
+use crate::options::PermissionMode;
 
 /// Context passed to a [`CanUseToolCallback`] when the `claude` binary
 /// asks for permission.
@@ -54,8 +58,13 @@ pub struct PermissionDecision {
 
 #[derive(Debug, Clone)]
 enum DecisionKind {
-    Allow { updated_input: Option<Value> },
-    Deny { reason: String },
+    Allow {
+        updated_input: Option<Value>,
+        updated_permissions: Vec<PermissionUpdate>,
+    },
+    Deny {
+        reason: String,
+    },
 }
 
 impl PermissionDecision {
@@ -65,6 +74,7 @@ impl PermissionDecision {
         Self {
             inner: DecisionKind::Allow {
                 updated_input: None,
+                updated_permissions: Vec::new(),
             },
         }
     }
@@ -77,6 +87,7 @@ impl PermissionDecision {
         Self {
             inner: DecisionKind::Allow {
                 updated_input: Some(updated_input),
+                updated_permissions: Vec::new(),
             },
         }
     }
@@ -91,6 +102,23 @@ impl PermissionDecision {
         }
     }
 
+    /// Attach a list of [`PermissionUpdate`]s to an allow decision. These
+    /// are forwarded to the `claude` binary as `updatedPermissions` on the
+    /// wire and applied to the session's permission state. No-op on a
+    /// deny decision — Python's `PermissionResultDeny` has no equivalent
+    /// channel.
+    #[must_use]
+    pub fn with_updated_permissions(mut self, updates: Vec<PermissionUpdate>) -> Self {
+        if let DecisionKind::Allow {
+            updated_permissions,
+            ..
+        } = &mut self.inner
+        {
+            *updated_permissions = updates;
+        }
+        self
+    }
+
     /// True if this is an allow decision.
     #[must_use]
     pub fn is_allow(&self) -> bool {
@@ -101,8 +129,21 @@ impl PermissionDecision {
     #[must_use]
     pub fn updated_input(&self) -> Option<&Value> {
         match &self.inner {
-            DecisionKind::Allow { updated_input } => updated_input.as_ref(),
+            DecisionKind::Allow { updated_input, .. } => updated_input.as_ref(),
             DecisionKind::Deny { .. } => None,
+        }
+    }
+
+    /// Permission updates attached to an allow decision. Empty slice for
+    /// deny, or for an allow that carries no updates.
+    #[must_use]
+    pub fn updated_permissions(&self) -> &[PermissionUpdate] {
+        match &self.inner {
+            DecisionKind::Allow {
+                updated_permissions,
+                ..
+            } => updated_permissions,
+            DecisionKind::Deny { .. } => &[],
         }
     }
 
@@ -114,6 +155,115 @@ impl PermissionDecision {
             DecisionKind::Allow { .. } => None,
         }
     }
+}
+
+/// Where a [`PermissionUpdate`] should be persisted. Mirrors Python's
+/// `PermissionUpdateDestination` literal (`types.py:103-105`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PermissionUpdateDestination {
+    /// User-level `~/.claude/settings.json`.
+    UserSettings,
+    /// Project-level `.claude/settings.json`.
+    ProjectSettings,
+    /// Project-local `.claude/settings.local.json`.
+    LocalSettings,
+    /// Session-scoped (in-memory, per-client) — discarded on disconnect.
+    Session,
+}
+
+/// Policy a rule-based [`PermissionUpdate`] applies. Mirrors Python's
+/// `PermissionBehavior` literal (`types.py:107`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PermissionBehavior {
+    /// Auto-approve matches.
+    Allow,
+    /// Auto-deny matches.
+    Deny,
+    /// Prompt on matches.
+    Ask,
+}
+
+/// One tool-rule entry inside a rule-based [`PermissionUpdate`].
+/// Mirrors Python's `PermissionRuleValue` (`types.py:110-115`). Wire uses
+/// camelCase (`toolName`, `ruleContent`) per Python's `to_dict`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PermissionRuleValue {
+    /// Tool the rule targets (e.g. `"Edit"`, `"Bash"`).
+    pub tool_name: String,
+    /// Optional rule-content pattern (tool-specific). `None` means "any
+    /// invocation of this tool".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rule_content: Option<String>,
+}
+
+/// One permission-state mutation attached to an allow decision. Mirrors
+/// Python's `PermissionUpdate` (`types.py:118-170`). Dispatched on `type`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum PermissionUpdate {
+    /// Append rules to the active permission set.
+    #[serde(rename = "addRules")]
+    AddRules {
+        /// Rules to add.
+        rules: Vec<PermissionRuleValue>,
+        /// Policy for matching invocations.
+        behavior: PermissionBehavior,
+        /// Where to persist. `None` = in-memory only.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        destination: Option<PermissionUpdateDestination>,
+    },
+    /// Replace the entire rule set with `rules`.
+    #[serde(rename = "replaceRules")]
+    ReplaceRules {
+        /// Rules to install.
+        rules: Vec<PermissionRuleValue>,
+        /// Policy for matching invocations.
+        behavior: PermissionBehavior,
+        /// Where to persist.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        destination: Option<PermissionUpdateDestination>,
+    },
+    /// Remove the listed rules from the active set.
+    #[serde(rename = "removeRules")]
+    RemoveRules {
+        /// Rules to drop.
+        rules: Vec<PermissionRuleValue>,
+        /// Policy the rules were registered under.
+        behavior: PermissionBehavior,
+        /// Where to persist the removal.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        destination: Option<PermissionUpdateDestination>,
+    },
+    /// Switch the session's [`PermissionMode`].
+    #[serde(rename = "setMode")]
+    SetMode {
+        /// Target mode.
+        mode: PermissionMode,
+        /// Where to persist.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        destination: Option<PermissionUpdateDestination>,
+    },
+    /// Widen the additional-directories allowlist.
+    #[serde(rename = "addDirectories")]
+    AddDirectories {
+        /// Absolute paths to add.
+        directories: Vec<String>,
+        /// Where to persist.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        destination: Option<PermissionUpdateDestination>,
+    },
+    /// Shrink the additional-directories allowlist.
+    #[serde(rename = "removeDirectories")]
+    RemoveDirectories {
+        /// Absolute paths to remove.
+        directories: Vec<String>,
+        /// Where to persist the removal.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        destination: Option<PermissionUpdateDestination>,
+    },
 }
 
 /// Trait for permission callbacks.

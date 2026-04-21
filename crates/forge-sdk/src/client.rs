@@ -405,13 +405,23 @@ impl Client {
         };
 
         let behavior = if decision.is_allow() {
+            let perms = decision.updated_permissions();
+            let updated_permissions = if perms.is_empty() {
+                None
+            } else {
+                Some(
+                    serde_json::to_value(perms).map_err(|e| Error::MessageParse {
+                        reason: format!("could not encode updated_permissions: {e}"),
+                    })?,
+                )
+            };
             AllowBehavior::Allow {
                 updated_input: decision
                     .updated_input()
                     .cloned()
                     .or(original_input)
                     .unwrap_or(serde_json::Value::Null),
-                updated_permissions: None,
+                updated_permissions,
             }
         } else {
             AllowBehavior::Deny {

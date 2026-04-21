@@ -15,19 +15,25 @@ use crate::session_store::SessionStore;
 /// Which permission flow the `claude` binary should use for tool invocations.
 ///
 /// Mirrors Python SDK's `permission_mode` values (all six).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum PermissionMode {
     /// Prompt on every tool use (the default).
+    #[serde(rename = "default")]
     Default,
     /// Auto-allow edits / writes; prompt on destructive ops.
+    #[serde(rename = "acceptEdits")]
     AcceptEdits,
     /// Read-only mode; block tools that would mutate the workspace.
+    #[serde(rename = "plan")]
     Plan,
     /// Auto-allow all tools (use with care).
+    #[serde(rename = "bypassPermissions")]
     BypassPermissions,
     /// Let the binary decide based on tool + context heuristics (Python v0.1.57+).
+    #[serde(rename = "auto")]
     Auto,
     /// Never prompt; silently deny anything that would require approval.
+    #[serde(rename = "dontAsk")]
     DontAsk,
 }
 
