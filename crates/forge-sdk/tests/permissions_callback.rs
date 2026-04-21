@@ -1,4 +1,4 @@
-//! End-to-end tests of the can_use_tool callback flow.
+//! End-to-end tests of the `can_use_tool` callback flow.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
