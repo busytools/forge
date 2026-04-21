@@ -23,6 +23,7 @@ tracing = { workspace = true }
 async-trait = { workspace = true }
 getrandom = { workspace = true }
 hex = { workspace = true }
+uuid = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
