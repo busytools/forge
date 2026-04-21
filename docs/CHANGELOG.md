@@ -9,6 +9,57 @@ Version numbers mirror the Python SDK release they target parity with
 
 ## [Unreleased]
 
+## [0.1.1] — 2026-04-21
+
+Deferred-item follow-up after v0.1.0 — closes the gaps listed in the
+v0.1.0 "Known gaps" section.
+
+### Added
+
+- **`initialize` control_request (C2.9):** Sent automatically on
+  `Client::spawn` after the system/init message. Carries the hook
+  registry (event → matcher + hookCallbackIds + timeout), skills list
+  (concrete names; `"all"` continues to travel via `--allowedTools`),
+  `excludeDynamicSections` bool, and `agents` placeholder. Waits for a
+  matching `control_response` before accepting user input. Protocol
+  matches Python SDK v0.1.64 `_internal/query.py`.
+- **Request-id generator** matching Python's `req_<counter>_<hex4>`
+  shape (`request_id::next()`).
+- **`permission_prompt_tool_name` option** — orthogonal permission
+  path via CLI flag `--permission-prompt-tool <name>`.
+- **`session_store` option + `--session-mirror` CLI flag** — when a
+  `SessionStore` is attached, forge-sdk passes `--session-mirror` so
+  the CLI emits `transcript_mirror` frames. (Frame ingestion into
+  `store.append(...)` still to follow in a later patch — the wire
+  plumbing is in place.)
+- **CLI-version guard on spawn** — runs `<binary> --version` once and
+  checks the reported major version meets `minimum_cli_version`
+  (default `"2.0.0"`, matching Python SDK's pin at
+  `subprocess_cli.py:29`). Pass `None` to disable.
+- **8 outbound control subtypes** on `Client`:
+  `interrupt`, `set_permission_mode`, `rewind_files`, `mcp_reconnect`,
+  `mcp_toggle`, `stop_task`, `mcp_status`, `get_context_usage`.
+- **`fork_session`** on `Client` — sends the `fork_session`
+  control_request with an optional `tool_use_id` split-point and
+  returns the new `session_id` the CLI assigned.
+- **Mock fixtures:** `mock_claude_raw.sh` for transport-level tests
+  that bypass `Client::spawn`; existing mocks updated to answer the
+  initialize handshake.
+
+### Changed
+
+- `Options` grows `permission_prompt_tool_name`, `session_store`,
+  `minimum_cli_version` fields. `Debug` impl updated.
+
+### Known gaps still outstanding
+
+- Transcript-mirror frame ingestion (`transcript_mirror` →
+  `session_store.append`) — flag is passed but we don't yet parse the
+  frames on the stdio stream.
+- No integration tests for the 8 new control subtypes or
+  `fork_session`; real-claude smoke coverage would need the live
+  binary.
+
 ## [0.1.0] — 2026-04-21
 
 First parity release against `claude-agent-sdk` v0.1.64.
