@@ -85,7 +85,10 @@ impl Client {
     /// Any [`Error`] variant; see field docs.
     pub async fn spawn(options: Options) -> Result<Self, Error> {
         let can_use_tool = options.can_use_tool.clone();
-        let mcp_hosts = McpHosts::new(options.mcp_servers.clone());
+        let mcp_hosts = McpHosts::new(
+            options.mcp_servers.clone(),
+            options.external_mcp_servers.clone(),
+        );
         let hook_registry = options.hooks.mint_registry();
         let hook_payload = hook_registry.to_initialize_payload();
         let hook_callbacks = hook_registry.by_id;

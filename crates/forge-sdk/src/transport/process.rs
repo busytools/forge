@@ -207,9 +207,13 @@ pub fn build_args(options: &Options) -> Vec<String> {
 
     // MCP: pass --mcp-config '<inline-json>' when servers are registered.
     // Python SDK uses inline JSON (not a temp file) with {"type": "sdk"}
-    // entries to signal in-process hosting.
-    if !options.mcp_servers.is_empty() {
-        let hosts = McpHosts::new(options.mcp_servers.clone());
+    // entries to signal in-process hosting; external servers carry their
+    // own stdio / SSE / HTTP config verbatim.
+    let hosts = McpHosts::new(
+        options.mcp_servers.clone(),
+        options.external_mcp_servers.clone(),
+    );
+    if !hosts.is_empty() {
         args.push("--mcp-config".into());
         args.push(hosts.config_argv());
     }

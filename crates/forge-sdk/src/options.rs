@@ -85,6 +85,12 @@ pub struct Options {
     /// `mcp__<server>__<tool>` prefix the model sees) to a built
     /// [`McpServer`].
     pub mcp_servers: Vec<(String, McpServer)>,
+    /// External MCP servers — stdio / SSE / HTTP. Mirrors the non-SDK
+    /// variants of Python's `ClaudeAgentOptions.mcp_servers`
+    /// (`types.py:549-572`). Registered alongside in-process servers in
+    /// the `--mcp-config` JSON.
+    pub external_mcp_servers:
+        std::collections::HashMap<String, crate::public_types::McpServerConfig>,
     /// Registered hooks. Empty by default.
     pub hooks: Hooks,
     /// Tool names the model is allowed to invoke. Passed to the CLI as
@@ -223,6 +229,7 @@ impl Default for Options {
             permission_mode: PermissionMode::Default,
             can_use_tool: None,
             mcp_servers: Vec::new(),
+            external_mcp_servers: HashMap::new(),
             hooks: Hooks::default(),
             allowed_tools: Vec::new(),
             skills: Vec::new(),
@@ -387,6 +394,10 @@ impl std::fmt::Debug for Options {
                 "mcp_servers",
                 &format!("<{} servers>", self.mcp_servers.len()),
             )
+            .field(
+                "external_mcp_servers",
+                &format!("<{} external>", self.external_mcp_servers.len()),
+            )
             .field("hooks", &self.hooks)
             .field("allowed_tools", &self.allowed_tools)
             .field("skills", &self.skills)
@@ -507,6 +518,18 @@ impl OptionsBuilder {
     #[must_use]
     pub fn mcp_server(mut self, name: impl Into<String>, server: McpServer) -> Self {
         self.inner.mcp_servers.push((name.into(), server));
+        self
+    }
+
+    /// Register an external (stdio / SSE / HTTP) MCP server under the
+    /// given name. Non-SDK variants of Python's `mcp_servers` dict.
+    #[must_use]
+    pub fn external_mcp_server(
+        mut self,
+        name: impl Into<String>,
+        config: crate::public_types::McpServerConfig,
+    ) -> Self {
+        self.inner.external_mcp_servers.insert(name.into(), config);
         self
     }
 
