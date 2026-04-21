@@ -10,6 +10,7 @@ use std::sync::Arc;
 use crate::hooks::Hooks;
 use crate::mcp::McpServer;
 use crate::permissions::CanUseToolCallback;
+use crate::session_store::SessionStore;
 
 /// Which permission flow the `claude` binary should use for tool invocations.
 ///
@@ -93,6 +94,20 @@ pub struct Options {
     /// `control_request` (NOT a CLI flag — Python SDK delivers this via
     /// the control channel).
     pub exclude_dynamic_sections: bool,
+    /// Orthogonal permission-prompt tool. When set, passed as
+    /// `--permission-prompt-tool <name>`. Mirrors Python
+    /// `ClaudeAgentOptions.permission_prompt_tool_name`.
+    pub permission_prompt_tool_name: Option<String>,
+    /// Transcript-mirror session store. When `Some`, forge-sdk passes
+    /// `--session-mirror` to the CLI so it emits `transcript_mirror`
+    /// frames to the SDK, which batches them to `store.append(...)` at
+    /// ~100ms cadence.
+    pub session_store: Option<Arc<dyn SessionStore>>,
+    /// Minimum `claude` binary version required. Default `>= 2.0.0`
+    /// (matches Python SDK v0.1.64 pin at `subprocess_cli.py:29`). When
+    /// `Some`, `Client::spawn` runs `<binary> --version` once and checks
+    /// the reported major version is at least the first component.
+    pub minimum_cli_version: Option<String>,
 }
 
 impl Default for Options {
@@ -110,6 +125,9 @@ impl Default for Options {
             skills: Vec::new(),
             setting_sources: None,
             exclude_dynamic_sections: false,
+            permission_prompt_tool_name: None,
+            session_store: None,
+            minimum_cli_version: Some("2.0.0".into()),
         }
     }
 }
@@ -135,6 +153,15 @@ impl std::fmt::Debug for Options {
             .field("skills", &self.skills)
             .field("setting_sources", &self.setting_sources)
             .field("exclude_dynamic_sections", &self.exclude_dynamic_sections)
+            .field(
+                "permission_prompt_tool_name",
+                &self.permission_prompt_tool_name,
+            )
+            .field(
+                "session_store",
+                &self.session_store.as_ref().map(|_| "<store>"),
+            )
+            .field("minimum_cli_version", &self.minimum_cli_version)
             .finish()
     }
 }
@@ -262,6 +289,36 @@ impl OptionsBuilder {
     #[must_use]
     pub fn exclude_dynamic_sections(mut self, yes: bool) -> Self {
         self.inner.exclude_dynamic_sections = yes;
+        self
+    }
+
+    /// Set an orthogonal permission-prompt tool name (CLI flag
+    /// `--permission-prompt-tool`). Alternative to `can_use_tool` — the
+    /// CLI invokes the named tool (typically via MCP) instead of routing
+    /// permission requests to the SDK callback.
+    #[must_use]
+    pub fn permission_prompt_tool_name(mut self, name: impl Into<String>) -> Self {
+        self.inner.permission_prompt_tool_name = Some(name.into());
+        self
+    }
+
+    /// Attach a transcript-mirror session store. When set, the SDK spawns
+    /// the CLI with `--session-mirror` and batches `transcript_mirror`
+    /// frames to `store.append(...)`.
+    #[must_use]
+    pub fn session_store<S>(mut self, store: S) -> Self
+    where
+        S: SessionStore + 'static,
+    {
+        self.inner.session_store = Some(Arc::new(store));
+        self
+    }
+
+    /// Override the minimum `claude` binary version check. Pass `None` to
+    /// disable the check entirely.
+    #[must_use]
+    pub fn minimum_cli_version(mut self, version: Option<String>) -> Self {
+        self.inner.minimum_cli_version = version;
         self
     }
 
