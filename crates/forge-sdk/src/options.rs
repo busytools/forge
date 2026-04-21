@@ -201,6 +201,16 @@ pub struct Options {
     /// Toggle `--enable-file-checkpointing`. Python SDK v0.1.64
     /// `ClaudeAgentOptions.enable_file_checkpointing` (`types.py:1408`).
     pub enable_file_checkpointing: bool,
+    /// Settings: either a file path or an inline JSON string. When
+    /// combined with [`sandbox`](Self::sandbox), forge-sdk parses the JSON
+    /// (or reads the file) and merges `{"sandbox": <sandbox>}` in. Mirrors
+    /// Python's `ClaudeAgentOptions.settings` (`types.py:1410`) +
+    /// `_build_settings_value` in `subprocess_cli.py:111-163`.
+    pub settings: Option<String>,
+    /// Sandbox configuration — merged into [`settings`](Self::settings)
+    /// JSON when emitted via `--settings`. Mirrors Python's
+    /// `ClaudeAgentOptions.sandbox` (`types.py:1412`).
+    pub sandbox: Option<crate::public_types::SandboxSettings>,
 }
 
 impl Default for Options {
@@ -248,6 +258,8 @@ impl Default for Options {
             stderr: None,
             load_timeout_ms: None,
             enable_file_checkpointing: false,
+            settings: None,
+            sandbox: None,
         }
     }
 }
@@ -262,6 +274,50 @@ impl Options {
             return None;
         }
         serde_json::to_string(format.get("schema")?).ok()
+    }
+
+    /// Resolve `settings` + `sandbox` into the single string passed via
+    /// `--settings`. Mirrors Python's `_build_settings_value`
+    /// (`subprocess_cli.py:111-163`). Returns `None` when neither field
+    /// is set.
+    pub(crate) fn build_settings_value(&self) -> Option<String> {
+        let has_settings = self.settings.is_some();
+        let has_sandbox = self.sandbox.is_some();
+        if !has_settings && !has_sandbox {
+            return None;
+        }
+        // Only a settings path / inline JSON, no sandbox merge needed:
+        // pass through verbatim (CLI accepts both forms).
+        if has_settings && !has_sandbox {
+            return self.settings.clone();
+        }
+
+        // Need to merge. Parse existing settings (if any) into a JSON
+        // object, then attach "sandbox". Invalid / missing files fall back
+        // to an empty object, matching Python's warn-and-continue behaviour.
+        let mut settings_obj = serde_json::Map::new();
+        if let Some(raw) = self.settings.as_deref() {
+            let trimmed = raw.trim();
+            if trimmed.starts_with('{') && trimmed.ends_with('}') {
+                if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(trimmed) {
+                    if let Some(obj) = parsed.as_object() {
+                        settings_obj.clone_from(obj);
+                    }
+                }
+            } else if let Ok(bytes) = std::fs::read(trimmed) {
+                if let Ok(parsed) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+                    if let Some(obj) = parsed.as_object() {
+                        settings_obj.clone_from(obj);
+                    }
+                }
+            }
+        }
+        if let Some(sandbox) = &self.sandbox {
+            if let Ok(v) = serde_json::to_value(sandbox) {
+                settings_obj.insert("sandbox".into(), v);
+            }
+        }
+        serde_json::to_string(&settings_obj).ok()
     }
 }
 
@@ -372,6 +428,8 @@ impl std::fmt::Debug for Options {
             .field("stderr", &self.stderr.as_ref().map(|_| "<callback>"))
             .field("load_timeout_ms", &self.load_timeout_ms)
             .field("enable_file_checkpointing", &self.enable_file_checkpointing)
+            .field("settings", &self.settings)
+            .field("sandbox", &self.sandbox)
             .finish()
     }
 }
@@ -771,6 +829,22 @@ impl OptionsBuilder {
     #[must_use]
     pub fn enable_file_checkpointing(mut self, yes: bool) -> Self {
         self.inner.enable_file_checkpointing = yes;
+        self
+    }
+
+    /// Set `--settings` value — either a file path or an inline JSON
+    /// string. Combined with [`sandbox`](Self::sandbox) if both are set.
+    #[must_use]
+    pub fn settings(mut self, s: impl Into<String>) -> Self {
+        self.inner.settings = Some(s.into());
+        self
+    }
+
+    /// Attach sandbox settings. Merged into `--settings` JSON if
+    /// `settings` is also set.
+    #[must_use]
+    pub fn sandbox(mut self, sandbox: crate::public_types::SandboxSettings) -> Self {
+        self.inner.sandbox = Some(sandbox);
         self
     }
 

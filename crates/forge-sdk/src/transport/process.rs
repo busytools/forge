@@ -192,6 +192,14 @@ pub fn build_args(options: &Options) -> Vec<String> {
         args.push("--session-id".into());
         args.push(sid.clone());
     }
+    // --settings (with optional sandbox merge). Python's
+    // `_build_settings_value` — resolves settings + sandbox into one CLI
+    // argument, either a file path or an inline JSON string.
+    if let Some(value) = options.build_settings_value() {
+        args.push("--settings".into());
+        args.push(value);
+    }
+
     for dir in &options.add_dirs {
         args.push("--add-dir".into());
         args.push(dir.to_string_lossy().into_owned());

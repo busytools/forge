@@ -265,6 +265,63 @@ fn permission_mode_default_is_suppressed() {
 }
 
 #[test]
+fn settings_path_passes_through_when_no_sandbox() {
+    let argv = argv_of(OptionsBuilder::new().settings("/tmp/settings.json"));
+    assert_eq!(
+        find_flag(&argv, "--settings"),
+        Some(Some("/tmp/settings.json"))
+    );
+}
+
+#[test]
+fn settings_inline_json_passes_through_when_no_sandbox() {
+    let argv = argv_of(OptionsBuilder::new().settings(r#"{"theme":"dark"}"#));
+    assert_eq!(
+        find_flag(&argv, "--settings"),
+        Some(Some(r#"{"theme":"dark"}"#))
+    );
+}
+
+#[test]
+fn sandbox_alone_merges_into_settings_json() {
+    let sandbox = forge_sdk::SandboxSettings {
+        enabled: Some(true),
+        ..forge_sdk::SandboxSettings::default()
+    };
+    let argv = argv_of(OptionsBuilder::new().sandbox(sandbox));
+    let value = find_flag(&argv, "--settings")
+        .expect("flag present")
+        .expect("value present");
+    let parsed: serde_json::Value = serde_json::from_str(value).expect("json");
+    assert_eq!(parsed["sandbox"]["enabled"], true);
+}
+
+#[test]
+fn settings_inline_json_merges_with_sandbox() {
+    let sandbox = forge_sdk::SandboxSettings {
+        enabled: Some(true),
+        ..forge_sdk::SandboxSettings::default()
+    };
+    let argv = argv_of(
+        OptionsBuilder::new()
+            .settings(r#"{"theme":"dark"}"#)
+            .sandbox(sandbox),
+    );
+    let value = find_flag(&argv, "--settings")
+        .expect("flag present")
+        .expect("value present");
+    let parsed: serde_json::Value = serde_json::from_str(value).expect("json");
+    assert_eq!(parsed["theme"], "dark");
+    assert_eq!(parsed["sandbox"]["enabled"], true);
+}
+
+#[test]
+fn enable_file_checkpointing_emits_bare_flag() {
+    let argv = argv_of(OptionsBuilder::new().enable_file_checkpointing(true));
+    assert!(argv.iter().any(|a| a == "--enable-file-checkpointing"));
+}
+
+#[test]
 fn permission_mode_non_default_emitted() {
     let mut options = OptionsBuilder::new().build();
     options.permission_mode = PermissionMode::AcceptEdits;
