@@ -551,7 +551,7 @@ impl Client {
     ///
     /// # Errors
     ///
-    /// See [`send_control`](Self::send_control).
+    /// See the outbound control error cases.
     pub async fn interrupt(&mut self) -> Result<(), Error> {
         self.send_control("interrupt", serde_json::json!({}))
             .await?;
@@ -562,7 +562,7 @@ impl Client {
     ///
     /// # Errors
     ///
-    /// See [`send_control`](Self::send_control).
+    /// See the outbound control error cases.
     pub async fn set_permission_mode(
         &mut self,
         mode: crate::options::PermissionMode,
@@ -579,7 +579,7 @@ impl Client {
     ///
     /// # Errors
     ///
-    /// See [`send_control`](Self::send_control).
+    /// See the outbound control error cases.
     pub async fn rewind_files(&mut self) -> Result<(), Error> {
         self.send_control("rewind_files", serde_json::json!({}))
             .await?;
@@ -591,7 +591,7 @@ impl Client {
     ///
     /// # Errors
     ///
-    /// See [`send_control`](Self::send_control).
+    /// See the outbound control error cases.
     pub async fn mcp_reconnect(&mut self, server_name: &str) -> Result<(), Error> {
         self.send_control(
             "mcp_reconnect",
@@ -605,7 +605,7 @@ impl Client {
     ///
     /// # Errors
     ///
-    /// See [`send_control`](Self::send_control).
+    /// See the outbound control error cases.
     pub async fn mcp_toggle(&mut self, server_name: &str, enabled: bool) -> Result<(), Error> {
         self.send_control(
             "mcp_toggle",
@@ -619,7 +619,7 @@ impl Client {
     ///
     /// # Errors
     ///
-    /// See [`send_control`](Self::send_control).
+    /// See the outbound control error cases.
     pub async fn stop_task(&mut self, tool_use_id: &str) -> Result<(), Error> {
         self.send_control("stop_task", serde_json::json!({"tool_use_id": tool_use_id}))
             .await?;
@@ -630,7 +630,7 @@ impl Client {
     ///
     /// # Errors
     ///
-    /// See [`send_control`](Self::send_control).
+    /// See the outbound control error cases.
     pub async fn mcp_status(&mut self) -> Result<serde_json::Value, Error> {
         self.send_control("mcp_status", serde_json::json!({})).await
     }
@@ -640,7 +640,7 @@ impl Client {
     ///
     /// # Errors
     ///
-    /// See [`send_control`](Self::send_control).
+    /// See the outbound control error cases.
     pub async fn get_context_usage(&mut self) -> Result<serde_json::Value, Error> {
         self.send_control("get_context_usage", serde_json::json!({}))
             .await
@@ -651,7 +651,7 @@ impl Client {
     ///
     /// # Errors
     ///
-    /// See [`send_control`](Self::send_control).
+    /// See the outbound control error cases.
     pub async fn fork_session(&mut self, at_tool_use_id: Option<&str>) -> Result<String, Error> {
         let mut body = serde_json::Map::new();
         if let Some(id) = at_tool_use_id {
