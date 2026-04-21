@@ -467,6 +467,210 @@ impl Client {
         Ok(())
     }
 
+    /// Issue an outbound `control_request` with the given `subtype` and
+    /// body, await the matching `control_response`, and return the inner
+    /// `response` value on success.
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::MessageParse`] when the CLI replies with an error
+    ///   subtype or a malformed frame.
+    /// - [`Error::Io`] on pipe read/write failure.
+    async fn send_control(
+        &mut self,
+        subtype: &str,
+        extra: serde_json::Value,
+    ) -> Result<serde_json::Value, Error> {
+        let request_id = crate::request_id::next();
+        let mut request_body = serde_json::Map::new();
+        request_body.insert(
+            "subtype".into(),
+            serde_json::Value::String(subtype.to_string()),
+        );
+        if let serde_json::Value::Object(extra_map) = extra {
+            for (k, v) in extra_map {
+                request_body.insert(k, v);
+            }
+        }
+        let envelope = serde_json::json!({
+            "type": "control_request",
+            "request_id": request_id,
+            "request": serde_json::Value::Object(request_body),
+        });
+        let mut line = serde_json::to_string(&envelope).map_err(|e| Error::MessageParse {
+            reason: format!("control encode: {e}"),
+        })?;
+        line.push('\n');
+        self.sub.write_line(&line).await?;
+
+        loop {
+            let Some(response_line) = self.sub.read_line().await? else {
+                return Err(Error::Connection {
+                    reason: format!("subprocess closed before {subtype} response"),
+                });
+            };
+            self.line_number += 1;
+            let value: serde_json::Value =
+                serde_json::from_str(&response_line).map_err(|source| Error::JsonDecode {
+                    line: self.line_number,
+                    source,
+                })?;
+            if value.get("type").and_then(serde_json::Value::as_str) == Some("control_response") {
+                let resp_request_id = value
+                    .pointer("/response/request_id")
+                    .and_then(serde_json::Value::as_str);
+                if resp_request_id == Some(&request_id) {
+                    let resp_subtype = value
+                        .pointer("/response/subtype")
+                        .and_then(serde_json::Value::as_str);
+                    if resp_subtype == Some("success") {
+                        return Ok(value
+                            .pointer("/response/response")
+                            .cloned()
+                            .unwrap_or(serde_json::Value::Null));
+                    }
+                    let err = value
+                        .pointer("/response/error")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("unknown error");
+                    return Err(Error::MessageParse {
+                        reason: format!("{subtype} failed: {err}"),
+                    });
+                }
+            }
+            tracing::warn!(
+                line = %response_line,
+                %subtype,
+                "unexpected frame while awaiting control response"
+            );
+        }
+    }
+
+    /// Ask the CLI to interrupt the current turn (cancel in-flight tool
+    /// calls and return control to the SDK).
+    ///
+    /// # Errors
+    ///
+    /// See [`send_control`](Self::send_control).
+    pub async fn interrupt(&mut self) -> Result<(), Error> {
+        self.send_control("interrupt", serde_json::json!({}))
+            .await?;
+        Ok(())
+    }
+
+    /// Switch the permission mode mid-session.
+    ///
+    /// # Errors
+    ///
+    /// See [`send_control`](Self::send_control).
+    pub async fn set_permission_mode(
+        &mut self,
+        mode: crate::options::PermissionMode,
+    ) -> Result<(), Error> {
+        self.send_control(
+            "set_permission_mode",
+            serde_json::json!({"mode": mode.as_cli_arg()}),
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// Ask the CLI to revert file edits made in the current turn.
+    ///
+    /// # Errors
+    ///
+    /// See [`send_control`](Self::send_control).
+    pub async fn rewind_files(&mut self) -> Result<(), Error> {
+        self.send_control("rewind_files", serde_json::json!({}))
+            .await?;
+        Ok(())
+    }
+
+    /// Reconnect a named MCP server (asks the CLI to drop + re-establish
+    /// its connection to the named server).
+    ///
+    /// # Errors
+    ///
+    /// See [`send_control`](Self::send_control).
+    pub async fn mcp_reconnect(&mut self, server_name: &str) -> Result<(), Error> {
+        self.send_control(
+            "mcp_reconnect",
+            serde_json::json!({"server_name": server_name}),
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// Toggle a named MCP server on/off.
+    ///
+    /// # Errors
+    ///
+    /// See [`send_control`](Self::send_control).
+    pub async fn mcp_toggle(&mut self, server_name: &str, enabled: bool) -> Result<(), Error> {
+        self.send_control(
+            "mcp_toggle",
+            serde_json::json!({"server_name": server_name, "enabled": enabled}),
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// Kill an in-flight sub-agent task by its tool-use id.
+    ///
+    /// # Errors
+    ///
+    /// See [`send_control`](Self::send_control).
+    pub async fn stop_task(&mut self, tool_use_id: &str) -> Result<(), Error> {
+        self.send_control("stop_task", serde_json::json!({"tool_use_id": tool_use_id}))
+            .await?;
+        Ok(())
+    }
+
+    /// Query MCP server status. Returns the raw response payload.
+    ///
+    /// # Errors
+    ///
+    /// See [`send_control`](Self::send_control).
+    pub async fn mcp_status(&mut self) -> Result<serde_json::Value, Error> {
+        self.send_control("mcp_status", serde_json::json!({})).await
+    }
+
+    /// Query current context usage (tokens consumed vs. budget). Returns
+    /// the raw response payload.
+    ///
+    /// # Errors
+    ///
+    /// See [`send_control`](Self::send_control).
+    pub async fn get_context_usage(&mut self) -> Result<serde_json::Value, Error> {
+        self.send_control("get_context_usage", serde_json::json!({}))
+            .await
+    }
+
+    /// Fork the current session into a new one at the given tool-use id
+    /// boundary. Returns the new `session_id` the CLI assigned.
+    ///
+    /// # Errors
+    ///
+    /// See [`send_control`](Self::send_control).
+    pub async fn fork_session(&mut self, at_tool_use_id: Option<&str>) -> Result<String, Error> {
+        let mut body = serde_json::Map::new();
+        if let Some(id) = at_tool_use_id {
+            body.insert(
+                "tool_use_id".into(),
+                serde_json::Value::String(id.to_string()),
+            );
+        }
+        let resp = self
+            .send_control("fork_session", serde_json::Value::Object(body))
+            .await?;
+        resp.get("session_id")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string)
+            .ok_or_else(|| Error::MessageParse {
+                reason: format!("fork_session response missing session_id: {resp}"),
+            })
+    }
+
     /// Graceful shutdown. Closes stdin, waits for the subprocess to exit.
     ///
     /// # Errors
