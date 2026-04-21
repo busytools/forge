@@ -7,11 +7,11 @@ This file is the single source of truth for **where forge-sdk is** relative to P
 | Field | Value |
 |---|---|
 | **Target Python SDK version** | `0.1.64` (released 2026-04-20) |
-| **Target Python SDK commit** | TBD — record SHA on first parity run |
-| **forge-sdk version at parity** | `pre-v0.0.1` — nothing shipped yet |
-| **Last full parity run** | _not yet executed_ |
-| **Next parity check due** | 2026-04-27 (first Monday after planning) |
-| **Design-spec basis** | `~/.claude-stargate/plans/2026-04-21-forge-sdk-port-design.md` + `~/.claude-stargate/plans/2026-04-21-forge-sdk-m0-m1-plan.md` + `~/.claude-stargate/plans/2026-04-21-forge-sdk-m2-m3-plan.md` + `~/.claude-stargate/plans/2026-04-21-forge-sdk-m4-m7-plan.md` + `~/.claude-stargate/plans/2026-04-21-forge-sdk-corrections.md` (if present — apply before executing Plans 2/3). |
+| **Target Python SDK commit** | `anthropics-claude-agent-sdk-python-1267352` (tarball SHA prefix) |
+| **forge-sdk version at parity** | `v0.1.3` |
+| **Last full parity run** | 2026-04-21 (first run, pulled ahead of the 2026-04-27 weekly) |
+| **Next parity check due** | 2026-04-27 (first weekly) |
+| **Design-spec basis** | `~/.claude-stargate/plans/2026-04-21-forge-sdk-port-design.md` + `~/.claude-stargate/plans/2026-04-21-forge-sdk-m0-m1-plan.md` + `~/.claude-stargate/plans/2026-04-21-forge-sdk-m2-m3-plan.md` + `~/.claude-stargate/plans/2026-04-21-forge-sdk-m4-m7-plan.md` + `~/.claude-stargate/plans/2026-04-21-forge-sdk-corrections.md`. |
 
 ## Parity log
 
@@ -34,7 +34,75 @@ Each entry below records one weekly parity check.
 
 -->
 
-_(No parity runs yet.)_
+### 2026-04-21 — Python SDK v0.1.64 (first run, pulled ahead of weekly cadence)
+
+- **Upstream range reviewed:** initial parity — no prior run.
+- **Upstream target:** v0.1.64 (latest; no newer releases to port).
+- **Changes classified** (against what forge-sdk shipped in v0.1.2):
+  - `behavioural`:
+    - `transcript_mirror` frame wire shape — Python emits at **top level**
+      `{"type":"transcript_mirror","filePath":"...","entries":[...]}`
+      (`_internal/query.py:282-289`,
+      `_internal/transcript_mirror_batcher.py:3`). forge-sdk v0.1.2 had
+      the wrong best-guess shape (nested under system with
+      `session_id`/`project_key`/`subpath` inline). FIXED in v0.1.3.
+    - `SessionStoreListEntry` field name — Python is `mtime` (not
+      `mtime_ms`) per `types.py:1153-1159`. FIXED.
+    - `project_key` sanitisation — Python is `[^a-zA-Z0-9]` → `-` with
+      djb2 hash suffix for >200 chars (`_internal/sessions.py::_sanitize_path`).
+      forge-sdk v0.1.2 used `[^a-zA-Z0-9_-]` → `_` (no hash fallback).
+      FIXED.
+    - `file_path_to_session_key` resolution — Python derives the
+      `SessionKey` from `filePath` relative to projects_dir
+      (`_internal/session_store.py:108-153`). ADDED in v0.1.3 as
+      `session_store::file_path_to_session_key()`; Client resolves via
+      the new `Options.projects_dir` field (falls back to
+      `$CLAUDE_CONFIG_DIR/projects` or `~/.claude/projects`).
+  - `new-public-api`:
+    - `Options::projects_dir` — new field + `OptionsBuilder::projects_dir()`.
+  - `trivial`:
+    - Docs / comments updated.
+- **Ported in forge-sdk:**
+  - `8ec1d70` fix(forge-sdk): correct transcript_mirror wire shape +
+    mtime field name + project_key sanitisation.
+- **Deferred (not regressions, flagged for follow-up):**
+  - Full `TranscriptMirrorBatcher` — Python SDK coalesces by
+    `file_path`, eager-flushes at 500 entries or 1 MiB, explicit flush
+    on `result` arrival with 60 s per-append timeout, `on_error`
+    callback surfaces failures
+    (`_internal/transcript_mirror_batcher.py:39-174`). forge-sdk v0.1.3
+    has a minimum-viable handler: per-frame append, flush-on-result
+    as a no-op hook (ready for mechanical swap). Tracked for a future
+    patch — moderate effort, low parity risk since at-most-once
+    semantics are preserved.
+  - Session helper functions (`list_sessions`, `get_session_info`,
+    `get_session_messages`, `list_subagents`, `get_subagent_messages`,
+    `project_key_for_directory`, and their `_from_store` async
+    counterparts from `_internal/sessions.py`) — not exposed in
+    forge-sdk. These are read-side utilities that scan
+    `~/.claude/projects/<project_key>/*.jsonl` transcripts and do
+    JSONL head/tail parsing. Out of scope for v0.1.x — the `Client`
+    live-session surface is complete; offline transcript utilities
+    can land incrementally.
+  - `control_cancel_request` — Python handles an inbound
+    `{"type":"control_cancel_request","request_id":...}` by cancelling
+    the in-flight control handler (`_internal/query.py:274-280`).
+    forge-sdk's classifier-style loop doesn't currently respect this;
+    not currently hit in integration paths. Low priority.
+- **forge-sdk tag released:** `v0.1.3` (no Python version bump — still
+  tracking `v0.1.64`).
+- **Upstream `tests/` mirror status:** no Rust port of `tests/` yet.
+  Counted ~30 Python test files against the published behaviour. The
+  test-mirroring subdirectory `crates/forge-sdk/tests/python_parity/`
+  is empty; mirroring begins next weekly run as the contract.
+- **Notes for next parity run (2026-04-27):**
+  - Verify `transcript_mirror` wire shape + `file_path_to_session_key`
+    resolution against the real `claude` CLI (manual observation with
+    `--session-mirror`); correct any drift.
+  - Start Python-tests → `tests/python_parity/` mirror.
+  - Re-check upstream for new releases since v0.1.64.
+  - Consider implementing the full batcher with size thresholds (500 /
+    1 MiB).
 
 ## How to run a parity check
 

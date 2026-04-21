@@ -9,6 +9,62 @@ Version numbers mirror the Python SDK release they target parity with
 
 ## [Unreleased]
 
+## [0.1.3] — 2026-04-21
+
+First weekly parity run (pulled ahead of 2026-04-27 cadence). Corrects
+divergences from the actual Python SDK v0.1.64 wire protocol that were
+shipped as "best-guess" in v0.1.2.
+
+### Fixed
+
+- **`transcript_mirror` wire shape.** Python SDK v0.1.64 emits
+  `{"type":"transcript_mirror","filePath":...,"entries":[...]}` at the
+  top level (`_internal/query.py:282-289`,
+  `_internal/transcript_mirror_batcher.py:3`). v0.1.2 mistakenly
+  assumed `{"type":"system","subtype":"transcript_mirror",...}` with
+  inline `session_id`/`project_key`/`subpath`. The codec now parses
+  the real shape into a new `DecodedLine::TranscriptMirror {file_path,
+  entries}` variant; Client derives the `SessionKey` via
+  `session_store::file_path_to_session_key()`.
+- **`SessionStoreListEntry.mtime`** field name — Python wire key is
+  `mtime` (not `mtime_ms`) per `types.py:1153-1159`. Public breaking
+  change on the list-sessions return type; callers reading the field
+  need a rename.
+- **`project_key` sanitisation.** Now `[^a-zA-Z0-9]` → `-` with a
+  djb2 hash suffix for inputs >200 chars, matching
+  `_internal/sessions.py::_sanitize_path`. v0.1.2 used
+  `[^a-zA-Z0-9_-]` → `_` (no hash fallback), which produced different
+  directory names for the same project path.
+
+### Added
+
+- `session_store::file_path_to_session_key(file_path, projects_dir)` —
+  derives a `SessionKey` from the `filePath` in a mirror frame.
+  Mirrors Python `_internal/session_store.py:108-153`.
+- `Options.projects_dir` + `OptionsBuilder::projects_dir()` — override
+  the projects directory used to resolve mirror frame paths. Defaults
+  to `$CLAUDE_CONFIG_DIR/projects` or `~/.claude/projects`.
+
+### Changed
+
+- `Client::next_event` routes `DecodedLine::TranscriptMirror` to a new
+  internal handler and calls a (currently no-op) `flush_mirror()` on
+  `Message::Result` arrival. Ready for mechanical swap to a real
+  batcher.
+
+### Still outstanding (tracked for next parity run)
+
+- Full `TranscriptMirrorBatcher` (per-filePath coalescing, 500-entry /
+  1-MiB eager flush, 60 s append timeout, `on_error` callback).
+  Minimum-viable per-frame append is in place; flush-on-result is
+  wired but currently empty.
+- Offline session helpers (`list_sessions`, `get_session_info`,
+  `get_session_messages`, `list_subagents`,
+  `get_subagent_messages`, and the `_from_store` async variants). Not
+  exposed yet.
+- `control_cancel_request` inbound handling.
+- Start `tests/python_parity/` Rust mirror of upstream tests.
+
 ## [0.1.2] — 2026-04-21
 
 Closes the two remaining gaps called out under the v0.1.1 "Known gaps
