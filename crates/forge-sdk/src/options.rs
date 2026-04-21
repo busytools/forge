@@ -1,10 +1,13 @@
 //! Configuration for spawning a `Client`.
 //!
-//! Mirrors Python SDK's `ClaudeAgentOptions`. Fields present for M1 only;
-//! permission callback, hooks, MCP servers, session store, skills arrive in
-//! later milestones and are added to this struct at that point.
+//! Mirrors Python SDK's `ClaudeAgentOptions`. Fields present for M1/M2 only;
+//! hooks, MCP servers, session store, skills arrive in later milestones
+//! and are added to this struct at that point.
 
 use std::path::PathBuf;
+use std::sync::Arc;
+
+use crate::permissions::CanUseToolCallback;
 
 /// Which permission flow the `claude` binary should use for tool invocations.
 ///
@@ -46,7 +49,7 @@ impl PermissionMode {
 /// struct is `#[non_exhaustive]` so new fields (permission callback, MCP
 /// servers, hooks) can be added in later milestones without breaking
 /// callers.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 #[non_exhaustive]
 pub struct Options {
     /// Path or name of the `claude` binary to spawn.
@@ -59,6 +62,9 @@ pub struct Options {
     pub model: Option<String>,
     /// Permission flow.
     pub permission_mode: PermissionMode,
+    /// Optional permission callback. When set, the `claude` binary asks
+    /// this callback before invoking any tool.
+    pub can_use_tool: Option<Arc<dyn CanUseToolCallback>>,
 }
 
 impl Default for Options {
@@ -69,14 +75,39 @@ impl Default for Options {
             resume: None,
             model: None,
             permission_mode: PermissionMode::Default,
+            can_use_tool: None,
         }
     }
 }
 
+impl std::fmt::Debug for Options {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Options")
+            .field("binary", &self.binary)
+            .field("cwd", &self.cwd)
+            .field("resume", &self.resume)
+            .field("model", &self.model)
+            .field("permission_mode", &self.permission_mode)
+            .field(
+                "can_use_tool",
+                &self.can_use_tool.as_ref().map(|_| "<callback>"),
+            )
+            .finish()
+    }
+}
+
 /// Builder for [`Options`].
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct OptionsBuilder {
     inner: Options,
+}
+
+impl std::fmt::Debug for OptionsBuilder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OptionsBuilder")
+            .field("inner", &self.inner)
+            .finish()
+    }
 }
 
 impl OptionsBuilder {
@@ -118,6 +149,18 @@ impl OptionsBuilder {
     #[must_use]
     pub fn permission_mode(mut self, mode: PermissionMode) -> Self {
         self.inner.permission_mode = mode;
+        self
+    }
+
+    /// Register a permission callback. Any type implementing
+    /// [`CanUseToolCallback`] works — including plain async functions
+    /// via the blanket impl.
+    #[must_use]
+    pub fn can_use_tool<C>(mut self, callback: C) -> Self
+    where
+        C: CanUseToolCallback + 'static,
+    {
+        self.inner.can_use_tool = Some(Arc::new(callback));
         self
     }
 
