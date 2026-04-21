@@ -35,4 +35,9 @@
 #![doc(html_root_url = "https://docs.rs/forge-sdk/0.0.1")]
 #![forbid(unsafe_code)]
 
-// Empty for now; modules added in subsequent tasks.
+mod error;
+
+pub use error::Error;
+
+/// Convenient alias for `Result<T, forge_sdk::Error>`.
+pub type Result<T, E = Error> = core::result::Result<T, E>;
