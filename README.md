@@ -1,29 +1,33 @@
 # forge
 
-A Rust workspace for Claude-assisted tooling.
+A Rust workspace for building Claude-assisted tooling. The first deliverable is
+[`forge-sdk`](crates/forge-sdk) — a feature-parity Rust port of Anthropic's
+[`claude-agent-sdk`](https://github.com/anthropics/claude-agent-sdk-python).
 
 ## Status
 
-**Pre-v0.0.1.** Project skeleton only. All code is yet to be written; the design and implementation plans are complete and ready to execute.
+- **v0.0.x** — `forge-sdk` under active development. M0 scaffolding + M1 core
+  transport in flight.
+- `forged` (daemon) and `forge-tui` (terminal client) will land as sibling
+  crates in later milestones.
 
-The first deliverable is **`forge-sdk`** — a Rust port of Anthropic's [`claude-agent-sdk`](https://github.com/anthropics/claude-agent-sdk-python) at feature parity with Python v0.1.64+. Daemon (`forged`) and TUI client (`forge-tui`) follow in subsequent phases.
+## Crates
 
-## Where the plans live
+| Crate | Description | Status |
+|---|---|---|
+| [`forge-sdk`](crates/forge-sdk) | Rust port of `claude-agent-sdk` | M0 + M1 in progress |
 
-All design and planning documents are at `~/.claude-stargate/plans/` with the `2026-04-21-forge-sdk-*` prefix. They are **user-level** and not committed to this repo (per the project's convention against committing LLM-generated planning docs).
+## Development
 
-| Document | Purpose |
-|---|---|
-| `2026-04-21-forge-sdk-README.md` | **Start here.** Index + handoff guide. |
-| `2026-04-21-forge-sdk-port-design.md` | Design spec covering all 7 milestones. |
-| `2026-04-21-forge-sdk-m0-m1-plan.md` | Plan 1: scaffolding + core transport. |
-| `2026-04-21-forge-sdk-m2-m3-plan.md` | Plan 2: permissions + in-process MCP. |
-| `2026-04-21-forge-sdk-m4-m7-plan.md` | Plan 3: hooks, session features, recent additions, polish, publish. |
+Requires nightly Rust pinned via `rust-toolchain.toml`.
 
-## How to work on this project
-
-Open a Claude Code session in this directory. The session will load `CLAUDE.md` automatically, which gives you everything needed to pick up where the planning phase left off.
+```bash
+cargo build
+cargo nextest run
+cargo clippy --all-targets -- -D warnings
+cargo fmt --check
+```
 
 ## Licence
 
-MIT (will be added when the first crate lands — see Plan 1 Task 6).
+MIT.
