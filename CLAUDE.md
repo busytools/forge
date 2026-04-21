@@ -12,10 +12,16 @@ This project was planned during an architect team session on 2026-04-21. The use
 
 - Project directory created (`~/Projects/forge/`).
 - Git repository initialised (`main` branch).
-- Top-level `README.md`, `CLAUDE.md` (this file), `.gitignore` seeded.
-- All design + planning artefacts written and saved at user level.
+- Top-level `README.md`, `CLAUDE.md` (this file), `.gitignore`, `PARITY.md` seeded.
+- All design + planning artefacts written and saved at user level, **including a corrections document that MUST be read before executing Plans 2 or 3** — two parallel reviews (protocol verification + code-review consistency) surfaced structural issues in the plans that need correction during execution.
 
 That's it. No Rust crates yet. No CI. No LICENSE. All of those are **Plan 1** tasks.
+
+## CRITICAL pre-read — corrections document
+
+Before touching Plan 2 or Plan 3, read `~/.claude-stargate/plans/2026-04-21-forge-sdk-corrections.md`. That document captures the review findings: wrong wire shapes, an entirely-wrong MCP architecture, compile blockers, version-bump gaps, and a handful of dependency-consistency issues. The plans as written contain real errors — not executing without the corrections sheet.
+
+Plan 1 is largely clean — one small correction (adding `"fs"` to tokio features). Plan 2 has structural fixes (MCP rewrite, permission wire shape). Plan 3 has structural fixes (hook dispatch mechanism, SessionStore protocol, CLI flag mechanics).
 
 ## Where to find the plans
 
@@ -26,6 +32,7 @@ That's it. No Rust crates yet. No CI. No LICENSE. All of those are **Plan 1** ta
 3. **`~/.claude-stargate/plans/2026-04-21-forge-sdk-m0-m1-plan.md`** — Plan 1. 20 tasks. M0 (scaffolding) + M1 (core transport). **Start executing here.**
 4. **`~/.claude-stargate/plans/2026-04-21-forge-sdk-m2-m3-plan.md`** — Plan 2. 30 tasks. M2 (permissions) + M3 (in-process MCP). Execute after Plan 1 merges.
 5. **`~/.claude-stargate/plans/2026-04-21-forge-sdk-m4-m7-plan.md`** — Plan 3. 40 tasks. M4 (hooks) + M5 (session features) + M6 (recent additions) + M7 (polish + publish). Execute after Plan 2 merges.
+6. **`~/.claude-stargate/plans/2026-04-21-forge-sdk-corrections.md`** — **MANDATORY pre-read** before Plans 2 / 3. Consolidated corrections from two reviews. Search this file for every task number before executing it.
 
 ## Starting point for the very next agent
 
@@ -65,9 +72,38 @@ For each plan file:
 - **tyrchen/claude-agent-sdk-rs** (MIT, pure Rust) — cross-check reference for idiomatic translation patterns only. It's 2+ months behind upstream; do NOT treat as ground truth for recent features.
 - **MCP spec** — <https://spec.modelcontextprotocol.io/> — for Task 16+ of Plan 2.
 
-## Weekly parity check (applies after Plan 1 merges)
+## Weekly parity check — PROACTIVE OWNERSHIP
 
-Every Monday, run through `docs/parity-check.md` (landed in Plan 3 Task 25). In short: diff upstream releases since last tracked, classify changes, open issues, port in the same week. This ritual is how forge-sdk stays at parity with Python — the whole point of owning this layer.
+`forge-sdk`'s purpose is feature parity with Python `claude-agent-sdk`. Anthropic ships the Python SDK at a ~3–4/month cadence; if forge-sdk falls behind, we've re-created the exact problem (rusty community crates lagging upstream) that forge-sdk exists to solve. The weekly check is the non-negotiable forcing function.
+
+### State tracking
+
+**Read `PARITY.md` at the root of this repo first.** It's the single source of truth for:
+- The Python SDK version forge-sdk is currently at parity with (last fully-ported upstream commit + release).
+- The specifications that parity is based on (the user-level plans at `~/.claude-stargate/plans/2026-04-21-forge-sdk-*.md`).
+- Parity-run log: one entry per weekly check, most recent on top.
+
+Every parity check writes a new entry to `PARITY.md` and updates its "current state" table.
+
+### Proactive reminder — your job as forge lead
+
+**Every Monday (or first working day of the week), you proactively message the user with:**
+
+> "It's parity-check Monday. Python `claude-agent-sdk` upstream last reviewed at <version>. Want me to run the check now?"
+
+The user may defer, batch, or green-light it. But it is **your job to surface the prompt**, not theirs to remember. Anthropic is very active; missing a week compounds.
+
+When in an architect- or `ws teams ask forge` dispatch, the same applies — if a week has passed since the last `PARITY.md` entry, surface the reminder before taking any other action for that session.
+
+### When authorised, run the check
+
+Follow `docs/parity-check.md` (this file is created in Plan 3 Task 25 — until then, fall back to the abbreviated runbook in `PARITY.md`'s "How to run a parity check" section).
+
+### Test mirroring — the parity gate
+
+`PARITY.md` documents a key strategy: **the Python SDK's own `tests/` directory is our executable spec for behavioural parity.** We maintain a `crates/forge-sdk/tests/python_parity/` subdirectory that mirrors Python's tests into Rust. A weekly parity check includes diffing `tests/` as well as source — every new/changed Python test should translate to a corresponding Rust test in the same week.
+
+Read `PARITY.md`'s "Test-mirroring strategy" section before running any parity-check or landing any new behavioural feature. The mirrored tests are additive — they don't replace the Rust-specific tests from Plans 1–3; they complement them.
 
 ## Hard rules
 
