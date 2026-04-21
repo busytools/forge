@@ -1,8 +1,9 @@
 //! Top-level stream-json message shapes.
 //!
 //! Every line the `claude --output-format stream-json` binary emits is one
-//! of these four variants. Mirrors Python SDK's `AssistantMessage`,
-//! `UserMessage`, `SystemMessage`, `ResultMessage`.
+//! of these variants. Mirrors Python SDK's `AssistantMessage`, `UserMessage`,
+//! `SystemMessage` (plus task-lifecycle + mirror-error subclasses),
+//! `ResultMessage`, and `RateLimitEvent`.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -10,8 +11,12 @@ use serde_json::Value;
 use crate::content::ContentBlock;
 
 /// One stream-json message.
+///
+/// Wire-level dispatch on `type` and, for `type="system"`, on `subtype` is
+/// handled by a private shim — users never see it. Every variant here is
+/// the user-facing shape.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(from = "MessageRepr", into = "MessageRepr")]
 pub enum Message {
     /// An assistant turn (may be a partial chunk during streaming).
     Assistant {
@@ -20,7 +25,6 @@ pub enum Message {
         /// Session id this turn belongs to.
         session_id: String,
         /// Parent tool-use id when this turn is a sub-agent spawned via `Task`.
-        #[serde(default)]
         parent_tool_use_id: Option<String>,
     },
 
@@ -31,21 +35,78 @@ pub enum Message {
         /// Session id this turn belongs to.
         session_id: String,
         /// Parent tool-use id when this is a sub-agent turn.
-        #[serde(default)]
         parent_tool_use_id: Option<String>,
     },
 
-    /// Out-of-band system event. `subtype` discriminates (init, notification, etc.).
-    /// The rest of the payload is captured in `data`.
+    /// Out-of-band system event — `subtype` discriminates (e.g. `"init"`).
+    /// Known task-lifecycle and mirror-error subtypes get their own typed
+    /// variants below; everything else lands here with the raw payload.
     System {
-        /// System event discriminant (e.g. `"init"`, `"notification"`).
+        /// System event discriminant (e.g. `"init"`, `"info"`).
         subtype: String,
         /// Session id when the event is session-scoped.
-        #[serde(default)]
         session_id: Option<String>,
         /// All other fields on the original message, captured verbatim.
-        #[serde(flatten)]
         data: Value,
+    },
+
+    /// A sub-agent `Task` has started running. Subtype `"task_started"`.
+    /// Mirrors Python SDK v0.1.64 `TaskStartedMessage` (`types.py:951-965`).
+    TaskStarted {
+        /// Stable identifier for this task instance.
+        task_id: String,
+        /// Human-readable description supplied when the task was spawned.
+        description: String,
+        /// Unique identifier for this lifecycle event.
+        uuid: String,
+        /// Session id the task runs in.
+        session_id: String,
+        /// Parent tool-use id if the task was spawned via a tool call.
+        tool_use_id: Option<String>,
+        /// Sub-agent type selector (e.g. `"general-purpose"`).
+        task_type: Option<String>,
+    },
+
+    /// Periodic progress update while a sub-agent `Task` is in flight.
+    /// Subtype `"task_progress"`. Mirrors Python SDK v0.1.64
+    /// `TaskProgressMessage` (`types.py:967-983`).
+    TaskProgress {
+        /// Stable identifier for this task instance.
+        task_id: String,
+        /// Human-readable description supplied when the task was spawned.
+        description: String,
+        /// Usage accumulated so far.
+        usage: TaskUsage,
+        /// Unique identifier for this lifecycle event.
+        uuid: String,
+        /// Session id the task runs in.
+        session_id: String,
+        /// Parent tool-use id if the task was spawned via a tool call.
+        tool_use_id: Option<String>,
+        /// Name of the last tool the sub-agent invoked, if any.
+        last_tool_name: Option<String>,
+    },
+
+    /// Terminal notification when a sub-agent `Task` completes, fails, or is
+    /// stopped. Subtype `"task_notification"`. Mirrors Python SDK v0.1.64
+    /// `TaskNotificationMessage` (`types.py:986-1002`).
+    TaskNotification {
+        /// Stable identifier for this task instance.
+        task_id: String,
+        /// How the task ended.
+        status: TaskNotificationStatus,
+        /// Path on disk where the task wrote its result transcript.
+        output_file: String,
+        /// Short natural-language summary of the outcome.
+        summary: String,
+        /// Unique identifier for this lifecycle event.
+        uuid: String,
+        /// Session id the task ran in.
+        session_id: String,
+        /// Parent tool-use id if the task was spawned via a tool call.
+        tool_use_id: Option<String>,
+        /// Total usage accumulated over the lifetime of the task, if reported.
+        usage: Option<TaskUsage>,
     },
 
     /// Rate-limit state transition. The CLI emits this when the current
@@ -214,4 +275,364 @@ pub struct Usage {
     /// Tokens read from the prompt cache this turn.
     #[serde(default)]
     pub cache_read_input_tokens: u64,
+}
+
+/// Usage counters reported inside task-progress and task-notification frames.
+///
+/// Mirrors Python SDK v0.1.64 `TaskUsage` (`types.py:939-944`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskUsage {
+    /// Tokens consumed across all model calls in this task so far.
+    pub total_tokens: u64,
+    /// Number of tool invocations the sub-agent has made.
+    pub tool_uses: u64,
+    /// Wall-clock time the task has spent running, in milliseconds.
+    pub duration_ms: u64,
+}
+
+/// Terminal status of a sub-agent `Task` reported via
+/// [`Message::TaskNotification`]. Mirrors Python's
+/// `Literal["completed", "failed", "stopped"]` (`types.py:948`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskNotificationStatus {
+    /// Task finished successfully.
+    Completed,
+    /// Task exited with an error.
+    Failed,
+    /// Task was cancelled before it could finish.
+    Stopped,
+}
+
+// ---------------------------------------------------------------------------
+// Wire shim — serde sees this, users never do.
+//
+// `Message` has the user-facing variant layout. `MessageRepr` encodes the
+// actual wire dispatch: first on `type`, then (for `type="system"`) on
+// `subtype`. The cascade works because:
+//
+// * `MessageRepr` is internally-tagged on `type` — serde picks `System(repr)`
+//   when `type="system"`, the rest via tag rename.
+// * `SystemRepr` is untagged — serde tries `Typed(TypedSystemRepr)` first
+//   (which is itself internally-tagged on `subtype`), then falls back to
+//   `Generic(GenericSystemRepr)` for subtypes we don't recognise.
+// * `TypedSystemRepr` dispatches the known task-lifecycle subtypes.
+// * `GenericSystemRepr` captures any other subtype into the opaque
+//   `data: Value`, which is what `Message::System` surfaces to users.
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum MessageRepr {
+    Assistant {
+        message: AssistantEnvelope,
+        session_id: String,
+        #[serde(default)]
+        parent_tool_use_id: Option<String>,
+    },
+    User {
+        message: UserEnvelope,
+        session_id: String,
+        #[serde(default)]
+        parent_tool_use_id: Option<String>,
+    },
+    System(SystemRepr),
+    RateLimitEvent {
+        rate_limit_info: RateLimitInfo,
+        uuid: String,
+        session_id: String,
+    },
+    Result {
+        subtype: String,
+        session_id: String,
+        is_error: bool,
+        num_turns: u64,
+        duration_ms: u64,
+        duration_api_ms: u64,
+        total_cost_usd: f64,
+        usage: Usage,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+enum SystemRepr {
+    Typed(TypedSystemRepr),
+    Generic(GenericSystemRepr),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "subtype", rename_all = "snake_case")]
+#[allow(clippy::enum_variant_names)]
+enum TypedSystemRepr {
+    TaskStarted {
+        task_id: String,
+        description: String,
+        uuid: String,
+        session_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tool_use_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        task_type: Option<String>,
+    },
+    TaskProgress {
+        task_id: String,
+        description: String,
+        usage: TaskUsage,
+        uuid: String,
+        session_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tool_use_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        last_tool_name: Option<String>,
+    },
+    TaskNotification {
+        task_id: String,
+        status: TaskNotificationStatus,
+        output_file: String,
+        summary: String,
+        uuid: String,
+        session_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tool_use_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        usage: Option<TaskUsage>,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct GenericSystemRepr {
+    subtype: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    session_id: Option<String>,
+    #[serde(flatten)]
+    data: Value,
+}
+
+impl From<MessageRepr> for Message {
+    #[allow(clippy::too_many_lines)]
+    fn from(repr: MessageRepr) -> Self {
+        match repr {
+            MessageRepr::Assistant {
+                message,
+                session_id,
+                parent_tool_use_id,
+            } => Message::Assistant {
+                message,
+                session_id,
+                parent_tool_use_id,
+            },
+            MessageRepr::User {
+                message,
+                session_id,
+                parent_tool_use_id,
+            } => Message::User {
+                message,
+                session_id,
+                parent_tool_use_id,
+            },
+            MessageRepr::System(SystemRepr::Typed(TypedSystemRepr::TaskStarted {
+                task_id,
+                description,
+                uuid,
+                session_id,
+                tool_use_id,
+                task_type,
+            })) => Message::TaskStarted {
+                task_id,
+                description,
+                uuid,
+                session_id,
+                tool_use_id,
+                task_type,
+            },
+            MessageRepr::System(SystemRepr::Typed(TypedSystemRepr::TaskProgress {
+                task_id,
+                description,
+                usage,
+                uuid,
+                session_id,
+                tool_use_id,
+                last_tool_name,
+            })) => Message::TaskProgress {
+                task_id,
+                description,
+                usage,
+                uuid,
+                session_id,
+                tool_use_id,
+                last_tool_name,
+            },
+            MessageRepr::System(SystemRepr::Typed(TypedSystemRepr::TaskNotification {
+                task_id,
+                status,
+                output_file,
+                summary,
+                uuid,
+                session_id,
+                tool_use_id,
+                usage,
+            })) => Message::TaskNotification {
+                task_id,
+                status,
+                output_file,
+                summary,
+                uuid,
+                session_id,
+                tool_use_id,
+                usage,
+            },
+            MessageRepr::System(SystemRepr::Generic(GenericSystemRepr {
+                subtype,
+                session_id,
+                data,
+            })) => Message::System {
+                subtype,
+                session_id,
+                data,
+            },
+            MessageRepr::RateLimitEvent {
+                rate_limit_info,
+                uuid,
+                session_id,
+            } => Message::RateLimitEvent {
+                rate_limit_info,
+                uuid,
+                session_id,
+            },
+            MessageRepr::Result {
+                subtype,
+                session_id,
+                is_error,
+                num_turns,
+                duration_ms,
+                duration_api_ms,
+                total_cost_usd,
+                usage,
+            } => Message::Result {
+                subtype,
+                session_id,
+                is_error,
+                num_turns,
+                duration_ms,
+                duration_api_ms,
+                total_cost_usd,
+                usage,
+            },
+        }
+    }
+}
+
+impl From<Message> for MessageRepr {
+    #[allow(clippy::too_many_lines)]
+    fn from(msg: Message) -> Self {
+        match msg {
+            Message::Assistant {
+                message,
+                session_id,
+                parent_tool_use_id,
+            } => MessageRepr::Assistant {
+                message,
+                session_id,
+                parent_tool_use_id,
+            },
+            Message::User {
+                message,
+                session_id,
+                parent_tool_use_id,
+            } => MessageRepr::User {
+                message,
+                session_id,
+                parent_tool_use_id,
+            },
+            Message::System {
+                subtype,
+                session_id,
+                data,
+            } => MessageRepr::System(SystemRepr::Generic(GenericSystemRepr {
+                subtype,
+                session_id,
+                data,
+            })),
+            Message::TaskStarted {
+                task_id,
+                description,
+                uuid,
+                session_id,
+                tool_use_id,
+                task_type,
+            } => MessageRepr::System(SystemRepr::Typed(TypedSystemRepr::TaskStarted {
+                task_id,
+                description,
+                uuid,
+                session_id,
+                tool_use_id,
+                task_type,
+            })),
+            Message::TaskProgress {
+                task_id,
+                description,
+                usage,
+                uuid,
+                session_id,
+                tool_use_id,
+                last_tool_name,
+            } => MessageRepr::System(SystemRepr::Typed(TypedSystemRepr::TaskProgress {
+                task_id,
+                description,
+                usage,
+                uuid,
+                session_id,
+                tool_use_id,
+                last_tool_name,
+            })),
+            Message::TaskNotification {
+                task_id,
+                status,
+                output_file,
+                summary,
+                uuid,
+                session_id,
+                tool_use_id,
+                usage,
+            } => MessageRepr::System(SystemRepr::Typed(TypedSystemRepr::TaskNotification {
+                task_id,
+                status,
+                output_file,
+                summary,
+                uuid,
+                session_id,
+                tool_use_id,
+                usage,
+            })),
+            Message::RateLimitEvent {
+                rate_limit_info,
+                uuid,
+                session_id,
+            } => MessageRepr::RateLimitEvent {
+                rate_limit_info,
+                uuid,
+                session_id,
+            },
+            Message::Result {
+                subtype,
+                session_id,
+                is_error,
+                num_turns,
+                duration_ms,
+                duration_api_ms,
+                total_cost_usd,
+                usage,
+            } => MessageRepr::Result {
+                subtype,
+                session_id,
+                is_error,
+                num_turns,
+                duration_ms,
+                duration_api_ms,
+                total_cost_usd,
+                usage,
+            },
+        }
+    }
 }

@@ -49,6 +49,11 @@ async fn memory_session_store_receives_mirrored_entries_via_client() {
             Message::RateLimitEvent { .. } => {
                 panic!("unexpected rate-limit event in mirror test")
             }
+            Message::TaskStarted { .. }
+            | Message::TaskProgress { .. }
+            | Message::TaskNotification { .. } => {
+                panic!("unexpected task lifecycle frame in mirror test")
+            }
         }
     }
     assert!(saw_assistant, "expected an assistant turn before result");
