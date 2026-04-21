@@ -6,3 +6,5 @@ Cargo.lock.tmp
 .vscode/
 *.swp
 *.log
+.envrc
+.direnv/
