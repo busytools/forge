@@ -171,6 +171,29 @@ pub struct PostToolUseInput {
     pub tool_use_id: String,
 }
 
+/// Input payload for `PostToolUseFailure`. Ported from `types.py:285-292`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PostToolUseFailureInput {
+    /// Shared hook context.
+    #[serde(flatten)]
+    pub base: BaseHookInput,
+    /// Optional sub-agent attribution.
+    #[serde(flatten)]
+    pub subagent: SubagentContext,
+    /// Tool that was invoked and failed.
+    pub tool_name: String,
+    /// Input the tool ran with.
+    pub tool_input: Value,
+    /// Tool-use identifier matching the preceding `PreToolUse` frame.
+    pub tool_use_id: String,
+    /// Error message the tool surfaced.
+    pub error: String,
+    /// `Some(true)` when the failure was caused by user interruption; `None`
+    /// when the CLI omits the field (upstream `NotRequired`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub is_interrupt: Option<bool>,
+}
+
 /// Input payload for `UserPromptSubmit`. Ported from `types.py:294-298`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserPromptSubmitInput {
@@ -221,6 +244,56 @@ pub struct PreCompactInput {
     /// pass custom instructions.
     #[serde(default)]
     pub custom_instructions: Option<String>,
+}
+
+/// Input payload for `Notification`. Ported from `types.py:324-328`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NotificationInput {
+    /// Shared hook context.
+    #[serde(flatten)]
+    pub base: BaseHookInput,
+    /// Body of the notification.
+    pub message: String,
+    /// Optional title; absent when the CLI omits it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// Notification classification (e.g. `"permission_request"`).
+    pub notification_type: String,
+}
+
+/// Input payload for `SubagentStart`. Ported from `types.py:331-335`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SubagentStartInput {
+    /// Shared hook context.
+    #[serde(flatten)]
+    pub base: BaseHookInput,
+    /// Sub-agent identifier for this spawn.
+    pub agent_id: String,
+    /// Agent type (e.g. `"general-purpose"`).
+    pub agent_type: String,
+}
+
+/// Input payload for `PermissionRequest`. Ported from `types.py:338-344`.
+///
+/// Observed when the CLI asks the SDK to confirm a tool invocation. This is
+/// distinct from the `can_use_tool` `control_request` path — `PermissionRequest`
+/// hooks are observational; actual allow/deny decisions still flow through
+/// `can_use_tool`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PermissionRequestInput {
+    /// Shared hook context.
+    #[serde(flatten)]
+    pub base: BaseHookInput,
+    /// Optional sub-agent attribution.
+    #[serde(flatten)]
+    pub subagent: SubagentContext,
+    /// Tool the CLI is asking about.
+    pub tool_name: String,
+    /// Proposed tool input.
+    pub tool_input: Value,
+    /// Optional list of permission-rule suggestions the CLI proposes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission_suggestions: Option<Vec<Value>>,
 }
 
 /// A hook decision.
@@ -376,10 +449,14 @@ where
 pub struct Hooks {
     pub(crate) pre_tool_use: Vec<(String, Arc<dyn ErasedHookCallback>)>,
     pub(crate) post_tool_use: Vec<(String, Arc<dyn ErasedHookCallback>)>,
+    pub(crate) post_tool_use_failure: Vec<(String, Arc<dyn ErasedHookCallback>)>,
     pub(crate) user_prompt_submit: Vec<Arc<dyn ErasedHookCallback>>,
     pub(crate) stop: Vec<Arc<dyn ErasedHookCallback>>,
     pub(crate) subagent_stop: Vec<Arc<dyn ErasedHookCallback>>,
+    pub(crate) subagent_start: Vec<Arc<dyn ErasedHookCallback>>,
     pub(crate) pre_compact: Vec<Arc<dyn ErasedHookCallback>>,
+    pub(crate) notification: Vec<Arc<dyn ErasedHookCallback>>,
+    pub(crate) permission_request: Vec<(String, Arc<dyn ErasedHookCallback>)>,
 }
 
 impl std::fmt::Debug for Hooks {
@@ -387,10 +464,17 @@ impl std::fmt::Debug for Hooks {
         f.debug_struct("Hooks")
             .field("pre_tool_use_count", &self.pre_tool_use.len())
             .field("post_tool_use_count", &self.post_tool_use.len())
+            .field(
+                "post_tool_use_failure_count",
+                &self.post_tool_use_failure.len(),
+            )
             .field("user_prompt_submit_count", &self.user_prompt_submit.len())
             .field("stop_count", &self.stop.len())
             .field("subagent_stop_count", &self.subagent_stop.len())
+            .field("subagent_start_count", &self.subagent_start.len())
             .field("pre_compact_count", &self.pre_compact.len())
+            .field("notification_count", &self.notification.len())
+            .field("permission_request_count", &self.permission_request.len())
             .finish()
     }
 }
@@ -423,6 +507,13 @@ impl Hooks {
         for (matcher, cb) in &self.post_tool_use {
             mint(HookKind::PostToolUse, Some(matcher.clone()), cb.clone());
         }
+        for (matcher, cb) in &self.post_tool_use_failure {
+            mint(
+                HookKind::PostToolUseFailure,
+                Some(matcher.clone()),
+                cb.clone(),
+            );
+        }
         for cb in &self.user_prompt_submit {
             mint(HookKind::UserPromptSubmit, None, cb.clone());
         }
@@ -432,11 +523,33 @@ impl Hooks {
         for cb in &self.subagent_stop {
             mint(HookKind::SubagentStop, None, cb.clone());
         }
+        for cb in &self.subagent_start {
+            mint(HookKind::SubagentStart, None, cb.clone());
+        }
         for cb in &self.pre_compact {
             mint(HookKind::PreCompact, None, cb.clone());
         }
+        for cb in &self.notification {
+            mint(HookKind::Notification, None, cb.clone());
+        }
+        for (matcher, cb) in &self.permission_request {
+            mint(
+                HookKind::PermissionRequest,
+                Some(matcher.clone()),
+                cb.clone(),
+            );
+        }
 
         registry
+    }
+
+    /// Render the `hooks` key of the `initialize` `control_request` payload
+    /// exactly as the Client will send it. Test-only surface — production
+    /// code uses this indirectly through the Client's initialize path.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn to_initialize_payload_for_test(&self) -> serde_json::Value {
+        self.mint_registry().to_initialize_payload()
     }
 }
 
@@ -609,6 +722,70 @@ impl HooksBuilder {
                 inner: callback,
                 _marker: PhantomData,
             }));
+        self
+    }
+
+    /// Register a `PostToolUseFailure` hook. `matcher` follows the same
+    /// tool-name glob semantics as [`Self::pre_tool_use`] / [`Self::post_tool_use`].
+    #[must_use]
+    pub fn post_tool_use_failure<C>(mut self, matcher: impl Into<String>, callback: C) -> Self
+    where
+        C: HookCallback<PostToolUseFailureInput> + 'static,
+    {
+        self.inner.post_tool_use_failure.push((
+            matcher.into(),
+            Arc::new(ErasedCallback::<PostToolUseFailureInput, C> {
+                inner: callback,
+                _marker: PhantomData,
+            }),
+        ));
+        self
+    }
+
+    /// Register a `Notification` hook.
+    #[must_use]
+    pub fn notification<C>(mut self, callback: C) -> Self
+    where
+        C: HookCallback<NotificationInput> + 'static,
+    {
+        self.inner
+            .notification
+            .push(Arc::new(ErasedCallback::<NotificationInput, C> {
+                inner: callback,
+                _marker: PhantomData,
+            }));
+        self
+    }
+
+    /// Register a `SubagentStart` hook.
+    #[must_use]
+    pub fn subagent_start<C>(mut self, callback: C) -> Self
+    where
+        C: HookCallback<SubagentStartInput> + 'static,
+    {
+        self.inner
+            .subagent_start
+            .push(Arc::new(ErasedCallback::<SubagentStartInput, C> {
+                inner: callback,
+                _marker: PhantomData,
+            }));
+        self
+    }
+
+    /// Register a `PermissionRequest` hook (observational; `matcher` globs
+    /// against tool names the same way as [`Self::pre_tool_use`]).
+    #[must_use]
+    pub fn permission_request<C>(mut self, matcher: impl Into<String>, callback: C) -> Self
+    where
+        C: HookCallback<PermissionRequestInput> + 'static,
+    {
+        self.inner.permission_request.push((
+            matcher.into(),
+            Arc::new(ErasedCallback::<PermissionRequestInput, C> {
+                inner: callback,
+                _marker: PhantomData,
+            }),
+        ));
         self
     }
 

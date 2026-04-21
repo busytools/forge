@@ -53,7 +53,8 @@ pub use client::Client;
 pub use error::Error;
 pub use hooks::{
     BaseHookInput, HookCallback, HookContext, HookDecision, HookKind, Hooks, HooksBuilder,
-    PostToolUseInput, PreCompactInput, PreToolUseInput, StopInput, SubagentContext,
+    NotificationInput, PermissionRequestInput, PostToolUseFailureInput, PostToolUseInput,
+    PreCompactInput, PreToolUseInput, StopInput, SubagentContext, SubagentStartInput,
     SubagentStopInput, UserPromptSubmitInput,
 };
 pub use options::{Options, OptionsBuilder, PermissionMode};
