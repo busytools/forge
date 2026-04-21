@@ -44,6 +44,7 @@ pub mod mcp;
 pub mod messages;
 mod options;
 pub mod permissions;
+pub mod session_store;
 pub mod transport;
 
 pub use client::Client;
@@ -54,6 +55,10 @@ pub use hooks::{
 };
 pub use options::{Options, OptionsBuilder, PermissionMode};
 pub use permissions::{CanUseToolCallback, PermissionDecision, ToolPermissionContext};
+pub use session_store::{
+    FsSessionStore, MemorySessionStore, SessionKey, SessionListSubkeysKey, SessionStore,
+    SessionStoreEntry, SessionStoreError, SessionStoreListEntry,
+};
 
 #[doc(hidden)]
 pub use crate::mcp::macros::__private;
