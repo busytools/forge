@@ -212,6 +212,9 @@ pub fn build_args(options: &Options) -> Vec<String> {
     if options.fork_session {
         args.push("--fork-session".into());
     }
+    if options.enable_file_checkpointing {
+        args.push("--enable-file-checkpointing".into());
+    }
     if options.session_store.is_some() {
         args.push("--session-mirror".into());
     }
