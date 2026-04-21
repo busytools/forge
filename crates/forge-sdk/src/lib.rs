@@ -39,6 +39,7 @@ mod client;
 pub mod content;
 pub mod control;
 mod error;
+pub mod hooks;
 pub mod mcp;
 pub mod messages;
 mod options;
@@ -47,6 +48,10 @@ pub mod transport;
 
 pub use client::Client;
 pub use error::Error;
+pub use hooks::{
+    HookCallback, HookContext, HookDecision, HookKind, Hooks, HooksBuilder, PostToolUseInput,
+    PreCompactInput, PreToolUseInput, StopInput, SubagentStopInput, UserPromptSubmitInput,
+};
 pub use options::{Options, OptionsBuilder, PermissionMode};
 pub use permissions::{CanUseToolCallback, PermissionDecision, ToolPermissionContext};
 

@@ -4,11 +4,14 @@ use std::sync::Arc;
 
 use tracing::debug;
 
+use std::collections::HashMap;
+
 use crate::Error;
 use crate::control::{
     AllowBehavior, ControlRequest, ControlRequestKind, ControlResponse, ControlResponseKind,
     ControlResponseType,
 };
+use crate::hooks::{ErasedHookCallback, HookContext, HookDecision, HookKind};
 use crate::mcp::orchestration::McpHosts;
 use crate::mcp::protocol::JsonRpcRequest;
 use crate::messages::Message;
@@ -28,6 +31,7 @@ pub struct Client {
     line_number: u64,
     can_use_tool: Option<Arc<dyn CanUseToolCallback>>,
     mcp_hosts: McpHosts,
+    hook_callbacks: HashMap<String, Arc<dyn ErasedHookCallback>>,
 }
 
 impl std::fmt::Debug for Client {
@@ -41,6 +45,10 @@ impl std::fmt::Debug for Client {
                 &self.can_use_tool.as_ref().map(|_| "<callback>"),
             )
             .field("mcp_hosts", &self.mcp_hosts)
+            .field(
+                "hook_callbacks",
+                &format!("<{} hooks>", self.hook_callbacks.len()),
+            )
             .finish()
     }
 }
@@ -54,6 +62,8 @@ impl Client {
     pub async fn spawn(options: Options) -> Result<Self, Error> {
         let can_use_tool = options.can_use_tool.clone();
         let mcp_hosts = McpHosts::new(options.mcp_servers.clone());
+        let hook_registry = options.hooks.mint_registry();
+        let hook_callbacks = hook_registry.by_id;
         let mut sub = Subprocess::spawn(&options).await?;
         let init_line = sub.read_line().await?.ok_or_else(|| Error::Connection {
             reason: "subprocess closed stdout before init line".into(),
@@ -78,6 +88,7 @@ impl Client {
             line_number: 1,
             can_use_tool,
             mcp_hosts,
+            hook_callbacks,
         })
     }
 
@@ -137,6 +148,18 @@ impl Client {
         } = &req.request
         {
             return self.handle_mcp_message(&req, server_name, message).await;
+        }
+
+        // Hook callback — dispatch by opaque callback_id.
+        if let ControlRequestKind::HookCallback {
+            callback_id,
+            input,
+            tool_use_id,
+        } = &req.request
+        {
+            return self
+                .handle_hook_callback(&req, callback_id, input, tool_use_id.as_deref())
+                .await;
         }
 
         let decision = match (&self.can_use_tool, &req.request) {
@@ -268,6 +291,86 @@ impl Client {
         })?;
         line.push('\n');
         self.sub.write_line(&line).await
+    }
+
+    /// Handle a `hook_callback` control request — dispatch by opaque
+    /// `callback_id` and emit the appropriate `hookSpecificOutput` wrapper
+    /// per event kind.
+    async fn handle_hook_callback(
+        &mut self,
+        req: &ControlRequest,
+        callback_id: &str,
+        input: &serde_json::Value,
+        tool_use_id: Option<&str>,
+    ) -> Result<(), Error> {
+        let event_name = input
+            .get("hook_event_name")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("Unknown")
+            .to_string();
+        let kind = HookKind::from_wire(&event_name);
+
+        let ctx = HookContext {
+            kind,
+            tool_name: input
+                .get("tool_name")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string),
+            session_id: self.session_id.clone(),
+            tool_use_id: tool_use_id.map(str::to_string),
+        };
+
+        let decision = if let Some(cb) = self.hook_callbacks.get(callback_id) {
+            cb.call_erased(input.clone(), ctx).await
+        } else {
+            tracing::warn!(%callback_id, "hook_callback for unknown id; passthrough");
+            HookDecision::passthrough()
+        };
+
+        let mut response_body = match (decision.is_allow(), decision.reason()) {
+            (true, _) => serde_json::json!({}),
+            (false, Some(reason)) => serde_json::json!({"decision": "block", "reason": reason}),
+            (false, None) => serde_json::json!({"decision": "block"}),
+        };
+
+        if let Some(updated) = decision.updated_input() {
+            let wrapper = match kind {
+                HookKind::PreToolUse => Some(serde_json::json!({
+                    "hookEventName": "PreToolUse",
+                    "updatedInput": updated,
+                })),
+                HookKind::UserPromptSubmit => Some(serde_json::json!({
+                    "hookEventName": "UserPromptSubmit",
+                    "updatedPrompt": updated,
+                })),
+                _ => {
+                    tracing::warn!(
+                        ?kind,
+                        "hook returned updated_input but hook kind doesn't support it; ignoring"
+                    );
+                    None
+                }
+            };
+            if let Some(w) = wrapper {
+                if let Some(map) = response_body.as_object_mut() {
+                    map.insert("hookSpecificOutput".into(), w);
+                }
+            }
+        }
+
+        let ctrl = ControlResponse {
+            ty: ControlResponseType::ControlResponse,
+            response: ControlResponseKind::Success {
+                request_id: req.request_id.clone(),
+                response: response_body,
+            },
+        };
+        let mut line = serde_json::to_string(&ctrl).map_err(|e| Error::MessageParse {
+            reason: format!("hook response encode: {e}"),
+        })?;
+        line.push('\n');
+        self.sub.write_line(&line).await?;
+        Ok(())
     }
 
     /// Graceful shutdown. Closes stdin, waits for the subprocess to exit.
