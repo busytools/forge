@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::content::ContentBlock;
+use crate::session_store::SessionKey;
 
 /// One stream-json message.
 ///
@@ -107,6 +108,19 @@ pub enum Message {
         tool_use_id: Option<String>,
         /// Total usage accumulated over the lifetime of the task, if reported.
         usage: Option<TaskUsage>,
+    },
+
+    /// Synthesised system frame reporting a failed
+    /// [`SessionStore::append`](crate::session_store::SessionStore::append)
+    /// call inside the transcript-mirror batcher. Subtype `"mirror_error"`.
+    /// Non-fatal: the on-disk transcript is already durable, but the
+    /// mirrored copy in the external store is missing the failed batch.
+    /// Mirrors Python SDK v0.1.64 `MirrorErrorMessage` (`types.py:1005-1019`).
+    MirrorError {
+        /// Session key whose append failed, if known at error time.
+        key: Option<SessionKey>,
+        /// Human-readable reason for the failure.
+        error: String,
     },
 
     /// Rate-limit state transition. The CLI emits this when the current
@@ -398,6 +412,12 @@ enum TypedSystemRepr {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         usage: Option<TaskUsage>,
     },
+    MirrorError {
+        #[serde(default)]
+        key: Option<SessionKey>,
+        #[serde(default)]
+        error: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -482,6 +502,9 @@ impl From<MessageRepr> for Message {
                 tool_use_id,
                 usage,
             },
+            MessageRepr::System(SystemRepr::Typed(TypedSystemRepr::MirrorError { key, error })) => {
+                Message::MirrorError { key, error }
+            }
             MessageRepr::System(SystemRepr::Generic(GenericSystemRepr {
                 subtype,
                 session_id,
@@ -586,6 +609,12 @@ impl From<Message> for MessageRepr {
                 tool_use_id,
                 last_tool_name,
             })),
+            Message::MirrorError { key, error } => {
+                MessageRepr::System(SystemRepr::Typed(TypedSystemRepr::MirrorError {
+                    key,
+                    error,
+                }))
+            }
             Message::TaskNotification {
                 task_id,
                 status,
