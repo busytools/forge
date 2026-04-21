@@ -11,7 +11,10 @@ use crate::control::{
     AllowBehavior, ControlRequest, ControlRequestKind, ControlResponse, ControlResponseKind,
     ControlResponseType,
 };
-use crate::hooks::{ErasedHookCallback, HookContext, HookDecision, HookKind};
+use crate::hooks::{
+    ErasedHookCallback, HookContext, HookDecision, HookKind, PreToolUseHookSpecificOutput,
+    UserPromptSubmitHookSpecificOutput,
+};
 use crate::mcp::orchestration::McpHosts;
 use crate::mcp::protocol::JsonRpcRequest;
 use crate::messages::Message;
@@ -511,14 +514,37 @@ impl Client {
 
         if let Some(updated) = decision.updated_input() {
             let wrapper = match kind {
-                HookKind::PreToolUse => Some(serde_json::json!({
-                    "hookEventName": "PreToolUse",
-                    "updatedInput": updated,
-                })),
-                HookKind::UserPromptSubmit => Some(serde_json::json!({
-                    "hookEventName": "UserPromptSubmit",
-                    "updatedPrompt": updated,
-                })),
+                HookKind::PreToolUse => {
+                    let typed = PreToolUseHookSpecificOutput {
+                        updated_input: Some(updated.clone()),
+                        ..Default::default()
+                    };
+                    serde_json::to_value(typed).ok()
+                }
+                HookKind::UserPromptSubmit => {
+                    // Upstream `UserPromptSubmitHookSpecificOutput` only
+                    // carries `additionalContext: str`. If the caller hands
+                    // us a JSON string, forward it there; otherwise drop the
+                    // payload and warn — there is no wire field to land a
+                    // structured replacement.
+                    updated.as_str().map_or_else(
+                        || {
+                            tracing::warn!(
+                                ?kind,
+                                "UserPromptSubmit replace_input expects a JSON string \
+                                 (used as additionalContext); dropping non-string payload"
+                            );
+                            None
+                        },
+                        |s| {
+                            let typed = UserPromptSubmitHookSpecificOutput {
+                                additional_context: Some(s.to_string()),
+                                ..Default::default()
+                            };
+                            serde_json::to_value(typed).ok()
+                        },
+                    )
+                }
                 _ => {
                     tracing::warn!(
                         ?kind,
@@ -527,10 +553,10 @@ impl Client {
                     None
                 }
             };
-            if let Some(w) = wrapper {
-                if let Some(map) = response_body.as_object_mut() {
-                    map.insert("hookSpecificOutput".into(), w);
-                }
+            if let Some(w) = wrapper
+                && let Some(map) = response_body.as_object_mut()
+            {
+                map.insert("hookSpecificOutput".into(), w);
             }
         }
 
