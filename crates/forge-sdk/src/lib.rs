@@ -45,6 +45,7 @@ pub mod mcp;
 pub mod messages;
 mod options;
 pub mod permissions;
+pub mod public_types;
 pub(crate) mod request_id;
 pub mod session_store;
 pub mod tracing_bridge;
@@ -71,10 +72,20 @@ pub use permissions::{
     CanUseToolCallback, PermissionBehavior, PermissionDecision, PermissionRuleValue,
     PermissionUpdate, PermissionUpdateDestination, ToolPermissionContext,
 };
+pub use public_types::{
+    ContextUsageCategory, ContextUsageResponse, McpServerConfig, McpServerConnectionStatus,
+    McpServerInfo, McpServerStatus, McpStatusResponse, McpToolAnnotations, McpToolInfo,
+    SDKSessionInfo, SandboxIgnoreViolations, SandboxNetworkConfig, SandboxSettings, SdkBeta,
+    SessionMessage, SessionMessageKind, SettingSource, StreamEvent,
+};
 pub use session_store::{
     FsSessionStore, MemorySessionStore, SessionKey, SessionListSubkeysKey, SessionStore,
     SessionStoreEntry, SessionStoreError, SessionStoreListEntry,
 };
+
+/// In-memory [`SessionStore`] — Python SDK publishes this as
+/// `InMemorySessionStore`; forge-sdk aliases for surface parity.
+pub use session_store::MemorySessionStore as InMemorySessionStore;
 
 #[doc(hidden)]
 pub use crate::mcp::macros::__private;
