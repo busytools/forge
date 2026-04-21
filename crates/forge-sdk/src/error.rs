@@ -63,4 +63,9 @@ pub enum Error {
     /// Wrapping `std::io::Error` for convenience.
     #[error("I/O error: {0}")]
     Io(#[from] io::Error),
+
+    /// Wrapping a [`SessionStoreError`](crate::session_store::SessionStoreError)
+    /// when a store operation fails.
+    #[error("session store error: {0}")]
+    SessionStore(#[from] crate::session_store::SessionStoreError),
 }
