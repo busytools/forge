@@ -47,3 +47,13 @@ fn builder_sets_custom_binary() {
         .build();
     assert_eq!(opts.binary, "/usr/local/bin/claude");
 }
+
+#[test]
+fn builder_stores_can_use_tool_callback() {
+    use forge_sdk::{PermissionDecision, ToolPermissionContext};
+
+    let opts = OptionsBuilder::new()
+        .can_use_tool(|_ctx: ToolPermissionContext| async move { PermissionDecision::allow() })
+        .build();
+    assert!(opts.can_use_tool.is_some());
+}
