@@ -8,3 +8,4 @@ Cargo.lock.tmp
 *.log
 .envrc
 .direnv/
+.claude/*.local.md
