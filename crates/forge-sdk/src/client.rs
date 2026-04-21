@@ -796,22 +796,60 @@ impl Client {
         Ok(())
     }
 
-    /// Query MCP server status. Returns the raw response payload.
+    /// Query MCP server status. Returns the typed response.
+    ///
+    /// # Errors
+    ///
+    /// See the outbound control error cases, plus [`Error::MessageParse`]
+    /// when the CLI payload doesn't match
+    /// [`McpStatusResponse`](crate::public_types::McpStatusResponse).
+    pub async fn mcp_status(&mut self) -> Result<crate::public_types::McpStatusResponse, Error> {
+        let raw = self
+            .send_control("mcp_status", serde_json::json!({}))
+            .await?;
+        serde_json::from_value(raw).map_err(|e| Error::MessageParse {
+            reason: format!("mcp_status: {e}"),
+        })
+    }
+
+    /// Query MCP server status, returning the raw JSON payload. Use this
+    /// escape hatch when the CLI returns fields not yet modelled by
+    /// [`McpStatusResponse`](crate::public_types::McpStatusResponse).
     ///
     /// # Errors
     ///
     /// See the outbound control error cases.
-    pub async fn mcp_status(&mut self) -> Result<serde_json::Value, Error> {
+    pub async fn mcp_status_raw(&mut self) -> Result<serde_json::Value, Error> {
         self.send_control("mcp_status", serde_json::json!({})).await
     }
 
     /// Query current context usage (tokens consumed vs. budget). Returns
-    /// the raw response payload.
+    /// the typed response.
+    ///
+    /// # Errors
+    ///
+    /// See the outbound control error cases, plus [`Error::MessageParse`]
+    /// when the CLI payload doesn't match
+    /// [`ContextUsageResponse`](crate::public_types::ContextUsageResponse).
+    pub async fn get_context_usage(
+        &mut self,
+    ) -> Result<crate::public_types::ContextUsageResponse, Error> {
+        let raw = self
+            .send_control("get_context_usage", serde_json::json!({}))
+            .await?;
+        serde_json::from_value(raw).map_err(|e| Error::MessageParse {
+            reason: format!("get_context_usage: {e}"),
+        })
+    }
+
+    /// Query current context usage, returning the raw JSON payload. Use
+    /// this when the CLI returns fields not yet modelled by
+    /// [`ContextUsageResponse`](crate::public_types::ContextUsageResponse).
     ///
     /// # Errors
     ///
     /// See the outbound control error cases.
-    pub async fn get_context_usage(&mut self) -> Result<serde_json::Value, Error> {
+    pub async fn get_context_usage_raw(&mut self) -> Result<serde_json::Value, Error> {
         self.send_control("get_context_usage", serde_json::json!({}))
             .await
     }
