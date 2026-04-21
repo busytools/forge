@@ -91,6 +91,13 @@ impl Client {
         let hook_callbacks = hook_registry.by_id;
         let session_store = options.session_store.clone();
         let projects_dir = options.projects_dir.clone();
+        let agents_payload = if options.agents.is_empty() {
+            serde_json::json!({})
+        } else {
+            serde_json::to_value(&options.agents).map_err(|e| Error::MessageParse {
+                reason: format!("could not encode agents map: {e}"),
+            })?
+        };
         // Concrete-list skills populate `initialize.skills`. `"all"` marker
         // travels via `--allowedTools` only and does NOT appear in the
         // initialize payload (matches Python SDK).
@@ -145,7 +152,12 @@ impl Client {
             synth_messages,
         };
         client
-            .send_initialize(hook_payload, skills_payload, exclude_dynamic_sections)
+            .send_initialize(
+                hook_payload,
+                skills_payload,
+                exclude_dynamic_sections,
+                agents_payload,
+            )
             .await?;
         Ok(client)
     }
@@ -164,6 +176,7 @@ impl Client {
         hooks: serde_json::Value,
         skills: Vec<String>,
         exclude_dynamic_sections: bool,
+        agents: serde_json::Value,
     ) -> Result<(), Error> {
         let request_id = crate::request_id::next();
         let body = serde_json::json!({
@@ -174,7 +187,7 @@ impl Client {
                 "hooks": hooks,
                 "excludeDynamicSections": exclude_dynamic_sections,
                 "skills": skills,
-                "agents": {},
+                "agents": agents,
             }
         });
         let mut line = serde_json::to_string(&body).map_err(|e| Error::MessageParse {

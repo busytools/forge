@@ -35,6 +35,7 @@
 #![doc(html_root_url = "https://docs.rs/forge-sdk/0.1.64")]
 #![forbid(unsafe_code)]
 
+pub mod agents;
 mod client;
 pub mod content;
 pub mod control;
