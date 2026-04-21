@@ -45,3 +45,30 @@ fn encode_user_prompt_is_single_line_with_newline() {
     assert_eq!(v["message"]["content"][0]["type"], "text");
     assert_eq!(v["message"]["content"][0]["text"], "hello");
 }
+
+#[test]
+fn dispatch_detects_control_request() {
+    use forge_sdk::transport::codec::{DecodedLine, decode_dispatch};
+
+    let line = r#"{"type":"control_request","request_id":"r1","request":{"subtype":"can_use_tool","tool_name":"Edit","input":{},"permission_suggestions":[],"blocked_path":null,"tool_use_id":"toolu_dispatch","agent_id":null}}"#;
+    let decoded = decode_dispatch(line, 1).expect("decode");
+    assert!(matches!(decoded, DecodedLine::Control(_)));
+}
+
+#[test]
+fn dispatch_detects_regular_message() {
+    use forge_sdk::transport::codec::{DecodedLine, decode_dispatch};
+
+    let line = r#"{"type":"assistant","message":{"id":"m","role":"assistant","model":"claude-opus-4-5","content":[{"type":"text","text":"hi"}],"stop_reason":"end_turn","stop_sequence":null,"usage":{"input_tokens":1,"output_tokens":1,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}},"session_id":"s","parent_tool_use_id":null}"#;
+    let decoded = decode_dispatch(line, 1).expect("decode");
+    assert!(matches!(decoded, DecodedLine::Message(_)));
+}
+
+#[test]
+fn dispatch_rejects_missing_type() {
+    use forge_sdk::transport::codec::decode_dispatch;
+
+    let line = r#"{"nope":"yes"}"#;
+    let err = decode_dispatch(line, 5).expect_err("should fail");
+    assert!(format!("{err}").contains("missing `type`"));
+}
