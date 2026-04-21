@@ -58,6 +58,33 @@ impl Subprocess {
             cmd.arg("--mcp-config").arg(hosts.config_argv());
         }
 
+        // --allowedTools (camelCase per Python SDK). Combines explicit
+        // allowed_tools + Skill injection per C3.4.
+        let mut allowed: Vec<String> = options.allowed_tools.clone();
+        for skill in &options.skills {
+            if skill == "all" {
+                allowed.push("Skill".into());
+            } else {
+                allowed.push(format!("Skill({skill})"));
+            }
+        }
+        if !allowed.is_empty() {
+            cmd.arg("--allowedTools").arg(allowed.join(","));
+        }
+
+        // --setting-sources: explicit override wins; otherwise default to
+        // user,project when skills is set (per Python SDK behaviour).
+        let setting_sources: Option<Vec<String>> = options.setting_sources.clone().or_else(|| {
+            if options.skills.is_empty() {
+                None
+            } else {
+                Some(vec!["user".into(), "project".into()])
+            }
+        });
+        if let Some(sources) = setting_sources {
+            cmd.arg(format!("--setting-sources={}", sources.join(",")));
+        }
+
         cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
