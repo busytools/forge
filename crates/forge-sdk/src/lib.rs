@@ -44,6 +44,7 @@ pub mod mcp;
 pub mod messages;
 mod options;
 pub mod permissions;
+pub(crate) mod request_id;
 pub mod session_store;
 pub mod tracing_bridge;
 pub mod transport;

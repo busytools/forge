@@ -63,7 +63,19 @@ impl Client {
         let can_use_tool = options.can_use_tool.clone();
         let mcp_hosts = McpHosts::new(options.mcp_servers.clone());
         let hook_registry = options.hooks.mint_registry();
+        let hook_payload = hook_registry.to_initialize_payload();
         let hook_callbacks = hook_registry.by_id;
+        // Concrete-list skills populate `initialize.skills`. `"all"` marker
+        // travels via `--allowedTools` only and does NOT appear in the
+        // initialize payload (matches Python SDK).
+        let skills_payload: Vec<String> = options
+            .skills
+            .iter()
+            .filter(|s| s.as_str() != "all")
+            .cloned()
+            .collect();
+        let exclude_dynamic_sections = options.exclude_dynamic_sections;
+
         let mut sub = Subprocess::spawn(&options).await?;
         let init_line = sub.read_line().await?.ok_or_else(|| Error::Connection {
             reason: "subprocess closed stdout before init line".into(),
@@ -82,14 +94,96 @@ impl Client {
             }
         };
         debug!(session_id, "client init");
-        Ok(Self {
+
+        let mut client = Self {
             sub,
             session_id,
             line_number: 1,
             can_use_tool,
             mcp_hosts,
             hook_callbacks,
-        })
+        };
+        client
+            .send_initialize(hook_payload, skills_payload, exclude_dynamic_sections)
+            .await?;
+        Ok(client)
+    }
+
+    /// Send the `initialize` `control_request` and await its matching
+    /// `control_response`. Python SDK does this right after receiving the
+    /// system/init message, before any user input.
+    ///
+    /// The body carries:
+    /// - `hooks` — `{event_name: [{matcher, hookCallbackIds, timeout}]}`
+    /// - `excludeDynamicSections` — bool
+    /// - `skills` — list of concrete skill names (the `"all"` sentinel
+    ///   travels via `--allowedTools` only).
+    async fn send_initialize(
+        &mut self,
+        hooks: serde_json::Value,
+        skills: Vec<String>,
+        exclude_dynamic_sections: bool,
+    ) -> Result<(), Error> {
+        let request_id = crate::request_id::next();
+        let body = serde_json::json!({
+            "type": "control_request",
+            "request_id": request_id,
+            "request": {
+                "subtype": "initialize",
+                "hooks": hooks,
+                "excludeDynamicSections": exclude_dynamic_sections,
+                "skills": skills,
+                "agents": {},
+            }
+        });
+        let mut line = serde_json::to_string(&body).map_err(|e| Error::MessageParse {
+            reason: format!("initialize serialise: {e}"),
+        })?;
+        line.push('\n');
+        self.sub.write_line(&line).await?;
+
+        // Await the matching response. Control responses arrive on the
+        // same stdio as regular messages — typically the very next line
+        // with no user prompts racing.
+        loop {
+            let Some(response_line) = self.sub.read_line().await? else {
+                return Err(Error::Connection {
+                    reason: "subprocess closed before initialize response".into(),
+                });
+            };
+            self.line_number += 1;
+            let value: serde_json::Value =
+                serde_json::from_str(&response_line).map_err(|source| Error::JsonDecode {
+                    line: self.line_number,
+                    source,
+                })?;
+            if value.get("type").and_then(serde_json::Value::as_str) == Some("control_response") {
+                let resp_request_id = value
+                    .pointer("/response/request_id")
+                    .and_then(serde_json::Value::as_str);
+                if resp_request_id == Some(&request_id) {
+                    let subtype = value
+                        .pointer("/response/subtype")
+                        .and_then(serde_json::Value::as_str);
+                    if subtype == Some("success") {
+                        return Ok(());
+                    }
+                    let err = value
+                        .pointer("/response/error")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("unknown error");
+                    return Err(Error::MessageParse {
+                        reason: format!("initialize failed: {err}"),
+                    });
+                }
+            }
+            // Not our response — if it's some other control_request we
+            // don't yet know how to handle at init time, log and drop.
+            // Real CLI behaviour: the initialize response is always the
+            // next frame; hitting this branch in production means a
+            // protocol bug worth surfacing.
+            tracing::warn!(line = %response_line, "unexpected frame during initialize");
+        }
     }
 
     /// The session id captured from the init message.

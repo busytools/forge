@@ -374,13 +374,50 @@ pub(crate) struct HookRegistry {
     pub(crate) metadata: Vec<HookRegistryEntry>,
 }
 
+impl HookRegistry {
+    /// Render the `hooks` field of the `initialize` `control_request`:
+    /// `{"PreToolUse": [{"matcher": "...", "hookCallbackIds": ["hook_0"], "timeout": 30}, ...], ...}`.
+    pub(crate) fn to_initialize_payload(&self) -> serde_json::Value {
+        use std::collections::BTreeMap;
+
+        // Group ids by (kind, matcher). BTreeMap for deterministic output.
+        let mut by_kind: BTreeMap<&'static str, BTreeMap<String, Vec<String>>> = BTreeMap::new();
+        for entry in &self.metadata {
+            let kind_name = entry.kind.as_str();
+            let matcher_key = entry.matcher.clone().unwrap_or_default();
+            by_kind
+                .entry(kind_name)
+                .or_default()
+                .entry(matcher_key)
+                .or_default()
+                .push(entry.id.clone());
+        }
+
+        let mut map = serde_json::Map::new();
+        for (kind_name, matcher_group) in by_kind {
+            let specs: Vec<serde_json::Value> = matcher_group
+                .into_iter()
+                .map(|(matcher, ids)| {
+                    let mut spec = serde_json::Map::new();
+                    if !matcher.is_empty() {
+                        spec.insert("matcher".into(), serde_json::Value::String(matcher));
+                    }
+                    spec.insert(
+                        "hookCallbackIds".into(),
+                        serde_json::Value::Array(ids.into_iter().map(Into::into).collect()),
+                    );
+                    spec.insert("timeout".into(), serde_json::json!(30));
+                    serde_json::Value::Object(spec)
+                })
+                .collect();
+            map.insert(kind_name.into(), serde_json::Value::Array(specs));
+        }
+        serde_json::Value::Object(map)
+    }
+}
+
 /// One entry describing a minted hook id.
-///
-/// Fields are currently held for future wiring into the `initialize`
-/// `control_request` payload (Plan 2 Task 6.5 per corrections C2.9).
-/// Tagged `#[allow(dead_code)]` until that task lands.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub(crate) struct HookRegistryEntry {
     pub(crate) id: String,
     pub(crate) kind: HookKind,
