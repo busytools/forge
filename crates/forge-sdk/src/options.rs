@@ -73,6 +73,26 @@ pub struct Options {
     pub mcp_servers: Vec<(String, McpServer)>,
     /// Registered hooks. Empty by default.
     pub hooks: Hooks,
+    /// Tool names the model is allowed to invoke. Passed to the CLI as
+    /// `--allowedTools <comma,list>`. Empty means "no explicit allowlist".
+    pub allowed_tools: Vec<String>,
+    /// Skills to enable. Python SDK supports `"all"` plus concrete names.
+    /// Three-channel delivery:
+    /// 1. Injected into `--allowedTools` as `Skill` (for `"all"`) or
+    ///    `Skill(<name>)`.
+    /// 2. If `setting_sources` is unset, defaulted to `user,project` and
+    ///    emitted as `--setting-sources=user,project`.
+    /// 3. Concrete (non-`"all"`) skills also populate the `skills` field
+    ///    in the `initialize` `control_request` (deferred until C2.9 lands).
+    pub skills: Vec<String>,
+    /// CLI `--setting-sources` value. When `None`, the default derives
+    /// from whether `skills` is set.
+    pub setting_sources: Option<Vec<String>>,
+    /// Whether to exclude dynamic sections from the system prompt. Wire
+    /// shape: `excludeDynamicSections` field in the `initialize`
+    /// `control_request` (NOT a CLI flag — Python SDK delivers this via
+    /// the control channel).
+    pub exclude_dynamic_sections: bool,
 }
 
 impl Default for Options {
@@ -86,6 +106,10 @@ impl Default for Options {
             can_use_tool: None,
             mcp_servers: Vec::new(),
             hooks: Hooks::default(),
+            allowed_tools: Vec::new(),
+            skills: Vec::new(),
+            setting_sources: None,
+            exclude_dynamic_sections: false,
         }
     }
 }
@@ -107,6 +131,10 @@ impl std::fmt::Debug for Options {
                 &format!("<{} servers>", self.mcp_servers.len()),
             )
             .field("hooks", &self.hooks)
+            .field("allowed_tools", &self.allowed_tools)
+            .field("skills", &self.skills)
+            .field("setting_sources", &self.setting_sources)
+            .field("exclude_dynamic_sections", &self.exclude_dynamic_sections)
             .finish()
     }
 }
@@ -191,6 +219,49 @@ impl OptionsBuilder {
     #[must_use]
     pub fn hooks(mut self, hooks: Hooks) -> Self {
         self.inner.hooks = hooks;
+        self
+    }
+
+    /// Set the `--allowedTools` list explicitly.
+    #[must_use]
+    pub fn allowed_tools<I, S>(mut self, tools: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.inner.allowed_tools = tools.into_iter().map(Into::into).collect();
+        self
+    }
+
+    /// Enable skills. Use `"all"` to enable all skills, or list names.
+    /// Python SDK defaults `setting_sources` to `["user", "project"]` when
+    /// this is set and `setting_sources` is not explicitly provided.
+    #[must_use]
+    pub fn skills<I, S>(mut self, skills: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.inner.skills = skills.into_iter().map(Into::into).collect();
+        self
+    }
+
+    /// Override the `--setting-sources` list.
+    #[must_use]
+    pub fn setting_sources<I, S>(mut self, sources: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.inner.setting_sources = Some(sources.into_iter().map(Into::into).collect());
+        self
+    }
+
+    /// Exclude dynamic sections from the system prompt. Delivered via
+    /// the `initialize` `control_request`, not a CLI flag.
+    #[must_use]
+    pub fn exclude_dynamic_sections(mut self, yes: bool) -> Self {
+        self.inner.exclude_dynamic_sections = yes;
         self
     }
 
