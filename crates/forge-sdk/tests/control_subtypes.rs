@@ -73,9 +73,9 @@ async fn stop_task_round_trip() {
 }
 
 #[tokio::test]
-async fn mcp_status_returns_canned_payload() {
+async fn mcp_status_raw_returns_canned_payload() {
     let mut client = spawn_client().await;
-    let resp = client.mcp_status().await.expect("mcp_status");
+    let resp = client.mcp_status_raw().await.expect("mcp_status");
     assert_eq!(
         resp,
         serde_json::json!({"servers": []}),
@@ -85,9 +85,12 @@ async fn mcp_status_returns_canned_payload() {
 }
 
 #[tokio::test]
-async fn get_context_usage_returns_canned_payload() {
+async fn get_context_usage_raw_returns_canned_payload() {
     let mut client = spawn_client().await;
-    let resp = client.get_context_usage().await.expect("get_context_usage");
+    let resp = client
+        .get_context_usage_raw()
+        .await
+        .expect("get_context_usage");
     assert_eq!(
         resp,
         serde_json::json!({"used": 0, "budget": 200_000}),
