@@ -39,6 +39,7 @@ pub mod content;
 mod error;
 pub mod messages;
 mod options;
+pub mod transport;
 
 pub use error::Error;
 pub use options::{Options, OptionsBuilder, PermissionMode};
