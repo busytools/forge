@@ -3,8 +3,12 @@
 //! Mirrors Python `claude-agent-sdk` v0.1.64's `SessionStore` protocol
 //! (`types.py:1169-1257`). The `claude` CLI always writes transcripts to
 //! local disk; a `SessionStore` receives a secondary copy of each JSONL
-//! line batched at ~100ms cadence. At-most-once delivery; failures
-//! surface as `mirror_error` system messages, not retried.
+//! line. Frames are batched and flushed to [`SessionStore::append`]
+//! on two triggers: (a) explicit flush when a `result` message arrives,
+//! and (b) eager flush when the pending buffer exceeds ~500 entries or
+//! ~1 MiB.
+//! At-most-once delivery — failed `append` batches drop silently (the
+//! local-disk transcript is already durable).
 //!
 //! Two methods are required (`append`, `load`); three are optional
 //! (`list_sessions`, `delete`, `list_subkeys`) with default impls returning
@@ -67,20 +71,22 @@ pub struct SessionStoreEntry {
     pub extra: Value,
 }
 
-/// One row in the `list_sessions` result.
+/// One row in the `list_sessions` result. Wire field name is `mtime`
+/// (milliseconds since Unix epoch) per Python `types.py:1153-1159`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionStoreListEntry {
     /// Session UUID.
     pub session_id: String,
     /// Last-modification time in milliseconds since Unix epoch.
-    pub mtime_ms: u64,
+    pub mtime: u64,
 }
 
 /// Transcript-mirror adapter. Mirrors Python's `SessionStore` protocol.
 #[async_trait]
 pub trait SessionStore: Send + Sync {
     /// Append one batch of transcript lines to the session identified by
-    /// `key`. Batches arrive at ~100ms cadence from the SDK.
+    /// `key`. Batches arrive from the SDK on result/flush boundaries
+    /// (see module docs for exact flush triggers).
     async fn append(
         &self,
         key: &SessionKey,
@@ -94,7 +100,7 @@ pub trait SessionStore: Send + Sync {
         key: &SessionKey,
     ) -> Result<Option<Vec<SessionStoreEntry>>, SessionStoreError>;
 
-    /// List sessions under `project_key`, most-recent first (by `mtime_ms`).
+    /// List sessions under `project_key`, most-recent first (by `mtime`).
     async fn list_sessions(
         &self,
         project_key: &str,
@@ -212,10 +218,10 @@ impl SessionStore for MemorySessionStore {
             .filter(|((pk, _), _)| pk == project_key)
             .map(|((_, sid), m)| SessionStoreListEntry {
                 session_id: sid.clone(),
-                mtime_ms: *m,
+                mtime: *m,
             })
             .collect();
-        rows.sort_by_key(|r| std::cmp::Reverse(r.mtime_ms));
+        rows.sort_by_key(|r| std::cmp::Reverse(r.mtime));
         Ok(rows)
     }
 
@@ -303,16 +309,94 @@ impl FsSessionStore {
     }
 }
 
-fn sanitise(s: &str) -> String {
-    s.chars()
-        .map(|c| {
-            if c.is_alphanumeric() || c == '-' || c == '_' {
-                c
-            } else {
-                '_'
+/// Python-SDK-compatible path sanitisation: `[^a-zA-Z0-9]` → `-`. For
+/// long inputs (>`MAX_SANITIZED_LENGTH`), truncates and appends a djb2
+/// hash suffix matching the CLI's hash-fallback directory naming
+/// (`_internal/sessions.py::_sanitize_path`).
+pub(crate) fn sanitise(s: &str) -> String {
+    const MAX_SANITIZED_LENGTH: usize = 200;
+    let raw: String = s
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    if raw.len() <= MAX_SANITIZED_LENGTH {
+        return raw;
+    }
+    // djb2-style hash matching the Python reference (JS-compatible 32-bit).
+    let mut h: i64 = 0;
+    for ch in s.chars() {
+        h = ((h << 5) - h + i64::from(ch as u32)) & 0xFFFF_FFFF;
+        if h >= 0x8000_0000 {
+            h -= 0x1_0000_0000;
+        }
+    }
+    let h = h.unsigned_abs();
+    let suffix = format_base36(h);
+    format!("{}-{suffix}", &raw[..MAX_SANITIZED_LENGTH])
+}
+
+fn format_base36(mut n: u64) -> String {
+    if n == 0 {
+        return "0".into();
+    }
+    let digits = b"0123456789abcdefghijklmnopqrstuvwxyz";
+    let mut out = Vec::new();
+    while n > 0 {
+        out.push(digits[(n % 36) as usize]);
+        n /= 36;
+    }
+    out.reverse();
+    String::from_utf8(out).unwrap_or_default()
+}
+
+/// Derive a [`SessionKey`] from an absolute transcript file path relative
+/// to the projects root. Main transcripts live at
+/// `<projects_dir>/<project_key>/<session_id>.jsonl`; subagent
+/// transcripts at `<projects_dir>/<project_key>/<session_id>/subagents/<...>.jsonl`.
+/// Returns `None` for paths outside `projects_dir` or with unrecognised
+/// shape. Mirrors Python `_internal/session_store.py::file_path_to_session_key`.
+#[must_use]
+pub fn file_path_to_session_key(file_path: &str, projects_dir: &str) -> Option<SessionKey> {
+    use std::path::Path;
+
+    let file = Path::new(file_path);
+    let projects = Path::new(projects_dir);
+    let rel = file.strip_prefix(projects).ok()?;
+    let mut parts: Vec<&str> = rel.iter().filter_map(|c| c.to_str()).collect();
+    if parts.len() < 2 {
+        return None;
+    }
+    let project_key = parts.remove(0).to_string();
+    let first = parts[0];
+
+    // Main transcript: <project_key>/<session_id>.jsonl
+    if parts.len() == 1 && first.to_ascii_lowercase().ends_with(".jsonl") {
+        let session_id = first.trim_end_matches(".jsonl").to_string();
+        return Some(SessionKey {
+            project_key,
+            session_id,
+            subpath: None,
+        });
+    }
+
+    // Subagent: <project_key>/<session_id>/<...>.jsonl
+    if parts.len() >= 3 {
+        let session_id = parts.remove(0).to_string();
+        let last_idx = parts.len() - 1;
+        if parts[last_idx].to_ascii_lowercase().ends_with(".jsonl") {
+            if let Some(stripped) = parts[last_idx].strip_suffix(".jsonl") {
+                parts[last_idx] = stripped;
             }
-        })
-        .collect()
+        }
+        let subpath = parts.join("/");
+        return Some(SessionKey {
+            project_key,
+            session_id,
+            subpath: Some(subpath),
+        });
+    }
+
+    None
 }
 
 #[async_trait]
@@ -387,17 +471,17 @@ impl SessionStore for FsSessionStore {
                 continue;
             };
             let meta = entry.metadata().await?;
-            let mtime_ms = meta
+            let mtime = meta
                 .modified()
                 .ok()
                 .and_then(|m| m.duration_since(UNIX_EPOCH).ok())
                 .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX));
             out.push(SessionStoreListEntry {
                 session_id: session_id.to_string(),
-                mtime_ms,
+                mtime,
             });
         }
-        out.sort_by_key(|r| std::cmp::Reverse(r.mtime_ms));
+        out.sort_by_key(|r| std::cmp::Reverse(r.mtime));
         Ok(out)
     }
 

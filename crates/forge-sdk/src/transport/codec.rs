@@ -6,14 +6,23 @@ use crate::Error;
 use crate::control::ControlRequest;
 use crate::messages::Message;
 
-/// A single stream-json line from the subprocess — either a regular message
-/// or a control request.
+/// A single stream-json line from the subprocess — either a regular message,
+/// a control request, or a transcript-mirror frame.
 #[derive(Debug, Clone)]
 pub enum DecodedLine {
     /// An assistant/user/system/result message.
     Message(Message),
     /// A control request (e.g. permission check, MCP message, hook callback).
     Control(ControlRequest),
+    /// Transcript-mirror frame emitted by `--session-mirror`. Top-level
+    /// wire shape `{"type":"transcript_mirror","filePath":...,"entries":[...]}`
+    /// per Python SDK `_internal/transcript_mirror_batcher.py:3`.
+    TranscriptMirror {
+        /// Absolute path of the on-disk transcript file (`<projects_dir>/<project_key>/<session_id>[.jsonl|/...]`).
+        file_path: String,
+        /// JSONL entries the CLI just appended to `file_path`.
+        entries: Vec<crate::session_store::SessionStoreEntry>,
+    },
 }
 
 /// Parse one stream-json line into a [`Message`].
@@ -71,6 +80,25 @@ pub fn decode_dispatch(line: &str, line_number: u64) -> Result<DecodedLine, Erro
                 reason: format!("line {line_number}: {e}"),
             })?;
             Ok(DecodedLine::Message(msg))
+        }
+        "transcript_mirror" => {
+            let file_path = value
+                .get("filePath")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| Error::MessageParse {
+                    reason: format!("line {line_number}: transcript_mirror missing `filePath`"),
+                })?
+                .to_string();
+            let entries: Vec<crate::session_store::SessionStoreEntry> = value
+                .get("entries")
+                .cloned()
+                .map(serde_json::from_value)
+                .transpose()
+                .map_err(|e| Error::MessageParse {
+                    reason: format!("line {line_number}: transcript_mirror entries: {e}"),
+                })?
+                .unwrap_or_default();
+            Ok(DecodedLine::TranscriptMirror { file_path, entries })
         }
         other => Err(Error::MessageParse {
             reason: format!("line {line_number}: unknown type `{other}`"),
