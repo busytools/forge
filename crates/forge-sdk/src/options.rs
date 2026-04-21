@@ -108,6 +108,12 @@ pub struct Options {
     /// `Some`, `Client::spawn` runs `<binary> --version` once and checks
     /// the reported major version is at least the first component.
     pub minimum_cli_version: Option<String>,
+    /// Override the directory used to resolve `transcript_mirror.filePath`
+    /// into a [`SessionKey`](crate::session_store::SessionKey). When `None`,
+    /// forge-sdk defaults to `$CLAUDE_CONFIG_DIR/projects` or
+    /// `~/.claude/projects`. Matches Python SDK's `_internal/sessions.py`
+    /// `_get_projects_dir()`.
+    pub projects_dir: Option<PathBuf>,
 }
 
 impl Default for Options {
@@ -128,6 +134,7 @@ impl Default for Options {
             permission_prompt_tool_name: None,
             session_store: None,
             minimum_cli_version: Some("2.0.0".into()),
+            projects_dir: None,
         }
     }
 }
@@ -162,6 +169,7 @@ impl std::fmt::Debug for Options {
                 &self.session_store.as_ref().map(|_| "<store>"),
             )
             .field("minimum_cli_version", &self.minimum_cli_version)
+            .field("projects_dir", &self.projects_dir)
             .finish()
     }
 }
@@ -329,6 +337,16 @@ impl OptionsBuilder {
     #[must_use]
     pub fn minimum_cli_version(mut self, version: Option<String>) -> Self {
         self.inner.minimum_cli_version = version;
+        self
+    }
+
+    /// Override the projects directory used to resolve `transcript_mirror`
+    /// `filePath` frames into
+    /// [`SessionKey`](crate::session_store::SessionKey) values. When unset,
+    /// defaults to `$CLAUDE_CONFIG_DIR/projects` or `~/.claude/projects`.
+    #[must_use]
+    pub fn projects_dir(mut self, path: impl Into<PathBuf>) -> Self {
+        self.inner.projects_dir = Some(path.into());
         self
     }
 

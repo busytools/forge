@@ -17,7 +17,7 @@ use crate::mcp::protocol::JsonRpcRequest;
 use crate::messages::Message;
 use crate::options::Options;
 use crate::permissions::{CanUseToolCallback, PermissionDecision, ToolPermissionContext};
-use crate::session_store::{SessionKey, SessionStore, SessionStoreEntry};
+use crate::session_store::SessionStore;
 use crate::transport::codec::{DecodedLine, decode_dispatch, decode_line, encode_user_prompt};
 use crate::transport::process::Subprocess;
 
@@ -34,6 +34,7 @@ pub struct Client {
     mcp_hosts: McpHosts,
     hook_callbacks: HashMap<String, Arc<dyn ErasedHookCallback>>,
     session_store: Option<Arc<dyn SessionStore>>,
+    projects_dir: Option<std::path::PathBuf>,
 }
 
 impl std::fmt::Debug for Client {
@@ -55,6 +56,7 @@ impl std::fmt::Debug for Client {
                 "session_store",
                 &self.session_store.as_ref().map(|_| "<store>"),
             )
+            .field("projects_dir", &self.projects_dir)
             .finish()
     }
 }
@@ -72,6 +74,7 @@ impl Client {
         let hook_payload = hook_registry.to_initialize_payload();
         let hook_callbacks = hook_registry.by_id;
         let session_store = options.session_store.clone();
+        let projects_dir = options.projects_dir.clone();
         // Concrete-list skills populate `initialize.skills`. `"all"` marker
         // travels via `--allowedTools` only and does NOT appear in the
         // initialize payload (matches Python SDK).
@@ -110,6 +113,7 @@ impl Client {
             mcp_hosts,
             hook_callbacks,
             session_store,
+            projects_dir,
         };
         client
             .send_initialize(hook_payload, skills_payload, exclude_dynamic_sections)
@@ -230,91 +234,82 @@ impl Client {
             };
             self.line_number += 1;
             match decode_dispatch(&line, self.line_number)? {
-                DecodedLine::Message(Message::System { subtype, data, .. })
-                    if subtype == "transcript_mirror" =>
-                {
-                    self.handle_transcript_mirror(&data).await;
+                DecodedLine::Message(msg) => {
+                    // Flush mirror on result frames — Python SDK behaviour at
+                    // `_internal/query.py:292-297`.
+                    if let Message::Result { .. } = &msg {
+                        self.flush_mirror().await;
+                    }
+                    return Ok(Some(msg));
                 }
-                DecodedLine::Message(msg) => return Ok(Some(msg)),
                 DecodedLine::Control(req) => {
                     self.handle_control(req).await?;
+                }
+                DecodedLine::TranscriptMirror { file_path, entries } => {
+                    self.handle_transcript_mirror(&file_path, entries).await;
                 }
             }
         }
     }
 
-    /// Handle a `system`/`transcript_mirror` frame emitted by the CLI when
-    /// `--session-mirror` is active. Parses the embedded `SessionKey` +
-    /// `entries` and forwards to the attached [`SessionStore`] (if any).
+    /// Handle a top-level `{"type":"transcript_mirror","filePath":...,
+    /// "entries":[...]}` frame. Derives a [`SessionKey`] from the `filePath`
+    /// relative to the configured projects directory and forwards entries
+    /// to the attached [`SessionStore`] (if any).
     ///
-    /// Wire shape (best-guess pending upstream SDK confirmation on the
-    /// 2026-04-27 weekly parity check; Python SDK reference not available
-    /// in this session — VERIFY ON 2026-04-27):
-    ///
-    /// ```json
-    /// {
-    ///   "type": "system",
-    ///   "subtype": "transcript_mirror",
-    ///   "session_id": "...",
-    ///   "project_key": "...",
-    ///   "subpath": null,
-    ///   "entries": [{"type":"user","content":"hi"}]
-    /// }
-    /// ```
-    ///
-    /// Python SDK may batch frames differently (one entry per frame, or
-    /// embed the key differently). This handler tolerates shape drift:
-    /// frames missing `project_key` or `entries`, or with types that don't
-    /// decode, are logged at `warn!` and dropped — the event loop never
-    /// crashes on a malformed mirror frame. A failing `store.append` is
-    /// likewise logged and swallowed (mirror is at-most-once per Python
-    /// SDK contract).
-    async fn handle_transcript_mirror(&self, data: &serde_json::Value) {
+    /// Wire shape verified against Python v0.1.64
+    /// `_internal/transcript_mirror_batcher.py` + `_internal/query.py:282-289`.
+    /// Minimum-viable impl: per-frame append (no coalescing, no size
+    /// thresholds). Flush-on-result is handled in [`next_event`].
+    /// `store.append` failures are logged + dropped (at-most-once per the
+    /// Python SDK contract).
+    async fn handle_transcript_mirror(
+        &self,
+        file_path: &str,
+        entries: Vec<crate::session_store::SessionStoreEntry>,
+    ) {
         let Some(store) = self.session_store.as_ref() else {
-            // No store attached — frame is informational and can be dropped.
             return;
         };
-
-        let Some(project_key) = data.get("project_key").and_then(serde_json::Value::as_str) else {
+        if entries.is_empty() {
+            return;
+        }
+        let projects_dir = self.projects_dir_str();
+        let Some(key) = crate::session_store::file_path_to_session_key(file_path, &projects_dir)
+        else {
             tracing::warn!(
-                ?data,
-                "transcript_mirror frame missing project_key; skipping"
+                %file_path, %projects_dir,
+                "transcript_mirror filePath outside projects_dir; dropping frame"
             );
             return;
-        };
-        let session_id = data
-            .get("session_id")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or(&self.session_id);
-        let subpath = data
-            .get("subpath")
-            .and_then(serde_json::Value::as_str)
-            .map(str::to_string);
-
-        let Some(entries_value) = data.get("entries") else {
-            tracing::warn!(?data, "transcript_mirror frame missing entries; skipping");
-            return;
-        };
-        let entries: Vec<SessionStoreEntry> = match serde_json::from_value(entries_value.clone()) {
-            Ok(v) => v,
-            Err(err) => {
-                tracing::warn!(
-                    %err,
-                    ?data,
-                    "transcript_mirror entries failed to parse; skipping"
-                );
-                return;
-            }
-        };
-
-        let key = SessionKey {
-            project_key: project_key.to_string(),
-            session_id: session_id.to_string(),
-            subpath,
         };
         if let Err(err) = store.append(&key, &entries).await {
             tracing::warn!(%err, ?key, "session_store.append failed for transcript_mirror batch");
         }
+    }
+
+    /// Explicit mirror flush. Currently a no-op — the minimum-viable
+    /// handler appends per-frame, so there's no pending buffer. The call
+    /// site exists so wiring the true batcher (coalesce-by-filePath,
+    /// 500-entry / 1-MiB eager flush per Python's
+    /// `TranscriptMirrorBatcher`) is a mechanical swap.
+    #[allow(clippy::unused_async)] // kept async for future batcher swap
+    async fn flush_mirror(&self) {
+        // Intentionally empty — see doc comment.
+    }
+
+    /// Compute the effective `projects_dir` for `file_path_to_session_key`.
+    /// Honours the CLI's `CLAUDE_CONFIG_DIR` override when set, else
+    /// defaults to `~/.claude/projects`.
+    fn projects_dir_str(&self) -> String {
+        if let Some(dir) = &self.projects_dir {
+            return dir.to_string_lossy().into_owned();
+        }
+        if let Ok(custom) = std::env::var("CLAUDE_CONFIG_DIR") {
+            return format!("{}/projects", custom.trim_end_matches('/'));
+        }
+        let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+        format!("{home}/.claude/projects")
     }
 
     async fn handle_control(&mut self, req: ControlRequest) -> Result<(), Error> {

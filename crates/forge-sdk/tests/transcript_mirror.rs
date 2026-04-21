@@ -23,6 +23,7 @@ async fn memory_session_store_receives_mirrored_entries_via_client() {
     let opts = OptionsBuilder::new()
         .binary(fixture("mock_claude_transcript_mirror.sh"))
         .session_store_arc(store_handle)
+        .projects_dir("/tmp/forge-mirror-root")
         .build();
 
     let mut client = Client::spawn(opts).await.expect("spawn");
