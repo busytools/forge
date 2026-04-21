@@ -5,7 +5,12 @@ use std::sync::Arc;
 use tracing::debug;
 
 use crate::Error;
-use crate::control::{AllowBehavior, ControlRequest, ControlRequestKind};
+use crate::control::{
+    AllowBehavior, ControlRequest, ControlRequestKind, ControlResponse, ControlResponseKind,
+    ControlResponseType,
+};
+use crate::mcp::orchestration::McpHosts;
+use crate::mcp::protocol::JsonRpcRequest;
 use crate::messages::Message;
 use crate::options::Options;
 use crate::permissions::{CanUseToolCallback, PermissionDecision, ToolPermissionContext};
@@ -22,6 +27,7 @@ pub struct Client {
     session_id: String,
     line_number: u64,
     can_use_tool: Option<Arc<dyn CanUseToolCallback>>,
+    mcp_hosts: McpHosts,
 }
 
 impl std::fmt::Debug for Client {
@@ -34,6 +40,7 @@ impl std::fmt::Debug for Client {
                 "can_use_tool",
                 &self.can_use_tool.as_ref().map(|_| "<callback>"),
             )
+            .field("mcp_hosts", &self.mcp_hosts)
             .finish()
     }
 }
@@ -46,6 +53,7 @@ impl Client {
     /// Any [`Error`] variant; see field docs.
     pub async fn spawn(options: Options) -> Result<Self, Error> {
         let can_use_tool = options.can_use_tool.clone();
+        let mcp_hosts = McpHosts::new(options.mcp_servers.clone());
         let mut sub = Subprocess::spawn(&options).await?;
         let init_line = sub.read_line().await?.ok_or_else(|| Error::Connection {
             reason: "subprocess closed stdout before init line".into(),
@@ -69,6 +77,7 @@ impl Client {
             session_id,
             line_number: 1,
             can_use_tool,
+            mcp_hosts,
         })
     }
 
@@ -121,6 +130,15 @@ impl Client {
         // `updatedInput` when the callback supplies no override.
         let original_input = req.original_tool_input().cloned();
 
+        // MCP message routing — in-process dispatch to the named server.
+        if let ControlRequestKind::McpMessage {
+            server_name,
+            message,
+        } = &req.request
+        {
+            return self.handle_mcp_message(&req, server_name, message).await;
+        }
+
         let decision = match (&self.can_use_tool, &req.request) {
             (
                 Some(cb),
@@ -147,9 +165,9 @@ impl Client {
                 PermissionDecision::deny("no permission callback registered")
             }
             _ => {
-                // McpMessage / HookCallback / other subtypes handled elsewhere
-                // (see M3 MCP routing, Plan 3 hooks). Until they're wired up,
-                // respond with an unsupported error.
+                // HookCallback / other subtypes handled elsewhere
+                // (see Plan 3 hooks). Until they're wired up, respond
+                // with an unsupported error.
                 return self.write_unsupported_control_error(&req).await;
             }
         };
@@ -184,7 +202,6 @@ impl Client {
     }
 
     async fn write_unsupported_control_error(&mut self, req: &ControlRequest) -> Result<(), Error> {
-        use crate::control::{ControlResponse, ControlResponseKind, ControlResponseType};
         let resp = ControlResponse {
             ty: ControlResponseType::ControlResponse,
             response: ControlResponseKind::Error {
@@ -194,6 +211,60 @@ impl Client {
         };
         let mut line = serde_json::to_string(&resp).map_err(|e| Error::MessageParse {
             reason: format!("error response serialise: {e}"),
+        })?;
+        line.push('\n');
+        self.sub.write_line(&line).await
+    }
+
+    /// Handle an MCP JSON-RPC `mcp_message` control request — dispatch to
+    /// the registered in-process server and write the wrapped response.
+    async fn handle_mcp_message(
+        &mut self,
+        req: &ControlRequest,
+        server_name: &str,
+        message: &serde_json::Value,
+    ) -> Result<(), Error> {
+        if !self.mcp_hosts.has(server_name) {
+            let resp = ControlResponse {
+                ty: ControlResponseType::ControlResponse,
+                response: ControlResponseKind::Error {
+                    request_id: req.request_id.clone(),
+                    error: format!("unknown MCP server: {server_name}"),
+                },
+            };
+            let mut line = serde_json::to_string(&resp).map_err(|e| Error::MessageParse {
+                reason: format!("error response serialise: {e}"),
+            })?;
+            line.push('\n');
+            return self.sub.write_line(&line).await;
+        }
+
+        // Parse the inner JSON-RPC request.
+        let jsonrpc: JsonRpcRequest =
+            serde_json::from_value(message.clone()).map_err(|e| Error::MessageParse {
+                reason: format!("bad JSON-RPC envelope: {e}"),
+            })?;
+
+        // Dispatch. Notifications (no id) return None; synthesise an empty
+        // result wrapper so a control_response is always emitted (matches
+        // Python SDK behaviour where `control_response` is always written).
+        let jsonrpc_response = match self.mcp_hosts.dispatch(server_name, &jsonrpc).await {
+            Some(r) => serde_json::to_value(&r).map_err(|e| Error::MessageParse {
+                reason: format!("mcp response serialise: {e}"),
+            })?,
+            None => serde_json::json!({"jsonrpc": "2.0", "result": {}}),
+        };
+
+        let wrapper = serde_json::json!({"mcp_response": jsonrpc_response});
+        let resp = ControlResponse {
+            ty: ControlResponseType::ControlResponse,
+            response: ControlResponseKind::Success {
+                request_id: req.request_id.clone(),
+                response: wrapper,
+            },
+        };
+        let mut line = serde_json::to_string(&resp).map_err(|e| Error::MessageParse {
+            reason: format!("mcp control response serialise: {e}"),
         })?;
         line.push('\n');
         self.sub.write_line(&line).await

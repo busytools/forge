@@ -7,6 +7,7 @@ use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
 use tracing::{debug, warn};
 
 use crate::Error;
+use crate::mcp::orchestration::McpHosts;
 use crate::options::Options;
 
 /// A live subprocess with owned stdin/stdout handles.
@@ -47,6 +48,14 @@ impl Subprocess {
         }
         if let Some(cwd) = &options.cwd {
             cmd.current_dir(cwd);
+        }
+
+        // MCP: pass --mcp-config '<inline-json>' when servers are registered.
+        // Python SDK uses inline JSON (not a temp file) with {"type": "sdk"}
+        // entries to signal in-process hosting.
+        if !options.mcp_servers.is_empty() {
+            let hosts = McpHosts::new(options.mcp_servers.clone());
+            cmd.arg("--mcp-config").arg(hosts.config_argv());
         }
 
         cmd.stdin(Stdio::piped())

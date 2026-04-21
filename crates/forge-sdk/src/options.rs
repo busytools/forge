@@ -7,6 +7,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use crate::mcp::McpServer;
 use crate::permissions::CanUseToolCallback;
 
 /// Which permission flow the `claude` binary should use for tool invocations.
@@ -65,6 +66,10 @@ pub struct Options {
     /// Optional permission callback. When set, the `claude` binary asks
     /// this callback before invoking any tool.
     pub can_use_tool: Option<Arc<dyn CanUseToolCallback>>,
+    /// In-process MCP servers. Each entry maps a server name (used in the
+    /// `mcp__<server>__<tool>` prefix the model sees) to a built
+    /// [`McpServer`].
+    pub mcp_servers: Vec<(String, McpServer)>,
 }
 
 impl Default for Options {
@@ -76,6 +81,7 @@ impl Default for Options {
             model: None,
             permission_mode: PermissionMode::Default,
             can_use_tool: None,
+            mcp_servers: Vec::new(),
         }
     }
 }
@@ -91,6 +97,10 @@ impl std::fmt::Debug for Options {
             .field(
                 "can_use_tool",
                 &self.can_use_tool.as_ref().map(|_| "<callback>"),
+            )
+            .field(
+                "mcp_servers",
+                &format!("<{} servers>", self.mcp_servers.len()),
             )
             .finish()
     }
@@ -161,6 +171,14 @@ impl OptionsBuilder {
         C: CanUseToolCallback + 'static,
     {
         self.inner.can_use_tool = Some(Arc::new(callback));
+        self
+    }
+
+    /// Register an in-process MCP server under the given name. The model
+    /// sees tools as `mcp__<name>__<tool>`.
+    #[must_use]
+    pub fn mcp_server(mut self, name: impl Into<String>, server: McpServer) -> Self {
+        self.inner.mcp_servers.push((name.into(), server));
         self
     }
 
