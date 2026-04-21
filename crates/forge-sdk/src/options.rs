@@ -314,6 +314,16 @@ impl OptionsBuilder {
         self
     }
 
+    /// Attach an already-`Arc`-wrapped transcript-mirror session store —
+    /// useful when the caller wants to keep a handle on the store (e.g.
+    /// to inspect it after the client returns). Behaviour is otherwise
+    /// identical to [`session_store`](Self::session_store).
+    #[must_use]
+    pub fn session_store_arc(mut self, store: Arc<dyn SessionStore>) -> Self {
+        self.inner.session_store = Some(store);
+        self
+    }
+
     /// Override the minimum `claude` binary version check. Pass `None` to
     /// disable the check entirely.
     #[must_use]
