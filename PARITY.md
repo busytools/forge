@@ -61,14 +61,26 @@ Branch `parity-tier1-wire-risk` landed 17 commits covering:
   hash (for project-key compat with the CLI) and a minimal no-dep
   ISO-8601 parser.
 
-**Not yet done:** `fork_session` (offline) + `ForkSessionResult`,
-`list_subagents` + `get_subagent_messages`, the `*_from_store` /
-`*_via_store` async variants, `project_key_for_directory` public
-alias. Python's head-only read optimisation
-(`_read_session_lite`) not mirrored; full-file parse used instead —
-correct but slower on huge session dirs.
+**All 6 Tier-5 helpers are now in:**
+- `list_sessions` / `get_session_info` / `get_session_messages`
+- `list_subagents` / `get_subagent_messages`
+- `rename_session` / `tag_session` / `delete_session` /
+  `fork_session` + `ForkSessionResult`
+- `*_from_store` / `*_via_store` async variants of every helper above
+- `project_key_for_directory`, `InMemorySessionStore` alias
 
-**Test count:** 205 tests + 2 ignored pass on `just check` (fmt +
+`fork_session` does proper UUID remap (`uuid` crate, `v4` feature) +
+optional `up_to_message_id` boundary + optional custom-title attach.
+
+**Still simplified relative to Python:**
+- `_read_session_lite` head-only optimisation — forge-sdk reads whole
+  files. Correct but slower on massive session dirs.
+- Git-worktree discovery for `list_sessions(include_worktrees=true)` —
+  accepted as a parameter but ignored (single-project scan only).
+- `fork_session` auto-title — falls back to "(no title)" rather than
+  deriving "<original> (fork)" when no explicit title is passed.
+
+**Test count:** 208 tests + 2 ignored pass on `just check` (fmt +
 clippy all-targets -D warnings + nextest forge-sdk + docs -D
 warnings). Python SDK's own `tests/` directory not yet mirrored
 (Tier 6, ongoing).
