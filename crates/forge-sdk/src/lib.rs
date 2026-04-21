@@ -40,11 +40,13 @@ pub mod content;
 mod error;
 pub mod messages;
 mod options;
+pub mod permissions;
 pub mod transport;
 
 pub use client::Client;
 pub use error::Error;
 pub use options::{Options, OptionsBuilder, PermissionMode};
+pub use permissions::{CanUseToolCallback, PermissionDecision, ToolPermissionContext};
 
 /// Convenient alias for `Result<T, forge_sdk::Error>`.
 pub type Result<T, E = Error> = core::result::Result<T, E>;
