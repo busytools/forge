@@ -4,6 +4,12 @@
 
 set -euo pipefail
 
+# --version: print a synthetic version.
+if [[ ${1:-} == "--version" ]]; then
+    printf "%s\n" "2.1.116 (anthropic-mock)"
+    exit 0
+fi
+
 printf '%s\n' '{"type":"system","subtype":"init","session_id":"mock-hooks-001","cwd":"/tmp","tools":["Bash"],"mcp_servers":[],"model":"claude-opus-4-5","permissionMode":"default","apiKeySource":"ANTHROPIC_API_KEY"}'
 
 IFS= read -r init_req

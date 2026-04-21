@@ -10,6 +10,69 @@ use crate::Error;
 use crate::mcp::orchestration::McpHosts;
 use crate::options::Options;
 
+/// Run `<binary> --version` synchronously and return the stdout.
+///
+/// # Errors
+///
+/// [`Error::CliNotFound`] when the binary isn't on PATH; [`Error::Io`]
+/// on any other spawn/wait failure; [`Error::Process`] when the version
+/// probe exits non-zero.
+pub fn query_cli_version(binary: &str) -> Result<String, Error> {
+    let output = std::process::Command::new(binary)
+        .arg("--version")
+        .output()
+        .map_err(|e| match e.kind() {
+            std::io::ErrorKind::NotFound => Error::CliNotFound {
+                binary: binary.to_string(),
+            },
+            _ => Error::Io(e),
+        })?;
+    if !output.status.success() {
+        return Err(Error::Process {
+            exit_code: output.status.code(),
+            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        });
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+/// Check that the reported `claude` version is at least `min_version`
+/// (semver-style major.minor.patch, only major component compared).
+///
+/// # Errors
+///
+/// [`Error::Connection`] when the reported version is below the minimum
+/// or can't be parsed.
+pub fn check_cli_version(reported: &str, min_version: &str) -> Result<(), Error> {
+    // `reported` is typically like `2.1.116 (anthropic)` or `claude 2.1.116`.
+    let token = reported
+        .split_whitespace()
+        .find(|t| t.chars().next().is_some_and(|c| c.is_ascii_digit()))
+        .ok_or_else(|| Error::Connection {
+            reason: format!("could not parse claude version from: {reported}"),
+        })?;
+    let major: u32 = token
+        .split('.')
+        .next()
+        .and_then(|s| s.parse().ok())
+        .ok_or_else(|| Error::Connection {
+            reason: format!("could not parse major version from: {token}"),
+        })?;
+    let min_major: u32 = min_version
+        .split('.')
+        .next()
+        .and_then(|s| s.parse().ok())
+        .ok_or_else(|| Error::Connection {
+            reason: format!("could not parse minimum major from: {min_version}"),
+        })?;
+    if major < min_major {
+        return Err(Error::Connection {
+            reason: format!("claude CLI version {reported} below minimum required {min_version}"),
+        });
+    }
+    Ok(())
+}
+
 /// A live subprocess with owned stdin/stdout handles.
 ///
 /// Drop takes best-effort cleanup (sends SIGKILL if still alive). Prefer
@@ -33,6 +96,18 @@ impl Subprocess {
     /// - [`Error::Io`] for other spawn failures.
     #[allow(clippy::unused_async)] // kept async for API symmetry + future runtime hooks
     pub async fn spawn(options: &Options) -> Result<Self, Error> {
+        // Optional CLI-version guard. Runs `<binary> --version` once.
+        if let Some(min) = &options.minimum_cli_version {
+            match query_cli_version(&options.binary) {
+                Ok(reported) => check_cli_version(&reported, min)?,
+                // Tolerate probe failure: spawn may still succeed on a
+                // freshly-available binary, but surface the error when
+                // spawn itself fails below.
+                Err(e) => {
+                    tracing::warn!(?e, "claude --version probe failed; skipping version check");
+                }
+            }
+        }
         let mut cmd = Command::new(&options.binary);
         cmd.arg("--output-format").arg("stream-json");
         cmd.arg("--input-format").arg("stream-json");
@@ -83,6 +158,16 @@ impl Subprocess {
         });
         if let Some(sources) = setting_sources {
             cmd.arg(format!("--setting-sources={}", sources.join(",")));
+        }
+
+        // Orthogonal permission-prompt tool.
+        if let Some(name) = &options.permission_prompt_tool_name {
+            cmd.arg("--permission-prompt-tool").arg(name);
+        }
+
+        // Transcript mirroring to a SessionStore.
+        if options.session_store.is_some() {
+            cmd.arg("--session-mirror");
         }
 
         cmd.stdin(Stdio::piped())
