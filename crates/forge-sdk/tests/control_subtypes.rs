@@ -65,10 +65,7 @@ async fn mcp_toggle_round_trip() {
 #[tokio::test]
 async fn stop_task_round_trip() {
     let mut client = spawn_client().await;
-    client
-        .stop_task("toolu_task_abc")
-        .await
-        .expect("stop_task");
+    client.stop_task("toolu_task_abc").await.expect("stop_task");
     client.disconnect().await.expect("disconnect");
 }
 
@@ -87,10 +84,7 @@ async fn mcp_status_returns_canned_payload() {
 #[tokio::test]
 async fn get_context_usage_returns_canned_payload() {
     let mut client = spawn_client().await;
-    let resp = client
-        .get_context_usage()
-        .await
-        .expect("get_context_usage");
+    let resp = client.get_context_usage().await.expect("get_context_usage");
     assert_eq!(
         resp,
         serde_json::json!({"used": 0, "budget": 200_000}),

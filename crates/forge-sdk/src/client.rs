@@ -275,10 +275,7 @@ impl Client {
             return;
         };
 
-        let Some(project_key) = data
-            .get("project_key")
-            .and_then(serde_json::Value::as_str)
-        else {
+        let Some(project_key) = data.get("project_key").and_then(serde_json::Value::as_str) else {
             tracing::warn!(
                 ?data,
                 "transcript_mirror frame missing project_key; skipping"
@@ -295,10 +292,7 @@ impl Client {
             .map(str::to_string);
 
         let Some(entries_value) = data.get("entries") else {
-            tracing::warn!(
-                ?data,
-                "transcript_mirror frame missing entries; skipping"
-            );
+            tracing::warn!(?data, "transcript_mirror frame missing entries; skipping");
             return;
         };
         let entries: Vec<SessionStoreEntry> = match serde_json::from_value(entries_value.clone()) {

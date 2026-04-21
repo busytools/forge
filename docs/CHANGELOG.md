@@ -9,6 +9,53 @@ Version numbers mirror the Python SDK release they target parity with
 
 ## [Unreleased]
 
+## [0.1.2] — 2026-04-21
+
+Closes the two remaining gaps called out under the v0.1.1 "Known gaps
+still outstanding" section.
+
+### Added
+
+- **Integration tests for the 9 outbound control subtypes** —
+  `interrupt`, `set_permission_mode`, `rewind_files`, `mcp_reconnect`,
+  `mcp_toggle`, `stop_task`, `mcp_status`, `get_context_usage`,
+  `fork_session`. New `mock_claude_control.sh` fixture handles the
+  initialize handshake, then loops parsing each outbound
+  `control_request` and emitting a matching `control_response` with a
+  canned payload per subtype. Tests assert the round-trip returns the
+  decoded payload for `mcp_status` / `get_context_usage` /
+  `fork_session`.
+- **`transcript_mirror` frame ingestion** — `Client::next_event` now
+  intercepts `system/transcript_mirror` frames emitted by the CLI under
+  `--session-mirror`, parses the `SessionKey` + `entries` payload, and
+  calls `session_store.append(&key, &entries).await`. Frames are
+  swallowed (never surface via `next_event`); parse failures and
+  append errors are logged at `warn!` and continue the event loop (mirror
+  is at-most-once per Python SDK contract). No batching yet — each
+  frame appends on arrival; Python SDK's 100 ms batch cadence is still
+  outstanding and tracked for the weekly parity check.
+- **`OptionsBuilder::session_store_arc`** — alternate one-arg entry
+  point that accepts `Arc<dyn SessionStore>` directly, so callers that
+  want to keep a handle on the store (e.g. to inspect it after a
+  client exits) don't need to double-wrap.
+
+### Changed
+
+- `Client` grows a `session_store: Option<Arc<dyn SessionStore>>`
+  field captured at `spawn` time. Manual `Debug` impl shows `"<store>"`
+  when set.
+
+### Known
+
+- Exact wire shape of `transcript_mirror` is a **best-guess** pending
+  the 2026-04-27 weekly parity check — Python SDK source was not
+  available in this session. Assumed shape (single frame per entry
+  batch, key inlined on the frame):
+  `{"type":"system","subtype":"transcript_mirror","session_id":"...","project_key":"...","subpath":null,"entries":[...]}`.
+  Frames that don't match are logged and dropped; the event loop does
+  not crash. Source comment on `Client::handle_transcript_mirror`
+  flags this for verification.
+
 ## [0.1.1] — 2026-04-21
 
 Deferred-item follow-up after v0.1.0 — closes the gaps listed in the
