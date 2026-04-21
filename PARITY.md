@@ -8,9 +8,10 @@ This file is the single source of truth for **where forge-sdk is** relative to P
 |---|---|
 | **Target Python SDK version** | `0.1.64` (released 2026-04-20) |
 | **Target Python SDK commit** | `anthropics-claude-agent-sdk-python-1267352` (tarball SHA prefix) |
-| **forge-sdk version at parity** | `v0.1.3` |
-| **Last full parity run** | 2026-04-21 (first run, pulled ahead of the 2026-04-27 weekly) |
+| **forge-sdk version at parity** | `v0.1.64` (deep audit pass) |
+| **Last full parity run** | 2026-04-21 (deep dive, second pass same day) |
 | **Next parity check due** | 2026-04-27 (first weekly) |
+| **Versioning convention** | forge-sdk version mirrors the Python SDK release it targets — `v0.1.64` means parity with Python v0.1.64. No separate forge-sdk patch numbers. |
 | **Design-spec basis** | `~/.claude-stargate/plans/2026-04-21-forge-sdk-port-design.md` + `~/.claude-stargate/plans/2026-04-21-forge-sdk-m0-m1-plan.md` + `~/.claude-stargate/plans/2026-04-21-forge-sdk-m2-m3-plan.md` + `~/.claude-stargate/plans/2026-04-21-forge-sdk-m4-m7-plan.md` + `~/.claude-stargate/plans/2026-04-21-forge-sdk-corrections.md`. |
 
 ## Parity log
@@ -34,7 +35,199 @@ Each entry below records one weekly parity check.
 
 -->
 
-### 2026-04-21 — Python SDK v0.1.64 (first run, pulled ahead of weekly cadence)
+### 2026-04-21 — Python SDK v0.1.64 (deep-dive, second pass)
+
+This entry is the exhaustive audit. The first-pass entry below (same
+day) checked three items; this one walks every file in the Python SDK
+and catalogues every divergence.
+
+- **Upstream target:** v0.1.64 (tarball `anthropics-claude-agent-sdk-python-1267352`).
+- **Surface examined:**
+  - `types.py` (1553 LoC) — every public type + control-request union.
+  - `_errors.py` (56 LoC) — exception hierarchy.
+  - `_cli_version.py` (3 LoC) — `__cli_version__ = "2.1.116"`.
+  - `__init__.py` (643 LoC) — public re-export surface (~120 names).
+  - `_internal/query.py` (825 LoC) — control dispatch + stdio loop.
+  - `_internal/transport/subprocess_cli.py` (736 LoC) — CLI argv.
+  - `_internal/transcript_mirror_batcher.py` — batcher semantics.
+  - `_internal/session_store.py` + `_internal/sessions.py` — session helpers.
+  - `_internal/session_mutations.py` — fork/rename/tag/delete.
+  - `client.py` + `_internal/client.py` — public `ClaudeSDKClient`.
+  - `query.py` — top-level one-shot `query()` function.
+
+#### Wire divergences FIXED in v0.1.64
+
+- **Outbound `stop_task` payload** — Python `types.py:1519` expects
+  `{"subtype":"stop_task","task_id":"..."}`. forge-sdk was sending
+  `tool_use_id` (wrong name, wrong semantic — Python's `task_id` is
+  the sub-agent's task id, not a tool-use id). FIXED —
+  `Client::stop_task(task_id: &str)`.
+- **Outbound `rewind_files` payload** — Python `types.py:1497`
+  requires `user_message_id: str`. forge-sdk was sending an empty
+  object. FIXED — signature is now
+  `Client::rewind_files(user_message_id: &str)`.
+- **Outbound `mcp_reconnect` / `mcp_toggle` field name** — Python
+  `types.py:1505`, `1513` uses camelCase `serverName`. forge-sdk was
+  sending snake_case `server_name`. FIXED — both now emit
+  `"serverName"`.
+- **CLI argv — spurious `--input-format`** — Python
+  `subprocess_cli.py:207` only emits `--output-format stream-json
+  --verbose`. forge-sdk added `--input-format stream-json`. Dropped
+  to match argv byte-for-byte.
+- **CLI argv — always-on `--permission-mode`** — Python emits
+  `--permission-mode` only when the caller sets one explicitly
+  (`subprocess_cli.py:267-268`). forge-sdk always passed
+  `--permission-mode default`. Fixed — now conditional on
+  `permission_mode != Default`.
+
+#### Major surface gaps flagged (not regressions, scope expansions)
+
+The Python SDK exposes types and options forge-sdk doesn't model yet.
+None are wire-breaking for the Client paths we already ship, but they
+are real parity gaps against the "every public type in Python has a
+Rust counterpart" invariant.
+
+- **Options on `ClaudeAgentOptions` not exposed in `OptionsBuilder`:**
+  `tools`, `disallowed_tools`, `system_prompt` (with preset/file
+  variants), `continue_conversation`, `session_id`, `max_turns`,
+  `max_budget_usd`, `fallback_model`, `betas`, `cli_path`, `settings`,
+  `add_dirs`, `env`, `extra_args`, `max_buffer_size`, `stderr`
+  callback, `user`, `include_partial_messages`, `fork_session` (as
+  spawn-time flag; we have a runtime method), `agents`, `sandbox`,
+  `plugins`, `max_thinking_tokens`, `thinking`, `effort`,
+  `output_format`, `enable_file_checkpointing`, `load_timeout_ms`,
+  `task_budget`.
+- **Public types not ported:** `AgentDefinition`, `PermissionUpdate` +
+  `PermissionRuleValue`, `RateLimitInfo` + `RateLimitEvent`,
+  `TaskStartedMessage` + `TaskProgressMessage` +
+  `TaskNotificationMessage` + `TaskUsage` + `TaskBudget`,
+  `MirrorErrorMessage`, `SandboxSettings` (+ `NetworkConfig` +
+  `IgnoreViolations`), `SdkPluginConfig`, `ThinkingConfig` (+ 3
+  variants), `StreamEvent`, `SystemPromptPreset` + `SystemPromptFile`
+  + `ToolsPreset`, `SdkBeta`, `ContextUsageCategory` +
+  `ContextUsageResponse` (we return raw `Value`), `McpServerStatus` +
+  variants (we don't model `get_mcp_status` response),
+  `McpServerConfig` with stdio/sse/http variants (we only model
+  in-process "sdk"), `SDKSessionInfo`, `SessionMessage`.
+- **Hook inputs missing `BaseHookInput` fields:** Python hooks flatten
+  `session_id`, `transcript_path`, `cwd`, `permission_mode` into every
+  hook input. forge-sdk's hook inputs (`PreToolUseInput`, etc.) only
+  carry the event-specific fields. Add a `BaseHookInput` mixin
+  analogue.
+- **Missing hook input types:** `PermissionRequestHookInput`,
+  `NotificationHookInput`, `SubagentStartHookInput`,
+  `PostToolUseFailureHookInput`. We have the `HookKind` enum variants
+  but no typed input structs and no builder methods on `HooksBuilder`.
+- **Typed `hookSpecificOutput` wrappers:** Python ships
+  `PreToolUseHookSpecificOutput`, `PostToolUseHookSpecificOutput`,
+  `NotificationHookSpecificOutput`, etc. forge-sdk builds the JSON
+  inline in `handle_hook_callback`. Land typed wrappers.
+- **Offline session helpers not exposed:** `list_sessions`,
+  `get_session_info`, `get_session_messages`, `list_subagents`,
+  `get_subagent_messages` (+ `_from_store` async variants).
+  `project_key_for_directory` is now present as
+  `session_store::sanitise` but not re-exported under the Python name.
+- **Session mutations via-store not exposed:** `rename_session`,
+  `tag_session`, `delete_session`, `fork_session_via_store`, etc.
+- **Error type flat vs. hierarchical:** Python has `ClaudeSDKError` →
+  `CLIConnectionError` → `CLINotFoundError`, plus sibling
+  `ProcessError`, `CLIJSONDecodeError`, `MessageParseError`. forge-sdk
+  uses one enum. Acceptable Rust idiom, but note that Python's
+  `MessageParseError` carries a `data: dict | None` field our variant
+  lacks.
+- **`control_cancel_request` inbound handling:** Python
+  `_internal/query.py:274-280` cancels the in-flight control handler
+  when the CLI sends a cancel. forge-sdk doesn't yet.
+- **Transcript-mirror batcher:** Python's `TranscriptMirrorBatcher`
+  coalesces by `filePath`, eager-flushes at 500 entries or 1 MiB,
+  explicit-flushes on `result` arrival with a 60 s per-append timeout,
+  and reports failures through an `on_error` callback that emits a
+  `mirror_error` system message. forge-sdk has a per-frame append
+  stub; flush-on-result is wired as a no-op hook ready for mechanical
+  swap.
+- **MCP config type beyond SDK:** Python accepts in-process (`type: sdk`),
+  `stdio`, `sse`, `http` configs. forge-sdk only models in-process.
+- **`query.py` top-level helper** — Python exposes a one-shot
+  `async query(prompt, options) -> AsyncIterator<Message>`. forge-sdk
+  has only the `Client::spawn` builder surface.
+- **`can_use_tool` callback — `updated_permissions`:** Python's
+  `PermissionResultAllow` carries an `updated_permissions:
+  list[PermissionUpdate] | None` field. forge-sdk's `PermissionDecision`
+  only models `updated_input`.
+
+#### CLI argv flags not yet emitted
+
+The following Python argv flags are not currently emitted by
+forge-sdk (their option fields don't exist yet): `--system-prompt`,
+`--system-prompt-file`, `--append-system-prompt`, `--tools`,
+`--disallowedTools`, `--max-turns`, `--max-budget-usd`,
+`--fallback-model`, `--betas`, `--continue`, `--session-id`,
+`--settings`, `--add-dir`, `--include-partial-messages`,
+`--fork-session` (spawn-time flag vs. control_request),
+`--plugin-dir`, `--task-budget`, `--thinking`,
+`--max-thinking-tokens`.
+
+#### Ported in forge-sdk this pass
+
+- Commits on branch `parity-v0.1.64-fixes` (pending push):
+  - Wire fixes for `stop_task`, `rewind_files`, `mcp_reconnect`,
+    `mcp_toggle`.
+  - CLI argv: drop `--input-format`, gate `--permission-mode` on
+    non-default variant.
+  - Version bump to `0.1.64` (matches Python exactly per the
+    mirrored-versioning convention).
+
+#### Still outstanding (tracked for next weekly)
+
+Priority order for 2026-04-27 and following weeks:
+
+1. **`BaseHookInput` flattening** on all hook input types + add
+   missing `PermissionRequestHookInput`, `NotificationHookInput`,
+   `SubagentStartHookInput`, `PostToolUseFailureHookInput` types.
+2. **Typed `hookSpecificOutput` wrappers** per event.
+3. **Full `TranscriptMirrorBatcher`** (500-entry / 1-MiB eager flush,
+   explicit flush on result, `on_error` → `MirrorErrorMessage`
+   synthesis).
+4. **`control_cancel_request` inbound handling.**
+5. **`AgentDefinition`** + `OptionsBuilder::agents()` + populate the
+   `initialize` payload properly.
+6. **`RateLimitEvent` + `RateLimitInfo`** — CLI emits these; we drop
+   them as unknown frames.
+7. **`Task*` system messages** — same.
+8. **Offline session helpers** (`list_sessions`, etc.).
+9. **Session mutations via-store** (`rename_session`, etc.).
+10. **`McpServerConfig` variants** (stdio/sse/http) beyond in-process.
+11. **`PermissionUpdate`** on `PermissionDecision::allow_with_input`.
+12. **Sandbox, ThinkingConfig, SdkPluginConfig** options.
+13. Start Python `tests/` → `crates/forge-sdk/tests/python_parity/`
+    mirror.
+
+#### Test-mirror status
+
+- Mirror suite: `crates/forge-sdk/tests/python_parity/` — empty.
+- Coverage %: 0 / ~30 upstream test files.
+- Skip count: 0.
+
+#### forge-sdk tag released
+
+`v0.1.64` — version mirrors Python exactly.
+
+#### Notes for 2026-04-27
+
+- Upstream is still at v0.1.64. First item on that run: diff for
+  new releases.
+- Consider scoping the backlog items into a v0.1.64.X patch
+  sequence for forge-sdk (e.g. `v0.1.64-1`, or track forge-sdk
+  patches against the same Python version).
+- The "every public type mirrored" backlog is large; prioritise by
+  wire-protocol risk (BaseHookInput + hookSpecificOutput first,
+  types second).
+
+---
+
+### 2026-04-21 — Python SDK v0.1.64 (first run, superseded by deep-dive above)
+
+Kept for history — a narrower first pass that covered three items.
 
 - **Upstream range reviewed:** initial parity — no prior run.
 - **Upstream target:** v0.1.64 (latest; no newer releases to port).
