@@ -12,29 +12,42 @@ use std::collections::HashMap;
 
 use crate::mcp::McpServer;
 use crate::mcp::protocol::{JsonRpcRequest, JsonRpcResponse};
+use crate::public_types::McpServerConfig;
 
-/// Registry of in-process MCP servers, keyed by the name under which the
-/// caller registered them via `OptionsBuilder::mcp_server(...)`.
+/// Registry of MCP servers (both in-process SDK and external stdio /
+/// SSE / HTTP). Keyed by the name under which the caller registered
+/// them via `OptionsBuilder::mcp_server` / `external_mcp_server`.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct McpHosts {
     servers: HashMap<String, McpServer>,
+    external: HashMap<String, McpServerConfig>,
 }
 
 impl McpHosts {
-    /// Build from an `Options.mcp_servers` vector.
-    pub(crate) fn new(entries: Vec<(String, McpServer)>) -> Self {
+    /// Build from the `Options.mcp_servers` vector of in-process servers
+    /// plus a `HashMap` of external configs. Either side may be empty.
+    pub(crate) fn new(
+        sdk_entries: Vec<(String, McpServer)>,
+        external: HashMap<String, McpServerConfig>,
+    ) -> Self {
         let mut servers = HashMap::new();
-        for (name, server) in entries {
+        for (name, server) in sdk_entries {
             servers.insert(name, server);
         }
-        Self { servers }
+        Self { servers, external }
     }
 
-    /// Build the `--mcp-config` inline JSON argument. Returns an empty
-    /// string when no servers are registered (caller should skip adding
-    /// the flag entirely in that case).
+    /// True when no servers of either flavour are registered.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.servers.is_empty() && self.external.is_empty()
+    }
+
+    /// Build the `--mcp-config` inline JSON argument. SDK servers emit
+    /// `{"type":"sdk","name":<n>}`; external servers serialise via
+    /// [`McpServerConfig`]'s own serde impl. Returns `"{"mcpServers":{}}"`
+    /// when empty — caller should skip adding the flag in that case.
     pub(crate) fn config_argv(&self) -> String {
-        let servers: serde_json::Map<String, serde_json::Value> = self
+        let mut servers: serde_json::Map<String, serde_json::Value> = self
             .servers
             .keys()
             .map(|name| {
@@ -44,6 +57,11 @@ impl McpHosts {
                 )
             })
             .collect();
+        for (name, cfg) in &self.external {
+            if let Ok(v) = serde_json::to_value(cfg) {
+                servers.insert(name.clone(), v);
+            }
+        }
         serde_json::json!({"mcpServers": servers}).to_string()
     }
 
