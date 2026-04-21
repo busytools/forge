@@ -8,7 +8,7 @@ use tracing::{debug, warn};
 
 use crate::Error;
 use crate::mcp::orchestration::McpHosts;
-use crate::options::Options;
+use crate::options::{Options, PermissionMode};
 
 /// Run `<binary> --version` synchronously and return the stdout.
 ///
@@ -109,11 +109,21 @@ impl Subprocess {
             }
         }
         let mut cmd = Command::new(&options.binary);
+        // Python SDK passes only `--output-format stream-json --verbose`
+        // (streaming input is signalled by sending stream-json on stdin,
+        // not by a flag). Leaving `--input-format` off keeps us
+        // byte-compatible with Python's argv composition.
         cmd.arg("--output-format").arg("stream-json");
-        cmd.arg("--input-format").arg("stream-json");
         cmd.arg("--verbose");
-        cmd.arg("--permission-mode")
-            .arg(options.permission_mode.as_cli_arg());
+        // Python SDK only emits `--permission-mode` when the caller set
+        // one explicitly. We mirror that: the CLI default is already
+        // `default`, so omitting the flag on the default variant avoids
+        // argv drift and also lets the CLI honour any user-level
+        // override.
+        if options.permission_mode != PermissionMode::Default {
+            cmd.arg("--permission-mode")
+                .arg(options.permission_mode.as_cli_arg());
+        }
 
         if let Some(model) = &options.model {
             cmd.arg("--model").arg(model);

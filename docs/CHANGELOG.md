@@ -9,6 +9,82 @@ Version numbers mirror the Python SDK release they target parity with
 
 ## [Unreleased]
 
+## [0.1.64] — 2026-04-21
+
+Deep-dive parity pass against Python `claude-agent-sdk` v0.1.64.
+Version number jumps from 0.1.3 to 0.1.64 so forge-sdk releases
+mirror the Python SDK version they target parity with (per the
+convention documented in `PARITY.md`).
+
+### Fixed — wire-level divergences from Python SDK
+
+- **`stop_task` payload.** Python `types.py:1519` requires
+  `{"subtype":"stop_task","task_id":"..."}`. forge-sdk was sending
+  `tool_use_id` — wrong field name AND wrong semantic (Python's
+  `task_id` is a sub-agent task id, not a tool-use id). Signature
+  changed: `Client::stop_task(task_id: &str)`.
+- **`rewind_files` payload.** Python `types.py:1497` requires
+  `user_message_id: str`. forge-sdk was sending an empty object, so
+  the CLI had no message to rewind to. Signature changed:
+  `Client::rewind_files(user_message_id: &str)`.
+- **`mcp_reconnect` / `mcp_toggle` field name.** Python
+  `types.py:1505, 1513` uses camelCase `serverName`. forge-sdk was
+  sending snake_case `server_name`. Wire now matches; public
+  `Client` method argument name is unchanged (`server_name`) — only
+  the JSON field key differs.
+- **CLI argv: `--input-format`.** Python
+  `subprocess_cli.py:207` does not emit this flag. forge-sdk was
+  emitting `--input-format stream-json`. Removed so argv matches
+  byte-for-byte.
+- **CLI argv: always-on `--permission-mode`.** Python only emits
+  `--permission-mode` when the caller set one explicitly. forge-sdk
+  always emitted `--permission-mode default`. Now conditional on
+  `permission_mode != PermissionMode::Default`, so CLI falls back to
+  its own default (and any user-level override).
+
+### Changed
+
+- Workspace version `0.1.3` → `0.1.64`. Future forge-sdk releases
+  track the Python SDK version they mirror (e.g. v0.1.65 when
+  Anthropic ships v0.1.65). See `PARITY.md` "Versioning convention".
+- `html_root_url` bumped accordingly.
+
+### Added
+
+- Exhaustive deep-dive audit log in `PARITY.md` enumerating every
+  public type / option / argv flag divergence against Python v0.1.64.
+
+### Known gaps (tracked in PARITY.md for the 2026-04-27 weekly)
+
+Broad surface still to port. See `PARITY.md` for the full list and
+priority order. Highlights:
+
+- `BaseHookInput` flattening (session_id, transcript_path, cwd,
+  permission_mode) on every hook input type.
+- Missing hook input types: `PermissionRequestHookInput`,
+  `NotificationHookInput`, `SubagentStartHookInput`,
+  `PostToolUseFailureHookInput`.
+- Typed `hookSpecificOutput` wrappers per event.
+- Full `TranscriptMirrorBatcher` (500-entry / 1-MiB eager flush + on_error
+  → `MirrorErrorMessage`).
+- `control_cancel_request` inbound handling.
+- `AgentDefinition` + `agents` option.
+- `RateLimitEvent` / `RateLimitInfo` system frames.
+- Task lifecycle frames (`TaskStartedMessage`, `TaskProgressMessage`,
+  `TaskNotificationMessage`, `TaskUsage`, `TaskBudget`).
+- Offline session helpers (`list_sessions`, etc.) and
+  `*_via_store` / `*_from_store` async variants.
+- `McpServerConfig` variants (stdio/sse/http) — forge-sdk only models
+  in-process.
+- `PermissionUpdate` on `PermissionDecision::allow_with_input`.
+- Options: `tools`, `disallowed_tools`, `system_prompt`,
+  `continue_conversation`, `session_id`, `max_turns`,
+  `max_budget_usd`, `fallback_model`, `betas`, `settings`, `add_dirs`,
+  `env`, `extra_args`, `include_partial_messages`, `fork_session`
+  (spawn flag), `plugins`, `thinking`, `effort`, `output_format`,
+  `enable_file_checkpointing`, `task_budget`, `sandbox`,
+  `max_buffer_size`, `stderr`-callback, `user`.
+
 ## [0.1.3] — 2026-04-21
 
 First weekly parity run (pulled ahead of 2026-04-27 cadence). Corrects

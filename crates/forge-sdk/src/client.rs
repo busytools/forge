@@ -657,19 +657,25 @@ impl Client {
         Ok(())
     }
 
-    /// Ask the CLI to revert file edits made in the current turn.
+    /// Ask the CLI to revert file edits made since the given user message.
+    /// Required field shape matches Python SDK `types.py:1497` —
+    /// `{"subtype": "rewind_files", "user_message_id": "..."}`.
     ///
     /// # Errors
     ///
     /// See the outbound control error cases.
-    pub async fn rewind_files(&mut self) -> Result<(), Error> {
-        self.send_control("rewind_files", serde_json::json!({}))
-            .await?;
+    pub async fn rewind_files(&mut self, user_message_id: &str) -> Result<(), Error> {
+        self.send_control(
+            "rewind_files",
+            serde_json::json!({"user_message_id": user_message_id}),
+        )
+        .await?;
         Ok(())
     }
 
     /// Reconnect a named MCP server (asks the CLI to drop + re-establish
-    /// its connection to the named server).
+    /// its connection to the named server). Wire shape uses camelCase
+    /// `serverName` per Python SDK `types.py:1505`.
     ///
     /// # Errors
     ///
@@ -677,13 +683,14 @@ impl Client {
     pub async fn mcp_reconnect(&mut self, server_name: &str) -> Result<(), Error> {
         self.send_control(
             "mcp_reconnect",
-            serde_json::json!({"server_name": server_name}),
+            serde_json::json!({"serverName": server_name}),
         )
         .await?;
         Ok(())
     }
 
-    /// Toggle a named MCP server on/off.
+    /// Toggle a named MCP server on/off. Wire shape uses camelCase
+    /// `serverName` per Python SDK `types.py:1513`.
     ///
     /// # Errors
     ///
@@ -691,19 +698,21 @@ impl Client {
     pub async fn mcp_toggle(&mut self, server_name: &str, enabled: bool) -> Result<(), Error> {
         self.send_control(
             "mcp_toggle",
-            serde_json::json!({"server_name": server_name, "enabled": enabled}),
+            serde_json::json!({"serverName": server_name, "enabled": enabled}),
         )
         .await?;
         Ok(())
     }
 
-    /// Kill an in-flight sub-agent task by its tool-use id.
+    /// Kill an in-flight sub-agent task by its `task_id` (from the
+    /// `TaskStarted` system message). Matches Python SDK
+    /// `types.py:1519` — `{"subtype": "stop_task", "task_id": "..."}`.
     ///
     /// # Errors
     ///
     /// See the outbound control error cases.
-    pub async fn stop_task(&mut self, tool_use_id: &str) -> Result<(), Error> {
-        self.send_control("stop_task", serde_json::json!({"tool_use_id": tool_use_id}))
+    pub async fn stop_task(&mut self, task_id: &str) -> Result<(), Error> {
+        self.send_control("stop_task", serde_json::json!({"task_id": task_id}))
             .await?;
         Ok(())
     }
