@@ -198,6 +198,9 @@ pub struct Options {
     /// Internal: upper bound on `session_store.load()` during resume.
     /// `None` = default 60 s.
     pub load_timeout_ms: Option<u64>,
+    /// Toggle `--enable-file-checkpointing`. Python SDK v0.1.64
+    /// `ClaudeAgentOptions.enable_file_checkpointing` (`types.py:1408`).
+    pub enable_file_checkpointing: bool,
 }
 
 impl Default for Options {
@@ -244,6 +247,7 @@ impl Default for Options {
             max_buffer_size: None,
             stderr: None,
             load_timeout_ms: None,
+            enable_file_checkpointing: false,
         }
     }
 }
@@ -367,6 +371,7 @@ impl std::fmt::Debug for Options {
             .field("max_buffer_size", &self.max_buffer_size)
             .field("stderr", &self.stderr.as_ref().map(|_| "<callback>"))
             .field("load_timeout_ms", &self.load_timeout_ms)
+            .field("enable_file_checkpointing", &self.enable_file_checkpointing)
             .finish()
     }
 }
@@ -759,6 +764,13 @@ impl OptionsBuilder {
     #[must_use]
     pub fn load_timeout_ms(mut self, n: u64) -> Self {
         self.inner.load_timeout_ms = Some(n);
+        self
+    }
+
+    /// Toggle `--enable-file-checkpointing`.
+    #[must_use]
+    pub fn enable_file_checkpointing(mut self, yes: bool) -> Self {
+        self.inner.enable_file_checkpointing = yes;
         self
     }
 
