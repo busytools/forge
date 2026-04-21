@@ -32,6 +32,127 @@ pub fn sanitize_path_public(name: &str) -> String {
     sanitize_path(name)
 }
 
+/// Map a directory path to the CLI's on-disk project key. Canonicalises
+/// the path first and then applies the CLI's JS-style sanitisation hash.
+/// Mirrors Python SDK's `project_key_for_directory`
+/// (`_internal/session_store.py`).
+#[must_use]
+pub fn project_key_for_directory(path: &str) -> String {
+    let canonical = match fs::canonicalize(path) {
+        Ok(p) => p.to_string_lossy().into_owned(),
+        Err(_) => path.to_string(),
+    };
+    sanitize_path(&canonical)
+}
+
+/// List subagent transcripts for a session. Subagent files live at
+/// `<projects_dir>/<project_key>/<session_id>/subagents/*.jsonl`.
+/// Mirrors Python SDK's `list_subagents` (`sessions.py:1122-1186`).
+///
+/// Returns an empty Vec when the session directory doesn't exist or has
+/// no subagent transcripts.
+#[must_use]
+#[allow(clippy::needless_pass_by_value)]
+pub fn list_subagents(session_id: &str, directory: Option<String>) -> Vec<SDKSessionInfo> {
+    if !is_valid_uuid(session_id) {
+        return Vec::new();
+    }
+    let Some(subagents_dir) = resolve_subagents_dir(session_id, directory.as_deref()) else {
+        return Vec::new();
+    };
+    let Ok(iter) = fs::read_dir(subagents_dir) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for entry in iter.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+            continue;
+        }
+        if let Some(info) = read_session_info(&path) {
+            out.push(info);
+        }
+    }
+    out.sort_by_key(|e| std::cmp::Reverse(e.last_modified));
+    out
+}
+
+/// Read the transcript of a single subagent session. Mirrors Python
+/// SDK's `get_subagent_messages`.
+#[must_use]
+#[allow(clippy::needless_pass_by_value)]
+pub fn get_subagent_messages(
+    parent_session_id: &str,
+    subagent_id: &str,
+    directory: Option<String>,
+) -> Vec<SessionMessage> {
+    if !is_valid_uuid(parent_session_id) || !is_valid_uuid(subagent_id) {
+        return Vec::new();
+    }
+    let Some(subagents_dir) = resolve_subagents_dir(parent_session_id, directory.as_deref()) else {
+        return Vec::new();
+    };
+    let path = subagents_dir.join(format!("{subagent_id}.jsonl"));
+    let Ok(file) = fs::File::open(&path) else {
+        return Vec::new();
+    };
+    parse_session_messages(file)
+}
+
+fn resolve_subagents_dir(session_id: &str, directory: Option<&str>) -> Option<PathBuf> {
+    let project_dir = if let Some(dir) = directory {
+        project_dir_for(dir)
+    } else {
+        let iter = fs::read_dir(projects_dir()).ok()?;
+        iter.flatten()
+            .map(|e| e.path())
+            .find(|p| p.join(format!("{session_id}.jsonl")).is_file())?
+    };
+    Some(project_dir.join(session_id).join("subagents"))
+}
+
+fn parse_session_messages<R: std::io::Read>(reader: R) -> Vec<SessionMessage> {
+    let mut out = Vec::new();
+    for line in BufReader::new(reader).lines().map_while(Result::ok) {
+        if line.is_empty() {
+            continue;
+        }
+        let Ok(value) = serde_json::from_str::<Value>(&line) else {
+            continue;
+        };
+        let kind = match value.get("type").and_then(Value::as_str) {
+            Some("user") => SessionMessageKind::User,
+            Some("assistant") => SessionMessageKind::Assistant,
+            _ => continue,
+        };
+        if value
+            .get("parent_tool_use_id")
+            .is_some_and(|v| !v.is_null())
+        {
+            continue;
+        }
+        let uuid = value
+            .get("uuid")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let sess = value
+            .get("session_id")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let message = value.get("message").cloned().unwrap_or(Value::Null);
+        out.push(SessionMessage {
+            kind,
+            uuid,
+            session_id: sess,
+            message,
+            parent_tool_use_id: None,
+        });
+    }
+    out
+}
+
 /// Sanitise a path the same way the `claude` CLI does — non-alphanumerics
 /// become hyphens, and overlong paths are truncated with a base-36 hash
 /// suffix (matching JS's `String.prototype.hashCode` trick). Ported from
@@ -197,46 +318,7 @@ pub fn get_session_messages(session_id: &str, directory: Option<String>) -> Vec<
     let Ok(file) = fs::File::open(&path) else {
         return Vec::new();
     };
-    let mut out = Vec::new();
-    for line in BufReader::new(file).lines().map_while(Result::ok) {
-        if line.is_empty() {
-            continue;
-        }
-        let Ok(value) = serde_json::from_str::<Value>(&line) else {
-            continue;
-        };
-        let kind = match value.get("type").and_then(Value::as_str) {
-            Some("user") => SessionMessageKind::User,
-            Some("assistant") => SessionMessageKind::Assistant,
-            _ => continue,
-        };
-        // Skip tool-use sidechain messages — Python does the same.
-        if value
-            .get("parent_tool_use_id")
-            .is_some_and(|v| !v.is_null())
-        {
-            continue;
-        }
-        let uuid = value
-            .get("uuid")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string();
-        let sess = value
-            .get("session_id")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string();
-        let message = value.get("message").cloned().unwrap_or(Value::Null);
-        out.push(SessionMessage {
-            kind,
-            uuid,
-            session_id: sess,
-            message,
-            parent_tool_use_id: None,
-        });
-    }
-    out
+    parse_session_messages(file)
 }
 
 fn is_valid_uuid(s: &str) -> bool {
