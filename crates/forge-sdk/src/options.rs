@@ -7,6 +7,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use crate::hooks::Hooks;
 use crate::mcp::McpServer;
 use crate::permissions::CanUseToolCallback;
 
@@ -70,6 +71,8 @@ pub struct Options {
     /// `mcp__<server>__<tool>` prefix the model sees) to a built
     /// [`McpServer`].
     pub mcp_servers: Vec<(String, McpServer)>,
+    /// Registered hooks. Empty by default.
+    pub hooks: Hooks,
 }
 
 impl Default for Options {
@@ -82,6 +85,7 @@ impl Default for Options {
             permission_mode: PermissionMode::Default,
             can_use_tool: None,
             mcp_servers: Vec::new(),
+            hooks: Hooks::default(),
         }
     }
 }
@@ -102,6 +106,7 @@ impl std::fmt::Debug for Options {
                 "mcp_servers",
                 &format!("<{} servers>", self.mcp_servers.len()),
             )
+            .field("hooks", &self.hooks)
             .finish()
     }
 }
@@ -179,6 +184,13 @@ impl OptionsBuilder {
     #[must_use]
     pub fn mcp_server(mut self, name: impl Into<String>, server: McpServer) -> Self {
         self.inner.mcp_servers.push((name.into(), server));
+        self
+    }
+
+    /// Attach hooks.
+    #[must_use]
+    pub fn hooks(mut self, hooks: Hooks) -> Self {
+        self.inner.hooks = hooks;
         self
     }
 
