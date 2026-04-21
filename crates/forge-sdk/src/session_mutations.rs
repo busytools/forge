@@ -5,18 +5,26 @@
 //! - [`tag_session`] — appends a `tag` JSONL entry (pass `None` to clear).
 //! - [`delete_session`] — removes the `<session_id>.jsonl` file and any
 //!   sibling `<session_id>/` subagent-transcript directory.
-//!
-//! Not yet ported: `fork_session` / `ForkSessionResult` (full transcript
-//! walk + UUID remapping) and the `*_via_store` async variants. These
-//! are follow-ups; the ones above cover the bulk of typical use.
+//! - [`fork_session`] — copies transcript entries into a new session,
+//!   remapping UUIDs. Optionally truncates at a supplied
+//!   `up_to_message_id` boundary.
 
+use std::collections::HashMap;
 use std::fs;
-use std::io::Write;
+use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
-use serde_json::json;
+use serde_json::{Value, json};
+use uuid::Uuid;
 
 use crate::error::Error;
+
+/// Outcome of a [`fork_session`] call.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ForkSessionResult {
+    /// UUID of the new forked session.
+    pub session_id: String,
+}
 
 /// Rename a session by appending a `custom-title` entry. Calls
 /// `list_sessions` / `get_session_info` will surface the most recently
@@ -100,6 +108,159 @@ pub fn delete_session(session_id: &str, directory: Option<&str>) -> Result<(), E
         let _ = fs::remove_dir_all(parent.join(session_id));
     }
     Ok(())
+}
+
+/// Fork a session into a new branch. Copies the transcript line-by-line
+/// into a new `<new_session_id>.jsonl` file, remapping every `uuid` /
+/// `parentUuid` / `sessionId` field. When `up_to_message_id` is set,
+/// stops copying after that message's UUID has been emitted.
+///
+/// # Errors
+///
+/// - [`Error::MessageParse`] when either UUID is invalid.
+/// - [`Error::Io`] when the source file can't be found, is empty, or
+///   the write fails.
+#[allow(clippy::too_many_lines)]
+pub fn fork_session(
+    session_id: &str,
+    directory: Option<&str>,
+    up_to_message_id: Option<&str>,
+    title: Option<&str>,
+) -> Result<ForkSessionResult, Error> {
+    validate_uuid(session_id)?;
+    if let Some(m) = up_to_message_id {
+        validate_uuid(m)?;
+    }
+    let source = find_session_file(session_id, directory).ok_or_else(|| {
+        Error::Io(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("session {session_id} not found"),
+        ))
+    })?;
+
+    // Generate new session id up front so we can remap sessionId fields
+    // inline as we scan.
+    let new_session_id = Uuid::new_v4().to_string();
+    let project_dir = source
+        .parent()
+        .ok_or_else(|| Error::Io(std::io::Error::other("session file missing parent dir")))?;
+    let fork_path = project_dir.join(format!("{new_session_id}.jsonl"));
+    if fork_path.exists() {
+        return Err(Error::Io(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            format!("fork target {new_session_id} already exists"),
+        )));
+    }
+
+    let reader = BufReader::new(fs::File::open(&source)?);
+    let mut uuid_remap: HashMap<String, String> = HashMap::new();
+    let mut out_lines: Vec<String> = Vec::new();
+    let mut saw_boundary = false;
+
+    for line in reader.lines().map_while(Result::ok) {
+        if line.is_empty() {
+            continue;
+        }
+        let Ok(mut value) = serde_json::from_str::<Value>(&line) else {
+            // Pass unparseable lines through verbatim — mirrors Python's
+            // tolerant copy behaviour.
+            out_lines.push(line);
+            continue;
+        };
+        if let Some(obj) = value.as_object_mut() {
+            // Copy out the old uuid before mutating the map (avoids
+            // borrow-checker clash when we insert the new value below).
+            let old_uuid: Option<String> = obj
+                .get("uuid")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned);
+            let mut boundary_hit = false;
+            if let Some(old) = old_uuid {
+                let new = uuid_remap
+                    .entry(old.clone())
+                    .or_insert_with(|| Uuid::new_v4().to_string())
+                    .clone();
+                obj.insert("uuid".into(), Value::String(new));
+                if up_to_message_id == Some(old.as_str()) {
+                    boundary_hit = true;
+                }
+            }
+            for parent_key in ["parentUuid", "parent_uuid"] {
+                let parent = obj
+                    .get(parent_key)
+                    .and_then(Value::as_str)
+                    .map(ToOwned::to_owned);
+                if let Some(p) = parent {
+                    if let Some(mapped) = uuid_remap.get(&p) {
+                        obj.insert(parent_key.into(), Value::String(mapped.clone()));
+                    }
+                }
+            }
+            for key in ["sessionId", "session_id"] {
+                if obj.contains_key(key) {
+                    obj.insert(key.into(), Value::String(new_session_id.clone()));
+                }
+            }
+            if boundary_hit {
+                saw_boundary = true;
+            }
+        }
+        out_lines.push(
+            serde_json::to_string(&value).map_err(|e| Error::MessageParse {
+                reason: format!("encode fork entry: {e}"),
+            })?,
+        );
+        if saw_boundary {
+            break;
+        }
+    }
+
+    if out_lines.is_empty() {
+        return Err(Error::Io(std::io::Error::other(format!(
+            "session {session_id} has no messages to fork"
+        ))));
+    }
+    if up_to_message_id.is_some() && !saw_boundary {
+        return Err(Error::MessageParse {
+            reason: format!(
+                "up_to_message_id {} not found in transcript",
+                up_to_message_id.unwrap_or("")
+            ),
+        });
+    }
+
+    // Apply fork title — either user-supplied or auto-derived.
+    if let Some(t) = title {
+        let stripped = t.trim();
+        if !stripped.is_empty() {
+            let title_entry = serde_json::to_string(&json!({
+                "type": "custom-title",
+                "customTitle": stripped,
+                "sessionId": new_session_id,
+            }))
+            .map_err(|e| Error::MessageParse {
+                reason: format!("encode fork title: {e}"),
+            })?;
+            out_lines.push(title_entry);
+        }
+    }
+
+    let mut body = out_lines.join("\n");
+    body.push('\n');
+    fs::write(&fork_path, body)?;
+    Ok(ForkSessionResult {
+        session_id: new_session_id,
+    })
+}
+
+/// Public wrapper so other modules (e.g. `sessions_store`) can reuse
+/// the same validator without duplicating the regex/format logic.
+///
+/// # Errors
+///
+/// [`Error::MessageParse`] when `s` is not a canonical 8-4-4-4-12 UUID.
+pub fn validate_uuid_public(s: &str) -> Result<(), Error> {
+    validate_uuid(s)
 }
 
 fn validate_uuid(s: &str) -> Result<(), Error> {

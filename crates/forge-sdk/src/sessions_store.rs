@@ -201,6 +201,150 @@ pub async fn delete_session_via_store(
     Ok(())
 }
 
+/// Fork a session via the attached store. Loads the source session,
+/// remaps UUIDs, and appends the forked entries into a new session id.
+/// Mirrors Python `fork_session_via_store`.
+///
+/// # Errors
+///
+/// - [`Error::MessageParse`] when `session_id` or `up_to_message_id`
+///   aren't valid UUIDs, when the source session is empty, or when the
+///   boundary can't be found.
+/// - Any error from `SessionStore::load` / `append`.
+pub async fn fork_session_via_store(
+    store: Arc<dyn SessionStore>,
+    project_key: &str,
+    session_id: &str,
+    up_to_message_id: Option<&str>,
+    title: Option<&str>,
+) -> Result<crate::session_mutations::ForkSessionResult, Error> {
+    crate::session_mutations::validate_uuid_public(session_id)?;
+    if let Some(m) = up_to_message_id {
+        crate::session_mutations::validate_uuid_public(m)?;
+    }
+    let source_key = SessionKey {
+        project_key: project_key.into(),
+        session_id: session_id.into(),
+        subpath: None,
+    };
+    let entries = store
+        .load(&source_key)
+        .await?
+        .ok_or_else(|| Error::MessageParse {
+            reason: format!("session {session_id} has no messages to fork"),
+        })?;
+
+    let new_session_id = uuid::Uuid::new_v4().to_string();
+    let mut uuid_remap: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    let mut remapped: Vec<SessionStoreEntry> = Vec::new();
+    let mut saw_boundary = false;
+
+    for entry in &entries {
+        let mut value = serde_json::to_value(entry).map_err(|e| Error::MessageParse {
+            reason: format!("encode entry: {e}"),
+        })?;
+        let boundary_hit = remap_entry_in_place(
+            &mut value,
+            &mut uuid_remap,
+            &new_session_id,
+            up_to_message_id,
+        );
+        let new_entry: SessionStoreEntry =
+            serde_json::from_value(value).map_err(|e| Error::MessageParse {
+                reason: format!("decode remapped entry: {e}"),
+            })?;
+        remapped.push(new_entry);
+        if boundary_hit {
+            saw_boundary = true;
+            break;
+        }
+    }
+
+    if remapped.is_empty() {
+        return Err(Error::MessageParse {
+            reason: format!("session {session_id} has no messages to fork"),
+        });
+    }
+    if up_to_message_id.is_some() && !saw_boundary {
+        return Err(Error::MessageParse {
+            reason: format!(
+                "up_to_message_id {} not found in transcript",
+                up_to_message_id.unwrap_or("")
+            ),
+        });
+    }
+
+    if let Some(t) = title {
+        let stripped = t.trim();
+        if !stripped.is_empty() {
+            let payload = json!({
+                "type": "custom-title",
+                "customTitle": stripped,
+                "sessionId": new_session_id,
+            });
+            let entry: SessionStoreEntry =
+                serde_json::from_value(payload).map_err(|e| Error::MessageParse {
+                    reason: format!("encode fork title: {e}"),
+                })?;
+            remapped.push(entry);
+        }
+    }
+
+    let dest_key = SessionKey {
+        project_key: project_key.into(),
+        session_id: new_session_id.clone(),
+        subpath: None,
+    };
+    store.append(&dest_key, &remapped).await?;
+    Ok(crate::session_mutations::ForkSessionResult {
+        session_id: new_session_id,
+    })
+}
+
+fn remap_entry_in_place(
+    value: &mut Value,
+    uuid_remap: &mut std::collections::HashMap<String, String>,
+    new_session_id: &str,
+    boundary: Option<&str>,
+) -> bool {
+    let Some(obj) = value.as_object_mut() else {
+        return false;
+    };
+    let old_uuid: Option<String> = obj
+        .get("uuid")
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned);
+    let mut boundary_hit = false;
+    if let Some(old) = old_uuid {
+        let new = uuid_remap
+            .entry(old.clone())
+            .or_insert_with(|| uuid::Uuid::new_v4().to_string())
+            .clone();
+        obj.insert("uuid".into(), Value::String(new));
+        if boundary == Some(old.as_str()) {
+            boundary_hit = true;
+        }
+    }
+    for parent_key in ["parentUuid", "parent_uuid"] {
+        let parent = obj
+            .get(parent_key)
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned);
+        if let Some(p) = parent {
+            if let Some(mapped) = uuid_remap.get(&p) {
+                obj.insert(parent_key.into(), Value::String(mapped.clone()));
+            }
+        }
+    }
+    for key in ["sessionId", "session_id"] {
+        if obj.contains_key(key) {
+            obj.insert(key.into(), Value::String(new_session_id.into()));
+        }
+    }
+    boundary_hit
+}
+
 fn to_session_message(entry: &SessionStoreEntry) -> Option<SessionMessage> {
     let kind = match entry.ty.as_str() {
         "user" => SessionMessageKind::User,
