@@ -1,0 +1,50 @@
+[workspace]
+resolver = "3"
+members = ["crates/forge-sdk"]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/vedhavyas/forge"
+authors = ["Vedhavyas Singareddi <ved@subspace.network>"]
+rust-version = "1.85"
+
+[workspace.dependencies]
+tokio = { version = "1.42", features = ["rt-multi-thread", "process", "io-util", "macros", "sync", "time", "fs"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tracing = "0.1"
+anyhow = "1"
+async-trait = "0.1"
+getrandom = "0.3"
+hex = "0.4"
+
+# Dev-only
+proptest = "1"
+insta = { version = "1", features = ["yaml"] }
+tempfile = "3"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+exit = "deny"
+todo = "deny"
+unimplemented = "deny"
+module_name_repetitions = "allow"   # Rust-idiomatic pattern; not actually repetition
+
+[profile.dev]
+opt-level = 0
+debug = true
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
