@@ -48,6 +48,19 @@ pub enum Message {
         data: Value,
     },
 
+    /// Rate-limit state transition. The CLI emits this when the current
+    /// rate-limit window changes state (e.g. `allowed` → `allowed_warning`).
+    /// Wire shape mirrors Python SDK v0.1.64 `types.py:1054-1107` +
+    /// `_internal/message_parser.py:242-262`.
+    RateLimitEvent {
+        /// Rate-limit snapshot at the moment of the transition.
+        rate_limit_info: RateLimitInfo,
+        /// Unique identifier for this rate-limit event.
+        uuid: String,
+        /// Session id the event applies to.
+        session_id: String,
+    },
+
     /// End-of-turn or end-of-session summary with cost and usage.
     Result {
         /// Result discriminant (e.g. `"success"`, `"error_during_execution"`).
@@ -111,6 +124,81 @@ pub enum StopReason {
     StopSequence,
     /// Model is requesting a tool call; expect a `tool_use` block in content.
     ToolUse,
+}
+
+/// Rate-limit window status. Ported from Python's
+/// `Literal["allowed", "allowed_warning", "rejected"]` in `types.py:1054`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RateLimitStatus {
+    /// Within the window — no restrictions.
+    Allowed,
+    /// Approaching the limit; callers should warn / back off soon.
+    AllowedWarning,
+    /// Limit hit; requests are being refused.
+    Rejected,
+}
+
+/// Which rate-limit window applies. Ported from `types.py:1055-1057`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RateLimitType {
+    /// Five-hour rolling window.
+    FiveHour,
+    /// Seven-day rolling window (any model).
+    SevenDay,
+    /// Seven-day window for Opus-class models specifically.
+    SevenDayOpus,
+    /// Seven-day window for Sonnet-class models specifically.
+    SevenDaySonnet,
+    /// Pay-as-you-go overage window.
+    Overage,
+}
+
+/// Rate-limit snapshot emitted inside a [`Message::RateLimitEvent`].
+///
+/// Mirrors Python SDK v0.1.64 `RateLimitInfo` (`types.py:1061-1088`). Inner
+/// field names on the wire are camelCase (`resetsAt`, `rateLimitType`,
+/// `overageStatus`, `overageResetsAt`, `overageDisabledReason`) per the CLI
+/// spec, while the outer frame uses `snake_case`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RateLimitInfo {
+    /// Current rate-limit status.
+    pub status: RateLimitStatus,
+    /// Unix timestamp (seconds) when the rate-limit window resets.
+    #[serde(default, rename = "resetsAt", skip_serializing_if = "Option::is_none")]
+    pub resets_at: Option<i64>,
+    /// Which rate-limit window applies.
+    #[serde(
+        default,
+        rename = "rateLimitType",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub rate_limit_type: Option<RateLimitType>,
+    /// Fraction of the rate limit consumed (0.0 – 1.0).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub utilization: Option<f64>,
+    /// Status of overage / pay-as-you-go usage, if applicable.
+    #[serde(
+        default,
+        rename = "overageStatus",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub overage_status: Option<RateLimitStatus>,
+    /// Unix timestamp (seconds) when overage window resets.
+    #[serde(
+        default,
+        rename = "overageResetsAt",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub overage_resets_at: Option<i64>,
+    /// Why overage is unavailable when rejected.
+    #[serde(
+        default,
+        rename = "overageDisabledReason",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub overage_disabled_reason: Option<String>,
 }
 
 /// Token-usage accounting.
