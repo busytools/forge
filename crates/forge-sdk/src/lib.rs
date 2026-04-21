@@ -35,6 +35,7 @@
 #![doc(html_root_url = "https://docs.rs/forge-sdk/0.0.1")]
 #![forbid(unsafe_code)]
 
+pub mod content;
 mod error;
 
 pub use error::Error;
