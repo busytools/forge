@@ -14,6 +14,14 @@ pub enum DecodedLine {
     Message(Message),
     /// A control request (e.g. permission check, MCP message, hook callback).
     Control(ControlRequest),
+    /// The CLI has withdrawn a previously-issued `control_request` — the
+    /// handler matching `request_id` should be cancelled if still in flight.
+    /// Wire shape `{"type":"control_cancel_request","request_id":"..."}`
+    /// per Python SDK `_internal/query.py:274-280`.
+    ControlCancel {
+        /// `request_id` of the `control_request` being withdrawn.
+        request_id: String,
+    },
     /// Transcript-mirror frame emitted by `--session-mirror`. Top-level
     /// wire shape `{"type":"transcript_mirror","filePath":...,"entries":[...]}`
     /// per Python SDK `_internal/transcript_mirror_batcher.py:3`.
@@ -74,6 +82,18 @@ pub fn decode_dispatch(line: &str, line_number: u64) -> Result<DecodedLine, Erro
                     reason: format!("line {line_number}: {e}"),
                 })?;
             Ok(DecodedLine::Control(req))
+        }
+        "control_cancel_request" => {
+            let request_id = value
+                .get("request_id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| Error::MessageParse {
+                    reason: format!(
+                        "line {line_number}: control_cancel_request missing `request_id`"
+                    ),
+                })?
+                .to_string();
+            Ok(DecodedLine::ControlCancel { request_id })
         }
         "assistant" | "user" | "system" | "result" => {
             let msg: Message = serde_json::from_value(value).map_err(|e| Error::MessageParse {

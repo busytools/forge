@@ -248,6 +248,15 @@ impl Client {
                 DecodedLine::Control(req) => {
                     self.handle_control(req).await?;
                 }
+                DecodedLine::ControlCancel { request_id } => {
+                    // Python SDK (`_internal/query.py:274-280`) cancels the
+                    // in-flight control handler tied to `request_id`.
+                    // forge-sdk dispatches control handlers synchronously on
+                    // the read loop, so by the time we see the cancel frame
+                    // the handler has already completed — there is nothing
+                    // live to cancel. Log and drop, keeping the loop alive.
+                    tracing::debug!(%request_id, "control_cancel_request received; nothing to cancel");
+                }
                 DecodedLine::TranscriptMirror { file_path, entries } => {
                     self.handle_transcript_mirror(&file_path, entries).await;
                 }
