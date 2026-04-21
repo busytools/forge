@@ -63,7 +63,10 @@ pub use hooks::{
     UserPromptSubmitHookSpecificOutput, UserPromptSubmitInput,
 };
 pub use options::{Options, OptionsBuilder, PermissionMode};
-pub use permissions::{CanUseToolCallback, PermissionDecision, ToolPermissionContext};
+pub use permissions::{
+    CanUseToolCallback, PermissionBehavior, PermissionDecision, PermissionRuleValue,
+    PermissionUpdate, PermissionUpdateDestination, ToolPermissionContext,
+};
 pub use session_store::{
     FsSessionStore, MemorySessionStore, SessionKey, SessionListSubkeysKey, SessionStore,
     SessionStoreEntry, SessionStoreError, SessionStoreListEntry,
