@@ -184,7 +184,7 @@ impl Client {
         let (mirror_batcher, synth_messages) = if let Some(store) = options.session_store.clone() {
             let projects_dir_str = options.projects_dir.as_ref().map_or_else(
                 || {
-                    crate::session_mutations::projects_dir()
+                    crate::session::mutations::projects_dir()
                         .to_string_lossy()
                         .into_owned()
                 },
@@ -380,7 +380,7 @@ impl Client {
     fn handle_transcript_mirror(
         &self,
         file_path: String,
-        entries: Vec<crate::session_store::SessionStoreEntry>,
+        entries: Vec<crate::session::store::SessionStoreEntry>,
     ) {
         if entries.is_empty() {
             return;

@@ -3,7 +3,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use forge_sdk::session_store::{
+use forge_sdk::session::store::{
     MemorySessionStore, SessionKey, SessionListSubkeysKey, SessionStore, SessionStoreEntry,
 };
 use serde_json::json;

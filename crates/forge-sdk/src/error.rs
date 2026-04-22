@@ -73,10 +73,10 @@ pub enum Error {
     #[error("I/O error: {0}")]
     Io(#[from] io::Error),
 
-    /// Wrapping a [`SessionStoreError`](crate::session_store::SessionStoreError)
+    /// Wrapping a [`SessionStoreError`](crate::session::store::SessionStoreError)
     /// when a store operation fails.
     #[error("session store error: {0}")]
-    SessionStore(#[from] crate::session_store::SessionStoreError),
+    SessionStore(#[from] crate::session::store::SessionStoreError),
 }
 
 impl Error {

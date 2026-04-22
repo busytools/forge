@@ -8,7 +8,7 @@
 //! Session forking lives elsewhere: the spawn-time
 //! [`Options::fork_session`](crate::Options) flag (surfaced via
 //! `--fork-session`) and the offline
-//! [`fork_session`](crate::session_mutations::fork_session) free
+//! [`fork_session`](crate::session::mutations::fork_session) free
 //! function. Python SDK v0.1.64 does not define a runtime
 //! `fork_session` `control_request` subtype.
 //!

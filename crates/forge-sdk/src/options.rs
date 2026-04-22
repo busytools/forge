@@ -16,7 +16,7 @@ use serde_json::Value;
 use crate::agents::{AgentDefinition, EffortLevel};
 use crate::mcp::McpServer;
 use crate::permissions::CanUseToolCallback;
-use crate::session_store::SessionStore;
+use crate::session::store::SessionStore;
 
 /// Which permission flow the `claude` binary should use for tool invocations.
 ///
@@ -128,7 +128,7 @@ pub struct Options {
     /// the reported major version is at least the first component.
     pub minimum_cli_version: Option<String>,
     /// Override the directory used to resolve `transcript_mirror.filePath`
-    /// into a [`SessionKey`](crate::session_store::SessionKey). When `None`,
+    /// into a [`SessionKey`](crate::session::store::SessionKey). When `None`,
     /// forge-sdk defaults to `$CLAUDE_CONFIG_DIR/projects` or
     /// `~/.claude/projects`. Matches Python SDK's `_internal/sessions.py`
     /// `_get_projects_dir()`.
@@ -166,7 +166,7 @@ pub struct Options {
     pub include_partial_messages: bool,
     /// Spawn-time fork — duplicate `resume`'s session on the first turn.
     /// `--fork-session` (distinct from the offline JSONL-level
-    /// [`fork_session`](crate::session_mutations::fork_session) helper;
+    /// [`fork_session`](crate::session::mutations::fork_session) helper;
     /// Python SDK v0.1.64 has no runtime `fork_session` `control_request`).
     pub fork_session: bool,
     /// Extra directories surfaced to the CLI via repeated `--add-dir`.
@@ -705,7 +705,7 @@ impl OptionsBuilder {
 
     /// Override the projects directory used to resolve `transcript_mirror`
     /// `filePath` frames into
-    /// [`SessionKey`](crate::session_store::SessionKey) values. When unset,
+    /// [`SessionKey`](crate::session::store::SessionKey) values. When unset,
     /// defaults to `$CLAUDE_CONFIG_DIR/projects` or `~/.claude/projects`.
     #[must_use]
     pub fn projects_dir(mut self, path: impl Into<PathBuf>) -> Self {

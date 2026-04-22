@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::content::ContentBlock;
-use crate::session_store::SessionKey;
+use crate::session::store::SessionKey;
 
 /// One stream-json message.
 ///
@@ -132,7 +132,7 @@ pub enum Message {
     },
 
     /// Synthesised system frame reporting a failed
-    /// [`SessionStore::append`](crate::session_store::SessionStore::append)
+    /// [`SessionStore::append`](crate::session::store::SessionStore::append)
     /// call inside the transcript-mirror batcher. Subtype `"mirror_error"`.
     /// Non-fatal: the on-disk transcript is already durable, but the
     /// mirrored copy in the external store is missing the failed batch.
