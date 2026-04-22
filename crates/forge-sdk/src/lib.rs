@@ -100,7 +100,11 @@ pub type Result<T, E = Error> = core::result::Result<T, E>;
 /// One-shot helper that spawns a client, sends a single prompt, drains
 /// every message up to and including the terminal [`messages::Message::Result`]
 /// frame, and disconnects. Mirrors Python SDK's top-level `query()`
-/// helper (`query.py`).
+/// helper (`query.py:11-40`).
+///
+/// `options` is optional — pass `None` for the default configuration,
+/// matching Python's `options: ClaudeAgentOptions | None = None`
+/// keyword-only argument.
 ///
 /// Use this for stateless one-off prompts when you don't need to issue
 /// follow-ups or interrupt the turn. For multi-turn / streaming
@@ -111,17 +115,13 @@ pub type Result<T, E = Error> = core::result::Result<T, E>;
 /// Any [`Error`] variant — see [`Client::spawn`],
 /// [`Client::send_user_message`], [`Client::next_event`],
 /// [`Client::disconnect`].
-pub async fn query(prompt: impl AsRef<str>, options: Options) -> Result<Vec<messages::Message>> {
-    let mut client = Client::spawn(options).await?;
+pub async fn query(
+    prompt: impl AsRef<str>,
+    options: Option<Options>,
+) -> Result<Vec<messages::Message>> {
+    let mut client = Client::spawn(options.unwrap_or_default()).await?;
     client.send_user_message(prompt.as_ref()).await?;
-    let mut out = Vec::new();
-    while let Some(msg) = client.next_event().await? {
-        let terminal = matches!(msg, messages::Message::Result { .. });
-        out.push(msg);
-        if terminal {
-            break;
-        }
-    }
+    let messages = client.receive_response().await?;
     client.disconnect().await?;
-    Ok(out)
+    Ok(messages)
 }
