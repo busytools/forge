@@ -26,6 +26,7 @@ use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
 use serde_json::Value;
+use unicode_normalization::UnicodeNormalization;
 
 use crate::public_types::{SDKSessionInfo, SessionMessage, SessionMessageKind};
 use crate::session::mutations::is_valid_uuid;
@@ -53,11 +54,22 @@ pub(crate) fn sanitize_path_public(name: &str) -> String {
 /// (`_internal/session_store.py`).
 #[must_use]
 pub fn project_key_for_directory(path: &str) -> String {
-    let canonical = match fs::canonicalize(path) {
+    sanitize_path(&canonicalize_path(path))
+}
+
+/// Resolve a directory to its realpath and apply NFC normalisation.
+/// Mirrors Python's `_canonicalize_path` (`_internal/sessions.py:147-153`)
+/// — falls back to the input (NFC-normalised) when the path can't be
+/// canonicalised (most commonly because it doesn't exist). NFC is
+/// essential on filesystems that don't auto-normalise (Linux ext4,
+/// Windows NTFS) so decomposed inputs still hash to the CLI's on-disk
+/// project-key layout.
+fn canonicalize_path(path: &str) -> String {
+    let resolved = match fs::canonicalize(path) {
         Ok(p) => p.to_string_lossy().into_owned(),
         Err(_) => path.to_string(),
     };
-    sanitize_path(&canonical)
+    resolved.nfc().collect()
 }
 
 /// List subagent IDs for a session. Subagent transcripts live at
@@ -293,11 +305,7 @@ fn git_worktree_paths(dir: &str) -> Vec<String> {
 }
 
 fn project_dir_for(project_path: &str) -> PathBuf {
-    let canonical = match fs::canonicalize(project_path) {
-        Ok(p) => p.to_string_lossy().into_owned(),
-        Err(_) => project_path.to_string(),
-    };
-    projects_dir().join(sanitize_path(&canonical))
+    projects_dir().join(sanitize_path(&canonicalize_path(project_path)))
 }
 
 /// List sessions. When `directory` is `Some`, scans that project dir

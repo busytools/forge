@@ -8,19 +8,7 @@
 //! 2. `validate_session_store_options` — the pure-function form does not
 //!    exist in forge-sdk (validation lives inline in `Client::spawn`), so
 //!    porting would require spawning the `claude` binary. Deferred.
-//! 3. `project_key_for_directory` — the subset ported below.
-//!
-//! The two `project_key_for_directory` tests not ported here:
-//!
-//! - `test_defaults_to_cwd` — Python's signature is
-//!   `project_key_for_directory(directory=None)`; forge-sdk's is
-//!   `project_key_for_directory(path: &str)` with no overload. A parity
-//!   gap worth closing, but out of scope for a test-port commit.
-//! - `test_nfc_normalizes_decomposed_unicode` — Python runs
-//!   `unicodedata.normalize("NFC", realpath(d))`; forge-sdk does not
-//!   apply NFC. Relevant on macOS HFS+ where decomposed paths could
-//!   otherwise land at a different `project_key` than the CLI derives.
-//!   Follow-up work since it needs a new dependency (`unicode-normalization`).
+//! 3. `project_key_for_directory` — all six cases ported below.
 
 use std::path::Path;
 
@@ -96,6 +84,40 @@ fn project_key_long_path_uses_portable_hash_suffix() {
     assert!(
         key.len() > "aaaa".len(),
         "hash suffix must be non-empty: {key}"
+    );
+}
+
+/// Ported from `test_nfc_normalizes_decomposed_unicode`. Python
+/// canonicalises via `os.path.realpath` + `unicodedata.normalize("NFC",
+/// …)`. On filesystems that don't auto-normalise (Linux ext4, Windows
+/// NTFS), an NFD input would otherwise hash to a different key than the
+/// NFC dir the CLI writes under, silently missing `store.load`.
+#[test]
+fn project_key_nfc_normalizes_decomposed_unicode() {
+    let tmp = tempfile::tempdir().expect("tmp dir");
+    let nfc = tmp.path().join("caf\u{00E9}");
+    let nfd = tmp.path().join("cafe\u{0301}");
+    std::fs::create_dir(&nfc).expect("create nfc dir");
+    assert_eq!(
+        project_key_for_directory(nfc.to_str().expect("nfc utf8")),
+        project_key_for_directory(nfd.to_str().expect("nfd utf8"))
+    );
+}
+
+/// Guards the NFC step independently of filesystem behaviour. Both
+/// inputs point at a non-existent path so `fs::canonicalize` falls
+/// through to the raw input on every platform — the only remaining
+/// normalising force is the explicit NFC pass. Without it, the
+/// precomposed and decomposed byte sequences produce distinct keys.
+#[test]
+fn project_key_nfc_applied_even_when_canonicalize_falls_back() {
+    let tmp = tempfile::tempdir().expect("tmp dir");
+    let tmp_str = tmp.path().to_str().expect("tmp utf8");
+    let nfc = format!("{tmp_str}/absent-caf\u{00E9}");
+    let nfd = format!("{tmp_str}/absent-cafe\u{0301}");
+    assert_eq!(
+        project_key_for_directory(&nfc),
+        project_key_for_directory(&nfd)
     );
 }
 
