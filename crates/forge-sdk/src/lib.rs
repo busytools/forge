@@ -112,9 +112,9 @@ pub type Result<T, E = Error> = core::result::Result<T, E>;
 /// matching Python's `options: ClaudeAgentOptions | None = None`
 /// keyword-only argument.
 ///
-/// Use this for stateless one-off prompts when you don't need to issue
-/// follow-ups or interrupt the turn. For multi-turn / streaming
-/// interactions hold a [`Client`] directly.
+/// Collects every message before returning. For streaming consumption
+/// (message-by-message as the CLI emits them, matching Python's
+/// `AsyncIterator[Message]` return shape), use [`query_stream`].
 ///
 /// # Errors
 ///
@@ -130,4 +130,61 @@ pub async fn query(
     let messages = client.receive_response().await?;
     client.disconnect().await?;
     Ok(messages)
+}
+
+/// Streaming counterpart to [`query`]. Returns a
+/// [`Stream`](tokio_stream::Stream) that yields each message as the
+/// CLI emits it, closing once the terminal `Message::Result` frame
+/// has been delivered (or on error).
+///
+/// Mirrors Python SDK's `query()` return shape
+/// (`AsyncIterator[Message]`, `query.py:11`). Use this when you want
+/// to react to partial assistant turns, tool-use blocks, or
+/// rate-limit events as they arrive rather than waiting for the
+/// whole turn to finish.
+///
+/// Errors land as the final `Result::Err` item before the stream
+/// closes — same error surface as [`Client::next_event`] and
+/// [`Client::disconnect`].
+pub fn query_stream(
+    prompt: impl Into<String>,
+    options: Option<Options>,
+) -> impl tokio_stream::Stream<Item = Result<messages::Message>> + Send + 'static {
+    let prompt = prompt.into();
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Result<messages::Message>>();
+    tokio::spawn(async move {
+        let mut client = match Client::spawn(options.unwrap_or_default()).await {
+            Ok(c) => c,
+            Err(e) => {
+                let _ = tx.send(Err(e));
+                return;
+            }
+        };
+        if let Err(e) = client.send_user_message(&prompt).await {
+            let _ = tx.send(Err(e));
+            let _ = client.disconnect().await;
+            return;
+        }
+        loop {
+            match client.next_event().await {
+                Ok(Some(msg)) => {
+                    let is_result = matches!(msg, messages::Message::Result { .. });
+                    if tx.send(Ok(msg)).is_err() {
+                        // Consumer dropped the stream — stop driving.
+                        break;
+                    }
+                    if is_result {
+                        break;
+                    }
+                }
+                Ok(None) => break,
+                Err(e) => {
+                    let _ = tx.send(Err(e));
+                    break;
+                }
+            }
+        }
+        let _ = client.disconnect().await;
+    });
+    tokio_stream::wrappers::UnboundedReceiverStream::new(rx)
 }
