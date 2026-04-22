@@ -170,6 +170,17 @@ impl Client {
         Ok(())
     }
 
+    /// Python-style alias for [`mcp_reconnect`](Self::mcp_reconnect) —
+    /// matches `ClaudeSDKClient.reconnect_mcp_server` so snippets
+    /// porting directly from Python compile unchanged.
+    ///
+    /// # Errors
+    ///
+    /// See [`mcp_reconnect`](Self::mcp_reconnect).
+    pub async fn reconnect_mcp_server(&mut self, server_name: &str) -> Result<(), Error> {
+        self.mcp_reconnect(server_name).await
+    }
+
     /// Toggle a named MCP server on/off. Wire shape uses camelCase
     /// `serverName` per Python SDK `types.py:1513`.
     ///
@@ -183,6 +194,19 @@ impl Client {
         )
         .await?;
         Ok(())
+    }
+
+    /// Python-style alias for [`mcp_toggle`](Self::mcp_toggle).
+    ///
+    /// # Errors
+    ///
+    /// See [`mcp_toggle`](Self::mcp_toggle).
+    pub async fn toggle_mcp_server(
+        &mut self,
+        server_name: &str,
+        enabled: bool,
+    ) -> Result<(), Error> {
+        self.mcp_toggle(server_name, enabled).await
     }
 
     /// Kill an in-flight sub-agent task by its `task_id` (from the
@@ -210,6 +234,17 @@ impl Client {
             .send_control("mcp_status", serde_json::json!({}))
             .await?;
         serde_json::from_value(raw).map_err(|e| Error::message_parse(format!("mcp_status: {e}")))
+    }
+
+    /// Python-style alias for [`mcp_status`](Self::mcp_status).
+    ///
+    /// # Errors
+    ///
+    /// See [`mcp_status`](Self::mcp_status).
+    pub async fn get_mcp_status(
+        &mut self,
+    ) -> Result<crate::public_types::McpStatusResponse, Error> {
+        self.mcp_status().await
     }
 
     /// Query MCP server status, returning the raw JSON payload. Use this
