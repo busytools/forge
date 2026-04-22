@@ -80,9 +80,13 @@ pub fn check_cli_version(reported: &str, min_version: &str) -> Result<(), Error>
 /// Build the subprocess argv from [`Options`], matching Python SDK's
 /// `_build_command` byte-for-byte where possible. Exposed for tests and
 /// for advanced callers that want to inspect the argv without spawning.
-#[must_use]
+///
+/// # Errors
+///
+/// [`Error::MessageParse`] when `options.sandbox` fails to serialise
+/// (refuses to spawn un-sandboxed when the caller asked for sandboxing).
 #[allow(clippy::too_many_lines)]
-pub fn build_args(options: &Options) -> Vec<String> {
+pub fn build_args(options: &Options) -> Result<Vec<String>, Error> {
     let mut args: Vec<String> = Vec::new();
 
     // Python SDK passes only `--output-format stream-json --verbose`
@@ -197,7 +201,7 @@ pub fn build_args(options: &Options) -> Vec<String> {
     // --settings (with optional sandbox merge). Python's
     // `_build_settings_value` — resolves settings + sandbox into one CLI
     // argument, either a file path or an inline JSON string.
-    if let Some(value) = options.build_settings_value() {
+    if let Some(value) = options.build_settings_value()? {
         args.push("--settings".into());
         args.push(value);
     }
@@ -301,7 +305,7 @@ pub fn build_args(options: &Options) -> Vec<String> {
     args.push("--input-format".into());
     args.push("stream-json".into());
 
-    args
+    Ok(args)
 }
 
 /// A live subprocess with owned stdin/stdout handles.
@@ -340,7 +344,7 @@ impl Subprocess {
             }
         }
         let mut cmd = Command::new(&options.binary);
-        cmd.args(build_args(options));
+        cmd.args(build_args(options)?);
         if let Some(cwd) = &options.cwd {
             cmd.current_dir(cwd);
         }

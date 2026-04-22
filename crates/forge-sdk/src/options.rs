@@ -281,46 +281,93 @@ impl Options {
 
     /// Resolve `settings` + `sandbox` into the single string passed via
     /// `--settings`. Mirrors Python's `_build_settings_value`
-    /// (`subprocess_cli.py:111-163`). Returns `None` when neither field
-    /// is set.
-    pub(crate) fn build_settings_value(&self) -> Option<String> {
+    /// (`subprocess_cli.py:111-163`), but surfaces sandbox serialisation
+    /// failures rather than silently dropping the sandbox config. Parse
+    /// failures on the user-supplied settings blob log a `warn` and
+    /// continue (Python semantics).
+    ///
+    /// # Errors
+    ///
+    /// [`crate::Error::MessageParse`] when the `sandbox` struct fails to
+    /// serialise (shouldn't happen for well-formed types, but we refuse
+    /// to spawn un-sandboxed when the caller asked for sandboxing).
+    pub(crate) fn build_settings_value(&self) -> Result<Option<String>, crate::Error> {
         let has_settings = self.settings.is_some();
         let has_sandbox = self.sandbox.is_some();
         if !has_settings && !has_sandbox {
-            return None;
+            return Ok(None);
         }
         // Only a settings path / inline JSON, no sandbox merge needed:
         // pass through verbatim (CLI accepts both forms).
         if has_settings && !has_sandbox {
-            return self.settings.clone();
+            return Ok(self.settings.clone());
         }
 
         // Need to merge. Parse existing settings (if any) into a JSON
-        // object, then attach "sandbox". Invalid / missing files fall back
-        // to an empty object, matching Python's warn-and-continue behaviour.
+        // object, then attach "sandbox".
         let mut settings_obj = serde_json::Map::new();
         if let Some(raw) = self.settings.as_deref() {
             let trimmed = raw.trim();
             if trimmed.starts_with('{') && trimmed.ends_with('}') {
-                if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(trimmed) {
-                    if let Some(obj) = parsed.as_object() {
-                        settings_obj.clone_from(obj);
+                match serde_json::from_str::<serde_json::Value>(trimmed) {
+                    Ok(parsed) => {
+                        if let Some(obj) = parsed.as_object() {
+                            settings_obj.clone_from(obj);
+                        } else {
+                            tracing::warn!(
+                                "inline --settings JSON parsed but is not an object; ignoring"
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            error = %e,
+                            "inline --settings JSON failed to parse; ignoring and merging sandbox only"
+                        );
                     }
                 }
-            } else if let Ok(bytes) = std::fs::read(trimmed) {
-                if let Ok(parsed) = serde_json::from_slice::<serde_json::Value>(&bytes) {
-                    if let Some(obj) = parsed.as_object() {
-                        settings_obj.clone_from(obj);
+            } else {
+                match std::fs::read(trimmed) {
+                    Ok(bytes) => match serde_json::from_slice::<serde_json::Value>(&bytes) {
+                        Ok(parsed) => {
+                            if let Some(obj) = parsed.as_object() {
+                                settings_obj.clone_from(obj);
+                            } else {
+                                tracing::warn!(
+                                    path = %trimmed,
+                                    "settings file JSON is not an object; ignoring"
+                                );
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                path = %trimmed,
+                                error = %e,
+                                "settings file JSON failed to parse; ignoring and merging sandbox only"
+                            );
+                        }
+                    },
+                    Err(e) => {
+                        tracing::warn!(
+                            path = %trimmed,
+                            error = %e,
+                            "settings file read failed; ignoring and merging sandbox only"
+                        );
                     }
                 }
             }
         }
         if let Some(sandbox) = &self.sandbox {
-            if let Ok(v) = serde_json::to_value(sandbox) {
-                settings_obj.insert("sandbox".into(), v);
-            }
+            let v = serde_json::to_value(sandbox).map_err(|e| crate::Error::MessageParse {
+                reason: format!("could not serialise sandbox config: {e}"),
+            })?;
+            settings_obj.insert("sandbox".into(), v);
         }
-        serde_json::to_string(&settings_obj).ok()
+        serde_json::to_string(&settings_obj)
+            .map(Some)
+            .map_err(|e| crate::Error::MessageParse {
+                reason: format!("could not serialise merged settings: {e}"),
+            })
     }
 }
 
