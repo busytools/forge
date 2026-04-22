@@ -1,9 +1,11 @@
 //! `tokio::process` wrapping of the `claude` binary.
 
 use std::process::Stdio;
+use std::sync::Arc;
 
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
+use tokio::process::{Child, ChildStdin, ChildStdout, Command};
+use tokio::task::JoinHandle;
 use tracing::{debug, warn};
 
 use crate::Error;
@@ -311,7 +313,7 @@ pub struct Subprocess {
     child: Child,
     stdin: ChildStdin,
     stdout: BufReader<ChildStdout>,
-    _stderr: ChildStderr,
+    stderr_task: Option<JoinHandle<()>>,
     line_buf: String,
 }
 
@@ -372,11 +374,19 @@ impl Subprocess {
             reason: "stderr pipe missing".into(),
         })?;
 
+        // Drain stderr on a background task so the pipe never blocks.
+        // When options.stderr is Some, forward each line to the callback;
+        // otherwise discard silently.
+        let stderr_callback = options.stderr.clone();
+        let stderr_task = tokio::spawn(async move {
+            drain_stderr(stderr, stderr_callback).await;
+        });
+
         Ok(Self {
             child,
             stdin,
             stdout: BufReader::new(stdout),
-            _stderr: stderr,
+            stderr_task: Some(stderr_task),
             line_buf: String::new(),
         })
     }
@@ -426,6 +436,11 @@ impl Subprocess {
         // Close stdin first — signals EOF to the subprocess so it can exit cleanly.
         drop(self.stdin);
         let status = self.child.wait().await?;
+        // Give the stderr drain task a chance to finish emitting lines
+        // after the subprocess exits. The task self-terminates on EOF.
+        if let Some(task) = self.stderr_task.take() {
+            let _ = task.await;
+        }
         if !status.success() {
             warn!(?status, "claude subprocess exited non-zero during shutdown");
             return Err(Error::Process {
@@ -434,5 +449,37 @@ impl Subprocess {
             });
         }
         Ok(())
+    }
+}
+
+/// Background drain for the subprocess stderr pipe. Reads lines as UTF-8
+/// (lossy on invalid bytes) and forwards each to the caller-supplied
+/// callback when set. Silently consumes lines otherwise so the pipe
+/// never blocks.
+async fn drain_stderr(
+    stderr: tokio::process::ChildStderr,
+    callback: Option<Arc<dyn Fn(String) + Send + Sync>>,
+) {
+    use tokio::io::AsyncBufReadExt as _;
+    let mut reader = BufReader::new(stderr);
+    let mut buf = String::new();
+    loop {
+        buf.clear();
+        let n = match reader.read_line(&mut buf).await {
+            Ok(n) => n,
+            Err(e) => {
+                debug!(?e, "stderr read failed");
+                return;
+            }
+        };
+        if n == 0 {
+            return;
+        }
+        while matches!(buf.chars().last(), Some('\n' | '\r')) {
+            buf.pop();
+        }
+        if let Some(cb) = callback.as_ref() {
+            cb(buf.clone());
+        }
     }
 }
