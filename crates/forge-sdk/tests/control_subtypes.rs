@@ -98,25 +98,3 @@ async fn get_context_usage_raw_returns_canned_payload() {
     );
     client.disconnect().await.expect("disconnect");
 }
-
-#[tokio::test]
-async fn fork_session_returns_new_session_id() {
-    let mut client = spawn_client().await;
-    let new_session = client
-        .fork_session(Some("toolu_split_01"))
-        .await
-        .expect("fork_session");
-    assert_eq!(new_session, "forked-123", "fork_session id mismatch");
-    client.disconnect().await.expect("disconnect");
-}
-
-#[tokio::test]
-async fn fork_session_without_tool_use_id_returns_new_session_id() {
-    let mut client = spawn_client().await;
-    let new_session = client.fork_session(None).await.expect("fork_session");
-    assert_eq!(
-        new_session, "forked-123",
-        "fork_session (no tool_use_id) id mismatch"
-    );
-    client.disconnect().await.expect("disconnect");
-}

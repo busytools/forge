@@ -1,9 +1,15 @@
 //! Outbound `control_request` senders: the generic [`send_control`]
-//! primitive plus the nine typed wrappers consumers call
+//! primitive plus the eight typed wrappers consumers call
 //! (`interrupt`, `set_permission_mode`, `rewind_files`, `mcp_reconnect`,
-//! `mcp_toggle`, `stop_task`, `mcp_status`, `get_context_usage`,
-//! `fork_session`), including `_raw` escape hatches for `mcp_status` and
-//! `get_context_usage`.
+//! `mcp_toggle`, `stop_task`, `mcp_status`, `get_context_usage`),
+//! including `_raw` escape hatches for `mcp_status` and `get_context_usage`.
+//!
+//! Session forking lives elsewhere: the spawn-time
+//! [`Options::fork_session`](crate::Options) flag (surfaced via
+//! `--fork-session`) and the offline
+//! [`fork_session`](crate::session_mutations::fork_session) free
+//! function. Python SDK v0.1.64 does not define a runtime
+//! `fork_session` `control_request` subtype.
 //!
 //! Split out from `client.rs` (audit finding I5) to separate outbound
 //! control issuance from inbound dispatch / lifecycle.
@@ -236,30 +242,5 @@ impl Client {
     pub async fn get_context_usage_raw(&mut self) -> Result<serde_json::Value, Error> {
         self.send_control("get_context_usage", serde_json::json!({}))
             .await
-    }
-
-    /// Fork the current session into a new one at the given tool-use id
-    /// boundary. Returns the new `session_id` the CLI assigned.
-    ///
-    /// # Errors
-    ///
-    /// See the outbound control error cases.
-    pub async fn fork_session(&mut self, at_tool_use_id: Option<&str>) -> Result<String, Error> {
-        let mut body = serde_json::Map::new();
-        if let Some(id) = at_tool_use_id {
-            body.insert(
-                "tool_use_id".into(),
-                serde_json::Value::String(id.to_string()),
-            );
-        }
-        let resp = self
-            .send_control("fork_session", serde_json::Value::Object(body))
-            .await?;
-        resp.get("session_id")
-            .and_then(serde_json::Value::as_str)
-            .map(str::to_string)
-            .ok_or_else(|| Error::MessageParse {
-                reason: format!("fork_session response missing session_id: {resp}"),
-            })
     }
 }

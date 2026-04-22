@@ -42,9 +42,6 @@ print(json.dumps({
         get_context_usage)
             response_payload='{"used":0,"budget":200000}'
             ;;
-        fork_session)
-            response_payload='{"session_id":"forked-123"}'
-            ;;
         *)
             response_payload='{}'
             ;;
