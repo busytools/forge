@@ -18,6 +18,9 @@ mod errors;
 #[path = "python_parity/integration.rs"]
 mod integration;
 
+#[path = "python_parity/mcp_large_output.rs"]
+mod mcp_large_output;
+
 #[path = "python_parity/message_parser.rs"]
 mod message_parser;
 
