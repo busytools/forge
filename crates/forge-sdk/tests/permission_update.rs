@@ -8,7 +8,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use forge_sdk::PermissionMode;
-use forge_sdk::permissions::{
+use forge_sdk::{
     PermissionBehavior, PermissionDecision, PermissionRuleValue, PermissionUpdate,
     PermissionUpdateDestination,
 };

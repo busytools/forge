@@ -2,7 +2,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use forge_sdk::hooks::{
+use forge_sdk::{
     BaseHookInput, HookDecision, HookKind, NotificationInput, PermissionRequestInput,
     PostToolUseFailureInput, PostToolUseInput, PreCompactInput, PreToolUseInput, StopInput,
     SubagentContext, SubagentStartInput, SubagentStopInput, UserPromptSubmitInput,

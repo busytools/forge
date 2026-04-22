@@ -9,7 +9,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use forge_sdk::messages::Message;
+use forge_sdk::Message;
 use serde_json::json;
 
 /// Minimum-viable result frame — only the six required fields. Python

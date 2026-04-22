@@ -8,7 +8,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use forge_sdk::hooks::{
+use forge_sdk::{
     HookSpecificOutput, NotificationHookSpecificOutput, PermissionRequestHookSpecificOutput,
     PostToolUseFailureHookSpecificOutput, PostToolUseHookSpecificOutput,
     PreToolUseHookSpecificOutput, PreToolUsePermissionDecision, SessionStartHookSpecificOutput,

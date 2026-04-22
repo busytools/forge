@@ -6,8 +6,8 @@
 //! ```
 
 use anyhow::Result;
+use forge_sdk::Message;
 use forge_sdk::mcp::{McpServerBuilder, ToolInput, ToolOutput};
-use forge_sdk::messages::Message;
 use forge_sdk::{Client, OptionsBuilder, PermissionMode, tool};
 
 tool! {

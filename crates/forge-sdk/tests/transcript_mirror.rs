@@ -7,7 +7,7 @@
 
 use std::sync::Arc;
 
-use forge_sdk::messages::Message;
+use forge_sdk::Message;
 use forge_sdk::session_store::{MemorySessionStore, SessionKey, SessionStore};
 use forge_sdk::{Client, OptionsBuilder};
 

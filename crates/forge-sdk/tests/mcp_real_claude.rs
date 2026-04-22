@@ -13,8 +13,8 @@
 )]
 
 use async_trait::async_trait;
+use forge_sdk::Message;
 use forge_sdk::mcp::{McpServerBuilder, Tool, ToolInput, ToolOutput};
-use forge_sdk::messages::Message;
 use forge_sdk::{Client, OptionsBuilder, PermissionMode};
 use serde_json::json;
 

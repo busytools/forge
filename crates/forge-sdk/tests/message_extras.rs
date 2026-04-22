@@ -9,7 +9,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use forge_sdk::messages::{AssistantMessageError, Message};
+use forge_sdk::{AssistantMessageError, Message};
 use serde_json::json;
 
 #[test]
