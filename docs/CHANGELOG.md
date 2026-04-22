@@ -9,6 +9,80 @@ Version numbers mirror the Python SDK release they target parity with
 
 ## [Unreleased]
 
+### Added — parity-gap closures (seventh pass, 2026-04-22)
+
+- **`query_stream()`** returning `impl Stream<Item = Result<Message>>`
+  alongside the Vec-collecting `query()`. Mirrors Python's
+  `query() -> AsyncIterator[Message]` return shape. Driven by a
+  spawned task + mpsc channel; consumer-drop tears down cleanly.
+  Adds `tokio-stream = "0.1"` to workspace deps.
+- **`SessionSummaryEntry`** + **`fold_session_summary()`** +
+  **`summary_entry_to_sdk_info()`** — pure-fn port of Python's
+  `_internal/session_summary.py`. Stores call `fold_session_summary`
+  from inside `append()` to maintain per-session summary sidecars
+  without re-reading the transcript. Lives in `src/session/summary.rs`.
+- **`SessionStore::list_session_summaries()`** — optional trait
+  method (default `NotImplemented`). Stores that maintain sidecars
+  override to expose the `list_sessions_from_store()` fast path.
+- **`pub trait Transport`** + **`Client::spawn_with_transport()`** —
+  carves an extensibility seam out of the concrete `Subprocess`.
+  Callers can now inject in-memory mocks, remote-SSH transports,
+  containerised spawn, etc. Mirrors Python's abstract `Transport`
+  base.
+- **`forge_sdk::testing::run_session_store_conformance()`** — 327-line
+  testing harness ported from Python's
+  `claude_agent_sdk.testing.session_store_conformance`. Third-party
+  `SessionStore` adapters call this to certify the 14 behavioural
+  contracts. Auto-probes optional methods via `NotImplemented`
+  detection; caller can also name methods to skip explicitly.
+
+### Changed — breaking (pre-release)
+
+- **`Client::sub`** internal field type changed from concrete
+  `Subprocess` to `Box<dyn Transport>`. Public API callers
+  unaffected; direct-access-to-sub callers (if any) must migrate.
+- **`Subprocess::shutdown(self)`** is now an alias for
+  `close(&mut self)`. The `&mut self` form is preferred; the
+  consuming form stays for backward compatibility.
+- **`MemorySessionStore::list_subkeys`** no longer applies
+  `sanitise()` to subpath strings. The conformance contract requires
+  verbatim round-trip — the prior sanitisation swapped `/` for `-`
+  in returned subpaths. Filesystem-backed stores (`FsSessionStore`)
+  still sanitise for on-disk layout as expected.
+
+### Added — Tier 6 test-mirror completion (sixth pass, 2026-04-22)
+
+Every in-scope Python test file (14/14) now has a named Rust
+counterpart in `tests/python_parity/`:
+
+- `types.rs` (45/45) · `rate_limit.rs` (5/5) ·
+  `subprocess_buffering.rs` (6/10 + 4 gap-docs) · `client.rs` (3/6
+  + 3 N/A) · `integration.rs` (5/5) · `mcp_large_output.rs` (12/15
+  + 3 blocked) · `query.rs` (5/17 + 12 N/A) · `transport.rs` (32/73
+  + 10 N/A) · `sessions.rs` (97/99 + 2 gaps) ·
+  `session_mutations.rs` (52/52) · `session_resume.rs` (7/38 + 31
+  N/A) · `session_helpers_store.rs` (41/41) ·
+  `transcript_mirror.rs` (33/33) · `tool_callbacks.rs` (18/18) ·
+  `sdk_mcp_integration.rs` (16/48 + 32 N/A) ·
+  `streaming_client.rs` (21/31 + 10 N/A).
+
+Out of scope (Python ecosystem-specific example stores):
+`test_example_redis_*`, `test_example_s3_*`, `test_example_postgres_*`.
+
+### Added — earlier 2026-04-22 rounds
+
+- Third pass: `ServerToolUse` + `ServerToolResult` content blocks
+  (advisor / web_search / web_fetch / code_execution family).
+  `test_message_parser.py` completed at 45/45 (tier 6).
+- Fourth pass: `project_key_for_directory` gap closures — NFC
+  normalisation on the canonicalised path + `Option<&str>` accepting
+  `None` to default to cwd. Adds `unicode-normalization` dep.
+  Breaking: signature changed from `&str` to `Option<&str>`.
+- Fifth pass: `validate_session_store_options` extracted as a pure
+  function at `session::validation::`. `Client::spawn` now routes
+  through it; the 6 Python `TestSessionStoreOptionsValidation` cases
+  are ported.
+
 ## [0.1.64] — 2026-04-21
 
 Deep-dive parity pass against Python `claude-agent-sdk` v0.1.64.
