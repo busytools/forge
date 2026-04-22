@@ -51,10 +51,12 @@ pub(crate) fn sanitize_path_public(name: &str) -> String {
 /// Map a directory path to the CLI's on-disk project key. Canonicalises
 /// the path first and then applies the CLI's JS-style sanitisation hash.
 /// Mirrors Python SDK's `project_key_for_directory`
-/// (`_internal/session_store.py`).
+/// (`_internal/session_store.py`). `None` defaults to `"."` (the
+/// process's current working directory), matching Python's
+/// `directory: str | Path | None = None` signature.
 #[must_use]
-pub fn project_key_for_directory(path: &str) -> String {
-    sanitize_path(&canonicalize_path(path))
+pub fn project_key_for_directory(path: Option<&str>) -> String {
+    sanitize_path(&canonicalize_path(path.unwrap_or(".")))
 }
 
 /// Resolve a directory to its realpath and apply NFC normalisation.
