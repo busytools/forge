@@ -18,6 +18,64 @@ This file is the single source of truth for **where forge-sdk is** relative to P
 
 Each entry below records one weekly parity check.
 
+### 2026-04-22 — second post-audit round (`parity-round-six` branch)
+
+Works through the remaining fresh-audit findings and the
+architecture-review paper cuts that were deferred after the wire
+closes landed.
+
+- **A1 — MessageParse sites use `Error::message_parse` constructor.**
+  42 production call sites migrated from the struct-literal form
+  `Error::MessageParse { reason, data: None }` to the cleaner
+  `Error::message_parse(reason)` / `message_parse_with_data(...)`
+  helpers introduced in pass 4. No behaviour change.
+- **N10 — `Message::System.data` preserves full dict.** Python's
+  `SystemMessage.data` includes `type`, `subtype`, `session_id`, plus
+  extras (`types.py:932-935`). forge-sdk's `serde(flatten)` was
+  consuming the first three. Fixed in the
+  `MessageRepr ↔ Message` bridge: rehydrate on the way in, strip
+  before re-flattening on the way out. Callers doing
+  `data["subtype"]` (Python idiom) now see the expected shape.
+- **N9 — `session_store + enable_file_checkpointing` refused at
+  spawn.** Mirrors Python
+  `_internal/session_store_validation.py:40-45`. Pre-flight
+  validation in `Client::spawn` returns `Error::MessageParse` rather
+  than letting the conflict surface as a confusing mid-session
+  divergence. Rule 1 (continue_conversation + store without
+  list_sessions) deliberately not ported — it requires a
+  reflection-style trait probe that's awkward in Rust.
+- **A2 — `ToolPermissionContext::with_signal` `#[doc(hidden)]`.**
+  The field is a Python placeholder for abort-signal wiring that
+  hasn't landed upstream; hide until Anthropic finishes it.
+- **A3 — Inline `sessions.rs::is_valid_uuid` thunk.** The 2-line
+  wrapper on `session_mutations::is_valid_uuid` was dead weight;
+  import the callee directly.
+- **A4 — `mcp.rs` re-exports `JsonRpc*` + `ServerInfo`.** The
+  `protocol` submodule had six types but only two were surfaced at
+  `mcp::*`. Now all six are re-exported for consistency.
+- **N6 — User prompt wire shape: bare string.** Python
+  `client.py:260-267` sends `{"content": prompt}` as a bare string;
+  forge-sdk was wrapping as `[{"type":"text","text":prompt}]`. Both
+  parse CLI-side but byte parity means matching Python's simpler
+  shape. Incoming parsing unaffected — `UserEnvelope`'s custom
+  deserialize already accepts both str and list.
+- **Tier 6 — `test_transport.py` argv subset ported.** 10 new
+  cases under `tests/python_parity/transport.rs` covering the
+  Python argv-shape smoke tests. Mirror coverage now 3 / 27 files
+  (`errors`, `message_parser`, `transport`).
+
+**Test count:** 287 tests + 3 ignored pass on `just check` (10 new
+in this round across all buckets). Paper cut A5 (double-exposed
+`public_types`/`hooks`/`permissions` modules as both `pub mod` and
+flat re-exports) deliberately not fixed — downgrade would break
+~15 test files. Tracked for a v0.2 surface reshape.
+
+**Remaining open** (tracked in handoff): N5 (`exclude_dynamic_sections`
+inside system_prompt preset), N8 (`AsyncHookJSONOutput`), N11
+(`Client` method verb-noun order), Python validation rule 1
+(`continue_conversation + session_store` requires `list_sessions`),
+and the full session-module cluster collapse (v0.2).
+
 ### 2026-04-22 — post-audit wire closes (`parity-post-audit` + `parity-closing` branches)
 
 Fresh-audit pass after the prior drops. Surfaced 12 findings; the five
