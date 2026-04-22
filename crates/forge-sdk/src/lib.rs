@@ -58,6 +58,11 @@ pub mod transport;
 
 pub use client::Client;
 pub use error::Error;
+// Top-level message + content re-exports so consumers can say
+// `use forge_sdk::{AssistantEnvelope, StopReason, RateLimitInfo, ...}`
+// instead of reaching through `forge_sdk::messages::*`. Matches the
+// Python SDK's flat `__init__.py` surface.
+pub use content::ContentBlock;
 pub use hooks::{
     BaseHookInput, HookCallback, HookContext, HookDecision, HookKind, HookSpecificOutput, Hooks,
     HooksBuilder, NotificationHookSpecificOutput, NotificationInput,
@@ -67,6 +72,10 @@ pub use hooks::{
     PreToolUsePermissionDecision, SessionStartHookSpecificOutput, StopInput, SubagentContext,
     SubagentStartHookSpecificOutput, SubagentStartInput, SubagentStopInput,
     UserPromptSubmitHookSpecificOutput, UserPromptSubmitInput,
+};
+pub use messages::{
+    AssistantEnvelope, AssistantMessageError, Message, RateLimitInfo, RateLimitStatus,
+    RateLimitType, StopReason, TaskNotificationStatus, TaskUsage, Usage, UserEnvelope,
 };
 pub use options::{
     Options, OptionsBuilder, PermissionMode, SdkPluginConfig, SystemPromptKind, ThinkingConfig,

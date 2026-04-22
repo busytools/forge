@@ -283,8 +283,29 @@ pub enum AssistantMessageError {
 pub struct UserEnvelope {
     /// Fixed value `"user"`.
     pub role: String,
-    /// Content blocks — usually `ToolResult` blocks when reporting tool outputs.
+    /// Content blocks — usually `ToolResult` blocks when reporting
+    /// tool outputs. Wire shape is `list | str` per Python
+    /// `types.py:910` + `_internal/message_parser.py:89-94`: a bare
+    /// string is accepted on the way in and normalised into a single
+    /// [`ContentBlock::Text`] block; serialising always emits the
+    /// list form.
+    #[serde(deserialize_with = "deserialize_user_content")]
     pub content: Vec<ContentBlock>,
+}
+
+fn deserialize_user_content<'de, D>(de: D) -> Result<Vec<ContentBlock>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::Error as _;
+    let value = Value::deserialize(de)?;
+    match value {
+        Value::String(s) => Ok(vec![ContentBlock::Text { text: s }]),
+        Value::Array(_) => serde_json::from_value(value).map_err(D::Error::custom),
+        other => Err(D::Error::custom(format!(
+            "user message content must be str or list, got: {other}"
+        ))),
+    }
 }
 
 /// Anthropic API's stop-reason enum.
