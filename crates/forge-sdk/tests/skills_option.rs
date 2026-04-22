@@ -13,7 +13,9 @@ fn skills_default_empty() {
     assert!(opts.skills.is_empty());
     assert!(opts.allowed_tools.is_empty());
     assert!(opts.setting_sources.is_none());
-    assert!(!opts.exclude_dynamic_sections);
+    // Python `_internal/query.py:204` omits the field unless the
+    // caller set it; forge-sdk matches via Option<bool>.
+    assert!(opts.exclude_dynamic_sections.is_none());
 }
 
 #[test]
@@ -50,5 +52,5 @@ fn allowed_tools_round_trip() {
 #[test]
 fn exclude_dynamic_sections_toggles() {
     let opts = OptionsBuilder::new().exclude_dynamic_sections(true).build();
-    assert!(opts.exclude_dynamic_sections);
+    assert_eq!(opts.exclude_dynamic_sections, Some(true));
 }

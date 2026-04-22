@@ -112,7 +112,7 @@ pub struct Options {
     /// shape: `excludeDynamicSections` field in the `initialize`
     /// `control_request` (NOT a CLI flag — Python SDK delivers this via
     /// the control channel).
-    pub exclude_dynamic_sections: bool,
+    pub exclude_dynamic_sections: Option<bool>,
     /// Orthogonal permission-prompt tool. When set, passed as
     /// `--permission-prompt-tool <name>`. Mirrors Python
     /// `ClaudeAgentOptions.permission_prompt_tool_name`.
@@ -237,7 +237,7 @@ impl Default for Options {
             allowed_tools: Vec::new(),
             skills: Vec::new(),
             setting_sources: None,
-            exclude_dynamic_sections: false,
+            exclude_dynamic_sections: None,
             permission_prompt_tool_name: None,
             session_store: None,
             minimum_cli_version: Some("2.0.0".into()),
@@ -639,7 +639,7 @@ impl OptionsBuilder {
     /// the `initialize` `control_request`, not a CLI flag.
     #[must_use]
     pub fn exclude_dynamic_sections(mut self, yes: bool) -> Self {
-        self.inner.exclude_dynamic_sections = yes;
+        self.inner.exclude_dynamic_sections = Some(yes);
         self
     }
 
