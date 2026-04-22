@@ -24,6 +24,9 @@ mod mcp_large_output;
 #[path = "python_parity/query.rs"]
 mod query;
 
+#[path = "python_parity/sessions.rs"]
+mod sessions;
+
 #[path = "python_parity/message_parser.rs"]
 mod message_parser;
 
