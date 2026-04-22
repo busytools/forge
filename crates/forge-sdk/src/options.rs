@@ -516,6 +516,16 @@ impl OptionsBuilder {
         self
     }
 
+    /// Alias for [`binary`](Self::binary) — matches Python SDK's
+    /// `ClaudeAgentOptions.cli_path` field name so snippets porting
+    /// directly from Python compile unchanged. Accepts any path-like
+    /// value; forge-sdk stores it as the string the binary is
+    /// launched with.
+    #[must_use]
+    pub fn cli_path(self, cli_path: impl AsRef<std::path::Path>) -> Self {
+        self.binary(cli_path.as_ref().to_string_lossy().into_owned())
+    }
+
     /// Set the working directory for the subprocess.
     #[must_use]
     pub fn cwd(mut self, cwd: impl Into<PathBuf>) -> Self {

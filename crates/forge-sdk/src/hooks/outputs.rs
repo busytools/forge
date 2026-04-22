@@ -208,6 +208,15 @@ pub struct PermissionRequestHookSpecificOutput {
 /// untagged representation — each variant's inner struct already carries
 /// its own `hookEventName` discriminator, so probing by `hookEventName` is
 /// the right way to decide the variant on the wire.
+///
+/// **Note.** forge-sdk's internal write path constructs the concrete
+/// wrapper structs (`PreToolUseHookSpecificOutput` /
+/// `UserPromptSubmitHookSpecificOutput`) directly rather than pattern-
+/// matching on this enum — the dispatch lives in the callback handler.
+/// `HookSpecificOutput` is carried here purely for caller ergonomics:
+/// consumers that want to construct or inspect a response by event name
+/// have a typed union they can match on without reinventing the
+/// discriminator logic.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum HookSpecificOutput {

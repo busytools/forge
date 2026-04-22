@@ -374,6 +374,12 @@ pub struct RateLimitInfo {
         skip_serializing_if = "Option::is_none"
     )]
     pub overage_disabled_reason: Option<String>,
+    /// Echo of the raw CLI payload so callers can introspect fields
+    /// forge-sdk doesn't yet type. Mirrors Python's
+    /// `RateLimitInfo.raw` (`types.py:1083`); serde's `flatten` makes
+    /// this the catch-all bucket for unknown keys on the wire.
+    #[serde(flatten, default, skip_serializing_if = "serde_json::Map::is_empty")]
+    pub raw: serde_json::Map<String, serde_json::Value>,
 }
 
 /// Token-usage accounting.

@@ -37,10 +37,12 @@ const MAX_SANITIZED_LENGTH: usize = 200;
 /// the two implementations slice transcripts at the same boundary.
 const LITE_READ_BUF_SIZE: u64 = 65_536;
 
-/// Re-export of the internal path sanitiser for other modules that need
-/// to derive the same on-disk project-key layout the CLI uses.
+/// Crate-internal re-export of the path sanitiser — other modules need
+/// it to derive the same on-disk project-key layout the CLI uses. Not
+/// part of the public API; downstream consumers should call
+/// [`project_key_for_directory`] instead.
 #[must_use]
-pub fn sanitize_path_public(name: &str) -> String {
+pub(crate) fn sanitize_path_public(name: &str) -> String {
     sanitize_path(name)
 }
 

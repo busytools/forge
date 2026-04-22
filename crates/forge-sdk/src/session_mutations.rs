@@ -260,13 +260,14 @@ pub fn fork_session(
     })
 }
 
-/// Public wrapper so other modules (e.g. `sessions_store`) can reuse
-/// the same validator without duplicating the regex/format logic.
+/// Crate-internal wrapper so other modules (e.g. `sessions_store`) can
+/// reuse the same validator without duplicating the regex/format logic.
+/// Not part of the public API.
 ///
 /// # Errors
 ///
 /// [`Error::MessageParse`] when `s` is not a canonical 8-4-4-4-12 UUID.
-pub fn validate_uuid_public(s: &str) -> Result<(), Error> {
+pub(crate) fn validate_uuid_public(s: &str) -> Result<(), Error> {
     validate_uuid(s)
 }
 
