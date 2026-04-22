@@ -18,6 +18,70 @@ This file is the single source of truth for **where forge-sdk is** relative to P
 
 Each entry below records one weekly parity check.
 
+### 2026-04-22 — wire-protocol + API coverage fixes (`parity-wire-fixes` branch)
+
+Follow-up to the 2026-04-22 parity + architecture review
+(`audits/2026-04-22-parity-review.md`). Six verified wire-protocol
+bugs the earlier sweeps had missed, each shipped with regression
+tests against Python v0.1.64.
+
+- **C1 — `stream_event` + `error` frames rejected.** `codec.rs::decode_dispatch`
+  rejected both as unknown `type`. The CLI emits `stream_event`
+  whenever `Options::include_partial_messages` is set
+  (`types.py:1043-1050` + `message_parser.py:229-240`), and Python
+  injects synthetic `{"type":"error","error":...}` frames at
+  `_internal/query.py:315` when the read loop fails. Added
+  `Message::StreamEvent { uuid, session_id, event, parent_tool_use_id }`
+  and `Message::Error { error }` + matching codec dispatch.
+- **C2 — `Message::Result` missing 7 fields; `total_cost_usd` mis-typed.**
+  Rust had 8 fields and required `total_cost_usd: f64` + `usage:
+  Usage`. Python `data.get(...)` (`_internal/message_parser.py:205-227`)
+  leaves both optional — any free-tier or error-path result frame
+  would serde-reject. Now matches Python `ResultMessage`
+  (`types.py:1023-1039`): `total_cost_usd: Option<f64>`, `usage:
+  Option<Usage>`, plus new optional fields `stop_reason`, `result`,
+  `structured_output`, `model_usage` (camelCase wire key
+  `modelUsage`), `permission_denials`, `errors`, `uuid`.
+- **C3 — `SandboxSettings`, `SandboxNetworkConfig`, `SandboxIgnoreViolations`
+  had fabricated field names.** Every field was Rust-side invention
+  that the CLI doesn't recognise — the `--settings` JSON merge at
+  `options.rs:360-365` produced a shape the binary silently ignores.
+  Rewritten to Python v0.1.64 (`types.py:782-856`): `enabled`,
+  `autoAllowBashIfSandboxed`, `excludedCommands`,
+  `allowUnsandboxedCommands`, `network` (with `allowUnixSockets` /
+  `allowAllUnixSockets` / `allowLocalBinding` / `httpProxyPort` /
+  `socksProxyPort`), `ignoreViolations` (with `file` / `network`),
+  `enableWeakerNestedSandbox`.
+- **C4 — `Client::fork_session` phantom `control_request` subtype.**
+  Python has no runtime `fork_session` subtype; the method was
+  sending a request the CLI cannot handle and would always error in
+  production. Removed. Session forking lives in `Options::fork_session`
+  (spawn-time → `--fork-session`) and the offline
+  `session_mutations::fork_session` function.
+- **C5 — `--system-prompt ""` suppression silently dropped.** Python
+  (`subprocess_cli.py:209-210`) always emits one of the
+  `--system-prompt{,-file}` / `--append-system-prompt` forms —
+  including an explicit empty string when the option is unset, so the
+  CLI doesn't fall back to its builtin prompt. forge-sdk now matches
+  byte-for-byte.
+- **C6 — Hook callback response dropped `SyncHookJSONOutput` control
+  fields.** Python (`types.py:463-505` + `query.py:40-55`) forwards
+  `continue_`/`suppressOutput`/`stopReason`/`systemMessage` from the
+  callback to the CLI with `continue_` → `continue` wire rename;
+  forge-sdk's `HookDecision` modelled none of them, so a Python
+  callback that halted the agent via `continue: false` did nothing
+  in Rust. Added four builder methods (`with_continue`,
+  `with_suppress_output`, `with_stop_reason`, `with_system_message`)
+  + accessors + wire emission in `handle_hook_callback`.
+
+**Test count:** 239 tests + 3 ignored pass on `just check` (14 new
+across C1-C6). The parity-review report at
+`audits/2026-04-22-parity-review.md` catalogues all findings
+including the medium / minor / architectural items not touched in
+this drop (missing `Client::set_model` / `get_server_info` /
+`receive_response`; the session-module cluster reshape; dead public
+surface; etc.).
+
 ### 2026-04-22 — audit follow-up + lite read + test mirror kickoff (`audit-followup-parity` branch)
 
 Follow-up session after the 2026-04-22 audit landed (`c4df432`). Picked
