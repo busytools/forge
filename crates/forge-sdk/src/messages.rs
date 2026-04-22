@@ -27,6 +27,16 @@ pub enum Message {
         session_id: String,
         /// Parent tool-use id when this turn is a sub-agent spawned via `Task`.
         parent_tool_use_id: Option<String>,
+        /// Classification of a failure the CLI attributes to this turn
+        /// (e.g. `rate_limit`, `billing_error`). `None` for successful
+        /// turns. Ported from Python `AssistantMessage.error`
+        /// (`types.py:922` + `message_parser.py:137`).
+        error: Option<AssistantMessageError>,
+        /// Stable identifier for this assistant turn, used for file
+        /// checkpointing (`enable_file_checkpointing=true`) and as the
+        /// target of [`Client::rewind_files`](crate::Client::rewind_files).
+        /// Python `AssistantMessage.uuid` (`types.py:928`).
+        uuid: Option<String>,
     },
 
     /// A user turn — user prompts or tool-result envelopes.
@@ -37,6 +47,17 @@ pub enum Message {
         session_id: String,
         /// Parent tool-use id when this is a sub-agent turn.
         parent_tool_use_id: Option<String>,
+        /// Stable identifier for this user turn — the `user_message_id`
+        /// [`Client::rewind_files`](crate::Client::rewind_files) takes.
+        /// Python `UserMessage.uuid` (`types.py:910`). `None` unless the
+        /// CLI is configured to emit them
+        /// (`extra_args={"replay-user-messages": None}`).
+        uuid: Option<String>,
+        /// Raw tool-result payload the CLI attaches when this user turn
+        /// reports a tool's output. Python `UserMessage.tool_use_result`
+        /// (`types.py:912`); forge-sdk passes it through as a
+        /// [`Value`] since the upstream type is `dict[str, Any]`.
+        tool_use_result: Option<Value>,
     },
 
     /// Out-of-band system event — `subtype` discriminates (e.g. `"init"`).
@@ -216,7 +237,8 @@ pub enum Message {
 /// The Anthropic-API-shaped envelope inside an `Assistant` message.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AssistantEnvelope {
-    /// Message id from the Anthropic API.
+    /// Message id from the Anthropic API. Corresponds to Python's
+    /// `AssistantMessage.message_id` (`types.py:926`).
     pub id: String,
     /// Fixed value `"assistant"`.
     pub role: String,
@@ -230,8 +252,30 @@ pub struct AssistantEnvelope {
     /// Stop sequence that triggered end-of-turn, if any.
     #[serde(default)]
     pub stop_sequence: Option<String>,
-    /// Token usage for this turn.
-    pub usage: Usage,
+    /// Token usage for this turn. Optional — Python reads it as
+    /// `data["message"].get("usage")` (`message_parser.py:135`), and
+    /// error-path frames don't carry a usage block.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<Usage>,
+}
+
+/// Classification of a failure the CLI attributes to an assistant turn.
+/// Ported from Python `AssistantMessageError` union (`types.py:897-904`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AssistantMessageError {
+    /// The model couldn't be reached because authentication failed.
+    AuthenticationFailed,
+    /// The account hit a billing problem (e.g. no active credits).
+    BillingError,
+    /// Rate-limit rejection — retry after the window resets.
+    RateLimit,
+    /// The request was rejected as malformed.
+    InvalidRequest,
+    /// Generic server-side error.
+    ServerError,
+    /// Fallback for error classes forge-sdk doesn't yet recognise.
+    Unknown,
 }
 
 /// Envelope inside a `User` message.
@@ -399,12 +443,20 @@ enum MessageRepr {
         session_id: String,
         #[serde(default)]
         parent_tool_use_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<AssistantMessageError>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        uuid: Option<String>,
     },
     User {
         message: UserEnvelope,
         session_id: String,
         #[serde(default)]
         parent_tool_use_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        uuid: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tool_use_result: Option<Value>,
     },
     System(SystemRepr),
     RateLimitEvent {
@@ -523,19 +575,27 @@ impl From<MessageRepr> for Message {
                 message,
                 session_id,
                 parent_tool_use_id,
+                error,
+                uuid,
             } => Message::Assistant {
                 message,
                 session_id,
                 parent_tool_use_id,
+                error,
+                uuid,
             },
             MessageRepr::User {
                 message,
                 session_id,
                 parent_tool_use_id,
+                uuid,
+                tool_use_result,
             } => Message::User {
                 message,
                 session_id,
                 parent_tool_use_id,
+                uuid,
+                tool_use_result,
             },
             MessageRepr::System(SystemRepr::Typed(TypedSystemRepr::TaskStarted {
                 task_id,
@@ -666,19 +726,27 @@ impl From<Message> for MessageRepr {
                 message,
                 session_id,
                 parent_tool_use_id,
+                error,
+                uuid,
             } => MessageRepr::Assistant {
                 message,
                 session_id,
                 parent_tool_use_id,
+                error,
+                uuid,
             },
             Message::User {
                 message,
                 session_id,
                 parent_tool_use_id,
+                uuid,
+                tool_use_result,
             } => MessageRepr::User {
                 message,
                 session_id,
                 parent_tool_use_id,
+                uuid,
+                tool_use_result,
             },
             Message::System {
                 subtype,

@@ -25,12 +25,26 @@ pub struct ToolPermissionContext {
     /// Sub-agent identifier when the request came from a Task-spawned
     /// child agent. `None` for main-agent tool calls.
     pub agent_id: Option<String>,
+    /// Permission-rule suggestions the CLI attached to this request.
+    /// Typically populated when the user has in-flight workspace
+    /// permission prompts. Mirrors Python's
+    /// `ToolPermissionContext.suggestions` (`types.py:180`) — populated
+    /// from the `control_request`'s `permission_suggestions` list, with
+    /// unrecognised entries dropped.
+    pub suggestions: Vec<PermissionUpdate>,
+    /// Abort signal placeholder — Python reserves this field for future
+    /// abort-signal support (`types.py:178`). forge-sdk carries it
+    /// through as an opaque [`Value`] so callbacks can introspect the
+    /// payload once it's wired end-to-end.
+    pub signal: Option<Value>,
 }
 
 impl ToolPermissionContext {
     /// Construct a context. Public constructor needed because the struct is
     /// `#[non_exhaustive]` (struct-literal construction is blocked across
-    /// crate boundaries).
+    /// crate boundaries). `suggestions` and `signal` default to empty /
+    /// `None`; use [`with_suggestions`](Self::with_suggestions) and
+    /// [`with_signal`](Self::with_signal) to attach them.
     #[must_use]
     pub fn new(
         tool_name: impl Into<String>,
@@ -43,7 +57,24 @@ impl ToolPermissionContext {
             tool_input,
             tool_use_id: tool_use_id.into(),
             agent_id,
+            suggestions: Vec::new(),
+            signal: None,
         }
+    }
+
+    /// Attach permission-rule suggestions parsed from the control
+    /// request's `permission_suggestions` field.
+    #[must_use]
+    pub fn with_suggestions(mut self, suggestions: Vec<PermissionUpdate>) -> Self {
+        self.suggestions = suggestions;
+        self
+    }
+
+    /// Attach the abort-signal placeholder payload.
+    #[must_use]
+    pub fn with_signal(mut self, signal: Value) -> Self {
+        self.signal = Some(signal);
+        self
     }
 }
 

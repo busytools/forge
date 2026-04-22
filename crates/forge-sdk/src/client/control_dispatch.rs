@@ -56,15 +56,25 @@ impl Client {
                     input,
                     tool_use_id,
                     agent_id,
+                    permission_suggestions,
                     ..
                 },
             ) => {
+                // Decode Python's typed `PermissionUpdate` suggestions out
+                // of the raw `Vec<Value>` the decoder captured. Unrecog-
+                // nised entries drop silently so CLI schema evolution
+                // doesn't tank the callback.
+                let suggestions: Vec<crate::permissions::PermissionUpdate> = permission_suggestions
+                    .iter()
+                    .filter_map(|v| serde_json::from_value(v.clone()).ok())
+                    .collect();
                 let ctx = ToolPermissionContext::new(
                     tool_name.clone(),
                     input.clone(),
                     tool_use_id.clone(),
                     agent_id.clone(),
-                );
+                )
+                .with_suggestions(suggestions);
                 cb.call(ctx).await
             }
             (None, ControlRequestKind::CanUseTool { .. }) => {
