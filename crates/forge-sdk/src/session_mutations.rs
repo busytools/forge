@@ -258,9 +258,11 @@ pub fn validate_uuid_public(s: &str) -> Result<(), Error> {
     validate_uuid(s)
 }
 
-fn validate_uuid(s: &str) -> Result<(), Error> {
+/// True if `s` is a canonical 8-4-4-4-12 hex UUID string. Shared across
+/// modules that need a stateless pre-flight check.
+pub(crate) fn is_valid_uuid(s: &str) -> bool {
     let parts: Vec<&str> = s.split('-').collect();
-    let ok = parts.len() == 5
+    parts.len() == 5
         && matches!(
             (
                 parts[0].len(),
@@ -273,8 +275,11 @@ fn validate_uuid(s: &str) -> Result<(), Error> {
         )
         && parts
             .iter()
-            .all(|p| p.chars().all(|c| c.is_ascii_hexdigit()));
-    if ok {
+            .all(|p| p.chars().all(|c| c.is_ascii_hexdigit()))
+}
+
+fn validate_uuid(s: &str) -> Result<(), Error> {
+    if is_valid_uuid(s) {
         Ok(())
     } else {
         Err(Error::MessageParse {
@@ -283,9 +288,16 @@ fn validate_uuid(s: &str) -> Result<(), Error> {
     }
 }
 
-fn projects_dir() -> PathBuf {
+/// Resolve the Claude projects directory. Honours `$CLAUDE_CONFIG_DIR`
+/// (ignoring empty-string values), else falls back to
+/// `~/.claude/projects`. Shared across `sessions`, `session_mutations`,
+/// and `client`.
+pub(crate) fn projects_dir() -> PathBuf {
     if let Ok(custom) = std::env::var("CLAUDE_CONFIG_DIR") {
-        return PathBuf::from(custom.trim_end_matches('/')).join("projects");
+        let trimmed = custom.trim_end_matches('/');
+        if !trimmed.is_empty() {
+            return PathBuf::from(trimmed).join("projects");
+        }
     }
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
     PathBuf::from(home).join(".claude").join("projects")

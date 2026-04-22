@@ -309,44 +309,11 @@ impl FsSessionStore {
     }
 }
 
-/// Python-SDK-compatible path sanitisation: `[^a-zA-Z0-9]` → `-`. For
-/// long inputs (>`MAX_SANITIZED_LENGTH`), truncates and appends a djb2
-/// hash suffix matching the CLI's hash-fallback directory naming
-/// (`_internal/sessions.py::_sanitize_path`).
+/// Python-SDK-compatible path sanitisation. Delegates to
+/// [`crate::sessions::sanitize_path_public`] — single authoritative
+/// implementation for on-disk project-key layout.
 pub(crate) fn sanitise(s: &str) -> String {
-    const MAX_SANITIZED_LENGTH: usize = 200;
-    let raw: String = s
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
-        .collect();
-    if raw.len() <= MAX_SANITIZED_LENGTH {
-        return raw;
-    }
-    // djb2-style hash matching the Python reference (JS-compatible 32-bit).
-    let mut h: i64 = 0;
-    for ch in s.chars() {
-        h = ((h << 5) - h + i64::from(ch as u32)) & 0xFFFF_FFFF;
-        if h >= 0x8000_0000 {
-            h -= 0x1_0000_0000;
-        }
-    }
-    let h = h.unsigned_abs();
-    let suffix = format_base36(h);
-    format!("{}-{suffix}", &raw[..MAX_SANITIZED_LENGTH])
-}
-
-fn format_base36(mut n: u64) -> String {
-    if n == 0 {
-        return "0".into();
-    }
-    let digits = b"0123456789abcdefghijklmnopqrstuvwxyz";
-    let mut out = Vec::new();
-    while n > 0 {
-        out.push(digits[(n % 36) as usize]);
-        n /= 36;
-    }
-    out.reverse();
-    String::from_utf8(out).unwrap_or_default()
+    crate::sessions::sanitize_path_public(s)
 }
 
 /// Derive a [`SessionKey`] from an absolute transcript file path relative

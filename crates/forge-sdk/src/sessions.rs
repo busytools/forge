@@ -195,19 +195,8 @@ fn simple_hash(s: &str) -> String {
     String::from_utf8(out).unwrap_or_default()
 }
 
-/// Resolve the projects directory, honouring `CLAUDE_CONFIG_DIR` first
-/// and falling back to `~/.claude/projects`.
-fn projects_dir() -> PathBuf {
-    if let Ok(custom) = std::env::var("CLAUDE_CONFIG_DIR") {
-        return PathBuf::from(custom.trim_end_matches('/')).join("projects");
-    }
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-    PathBuf::from(home).join(".claude").join("projects")
-}
+use crate::session_mutations::projects_dir;
 
-/// Resolve a project directory path to its sanitised on-disk key. Python
-/// canonicalises via `realpath`; we follow suit when the path exists,
-/// else fall back to the raw input.
 /// Resolve git-worktree paths for a directory via
 /// `git worktree list --porcelain`. Returns an empty Vec when the
 /// directory is not in a git repo or `git` isn't on `PATH`.
@@ -354,23 +343,7 @@ pub fn get_session_messages(session_id: &str, directory: Option<String>) -> Vec<
 }
 
 fn is_valid_uuid(s: &str) -> bool {
-    // 8-4-4-4-12 hex, accept both lower and upper case.
-    let parts: Vec<&str> = s.split('-').collect();
-    if parts.len() != 5 {
-        return false;
-    }
-    matches!(
-        (
-            parts[0].len(),
-            parts[1].len(),
-            parts[2].len(),
-            parts[3].len(),
-            parts[4].len()
-        ),
-        (8, 4, 4, 4, 12)
-    ) && parts
-        .iter()
-        .all(|p| p.chars().all(|c| c.is_ascii_hexdigit()))
+    crate::session_mutations::is_valid_uuid(s)
 }
 
 fn read_session_info(path: &Path) -> Option<SDKSessionInfo> {
