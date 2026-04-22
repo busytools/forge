@@ -359,6 +359,26 @@ fn hook_decision_control_fields_survive_deny() {
 }
 
 #[test]
+fn hook_decision_defer_carries_timeout() {
+    let d = HookDecision::defer(Some(5000));
+    assert!(d.is_deferred());
+    assert_eq!(d.defer_timeout_ms(), Some(5000));
+    // Allow / deny predicates don't apply to deferred hooks — is_allow
+    // is still true (no `decision: block` is emitted), but no updated
+    // input should surface.
+    assert!(d.is_allow());
+    assert!(d.updated_input().is_none());
+    assert!(d.reason().is_none());
+}
+
+#[test]
+fn hook_decision_defer_without_timeout_leaves_field_none() {
+    let d = HookDecision::defer(None);
+    assert!(d.is_deferred());
+    assert!(d.defer_timeout_ms().is_none());
+}
+
+#[test]
 fn hook_decision_control_fields_survive_passthrough() {
     let d = HookDecision::passthrough()
         .with_continue(true)

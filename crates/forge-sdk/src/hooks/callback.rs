@@ -32,6 +32,15 @@ enum HookDecisionKind {
     },
     /// No-op — purely observational; continue unchanged.
     Passthrough,
+    /// Deferred-execution ACK — ships Python's `AsyncHookJSONOutput`
+    /// shape (`{"async": true, "asyncTimeout": <ms>}`) so the CLI
+    /// knows not to wait on the hook's in-line response. The caller
+    /// is expected to deliver the real result out-of-band. Wiring
+    /// the out-of-band return path is follow-up work; forge-sdk
+    /// currently only emits the ACK.
+    Defer {
+        timeout_ms: Option<u64>,
+    },
 }
 
 impl HookDecision {
@@ -75,6 +84,34 @@ impl HookDecision {
     #[must_use]
     pub fn passthrough() -> Self {
         Self::with_inner(HookDecisionKind::Passthrough)
+    }
+
+    /// Defer the hook response. Emits Python's `AsyncHookJSONOutput`
+    /// shape (`types.py:448-460`): `{"async": true, "asyncTimeout":
+    /// <ms>?}`. Pass `None` for no explicit timeout. The CLI will
+    /// proceed without waiting for the hook's final verdict; the
+    /// caller is expected to deliver the real decision out-of-band
+    /// (wiring that channel is follow-up work — forge-sdk currently
+    /// emits only the ACK shape).
+    #[must_use]
+    pub fn defer(timeout_ms: Option<u64>) -> Self {
+        Self::with_inner(HookDecisionKind::Defer { timeout_ms })
+    }
+
+    /// True iff the decision was constructed via [`defer`](Self::defer).
+    #[must_use]
+    pub fn is_deferred(&self) -> bool {
+        matches!(self.inner, HookDecisionKind::Defer { .. })
+    }
+
+    /// Optional timeout in milliseconds attached to a
+    /// [`defer`](Self::defer) decision.
+    #[must_use]
+    pub fn defer_timeout_ms(&self) -> Option<u64> {
+        match &self.inner {
+            HookDecisionKind::Defer { timeout_ms } => *timeout_ms,
+            _ => None,
+        }
     }
 
     /// Attach the Python SDK's `continue_` control field (CLI wire name:

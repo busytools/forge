@@ -220,6 +220,31 @@ impl Client {
             HookDecision::passthrough()
         };
 
+        // Deferred hooks short-circuit the normal body-building. Python
+        // `types.py:448-460` defines `AsyncHookJSONOutput` as exactly
+        // `{"async": true, "asyncTimeout": <ms>?}` — no `decision` /
+        // `hookSpecificOutput` / control fields. Emit that shape and
+        // return.
+        if decision.is_deferred() {
+            let mut defer_body = serde_json::Map::new();
+            defer_body.insert("async".into(), serde_json::Value::Bool(true));
+            if let Some(timeout) = decision.defer_timeout_ms() {
+                defer_body.insert("asyncTimeout".into(), serde_json::json!(timeout));
+            }
+            let ctrl = ControlResponse {
+                ty: ControlResponseType::ControlResponse,
+                response: ControlResponseKind::Success {
+                    request_id: req.request_id.clone(),
+                    response: serde_json::Value::Object(defer_body),
+                },
+            };
+            let mut line = serde_json::to_string(&ctrl)
+                .map_err(|e| Error::message_parse(format!("deferred hook encode: {e}")))?;
+            line.push('\n');
+            self.sub.write_line(&line).await?;
+            return Ok(());
+        }
+
         let mut response_body = match (decision.is_allow(), decision.reason()) {
             (true, _) => serde_json::json!({}),
             (false, Some(reason)) => serde_json::json!({"decision": "block", "reason": reason}),
