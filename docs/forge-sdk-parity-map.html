@@ -96,6 +96,8 @@
   .chip.s-partial { border-color: #d9a44a; color: #e9c27d; }
   .chip.s-gap     { border-color: #c9524d; color: #dc8883; }
   .chip.s-skip    { border-color: #8a8a8a; color: #bbb; }
+  .chip.s-cut     { border-color: #cc4488; color: #e07dae; background: rgba(204,68,136,0.10); }
+  .chip.s-review  { border-color: #c27046; color: #e09770; background: rgba(194,112,70,0.08); }
 
   main {
     padding: 24px 32px 80px;
@@ -240,8 +242,19 @@
   .status-partial { color: #e9c27d; border-color: #d9a44a; background: rgba(217,164,74,0.08); }
   .status-gap     { color: #dc8883; border-color: #c9524d; background: rgba(201,82,77,0.12); }
   .status-skip    { color: #bbb;    border-color: #8a8a8a; background: rgba(138,138,138,0.08); }
+  .status-cut     { color: #e07dae; border-color: #cc4488; background: rgba(204,68,136,0.14); }
+  .status-review  { color: #e09770; border-color: #c27046; background: rgba(194,112,70,0.10); }
 
   tr.hidden { display: none; }
+
+  /* Post-parity cleanup: decided cuts strike through inline code columns.
+     data-s="review" rows stay visually normal — they're still under discussion. */
+  table.parity tbody tr[data-s="cut"] td.py,
+  table.parity tbody tr[data-s="cut"] td.rs {
+    text-decoration: line-through;
+    text-decoration-color: #cc4488;
+    opacity: 0.72;
+  }
 
   /* Summary + gaps boxes */
   .summary-grid {
@@ -261,6 +274,8 @@
   .stat.s-shape   { border-left-color: #5599dd; }
   .stat.s-partial { border-left-color: #d9a44a; }
   .stat.s-gap     { border-left-color: #c9524d; }
+  .stat.s-cut     { border-left-color: #cc4488; }
+  .stat.s-review  { border-left-color: #c27046; }
   .stat.s-total   { border-left-color: var(--primary); }
   .stat .label {
     color: var(--subtle);
@@ -328,6 +343,38 @@
     text-align: center;
     margin-top: 40px;
   }
+
+  /* Post-parity cleanup banner — appears above the diagram. */
+  .cleanup-banner {
+    background: linear-gradient(180deg, rgba(204,68,136,0.06), rgba(194,112,70,0.04));
+    border: 1px solid var(--border);
+    border-left: 3px solid #cc4488;
+    border-radius: 6px;
+    padding: 16px 18px;
+    margin: 0 0 24px;
+  }
+  .cleanup-banner h3 {
+    margin: 0 0 6px;
+    font-size: 15px;
+    color: #e07dae;
+    font-weight: 600;
+    letter-spacing: -0.2px;
+  }
+  .cleanup-banner p {
+    margin: 0 0 8px;
+    color: var(--muted);
+    font-size: 13px;
+    max-width: 900px;
+  }
+  .cleanup-banner p:last-child { margin-bottom: 0; }
+  .cleanup-banner .legend-mini {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    font-size: 12px;
+    margin-top: 6px;
+  }
+  .cleanup-banner .legend-mini .chip { padding: 2px 10px; border-radius: 10px; border: 1px solid var(--border); }
 </style>
 </head>
 <body>
@@ -352,10 +399,39 @@
     <span class="chip s-partial">⚠ partial — most functionality, some gap</span>
     <span class="chip s-gap">✗ gap — not shipped</span>
     <span class="chip s-skip">∅ out of scope — deliberately skipped</span>
+    <span class="chip s-cut">✂ cut — decided to remove (post-parity cleanup)</span>
+    <span class="chip s-review">? review — under discussion for cut</span>
   </div>
 </header>
 
 <main>
+
+<!-- ─────────────────────────── Post-parity cleanup banner ─────────────────────────── -->
+<div class="cleanup-banner">
+  <h3>Post-parity cleanup — review in progress</h3>
+  <p>
+    Python-parity phase is done (764 + 107 tests green, 4 / 5 feature gaps closed, only
+    upstream-blocked <code>AsyncHookJSONOutput</code> remaining). This branch is the
+    cleanup pass: surfaces that exist for parity-completeness but add no value to what
+    we're actually building on top of the <code>claude</code> binary are being flagged
+    for removal. Two new states appear on the rows below:
+  </p>
+  <div class="legend-mini">
+    <span class="chip s-cut">✂ cut</span>
+    <span class="chip s-review">? review</span>
+  </div>
+  <p style="margin-top: 10px;">
+    <strong style="color: #e07dae;">✂ cut</strong> = decided, execution tracked as a
+    review-queue task and to-be-filed GitHub issue.
+    <strong style="color: #e09770;">? review</strong> = flagged for discussion, not yet
+    decided. Uncheck the matching chip at the top of the tables to hide each slice.
+  </p>
+  <p style="margin-top: 10px;">
+    <strong>End state of this branch:</strong> PR communicates the cut proposal visually.
+    Actual code deletion and follow-up work ship in separate PRs driven by the GitHub
+    issues created from the review queue.
+  </p>
+</div>
 
 <!-- ─────────────────────────── Diagram ─────────────────────────── -->
 <div class="diagram-wrap">
@@ -384,6 +460,8 @@ flowchart LR
   classDef partial fill:#2a2214,stroke:#d9a44a,color:#e9c27d,stroke-width:1.5px
   classDef gap     fill:#2a1818,stroke:#c9524d,color:#dc8883,stroke-width:1.5px
   classDef pyonly  fill:#1e1e1e,stroke:#8a8a8a,color:#bbb,stroke-width:1.5px,stroke-dasharray:4 3
+  classDef cut     fill:#2a1320,stroke:#cc4488,color:#e07dae,stroke-width:1.5px,stroke-dasharray:5 3
+  classDef review  fill:#2a1e16,stroke:#c27046,color:#e09770,stroke-width:1.5px,stroke-dasharray:2 2
 
   subgraph Entry [Entry points]
     Query["query() + query_stream()<br>Vec + Stream"]:::parity
@@ -511,6 +589,16 @@ flowchart LR
     <div class="val" id="stat-gap">—</div>
     <div class="desc">not shipped</div>
   </div>
+  <div class="stat s-cut">
+    <div class="label">cut</div>
+    <div class="val" id="stat-cut">—</div>
+    <div class="desc">decided — remove in follow-up PR</div>
+  </div>
+  <div class="stat s-review">
+    <div class="label">review</div>
+    <div class="val" id="stat-review">—</div>
+    <div class="desc">flagged — undecided</div>
+  </div>
 </div>
 
 <!-- ─────────────────────────── Controls ─────────────────────────── -->
@@ -522,6 +610,8 @@ flowchart LR
     <label><input type="checkbox" class="sfilter-box" value="partial" checked><span class="chip s-partial">⚠</span></label>
     <label><input type="checkbox" class="sfilter-box" value="gap" checked><span class="chip s-gap">✗</span></label>
     <label><input type="checkbox" class="sfilter-box" value="skip" checked><span class="chip s-skip">∅</span></label>
+    <label><input type="checkbox" class="sfilter-box" value="cut" checked><span class="chip s-cut">✂</span></label>
+    <label><input type="checkbox" class="sfilter-box" value="review" checked><span class="chip s-review">?</span></label>
   </span>
   <span class="hint">Toggle chips to slice; unchecking "parity" quickly surfaces every non-green row.</span>
 </div>
@@ -906,12 +996,12 @@ flowchart LR
   sboxes.forEach(b => b.addEventListener('change', applyFilter));
 
   // Populate summary counts
-  const counts = { parity: 0, shape: 0, partial: 0, gap: 0, skip: 0, total: 0 };
+  const counts = { parity: 0, shape: 0, partial: 0, gap: 0, skip: 0, cut: 0, review: 0, total: 0 };
   rows.forEach(r => {
     const s = r.getAttribute('data-s');
     if (counts[s] !== undefined) { counts[s]++; counts.total++; }
   });
-  ['parity', 'shape', 'partial', 'gap', 'total'].forEach(k => {
+  ['parity', 'shape', 'partial', 'gap', 'cut', 'review', 'total'].forEach(k => {
     const el = document.getElementById('stat-' + k);
     if (el) el.textContent = counts[k];
   });
