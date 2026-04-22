@@ -14,7 +14,6 @@
 //! `SessionStore`-backed `*_from_store` variants. These are all
 //! follow-up work.
 
-use std::collections::HashMap;
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
@@ -392,8 +391,6 @@ fn read_session_info(path: &Path) -> Option<SDKSessionInfo> {
     let mut tag: Option<String> = None;
     let mut created_at: Option<u64> = None;
     let mut summary: Option<String> = None;
-    let mut extras: HashMap<String, Value> = HashMap::new();
-
     for line in BufReader::new(file).lines().map_while(Result::ok) {
         if line.is_empty() {
             continue;
@@ -401,6 +398,9 @@ fn read_session_info(path: &Path) -> Option<SDKSessionInfo> {
         let Ok(value) = serde_json::from_str::<Value>(&line) else {
             continue;
         };
+        // first_prompt and created_at are FIRST-wins by design — the first
+        // user turn is the seed prompt; creation time is the earliest
+        // stamped entry.
         if first_prompt.is_none()
             && value.get("type").and_then(Value::as_str) == Some("user")
             && value.get("parent_tool_use_id").is_none_or(Value::is_null)
@@ -420,36 +420,28 @@ fn read_session_info(path: &Path) -> Option<SDKSessionInfo> {
                 }
             }
         }
-        if custom_title.is_none() {
-            if let Some(v) = value.get("customTitle").and_then(Value::as_str) {
-                custom_title = Some(v.to_string());
-            }
+        // All mutable metadata is LAST-wins — `rename_session` /
+        // `tag_session` append a new entry at the end of the file; the
+        // most recent wins.
+        if let Some(v) = value.get("customTitle").and_then(Value::as_str) {
+            custom_title = Some(v.to_string());
         }
-        if cwd.is_none() {
-            if let Some(v) = value.get("cwd").and_then(Value::as_str) {
-                cwd = Some(v.to_string());
-            }
+        if let Some(v) = value.get("cwd").and_then(Value::as_str) {
+            cwd = Some(v.to_string());
         }
-        if git_branch.is_none() {
-            if let Some(v) = value.get("gitBranch").and_then(Value::as_str) {
-                git_branch = Some(v.to_string());
-            }
+        if let Some(v) = value.get("gitBranch").and_then(Value::as_str) {
+            git_branch = Some(v.to_string());
         }
-        if tag.is_none() {
-            if let Some(v) = value.get("tag").and_then(Value::as_str) {
-                tag = Some(v.to_string());
-            }
+        if let Some(v) = value.get("tag").and_then(Value::as_str) {
+            // Empty tag means "cleared" — see `tag_session(None)`.
+            tag = if v.is_empty() {
+                None
+            } else {
+                Some(v.to_string())
+            };
         }
-        if summary.is_none() {
-            if let Some(v) = value.get("summary").and_then(Value::as_str) {
-                summary = Some(v.to_string());
-            }
-        }
-        // Keep the first-seen payload for later reference.
-        if let Some(obj) = value.as_object() {
-            for (k, v) in obj {
-                extras.entry(k.clone()).or_insert_with(|| v.clone());
-            }
+        if let Some(v) = value.get("summary").and_then(Value::as_str) {
+            summary = Some(v.to_string());
         }
     }
 
@@ -486,14 +478,27 @@ fn chrono_like_parse_ms(ts: &str) -> Result<u64, ()> {
     let hour: u32 = ts.get(11..13).and_then(|s| s.parse().ok()).ok_or(())?;
     let minute: u32 = ts.get(14..16).and_then(|s| s.parse().ok()).ok_or(())?;
     let second: u32 = ts.get(17..19).and_then(|s| s.parse().ok()).ok_or(())?;
+    // Sub-second fragment — normalise to 3-digit millis. "x.5Z" → 500,
+    // "x.123456Z" → 123 (not 123456, which was ~2 minutes wrong).
     let mut millis: u32 = 0;
     if bytes.get(19) == Some(&b'.') {
         let ms_end = ts.find('Z').unwrap_or(bytes.len());
-        millis = ts.get(20..ms_end).and_then(|s| s.parse().ok()).unwrap_or(0);
+        if let Some(frag) = ts.get(20..ms_end) {
+            let mut buf = String::with_capacity(3);
+            for ch in frag.chars().take(3) {
+                buf.push(ch);
+            }
+            while buf.len() < 3 {
+                buf.push('0');
+            }
+            millis = buf.parse::<u32>().unwrap_or(0).min(999);
+        }
     }
 
-    // Simple epoch conversion valid for 1970-02-01 through ~2200.
-    if year < 1970 {
+    // Simple epoch conversion valid for 1970-02-01 through ~2300. Cap
+    // the upper year so a malformed "99999-..." timestamp can't spin
+    // the leap-year loop ~98 000 iterations per entry.
+    if !(1970..=2300).contains(&year) {
         return Err(());
     }
     let mut days: u64 = 0;
