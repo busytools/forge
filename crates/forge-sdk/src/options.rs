@@ -379,12 +379,36 @@ impl Options {
 /// `str | SystemPromptPreset | SystemPromptFile` (`types.py:35-78`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SystemPromptKind {
-    /// Plain override — `--system-prompt <text>`.
+    /// Plain string override — `--system-prompt <text>`.
     Inline(String),
-    /// Preset with an append suffix — `--append-system-prompt <text>`.
-    PresetAppend(String),
+    /// Preset (currently only `claude_code`) with optional append + the
+    /// `exclude_dynamic_sections` signal that rides along inside the
+    /// `initialize` `control_request` instead of argv. Mirrors Python
+    /// `SystemPromptPreset` (`types.py:43-66`).
+    Preset {
+        /// Optional append text that lands on argv as
+        /// `--append-system-prompt <text>`.
+        append: Option<String>,
+        /// When `Some`, sent in the `initialize` body as
+        /// `excludeDynamicSections`. `None` omits the field, matching
+        /// Python's `_internal/query.py:204` conditional.
+        exclude_dynamic_sections: Option<bool>,
+    },
     /// File-backed prompt — `--system-prompt-file <path>`.
     File(std::path::PathBuf),
+}
+
+impl SystemPromptKind {
+    /// Convenience constructor for the `claude_code` preset with an
+    /// append string. Python `{"type": "preset", "preset":
+    /// "claude_code", "append": ...}`.
+    #[must_use]
+    pub fn preset_append(append: impl Into<String>) -> Self {
+        Self::Preset {
+            append: Some(append.into()),
+            exclude_dynamic_sections: None,
+        }
+    }
 }
 
 /// Tool-base selector. Python's `ToolsPreset` is a dict `{"type":"default"}`;

@@ -150,7 +150,17 @@ impl Client {
         } else {
             Some(skills_payload)
         };
-        let exclude_dynamic_sections = options.exclude_dynamic_sections;
+        // Derive `excludeDynamicSections` from either the preset
+        // (Python's canonical path — `types.py:43-66`) OR the
+        // Rust-ergonomic top-level `Options::exclude_dynamic_sections`
+        // shortcut. Preset wins when both are set.
+        let exclude_dynamic_sections = match &options.system_prompt {
+            Some(crate::options::SystemPromptKind::Preset {
+                exclude_dynamic_sections: Some(v),
+                ..
+            }) => Some(*v),
+            _ => options.exclude_dynamic_sections,
+        };
 
         let mut sub = Subprocess::spawn(&options).await?;
         let init_line = sub.read_line().await?.ok_or_else(|| Error::Connection {

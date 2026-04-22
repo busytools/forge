@@ -68,6 +68,22 @@ async fn exclude_dynamic_sections_when_set_is_included() {
 }
 
 #[tokio::test]
+async fn exclude_dynamic_sections_via_preset_wins() {
+    use forge_sdk::SystemPromptKind;
+    let req = capture_init(|b| {
+        // Top-level is false, preset flips to true — preset wins per
+        // Python types.py:43-66 (preset is the canonical path).
+        b.exclude_dynamic_sections(false)
+            .system_prompt(SystemPromptKind::Preset {
+                append: None,
+                exclude_dynamic_sections: Some(true),
+            })
+    })
+    .await;
+    assert_eq!(req["excludeDynamicSections"], true);
+}
+
+#[tokio::test]
 async fn skills_all_marker_omits_field() {
     // 'all' sentinel maps to --allowedTools only per Python; initialize
     // payload must NOT contain the skills list.
