@@ -18,6 +18,33 @@ This file is the single source of truth for **where forge-sdk is** relative to P
 
 Each entry below records one weekly parity check.
 
+### 2026-04-22 — server-tool blocks + Tier 6 parser close
+
+Porting the remaining `test_message_parser.py` fixtures surfaced a
+silent wire-parity gap: Python has `ServerToolUseBlock` and
+`ServerToolResultBlock` on `ContentBlock` (advisor / web_search /
+web_fetch / code_execution family) and forge-sdk was missing both —
+any assistant turn carrying one would have failed deserialisation.
+
+- **ContentBlock::ServerToolUse** — wire type `server_tool_use`, fields
+  `id`, `name`, `input`. `name` is kept as `String` rather than a
+  narrower Literal enum so new server-tool kinds don't require an SDK
+  bump.
+- **ContentBlock::ServerToolResult** — wire type `advisor_tool_result`,
+  fields `tool_use_id`, `content` (opaque `Value` since the result
+  shape is tool-specific: advisor emits `advisor_result` /
+  `advisor_redacted_result` / `advisor_tool_result_error`).
+- **Tier 6 — test_message_parser.py 45 / 45.** 16 new ports:
+  tool_use_result metadata, server_tool_use + advisor_tool_result +
+  redacted advisor result, assistant_message_inside_subagent,
+  missing-field rejection for user/assistant/system/result, assistant
+  `error=unknown` variant, assistant all-fields + optional-fields-absent,
+  result modelUsage/permission_denials/uuid/errors/no-errors.
+
+**Test count:** 320 tests + 3 ignored pass on `just check` (+16 new).
+Tier 6 mirror coverage: 3 / 27 upstream files (`errors`,
+`message_parser` 100%, `transport`).
+
 ### 2026-04-22 — closeout round (`parity-closeout` branch)
 
 Final pass through the remaining audit backlog. Everything the two
