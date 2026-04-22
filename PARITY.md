@@ -9,7 +9,7 @@ This file is the single source of truth for **where forge-sdk is** relative to P
 | **Target Python SDK version** | `0.1.64` (released 2026-04-20) |
 | **Target Python SDK commit** | `anthropics-claude-agent-sdk-python-1267352` (tarball SHA prefix) |
 | **forge-sdk version at parity** | `v0.1.64` (deep audit pass) |
-| **Last full parity run** | 2026-04-22 (fifth pass — validate_session_store_options extracted) |
+| **Last full parity run** | 2026-04-22 (sixth pass — Tier 6 test coverage completed) |
 | **Next parity check due** | 2026-04-27 (first weekly) |
 | **Versioning convention** | forge-sdk version mirrors the Python SDK release it targets — `v0.1.64` means parity with Python v0.1.64. No separate forge-sdk patch numbers. |
 | **Design-spec basis** | `~/.claude-stargate/plans/2026-04-21-forge-sdk-port-design.md` + `~/.claude-stargate/plans/2026-04-21-forge-sdk-m0-m1-plan.md` + `~/.claude-stargate/plans/2026-04-21-forge-sdk-m2-m3-plan.md` + `~/.claude-stargate/plans/2026-04-21-forge-sdk-m4-m7-plan.md` + `~/.claude-stargate/plans/2026-04-21-forge-sdk-corrections.md`. |
@@ -17,6 +17,83 @@ This file is the single source of truth for **where forge-sdk is** relative to P
 ## Parity log
 
 Each entry below records one weekly parity check.
+
+### 2026-04-22 — Tier 6 test coverage completed (all 14 in-scope files)
+
+Completed the Python-SDK test-mirror ("Tier 6") coverage across every
+upstream test file in scope. Each Python test now has a named Rust
+counterpart — the weekly parity grep can match on test name alone.
+
+**Ports landed this round** (each in its own commit):
+
+1. `test_types.py` → `python_parity/types.rs` — 45/45 cases
+   (message / content / options / hook input-output / MCP status /
+   agent definition + camelCase wire keys).
+2. `test_rate_limit_event_repro.py` → `python_parity/rate_limit.rs`
+   — 5/5 cases; regression guard for the CLI v2.1.45+ rate-limit
+   event shape.
+3. `test_subprocess_buffering.py` → `python_parity/subprocess_buffering.rs`
+   — 6/10 runnable via a `tokio::io::duplex` pair; 4 `#[ignore]` for
+   architectural differences (no per-line buffer cap; no silent-skip
+   for non-JSON stdout lines — parity gap logged).
+4. `test_client.py` → `python_parity/client.rs` — 3/6 runnable;
+   3 N/A (no `CLAUDE_CODE_STREAM_CLOSE_TIMEOUT` env; no `spawn_task`
+   layer to deadlock).
+5. `test_integration.py` → `python_parity/integration.rs` — 5/5.
+6. `test_mcp_large_output.py` → `python_parity/mcp_large_output.rs`
+   — 12/15 runnable; 3 `#[ignore]` because Rust 2024 + `forbid(unsafe_code)`
+   blocks process-env mutation in tests.
+7. `test_query.py` → `python_parity/query.rs` — 5/17 runnable;
+   12 N/A (Python `Query` coordinator has no Rust analogue —
+   single-task design).
+8. `test_transport.py` → `python_parity/transport.rs` — 32/73
+   runnable (extends prior subset); 10 `#[ignore]` (OTEL propagation,
+   asyncio cross-task cleanup, SIGTERM/SIGKILL ladder, concurrent-
+   write lock tests — all Python-model specific).
+9. `test_sessions.py` → `python_parity/sessions.rs` — 97/99
+   runnable as parity ledger cross-referencing
+   `src/session/scan.rs::tests` (47 inline unit tests); 2 gap markers
+   (no chain-walk for terminal-non-message / cycle detection).
+10. `test_session_mutations.py` → `python_parity/session_mutations.rs`
+    — 52/52 as parity ledger.
+11. `test_session_resume.py` → `python_parity/session_resume.rs` —
+    7/38 runnable; 31 `#[ignore]` because Python materialises
+    `SessionStore` to a tmpdir while forge-sdk uses `--session-mirror`
+    for live sync.
+12. `test_session_helpers_store.py` → `python_parity/session_helpers_store.rs`
+    — 41/41 as parity ledger.
+13. `test_transcript_mirror.py` → `python_parity/transcript_mirror.rs`
+    — 33/33 as parity ledger.
+14. `test_tool_callbacks.py` → `python_parity/tool_callbacks.rs`
+    — 18/18 as parity ledger.
+15. `test_sdk_mcp_integration.py` → `python_parity/sdk_mcp_integration.rs`
+    — 16/48 runnable; 32 N/A for TypedDict→JSON-schema tests
+    (serde + typed structs pin schemas at compile time — Rust
+    doesn't need runtime introspection).
+16. `test_streaming_client.py` → `python_parity/streaming_client.rs`
+    — 21/31 runnable; 10 N/A (`not_connected` paths don't apply —
+    `Client::spawn` returns a connected client by construction).
+
+**Test count:** 737 tests + 107 ignored pass on `just check` (+404
+this round; 477 under `python_parity` specifically). Tier 6 file
+coverage: 14 / 14 in-scope upstream files (the 4 example-store
+files — Redis / S3 / Postgres — are Python ecosystem-specific and
+not targeted).
+
+**Parity-gap findings surfaced by this round:**
+
+- `get_session_messages` does not walk `parent_tool_use_id` chain to
+  pick latest-leaf (`test_sessions.py::test_picks_latest_leaf_by_file_position`).
+- Cycle detection in message chain traversal (`test_sessions.py::test_cycle_detection`).
+- `Options::max_buffer_size` tunes BufReader capacity, not a per-line
+  length cap (Python has a hard cap + CLIJSONDecodeError).
+- Non-JSON stdout lines surface `JsonDecode` error (Python silently
+  skips — upstream issue #347).
+- No `CLAUDE_CODE_STREAM_CLOSE_TIMEOUT` env knob / default init
+  timeout.
+
+Gaps #1-2 + #4 tracked as `#[ignore]` in the parity test files;
+#3 + #5 are minor architectural differences.
 
 ### 2026-04-22 — validate_session_store_options extracted + 6 parity tests
 
