@@ -1,8 +1,9 @@
 //! Outbound `control_request` senders: the generic [`send_control`]
-//! primitive plus the eight typed wrappers consumers call
-//! (`interrupt`, `set_permission_mode`, `rewind_files`, `mcp_reconnect`,
-//! `mcp_toggle`, `stop_task`, `mcp_status`, `get_context_usage`),
-//! including `_raw` escape hatches for `mcp_status` and `get_context_usage`.
+//! primitive plus the nine typed wrappers consumers call
+//! (`interrupt`, `set_permission_mode`, `set_model`, `rewind_files`,
+//! `mcp_reconnect`, `mcp_toggle`, `stop_task`, `mcp_status`,
+//! `get_context_usage`), including `_raw` escape hatches for
+//! `mcp_status` and `get_context_usage`.
 //!
 //! Session forking lives elsewhere: the spawn-time
 //! [`Options::fork_session`](crate::Options) flag (surfaced via
@@ -123,6 +124,20 @@ impl Client {
             serde_json::json!({"mode": mode.as_cli_arg()}),
         )
         .await?;
+        Ok(())
+    }
+
+    /// Switch the model mid-session. Pass `Some("claude-sonnet-4-6")` or
+    /// similar to pick a specific model; `None` reverts to the CLI
+    /// default. Wire shape mirrors Python SDK `_internal/query.py:688-695`
+    /// — `{"subtype": "set_model", "model": <string or null>}`.
+    ///
+    /// # Errors
+    ///
+    /// See the outbound control error cases.
+    pub async fn set_model(&mut self, model: Option<&str>) -> Result<(), Error> {
+        self.send_control("set_model", serde_json::json!({"model": model}))
+            .await?;
         Ok(())
     }
 

@@ -15,10 +15,11 @@ fi
 # 1. Init message (stream-json `system`/`init`).
 printf '%s\n' '{"type":"system","subtype":"init","session_id":"mock-ctrl-001","cwd":"/tmp","tools":["Edit","Read"],"mcp_servers":[],"model":"claude-opus-4-5","permissionMode":"default","apiKeySource":"ANTHROPIC_API_KEY"}'
 
-# 2. Read initialize control_request and respond.
+# 2. Read initialize control_request and respond with a canned server-info
+#    body (commands + outputStyle) so Client::get_server_info exposes it.
 IFS= read -r init_req
 init_id=$(printf '%s' "$init_req" | python3 -c 'import sys, json; d=json.load(sys.stdin); print(d.get("request_id",""))' 2>/dev/null || echo "")
-printf '%s\n' "{\"type\":\"control_response\",\"response\":{\"subtype\":\"success\",\"request_id\":\"$init_id\",\"response\":{}}}"
+printf '%s\n' "{\"type\":\"control_response\",\"response\":{\"subtype\":\"success\",\"request_id\":\"$init_id\",\"response\":{\"commands\":[{\"name\":\"/help\"}],\"outputStyle\":\"default\"}}}"
 
 # 3. Loop: read one outbound control_request line, classify by subtype,
 # write back a matching control_response carrying a canned payload.

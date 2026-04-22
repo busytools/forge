@@ -40,6 +40,11 @@ pub struct Client {
     pub(crate) hook_callbacks: HashMap<String, Arc<dyn ErasedHookCallback>>,
     pub(crate) mirror_batcher: Option<TranscriptMirrorBatcher>,
     pub(crate) synth_messages: Option<mpsc::UnboundedReceiver<Message>>,
+    /// Response payload from the `initialize` `control_request`, cached so
+    /// [`get_server_info`](Self::get_server_info) can return it without
+    /// re-issuing the handshake. Python stores the same payload at
+    /// `_internal/query.py:214` (`self._initialization_result`).
+    pub(crate) initialization_result: Option<serde_json::Value>,
 }
 
 impl std::fmt::Debug for Client {
@@ -64,6 +69,10 @@ impl std::fmt::Debug for Client {
             .field(
                 "synth_messages",
                 &self.synth_messages.as_ref().map(|_| "<rx>"),
+            )
+            .field(
+                "initialization_result",
+                &self.initialization_result.as_ref().map(|_| "<cached>"),
             )
             .finish()
     }
@@ -148,6 +157,7 @@ impl Client {
             hook_callbacks,
             mirror_batcher,
             synth_messages,
+            initialization_result: None,
         };
         client
             .send_initialize(
@@ -162,9 +172,13 @@ impl Client {
 
     /// Send the `initialize` `control_request` and await its matching
     /// `control_response`. Python SDK does this right after receiving the
-    /// system/init message, before any user input.
+    /// system/init message, before any user input. The decoded response
+    /// body is cached on [`initialization_result`](Self::initialization_result)
+    /// so [`get_server_info`](Self::get_server_info) can surface it later
+    /// without a second round-trip (matches Python
+    /// `_internal/query.py:214`).
     ///
-    /// The body carries:
+    /// The request body carries:
     /// - `hooks` — `{event_name: [{matcher, hookCallbackIds, timeout}]}`
     /// - `excludeDynamicSections` — bool
     /// - `skills` — list of concrete skill names (the `"all"` sentinel
@@ -176,17 +190,36 @@ impl Client {
         exclude_dynamic_sections: bool,
         agents: serde_json::Value,
     ) -> Result<(), Error> {
-        self.send_control(
-            "initialize",
-            serde_json::json!({
-                "hooks": hooks,
-                "excludeDynamicSections": exclude_dynamic_sections,
-                "skills": skills,
-                "agents": agents,
-            }),
-        )
-        .await?;
+        let response = self
+            .send_control(
+                "initialize",
+                serde_json::json!({
+                    "hooks": hooks,
+                    "excludeDynamicSections": exclude_dynamic_sections,
+                    "skills": skills,
+                    "agents": agents,
+                }),
+            )
+            .await?;
+        // `send_control` returns `Value::Null` when the CLI replies with
+        // an empty success body; store `None` in that case so
+        // `get_server_info()` reflects "no info" cleanly.
+        self.initialization_result = if response.is_null() {
+            None
+        } else {
+            Some(response)
+        };
         Ok(())
+    }
+
+    /// Cached response from the `initialize` `control_request` — holds
+    /// the CLI's server capabilities, available commands, and output
+    /// styles. Returns `None` when the CLI didn't attach a body to its
+    /// initialize response. Mirrors Python SDK's
+    /// `ClaudeSDKClient.get_server_info` (`client.py:541-564`).
+    #[must_use]
+    pub fn get_server_info(&self) -> Option<&serde_json::Value> {
+        self.initialization_result.as_ref()
     }
 
     /// The session id captured from the init message.
@@ -297,6 +330,31 @@ impl Client {
         if let Some(batcher) = self.mirror_batcher.as_ref() {
             batcher.flush().await;
         }
+    }
+
+    /// Drain messages until and including a [`Message::Result`]. The
+    /// result frame IS included in the returned vector. Convenience over
+    /// [`next_event`](Self::next_event) for one-shot request/response
+    /// workflows where callers don't want to write their own termination
+    /// loop. Mirrors Python SDK's `ClaudeSDKClient.receive_response`
+    /// (`client.py:566-605`).
+    ///
+    /// Returns whatever was received before the subprocess closed if no
+    /// `Result` frame ever arrives.
+    ///
+    /// # Errors
+    ///
+    /// Any error [`next_event`](Self::next_event) surfaces.
+    pub async fn receive_response(&mut self) -> Result<Vec<Message>, Error> {
+        let mut msgs = Vec::new();
+        while let Some(msg) = self.next_event().await? {
+            let is_result = matches!(msg, Message::Result { .. });
+            msgs.push(msg);
+            if is_result {
+                break;
+            }
+        }
+        Ok(msgs)
     }
 
     /// Graceful shutdown. Closes stdin, waits for the subprocess to exit.
