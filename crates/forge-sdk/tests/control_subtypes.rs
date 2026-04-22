@@ -98,3 +98,36 @@ async fn get_context_usage_raw_returns_canned_payload() {
     );
     client.disconnect().await.expect("disconnect");
 }
+
+#[tokio::test]
+async fn set_model_round_trip_with_model() {
+    let mut client = spawn_client().await;
+    client
+        .set_model(Some("claude-sonnet-4-6"))
+        .await
+        .expect("set_model");
+    client.disconnect().await.expect("disconnect");
+}
+
+#[tokio::test]
+async fn set_model_round_trip_with_none_reverts_to_default() {
+    let mut client = spawn_client().await;
+    // Python accepts `model=None` to revert to CLI default; forge-sdk
+    // passes Option<&str>, so None serialises to JSON null.
+    client.set_model(None).await.expect("set_model");
+    client.disconnect().await.expect("disconnect");
+}
+
+#[tokio::test]
+async fn get_server_info_returns_cached_initialize_payload() {
+    // The mock replies to `initialize` with a canned
+    // `{"commands": [...], "outputStyle": "default"}` body. Client::spawn
+    // stores it so get_server_info() surfaces the payload later
+    // without re-issuing the handshake (mirrors Python
+    // ClaudeSDKClient.get_server_info — client.py:541-564).
+    let client = spawn_client().await;
+    let info = client.get_server_info().expect("initialize payload cached");
+    assert_eq!(info["outputStyle"], "default");
+    assert!(info["commands"].is_array(), "expected commands array");
+    client.disconnect().await.expect("disconnect");
+}
