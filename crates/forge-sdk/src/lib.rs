@@ -97,6 +97,8 @@ pub use session::store::{
 /// `InMemorySessionStore`; forge-sdk aliases for surface parity.
 pub use session::store::MemorySessionStore as InMemorySessionStore;
 
+pub use session::summary::{SessionSummaryEntry, fold_session_summary, summary_entry_to_sdk_info};
+
 #[doc(hidden)]
 pub use crate::mcp::macros::__private;
 

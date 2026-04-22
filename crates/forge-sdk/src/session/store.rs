@@ -138,6 +138,24 @@ pub trait SessionStore: Send + Sync {
         let _ = key;
         Err(SessionStoreError::NotImplemented)
     }
+
+    /// Return the full set of `SessionSummaryEntry` sidecars for
+    /// `project_key`. Stores that maintain incremental summaries via
+    /// [`fold_session_summary`](crate::fold_session_summary) inside
+    /// `append()` should override this so
+    /// `list_sessions_from_store()` can fetch metadata in a single
+    /// call instead of N per-session `load()`s.
+    ///
+    /// Default: returns `NotImplemented` to signal the fast path is
+    /// unavailable. Callers are expected to fall back to per-session
+    /// `load()`.
+    async fn list_session_summaries(
+        &self,
+        project_key: &str,
+    ) -> Result<Vec<crate::session::summary::SessionSummaryEntry>, SessionStoreError> {
+        let _ = project_key;
+        Err(SessionStoreError::NotImplemented)
+    }
 }
 
 /// Error surface for [`SessionStore`].

@@ -641,7 +641,7 @@ fn extract_first_prompt_from_head(head: &str) -> Option<String> {
 }
 
 /// Extract `<command-name>CMD</command-name>` when present.
-fn extract_command_name(s: &str) -> Option<String> {
+pub(crate) fn extract_command_name(s: &str) -> Option<String> {
     const OPEN: &str = "<command-name>";
     const CLOSE: &str = "</command-name>";
     let open = s.find(OPEN)?;
@@ -651,7 +651,7 @@ fn extract_command_name(s: &str) -> Option<String> {
 }
 
 /// Fixed-prefix counterpart to Python's `_SKIP_FIRST_PROMPT_PATTERN`.
-fn should_skip_first_prompt(s: &str) -> bool {
+pub(crate) fn should_skip_first_prompt(s: &str) -> bool {
     const PREFIXES: [&str; 4] = [
         "<local-command-stdout>",
         "<session-start-hook>",
@@ -739,7 +739,7 @@ fn parse_session_info_from_lite(
 
 /// Best-effort ISO-8601 → milliseconds converter. No chrono dep; handles
 /// the specific `YYYY-MM-DDTHH:MM:SS(.sss)?Z` shape the CLI emits.
-fn chrono_like_parse_ms(ts: &str) -> Result<u64, ()> {
+pub(crate) fn chrono_like_parse_ms(ts: &str) -> Result<u64, ()> {
     // Example: "2026-04-22T04:15:27.123Z"
     let bytes = ts.as_bytes();
     if bytes.len() < 20 || !ts.ends_with('Z') {
