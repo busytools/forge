@@ -18,7 +18,7 @@ This file is the single source of truth for **where forge-sdk is** relative to P
 
 Each entry below records one weekly parity check.
 
-### 2026-04-22 — server-tool blocks + Tier 6 parser close
+### 2026-04-22 — server-tool blocks + Tier 6 parser close + project_key port
 
 Porting the remaining `test_message_parser.py` fixtures surfaced a
 silent wire-parity gap: Python has `ServerToolUseBlock` and
@@ -40,10 +40,29 @@ any assistant turn carrying one would have failed deserialisation.
   missing-field rejection for user/assistant/system/result, assistant
   `error=unknown` variant, assistant all-fields + optional-fields-absent,
   result modelUsage/permission_denials/uuid/errors/no-errors.
+- **Tier 6 — test_session_store_conformance.py 4 / 17.** Portable subset
+  only: `project_key_for_directory` sanitises non-alphanumerics,
+  produces stable keys, canonicalises relative paths, and uses the
+  djb2 hash suffix on overlong paths. Conformance harness +
+  `validate_session_store_options` + NFC + no-arg default all deferred
+  (reasons in `session_store_conformance.rs` module doc).
 
-**Test count:** 320 tests + 3 ignored pass on `just check` (+16 new).
-Tier 6 mirror coverage: 3 / 27 upstream files (`errors`,
-`message_parser` 100%, `transport`).
+**Test count:** 324 tests + 3 ignored pass on `just check` (+20 new).
+Tier 6 mirror coverage: 4 / 27 upstream files (`errors`,
+`message_parser` 100%, `session_store_conformance` 24%, `transport`).
+
+**Parity gaps surfaced this round (both in `project_key_for_directory`):**
+
+1. **No-arg default.** Python's
+   `project_key_for_directory(directory=None)` defaults to cwd;
+   forge-sdk's takes `path: &str` only. Minor API shape gap.
+2. **NFC normalisation.** Python runs
+   `unicodedata.normalize("NFC", realpath(d))` before hashing;
+   forge-sdk calls `fs::canonicalize` only. On macOS HFS+ a
+   decomposed path (`cafe\\u0301`) would derive a different
+   `project_key` than the CLI's canonical NFC form — `store.load`
+   silently misses. Fix needs `unicode-normalization` dep; tracked for
+   a follow-up.
 
 ### 2026-04-22 — closeout round (`parity-closeout` branch)
 
