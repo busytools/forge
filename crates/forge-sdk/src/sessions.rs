@@ -28,6 +28,7 @@ use std::path::{Path, PathBuf};
 use serde_json::Value;
 
 use crate::public_types::{SDKSessionInfo, SessionMessage, SessionMessageKind};
+use crate::session_mutations::is_valid_uuid;
 use crate::session_mutations::projects_dir;
 
 const MAX_SANITIZED_LENGTH: usize = 200;
@@ -409,10 +410,6 @@ pub fn get_session_messages(session_id: &str, directory: Option<String>) -> Vec<
         return Vec::new();
     };
     parse_session_messages(file)
-}
-
-fn is_valid_uuid(s: &str) -> bool {
-    crate::session_mutations::is_valid_uuid(s)
 }
 
 // ---------------------------------------------------------------------------

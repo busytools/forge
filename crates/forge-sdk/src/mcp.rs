@@ -13,6 +13,8 @@ pub mod protocol;
 pub mod server;
 pub mod tool;
 
-pub use protocol::{McpError, ToolDescription};
+pub use protocol::{
+    JsonRpcRequest, JsonRpcResponse, JsonRpcResult, McpError, ServerInfo, ToolDescription,
+};
 pub use server::{McpServer, McpServerBuilder};
 pub use tool::{Tool, ToolInput, ToolOutput, ToolOutputBlock};
