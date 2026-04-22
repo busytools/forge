@@ -371,9 +371,17 @@ fn settings_inline_json_merges_with_sandbox() {
 }
 
 #[test]
-fn enable_file_checkpointing_emits_bare_flag() {
+fn enable_file_checkpointing_does_not_emit_cli_flag() {
+    // Python SDK delivers this via the
+    // CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING env var
+    // (subprocess_cli.py:436-437), NOT a CLI flag. forge-sdk must
+    // match — a `--enable-file-checkpointing` flag would be
+    // unrecognised by the CLI and silently ignored.
     let argv = argv_of(OptionsBuilder::new().enable_file_checkpointing(true));
-    assert!(argv.iter().any(|a| a == "--enable-file-checkpointing"));
+    assert!(
+        !argv.iter().any(|a| a == "--enable-file-checkpointing"),
+        "flag must NOT be emitted — it's delivered via env var"
+    );
 }
 
 #[test]

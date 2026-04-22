@@ -113,11 +113,53 @@ impl Subprocess {
         if let Some(cwd) = &options.cwd {
             cmd.current_dir(cwd);
         }
+
+        // Env setup — mirrors Python
+        // `_internal/transport/subprocess_cli.py:395-437`:
+        //
+        // 1. Start from parent env, filtering out `CLAUDECODE` so SDK-
+        //    spawned subprocesses don't think they're nested inside a
+        //    Claude Code parent (upstream issue #573).
+        // 2. Inject `CLAUDE_CODE_ENTRYPOINT=sdk-py` (overridable via
+        //    `options.env`).
+        // 3. Let `options.env` override anything the SDK would
+        //    otherwise default, EXCEPT `CLAUDE_AGENT_SDK_VERSION` —
+        //    that one the SDK always stamps last.
+        // 4. Stamp `CLAUDE_AGENT_SDK_VERSION` as the final write.
+        // 5. Gate `CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING=true` on
+        //    `enable_file_checkpointing` (NOT a CLI flag — env var).
+        // 6. Set `PWD` to the chosen cwd when present.
+        cmd.env_remove("CLAUDECODE");
+        cmd.env("CLAUDE_CODE_ENTRYPOINT", "sdk-py");
         for (k, v) in &options.env {
             cmd.env(k, v);
         }
+        cmd.env("CLAUDE_AGENT_SDK_VERSION", env!("CARGO_PKG_VERSION"));
+        if options.enable_file_checkpointing {
+            cmd.env("CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING", "true");
+        }
+        if let Some(cwd) = &options.cwd {
+            cmd.env("PWD", cwd);
+        }
+
+        // `options.user` must setuid the child — Python
+        // `subprocess_cli.py:458` passes it to `anyio.open_process`'s
+        // `user=` kwarg. Rust's analogue is `tokio::process::Command`'s
+        // inherent `uid()` method on Unix; no-op on other targets so
+        // the option stays a Unix-only knob.
+        #[cfg(unix)]
         if let Some(user) = &options.user {
-            cmd.env("USER", user);
+            match user.parse::<u32>() {
+                Ok(uid) => {
+                    cmd.uid(uid);
+                }
+                Err(_) => {
+                    tracing::warn!(
+                        %user,
+                        "Options::user did not parse as a uid; ignoring (Python accepts a numeric uid)"
+                    );
+                }
+            }
         }
 
         cmd.stdin(Stdio::piped())

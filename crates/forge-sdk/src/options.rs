@@ -202,8 +202,13 @@ pub struct Options {
     /// stderr is forwarded to `callback(line)`. Drained in the
     /// background so the pipe never blocks.
     pub stderr: Option<std::sync::Arc<dyn Fn(String) + Send + Sync>>,
-    /// Toggle `--enable-file-checkpointing`. Python SDK v0.1.64
-    /// `ClaudeAgentOptions.enable_file_checkpointing` (`types.py:1408`).
+    /// Enable file-checkpoint tracking (required for
+    /// [`Client::rewind_files`](crate::Client::rewind_files)). Python
+    /// delivers this via the `CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING`
+    /// env var (`_internal/transport/subprocess_cli.py:436-437`), NOT a
+    /// CLI flag — forge-sdk matches. Field name mirrors Python
+    /// `ClaudeAgentOptions.enable_file_checkpointing`
+    /// (`types.py:1408`).
     pub enable_file_checkpointing: bool,
     /// Settings: either a file path or an inline JSON string. When
     /// combined with [`sandbox`](Self::sandbox), forge-sdk parses the JSON
@@ -896,7 +901,9 @@ impl OptionsBuilder {
         self
     }
 
-    /// Toggle `--enable-file-checkpointing`.
+    /// Enable file-checkpoint tracking. Delivered via the
+    /// `CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING` env var (matches
+    /// Python).
     #[must_use]
     pub fn enable_file_checkpointing(mut self, yes: bool) -> Self {
         self.inner.enable_file_checkpointing = yes;
