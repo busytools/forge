@@ -666,7 +666,17 @@ where
     async fn call_erased(&self, input: Value, context: HookContext) -> HookDecision {
         match serde_json::from_value::<I>(input) {
             Ok(typed) => self.inner.call(typed, context).await,
-            Err(_) => HookDecision::passthrough(),
+            Err(e) => {
+                // Security-permissive passthrough would silently skip the
+                // caller's hook logic. Log prominently so a CLI schema drift
+                // doesn't invisibly bypass the user's policy.
+                tracing::warn!(
+                    error = %e,
+                    hook_kind = ?context.kind,
+                    "hook input deserialise failed; passthrough (hook not consulted). CLI schema drift?"
+                );
+                HookDecision::passthrough()
+            }
         }
     }
 }

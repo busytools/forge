@@ -21,7 +21,7 @@ use forge_sdk::{
 use serde_json::json;
 
 fn argv_of(builder: OptionsBuilder) -> Vec<String> {
-    build_args(&builder.build())
+    build_args(&builder.build()).expect("build_args")
 }
 
 /// Locate the index of a flag and return (flag, value) pair when the flag
@@ -325,7 +325,7 @@ fn enable_file_checkpointing_emits_bare_flag() {
 fn permission_mode_non_default_emitted() {
     let mut options = OptionsBuilder::new().build();
     options.permission_mode = PermissionMode::AcceptEdits;
-    let argv = build_args(&options);
+    let argv = build_args(&options).expect("build_args");
     assert_eq!(
         find_flag(&argv, "--permission-mode"),
         Some(Some("acceptEdits"))
