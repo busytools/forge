@@ -186,8 +186,7 @@ fn system_prompt_file_uses_dedicated_flag() {
 #[test]
 fn system_prompt_preset_append_uses_dedicated_flag() {
     let argv = argv_of(
-        OptionsBuilder::new()
-            .system_prompt(SystemPromptKind::PresetAppend("extra instructions".into())),
+        OptionsBuilder::new().system_prompt(SystemPromptKind::preset_append("extra instructions")),
     );
     assert_eq!(
         find_flag(&argv, "--append-system-prompt"),

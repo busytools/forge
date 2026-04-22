@@ -44,9 +44,13 @@ pub fn build_args(options: &Options) -> Result<Vec<String>, Error> {
             args.push("--system-prompt-file".into());
             args.push(path.to_string_lossy().into_owned());
         }
-        Some(SystemPromptKind::PresetAppend(append)) => {
-            args.push("--append-system-prompt".into());
-            args.push(append.clone());
+        Some(SystemPromptKind::Preset { append, .. }) => {
+            // `exclude_dynamic_sections` is delivered in the initialize
+            // control_request body (client.rs), NOT on argv.
+            if let Some(text) = append {
+                args.push("--append-system-prompt".into());
+                args.push(text.clone());
+            }
         }
     }
 
