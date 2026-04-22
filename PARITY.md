@@ -9,7 +9,7 @@ This file is the single source of truth for **where forge-sdk is** relative to P
 | **Target Python SDK version** | `0.1.64` (released 2026-04-20) |
 | **Target Python SDK commit** | `anthropics-claude-agent-sdk-python-1267352` (tarball SHA prefix) |
 | **forge-sdk version at parity** | `v0.1.64` (deep audit pass) |
-| **Last full parity run** | 2026-04-22 (sixth pass — Tier 6 test coverage completed) |
+| **Last full parity run** | 2026-04-22 (seventh pass — 4/5 feature gaps closed) |
 | **Next parity check due** | 2026-04-27 (first weekly) |
 | **Versioning convention** | forge-sdk version mirrors the Python SDK release it targets — `v0.1.64` means parity with Python v0.1.64. No separate forge-sdk patch numbers. |
 | **Design-spec basis** | `~/.claude-subspace/plans/2026-04-21-forge-sdk-port-design.md` + `~/.claude-subspace/plans/2026-04-21-forge-sdk-m0-m1-plan.md` + `~/.claude-subspace/plans/2026-04-21-forge-sdk-m2-m3-plan.md` + `~/.claude-subspace/plans/2026-04-21-forge-sdk-m4-m7-plan.md` + `~/.claude-subspace/plans/2026-04-21-forge-sdk-corrections.md`. |
@@ -17,6 +17,51 @@ This file is the single source of truth for **where forge-sdk is** relative to P
 ## Parity log
 
 Each entry below records one weekly parity check.
+
+### 2026-04-22 — 4/5 feature gaps closed (query-Stream, SummaryEntry, Transport trait, conformance harness)
+
+Closes four of the five feature gaps that were left after the Tier 6
+test-coverage round. The fifth (`AsyncHookJSONOutput` out-of-band
+delivery) stays deferred because it's blocked on upstream.
+
+**Gaps closed this round:**
+
+1. **`query()` as a Stream.** Adds `query_stream()` returning
+   `impl Stream<Item = Result<Message>>` alongside the existing
+   Vec-collecting `query()`. Driven by a spawned task over an
+   `mpsc::unbounded_channel`; consumer-drop tears down cleanly. Adds
+   `tokio-stream = "0.1"` to workspace deps. 2 parity tests.
+
+2. **`SessionSummaryEntry` + `fold_session_summary`.** Ports Python's
+   `_internal/session_summary.py` as `src/session/summary.rs`.
+   Pure-fn fold + sidecar type + `summary_entry_to_sdk_info`
+   converter + `SessionStore::list_session_summaries` optional trait
+   method. 14 inline unit tests.
+
+3. **Public `Transport` trait + `Client::spawn_with_transport`.**
+   Carves the Python-style `Transport` abstract base out of the
+   concrete `Subprocess`. `Client::sub` is now `Box<dyn Transport>`;
+   `Subprocess::shutdown(self)` split into `end_input(&mut) +
+   close(&mut)` with idempotent close. New `spawn_with_transport`
+   constructor for injection. Breaking change for direct callers
+   (pre-release). 2 parity tests exercising an in-memory mock.
+
+4. **`run_session_store_conformance` testing harness.** Ports
+   Python's `claude_agent_sdk.testing.session_store_conformance`
+   (327 L) as `src/testing.rs`. 14 behavioural contracts encoded;
+   auto-probe for optional methods via `NotImplemented`. Caught a
+   real conformance bug in `MemorySessionStore::list_subkeys`
+   (subpath sanitisation leak) that's now fixed. 4 parity tests
+   cover the harness itself + the 5 previously-ignored
+   `TestInMemorySessionStore` markers are now harness-backed.
+
+**Test count:** 764 tests + 107 ignored pass on `just check` (+27
+this round). Parity map now shows only 1 open gap
+(`AsyncHookJSONOutput` delivery).
+
+**Still deferred:** out-of-band async hook response delivery — the
+ACK frame emits today but the follow-up channel is blocked on
+upstream finalising its protocol.
 
 ### 2026-04-22 — Tier 6 test coverage completed (all 14 in-scope files)
 
