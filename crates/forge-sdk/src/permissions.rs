@@ -70,7 +70,13 @@ impl ToolPermissionContext {
         self
     }
 
-    /// Attach the abort-signal placeholder payload.
+    /// Attach the abort-signal placeholder payload. Python reserves this
+    /// for future abort-signal wiring upstream and currently passes
+    /// `None` everywhere (`types.py:178`). Hidden from the public doc
+    /// surface until Anthropic wires the field end-to-end — forge-sdk
+    /// keeps the builder only to preserve source-level compatibility
+    /// when that day arrives.
+    #[doc(hidden)]
     #[must_use]
     pub fn with_signal(mut self, signal: Value) -> Self {
         self.signal = Some(signal);
