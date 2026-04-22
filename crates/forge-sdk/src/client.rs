@@ -23,6 +23,7 @@ use crate::messages::Message;
 use crate::options::Options;
 use crate::permissions::CanUseToolCallback;
 use crate::transcript_mirror_batcher::TranscriptMirrorBatcher;
+use crate::transport::Transport;
 use crate::transport::codec::{DecodedLine, decode_dispatch, decode_line};
 use crate::transport::process::Subprocess;
 
@@ -31,8 +32,12 @@ use crate::transport::process::Subprocess;
 /// Construct via [`spawn`](Self::spawn). The first line the binary emits is
 /// always a `system`/`init` message carrying the session id — `spawn`
 /// consumes it so callers start clean at the first `assistant` turn.
+///
+/// The transport is held as a `Box<dyn Transport>` so callers can inject
+/// an alternative I/O backend via
+/// [`spawn_with_transport`](Self::spawn_with_transport).
 pub struct Client {
-    pub(crate) sub: Subprocess,
+    pub(crate) sub: Box<dyn Transport>,
     pub(crate) session_id: String,
     pub(crate) line_number: u64,
     pub(crate) can_use_tool: Option<Arc<dyn CanUseToolCallback>>,
@@ -50,7 +55,7 @@ pub struct Client {
 impl std::fmt::Debug for Client {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Client")
-            .field("sub", &self.sub)
+            .field("sub", &"<transport>")
             .field("session_id", &self.session_id)
             .field("line_number", &self.line_number)
             .field(
@@ -84,8 +89,25 @@ impl Client {
     /// # Errors
     ///
     /// Any [`Error`] variant; see field docs.
-    #[allow(clippy::too_many_lines)]
     pub async fn spawn(options: Options) -> Result<Self, Error> {
+        // Validate BEFORE spawning the subprocess so misconfigured
+        // option combinations fail fast without an unneeded fork.
+        // (spawn_inner validates as well; doing it here short-circuits
+        // the Subprocess::spawn path for the common validation-error
+        // case. The re-check inside spawn_inner covers the
+        // spawn_with_transport entry point.)
+        crate::session::validation::validate_session_store_options(&options)?;
+        let sub = Subprocess::spawn(&options).await?;
+        Self::spawn_inner(options, Box::new(sub)).await
+    }
+
+    /// Common init path shared by [`spawn`](Self::spawn) and
+    /// [`spawn_with_transport`](Self::spawn_with_transport). Takes a
+    /// boxed transport the caller has already connected (or a
+    /// freshly-spawned `Subprocess`) and drains the init line +
+    /// initialize `control_request` exactly once.
+    #[allow(clippy::too_many_lines)]
+    async fn spawn_inner(options: Options, mut sub: Box<dyn Transport>) -> Result<Self, Error> {
         crate::session::validation::validate_session_store_options(&options)?;
 
         let can_use_tool = options.can_use_tool.clone();
@@ -135,9 +157,8 @@ impl Client {
             _ => options.exclude_dynamic_sections,
         };
 
-        let mut sub = Subprocess::spawn(&options).await?;
         let init_line = sub.read_line().await?.ok_or_else(|| Error::Connection {
-            reason: "subprocess closed stdout before init line".into(),
+            reason: "transport closed stdout before init line".into(),
         })?;
         let init = decode_line(&init_line, 1)?;
         let session_id = match &init {
@@ -403,10 +424,35 @@ impl Client {
     ///
     /// [`Error::Process`] when the subprocess exits non-zero, [`Error::Io`]
     /// for I/O failure.
-    pub async fn disconnect(self) -> Result<(), Error> {
+    pub async fn disconnect(mut self) -> Result<(), Error> {
         if let Some(batcher) = &self.mirror_batcher {
             batcher.close().await;
         }
-        self.sub.shutdown().await
+        self.sub.close().await
+    }
+
+    /// Spawn a client around a caller-supplied [`Transport`]
+    /// implementation, bypassing the internal `Subprocess` construction.
+    ///
+    /// Useful for testing with an in-memory transport, or for hosting
+    /// the `claude` binary in a non-local environment (remote SSH,
+    /// containerised sandbox, etc.). The passed transport MUST be
+    /// ready to serve I/O — this constructor immediately reads the
+    /// CLI's `system`/`init` line and sends the `initialize`
+    /// `control_request`.
+    ///
+    /// All initialisation logic (`session_store` validation, MCP host
+    /// wiring, hook registry, transcript-mirror batcher) runs
+    /// identically to [`spawn`](Self::spawn) — only the I/O
+    /// implementation differs.
+    ///
+    /// # Errors
+    ///
+    /// Any [`Error`] variant — see [`Client::spawn`].
+    pub async fn spawn_with_transport(
+        options: Options,
+        transport: Box<dyn Transport>,
+    ) -> Result<Self, Error> {
+        Self::spawn_inner(options, transport).await
     }
 }
