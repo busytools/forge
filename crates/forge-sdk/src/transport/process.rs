@@ -382,10 +382,15 @@ impl Subprocess {
             drain_stderr(stderr, stderr_callback).await;
         });
 
+        let stdout_reader = match options.max_buffer_size {
+            Some(n) if n > 0 => BufReader::with_capacity(n, stdout),
+            _ => BufReader::new(stdout),
+        };
+
         Ok(Self {
             child,
             stdin,
-            stdout: BufReader::new(stdout),
+            stdout: stdout_reader,
             stderr_task: Some(stderr_task),
             line_buf: String::new(),
         })
