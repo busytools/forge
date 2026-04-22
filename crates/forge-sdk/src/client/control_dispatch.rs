@@ -12,10 +12,8 @@ use crate::control::{
     AllowBehavior, ControlRequest, ControlRequestKind, ControlResponse, ControlResponseKind,
     ControlResponseType,
 };
-use crate::hooks::{
-    HookContext, HookDecision, HookKind, PreToolUseHookSpecificOutput,
-    UserPromptSubmitHookSpecificOutput,
-};
+use crate::hooks::outputs::encode_updated_input_wrapper;
+use crate::hooks::{HookContext, HookDecision, HookKind};
 use crate::mcp::protocol::JsonRpcRequest;
 use crate::permissions::{PermissionDecision, ToolPermissionContext};
 
@@ -191,7 +189,6 @@ impl Client {
     /// Handle a `hook_callback` control request — dispatch by opaque
     /// `callback_id` and emit the appropriate `hookSpecificOutput` wrapper
     /// per event kind.
-    #[allow(clippy::too_many_lines)]
     async fn handle_hook_callback(
         &mut self,
         req: &ControlRequest,
@@ -229,70 +226,11 @@ impl Client {
             (false, None) => serde_json::json!({"decision": "block"}),
         };
 
-        if let Some(updated) = decision.updated_input() {
-            let wrapper = match kind {
-                HookKind::PreToolUse => {
-                    let typed = PreToolUseHookSpecificOutput {
-                        updated_input: Some(updated.clone()),
-                        ..Default::default()
-                    };
-                    serde_json::to_value(typed)
-                        .map_err(|e| {
-                            tracing::warn!(
-                                ?kind,
-                                error = %e,
-                                "PreToolUse hookSpecificOutput serialise failed; \
-                                 dropping updated_input"
-                            );
-                        })
-                        .ok()
-                }
-                HookKind::UserPromptSubmit => {
-                    // Upstream `UserPromptSubmitHookSpecificOutput` only
-                    // carries `additionalContext: str`. If the caller hands
-                    // us a JSON string, forward it there; otherwise drop the
-                    // payload and warn — there is no wire field to land a
-                    // structured replacement.
-                    updated.as_str().map_or_else(
-                        || {
-                            tracing::warn!(
-                                ?kind,
-                                "UserPromptSubmit replace_input expects a JSON string \
-                                 (used as additionalContext); dropping non-string payload"
-                            );
-                            None
-                        },
-                        |s| {
-                            let typed = UserPromptSubmitHookSpecificOutput {
-                                additional_context: Some(s.to_string()),
-                                ..Default::default()
-                            };
-                            serde_json::to_value(typed)
-                                .map_err(|e| {
-                                    tracing::warn!(
-                                        ?kind,
-                                        error = %e,
-                                        "UserPromptSubmit hookSpecificOutput serialise failed; \
-                                         dropping updated_input"
-                                    );
-                                })
-                                .ok()
-                        },
-                    )
-                }
-                _ => {
-                    tracing::warn!(
-                        ?kind,
-                        "hook returned updated_input but hook kind doesn't support it; ignoring"
-                    );
-                    None
-                }
-            };
-            if let Some(w) = wrapper
-                && let Some(map) = response_body.as_object_mut()
-            {
-                map.insert("hookSpecificOutput".into(), w);
-            }
+        if let Some(updated) = decision.updated_input()
+            && let Some(wrapper) = encode_updated_input_wrapper(kind, updated)
+            && let Some(map) = response_body.as_object_mut()
+        {
+            map.insert("hookSpecificOutput".into(), wrapper);
         }
 
         let ctrl = ControlResponse {

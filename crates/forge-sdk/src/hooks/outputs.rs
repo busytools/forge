@@ -10,6 +10,8 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use super::HookKind;
+
 /// Permission decision a `PreToolUse` hook can express. Mirrors Python's
 /// `Literal["allow", "deny", "ask"]`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -225,4 +227,74 @@ pub enum HookSpecificOutput {
     SubagentStart(SubagentStartHookSpecificOutput),
     /// `PermissionRequest` event output.
     PermissionRequest(PermissionRequestHookSpecificOutput),
+}
+
+/// Encode a `replace_input` [`crate::hooks::HookDecision`] into a
+/// `hookSpecificOutput` wrapper for the given hook kind.
+///
+/// Returns `None` when the hook kind has no wire field for an input
+/// override (anything other than `PreToolUse` / `UserPromptSubmit`) or
+/// when the supplied value doesn't match the wrapper's expected shape
+/// (e.g. a non-string payload for `UserPromptSubmit`, whose wire struct
+/// only carries `additionalContext: str`). Emits a `tracing::warn!` in
+/// every drop path so misuse is visible rather than silent.
+pub(crate) fn encode_updated_input_wrapper(kind: HookKind, updated: &Value) -> Option<Value> {
+    match kind {
+        HookKind::PreToolUse => {
+            let typed = PreToolUseHookSpecificOutput {
+                updated_input: Some(updated.clone()),
+                ..Default::default()
+            };
+            serde_json::to_value(typed)
+                .map_err(|e| {
+                    tracing::warn!(
+                        ?kind,
+                        error = %e,
+                        "PreToolUse hookSpecificOutput serialise failed; \
+                         dropping updated_input"
+                    );
+                })
+                .ok()
+        }
+        HookKind::UserPromptSubmit => {
+            // Upstream `UserPromptSubmitHookSpecificOutput` only carries
+            // `additionalContext: str`. If the caller hands us a JSON
+            // string, forward it there; otherwise drop the payload and
+            // warn — there is no wire field to land a structured
+            // replacement.
+            updated.as_str().map_or_else(
+                || {
+                    tracing::warn!(
+                        ?kind,
+                        "UserPromptSubmit replace_input expects a JSON string \
+                         (used as additionalContext); dropping non-string payload"
+                    );
+                    None
+                },
+                |s| {
+                    let typed = UserPromptSubmitHookSpecificOutput {
+                        additional_context: Some(s.to_string()),
+                        ..Default::default()
+                    };
+                    serde_json::to_value(typed)
+                        .map_err(|e| {
+                            tracing::warn!(
+                                ?kind,
+                                error = %e,
+                                "UserPromptSubmit hookSpecificOutput serialise failed; \
+                                 dropping updated_input"
+                            );
+                        })
+                        .ok()
+                },
+            )
+        }
+        _ => {
+            tracing::warn!(
+                ?kind,
+                "hook returned updated_input but hook kind doesn't support it; ignoring"
+            );
+            None
+        }
+    }
 }
