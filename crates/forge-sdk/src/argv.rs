@@ -163,9 +163,9 @@ pub fn build_args(options: &Options) -> Result<Vec<String>, Error> {
     if options.fork_session {
         args.push("--fork-session".into());
     }
-    if options.enable_file_checkpointing {
-        args.push("--enable-file-checkpointing".into());
-    }
+    // NB: enable_file_checkpointing is delivered via the
+    // CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING env var, not a CLI flag
+    // (Python subprocess_cli.py:436-437). Wired in transport/process.rs.
     if options.session_store.is_some() {
         args.push("--session-mirror".into());
     }
