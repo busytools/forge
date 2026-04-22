@@ -451,3 +451,304 @@ fn parse_result_message_with_null_stop_reason() {
     };
     assert!(stop_reason.is_none());
 }
+
+// --- Task lifecycle -------------------------------------------------
+
+/// Ported from `test_parse_task_started_message`.
+#[test]
+fn parse_task_started_message() {
+    let data = json!({
+        "type": "system",
+        "subtype": "task_started",
+        "task_id": "task-abc",
+        "tool_use_id": "toolu_01",
+        "description": "Reticulating splines",
+        "task_type": "background",
+        "uuid": "uuid-1",
+        "session_id": "session-1"
+    });
+    let msg: Message = serde_json::from_value(data).expect("parse");
+    let Message::TaskStarted {
+        task_id,
+        description,
+        uuid,
+        session_id,
+        tool_use_id,
+        task_type,
+    } = msg
+    else {
+        panic!("expected TaskStarted");
+    };
+    assert_eq!(task_id, "task-abc");
+    assert_eq!(description, "Reticulating splines");
+    assert_eq!(uuid, "uuid-1");
+    assert_eq!(session_id, "session-1");
+    assert_eq!(tool_use_id.as_deref(), Some("toolu_01"));
+    assert_eq!(task_type.as_deref(), Some("background"));
+}
+
+/// Ported from `test_parse_task_started_message_optional_fields_absent`.
+#[test]
+fn parse_task_started_message_optional_fields_absent() {
+    let data = json!({
+        "type": "system",
+        "subtype": "task_started",
+        "task_id": "task-abc",
+        "description": "Working",
+        "uuid": "uuid-1",
+        "session_id": "session-1"
+    });
+    let msg: Message = serde_json::from_value(data).expect("parse");
+    let Message::TaskStarted {
+        tool_use_id,
+        task_type,
+        ..
+    } = msg
+    else {
+        panic!("expected TaskStarted");
+    };
+    assert!(tool_use_id.is_none());
+    assert!(task_type.is_none());
+}
+
+/// Ported from `test_parse_task_progress_message`.
+#[test]
+fn parse_task_progress_message() {
+    let data = json!({
+        "type": "system",
+        "subtype": "task_progress",
+        "task_id": "task-abc",
+        "tool_use_id": "toolu_01",
+        "description": "Halfway there",
+        "usage": {"total_tokens": 1234, "tool_uses": 5, "duration_ms": 9876},
+        "last_tool_name": "Read",
+        "uuid": "uuid-2",
+        "session_id": "session-1"
+    });
+    let msg: Message = serde_json::from_value(data).expect("parse");
+    let Message::TaskProgress {
+        task_id,
+        description,
+        usage,
+        uuid,
+        session_id,
+        tool_use_id,
+        last_tool_name,
+    } = msg
+    else {
+        panic!("expected TaskProgress");
+    };
+    assert_eq!(task_id, "task-abc");
+    assert_eq!(description, "Halfway there");
+    assert_eq!(uuid, "uuid-2");
+    assert_eq!(session_id, "session-1");
+    assert_eq!(tool_use_id.as_deref(), Some("toolu_01"));
+    assert_eq!(last_tool_name.as_deref(), Some("Read"));
+    assert_eq!(usage.total_tokens, 1234);
+    assert_eq!(usage.tool_uses, 5);
+    assert_eq!(usage.duration_ms, 9876);
+}
+
+/// Ported from `test_parse_task_notification_message`.
+#[test]
+fn parse_task_notification_message() {
+    use forge_sdk::TaskNotificationStatus;
+    let data = json!({
+        "type": "system",
+        "subtype": "task_notification",
+        "task_id": "task-abc",
+        "tool_use_id": "toolu_01",
+        "status": "completed",
+        "output_file": "/tmp/out.md",
+        "summary": "All done",
+        "usage": {"total_tokens": 2000, "tool_uses": 7, "duration_ms": 12345},
+        "uuid": "uuid-3",
+        "session_id": "session-1"
+    });
+    let msg: Message = serde_json::from_value(data).expect("parse");
+    let Message::TaskNotification {
+        task_id,
+        status,
+        output_file,
+        summary,
+        usage,
+        ..
+    } = msg
+    else {
+        panic!("expected TaskNotification");
+    };
+    assert_eq!(task_id, "task-abc");
+    assert!(matches!(status, TaskNotificationStatus::Completed));
+    assert_eq!(output_file, "/tmp/out.md");
+    assert_eq!(summary, "All done");
+    assert!(usage.is_some());
+}
+
+/// Ported from `test_parse_task_notification_message_optional_fields_absent`.
+#[test]
+fn parse_task_notification_message_optional_fields_absent() {
+    use forge_sdk::TaskNotificationStatus;
+    let data = json!({
+        "type": "system",
+        "subtype": "task_notification",
+        "task_id": "task-abc",
+        "status": "failed",
+        "output_file": "/tmp/out.md",
+        "summary": "Boom",
+        "uuid": "uuid-3",
+        "session_id": "session-1"
+    });
+    let msg: Message = serde_json::from_value(data).expect("parse");
+    let Message::TaskNotification {
+        status,
+        usage,
+        tool_use_id,
+        ..
+    } = msg
+    else {
+        panic!("expected TaskNotification");
+    };
+    assert!(matches!(status, TaskNotificationStatus::Failed));
+    assert!(usage.is_none());
+    assert!(tool_use_id.is_none());
+}
+
+/// Ported from `test_unknown_system_subtype_yields_generic`.
+#[test]
+fn unknown_system_subtype_yields_generic() {
+    let data = json!({
+        "type": "system",
+        "subtype": "some_future_subtype",
+        "foo": "bar"
+    });
+    let msg: Message = serde_json::from_value(data).expect("parse");
+    match msg {
+        Message::System { subtype, .. } => {
+            assert_eq!(subtype, "some_future_subtype");
+        }
+        other => panic!("expected generic System, got {other:?}"),
+    }
+}
+
+// --- Rate-limit event -----------------------------------------------
+
+/// Ported from `test_parse_rate_limit_event`.
+#[test]
+fn parse_rate_limit_event() {
+    use forge_sdk::{RateLimitStatus, RateLimitType};
+    let data = json!({
+        "type": "rate_limit_event",
+        "rate_limit_info": {
+            "status": "allowed_warning",
+            "resetsAt": 1_700_000_000,
+            "rateLimitType": "five_hour",
+            "utilization": 0.85
+        },
+        "uuid": "evt-1",
+        "session_id": "sess"
+    });
+    let msg: Message = serde_json::from_value(data).expect("parse");
+    let Message::RateLimitEvent {
+        rate_limit_info,
+        uuid,
+        session_id,
+    } = msg
+    else {
+        panic!("expected RateLimitEvent");
+    };
+    assert_eq!(uuid, "evt-1");
+    assert_eq!(session_id, "sess");
+    assert_eq!(rate_limit_info.status, RateLimitStatus::AllowedWarning);
+    assert_eq!(
+        rate_limit_info.rate_limit_type,
+        Some(RateLimitType::FiveHour)
+    );
+    assert_eq!(rate_limit_info.utilization, Some(0.85));
+}
+
+// --- Assistant error variants ---------------------------------------
+
+/// Ported from `test_parse_assistant_message_with_authentication_error`.
+#[test]
+fn parse_assistant_message_with_authentication_error() {
+    use forge_sdk::AssistantMessageError;
+    let data = json!({
+        "type": "assistant",
+        "session_id": "sess",
+        "error": "authentication_failed",
+        "message": {
+            "id": "msg_1",
+            "role": "assistant",
+            "model": "claude-opus-4-5",
+            "content": []
+        }
+    });
+    let msg: Message = serde_json::from_value(data).expect("parse");
+    let Message::Assistant { error, .. } = msg else {
+        panic!("expected Assistant");
+    };
+    assert_eq!(error, Some(AssistantMessageError::AuthenticationFailed));
+}
+
+/// Ported from `test_parse_assistant_message_with_rate_limit_error`.
+#[test]
+fn parse_assistant_message_with_rate_limit_error() {
+    use forge_sdk::AssistantMessageError;
+    let data = json!({
+        "type": "assistant",
+        "session_id": "sess",
+        "error": "rate_limit",
+        "message": {
+            "id": "msg_1",
+            "role": "assistant",
+            "model": "claude-opus-4-5",
+            "content": []
+        }
+    });
+    let msg: Message = serde_json::from_value(data).expect("parse");
+    let Message::Assistant { error, .. } = msg else {
+        panic!("expected Assistant");
+    };
+    assert_eq!(error, Some(AssistantMessageError::RateLimit));
+}
+
+/// Ported from `test_parse_assistant_message_without_error`.
+#[test]
+fn parse_assistant_message_without_error() {
+    let data = json!({
+        "type": "assistant",
+        "session_id": "sess",
+        "message": {
+            "id": "msg_1",
+            "role": "assistant",
+            "model": "claude-opus-4-5",
+            "content": []
+        }
+    });
+    let msg: Message = serde_json::from_value(data).expect("parse");
+    let Message::Assistant { error, .. } = msg else {
+        panic!("expected Assistant");
+    };
+    assert!(error.is_none());
+}
+
+// --- Error / malformed paths ----------------------------------------
+
+/// Ported from `test_parse_missing_type_field`.
+#[test]
+fn parse_missing_type_field() {
+    let data = json!({
+        "session_id": "sess",
+        "message": {"role": "user", "content": "x"}
+    });
+    let result: Result<Message, _> = serde_json::from_value(data);
+    assert!(result.is_err(), "missing 'type' must error");
+}
+
+/// Ported from `test_parse_unknown_message_type`.
+#[test]
+fn parse_unknown_message_type() {
+    let data = json!({"type": "mystery_future_type", "x": 1});
+    let result: Result<Message, _> = serde_json::from_value(data);
+    assert!(result.is_err(), "unknown type must error");
+}
