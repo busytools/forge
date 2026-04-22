@@ -18,6 +18,66 @@ This file is the single source of truth for **where forge-sdk is** relative to P
 
 Each entry below records one weekly parity check.
 
+### 2026-04-22 — post-audit wire closes (`parity-post-audit` + `parity-closing` branches)
+
+Fresh-audit pass after the prior drops. Surfaced 12 findings; the five
+with wire impact are fixed here. Remaining seven are minor / cosmetic
+and tracked in the handoff.
+
+Shipped in this round:
+
+- **N1 — `enable_file_checkpointing` delivered via env var.** Python
+  sets `CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING=true`
+  (`subprocess_cli.py:436-437`); forge-sdk was emitting a phantom
+  `--enable-file-checkpointing` CLI flag the binary silently ignores.
+  Fixed: drop the flag, set the env var when the option is on.
+- **N2 — mandatory subprocess env vars.** Python always stamps
+  `CLAUDE_CODE_ENTRYPOINT=sdk-py`, `CLAUDE_AGENT_SDK_VERSION=<ver>`,
+  `PWD=<cwd>` (when set), and filters `CLAUDECODE` out of inherited
+  env (upstream #573). forge-sdk matches byte-for-byte including the
+  precedence order (options.env overrides entrypoint but not SDK
+  version).
+- **N3 — `Options::user` is setuid.** Python passes `user=` to
+  `anyio.open_process` → `setuid`. forge-sdk was relabelling `$USER`
+  instead. Fixed: parse as uid and call tokio Command's Unix-only
+  `uid()` method.
+- **N4 — conditional `initialize` control_request fields.** Python
+  only attaches `agents` / `excludeDynamicSections` / `skills` when
+  the caller has set them (`query.py:196-207`); `hooks` serialises
+  as `null` when empty. forge-sdk was sending all four
+  unconditionally with default values. Fixed — including switching
+  `Options::exclude_dynamic_sections` to `Option<bool>`.
+- **N7 — `UserEnvelope.content` accepts `str | list`.** The CLI
+  occasionally echoes user turns with bare-string content
+  (`types.py:910`); forge-sdk's `Vec<ContentBlock>` rejected them.
+  Custom deserialize normalises a string to a single
+  `ContentBlock::Text`.
+- **N12 — top-level message re-exports.** `lib.rs` now surfaces
+  `Message`, `AssistantEnvelope`, `UserEnvelope`,
+  `AssistantMessageError`, `ContentBlock`, `StopReason`, `Usage`,
+  `TaskUsage`, `TaskNotificationStatus`, `RateLimitInfo`,
+  `RateLimitStatus`, `RateLimitType` — matches Python's flat
+  `__init__.py` surface.
+
+Also from the preceding `parity-closing` branch (already shipped in
+this session before the fresh audit): `Error::MessageParse { data }`
+expansion + constructor helpers, `sessions_store.rs → sessions_via_store.rs`
+rename (audit finding I6, minimal), `query()` takes `Option<Options>`,
+and 14 `test_message_parser.py` cases ported to
+`tests/python_parity/message_parser.rs` (Tier 6 — 2 of 27 upstream
+files now mirrored).
+
+**Test count:** 275 tests + 3 ignored pass on `just check` (9 new in
+this round: 4 transport-env + 4 initialize-payload + 1 string-content
+parity port).
+
+**Remaining audit items (deferred):** N5 (`exclude_dynamic_sections`
+placement inside `system_prompt` preset — API reshape), N6 (outbound
+user prompt wrap shape — benign byte divergence), N8
+(`AsyncHookJSONOutput`), N9 (`SessionStore` precondition validation),
+N10 (`Message::System.data` field coverage), N11 (`Client` method
+naming mirrors Python verb-noun order). All tracked in the handoff.
+
 ### 2026-04-22 — API surface + field coverage follow-up (`parity-followup` branch)
 
 Second pass after the `parity-wire-fixes` drop — closes the non-wire
