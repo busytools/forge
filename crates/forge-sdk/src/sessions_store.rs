@@ -235,8 +235,19 @@ pub async fn fork_session_via_store(
         })?;
 
     let new_session_id = uuid::Uuid::new_v4().to_string();
+    // Pass 1 — mint new UUIDs for every entry up-front so parentUuid
+    // references always find a mapping.
     let mut uuid_remap: std::collections::HashMap<String, String> =
         std::collections::HashMap::new();
+    for entry in &entries {
+        if let Some(old) = entry.uuid.as_deref() {
+            uuid_remap
+                .entry(old.to_string())
+                .or_insert_with(|| uuid::Uuid::new_v4().to_string());
+        }
+    }
+
+    // Pass 2 — rewrite each entry using the fully-populated map.
     let mut remapped: Vec<SessionStoreEntry> = Vec::new();
     let mut saw_boundary = false;
 
@@ -244,9 +255,9 @@ pub async fn fork_session_via_store(
         let mut value = serde_json::to_value(entry).map_err(|e| Error::MessageParse {
             reason: format!("encode entry: {e}"),
         })?;
-        let boundary_hit = remap_entry_in_place(
+        let boundary_hit = crate::session_mutations::remap_entry_fields(
             &mut value,
-            &mut uuid_remap,
+            &uuid_remap,
             &new_session_id,
             up_to_message_id,
         );
@@ -300,49 +311,6 @@ pub async fn fork_session_via_store(
     Ok(crate::session_mutations::ForkSessionResult {
         session_id: new_session_id,
     })
-}
-
-fn remap_entry_in_place(
-    value: &mut Value,
-    uuid_remap: &mut std::collections::HashMap<String, String>,
-    new_session_id: &str,
-    boundary: Option<&str>,
-) -> bool {
-    let Some(obj) = value.as_object_mut() else {
-        return false;
-    };
-    let old_uuid: Option<String> = obj
-        .get("uuid")
-        .and_then(Value::as_str)
-        .map(ToOwned::to_owned);
-    let mut boundary_hit = false;
-    if let Some(old) = old_uuid {
-        let new = uuid_remap
-            .entry(old.clone())
-            .or_insert_with(|| uuid::Uuid::new_v4().to_string())
-            .clone();
-        obj.insert("uuid".into(), Value::String(new));
-        if boundary == Some(old.as_str()) {
-            boundary_hit = true;
-        }
-    }
-    for parent_key in ["parentUuid", "parent_uuid"] {
-        let parent = obj
-            .get(parent_key)
-            .and_then(Value::as_str)
-            .map(ToOwned::to_owned);
-        if let Some(p) = parent {
-            if let Some(mapped) = uuid_remap.get(&p) {
-                obj.insert(parent_key.into(), Value::String(mapped.clone()));
-            }
-        }
-    }
-    for key in ["sessionId", "session_id"] {
-        if obj.contains_key(key) {
-            obj.insert(key.into(), Value::String(new_session_id.into()));
-        }
-    }
-    boundary_hit
 }
 
 fn to_session_message(entry: &SessionStoreEntry) -> Option<SessionMessage> {
@@ -402,30 +370,26 @@ fn sdk_session_info_from_entries(
                 first_prompt = Some(content.to_string());
             }
         }
-        if custom_title.is_none() {
-            if let Some(v) = entry.extra.get("customTitle").and_then(Value::as_str) {
-                custom_title = Some(v.to_string());
-            }
+        // Mutable metadata — LAST-wins. `rename_session_via_store` and
+        // `tag_session_via_store` append new entries; most recent is truth.
+        if let Some(v) = entry.extra.get("customTitle").and_then(Value::as_str) {
+            custom_title = Some(v.to_string());
         }
-        if cwd.is_none() {
-            if let Some(v) = entry.extra.get("cwd").and_then(Value::as_str) {
-                cwd = Some(v.to_string());
-            }
+        if let Some(v) = entry.extra.get("cwd").and_then(Value::as_str) {
+            cwd = Some(v.to_string());
         }
-        if git_branch.is_none() {
-            if let Some(v) = entry.extra.get("gitBranch").and_then(Value::as_str) {
-                git_branch = Some(v.to_string());
-            }
+        if let Some(v) = entry.extra.get("gitBranch").and_then(Value::as_str) {
+            git_branch = Some(v.to_string());
         }
-        if tag.is_none() {
-            if let Some(v) = entry.extra.get("tag").and_then(Value::as_str) {
-                tag = Some(v.to_string());
-            }
+        if let Some(v) = entry.extra.get("tag").and_then(Value::as_str) {
+            tag = if v.is_empty() {
+                None
+            } else {
+                Some(v.to_string())
+            };
         }
-        if summary.is_none() {
-            if let Some(v) = entry.extra.get("summary").and_then(Value::as_str) {
-                summary = Some(v.to_string());
-            }
+        if let Some(v) = entry.extra.get("summary").and_then(Value::as_str) {
+            summary = Some(v.to_string());
         }
     }
     let display = summary

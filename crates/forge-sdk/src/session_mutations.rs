@@ -152,58 +152,51 @@ pub fn fork_session(
         )));
     }
 
-    let reader = BufReader::new(fs::File::open(&source)?);
+    // Read the whole transcript into memory first. Two passes are
+    // unavoidable: if a child references a parent not yet seen, the
+    // naive streaming approach leaves the parentUuid pointing at a UUID
+    // that doesn't exist in the forked transcript.
+    let mut raw_lines: Vec<String> = Vec::new();
+    for line in BufReader::new(fs::File::open(&source)?)
+        .lines()
+        .map_while(Result::ok)
+    {
+        raw_lines.push(line);
+    }
+
+    // Pass 1 — mint a new UUID for every entry that has one, so
+    // parentUuid references always find a mapping.
     let mut uuid_remap: HashMap<String, String> = HashMap::new();
+    for line in &raw_lines {
+        if line.is_empty() {
+            continue;
+        }
+        if let Ok(value) = serde_json::from_str::<Value>(line) {
+            if let Some(old) = value.get("uuid").and_then(Value::as_str) {
+                uuid_remap
+                    .entry(old.to_string())
+                    .or_insert_with(|| Uuid::new_v4().to_string());
+            }
+        }
+    }
+
+    // Pass 2 — rewrite each entry using the fully-populated map.
     let mut out_lines: Vec<String> = Vec::new();
     let mut saw_boundary = false;
 
-    for line in reader.lines().map_while(Result::ok) {
+    for line in raw_lines {
         if line.is_empty() {
             continue;
         }
         let Ok(mut value) = serde_json::from_str::<Value>(&line) else {
-            // Pass unparseable lines through verbatim — mirrors Python's
-            // tolerant copy behaviour.
+            // Pass unparseable lines through verbatim — tolerant copy.
             out_lines.push(line);
             continue;
         };
-        if let Some(obj) = value.as_object_mut() {
-            // Copy out the old uuid before mutating the map (avoids
-            // borrow-checker clash when we insert the new value below).
-            let old_uuid: Option<String> = obj
-                .get("uuid")
-                .and_then(Value::as_str)
-                .map(ToOwned::to_owned);
-            let mut boundary_hit = false;
-            if let Some(old) = old_uuid {
-                let new = uuid_remap
-                    .entry(old.clone())
-                    .or_insert_with(|| Uuid::new_v4().to_string())
-                    .clone();
-                obj.insert("uuid".into(), Value::String(new));
-                if up_to_message_id == Some(old.as_str()) {
-                    boundary_hit = true;
-                }
-            }
-            for parent_key in ["parentUuid", "parent_uuid"] {
-                let parent = obj
-                    .get(parent_key)
-                    .and_then(Value::as_str)
-                    .map(ToOwned::to_owned);
-                if let Some(p) = parent {
-                    if let Some(mapped) = uuid_remap.get(&p) {
-                        obj.insert(parent_key.into(), Value::String(mapped.clone()));
-                    }
-                }
-            }
-            for key in ["sessionId", "session_id"] {
-                if obj.contains_key(key) {
-                    obj.insert(key.into(), Value::String(new_session_id.clone()));
-                }
-            }
-            if boundary_hit {
-                saw_boundary = true;
-            }
+        let boundary_hit =
+            remap_entry_fields(&mut value, &uuid_remap, &new_session_id, up_to_message_id);
+        if boundary_hit {
+            saw_boundary = true;
         }
         out_lines.push(
             serde_json::to_string(&value).map_err(|e| Error::MessageParse {
@@ -338,6 +331,51 @@ fn append_line(path: &Path, data: &[u8]) -> Result<(), Error> {
     let mut file = fs::OpenOptions::new().append(true).open(path)?;
     file.write_all(data)?;
     Ok(())
+}
+
+/// Rewrite `uuid` / `parentUuid` / `parent_uuid` / `sessionId` /
+/// `session_id` on one JSONL entry using a fully-populated remap
+/// (pass-1 output). Returns `true` when the entry's old uuid matched
+/// `boundary` — caller stops after emitting that line.
+pub(crate) fn remap_entry_fields(
+    value: &mut Value,
+    uuid_remap: &HashMap<String, String>,
+    new_session_id: &str,
+    boundary: Option<&str>,
+) -> bool {
+    let Some(obj) = value.as_object_mut() else {
+        return false;
+    };
+    let mut boundary_hit = false;
+    if let Some(old) = obj
+        .get("uuid")
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned)
+    {
+        if let Some(mapped) = uuid_remap.get(&old) {
+            obj.insert("uuid".into(), Value::String(mapped.clone()));
+        }
+        if boundary == Some(old.as_str()) {
+            boundary_hit = true;
+        }
+    }
+    for parent_key in ["parentUuid", "parent_uuid"] {
+        if let Some(parent) = obj
+            .get(parent_key)
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned)
+        {
+            if let Some(mapped) = uuid_remap.get(&parent) {
+                obj.insert(parent_key.into(), Value::String(mapped.clone()));
+            }
+        }
+    }
+    for key in ["sessionId", "session_id"] {
+        if obj.contains_key(key) {
+            obj.insert(key.into(), Value::String(new_session_id.into()));
+        }
+    }
+    boundary_hit
 }
 
 /// Scan the source transcript for the last `customTitle` / `aiTitle`
