@@ -197,13 +197,10 @@ pub struct Options {
     pub output_format: Option<Value>,
     /// Internal stdout buffer upper bound. `None` = default 1 MiB.
     pub max_buffer_size: Option<usize>,
-    /// Stderr line callback. When set, lines from the subprocess stderr
-    /// are forwarded. Matches Python's
-    /// `stderr: Callable[[str], None] | None`.
+    /// Stderr line callback. When set, each line from the subprocess
+    /// stderr is forwarded to `callback(line)`. Drained in the
+    /// background so the pipe never blocks.
     pub stderr: Option<std::sync::Arc<dyn Fn(String) + Send + Sync>>,
-    /// Internal: upper bound on `session_store.load()` during resume.
-    /// `None` = default 60 s.
-    pub load_timeout_ms: Option<u64>,
     /// Toggle `--enable-file-checkpointing`. Python SDK v0.1.64
     /// `ClaudeAgentOptions.enable_file_checkpointing` (`types.py:1408`).
     pub enable_file_checkpointing: bool,
@@ -263,7 +260,6 @@ impl Default for Options {
             output_format: None,
             max_buffer_size: None,
             stderr: None,
-            load_timeout_ms: None,
             enable_file_checkpointing: false,
             settings: None,
             sandbox: None,
@@ -437,7 +433,6 @@ impl std::fmt::Debug for Options {
             .field("output_format", &self.output_format)
             .field("max_buffer_size", &self.max_buffer_size)
             .field("stderr", &self.stderr.as_ref().map(|_| "<callback>"))
-            .field("load_timeout_ms", &self.load_timeout_ms)
             .field("enable_file_checkpointing", &self.enable_file_checkpointing)
             .field("settings", &self.settings)
             .field("sandbox", &self.sandbox)
@@ -838,13 +833,6 @@ impl OptionsBuilder {
     #[must_use]
     pub fn stderr(mut self, cb: impl Fn(String) + Send + Sync + 'static) -> Self {
         self.inner.stderr = Some(Arc::new(cb));
-        self
-    }
-
-    /// Cap session-store load timeout (ms) during resume.
-    #[must_use]
-    pub fn load_timeout_ms(mut self, n: u64) -> Self {
-        self.inner.load_timeout_ms = Some(n);
         self
     }
 
