@@ -98,6 +98,7 @@ impl Client {
         } else {
             serde_json::to_value(&options.agents).map_err(|e| Error::MessageParse {
                 reason: format!("could not encode agents map: {e}"),
+                data: None,
             })?
         };
         // Concrete-list skills populate `initialize.skills`. `"all"` marker
@@ -125,6 +126,7 @@ impl Client {
             other => {
                 return Err(Error::MessageParse {
                     reason: format!("expected system/init, got: {other:?}"),
+                    data: None,
                 });
             }
         };

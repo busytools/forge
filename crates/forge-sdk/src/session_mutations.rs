@@ -42,6 +42,7 @@ pub fn rename_session(session_id: &str, title: &str, directory: Option<&str>) ->
     if stripped.is_empty() {
         return Err(Error::MessageParse {
             reason: "title must be non-empty".into(),
+            data: None,
         });
     }
     let payload = json!({
@@ -74,6 +75,7 @@ pub fn tag_session(
             if stripped.is_empty() {
                 return Err(Error::MessageParse {
                     reason: "tag must be non-empty (use None to clear)".into(),
+                    data: None,
                 });
             }
             stripped.to_string()
@@ -213,6 +215,7 @@ pub fn fork_session(
         out_lines.push(
             serde_json::to_string(&value).map_err(|e| Error::MessageParse {
                 reason: format!("encode fork entry: {e}"),
+                data: None,
             })?,
         );
         if saw_boundary {
@@ -231,6 +234,7 @@ pub fn fork_session(
                 "up_to_message_id {} not found in transcript",
                 up_to_message_id.unwrap_or("")
             ),
+            data: None,
         });
     }
 
@@ -248,6 +252,7 @@ pub fn fork_session(
         }))
         .map_err(|e| Error::MessageParse {
             reason: format!("encode fork title: {e}"),
+            data: None,
         })?;
         out_lines.push(title_entry);
     }
@@ -297,6 +302,7 @@ fn validate_uuid(s: &str) -> Result<(), Error> {
     } else {
         Err(Error::MessageParse {
             reason: format!("Invalid session_id: {s}"),
+            data: None,
         })
     }
 }
@@ -347,6 +353,7 @@ fn append_to_session(
     })?;
     let mut line = serde_json::to_string(payload).map_err(|e| Error::MessageParse {
         reason: format!("encode mutation payload: {e}"),
+        data: None,
     })?;
     line.push('\n');
     append_line(&path, line.as_bytes())

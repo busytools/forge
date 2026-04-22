@@ -107,9 +107,25 @@ fn json_decode_error() {
 /// the `test_base_error` intent (carry a human-readable message verbatim).
 #[test]
 fn message_parse_carries_reason() {
-    let err = Error::MessageParse {
-        reason: "unknown message shape".into(),
-    };
+    let err = Error::message_parse("unknown message shape");
     let _: &dyn std::error::Error = &err;
     assert!(err.to_string().contains("unknown message shape"));
+    let Error::MessageParse { data, .. } = err else {
+        panic!("expected MessageParse");
+    };
+    assert!(data.is_none(), "constructor without data leaves field None");
+}
+
+/// Python `MessageParseError(msg, data)` (`_errors.py:48-55`) attaches
+/// the offending payload so callers can introspect the failure. forge-sdk
+/// mirrors the shape via `Error::message_parse_with_data`.
+#[test]
+fn message_parse_with_data_attaches_payload() {
+    let payload = serde_json::json!({"type": "mystery", "extra": 1});
+    let err = Error::message_parse_with_data("unknown type", payload.clone());
+    let Error::MessageParse { data, reason } = err else {
+        panic!("expected MessageParse");
+    };
+    assert_eq!(reason, "unknown type");
+    assert_eq!(data, Some(payload));
 }
