@@ -752,3 +752,497 @@ fn parse_unknown_message_type() {
     let result: Result<Message, _> = serde_json::from_value(data);
     assert!(result.is_err(), "unknown type must error");
 }
+
+/// Ported from `test_parse_user_message_with_tool_use_result`. The CLI
+/// attaches a `tool_use_result` metadata dict alongside a user turn so
+/// callers can inspect tool-execution details (file paths, structured
+/// patches, etc.). forge-sdk passes the dict through as a `Value`.
+#[test]
+fn parse_user_message_with_tool_use_result() {
+    let tool_result = json!({
+        "filePath": "/path/to/file.py",
+        "oldString": "old code",
+        "newString": "new code",
+        "originalFile": "full file contents",
+        "structuredPatch": [{
+            "oldStart": 33,
+            "oldLines": 7,
+            "newStart": 33,
+            "newLines": 7,
+            "lines": ["   # comment", "-      old line", "+      new line"]
+        }],
+        "userModified": false,
+        "replaceAll": false
+    });
+    let data = json!({
+        "type": "user",
+        "message": {
+            "role": "user",
+            "content": [{
+                "tool_use_id": "toolu_vrtx_01KXWexk3NJdwkjWzPMGQ2F1",
+                "type": "tool_result",
+                "content": "The file has been updated."
+            }]
+        },
+        "parent_tool_use_id": null,
+        "session_id": "84afb479-17ae-49af-8f2b-666ac2530c3a",
+        "uuid": "2ace3375-1879-48a0-a421-6bce25a9295a",
+        "tool_use_result": tool_result.clone(),
+    });
+    let msg: Message = serde_json::from_value(data).expect("parse");
+    let Message::User {
+        uuid,
+        tool_use_result: got,
+        ..
+    } = msg
+    else {
+        panic!("expected User");
+    };
+    assert_eq!(
+        uuid.as_deref(),
+        Some("2ace3375-1879-48a0-a421-6bce25a9295a")
+    );
+    assert_eq!(got, Some(tool_result));
+}
+
+/// Ported from `test_parse_assistant_message_with_server_tool_use`.
+/// `server_tool_use` blocks (advisor, `web_search`, …) must round-trip
+/// rather than being dropped.
+#[test]
+fn parse_assistant_message_with_server_tool_use() {
+    let data = json!({
+        "type": "assistant",
+        "session_id": "sess",
+        "message": {
+            "id": "msg_srv",
+            "role": "assistant",
+            "model": "claude-sonnet-4-5",
+            "content": [{
+                "type": "server_tool_use",
+                "id": "srvtoolu_01ABC",
+                "name": "advisor",
+                "input": {}
+            }]
+        }
+    });
+    let msg: Message = serde_json::from_value(data).expect("parse");
+    let Message::Assistant { message, .. } = msg else {
+        panic!("expected Assistant");
+    };
+    assert_eq!(message.content.len(), 1);
+    match &message.content[0] {
+        ContentBlock::ServerToolUse { id, name, input } => {
+            assert_eq!(id, "srvtoolu_01ABC");
+            assert_eq!(name, "advisor");
+            assert_eq!(input, &json!({}));
+        }
+        other => panic!("expected ServerToolUse, got {other:?}"),
+    }
+}
+
+/// Ported from `test_parse_assistant_message_with_server_tool_result`.
+/// Wire type is `advisor_tool_result`; `content` is passed through as an
+/// opaque dict because the shape is tool-specific.
+#[test]
+fn parse_assistant_message_with_server_tool_result() {
+    let data = json!({
+        "type": "assistant",
+        "session_id": "sess",
+        "message": {
+            "id": "msg_srv_result",
+            "role": "assistant",
+            "model": "claude-sonnet-4-5",
+            "content": [{
+                "type": "advisor_tool_result",
+                "tool_use_id": "srvtoolu_01ABC",
+                "content": {
+                    "type": "advisor_result",
+                    "text": "Consider edge cases around empty input."
+                }
+            }]
+        }
+    });
+    let msg: Message = serde_json::from_value(data).expect("parse");
+    let Message::Assistant { message, .. } = msg else {
+        panic!("expected Assistant");
+    };
+    match &message.content[0] {
+        ContentBlock::ServerToolResult {
+            tool_use_id,
+            content,
+        } => {
+            assert_eq!(tool_use_id, "srvtoolu_01ABC");
+            assert_eq!(
+                content,
+                &json!({
+                    "type": "advisor_result",
+                    "text": "Consider edge cases around empty input."
+                })
+            );
+        }
+        other => panic!("expected ServerToolResult, got {other:?}"),
+    }
+}
+
+/// Ported from `test_parse_assistant_message_with_redacted_advisor_result`.
+/// External-API callers see the advisor payload as an encrypted blob
+/// rather than plain text — still carried on the same
+/// `ServerToolResult` variant, just with a different inner `type`.
+#[test]
+fn parse_assistant_message_with_redacted_advisor_result() {
+    let data = json!({
+        "type": "assistant",
+        "session_id": "sess",
+        "message": {
+            "id": "msg_redacted",
+            "role": "assistant",
+            "model": "claude-sonnet-4-5",
+            "content": [{
+                "type": "advisor_tool_result",
+                "tool_use_id": "srvtoolu_01ABC",
+                "content": {
+                    "type": "advisor_redacted_result",
+                    "encrypted_content": "EuYDCioIDhgC..."
+                }
+            }]
+        }
+    });
+    let msg: Message = serde_json::from_value(data).expect("parse");
+    let Message::Assistant { message, .. } = msg else {
+        panic!("expected Assistant");
+    };
+    match &message.content[0] {
+        ContentBlock::ServerToolResult { content, .. } => {
+            assert_eq!(content["type"], "advisor_redacted_result");
+            assert_eq!(content["encrypted_content"], "EuYDCioIDhgC...");
+        }
+        other => panic!("expected ServerToolResult, got {other:?}"),
+    }
+}
+
+/// Ported from `test_parse_assistant_message_inside_subagent` — sub-agent
+/// turns carry a `parent_tool_use_id` pointing back at the spawning tool.
+#[test]
+fn parse_assistant_message_inside_subagent() {
+    let data = json!({
+        "type": "assistant",
+        "session_id": "sess",
+        "message": {
+            "id": "msg_sub",
+            "role": "assistant",
+            "model": "claude-opus-4-1-20250805",
+            "content": [
+                {"type": "text", "text": "Hello"},
+                {"type": "tool_use", "id": "tool_123", "name": "Read", "input": {"file_path": "/test.txt"}}
+            ]
+        },
+        "parent_tool_use_id": "toolu_01Xrwd5Y13sEHtzScxR77So8"
+    });
+    let msg: Message = serde_json::from_value(data).expect("parse");
+    let Message::Assistant {
+        parent_tool_use_id, ..
+    } = msg
+    else {
+        panic!("expected Assistant");
+    };
+    assert_eq!(
+        parent_tool_use_id.as_deref(),
+        Some("toolu_01Xrwd5Y13sEHtzScxR77So8")
+    );
+}
+
+// --- Negative / missing-field fixtures ------------------------------
+
+/// Ported from `test_parse_user_message_missing_fields`. A bare
+/// `{"type": "user"}` must fail — `message` and `session_id` are required.
+#[test]
+fn parse_user_message_missing_fields() {
+    let data = json!({"type": "user"});
+    let result: Result<Message, _> = serde_json::from_value(data);
+    assert!(result.is_err(), "user missing fields must error");
+}
+
+/// Ported from `test_parse_assistant_message_missing_fields`.
+#[test]
+fn parse_assistant_message_missing_fields() {
+    let data = json!({"type": "assistant"});
+    let result: Result<Message, _> = serde_json::from_value(data);
+    assert!(result.is_err(), "assistant missing fields must error");
+}
+
+/// Ported from `test_parse_system_message_missing_fields`.
+/// A `{"type":"system"}` without `subtype` must fail because every
+/// system frame dispatches on `subtype`.
+#[test]
+fn parse_system_message_missing_fields() {
+    let data = json!({"type": "system"});
+    let result: Result<Message, _> = serde_json::from_value(data);
+    assert!(result.is_err(), "system missing subtype must error");
+}
+
+/// Ported from `test_parse_result_message_missing_fields`.
+/// Requires the 6 required fields (`is_error`, `num_turns`, `duration_ms`,
+/// `duration_api_ms`, `session_id`) beyond `subtype`.
+#[test]
+fn parse_result_message_missing_fields() {
+    let data = json!({"type": "result", "subtype": "success"});
+    let result: Result<Message, _> = serde_json::from_value(data);
+    assert!(result.is_err(), "result missing required fields must error");
+}
+
+// --- Assistant error coverage (extended) ----------------------------
+
+/// Ported from `test_parse_assistant_message_with_unknown_error`.
+/// CLI maps unrecognised API errors (e.g. HTTP 500) to the `unknown`
+/// variant and surfaces the text in content blocks.
+#[test]
+fn parse_assistant_message_with_unknown_error() {
+    use forge_sdk::AssistantMessageError;
+    let data = json!({
+        "type": "assistant",
+        "session_id": "test-session",
+        "error": "unknown",
+        "message": {
+            "id": "msg_unknown_err",
+            "role": "assistant",
+            "model": "<synthetic>",
+            "content": [{
+                "type": "text",
+                "text": "API Error: 500 {\"type\":\"error\",\"error\":{\"type\":\"api_error\",\"message\":\"Internal server error\"}}"
+            }]
+        }
+    });
+    let msg: Message = serde_json::from_value(data).expect("parse");
+    let Message::Assistant { error, .. } = msg else {
+        panic!("expected Assistant");
+    };
+    assert_eq!(error, Some(AssistantMessageError::Unknown));
+}
+
+/// Ported from `test_parse_assistant_message_with_all_fields`. `id`,
+/// `stop_reason`, `session_id`, `uuid`, and per-turn `usage` must all round-trip.
+#[test]
+fn parse_assistant_message_with_all_fields() {
+    let data = json!({
+        "type": "assistant",
+        "session_id": "fdf2d90a-fd9e-4736-ae35-806edd13643f",
+        "uuid": "0dbd2453-1209-4fe9-bd51-4102f64e33df",
+        "message": {
+            "id": "msg_01HRq7YZE3apPqSHydvG77Ve",
+            "role": "assistant",
+            "model": "claude-sonnet-4-5-20250929",
+            "content": [{"type": "text", "text": "Hello"}],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 10, "output_tokens": 5}
+        }
+    });
+    let msg: Message = serde_json::from_value(data).expect("parse");
+    let Message::Assistant {
+        message,
+        session_id,
+        uuid,
+        ..
+    } = msg
+    else {
+        panic!("expected Assistant");
+    };
+    assert_eq!(message.id, "msg_01HRq7YZE3apPqSHydvG77Ve");
+    assert!(matches!(
+        message.stop_reason,
+        Some(forge_sdk::StopReason::EndTurn)
+    ));
+    assert_eq!(session_id, "fdf2d90a-fd9e-4736-ae35-806edd13643f");
+    assert_eq!(
+        uuid.as_deref(),
+        Some("0dbd2453-1209-4fe9-bd51-4102f64e33df")
+    );
+    let usage = message.usage.expect("usage present");
+    assert_eq!(usage.input_tokens, 10);
+    assert_eq!(usage.output_tokens, 5);
+}
+
+/// Ported from `test_parse_assistant_message_optional_fields_absent`.
+/// Missing optional fields must default to `None` rather than erroring.
+#[test]
+fn parse_assistant_message_optional_fields_absent() {
+    let data = json!({
+        "type": "assistant",
+        "session_id": "sess",
+        "message": {
+            "id": "msg_minimal",
+            "role": "assistant",
+            "model": "claude-opus-4-5",
+            "content": [{"type": "text", "text": "hi"}]
+        }
+    });
+    let msg: Message = serde_json::from_value(data).expect("parse");
+    let Message::Assistant {
+        message,
+        uuid,
+        parent_tool_use_id,
+        error,
+        ..
+    } = msg
+    else {
+        panic!("expected Assistant");
+    };
+    assert!(message.stop_reason.is_none());
+    assert!(uuid.is_none());
+    assert!(parent_tool_use_id.is_none());
+    assert!(error.is_none());
+}
+
+// --- Result message extended coverage -------------------------------
+
+/// Ported from `test_parse_result_message_with_model_usage`.
+/// `modelUsage` (camelCase on the wire), `permission_denials`, and
+/// `uuid` must round-trip on success results.
+#[test]
+fn parse_result_message_with_model_usage() {
+    let data = json!({
+        "type": "result",
+        "subtype": "success",
+        "duration_ms": 3000,
+        "duration_api_ms": 2000,
+        "is_error": false,
+        "num_turns": 1,
+        "session_id": "fdf2d90a-fd9e-4736-ae35-806edd13643f",
+        "stop_reason": "end_turn",
+        "total_cost_usd": 0.0106,
+        "usage": {"input_tokens": 3, "output_tokens": 24},
+        "result": "Hello",
+        "modelUsage": {
+            "claude-sonnet-4-5-20250929": {
+                "inputTokens": 3,
+                "outputTokens": 24,
+                "cacheReadInputTokens": 20_012,
+                "costUSD": 0.0106,
+                "contextWindow": 200_000,
+                "maxOutputTokens": 64_000
+            }
+        },
+        "permission_denials": [],
+        "uuid": "d379c496-f33a-4ea4-b920-3c5483baa6f7"
+    });
+    let msg: Message = serde_json::from_value(data).expect("parse");
+    let Message::Result {
+        model_usage,
+        permission_denials,
+        uuid,
+        ..
+    } = msg
+    else {
+        panic!("expected Result");
+    };
+    let model_usage = model_usage.expect("modelUsage present");
+    assert_eq!(model_usage["claude-sonnet-4-5-20250929"]["costUSD"], 0.0106);
+    assert_eq!(
+        permission_denials.expect("permission_denials present"),
+        Vec::<serde_json::Value>::new()
+    );
+    assert_eq!(
+        uuid.as_deref(),
+        Some("d379c496-f33a-4ea4-b920-3c5483baa6f7")
+    );
+}
+
+/// Ported from `test_parse_result_message_optional_fields_absent`.
+/// New optional fields default to `None` when the frame omits them.
+#[test]
+fn parse_result_message_optional_fields_absent() {
+    let data = json!({
+        "type": "result",
+        "subtype": "success",
+        "duration_ms": 1000,
+        "duration_api_ms": 500,
+        "is_error": false,
+        "num_turns": 1,
+        "session_id": "session_123"
+    });
+    let msg: Message = serde_json::from_value(data).expect("parse");
+    let Message::Result {
+        model_usage,
+        permission_denials,
+        errors,
+        uuid,
+        ..
+    } = msg
+    else {
+        panic!("expected Result");
+    };
+    assert!(model_usage.is_none());
+    assert!(permission_denials.is_none());
+    assert!(errors.is_none());
+    assert!(uuid.is_none());
+}
+
+/// Ported from `test_parse_result_message_with_errors`. Error-path
+/// result frames carry an `errors: [str]` list so SDK users can
+/// diagnose non-zero exits.
+#[test]
+fn parse_result_message_with_errors() {
+    let data = json!({
+        "type": "result",
+        "subtype": "error_during_execution",
+        "duration_ms": 5000,
+        "duration_api_ms": 3000,
+        "is_error": true,
+        "num_turns": 3,
+        "session_id": "session_456",
+        "errors": [
+            "Tool execution failed: permission denied",
+            "Unable to write to /etc/hosts"
+        ],
+        "uuid": "err-uuid-789"
+    });
+    let msg: Message = serde_json::from_value(data).expect("parse");
+    let Message::Result {
+        errors,
+        is_error,
+        subtype,
+        uuid,
+        ..
+    } = msg
+    else {
+        panic!("expected Result");
+    };
+    assert_eq!(
+        errors.expect("errors present"),
+        vec![
+            "Tool execution failed: permission denied".to_string(),
+            "Unable to write to /etc/hosts".to_string()
+        ]
+    );
+    assert!(is_error);
+    assert_eq!(subtype, "error_during_execution");
+    assert_eq!(uuid.as_deref(), Some("err-uuid-789"));
+}
+
+/// Ported from `test_parse_result_message_success_no_errors`. Happy-path
+/// result frames have no `errors` field at all.
+#[test]
+fn parse_result_message_success_no_errors() {
+    let data = json!({
+        "type": "result",
+        "subtype": "success",
+        "duration_ms": 1000,
+        "duration_api_ms": 500,
+        "is_error": false,
+        "num_turns": 1,
+        "session_id": "session_789",
+        "result": "Task completed successfully"
+    });
+    let msg: Message = serde_json::from_value(data).expect("parse");
+    let Message::Result {
+        errors,
+        is_error,
+        result,
+        ..
+    } = msg
+    else {
+        panic!("expected Result");
+    };
+    assert!(errors.is_none());
+    assert!(!is_error);
+    assert_eq!(result.as_deref(), Some("Task completed successfully"));
+}
