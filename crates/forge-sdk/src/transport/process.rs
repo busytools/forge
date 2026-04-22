@@ -12,12 +12,6 @@ use crate::Error;
 use crate::argv::build_args;
 use crate::options::Options;
 
-// Re-export so legacy callers continue to find `build_args` at
-// `crate::transport::process::build_args`. New code should import
-// `crate::argv::build_args` directly.
-#[doc(hidden)]
-pub use crate::argv::build_args as build_args_legacy;
-
 /// Run `<binary> --version` synchronously and return the stdout.
 ///
 /// # Errors

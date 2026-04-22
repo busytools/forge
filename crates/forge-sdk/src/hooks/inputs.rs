@@ -156,7 +156,7 @@ pub struct PreCompactInput {
     pub trigger: String,
     /// Caller-supplied compaction guidance. `None` when the CLI did not
     /// pass custom instructions.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub custom_instructions: Option<String>,
 }
 
