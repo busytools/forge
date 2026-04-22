@@ -9,6 +9,9 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+#[path = "python_parity/client.rs"]
+mod client;
+
 #[path = "python_parity/errors.rs"]
 mod errors;
 
