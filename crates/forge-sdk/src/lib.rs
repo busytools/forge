@@ -48,10 +48,7 @@ mod options;
 pub(crate) mod permissions;
 pub(crate) mod public_types;
 pub(crate) mod request_id;
-pub mod session_mutations;
-pub mod session_store;
-pub mod sessions;
-pub mod sessions_via_store;
+pub mod session;
 pub mod tracing_bridge;
 pub(crate) mod transcript_mirror_batcher;
 pub mod transport;
@@ -91,14 +88,14 @@ pub use public_types::{
     SDKSessionInfo, SandboxIgnoreViolations, SandboxNetworkConfig, SandboxSettings, SdkBeta,
     SessionMessage, SessionMessageKind, SettingSource, StreamEvent,
 };
-pub use session_store::{
+pub use session::store::{
     FsSessionStore, MemorySessionStore, SessionKey, SessionListSubkeysKey, SessionStore,
     SessionStoreEntry, SessionStoreError, SessionStoreListEntry,
 };
 
 /// In-memory [`SessionStore`] — Python SDK publishes this as
 /// `InMemorySessionStore`; forge-sdk aliases for surface parity.
-pub use session_store::MemorySessionStore as InMemorySessionStore;
+pub use session::store::MemorySessionStore as InMemorySessionStore;
 
 #[doc(hidden)]
 pub use crate::mcp::macros::__private;

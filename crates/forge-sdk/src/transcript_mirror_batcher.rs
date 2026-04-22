@@ -1,5 +1,5 @@
 //! Coalescing adapter between `transcript_mirror` frames and a
-//! [`SessionStore`](crate::session_store::SessionStore).
+//! [`SessionStore`](crate::session::store::SessionStore).
 //!
 //! The CLI emits `{"type":"transcript_mirror","filePath":...,"entries":[...]}`
 //! frames alongside regular stream-json output. The client peels them off
@@ -24,7 +24,9 @@ use tokio::task::JoinHandle;
 use tracing::{debug, error, warn};
 
 use crate::messages::Message;
-use crate::session_store::{SessionKey, SessionStore, SessionStoreEntry, file_path_to_session_key};
+use crate::session::store::{
+    SessionKey, SessionStore, SessionStoreEntry, file_path_to_session_key,
+};
 
 /// Eager-flush threshold on total entry count. Mirrors Python's
 /// `MAX_PENDING_ENTRIES = 500` (`transcript_mirror_batcher.py:26`).
@@ -262,7 +264,7 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
     use super::*;
-    use crate::session_store::{MemorySessionStore, SessionStoreEntry, SessionStoreError};
+    use crate::session::store::{MemorySessionStore, SessionStoreEntry, SessionStoreError};
     use async_trait::async_trait;
     use serde_json::{Value, json};
     use std::sync::atomic::{AtomicUsize, Ordering};

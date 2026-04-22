@@ -1,5 +1,5 @@
-//! `SessionStore`-backed async variants of [`sessions`](crate::sessions)
-//! and [`session_mutations`](crate::session_mutations).
+//! `SessionStore`-backed async variants of [`scan`](crate::session::scan)
+//! and [`mutations`](crate::session::mutations).
 //!
 //! Each function here delegates to the [`SessionStore`] protocol rather
 //! than the local filesystem. Mirrors the `*_from_store` / `*_via_store`
@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 
 use crate::error::Error;
 use crate::public_types::{SDKSessionInfo, SessionMessage, SessionMessageKind};
-use crate::session_store::{
+use crate::session::store::{
     SessionKey, SessionListSubkeysKey, SessionStore, SessionStoreEntry, SessionStoreListEntry,
 };
 
@@ -215,10 +215,10 @@ pub async fn fork_session_via_store(
     session_id: &str,
     up_to_message_id: Option<&str>,
     title: Option<&str>,
-) -> Result<crate::session_mutations::ForkSessionResult, Error> {
-    crate::session_mutations::validate_uuid_public(session_id)?;
+) -> Result<crate::session::mutations::ForkSessionResult, Error> {
+    crate::session::mutations::validate_uuid_public(session_id)?;
     if let Some(m) = up_to_message_id {
-        crate::session_mutations::validate_uuid_public(m)?;
+        crate::session::mutations::validate_uuid_public(m)?;
     }
     let source_key = SessionKey {
         project_key: project_key.into(),
@@ -249,7 +249,7 @@ pub async fn fork_session_via_store(
     for entry in &entries {
         let mut value = serde_json::to_value(entry)
             .map_err(|e| Error::message_parse(format!("encode entry: {e}")))?;
-        let boundary_hit = crate::session_mutations::remap_entry_fields(
+        let boundary_hit = crate::session::mutations::remap_entry_fields(
             &mut value,
             &uuid_remap,
             &new_session_id,
@@ -296,7 +296,7 @@ pub async fn fork_session_via_store(
         subpath: None,
     };
     store.append(&dest_key, &remapped).await?;
-    Ok(crate::session_mutations::ForkSessionResult {
+    Ok(crate::session::mutations::ForkSessionResult {
         session_id: new_session_id,
     })
 }
@@ -408,7 +408,7 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
     use super::*;
-    use crate::session_store::MemorySessionStore;
+    use crate::session::store::MemorySessionStore;
 
     fn entry(kind: &str, content: &str) -> SessionStoreEntry {
         SessionStoreEntry {

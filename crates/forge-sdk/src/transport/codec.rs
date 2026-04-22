@@ -29,7 +29,7 @@ pub enum DecodedLine {
         /// Absolute path of the on-disk transcript file (`<projects_dir>/<project_key>/<session_id>[.jsonl|/...]`).
         file_path: String,
         /// JSONL entries the CLI just appended to `file_path`.
-        entries: Vec<crate::session_store::SessionStoreEntry>,
+        entries: Vec<crate::session::store::SessionStoreEntry>,
     },
 }
 
@@ -106,7 +106,7 @@ pub fn decode_dispatch(line: &str, line_number: u64) -> Result<DecodedLine, Erro
                     ))
                 })?
                 .to_string();
-            let entries: Vec<crate::session_store::SessionStoreEntry> = value
+            let entries: Vec<crate::session::store::SessionStoreEntry> = value
                 .get("entries")
                 .cloned()
                 .map(serde_json::from_value)

@@ -329,10 +329,10 @@ impl FsSessionStore {
 }
 
 /// Python-SDK-compatible path sanitisation. Delegates to
-/// [`crate::sessions::sanitize_path_public`] — single authoritative
+/// [`crate::session::scan::sanitize_path_public`] — single authoritative
 /// implementation for on-disk project-key layout.
 pub(crate) fn sanitise(s: &str) -> String {
-    crate::sessions::sanitize_path_public(s)
+    crate::session::scan::sanitize_path_public(s)
 }
 
 /// Derive a [`SessionKey`] from an absolute transcript file path relative

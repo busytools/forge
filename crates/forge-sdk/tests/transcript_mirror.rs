@@ -8,7 +8,7 @@
 use std::sync::Arc;
 
 use forge_sdk::Message;
-use forge_sdk::session_store::{MemorySessionStore, SessionKey, SessionStore};
+use forge_sdk::session::store::{MemorySessionStore, SessionKey, SessionStore};
 use forge_sdk::{Client, OptionsBuilder};
 
 fn fixture(name: &str) -> String {

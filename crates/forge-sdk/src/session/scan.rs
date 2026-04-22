@@ -28,8 +28,8 @@ use std::path::{Path, PathBuf};
 use serde_json::Value;
 
 use crate::public_types::{SDKSessionInfo, SessionMessage, SessionMessageKind};
-use crate::session_mutations::is_valid_uuid;
-use crate::session_mutations::projects_dir;
+use crate::session::mutations::is_valid_uuid;
+use crate::session::mutations::projects_dir;
 
 const MAX_SANITIZED_LENGTH: usize = 200;
 
