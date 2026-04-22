@@ -93,23 +93,35 @@ impl Client {
         let hook_registry = options.hooks.mint_registry();
         let hook_payload = hook_registry.to_initialize_payload();
         let hook_callbacks = hook_registry.by_id;
+        // Python `_internal/query.py:196-207` conditionally attaches
+        // `agents` / `excludeDynamicSections` / `skills` — forge-sdk
+        // matches byte-for-byte so the initialize frame looks identical
+        // on the wire when the caller doesn't set any of them.
         let agents_payload = if options.agents.is_empty() {
-            serde_json::json!({})
+            None
         } else {
-            serde_json::to_value(&options.agents).map_err(|e| Error::MessageParse {
-                reason: format!("could not encode agents map: {e}"),
-                data: None,
-            })?
+            Some(
+                serde_json::to_value(&options.agents).map_err(|e| Error::MessageParse {
+                    reason: format!("could not encode agents map: {e}"),
+                    data: None,
+                })?,
+            )
         };
         // Concrete-list skills populate `initialize.skills`. `"all"` marker
         // travels via `--allowedTools` only and does NOT appear in the
-        // initialize payload (matches Python SDK).
+        // initialize payload (matches Python SDK). An empty list is
+        // indistinguishable from "unset" so it drops out too.
         let skills_payload: Vec<String> = options
             .skills
             .iter()
             .filter(|s| s.as_str() != "all")
             .cloned()
             .collect();
+        let skills_payload = if skills_payload.is_empty() {
+            None
+        } else {
+            Some(skills_payload)
+        };
         let exclude_dynamic_sections = options.exclude_dynamic_sections;
 
         let mut sub = Subprocess::spawn(&options).await?;
@@ -180,28 +192,44 @@ impl Client {
     /// without a second round-trip (matches Python
     /// `_internal/query.py:214`).
     ///
-    /// The request body carries:
-    /// - `hooks` — `{event_name: [{matcher, hookCallbackIds, timeout}]}`
-    /// - `excludeDynamicSections` — bool
-    /// - `skills` — list of concrete skill names (the `"all"` sentinel
-    ///   travels via `--allowedTools` only).
+    /// Field-inclusion matches Python `_internal/query.py:196-207`:
+    /// - `hooks` — always present; value is `null` when no callbacks
+    ///   are registered.
+    /// - `agents` — only when the caller has agents configured.
+    /// - `excludeDynamicSections` — only when the caller set a value.
+    /// - `skills` — only when the caller supplied a concrete list (the
+    ///   `"all"` sentinel travels via `--allowedTools` only).
     async fn send_initialize(
         &mut self,
         hooks: serde_json::Value,
-        skills: Vec<String>,
-        exclude_dynamic_sections: bool,
-        agents: serde_json::Value,
+        skills: Option<Vec<String>>,
+        exclude_dynamic_sections: Option<bool>,
+        agents: Option<serde_json::Value>,
     ) -> Result<(), Error> {
+        let hooks_field = if hooks.as_object().is_some_and(serde_json::Map::is_empty) {
+            serde_json::Value::Null
+        } else {
+            hooks
+        };
+        let mut body = serde_json::Map::new();
+        body.insert("hooks".into(), hooks_field);
+        if let Some(a) = agents {
+            body.insert("agents".into(), a);
+        }
+        if let Some(flag) = exclude_dynamic_sections {
+            body.insert(
+                "excludeDynamicSections".into(),
+                serde_json::Value::Bool(flag),
+            );
+        }
+        if let Some(list) = skills {
+            body.insert(
+                "skills".into(),
+                serde_json::Value::Array(list.into_iter().map(Into::into).collect()),
+            );
+        }
         let response = self
-            .send_control(
-                "initialize",
-                serde_json::json!({
-                    "hooks": hooks,
-                    "excludeDynamicSections": exclude_dynamic_sections,
-                    "skills": skills,
-                    "agents": agents,
-                }),
-            )
+            .send_control("initialize", serde_json::Value::Object(body))
             .await?;
         // `send_control` returns `Value::Null` when the CLI replies with
         // an empty success body; store `None` in that case so
