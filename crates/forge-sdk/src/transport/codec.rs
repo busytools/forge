@@ -135,14 +135,15 @@ pub fn decode_dispatch(line: &str, line_number: u64) -> Result<DecodedLine, Erro
 /// [`Error::MessageParse`] wrapping a JSON serialization failure
 /// (extraordinarily rare for string inputs; included for totality).
 pub fn encode_user_prompt(prompt: &str, session_id: &str) -> Result<String, Error> {
+    // Python `client.py:260-267` sends `content` as a bare string for
+    // plain-text prompts. forge-sdk matches byte-for-byte so argv +
+    // stdin dumps line up between the two SDKs when a caller wants to
+    // compare them. The CLI accepts both the bare-string and
+    // `[{"type":"text","text":prompt}]` shapes, but parity means
+    // emitting the simpler form.
     let payload = json!({
         "type": "user",
-        "message": {
-            "role": "user",
-            "content": [
-                {"type": "text", "text": prompt}
-            ]
-        },
+        "message": {"role": "user", "content": prompt},
         "session_id": session_id,
         "parent_tool_use_id": null,
     });
