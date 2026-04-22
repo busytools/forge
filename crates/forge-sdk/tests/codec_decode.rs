@@ -42,8 +42,9 @@ fn encode_user_prompt_is_single_line_with_newline() {
     assert_eq!(v["type"], "user");
     assert_eq!(v["session_id"], "sess_01");
     assert_eq!(v["message"]["role"], "user");
-    assert_eq!(v["message"]["content"][0]["type"], "text");
-    assert_eq!(v["message"]["content"][0]["text"], "hello");
+    // Python sends `content` as a bare string for plain-text prompts
+    // (client.py:260-267); forge-sdk matches byte-for-byte.
+    assert_eq!(v["message"]["content"], "hello");
 }
 
 #[test]
