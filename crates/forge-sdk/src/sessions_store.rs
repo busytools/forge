@@ -128,6 +128,7 @@ pub async fn rename_session_via_store(
     if stripped.is_empty() {
         return Err(Error::MessageParse {
             reason: "title must be non-empty".into(),
+            data: None,
         });
     }
     let entry = entry_from_payload(json!({
@@ -162,6 +163,7 @@ pub async fn tag_session_via_store(
             if stripped.is_empty() {
                 return Err(Error::MessageParse {
                     reason: "tag must be non-empty (use None to clear)".into(),
+                    data: None,
                 });
             }
             stripped.to_string()
@@ -232,6 +234,7 @@ pub async fn fork_session_via_store(
         .await?
         .ok_or_else(|| Error::MessageParse {
             reason: format!("session {session_id} has no messages to fork"),
+            data: None,
         })?;
 
     let new_session_id = uuid::Uuid::new_v4().to_string();
@@ -254,6 +257,7 @@ pub async fn fork_session_via_store(
     for entry in &entries {
         let mut value = serde_json::to_value(entry).map_err(|e| Error::MessageParse {
             reason: format!("encode entry: {e}"),
+            data: None,
         })?;
         let boundary_hit = crate::session_mutations::remap_entry_fields(
             &mut value,
@@ -264,6 +268,7 @@ pub async fn fork_session_via_store(
         let new_entry: SessionStoreEntry =
             serde_json::from_value(value).map_err(|e| Error::MessageParse {
                 reason: format!("decode remapped entry: {e}"),
+                data: None,
             })?;
         remapped.push(new_entry);
         if boundary_hit {
@@ -275,6 +280,7 @@ pub async fn fork_session_via_store(
     if remapped.is_empty() {
         return Err(Error::MessageParse {
             reason: format!("session {session_id} has no messages to fork"),
+            data: None,
         });
     }
     if up_to_message_id.is_some() && !saw_boundary {
@@ -283,6 +289,7 @@ pub async fn fork_session_via_store(
                 "up_to_message_id {} not found in transcript",
                 up_to_message_id.unwrap_or("")
             ),
+            data: None,
         });
     }
 
@@ -297,6 +304,7 @@ pub async fn fork_session_via_store(
             let entry: SessionStoreEntry =
                 serde_json::from_value(payload).map_err(|e| Error::MessageParse {
                     reason: format!("encode fork title: {e}"),
+                    data: None,
                 })?;
             remapped.push(entry);
         }
@@ -413,6 +421,7 @@ fn sdk_session_info_from_entries(
 fn entry_from_payload(payload: Value) -> Result<SessionStoreEntry, Error> {
     serde_json::from_value(payload).map_err(|e| Error::MessageParse {
         reason: format!("encode mutation payload: {e}"),
+        data: None,
     })
 }
 

@@ -51,6 +51,7 @@ impl Client {
         });
         let mut line = serde_json::to_string(&envelope).map_err(|e| Error::MessageParse {
             reason: format!("control encode: {e}"),
+            data: None,
         })?;
         line.push('\n');
         self.sub.write_line(&line).await?;
@@ -87,6 +88,7 @@ impl Client {
                         .unwrap_or("unknown error");
                     return Err(Error::MessageParse {
                         reason: format!("{subtype} failed: {err}"),
+                        data: None,
                     });
                 }
             }
@@ -214,6 +216,7 @@ impl Client {
             .await?;
         serde_json::from_value(raw).map_err(|e| Error::MessageParse {
             reason: format!("mcp_status: {e}"),
+            data: None,
         })
     }
 
@@ -244,6 +247,7 @@ impl Client {
             .await?;
         serde_json::from_value(raw).map_err(|e| Error::MessageParse {
             reason: format!("get_context_usage: {e}"),
+            data: None,
         })
     }
 

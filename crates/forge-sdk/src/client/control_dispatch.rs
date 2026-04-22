@@ -96,6 +96,7 @@ impl Client {
                 Some(
                     serde_json::to_value(perms).map_err(|e| Error::MessageParse {
                         reason: format!("could not encode updated_permissions: {e}"),
+                        data: None,
                     })?,
                 )
             };
@@ -118,9 +119,11 @@ impl Client {
             .build_response(behavior)
             .map_err(|e| Error::MessageParse {
                 reason: format!("could not build control response: {e}"),
+                data: None,
             })?;
         let mut line = serde_json::to_string(&resp).map_err(|e| Error::MessageParse {
             reason: format!("could not serialise control response: {e}"),
+            data: None,
         })?;
         line.push('\n');
         self.sub.write_line(&line).await?;
@@ -137,6 +140,7 @@ impl Client {
         };
         let mut line = serde_json::to_string(&resp).map_err(|e| Error::MessageParse {
             reason: format!("error response serialise: {e}"),
+            data: None,
         })?;
         line.push('\n');
         self.sub.write_line(&line).await
@@ -160,6 +164,7 @@ impl Client {
             };
             let mut line = serde_json::to_string(&resp).map_err(|e| Error::MessageParse {
                 reason: format!("error response serialise: {e}"),
+                data: None,
             })?;
             line.push('\n');
             return self.sub.write_line(&line).await;
@@ -169,6 +174,7 @@ impl Client {
         let jsonrpc: JsonRpcRequest =
             serde_json::from_value(message.clone()).map_err(|e| Error::MessageParse {
                 reason: format!("bad JSON-RPC envelope: {e}"),
+                data: None,
             })?;
 
         // Dispatch. Notifications (no id) return None; synthesise an empty
@@ -177,6 +183,7 @@ impl Client {
         let jsonrpc_response = match self.mcp_hosts.dispatch(server_name, &jsonrpc).await {
             Some(r) => serde_json::to_value(&r).map_err(|e| Error::MessageParse {
                 reason: format!("mcp response serialise: {e}"),
+                data: None,
             })?,
             None => serde_json::json!({"jsonrpc": "2.0", "result": {}}),
         };
@@ -191,6 +198,7 @@ impl Client {
         };
         let mut line = serde_json::to_string(&resp).map_err(|e| Error::MessageParse {
             reason: format!("mcp control response serialise: {e}"),
+            data: None,
         })?;
         line.push('\n');
         self.sub.write_line(&line).await
@@ -274,6 +282,7 @@ impl Client {
         };
         let mut line = serde_json::to_string(&ctrl).map_err(|e| Error::MessageParse {
             reason: format!("hook response encode: {e}"),
+            data: None,
         })?;
         line.push('\n');
         self.sub.write_line(&line).await?;

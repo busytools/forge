@@ -53,11 +53,20 @@ pub enum Error {
 
     /// A stream-json message parsed as JSON but did not match any known message schema.
     ///
-    /// Mirrors Python's `MessageParseError`.
+    /// Mirrors Python's `MessageParseError` (`_errors.py:48-55`), including
+    /// the optional `data` field that carries the offending payload when
+    /// one is available. Python reads this as a `dict[str, Any] | None`;
+    /// forge-sdk types it as `Option<serde_json::Value>` so callers
+    /// inspecting the failure can recover the decoded JSON without
+    /// re-parsing the error message.
     #[error("stream-json message has unknown or invalid shape: {reason}")]
     MessageParse {
         /// Human-readable explanation (often includes the offending JSON excerpt).
         reason: String,
+        /// Decoded CLI payload the failure originated from, when the
+        /// call site had it in hand. `None` for failures surfaced
+        /// before a payload is parsed (e.g. envelope encode failures).
+        data: Option<serde_json::Value>,
     },
 
     /// Wrapping `std::io::Error` for convenience.
@@ -68,4 +77,28 @@ pub enum Error {
     /// when a store operation fails.
     #[error("session store error: {0}")]
     SessionStore(#[from] crate::session_store::SessionStoreError),
+}
+
+impl Error {
+    /// Construct a [`Error::MessageParse`] carrying only a reason string
+    /// (most call sites). Equivalent to the struct-literal form with
+    /// `data: None`.
+    #[must_use]
+    pub fn message_parse(reason: impl Into<String>) -> Self {
+        Self::MessageParse {
+            reason: reason.into(),
+            data: None,
+        }
+    }
+
+    /// Construct a [`Error::MessageParse`] that carries the offending
+    /// payload alongside the reason — mirrors Python's
+    /// `MessageParseError(msg, data)`.
+    #[must_use]
+    pub fn message_parse_with_data(reason: impl Into<String>, data: serde_json::Value) -> Self {
+        Self::MessageParse {
+            reason: reason.into(),
+            data: Some(data),
+        }
+    }
 }

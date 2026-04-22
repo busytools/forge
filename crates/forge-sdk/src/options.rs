@@ -361,6 +361,7 @@ impl Options {
         if let Some(sandbox) = &self.sandbox {
             let v = serde_json::to_value(sandbox).map_err(|e| crate::Error::MessageParse {
                 reason: format!("could not serialise sandbox config: {e}"),
+                data: None,
             })?;
             settings_obj.insert("sandbox".into(), v);
         }
@@ -368,6 +369,7 @@ impl Options {
             .map(Some)
             .map_err(|e| crate::Error::MessageParse {
                 reason: format!("could not serialise merged settings: {e}"),
+                data: None,
             })
     }
 }
