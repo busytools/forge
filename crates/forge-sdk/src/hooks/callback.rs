@@ -7,9 +7,19 @@ use serde_json::Value;
 use super::HookContext;
 
 /// A hook decision.
+///
+/// The primary shape (allow / deny / replace-input / passthrough) mirrors
+/// Python's `SyncHookJSONOutput.decision` field; the `with_*` builders
+/// attach the optional control fields Python documents alongside it —
+/// `continue_` / `suppressOutput` / `stopReason` / `systemMessage`. See
+/// `types.py:463-505` + `_internal/query.py:40-55` for the full contract.
 #[derive(Debug, Clone)]
 pub struct HookDecision {
     inner: HookDecisionKind,
+    continue_execution: Option<bool>,
+    suppress_output: Option<bool>,
+    stop_reason: Option<String>,
+    system_message: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -25,44 +35,80 @@ enum HookDecisionKind {
 }
 
 impl HookDecision {
+    fn with_inner(inner: HookDecisionKind) -> Self {
+        Self {
+            inner,
+            continue_execution: None,
+            suppress_output: None,
+            stop_reason: None,
+            system_message: None,
+        }
+    }
+
     /// Allow the action unchanged.
     #[must_use]
     pub fn allow() -> Self {
-        Self {
-            inner: HookDecisionKind::Allow {
-                updated_input: None,
-            },
-        }
+        Self::with_inner(HookDecisionKind::Allow {
+            updated_input: None,
+        })
     }
 
     /// Allow but substitute a new input payload (`PreToolUse` /
     /// `UserPromptSubmit`).
     #[must_use]
     pub fn replace_input(new_input: Value) -> Self {
-        Self {
-            inner: HookDecisionKind::Allow {
-                updated_input: Some(new_input),
-            },
-        }
+        Self::with_inner(HookDecisionKind::Allow {
+            updated_input: Some(new_input),
+        })
     }
 
     /// Deny the action with a reason string.
     #[must_use]
     pub fn deny(reason: impl Into<String>) -> Self {
-        Self {
-            inner: HookDecisionKind::Deny {
-                reason: reason.into(),
-            },
-        }
+        Self::with_inner(HookDecisionKind::Deny {
+            reason: reason.into(),
+        })
     }
 
     /// Observational only — continue unchanged (typical `PostToolUse` /
     /// `Stop`).
     #[must_use]
     pub fn passthrough() -> Self {
-        Self {
-            inner: HookDecisionKind::Passthrough,
-        }
+        Self::with_inner(HookDecisionKind::Passthrough)
+    }
+
+    /// Attach the Python SDK's `continue_` control field (CLI wire name:
+    /// `continue`). Pass `false` to signal that Claude should not proceed
+    /// after the hook — typically combined with
+    /// [`with_stop_reason`](Self::with_stop_reason).
+    #[must_use]
+    pub fn with_continue(mut self, should_continue: bool) -> Self {
+        self.continue_execution = Some(should_continue);
+        self
+    }
+
+    /// Attach the Python SDK's `suppressOutput` control field. When
+    /// `true`, the CLI hides stdout from transcript mode.
+    #[must_use]
+    pub fn with_suppress_output(mut self, suppress: bool) -> Self {
+        self.suppress_output = Some(suppress);
+        self
+    }
+
+    /// Attach the Python SDK's `stopReason` control field — the message
+    /// the CLI shows when `continue` is set to `false`.
+    #[must_use]
+    pub fn with_stop_reason(mut self, reason: impl Into<String>) -> Self {
+        self.stop_reason = Some(reason.into());
+        self
+    }
+
+    /// Attach the Python SDK's `systemMessage` control field — a warning
+    /// displayed to the user alongside the hook's decision.
+    #[must_use]
+    pub fn with_system_message(mut self, msg: impl Into<String>) -> Self {
+        self.system_message = Some(msg.into());
+        self
     }
 
     /// True if the decision allows the action.
@@ -87,6 +133,31 @@ impl HookDecision {
             HookDecisionKind::Deny { reason } => Some(reason),
             _ => None,
         }
+    }
+
+    /// `continue` control field, if the callback set one. Wire name is
+    /// `continue` (Python stores as `continue_` to dodge the keyword).
+    #[must_use]
+    pub fn continue_execution(&self) -> Option<bool> {
+        self.continue_execution
+    }
+
+    /// `suppressOutput` control field, if the callback set one.
+    #[must_use]
+    pub fn suppress_output(&self) -> Option<bool> {
+        self.suppress_output
+    }
+
+    /// `stopReason` control field, if the callback set one.
+    #[must_use]
+    pub fn stop_reason(&self) -> Option<&str> {
+        self.stop_reason.as_deref()
+    }
+
+    /// `systemMessage` control field, if the callback set one.
+    #[must_use]
+    pub fn system_message(&self) -> Option<&str> {
+        self.system_message.as_deref()
     }
 }
 

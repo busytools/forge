@@ -315,3 +315,55 @@ fn hook_kind_from_wire_round_trips() {
     }
     assert_eq!(HookKind::from_wire("BrandNewKind"), HookKind::Unknown);
 }
+
+// ---------------------------------------------------------------------------
+// SyncHookJSONOutput control fields — with_continue / with_suppress_output /
+// with_stop_reason / with_system_message. Mirrors Python's SyncHookJSONOutput
+// (types.py:463-505). The accessors need to expose what the callback set so
+// handle_hook_callback can emit them on the wire.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn hook_decision_defaults_expose_no_control_fields() {
+    let d = HookDecision::allow();
+    assert!(d.continue_execution().is_none());
+    assert!(d.suppress_output().is_none());
+    assert!(d.stop_reason().is_none());
+    assert!(d.system_message().is_none());
+}
+
+#[test]
+fn hook_decision_with_continue_chains_through_builders() {
+    let d = HookDecision::allow()
+        .with_continue(false)
+        .with_stop_reason("halt because policy")
+        .with_suppress_output(true)
+        .with_system_message("warning: sensitive op");
+    assert_eq!(d.continue_execution(), Some(false));
+    assert_eq!(d.suppress_output(), Some(true));
+    assert_eq!(d.stop_reason(), Some("halt because policy"));
+    assert_eq!(d.system_message(), Some("warning: sensitive op"));
+    // Still an allow — control fields and decision are independent.
+    assert!(d.is_allow());
+}
+
+#[test]
+fn hook_decision_control_fields_survive_deny() {
+    let d = HookDecision::deny("blocked by audit")
+        .with_suppress_output(true)
+        .with_system_message("audit hook denied tool");
+    assert!(!d.is_allow());
+    assert_eq!(d.reason(), Some("blocked by audit"));
+    assert_eq!(d.suppress_output(), Some(true));
+    assert_eq!(d.system_message(), Some("audit hook denied tool"));
+}
+
+#[test]
+fn hook_decision_control_fields_survive_passthrough() {
+    let d = HookDecision::passthrough()
+        .with_continue(true)
+        .with_system_message("observation only");
+    assert!(d.is_allow());
+    assert_eq!(d.continue_execution(), Some(true));
+    assert_eq!(d.system_message(), Some("observation only"));
+}
