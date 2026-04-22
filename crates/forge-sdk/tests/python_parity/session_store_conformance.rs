@@ -14,12 +14,29 @@ use std::path::Path;
 
 use forge_sdk::session::scan::project_key_for_directory;
 
+/// Ported from `test_defaults_to_cwd`. Python's
+/// `project_key_for_directory()` takes `directory: str | Path | None =
+/// None` and falls back to `"."` when absent, so callers don't have to
+/// inline `os.getcwd()`. forge-sdk mirrors this via `Option<&str>`:
+/// `None` resolves to the process's current working directory.
+#[test]
+fn project_key_defaults_to_cwd() {
+    let cwd = std::env::current_dir()
+        .expect("cwd")
+        .to_string_lossy()
+        .into_owned();
+    assert_eq!(
+        project_key_for_directory(None),
+        project_key_for_directory(Some(&cwd))
+    );
+}
+
 /// Ported from `test_sanitizes_path`.
 /// Non-alphanumerics must be replaced with hyphens so the CLI's project
 /// directory layout is preserved.
 #[test]
 fn project_key_sanitizes_path() {
-    let key = project_key_for_directory("/tmp/my project!");
+    let key = project_key_for_directory(Some("/tmp/my project!"));
     assert!(!key.contains('/'));
     assert!(!key.contains(' '));
     assert!(!key.contains('!'));
@@ -30,8 +47,8 @@ fn project_key_sanitizes_path() {
 #[test]
 fn project_key_stable_for_same_path() {
     assert_eq!(
-        project_key_for_directory("/a/b/c"),
-        project_key_for_directory("/a/b/c")
+        project_key_for_directory(Some("/a/b/c")),
+        project_key_for_directory(Some("/a/b/c"))
     );
 }
 
@@ -47,8 +64,8 @@ fn project_key_relative_dir_resolved_to_absolute() {
         .expect("cwd canonicalises")
         .to_string_lossy()
         .into_owned();
-    let key_dot = project_key_for_directory(".");
-    let key_cwd = project_key_for_directory(&cwd);
+    let key_dot = project_key_for_directory(Some("."));
+    let key_cwd = project_key_for_directory(Some(&cwd));
     assert_eq!(key_dot, key_cwd, "relative `.` must canonicalise to cwd");
 
     // And the literal-"."-derived key (no canonicalisation) would be
@@ -73,7 +90,7 @@ fn project_key_long_path_uses_portable_hash_suffix() {
     // form falls back to the input when realpath fails (forge-sdk
     // `session/scan.rs:56-60`).
     let long = format!("/{}", "a".repeat(260));
-    let key = project_key_for_directory(&long);
+    let key = project_key_for_directory(Some(&long));
     // Python uses `-` as the separator; forge-sdk matches (see
     // `session/scan.rs:241`). Every input above the length cap must
     // therefore contain a `-` before the 4-char-ish hash tail.
@@ -99,8 +116,8 @@ fn project_key_nfc_normalizes_decomposed_unicode() {
     let nfd = tmp.path().join("cafe\u{0301}");
     std::fs::create_dir(&nfc).expect("create nfc dir");
     assert_eq!(
-        project_key_for_directory(nfc.to_str().expect("nfc utf8")),
-        project_key_for_directory(nfd.to_str().expect("nfd utf8"))
+        project_key_for_directory(Some(nfc.to_str().expect("nfc utf8"))),
+        project_key_for_directory(Some(nfd.to_str().expect("nfd utf8")))
     );
 }
 
@@ -116,8 +133,8 @@ fn project_key_nfc_applied_even_when_canonicalize_falls_back() {
     let nfc = format!("{tmp_str}/absent-caf\u{00E9}");
     let nfd = format!("{tmp_str}/absent-cafe\u{0301}");
     assert_eq!(
-        project_key_for_directory(&nfc),
-        project_key_for_directory(&nfd)
+        project_key_for_directory(Some(&nfc)),
+        project_key_for_directory(Some(&nfd))
     );
 }
 
