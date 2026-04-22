@@ -39,9 +39,20 @@ fn baseline_argv_matches_python() {
         &argv[0..3],
         &["--output-format", "stream-json", "--verbose"]
     );
+    // Python emits `--system-prompt ""` when no system_prompt is set
+    // (subprocess_cli.py:209-210). forge-sdk matches.
+    assert_eq!(find_flag(&argv, "--system-prompt"), Some(Some("")));
     // Ends with --input-format stream-json.
     let tail = &argv[argv.len() - 2..];
     assert_eq!(tail, &["--input-format", "stream-json"]);
+}
+
+#[test]
+fn system_prompt_none_emits_empty_string() {
+    let argv = argv_of(OptionsBuilder::new());
+    assert_eq!(find_flag(&argv, "--system-prompt"), Some(Some("")));
+    assert!(find_flag(&argv, "--system-prompt-file").is_none());
+    assert!(find_flag(&argv, "--append-system-prompt").is_none());
 }
 
 #[test]

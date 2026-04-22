@@ -21,31 +21,32 @@ use crate::options::{
 pub fn build_args(options: &Options) -> Result<Vec<String>, Error> {
     let mut args: Vec<String> = Vec::new();
 
-    // Python SDK passes only `--output-format stream-json --verbose`
-    // (streaming input is signalled by sending stream-json on stdin,
-    // not by a flag). Leaving `--input-format` off keeps us
-    // byte-compatible with Python's argv composition.
+    // Python SDK leads every invocation with these three flags
+    // (`_internal/transport/subprocess_cli.py:207`).
     args.push("--output-format".into());
     args.push("stream-json".into());
     args.push("--verbose".into());
 
-    // system_prompt — Python always emits a form of this flag. We match
-    // only when the caller set an explicit value; None means "inherit
-    // CLI default" which is closer to Rust idiom.
-    if let Some(sp) = &options.system_prompt {
-        match sp {
-            SystemPromptKind::Inline(text) => {
-                args.push("--system-prompt".into());
-                args.push(text.clone());
-            }
-            SystemPromptKind::File(path) => {
-                args.push("--system-prompt-file".into());
-                args.push(path.to_string_lossy().into_owned());
-            }
-            SystemPromptKind::PresetAppend(append) => {
-                args.push("--append-system-prompt".into());
-                args.push(append.clone());
-            }
+    // system_prompt — Python always emits one of four flag forms
+    // (`subprocess_cli.py:209-218`), including an explicit
+    // `--system-prompt ""` when the option is unset so the CLI
+    // doesn't fall back to its builtin prompt. Match byte-for-byte.
+    match options.system_prompt.as_ref() {
+        None => {
+            args.push("--system-prompt".into());
+            args.push(String::new());
+        }
+        Some(SystemPromptKind::Inline(text)) => {
+            args.push("--system-prompt".into());
+            args.push(text.clone());
+        }
+        Some(SystemPromptKind::File(path)) => {
+            args.push("--system-prompt-file".into());
+            args.push(path.to_string_lossy().into_owned());
+        }
+        Some(SystemPromptKind::PresetAppend(append)) => {
+            args.push("--append-system-prompt".into());
+            args.push(append.clone());
         }
     }
 
