@@ -14,3 +14,6 @@ mod errors;
 
 #[path = "python_parity/message_parser.rs"]
 mod message_parser;
+
+#[path = "python_parity/transport.rs"]
+mod transport;
