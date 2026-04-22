@@ -505,18 +505,18 @@ flowchart LR
     ProjKey["project_key_for_directory<br>+ NFC + cwd default"]:::parity
   end
 
-  subgraph SessStore [Session store]
-    SStore["SessionStore trait<br>Key/Entry/Listing/Subkeys"]:::parity
-    SStoreInM["InMemorySessionStore<br>= MemorySessionStore"]:::parity
-    SStoreFs["FsSessionStore"]:::parity
-    SValid["validate_session_store_options<br>(pure fn)"]:::parity
-    SSum["SessionSummaryEntry<br>+ fold_session_summary"]:::parity
-    SConf["run_session_store_conformance<br>(testing harness)"]:::parity
+  subgraph SessStore [Session store · PROPOSED CUT]
+    SStore["SessionStore trait<br>Key/Entry/Listing/Subkeys"]:::cut
+    SStoreInM["InMemorySessionStore<br>= MemorySessionStore"]:::cut
+    SStoreFs["FsSessionStore"]:::cut
+    SValid["validate_session_store_options<br>(pure fn)"]:::cut
+    SSum["SessionSummaryEntry<br>+ fold_session_summary"]:::cut
+    SConf["run_session_store_conformance<br>(testing harness)"]:::cut
   end
 
-  subgraph SessVia [Session · via SessionStore]
-    SViaScan["*_from_store<br>(5 async variants)"]:::parity
-    SViaMut["*_via_store<br>(4 async variants)"]:::parity
+  subgraph SessVia [Session · via SessionStore · PROPOSED CUT]
+    SViaScan["*_from_store<br>(5 async variants)"]:::cut
+    SViaMut["*_via_store<br>(4 async variants)"]:::cut
   end
 
   subgraph MCP [MCP]
@@ -785,39 +785,47 @@ flowchart LR
   </tbody>
 </table>
 
-<h2 class="section-title">Session store + validation</h2>
+<h2 class="section-title">Session store + validation <span class="count">proposed cut — entire section</span></h2>
 <p class="section-intro">
-  Trait + two concrete stores (<code>MemorySessionStore</code>,
-  <code>FsSessionStore</code>) + pure-function validation all shipped.
-  All previously-tracked gaps closed as of the seventh pass
-  (2026-04-22) — <code>SessionSummaryEntry</code>,
-  <code>fold_session_summary</code>, and the conformance testing harness
-  all shipped. See the individual rows for pointers to their
-  implementation files.
+  <strong style="color: #e07dae;">✂ All 8 rows in this section are proposed for removal.</strong>
+  The <code>SessionStore</code> trait carries zero data beyond what the <code>claude</code>
+  binary already writes to <code>.jsonl</code> on disk (byte-for-byte identical — no enrichment,
+  no derived fields). Its value is callback dispatch + pluggable backend, neither of which
+  earns its keep for a CLI/TUI consuming the binary directly. Re-introduce when
+  <code>forged</code> (planned daemon) concretely needs storage outside
+  <code>$CLAUDE_CONFIG_DIR/projects</code>. Tracked in
+  <a href="#">review task #3</a> (execution) blocked on #2 (decision).
 </p>
 <table class="parity" data-section="store">
   <thead><tr><th>Python</th><th>forge-sdk</th><th>status</th><th>notes</th></tr></thead>
   <tbody>
-    <tr data-s="parity"><td class="py">SessionStore (Protocol)</td><td class="rs">SessionStore trait</td><td><span class="status status-parity">✓ parity</span></td><td class="notes">async_trait; same method set. provides_list_sessions() mirrors Python's _store_implements() probe.</td></tr>
-    <tr data-s="parity"><td class="py">SessionKey / SessionStoreEntry / SessionStoreListEntry / SessionListSubkeysKey</td><td class="rs">same names</td><td><span class="status status-parity">✓ parity</span></td><td class="notes">All 4 types.</td></tr>
-    <tr data-s="parity"><td class="py">InMemorySessionStore</td><td class="rs">MemorySessionStore (+alias)</td><td><span class="status status-parity">✓ parity</span></td><td class="notes">Python name aliased via <code>pub use … as InMemorySessionStore</code>.</td></tr>
-    <tr data-s="parity"><td class="py">validate_session_store_options</td><td class="rs">session::validation::validate_session_store_options</td><td><span class="status status-parity">✓ parity</span></td><td class="notes">Extracted in fifth pass (<code>998eb43</code>). 6 parity tests cover all rules.</td></tr>
-    <tr data-s="parity"><td class="py">SessionSummaryEntry</td><td class="rs">session::summary::SessionSummaryEntry</td><td><span class="status status-parity">✓ parity</span></td><td class="notes">Closed in seventh pass (2026-04-22). Re-exported from crate root. 14 inline unit tests in <code>src/session/summary.rs</code>.</td></tr>
-    <tr data-s="parity"><td class="py">fold_session_summary()</td><td class="rs">session::summary::fold_session_summary</td><td><span class="status status-parity">✓ parity</span></td><td class="notes">Closed in seventh pass (2026-04-22). Pure fn, preserves <code>prev.mtime</code> verbatim; adapter stamps mtime after persisting. Companion <code>summary_entry_to_sdk_info</code> also re-exported.</td></tr>
-    <tr data-s="parity"><td class="py">SessionStore::list_session_summaries</td><td class="rs">SessionStore::list_session_summaries</td><td><span class="status status-parity">✓ parity</span></td><td class="notes">Optional trait method added in seventh pass (2026-04-22). Default returns <code>NotImplemented</code>; stores that maintain sidecars override to expose the fast path.</td></tr>
-    <tr data-s="parity"><td class="py">run_session_store_conformance (testing)</td><td class="rs">forge_sdk::testing::run_session_store_conformance</td><td><span class="status status-parity">✓ parity</span></td><td class="notes">Closed in seventh pass (2026-04-22). 14 contracts encoded; auto-probe for optional methods. Lives in <code>src/testing.rs</code>. Harness itself caught + fixed a real bug in <code>MemorySessionStore::list_subkeys</code> (subpath sanitisation leak). 4 parity tests in <code>tests/session_store_conformance_harness.rs</code>.</td></tr>
+    <tr data-s="cut"><td class="py">SessionStore (Protocol)</td><td class="rs">SessionStore trait</td><td><span class="status status-cut">✂ cut</span></td><td class="notes">async_trait; same method set. provides_list_sessions() mirrors Python's _store_implements() probe. <strong>Cut:</strong> no downstream consumer in the CLI/TUI build-up — binary's own <code>.jsonl</code> covers persistence.</td></tr>
+    <tr data-s="cut"><td class="py">SessionKey / SessionStoreEntry / SessionStoreListEntry / SessionListSubkeysKey</td><td class="rs">same names</td><td><span class="status status-cut">✂ cut</span></td><td class="notes">All 4 types. <strong>Cut:</strong> tied to the trait; no other callers.</td></tr>
+    <tr data-s="cut"><td class="py">InMemorySessionStore</td><td class="rs">MemorySessionStore (+alias)</td><td><span class="status status-cut">✂ cut</span></td><td class="notes">Python name aliased via <code>pub use … as InMemorySessionStore</code>. <strong>Cut:</strong> only used by the conformance harness + internal tests, which are also being cut.</td></tr>
+    <tr data-s="cut"><td class="py">validate_session_store_options</td><td class="rs">session::validation::validate_session_store_options</td><td><span class="status status-cut">✂ cut</span></td><td class="notes">Extracted in fifth pass (<code>998eb43</code>). 6 parity tests cover all rules. <strong>Cut:</strong> validates combinations of options that only matter when a session_store is configured — moot post-cut.</td></tr>
+    <tr data-s="cut"><td class="py">SessionSummaryEntry</td><td class="rs">session::summary::SessionSummaryEntry</td><td><span class="status status-cut">✂ cut</span></td><td class="notes">Closed in seventh pass (2026-04-22). Re-exported from crate root. 14 inline unit tests in <code>src/session/summary.rs</code>. <strong>Cut:</strong> rolling back the seventh-pass landing — depends on SessionStore types.</td></tr>
+    <tr data-s="cut"><td class="py">fold_session_summary()</td><td class="rs">session::summary::fold_session_summary</td><td><span class="status status-cut">✂ cut</span></td><td class="notes">Closed in seventh pass (2026-04-22). Pure fn, preserves <code>prev.mtime</code> verbatim; adapter stamps mtime after persisting. Companion <code>summary_entry_to_sdk_info</code> also re-exported. <strong>Cut:</strong> operates on SessionStore types.</td></tr>
+    <tr data-s="cut"><td class="py">SessionStore::list_session_summaries</td><td class="rs">SessionStore::list_session_summaries</td><td><span class="status status-cut">✂ cut</span></td><td class="notes">Optional trait method added in seventh pass (2026-04-22). Default returns <code>NotImplemented</code>; stores that maintain sidecars override to expose the fast path. <strong>Cut:</strong> the trait is cut.</td></tr>
+    <tr data-s="cut"><td class="py">run_session_store_conformance (testing)</td><td class="rs">forge_sdk::testing::run_session_store_conformance</td><td><span class="status status-cut">✂ cut</span></td><td class="notes">Closed in seventh pass (2026-04-22). 14 contracts encoded; auto-probe for optional methods. Lives in <code>src/testing.rs</code>. Harness itself caught + fixed a real bug in <code>MemorySessionStore::list_subkeys</code> (subpath sanitisation leak). 4 parity tests in <code>tests/session_store_conformance_harness.rs</code>. <strong>Cut:</strong> no trait to conform to.</td></tr>
   </tbody>
 </table>
 
-<h2 class="section-title">Session listing · via SessionStore (async variants)</h2>
+<h2 class="section-title">Session listing · via SessionStore (async variants) <span class="count">proposed cut — entire section</span></h2>
+<p class="section-intro">
+  <strong style="color: #e07dae;">✂ All 5 rows are proposed for removal alongside the
+  SessionStore trait.</strong> The <code>*_from_store</code> helpers are the async
+  wrappers that read sessions through a user-supplied <code>SessionStore</code>. They
+  have no purpose once the trait is cut — the filesystem equivalents (under "Session
+  listing — local filesystem" above) stay and cover every current use case.
+</p>
 <table class="parity" data-section="viascan">
   <thead><tr><th>Python</th><th>forge-sdk</th><th>status</th><th>notes</th></tr></thead>
   <tbody>
-    <tr data-s="parity"><td class="py">list_sessions_from_store</td><td class="rs">session::via_store::list_sessions_from_store</td><td><span class="status status-parity">✓ parity</span></td><td class="notes">Fast path via <code>list_session_summaries</code> when the store implements it.</td></tr>
-    <tr data-s="parity"><td class="py">get_session_info_from_store</td><td class="rs">session::via_store::get_session_info_from_store</td><td><span class="status status-parity">✓ parity</span></td><td class="notes"></td></tr>
-    <tr data-s="parity"><td class="py">get_session_messages_from_store</td><td class="rs">session::via_store::get_session_messages_from_store</td><td><span class="status status-parity">✓ parity</span></td><td class="notes"></td></tr>
-    <tr data-s="parity"><td class="py">list_subagents_from_store</td><td class="rs">session::via_store::list_subagents_from_store</td><td><span class="status status-parity">✓ parity</span></td><td class="notes"></td></tr>
-    <tr data-s="parity"><td class="py">get_subagent_messages_from_store</td><td class="rs">session::via_store::get_subagent_messages_from_store</td><td><span class="status status-parity">✓ parity</span></td><td class="notes"></td></tr>
+    <tr data-s="cut"><td class="py">list_sessions_from_store</td><td class="rs">session::via_store::list_sessions_from_store</td><td><span class="status status-cut">✂ cut</span></td><td class="notes">Fast path via <code>list_session_summaries</code> when the store implements it. <strong>Cut:</strong> no store, no fast path.</td></tr>
+    <tr data-s="cut"><td class="py">get_session_info_from_store</td><td class="rs">session::via_store::get_session_info_from_store</td><td><span class="status status-cut">✂ cut</span></td><td class="notes"><strong>Cut:</strong> filesystem equivalent <code>get_session_info</code> remains.</td></tr>
+    <tr data-s="cut"><td class="py">get_session_messages_from_store</td><td class="rs">session::via_store::get_session_messages_from_store</td><td><span class="status status-cut">✂ cut</span></td><td class="notes"><strong>Cut:</strong> filesystem equivalent <code>get_session_messages</code> remains.</td></tr>
+    <tr data-s="cut"><td class="py">list_subagents_from_store</td><td class="rs">session::via_store::list_subagents_from_store</td><td><span class="status status-cut">✂ cut</span></td><td class="notes"><strong>Cut:</strong> filesystem equivalent <code>list_subagents</code> remains.</td></tr>
+    <tr data-s="cut"><td class="py">get_subagent_messages_from_store</td><td class="rs">session::via_store::get_subagent_messages_from_store</td><td><span class="status status-cut">✂ cut</span></td><td class="notes"><strong>Cut:</strong> filesystem equivalent <code>get_subagent_messages</code> remains.</td></tr>
   </tbody>
 </table>
 
@@ -829,7 +837,7 @@ flowchart LR
     <tr data-s="parity"><td class="py">tag_session</td><td class="rs">session::mutations::tag_session</td><td><span class="status status-parity">✓ parity</span></td><td class="notes"></td></tr>
     <tr data-s="parity"><td class="py">delete_session</td><td class="rs">session::mutations::delete_session</td><td><span class="status status-parity">✓ parity</span></td><td class="notes"></td></tr>
     <tr data-s="parity"><td class="py">fork_session + ForkSessionResult</td><td class="rs">session::mutations::{fork_session, ForkSessionResult}</td><td><span class="status status-parity">✓ parity</span></td><td class="notes">Same new-session-id + entries-copied payload.</td></tr>
-    <tr data-s="parity"><td class="py">*_via_store (4 async variants)</td><td class="rs">session::via_store::*_via_store</td><td><span class="status status-parity">✓ parity</span></td><td class="notes">rename / tag / delete / fork.</td></tr>
+    <tr data-s="cut"><td class="py">*_via_store (4 async variants)</td><td class="rs">session::via_store::*_via_store</td><td><span class="status status-cut">✂ cut</span></td><td class="notes">rename / tag / delete / fork. <strong>Cut:</strong> async wrappers of the filesystem mutations for SessionStore-backed callers. Filesystem mutations (row above) cover every current use case.</td></tr>
   </tbody>
 </table>
 
@@ -864,28 +872,25 @@ flowchart LR
   style) so the history is visible.
 </p>
 <div class="gap-grid">
-  <div class="gap-card" style="border-left-color: #46a06d;">
-    <h4>✓ SessionSummaryEntry + fold_session_summary <span class="py">session_summary.py</span></h4>
+  <div class="gap-card" style="border-left-color: #cc4488;">
+    <h4 style="text-decoration: line-through; text-decoration-color: #cc4488; opacity: 0.8;">✓ SessionSummaryEntry + fold_session_summary <span class="py">session_summary.py</span></h4>
     <p class="why">
-      <strong>Closed on 2026-04-22 (seventh pass).</strong> Ported as
-      <code>src/session/summary.rs</code>. Public re-exports:
-      <code>SessionSummaryEntry</code>, <code>fold_session_summary</code>,
-      <code>summary_entry_to_sdk_info</code>. Added
-      <code>SessionStore::list_session_summaries</code> optional trait
-      method (default <code>NotImplemented</code>).
+      <strong style="color: #e07dae;">✂ Rolled back as part of post-parity cleanup.</strong>
+      Ported as <code>src/session/summary.rs</code> in the seventh pass. Being removed
+      because it depends on the <code>SessionStore</code> types (also cut). Incremental
+      summaries are a forged-level concern — reintroduce there if needed.
     </p>
-    <p class="impact"><strong>Impact:</strong> third-party store authors can now maintain incremental summaries with the same fold function Python uses. 14 inline unit tests cover the invariants.</p>
+    <p class="impact"><strong style="color: #e07dae;">Net effect after cut:</strong> ~14 inline unit tests removed; <code>list_session_summaries</code> optional trait method vanishes with the trait.</p>
   </div>
-  <div class="gap-card" style="border-left-color: #46a06d;">
-    <h4>✓ run_session_store_conformance harness <span class="py">testing/session_store_conformance.py</span></h4>
+  <div class="gap-card" style="border-left-color: #cc4488;">
+    <h4 style="text-decoration: line-through; text-decoration-color: #cc4488; opacity: 0.8;">✓ run_session_store_conformance harness <span class="py">testing/session_store_conformance.py</span></h4>
     <p class="why">
-      <strong>Closed on 2026-04-22 (seventh pass).</strong> Ported as
-      <code>src/testing.rs</code>. 14 contracts encoded; auto-probe for
-      optional methods. Caught a real bug in
-      <code>MemorySessionStore::list_subkeys</code> (subpath
-      sanitisation leak) — fixed as part of the round.
+      <strong style="color: #e07dae;">✂ Rolled back as part of post-parity cleanup.</strong>
+      Ported as <code>src/testing.rs</code> in the seventh pass. Being removed alongside
+      the trait it certifies. The subpath-sanitisation bug it caught in
+      <code>MemorySessionStore::list_subkeys</code> goes away with the store itself.
     </p>
-    <p class="impact"><strong>Impact:</strong> third-party store adapters now have a public harness to certify against. The 5 previously-ignored TestInMemorySessionStore parity tests now run.</p>
+    <p class="impact"><strong style="color: #e07dae;">Net effect after cut:</strong> 14 contracts + 4 parity tests + <code>tests/session_store_conformance_harness.rs</code> removed.</p>
   </div>
   <div class="gap-card" style="border-left-color: #46a06d;">
     <h4>✓ Public Transport trait <span class="py">_internal/transport/__init__.py</span></h4>
