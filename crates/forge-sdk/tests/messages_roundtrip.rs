@@ -2,7 +2,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use forge_sdk::messages::{Message, StopReason};
+use forge_sdk::{Message, StopReason};
 use serde_json::json;
 
 #[test]

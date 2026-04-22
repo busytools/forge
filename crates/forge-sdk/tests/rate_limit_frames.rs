@@ -5,8 +5,8 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use forge_sdk::messages::{Message, RateLimitInfo, RateLimitStatus, RateLimitType};
 use forge_sdk::transport::codec::{DecodedLine, decode_dispatch, decode_line};
+use forge_sdk::{Message, RateLimitInfo, RateLimitStatus, RateLimitType};
 use serde_json::json;
 
 #[test]

@@ -5,8 +5,8 @@
 //! These tests assert the same per-variant field coverage: user,
 //! assistant, and result messages with the full range of content blocks.
 
+use forge_sdk::Message;
 use forge_sdk::content::ContentBlock;
-use forge_sdk::messages::Message;
 use serde_json::json;
 
 /// Ported from `claude-agent-sdk-python` v0.1.64 `tests/test_message_parser.py::TestMessageParser::test_parse_valid_user_message`.

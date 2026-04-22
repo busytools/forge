@@ -2,7 +2,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use forge_sdk::messages::Message;
+use forge_sdk::Message;
 use forge_sdk::{Client, OptionsBuilder};
 
 fn mock_binary_path() -> String {

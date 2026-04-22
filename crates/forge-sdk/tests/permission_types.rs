@@ -2,7 +2,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use forge_sdk::permissions::{PermissionDecision, ToolPermissionContext};
+use forge_sdk::{PermissionDecision, ToolPermissionContext};
 use serde_json::json;
 
 #[test]

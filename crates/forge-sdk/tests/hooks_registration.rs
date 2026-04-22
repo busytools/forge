@@ -2,10 +2,10 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use forge_sdk::hooks::{
+use forge_sdk::{HookContext, HookDecision, HooksBuilder, OptionsBuilder, PreToolUseInput};
+use forge_sdk::{
     NotificationInput, PermissionRequestInput, PostToolUseFailureInput, SubagentStartInput,
 };
-use forge_sdk::{HookContext, HookDecision, HooksBuilder, OptionsBuilder, PreToolUseInput};
 
 #[test]
 fn hooks_attach_to_options() {
