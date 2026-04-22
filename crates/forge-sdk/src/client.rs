@@ -22,7 +22,6 @@ use crate::mcp::protocol::JsonRpcRequest;
 use crate::messages::Message;
 use crate::options::Options;
 use crate::permissions::{CanUseToolCallback, PermissionDecision, ToolPermissionContext};
-use crate::session_store::SessionStore;
 use crate::transcript_mirror_batcher::TranscriptMirrorBatcher;
 use crate::transport::codec::{DecodedLine, decode_dispatch, decode_line, encode_user_prompt};
 use crate::transport::process::Subprocess;
@@ -39,8 +38,6 @@ pub struct Client {
     can_use_tool: Option<Arc<dyn CanUseToolCallback>>,
     mcp_hosts: McpHosts,
     hook_callbacks: HashMap<String, Arc<dyn ErasedHookCallback>>,
-    session_store: Option<Arc<dyn SessionStore>>,
-    projects_dir: Option<std::path::PathBuf>,
     mirror_batcher: Option<TranscriptMirrorBatcher>,
     synth_messages: Option<mpsc::UnboundedReceiver<Message>>,
 }
@@ -60,11 +57,6 @@ impl std::fmt::Debug for Client {
                 "hook_callbacks",
                 &format!("<{} hooks>", self.hook_callbacks.len()),
             )
-            .field(
-                "session_store",
-                &self.session_store.as_ref().map(|_| "<store>"),
-            )
-            .field("projects_dir", &self.projects_dir)
             .field(
                 "mirror_batcher",
                 &self.mirror_batcher.as_ref().map(|_| "<batcher>"),
@@ -92,8 +84,6 @@ impl Client {
         let hook_registry = options.hooks.mint_registry();
         let hook_payload = hook_registry.to_initialize_payload();
         let hook_callbacks = hook_registry.by_id;
-        let session_store = options.session_store.clone();
-        let projects_dir = options.projects_dir.clone();
         let agents_payload = if options.agents.is_empty() {
             serde_json::json!({})
         } else {
@@ -131,8 +121,15 @@ impl Client {
         };
         debug!(session_id, "client init");
 
-        let (mirror_batcher, synth_messages) = if let Some(store) = session_store.clone() {
-            let projects_dir_str = projects_dir_as_string(projects_dir.as_ref());
+        let (mirror_batcher, synth_messages) = if let Some(store) = options.session_store.clone() {
+            let projects_dir_str = options.projects_dir.as_ref().map_or_else(
+                || {
+                    crate::session_mutations::projects_dir()
+                        .to_string_lossy()
+                        .into_owned()
+                },
+                |p| p.to_string_lossy().into_owned(),
+            );
             let (tx, rx) = mpsc::unbounded_channel();
             (
                 Some(TranscriptMirrorBatcher::new(store, projects_dir_str, tx)),
@@ -149,8 +146,6 @@ impl Client {
             can_use_tool,
             mcp_hosts,
             hook_callbacks,
-            session_store,
-            projects_dir,
             mirror_batcher,
             synth_messages,
         };
@@ -181,66 +176,17 @@ impl Client {
         exclude_dynamic_sections: bool,
         agents: serde_json::Value,
     ) -> Result<(), Error> {
-        let request_id = crate::request_id::next();
-        let body = serde_json::json!({
-            "type": "control_request",
-            "request_id": request_id,
-            "request": {
-                "subtype": "initialize",
+        self.send_control(
+            "initialize",
+            serde_json::json!({
                 "hooks": hooks,
                 "excludeDynamicSections": exclude_dynamic_sections,
                 "skills": skills,
                 "agents": agents,
-            }
-        });
-        let mut line = serde_json::to_string(&body).map_err(|e| Error::MessageParse {
-            reason: format!("initialize serialise: {e}"),
-        })?;
-        line.push('\n');
-        self.sub.write_line(&line).await?;
-
-        // Await the matching response. Control responses arrive on the
-        // same stdio as regular messages — typically the very next line
-        // with no user prompts racing.
-        loop {
-            let Some(response_line) = self.sub.read_line().await? else {
-                return Err(Error::Connection {
-                    reason: "subprocess closed before initialize response".into(),
-                });
-            };
-            self.line_number += 1;
-            let value: serde_json::Value =
-                serde_json::from_str(&response_line).map_err(|source| Error::JsonDecode {
-                    line: self.line_number,
-                    source,
-                })?;
-            if value.get("type").and_then(serde_json::Value::as_str) == Some("control_response") {
-                let resp_request_id = value
-                    .pointer("/response/request_id")
-                    .and_then(serde_json::Value::as_str);
-                if resp_request_id == Some(&request_id) {
-                    let subtype = value
-                        .pointer("/response/subtype")
-                        .and_then(serde_json::Value::as_str);
-                    if subtype == Some("success") {
-                        return Ok(());
-                    }
-                    let err = value
-                        .pointer("/response/error")
-                        .and_then(serde_json::Value::as_str)
-                        .unwrap_or("unknown error");
-                    return Err(Error::MessageParse {
-                        reason: format!("initialize failed: {err}"),
-                    });
-                }
-            }
-            // Not our response — if it's some other control_request we
-            // don't yet know how to handle at init time, log and drop.
-            // Real CLI behaviour: the initialize response is always the
-            // next frame; hitting this branch in production means a
-            // protocol bug worth surfacing.
-            tracing::warn!(line = %response_line, "unexpected frame during initialize");
-        }
+            }),
+        )
+        .await?;
+        Ok(())
     }
 
     /// The session id captured from the init message.
@@ -351,14 +297,6 @@ impl Client {
         if let Some(batcher) = self.mirror_batcher.as_ref() {
             batcher.flush().await;
         }
-    }
-
-    /// Compute the effective `projects_dir` for `file_path_to_session_key`.
-    /// Honours the CLI's `CLAUDE_CONFIG_DIR` override when set, else
-    /// defaults to `~/.claude/projects`.
-    #[allow(dead_code)] // retained for diagnostics/tests
-    fn projects_dir_str(&self) -> String {
-        projects_dir_as_string(self.projects_dir.as_ref())
     }
 
     async fn handle_control(&mut self, req: ControlRequest) -> Result<(), Error> {
@@ -894,19 +832,4 @@ impl Client {
         }
         self.sub.shutdown().await
     }
-}
-
-/// Compute the effective `projects_dir` for `file_path_to_session_key`.
-/// Honours the CLI's `CLAUDE_CONFIG_DIR` override when set, else defaults
-/// to `~/.claude/projects`. Shared between [`Client::spawn`] and the
-/// batcher construction path.
-fn projects_dir_as_string(dir: Option<&std::path::PathBuf>) -> String {
-    if let Some(dir) = dir {
-        return dir.to_string_lossy().into_owned();
-    }
-    if let Ok(custom) = std::env::var("CLAUDE_CONFIG_DIR") {
-        return format!("{}/projects", custom.trim_end_matches('/'));
-    }
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-    format!("{home}/.claude/projects")
 }
