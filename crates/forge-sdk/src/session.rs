@@ -19,6 +19,10 @@
 //!   filesystem.
 //! - [`validation`] — pre-flight validation for `session_store` option
 //!   combinations, invoked by [`Client::spawn`](crate::client::Client::spawn).
+//! - [`summary`] — incremental session-summary derivation
+//!   (`fold_session_summary` + `SessionSummaryEntry`) that store
+//!   adapters call from inside `append()` to maintain a per-session
+//!   sidecar without re-reading the transcript.
 //!
 //! Consumers import from the flat `forge_sdk::*` re-export surface
 //! (for storage types) or these paths directly (for the free
@@ -29,5 +33,6 @@
 pub mod mutations;
 pub mod scan;
 pub mod store;
+pub mod summary;
 pub mod validation;
 pub mod via_store;
