@@ -9,7 +9,7 @@ This file is the single source of truth for **where forge-sdk is** relative to P
 | **Target Python SDK version** | `0.1.64` (released 2026-04-20) |
 | **Target Python SDK commit** | `anthropics-claude-agent-sdk-python-1267352` (tarball SHA prefix) |
 | **forge-sdk version at parity** | `v0.1.64` (deep audit pass) |
-| **Last full parity run** | 2026-04-22 (fourth pass — project_key gaps closed) |
+| **Last full parity run** | 2026-04-22 (fifth pass — validate_session_store_options extracted) |
 | **Next parity check due** | 2026-04-27 (first weekly) |
 | **Versioning convention** | forge-sdk version mirrors the Python SDK release it targets — `v0.1.64` means parity with Python v0.1.64. No separate forge-sdk patch numbers. |
 | **Design-spec basis** | `~/.claude-stargate/plans/2026-04-21-forge-sdk-port-design.md` + `~/.claude-stargate/plans/2026-04-21-forge-sdk-m0-m1-plan.md` + `~/.claude-stargate/plans/2026-04-21-forge-sdk-m2-m3-plan.md` + `~/.claude-stargate/plans/2026-04-21-forge-sdk-m4-m7-plan.md` + `~/.claude-stargate/plans/2026-04-21-forge-sdk-corrections.md`. |
@@ -17,6 +17,31 @@ This file is the single source of truth for **where forge-sdk is** relative to P
 ## Parity log
 
 Each entry below records one weekly parity check.
+
+### 2026-04-22 — validate_session_store_options extracted + 6 parity tests
+
+Python ships `_internal/session_store_validation.py` as a standalone
+module that `Client`/`ClaudeSDKClient` imports; forge-sdk had inlined
+the same two rules inside `Client::spawn`. Extracting lets third-party
+test suites (and our own parity tests) exercise the fail-fast rules
+without spawning the `claude` binary.
+
+- **New module** `src/session/validation.rs` — public
+  `validate_session_store_options(&Options) -> Result<(), Error>`.
+- **`Client::spawn`** now calls the extracted function; the 27-line
+  inline block collapses to one line.
+- **Behaviour unchanged** — same two rules, same error messages.
+  Existing `session_store_validation.rs` integration tests continue
+  to pass through `Client::spawn`, covering the wiring.
+- **Tier 6 — test_session_store_conformance.py 12 / 17.** Ports all
+  six `TestSessionStoreOptionsValidation` cases. Remaining 5 cases
+  all depend on the conformance harness (`run_session_store_conformance`
+  + `_store_implements`), which is new forge-sdk surface rather than
+  a port.
+
+**Test count:** 333 tests + 3 ignored pass on `just check` (+6 this
+round). Tier 6 mirror coverage: still 4 / 27 upstream files; the
+`session_store_conformance` file is now 71% ported (was 35%).
 
 ### 2026-04-22 — project_key_for_directory parity gaps closed
 
