@@ -9,7 +9,7 @@ This file is the single source of truth for **where forge-sdk is** relative to P
 | **Target Python SDK version** | `0.1.64` (released 2026-04-20) |
 | **Target Python SDK commit** | `anthropics-claude-agent-sdk-python-1267352` (tarball SHA prefix) |
 | **forge-sdk version at parity** | `v0.1.64` (deep audit pass) |
-| **Last full parity run** | 2026-04-21 (deep dive, second pass same day) |
+| **Last full parity run** | 2026-04-22 (fourth pass — project_key gaps closed) |
 | **Next parity check due** | 2026-04-27 (first weekly) |
 | **Versioning convention** | forge-sdk version mirrors the Python SDK release it targets — `v0.1.64` means parity with Python v0.1.64. No separate forge-sdk patch numbers. |
 | **Design-spec basis** | `~/.claude-stargate/plans/2026-04-21-forge-sdk-port-design.md` + `~/.claude-stargate/plans/2026-04-21-forge-sdk-m0-m1-plan.md` + `~/.claude-stargate/plans/2026-04-21-forge-sdk-m2-m3-plan.md` + `~/.claude-stargate/plans/2026-04-21-forge-sdk-m4-m7-plan.md` + `~/.claude-stargate/plans/2026-04-21-forge-sdk-corrections.md`. |
@@ -17,6 +17,39 @@ This file is the single source of truth for **where forge-sdk is** relative to P
 ## Parity log
 
 Each entry below records one weekly parity check.
+
+### 2026-04-22 — project_key_for_directory parity gaps closed
+
+Closes both gaps the third-pass entry surfaced. `project_key_for_directory`
+now matches Python's `_internal/sessions.py:1414-1424` signature and
+behaviour.
+
+- **NFC normalisation.** Extracted a `canonicalize_path` helper that
+  realpaths the input and applies NFC, mirroring Python's
+  `_canonicalize_path` (`sessions.py:147-153`). Routed both
+  `project_key_for_directory` and the internal `project_dir_for` through
+  it so session scans and store lookups agree on the key shape on
+  filesystems that don't auto-normalise (Linux ext4, Windows NTFS). Added
+  `unicode-normalization = "0.1"` to the workspace dep set.
+- **No-arg default.** Signature is now
+  `project_key_for_directory(path: Option<&str>) -> String`; `None`
+  resolves to `"."` (cwd). Breaking for direct callers — justified
+  pre-release; no non-test callers existed.
+- **Tier 6 — test_session_store_conformance.py 6 / 17.** Adds
+  `project_key_defaults_to_cwd`, `project_key_nfc_normalizes_decomposed_unicode`,
+  and a stricter companion `project_key_nfc_applied_even_when_canonicalize_falls_back`
+  that uses non-existent paths so the NFC step is exercised on every
+  platform (APFS's lookup normalisation would otherwise mask the gap).
+
+**Test count:** 327 tests + 3 ignored pass on `just check` (+3 this
+round). Tier 6 mirror coverage unchanged at 4 / 27 upstream files —
+`session_store_conformance` now 35% ported (was 24%).
+
+**Remaining `test_session_store_conformance.py` deferrals:** the
+conformance harness (`run_session_store_conformance`) and the 6
+`TestSessionStoreOptionsValidation` cases — both need new forge-sdk
+surface (a testing harness for third-party adapters; a pure-function
+`validate_session_store_options`). New scope, not just a port.
 
 ### 2026-04-22 — server-tool blocks + Tier 6 parser close + project_key port
 
@@ -51,18 +84,11 @@ any assistant turn carrying one would have failed deserialisation.
 Tier 6 mirror coverage: 4 / 27 upstream files (`errors`,
 `message_parser` 100%, `session_store_conformance` 24%, `transport`).
 
-**Parity gaps surfaced this round (both in `project_key_for_directory`):**
+**Parity gaps surfaced this round** (both closed in the 2026-04-22
+fourth-pass entry above):
 
-1. **No-arg default.** Python's
-   `project_key_for_directory(directory=None)` defaults to cwd;
-   forge-sdk's takes `path: &str` only. Minor API shape gap.
-2. **NFC normalisation.** Python runs
-   `unicodedata.normalize("NFC", realpath(d))` before hashing;
-   forge-sdk calls `fs::canonicalize` only. On macOS HFS+ a
-   decomposed path (`cafe\\u0301`) would derive a different
-   `project_key` than the CLI's canonical NFC form — `store.load`
-   silently misses. Fix needs `unicode-normalization` dep; tracked for
-   a follow-up.
+1. **No-arg default.** Signature mismatch — closed.
+2. **NFC normalisation.** Missing NFC step — closed.
 
 ### 2026-04-22 — closeout round (`parity-closeout` branch)
 
