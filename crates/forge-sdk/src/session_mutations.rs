@@ -40,10 +40,7 @@ pub fn rename_session(session_id: &str, title: &str, directory: Option<&str>) ->
     validate_uuid(session_id)?;
     let stripped = title.trim();
     if stripped.is_empty() {
-        return Err(Error::MessageParse {
-            reason: "title must be non-empty".into(),
-            data: None,
-        });
+        return Err(Error::message_parse("title must be non-empty"));
     }
     let payload = json!({
         "type": "custom-title",
@@ -73,10 +70,9 @@ pub fn tag_session(
         Some(raw) => {
             let stripped = raw.trim();
             if stripped.is_empty() {
-                return Err(Error::MessageParse {
-                    reason: "tag must be non-empty (use None to clear)".into(),
-                    data: None,
-                });
+                return Err(Error::message_parse(
+                    "tag must be non-empty (use None to clear)",
+                ));
             }
             stripped.to_string()
         }
@@ -213,10 +209,8 @@ pub fn fork_session(
             saw_boundary = true;
         }
         out_lines.push(
-            serde_json::to_string(&value).map_err(|e| Error::MessageParse {
-                reason: format!("encode fork entry: {e}"),
-                data: None,
-            })?,
+            serde_json::to_string(&value)
+                .map_err(|e| Error::message_parse(format!("encode fork entry: {e}")))?,
         );
         if saw_boundary {
             break;
@@ -229,13 +223,10 @@ pub fn fork_session(
         ))));
     }
     if up_to_message_id.is_some() && !saw_boundary {
-        return Err(Error::MessageParse {
-            reason: format!(
-                "up_to_message_id {} not found in transcript",
-                up_to_message_id.unwrap_or("")
-            ),
-            data: None,
-        });
+        return Err(Error::message_parse(format!(
+            "up_to_message_id {} not found in transcript",
+            up_to_message_id.unwrap_or("")
+        )));
     }
 
     // Apply fork title — user-supplied wins, else derive from the source
@@ -250,10 +241,7 @@ pub fn fork_session(
             "customTitle": final_title,
             "sessionId": new_session_id,
         }))
-        .map_err(|e| Error::MessageParse {
-            reason: format!("encode fork title: {e}"),
-            data: None,
-        })?;
+        .map_err(|e| Error::message_parse(format!("encode fork title: {e}")))?;
         out_lines.push(title_entry);
     }
 
@@ -300,10 +288,7 @@ fn validate_uuid(s: &str) -> Result<(), Error> {
     if is_valid_uuid(s) {
         Ok(())
     } else {
-        Err(Error::MessageParse {
-            reason: format!("Invalid session_id: {s}"),
-            data: None,
-        })
+        Err(Error::message_parse(format!("Invalid session_id: {s}")))
     }
 }
 
@@ -351,10 +336,8 @@ fn append_to_session(
             format!("session {session_id} not found"),
         ))
     })?;
-    let mut line = serde_json::to_string(payload).map_err(|e| Error::MessageParse {
-        reason: format!("encode mutation payload: {e}"),
-        data: None,
-    })?;
+    let mut line = serde_json::to_string(payload)
+        .map_err(|e| Error::message_parse(format!("encode mutation payload: {e}")))?;
     line.push('\n');
     append_line(&path, line.as_bytes())
 }

@@ -364,18 +364,14 @@ impl Options {
             }
         }
         if let Some(sandbox) = &self.sandbox {
-            let v = serde_json::to_value(sandbox).map_err(|e| crate::Error::MessageParse {
-                reason: format!("could not serialise sandbox config: {e}"),
-                data: None,
+            let v = serde_json::to_value(sandbox).map_err(|e| {
+                crate::Error::message_parse(format!("could not serialise sandbox config: {e}"))
             })?;
             settings_obj.insert("sandbox".into(), v);
         }
-        serde_json::to_string(&settings_obj)
-            .map(Some)
-            .map_err(|e| crate::Error::MessageParse {
-                reason: format!("could not serialise merged settings: {e}"),
-                data: None,
-            })
+        serde_json::to_string(&settings_obj).map(Some).map_err(|e| {
+            crate::Error::message_parse(format!("could not serialise merged settings: {e}"))
+        })
     }
 }
 
