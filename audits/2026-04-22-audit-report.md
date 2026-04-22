@@ -289,4 +289,23 @@
 3. **One-commit cleanup batch (easy wins, high payoff)**: I8-I14 + M1-M6. ~400 LoC removed, no behavior change.
 4. **Architecture refactors (defer, separate sessions)**: I4 (transport/MCP), I5 (client god file), I6 (4-way session naming), I18 (hooks god file). These want careful review, not a rushed batch.
 
+---
+
+## Resolution status (updated 2026-04-22 post-fix)
+
+**Fixed in `audit-fixes` branch (32/37 findings):**
+
+- C1, C2 (both critical) → commit `497e0d7`
+- I1, I2, I7 (correctness bugs) → commit `f01a111`. Also fixed I12's root cause (shared info-accumulator behaviour aligned) and removed the dead `extras` HashMap (M6) and bounded the year loop (M12) in the same commit.
+- I8, I9, I10, I11, I14, M1, M2, M3, M4, M5 (dedup + dead code) → commit `ccc7a51`
+- I16, I17, M7, M8, M9, M10, M11, M13 (silent-failure cleanup) → commit `21d6b31`
+- I4 (transport/MCP layer violation) → commit `0d6503d` — new `crate::argv` module
+
+**Deferred (5/37 findings), all stylistic / architectural:**
+
+- **I5** (`client.rs` god file, 854 LoC) and **I18** (`hooks.rs` god file, 1035 LoC) — both are minor-severity multi-file splits with significant refactor risk. `client.rs` split in particular needs coordinated extraction of control-dispatch + control-send + hook-response encoding that would benefit from dedicated review, not a batch-audit-fix. Functionality unaffected.
+- **I6** (four-way session-module naming) — renaming `sessions_store.rs` → `sessions_via_store.rs` is a cosmetic change that breaks import paths for downstream users; holding until a `v0.2` cut that can bundle multiple naming improvements.
+- **I13** (shared `to_session_message` helper between `sessions.rs` and `sessions_store.rs`) — skipped because the two call sites consume different input types (`serde_json::Value` vs `SessionStoreEntry`); extracting requires a trait-based view that's marginal benefit.
+- **M14** (drop `SessionKey` import in `messages.rs` by replacing with two `Option<String>`) — re-examined and decided the typed `SessionKey` is the right public-API shape for consumers matching on `MirrorError`. The layering concern is compile-time only; both types are public.
+
 — End of audit report —
