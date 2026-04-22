@@ -24,6 +24,12 @@ mod mcp_large_output;
 #[path = "python_parity/query.rs"]
 mod query;
 
+#[path = "python_parity/session_mutations.rs"]
+mod session_mutations;
+
+#[path = "python_parity/session_resume.rs"]
+mod session_resume;
+
 #[path = "python_parity/sessions.rs"]
 mod sessions;
 
