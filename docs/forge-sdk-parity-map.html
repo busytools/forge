@@ -655,8 +655,8 @@ flowchart LR
     <tr data-s="shape"><td class="py">SystemPrompt (str | …)</td><td class="rs">SystemPromptKind enum</td><td><span class="status status-shape">≈ shape</span></td><td class="notes">Preset vs String variants, <code>exclude_dynamic_sections</code> attached to Preset per Python <code>SystemPromptPreset</code>.</td></tr>
     <tr data-s="parity"><td class="py">ContextUsageCategory / Response</td><td class="rs">ContextUsageCategory / Response</td><td><span class="status status-parity">✓ parity</span></td><td class="notes">Same fields, same wire shape.</td></tr>
     <tr data-s="parity"><td class="py">SettingSource</td><td class="rs">SettingSource</td><td><span class="status status-parity">✓ parity</span></td><td class="notes">System / Project / User / Local.</td></tr>
-    <tr data-s="parity"><td class="py">SdkPluginConfig</td><td class="rs">SdkPluginConfig</td><td><span class="status status-parity">✓ parity</span></td><td class="notes">Name + version + registry.</td></tr>
-    <tr data-s="parity"><td class="py">SdkBeta</td><td class="rs">SdkBeta</td><td><span class="status status-parity">✓ parity</span></td><td class="notes">Enables beta flags consistently.</td></tr>
+    <tr data-s="review"><td class="py">SdkPluginConfig</td><td class="rs">SdkPluginConfig</td><td><span class="status status-review">? review</span></td><td class="notes">Name + version + registry. <strong>Under review:</strong> plugin registration hook — Anthropic-internal extensibility. Unclear whether we ship with plugin support at all. Low cost to keep (just a config struct); non-zero to maintain. Duplicate row in "Agents · plugins · beta" below.</td></tr>
+    <tr data-s="review"><td class="py">SdkBeta</td><td class="rs">SdkBeta</td><td><span class="status status-review">? review</span></td><td class="notes">Enables beta flags consistently. <strong>Under review:</strong> same rationale as SdkPluginConfig — beta flag plumbing, questionable value for a focused tool. Duplicate row below.</td></tr>
     <tr data-s="parity"><td class="py">SandboxSettings / NetworkConfig / IgnoreViolations</td><td class="rs">SandboxSettings / NetworkConfig / IgnoreViolations</td><td><span class="status status-parity">✓ parity</span></td><td class="notes">All 3 types + wire encoding match.</td></tr>
   </tbody>
 </table>
@@ -836,7 +836,7 @@ flowchart LR
     <tr data-s="parity"><td class="py">rename_session</td><td class="rs">session::mutations::rename_session</td><td><span class="status status-parity">✓ parity</span></td><td class="notes">Filesystem + via_store.</td></tr>
     <tr data-s="parity"><td class="py">tag_session</td><td class="rs">session::mutations::tag_session</td><td><span class="status status-parity">✓ parity</span></td><td class="notes"></td></tr>
     <tr data-s="parity"><td class="py">delete_session</td><td class="rs">session::mutations::delete_session</td><td><span class="status status-parity">✓ parity</span></td><td class="notes"></td></tr>
-    <tr data-s="parity"><td class="py">fork_session + ForkSessionResult</td><td class="rs">session::mutations::{fork_session, ForkSessionResult}</td><td><span class="status status-parity">✓ parity</span></td><td class="notes">Same new-session-id + entries-copied payload.</td></tr>
+    <tr data-s="review"><td class="py">fork_session + ForkSessionResult</td><td class="rs">session::mutations::{fork_session, ForkSessionResult}</td><td><span class="status status-review">? review</span></td><td class="notes">Same new-session-id + entries-copied payload. <strong>Under review:</strong> enables conversation branching ("try a different path from here"). YAGNI for a v1 CLI / TUI that just runs linear conversations. Decision depends on whether forge-tui wants branching on day 1. Direct filesystem form — cut would be easy.</td></tr>
     <tr data-s="cut"><td class="py">*_via_store (4 async variants)</td><td class="rs">session::via_store::*_via_store</td><td><span class="status status-cut">✂ cut</span></td><td class="notes">rename / tag / delete / fork. <strong>Cut:</strong> async wrappers of the filesystem mutations for SessionStore-backed callers. Filesystem mutations (row above) cover every current use case.</td></tr>
   </tbody>
 </table>
@@ -847,8 +847,8 @@ flowchart LR
   <tbody>
     <tr data-s="parity"><td class="py">AgentDefinition</td><td class="rs">agents::AgentDefinition</td><td><span class="status status-parity">✓ parity</span></td><td class="notes">Name/description/tools/model.</td></tr>
     <tr data-s="parity"><td class="py">SettingSource</td><td class="rs">SettingSource</td><td><span class="status status-parity">✓ parity</span></td><td class="notes">Also listed under Options — duplicated here for visibility.</td></tr>
-    <tr data-s="parity"><td class="py">SdkPluginConfig</td><td class="rs">SdkPluginConfig</td><td><span class="status status-parity">✓ parity</span></td><td class="notes"></td></tr>
-    <tr data-s="parity"><td class="py">SdkBeta</td><td class="rs">SdkBeta</td><td><span class="status status-parity">✓ parity</span></td><td class="notes"></td></tr>
+    <tr data-s="review"><td class="py">SdkPluginConfig</td><td class="rs">SdkPluginConfig</td><td><span class="status status-review">? review</span></td><td class="notes"><strong>Under review</strong> — see Options section row for rationale. Duplicate entry.</td></tr>
+    <tr data-s="review"><td class="py">SdkBeta</td><td class="rs">SdkBeta</td><td><span class="status status-review">? review</span></td><td class="notes"><strong>Under review</strong> — see Options section row for rationale. Duplicate entry.</td></tr>
   </tbody>
 </table>
 
@@ -926,13 +926,23 @@ flowchart LR
   </div>
 </div>
 
-<h2 class="section-title">Testing coverage — Tier 6 mirror <span class="count">complete on 2026-04-22</span></h2>
+<h2 class="section-title">Testing coverage — Tier 6 mirror <span class="count">complete on 2026-04-22 · section under review</span></h2>
 <p class="section-intro">
   The Python SDK's <code>tests/</code> directory is forge-sdk's executable spec
   for behavioural parity. Every new Python test should translate to a Rust
   test within the same weekly parity-check cycle. As of the sixth pass, every
   upstream test file in scope has a named Rust counterpart — the weekly
   parity grep matches on test-name alone.
+</p>
+<p class="section-intro" style="border-left: 3px solid #c27046; padding-left: 10px; background: rgba(194,112,70,0.04);">
+  <strong style="color: #e09770;">? Section under review.</strong> Once the
+  parity phase ends, maintaining this 20-row ledger becomes overhead without
+  proportional value — forge-sdk's own test count tells us how we're doing,
+  and the Python mapping matters less once we're not chasing parity. Options
+  under consideration: (a) trim to aggregate counts only; (b) archive this
+  section to a separate doc (e.g. <code>docs/tier6-archive.html</code>) that's
+  linked from here; (c) keep the ledger but drop weekly-update cadence now
+  that it's "complete." Tracked in the review queue.
 </p>
 <table class="parity" data-section="tier6">
   <thead><tr><th>Upstream file</th><th>Upstream lines</th><th>Coverage</th><th>Notes</th></tr></thead>
@@ -959,23 +969,25 @@ flowchart LR
   </tbody>
 </table>
 
-<p class="section-intro" style="margin-top: 16px;">
+<p class="section-intro" style="margin-top: 16px; border-left: 3px solid #cc4488; padding-left: 10px; background: rgba(204,68,136,0.04);">
   <strong>Out of scope (4 files):</strong> <code>test_example_redis_session_store.py</code>,
   <code>test_example_redis_session_store_live.py</code>,
   <code>test_example_s3_session_store.py</code>,
   <code>test_example_s3_session_store_live.py</code>,
   <code>test_example_postgres_session_store.py</code> — Python ecosystem-
-  specific example stores. If forge-sdk ever ships parallel example
-  adapters, these would come back in scope.
+  specific example stores.
+  <strong style="color: #e07dae;">✂ Becomes entirely moot after SessionStore cut.</strong>
+  Drop this paragraph alongside the trait removal.
 </p>
 
 </main>
 
 <footer>
-  forge-sdk parity map · regenerate on surface change · not committed to git ·
-  data sourced from
+  forge-sdk parity map · annotated for post-parity cleanup review · tracked on
+  <code>post-parity-cleanup</code> branch (exception to the local-only rule while
+  this cleanup review is active) · data sourced from
   <code>/tmp/claude-agent-sdk-python/src/claude_agent_sdk/__init__.py</code>
-  (v0.1.64) and <code>crates/forge-sdk/src/lib.rs</code> (main @ 32fe9a4)
+  (v0.1.64) and <code>crates/forge-sdk/src/lib.rs</code>
 </footer>
 
 <script src="https://unpkg.com/mermaid@10/dist/mermaid.min.js"></script>
