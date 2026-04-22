@@ -15,5 +15,8 @@ mod errors;
 #[path = "python_parity/message_parser.rs"]
 mod message_parser;
 
+#[path = "python_parity/session_store_conformance.rs"]
+mod session_store_conformance;
+
 #[path = "python_parity/transport.rs"]
 mod transport;
