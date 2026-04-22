@@ -265,7 +265,7 @@ pub fn fork_session(
     })
 }
 
-/// Crate-internal wrapper so other modules (e.g. `sessions_store`) can
+/// Crate-internal wrapper so other modules (e.g. `sessions_via_store`) can
 /// reuse the same validator without duplicating the regex/format logic.
 /// Not part of the public API.
 ///
