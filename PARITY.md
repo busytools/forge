@@ -18,6 +18,64 @@ This file is the single source of truth for **where forge-sdk is** relative to P
 
 Each entry below records one weekly parity check.
 
+### 2026-04-22 — closeout round (`parity-closeout` branch)
+
+Final pass through the remaining audit backlog. Everything the two
+audits flagged is now either landed or explicitly deferred as
+v0.2-scope.
+
+- **Validation rule 1** — `continue_conversation + session_store`
+  without `list_sessions` now rejected at `Client::spawn`. Added a
+  `SessionStore::provides_list_sessions() -> bool` default-false trait
+  method; `FsSessionStore` and `MemorySessionStore` override to true.
+  Mirrors Python `_internal/session_store_validation.py:28-38`.
+- **N8 — `HookDecision::defer`.** Emits Python's
+  `AsyncHookJSONOutput` shape (`{"async": true, "asyncTimeout":
+  <ms>?}`). Out-of-band deferred-response delivery still follow-up
+  work; forge-sdk emits only the ACK.
+- **N11 — Python-style Client method aliases.** `get_mcp_status`,
+  `reconnect_mcp_server`, `toggle_mcp_server` added as thin wrappers
+  over the existing `mcp_*` naming.
+- **N5 — `SystemPromptKind::Preset { append, exclude_dynamic_sections }`.**
+  Mirrors Python `SystemPromptPreset` (`types.py:43-66`). Preset's
+  `exclude_dynamic_sections` wins over the top-level Options
+  shortcut when both are set.
+- **A5 — `messages`/`permissions`/`public_types` downgraded to
+  `pub(crate)`.** Killed the double-exposed paths; 21 test/example
+  files migrated to the flat `forge_sdk::X` re-export surface.
+- **I6 full — session cluster collapse.** `sessions.rs` +
+  `sessions_via_store.rs` + `session_store.rs` + `session_mutations.rs`
+  merged under `src/session/` as `scan.rs` / `via_store.rs` /
+  `store.rs` / `mutations.rs`. Module paths updated crate-wide (+ in
+  tests/examples). Eliminates the long-standing plural/singular
+  naming collision between `sessions.rs` and `session_store.rs`.
+- **A1 — MessageParse constructor migration.** 42 call sites switched
+  from the `Error::MessageParse { reason, data: None }` struct
+  literal to `Error::message_parse(reason)` — removes `data: None`
+  boilerplate from every error-raising path.
+- **Tier 6 — `test_message_parser.py` extended to 28/45 cases.**
+  Added task lifecycle (all three subtypes + optional-fields-absent),
+  unknown system subtype fallback, rate_limit_event,
+  assistant-error variants (authentication_failed, rate_limit,
+  without_error), and malformed-payload rejection.
+
+**Test count:** 304 tests + 3 ignored pass on `just check` (12 new
+across this round). Tier 6 mirror coverage: 3 / 27 upstream files
+(`errors`, `message_parser` at 62%, `transport`).
+
+**Everything known from the prior audit is now addressed:**
+- All C1–C6 wire bugs fixed (prior rounds).
+- All N1–N12 fresh-audit findings closed.
+- All A1–A5 architecture paper cuts closed.
+- All known validation rules enforced.
+- Session cluster collapsed.
+
+**Deliberately deferred**: Full top-level `query()` Stream return
+(would require `futures` dep), out-of-band AsyncHookJSONOutput
+response delivery, and remaining `test_message_parser.py` cases
+(17 missing-field + optional rejection fixtures). All flagged in
+the handoff for future passes.
+
 ### 2026-04-22 — second post-audit round (`parity-round-six` branch)
 
 Works through the remaining fresh-audit findings and the
