@@ -229,20 +229,22 @@ pub fn fork_session(
         });
     }
 
-    // Apply fork title — either user-supplied or auto-derived.
-    if let Some(t) = title {
-        let stripped = t.trim();
-        if !stripped.is_empty() {
-            let title_entry = serde_json::to_string(&json!({
-                "type": "custom-title",
-                "customTitle": stripped,
-                "sessionId": new_session_id,
-            }))
-            .map_err(|e| Error::MessageParse {
-                reason: format!("encode fork title: {e}"),
-            })?;
-            out_lines.push(title_entry);
-        }
+    // Apply fork title — user-supplied wins, else derive from the source
+    // (last customTitle / aiTitle / first prompt) and append " (fork)".
+    let resolved_title = title
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty())
+        .or_else(|| derive_fork_title(&source).map(|orig| format!("{orig} (fork)")));
+    if let Some(final_title) = resolved_title {
+        let title_entry = serde_json::to_string(&json!({
+            "type": "custom-title",
+            "customTitle": final_title,
+            "sessionId": new_session_id,
+        }))
+        .map_err(|e| Error::MessageParse {
+            reason: format!("encode fork title: {e}"),
+        })?;
+        out_lines.push(title_entry);
     }
 
     let mut body = out_lines.join("\n");
@@ -336,6 +338,44 @@ fn append_line(path: &Path, data: &[u8]) -> Result<(), Error> {
     let mut file = fs::OpenOptions::new().append(true).open(path)?;
     file.write_all(data)?;
     Ok(())
+}
+
+/// Scan the source transcript for the last `customTitle` / `aiTitle`
+/// entry, or fall back to the first user prompt's text content.
+fn derive_fork_title(source: &Path) -> Option<String> {
+    let Ok(file) = fs::File::open(source) else {
+        return None;
+    };
+    let mut custom_title: Option<String> = None;
+    let mut ai_title: Option<String> = None;
+    let mut first_prompt: Option<String> = None;
+    for line in BufReader::new(file).lines().map_while(Result::ok) {
+        if line.is_empty() {
+            continue;
+        }
+        let Ok(value) = serde_json::from_str::<Value>(&line) else {
+            continue;
+        };
+        if let Some(v) = value.get("customTitle").and_then(Value::as_str) {
+            custom_title = Some(v.to_string());
+        }
+        if let Some(v) = value.get("aiTitle").and_then(Value::as_str) {
+            ai_title = Some(v.to_string());
+        }
+        if first_prompt.is_none()
+            && value.get("type").and_then(Value::as_str) == Some("user")
+            && value.get("parent_tool_use_id").is_none_or(Value::is_null)
+        {
+            if let Some(content) = value
+                .get("message")
+                .and_then(|m| m.get("content"))
+                .and_then(Value::as_str)
+            {
+                first_prompt = Some(content.to_string());
+            }
+        }
+    }
+    custom_title.or(ai_title).or(first_prompt)
 }
 
 #[cfg(test)]
