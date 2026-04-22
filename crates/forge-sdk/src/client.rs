@@ -469,6 +469,7 @@ impl Client {
     /// Handle a `hook_callback` control request — dispatch by opaque
     /// `callback_id` and emit the appropriate `hookSpecificOutput` wrapper
     /// per event kind.
+    #[allow(clippy::too_many_lines)]
     async fn handle_hook_callback(
         &mut self,
         req: &ControlRequest,
@@ -513,7 +514,16 @@ impl Client {
                         updated_input: Some(updated.clone()),
                         ..Default::default()
                     };
-                    serde_json::to_value(typed).ok()
+                    serde_json::to_value(typed)
+                        .map_err(|e| {
+                            tracing::warn!(
+                                ?kind,
+                                error = %e,
+                                "PreToolUse hookSpecificOutput serialise failed; \
+                                 dropping updated_input"
+                            );
+                        })
+                        .ok()
                 }
                 HookKind::UserPromptSubmit => {
                     // Upstream `UserPromptSubmitHookSpecificOutput` only
@@ -535,7 +545,16 @@ impl Client {
                                 additional_context: Some(s.to_string()),
                                 ..Default::default()
                             };
-                            serde_json::to_value(typed).ok()
+                            serde_json::to_value(typed)
+                                .map_err(|e| {
+                                    tracing::warn!(
+                                        ?kind,
+                                        error = %e,
+                                        "UserPromptSubmit hookSpecificOutput serialise failed; \
+                                         dropping updated_input"
+                                    );
+                                })
+                                .ok()
                         },
                     )
                 }

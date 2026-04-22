@@ -164,6 +164,11 @@ impl TranscriptMirrorBatcher {
         });
         if let Ok(mut buf) = self.inner.pending.lock() {
             buf.flush_task = Some(task);
+        } else {
+            // Poisoned mutex. Abort the task so it doesn't run orphaned
+            // past close() — flush() can't await a handle it can't see.
+            error!("TranscriptMirrorBatcher pending mutex poisoned; aborting spawned drain");
+            task.abort();
         }
     }
 

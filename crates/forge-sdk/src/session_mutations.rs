@@ -103,9 +103,21 @@ pub fn delete_session(session_id: &str, directory: Option<&str>) -> Result<(), E
         ))
     })?;
     fs::remove_file(&path)?;
-    // Sibling subagents directory — best-effort cleanup.
+    // Sibling subagents directory — best-effort cleanup. NotFound is
+    // fine (no subagents ran); other errors leave orphaned transcripts
+    // on disk and warrant a visible log so the user knows why
+    // `list_subagents` will keep returning phantom entries.
     if let Some(parent) = path.parent() {
-        let _ = fs::remove_dir_all(parent.join(session_id));
+        let subagents = parent.join(session_id);
+        if let Err(e) = fs::remove_dir_all(&subagents) {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                tracing::warn!(
+                    path = %subagents.display(),
+                    error = %e,
+                    "failed to clean up sibling subagents directory"
+                );
+            }
+        }
     }
     Ok(())
 }

@@ -332,16 +332,14 @@ impl Subprocess {
     #[allow(clippy::unused_async)] // kept async for API symmetry + future runtime hooks
     pub async fn spawn(options: &Options) -> Result<Self, Error> {
         // Optional CLI-version guard. Runs `<binary> --version` once.
+        // The caller asked for a floor — if the probe fails, surface it
+        // rather than silently skipping (they won't know the check was
+        // bypassed otherwise).
         if let Some(min) = &options.minimum_cli_version {
-            match query_cli_version(&options.binary) {
-                Ok(reported) => check_cli_version(&reported, min)?,
-                // Tolerate probe failure: spawn may still succeed on a
-                // freshly-available binary, but surface the error when
-                // spawn itself fails below.
-                Err(e) => {
-                    tracing::warn!(?e, "claude --version probe failed; skipping version check");
-                }
-            }
+            let reported = query_cli_version(&options.binary).map_err(|e| Error::Connection {
+                reason: format!("minimum_cli_version set but --version probe failed: {e}"),
+            })?;
+            check_cli_version(&reported, min)?;
         }
         let mut cmd = Command::new(&options.binary);
         cmd.args(build_args(options)?);

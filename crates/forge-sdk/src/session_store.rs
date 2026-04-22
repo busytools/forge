@@ -23,7 +23,7 @@
 )]
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -254,10 +254,13 @@ impl SessionStore for MemorySessionStore {
             .inner
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // Return sanitised subkey names to match FsSessionStore's
+        // on-disk naming. Callers should treat subkey strings as
+        // opaque identifiers keyed by the same adapter.
         let mut subkeys: Vec<String> = inner
             .keys()
             .filter(|k| k.project_key == key.project_key && k.session_id == key.session_id)
-            .filter_map(|k| k.subpath.clone())
+            .filter_map(|k| k.subpath.as_deref().map(sanitise))
             .collect();
         subkeys.sort();
         Ok(subkeys)
@@ -337,23 +340,23 @@ pub fn file_path_to_session_key(file_path: &str, projects_dir: &str) -> Option<S
     let first = parts[0];
 
     // Main transcript: <project_key>/<session_id>.jsonl
-    if parts.len() == 1 && first.to_ascii_lowercase().ends_with(".jsonl") {
-        let session_id = first.trim_end_matches(".jsonl").to_string();
-        return Some(SessionKey {
-            project_key,
-            session_id,
-            subpath: None,
-        });
+    if parts.len() == 1 {
+        if let Some(session_id) = strip_jsonl_suffix(first) {
+            return Some(SessionKey {
+                project_key,
+                session_id: session_id.to_string(),
+                subpath: None,
+            });
+        }
+        return None;
     }
 
     // Subagent: <project_key>/<session_id>/<...>.jsonl
     if parts.len() >= 3 {
         let session_id = parts.remove(0).to_string();
         let last_idx = parts.len() - 1;
-        if parts[last_idx].to_ascii_lowercase().ends_with(".jsonl") {
-            if let Some(stripped) = parts[last_idx].strip_suffix(".jsonl") {
-                parts[last_idx] = stripped;
-            }
+        if let Some(stripped) = strip_jsonl_suffix(parts[last_idx]) {
+            parts[last_idx] = stripped;
         }
         let subpath = parts.join("/");
         return Some(SessionKey {
@@ -364,6 +367,16 @@ pub fn file_path_to_session_key(file_path: &str, projects_dir: &str) -> Option<S
     }
 
     None
+}
+
+/// Case-insensitive `.jsonl` suffix stripper. Returns `None` when the
+/// name doesn't end in `.jsonl`/`.JSONL`/any casing. Strips a single
+/// occurrence, avoiding `trim_end_matches` which would peel multiple
+/// suffixes from `foo.jsonl.jsonl`.
+fn strip_jsonl_suffix(name: &str) -> Option<&str> {
+    let lc = name.to_ascii_lowercase();
+    let stem_len = lc.strip_suffix(".jsonl")?.len();
+    name.get(..stem_len)
 }
 
 #[async_trait]
@@ -453,20 +466,28 @@ impl SessionStore for FsSessionStore {
     }
 
     async fn delete(&self, key: &SessionKey) -> Result<(), SessionStoreError> {
+        // Remove-if-present semantics: NotFound is fine, but all other
+        // errors (permission denied, interrupted syscall) must propagate
+        // so the caller doesn't think the delete succeeded when it didn't.
+        async fn remove_file_if_exists(path: &Path) -> Result<(), SessionStoreError> {
+            match tokio::fs::remove_file(path).await {
+                Ok(()) => Ok(()),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(e) => Err(SessionStoreError::from(e)),
+            }
+        }
+        async fn remove_dir_if_exists(path: &Path) -> Result<(), SessionStoreError> {
+            match tokio::fs::remove_dir_all(path).await {
+                Ok(()) => Ok(()),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(e) => Err(SessionStoreError::from(e)),
+            }
+        }
         if key.subpath.is_none() {
-            let main = self.session_path(key);
-            if tokio::fs::try_exists(&main).await.unwrap_or(false) {
-                tokio::fs::remove_file(&main).await?;
-            }
-            let subdir = self.session_dir(&key.project_key, &key.session_id);
-            if tokio::fs::try_exists(&subdir).await.unwrap_or(false) {
-                tokio::fs::remove_dir_all(&subdir).await?;
-            }
+            remove_file_if_exists(&self.session_path(key)).await?;
+            remove_dir_if_exists(&self.session_dir(&key.project_key, &key.session_id)).await?;
         } else {
-            let path = self.session_path(key);
-            if tokio::fs::try_exists(&path).await.unwrap_or(false) {
-                tokio::fs::remove_file(&path).await?;
-            }
+            remove_file_if_exists(&self.session_path(key)).await?;
         }
         Ok(())
     }
