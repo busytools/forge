@@ -18,6 +18,59 @@ This file is the single source of truth for **where forge-sdk is** relative to P
 
 Each entry below records one weekly parity check.
 
+### 2026-04-22 — API surface + field coverage follow-up (`parity-followup` branch)
+
+Second pass after the `parity-wire-fixes` drop — closes the non-wire
+items flagged in `audits/2026-04-22-parity-review.md`.
+
+- **`Client::receive_response`** — drain `next_event` until (and
+  including) a `Message::Result` and return the `Vec<Message>`.
+  Python's `client.py:566-605`, the most-used convenience helper.
+- **`Client::set_model(Option<&str>)`** — Python `client.py:345-367` +
+  `_internal/query.py:688-695`. None serialises as JSON `null` to
+  revert to the CLI default.
+- **`Client::get_server_info() -> Option<&Value>`** — returns the
+  cached `initialize` response (capabilities, commands, output
+  styles). Required capturing the handshake body on the Client
+  struct — Python stores the same at `_internal/query.py:214`.
+- **Subagent parity fix.** `list_subagents` now returns `Vec<String>`
+  of agent IDs (was `Vec<SDKSessionInfo>`) and recursively walks
+  `subagents/` for `agent-<id>.jsonl` files (was `<id>.jsonl`, which
+  never matched real transcripts). `get_subagent_messages` gains
+  `limit` / `offset` parameters mirroring Python.
+- **Message field coverage.**
+  - `Message::Assistant` gains `error: Option<AssistantMessageError>`
+    (new `snake_case` enum mirroring Python's `Literal` union) and
+    `uuid: Option<String>`.
+  - `AssistantEnvelope::usage` → `Option<Usage>` (Python reads as
+    `data["message"].get("usage")`).
+  - `Message::User` gains `uuid: Option<String>` and
+    `tool_use_result: Option<Value>`.
+  - `ToolPermissionContext` gains `suggestions: Vec<PermissionUpdate>`
+    (populated from the control_request's `permission_suggestions`
+    via typed decode) and `signal: Option<Value>` (Python's future
+    abort-signal placeholder).
+- **Option aliases + polish.** `OptionsBuilder::cli_path` ergonomic
+  alias for `.binary()`; `PreCompactInput::custom_instructions` gets
+  `skip_serializing_if`; `RateLimitInfo::raw` catches unknown CLI
+  fields via `serde(flatten)`; `HookSpecificOutput` gains a
+  clarifying doc note about caller-ergonomics role; dead public
+  surface downgraded (`sanitize_path_public` /
+  `validate_uuid_public` to `pub(crate)`; `build_args_legacy`
+  deleted).
+
+**Test count:** 251 tests + 3 ignored pass on `just check` (12 new
+across this drop — see `result_message_fields.rs`,
+`message_extras.rs`, `stream_event_and_error_frames.rs`, the expanded
+`control_subtypes.rs`, and new in-module subagent tests).
+
+**Still outstanding** (tracked for follow-up): `Error::MessageParse { data }`
+field expansion (40+ construction sites — its own commit); the
+session-module cluster collapse (wants a version bump — breaks
+downstream imports); top-level `query()` signature alignment; and
+ongoing Tier 6 test mirroring (currently 1 / 27 upstream files —
+`errors.rs` only).
+
 ### 2026-04-22 — wire-protocol + API coverage fixes (`parity-wire-fixes` branch)
 
 Follow-up to the 2026-04-22 parity + architecture review
