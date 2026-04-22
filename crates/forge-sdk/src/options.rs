@@ -165,8 +165,9 @@ pub struct Options {
     /// `--include-partial-messages`.
     pub include_partial_messages: bool,
     /// Spawn-time fork — duplicate `resume`'s session on the first turn.
-    /// `--fork-session` (distinct from the runtime
-    /// [`Client::fork_session`](crate::Client::fork_session) `control_request`).
+    /// `--fork-session` (distinct from the offline JSONL-level
+    /// [`fork_session`](crate::session_mutations::fork_session) helper;
+    /// Python SDK v0.1.64 has no runtime `fork_session` `control_request`).
     pub fork_session: bool,
     /// Extra directories surfaced to the CLI via repeated `--add-dir`.
     pub add_dirs: Vec<std::path::PathBuf>,
