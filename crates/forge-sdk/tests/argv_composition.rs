@@ -14,7 +14,7 @@
 )]
 
 use forge_sdk::agents::{EffortLevel, EffortPreset};
-use forge_sdk::transport::process::build_args;
+use forge_sdk::argv::build_args;
 use forge_sdk::{
     OptionsBuilder, PermissionMode, SdkPluginConfig, SystemPromptKind, ThinkingConfig, ToolsPreset,
 };
