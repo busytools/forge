@@ -322,6 +322,30 @@ fn parse_assistant_message_without_usage() {
     assert!(message.usage.is_none());
 }
 
+/// Ported from `test_parse_user_message_with_string_content_and_tool_use_result`
+/// (Python accepts a bare string for `UserMessage.content` — types.py:910).
+#[test]
+fn parse_user_message_with_string_content() {
+    let data = json!({
+        "type": "user",
+        "session_id": "sess",
+        "message": {"role": "user", "content": "bare string prompt"}
+    });
+    let msg: Message = serde_json::from_value(data).expect("parse");
+    let Message::User { message, .. } = msg else {
+        panic!("expected User");
+    };
+    assert_eq!(
+        message.content.len(),
+        1,
+        "string must normalise to one block"
+    );
+    match &message.content[0] {
+        ContentBlock::Text { text } => assert_eq!(text, "bare string prompt"),
+        other => panic!("expected Text after string→block conversion, got {other:?}"),
+    }
+}
+
 /// Ported from `test_parse_valid_result_message`.
 #[test]
 fn parse_valid_result_message() {
