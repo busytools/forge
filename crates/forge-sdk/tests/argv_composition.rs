@@ -294,6 +294,50 @@ fn settings_inline_json_passes_through_when_no_sandbox() {
 }
 
 #[test]
+fn sandbox_all_fields_wire_as_python_camel_case() {
+    // Verifies the field names land on the wire exactly as Python emits
+    // them (types.py:782-856). Regression guard against the fabricated
+    // names forge-sdk carried before 2026-04-22.
+    let sandbox = forge_sdk::SandboxSettings {
+        enabled: Some(true),
+        auto_allow_bash_if_sandboxed: Some(true),
+        excluded_commands: Some(vec!["git".into(), "docker".into()]),
+        allow_unsandboxed_commands: Some(false),
+        network: Some(forge_sdk::SandboxNetworkConfig {
+            allow_unix_sockets: Some(vec!["/var/run/docker.sock".into()]),
+            allow_all_unix_sockets: Some(false),
+            allow_local_binding: Some(true),
+            http_proxy_port: Some(3128),
+            socks_proxy_port: Some(1080),
+        }),
+        ignore_violations: Some(forge_sdk::SandboxIgnoreViolations {
+            file: Some(vec!["/tmp".into()]),
+            network: Some(vec!["metrics.example".into()]),
+        }),
+        enable_weaker_nested_sandbox: Some(false),
+    };
+    let wire = serde_json::to_value(&sandbox).expect("serialize");
+    assert_eq!(wire["enabled"], true);
+    assert_eq!(wire["autoAllowBashIfSandboxed"], true);
+    assert_eq!(wire["excludedCommands"], json!(["git", "docker"]));
+    assert_eq!(wire["allowUnsandboxedCommands"], false);
+    assert_eq!(
+        wire["network"]["allowUnixSockets"],
+        json!(["/var/run/docker.sock"])
+    );
+    assert_eq!(wire["network"]["allowAllUnixSockets"], false);
+    assert_eq!(wire["network"]["allowLocalBinding"], true);
+    assert_eq!(wire["network"]["httpProxyPort"], 3128);
+    assert_eq!(wire["network"]["socksProxyPort"], 1080);
+    assert_eq!(wire["ignoreViolations"]["file"], json!(["/tmp"]));
+    assert_eq!(
+        wire["ignoreViolations"]["network"],
+        json!(["metrics.example"])
+    );
+    assert_eq!(wire["enableWeakerNestedSandbox"], false);
+}
+
+#[test]
 fn sandbox_alone_merges_into_settings_json() {
     let sandbox = forge_sdk::SandboxSettings {
         enabled: Some(true),

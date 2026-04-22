@@ -309,60 +309,77 @@ pub enum McpServerConfig {
     },
 }
 
-/// Sandbox settings — Python's `SandboxSettings` (`types.py:781-856`).
-/// Merged into `--settings` alongside any explicit `settings` value via
-/// Python's `_build_settings_value` at `subprocess_cli.py:111-163`.
+/// Bash sandbox configuration — Python's `SandboxSettings`
+/// (`types.py:812-856`). Merged into `--settings` alongside any
+/// explicit `settings` value via Python's `_build_settings_value`
+/// (`subprocess_cli.py:111-163`). Fields are camelCase on the wire.
 ///
-/// Forge-sdk exposes the fields but does NOT yet wire them into the argv;
-/// that lands together with the `settings` option in a follow-up drop.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+/// **Note:** Filesystem read/write restrictions and network
+/// restrictions are NOT configured here — they travel through the
+/// permission-rules surface (`Read`, `Edit`, `WebFetch`). Sandbox
+/// settings control the *bash-command* sandbox specifically.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SandboxSettings {
-    /// Enable the sandbox.
+    /// Enable bash sandboxing (macOS/Linux only). Default: false.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enabled: Option<bool>,
-    /// Network-access policy.
+    /// Auto-approve bash commands when sandboxed. Default: true.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_allow_bash_if_sandboxed: Option<bool>,
+    /// Commands that should run outside the sandbox
+    /// (e.g. `["git", "docker"]`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub excluded_commands: Option<Vec<String>>,
+    /// Allow commands to bypass sandbox via `dangerouslyDisableSandbox`.
+    /// When false, all commands must run sandboxed (or be in
+    /// `excluded_commands`). Default: true.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allow_unsandboxed_commands: Option<bool>,
+    /// Network configuration for the sandbox.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub network: Option<SandboxNetworkConfig>,
-    /// Paths / protocols on which to suppress violations.
+    /// Violations to ignore.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ignore_violations: Option<SandboxIgnoreViolations>,
-    /// Extra read-only paths.
+    /// Enable weaker sandbox for unprivileged Docker (Linux only).
+    /// Reduces security. Default: false.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub extra_read_only_paths: Option<Vec<String>>,
-    /// Extra read-write paths.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub extra_read_write_paths: Option<Vec<String>>,
-    /// Exclude tools from the sandbox.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub exclude_tools: Option<Vec<String>>,
+    pub enable_weaker_nested_sandbox: Option<bool>,
 }
 
-/// Sandbox network-access configuration. Mirrors Python's
-/// `SandboxNetworkConfig` (`types.py:821-833`).
+/// Sandbox network configuration. Mirrors Python's
+/// `SandboxNetworkConfig` (`types.py:782-798`). Fields are camelCase.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SandboxNetworkConfig {
-    /// Allow outbound network (default: false).
+    /// Unix socket paths accessible in the sandbox (e.g. SSH agents).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub allow: Option<bool>,
-    /// Host allowlist.
+    pub allow_unix_sockets: Option<Vec<String>>,
+    /// Allow all Unix sockets (less secure).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub allowed_hosts: Option<Vec<String>>,
-    /// Host denylist.
+    pub allow_all_unix_sockets: Option<bool>,
+    /// Allow binding to localhost ports (macOS only).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub denied_hosts: Option<Vec<String>>,
+    pub allow_local_binding: Option<bool>,
+    /// HTTP proxy port if bringing your own proxy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub http_proxy_port: Option<u16>,
+    /// SOCKS5 proxy port if bringing your own proxy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub socks_proxy_port: Option<u16>,
 }
 
-/// Sandbox-violation ignore lists. Mirrors Python's
-/// `SandboxIgnoreViolations` (`types.py:835-855`).
+/// Violations to ignore in the sandbox. Mirrors Python's
+/// `SandboxIgnoreViolations` (`types.py:800-809`). Note that Python's
+/// field names are `file` (singular) and `network` — these get passed
+/// through as-is.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct SandboxIgnoreViolations {
-    /// Path-based ignores.
+    /// File paths for which violations should be ignored.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub paths: Option<Vec<String>>,
-    /// Protocol-based ignores.
+    pub file: Option<Vec<String>>,
+    /// Network hosts for which violations should be ignored.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub protocols: Option<Vec<String>>,
+    pub network: Option<Vec<String>>,
 }
