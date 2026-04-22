@@ -82,10 +82,15 @@ pub fn check_cli_version(reported: &str, min_version: &str) -> Result<(), Error>
 #[derive(Debug)]
 pub struct Subprocess {
     child: Child,
-    stdin: ChildStdin,
+    /// `None` after [`Subprocess::end_input`] closes the write half.
+    /// All subsequent [`Subprocess::write_line`] calls error out.
+    stdin: Option<ChildStdin>,
     stdout: BufReader<ChildStdout>,
     stderr_task: Option<JoinHandle<()>>,
     line_buf: String,
+    /// Captured `Child::wait` result. Populated by the first call to
+    /// [`Subprocess::close`] so subsequent calls are idempotent no-ops.
+    closed: bool,
 }
 
 impl Subprocess {
@@ -200,10 +205,11 @@ impl Subprocess {
 
         Ok(Self {
             child,
-            stdin,
+            stdin: Some(stdin),
             stdout: stdout_reader,
             stderr_task: Some(stderr_task),
             line_buf: String::new(),
+            closed: false,
         })
     }
 
@@ -235,22 +241,50 @@ impl Subprocess {
     ///
     /// # Errors
     ///
-    /// [`Error::Io`] on write failure.
+    /// [`Error::Io`] on write failure, including writes issued after
+    /// [`end_input`](Self::end_input).
     pub async fn write_line(&mut self, line: &str) -> Result<(), Error> {
-        self.stdin.write_all(line.as_bytes()).await?;
-        self.stdin.flush().await?;
+        let Some(stdin) = self.stdin.as_mut() else {
+            return Err(Error::Io(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "subprocess stdin already closed (end_input called)",
+            )));
+        };
+        stdin.write_all(line.as_bytes()).await?;
+        stdin.flush().await?;
         Ok(())
     }
 
-    /// Graceful shutdown: close stdin, wait for the subprocess to exit.
+    /// Close the subprocess's stdin. Safe to call multiple times.
+    /// Subsequent [`write_line`](Self::write_line) calls will fail
+    /// with a `BrokenPipe` `Io` error.
+    ///
+    /// # Errors
+    ///
+    /// None today — kept `Result` for [`Transport`](super::Transport)
+    /// trait compatibility.
+    #[allow(clippy::unused_async)] // Trait symmetry: Transport::end_input is async.
+    pub async fn end_input(&mut self) -> Result<(), Error> {
+        // Dropping the ChildStdin closes the write half.
+        self.stdin = None;
+        Ok(())
+    }
+
+    /// Graceful shutdown: close stdin, wait for the subprocess to
+    /// exit, drain the stderr task. Idempotent — subsequent calls
+    /// are no-ops.
     ///
     /// # Errors
     ///
     /// [`Error::Process`] when the subprocess exits non-zero, [`Error::Io`]
     /// for I/O failure.
-    pub async fn shutdown(mut self) -> Result<(), Error> {
+    pub async fn close(&mut self) -> Result<(), Error> {
+        if self.closed {
+            return Ok(());
+        }
+        self.closed = true;
         // Close stdin first — signals EOF to the subprocess so it can exit cleanly.
-        drop(self.stdin);
+        self.stdin = None;
         let status = self.child.wait().await?;
         // Give the stderr drain task a chance to finish emitting lines
         // after the subprocess exits. The task self-terminates on EOF.
@@ -265,6 +299,32 @@ impl Subprocess {
             });
         }
         Ok(())
+    }
+
+    /// Consuming alias for [`close`](Self::close). Kept for backward
+    /// compatibility with pre-`Transport`-trait callers.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`close`](Self::close).
+    pub async fn shutdown(mut self) -> Result<(), Error> {
+        self.close().await
+    }
+}
+
+#[async_trait::async_trait]
+impl super::Transport for Subprocess {
+    async fn read_line(&mut self) -> Result<Option<String>, Error> {
+        Subprocess::read_line(self).await
+    }
+    async fn write_line(&mut self, line: &str) -> Result<(), Error> {
+        Subprocess::write_line(self, line).await
+    }
+    async fn end_input(&mut self) -> Result<(), Error> {
+        Subprocess::end_input(self).await
+    }
+    async fn close(&mut self) -> Result<(), Error> {
+        Subprocess::close(self).await
     }
 }
 
