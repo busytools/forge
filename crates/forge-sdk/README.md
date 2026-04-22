@@ -94,8 +94,12 @@ async fn main() -> anyhow::Result<()> {
 }
 ```
 
-See `examples/` for working permissions, MCP, and custom-transport
-demos.
+See `examples/` for working demos:
+
+- `echo.rs` — minimal client lifecycle.
+- `hooks_logging.rs` — `UserPromptSubmit` hook capturing prompts.
+- `mcp_tool.rs` — in-process MCP server exposing a tool.
+- `permissions.rs` — `can_use_tool` callback gating tool invocations.
 
 ## Development
 
