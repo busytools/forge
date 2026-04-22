@@ -36,6 +36,7 @@
 #![forbid(unsafe_code)]
 
 pub mod agents;
+pub mod argv;
 mod client;
 pub mod content;
 pub mod control;
