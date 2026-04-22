@@ -109,6 +109,18 @@ pub trait SessionStore: Send + Sync {
         Err(SessionStoreError::NotImplemented)
     }
 
+    /// Advisory — returns `true` when this implementation overrides
+    /// [`list_sessions`](Self::list_sessions). The pre-flight validator in
+    /// [`Client::spawn`](crate::Client::spawn) uses this to refuse
+    /// `continue_conversation` combinations that would later fail with
+    /// [`SessionStoreError::NotImplemented`] mid-session. Custom stores
+    /// that provide `list_sessions` should override to `true`. Mirrors
+    /// Python's reflection-based check at
+    /// `_internal/session_store_validation.py:9-17`.
+    fn provides_list_sessions(&self) -> bool {
+        false
+    }
+
     /// Delete a session. When `key.subpath` is `None`, implementations
     /// MUST cascade and delete all subkeys under the same `session_id`.
     async fn delete(&self, key: &SessionKey) -> Result<(), SessionStoreError> {
@@ -176,6 +188,10 @@ impl MemorySessionStore {
 
 #[async_trait]
 impl SessionStore for MemorySessionStore {
+    fn provides_list_sessions(&self) -> bool {
+        true
+    }
+
     async fn append(
         &self,
         key: &SessionKey,
@@ -381,6 +397,10 @@ fn strip_jsonl_suffix(name: &str) -> Option<&str> {
 
 #[async_trait]
 impl SessionStore for FsSessionStore {
+    fn provides_list_sessions(&self) -> bool {
+        true
+    }
+
     async fn append(
         &self,
         key: &SessionKey,
