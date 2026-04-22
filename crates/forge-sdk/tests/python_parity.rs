@@ -24,5 +24,8 @@ mod transport;
 #[path = "python_parity/rate_limit.rs"]
 mod rate_limit;
 
+#[path = "python_parity/subprocess_buffering.rs"]
+mod subprocess_buffering;
+
 #[path = "python_parity/types.rs"]
 mod types;
