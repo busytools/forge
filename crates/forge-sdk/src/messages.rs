@@ -682,11 +682,30 @@ impl From<MessageRepr> for Message {
                 subtype,
                 session_id,
                 data,
-            })) => Message::System {
-                subtype,
-                session_id,
-                data,
-            },
+            })) => {
+                // Python `SystemMessage.data` carries the FULL original
+                // dict including `type`, `subtype`, and `session_id`
+                // (`_internal/message_parser.py:196-199` +
+                // `types.py:932-935`). Rust's serde `#[flatten]` on the
+                // private `GenericSystemRepr` strips those fields
+                // because they're claimed by explicit sibling fields
+                // and the outer tag dispatch. Rehydrate so callers
+                // reading `data["subtype"]` (the Python idiom) see the
+                // same shape.
+                let mut full_data = data;
+                if let Value::Object(map) = &mut full_data {
+                    map.insert("type".into(), Value::String("system".into()));
+                    map.insert("subtype".into(), Value::String(subtype.clone()));
+                    if let Some(sid) = &session_id {
+                        map.insert("session_id".into(), Value::String(sid.clone()));
+                    }
+                }
+                Message::System {
+                    subtype,
+                    session_id,
+                    data: full_data,
+                }
+            }
             MessageRepr::RateLimitEvent {
                 rate_limit_info,
                 uuid,
@@ -779,11 +798,24 @@ impl From<Message> for MessageRepr {
                 subtype,
                 session_id,
                 data,
-            } => MessageRepr::System(SystemRepr::Generic(GenericSystemRepr {
-                subtype,
-                session_id,
-                data,
-            })),
+            } => {
+                // `data` now carries the full shape (including `type`,
+                // `subtype`, `session_id`) to match Python. On the way
+                // back out, strip those keys from the flatten payload
+                // so the outer tag-dispatch + explicit sibling fields
+                // don't produce duplicates on the wire.
+                let mut flat = data;
+                if let Value::Object(map) = &mut flat {
+                    map.remove("type");
+                    map.remove("subtype");
+                    map.remove("session_id");
+                }
+                MessageRepr::System(SystemRepr::Generic(GenericSystemRepr {
+                    subtype,
+                    session_id,
+                    data: flat,
+                }))
+            }
             Message::TaskStarted {
                 task_id,
                 description,
