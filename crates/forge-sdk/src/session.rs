@@ -17,6 +17,8 @@
 //!   the scanners and mutations that route through a
 //!   [`SessionStore`](store::SessionStore) rather than the local
 //!   filesystem.
+//! - [`validation`] — pre-flight validation for `session_store` option
+//!   combinations, invoked by [`Client::spawn`](crate::client::Client::spawn).
 //!
 //! Consumers import from the flat `forge_sdk::*` re-export surface
 //! (for storage types) or these paths directly (for the free
@@ -27,4 +29,5 @@
 pub mod mutations;
 pub mod scan;
 pub mod store;
+pub mod validation;
 pub mod via_store;
