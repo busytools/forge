@@ -155,6 +155,35 @@ pub enum Message {
         /// Aggregate token usage.
         usage: Usage,
     },
+
+    /// Streaming partial-message event emitted when
+    /// [`Options::include_partial_messages`](crate::Options) is set. The
+    /// CLI forwards raw Anthropic-API stream events (`message_start`,
+    /// `content_block_delta`, `message_delta`, `message_stop`) without
+    /// coalescing them into complete turns. Mirrors Python SDK's
+    /// `StreamEvent` (`types.py:1043-1050`,
+    /// `_internal/message_parser.py:229-240`).
+    StreamEvent {
+        /// Unique identifier for this stream event.
+        uuid: String,
+        /// Session the event belongs to.
+        session_id: String,
+        /// Raw Anthropic API stream event payload.
+        event: Value,
+        /// Parent `tool_use` id when the emitting turn is a sub-agent.
+        parent_tool_use_id: Option<String>,
+    },
+
+    /// Fatal transport error injected into the message stream when the
+    /// CLI's read loop fails. Python SDK emits this at
+    /// `_internal/query.py:315` as a last-gasp signal before teardown;
+    /// forge-sdk preserves the same shape so callers draining
+    /// [`Client::next_event`](crate::Client::next_event) see the failure
+    /// on the iterator rather than via a side channel.
+    Error {
+        /// The failure message as Python stringified it.
+        error: String,
+    },
 }
 
 /// The Anthropic-API-shaped envelope inside an `Assistant` message.
@@ -366,6 +395,16 @@ enum MessageRepr {
         total_cost_usd: f64,
         usage: Usage,
     },
+    StreamEvent {
+        uuid: String,
+        session_id: String,
+        event: Value,
+        #[serde(default)]
+        parent_tool_use_id: Option<String>,
+    },
+    Error {
+        error: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -542,6 +581,18 @@ impl From<MessageRepr> for Message {
                 total_cost_usd,
                 usage,
             },
+            MessageRepr::StreamEvent {
+                uuid,
+                session_id,
+                event,
+                parent_tool_use_id,
+            } => Message::StreamEvent {
+                uuid,
+                session_id,
+                event,
+                parent_tool_use_id,
+            },
+            MessageRepr::Error { error } => Message::Error { error },
         }
     }
 }
@@ -662,6 +713,18 @@ impl From<Message> for MessageRepr {
                 total_cost_usd,
                 usage,
             },
+            Message::StreamEvent {
+                uuid,
+                session_id,
+                event,
+                parent_tool_use_id,
+            } => MessageRepr::StreamEvent {
+                uuid,
+                session_id,
+                event,
+                parent_tool_use_id,
+            },
+            Message::Error { error } => MessageRepr::Error { error },
         }
     }
 }

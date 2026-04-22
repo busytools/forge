@@ -57,6 +57,8 @@ async fn memory_session_store_receives_mirrored_entries_via_client() {
             Message::MirrorError { .. } => {
                 panic!("unexpected mirror_error frame in mirror test")
             }
+            Message::StreamEvent { .. } => panic!("unexpected stream_event in mirror test"),
+            Message::Error { .. } => panic!("unexpected error frame in mirror test"),
         }
     }
     assert!(saw_assistant, "expected an assistant turn before result");
