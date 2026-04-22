@@ -18,6 +18,69 @@ This file is the single source of truth for **where forge-sdk is** relative to P
 
 Each entry below records one weekly parity check.
 
+### 2026-04-22 — audit follow-up + lite read + test mirror kickoff (`audit-followup-parity` branch)
+
+Follow-up session after the 2026-04-22 audit landed (`c4df432`). Picked
+up the deferred structural items and the last Tier-5 parity
+simplification, plus kicked off Tier 6 (test mirroring) with the
+contract PARITY.md already describes.
+
+- **I18 — `hooks.rs` split.** 1035-LoC monolith broken into
+  `hooks/inputs.rs`, `hooks/outputs.rs`, `hooks/callback.rs`, and
+  `hooks/registry.rs`. Parent keeps `HookKind` + `HookContext` + the
+  public re-exports; no consumer-visible change.
+- **I5 — `client.rs` split.** 854-LoC client extracted into
+  `client/control_dispatch.rs` (inbound dispatch — `handle_control`,
+  `handle_mcp_message`, `handle_hook_callback`,
+  `write_unsupported_control_error`) and `client/control_send.rs`
+  (outbound — `send_control` + 9 typed wrappers + 2 `_raw` escape
+  hatches). Parent keeps the struct, `Debug` impl, spawn / next_event
+  / transcript-mirror plumbing / disconnect. Per-HookKind
+  `hookSpecificOutput` encoding moved into
+  `hooks/outputs::encode_updated_input_wrapper` next to the typed
+  output structs — `handle_hook_callback` no longer carries inline
+  per-event wrapper logic.
+- **`_read_session_lite` head/tail optimisation.** `list_sessions`
+  / `get_session_info` now read at most 64 KiB from each end of a
+  JSONL file rather than scanning the whole thing — matches Python
+  `_read_session_lite` / `_parse_session_info_from_lite` byte
+  semantics. The port also closes behavioural gaps the full-scan
+  path had: sidechain-session skip, metadata-only-session skip,
+  `aiTitle` / `lastPrompt` fallbacks, head-first `cwd` / tail-first
+  `gitBranch`, and tag extraction scoped to `{"type":"tag"}` lines
+  (prevents `git tag` tool_use inputs from being picked up as
+  session tags — reproduced in a new unit test).
+- **Tier 6 kickoff — `tests/python_parity/` populated with the first
+  mirror.** Strategy: `tests/python_parity.rs` as the test-binary
+  entry + `tests/python_parity/<file>.rs` submodules referenced via
+  `#[path]`. First port: `errors.rs` mirrors
+  `tests/test_errors.py` (4 of 5 tests mapped to Rust `Error` enum
+  variants, 1 explicitly skipped with rationale — Rust enum has no
+  bare-message base variant). All upstream tests now have a tagged
+  Rust counterpart or a documented skip stub.
+
+**Simplifications resolved in this pass (remove from "still simplified"):**
+- `_read_session_lite` head-only optimisation — done.
+
+**Still simplified relative to Python:**
+- Git-worktree discovery for `list_sessions(include_worktrees=true)` —
+  accepted as a parameter but ignored (single-project scan only). *Correction
+  from prior entry:* `d1e7610` wires the porcelain lookup; the backlog item
+  here now covers fully honouring per-worktree project dirs.
+- `fork_session` auto-title — falls back to `(no title)` rather than
+  deriving `<original> (fork)` when no explicit title is passed.
+- `list_subagents` + `get_subagent_messages` return type / filename
+  divergence — Python returns `list[str]` of agent IDs and expects
+  `agent-<id>.jsonl`; forge-sdk returns `Vec<SDKSessionInfo>` and reads
+  `<id>.jsonl`. Leftover from the initial port; flagged during the lite
+  read work.
+
+**Test count:** 225 tests + 3 ignored pass on `just check` (fmt + clippy
+all-targets `-D warnings` + nextest forge-sdk + docs `-D warnings`).
+17 new unit/integration tests (12 in `sessions.rs` covering the lite
+read + 5 in `tests/python_parity/errors.rs`). Python SDK `tests/`
+mirror coverage: 1 / ~27 upstream test files (~3.7%).
+
 ### 2026-04-22 — major surface sweep (`parity-tier1-wire-risk` branch)
 
 Single-session push through Tiers 1–5 of the 2026-04-21 handoff.
@@ -72,13 +135,9 @@ Branch `parity-tier1-wire-risk` landed 17 commits covering:
 `fork_session` does proper UUID remap (`uuid` crate, `v4` feature) +
 optional `up_to_message_id` boundary + optional custom-title attach.
 
-**Still simplified relative to Python:**
-- `_read_session_lite` head-only optimisation — forge-sdk reads whole
-  files. Correct but slower on massive session dirs.
-- Git-worktree discovery for `list_sessions(include_worktrees=true)` —
-  accepted as a parameter but ignored (single-project scan only).
-- `fork_session` auto-title — falls back to "(no title)" rather than
-  deriving "<original> (fork)" when no explicit title is passed.
+**Still simplified relative to Python:** (superseded — see the
+2026-04-22 follow-up entry above. `_read_session_lite` is now ported;
+`list_subagents` / `get_subagent_messages` divergence documented.)
 
 **Test count:** 208 tests + 2 ignored pass on `just check` (fmt +
 clippy all-targets -D warnings + nextest forge-sdk + docs -D
