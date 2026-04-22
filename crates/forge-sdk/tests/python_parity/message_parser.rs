@@ -322,6 +322,37 @@ fn parse_assistant_message_without_usage() {
     assert!(message.usage.is_none());
 }
 
+/// Ported from `test_parse_valid_system_message`. Python's
+/// `SystemMessage.data` retains the full original dict — including
+/// `type`, `subtype`, and `session_id` — so callers can pattern-match
+/// on `msg.data.get("subtype")` per the Python idiom.
+#[test]
+fn parse_valid_system_message_preserves_full_data() {
+    let data = json!({
+        "type": "system",
+        "subtype": "start",
+        "session_id": "sess-sys-1",
+        "some_extra": "bonus"
+    });
+    let msg: Message = serde_json::from_value(data).expect("parse");
+    let Message::System {
+        subtype,
+        session_id,
+        data,
+    } = msg
+    else {
+        panic!("expected System");
+    };
+    assert_eq!(subtype, "start");
+    assert_eq!(session_id.as_deref(), Some("sess-sys-1"));
+    // Full-dict shape from Python — data must include `type`, `subtype`,
+    // `session_id`, plus any extra fields.
+    assert_eq!(data["type"], "system");
+    assert_eq!(data["subtype"], "start");
+    assert_eq!(data["session_id"], "sess-sys-1");
+    assert_eq!(data["some_extra"], "bonus");
+}
+
 /// Ported from `test_parse_user_message_with_string_content_and_tool_use_result`
 /// (Python accepts a bare string for `UserMessage.content` — types.py:910).
 #[test]
