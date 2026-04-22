@@ -13,10 +13,13 @@
 //! `_read_session_lite` / `_parse_session_info_from_lite` so a 100 MiB
 //! transcript costs two 64 KiB reads rather than a full scan.
 //!
-//! Not yet ported: subagent listing with Python's `agent-<id>.jsonl`
-//! naming (current Rust uses `<id>.jsonl` and returns `SDKSessionInfo`
-//! rather than the `Vec<String>` Python returns) and the
-//! `SessionStore`-backed `*_from_store` variants. Follow-up work.
+//! Subagent helpers ([`list_subagents`], [`get_subagent_messages`]) read
+//! `agent-<id>.jsonl` files under `<session_id>/subagents/` and recurse
+//! into nested subdirectories (e.g. `workflows/<run_id>/`) to match
+//! Python's layout.
+//!
+//! Not yet ported: the `SessionStore`-backed `*_from_store` variants
+//! from `_internal/sessions.py`. Follow-up work.
 
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
@@ -54,58 +57,114 @@ pub fn project_key_for_directory(path: &str) -> String {
     sanitize_path(&canonical)
 }
 
-/// List subagent transcripts for a session. Subagent files live at
-/// `<projects_dir>/<project_key>/<session_id>/subagents/*.jsonl`.
-/// Mirrors Python SDK's `list_subagents` (`sessions.py:1122-1186`).
+/// List subagent IDs for a session. Subagent transcripts live at
+/// `<projects_dir>/<project_key>/<session_id>/subagents/agent-<agent_id>.jsonl`
+/// and may be nested in further subdirectories (e.g.
+/// `subagents/workflows/<run_id>/agent-<agent_id>.jsonl`) — this
+/// function recursively walks the tree. Ported from Python SDK v0.1.64
+/// `list_subagents` (`_internal/sessions.py:1273-1316`).
 ///
-/// Returns an empty Vec when the session directory doesn't exist or has
-/// no subagent transcripts.
+/// Returns an empty Vec when `session_id` is not a valid UUID, the
+/// session has no subagents directory, or no `agent-*.jsonl` files are
+/// present.
 #[must_use]
 #[allow(clippy::needless_pass_by_value)]
-pub fn list_subagents(session_id: &str, directory: Option<String>) -> Vec<SDKSessionInfo> {
+pub fn list_subagents(session_id: &str, directory: Option<String>) -> Vec<String> {
     if !is_valid_uuid(session_id) {
         return Vec::new();
     }
     let Some(subagents_dir) = resolve_subagents_dir(session_id, directory.as_deref()) else {
         return Vec::new();
     };
-    let Ok(iter) = fs::read_dir(subagents_dir) else {
-        return Vec::new();
-    };
-    let mut out = Vec::new();
-    for entry in iter.flatten() {
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
-            continue;
-        }
-        if let Some(info) = read_session_info(&path) {
-            out.push(info);
-        }
-    }
-    out.sort_by_key(|e| std::cmp::Reverse(e.last_modified));
-    out
+    collect_agent_files(&subagents_dir)
+        .into_iter()
+        .map(|(agent_id, _)| agent_id)
+        .collect()
 }
 
-/// Read the transcript of a single subagent session. Mirrors Python
-/// SDK's `get_subagent_messages`.
+/// Read a subagent's transcript in chronological order. Mirrors Python
+/// SDK's `get_subagent_messages` (`_internal/sessions.py:1318-1383`).
+///
+/// `agent_id` is the id returned by [`list_subagents`] (the part between
+/// `agent-` and `.jsonl` in the on-disk filename). `limit` caps the
+/// number of messages returned; `offset` skips the first N.
+///
+/// Returns an empty Vec when `session_id` is not a valid UUID,
+/// `agent_id` is empty, the transcript can't be found, or the file
+/// contains no user/assistant entries.
 #[must_use]
 #[allow(clippy::needless_pass_by_value)]
 pub fn get_subagent_messages(
-    parent_session_id: &str,
-    subagent_id: &str,
+    session_id: &str,
+    agent_id: &str,
     directory: Option<String>,
+    limit: Option<usize>,
+    offset: usize,
 ) -> Vec<SessionMessage> {
-    if !is_valid_uuid(parent_session_id) || !is_valid_uuid(subagent_id) {
+    if !is_valid_uuid(session_id) || agent_id.is_empty() {
         return Vec::new();
     }
-    let Some(subagents_dir) = resolve_subagents_dir(parent_session_id, directory.as_deref()) else {
+    let Some(subagents_dir) = resolve_subagents_dir(session_id, directory.as_deref()) else {
         return Vec::new();
     };
-    let path = subagents_dir.join(format!("{subagent_id}.jsonl"));
+    // Walk the tree — the file may live directly under subagents/ or in
+    // a nested subdirectory (Python `workflows/<runId>/` pattern).
+    let Some((_, path)) = collect_agent_files(&subagents_dir)
+        .into_iter()
+        .find(|(found, _)| found == agent_id)
+    else {
+        return Vec::new();
+    };
     let Ok(file) = fs::File::open(&path) else {
         return Vec::new();
     };
-    parse_session_messages(file)
+    let all = parse_session_messages(file);
+    apply_limit_offset(all, limit, offset)
+}
+
+/// Recursively walk `base_dir` and collect `(agent_id, file_path)` for
+/// every file named `agent-<agent_id>.jsonl`. Returned entries are
+/// sorted by filename within each directory (matches Python's
+/// `sorted(current_dir.iterdir(), key=lambda p: p.name)`).
+fn collect_agent_files(base_dir: &Path) -> Vec<(String, PathBuf)> {
+    let mut out = Vec::new();
+    walk_agent_files(base_dir, &mut out);
+    out
+}
+
+fn walk_agent_files(dir: &Path, out: &mut Vec<(String, PathBuf)>) {
+    let Ok(iter) = fs::read_dir(dir) else {
+        return;
+    };
+    let mut entries: Vec<_> = iter.flatten().collect();
+    entries.sort_by_key(std::fs::DirEntry::file_name);
+    for entry in entries {
+        let path = entry.path();
+        let Ok(ty) = entry.file_type() else { continue };
+        if ty.is_file() {
+            if let Some(name) = path.file_name().and_then(|n| n.to_str())
+                && let Some(stripped) = name.strip_prefix("agent-")
+                && let Some(id) = stripped.strip_suffix(".jsonl")
+            {
+                out.push((id.to_string(), path));
+            }
+        } else if ty.is_dir() {
+            walk_agent_files(&path, out);
+        }
+    }
+}
+
+fn apply_limit_offset(
+    messages: Vec<SessionMessage>,
+    limit: Option<usize>,
+    offset: usize,
+) -> Vec<SessionMessage> {
+    let end = limit.map_or(messages.len(), |l| offset.saturating_add(l));
+    messages
+        .into_iter()
+        .skip(offset)
+        .take(end.saturating_sub(offset))
+        .collect()
 }
 
 fn resolve_subagents_dir(session_id: &str, directory: Option<&str>) -> Option<PathBuf> {
@@ -936,5 +995,81 @@ mod tests {
         let info = parse_session_info_from_lite("abc", &lite, None).expect("some");
         assert_eq!(info.summary, "Curated");
         assert_eq!(info.custom_title.as_deref(), Some("Curated"));
+    }
+
+    // ---------------------------------------------------------------------
+    // Subagent-listing helpers — the recursive walk + filename filter
+    // ported from Python `_collect_agent_files`
+    // (`_internal/sessions.py:1200-1228`).
+    // ---------------------------------------------------------------------
+
+    fn write_tmp_file(path: &Path, body: &str) {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::write(path, body).unwrap();
+    }
+
+    #[test]
+    fn collect_agent_files_picks_agent_prefixed_jsonl_only() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path();
+        write_tmp_file(&base.join("agent-aaa.jsonl"), "{}\n");
+        write_tmp_file(&base.join("random.jsonl"), "{}\n"); // decoy
+        write_tmp_file(&base.join("agent-bbb.txt"), "{}\n"); // wrong ext
+
+        let collected = collect_agent_files(base);
+        let ids: Vec<&str> = collected.iter().map(|(id, _)| id.as_str()).collect();
+        assert!(ids.contains(&"aaa"), "agent-aaa.jsonl must be collected");
+        assert!(
+            !ids.contains(&"bbb"),
+            "agent-bbb.txt must be ignored (wrong extension)"
+        );
+        assert!(
+            !ids.contains(&"random"),
+            "random.jsonl must be ignored (missing `agent-` prefix)"
+        );
+    }
+
+    #[test]
+    fn collect_agent_files_recurses_into_nested_subdirs() {
+        // Python writes subagents at `workflows/<run_id>/agent-<id>.jsonl`
+        // (`_internal/sessions.py:1282`). Walk must find them.
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path();
+        write_tmp_file(
+            &base
+                .join("workflows")
+                .join("run1")
+                .join("agent-nested.jsonl"),
+            "{}\n",
+        );
+        let collected = collect_agent_files(base);
+        assert_eq!(collected.len(), 1);
+        assert_eq!(collected[0].0, "nested");
+        assert!(collected[0].1.ends_with("agent-nested.jsonl"));
+    }
+
+    #[test]
+    fn collect_agent_files_returns_empty_for_missing_dir() {
+        let collected = collect_agent_files(Path::new("/nonexistent/path/xyz"));
+        assert!(collected.is_empty());
+    }
+
+    #[test]
+    fn apply_limit_offset_slices() {
+        let make = |n: usize| SessionMessage {
+            kind: SessionMessageKind::User,
+            uuid: format!("u-{n}"),
+            session_id: "s".into(),
+            message: Value::Null,
+            parent_tool_use_id: None,
+        };
+        let msgs = vec![make(0), make(1), make(2), make(3)];
+        assert_eq!(apply_limit_offset(msgs.clone(), None, 0).len(), 4);
+        assert_eq!(apply_limit_offset(msgs.clone(), Some(2), 0).len(), 2);
+        assert_eq!(apply_limit_offset(msgs.clone(), Some(2), 1).len(), 2);
+        assert_eq!(apply_limit_offset(msgs.clone(), Some(10), 3).len(), 1);
+        assert_eq!(apply_limit_offset(msgs, Some(0), 0).len(), 0);
     }
 }
