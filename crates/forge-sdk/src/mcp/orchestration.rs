@@ -58,8 +58,17 @@ impl McpHosts {
             })
             .collect();
         for (name, cfg) in &self.external {
-            if let Ok(v) = serde_json::to_value(cfg) {
-                servers.insert(name.clone(), v);
+            match serde_json::to_value(cfg) {
+                Ok(v) => {
+                    servers.insert(name.clone(), v);
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        %name,
+                        error = %e,
+                        "external MCP server config failed to serialise; omitting from --mcp-config"
+                    );
+                }
             }
         }
         serde_json::json!({"mcpServers": servers}).to_string()
