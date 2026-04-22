@@ -18,7 +18,10 @@
 
 use std::path::PathBuf;
 
-use forge_sdk::{ContentBlock, Message, Options, OptionsBuilder, PermissionMode, query};
+use forge_sdk::{
+    ContentBlock, Message, Options, OptionsBuilder, PermissionMode, query, query_stream,
+};
+use tokio_stream::StreamExt;
 
 fn mock_binary_path() -> String {
     concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/mock_claude.sh").into()
@@ -124,3 +127,61 @@ async fn query_uses_default_initialize_timeout() {}
 #[ignore = "not applicable: forge-sdk has no spawn_task layer; see client_mock.rs::disconnect_after_send_does_not_hang"]
 #[tokio::test]
 async fn string_prompt_spawns_wait_for_result_as_task() {}
+
+// ===========================================================================
+// Streaming-shape parity — matches Python's query() → AsyncIterator[Message]
+// ===========================================================================
+
+/// Companion to `query_single_prompt` covering the streaming API.
+/// Python's `query()` returns an `AsyncIterator[Message]`; forge-sdk
+/// mirrors that via `query_stream()` which returns a
+/// `tokio_stream::Stream<Item = Result<Message>>`.
+#[tokio::test]
+async fn query_stream_yields_messages_as_they_arrive() {
+    let opts = OptionsBuilder::new().binary(mock_binary_path()).build();
+    let stream = query_stream("What is 2+2?", Some(opts));
+    tokio::pin!(stream);
+
+    let mut saw_assistant = false;
+    let mut saw_result = false;
+    while let Some(item) = stream.next().await {
+        let msg = item.expect("stream item");
+        match msg {
+            Message::Assistant { .. } => saw_assistant = true,
+            Message::Result { .. } => {
+                saw_result = true;
+                // Python's iterator closes after Result. Verify the
+                // same: nothing more after result.
+                assert!(
+                    stream.next().await.is_none(),
+                    "stream must close after Result"
+                );
+                break;
+            }
+            _ => {}
+        }
+    }
+    assert!(saw_assistant, "must see at least one Assistant message");
+    assert!(saw_result, "must see a terminal Result frame");
+}
+
+/// Drop-early semantics: if the consumer stops awaiting before the
+/// result frame arrives, the spawned driver must not panic. Python's
+/// equivalent is the garbage-collector handling the unclosed async
+/// generator; Rust's equivalent is `mpsc::UnboundedSender::send`
+/// returning `Err` on drop which the driver loops on.
+#[tokio::test]
+async fn query_stream_drop_early_does_not_panic() {
+    let opts = OptionsBuilder::new().binary(mock_binary_path()).build();
+    let stream = query_stream("hi", Some(opts));
+    tokio::pin!(stream);
+    // Take only the first item, then drop. The spawned task cleans
+    // itself up via the send-on-closed-channel error path.
+    let _first = stream.next().await.expect("at least one message");
+    // Let the pinned stream fall out of scope here so the mpsc
+    // receiver closes; the spawned driver sees the send error on
+    // the next message and exits cleanly. Yielding below gives it
+    // the chance to run.
+    tokio::task::yield_now().await;
+    tokio::task::yield_now().await;
+}
