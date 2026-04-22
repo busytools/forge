@@ -288,13 +288,14 @@ impl SessionStore for MemorySessionStore {
             .inner
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        // Return sanitised subkey names to match FsSessionStore's
-        // on-disk naming. Callers should treat subkey strings as
-        // opaque identifiers keyed by the same adapter.
+        // Subpaths round-trip verbatim — the conformance contract
+        // treats them as opaque identifiers. Filesystem-backed stores
+        // may choose to sanitise for on-disk layout (see
+        // `FsSessionStore`); in-memory has no such constraint.
         let mut subkeys: Vec<String> = inner
             .keys()
             .filter(|k| k.project_key == key.project_key && k.session_id == key.session_id)
-            .filter_map(|k| k.subpath.as_deref().map(sanitise))
+            .filter_map(|k| k.subpath.clone())
             .collect();
         subkeys.sort();
         Ok(subkeys)
