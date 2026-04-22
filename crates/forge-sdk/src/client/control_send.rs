@@ -49,10 +49,8 @@ impl Client {
             "request_id": request_id,
             "request": serde_json::Value::Object(request_body),
         });
-        let mut line = serde_json::to_string(&envelope).map_err(|e| Error::MessageParse {
-            reason: format!("control encode: {e}"),
-            data: None,
-        })?;
+        let mut line = serde_json::to_string(&envelope)
+            .map_err(|e| Error::message_parse(format!("control encode: {e}")))?;
         line.push('\n');
         self.sub.write_line(&line).await?;
 
@@ -86,10 +84,7 @@ impl Client {
                         .pointer("/response/error")
                         .and_then(serde_json::Value::as_str)
                         .unwrap_or("unknown error");
-                    return Err(Error::MessageParse {
-                        reason: format!("{subtype} failed: {err}"),
-                        data: None,
-                    });
+                    return Err(Error::message_parse(format!("{subtype} failed: {err}")));
                 }
             }
             tracing::warn!(
@@ -214,10 +209,7 @@ impl Client {
         let raw = self
             .send_control("mcp_status", serde_json::json!({}))
             .await?;
-        serde_json::from_value(raw).map_err(|e| Error::MessageParse {
-            reason: format!("mcp_status: {e}"),
-            data: None,
-        })
+        serde_json::from_value(raw).map_err(|e| Error::message_parse(format!("mcp_status: {e}")))
     }
 
     /// Query MCP server status, returning the raw JSON payload. Use this
@@ -245,10 +237,8 @@ impl Client {
         let raw = self
             .send_control("get_context_usage", serde_json::json!({}))
             .await?;
-        serde_json::from_value(raw).map_err(|e| Error::MessageParse {
-            reason: format!("get_context_usage: {e}"),
-            data: None,
-        })
+        serde_json::from_value(raw)
+            .map_err(|e| Error::message_parse(format!("get_context_usage: {e}")))
     }
 
     /// Query current context usage, returning the raw JSON payload. Use

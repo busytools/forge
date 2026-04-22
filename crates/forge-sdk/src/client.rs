@@ -97,16 +97,14 @@ impl Client {
         // `agents` / `excludeDynamicSections` / `skills` — forge-sdk
         // matches byte-for-byte so the initialize frame looks identical
         // on the wire when the caller doesn't set any of them.
-        let agents_payload = if options.agents.is_empty() {
-            None
-        } else {
-            Some(
-                serde_json::to_value(&options.agents).map_err(|e| Error::MessageParse {
-                    reason: format!("could not encode agents map: {e}"),
-                    data: None,
-                })?,
-            )
-        };
+        let agents_payload =
+            if options.agents.is_empty() {
+                None
+            } else {
+                Some(serde_json::to_value(&options.agents).map_err(|e| {
+                    Error::message_parse(format!("could not encode agents map: {e}"))
+                })?)
+            };
         // Concrete-list skills populate `initialize.skills`. `"all"` marker
         // travels via `--allowedTools` only and does NOT appear in the
         // initialize payload (matches Python SDK). An empty list is
@@ -136,10 +134,9 @@ impl Client {
                 ..
             } if subtype == "init" => id.clone(),
             other => {
-                return Err(Error::MessageParse {
-                    reason: format!("expected system/init, got: {other:?}"),
-                    data: None,
-                });
+                return Err(Error::message_parse(format!(
+                    "expected system/init, got: {other:?}"
+                )));
             }
         };
         debug!(session_id, "client init");

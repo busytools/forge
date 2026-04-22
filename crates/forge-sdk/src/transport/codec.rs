@@ -48,10 +48,8 @@ pub fn decode_line(line: &str, line_number: u64) -> Result<Message, Error> {
         line: line_number,
         source,
     })?;
-    serde_json::from_value(value).map_err(|e| Error::MessageParse {
-        reason: format!("line {line_number}: {e}"),
-        data: None,
-    })
+    serde_json::from_value(value)
+        .map_err(|e| Error::message_parse(format!("line {line_number}: {e}")))
 }
 
 /// Decode one stream-json line, dispatching on the `type` field.
@@ -73,47 +71,39 @@ pub fn decode_dispatch(line: &str, line_number: u64) -> Result<DecodedLine, Erro
     let ty = value
         .get("type")
         .and_then(|v| v.as_str())
-        .ok_or_else(|| Error::MessageParse {
-            reason: format!("line {line_number}: missing `type` field"),
-            data: None,
-        })?;
+        .ok_or_else(|| Error::message_parse(format!("line {line_number}: missing `type` field")))?;
     match ty {
         "control_request" => {
-            let req: ControlRequest =
-                serde_json::from_value(value).map_err(|e| Error::MessageParse {
-                    reason: format!("line {line_number}: {e}"),
-                    data: None,
-                })?;
+            let req: ControlRequest = serde_json::from_value(value)
+                .map_err(|e| Error::message_parse(format!("line {line_number}: {e}")))?;
             Ok(DecodedLine::Control(req))
         }
         "control_cancel_request" => {
             let request_id = value
                 .get("request_id")
                 .and_then(Value::as_str)
-                .ok_or_else(|| Error::MessageParse {
-                    reason: format!(
+                .ok_or_else(|| {
+                    Error::message_parse(format!(
                         "line {line_number}: control_cancel_request missing `request_id`"
-                    ),
-                    data: None,
+                    ))
                 })?
                 .to_string();
             Ok(DecodedLine::ControlCancel { request_id })
         }
         "assistant" | "user" | "system" | "result" | "rate_limit_event" | "stream_event"
         | "error" => {
-            let msg: Message = serde_json::from_value(value).map_err(|e| Error::MessageParse {
-                reason: format!("line {line_number}: {e}"),
-                data: None,
-            })?;
+            let msg: Message = serde_json::from_value(value)
+                .map_err(|e| Error::message_parse(format!("line {line_number}: {e}")))?;
             Ok(DecodedLine::Message(msg))
         }
         "transcript_mirror" => {
             let file_path = value
                 .get("filePath")
                 .and_then(serde_json::Value::as_str)
-                .ok_or_else(|| Error::MessageParse {
-                    reason: format!("line {line_number}: transcript_mirror missing `filePath`"),
-                    data: None,
+                .ok_or_else(|| {
+                    Error::message_parse(format!(
+                        "line {line_number}: transcript_mirror missing `filePath`"
+                    ))
                 })?
                 .to_string();
             let entries: Vec<crate::session_store::SessionStoreEntry> = value
@@ -121,17 +111,17 @@ pub fn decode_dispatch(line: &str, line_number: u64) -> Result<DecodedLine, Erro
                 .cloned()
                 .map(serde_json::from_value)
                 .transpose()
-                .map_err(|e| Error::MessageParse {
-                    reason: format!("line {line_number}: transcript_mirror entries: {e}"),
-                    data: None,
+                .map_err(|e| {
+                    Error::message_parse(format!(
+                        "line {line_number}: transcript_mirror entries: {e}"
+                    ))
                 })?
                 .unwrap_or_default();
             Ok(DecodedLine::TranscriptMirror { file_path, entries })
         }
-        other => Err(Error::MessageParse {
-            reason: format!("line {line_number}: unknown type `{other}`"),
-            data: None,
-        }),
+        other => Err(Error::message_parse(format!(
+            "line {line_number}: unknown type `{other}`"
+        ))),
     }
 }
 
@@ -156,10 +146,8 @@ pub fn encode_user_prompt(prompt: &str, session_id: &str) -> Result<String, Erro
         "session_id": session_id,
         "parent_tool_use_id": null,
     });
-    let mut line = serde_json::to_string(&payload).map_err(|e| Error::MessageParse {
-        reason: format!("could not encode prompt: {e}"),
-        data: None,
-    })?;
+    let mut line = serde_json::to_string(&payload)
+        .map_err(|e| Error::message_parse(format!("could not encode prompt: {e}")))?;
     line.push('\n');
     Ok(line)
 }
