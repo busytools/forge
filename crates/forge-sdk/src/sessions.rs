@@ -8,21 +8,31 @@
 //! - [`get_session_info`] — reads metadata for one session by ID.
 //! - [`get_session_messages`] — reads the full transcript for one session.
 //!
-//! Not yet ported: subagent transcripts (`list_subagents`,
-//! `get_subagent_messages`), the head-only read optimisation
-//! (`_read_session_lite`), git-worktree discovery, and the
-//! `SessionStore`-backed `*_from_store` variants. These are all
-//! follow-up work.
+//! Session metadata ([`list_sessions`], [`get_session_info`]) is extracted
+//! via an internal head + tail lite read — mirrors Python's
+//! `_read_session_lite` / `_parse_session_info_from_lite` so a 100 MiB
+//! transcript costs two 64 KiB reads rather than a full scan.
+//!
+//! Not yet ported: subagent listing with Python's `agent-<id>.jsonl`
+//! naming (current Rust uses `<id>.jsonl` and returns `SDKSessionInfo`
+//! rather than the `Vec<String>` Python returns) and the
+//! `SessionStore`-backed `*_from_store` variants. Follow-up work.
 
 use std::fs;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
 use crate::public_types::{SDKSessionInfo, SessionMessage, SessionMessageKind};
+use crate::session_mutations::projects_dir;
 
 const MAX_SANITIZED_LENGTH: usize = 200;
+
+/// Size of the head / tail byte buffer for lite metadata reads.
+/// Python SDK constant (`_internal/sessions.py:29`) — match exactly so
+/// the two implementations slice transcripts at the same boundary.
+const LITE_READ_BUF_SIZE: u64 = 65_536;
 
 /// Re-export of the internal path sanitiser for other modules that need
 /// to derive the same on-disk project-key layout the CLI uses.
@@ -195,8 +205,6 @@ fn simple_hash(s: &str) -> String {
     String::from_utf8(out).unwrap_or_default()
 }
 
-use crate::session_mutations::projects_dir;
-
 /// Resolve git-worktree paths for a directory via
 /// `git worktree list --porcelain`. Returns an empty Vec when the
 /// directory is not in a git repo or `git` isn't on `PATH`.
@@ -231,7 +239,7 @@ fn project_dir_for(project_path: &str) -> PathBuf {
 }
 
 /// List sessions. When `directory` is `Some`, scans that project dir
-/// (ignoring git worktrees for now — `include_worktrees` is reserved);
+/// (optionally extending across git worktrees via `include_worktrees`);
 /// when `None`, scans every project directory. Results are sorted by
 /// `last_modified` descending and pagination applies at the end.
 ///
@@ -346,88 +354,312 @@ fn is_valid_uuid(s: &str) -> bool {
     crate::session_mutations::is_valid_uuid(s)
 }
 
-fn read_session_info(path: &Path) -> Option<SDKSessionInfo> {
-    let meta = fs::metadata(path).ok()?;
-    let last_modified = meta
+// ---------------------------------------------------------------------------
+// Lite read — head + tail metadata extraction without full-file scan.
+// Ported from Python SDK v0.1.64 `_internal/sessions.py:347-441`.
+// ---------------------------------------------------------------------------
+
+/// Head / tail snapshot of a session file — enough to recover all
+/// [`SDKSessionInfo`] fields without a full scan. Python equivalent:
+/// `_LiteSessionFile` (`sessions.py:336-347`).
+struct LiteSessionFile {
+    mtime: u64,
+    size: u64,
+    head: String,
+    tail: String,
+}
+
+/// Open a session file, stat it, read at most [`LITE_READ_BUF_SIZE`]
+/// bytes from the head and the same from the tail. For files smaller
+/// than the buffer, `tail == head` (single read). Returns `None` on
+/// any I/O error or for empty files.
+fn read_session_lite(path: &Path) -> Option<LiteSessionFile> {
+    let mut file = fs::File::open(path).ok()?;
+    let meta = file.metadata().ok()?;
+    let size = meta.len();
+    if size == 0 {
+        return None;
+    }
+    let mtime = meta
         .modified()
         .ok()
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
         .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX));
-    let file_size = meta.len();
-    let session_id = path.file_stem().and_then(|s| s.to_str())?.to_string();
 
-    let file = fs::File::open(path).ok()?;
-    let mut first_prompt: Option<String> = None;
-    let mut custom_title: Option<String> = None;
-    let mut cwd: Option<String> = None;
-    let mut git_branch: Option<String> = None;
-    let mut tag: Option<String> = None;
-    let mut created_at: Option<u64> = None;
-    let mut summary: Option<String> = None;
-    for line in BufReader::new(file).lines().map_while(Result::ok) {
-        if line.is_empty() {
-            continue;
-        }
-        let Ok(value) = serde_json::from_str::<Value>(&line) else {
-            continue;
-        };
-        // first_prompt and created_at are FIRST-wins by design — the first
-        // user turn is the seed prompt; creation time is the earliest
-        // stamped entry.
-        if first_prompt.is_none()
-            && value.get("type").and_then(Value::as_str) == Some("user")
-            && value.get("parent_tool_use_id").is_none_or(Value::is_null)
-        {
-            if let Some(content) = value
-                .get("message")
-                .and_then(|m| m.get("content"))
-                .and_then(Value::as_str)
-            {
-                first_prompt = Some(content.to_string());
-            }
-        }
-        if created_at.is_none() {
-            if let Some(ts) = value.get("timestamp").and_then(Value::as_str) {
-                if let Ok(parsed) = chrono_like_parse_ms(ts) {
-                    created_at = Some(parsed);
+    let head_len = usize::try_from(LITE_READ_BUF_SIZE.min(size)).unwrap_or(usize::MAX);
+    let mut head_bytes = vec![0u8; head_len];
+    let read = file.read(&mut head_bytes).ok()?;
+    head_bytes.truncate(read);
+    if head_bytes.is_empty() {
+        return None;
+    }
+    let head = String::from_utf8_lossy(&head_bytes).into_owned();
+
+    let tail = if size <= LITE_READ_BUF_SIZE {
+        head.clone()
+    } else {
+        let tail_offset = size - LITE_READ_BUF_SIZE;
+        file.seek(SeekFrom::Start(tail_offset)).ok()?;
+        let mut tail_bytes = vec![0u8; usize::try_from(LITE_READ_BUF_SIZE).unwrap_or(usize::MAX)];
+        let read = file.read(&mut tail_bytes).ok()?;
+        tail_bytes.truncate(read);
+        String::from_utf8_lossy(&tail_bytes).into_owned()
+    };
+
+    Some(LiteSessionFile {
+        mtime,
+        size,
+        head,
+        tail,
+    })
+}
+
+/// Find the first byte offset where `needle` begins in `haystack`.
+fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() || needle.len() > haystack.len() {
+        return None;
+    }
+    haystack.windows(needle.len()).position(|w| w == needle)
+}
+
+/// Extract the first occurrence of a JSON string field (`"key":"value"`
+/// or `"key": "value"`). Scans bytes directly to survive partial tail
+/// reads; unescapes via `serde_json` only when the value contains a
+/// backslash. Returns `None` when the field is absent or unterminated.
+fn extract_json_string_field(text: &str, key: &str) -> Option<String> {
+    let bytes = text.as_bytes();
+    let compact = format!("\"{key}\":\"");
+    let spaced = format!("\"{key}\": \"");
+    for pattern in [compact.as_bytes(), spaced.as_bytes()] {
+        if let Some(idx) = find_bytes(bytes, pattern) {
+            let value_start = idx + pattern.len();
+            let mut i = value_start;
+            while i < bytes.len() {
+                if bytes[i] == b'\\' {
+                    i += 2;
+                    continue;
                 }
+                if bytes[i] == b'"' {
+                    let raw = std::str::from_utf8(&bytes[value_start..i]).ok()?;
+                    return Some(unescape_json_string(raw));
+                }
+                i += 1;
             }
-        }
-        // All mutable metadata is LAST-wins — `rename_session` /
-        // `tag_session` append a new entry at the end of the file; the
-        // most recent wins.
-        if let Some(v) = value.get("customTitle").and_then(Value::as_str) {
-            custom_title = Some(v.to_string());
-        }
-        if let Some(v) = value.get("cwd").and_then(Value::as_str) {
-            cwd = Some(v.to_string());
-        }
-        if let Some(v) = value.get("gitBranch").and_then(Value::as_str) {
-            git_branch = Some(v.to_string());
-        }
-        if let Some(v) = value.get("tag").and_then(Value::as_str) {
-            // Empty tag means "cleared" — see `tag_session(None)`.
-            tag = if v.is_empty() {
-                None
-            } else {
-                Some(v.to_string())
-            };
-        }
-        if let Some(v) = value.get("summary").and_then(Value::as_str) {
-            summary = Some(v.to_string());
         }
     }
+    None
+}
 
-    let display_summary = summary
-        .or_else(|| custom_title.clone())
-        .or_else(|| first_prompt.clone())
-        .unwrap_or_default();
+/// Like [`extract_json_string_field`] but returns the LAST occurrence.
+fn extract_last_json_string_field(text: &str, key: &str) -> Option<String> {
+    let bytes = text.as_bytes();
+    let compact = format!("\"{key}\":\"");
+    let spaced = format!("\"{key}\": \"");
+    let mut last: Option<String> = None;
+    for pattern in [compact.as_bytes(), spaced.as_bytes()] {
+        let mut search_from = 0usize;
+        while search_from < bytes.len() {
+            let remaining = &bytes[search_from..];
+            let Some(rel_idx) = find_bytes(remaining, pattern) else {
+                break;
+            };
+            let idx = search_from + rel_idx;
+            let value_start = idx + pattern.len();
+            let mut i = value_start;
+            while i < bytes.len() {
+                if bytes[i] == b'\\' {
+                    i += 2;
+                    continue;
+                }
+                if bytes[i] == b'"' {
+                    if let Ok(raw) = std::str::from_utf8(&bytes[value_start..i]) {
+                        last = Some(unescape_json_string(raw));
+                    }
+                    break;
+                }
+                i += 1;
+            }
+            search_from = i + 1;
+        }
+    }
+    last
+}
+
+/// Unescape a JSON string value. No-op when there are no backslashes.
+fn unescape_json_string(raw: &str) -> String {
+    if !raw.contains('\\') {
+        return raw.to_string();
+    }
+    let wrapped = format!("\"{raw}\"");
+    serde_json::from_str::<String>(&wrapped).unwrap_or_else(|_| raw.to_string())
+}
+
+/// Extract the first meaningful user prompt from a JSONL head chunk.
+/// Skips `tool_result`, `isMeta`, `isCompactSummary`, slash-command
+/// messages (with command-name fallback), and the fixed-prefix skip
+/// patterns Python's `_SKIP_FIRST_PROMPT_PATTERN` matches. Truncates to
+/// 200 chars with an ellipsis. Ported from `sessions.py:255-330`.
+#[allow(clippy::too_many_lines)]
+fn extract_first_prompt_from_head(head: &str) -> Option<String> {
+    let mut command_fallback: Option<String> = None;
+    for line in head.split('\n') {
+        if !line.contains("\"type\":\"user\"") && !line.contains("\"type\": \"user\"") {
+            continue;
+        }
+        if line.contains("\"tool_result\"") {
+            continue;
+        }
+        if line.contains("\"isMeta\":true") || line.contains("\"isMeta\": true") {
+            continue;
+        }
+        if line.contains("\"isCompactSummary\":true") || line.contains("\"isCompactSummary\": true")
+        {
+            continue;
+        }
+        let Ok(entry) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        if entry.get("type").and_then(Value::as_str) != Some("user") {
+            continue;
+        }
+        let Some(message) = entry.get("message") else {
+            continue;
+        };
+        let Some(content) = message.get("content") else {
+            continue;
+        };
+        let texts: Vec<String> = if let Some(s) = content.as_str() {
+            vec![s.to_string()]
+        } else if let Some(arr) = content.as_array() {
+            arr.iter()
+                .filter_map(|b| {
+                    (b.get("type").and_then(Value::as_str) == Some("text"))
+                        .then(|| b.get("text").and_then(Value::as_str).map(str::to_string))
+                        .flatten()
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        for raw in texts {
+            let result = raw.replace('\n', " ");
+            let result = result.trim();
+            if result.is_empty() {
+                continue;
+            }
+            if let Some(cmd) = extract_command_name(result) {
+                if command_fallback.is_none() {
+                    command_fallback = Some(cmd);
+                }
+                continue;
+            }
+            if should_skip_first_prompt(result) {
+                continue;
+            }
+            let truncated = if result.chars().count() > 200 {
+                let mut buf: String = result.chars().take(200).collect();
+                while buf.ends_with(char::is_whitespace) {
+                    buf.pop();
+                }
+                buf.push('\u{2026}');
+                buf
+            } else {
+                result.to_string()
+            };
+            return Some(truncated);
+        }
+    }
+    command_fallback
+}
+
+/// Extract `<command-name>CMD</command-name>` when present.
+fn extract_command_name(s: &str) -> Option<String> {
+    const OPEN: &str = "<command-name>";
+    const CLOSE: &str = "</command-name>";
+    let open = s.find(OPEN)?;
+    let after = &s[open + OPEN.len()..];
+    let close = after.find(CLOSE)?;
+    Some(after[..close].to_string())
+}
+
+/// Fixed-prefix counterpart to Python's `_SKIP_FIRST_PROMPT_PATTERN`.
+fn should_skip_first_prompt(s: &str) -> bool {
+    const PREFIXES: [&str; 4] = [
+        "<local-command-stdout>",
+        "<session-start-hook>",
+        "<tick>",
+        "<goal>",
+    ];
+    if PREFIXES.iter().any(|p| s.starts_with(p)) {
+        return true;
+    }
+    if s.starts_with("[Request interrupted by user") && s.contains(']') {
+        return true;
+    }
+    let trimmed = s.trim();
+    for (open, close) in [
+        ("<ide_opened_file>", "</ide_opened_file>"),
+        ("<ide_selection>", "</ide_selection>"),
+    ] {
+        if trimmed.starts_with(open) && trimmed.ends_with(close) {
+            return true;
+        }
+    }
+    false
+}
+
+fn read_session_info(path: &Path) -> Option<SDKSessionInfo> {
+    let session_id = path.file_stem().and_then(|s| s.to_str())?.to_string();
+    let lite = read_session_lite(path)?;
+    parse_session_info_from_lite(&session_id, &lite, None)
+}
+
+/// Ported from Python `_parse_session_info_from_lite`
+/// (`sessions.py:418-502`). Skips sidechain transcripts and metadata-only
+/// sessions (no summary after all fallbacks).
+fn parse_session_info_from_lite(
+    session_id: &str,
+    lite: &LiteSessionFile,
+    project_path: Option<&str>,
+) -> Option<SDKSessionInfo> {
+    let head = lite.head.as_str();
+    let tail = lite.tail.as_str();
+
+    let first_line = head.find('\n').map_or(head, |idx| &head[..idx]);
+    if first_line.contains("\"isSidechain\":true") || first_line.contains("\"isSidechain\": true") {
+        return None;
+    }
+
+    let custom_title = extract_last_json_string_field(tail, "customTitle")
+        .or_else(|| extract_last_json_string_field(head, "customTitle"))
+        .or_else(|| extract_last_json_string_field(tail, "aiTitle"))
+        .or_else(|| extract_last_json_string_field(head, "aiTitle"));
+    let first_prompt = extract_first_prompt_from_head(head);
+    let summary = custom_title
+        .clone()
+        .or_else(|| extract_last_json_string_field(tail, "lastPrompt"))
+        .or_else(|| extract_last_json_string_field(tail, "summary"))
+        .or_else(|| first_prompt.clone())?;
+
+    let git_branch = extract_last_json_string_field(tail, "gitBranch")
+        .or_else(|| extract_json_string_field(head, "gitBranch"));
+    let cwd = extract_json_string_field(head, "cwd").or_else(|| project_path.map(str::to_string));
+    // Scope tag extraction to `{"type":"tag"}` lines — a bare scan for
+    // `"tag"` would match tool_use inputs (git tag, Docker tags, etc.).
+    let tag = tail
+        .lines()
+        .rev()
+        .find(|l| l.starts_with("{\"type\":\"tag\""))
+        .and_then(|l| extract_last_json_string_field(l, "tag"))
+        .filter(|v| !v.is_empty());
+    let created_at = extract_json_string_field(first_line, "timestamp")
+        .and_then(|ts| chrono_like_parse_ms(&ts).ok());
 
     Some(SDKSessionInfo {
-        session_id,
-        summary: display_summary,
-        last_modified,
-        file_size: Some(file_size),
+        session_id: session_id.to_string(),
+        summary,
+        last_modified: lite.mtime,
+        file_size: Some(lite.size),
         custom_title,
         first_prompt,
         git_branch,
@@ -557,5 +789,152 @@ mod tests {
         // Verify via cross-check: seconds = 20200 * 86400.
         // We don't hard-code; just check the ms portion adds correctly.
         assert_eq!(ms % 1000, 500);
+    }
+
+    #[test]
+    fn extract_json_string_field_finds_compact_form() {
+        let t = r#"noise {"type":"user","message":{"content":"hi"}} noise"#;
+        assert_eq!(
+            extract_json_string_field(t, "content"),
+            Some("hi".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_json_string_field_finds_spaced_form() {
+        let t = r#"{"gitBranch": "main"}"#;
+        assert_eq!(
+            extract_json_string_field(t, "gitBranch"),
+            Some("main".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_json_string_field_handles_escaped_quotes() {
+        let t = r#"{"customTitle":"he said \"hi\""}"#;
+        assert_eq!(
+            extract_json_string_field(t, "customTitle"),
+            Some(r#"he said "hi""#.to_string())
+        );
+    }
+
+    #[test]
+    fn extract_last_json_string_field_picks_last() {
+        let t = r#"{"tag":"old"} {"tag":"new"}"#;
+        assert_eq!(
+            extract_last_json_string_field(t, "tag"),
+            Some("new".to_string())
+        );
+    }
+
+    #[test]
+    fn first_prompt_skips_local_command_stdout() {
+        let head = r#"{"type":"user","message":{"content":"<local-command-stdout>out</local-command-stdout>"}}
+{"type":"user","message":{"content":"actual prompt"}}"#;
+        assert_eq!(
+            extract_first_prompt_from_head(head),
+            Some("actual prompt".to_string())
+        );
+    }
+
+    #[test]
+    fn first_prompt_falls_back_to_command_name() {
+        let head = r#"{"type":"user","message":{"content":"<command-name>foo</command-name>"}}"#;
+        assert_eq!(
+            extract_first_prompt_from_head(head),
+            Some("foo".to_string())
+        );
+    }
+
+    #[test]
+    fn first_prompt_skips_tool_result_line() {
+        let head = r#"{"type":"user","message":{"content":[{"type":"tool_result","content":"x"}]}}
+{"type":"user","message":{"content":"real prompt"}}"#;
+        assert_eq!(
+            extract_first_prompt_from_head(head),
+            Some("real prompt".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_session_info_skips_sidechain() {
+        let head = "{\"isSidechain\":true,\"type\":\"user\"}\n".to_string();
+        let lite = LiteSessionFile {
+            mtime: 0,
+            size: 1,
+            head: head.clone(),
+            tail: head,
+        };
+        assert!(parse_session_info_from_lite("abc", &lite, None).is_none());
+    }
+
+    #[test]
+    fn parse_session_info_skips_metadata_only() {
+        let content = "{\"type\":\"tag\",\"tag\":\"meta\"}\n".to_string();
+        let lite = LiteSessionFile {
+            mtime: 10,
+            size: content.len() as u64,
+            head: content.clone(),
+            tail: content,
+        };
+        // No custom_title, no aiTitle, no lastPrompt, no summary,
+        // no first_prompt → skipped.
+        assert!(parse_session_info_from_lite("abc", &lite, None).is_none());
+    }
+
+    #[test]
+    fn parse_session_info_extracts_prompt_and_tag() {
+        let content = r#"{"type":"user","timestamp":"2026-04-22T00:00:00.000Z","gitBranch":"main","cwd":"/p","message":{"content":"hello"}}
+{"type":"tag","tag":"mytag"}
+"#
+        .to_string();
+        let lite = LiteSessionFile {
+            mtime: 99,
+            size: content.len() as u64,
+            head: content.clone(),
+            tail: content,
+        };
+        let info = parse_session_info_from_lite("abc", &lite, None).expect("some");
+        assert_eq!(info.first_prompt.as_deref(), Some("hello"));
+        assert_eq!(info.summary, "hello");
+        assert_eq!(info.tag.as_deref(), Some("mytag"));
+        assert_eq!(info.git_branch.as_deref(), Some("main"));
+        assert_eq!(info.cwd.as_deref(), Some("/p"));
+        assert!(info.created_at.is_some());
+    }
+
+    #[test]
+    fn parse_session_info_ignores_tag_on_tool_use_lines() {
+        // A git-tag tool_use shouldn't be picked up as a session tag —
+        // the `"tag"` string appears but the line isn't `{"type":"tag"`.
+        let content = r#"{"type":"user","message":{"content":"hi"}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","input":{"command":"git tag","tag":"v1.0"}}]}}
+"#
+        .to_string();
+        let lite = LiteSessionFile {
+            mtime: 0,
+            size: content.len() as u64,
+            head: content.clone(),
+            tail: content,
+        };
+        let info = parse_session_info_from_lite("abc", &lite, None).expect("some");
+        assert_eq!(info.tag, None);
+    }
+
+    #[test]
+    fn parse_session_info_prefers_custom_title_over_last_prompt() {
+        let content = r#"{"type":"user","message":{"content":"initial"}}
+{"customTitle":"Curated","lastPrompt":"last"}
+"#
+        .to_string();
+        let lite = LiteSessionFile {
+            mtime: 0,
+            size: content.len() as u64,
+            head: content.clone(),
+            tail: content,
+        };
+        let info = parse_session_info_from_lite("abc", &lite, None).expect("some");
+        assert_eq!(info.summary, "Curated");
+        assert_eq!(info.custom_title.as_deref(), Some("Curated"));
     }
 }
