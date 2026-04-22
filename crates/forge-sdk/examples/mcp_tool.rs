@@ -53,7 +53,8 @@ async fn main() -> Result<()> {
                 }
             }
             Message::Result { total_cost_usd, .. } => {
-                println!("done, cost ${total_cost_usd:.4}");
+                let cost = total_cost_usd.unwrap_or(0.0);
+                println!("done, cost ${cost:.4}");
                 break;
             }
             _ => {}

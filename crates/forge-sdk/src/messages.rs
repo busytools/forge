@@ -137,6 +137,11 @@ pub enum Message {
     },
 
     /// End-of-turn or end-of-session summary with cost and usage.
+    ///
+    /// Field coverage matches Python `ResultMessage` (`types.py:1023-1039` +
+    /// `_internal/message_parser.py:205-227`). Only six fields are required
+    /// on the wire — every other field is `Option<...>` because Python's
+    /// `data.get(...)` never raises when missing.
     Result {
         /// Result discriminant (e.g. `"success"`, `"error_during_execution"`).
         subtype: String,
@@ -150,10 +155,32 @@ pub enum Message {
         duration_ms: u64,
         /// Time spent waiting on the Anthropic API in milliseconds.
         duration_api_ms: u64,
-        /// Total cost so far in USD.
-        total_cost_usd: f64,
-        /// Aggregate token usage.
-        usage: Usage,
+        /// Why the turn ended, if the CLI reported a stop reason
+        /// (e.g. `"end_turn"`, `"max_turns"`, `"error"`).
+        stop_reason: Option<String>,
+        /// Total cost so far in USD. `None` when the CLI can't compute
+        /// or doesn't report (free-tier sessions, error-path results).
+        total_cost_usd: Option<f64>,
+        /// Aggregate token usage for the turn. Optional in Python
+        /// (`types.py:1034`).
+        usage: Option<Usage>,
+        /// Plain-text result body when the turn produced one (e.g. the
+        /// assistant's final output).
+        result: Option<String>,
+        /// Structured output when
+        /// [`Options::output_format`](crate::Options) was set to a JSON
+        /// schema. Passed through verbatim.
+        structured_output: Option<Value>,
+        /// Per-model usage breakdown. Wire key is camelCase
+        /// `modelUsage` (matches Python's `data.get("modelUsage")`).
+        model_usage: Option<Value>,
+        /// Permissions denied during the turn, surfaced so callers can
+        /// audit `can_use_tool` outcomes.
+        permission_denials: Option<Vec<Value>>,
+        /// Non-fatal errors accumulated during the turn.
+        errors: Option<Vec<String>>,
+        /// Unique identifier for this result frame.
+        uuid: Option<String>,
     },
 
     /// Streaming partial-message event emitted when
@@ -392,8 +419,28 @@ enum MessageRepr {
         num_turns: u64,
         duration_ms: u64,
         duration_api_ms: u64,
-        total_cost_usd: f64,
-        usage: Usage,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        stop_reason: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        total_cost_usd: Option<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        usage: Option<Usage>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        result: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        structured_output: Option<Value>,
+        #[serde(
+            default,
+            rename = "modelUsage",
+            skip_serializing_if = "Option::is_none"
+        )]
+        model_usage: Option<Value>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        permission_denials: Option<Vec<Value>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        errors: Option<Vec<String>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        uuid: Option<String>,
     },
     StreamEvent {
         uuid: String,
@@ -569,8 +616,15 @@ impl From<MessageRepr> for Message {
                 num_turns,
                 duration_ms,
                 duration_api_ms,
+                stop_reason,
                 total_cost_usd,
                 usage,
+                result,
+                structured_output,
+                model_usage,
+                permission_denials,
+                errors,
+                uuid,
             } => Message::Result {
                 subtype,
                 session_id,
@@ -578,8 +632,15 @@ impl From<MessageRepr> for Message {
                 num_turns,
                 duration_ms,
                 duration_api_ms,
+                stop_reason,
                 total_cost_usd,
                 usage,
+                result,
+                structured_output,
+                model_usage,
+                permission_denials,
+                errors,
+                uuid,
             },
             MessageRepr::StreamEvent {
                 uuid,
@@ -701,8 +762,15 @@ impl From<Message> for MessageRepr {
                 num_turns,
                 duration_ms,
                 duration_api_ms,
+                stop_reason,
                 total_cost_usd,
                 usage,
+                result,
+                structured_output,
+                model_usage,
+                permission_denials,
+                errors,
+                uuid,
             } => MessageRepr::Result {
                 subtype,
                 session_id,
@@ -710,8 +778,15 @@ impl From<Message> for MessageRepr {
                 num_turns,
                 duration_ms,
                 duration_api_ms,
+                stop_reason,
                 total_cost_usd,
                 usage,
+                result,
+                structured_output,
+                model_usage,
+                permission_denials,
+                errors,
+                uuid,
             },
             Message::StreamEvent {
                 uuid,

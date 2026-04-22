@@ -38,7 +38,8 @@ async fn main() -> Result<()> {
                 duration_ms,
                 ..
             } => {
-                println!("result: ${total_cost_usd:.4} in {duration_ms}ms");
+                let cost = total_cost_usd.unwrap_or(0.0);
+                println!("result: ${cost:.4} in {duration_ms}ms");
                 break;
             }
             other => println!("{other:?}"),
