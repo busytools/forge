@@ -21,5 +21,8 @@ mod session_store_conformance;
 #[path = "python_parity/transport.rs"]
 mod transport;
 
+#[path = "python_parity/rate_limit.rs"]
+mod rate_limit;
+
 #[path = "python_parity/types.rs"]
 mod types;
