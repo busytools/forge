@@ -209,6 +209,31 @@ fn projects_dir() -> PathBuf {
 /// Resolve a project directory path to its sanitised on-disk key. Python
 /// canonicalises via `realpath`; we follow suit when the path exists,
 /// else fall back to the raw input.
+/// Resolve git-worktree paths for a directory via
+/// `git worktree list --porcelain`. Returns an empty Vec when the
+/// directory is not in a git repo or `git` isn't on `PATH`.
+fn git_worktree_paths(dir: &str) -> Vec<String> {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .arg("worktree")
+        .arg("list")
+        .arg("--porcelain")
+        .output();
+    let Ok(output) = output else {
+        return Vec::new();
+    };
+    if !output.status.success() {
+        return Vec::new();
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    stdout
+        .lines()
+        .filter_map(|l| l.strip_prefix("worktree "))
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
 fn project_dir_for(project_path: &str) -> PathBuf {
     let canonical = match fs::canonicalize(project_path) {
         Ok(p) => p.to_string_lossy().into_owned(),
@@ -231,10 +256,18 @@ pub fn list_sessions(
     directory: Option<String>,
     limit: Option<usize>,
     offset: usize,
-    _include_worktrees: bool,
+    include_worktrees: bool,
 ) -> Vec<SDKSessionInfo> {
     let search_dirs: Vec<PathBuf> = if let Some(dir) = directory {
-        vec![project_dir_for(&dir)]
+        let mut dirs = vec![project_dir_for(&dir)];
+        if include_worktrees {
+            for wt in git_worktree_paths(&dir) {
+                dirs.push(project_dir_for(&wt));
+            }
+        }
+        dirs.sort();
+        dirs.dedup();
+        dirs
     } else {
         fs::read_dir(projects_dir())
             .map(|iter| {
