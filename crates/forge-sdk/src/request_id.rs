@@ -1,13 +1,20 @@
-//! Request ID generator matching Python SDK's `req_<counter>_<hex4>` format
-//! (see `_internal/query.py` counter + `secrets.token_hex(4)`).
+//! Request ID generator for outbound `control_request` frames.
+//!
+//! Shape: `forge_<counter>_<hex8>` (e.g. `forge_42_3a9f2b0e`). Python
+//! SDK uses `req_<counter>_<hex8>` (`_internal/query.py` counter +
+//! `secrets.token_hex(4)`); forge-sdk diverges on the prefix
+//! deliberately so stream-json logs distinguish forge-sdk-originated
+//! requests from CLI-originated ones at a glance. The CLI treats
+//! request IDs as opaque — it only echoes them back in the matching
+//! `control_response` — so the prefix has no wire-protocol effect.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
 
-/// Generate a new opaque request id in the Python-compatible shape
-/// `req_<counter>_<hex8>`. The 8-hex (4 bytes) suffix is random. Falls
-/// back to counter bytes if `getrandom` fails.
+/// Generate a new opaque request id in the shape `forge_<counter>_<hex8>`.
+/// The 8-hex (4 bytes) suffix is random. Falls back to counter bytes
+/// if `getrandom` fails.
 #[must_use]
 pub fn next() -> String {
     let n = COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -15,5 +22,5 @@ pub fn next() -> String {
     if getrandom::fill(&mut bytes).is_err() {
         bytes.copy_from_slice(&n.to_le_bytes()[..4]);
     }
-    format!("req_{n}_{}", hex::encode(bytes))
+    format!("forge_{n}_{}", hex::encode(bytes))
 }
