@@ -49,7 +49,6 @@ pub(crate) mod permissions;
 pub(crate) mod public_types;
 pub(crate) mod request_id;
 pub mod session;
-pub mod tracing_bridge;
 pub mod transport;
 
 pub use client::Client;
