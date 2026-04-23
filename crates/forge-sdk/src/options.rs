@@ -20,24 +20,32 @@ use crate::permissions::CanUseToolCallback;
 /// Mirrors Python SDK's `permission_mode` values (all six).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum PermissionMode {
-    /// Prompt on every tool use (the default).
+    /// Ask for permission on every tool use — the CLI's default behaviour
+    /// and forge-sdk's default variant. In SDK mode this routes the
+    /// question to the `can_use_tool` callback (or the configured
+    /// `permission_prompt_tool_name`). Wire value: `"default"`.
     #[serde(rename = "default")]
-    Default,
+    Ask,
     /// Auto-allow edits / writes; prompt on destructive ops.
     #[serde(rename = "acceptEdits")]
     AcceptEdits,
     /// Read-only mode; block tools that would mutate the workspace.
     #[serde(rename = "plan")]
     Plan,
-    /// Auto-allow all tools (use with care).
+    /// Auto-allow all tools (use with care). Symmetric inverse of
+    /// [`DenyPermissions`](Self::DenyPermissions).
     #[serde(rename = "bypassPermissions")]
     BypassPermissions,
-    /// Let the binary decide based on tool + context heuristics (Python v0.1.57+).
+    /// Let the binary decide based on tool + context heuristics
+    /// (Python SDK v0.1.57+).
     #[serde(rename = "auto")]
     Auto,
-    /// Never prompt; silently deny anything that would require approval.
+    /// Silently deny any tool invocation that would otherwise require
+    /// approval. Symmetric inverse of
+    /// [`BypassPermissions`](Self::BypassPermissions). Wire value:
+    /// `"dontAsk"` (preserved for CLI compatibility).
     #[serde(rename = "dontAsk")]
-    DontAsk,
+    DenyPermissions,
 }
 
 impl PermissionMode {
@@ -45,12 +53,12 @@ impl PermissionMode {
     #[must_use]
     pub fn as_cli_arg(self) -> &'static str {
         match self {
-            Self::Default => "default",
+            Self::Ask => "default",
             Self::AcceptEdits => "acceptEdits",
             Self::Plan => "plan",
             Self::BypassPermissions => "bypassPermissions",
             Self::Auto => "auto",
-            Self::DontAsk => "dontAsk",
+            Self::DenyPermissions => "dontAsk",
         }
     }
 }
@@ -220,7 +228,7 @@ impl Default for Options {
             cwd: None,
             resume: None,
             model: None,
-            permission_mode: PermissionMode::Default,
+            permission_mode: PermissionMode::Ask,
             can_use_tool: None,
             mcp_servers: Vec::new(),
             external_mcp_servers: HashMap::new(),
