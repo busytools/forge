@@ -323,7 +323,7 @@ pub fn list_sessions(
                 continue;
             }
             if let Some(info) = read_session_info(&path) {
-                entries.push(info);  
+                entries.push(info);
             }
         }
     }

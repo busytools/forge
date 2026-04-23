@@ -2,7 +2,8 @@
 //! stamps on every subprocess launch
 //! (`_internal/transport/subprocess_cli.py:395-437`):
 //!
-//! - `CLAUDE_CODE_ENTRYPOINT=sdk-py`
+//! - `CLAUDE_CODE_ENTRYPOINT=sdk-rs` (forge-sdk's own attribution —
+//!   upstream Python SDK stamps `sdk-py` here; we identify as Rust).
 //! - `CLAUDE_AGENT_SDK_VERSION=<crate version>`
 //! - `CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING=true` (when
 //!   `Options::enable_file_checkpointing`).
@@ -58,8 +59,8 @@ async fn spawn_sets_entrypoint_and_version_envs() {
     let env = spawn_and_capture_env(|b| b).await;
     assert_eq!(
         env.get("CLAUDE_CODE_ENTRYPOINT").map(String::as_str),
-        Some("sdk-py"),
-        "CLAUDE_CODE_ENTRYPOINT must be stamped (matches Python behaviour)"
+        Some("sdk-rs"),
+        "CLAUDE_CODE_ENTRYPOINT must be stamped to identify forge-sdk (Rust) to the CLI — upstream Python SDK stamps sdk-py here"
     );
     let version = env
         .get("CLAUDE_AGENT_SDK_VERSION")
