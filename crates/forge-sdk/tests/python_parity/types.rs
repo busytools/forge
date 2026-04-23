@@ -188,7 +188,7 @@ fn default_options() {
     let options = Options::default();
     assert!(options.allowed_tools.is_empty());
     assert!(options.system_prompt.is_none());
-    assert_eq!(options.permission_mode, PermissionMode::Default);
+    assert_eq!(options.permission_mode, PermissionMode::Ask);
     assert!(!options.continue_conversation);
     assert!(options.disallowed_tools.is_empty());
 }
@@ -216,9 +216,9 @@ fn options_with_permission_mode() {
     for mode in [
         PermissionMode::BypassPermissions,
         PermissionMode::Plan,
-        PermissionMode::Default,
+        PermissionMode::Ask,
         PermissionMode::AcceptEdits,
-        PermissionMode::DontAsk,
+        PermissionMode::DenyPermissions,
         PermissionMode::Auto,
     ] {
         let options = OptionsBuilder::new().permission_mode(mode).build();

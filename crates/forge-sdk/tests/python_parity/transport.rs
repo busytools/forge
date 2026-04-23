@@ -195,7 +195,7 @@ fn build_command_with_system_prompt_preset_and_append() {
 /// Ported from `test_build_command_with_dont_ask_permission_mode`.
 #[test]
 fn build_command_with_dont_ask_permission_mode() {
-    let argv = argv(OptionsBuilder::new().permission_mode(PermissionMode::DontAsk));
+    let argv = argv(OptionsBuilder::new().permission_mode(PermissionMode::DenyPermissions));
     assert!(has(&argv, "--permission-mode"));
     assert!(has(&argv, "dontAsk"));
 }

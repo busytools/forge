@@ -12,7 +12,7 @@ fn default_options() {
     assert_eq!(opts.binary, "claude");
     assert!(opts.cwd.is_none());
     assert!(opts.resume.is_none());
-    assert_eq!(opts.permission_mode, PermissionMode::Default);
+    assert_eq!(opts.permission_mode, PermissionMode::Ask);
     assert!(opts.model.is_none());
 }
 
