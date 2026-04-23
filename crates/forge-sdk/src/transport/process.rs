@@ -125,8 +125,9 @@ impl Subprocess {
         // 1. Start from parent env, filtering out `CLAUDECODE` so SDK-
         //    spawned subprocesses don't think they're nested inside a
         //    Claude Code parent (upstream issue #573).
-        // 2. Inject `CLAUDE_CODE_ENTRYPOINT=sdk-py` (overridable via
-        //    `options.env`).
+        // 2. Inject `CLAUDE_CODE_ENTRYPOINT=sdk-rs` (overridable via
+        //    `options.env`). Python SDK stamps `sdk-py` here; forge-sdk
+        //    identifies as Rust for honest attribution.
         // 3. Let `options.env` override anything the SDK would
         //    otherwise default, EXCEPT `CLAUDE_AGENT_SDK_VERSION` —
         //    that one the SDK always stamps last.
@@ -135,7 +136,7 @@ impl Subprocess {
         //    `enable_file_checkpointing` (NOT a CLI flag — env var).
         // 6. Set `PWD` to the chosen cwd when present.
         cmd.env_remove("CLAUDECODE");
-        cmd.env("CLAUDE_CODE_ENTRYPOINT", "sdk-py");
+        cmd.env("CLAUDE_CODE_ENTRYPOINT", "sdk-rs");
         for (k, v) in &options.env {
             cmd.env(k, v);
         }
