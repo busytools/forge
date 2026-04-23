@@ -170,9 +170,6 @@ pub fn build_args(options: &Options) -> Result<Vec<String>, Error> {
     // NB: enable_file_checkpointing is delivered via the
     // CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING env var, not a CLI flag
     // (Python subprocess_cli.py:436-437). Wired in transport/process.rs.
-    if options.session_store.is_some() {
-        args.push("--session-mirror".into());
-    }
 
     // --setting-sources: explicit override wins; otherwise default to
     // user,project when skills is set (per Python SDK behaviour).

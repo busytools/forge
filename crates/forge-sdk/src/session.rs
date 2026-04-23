@@ -1,11 +1,8 @@
-//! Session state — storage, scanning, mutations, and store-backed
-//! variants collapsed under one module.
+//! Session state — filesystem-backed scanners + mutations over the
+//! `claude` binary's on-disk JSONL transcripts.
 //!
 //! Each submodule has a single responsibility:
 //!
-//! - [`store`] — the [`SessionStore`](store::SessionStore) trait +
-//!   `FsSessionStore` / `MemorySessionStore` / `SessionKey` /
-//!   `SessionStoreEntry` + related types.
 //! - [`scan`] — offline filesystem scanners (`list_sessions`,
 //!   `get_session_info`, `get_session_messages`, `list_subagents`,
 //!   `get_subagent_messages`) plus the Python `_read_session_lite`
@@ -13,26 +10,10 @@
 //! - [`mutations`] — in-place mutations (`rename_session`,
 //!   `tag_session`, `delete_session`, `fork_session`) operating on
 //!   local JSONL transcripts.
-//! - [`via_store`] — async `_from_store` / `_via_store` variants of
-//!   the scanners and mutations that route through a
-//!   [`SessionStore`](store::SessionStore) rather than the local
-//!   filesystem.
-//! - [`validation`] — pre-flight validation for `session_store` option
-//!   combinations, invoked by [`Client::spawn`](crate::client::Client::spawn).
-//! - [`summary`] — incremental session-summary derivation
-//!   (`fold_session_summary` + `SessionSummaryEntry`) that store
-//!   adapters call from inside `append()` to maintain a per-session
-//!   sidecar without re-reading the transcript.
 //!
-//! Consumers import from the flat `forge_sdk::*` re-export surface
-//! (for storage types) or these paths directly (for the free
-//! functions). Collapsed from four top-level files (`sessions.rs`,
-//! `sessions_via_store.rs`, `session_store.rs`, `session_mutations.rs`)
-//! in 2026-04-22 — the full audit I6 recommendation.
+//! See `docs/cuts/transcript-mirror.md` for the 2026-04-23 removal of
+//! the `SessionStore` trait + `transcript_mirror` pipeline and the
+//! bring-back recipe.
 
 pub mod mutations;
 pub mod scan;
-pub mod store;
-pub mod summary;
-pub mod validation;
-pub mod via_store;

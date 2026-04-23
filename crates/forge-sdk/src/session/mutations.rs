@@ -257,13 +257,6 @@ pub fn fork_session(
 /// reuse the same validator without duplicating the regex/format logic.
 /// Not part of the public API.
 ///
-/// # Errors
-///
-/// [`Error::MessageParse`] when `s` is not a canonical 8-4-4-4-12 UUID.
-pub(crate) fn validate_uuid_public(s: &str) -> Result<(), Error> {
-    validate_uuid(s)
-}
-
 /// True if `s` is a canonical 8-4-4-4-12 hex UUID string. Shared across
 /// modules that need a stateless pre-flight check.
 pub(crate) fn is_valid_uuid(s: &str) -> bool {

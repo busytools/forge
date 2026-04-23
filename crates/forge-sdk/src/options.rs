@@ -1,8 +1,6 @@
 //! Configuration for spawning a `Client`.
 //!
-//! Mirrors Python SDK's `ClaudeAgentOptions`. Fields present for M1/M2 only;
-//! hooks, MCP servers, session store, skills arrive in later milestones
-//! and are added to this struct at that point.
+//! Mirrors Python SDK's `ClaudeAgentOptions`.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -16,7 +14,6 @@ use serde_json::Value;
 use crate::agents::{AgentDefinition, EffortLevel};
 use crate::mcp::McpServer;
 use crate::permissions::CanUseToolCallback;
-use crate::session::store::SessionStore;
 
 /// Which permission flow the `claude` binary should use for tool invocations.
 ///
@@ -117,21 +114,15 @@ pub struct Options {
     /// `--permission-prompt-tool <name>`. Mirrors Python
     /// `ClaudeAgentOptions.permission_prompt_tool_name`.
     pub permission_prompt_tool_name: Option<String>,
-    /// Transcript-mirror session store. When `Some`, forge-sdk passes
-    /// `--session-mirror` to the CLI so it emits `transcript_mirror`
-    /// frames to the SDK, which batches them to `store.append(...)` at
-    /// ~100ms cadence.
-    pub session_store: Option<Arc<dyn SessionStore>>,
     /// Minimum `claude` binary version required. Default `>= 2.0.0`
     /// (matches Python SDK v0.1.64 pin at `subprocess_cli.py:29`). When
     /// `Some`, `Client::spawn` runs `<binary> --version` once and checks
     /// the reported major version is at least the first component.
     pub minimum_cli_version: Option<String>,
-    /// Override the directory used to resolve `transcript_mirror.filePath`
-    /// into a [`SessionKey`](crate::session::store::SessionKey). When `None`,
-    /// forge-sdk defaults to `$CLAUDE_CONFIG_DIR/projects` or
-    /// `~/.claude/projects`. Matches Python SDK's `_internal/sessions.py`
-    /// `_get_projects_dir()`.
+    /// Override the directory used by `session::scan::*` to resolve
+    /// project keys. When `None`, forge-sdk defaults to
+    /// `$CLAUDE_CONFIG_DIR/projects` or `~/.claude/projects`. Matches
+    /// Python SDK's `_internal/sessions.py` `_get_projects_dir()`.
     pub projects_dir: Option<PathBuf>,
     /// Subagent definitions forwarded via the `initialize` `control_request`'s
     /// `agents` field. Key is the subagent name the model picks; value is
@@ -239,7 +230,6 @@ impl Default for Options {
             setting_sources: None,
             exclude_dynamic_sections: None,
             permission_prompt_tool_name: None,
-            session_store: None,
             minimum_cli_version: Some("2.0.0".into()),
             projects_dir: None,
             agents: HashMap::new(),
@@ -478,10 +468,6 @@ impl std::fmt::Debug for Options {
                 "permission_prompt_tool_name",
                 &self.permission_prompt_tool_name,
             )
-            .field(
-                "session_store",
-                &self.session_store.as_ref().map(|_| "<store>"),
-            )
             .field("minimum_cli_version", &self.minimum_cli_version)
             .field("projects_dir", &self.projects_dir)
             .field("agents", &format!("<{} agents>", self.agents.len()))
@@ -673,28 +659,6 @@ impl OptionsBuilder {
         self
     }
 
-    /// Attach a transcript-mirror session store. When set, the SDK spawns
-    /// the CLI with `--session-mirror` and batches `transcript_mirror`
-    /// frames to `store.append(...)`.
-    #[must_use]
-    pub fn session_store<S>(mut self, store: S) -> Self
-    where
-        S: SessionStore + 'static,
-    {
-        self.inner.session_store = Some(Arc::new(store));
-        self
-    }
-
-    /// Attach an already-`Arc`-wrapped transcript-mirror session store —
-    /// useful when the caller wants to keep a handle on the store (e.g.
-    /// to inspect it after the client returns). Behaviour is otherwise
-    /// identical to [`session_store`](Self::session_store).
-    #[must_use]
-    pub fn session_store_arc(mut self, store: Arc<dyn SessionStore>) -> Self {
-        self.inner.session_store = Some(store);
-        self
-    }
-
     /// Override the minimum `claude` binary version check. Pass `None` to
     /// disable the check entirely.
     #[must_use]
@@ -703,10 +667,9 @@ impl OptionsBuilder {
         self
     }
 
-    /// Override the projects directory used to resolve `transcript_mirror`
-    /// `filePath` frames into
-    /// [`SessionKey`](crate::session::store::SessionKey) values. When unset,
-    /// defaults to `$CLAUDE_CONFIG_DIR/projects` or `~/.claude/projects`.
+    /// Override the projects directory used by `session::scan::*` helpers
+    /// to resolve project keys. When unset, defaults to
+    /// `$CLAUDE_CONFIG_DIR/projects` or `~/.claude/projects`.
     #[must_use]
     pub fn projects_dir(mut self, path: impl Into<PathBuf>) -> Self {
         self.inner.projects_dir = Some(path.into());

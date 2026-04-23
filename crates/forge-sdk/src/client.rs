@@ -13,7 +13,6 @@ mod control_send;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use tokio::sync::mpsc;
 use tracing::debug;
 
 use crate::Error;
@@ -22,7 +21,6 @@ use crate::mcp::orchestration::McpHosts;
 use crate::messages::Message;
 use crate::options::Options;
 use crate::permissions::CanUseToolCallback;
-use crate::transcript_mirror_batcher::TranscriptMirrorBatcher;
 use crate::transport::Transport;
 use crate::transport::codec::{DecodedLine, decode_dispatch, decode_line};
 use crate::transport::process::Subprocess;
@@ -43,8 +41,6 @@ pub struct Client {
     pub(crate) can_use_tool: Option<Arc<dyn CanUseToolCallback>>,
     pub(crate) mcp_hosts: McpHosts,
     pub(crate) hook_callbacks: HashMap<String, Arc<dyn ErasedHookCallback>>,
-    pub(crate) mirror_batcher: Option<TranscriptMirrorBatcher>,
-    pub(crate) synth_messages: Option<mpsc::UnboundedReceiver<Message>>,
     /// Response payload from the `initialize` `control_request`, cached so
     /// [`get_server_info`](Self::get_server_info) can return it without
     /// re-issuing the handshake. Python stores the same payload at
@@ -68,14 +64,6 @@ impl std::fmt::Debug for Client {
                 &format!("<{} hooks>", self.hook_callbacks.len()),
             )
             .field(
-                "mirror_batcher",
-                &self.mirror_batcher.as_ref().map(|_| "<batcher>"),
-            )
-            .field(
-                "synth_messages",
-                &self.synth_messages.as_ref().map(|_| "<rx>"),
-            )
-            .field(
                 "initialization_result",
                 &self.initialization_result.as_ref().map(|_| "<cached>"),
             )
@@ -90,13 +78,6 @@ impl Client {
     ///
     /// Any [`Error`] variant; see field docs.
     pub async fn spawn(options: Options) -> Result<Self, Error> {
-        // Validate BEFORE spawning the subprocess so misconfigured
-        // option combinations fail fast without an unneeded fork.
-        // (spawn_inner validates as well; doing it here short-circuits
-        // the Subprocess::spawn path for the common validation-error
-        // case. The re-check inside spawn_inner covers the
-        // spawn_with_transport entry point.)
-        crate::session::validation::validate_session_store_options(&options)?;
         let sub = Subprocess::spawn(&options).await?;
         Self::spawn_inner(options, Box::new(sub)).await
     }
@@ -108,8 +89,6 @@ impl Client {
     /// initialize `control_request` exactly once.
     #[allow(clippy::too_many_lines)]
     async fn spawn_inner(options: Options, mut sub: Box<dyn Transport>) -> Result<Self, Error> {
-        crate::session::validation::validate_session_store_options(&options)?;
-
         let can_use_tool = options.can_use_tool.clone();
         let mcp_hosts = McpHosts::new(
             options.mcp_servers.clone(),
@@ -175,24 +154,6 @@ impl Client {
         };
         debug!(session_id, "client init");
 
-        let (mirror_batcher, synth_messages) = if let Some(store) = options.session_store.clone() {
-            let projects_dir_str = options.projects_dir.as_ref().map_or_else(
-                || {
-                    crate::session::mutations::projects_dir()
-                        .to_string_lossy()
-                        .into_owned()
-                },
-                |p| p.to_string_lossy().into_owned(),
-            );
-            let (tx, rx) = mpsc::unbounded_channel();
-            (
-                Some(TranscriptMirrorBatcher::new(store, projects_dir_str, tx)),
-                Some(rx),
-            )
-        } else {
-            (None, None)
-        };
-
         let mut client = Self {
             sub,
             session_id,
@@ -200,8 +161,6 @@ impl Client {
             can_use_tool,
             mcp_hosts,
             hook_callbacks,
-            mirror_batcher,
-            synth_messages,
             initialization_result: None,
         };
         client
@@ -314,35 +273,12 @@ impl Client {
     /// - [`Error::Io`] on pipe read/write failure.
     pub async fn next_event(&mut self) -> Result<Option<Message>, Error> {
         loop {
-            // Drain any synthesised messages (e.g. MirrorError from the
-            // transcript-mirror batcher) before blocking on the subprocess.
-            if let Some(rx) = self.synth_messages.as_mut() {
-                if let Ok(msg) = rx.try_recv() {
-                    return Ok(Some(msg));
-                }
-            }
             let Some(line) = self.sub.read_line().await? else {
-                // Final flush before stream end — matches Python SDK's
-                // teardown hook in `_internal/query.py`.
-                self.flush_mirror().await;
-                // After flush, the batcher may have pushed a MirrorError.
-                if let Some(rx) = self.synth_messages.as_mut() {
-                    if let Ok(msg) = rx.try_recv() {
-                        return Ok(Some(msg));
-                    }
-                }
                 return Ok(None);
             };
             self.line_number += 1;
             match decode_dispatch(&line, self.line_number)? {
-                DecodedLine::Message(msg) => {
-                    // Flush mirror on result frames — Python SDK behaviour at
-                    // `_internal/query.py:292-297`.
-                    if let Message::Result { .. } = &msg {
-                        self.flush_mirror().await;
-                    }
-                    return Ok(Some(msg));
-                }
+                DecodedLine::Message(msg) => return Ok(Some(msg)),
                 DecodedLine::Control(req) => {
                     self.handle_control(req).await?;
                 }
@@ -355,41 +291,7 @@ impl Client {
                     // live to cancel. Log and drop, keeping the loop alive.
                     tracing::debug!(%request_id, "control_cancel_request received; nothing to cancel");
                 }
-                DecodedLine::TranscriptMirror { file_path, entries } => {
-                    self.handle_transcript_mirror(file_path, entries);
-                }
             }
-        }
-    }
-
-    /// Handle a top-level `{"type":"transcript_mirror","filePath":...,
-    /// "entries":[...]}` frame. Enqueues into the batcher when a session
-    /// store is configured; otherwise drops.
-    ///
-    /// Wire shape verified against Python v0.1.64
-    /// `_internal/transcript_mirror_batcher.py` + `_internal/query.py:282-289`.
-    /// Coalescing, eager-flush thresholds, and `on_error`-synthesised
-    /// `MirrorError` frames live in
-    /// [`TranscriptMirrorBatcher`](crate::transcript_mirror_batcher).
-    fn handle_transcript_mirror(
-        &self,
-        file_path: String,
-        entries: Vec<crate::session::store::SessionStoreEntry>,
-    ) {
-        if entries.is_empty() {
-            return;
-        }
-        let Some(batcher) = self.mirror_batcher.as_ref() else {
-            return;
-        };
-        batcher.enqueue(file_path, entries);
-    }
-
-    /// Flush the transcript-mirror batcher — called on every `result` frame
-    /// and at stream-end / disconnect.
-    async fn flush_mirror(&self) {
-        if let Some(batcher) = self.mirror_batcher.as_ref() {
-            batcher.flush().await;
         }
     }
 
@@ -425,9 +327,6 @@ impl Client {
     /// [`Error::Process`] when the subprocess exits non-zero, [`Error::Io`]
     /// for I/O failure.
     pub async fn disconnect(mut self) -> Result<(), Error> {
-        if let Some(batcher) = &self.mirror_batcher {
-            batcher.close().await;
-        }
         self.sub.close().await
     }
 
@@ -441,8 +340,7 @@ impl Client {
     /// CLI's `system`/`init` line and sends the `initialize`
     /// `control_request`.
     ///
-    /// All initialisation logic (`session_store` validation, MCP host
-    /// wiring, hook registry, transcript-mirror batcher) runs
+    /// All initialisation logic (MCP host wiring, hook registry) runs
     /// identically to [`spawn`](Self::spawn) — only the I/O
     /// implementation differs.
     ///
