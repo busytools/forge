@@ -24,9 +24,6 @@ mod mcp_large_output;
 #[path = "python_parity/query.rs"]
 mod query;
 
-#[path = "python_parity/session_helpers_store.rs"]
-mod session_helpers_store;
-
 #[path = "python_parity/session_mutations.rs"]
 mod session_mutations;
 
@@ -42,17 +39,11 @@ mod streaming_client;
 #[path = "python_parity/tool_callbacks.rs"]
 mod tool_callbacks;
 
-#[path = "python_parity/transcript_mirror.rs"]
-mod transcript_mirror;
-
 #[path = "python_parity/sessions.rs"]
 mod sessions;
 
 #[path = "python_parity/message_parser.rs"]
 mod message_parser;
-
-#[path = "python_parity/session_store_conformance.rs"]
-mod session_store_conformance;
 
 #[path = "python_parity/transport.rs"]
 mod transport;
