@@ -86,8 +86,8 @@ pub use permissions::{
 pub use public_types::{
     ContextUsageCategory, ContextUsageResponse, McpServerConfig, McpServerConnectionStatus,
     McpServerInfo, McpServerStatus, McpStatusResponse, McpToolAnnotations, McpToolInfo,
-    SDKSessionInfo, SandboxIgnoreViolations, SandboxNetworkConfig, SandboxSettings, SdkBeta,
-    SessionMessage, SessionMessageKind, SettingSource, StreamEvent,
+    SDKSessionInfo, SandboxIgnoreViolations, SandboxNetworkConfig, SandboxSettings, SessionMessage,
+    SessionMessageKind, SettingSource, StreamEvent,
 };
 
 /// Convenient alias for `Result<T, forge_sdk::Error>`.
