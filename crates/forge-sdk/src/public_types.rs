@@ -8,14 +8,22 @@ use serde_json::Value;
 
 /// Which settings scope to load. Mirrors Python's
 /// `Literal["user", "project", "local"]` (`types.py:32`).
+///
+/// Combinations are expressed by passing multiple variants — see
+/// [`OptionsBuilder::setting_sources`](crate::OptionsBuilder::setting_sources).
+/// The CLI resolves the actual on-disk paths from whichever
+/// `CLAUDE_CONFIG_DIR` is active (env var wins, else `$HOME/.claude`);
+/// the paths below describe the layout, not hardcoded locations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SettingSource {
-    /// User-scope settings (`~/.claude/settings.json`).
+    /// User-scope settings at `<config_dir>/settings.json`
+    /// (`<config_dir>` = `$CLAUDE_CONFIG_DIR` if set, else `~/.claude`).
     User,
-    /// Project-scope settings (`<repo>/.claude/settings.json`).
+    /// Project-scope settings at `<repo>/.claude/settings.json`.
     Project,
-    /// Project-local settings (`<repo>/.claude/settings.local.json`).
+    /// Project-local (gitignored) settings at
+    /// `<repo>/.claude/settings.local.json`.
     Local,
 }
 
@@ -30,12 +38,6 @@ impl SettingSource {
         }
     }
 }
-
-/// Experimental beta flag names accepted by `--betas`. Mirrors Python's
-/// `SdkBeta` literal (`types.py:29`). Forge-sdk keeps this as a string
-/// alias rather than a closed enum so new beta tokens don't require a
-/// breaking change.
-pub type SdkBeta = String;
 
 /// Streaming partial-message event surfaced when
 /// `Options.include_partial_messages` is set. Mirrors Python's
