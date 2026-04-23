@@ -49,9 +49,7 @@ pub(crate) mod permissions;
 pub(crate) mod public_types;
 pub(crate) mod request_id;
 pub mod session;
-pub mod testing;
 pub mod tracing_bridge;
-pub(crate) mod transcript_mirror_batcher;
 pub mod transport;
 
 pub use client::Client;
@@ -61,6 +59,8 @@ pub use transport::Transport;
 // `use forge_sdk::{AssistantEnvelope, StopReason, RateLimitInfo, ...}`
 // instead of reaching through `forge_sdk::messages::*`. Matches the
 // Python SDK's flat `__init__.py` surface.
+#[doc(hidden)]
+pub use crate::mcp::macros::__private;
 pub use content::ContentBlock;
 pub use hooks::{
     BaseHookInput, HookCallback, HookContext, HookDecision, HookKind, HookSpecificOutput, Hooks,
@@ -90,19 +90,6 @@ pub use public_types::{
     SDKSessionInfo, SandboxIgnoreViolations, SandboxNetworkConfig, SandboxSettings, SdkBeta,
     SessionMessage, SessionMessageKind, SettingSource, StreamEvent,
 };
-pub use session::store::{
-    FsSessionStore, MemorySessionStore, SessionKey, SessionListSubkeysKey, SessionStore,
-    SessionStoreEntry, SessionStoreError, SessionStoreListEntry,
-};
-
-/// In-memory [`SessionStore`] — Python SDK publishes this as
-/// `InMemorySessionStore`; forge-sdk aliases for surface parity.
-pub use session::store::MemorySessionStore as InMemorySessionStore;
-
-pub use session::summary::{SessionSummaryEntry, fold_session_summary, summary_entry_to_sdk_info};
-
-#[doc(hidden)]
-pub use crate::mcp::macros::__private;
 
 /// Convenient alias for `Result<T, forge_sdk::Error>`.
 pub type Result<T, E = Error> = core::result::Result<T, E>;
