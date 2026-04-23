@@ -281,37 +281,11 @@ fn simple_hash(s: &str) -> String {
     String::from_utf8(out).unwrap_or_default()
 }
 
-/// Resolve git-worktree paths for a directory via
-/// `git worktree list --porcelain`. Returns an empty Vec when the
-/// directory is not in a git repo or `git` isn't on `PATH`.
-fn git_worktree_paths(dir: &str) -> Vec<String> {
-    let output = std::process::Command::new("git")
-        .arg("-C")
-        .arg(dir)
-        .arg("worktree")
-        .arg("list")
-        .arg("--porcelain")
-        .output();
-    let Ok(output) = output else {
-        return Vec::new();
-    };
-    if !output.status.success() {
-        return Vec::new();
-    }
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    stdout
-        .lines()
-        .filter_map(|l| l.strip_prefix("worktree "))
-        .map(ToOwned::to_owned)
-        .collect()
-}
-
 fn project_dir_for(project_path: &str) -> PathBuf {
     projects_dir().join(sanitize_path(&canonicalize_path(project_path)))
 }
 
-/// List sessions. When `directory` is `Some`, scans that project dir
-/// (optionally extending across git worktrees via `include_worktrees`);
+/// List sessions. When `directory` is `Some`, scans that project dir;
 /// when `None`, scans every project directory. Results are sorted by
 /// `last_modified` descending and pagination applies at the end.
 ///
@@ -324,18 +298,9 @@ pub fn list_sessions(
     directory: Option<String>,
     limit: Option<usize>,
     offset: usize,
-    include_worktrees: bool,
 ) -> Vec<SDKSessionInfo> {
     let search_dirs: Vec<PathBuf> = if let Some(dir) = directory {
-        let mut dirs = vec![project_dir_for(&dir)];
-        if include_worktrees {
-            for wt in git_worktree_paths(&dir) {
-                dirs.push(project_dir_for(&wt));
-            }
-        }
-        dirs.sort();
-        dirs.dedup();
-        dirs
+        vec![project_dir_for(&dir)]
     } else {
         fs::read_dir(projects_dir())
             .map(|iter| {
@@ -358,7 +323,7 @@ pub fn list_sessions(
                 continue;
             }
             if let Some(info) = read_session_info(&path) {
-                entries.push(info);
+                entries.push(info);  
             }
         }
     }
