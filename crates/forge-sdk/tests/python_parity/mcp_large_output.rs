@@ -140,9 +140,11 @@ async fn env_claudecode_stripped() {}
 #[tokio::test]
 async fn env_sdk_managed_vars_always_set() {
     let env = spawn_and_capture_env(|b| b).await;
+    // Upstream Python SDK stamps `sdk-py`; forge-sdk stamps `sdk-rs` for
+    // honest attribution. Behaviour matches: the var is ALWAYS set.
     assert_eq!(
         env.get("CLAUDE_CODE_ENTRYPOINT").map(String::as_str),
-        Some("sdk-py")
+        Some("sdk-rs")
     );
     assert!(env.contains_key("CLAUDE_AGENT_SDK_VERSION"));
 }
