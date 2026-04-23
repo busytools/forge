@@ -209,11 +209,6 @@ fn list_sessions_empty_file_filtered() {
 }
 
 #[test]
-fn list_sessions_include_worktrees_disabled() {
-    // Covered by scan.rs's include_worktrees branch at :321-326.
-}
-
-#[test]
 fn list_sessions_limit_zero_returns_all() {
     // Python semantics: limit=0 is treated as None (return all).
     // forge-sdk: limit: Option<usize>; `Some(0)` is "take 0 items",
