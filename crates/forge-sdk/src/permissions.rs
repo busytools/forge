@@ -32,19 +32,14 @@ pub struct ToolPermissionContext {
     /// from the `control_request`'s `permission_suggestions` list, with
     /// unrecognised entries dropped.
     pub suggestions: Vec<PermissionUpdate>,
-    /// Abort signal placeholder — Python reserves this field for future
-    /// abort-signal support (`types.py:178`). forge-sdk carries it
-    /// through as an opaque [`Value`] so callbacks can introspect the
-    /// payload once it's wired end-to-end.
-    pub signal: Option<Value>,
 }
 
 impl ToolPermissionContext {
     /// Construct a context. Public constructor needed because the struct is
     /// `#[non_exhaustive]` (struct-literal construction is blocked across
-    /// crate boundaries). `suggestions` and `signal` default to empty /
-    /// `None`; use [`with_suggestions`](Self::with_suggestions) and
-    /// [`with_signal`](Self::with_signal) to attach them.
+    /// crate boundaries). `suggestions` defaults to empty; use
+    /// [`with_suggestions`](Self::with_suggestions) to attach parsed
+    /// permission-rule hints.
     #[must_use]
     pub fn new(
         tool_name: impl Into<String>,
@@ -58,7 +53,6 @@ impl ToolPermissionContext {
             tool_use_id: tool_use_id.into(),
             agent_id,
             suggestions: Vec::new(),
-            signal: None,
         }
     }
 
@@ -67,19 +61,6 @@ impl ToolPermissionContext {
     #[must_use]
     pub fn with_suggestions(mut self, suggestions: Vec<PermissionUpdate>) -> Self {
         self.suggestions = suggestions;
-        self
-    }
-
-    /// Attach the abort-signal placeholder payload. Python reserves this
-    /// for future abort-signal wiring upstream and currently passes
-    /// `None` everywhere (`types.py:178`). Hidden from the public doc
-    /// surface until Anthropic wires the field end-to-end — forge-sdk
-    /// keeps the builder only to preserve source-level compatibility
-    /// when that day arrives.
-    #[doc(hidden)]
-    #[must_use]
-    pub fn with_signal(mut self, signal: Value) -> Self {
-        self.signal = Some(signal);
         self
     }
 }
