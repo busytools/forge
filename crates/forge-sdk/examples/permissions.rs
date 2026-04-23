@@ -25,7 +25,7 @@ async fn main() -> Result<()> {
         .unwrap_or_else(|| "Read /tmp/README.md and summarise".to_string());
 
     let opts = OptionsBuilder::new()
-        .permission_mode(PermissionMode::Default)
+        .permission_mode(PermissionMode::Ask)
         .can_use_tool(|ctx: ToolPermissionContext| async move {
             if is_read_only(&ctx.tool_name) {
                 eprintln!("ALLOW {} {}", ctx.tool_name, ctx.tool_input);

@@ -120,7 +120,7 @@ pub fn build_args(options: &Options) -> Result<Vec<String>, Error> {
     // one explicitly. We mirror that: the CLI default is already
     // `default`, so omitting the flag on the default variant avoids
     // argv drift and also lets the CLI honour any user-level override.
-    if options.permission_mode != PermissionMode::Default {
+    if options.permission_mode != PermissionMode::Ask {
         args.push("--permission-mode".into());
         args.push(options.permission_mode.as_cli_arg().into());
     }

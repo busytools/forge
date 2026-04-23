@@ -186,7 +186,7 @@ fn with_updated_permissions_attaches_updates() {
 fn with_updated_permissions_is_noop_on_deny() {
     let d = PermissionDecision::deny("nope").with_updated_permissions(vec![
         PermissionUpdate::SetMode {
-            mode: PermissionMode::Default,
+            mode: PermissionMode::Ask,
             destination: None,
         },
     ]);
