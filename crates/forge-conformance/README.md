@@ -148,6 +148,7 @@ crates/forge-conformance/
 | `control_request: stop_task` (out)          | stop_task                                   |
 | `control_request: interrupt` (out)          | interrupt                                   |
 | `control_request: can_use_tool` (in)        | permission_deny                             |
+| `control_cancel_request` (in)               | control_cancel                              |
 | `control_response: success` (in)            | all                                         |
 | `control_response: deny` (out, `behavior`)  | permission_deny                             |
 | Multi-turn / session continuity             | multi_turn                                  |
@@ -156,7 +157,6 @@ crates/forge-conformance/
 
 | Gap                               | Reason                                      |
 |-----------------------------------|---------------------------------------------|
-| `control_cancel_request` (in)     | CLI only emits this on its own timeout (30s+); deterministically triggering it in a scenario is flaky |
 | `error` message variant           | CLI emits this only on fatal transport failures that are hard to simulate in a healthy session |
 
 ## Upgrade ritual (when claude CLI bumps)

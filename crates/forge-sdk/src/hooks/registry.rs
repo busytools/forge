@@ -26,6 +26,12 @@ pub struct Hooks {
     pub(crate) pre_compact: Vec<Arc<dyn ErasedHookCallback>>,
     pub(crate) notification: Vec<Arc<dyn ErasedHookCallback>>,
     pub(crate) permission_request: Vec<(String, Arc<dyn ErasedHookCallback>)>,
+    /// Timeout (seconds) the CLI should apply to every hook callback.
+    /// `None` means "use the default forge-sdk emits" (30 — matches
+    /// Python's per-matcher default). Overridable via
+    /// [`HooksBuilder::default_timeout_secs`] for scenarios that need
+    /// to provoke `control_cancel_request` on slow callbacks.
+    pub(crate) default_timeout_secs: Option<u64>,
 }
 
 impl std::fmt::Debug for Hooks {
@@ -44,6 +50,7 @@ impl std::fmt::Debug for Hooks {
             .field("pre_compact_count", &self.pre_compact.len())
             .field("notification_count", &self.notification.len())
             .field("permission_request_count", &self.permission_request.len())
+            .field("default_timeout_secs", &self.default_timeout_secs)
             .finish()
     }
 }
@@ -55,7 +62,10 @@ impl Hooks {
     /// vector describing which event/matcher each id belongs to (used to
     /// populate the initialize `control_request` payload).
     pub(crate) fn mint_registry(&self) -> HookRegistry {
-        let mut registry = HookRegistry::default();
+        let mut registry = HookRegistry {
+            default_timeout_secs: self.default_timeout_secs,
+            ..HookRegistry::default()
+        };
         let mut counter: u64 = 0;
 
         let mut mint =
@@ -128,6 +138,7 @@ impl Hooks {
 pub(crate) struct HookRegistry {
     pub(crate) by_id: std::collections::HashMap<String, Arc<dyn ErasedHookCallback>>,
     pub(crate) metadata: Vec<HookRegistryEntry>,
+    pub(crate) default_timeout_secs: Option<u64>,
 }
 
 impl HookRegistry {
@@ -162,7 +173,10 @@ impl HookRegistry {
                         "hookCallbackIds".into(),
                         serde_json::Value::Array(ids.into_iter().map(Into::into).collect()),
                     );
-                    spec.insert("timeout".into(), serde_json::json!(30));
+                    spec.insert(
+                        "timeout".into(),
+                        serde_json::json!(self.default_timeout_secs.unwrap_or(30)),
+                    );
                     serde_json::Value::Object(spec)
                 })
                 .collect();
@@ -199,6 +213,20 @@ impl HooksBuilder {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Override the per-hook timeout (seconds) emitted in the
+    /// initialize `control_request`. The CLI uses this to decide how
+    /// long to wait on each `hook_callback` reply before giving up and
+    /// emitting a `control_cancel_request`. Default when unset is
+    /// 30 seconds — matches Python SDK's per-matcher default
+    /// (`types.py` `HookMatcher.timeout`). Lower it for scenarios
+    /// that deliberately provoke cancellation; raise it for
+    /// long-running callbacks (e.g. LLM sub-calls inside a hook).
+    #[must_use]
+    pub fn default_timeout_secs(mut self, secs: u64) -> Self {
+        self.inner.default_timeout_secs = Some(secs);
+        self
     }
 
     /// Register a `PreToolUse` hook. `matcher` is a glob against tool names
