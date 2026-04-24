@@ -1,0 +1,173 @@
+//! Wire conformance harness — verify forge-sdk's decoder handles every
+//! stream-json frame the live `claude` binary emits in realistic
+//! scenarios.
+//!
+//! ## What this checks
+//!
+//! 1. **Decode completeness.** Every inbound line must round-trip
+//!    through `transport::codec::decode_dispatch` without error. Any
+//!    unknown top-level `type` or control-request `subtype` surfaces
+//!    as a panic with the failing line attached.
+//! 2. **Trace capture.** Full stdin + stdout byte-capture lands at
+//!    `target/wire-traces/capture-<scenario>-<ts>.jsonl`, one
+//!    `{"dir":"in"|"out","line":"..."}` object per line.
+//! 3. **Metadata observability.** Captures turn count, cost, and
+//!    duration from the `Message::Result` frame.
+//!
+//! ## How to run
+//!
+//! ```bash
+//! # Uses whatever CLAUDE_CONFIG_DIR currently resolves to.
+//! FORGE_WIRE_CAPTURE=1 cargo nextest run -p forge-conformance --no-capture
+//! ```
+//!
+//! Opt-in because this burns real API tokens (small — a trivial
+//! prompt). Skipped silently when the env var is unset.
+
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use forge_conformance::{RecordingTransport, TraceLog};
+use forge_sdk::transport::codec::decode_dispatch;
+use forge_sdk::transport::process::Subprocess;
+use forge_sdk::{Client, Message, OptionsBuilder};
+
+fn timestamp_tag() -> String {
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    format!("{secs}")
+}
+
+fn write_trace(scenario: &str, log: &TraceLog) -> std::path::PathBuf {
+    let target =
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/wire-traces");
+    std::fs::create_dir_all(&target).expect("create wire-traces dir");
+    let path = target.join(format!("capture-{scenario}-{}.jsonl", timestamp_tag()));
+    let body = log.to_jsonl().expect("jsonl serialise");
+    std::fs::write(&path, body).expect("write trace");
+    path
+}
+
+fn assert_decode_completeness(log: &TraceLog, trace_path: &std::path::Path) {
+    let mut failures: Vec<(usize, String, String)> = Vec::new();
+    for (idx, line) in log.inbound().into_iter().enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        if let Err(e) = decode_dispatch(line, (idx + 1) as u64) {
+            failures.push((idx, line.to_string(), format!("{e}")));
+        }
+    }
+    if !failures.is_empty() {
+        eprintln!(
+            "wire_conformance: {} inbound lines failed to decode",
+            failures.len()
+        );
+        for (idx, line, err) in &failures {
+            eprintln!("  line {idx}: {err}");
+            eprintln!("    raw: {line}");
+        }
+        panic!(
+            "decode failures detected — see {} for the full trace",
+            trace_path.display()
+        );
+    }
+}
+
+#[tokio::test]
+#[ignore = "burns real Anthropic API tokens; opt-in via FORGE_WIRE_CAPTURE=1"]
+async fn wire_capture_trivial_prompt() {
+    if std::env::var("FORGE_WIRE_CAPTURE").is_err() {
+        eprintln!("FORGE_WIRE_CAPTURE not set; skipping");
+        return;
+    }
+
+    let opts = OptionsBuilder::new().max_turns(1).build();
+
+    let sub = Subprocess::spawn(&opts).await.expect("spawn subprocess");
+    let (transport, log_arc) = RecordingTransport::new(sub);
+
+    // Scope guard: always dump whatever we captured, even on a panic partway
+    // through — so failing spawns still give us a trace for post-mortem.
+    let dump_trace = |tag: &str| -> std::path::PathBuf {
+        let log = log_arc.lock().unwrap();
+        let path = write_trace(tag, &log);
+        eprintln!(
+            "wire trace ({tag}): {} [in={} out={}]",
+            path.display(),
+            log.inbound().len(),
+            log.outbound().len()
+        );
+        path
+    };
+
+    let spawn_result = Client::spawn_with_transport(opts, Box::new(transport)).await;
+    let mut client = match spawn_result {
+        Ok(c) => c,
+        Err(e) => {
+            let path = dump_trace("trivial-spawn-failed");
+            panic!(
+                "Client::spawn_with_transport failed — trace written to {}: {e}",
+                path.display()
+            );
+        }
+    };
+
+    if let Err(e) = client
+        .send_user_message("Respond with just the word OK.")
+        .await
+    {
+        let path = dump_trace("trivial-send-failed");
+        panic!(
+            "send_user_message failed — trace written to {}: {e}",
+            path.display()
+        );
+    }
+
+    let mut saw_result = false;
+    let mut summary: Option<(u64, Option<f64>, u64)> = None;
+    loop {
+        match client.next_event().await {
+            Ok(Some(msg)) => {
+                if let Message::Result {
+                    num_turns,
+                    total_cost_usd,
+                    duration_ms,
+                    ..
+                } = &msg
+                {
+                    saw_result = true;
+                    summary = Some((*num_turns, *total_cost_usd, *duration_ms));
+                    break;
+                }
+            }
+            Ok(None) => break,
+            Err(e) => {
+                let path = dump_trace("trivial-drain-failed");
+                panic!(
+                    "next_event failed mid-drain — trace at {}: {e}",
+                    path.display()
+                );
+            }
+        }
+    }
+    let _ = client.disconnect().await;
+
+    let trace_path = dump_trace("trivial");
+    let log = log_arc.lock().unwrap();
+    assert_decode_completeness(&log, &trace_path);
+
+    assert!(saw_result, "trivial prompt did not produce a Result frame");
+    let (turns, cost, dur_ms) = summary.unwrap();
+    eprintln!(
+        "captured in={} out={} | turns={} duration_ms={} cost_usd={:?}",
+        log.inbound().len(),
+        log.outbound().len(),
+        turns,
+        dur_ms,
+        cost
+    );
+}
