@@ -1,0 +1,34 @@
+//! Live-capture scenario: `stream_event` message with
+//! `include_partial_messages(true)`.
+//!
+//! The CLI emits `stream_event` frames (Anthropic-API streaming chunks)
+//! only when started with `--include-partial-messages`. This scenario
+//! turns that on and drives a prompt whose response is long enough to
+//! produce at least one stream_event.
+
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+use forge_conformance::run_live_scenario;
+use forge_sdk::{OptionsBuilder, PermissionMode};
+
+#[tokio::test]
+#[ignore = "burns real Anthropic API tokens; opt-in via FORGE_WIRE_CAPTURE=1"]
+async fn wire_capture_stream_event() {
+    let opts = OptionsBuilder::new()
+        .max_turns(1)
+        .permission_mode(PermissionMode::AcceptEdits)
+        .include_partial_messages(true)
+        .build();
+
+    run_live_scenario("stream_event", opts, |mut client| async move {
+        client
+            .send_user_message(
+                "Count from 1 to 20 slowly, one number per line, \
+                 with a word of description for each number.",
+            )
+            .await?;
+        Ok(client)
+    })
+    .await
+    .expect("scenario run");
+}

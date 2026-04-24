@@ -135,6 +135,49 @@ async fn wire_capture_rewind_files() {
 
 #[tokio::test]
 #[ignore = "burns real Anthropic API tokens; opt-in via FORGE_WIRE_CAPTURE=1"]
+async fn wire_capture_stop_task() {
+    let opts = OptionsBuilder::new()
+        .max_turns(6)
+        .permission_mode(PermissionMode::AcceptEdits)
+        .allowed_tools(vec!["Task".to_string(), "Bash".to_string()])
+        .build();
+
+    run_live_scenario("stop_task", opts, |mut client| async move {
+        client
+            .send_user_message(
+                "Use the Task tool with subagent_type=\"general-purpose\" \
+                 to run a Bash loop that counts slowly.",
+            )
+            .await?;
+
+        // Drain until we see a task_started, grab its id, stop it.
+        let mut task_id: Option<String> = None;
+        while task_id.is_none() {
+            match client.next_event().await? {
+                Some(forge_sdk::Message::TaskStarted { task_id: id, .. }) => {
+                    task_id = Some(id);
+                    break;
+                }
+                Some(forge_sdk::Message::Result { .. }) | None => break,
+                Some(_) => continue,
+            }
+        }
+        if let Some(id) = task_id {
+            tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+            if let Err(e) = client.stop_task(&id).await {
+                eprintln!("stop_task({id}): {e}");
+            }
+        } else {
+            eprintln!("stop_task: no task_started seen; outbound control skipped");
+        }
+        Ok(client)
+    })
+    .await
+    .expect("scenario run");
+}
+
+#[tokio::test]
+#[ignore = "burns real Anthropic API tokens; opt-in via FORGE_WIRE_CAPTURE=1"]
 async fn wire_capture_interrupt() {
     let opts = OptionsBuilder::new()
         .max_turns(1)
