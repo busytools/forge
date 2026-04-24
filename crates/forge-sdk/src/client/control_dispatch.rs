@@ -27,6 +27,19 @@ impl Client {
         // `updatedInput` when the callback supplies no override.
         let original_input = req.original_tool_input().cloned();
 
+        // Forward-compat: unknown subtype from the CLI. Log loudly so
+        // drift is visible, then return an error response so the CLI
+        // doesn't hang waiting for our decision. The session continues.
+        if let ControlRequestKind::Unknown { subtype, raw } = &req.request {
+            tracing::warn!(
+                %subtype,
+                raw = %raw,
+                request_id = %req.request_id,
+                "unknown control_request subtype — responding with error, session continues"
+            );
+            return self.write_unsupported_control_error(&req).await;
+        }
+
         // MCP message routing — in-process dispatch to the named server.
         if let ControlRequestKind::McpMessage {
             server_name,
