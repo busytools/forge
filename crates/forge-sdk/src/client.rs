@@ -488,6 +488,22 @@ impl Client {
         self.sub.close().await
     }
 
+    /// Close the stdin side of the transport while keeping the client
+    /// alive for reading. Signals the CLI that no more user messages
+    /// are coming; the CLI drains in-flight turns, emits any final
+    /// frames, and closes stdout. `next_event` returns `Ok(None)` on
+    /// EOF afterwards.
+    ///
+    /// Useful for scenarios that want to drain the conversation to
+    /// completion without prematurely killing the subprocess.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Io`] on write failure.
+    pub async fn end_input(&mut self) -> Result<(), Error> {
+        self.sub.end_input().await
+    }
+
     /// Spawn a client around a caller-supplied [`Transport`]
     /// implementation, bypassing the internal `Subprocess` construction.
     ///

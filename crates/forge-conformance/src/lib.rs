@@ -323,6 +323,15 @@ where
         }
     };
 
+    // Close stdin so the CLI knows no more user messages are coming.
+    // Without this, scenarios that drained all expected Result frames
+    // inside their drive closure would hang here — the CLI keeps
+    // stdout open waiting for another user message, `next_event`
+    // never returns EOF.
+    if let Err(e) = client.end_input().await {
+        eprintln!("{scenario}: end_input failed, continuing drain anyway: {e}");
+    }
+
     // Drain until Result or EOF.
     let mut saw_result = false;
     let mut summary: Option<(u64, Option<f64>, u64)> = None;
