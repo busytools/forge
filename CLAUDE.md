@@ -44,6 +44,21 @@ started.
    enforces.
 9. **`cargo nextest run`, not `cargo test`.** Locally use
    `just check` to run tests + clippy + fmt + docs in one shot.
+10. **Wire-conformance harness is mandatory for every new wire
+    surface.** If a feature touches stdin/stdout framing (new
+    control_request subtypes, new message types, new hook events,
+    new tool integrations) it ships with:
+    (a) a live-capture scenario in `crates/forge-conformance/tests/`
+    (opt-in via `FORGE_WIRE_CAPTURE=1`, drives the real CLI),
+    (b) the captured baseline trace committed to
+    `crates/forge-conformance/baselines/<PINNED_CLI_VERSION>/`,
+    (c) clean replay in `tests/replay.rs::all_baselines_decode_cleanly`
+    (every inbound line round-trips through forge-sdk's decoder
+    without surfacing `DecodedLine::Unknown` or decode errors).
+    The harness catches CLI-SDK deadlocks, ordering drift, and
+    silent encode regressions that unit tests miss — see
+    `project_wire_init_ordering` in auto-memory for the
+    canonical example of why this invariant exists.
 
 ## Weekly parity check — PROACTIVE OWNERSHIP
 
@@ -144,3 +159,23 @@ record the resolution in the parity log.
 4. `cat PARITY.md | head -50` — current parity state.
 5. Read the latest handoff in the auto-memory directory for round-
    specific context (what landed, what's next).
+
+## Wire-conformance cheatsheet
+
+- `crates/forge-conformance/` holds the harness. Replay mode runs
+  on every `cargo nextest run` — offline, no API cost.
+- Live capture: `FORGE_WIRE_CAPTURE=1 cargo nextest run \
+  -p forge-conformance --no-capture --run-ignored only <test>` —
+  burns API tokens against whatever profile the shell's
+  `CLAUDE_CONFIG_DIR` points at. The captured trace lands in
+  `target/wire-traces/` and can be promoted to the baseline
+  directory for that pinned CLI version.
+- Baselines live under
+  `crates/forge-conformance/baselines/<PINNED_CLI_VERSION>/`.
+  When bumping the pinned CLI, re-capture every baseline and
+  diff against the old set — divergences are the release-note
+  material.
+- Adding a scenario: write a `tests/scenarios_<name>.rs` using the
+  `run_live_scenario` helper, run it with `FORGE_WIRE_CAPTURE=1`,
+  `cp target/wire-traces/capture-<name>-*.jsonl` into the
+  baselines dir, commit test + baseline together.
