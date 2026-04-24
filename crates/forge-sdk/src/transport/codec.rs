@@ -22,6 +22,21 @@ pub enum DecodedLine {
         /// `request_id` of the `control_request` being withdrawn.
         request_id: String,
     },
+    /// Forward-compat fallback: the CLI emitted a frame with an unrecognised
+    /// top-level `type` field. Forge-sdk doesn't crash on these — it logs
+    /// a warning via `tracing::warn!` in the dispatch path and lets the
+    /// reader continue. Callers (like the wire-conformance harness) can
+    /// detect and report these explicitly by matching this variant.
+    ///
+    /// `type_str` is the raw `type` field value the CLI sent; `raw` is the
+    /// full JSON object for inspection / logging / replay. Neither is
+    /// typed — by definition, we don't know what this frame is.
+    Unknown {
+        /// The unrecognised `type` field value.
+        type_str: String,
+        /// Full JSON payload for later inspection.
+        raw: Value,
+    },
 }
 
 /// Parse one stream-json line into a [`Message`].
@@ -45,15 +60,19 @@ pub fn decode_line(line: &str, line_number: u64) -> Result<Message, Error> {
 
 /// Decode one stream-json line, dispatching on the `type` field.
 ///
-/// Returns either a regular [`Message`] or a [`ControlRequest`]. Callers
-/// typically route `Control(req)` into their control-handling path and
-/// surface `Message(msg)` to end users.
+/// Returns one of [`DecodedLine`]'s variants. For forward-compat with
+/// future `claude` CLI releases, any top-level `type` value forge-sdk
+/// doesn't recognise lands in [`DecodedLine::Unknown`] rather than
+/// erroring — callers (notably the wire-conformance harness) can
+/// detect these by matching the variant. The read loop in
+/// [`Client::next_event`](crate::Client::next_event) logs a
+/// `tracing::warn!` on Unknown and continues reading.
 ///
 /// # Errors
 ///
 /// - [`Error::JsonDecode`] when not valid JSON.
-/// - [`Error::MessageParse`] when the `type` field doesn't match any known
-///   dispatch or the inner shape is invalid.
+/// - [`Error::MessageParse`] when the `type` field is missing entirely
+///   or the inner shape of a recognised type is invalid.
 pub fn decode_dispatch(line: &str, line_number: u64) -> Result<DecodedLine, Error> {
     let value: Value = serde_json::from_str(line).map_err(|source| Error::JsonDecode {
         line: line_number,
@@ -87,9 +106,10 @@ pub fn decode_dispatch(line: &str, line_number: u64) -> Result<DecodedLine, Erro
                 .map_err(|e| Error::message_parse(format!("line {line_number}: {e}")))?;
             Ok(DecodedLine::Message(msg))
         }
-        other => Err(Error::message_parse(format!(
-            "line {line_number}: unknown type `{other}`"
-        ))),
+        other => Ok(DecodedLine::Unknown {
+            type_str: other.to_string(),
+            raw: value,
+        }),
     }
 }
 

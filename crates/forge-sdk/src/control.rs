@@ -29,8 +29,15 @@ pub enum ControlRequestType {
 }
 
 /// Enumerates the kinds of control requests we handle.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "subtype", rename_all = "snake_case")]
+///
+/// `Unknown` is the forward-compat catch-all — any `subtype` the CLI
+/// ships that forge-sdk doesn't yet model lands here with the full
+/// payload captured. The dispatcher in `client/control_dispatch.rs`
+/// responds with a `control_response` error (since we have no handler)
+/// and logs a `tracing::warn!` so callers notice drift. Unlike the
+/// previous strict-enum behaviour, an unknown subtype no longer
+/// panics the session.
+#[derive(Debug, Clone)]
 pub enum ControlRequestKind {
     /// A permission check for a tool call. Matches Python SDK
     /// `SDKControlPermissionRequest` at types.py:1283-1291.
@@ -40,15 +47,12 @@ pub enum ControlRequestKind {
         /// The JSON input the model generated.
         input: Value,
         /// Permission-suggestion hints from the binary (may be empty).
-        #[serde(default)]
         permission_suggestions: Vec<Value>,
         /// Path blocked by workspace sandboxing, when applicable.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
         blocked_path: Option<String>,
         /// Identifier of this tool-use (required; string).
         tool_use_id: String,
         /// Agent identifier when this is a sub-agent request.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
         agent_id: Option<String>,
     },
     /// MCP JSON-RPC message routed in-process. See `mcp` module for the MCP
@@ -69,9 +73,168 @@ pub enum ControlRequestKind {
         /// Hook-specific payload; includes `hook_event_name` to discriminate.
         input: Value,
         /// Tool-use id when the hook fired in a tool-use context.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
         tool_use_id: Option<String>,
     },
+    /// Forward-compat fallback for `subtype` values forge-sdk doesn't
+    /// recognise. The dispatcher responds with an error (since no handler
+    /// is registered) and logs a warning. This prevents an unknown CLI
+    /// subtype from panicking the session.
+    Unknown {
+        /// The unrecognised `subtype` value.
+        subtype: String,
+        /// Full request JSON including `request` body.
+        raw: Value,
+    },
+}
+
+impl Serialize for ControlRequestKind {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        match self {
+            Self::CanUseTool {
+                tool_name,
+                input,
+                permission_suggestions,
+                blocked_path,
+                tool_use_id,
+                agent_id,
+            } => {
+                let mut field_count = 4;
+                if !permission_suggestions.is_empty() {
+                    field_count += 1;
+                }
+                if blocked_path.is_some() {
+                    field_count += 1;
+                }
+                if agent_id.is_some() {
+                    field_count += 1;
+                }
+                let mut map = serializer.serialize_map(Some(field_count))?;
+                map.serialize_entry("subtype", "can_use_tool")?;
+                map.serialize_entry("tool_name", tool_name)?;
+                map.serialize_entry("input", input)?;
+                if !permission_suggestions.is_empty() {
+                    map.serialize_entry("permission_suggestions", permission_suggestions)?;
+                }
+                if let Some(bp) = blocked_path {
+                    map.serialize_entry("blocked_path", bp)?;
+                }
+                map.serialize_entry("tool_use_id", tool_use_id)?;
+                if let Some(aid) = agent_id {
+                    map.serialize_entry("agent_id", aid)?;
+                }
+                map.end()
+            }
+            Self::McpMessage {
+                server_name,
+                message,
+            } => {
+                let mut map = serializer.serialize_map(Some(3))?;
+                map.serialize_entry("subtype", "mcp_message")?;
+                map.serialize_entry("server_name", server_name)?;
+                map.serialize_entry("message", message)?;
+                map.end()
+            }
+            Self::HookCallback {
+                callback_id,
+                input,
+                tool_use_id,
+            } => {
+                let mut field_count = 3;
+                if tool_use_id.is_some() {
+                    field_count += 1;
+                }
+                let mut map = serializer.serialize_map(Some(field_count))?;
+                map.serialize_entry("subtype", "hook_callback")?;
+                map.serialize_entry("callback_id", callback_id)?;
+                map.serialize_entry("input", input)?;
+                if let Some(tid) = tool_use_id {
+                    map.serialize_entry("tool_use_id", tid)?;
+                }
+                map.end()
+            }
+            Self::Unknown { raw, .. } => raw.serialize(serializer),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for ControlRequestKind {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let raw = Value::deserialize(deserializer)?;
+        let subtype = raw
+            .get("subtype")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        match subtype.as_str() {
+            "can_use_tool" => {
+                let tool_name = raw
+                    .get("tool_name")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| serde::de::Error::missing_field("tool_name"))?
+                    .to_string();
+                let input = raw.get("input").cloned().unwrap_or(Value::Null);
+                let permission_suggestions = raw
+                    .get("permission_suggestions")
+                    .and_then(|v| v.as_array().cloned())
+                    .unwrap_or_default();
+                let blocked_path = raw
+                    .get("blocked_path")
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
+                let tool_use_id = raw
+                    .get("tool_use_id")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| serde::de::Error::missing_field("tool_use_id"))?
+                    .to_string();
+                let agent_id = raw
+                    .get("agent_id")
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
+                Ok(Self::CanUseTool {
+                    tool_name,
+                    input,
+                    permission_suggestions,
+                    blocked_path,
+                    tool_use_id,
+                    agent_id,
+                })
+            }
+            "mcp_message" => {
+                let server_name = raw
+                    .get("server_name")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| serde::de::Error::missing_field("server_name"))?
+                    .to_string();
+                let message = raw.get("message").cloned().unwrap_or(Value::Null);
+                Ok(Self::McpMessage {
+                    server_name,
+                    message,
+                })
+            }
+            "hook_callback" => {
+                let callback_id = raw
+                    .get("callback_id")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| serde::de::Error::missing_field("callback_id"))?
+                    .to_string();
+                let input = raw.get("input").cloned().unwrap_or(Value::Null);
+                let tool_use_id = raw
+                    .get("tool_use_id")
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
+                Ok(Self::HookCallback {
+                    callback_id,
+                    input,
+                    tool_use_id,
+                })
+            }
+            other => Ok(Self::Unknown {
+                subtype: other.to_string(),
+                raw,
+            }),
+        }
+    }
 }
 
 /// Control response from SDK back to the `claude` binary.
