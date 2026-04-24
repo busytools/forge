@@ -233,6 +233,182 @@ impl DecodeReport {
     }
 }
 
+/// Run a live-capture scenario end-to-end: build options, spawn a recorded
+/// `claude`, drive the scenario to a `Result` frame, dump the trace to
+/// `target/wire-traces/`, assert every inbound line decodes cleanly.
+///
+/// Caller supplies:
+/// - `scenario`: a short slug (e.g. `"bash_tool"`) used in trace filenames.
+/// - `options`: fully-built [`forge_sdk::Options`] — set tools,
+///   permission_mode, hooks, MCP servers, etc. here.
+/// - `drive`: async closure that drives the scenario once the client is
+///   ready. Typically calls `send_user_message(...)` and may register
+///   turn-specific state.
+///
+/// # Skip semantics
+///
+/// When `FORGE_WIRE_CAPTURE` is unset, returns `Ok(None)` immediately
+/// without touching the network — scenarios compile and link in CI but
+/// only run when the developer opts in.
+///
+/// # Errors
+///
+/// Any [`forge_sdk::Error`] surfaced during spawn / drive / drain.
+/// Panics on trace-dump failure or decode-completeness failure — those
+/// are harness invariants, not recoverable errors.
+///
+/// # Panics
+///
+/// - Transport panics are propagated.
+/// - Trace file I/O failure.
+/// - Decode-completeness regression in the captured inbound frames.
+pub async fn run_live_scenario<F, Fut>(
+    scenario: &str,
+    options: forge_sdk::Options,
+    drive: F,
+) -> Result<Option<ScenarioCapture>, Error>
+where
+    F: FnOnce(forge_sdk::Client) -> Fut,
+    Fut: std::future::Future<Output = Result<forge_sdk::Client, Error>>,
+{
+    if std::env::var("FORGE_WIRE_CAPTURE").is_err() {
+        eprintln!("FORGE_WIRE_CAPTURE not set; skipping scenario {scenario}");
+        return Ok(None);
+    }
+
+    let sub = Subprocess::spawn(&options).await?;
+    let (transport, log_arc) = RecordingTransport::new(sub);
+
+    // Scope-local helper to dump the trace regardless of how the test ends.
+    let dump = |log: &TraceLog, tag: &str| -> std::path::PathBuf {
+        let target = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/wire-traces");
+        std::fs::create_dir_all(&target).expect("create wire-traces dir");
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let path = target.join(format!("capture-{tag}-{ts}.jsonl"));
+        let body = log.to_jsonl().expect("jsonl serialise");
+        std::fs::write(&path, body).expect("write trace");
+        path
+    };
+
+    let client = forge_sdk::Client::spawn_with_transport(options, Box::new(transport))
+        .await
+        .map_err(|e| {
+            let log = log_arc.lock().unwrap();
+            let path = dump(&log, &format!("{scenario}-spawn-failed"));
+            eprintln!(
+                "{scenario}: spawn_with_transport failed, trace at {} [in={} out={}]",
+                path.display(),
+                log.inbound().len(),
+                log.outbound().len()
+            );
+            e
+        })?;
+
+    // Hand off to the scenario driver — on failure dump a partial trace.
+    let mut client = match drive(client).await {
+        Ok(c) => c,
+        Err(e) => {
+            let log = log_arc.lock().unwrap();
+            let path = dump(&log, &format!("{scenario}-drive-failed"));
+            eprintln!(
+                "{scenario}: drive failed, trace at {} [in={} out={}]",
+                path.display(),
+                log.inbound().len(),
+                log.outbound().len()
+            );
+            return Err(e);
+        }
+    };
+
+    // Drain until Result or EOF.
+    let mut saw_result = false;
+    let mut summary: Option<(u64, Option<f64>, u64)> = None;
+    loop {
+        match client.next_event().await {
+            Ok(Some(msg)) => {
+                if let forge_sdk::Message::Result {
+                    num_turns,
+                    total_cost_usd,
+                    duration_ms,
+                    ..
+                } = &msg
+                {
+                    saw_result = true;
+                    summary = Some((*num_turns, *total_cost_usd, *duration_ms));
+                    break;
+                }
+            }
+            Ok(None) => break,
+            Err(e) => {
+                let log = log_arc.lock().unwrap();
+                let path = dump(&log, &format!("{scenario}-drain-failed"));
+                eprintln!(
+                    "{scenario}: drain failed, trace at {} [in={} out={}]",
+                    path.display(),
+                    log.inbound().len(),
+                    log.outbound().len()
+                );
+                return Err(e);
+            }
+        }
+    }
+    let _ = client.disconnect().await;
+
+    // Successful (or at least drained) run — dump the trace, verify every
+    // inbound line decodes. Failure here is a hard panic.
+    let log = log_arc.lock().unwrap();
+    let trace_path = dump(&log, scenario);
+    let report = decode_all_inbound(&log);
+    if !report.is_clean() {
+        panic!(
+            "{scenario}: decode regressions in captured trace\n\
+             trace: {}\n\
+             report: {report:#?}",
+            trace_path.display()
+        );
+    }
+    eprintln!(
+        "{scenario}: captured in={} out={} | turns={} cost_usd={:?} duration_ms={} | trace={}",
+        log.inbound().len(),
+        log.outbound().len(),
+        summary.map(|(t, _, _)| t).unwrap_or(0),
+        summary.and_then(|(_, c, _)| c),
+        summary.map(|(_, _, d)| d).unwrap_or(0),
+        trace_path.display()
+    );
+
+    Ok(Some(ScenarioCapture {
+        trace_path,
+        inbound: log.inbound().len(),
+        outbound: log.outbound().len(),
+        saw_result,
+        summary,
+    }))
+}
+
+/// Outcome of a successful live-capture scenario run. Returned by
+/// [`run_live_scenario`] when the scenario produced a trace (regardless of
+/// whether a `Result` frame was seen before EOF).
+#[derive(Debug)]
+#[non_exhaustive]
+pub struct ScenarioCapture {
+    /// Absolute path of the `target/wire-traces/` dump for this run.
+    pub trace_path: std::path::PathBuf,
+    /// Number of inbound lines (CLI → SDK) the transport recorded.
+    pub inbound: usize,
+    /// Number of outbound lines (SDK → CLI) the transport recorded.
+    pub outbound: usize,
+    /// Whether a `Result` frame was observed before the loop ended.
+    pub saw_result: bool,
+    /// `(num_turns, total_cost_usd, duration_ms)` from the final `Result`
+    /// frame — `None` when the scenario ended without one.
+    pub summary: Option<(u64, Option<f64>, u64)>,
+}
+
 /// Run every inbound line from `log` through `decode_dispatch`, returning
 /// a categorised report.
 #[must_use]
