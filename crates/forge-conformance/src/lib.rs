@@ -281,8 +281,8 @@ where
 
     // Scope-local helper to dump the trace regardless of how the test ends.
     let dump = |log: &TraceLog, tag: &str| -> std::path::PathBuf {
-        let target = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../target/wire-traces");
+        let target =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/wire-traces");
         std::fs::create_dir_all(&target).expect("create wire-traces dir");
         let ts = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -296,7 +296,7 @@ where
 
     let client = forge_sdk::Client::spawn_with_transport(options, Box::new(transport))
         .await
-        .map_err(|e| {
+        .inspect_err(|_e| {
             let log = log_arc.lock().unwrap();
             let path = dump(&log, &format!("{scenario}-spawn-failed"));
             eprintln!(
@@ -305,7 +305,6 @@ where
                 log.inbound().len(),
                 log.outbound().len()
             );
-            e
         })?;
 
     // Hand off to the scenario driver — on failure dump a partial trace.

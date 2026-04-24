@@ -21,9 +21,7 @@ async fn wire_capture_pretooluse_hook() {
             // Pass-through allow: we want the CLI to emit the hook_callback
             // frame and see the SDK write a `control_response` with the
             // "allow" decision. The tool still runs.
-            |_input: PreToolUseInput, _ctx: HookContext| async move {
-                HookDecision::passthrough()
-            },
+            |_input: PreToolUseInput, _ctx: HookContext| async move { HookDecision::passthrough() },
         )
         .build();
 
