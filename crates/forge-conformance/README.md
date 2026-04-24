@@ -147,14 +147,15 @@ crates/forge-conformance/
 | `control_request: rewind_files` (out)       | rewind_files                                |
 | `control_request: stop_task` (out)          | stop_task                                   |
 | `control_request: interrupt` (out)          | interrupt                                   |
+| `control_request: can_use_tool` (in)        | permission_deny                             |
 | `control_response: success` (in)            | all                                         |
+| `control_response: deny` (out, `behavior`)  | permission_deny                             |
 | Multi-turn / session continuity             | multi_turn                                  |
 
-**Remaining gaps** (documented, not in scope for this CLI pin):
+**Remaining gaps** (genuinely unreachable without custom CLI behaviour):
 
 | Gap                               | Reason                                      |
 |-----------------------------------|---------------------------------------------|
-| `control_request: can_use_tool` (in) | forge-sdk doesn't inject `--permission-prompt-tool` when the callback is registered — tracked in project auto-memory `project_can_use_tool_wire_gap` |
 | `control_cancel_request` (in)     | CLI only emits this on its own timeout (30s+); deterministically triggering it in a scenario is flaky |
 | `error` message variant           | CLI emits this only on fatal transport failures that are hard to simulate in a healthy session |
 
