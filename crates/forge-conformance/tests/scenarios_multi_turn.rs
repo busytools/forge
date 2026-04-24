@@ -20,7 +20,9 @@ async fn wire_capture_multi_turn() {
     run_live_scenario("multi_turn", opts, |mut client| async move {
         // Turn 1 — drain the Result in-scenario so the harness's
         // main drain picks up turn 2's Result instead.
-        client.send_user_message("Reply with the single word: PINE").await?;
+        client
+            .send_user_message("Reply with the single word: PINE")
+            .await?;
         client.receive_response().await?;
 
         // Turn 2 — harness drains this until Result.
