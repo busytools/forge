@@ -28,6 +28,8 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+pub mod session_redact;
+
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;

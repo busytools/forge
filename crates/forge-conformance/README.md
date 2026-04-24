@@ -117,6 +117,41 @@ crates/forge-conformance/
     └── debug_smoke.rs                  # raw-wire diagnostic (FORGE_WIRE_DEBUG=1)
 ```
 
+## Real-session probe
+
+The harness also ships an opt-in decoder probe against Claude Code's
+on-disk session files
+(`$CLAUDE_CONFIG_DIR/projects/<slug>/<session-id>.jsonl`). These use
+a persistence-format superset of stream-json; the
+`session_redact::transform_persistence_line` helper rewrites each line
+into wire shape + scrubs PII, then the probe feeds everything through
+the decoder.
+
+Run it against all of the developer's recorded sessions:
+
+```bash
+FORGE_REAL_SESSIONS=$HOME/.claude-stargate/projects \
+  cargo nextest run -p forge-conformance --no-capture \
+  real_session_decode_probe
+```
+
+Nothing is persisted — failures surface as stderr lines and a panic.
+This is how the `document` content-block gap that forced the
+`ContentBlock::Unknown` forward-compat variant was surfaced.
+
+To produce a redacted, **committed** baseline from a specific
+session:
+
+```bash
+cargo run -p forge-conformance --example redact_session -- \
+  $HOME/.claude-stargate/projects/<slug>/<session>.jsonl \
+  crates/forge-conformance/baselines/2.1.117/real_session_<name>.jsonl
+```
+
+One sample lives at `baselines/2.1.117/real_session_sample.jsonl`
+— 352 messages covering real multi-turn tool-use flows, all
+redaction-scrubbed.
+
 ## Coverage map (wire surfaces vs. scenarios)
 
 | Wire surface                                | Captured by                                 |
