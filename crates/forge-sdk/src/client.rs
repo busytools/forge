@@ -10,7 +10,7 @@
 mod control_dispatch;
 mod control_send;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
 use tracing::debug;
@@ -41,6 +41,12 @@ pub struct Client {
     pub(crate) can_use_tool: Option<Arc<dyn CanUseToolCallback>>,
     pub(crate) mcp_hosts: McpHosts,
     pub(crate) hook_callbacks: HashMap<String, Arc<dyn ErasedHookCallback>>,
+    /// Messages read off the transport BEFORE the `system/init` frame
+    /// arrived. The CLI may emit non-init system frames first (e.g.
+    /// `hook_started` for a `SessionStart` settings-file hook) — we
+    /// buffer these here and drain them through `next_event` in order
+    /// so callers observe them as part of the normal message stream.
+    pub(crate) pre_init_messages: VecDeque<Message>,
     /// Response payload from the `initialize` `control_request`, cached so
     /// [`get_server_info`](Self::get_server_info) can return it without
     /// re-issuing the handshake. Python stores the same payload at
@@ -62,6 +68,10 @@ impl std::fmt::Debug for Client {
             .field(
                 "hook_callbacks",
                 &format!("<{} hooks>", self.hook_callbacks.len()),
+            )
+            .field(
+                "pre_init_messages",
+                &format!("<{} buffered>", self.pre_init_messages.len()),
             )
             .field(
                 "initialization_result",
@@ -136,20 +146,35 @@ impl Client {
             _ => options.exclude_dynamic_sections,
         };
 
-        let init_line = sub.read_line().await?.ok_or_else(|| Error::Connection {
-            reason: "transport closed stdout before init line".into(),
-        })?;
-        let init = decode_line(&init_line, 1)?;
-        let session_id = match &init {
-            Message::System {
-                session_id: Some(id),
-                subtype,
-                ..
-            } if subtype == "init" => id.clone(),
-            other => {
-                return Err(Error::message_parse(format!(
-                    "expected system/init, got: {other:?}"
-                )));
+        // Scan forward until we see the `system/init` frame. Any earlier
+        // frames get buffered into `pre_init_messages` so the caller
+        // observes them in order via `next_event` after init completes.
+        //
+        // Why this matters: the CLI can emit non-init system frames
+        // BEFORE init — concretely, `system/hook_started` when a
+        // settings-file `SessionStart` hook fires at session boot. An
+        // earlier strict version of this code crashed with
+        // "expected system/init" on the very first unexpected line.
+        let mut pre_init_messages: VecDeque<Message> = VecDeque::new();
+        let mut line_number = 0_u64;
+        let session_id = loop {
+            line_number += 1;
+            let line = sub.read_line().await?.ok_or_else(|| Error::Connection {
+                reason: "transport closed stdout before system/init line".into(),
+            })?;
+            let msg = decode_line(&line, line_number)?;
+            match &msg {
+                Message::System {
+                    session_id: Some(id),
+                    subtype,
+                    ..
+                } if subtype == "init" => {
+                    break id.clone();
+                }
+                _ => {
+                    debug!(line_number, "buffering pre-init frame for caller");
+                    pre_init_messages.push_back(msg);
+                }
             }
         };
         debug!(session_id, "client init");
@@ -157,10 +182,11 @@ impl Client {
         let mut client = Self {
             sub,
             session_id,
-            line_number: 1,
+            line_number,
             can_use_tool,
             mcp_hosts,
             hook_callbacks,
+            pre_init_messages,
             initialization_result: None,
         };
         client
@@ -272,6 +298,11 @@ impl Client {
     /// - [`Error::JsonDecode`] / [`Error::MessageParse`] per line.
     /// - [`Error::Io`] on pipe read/write failure.
     pub async fn next_event(&mut self) -> Result<Option<Message>, Error> {
+        // Drain any messages we buffered during spawn_inner before reading
+        // fresh lines from the transport.
+        if let Some(buffered) = self.pre_init_messages.pop_front() {
+            return Ok(Some(buffered));
+        }
         loop {
             let Some(line) = self.sub.read_line().await? else {
                 return Ok(None);
@@ -290,6 +321,18 @@ impl Client {
                     // the handler has already completed — there is nothing
                     // live to cancel. Log and drop, keeping the loop alive.
                     tracing::debug!(%request_id, "control_cancel_request received; nothing to cancel");
+                }
+                DecodedLine::Unknown { type_str, raw } => {
+                    // Forward-compat: the CLI emitted a frame with a `type`
+                    // we don't recognise. Log loudly so anyone watching
+                    // logs notices drift, then skip — keeping the read
+                    // loop alive rather than panicking the whole session.
+                    tracing::warn!(
+                        type = %type_str,
+                        raw = %raw,
+                        line = self.line_number,
+                        "unknown top-level stream-json type — skipping (harness should flag)"
+                    );
                 }
             }
         }
