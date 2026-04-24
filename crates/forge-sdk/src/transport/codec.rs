@@ -22,6 +22,20 @@ pub enum DecodedLine {
         /// `request_id` of the `control_request` being withdrawn.
         request_id: String,
     },
+    /// The CLI is responding to an outbound `control_request` we sent
+    /// (initialize, interrupt, `set_permission_mode`, …). These arrive on
+    /// stdout and are normally consumed synchronously by the client's
+    /// outbound-control wait loop — the read-dispatch loop in
+    /// [`Client::next_event`](crate::Client::next_event) never sees them.
+    /// Represented here so downstream tools (the wire-conformance replay
+    /// harness, debug captures) can recognise and categorise the frame
+    /// instead of mis-flagging it as `Unknown`.
+    ControlResponse {
+        /// `request_id` of the outbound `control_request` this responds to.
+        request_id: String,
+        /// Full JSON payload — useful for inspection and replay.
+        raw: Value,
+    },
     /// Forward-compat fallback: the CLI emitted a frame with an unrecognised
     /// top-level `type` field. Forge-sdk doesn't crash on these — it logs
     /// a warning via `tracing::warn!` in the dispatch path and lets the
@@ -99,6 +113,21 @@ pub fn decode_dispatch(line: &str, line_number: u64) -> Result<DecodedLine, Erro
                 })?
                 .to_string();
             Ok(DecodedLine::ControlCancel { request_id })
+        }
+        "control_response" => {
+            // `response.request_id` is where the CLI echoes the
+            // request_id we originally sent. Fall back to "" if the
+            // shape drifts; the Unknown categorisation is already covered
+            // by the Unknown variant, so there's no need to error here.
+            let request_id = value
+                .pointer("/response/request_id")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            Ok(DecodedLine::ControlResponse {
+                request_id,
+                raw: value,
+            })
         }
         "assistant" | "user" | "system" | "result" | "rate_limit_event" | "stream_event"
         | "error" => {

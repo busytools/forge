@@ -27,9 +27,12 @@ use crate::transport::process::Subprocess;
 
 /// An active `claude` binary subprocess.
 ///
-/// Construct via [`spawn`](Self::spawn). The first line the binary emits is
-/// always a `system`/`init` message carrying the session id — `spawn`
-/// consumes it so callers start clean at the first `assistant` turn.
+/// Construct via [`spawn`](Self::spawn). The init handshake
+/// ([`initialize` `control_request`](https://github.com/anthropics/claude-agent-sdk-python/blob/main/src/claude_agent_sdk/_internal/query.py#L196-L214))
+/// runs inside `spawn`; the `system/init` frame is consumed and its
+/// session id cached on [`session_id()`](Self::session_id). Callers
+/// of [`next_event`](Self::next_event) see the clean conversational
+/// stream starting with hook/assistant/user frames.
 ///
 /// The transport is held as a `Box<dyn Transport>` so callers can inject
 /// an alternative I/O backend via
@@ -146,116 +149,168 @@ impl Client {
             _ => options.exclude_dynamic_sections,
         };
 
-        // Scan forward until we see the `system/init` frame. Any earlier
-        // frames get buffered into `pre_init_messages` so the caller
-        // observes them in order via `next_event` after init completes.
+        // Build the initialize control_request body. Python SDK keeps the
+        // same field-inclusion rules (`_internal/query.py:196-207`) —
+        // `hooks` always present (null when empty), `agents` /
+        // `excludeDynamicSections` / `skills` only when explicitly set.
+        let hooks_field = if hook_payload
+            .as_object()
+            .is_some_and(serde_json::Map::is_empty)
+        {
+            serde_json::Value::Null
+        } else {
+            hook_payload
+        };
+        let mut init_body = serde_json::Map::new();
+        init_body.insert(
+            "subtype".into(),
+            serde_json::Value::String("initialize".into()),
+        );
+        init_body.insert("hooks".into(), hooks_field);
+        if let Some(a) = agents_payload {
+            init_body.insert("agents".into(), a);
+        }
+        if let Some(flag) = exclude_dynamic_sections {
+            init_body.insert(
+                "excludeDynamicSections".into(),
+                serde_json::Value::Bool(flag),
+            );
+        }
+        if let Some(list) = skills_payload {
+            init_body.insert(
+                "skills".into(),
+                serde_json::Value::Array(list.into_iter().map(Into::into).collect()),
+            );
+        }
+        let init_request_id = crate::request_id::next();
+        let init_envelope = serde_json::json!({
+            "type": "control_request",
+            "request_id": init_request_id,
+            "request": serde_json::Value::Object(init_body),
+        });
+        let mut init_line = serde_json::to_string(&init_envelope)
+            .map_err(|e| Error::message_parse(format!("initialize encode: {e}")))?;
+        init_line.push('\n');
+
+        // **Send initialize FIRST.** The CLI in stream-json interactive
+        // mode is driven entirely by stdin: it will not emit `system/init`
+        // until BOTH (a) an `initialize` control_request is received AND
+        // (b) a user message arrives. It DOES emit a `control_response` to
+        // the initialize right after hooks complete — that gives us the
+        // server-info payload (commands, agents, models, account, pid)
+        // without needing to drive a conversation yet.
         //
-        // Why this matters: the CLI can emit non-init system frames
-        // BEFORE init — concretely, `system/hook_started` when a
-        // settings-file `SessionStart` hook fires at session boot. An
-        // earlier strict version of this code crashed with
-        // "expected system/init" on the very first unexpected line.
+        // So `spawn_inner` only waits for the control_response; the real
+        // `session_id` arrives later on the first user message and gets
+        // plumbed through `next_event`. An earlier version of this code
+        // read init before sending initialize, which deadlocked against
+        // the CLI's ordering. Verified in
+        // `crates/forge-conformance/tests/wire_conformance.rs`.
+        sub.write_line(&init_line).await?;
+
+        // Drain lines until the initialize control_response arrives.
+        // Intervening hook frames (SessionStart) go into
+        // `pre_init_messages` so the caller still observes them in order
+        // through `next_event`. `system/init` itself is buffered the same
+        // way — `next_event` extracts session_id on the fly.
         let mut pre_init_messages: VecDeque<Message> = VecDeque::new();
         let mut line_number = 0_u64;
-        let session_id = loop {
+        let initialization_result = loop {
             line_number += 1;
             let line = sub.read_line().await?.ok_or_else(|| Error::Connection {
-                reason: "transport closed stdout before system/init line".into(),
+                reason: "transport closed stdout before initialize control_response".into(),
             })?;
+            let value: serde_json::Value =
+                serde_json::from_str(&line).map_err(|source| Error::JsonDecode {
+                    line: line_number,
+                    source,
+                })?;
+            let ty = value
+                .get("type")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("");
+            if ty == "control_response" {
+                let matches = value
+                    .pointer("/response/request_id")
+                    .and_then(serde_json::Value::as_str)
+                    == Some(&init_request_id);
+                if !matches {
+                    tracing::warn!(
+                        line = %line.trim_end(),
+                        "control_response during init with unexpected request_id"
+                    );
+                    continue;
+                }
+                let resp_subtype = value
+                    .pointer("/response/subtype")
+                    .and_then(serde_json::Value::as_str);
+                if resp_subtype == Some("success") {
+                    let body = value
+                        .pointer("/response/response")
+                        .cloned()
+                        .unwrap_or(serde_json::Value::Null);
+                    break match body {
+                        serde_json::Value::Null => None,
+                        v => Some(v),
+                    };
+                }
+                let err_msg = value
+                    .pointer("/response/error")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("unknown error");
+                return Err(Error::message_parse(format!(
+                    "initialize failed: {err_msg}"
+                )));
+            }
             let msg = decode_line(&line, line_number)?;
-            match &msg {
+            debug!(line_number, "buffering pre-init frame for caller");
+            pre_init_messages.push_back(msg);
+        };
+        debug!("client init handshake complete");
+
+        // Extract the session id from buffered pre-init frames when
+        // available. Some CLI configurations (and the mock CLI used in
+        // unit tests) emit `system/init` BEFORE the initialize
+        // control_response, so the session id is already in
+        // `pre_init_messages` — callers reading `session_id()` right
+        // after `spawn` returns see the real id immediately. In the
+        // production 2.1.117 stream-json flow, init arrives AFTER the
+        // initialize control_response + first user message, so
+        // `session_id` stays empty here and `next_event` populates it
+        // when the first session-scoped frame drains.
+        let session_id = pre_init_messages
+            .iter()
+            .find_map(|m| m.session_id().map(str::to_string))
+            .unwrap_or_default();
+        // Drop the `system/init` frame so callers of `next_event` see
+        // the clean post-init stream (first `assistant`/`user`/`result`,
+        // not the synthetic init metadata). Python SDK consumes init
+        // inside `query._fetch_init` and never surfaces it to callers;
+        // forge-sdk mirrors that contract.
+        pre_init_messages.retain(|m| {
+            !matches!(
+                m,
                 Message::System {
-                    session_id: Some(id),
                     subtype,
                     ..
-                } if subtype == "init" => {
-                    break id.clone();
-                }
-                _ => {
-                    debug!(line_number, "buffering pre-init frame for caller");
-                    pre_init_messages.push_back(msg);
-                }
-            }
-        };
-        debug!(session_id, "client init");
+                } if subtype == "init"
+            )
+        });
 
-        let mut client = Self {
+        Ok(Self {
             sub,
+            // Empty string until the first session-scoped message
+            // arrives. `send_user_message` tolerates empty session_id —
+            // the CLI assigns one on the first turn, and `next_event`
+            // captures it back.
             session_id,
             line_number,
             can_use_tool,
             mcp_hosts,
             hook_callbacks,
             pre_init_messages,
-            initialization_result: None,
-        };
-        client
-            .send_initialize(
-                hook_payload,
-                skills_payload,
-                exclude_dynamic_sections,
-                agents_payload,
-            )
-            .await?;
-        Ok(client)
-    }
-
-    /// Send the `initialize` `control_request` and await its matching
-    /// `control_response`. Python SDK does this right after receiving the
-    /// system/init message, before any user input. The decoded response
-    /// body is cached on [`initialization_result`](Self::initialization_result)
-    /// so [`get_server_info`](Self::get_server_info) can surface it later
-    /// without a second round-trip (matches Python
-    /// `_internal/query.py:214`).
-    ///
-    /// Field-inclusion matches Python `_internal/query.py:196-207`:
-    /// - `hooks` — always present; value is `null` when no callbacks
-    ///   are registered.
-    /// - `agents` — only when the caller has agents configured.
-    /// - `excludeDynamicSections` — only when the caller set a value.
-    /// - `skills` — only when the caller supplied a concrete list (the
-    ///   `"all"` sentinel travels via `--allowedTools` only).
-    async fn send_initialize(
-        &mut self,
-        hooks: serde_json::Value,
-        skills: Option<Vec<String>>,
-        exclude_dynamic_sections: Option<bool>,
-        agents: Option<serde_json::Value>,
-    ) -> Result<(), Error> {
-        let hooks_field = if hooks.as_object().is_some_and(serde_json::Map::is_empty) {
-            serde_json::Value::Null
-        } else {
-            hooks
-        };
-        let mut body = serde_json::Map::new();
-        body.insert("hooks".into(), hooks_field);
-        if let Some(a) = agents {
-            body.insert("agents".into(), a);
-        }
-        if let Some(flag) = exclude_dynamic_sections {
-            body.insert(
-                "excludeDynamicSections".into(),
-                serde_json::Value::Bool(flag),
-            );
-        }
-        if let Some(list) = skills {
-            body.insert(
-                "skills".into(),
-                serde_json::Value::Array(list.into_iter().map(Into::into).collect()),
-            );
-        }
-        let response = self
-            .send_control("initialize", serde_json::Value::Object(body))
-            .await?;
-        // `send_control` returns `Value::Null` when the CLI replies with
-        // an empty success body; store `None` in that case so
-        // `get_server_info()` reflects "no info" cleanly.
-        self.initialization_result = if response.is_null() {
-            None
-        } else {
-            Some(response)
-        };
-        Ok(())
+            initialization_result,
+        })
     }
 
     /// Cached response from the `initialize` `control_request` — holds
@@ -301,6 +356,7 @@ impl Client {
         // Drain any messages we buffered during spawn_inner before reading
         // fresh lines from the transport.
         if let Some(buffered) = self.pre_init_messages.pop_front() {
+            self.capture_session_id_from(&buffered);
             return Ok(Some(buffered));
         }
         loop {
@@ -309,7 +365,10 @@ impl Client {
             };
             self.line_number += 1;
             match decode_dispatch(&line, self.line_number)? {
-                DecodedLine::Message(msg) => return Ok(Some(msg)),
+                DecodedLine::Message(msg) => {
+                    self.capture_session_id_from(&msg);
+                    return Ok(Some(msg));
+                }
                 DecodedLine::Control(req) => {
                     self.handle_control(req).await?;
                 }
@@ -322,6 +381,17 @@ impl Client {
                     // live to cancel. Log and drop, keeping the loop alive.
                     tracing::debug!(%request_id, "control_cancel_request received; nothing to cancel");
                 }
+                DecodedLine::ControlResponse { request_id, .. } => {
+                    // A control_response only reaches `next_event` if it
+                    // arrives AFTER `send_control`'s synchronous wait has
+                    // already returned — either the CLI double-responded,
+                    // or the request_id drifted. Neither is expected in
+                    // a well-behaved session; log + skip rather than crash.
+                    tracing::warn!(
+                        %request_id,
+                        "unexpected control_response outside send_control loop — dropping"
+                    );
+                }
                 DecodedLine::Unknown { type_str, raw } => {
                     // Forward-compat: the CLI emitted a frame with a `type`
                     // we don't recognise. Log loudly so anyone watching
@@ -333,6 +403,20 @@ impl Client {
                         line = self.line_number,
                         "unknown top-level stream-json type — skipping (harness should flag)"
                     );
+                }
+            }
+        }
+    }
+
+    /// Populate `self.session_id` from the first message that carries
+    /// one. No-op once we've cached a non-empty value. Called on every
+    /// message observed through `next_event`.
+    fn capture_session_id_from(&mut self, msg: &Message) {
+        if self.session_id.is_empty() {
+            if let Some(id) = msg.session_id() {
+                if !id.is_empty() {
+                    self.session_id = id.to_string();
+                    debug!(session_id = %self.session_id, "client session_id bound");
                 }
             }
         }

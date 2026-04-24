@@ -43,7 +43,7 @@ fn all_baselines_decode_cleanly() {
     }
 
     let mut failures: Vec<(String, String)> = Vec::new();
-    let mut summary: Vec<(String, usize, usize, usize)> = Vec::new();
+    let mut summary: Vec<(String, usize, usize, usize, usize)> = Vec::new();
 
     for scenario in &scenarios {
         let log = load_baseline(scenario);
@@ -53,6 +53,7 @@ fn all_baselines_decode_cleanly() {
             report.messages,
             report.controls,
             report.control_cancels,
+            report.control_responses,
         ));
         if !report.is_clean() {
             failures.push((scenario.clone(), format!("{report:#?}")));
@@ -61,11 +62,11 @@ fn all_baselines_decode_cleanly() {
 
     eprintln!("pinned CLI version: {PINNED_CLI_VERSION}");
     eprintln!(
-        "scenarios: {} | decode summary (messages / controls / cancels):",
+        "scenarios: {} | decode summary (messages / controls / cancels / responses):",
         scenarios.len()
     );
-    for (name, m, c, cc) in &summary {
-        eprintln!("  {name}: {m}m / {c}c / {cc}cc");
+    for (name, m, c, cc, cr) in &summary {
+        eprintln!("  {name}: {m}m / {c}c / {cc}cc / {cr}cr");
     }
 
     if !failures.is_empty() {

@@ -220,6 +220,35 @@ pub enum Message {
     },
 }
 
+impl Message {
+    /// Extract the `session_id` a message is tagged with, when present.
+    ///
+    /// Used by [`Client::next_event`](crate::Client::next_event) to bind
+    /// the client's `session_id` field on the first frame that carries
+    /// one — the CLI in stream-json interactive mode only emits
+    /// `system/init` (the canonical session-id source) AFTER both an
+    /// initialize `control_request` AND a user message have been seen,
+    /// so the session id isn't known at spawn time.
+    ///
+    /// Returns `None` for the two variants that aren't session-scoped
+    /// (`Error` and `RateLimitEvent`, which carries no session id of its
+    /// own).
+    #[must_use]
+    pub fn session_id(&self) -> Option<&str> {
+        match self {
+            Message::Assistant { session_id, .. }
+            | Message::User { session_id, .. }
+            | Message::TaskStarted { session_id, .. }
+            | Message::TaskProgress { session_id, .. }
+            | Message::TaskNotification { session_id, .. }
+            | Message::Result { session_id, .. }
+            | Message::StreamEvent { session_id, .. } => Some(session_id.as_str()),
+            Message::System { session_id, .. } => session_id.as_deref(),
+            Message::RateLimitEvent { .. } | Message::Error { .. } => None,
+        }
+    }
+}
+
 /// The Anthropic-API-shaped envelope inside an `Assistant` message.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AssistantEnvelope {
