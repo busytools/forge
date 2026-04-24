@@ -3,7 +3,7 @@
 //! The wire shape must match Python SDK exactly — these tests capture real
 //! JSON the `claude` binary emits.
 
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use forge_sdk::content::ContentBlock;
 use serde_json::json;
@@ -63,8 +63,20 @@ fn tool_result_block_roundtrip() {
 }
 
 #[test]
-fn unknown_block_type_rejects_parse() {
+fn unknown_block_type_falls_back_to_unknown_variant() {
+    // Forward-compat: unrecognised content block types (e.g. Anthropic
+    // API's `document` block for PDF inputs, or any future block) must
+    // land in ContentBlock::Unknown instead of erroring — real-session
+    // probe uncovered this when a `document` block crashed the parser.
     let raw = json!({"type": "unknown_kind", "data": "..."});
-    let result: Result<ContentBlock, _> = serde_json::from_value(raw);
-    assert!(result.is_err(), "unknown block type should reject parse");
+    let block: ContentBlock = serde_json::from_value(raw.clone()).expect("parse");
+    let ContentBlock::Unknown {
+        type_str,
+        raw: echoed,
+    } = block
+    else {
+        panic!("expected Unknown variant");
+    };
+    assert_eq!(type_str, "unknown_kind");
+    assert_eq!(echoed, raw);
 }
