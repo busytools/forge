@@ -10,8 +10,8 @@
 
 use forge_conformance::run_live_scenario;
 use forge_sdk::{
-    HookContext, HookDecision, HooksBuilder, OptionsBuilder, PermissionMode, PostToolUseInput,
-    StopInput, SubagentStopInput, UserPromptSubmitInput,
+    HookContext, HookDecision, HooksBuilder, NotificationInput, OptionsBuilder, PermissionMode,
+    PostToolUseFailureInput, PostToolUseInput, StopInput, SubagentStopInput, UserPromptSubmitInput,
 };
 
 #[tokio::test]
@@ -118,6 +118,75 @@ async fn wire_capture_subagent_stop_hook() {
                  run `echo forge-subagent-stop-hook` via Bash and report \
                  the output back.",
             )
+            .await?;
+        Ok(client)
+    })
+    .await
+    .expect("scenario run");
+}
+
+#[tokio::test]
+#[ignore = "burns real Anthropic API tokens; opt-in via FORGE_WIRE_CAPTURE=1"]
+async fn wire_capture_post_tool_use_failure_hook() {
+    // Fires only when the tool call fails. Run a Bash command that
+    // deliberately exits non-zero (`false` / `exit 1`) so the CLI
+    // routes to PostToolUseFailure instead of PostToolUse.
+    let hooks = HooksBuilder::new()
+        .post_tool_use_failure(
+            "Bash",
+            |_input: PostToolUseFailureInput, _ctx: HookContext| async move {
+                HookDecision::passthrough()
+            },
+        )
+        .build();
+
+    let opts = OptionsBuilder::new()
+        .max_turns(3)
+        .permission_mode(PermissionMode::AcceptEdits)
+        .allowed_tools(vec!["Bash".to_string()])
+        .hooks(hooks)
+        .build();
+
+    run_live_scenario(
+        "post_tool_use_failure_hook",
+        opts,
+        |mut client| async move {
+            client
+                .send_user_message(
+                    "Run `exit 1` with the Bash tool (it will fail), then \
+                     just report back that the command failed.",
+                )
+                .await?;
+            Ok(client)
+        },
+    )
+    .await
+    .expect("scenario run");
+}
+
+#[tokio::test]
+#[ignore = "burns real Anthropic API tokens; opt-in via FORGE_WIRE_CAPTURE=1"]
+async fn wire_capture_notification_hook() {
+    // Notification hooks fire when the CLI posts a user-visible
+    // status message (idle state, waiting on input, etc.). Register a
+    // passthrough callback; a bare prompt may not always elicit one,
+    // but the trace captures the initialize path with the Notification
+    // entry in the hook registry.
+    let hooks = HooksBuilder::new()
+        .notification(|_input: NotificationInput, _ctx: HookContext| async move {
+            HookDecision::passthrough()
+        })
+        .build();
+
+    let opts = OptionsBuilder::new()
+        .max_turns(1)
+        .permission_mode(PermissionMode::AcceptEdits)
+        .hooks(hooks)
+        .build();
+
+    run_live_scenario("notification_hook", opts, |mut client| async move {
+        client
+            .send_user_message("Reply with only the word OK.")
             .await?;
         Ok(client)
     })
