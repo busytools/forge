@@ -77,22 +77,6 @@ fn assert_decode_completeness(log: &TraceLog, trace_path: &std::path::Path) {
     }
 }
 
-/// Point the spawned `claude` at a clean temp config dir so the user's
-/// own settings-file hooks / skills / MCP servers don't contaminate the
-/// captured trace. Returns the `TempDir` (keep it alive for the test's
-/// lifetime) + the path for `CLAUDE_CONFIG_DIR`.
-fn isolated_config_dir() -> (tempfile::TempDir, String) {
-    let tmp = tempfile::tempdir().expect("tempdir");
-    // Empty settings.json — no hooks, no skills, no MCP. Minimal profile.
-    std::fs::write(tmp.path().join("settings.json"), "{}\n").expect("write settings");
-    // Claude reads credentials from the active profile. We don't copy those
-    // in — so the test runs against whatever auth the *parent* env carries
-    // (OAuth token inherited via CLAUDE_CODE_OAUTH_TOKEN or a default
-    // keychain). This matches how real users invoke forge-sdk.
-    let path = tmp.path().to_string_lossy().into_owned();
-    (tmp, path)
-}
-
 #[tokio::test]
 #[ignore = "burns real Anthropic API tokens; opt-in via FORGE_WIRE_CAPTURE=1"]
 async fn wire_capture_trivial_prompt() {
@@ -101,12 +85,17 @@ async fn wire_capture_trivial_prompt() {
         return;
     }
 
-    let (_config_tmp, config_path) = isolated_config_dir();
-
-    let opts = OptionsBuilder::new()
-        .max_turns(1)
-        .env("CLAUDE_CONFIG_DIR", config_path)
-        .build();
+    // Inherit the parent env's `CLAUDE_CONFIG_DIR` so the spawned CLI uses
+    // whatever profile the developer's shell is authenticated against. An
+    // earlier attempt pointed at a fresh tempdir for "clean" traces — but
+    // a fresh config dir has no credentials, so the CLI bails with an
+    // auth-error result frame WITHOUT ever emitting a `control_response`
+    // to our `initialize` request, which then hangs `send_control` forever.
+    // The trade-off: captured traces include whatever hook/skill/MCP noise
+    // the developer's profile produces. Decoder must tolerate that anyway
+    // (it's what real library consumers will see), and our `Unknown`
+    // fallbacks plus pre-init buffering keep the harness robust.
+    let opts = OptionsBuilder::new().max_turns(1).build();
 
     let sub = Subprocess::spawn(&opts).await.expect("spawn subprocess");
     let (transport, log_arc) = RecordingTransport::new(sub);
