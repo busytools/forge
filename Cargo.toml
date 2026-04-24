@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/forge-sdk"]
+members = ["crates/forge-sdk", "crates/forge-conformance"]
 
 [workspace.package]
 version = "0.1.64"
