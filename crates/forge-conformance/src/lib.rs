@@ -323,21 +323,25 @@ where
         }
     };
 
-    // Close stdin so the CLI knows no more user messages are coming.
-    // Without this, scenarios that drained all expected Result frames
-    // inside their drive closure would hang here — the CLI keeps
-    // stdout open waiting for another user message, `next_event`
-    // never returns EOF.
-    if let Err(e) = client.end_input().await {
-        eprintln!("{scenario}: end_input failed, continuing drain anyway: {e}");
-    }
-
-    // Drain until Result or EOF.
+    // Drain until a `Result` frame, then close stdin and drain to EOF.
+    //
+    // We can't close stdin BEFORE the drain — the CLI is still
+    // emitting `hook_callback` / `mcp_message` control_requests during
+    // the turn, and our handlers reply on stdin. Closing too early
+    // breaks the pipe mid-handler. So the order is:
+    //
+    // 1. Read until `Result` (with a short per-read timeout in case
+    //    `drive` already drained everything inside its closure — in
+    //    that case the timeout fires, we assume drain is done, and
+    //    fall through to end_input).
+    // 2. Close stdin so the CLI exits cleanly.
+    // 3. Drain any trailing frames to EOF.
+    let read_timeout = std::time::Duration::from_secs(30);
     let mut saw_result = false;
     let mut summary: Option<(u64, Option<f64>, u64)> = None;
     loop {
-        match client.next_event().await {
-            Ok(Some(msg)) => {
+        match tokio::time::timeout(read_timeout, client.next_event()).await {
+            Ok(Ok(Some(msg))) => {
                 if let forge_sdk::Message::Result {
                     num_turns,
                     total_cost_usd,
@@ -350,8 +354,8 @@ where
                     break;
                 }
             }
-            Ok(None) => break,
-            Err(e) => {
+            Ok(Ok(None)) => break,
+            Ok(Err(e)) => {
                 let log = log_arc.lock().unwrap();
                 let path = dump(&log, &format!("{scenario}-drain-failed"));
                 eprintln!(
@@ -362,6 +366,28 @@ where
                 );
                 return Err(e);
             }
+            Err(_timeout) => {
+                // 30 s without a frame — `drive` must have drained the
+                // Result already. Break and let the end_input path
+                // handle cleanup + trailing frames.
+                break;
+            }
+        }
+    }
+
+    // Close stdin now that no more handler writes are expected.
+    if let Err(e) = client.end_input().await {
+        eprintln!("{scenario}: end_input failed, continuing to disconnect: {e}");
+    }
+    // Drain any trailing frames that arrive between end_input and EOF
+    // (some CLI paths emit a final `system:close` or trailing
+    // `rate_limit_event`). Errors from writes during trailing
+    // handlers (`BrokenPipe`) are expected here — stdin is closed.
+    let trailing_timeout = std::time::Duration::from_secs(5);
+    while let Ok(evt) = tokio::time::timeout(trailing_timeout, client.next_event()).await {
+        match evt {
+            Ok(Some(_)) => continue,
+            Ok(None) | Err(_) => break,
         }
     }
     let _ = client.disconnect().await;
