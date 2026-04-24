@@ -229,15 +229,13 @@ impl Client {
 
         let initialization_result = loop {
             client.line_number += 1;
-            let line =
-                client
-                    .sub
-                    .read_line()
-                    .await?
-                    .ok_or_else(|| Error::Connection {
-                        reason: "transport closed stdout before initialize control_response"
-                            .into(),
-                    })?;
+            let line = client
+                .sub
+                .read_line()
+                .await?
+                .ok_or_else(|| Error::Connection {
+                    reason: "transport closed stdout before initialize control_response".into(),
+                })?;
             let value: serde_json::Value =
                 serde_json::from_str(&line).map_err(|source| Error::JsonDecode {
                     line: client.line_number,
@@ -277,15 +275,17 @@ impl Client {
                         .pointer("/response/error")
                         .and_then(serde_json::Value::as_str)
                         .unwrap_or("unknown error");
-                    return Err(Error::message_parse(format!("initialize failed: {err_msg}")));
+                    return Err(Error::message_parse(format!(
+                        "initialize failed: {err_msg}"
+                    )));
                 }
                 "control_request" => {
                     // Inbound CLI → SDK request — most commonly an MCP
                     // `mcp_message` bootstrap call. Dispatch through the
                     // normal handler so the SDK replies on the wire and
                     // the CLI can make progress toward our init response.
-                    let req: crate::control::ControlRequest =
-                        serde_json::from_value(value).map_err(|e| {
+                    let req: crate::control::ControlRequest = serde_json::from_value(value)
+                        .map_err(|e| {
                             Error::message_parse(format!(
                                 "line {}: control_request decode: {e}",
                                 client.line_number
