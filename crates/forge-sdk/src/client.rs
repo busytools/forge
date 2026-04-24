@@ -208,86 +208,130 @@ impl Client {
         // `crates/forge-conformance/tests/wire_conformance.rs`.
         sub.write_line(&init_line).await?;
 
-        // Drain lines until the initialize control_response arrives.
-        // Intervening hook frames (SessionStart) go into
-        // `pre_init_messages` so the caller still observes them in order
-        // through `next_event`. `system/init` itself is buffered the same
-        // way — `next_event` extracts session_id on the fly.
-        let mut pre_init_messages: VecDeque<Message> = VecDeque::new();
-        let mut line_number = 0_u64;
+        // Build a partial client now so the init loop can dispatch any
+        // `control_request`s the CLI interleaves before its initialize
+        // response — specifically, in-process MCP servers will receive
+        // `mcp_message` bootstrap calls (JSON-RPC `initialize` /
+        // `tools/list`) BEFORE the CLI acknowledges our initialize.
+        // `handle_control` needs an `&mut Client`, so we construct it
+        // here with empty session_id / initialization_result and fill
+        // those in once the loop settles.
+        let mut client = Self {
+            sub,
+            session_id: String::new(),
+            line_number: 0,
+            can_use_tool,
+            mcp_hosts,
+            hook_callbacks,
+            pre_init_messages: VecDeque::new(),
+            initialization_result: None,
+        };
+
         let initialization_result = loop {
-            line_number += 1;
-            let line = sub.read_line().await?.ok_or_else(|| Error::Connection {
-                reason: "transport closed stdout before initialize control_response".into(),
-            })?;
+            client.line_number += 1;
+            let line =
+                client
+                    .sub
+                    .read_line()
+                    .await?
+                    .ok_or_else(|| Error::Connection {
+                        reason: "transport closed stdout before initialize control_response"
+                            .into(),
+                    })?;
             let value: serde_json::Value =
                 serde_json::from_str(&line).map_err(|source| Error::JsonDecode {
-                    line: line_number,
+                    line: client.line_number,
                     source,
                 })?;
             let ty = value
                 .get("type")
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or("");
-            if ty == "control_response" {
-                let matches = value
-                    .pointer("/response/request_id")
-                    .and_then(serde_json::Value::as_str)
-                    == Some(&init_request_id);
-                if !matches {
-                    tracing::warn!(
-                        line = %line.trim_end(),
-                        "control_response during init with unexpected request_id"
+            match ty {
+                "control_response" => {
+                    let matches = value
+                        .pointer("/response/request_id")
+                        .and_then(serde_json::Value::as_str)
+                        == Some(&init_request_id);
+                    if !matches {
+                        tracing::warn!(
+                            line = %line.trim_end(),
+                            "control_response during init with unexpected request_id"
+                        );
+                        continue;
+                    }
+                    let resp_subtype = value
+                        .pointer("/response/subtype")
+                        .and_then(serde_json::Value::as_str);
+                    if resp_subtype == Some("success") {
+                        let body = value
+                            .pointer("/response/response")
+                            .cloned()
+                            .unwrap_or(serde_json::Value::Null);
+                        break match body {
+                            serde_json::Value::Null => None,
+                            v => Some(v),
+                        };
+                    }
+                    let err_msg = value
+                        .pointer("/response/error")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("unknown error");
+                    return Err(Error::message_parse(format!("initialize failed: {err_msg}")));
+                }
+                "control_request" => {
+                    // Inbound CLI → SDK request — most commonly an MCP
+                    // `mcp_message` bootstrap call. Dispatch through the
+                    // normal handler so the SDK replies on the wire and
+                    // the CLI can make progress toward our init response.
+                    let req: crate::control::ControlRequest =
+                        serde_json::from_value(value).map_err(|e| {
+                            Error::message_parse(format!(
+                                "line {}: control_request decode: {e}",
+                                client.line_number
+                            ))
+                        })?;
+                    client.handle_control(req).await?;
+                }
+                "control_cancel_request" => {
+                    // Nothing in flight during init — Python's
+                    // `query.py:274-280` counterpart is also a no-op.
+                    tracing::debug!(
+                        line_number = client.line_number,
+                        "control_cancel_request during init; nothing live to cancel"
                     );
-                    continue;
                 }
-                let resp_subtype = value
-                    .pointer("/response/subtype")
-                    .and_then(serde_json::Value::as_str);
-                if resp_subtype == Some("success") {
-                    let body = value
-                        .pointer("/response/response")
-                        .cloned()
-                        .unwrap_or(serde_json::Value::Null);
-                    break match body {
-                        serde_json::Value::Null => None,
-                        v => Some(v),
-                    };
+                _ => {
+                    let msg = decode_line(&line, client.line_number)?;
+                    debug!(
+                        line_number = client.line_number,
+                        "buffering pre-init frame for caller"
+                    );
+                    client.pre_init_messages.push_back(msg);
                 }
-                let err_msg = value
-                    .pointer("/response/error")
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or("unknown error");
-                return Err(Error::message_parse(format!(
-                    "initialize failed: {err_msg}"
-                )));
             }
-            let msg = decode_line(&line, line_number)?;
-            debug!(line_number, "buffering pre-init frame for caller");
-            pre_init_messages.push_back(msg);
         };
         debug!("client init handshake complete");
 
         // Extract the session id from buffered pre-init frames when
         // available. Some CLI configurations (and the mock CLI used in
         // unit tests) emit `system/init` BEFORE the initialize
-        // control_response, so the session id is already in
-        // `pre_init_messages` — callers reading `session_id()` right
-        // after `spawn` returns see the real id immediately. In the
-        // production 2.1.117 stream-json flow, init arrives AFTER the
-        // initialize control_response + first user message, so
-        // `session_id` stays empty here and `next_event` populates it
+        // control_response — in that case callers reading `session_id()`
+        // right after `spawn` returns see the real id immediately. In
+        // the production 2.1.117 stream-json flow, init arrives AFTER
+        // the initialize control_response + first user message, so
+        // session_id stays empty here and `next_event` populates it
         // when the first session-scoped frame drains.
-        let session_id = pre_init_messages
+        client.session_id = client
+            .pre_init_messages
             .iter()
             .find_map(|m| m.session_id().map(str::to_string))
             .unwrap_or_default();
         // Drop the `system/init` frame so callers of `next_event` see
-        // the clean post-init stream (first `assistant`/`user`/`result`,
-        // not the synthetic init metadata). Python SDK consumes init
-        // inside `query._fetch_init` and never surfaces it to callers;
+        // the clean post-init stream. Python SDK consumes init inside
+        // `query._fetch_init` and never surfaces it to callers;
         // forge-sdk mirrors that contract.
-        pre_init_messages.retain(|m| {
+        client.pre_init_messages.retain(|m| {
             !matches!(
                 m,
                 Message::System {
@@ -296,21 +340,8 @@ impl Client {
                 } if subtype == "init"
             )
         });
-
-        Ok(Self {
-            sub,
-            // Empty string until the first session-scoped message
-            // arrives. `send_user_message` tolerates empty session_id —
-            // the CLI assigns one on the first turn, and `next_event`
-            // captures it back.
-            session_id,
-            line_number,
-            can_use_tool,
-            mcp_hosts,
-            hook_callbacks,
-            pre_init_messages,
-            initialization_result,
-        })
+        client.initialization_result = initialization_result;
+        Ok(client)
     }
 
     /// Cached response from the `initialize` `control_request` — holds
