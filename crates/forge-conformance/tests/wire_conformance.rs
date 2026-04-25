@@ -28,8 +28,7 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use forge_conformance::{RecordingTransport, TraceLog};
-use forge_sdk::transport::codec::decode_dispatch;
+use forge_conformance::{RecordingTransport, TraceLog, decode_all_inbound};
 use forge_sdk::transport::process::Subprocess;
 use forge_sdk::{Client, Message, OptionsBuilder};
 
@@ -52,29 +51,14 @@ fn write_trace(scenario: &str, log: &TraceLog) -> std::path::PathBuf {
 }
 
 fn assert_decode_completeness(log: &TraceLog, trace_path: &std::path::Path) {
-    let mut failures: Vec<(usize, String, String)> = Vec::new();
-    for (idx, line) in log.inbound().into_iter().enumerate() {
-        if line.trim().is_empty() {
-            continue;
-        }
-        if let Err(e) = decode_dispatch(line, (idx + 1) as u64) {
-            failures.push((idx, line.to_string(), format!("{e}")));
-        }
-    }
-    if !failures.is_empty() {
-        eprintln!(
-            "wire_conformance: {} inbound lines failed to decode",
-            failures.len()
-        );
-        for (idx, line, err) in &failures {
-            eprintln!("  line {idx}: {err}");
-            eprintln!("    raw: {line}");
-        }
-        panic!(
-            "decode failures detected — see {} for the full trace",
-            trace_path.display()
-        );
-    }
+    let report = decode_all_inbound(log);
+    assert!(
+        report.is_clean(),
+        "wire_conformance: decode regressions in captured trace\n\
+         trace: {}\n\
+         report: {report:#?}",
+        trace_path.display()
+    );
 }
 
 #[tokio::test]
@@ -103,7 +87,7 @@ async fn wire_capture_trivial_prompt() {
     // Scope guard: always dump whatever we captured, even on a panic partway
     // through — so failing spawns still give us a trace for post-mortem.
     let dump_trace = |tag: &str| -> std::path::PathBuf {
-        let log = log_arc.lock().unwrap();
+        let log = log_arc.lock();
         let path = write_trace(tag, &log);
         eprintln!(
             "wire trace ({tag}): {} [in={} out={}]",
@@ -169,7 +153,7 @@ async fn wire_capture_trivial_prompt() {
     }
 
     let trace_path = dump_trace("trivial");
-    let log = log_arc.lock().unwrap();
+    let log = log_arc.lock();
     assert_decode_completeness(&log, &trace_path);
 
     assert!(saw_result, "trivial prompt did not produce a Result frame");

@@ -30,13 +30,14 @@
 
 pub mod session_redact;
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use forge_sdk::Error;
 use forge_sdk::transport::Transport;
 use forge_sdk::transport::codec::{DecodedLine, decode_dispatch};
 use forge_sdk::transport::process::Subprocess;
+use parking_lot::Mutex;
 
 /// One captured line in a trace.
 #[derive(Default, Debug)]
@@ -111,7 +112,7 @@ impl Transport for RecordingTransport {
     async fn read_line(&mut self) -> Result<Option<String>, Error> {
         let line = self.inner.read_line().await?;
         if let Some(ref s) = line {
-            self.log.lock().unwrap().entries.push(("in", s.clone()));
+            self.log.lock().entries.push(("in", s.clone()));
         }
         Ok(line)
     }
@@ -119,7 +120,6 @@ impl Transport for RecordingTransport {
     async fn write_line(&mut self, line: &str) -> Result<(), Error> {
         self.log
             .lock()
-            .unwrap()
             .entries
             .push(("out", line.trim_end_matches('\n').to_string()));
         self.inner.write_line(line).await
@@ -299,7 +299,7 @@ where
     let client = forge_sdk::Client::spawn_with_transport(options, Box::new(transport))
         .await
         .inspect_err(|_e| {
-            let log = log_arc.lock().unwrap();
+            let log = log_arc.lock();
             let path = dump(&log, &format!("{scenario}-spawn-failed"));
             eprintln!(
                 "{scenario}: spawn_with_transport failed, trace at {} [in={} out={}]",
@@ -313,7 +313,7 @@ where
     let mut client = match drive(client).await {
         Ok(c) => c,
         Err(e) => {
-            let log = log_arc.lock().unwrap();
+            let log = log_arc.lock();
             let path = dump(&log, &format!("{scenario}-drive-failed"));
             eprintln!(
                 "{scenario}: drive failed, trace at {} [in={} out={}]",
@@ -358,7 +358,7 @@ where
             }
             Ok(Ok(None)) => break,
             Ok(Err(e)) => {
-                let log = log_arc.lock().unwrap();
+                let log = log_arc.lock();
                 let path = dump(&log, &format!("{scenario}-drain-failed"));
                 eprintln!(
                     "{scenario}: drain failed, trace at {} [in={} out={}]",
@@ -424,7 +424,7 @@ where
 
     // Successful (or at least drained) run — dump the trace, verify every
     // inbound line decodes. Failure here is a hard panic.
-    let log = log_arc.lock().unwrap();
+    let log = log_arc.lock();
     let trace_path = dump(&log, scenario);
     let report = decode_all_inbound(&log);
     assert!(

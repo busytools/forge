@@ -24,6 +24,7 @@ uuid = { version = "1", features = ["v4"] }
 unicode-normalization = "0.1"
 tokio-stream = "0.1"
 regex = "1"
+parking_lot = "0.12"
 
 # Dev-only
 proptest = "1"
