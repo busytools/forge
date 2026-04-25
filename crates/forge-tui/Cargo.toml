@@ -18,6 +18,7 @@ path = "src/main.rs"
 [dependencies]
 tokio = { workspace = true }
 tokio-tungstenite.workspace = true
+tokio-stream.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
@@ -26,6 +27,16 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 clap.workspace = true
 ratatui.workspace = true
-crossterm.workspace = true
+crossterm = { workspace = true, features = ["event-stream"] }
 async-trait.workspace = true
 uuid.workspace = true
+parking_lot.workspace = true
+futures-util = "0.3"
+
+[dev-dependencies]
+forged = { path = "../forged" }
+forge-sdk = { path = "../forge-sdk" }
+insta = { workspace = true }
+tempfile.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+futures-util = "0.3"
