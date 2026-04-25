@@ -1,0 +1,34 @@
+---
+source: crates/forge-tui/tests/render_snapshots.rs
+assertion_line: 20
+expression: buffer
+---
+Buffer {
+    area: Rect { x: 0, y: 0, width: 80, height: 20 },
+    content: [
+        "┌ Sessions [active] ───────┐┌ Conversation ────────────────────────────────────┐",
+        "│                          ││                                                  │",
+        "│                          ││                                                  │",
+        "│                          ││                                                  │",
+        "│                          ││                                                  │",
+        "│                          ││                                                  │",
+        "│                          ││                                                  │",
+        "│                          ││                                                  │",
+        "│                          ││                                                  │",
+        "│                          ││                                                  │",
+        "│                          ││                                                  │",
+        "│                          ││                                                  │",
+        "│                          ││                                                  │",
+        "│                          ││                                                  │",
+        "│                          ││                                                  │",
+        "│                          ││                                                  │",
+        "│                          ││                                                  │",
+        "│                          ││                                                  │",
+        "└──────────────────────────┘└──────────────────────────────────────────────────┘",
+        "- no session  |  q quit                                                         ",
+    ],
+    styles: [
+        x: 0, y: 0, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
+        x: 0, y: 19, fg: Gray, bg: Reset, underline: Reset, modifier: NONE,
+    ]
+}
