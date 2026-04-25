@@ -610,8 +610,17 @@ async fn ws_response_with_rev_id_resolves_outstanding_reverse_rpc() {
     assert!(t.contains("client.identify"));
 
     // The connection id is fresh per ws upgrade. Find it on the server.
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    let conn_id = state.connections.lock().keys().next().cloned().unwrap();
+    // Deterministic poll instead of a timing-dependent `sleep`.
+    let conn_id = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if let Some(id) = state.connections.lock().keys().next().cloned() {
+                break id;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("connection_id discovery timed out");
 
     // Manually register a session and mark this connection as primary.
     let sid = forged::session_state::SessionId("sess_e2e".into());

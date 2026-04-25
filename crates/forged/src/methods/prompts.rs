@@ -39,7 +39,13 @@ pub fn respond(
     // Send through the oneshot — the awaiting reverse-RPC handler wakes.
     // If the receiver has been dropped (e.g. timeout fired between
     // `take` and `send`), the value is silently discarded — there's no
-    // handler left to receive it.
-    let _ = prompt.responder.send(result);
+    // handler left to receive it. Surface a debug log so the timeout
+    // race is visible in operator traces rather than vanishing silently.
+    if prompt.responder.send(result).is_err() {
+        tracing::debug!(
+            prompt_id = %prompt.prompt_id,
+            "prompts.respond: responder receiver dropped (timeout race)"
+        );
+    }
     Ok(())
 }

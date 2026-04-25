@@ -18,7 +18,12 @@ use std::time::SystemTime;
 /// the unix epoch (a clock skew that small isn't worth panicking over).
 #[must_use]
 pub fn format_iso8601(t: SystemTime) -> String {
-    let dur = t.duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+    let dur = if let Ok(d) = t.duration_since(std::time::UNIX_EPOCH) {
+        d
+    } else {
+        tracing::warn!("clock skew: SystemTime < UNIX_EPOCH; reporting epoch");
+        std::time::Duration::default()
+    };
     let secs = dur.as_secs();
     let (y, m, d, hh, mm, ss) = secs_to_ymdhms(secs);
     format!("{y:04}-{m:02}-{d:02}T{hh:02}:{mm:02}:{ss:02}Z")
