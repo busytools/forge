@@ -6,6 +6,9 @@
 )]
 
 use clap::Parser;
+use tokio::net::TcpListener;
+
+use forged::registry::DaemonState;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -21,24 +24,29 @@ struct Cli {
 #[derive(Parser, Debug)]
 enum Cmd {
     /// Start the daemon (default if no subcommand given).
-    Listen,
+    Listen {
+        /// Address to bind. Default: 127.0.0.1:7373 (loopback only in M1).
+        #[arg(default_value = "127.0.0.1:7373")]
+        addr: String,
+    },
     /// Show daemon status (connects to local daemon over loopback).
     Status,
 }
 
-#[allow(
-    clippy::unnecessary_wraps,
-    reason = "M0 stub never errors; shape preserved for M1+"
-)]
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    tracing_subscriber::fmt::init();
     let cli = Cli::parse();
-    match cli.cmd.unwrap_or(Cmd::Listen) {
-        Cmd::Listen => {
-            println!("forged listen — not yet implemented (M1)");
+    match cli.cmd.unwrap_or(Cmd::Listen {
+        addr: "127.0.0.1:7373".into(),
+    }) {
+        Cmd::Listen { addr } => {
+            let listener = TcpListener::bind(&addr).await?;
+            forged::server::run(listener, DaemonState::new()).await?;
             Ok(())
         }
         Cmd::Status => {
-            println!("forged status — not yet implemented (M1)");
+            forged::status_cli::run("127.0.0.1:7373").await?;
             Ok(())
         }
     }
