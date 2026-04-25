@@ -126,6 +126,10 @@ pub struct SessionState {
     pub subscribers: Mutex<Vec<ConnectionId>>,
     /// Primary client (single-client model in M2; multi-client lands in M5).
     pub primary: Mutex<Option<ConnectionId>>,
+    /// Pending reverse-RPC prompts that haven't been answered yet (D14).
+    /// Populated by the reverse-RPC issuer when no primary is connected,
+    /// drained by `prompts.respond` or expiry.
+    pub prompts: crate::prompt_queue::PromptQueue,
 }
 
 impl SessionState {
@@ -137,6 +141,7 @@ impl SessionState {
             commands,
             subscribers: Mutex::new(Vec::new()),
             primary: Mutex::new(None),
+            prompts: crate::prompt_queue::PromptQueue::new(),
         }
     }
 }
