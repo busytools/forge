@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>           <string>com.stargate.forged</string>
+  <key>UserName</key>        <string>__USERNAME__</string>
+  <key>RunAtLoad</key>       <true/>
+  <key>KeepAlive</key>       <true/>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>-c</string>
+    <string>until /sbin/ifconfig | /usr/bin/grep -q "__WG_IP__"; do sleep 2; done
+            exec /usr/local/bin/forged listen</string>
+  </array>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key>                <string>/Users/__USERNAME__</string>
+    <key>PATH</key>                <string>/usr/local/bin:/usr/bin:/bin</string>
+    <key>CLAUDE_CONFIG_DIR</key>   <string>/Users/__USERNAME__/.claude-stargate</string>
+    <key>RUST_LOG</key>            <string>forged=info,forge_sdk=warn</string>
+  </dict>
+
+  <key>StandardOutPath</key>
+  <string>/Users/__USERNAME__/Library/Logs/forged/forged.stdout.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/__USERNAME__/Library/Logs/forged/forged.stderr.log</string>
+</dict>
+</plist>

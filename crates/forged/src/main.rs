@@ -25,9 +25,11 @@ struct Cli {
 enum Cmd {
     /// Start the daemon (default if no subcommand given).
     Listen {
-        /// Address to bind. Default: 127.0.0.1:7373 (loopback only in M1).
-        #[arg(default_value = "127.0.0.1:7373")]
-        addr: String,
+        /// Address to bind. When omitted the daemon uses every entry in
+        /// `config.bind` (default: `127.0.0.1:7373`). When provided this
+        /// single address overrides the config — useful for ad-hoc one-port
+        /// runs.
+        addr: Option<String>,
     },
     /// Show daemon status (connects to local daemon over loopback).
     Status,
@@ -35,15 +37,37 @@ enum Cmd {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    tracing_subscriber::fmt::init();
+    let config = forged::config::load_default()?;
+    forged::logging::init(&config)?;
+
     let cli = Cli::parse();
-    match cli.cmd.unwrap_or(Cmd::Listen {
-        addr: "127.0.0.1:7373".into(),
-    }) {
+    match cli.cmd.unwrap_or(Cmd::Listen { addr: None }) {
         Cmd::Listen { addr } => {
-            let listener = TcpListener::bind(&addr).await?;
-            forged::server::run(listener, DaemonState::new()).await?;
-            Ok(())
+            let state = DaemonState::new();
+            let binds: Vec<String> = match addr {
+                Some(a) => vec![a],
+                None if config.bind.is_empty() => vec!["127.0.0.1:7373".into()],
+                None => config.bind.clone(),
+            };
+
+            let mut handles = Vec::with_capacity(binds.len());
+            for bind in binds {
+                let listener = TcpListener::bind(&bind).await?;
+                tracing::info!(%bind, "listening");
+                let st = state.clone();
+                handles.push(tokio::spawn(async move {
+                    forged::server::run(listener, st).await
+                }));
+            }
+
+            // Wait for any listener task to finish — typically forever, until SIGTERM.
+            // The first task to exit (clean or otherwise) brings the daemon down.
+            let (result, _idx, _rest) = futures_util::future::select_all(handles).await;
+            match result {
+                Ok(Ok(())) => Ok(()),
+                Ok(Err(e)) => Err(Box::new(e) as Box<dyn std::error::Error>),
+                Err(join_err) => Err(Box::new(join_err) as Box<dyn std::error::Error>),
+            }
         }
         Cmd::Status => {
             forged::status_cli::run("127.0.0.1:7373").await?;

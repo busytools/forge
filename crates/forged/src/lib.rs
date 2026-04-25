@@ -7,10 +7,12 @@ pub use error::Error;
 
 pub mod bridged_transport;
 pub mod broadcast;
+pub mod config;
 pub mod connection;
 pub mod error;
 pub mod iso8601;
 pub mod jsonrpc;
+pub mod logging;
 pub mod methods;
 pub mod prompt_queue;
 pub mod registry;
