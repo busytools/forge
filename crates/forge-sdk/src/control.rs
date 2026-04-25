@@ -474,4 +474,49 @@ mod tests_control_types {
             "/tmp/x"
         );
     }
+
+    #[test]
+    fn deserialize_missing_subtype_lands_in_unknown_with_missing_sentinel() {
+        // A `control_request` without `subtype` is wire corruption.
+        // The Deserialize impl distinguishes this from forward-compat
+        // drift by using the `<missing>` sentinel — pinned here so a
+        // future refactor can't silently flip back to `unwrap_or("")`
+        // without breaking a test.
+        let raw = json!({
+            "type": "control_request",
+            "request_id": "r1",
+            "request": {"some": "shape"}
+        });
+        let req: ControlRequest = serde_json::from_value(raw).expect("parse");
+        match req.request {
+            ControlRequestKind::Unknown { subtype, .. } => {
+                assert_eq!(
+                    subtype, "<missing>",
+                    "missing-subtype must use the explicit sentinel, not empty string"
+                );
+            }
+            other => panic!("expected ControlRequestKind::Unknown, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn deserialize_unrecognised_subtype_distinguishable_from_missing() {
+        // Pairs with the test above. A real-but-unknown subtype must
+        // round-trip its actual string into Unknown so debug logs +
+        // dispatcher branches can tell forward-compat drift from
+        // wire corruption.
+        let raw = json!({
+            "type": "control_request",
+            "request_id": "r1",
+            "request": {"subtype": "future_thing", "data": 1}
+        });
+        let req: ControlRequest = serde_json::from_value(raw).expect("parse");
+        match req.request {
+            ControlRequestKind::Unknown { subtype, .. } => {
+                assert_eq!(subtype, "future_thing");
+                assert_ne!(subtype, "<missing>");
+            }
+            other => panic!("expected ControlRequestKind::Unknown, got: {other:?}"),
+        }
+    }
 }
