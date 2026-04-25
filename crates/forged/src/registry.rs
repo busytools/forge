@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use parking_lot::Mutex;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 
 use crate::connection::{Connection, ConnectionId};
 use crate::session_state::{Command, SessionHandle, SessionId, SessionState};
@@ -33,6 +33,10 @@ pub struct DaemonState {
     /// the broadcast helper can address subscribers without holding the
     /// daemon-wide lock across send attempts.
     pub connections: Arc<Mutex<HashMap<ConnectionId, Connection>>>,
+    /// Outstanding reverse-RPC requests keyed by `rev_<uuid>` id. The
+    /// oneshot sender is consumed when the matching response arrives
+    /// (see `crate::reverse_rpc::resolve`).
+    pub outstanding_reverse: Arc<Mutex<HashMap<String, oneshot::Sender<serde_json::Value>>>>,
 }
 
 impl DaemonState {
@@ -52,6 +56,7 @@ impl DaemonState {
             connected_clients: Arc::new(Mutex::new(0)),
             sessions: Arc::new(Mutex::new(HashMap::new())),
             connections: Arc::new(Mutex::new(HashMap::new())),
+            outstanding_reverse: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 

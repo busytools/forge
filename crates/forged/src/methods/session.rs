@@ -7,6 +7,8 @@
 //! tasks would deadlock because [`forge_sdk::Client::next_event`]
 //! holds `&mut self` across subprocess I/O.
 
+use std::sync::Arc;
+
 use forge_sdk::agents::{EffortLevel, EffortPreset};
 use forge_sdk::{
     Client, Options, OptionsBuilder, PermissionMode, SdkPluginConfig, SystemPromptKind,
@@ -20,6 +22,7 @@ use uuid::Uuid;
 
 use crate::Error;
 use crate::registry::DaemonState;
+use crate::sdk_callbacks::WireHookSpec;
 use crate::session_state::{Command, SessionHandle, SessionId};
 
 /// Result of `session.spawn`.
@@ -39,21 +42,94 @@ pub struct SpawnResult {
 /// writes without holding the [`Client`] lock across blocking I/O. See
 /// the bridged-transport module docs for the full rationale.
 ///
+/// Wires in M4's reverse-RPC bridges before spawning:
+///   - [`ForgedPermissionBridge`](crate::sdk_callbacks::ForgedPermissionBridge)
+///     as `options.can_use_tool` — routes `permission.request` over
+///     reverse-RPC to the session's primary client.
+///   - One [`ForgedHookBridge`](crate::sdk_callbacks::ForgedHookBridge)
+///     per [`WireHookSpec`] in `params.hooks` — routes `hook.<kind>`
+///     over reverse-RPC.
+///
 /// # Errors
 ///
 /// Bubbles `forge_sdk::Error` for spawn failures.
-pub async fn spawn(state: &DaemonState, options: Options) -> Result<SpawnResult, Error> {
+pub async fn spawn(
+    state: &DaemonState,
+    params: impl Into<SpawnParams>,
+) -> Result<SpawnResult, Error> {
+    let SpawnParams {
+        mut options,
+        hooks: hook_specs,
+    } = params.into();
+
+    let session_id = SessionId(format!("sess_{}", Uuid::new_v4()));
+    let state_arc = Arc::new(state.clone());
+
+    // Attach the reverse-RPC permission bridge so `can_use_tool` over
+    // the wire goes through this session's primary client.
+    let perm_bridge =
+        crate::sdk_callbacks::ForgedPermissionBridge::new(state_arc.clone(), session_id.clone());
+    options.can_use_tool = Some(Arc::new(perm_bridge));
+
+    // Attach hook bridges per spec. Replaces any default-empty Hooks
+    // the wire deserialiser left behind.
+    if !hook_specs.is_empty() {
+        let hooks = crate::sdk_callbacks::attach_hooks(&state_arc, &session_id, &hook_specs)?;
+        options.hooks = hooks;
+    }
+
     let bridge = crate::bridged_transport::BridgedTransport::spawn(&options)
         .await
         .map_err(Error::Sdk)?;
     let client = Client::spawn_with_transport(options, Box::new(bridge))
         .await
         .map_err(Error::Sdk)?;
-    let session_id = SessionId(format!("sess_{}", Uuid::new_v4()));
     let (handle, rx) = state.register_session(session_id.clone());
     spawn_session_actor(state.clone(), &handle, client, rx);
     info!(session_id = %session_id.0, "session spawned");
     Ok(SpawnResult { session_id })
+}
+
+/// Parsed `session.spawn` params: the configured [`Options`] plus the
+/// hook-spec list (M4) used to attach
+/// [`ForgedHookBridge`](crate::sdk_callbacks::ForgedHookBridge) instances
+/// after the session id is minted.
+#[derive(Debug)]
+#[non_exhaustive]
+pub struct SpawnParams {
+    /// Configured options (sans `can_use_tool` and hooks; those land in
+    /// `spawn` once the session id exists so the bridges can carry it).
+    pub options: Options,
+    /// Hooks the client wants the daemon to register on this session.
+    pub hooks: Vec<WireHookSpec>,
+}
+
+impl SpawnParams {
+    /// Construct from raw [`Options`] with no hook registrations. Used by
+    /// tests + direct callers that don't go through the wire deserialiser.
+    #[must_use]
+    pub fn from_options(options: Options) -> Self {
+        Self {
+            options,
+            hooks: Vec::new(),
+        }
+    }
+}
+
+impl From<Options> for SpawnParams {
+    fn from(options: Options) -> Self {
+        Self::from_options(options)
+    }
+}
+
+// Deref so existing tests written against `Options`-returning
+// `parse_spawn_params` can continue to read fields like `opts.binary`
+// directly. The hooks list lives at `opts.hooks` separately.
+impl std::ops::Deref for SpawnParams {
+    type Target = Options;
+    fn deref(&self) -> &Options {
+        &self.options
+    }
 }
 
 /// Extract a stable per-message identifier when one exists. Used as the
@@ -143,6 +219,10 @@ pub struct SubscribeParams {
 /// this just adds `conn` to the subscriber list so the broadcast helper
 /// fans events to it.
 ///
+/// Surfaces any reverse-RPC prompts currently parked in the session's
+/// queue (M4) so the new client can answer them via `prompts.respond`
+/// without missing prompts that arrived before they connected.
+///
 /// # Errors
 ///
 /// `SessionNotFound` if the id is unknown.
@@ -167,10 +247,16 @@ pub fn subscribe(
         }
     }
 
+    let pending_views = handle.prompts.snapshot_for_wire();
+    let pending_prompts = pending_views
+        .into_iter()
+        .map(|v| serde_json::to_value(v).map_err(Error::Json))
+        .collect::<Result<Vec<_>, _>>()?;
+
     Ok(SubscribeResult {
         replayed: 0,
         live: true,
-        pending_prompts: Vec::new(),
+        pending_prompts,
     })
 }
 
@@ -450,6 +536,11 @@ struct WireOptions {
     max_buffer_size: Option<usize>,
     enable_file_checkpointing: bool,
     settings: Option<String>,
+    /// Hook registrations (M4). Each entry attaches a
+    /// [`ForgedHookBridge`](crate::sdk_callbacks::ForgedHookBridge) for
+    /// the given hook kind so the CLI's hook callbacks fan out over
+    /// reverse-RPC.
+    hooks: Vec<WireHookSpec>,
 }
 
 /// System-prompt wire shape. Mirrors [`forge_sdk::SystemPromptKind`].
@@ -524,7 +615,14 @@ enum WireEffort {
 }
 
 /// Parse the full `session.spawn` params into a configured
-/// [`forge_sdk::Options`]. Replaces the M2 stub.
+/// [`forge_sdk::Options`] plus the [`WireHookSpec`] list. Replaces the
+/// M2 stub.
+///
+/// Hooks are returned separately rather than baked into Options
+/// because their attachment depends on the session id (each
+/// [`ForgedHookBridge`](crate::sdk_callbacks::ForgedHookBridge) carries
+/// the session id as a field), and the session id is minted by `spawn`
+/// itself.
 ///
 /// # Errors
 ///
@@ -532,13 +630,14 @@ enum WireEffort {
 /// deserialisation, references an unknown enum variant (e.g. an
 /// unrecognised `permission_mode`), or carries an unknown field.
 #[allow(clippy::too_many_lines)] // one builder call per Options field by design
-pub fn parse_spawn_params(raw: &Value) -> Result<Options, Error> {
+pub fn parse_spawn_params(raw: &Value) -> Result<SpawnParams, Error> {
     let opts_v = raw
         .get("options")
         .cloned()
         .unwrap_or_else(|| serde_json::json!({}));
     let wire: WireOptions = serde_json::from_value(opts_v)
         .map_err(|e| Error::InvalidParams(format!("options: {e}")))?;
+    let hook_specs = wire.hooks.clone();
 
     let mut b = OptionsBuilder::new();
     if let Some(bin) = wire.binary {
@@ -701,7 +800,10 @@ pub fn parse_spawn_params(raw: &Value) -> Result<Options, Error> {
         b = b.settings(s);
     }
 
-    Ok(b.build())
+    Ok(SpawnParams {
+        options: b.build(),
+        hooks: hook_specs,
+    })
 }
 
 // =============================================================================

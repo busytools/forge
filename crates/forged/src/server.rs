@@ -125,7 +125,45 @@ async fn read_loop(
             }
         };
 
-        let req: Request = match serde_json::from_str(&text) {
+        // Peek at the JSON shape: a frame with no `method`, an `id`,
+        // and (`result` | `error`) is an inbound JSON-RPC response. If
+        // the id starts `rev_`, it's a reply to a daemon-issued
+        // reverse-RPC (M4) — route it to the resolver and continue
+        // without trying to parse as a Request.
+        let v: Value = match serde_json::from_str(&text) {
+            Ok(v) => v,
+            Err(e) => {
+                let _ = conn.outbound.send(Outbound::Response(Response::error(
+                    Value::Null,
+                    Error::ParseError(e.to_string()).to_jsonrpc(),
+                )));
+                continue;
+            }
+        };
+
+        let is_response = v.get("method").is_none()
+            && v.get("id").is_some()
+            && (v.get("result").is_some() || v.get("error").is_some());
+        if is_response {
+            let id = v.get("id").and_then(Value::as_str).unwrap_or("");
+            if id.starts_with("rev_") {
+                // Use `result` when present; on error responses pass an
+                // object containing the error payload so the SDK
+                // callback can decide how to handle it (currently
+                // permissive — wraps the error as the answer).
+                let value = v
+                    .get("result")
+                    .cloned()
+                    .or_else(|| v.get("error").cloned())
+                    .unwrap_or(Value::Null);
+                crate::reverse_rpc::resolve(state, id, value);
+            }
+            // Either we just resolved a reverse-RPC, or the id didn't
+            // match anything outstanding — both cases are silent.
+            continue;
+        }
+
+        let req: Request = match serde_json::from_value(v) {
             Ok(r) => r,
             Err(e) => {
                 let _ = conn.outbound.send(Outbound::Response(Response::error(
@@ -157,7 +195,7 @@ async fn dispatch(req: &Request, conn: &Connection, state: &DaemonState) -> Resp
                 .clone()
                 .unwrap_or_else(|| Value::Object(serde_json::Map::default()));
             match methods::session::parse_spawn_params(&raw) {
-                Ok(opts) => methods::session::spawn(state, opts)
+                Ok(params) => methods::session::spawn(state, params)
                     .await
                     .and_then(|r| serde_json::to_value(r).map_err(Error::Json)),
                 Err(e) => Err(e),
@@ -333,6 +371,12 @@ async fn dispatch(req: &Request, conn: &Connection, state: &DaemonState) -> Resp
                 .and_then(|r| serde_json::to_value(r).map_err(Error::Json)),
             Err(e) => Err(e),
         },
+        // ---- prompts.* (M4) ------------------------------------------------
+        "prompts.respond" => match parse_params::<PromptsRespondParams>(req.params.as_ref()) {
+            Ok(p) => methods::prompts::respond(state, &p.session_id, &p.prompt_id, p.result)
+                .map(|()| Value::Null),
+            Err(e) => Err(e),
+        },
         other => Err(Error::MethodNotFound(other.to_string())),
     };
     match result {
@@ -467,4 +511,11 @@ struct McpToggleParams {
     session_id: crate::session_state::SessionId,
     server_name: String,
     enabled: bool,
+}
+
+#[derive(serde::Deserialize)]
+struct PromptsRespondParams {
+    session_id: crate::session_state::SessionId,
+    prompt_id: String,
+    result: Value,
 }
