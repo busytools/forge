@@ -114,14 +114,14 @@ impl Client {
         // `agents` / `excludeDynamicSections` / `skills` — forge-sdk
         // matches byte-for-byte so the initialize frame looks identical
         // on the wire when the caller doesn't set any of them.
-        let agents_payload =
-            if options.agents.is_empty() {
-                None
-            } else {
-                Some(serde_json::to_value(&options.agents).map_err(|e| {
-                    Error::message_parse(format!("could not encode agents map: {e}"))
-                })?)
-            };
+        let agents_payload = if options.agents.is_empty() {
+            None
+        } else {
+            Some(
+                serde_json::to_value(&options.agents)
+                    .map_err(|e| Error::encode("agents map", e))?,
+            )
+        };
         // Concrete-list skills populate `initialize.skills`. `"all"` marker
         // travels via `--allowedTools` only and does NOT appear in the
         // initialize payload (matches Python SDK). An empty list is
@@ -189,7 +189,7 @@ impl Client {
             "request": serde_json::Value::Object(init_body),
         });
         let mut init_line = serde_json::to_string(&init_envelope)
-            .map_err(|e| Error::message_parse(format!("initialize encode: {e}")))?;
+            .map_err(|e| Error::encode("initialize body", e))?;
         init_line.push('\n');
 
         // **Send initialize FIRST.** The CLI in stream-json interactive

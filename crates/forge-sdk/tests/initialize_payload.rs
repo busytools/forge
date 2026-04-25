@@ -102,3 +102,28 @@ async fn skills_concrete_list_is_included() {
     assert_eq!(list[0], "create-story");
     assert_eq!(list[1], "other-skill");
 }
+
+#[test]
+fn initialize_body_field_order_matches_python_insertion_order() {
+    // Pins the wire-byte invariant: with `serde_json/preserve_order`
+    // enabled in the workspace, our `init_body` Map (which inserts
+    // `subtype` first, `hooks` second) must serialize with `subtype`
+    // BEFORE `hooks` to match Python SDK's insertion-ordered dict at
+    // `_internal/query.py:196-200`. Without preserve_order the
+    // default `BTreeMap` would sort alphabetically (`hooks` first),
+    // breaking the byte-identical-wire-compatibility invariant.
+    let mut init_body = serde_json::Map::new();
+    init_body.insert(
+        "subtype".into(),
+        serde_json::Value::String("initialize".into()),
+    );
+    init_body.insert("hooks".into(), serde_json::Value::Null);
+    let serialized = serde_json::to_string(&init_body).expect("serialize");
+    let subtype_idx = serialized.find("\"subtype\"").expect("subtype present");
+    let hooks_idx = serialized.find("\"hooks\"").expect("hooks present");
+    assert!(
+        subtype_idx < hooks_idx,
+        "expected subtype before hooks (preserve_order feature must be enabled), \
+         got: {serialized}"
+    );
+}
