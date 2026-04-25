@@ -152,7 +152,14 @@ pub fn query_stream(
         };
         if let Err(e) = client.send_user_message(&prompt).await {
             let _ = tx.send(Err(e));
-            let _ = client.disconnect().await;
+            // Surface a disconnect failure to the consumer too — a
+            // subprocess that exits non-zero on shutdown should not
+            // disappear silently. `let _ =` on the channel send is
+            // fine: if the receiver was dropped we have nothing useful
+            // to do with the error.
+            if let Err(e) = client.disconnect().await {
+                let _ = tx.send(Err(e));
+            }
             return;
         }
         loop {
@@ -174,7 +181,13 @@ pub fn query_stream(
                 }
             }
         }
-        let _ = client.disconnect().await;
+        // Same surface-disconnect-error treatment on the happy-path
+        // exit. Mirrors `query()`'s `client.disconnect().await?` —
+        // streaming consumers shouldn't be in a worse position than
+        // one-shot consumers when the subprocess fails to clean up.
+        if let Err(e) = client.disconnect().await {
+            let _ = tx.send(Err(e));
+        }
     });
     tokio_stream::wrappers::UnboundedReceiverStream::new(rx)
 }

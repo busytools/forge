@@ -69,6 +69,24 @@ pub enum Error {
         data: Option<serde_json::Value>,
     },
 
+    /// Forge-sdk failed to JSON-encode a local payload (initialize
+    /// envelope, `control_request` body, hook response, session
+    /// mutation entry, etc.). Distinct from
+    /// [`Error::MessageParse`], which is for parse failures on
+    /// data the CLI sent us — `Encode` is when *we* couldn't
+    /// serialise something locally and the bug is on the SDK or
+    /// caller side, not the CLI's. `context` names what we were
+    /// trying to encode (e.g. "agents map", "initialize body",
+    /// "user prompt").
+    #[error("forge-sdk failed to encode local {context}: {source}")]
+    Encode {
+        /// What we were trying to encode.
+        context: String,
+        /// The underlying serde error.
+        #[source]
+        source: serde_json::Error,
+    },
+
     /// Wrapping `std::io::Error` for convenience.
     #[error("I/O error: {0}")]
     Io(#[from] io::Error),
@@ -94,6 +112,18 @@ impl Error {
         Self::MessageParse {
             reason: reason.into(),
             data: Some(data),
+        }
+    }
+
+    /// Construct an [`Error::Encode`] for a local JSON encode
+    /// failure. Use this for `serde_json::to_string`/`to_value`
+    /// failures on data the SDK constructed, NOT for parse
+    /// failures on incoming CLI bytes.
+    #[must_use]
+    pub fn encode(context: impl Into<String>, source: serde_json::Error) -> Self {
+        Self::Encode {
+            context: context.into(),
+            source,
         }
     }
 }

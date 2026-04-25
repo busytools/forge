@@ -50,7 +50,7 @@ impl Client {
             "request": serde_json::Value::Object(request_body),
         });
         let mut line = serde_json::to_string(&envelope)
-            .map_err(|e| Error::message_parse(format!("control encode: {e}")))?;
+            .map_err(|e| Error::encode("control_request envelope", e))?;
         line.push('\n');
         self.sub.write_line(&line).await?;
 
