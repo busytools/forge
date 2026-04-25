@@ -21,20 +21,53 @@ use forge_conformance::session_redact::redact_session_path;
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().collect();
-    if args.len() != 3 {
+    let mut input: Option<std::path::PathBuf> = None;
+    let mut output: Option<std::path::PathBuf> = None;
+    let mut max_frames: Option<usize> = None;
+    let mut iter = args.iter().skip(1);
+    while let Some(a) = iter.next() {
+        match a.as_str() {
+            "--max-frames" => {
+                let Some(v) = iter.next() else {
+                    eprintln!("--max-frames needs a value");
+                    return ExitCode::from(2);
+                };
+                let Ok(n) = v.parse::<usize>() else {
+                    eprintln!("--max-frames: not a number: {v}");
+                    return ExitCode::from(2);
+                };
+                max_frames = Some(n);
+            }
+            other if other.starts_with('-') => {
+                eprintln!("unknown flag: {other}");
+                return ExitCode::from(2);
+            }
+            _ => {
+                if input.is_none() {
+                    input = Some(std::path::PathBuf::from(a));
+                } else if output.is_none() {
+                    output = Some(std::path::PathBuf::from(a));
+                } else {
+                    eprintln!("unexpected argument: {a}");
+                    return ExitCode::from(2);
+                }
+            }
+        }
+    }
+    let (Some(input), Some(output)) = (input, output) else {
         eprintln!(
-            "usage: {} <input-session.jsonl> <output-baseline.jsonl>\n\n\
+            "usage: {} [--max-frames N] <input-session.jsonl> <output-baseline.jsonl>\n\n\
              Transforms a Claude Code session persistence file into a \
              redacted, stream-json-shaped baseline suitable for \
-             commit under baselines/<PINNED_CLI_VERSION>/.",
+             commit under baselines/<PINNED_CLI_VERSION>/.\n\n\
+             --max-frames caps the number of frames written (handy for \
+             trimming a multi-megabyte session into a small fixture).",
             args.first().map_or("redact_session", String::as_str)
         );
         return ExitCode::from(2);
-    }
-    let input = std::path::PathBuf::from(&args[1]);
-    let output = std::path::PathBuf::from(&args[2]);
+    };
 
-    let (lines, summary) = match redact_session_path(&input) {
+    let (mut lines, summary) = match redact_session_path(&input) {
         Ok(x) => x,
         Err(e) => {
             eprintln!("redact failed: {e}");
@@ -42,6 +75,12 @@ fn main() -> ExitCode {
         }
     };
     eprintln!("{summary}");
+    if let Some(cap) = max_frames {
+        if lines.len() > cap {
+            eprintln!("trimming from {} frames to --max-frames={cap}", lines.len());
+            lines.truncate(cap);
+        }
+    }
 
     // Emit one `{"dir":"in","line":"..."}` entry per frame, matching
     // what `RecordingTransport` writes — the replay decoder consumes

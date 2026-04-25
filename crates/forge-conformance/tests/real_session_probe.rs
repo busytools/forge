@@ -33,7 +33,36 @@
 use std::path::{Path, PathBuf};
 
 use forge_conformance::session_redact::redact_session_file;
+use forge_sdk::Message;
+use forge_sdk::content::ContentBlock;
 use forge_sdk::transport::codec::{DecodedLine, decode_dispatch};
+
+/// Walk a decoded `Message` for any `ContentBlock::Unknown` variants
+/// and surface them as `(type_str, snippet)` pairs. The snippet is a
+/// short JSON preview of the unknown block so a TUI consumer (or
+/// human reading logs) can identify the shape without dumping the
+/// entire payload.
+fn unknown_content_blocks(msg: &Message) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    let blocks: Option<&[ContentBlock]> = match msg {
+        Message::Assistant { message, .. } => Some(&message.content),
+        Message::User { message, .. } => Some(&message.content),
+        _ => None,
+    };
+    if let Some(blocks) = blocks {
+        for block in blocks {
+            if let ContentBlock::Unknown { type_str, raw } = block {
+                let preview = serde_json::to_string(raw)
+                    .unwrap_or_default()
+                    .chars()
+                    .take(200)
+                    .collect();
+                out.push((type_str.clone(), preview));
+            }
+        }
+    }
+    out
+}
 
 fn jsonl_files_under(root: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
@@ -81,6 +110,7 @@ fn real_session_decode_probe() {
     let mut frames_decoded = 0_usize;
     let mut decode_errors: Vec<(PathBuf, usize, String)> = Vec::new();
     let mut unknown_types: Vec<(PathBuf, usize, String)> = Vec::new();
+    let mut unknown_blocks: Vec<(PathBuf, usize, String, String)> = Vec::new();
 
     for path in &files {
         files_seen += 1;
@@ -99,8 +129,14 @@ fn real_session_decode_probe() {
         for (idx, line) in transformed.iter().enumerate() {
             frames_tried += 1;
             match decode_dispatch(line, (idx + 1) as u64) {
-                Ok(DecodedLine::Unknown { type_str, .. }) => {
+                Ok(DecodedLine::Unknown { type_str, raw: _ }) => {
                     unknown_types.push((path.clone(), idx + 1, type_str));
+                }
+                Ok(DecodedLine::Message(msg)) => {
+                    frames_decoded += 1;
+                    for (block_type, preview) in unknown_content_blocks(&msg) {
+                        unknown_blocks.push((path.clone(), idx + 1, block_type, preview));
+                    }
                 }
                 Ok(_) => {
                     frames_decoded += 1;
@@ -114,12 +150,14 @@ fn real_session_decode_probe() {
 
     eprintln!(
         "real-session probe: files={} transform_failed={} \
-         frames_tried={} frames_decoded={} unknowns={} errors={}",
+         frames_tried={} frames_decoded={} unknown_top_types={} \
+         unknown_content_blocks={} errors={}",
         files_seen,
         files_transform_failed,
         frames_tried,
         frames_decoded,
         unknown_types.len(),
+        unknown_blocks.len(),
         decode_errors.len()
     );
 
@@ -134,13 +172,36 @@ fn real_session_decode_probe() {
         );
     }
     if !unknown_types.is_empty() {
-        eprintln!("\n--- unknown types seen (first 10) ---");
+        eprintln!("\n--- unknown TOP-LEVEL types seen (first 10) ---");
         for (path, line, ty) in unknown_types.iter().take(10) {
-            eprintln!("{}:{}: unknown type {ty}", path.display(), line);
+            eprintln!(
+                "  session={} line={} unknown type=\"{}\"",
+                path.display(),
+                line,
+                ty
+            );
         }
         eprintln!(
-            "note: unknown types are tolerated via DecodedLine::Unknown; \
+            "note: unknown top-level types are tolerated via DecodedLine::Unknown; \
              listed here so CLI-bump reviews spot new frame types"
+        );
+    }
+    if !unknown_blocks.is_empty() {
+        eprintln!("\n--- unknown CONTENT BLOCK types seen (first 10) ---");
+        for (path, line, block_type, preview) in unknown_blocks.iter().take(10) {
+            eprintln!(
+                "  session={}\n  line={} block_type=\"{}\" preview={}\n",
+                path.display(),
+                line,
+                block_type,
+                preview
+            );
+        }
+        eprintln!(
+            "note: unknown content blocks land in ContentBlock::Unknown; \
+             above logs identify session + line + content shape so a \
+             reviewer can promote the block to a typed variant if it's \
+             a known Anthropic API type."
         );
     }
 }
