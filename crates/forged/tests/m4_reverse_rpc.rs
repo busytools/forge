@@ -390,6 +390,199 @@ fn subscribe_returns_pending_prompts_in_response() {
 }
 
 // ============================================================================
+// M4 — reverse-RPC error response variant tests (fix #5/#10)
+//
+// Spec: when the answering client returns `{"error": {...}}` the server
+// dispatches via `resolve_error`, which wraps the error as
+// `{"_jsonrpc_error": <error-obj>}` so the SDK bridges can map to a
+// typed deny with reason. The daemon must distinguish "client denied"
+// from "client errored" in operator logs.
+// ============================================================================
+
+#[tokio::test]
+async fn rev_error_response_resolves_with_typed_jsonrpc_error_sentinel() {
+    use forged::registry::OutstandingEntry;
+    let state = Arc::new(forged::registry::DaemonState::new());
+    let sid = forged::session_state::SessionId("sess_err_1".into());
+    let _kept = state.register_session(sid.clone());
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    state.outstanding_reverse.lock().insert(
+        "rev_e1".into(),
+        OutstandingEntry {
+            session_id: sid,
+            conn_id: None,
+            responder: tx,
+        },
+    );
+
+    forged::reverse_rpc::resolve_error(
+        &state,
+        "rev_e1",
+        &serde_json::json!({"code": -32601, "message": "method not found"}),
+    );
+
+    let v = rx.await.unwrap();
+    let err = v
+        .get("_jsonrpc_error")
+        .expect("missing _jsonrpc_error sentinel");
+    assert_eq!(err["code"], serde_json::json!(-32601));
+    assert_eq!(err["message"], serde_json::json!("method not found"));
+}
+
+#[tokio::test]
+async fn rev_error_with_arbitrary_code_carries_through_unchanged() {
+    use forged::registry::OutstandingEntry;
+    let state = Arc::new(forged::registry::DaemonState::new());
+    let sid = forged::session_state::SessionId("sess_err_2".into());
+    let _kept = state.register_session(sid.clone());
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    state.outstanding_reverse.lock().insert(
+        "rev_e2".into(),
+        OutstandingEntry {
+            session_id: sid,
+            conn_id: None,
+            responder: tx,
+        },
+    );
+
+    forged::reverse_rpc::resolve_error(
+        &state,
+        "rev_e2",
+        &serde_json::json!({"code": -1, "message": "x"}),
+    );
+
+    let v = rx.await.unwrap();
+    let err = v.get("_jsonrpc_error").unwrap();
+    assert_eq!(err["code"], serde_json::json!(-1));
+}
+
+#[tokio::test]
+async fn rev_value_null_resolves_to_typed_deny_via_unknown_decision() {
+    // Value::Null is not a `_jsonrpc_error`, not a `_client_disconnected`,
+    // not a `_session_closed` sentinel, and not an `{decision: ...}` shape.
+    // The bridge must surface it as a deny with "unknown decision".
+    let value = serde_json::Value::Null;
+    let decision = decode_perm_decision_from_value(&value);
+    assert!(!decision.is_allow(), "expected deny");
+}
+
+#[tokio::test]
+async fn rev_value_decision_42_resolves_to_typed_deny() {
+    // {"decision": 42} — string-required field is a number.
+    let value = serde_json::json!({"decision": 42});
+    let decision = decode_perm_decision_from_value(&value);
+    assert!(!decision.is_allow());
+}
+
+#[tokio::test]
+async fn rev_value_empty_object_resolves_to_typed_deny() {
+    // {} — no decision key at all. Wire shape default is "deny".
+    let value = serde_json::json!({});
+    let decision = decode_perm_decision_from_value(&value);
+    assert!(!decision.is_allow());
+}
+
+#[tokio::test]
+async fn rev_value_missing_decision_key_resolves_to_typed_deny() {
+    // {"reason": "..."} — only `reason`, no `decision` key.
+    let value = serde_json::json!({"reason": "no decision present"});
+    let decision = decode_perm_decision_from_value(&value);
+    assert!(!decision.is_allow());
+    assert_eq!(decision.reason(), Some("no decision present"));
+}
+
+/// Test helper: replays the permission-bridge `decode_*` logic
+/// against a raw value and returns the resulting [`PermissionDecision`].
+/// Mirrors the wire-shape branch in `ForgedPermissionBridge::issue_and_decode`
+/// without going through reverse-RPC issuance.
+fn decode_perm_decision_from_value(value: &serde_json::Value) -> forge_sdk::PermissionDecision {
+    use forge_sdk::PermissionDecision;
+    if let Some(err) = value.get("_jsonrpc_error") {
+        let code = err
+            .get("code")
+            .and_then(serde_json::Value::as_i64)
+            .unwrap_or(-1);
+        let message = err
+            .get("message")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("");
+        return PermissionDecision::deny(format!("client error {code}: {message}"));
+    }
+    if value.get("_client_disconnected").is_some() {
+        return PermissionDecision::deny(String::from(
+            "answering client disconnected before responding",
+        ));
+    }
+    if value.get("_session_closed").is_some() {
+        return PermissionDecision::deny(String::from("session closed before prompt answered"));
+    }
+    let decision_str = value
+        .get("decision")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("deny");
+    let updated_input = value.get("updated_input").cloned();
+    let reason = value
+        .get("reason")
+        .and_then(serde_json::Value::as_str)
+        .map(String::from);
+    match (decision_str, updated_input) {
+        ("allow", None) => PermissionDecision::allow(),
+        ("allow", Some(updates)) => PermissionDecision::allow_with_input(updates),
+        ("deny", _) => PermissionDecision::deny(reason.unwrap_or_default()),
+        (other, _) => PermissionDecision::deny(format!("unknown decision: {other}")),
+    }
+}
+
+// ============================================================================
+// Fix #4: prompts.expired on disconnect
+// ============================================================================
+
+/// When the answering primary disconnects mid-prompt, the parked
+/// reverse-RPC must unblock within ~50ms (synthetic
+/// `_client_disconnected` answer), NOT the full 1h timeout.
+#[tokio::test]
+async fn outstanding_reverse_unblocks_when_answering_conn_disconnects() {
+    use forged::registry::OutstandingEntry;
+    let state = Arc::new(forged::registry::DaemonState::new());
+    let sid = forged::session_state::SessionId("sess_disc".into());
+    let _kept = state.register_session(sid.clone());
+
+    let (out_tx, _out_rx) = tokio::sync::mpsc::unbounded_channel();
+    let conn = forged::connection::Connection::new(
+        forged::connection::ConnectionId("conn_disc".into()),
+        out_tx,
+    );
+    state.register_connection(conn.clone());
+
+    // Manually wire an OutstandingEntry whose conn_id points at this
+    // conn — mimicking what `try_send_to_primary` would do once the
+    // request is in flight.
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    state.outstanding_reverse.lock().insert(
+        "rev_disc".into(),
+        OutstandingEntry {
+            session_id: sid.clone(),
+            conn_id: Some(conn.id.clone()),
+            responder: tx,
+        },
+    );
+
+    // Disconnect — this must drain the outstanding entry and resolve
+    // the responder with the synthetic `_client_disconnected` answer.
+    let _ = state.unregister_connection(&conn.id);
+
+    let value = tokio::time::timeout(Duration::from_millis(50), rx)
+        .await
+        .expect("disconnect did not unblock outstanding rev within 50ms")
+        .expect("oneshot dropped without value");
+    assert_eq!(
+        value.get("_client_disconnected"),
+        Some(&serde_json::json!(true)),
+        "expected synthetic _client_disconnected answer, got {value}"
+    );
+}
+
+// ============================================================================
 // End-to-end: WS dispatch routes inbound rev_ responses to the resolver
 // ============================================================================
 

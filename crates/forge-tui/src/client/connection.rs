@@ -54,19 +54,36 @@ pub type Result<T> = std::result::Result<T, ClientError>;
 type ResponseTable = Arc<Mutex<HashMap<String, oneshot::Sender<serde_json::Value>>>>;
 type SubscriptionTable = Arc<Mutex<HashMap<String, mpsc::UnboundedSender<serde_json::Value>>>>;
 
-/// Reverse-RPC handler. Receives `(rev_id, params)` and returns a
-/// future that yields the response value to send back.
-///
-/// The id is forwarded so the handler (or whatever it forwards the
-/// request to) can later answer asynchronously via
-/// [`Client::send_response`] — useful for surfacing requests through a
-/// UI loop where the answer comes from a user keypress, not from the
-/// handler's own future.
-pub type ReverseRpcHandler = Arc<
-    dyn Fn(serde_json::Value, serde_json::Value) -> tokio::task::JoinHandle<serde_json::Value>
-        + Send
-        + Sync,
->;
+/// One inbound JSON-RPC notification not routed to a per-session
+/// subscription channel. Returned by [`Client::notifications`] so the
+/// app loop can fan `session.role_assigned`, `session.primary_changed`,
+/// `session.closed`, `prompts.expired` (etc.) into the right
+/// `AppEvent` variants.
+#[derive(Debug, Clone)]
+pub struct NotificationFrame {
+    /// JSON-RPC method name, e.g. `session.role_assigned`.
+    pub method: String,
+    /// `params` payload as it arrived on the wire.
+    pub params: serde_json::Value,
+}
+
+/// Reverse-RPC handler dispatch mode.
+enum ReverseHandlerKind {
+    /// Sync: handler returns the answer; the dispatcher awaits and
+    /// auto-replies via `send_response`. Use for hooks that auto-allow.
+    Sync(SyncHandlerArc),
+    /// Deferred: handler is responsible for arranging the eventual
+    /// `send_response` itself (e.g. by surfacing the request to a UI
+    /// loop and answering on a keypress).
+    Deferred(DeferredHandlerArc),
+}
+
+type BoxedSyncFut = std::pin::Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send>>;
+type BoxedDeferredFut = std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>;
+type SyncHandlerArc =
+    Arc<dyn Fn(serde_json::Value, serde_json::Value) -> BoxedSyncFut + Send + Sync>;
+type DeferredHandlerArc =
+    Arc<dyn Fn(serde_json::Value, serde_json::Value) -> BoxedDeferredFut + Send + Sync>;
 
 /// Forge-tui WebSocket client.
 ///
@@ -76,7 +93,18 @@ pub struct Client {
     out_tx: mpsc::UnboundedSender<String>,
     responses: ResponseTable,
     subscriptions: SubscriptionTable,
-    reverse_handlers: Arc<Mutex<HashMap<String, ReverseRpcHandler>>>,
+    reverse_handlers: Arc<Mutex<HashMap<String, ReverseHandlerKind>>>,
+    /// Sender side of the notifications channel. Held on the client so
+    /// a) every clone keeps the channel alive (without this, dropping
+    /// the original `Client` would close the receiver while clones are
+    /// still using `client.call()`); b) the field exists for symmetry
+    /// with `out_tx` even though the read loop is the only sender.
+    #[allow(dead_code, reason = "kept-alive sender; never read directly")]
+    notifications_tx: mpsc::UnboundedSender<NotificationFrame>,
+    /// One-shot consumer for the receiver. Wrapped so [`Client`] is
+    /// `Clone` — only the first call to [`Client::notifications`]
+    /// returns Some, subsequent calls return None.
+    notifications_rx: Arc<Mutex<Option<mpsc::UnboundedReceiver<NotificationFrame>>>>,
 }
 
 impl Client {
@@ -94,6 +122,7 @@ impl Client {
         let responses: ResponseTable = Arc::new(Mutex::new(HashMap::new()));
         let subscriptions: SubscriptionTable = Arc::new(Mutex::new(HashMap::new()));
         let reverse_handlers = Arc::new(Mutex::new(HashMap::new()));
+        let (notifications_tx, notifications_rx) = mpsc::unbounded_channel::<NotificationFrame>();
 
         let (sink, stream) = ws.split();
 
@@ -107,6 +136,7 @@ impl Client {
             subscriptions.clone(),
             reverse_handlers.clone(),
             out_tx.clone(),
+            notifications_tx.clone(),
         ));
 
         Ok(Self {
@@ -114,7 +144,20 @@ impl Client {
             responses,
             subscriptions,
             reverse_handlers,
+            notifications_tx,
+            notifications_rx: Arc::new(Mutex::new(Some(notifications_rx))),
         })
+    }
+
+    /// Take ownership of the unrouted-notifications receiver. Callable
+    /// once per [`Client`] instance — the second call returns `None`.
+    /// Drains [`NotificationFrame`]s for any inbound notification not
+    /// routed to a per-session subscription channel
+    /// (`session.role_assigned`, `session.primary_changed`,
+    /// `session.closed`, `prompts.expired`, etc.).
+    #[must_use]
+    pub fn notifications(&self) -> Option<mpsc::UnboundedReceiver<NotificationFrame>> {
+        self.notifications_rx.lock().take()
     }
 
     /// Issue a JSON-RPC request and await the result, deserialised as `R`.
@@ -183,27 +226,78 @@ impl Client {
         Ok(tokio_stream::wrappers::UnboundedReceiverStream::new(rx))
     }
 
-    /// Register a reverse-RPC handler.
+    /// Register a reverse-RPC handler. Back-compat alias for
+    /// [`Client::on_reverse_rpc_deferred`] — the handler returns its
+    /// answer asynchronously via [`Client::send_response`] from
+    /// elsewhere (e.g. a UI keypress).
     ///
-    /// `method` is the full method name (e.g. `permission.request`,
-    /// `hook.pre_tool_use`). The handler is invoked with `(rev_id, params)`
-    /// — the `rev_id` is forwarded so handlers wanting to defer the answer
-    /// (e.g. into a UI loop) can record it and later call
-    /// [`Client::send_response`] from elsewhere; handlers that compute the
-    /// answer synchronously can return it directly from the future.
+    /// **Caveat:** the returned future's value is IGNORED. Use
+    /// [`Client::on_reverse_rpc_sync`] for handlers that produce the
+    /// answer themselves (auto-allow hooks, etc.). The
+    /// `Output = serde_json::Value` shape here is a vestige from the
+    /// original API; the returned value is dropped because the
+    /// dispatcher cannot tell whether the future intends to "be the
+    /// answer" or "register handler state and let `send_response` do
+    /// the work." `_sync` and `_deferred` make the intent explicit.
     pub fn on_reverse_rpc<F, Fut>(&self, method: impl Into<String>, handler: F)
     where
         F: Fn(serde_json::Value, serde_json::Value) -> Fut + Send + Sync + 'static,
         Fut: std::future::Future<Output = serde_json::Value> + Send + 'static,
     {
+        // Wrap so the handler's return value is dropped — back-compat
+        // shape, captures the historical behaviour where the returned
+        // future was implicitly fire-and-forget. New code should pick
+        // `_sync` or `_deferred` explicitly.
         let h = Arc::new(handler);
-        let wrapped: ReverseRpcHandler = Arc::new(
-            move |rev_id: serde_json::Value, params: serde_json::Value| {
-                let h = h.clone();
-                tokio::spawn(async move { (h)(rev_id, params).await })
-            },
-        );
-        self.reverse_handlers.lock().insert(method.into(), wrapped);
+        self.on_reverse_rpc_deferred(method, move |rev_id, params| {
+            let h = h.clone();
+            async move {
+                let _ = (h)(rev_id, params).await;
+            }
+        });
+    }
+
+    /// Register a SYNC reverse-RPC handler. The handler computes and
+    /// returns the answer; the dispatcher awaits the future and
+    /// auto-replies via [`Client::send_response`] using the captured
+    /// `rev_id`. Use for hooks that auto-allow (the answer is fully
+    /// known at request time, no UI involvement).
+    pub fn on_reverse_rpc_sync<F, Fut>(&self, method: impl Into<String>, handler: F)
+    where
+        F: Fn(serde_json::Value, serde_json::Value) -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<Output = serde_json::Value> + Send + 'static,
+    {
+        let h = Arc::new(handler);
+        let wrapped = Arc::new(move |rev_id, params| {
+            let h = h.clone();
+            let fut = (h)(rev_id, params);
+            Box::pin(fut)
+                as std::pin::Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send>>
+        });
+        self.reverse_handlers
+            .lock()
+            .insert(method.into(), ReverseHandlerKind::Sync(wrapped));
+    }
+
+    /// Register a DEFERRED reverse-RPC handler. The handler arranges
+    /// the eventual `send_response` itself (e.g. by surfacing the
+    /// request to a UI loop and answering on a keypress); the
+    /// dispatcher does NOT auto-reply. Use for `permission.request`
+    /// where the answer comes from the user, not the handler.
+    pub fn on_reverse_rpc_deferred<F, Fut>(&self, method: impl Into<String>, handler: F)
+    where
+        F: Fn(serde_json::Value, serde_json::Value) -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<Output = ()> + Send + 'static,
+    {
+        let h = Arc::new(handler);
+        let wrapped = Arc::new(move |rev_id, params| {
+            let h = h.clone();
+            let fut = (h)(rev_id, params);
+            Box::pin(fut) as std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>
+        });
+        self.reverse_handlers
+            .lock()
+            .insert(method.into(), ReverseHandlerKind::Deferred(wrapped));
     }
 
     /// Send a JSON-RPC response for a previously-received reverse-RPC
@@ -247,14 +341,25 @@ async fn read_loop(
     mut stream: SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>,
     responses: ResponseTable,
     subscriptions: SubscriptionTable,
-    reverse_handlers: Arc<Mutex<HashMap<String, ReverseRpcHandler>>>,
+    reverse_handlers: Arc<Mutex<HashMap<String, ReverseHandlerKind>>>,
     out_tx: mpsc::UnboundedSender<String>,
+    notifications_tx: mpsc::UnboundedSender<NotificationFrame>,
 ) {
     while let Some(msg) = stream.next().await {
-        let Ok(WsMsg::Text(text)) = msg else { continue };
+        let text = match msg {
+            Ok(WsMsg::Text(t)) => t,
+            Ok(_) => continue,
+            Err(e) => {
+                tracing::warn!(error = %e, "ws recv failed; stopping read loop");
+                break;
+            }
+        };
         let v: serde_json::Value = match serde_json::from_str(&text) {
             Ok(v) => v,
-            Err(_) => continue,
+            Err(e) => {
+                tracing::warn!(error = %e, line = %text, "ws frame failed to parse as JSON");
+                continue;
+            }
         };
 
         // Response (no method, has id, has result|error).
@@ -281,12 +386,43 @@ async fn read_loop(
         if v.get("id").is_some() {
             // Reverse-RPC request from the daemon.
             let rev_id = v.get("id").cloned().unwrap_or(serde_json::Value::Null);
-            let handler = reverse_handlers.lock().get(&method).cloned();
-            if let Some(h) = handler {
-                // Fire-and-forget: the handler is responsible for sending the
-                // response back via `Client::send_response`. We still spawn it
-                // to keep the read loop free of blocking work.
-                drop(h(rev_id, params));
+            let handler = reverse_handlers.lock().get(&method).cloned_kind();
+            if let Some(kind) = handler {
+                match kind {
+                    ReverseHandlerKind::Sync(h) => {
+                        let out_tx = out_tx.clone();
+                        let rev_id_clone = rev_id.clone();
+                        tokio::spawn(async move {
+                            let answer = (h)(rev_id_clone.clone(), params).await;
+                            let resp = serde_json::json!({
+                                "jsonrpc": "2.0",
+                                "id": rev_id_clone,
+                                "result": answer,
+                            });
+                            match serde_json::to_string(&resp) {
+                                Ok(s) => {
+                                    if out_tx.send(s).is_err() {
+                                        tracing::warn!(
+                                            "reverse-RPC sync handler: outbound channel closed; cannot send response"
+                                        );
+                                    }
+                                }
+                                Err(e) => {
+                                    tracing::warn!(error = %e, "reverse-RPC sync handler: serialize failed");
+                                }
+                            }
+                        });
+                    }
+                    ReverseHandlerKind::Deferred(h) => {
+                        // Fire-and-forget: the handler is responsible
+                        // for sending the response back via
+                        // `Client::send_response`. We spawn it to keep
+                        // the read loop free of blocking work.
+                        tokio::spawn(async move {
+                            (h)(rev_id, params).await;
+                        });
+                    }
+                }
             } else {
                 // No handler — respond with method-not-found.
                 let resp = serde_json::json!({
@@ -304,11 +440,30 @@ async fn read_loop(
                 if let Some(sid) = params.get("session_id").and_then(|s| s.as_str()) {
                     if let Some(tx) = subscriptions.lock().get(sid) {
                         let _ = tx.send(params);
+                        continue;
                     }
                 }
             }
-            // Other notifications are dropped here; the App layer can
-            // observe them via separate channels (added in the app loop).
+            // Anything else (role_assigned, primary_changed, closed,
+            // prompts.expired, …) goes to the Client-wide
+            // notifications channel for the app layer to drain.
+            let _ = notifications_tx.send(NotificationFrame { method, params });
         }
+    }
+}
+
+// Helper: clone the inner handler out of a borrow without making
+// `ReverseHandlerKind` itself Clone (the inner Arc trait objects
+// already provide cheap clones).
+trait OptionExt {
+    fn cloned_kind(self) -> Option<ReverseHandlerKind>;
+}
+
+impl OptionExt for Option<&ReverseHandlerKind> {
+    fn cloned_kind(self) -> Option<ReverseHandlerKind> {
+        self.map(|k| match k {
+            ReverseHandlerKind::Sync(h) => ReverseHandlerKind::Sync(h.clone()),
+            ReverseHandlerKind::Deferred(h) => ReverseHandlerKind::Deferred(h.clone()),
+        })
     }
 }

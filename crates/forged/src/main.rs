@@ -50,6 +50,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 None => config.bind.clone(),
             };
 
+            // Warn loud and clear on non-loopback binds — forged has no
+            // app-layer auth in this milestone; anyone with network
+            // access to the listening port can drive `session.spawn`
+            // and run arbitrary commands. Loopback / WireGuard mesh is
+            // the only trust boundary today.
+            for bind in &binds {
+                if !is_loopback_bind(bind) {
+                    tracing::warn!(
+                        %bind,
+                        "non-loopback bind without app-layer auth — anyone with network access can run arbitrary commands via session.spawn. WireGuard mesh is the only trust boundary."
+                    );
+                }
+            }
+
             let mut handles = Vec::with_capacity(binds.len());
             for bind in binds {
                 let listener = TcpListener::bind(&bind).await?;
@@ -74,4 +88,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Ok(())
         }
     }
+}
+
+/// Heuristic check — is this bind address loopback-only? We strip the
+/// optional `host:port` form and consult the literal prefix; explicit
+/// IPv6 brackets are honoured (`[::1]:N`).
+fn is_loopback_bind(bind: &str) -> bool {
+    bind.starts_with("127.")
+        || bind.starts_with("[::1]")
+        || bind.starts_with("localhost")
+        || bind.starts_with("[::1")
 }

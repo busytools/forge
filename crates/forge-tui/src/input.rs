@@ -10,15 +10,25 @@
 use std::sync::Arc;
 
 use crossterm::event::KeyCode;
+use tokio::sync::mpsc;
 
-use crate::app::{App, Focus, Role};
+use crate::app::{App, AppEvent, Focus, Role};
 use crate::client::Client;
 
 /// Handle a key press.
 ///
 /// Returns `Some(true)` to quit; `Some(false)` to keep running with
 /// state updated; `None` if the key was unhandled.
-pub async fn handle_key(app: &mut App, key: KeyCode, client: &Arc<Client>) -> Option<bool> {
+///
+/// `event_tx` is forwarded to the Enter-on-session-list path so the
+/// background subscription pump can post `AppEvent::SessionFrame` back
+/// into the app loop. Other paths don't need it.
+pub async fn handle_key(
+    app: &mut App,
+    key: KeyCode,
+    client: &Arc<Client>,
+    event_tx: &mpsc::UnboundedSender<AppEvent>,
+) -> Option<bool> {
     if let Focus::PermissionModal = app.focus {
         match key {
             KeyCode::Char('a') => {
@@ -69,16 +79,29 @@ pub async fn handle_key(app: &mut App, key: KeyCode, client: &Arc<Client>) -> Op
                     let sid_owned = sid.to_string();
                     app.current_session = Some(sid_owned.clone());
                     app.focus = Focus::Conversation;
-                    // Subscribe (fire-and-forget — the App receives events via
-                    // the channel routed through the WS read loop).
+                    // Subscribe via `Client::subscribe_session` so the
+                    // returned mpsc gets pumped through `event_tx` as
+                    // `AppEvent::SessionFrame`. Calling
+                    // `client.call("session.subscribe", ...)` directly
+                    // would issue the daemon RPC but skip the local
+                    // mpsc registration — every notification would be
+                    // silently dropped by the read loop.
                     let client = client.clone();
+                    let event_tx = event_tx.clone();
                     tokio::spawn(async move {
-                        let _ = client
-                            .call::<_, serde_json::Value>(
-                                "session.subscribe",
-                                serde_json::json!({"session_id": sid_owned}),
-                            )
-                            .await;
+                        match client.subscribe_session(&sid_owned).await {
+                            Ok(mut stream) => {
+                                use futures_util::StreamExt;
+                                while let Some(frame) = stream.next().await {
+                                    if event_tx.send(AppEvent::SessionFrame(frame)).is_err() {
+                                        break;
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                tracing::warn!(error = %e, sid = %sid_owned, "session.subscribe failed");
+                            }
+                        }
                     });
                 }
             }

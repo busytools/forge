@@ -18,7 +18,7 @@ use crate::Error;
 use crate::connection::Outbound;
 use crate::jsonrpc::{Notification, Request};
 use crate::prompt_queue::{PendingPrompt, PromptKind};
-use crate::registry::DaemonState;
+use crate::registry::{DaemonState, OutstandingEntry};
 use crate::session_state::SessionId;
 
 /// Internal helper — try to send the reverse-RPC to the primary's
@@ -58,10 +58,14 @@ fn try_send_to_primary(
     };
     // Stash the responder before sending so we don't race with the
     // response arriving before we record the awaiter.
-    state
-        .outstanding_reverse
-        .lock()
-        .insert(rev_id.to_owned(), tx);
+    state.outstanding_reverse.lock().insert(
+        rev_id.to_owned(),
+        OutstandingEntry {
+            session_id: session_id.clone(),
+            conn_id: Some(pid.clone()),
+            responder: tx,
+        },
+    );
     let req = Request::new(
         method,
         serde_json::json!({
@@ -77,8 +81,8 @@ fn try_send_to_primary(
     // Channel closed — peel back the responder so it isn't leaked in
     // `outstanding_reverse`. Return ownership to the caller so it can
     // park the prompt in the queue instead.
-    if let Some(stale_tx) = state.outstanding_reverse.lock().remove(rev_id) {
-        Err(stale_tx)
+    if let Some(stale) = state.outstanding_reverse.lock().remove(rev_id) {
+        Err(stale.responder)
     } else {
         // Already taken by something else racing us — this branch
         // should be unreachable in practice because `resolve()` would
@@ -87,6 +91,116 @@ fn try_send_to_primary(
         // ownership-transfer contract honest.
         let (new_tx, _) = oneshot::channel();
         Err(new_tx)
+    }
+}
+
+/// Bag of inputs to [`park_in_queue`] — keeps clippy happy about
+/// argument count without ceremony.
+struct ParkArgs<'a> {
+    state: &'a DaemonState,
+    session_id: &'a SessionId,
+    rev_id: &'a str,
+    prompt_id: &'a str,
+    kind: PromptKind,
+    params: Value,
+    timeout: Duration,
+    tx: oneshot::Sender<Value>,
+}
+
+/// Park a prompt in the per-session queue. Records an outstanding-entry
+/// with no `conn_id` — disconnect cleanup will leave it untouched (no
+/// answering connection to track). The prompt is removed from
+/// `outstanding_reverse` when `prompts.respond` resolves it via
+/// [`resolve`] / [`crate::methods::prompts::respond`].
+fn park_in_queue(args: ParkArgs<'_>) {
+    let ParkArgs {
+        state,
+        session_id,
+        rev_id,
+        prompt_id,
+        kind,
+        params,
+        timeout,
+        tx,
+    } = args;
+    let Some(handle) = state.get_session(session_id) else {
+        return;
+    };
+    // Use a fresh oneshot for the queue's responder so disconnect
+    // cleanup of `outstanding_reverse` and queue-driven `prompts.respond`
+    // each have their own independent sender. Wire them through a
+    // bridging oneshot so whichever resolves first carries the answer
+    // back to the SDK callback.
+    let (queue_tx, queue_rx) = oneshot::channel::<Value>();
+    handle.prompts.enqueue(PendingPrompt {
+        prompt_id: prompt_id.to_owned(),
+        kind,
+        issued_at: SystemTime::now(),
+        expires_at: SystemTime::now() + timeout,
+        params,
+        responder: queue_tx,
+    });
+    // Stash the outstanding entry so `prompts.respond` (which calls
+    // `resolve(rev_id)`) drains it. Connection-disconnect cleanup
+    // skips it because `conn_id` is None.
+    state.outstanding_reverse.lock().insert(
+        rev_id.to_owned(),
+        OutstandingEntry {
+            session_id: session_id.clone(),
+            conn_id: None,
+            responder: tx,
+        },
+    );
+    // Forward the queue's answer (when prompts.respond fires) into the
+    // SDK responder. Spawned task keeps the wiring out of the hot path.
+    let rev_owned = rev_id.to_owned();
+    let state_clone = state.clone();
+    tokio::spawn(async move {
+        if let Ok(v) = queue_rx.await {
+            // Resolve via the public API so resolve() removes the
+            // outstanding entry; the responder may already be gone if
+            // disconnect cleanup beat us to it (synthetic
+            // `_client_disconnected` answer), in which case the send
+            // from `resolve` is a silent no-op.
+            resolve(&state_clone, &rev_owned, v);
+        }
+    });
+}
+
+/// Notify a session's subscribers that one or more pending prompts
+/// have expired because the conn that was answering them disconnected.
+/// Called from the WS read loop's connection-cleanup path.
+pub fn notify_disconnect_expired(state: &DaemonState, session_id: &SessionId, prompt_id: &str) {
+    let frame = Outbound::Notification(Notification::new(
+        "prompts.expired",
+        serde_json::json!({
+            "session_id": session_id.0,
+            "prompt_id": prompt_id,
+            "reason": "session_closed",
+            "fallback": "deny",
+        }),
+    ));
+    crate::broadcast::fanout(state, session_id, &frame);
+}
+
+/// Drain every pending prompt in the session's queue and emit
+/// `prompts.expired` for each. Called when the session actor exits
+/// (any reason). Each parked prompt gets a synthetic
+/// `_session_closed: true` answer so the SDK callback unblocks.
+pub fn drain_prompts_on_session_exit(state: &DaemonState, session_id: &SessionId) {
+    let Some(handle) = state.get_session(session_id) else {
+        return;
+    };
+    // Snapshot ids first so we can iterate without holding the queue
+    // mutex across the responder.send + broadcast.
+    let ids = handle.prompts.snapshot();
+    for prompt_id in ids {
+        if let Some(p) = handle.prompts.take(&prompt_id) {
+            let _ = p.responder.send(serde_json::json!({
+                "_session_closed": true,
+            }));
+        }
+        notify_disconnect_expired(state, session_id, &prompt_id);
     }
 }
 
@@ -124,15 +238,19 @@ pub async fn issue_to_primary(
 
     if let Err(returned_tx) = send_result {
         // No primary OR primary's channel is closed — park in queue.
-        let prompt = PendingPrompt {
-            prompt_id: prompt_id.clone(),
+        // Use the helper so the outstanding-entry table also reflects
+        // the parked state (with conn_id=None so disconnect cleanup
+        // skips it).
+        park_in_queue(ParkArgs {
+            state,
+            session_id,
+            rev_id: &rev_id,
+            prompt_id: &prompt_id,
             kind,
-            issued_at: SystemTime::now(),
-            expires_at: SystemTime::now() + timeout,
             params,
-            responder: returned_tx,
-        };
-        handle.prompts.enqueue(prompt);
+            timeout,
+            tx: returned_tx,
+        });
     }
 
     match tokio::time::timeout(timeout, rx).await {
@@ -170,7 +288,34 @@ pub async fn issue_to_primary(
 /// server's read loop when an inbound JSON-RPC response arrives whose
 /// id matches an outstanding entry.
 pub fn resolve(state: &DaemonState, rev_id: &str, value: Value) {
-    if let Some(tx) = state.outstanding_reverse.lock().remove(rev_id) {
-        let _ = tx.send(value);
+    if let Some(entry) = state.outstanding_reverse.lock().remove(rev_id) {
+        let _ = entry.responder.send(value);
+    }
+}
+
+/// Resolve an outstanding reverse-RPC with a typed JSON-RPC error
+/// payload. Called when the client returns a `{"error": {...}}` shape
+/// instead of `{"result": ...}`. Wraps the error in a sentinel object
+/// the SDK bridges decode as a deny:
+///
+/// ```json
+/// {"_jsonrpc_error": {"code": -32601, "message": "..."}}
+/// ```
+///
+/// The bridges' `decode_*` paths recognise the `_jsonrpc_error` key
+/// and surface a deny with the supplied code+message in the reason —
+/// operators get to distinguish "client said deny" from "client
+/// errored" in logs and audit.
+pub fn resolve_error(state: &DaemonState, rev_id: &str, error_obj: &Value) {
+    let code = error_obj.get("code").and_then(Value::as_i64).unwrap_or(-1);
+    let message = error_obj
+        .get("message")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    tracing::warn!(rev_id, code, message, "reverse-RPC client error");
+    if let Some(entry) = state.outstanding_reverse.lock().remove(rev_id) {
+        let _ = entry.responder.send(serde_json::json!({
+            "_jsonrpc_error": error_obj,
+        }));
     }
 }

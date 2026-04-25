@@ -50,6 +50,12 @@ pub enum AppEvent {
     },
     /// `role_assigned` notification — local primary/viewer state changed.
     RoleChanged(serde_json::Value),
+    /// `primary_changed` notification — daemon reports the primary slot
+    /// for some session has been claimed/cleared.
+    PrimaryChanged(serde_json::Value),
+    /// `session.closed` notification — daemon emits when the session
+    /// actor exits (any reason). Carries `{session_id, reason}`.
+    SessionClosed(serde_json::Value),
     /// `prompts.expired` notification — drop matching modal.
     PromptsExpired(serde_json::Value),
     /// External quit signal (currently unused; provided for tests).
@@ -141,12 +147,16 @@ impl PendingPermission {
 
 /// Run the app event loop until quit.
 ///
+/// `event_tx` is forwarded into key handlers so background tasks
+/// (subscription pumps, etc.) can post `AppEvent`s back into the loop.
+///
 /// # Errors
 ///
 /// Terminal I/O errors propagate.
 pub async fn run<B: Backend>(
     terminal: &mut Terminal<B>,
     client: Arc<Client>,
+    event_tx: mpsc::UnboundedSender<AppEvent>,
     mut events: mpsc::UnboundedReceiver<AppEvent>,
 ) -> std::io::Result<()> {
     let mut app = App::default();
@@ -160,7 +170,9 @@ pub async fn run<B: Backend>(
         match event {
             AppEvent::Quit => break,
             AppEvent::Term(Event::Key(k)) if k.kind == KeyEventKind::Press => {
-                if let Some(quit) = crate::input::handle_key(&mut app, k.code, &client).await {
+                if let Some(quit) =
+                    crate::input::handle_key(&mut app, k.code, &client, &event_tx).await
+                {
                     if quit {
                         break;
                     }
@@ -202,6 +214,28 @@ pub async fn run<B: Backend>(
                         "viewer" => Role::Viewer,
                         _ => Role::Vacant,
                     };
+                }
+            }
+            AppEvent::PrimaryChanged(p) => {
+                // The local `app.role` is owned by `RoleChanged`
+                // (from `session.role_assigned`) — `primary_changed`
+                // is a session-wide broadcast, not a per-client role
+                // update. Surface to the status line so the user can
+                // see who is currently primary.
+                let primary = p
+                    .get("primary")
+                    .and_then(|v| v.as_str())
+                    .map_or_else(|| "<none>".into(), String::from);
+                app.status_msg = format!("primary changed: {primary}");
+            }
+            AppEvent::SessionClosed(p) => {
+                let sid_closed = p.get("session_id").and_then(|v| v.as_str()).unwrap_or("");
+                let reason = p.get("reason").and_then(|v| v.as_str()).unwrap_or("");
+                if app.current_session.as_deref() == Some(sid_closed) {
+                    app.current_session = None;
+                    app.role = Role::Vacant;
+                    app.focus = Focus::SessionList;
+                    app.status_msg = format!("session closed: {reason}");
                 }
             }
             AppEvent::PromptsExpired(_) => {
