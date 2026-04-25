@@ -11,7 +11,8 @@
 use forge_conformance::run_live_scenario;
 use forge_sdk::{
     HookContext, HookDecision, HooksBuilder, NotificationInput, OptionsBuilder, PermissionMode,
-    PostToolUseFailureInput, PostToolUseInput, StopInput, SubagentStopInput, UserPromptSubmitInput,
+    PermissionRequestInput, PostToolUseFailureInput, PostToolUseInput, StopInput,
+    SubagentStartInput, SubagentStopInput, UserPromptSubmitInput,
 };
 
 #[tokio::test]
@@ -187,6 +188,75 @@ async fn wire_capture_notification_hook() {
     run_live_scenario("notification_hook", opts, |mut client| async move {
         client
             .send_user_message("Reply with only the word OK.")
+            .await?;
+        Ok(client)
+    })
+    .await
+    .expect("scenario run");
+}
+
+#[tokio::test]
+#[ignore = "burns real Anthropic API tokens; opt-in via FORGE_WIRE_CAPTURE=1"]
+async fn wire_capture_subagent_start_hook() {
+    // Fires when the Task tool launches a sub-agent. Combine with a
+    // Task dispatch so the hook gets a chance to fire.
+    let hooks = HooksBuilder::new()
+        .subagent_start(|_input: SubagentStartInput, _ctx: HookContext| async move {
+            HookDecision::passthrough()
+        })
+        .build();
+
+    let opts = OptionsBuilder::new()
+        .max_turns(6)
+        .permission_mode(PermissionMode::AcceptEdits)
+        .allowed_tools(vec!["Task".to_string(), "Bash".to_string()])
+        .hooks(hooks)
+        .build();
+
+    run_live_scenario("subagent_start_hook", opts, |mut client| async move {
+        client
+            .send_user_message(
+                "Use the Task tool with subagent_type=\"general-purpose\" to \
+                 run `echo forge-subagent-start-hook` via Bash and report \
+                 the output back.",
+            )
+            .await?;
+        Ok(client)
+    })
+    .await
+    .expect("scenario run");
+}
+
+#[tokio::test]
+#[ignore = "burns real Anthropic API tokens; opt-in via FORGE_WIRE_CAPTURE=1"]
+async fn wire_capture_permission_request_hook() {
+    // PermissionRequest fires alongside the can_use_tool flow. Same
+    // setup as `permission_deny`: Ask mode + permission_prompt_tool_name
+    // so the CLI escalates instead of auto-handling, plus a tool not
+    // in the developer's auto-allow list.
+    let hooks = HooksBuilder::new()
+        .permission_request(
+            "Write",
+            |_input: PermissionRequestInput, _ctx: HookContext| async move {
+                HookDecision::passthrough()
+            },
+        )
+        .build();
+
+    let opts = OptionsBuilder::new()
+        .max_turns(3)
+        .permission_mode(PermissionMode::Ask)
+        .extra_arg("permission-mode", Some("default".to_string()))
+        .permission_prompt_tool_name("stdio")
+        .hooks(hooks)
+        .build();
+
+    run_live_scenario("permission_request_hook", opts, |mut client| async move {
+        client
+            .send_user_message(
+                "Use the Write tool to create /tmp/forge-perm-hook.txt \
+                 containing PING.",
+            )
             .await?;
         Ok(client)
     })
