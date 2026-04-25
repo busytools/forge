@@ -207,10 +207,14 @@ impl Serialize for ContentBlock {
 impl<'de> Deserialize<'de> for ContentBlock {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let raw = Value::deserialize(deserializer)?;
+        // Distinguish "missing" (wire corruption) from "unrecognised"
+        // (forward-compat drift) so debug logs + `Unknown` payloads carry
+        // the right signal. Mirrors `ControlRequestKind::Deserialize`'s
+        // sentinel handling in `src/control.rs`.
         let ty = raw
             .get("type")
             .and_then(Value::as_str)
-            .unwrap_or("")
+            .unwrap_or("<missing>")
             .to_string();
         match ty.as_str() {
             "text" => Ok(ContentBlock::Text {
@@ -385,6 +389,27 @@ mod tests_content_roundtrip {
             panic!("expected Unknown variant");
         };
         assert_eq!(type_str, "unknown_kind");
+        assert_ne!(type_str, "<missing>");
         assert_eq!(echoed, raw);
+    }
+
+    #[test]
+    fn missing_type_field_lands_in_unknown_with_missing_sentinel() {
+        // Wire corruption (block payload with no `type` key at all) is
+        // distinguishable from forward-compat drift (block with an
+        // unrecognised `type` string) via the explicit `<missing>`
+        // sentinel. Mirrors the same contract for
+        // `ControlRequestKind::Deserialize` in `src/control.rs`. Pinned
+        // here so a future refactor can't silently regress to
+        // `unwrap_or("")`.
+        let raw = json!({"text_field": "no type at all"});
+        let block: ContentBlock = serde_json::from_value(raw.clone()).expect("parse");
+        let ContentBlock::Unknown { type_str, .. } = block else {
+            panic!("expected Unknown variant for missing type");
+        };
+        assert_eq!(
+            type_str, "<missing>",
+            "missing-type must use the explicit sentinel, not empty string"
+        );
     }
 }
