@@ -142,17 +142,26 @@ async fn read_loop(
     Ok(())
 }
 
+#[allow(clippy::too_many_lines)]
 async fn dispatch(req: &Request, conn: &Connection, state: &DaemonState) -> Response {
     let id = req.id.clone();
     let result: Result<Value, Error> = match req.method.as_str() {
+        // ---- daemon.* -------------------------------------------------------
         "daemon.status" => methods::daemon::status(state)
             .await
             .and_then(|s| serde_json::to_value(s).map_err(Error::Json)),
+        // ---- session.* ------------------------------------------------------
         "session.spawn" => {
-            let opts = parse_spawn_params(req.params.as_ref());
-            methods::session::spawn(state, opts)
-                .await
-                .and_then(|r| serde_json::to_value(r).map_err(Error::Json))
+            let raw = req
+                .params
+                .clone()
+                .unwrap_or_else(|| Value::Object(serde_json::Map::default()));
+            match methods::session::parse_spawn_params(&raw) {
+                Ok(opts) => methods::session::spawn(state, opts)
+                    .await
+                    .and_then(|r| serde_json::to_value(r).map_err(Error::Json)),
+                Err(e) => Err(e),
+            }
         }
         "session.send_user_message" => {
             match parse_params::<methods::session::SendUserMessageParams>(req.params.as_ref()) {
@@ -193,6 +202,137 @@ async fn dispatch(req: &Request, conn: &Connection, state: &DaemonState) -> Resp
                 Err(e) => Err(e),
             }
         }
+        "session.interrupt" => match parse_params::<SessionIdOnlyParams>(req.params.as_ref()) {
+            Ok(p) => methods::session::interrupt(state, &p.session_id)
+                .await
+                .map(|()| Value::Null),
+            Err(e) => Err(e),
+        },
+        "session.set_permission_mode" => {
+            match parse_params::<SetPermissionModeParams>(req.params.as_ref()) {
+                Ok(p) => match parse_permission_mode(&p.mode) {
+                    Ok(mode) => methods::session::set_permission_mode(state, &p.session_id, mode)
+                        .await
+                        .map(|()| Value::Null),
+                    Err(e) => Err(e),
+                },
+                Err(e) => Err(e),
+            }
+        }
+        "session.set_model" => match parse_params::<SetModelParams>(req.params.as_ref()) {
+            Ok(p) => methods::session::set_model(state, &p.session_id, p.model)
+                .await
+                .map(|()| Value::Null),
+            Err(e) => Err(e),
+        },
+        "session.rewind_files" => match parse_params::<RewindFilesParams>(req.params.as_ref()) {
+            Ok(p) => methods::session::rewind_files(state, &p.session_id, p.user_message_id)
+                .await
+                .map(|()| Value::Null),
+            Err(e) => Err(e),
+        },
+        "session.stop_task" => match parse_params::<StopTaskParams>(req.params.as_ref()) {
+            Ok(p) => methods::session::stop_task(state, &p.session_id, p.task_id)
+                .await
+                .map(|()| Value::Null),
+            Err(e) => Err(e),
+        },
+        // ---- sessions.* (filesystem) ----------------------------------------
+        "sessions.list" => match parse_params::<SessionsListParams>(req.params.as_ref()) {
+            Ok(p) => methods::sessions::list(p.directory, p.limit, p.offset).and_then(|v| {
+                serde_json::to_value(serde_json::json!({ "sessions": v })).map_err(Error::Json)
+            }),
+            Err(e) => Err(e),
+        },
+        "sessions.info" => match parse_params::<SessionsInfoParams>(req.params.as_ref()) {
+            Ok(p) => methods::sessions::info(p.session_id, p.directory)
+                .and_then(|v| serde_json::to_value(v).map_err(Error::Json)),
+            Err(e) => Err(e),
+        },
+        "sessions.messages" => match parse_params::<SessionsInfoParams>(req.params.as_ref()) {
+            Ok(p) => methods::sessions::messages(p.session_id, p.directory)
+                .and_then(|v| serde_json::to_value(v).map_err(Error::Json)),
+            Err(e) => Err(e),
+        },
+        "sessions.list_subagents" => {
+            match parse_params::<SessionsInfoParams>(req.params.as_ref()) {
+                Ok(p) => {
+                    methods::sessions::list_subagents(p.session_id, p.directory).and_then(|v| {
+                        serde_json::to_value(serde_json::json!({ "subagent_ids": v }))
+                            .map_err(Error::Json)
+                    })
+                }
+                Err(e) => Err(e),
+            }
+        }
+        "sessions.subagent_messages" => {
+            match parse_params::<SessionsSubagentMessagesParams>(req.params.as_ref()) {
+                Ok(p) => {
+                    methods::sessions::subagent_messages(p.session_id, p.subagent_id, p.directory)
+                        .and_then(|v| {
+                            serde_json::to_value(serde_json::json!({ "messages": v }))
+                                .map_err(Error::Json)
+                        })
+                }
+                Err(e) => Err(e),
+            }
+        }
+        "sessions.project_key" => {
+            match parse_params::<SessionsProjectKeyParams>(req.params.as_ref()) {
+                Ok(p) => methods::sessions::project_key(p.path).and_then(|v| {
+                    serde_json::to_value(serde_json::json!({ "project_key": v }))
+                        .map_err(Error::Json)
+                }),
+                Err(e) => Err(e),
+            }
+        }
+        "sessions.rename" => match parse_params::<SessionsRenameParams>(req.params.as_ref()) {
+            Ok(p) => {
+                methods::sessions::rename(p.session_id, p.title, p.directory).map(|()| Value::Null)
+            }
+            Err(e) => Err(e),
+        },
+        "sessions.tag" => match parse_params::<SessionsTagParams>(req.params.as_ref()) {
+            Ok(p) => methods::sessions::tag(p.session_id, p.tag, p.directory).map(|()| Value::Null),
+            Err(e) => Err(e),
+        },
+        "sessions.delete" => match parse_params::<SessionsInfoParams>(req.params.as_ref()) {
+            Ok(p) => methods::sessions::delete(p.session_id, p.directory).map(|()| Value::Null),
+            Err(e) => Err(e),
+        },
+        "sessions.fork" => match parse_params::<SessionsForkParams>(req.params.as_ref()) {
+            Ok(p) => {
+                methods::sessions::fork(p.session_id, p.up_to_message_id, p.title, p.directory)
+                    .and_then(|v| serde_json::to_value(v).map_err(Error::Json))
+            }
+            Err(e) => Err(e),
+        },
+        // ---- mcp.* ---------------------------------------------------------
+        "mcp.status" => match parse_params::<SessionIdOnlyParams>(req.params.as_ref()) {
+            Ok(p) => methods::mcp::status(state, &p.session_id)
+                .await
+                .and_then(|r| serde_json::to_value(r).map_err(Error::Json)),
+            Err(e) => Err(e),
+        },
+        "mcp.reconnect" => match parse_params::<McpReconnectParams>(req.params.as_ref()) {
+            Ok(p) => methods::mcp::reconnect(state, &p.session_id, &p.server_name)
+                .await
+                .map(|()| Value::Null),
+            Err(e) => Err(e),
+        },
+        "mcp.toggle" => match parse_params::<McpToggleParams>(req.params.as_ref()) {
+            Ok(p) => methods::mcp::toggle(state, &p.session_id, &p.server_name, p.enabled)
+                .await
+                .map(|()| Value::Null),
+            Err(e) => Err(e),
+        },
+        // ---- context.* -----------------------------------------------------
+        "context.get" => match parse_params::<SessionIdOnlyParams>(req.params.as_ref()) {
+            Ok(p) => methods::context::get(state, &p.session_id)
+                .await
+                .and_then(|r| serde_json::to_value(r).map_err(Error::Json)),
+            Err(e) => Err(e),
+        },
         other => Err(Error::MethodNotFound(other.to_string())),
     };
     match result {
@@ -212,20 +352,119 @@ fn parse_params<T: for<'de> serde::Deserialize<'de>>(params: Option<&Value>) -> 
     serde_json::from_value(raw).map_err(|e| Error::InvalidParams(e.to_string()))
 }
 
-/// Parse the `session.spawn` params shape — M2 only honours `binary`; the
-/// full `Options` deserialiser lands in M3.
-fn parse_spawn_params(p: Option<&Value>) -> forge_sdk::Options {
-    let raw = p
-        .cloned()
-        .unwrap_or_else(|| Value::Object(serde_json::Map::default()));
-    let opts = raw
-        .get("options")
-        .cloned()
-        .unwrap_or_else(|| Value::Object(serde_json::Map::default()));
-    let binary = opts
-        .get("binary")
-        .and_then(|v| v.as_str())
-        .unwrap_or("claude")
-        .to_string();
-    forge_sdk::OptionsBuilder::new().binary(binary).build()
+/// Translate a wire-shape `permission_mode` string into the SDK enum.
+fn parse_permission_mode(s: &str) -> Result<forge_sdk::PermissionMode, Error> {
+    match s {
+        "ask" => Ok(forge_sdk::PermissionMode::Ask),
+        "accept_edits" => Ok(forge_sdk::PermissionMode::AcceptEdits),
+        "plan" => Ok(forge_sdk::PermissionMode::Plan),
+        "bypass_permissions" => Ok(forge_sdk::PermissionMode::BypassPermissions),
+        "auto" => Ok(forge_sdk::PermissionMode::Auto),
+        "deny_permissions" => Ok(forge_sdk::PermissionMode::DenyPermissions),
+        other => Err(Error::InvalidParams(format!(
+            "permission_mode: unknown variant '{other}'"
+        ))),
+    }
+}
+
+// ---- Param shapes scoped to dispatch -----------------------------------
+
+#[derive(serde::Deserialize)]
+struct SessionIdOnlyParams {
+    session_id: crate::session_state::SessionId,
+}
+
+#[derive(serde::Deserialize)]
+struct SetPermissionModeParams {
+    session_id: crate::session_state::SessionId,
+    mode: String,
+}
+
+#[derive(serde::Deserialize)]
+struct SetModelParams {
+    session_id: crate::session_state::SessionId,
+    #[serde(default)]
+    model: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct RewindFilesParams {
+    session_id: crate::session_state::SessionId,
+    user_message_id: String,
+}
+
+#[derive(serde::Deserialize)]
+struct StopTaskParams {
+    session_id: crate::session_state::SessionId,
+    task_id: String,
+}
+
+#[derive(serde::Deserialize, Default)]
+#[serde(default)]
+struct SessionsListParams {
+    directory: Option<String>,
+    limit: Option<usize>,
+    offset: usize,
+}
+
+#[derive(serde::Deserialize)]
+struct SessionsInfoParams {
+    session_id: String,
+    #[serde(default)]
+    directory: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct SessionsSubagentMessagesParams {
+    session_id: String,
+    subagent_id: String,
+    #[serde(default)]
+    directory: Option<String>,
+}
+
+#[derive(serde::Deserialize, Default)]
+#[serde(default)]
+struct SessionsProjectKeyParams {
+    path: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct SessionsRenameParams {
+    session_id: String,
+    title: String,
+    #[serde(default)]
+    directory: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct SessionsTagParams {
+    session_id: String,
+    #[serde(default)]
+    tag: Option<String>,
+    #[serde(default)]
+    directory: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct SessionsForkParams {
+    session_id: String,
+    #[serde(default)]
+    up_to_message_id: Option<String>,
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    directory: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct McpReconnectParams {
+    session_id: crate::session_state::SessionId,
+    server_name: String,
+}
+
+#[derive(serde::Deserialize)]
+struct McpToggleParams {
+    session_id: crate::session_state::SessionId,
+    server_name: String,
+    enabled: bool,
 }
