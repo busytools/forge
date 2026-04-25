@@ -8,7 +8,7 @@
 //! request IDs as opaque — it only echoes them back in the matching
 //! `control_response` — so the prefix has no wire-protocol effect.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -23,8 +23,8 @@ pub fn next() -> String {
     let n = COUNTER.fetch_add(1, Ordering::Relaxed);
     let mut bytes = [0_u8; 4];
     if let Err(e) = getrandom::fill(&mut bytes) {
-        static LOGGED_ONCE: AtomicU64 = AtomicU64::new(0);
-        if LOGGED_ONCE.swap(1, Ordering::Relaxed) == 0 {
+        static LOGGED_ONCE: AtomicBool = AtomicBool::new(false);
+        if !LOGGED_ONCE.swap(true, Ordering::Relaxed) {
             tracing::warn!(
                 error = %e,
                 "getrandom failed; falling back to counter-derived request_id suffix"
