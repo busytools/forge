@@ -227,6 +227,26 @@ fn redact_content_block(block: &mut Value, state: &mut RedactState) {
                 }
             }
         }
+        "document" | "image" => {
+            // Anthropic API document/image block. Shape:
+            // `{"type":"<kind>","source":{"type":"base64",
+            //   "media_type":"<mime>","data":"<base64 bytes>"}}`.
+            // The `data` field can be megabytes — drop it entirely.
+            // Keep `media_type` so fixtures document what kind of
+            // attachment was present.
+            if let Some(Value::Object(src)) = obj.get_mut("source") {
+                if let Some(Value::String(d)) = src.get_mut("data") {
+                    let bytes = d.len();
+                    *d = format!("<redacted-{ty}-data {bytes}b>");
+                }
+                for k in ["text", "content", "url"] {
+                    if let Some(Value::String(s)) = src.get_mut(k) {
+                        let bytes = s.len();
+                        *s = format!("<redacted-{ty}-{k} {bytes}b>");
+                    }
+                }
+            }
+        }
         _ => {
             // Unknown block type — keep shape, scrub any obvious
             // text-carrying fields to be safe.
