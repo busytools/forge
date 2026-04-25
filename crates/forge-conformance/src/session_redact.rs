@@ -83,6 +83,19 @@ fn scrub_paths_recursive(v: &mut Value) {
                     .collect();
                 o.clear();
                 for (k, v) in entries {
+                    if o.contains_key(&k) {
+                        // Two distinct source paths redacted to the
+                        // same opaque key; the second insert silently
+                        // overwrites. This is intentional (privacy
+                        // collapse — the redactor should not preserve
+                        // distinguishing path info), but log so a
+                        // fixture-regen review can spot unexpected
+                        // shape changes.
+                        eprintln!(
+                            "scrub_paths_recursive: key collision after redaction; \
+                             distinct source paths collapsed into key={k:?}"
+                        );
+                    }
                     o.insert(k, v);
                 }
             }
@@ -370,4 +383,86 @@ pub fn redact_session_path(path: &std::path::Path) -> Result<(Vec<String>, Strin
         lines.len()
     );
     Ok((lines, summary))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn scrub_paths_recursive_value_only_no_keys() {
+        let mut v = json!({"k": "/Users/alice/foo.txt"});
+        scrub_paths_recursive(&mut v);
+        assert_eq!(v, json!({"k": "<redacted-home>/foo.txt"}));
+    }
+
+    #[test]
+    fn scrub_paths_recursive_object_keys_rewritten() {
+        let mut v = json!({"/Users/alice/foo.txt": 1, "harmless": 2});
+        scrub_paths_recursive(&mut v);
+        let obj = v.as_object().unwrap();
+        assert!(obj.contains_key("<redacted-home>/foo.txt"));
+        assert!(obj.contains_key("harmless"));
+        assert_eq!(obj.len(), 2);
+    }
+
+    #[test]
+    fn scrub_paths_recursive_collisions_collapse_last_wins() {
+        // Two distinct source paths redact to the same opaque key.
+        // Privacy-preserving by design — the redactor must not
+        // expose distinguishing path info via key uniqueness.
+        let mut v = json!({
+            "/Users/alice/foo": "a",
+            "/Users/bob/foo": "b",
+        });
+        scrub_paths_recursive(&mut v);
+        let obj = v.as_object().unwrap();
+        assert_eq!(obj.len(), 1);
+        assert!(obj.contains_key("<redacted-home>/foo"));
+    }
+
+    #[test]
+    fn scrub_paths_recursive_nested_object_keys_and_values() {
+        let mut v = json!({
+            "/Volumes/data/disk": {
+                "inner_key_/home/x/foo": "/Users/x/y/z",
+                "ok": 42
+            }
+        });
+        scrub_paths_recursive(&mut v);
+        // Outer key rewritten.
+        let outer = v.as_object().unwrap();
+        let inner = outer
+            .get("<redacted-home>/disk")
+            .unwrap()
+            .as_object()
+            .unwrap();
+        // Inner key rewritten too.
+        assert!(inner.contains_key("inner_key_<redacted-home>/foo"));
+        assert!(inner.contains_key("ok"));
+        // Inner string value rewritten.
+        assert_eq!(
+            inner["inner_key_<redacted-home>/foo"],
+            json!("<redacted-home>/y/z")
+        );
+    }
+
+    #[test]
+    fn scrub_paths_recursive_array_values() {
+        let mut v = json!(["/Users/alice/x", "ok", {"k": "/home/bob"}]);
+        scrub_paths_recursive(&mut v);
+        let arr = v.as_array().unwrap();
+        assert_eq!(arr[0], json!("<redacted-home>/x"));
+        assert_eq!(arr[1], json!("ok"));
+        assert_eq!(arr[2], json!({"k": "<redacted-home>"}));
+    }
+
+    #[test]
+    fn scrub_paths_recursive_no_op_on_clean_input() {
+        let mut v = json!({"name": "alice", "n": 42, "list": [1, 2, "ok"]});
+        let original = v.clone();
+        scrub_paths_recursive(&mut v);
+        assert_eq!(v, original);
+    }
 }

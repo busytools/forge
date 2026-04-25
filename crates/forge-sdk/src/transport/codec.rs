@@ -117,18 +117,25 @@ pub fn decode_dispatch(line: &str, line_number: u64) -> Result<DecodedLine, Erro
         }
         "control_response" => {
             // `response.request_id` is where the CLI echoes the
-            // request_id we originally sent. Fall back to "" if the
-            // shape drifts; the Unknown categorisation is already covered
-            // by the Unknown variant, so there's no need to error here.
-            let request_id = value
+            // request_id we originally sent. A `control_response` with
+            // no `request_id` is wire corruption — route it through
+            // `DecodedLine::Unknown` so the conformance harness counts
+            // it under `unknown_types` rather than as a "valid"
+            // ControlResponse. The runtime path (`send_control` /
+            // `next_event`) treats unknowns as warn-and-skip.
+            match value
                 .pointer("/response/request_id")
                 .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string();
-            Ok(DecodedLine::ControlResponse {
-                request_id,
-                raw: value,
-            })
+            {
+                Some(rid) => Ok(DecodedLine::ControlResponse {
+                    request_id: rid.to_string(),
+                    raw: value,
+                }),
+                None => Ok(DecodedLine::Unknown {
+                    type_str: "control_response (missing /response/request_id)".to_string(),
+                    raw: value,
+                }),
+            }
         }
         "assistant" | "user" | "system" | "result" | "rate_limit_event" | "stream_event"
         | "error" => {

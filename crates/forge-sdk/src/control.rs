@@ -162,10 +162,14 @@ impl Serialize for ControlRequestKind {
 impl<'de> Deserialize<'de> for ControlRequestKind {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let raw = Value::deserialize(deserializer)?;
+        // `subtype` is required per the wire spec. Distinguish "missing"
+        // (wire corruption / CLI bug) from "unrecognised" (forward-compat
+        // drift) so debug logs + `Unknown` payloads carry the right
+        // signal for the dispatcher.
         let subtype = raw
             .get("subtype")
             .and_then(Value::as_str)
-            .unwrap_or("")
+            .unwrap_or("<missing>")
             .to_string();
         match subtype.as_str() {
             "can_use_tool" => {
