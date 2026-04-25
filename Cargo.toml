@@ -23,6 +23,7 @@ hex = "0.4"
 uuid = { version = "1", features = ["v4"] }
 unicode-normalization = "0.1"
 tokio-stream = "0.1"
+regex = "1"
 
 # Dev-only
 proptest = "1"

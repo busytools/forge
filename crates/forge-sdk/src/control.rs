@@ -38,6 +38,7 @@ pub enum ControlRequestType {
 /// previous strict-enum behaviour, an unknown subtype no longer
 /// panics the session.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum ControlRequestKind {
     /// A permission check for a tool call. Matches Python SDK
     /// `SDKControlPermissionRequest` at types.py:1283-1291.

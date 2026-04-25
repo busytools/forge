@@ -81,6 +81,7 @@ fn jsonl_files_under(root: &Path) -> Vec<PathBuf> {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn real_session_decode_probe() {
     let Ok(root_str) = std::env::var("FORGE_REAL_SESSIONS") else {
         eprintln!(
@@ -90,12 +91,11 @@ fn real_session_decode_probe() {
         return;
     };
     let root = PathBuf::from(&root_str);
-    if !root.exists() {
-        panic!(
-            "FORGE_REAL_SESSIONS points at a missing path: {}",
-            root.display()
-        );
-    }
+    assert!(
+        root.exists(),
+        "FORGE_REAL_SESSIONS points at a missing path: {}",
+        root.display()
+    );
 
     let files = jsonl_files_under(&root);
     eprintln!(

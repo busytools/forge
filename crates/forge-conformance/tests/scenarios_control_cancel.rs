@@ -1,7 +1,7 @@
 //! Live-capture scenario: `control_cancel_request` from the CLI.
 //!
 //! Captures the rare frame the CLI emits when it gives up waiting on a
-//! hook_callback reply past its timeout. Produces the only wire shape
+//! `hook_callback` reply past its timeout. Produces the only wire shape
 //! our decoder had no live coverage for until now.
 //!
 //! Mechanism:
@@ -9,8 +9,8 @@
 //!    initialize payload will carry `timeout: 1` per hook matcher.
 //! 2. Make the hook callback sleep 3 seconds before returning.
 //! 3. Send a prompt that invokes Bash.
-//! 4. CLI fires `hook_callback` control_request, waits 1s, then emits
-//!    `control_cancel_request` with the matching request_id.
+//! 4. CLI fires `hook_callback` `control_request`, waits 1s, then emits
+//!    `control_cancel_request` with the matching `request_id`.
 //! 5. Our handler (still running) finally writes a `control_response`,
 //!    which the CLI may discard — that's fine, the cancel frame is
 //!    the capture target.

@@ -4,7 +4,7 @@
 //! asks the model to call it. The captured trace includes the
 //! `mcp_message` `control_request` round trip — CLI → SDK sending
 //! `initialize` / `tools/list` / `tools/call` JSON-RPC, SDK replying
-//! with the same request_id's `control_response`.
+//! with the same `request_id`'s `control_response`.
 //!
 //! Uses `PermissionMode::BypassPermissions` because the `mcp__probe__greet`
 //! tool isn't in the CLI's default allow list and we don't want the
@@ -22,10 +22,10 @@ struct GreetTool;
 
 #[async_trait]
 impl Tool for GreetTool {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "greet"
     }
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         "Greet someone by name"
     }
     fn input_schema(&self) -> serde_json::Value {

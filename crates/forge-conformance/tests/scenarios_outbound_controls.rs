@@ -1,7 +1,7 @@
 //! Live-capture scenarios: remaining outbound `control_request` subtypes.
 //!
 //! One scenario per subtype, each producing an outbound
-//! control_request + inbound control_response round trip the replay
+//! `control_request` + inbound `control_response` round trip the replay
 //! harness can exercise.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -115,9 +115,8 @@ async fn wire_capture_rewind_files() {
                 Some(forge_sdk::Message::User { uuid: Some(id), .. }) if rewind_id.is_none() => {
                     rewind_id = Some(id);
                 }
-                Some(forge_sdk::Message::Result { .. }) => break,
-                Some(_) => continue,
-                None => break,
+                Some(forge_sdk::Message::Result { .. }) | None => break,
+                Some(_) => {}
             }
         }
         if let Some(id) = rewind_id {
@@ -159,7 +158,7 @@ async fn wire_capture_stop_task() {
                     break;
                 }
                 Some(forge_sdk::Message::Result { .. }) | None => break,
-                Some(_) => continue,
+                Some(_) => {}
             }
         }
         if let Some(id) = task_id {

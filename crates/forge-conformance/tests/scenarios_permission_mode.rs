@@ -1,7 +1,7 @@
-//! Live-capture scenario: `set_permission_mode` outbound control_request.
+//! Live-capture scenario: `set_permission_mode` outbound `control_request`.
 //!
 //! Exercises runtime mutation of the CLI's permission mode via the
-//! `set_permission_mode` control_request. Captures an outbound
+//! `set_permission_mode` `control_request`. Captures an outbound
 //! `control_request` + inbound `control_response` round trip for a
 //! non-trivial subtype.
 

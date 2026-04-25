@@ -83,9 +83,36 @@ impl Client {
                     let err = value
                         .pointer("/response/error")
                         .and_then(serde_json::Value::as_str)
-                        .unwrap_or("unknown error");
+                        .map_or_else(
+                            || {
+                                format!(
+                                    "no `error` string field; full response: {}",
+                                    value.pointer("/response").map_or_else(
+                                        || "<missing>".to_string(),
+                                        ToString::to_string
+                                    )
+                                )
+                            },
+                            ToString::to_string,
+                        );
                     return Err(Error::message_parse(format!("{subtype} failed: {err}")));
                 }
+            }
+            // Inbound `control_request` (CLI → SDK) interleaved with our
+            // outbound wait — most commonly `hook_callback` / `mcp_message`
+            // / `can_use_tool`. Without dispatching them, the CLI hangs
+            // waiting for our reply and effectively deadlocks the session.
+            // Mirror the behaviour `spawn_inner` uses during init.
+            if value.get("type").and_then(serde_json::Value::as_str) == Some("control_request") {
+                let req: crate::control::ControlRequest =
+                    serde_json::from_value(value).map_err(|e| {
+                        Error::message_parse(format!(
+                            "line {}: control_request decode during {subtype} wait: {e}",
+                            self.line_number
+                        ))
+                    })?;
+                self.handle_control(req).await?;
+                continue;
             }
             tracing::warn!(
                 line = %response_line,
