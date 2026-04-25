@@ -13,7 +13,8 @@ and — later — `forged` (daemon) and `forge-tui` (terminal client).
   parity gap is `AsyncHookJSONOutput` out-of-band delivery —
   upstream-blocked, tracked in the auto-memory weekly-watch entry.
 - Full surface map: `docs/forge-sdk-parity-map.html` (interactive;
-  `.git/info/exclude`-d).
+  tracked in git so collaborators see the same view — regenerate
+  via the parity-check ritual when surface changes land).
 - Full parity log + weekly runbook: `PARITY.md`.
 - Release history: `docs/CHANGELOG.md`.
 
@@ -113,8 +114,10 @@ must translate to a Rust test in the same week.
   `feedback_forge_git_override.md`.
 - **One commit per logical unit.** Commit messages cite the round
   or unit (e.g. "feat(forge-sdk): query_stream() returns Stream…").
-- **`docs/forge-sdk-parity-map.html` stays local.** Regenerate on
-  surface changes; `.git/info/exclude`-d.
+- **`docs/forge-sdk-parity-map.html` is tracked.** Regenerate it
+  whenever the SDK surface changes (parity-check ritual rebuilds
+  it) and commit the refreshed file alongside the surface change
+  so collaborators see the same view.
 
 ## Style + Rust idiom
 
