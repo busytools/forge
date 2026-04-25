@@ -9,6 +9,7 @@
 
 use std::sync::Arc;
 
+use forge_sdk::PermissionMode;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, oneshot};
@@ -47,6 +48,65 @@ pub enum Command {
     Disconnect {
         /// Reply channel for the actor's `disconnect` result.
         reply: oneshot::Sender<Result<(), Error>>,
+    },
+    /// `session.interrupt` — send an interrupt `control_request`.
+    Interrupt {
+        /// Reply channel for the actor's `interrupt` result.
+        reply: oneshot::Sender<Result<(), Error>>,
+    },
+    /// `session.set_permission_mode` — switch the permission flow.
+    SetPermissionMode {
+        /// New permission mode.
+        mode: PermissionMode,
+        /// Reply channel for the actor's `set_permission_mode` result.
+        reply: oneshot::Sender<Result<(), Error>>,
+    },
+    /// `session.set_model` — switch the active model.
+    SetModel {
+        /// New model name; `None` reverts to the CLI default.
+        model: Option<String>,
+        /// Reply channel for the actor's `set_model` result.
+        reply: oneshot::Sender<Result<(), Error>>,
+    },
+    /// `session.rewind_files` — revert file edits since `user_message_id`.
+    RewindFiles {
+        /// Anchor user-message id.
+        user_message_id: String,
+        /// Reply channel for the actor's `rewind_files` result.
+        reply: oneshot::Sender<Result<(), Error>>,
+    },
+    /// `session.stop_task` — kill the in-flight subagent task.
+    StopTask {
+        /// Task id to kill.
+        task_id: String,
+        /// Reply channel for the actor's `stop_task` result.
+        reply: oneshot::Sender<Result<(), Error>>,
+    },
+    /// `mcp.status` — query MCP server status.
+    McpStatus {
+        /// Reply channel for the typed [`McpStatusResponse`](forge_sdk::McpStatusResponse).
+        reply: oneshot::Sender<Result<forge_sdk::McpStatusResponse, Error>>,
+    },
+    /// `mcp.reconnect` — drop + re-establish a named MCP connection.
+    McpReconnect {
+        /// Server name.
+        server_name: String,
+        /// Reply channel.
+        reply: oneshot::Sender<Result<(), Error>>,
+    },
+    /// `mcp.toggle` — enable/disable a named MCP server.
+    McpToggle {
+        /// Server name.
+        server_name: String,
+        /// Enable / disable.
+        enabled: bool,
+        /// Reply channel.
+        reply: oneshot::Sender<Result<(), Error>>,
+    },
+    /// `context.get` — query current context-window usage.
+    ContextGet {
+        /// Reply channel for the typed [`ContextUsageResponse`](forge_sdk::ContextUsageResponse).
+        reply: oneshot::Sender<Result<forge_sdk::ContextUsageResponse, Error>>,
     },
 }
 
