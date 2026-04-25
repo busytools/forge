@@ -10,7 +10,7 @@ description = "Wire-conformance harness + test fixtures for forge-sdk. Kept out 
 publish = false
 
 [dependencies]
-forge-sdk = { path = "../forge-sdk" }
+forge-sdk = { path = "../forge-sdk", version = "=0.1.64" }
 tokio = { workspace = true }
 serde.workspace = true
 serde_json.workspace = true
