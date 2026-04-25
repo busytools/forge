@@ -71,6 +71,13 @@ pub fn build_args(options: &Options) -> Result<Vec<String>, Error> {
 
     // --allowedTools (camelCase per Python SDK). Combines explicit
     // allowed_tools + Skill injection.
+    //
+    // `--allowedTools` accepts two Skill syntaxes: bare `Skill` is the
+    // wildcard (any skill may be invoked); `Skill(name)` allows the
+    // specific skill `name`. forge-sdk uses the sentinel `"all"` in
+    // `options.skills` to mean wildcard, so we translate `"all"` to
+    // bare `Skill` — emitting `Skill(all)` would be read by the CLI
+    // as "a skill literally named `all`" and fail to match anything.
     let mut allowed: Vec<String> = options.allowed_tools.clone();
     for skill in &options.skills {
         if skill == "all" {
