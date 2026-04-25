@@ -8,14 +8,18 @@
 //! all enter from any task without colliding on `WebSocketStream::send`.
 
 use std::net::SocketAddr;
+use std::sync::Arc;
+use std::time::SystemTime;
 
 use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
+use parking_lot::Mutex;
 use serde_json::Value;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
 use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite::Message as WsMsg;
+use tokio_tungstenite::tungstenite::handshake::server::{Request as TungReq, Response as TungResp};
 use tracing::{debug, info, warn};
 
 use crate::Error;
@@ -54,14 +58,39 @@ async fn handle_connection(
     peer: SocketAddr,
     state: DaemonState,
 ) -> Result<(), Error> {
-    let ws = tokio_tungstenite::accept_async(stream)
-        .await
-        .map_err(|e| Error::InternalError(format!("ws upgrade: {e}")))?;
+    // Capture the request URI's query string from inside the handshake
+    // callback so we can extract the friendly `?name=<value>` the client
+    // supplied. The callback runs synchronously inside the handshake; we
+    // stash the parsed value in an Arc<Mutex> the outer task reads after
+    // the upgrade completes.
+    let captured_name: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+    let cap_for_callback = captured_name.clone();
+    // tungstenite's handshake callback returns `Result<Response, ErrorResponse>`
+    // where `ErrorResponse` (an `http::Response<Option<String>>`) is much
+    // larger than the success variant. We never return Err from the
+    // callback (any handshake-level rejection is reserved for future
+    // auth work), so the size delta isn't a concern here.
+    #[allow(clippy::result_large_err)]
+    let ws = tokio_tungstenite::accept_hdr_async(stream, move |req: &TungReq, resp: TungResp| {
+        if let Some(query) = req.uri().query() {
+            for (k, v) in parse_query(query) {
+                if k == "name" && !v.is_empty() {
+                    *cap_for_callback.lock() = Some(v);
+                }
+            }
+        }
+        Ok(resp)
+    })
+    .await
+    .map_err(|e| Error::InternalError(format!("ws upgrade: {e}")))?;
     debug!(?peer, "ws upgraded");
+
+    let name = captured_name.lock().clone();
 
     let (write, read) = ws.split();
     let (out_tx, out_rx) = mpsc::unbounded_channel::<Outbound>();
-    let conn = Connection::new(ConnectionId::new(), out_tx.clone());
+    let conn =
+        Connection::with_metadata(ConnectionId::new(), name, SystemTime::now(), out_tx.clone());
     state.register_connection(conn.clone());
 
     // Spawn the writer task — drains out_rx, sends to WS.
@@ -377,6 +406,17 @@ async fn dispatch(req: &Request, conn: &Connection, state: &DaemonState) -> Resp
                 .map(|()| Value::Null),
             Err(e) => Err(e),
         },
+        // ---- session.* multi-client (M5) -----------------------------------
+        "session.claim_primary" => match parse_params::<SessionIdOnlyParams>(req.params.as_ref()) {
+            Ok(p) => methods::multi_client::claim_primary(state, &conn.id, &p.session_id)
+                .map(|()| Value::Null),
+            Err(e) => Err(e),
+        },
+        "session.peers" => match parse_params::<SessionIdOnlyParams>(req.params.as_ref()) {
+            Ok(p) => methods::multi_client::peers(state, &p.session_id)
+                .and_then(|r| serde_json::to_value(r).map_err(Error::Json)),
+            Err(e) => Err(e),
+        },
         other => Err(Error::MethodNotFound(other.to_string())),
     };
     match result {
@@ -518,4 +558,92 @@ struct PromptsRespondParams {
     session_id: crate::session_state::SessionId,
     prompt_id: String,
     result: Value,
+}
+
+// =============================================================================
+// Handshake query-string parsing — used by `handle_connection` to extract
+// the friendly `?name=<value>` the client supplies. Hand-rolled to avoid
+// pulling in the `url` crate just for one read site.
+// =============================================================================
+
+/// Iterate over `key=value` pairs in a query string. Uses
+/// percent-decoding via [`url_decode`] on each side. Empty trailing
+/// segments and keys without `=` map to the empty string for `value`.
+fn parse_query(q: &str) -> impl Iterator<Item = (String, String)> + '_ {
+    q.split('&').filter_map(|pair| {
+        if pair.is_empty() {
+            return None;
+        }
+        let mut it = pair.splitn(2, '=');
+        let k_raw = it.next()?;
+        let v_raw = it.next().unwrap_or("");
+        Some((url_decode(k_raw), url_decode(v_raw)))
+    })
+}
+
+/// Tiny `application/x-www-form-urlencoded` decoder. Handles `+` →
+/// space and `%XX` hex escapes; passes any non-ASCII or malformed
+/// escape through as a literal byte.
+fn url_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = String::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'+' => {
+                out.push(' ');
+                i += 1;
+            }
+            b'%' if i + 2 < bytes.len() => {
+                let hex = &s[i + 1..i + 3];
+                if let Ok(n) = u8::from_str_radix(hex, 16) {
+                    out.push(char::from(n));
+                    i += 3;
+                } else {
+                    out.push('%');
+                    i += 1;
+                }
+            }
+            other => {
+                out.push(char::from(other));
+                i += 1;
+            }
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_query, url_decode};
+
+    #[test]
+    fn parse_query_extracts_simple_pair() {
+        let parsed: Vec<(String, String)> = parse_query("name=studio-terminal").collect();
+        assert_eq!(parsed, vec![("name".into(), "studio-terminal".into())]);
+    }
+
+    #[test]
+    fn parse_query_decodes_percent_escapes_in_value() {
+        let parsed: Vec<(String, String)> = parse_query("name=hello%20world").collect();
+        assert_eq!(parsed, vec![("name".into(), "hello world".into())]);
+    }
+
+    #[test]
+    fn parse_query_handles_multiple_pairs_and_skips_empty_segments() {
+        let parsed: Vec<(String, String)> = parse_query("a=1&b=2&&c=3").collect();
+        assert_eq!(
+            parsed,
+            vec![
+                ("a".into(), "1".into()),
+                ("b".into(), "2".into()),
+                ("c".into(), "3".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn url_decode_handles_plus_as_space() {
+        assert_eq!(url_decode("foo+bar"), "foo bar");
+    }
 }

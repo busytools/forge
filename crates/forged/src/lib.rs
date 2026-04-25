@@ -9,6 +9,7 @@ pub mod bridged_transport;
 pub mod broadcast;
 pub mod connection;
 pub mod error;
+pub mod iso8601;
 pub mod jsonrpc;
 pub mod methods;
 pub mod prompt_queue;
