@@ -2,3 +2,4 @@
 //! method namespace (`daemon.*`, `session.*`, `sessions.*`, …).
 
 pub mod daemon;
+pub mod session;
