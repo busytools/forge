@@ -9,7 +9,7 @@ use std::collections::VecDeque;
 use std::sync::Mutex;
 
 use async_trait::async_trait;
-use forge_sdk::{Client, Error, OptionsBuilder, Transport};
+use forge_sdk::{Client, Error, Message, OptionsBuilder, Transport};
 
 /// In-memory transport driven by a scripted queue of stdout lines.
 /// Writes are captured so tests can assert what the client sent.
@@ -108,6 +108,44 @@ async fn spawn_with_transport_sends_initialize() {
         *mock.closed.lock().unwrap(),
         "client must call close() on the transport during disconnect"
     );
+}
+
+/// `next_event` surfaces a `Message::Unknown` when the CLI emits a
+/// frame whose top-level `type` value forge-sdk doesn't recognise —
+/// the programmatic forward-compat surface library consumers use to
+/// detect upstream drift.
+#[tokio::test]
+async fn next_event_surfaces_unknown_top_level_type() {
+    let init = r#"{"type":"system","subtype":"init","session_id":"mock-zzz","cwd":"/tmp","tools":[],"mcp_servers":[],"model":"claude","permissionMode":"default","apiKeySource":"env"}"#;
+    let drift = r#"{"type":"future_thing","subtype":"experimental","payload":{"k":"v"}}"#;
+    let mock = Box::new(MockTransport::new(vec![init, drift]));
+    let opts = OptionsBuilder::new().binary("unused").build();
+    let mut client = Client::spawn_with_transport(opts, mock)
+        .await
+        .expect("spawn_with_transport");
+
+    let msg = client
+        .next_event()
+        .await
+        .expect("next_event ok")
+        .expect("frame");
+    match msg {
+        Message::Unknown { type_str, raw } => {
+            assert_eq!(type_str, "future_thing");
+            assert_eq!(
+                raw.get("subtype").and_then(|v| v.as_str()),
+                Some("experimental")
+            );
+            assert_eq!(
+                raw.get("payload")
+                    .and_then(|v| v.get("k"))
+                    .and_then(|v| v.as_str()),
+                Some("v")
+            );
+        }
+        other => panic!("expected Message::Unknown, got: {other:?}"),
+    }
+    client.disconnect().await.expect("disconnect");
 }
 
 // Arc-shared mock so the test can retain a handle after boxing for

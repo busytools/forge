@@ -5,6 +5,8 @@
 //! `SystemMessage` (plus task-lifecycle + mirror-error subclasses),
 //! `ResultMessage`, and `RateLimitEvent`.
 
+use serde::de::Deserializer;
+use serde::ser::Serializer;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -15,8 +17,8 @@ use crate::content::ContentBlock;
 /// Wire-level dispatch on `type` and, for `type="system"`, on `subtype` is
 /// handled by a private shim — users never see it. Every variant here is
 /// the user-facing shape.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(from = "MessageRepr", into = "MessageRepr")]
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum Message {
     /// An assistant turn (may be a partial chunk during streaming).
     Assistant {
@@ -218,6 +220,29 @@ pub enum Message {
         /// The failure message as Python stringified it.
         error: String,
     },
+
+    /// Forward-compat fallback: a frame whose top-level `type` value
+    /// forge-sdk doesn't recognise. Surfaced through
+    /// [`Client::next_event`](crate::Client::next_event) when the codec
+    /// produces a [`DecodedLine::Unknown`](crate::transport::codec::DecodedLine).
+    /// Library consumers can match this variant to detect upstream CLI
+    /// drift programmatically (telemetry, structured alerts) instead of
+    /// relying on `tracing::warn!` log scraping.
+    ///
+    /// Mirrors the `Unknown` pattern already used by
+    /// [`ContentBlock`](crate::content::ContentBlock) and
+    /// [`ControlRequestKind`](crate::control::ControlRequestKind).
+    /// Never produced by deserialization — `decode_dispatch` filters
+    /// unknown types into [`DecodedLine::Unknown`](crate::transport::codec::DecodedLine)
+    /// before they reach serde — but `Serialize` round-trips `raw`
+    /// verbatim so logs / replay capture the original bytes.
+    Unknown {
+        /// Raw `type` field value as the CLI sent it.
+        type_str: String,
+        /// Full original JSON object — preserved for inspection,
+        /// replay, or rehydration once the new shape is supported.
+        raw: Value,
+    },
 }
 
 impl Message {
@@ -244,7 +269,9 @@ impl Message {
             | Message::Result { session_id, .. }
             | Message::StreamEvent { session_id, .. } => Some(session_id.as_str()),
             Message::System { session_id, .. } => session_id.as_deref(),
-            Message::RateLimitEvent { .. } | Message::Error { .. } => None,
+            Message::RateLimitEvent { .. } | Message::Error { .. } | Message::Unknown { .. } => {
+                None
+            }
         }
     }
 }
@@ -475,7 +502,28 @@ pub enum TaskNotificationStatus {
 // * `TypedSystemRepr` dispatches the known task-lifecycle subtypes.
 // * `GenericSystemRepr` captures any other subtype into the opaque
 //   `data: Value`, which is what `Message::System` surfaces to users.
+//
+// `Message::Unknown` is the only variant Serialize/Deserialize don't route
+// through `MessageRepr` — its `raw` field already carries the original
+// JSON, so we emit it verbatim instead of fabricating a synthetic wire
+// shape. Deserialize never produces it; `decode_dispatch` filters unknown
+// types into `DecodedLine::Unknown` before serde sees them.
 // ---------------------------------------------------------------------------
+
+impl Serialize for Message {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Message::Unknown { raw, .. } => raw.serialize(serializer),
+            other => MessageRepr::from(other.clone()).serialize(serializer),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for Message {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        MessageRepr::deserialize(deserializer).map(Message::from)
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -927,6 +975,16 @@ impl From<Message> for MessageRepr {
                 parent_tool_use_id,
             },
             Message::Error { error } => MessageRepr::Error { error },
+            // Defensive sentinel — `Serialize` for `Message` special-cases
+            // `Unknown` to emit `raw` verbatim, so this branch is dead code
+            // at runtime. Kept to keep the `From` impl total without
+            // `unreachable!()` (banned by the workspace lint set).
+            Message::Unknown { type_str, .. } => MessageRepr::Error {
+                error: format!(
+                    "Message::Unknown {{ type_str: {type_str:?} }} \
+                     cannot be encoded via MessageRepr"
+                ),
+            },
         }
     }
 }
