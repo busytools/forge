@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/forge-sdk", "crates/forge-conformance"]
+members = ["crates/forge-sdk", "crates/forge-conformance", "crates/forged", "crates/forge-tui"]
 
 [workspace.package]
 version = "0.1.64"
@@ -25,6 +25,13 @@ unicode-normalization = "0.1"
 tokio-stream = "0.1"
 regex = "1"
 parking_lot = "0.12"
+tokio-tungstenite = "0.24"
+clap = { version = "4", features = ["derive"] }
+tracing-appender = "0.2"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+toml = "0.8"
+ratatui = "0.29"
+crossterm = "0.28"
 
 # Dev-only
 proptest = "1"
