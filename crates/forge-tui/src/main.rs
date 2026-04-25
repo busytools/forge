@@ -26,6 +26,7 @@ use forge_tui::client::Client;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use tokio::sync::mpsc;
+use tracing_subscriber::EnvFilter;
 
 #[derive(Parser, Debug)]
 #[command(name = "forge-tui", version, about = "forge terminal client")]
@@ -62,7 +63,22 @@ impl Drop for TerminalGuard {
 }
 
 #[tokio::main]
+#[allow(
+    clippy::too_many_lines,
+    reason = "binary main wires up clients/handlers and notifications"
+)]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Init tracing to stderr — the TUI owns stdout (alternate screen),
+    // so logs go to stderr where they don't corrupt the rendered UI.
+    // Honour `RUST_LOG`; default to `forge_tui=info` for ergonomic
+    // visibility into client + dispatch errors.
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("forge_tui=info")),
+        )
+        .with_writer(std::io::stderr)
+        .init();
+
     let cli = Cli::parse();
 
     // Append `?name=...` (or `&name=...` if there's already a query string).
@@ -76,50 +92,57 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Register reverse-RPC handler for permission requests. The handler
     // captures the rev_id alongside the params and forwards both to the
     // app event channel; `input::answer_permission` later replies with
-    // `Client::send_response(rev_id, ...)`.
+    // `Client::send_response(rev_id, ...)`. Registered DEFERRED — the
+    // dispatcher does not auto-reply; the user keypress does.
     {
         let tx = event_tx.clone();
-        client.on_reverse_rpc(
+        client.on_reverse_rpc_deferred(
             "permission.request",
             move |rev_id: serde_json::Value, params: serde_json::Value| {
                 let tx = tx.clone();
                 async move {
                     let _ = tx.send(AppEvent::PermissionRequest { rev_id, params });
-                    // Returned future value is ignored — the answer flows back
-                    // out-of-band via Client::send_response.
-                    serde_json::Value::Null
                 }
             },
         );
     }
 
-    // Auto-allow hooks for v1. Hooks signal the daemon they may proceed.
-    let common_hook_methods = [
-        "hook.pre_tool_use",
-        "hook.post_tool_use",
-        "hook.user_prompt_submit",
-        "hook.stop",
-        "hook.subagent_stop",
-        "hook.pre_compact",
-        "hook.session_start",
-        "hook.session_end",
-        "hook.notification",
+    // Auto-allow hooks for v1. Aligned with `attach_hooks` in
+    // `crates/forged/src/sdk_callbacks.rs` — every kind the daemon
+    // recognises must have a matching handler here, and we drop kinds
+    // the daemon does not recognise (`session_start`, `session_end`).
+    // Registered SYNC so the dispatcher auto-replies with the
+    // passthrough decision; the app loop also gets a notification for
+    // visibility.
+    let known_hook_kinds = [
+        "pre_tool_use",
+        "post_tool_use",
+        "post_tool_use_failure",
+        "user_prompt_submit",
+        "stop",
+        "subagent_stop",
+        "subagent_start",
+        "pre_compact",
+        "notification",
+        "permission_request",
     ];
-    for method in common_hook_methods {
+    for kind in known_hook_kinds {
+        let method = format!("hook.{kind}");
+        let kind_owned = kind.to_string();
         let tx = event_tx.clone();
-        let kind = method.trim_start_matches("hook.").to_string();
-        client.on_reverse_rpc(method, move |rev_id, params| {
+        client.on_reverse_rpc_sync(method, move |rev_id, params| {
             let tx = tx.clone();
-            let kind = kind.clone();
+            let kind_owned = kind_owned.clone();
             async move {
                 let _ = tx.send(AppEvent::HookRequest {
-                    kind,
+                    kind: kind_owned,
                     rev_id,
                     params,
                 });
-                // Auto-allow shape: matches forged's hook callback contract
-                // (return an empty `decisions` array — see wire spec).
-                serde_json::json!({"decisions": []})
+                // Auto-allow shape: passthrough decision so the
+                // forged-side bridge maps to `HookDecision::passthrough`
+                // and the SDK reads it as "no opinion, proceed".
+                serde_json::json!({"decision": "passthrough"})
             }
         });
     }
@@ -143,6 +166,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
 
+    // Drain Client-wide notifications (everything that isn't a
+    // session.event subscription notification or a reverse-RPC) and
+    // route into the right AppEvent variants.
+    if let Some(mut notifications) = client.notifications() {
+        let tx = event_tx.clone();
+        tokio::spawn(async move {
+            while let Some(frame) = notifications.recv().await {
+                let event = match frame.method.as_str() {
+                    "session.role_assigned" => AppEvent::RoleChanged(frame.params),
+                    "session.primary_changed" => AppEvent::PrimaryChanged(frame.params),
+                    "session.closed" => AppEvent::SessionClosed(frame.params),
+                    "prompts.expired" => AppEvent::PromptsExpired(frame.params),
+                    other => {
+                        tracing::debug!(method = %other, "unrouted notification");
+                        continue;
+                    }
+                };
+                if tx.send(event).is_err() {
+                    break;
+                }
+            }
+        });
+    }
+
     let _guard = TerminalGuard::enter()?;
     let mut terminal = Terminal::new(CrosstermBackend::new(stdout()))?;
 
@@ -160,7 +207,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    let result = app::run(&mut terminal, client, event_rx).await;
+    let result = app::run(&mut terminal, client, event_tx, event_rx).await;
 
     // _guard is dropped here, restoring the terminal automatically.
     drop(terminal);

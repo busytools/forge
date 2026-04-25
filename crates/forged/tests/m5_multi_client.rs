@@ -572,6 +572,185 @@ async fn ws_session_peers_returns_subscribers_with_roles() {
 }
 
 // =============================================================================
+// Fix #3 regression — disconnect must purge from subscribers + primary
+// =============================================================================
+
+/// When a primary connection disconnects, the daemon must walk every
+/// session's subscribers list, remove the dead conn, and clear the
+/// primary slot. The next `session.peers` call must NOT report the
+/// disconnected conn.
+#[tokio::test]
+async fn disconnect_purges_dead_conn_from_subscribers_and_clears_primary() {
+    let (_state, addr) = spawn_daemon().await;
+
+    let url_a = format!("ws://{addr}/?name=A");
+    let (mut ws_a, _) = connect_async(&url_a).await.unwrap();
+    let mut parked_a = Vec::new();
+    let _ = drain_for_method(&mut ws_a, "client.identify", &mut parked_a).await;
+
+    // A spawns + subscribes — A is initial primary.
+    let spawn_req = forged::jsonrpc::Request::new(
+        "session.spawn",
+        serde_json::json!({"options": {"binary": MOCK_CLAUDE}}),
+        serde_json::json!(1),
+    );
+    ws_a.send(WsMsg::Text(serde_json::to_string(&spawn_req).unwrap()))
+        .await
+        .unwrap();
+    let spawn_resp = drain_for_response(&mut ws_a, &serde_json::json!(1), &mut parked_a).await;
+    let session_id = spawn_resp
+        .result
+        .unwrap()
+        .get("session_id")
+        .unwrap()
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let sub_a = forged::jsonrpc::Request::new(
+        "session.subscribe",
+        serde_json::json!({"session_id": session_id}),
+        serde_json::json!(2),
+    );
+    ws_a.send(WsMsg::Text(serde_json::to_string(&sub_a).unwrap()))
+        .await
+        .unwrap();
+    let _ = drain_for_response(&mut ws_a, &serde_json::json!(2), &mut parked_a).await;
+
+    // Drop A's WS handle — the daemon should observe the close, run
+    // `unregister_connection`, walk sessions, drop A from subscribers
+    // and clear the primary slot.
+    drop(ws_a);
+
+    // Give the daemon a moment to observe the close.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // Connect B and call session.peers.
+    let url_b = format!("ws://{addr}/?name=B");
+    let (mut ws_b, _) = connect_async(&url_b).await.unwrap();
+    let mut parked_b = Vec::new();
+    let _ = drain_for_method(&mut ws_b, "client.identify", &mut parked_b).await;
+
+    let peers = forged::jsonrpc::Request::new(
+        "session.peers",
+        serde_json::json!({"session_id": session_id}),
+        serde_json::json!(99),
+    );
+    ws_b.send(WsMsg::Text(serde_json::to_string(&peers).unwrap()))
+        .await
+        .unwrap();
+    let resp = drain_for_response(&mut ws_b, &serde_json::json!(99), &mut parked_b).await;
+    let result = resp.result.unwrap();
+    let arr = result["peers"].as_array().unwrap();
+    // A's conn should not appear; only B (which hasn't subscribed
+    // yet) — so the list might be empty or contain only B.
+    for entry in arr {
+        let name = entry["name"].as_str().unwrap_or("");
+        assert_ne!(
+            name, "A",
+            "expected A's stale entry to be purged after disconnect"
+        );
+    }
+}
+
+/// When the primary disconnects, all subscribers should receive
+/// `session.primary_changed { primary: null, reason: "disconnected" }`.
+#[tokio::test]
+async fn disconnect_broadcasts_primary_changed_with_disconnected_reason() {
+    let (_state, addr) = spawn_daemon().await;
+
+    // A spawns + subscribes (primary).
+    let url_a = format!("ws://{addr}/?name=A");
+    let (mut ws_a, _) = connect_async(&url_a).await.unwrap();
+    let mut parked_a = Vec::new();
+    let _ = drain_for_method(&mut ws_a, "client.identify", &mut parked_a).await;
+
+    let spawn_req = forged::jsonrpc::Request::new(
+        "session.spawn",
+        serde_json::json!({"options": {"binary": MOCK_CLAUDE}}),
+        serde_json::json!(1),
+    );
+    ws_a.send(WsMsg::Text(serde_json::to_string(&spawn_req).unwrap()))
+        .await
+        .unwrap();
+    let spawn_resp = drain_for_response(&mut ws_a, &serde_json::json!(1), &mut parked_a).await;
+    let session_id = spawn_resp
+        .result
+        .unwrap()
+        .get("session_id")
+        .unwrap()
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let sub_a = forged::jsonrpc::Request::new(
+        "session.subscribe",
+        serde_json::json!({"session_id": session_id}),
+        serde_json::json!(2),
+    );
+    ws_a.send(WsMsg::Text(serde_json::to_string(&sub_a).unwrap()))
+        .await
+        .unwrap();
+    let _ = drain_for_response(&mut ws_a, &serde_json::json!(2), &mut parked_a).await;
+
+    // B subscribes (auto-takeover; B is primary, A is viewer now).
+    let url_b = format!("ws://{addr}/?name=B");
+    let (mut ws_b, _) = connect_async(&url_b).await.unwrap();
+    let mut parked_b = Vec::new();
+    let _ = drain_for_method(&mut ws_b, "client.identify", &mut parked_b).await;
+
+    let sub_b = forged::jsonrpc::Request::new(
+        "session.subscribe",
+        serde_json::json!({"session_id": session_id}),
+        serde_json::json!(3),
+    );
+    ws_b.send(WsMsg::Text(serde_json::to_string(&sub_b).unwrap()))
+        .await
+        .unwrap();
+    let _ = drain_for_response(&mut ws_b, &serde_json::json!(3), &mut parked_b).await;
+
+    // Drain whatever auto-takeover broadcasts A has buffered so we
+    // can match strictly on the disconnect-emitted frame next.
+    let _ = drain_for_method(&mut ws_a, "session.primary_changed", &mut parked_a).await;
+    parked_a
+        .retain(|v| v.get("method").and_then(|m| m.as_str()) != Some("session.primary_changed"));
+    parked_b.clear();
+
+    // Drop B (the current primary). A should observe a
+    // primary_changed { reason: "disconnected" }.
+    drop(ws_b);
+
+    // Drain frames until we see one with reason=disconnected.
+    let mut saw_disconnected = false;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+    while tokio::time::Instant::now() < deadline {
+        let Ok(frame) = tokio::time::timeout(
+            Duration::from_millis(500),
+            drain_for_method(&mut ws_a, "session.primary_changed", &mut parked_a),
+        )
+        .await
+        else {
+            continue;
+        };
+        let reason = frame["params"]["reason"].as_str().unwrap_or("");
+        if reason == "disconnected" {
+            assert!(
+                frame["params"]["primary"].is_null(),
+                "expected primary=null, got {}",
+                frame["params"]["primary"]
+            );
+            saw_disconnected = true;
+            break;
+        }
+        // Otherwise it's a stale takeover frame; keep draining.
+    }
+    assert!(
+        saw_disconnected,
+        "primary_changed {{ reason: disconnected }} not seen within 3s after B disconnect"
+    );
+}
+
+// =============================================================================
 // M5.4 — Regression: queued permission.request hands off via takeover
 // =============================================================================
 

@@ -247,14 +247,43 @@ fn seed_projects(n: usize) -> (TempDir, PathBuf, String) {
     (tmp, project_subdir, dir_str)
 }
 
-fn point_sdk_at(tmp: &TempDir) {
-    // SAFETY: tests in this binary are single-threaded around env
-    // mutation per the harness convention; serial execution is
-    // ensured by routing every CLAUDE_CONFIG_DIR-touching test
-    // through the same lock.
-    unsafe {
-        std::env::set_var("CLAUDE_CONFIG_DIR", tmp.path());
+/// RAII guard that snapshots an env var on construction, applies the
+/// new value, and restores the original on drop. Survives test panics
+/// (Drop runs even if the test fn unwinds) — without this, a panicking
+/// test that mutated `CLAUDE_CONFIG_DIR` would leak into every
+/// subsequent test in the same process.
+struct EnvGuard {
+    key: &'static str,
+    prior: Option<std::ffi::OsString>,
+}
+
+impl EnvGuard {
+    fn new(key: &'static str, value: impl AsRef<std::ffi::OsStr>) -> Self {
+        let prior = std::env::var_os(key);
+        // SAFETY: tests in this binary are serialised around env
+        // mutation via `ENV_LOCK`; the guard restores the original
+        // value on drop even if the test panics.
+        unsafe {
+            std::env::set_var(key, value);
+        }
+        Self { key, prior }
     }
+}
+
+impl Drop for EnvGuard {
+    fn drop(&mut self) {
+        // SAFETY: same as new() — serialised access via ENV_LOCK.
+        unsafe {
+            match &self.prior {
+                Some(v) => std::env::set_var(self.key, v),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
+}
+
+fn point_sdk_at(tmp: &TempDir) -> EnvGuard {
+    EnvGuard::new("CLAUDE_CONFIG_DIR", tmp.path())
 }
 
 // Serialise tests that mutate $CLAUDE_CONFIG_DIR. Other tests don't
@@ -265,7 +294,7 @@ static ENV_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
 fn sessions_list_returns_seeded_entries() {
     let _g = ENV_LOCK.lock();
     let (tmp, _projects_dir, project_dir) = seed_projects(3);
-    point_sdk_at(&tmp);
+    let _guard = point_sdk_at(&tmp);
     let result = forged::methods::sessions::list(Some(project_dir), Some(10), 0).unwrap();
     assert_eq!(result.len(), 3, "expected 3 seeded sessions");
 }
@@ -274,7 +303,7 @@ fn sessions_list_returns_seeded_entries() {
 fn sessions_list_honours_limit_and_offset() {
     let _g = ENV_LOCK.lock();
     let (tmp, _, project_dir) = seed_projects(5);
-    point_sdk_at(&tmp);
+    let _guard = point_sdk_at(&tmp);
     let r = forged::methods::sessions::list(Some(project_dir), Some(2), 1).unwrap();
     assert_eq!(r.len(), 2);
 }
@@ -283,7 +312,7 @@ fn sessions_list_honours_limit_and_offset() {
 fn sessions_info_returns_some_for_known_id() {
     let _g = ENV_LOCK.lock();
     let (tmp, _, project_dir) = seed_projects(1);
-    point_sdk_at(&tmp);
+    let _guard = point_sdk_at(&tmp);
     let sid = "00000000-0000-4000-8000-000000000000".to_string();
     let info = forged::methods::sessions::info(sid.clone(), Some(project_dir)).unwrap();
     assert!(info.is_some(), "expected Some(SDKSessionInfo)");
@@ -294,7 +323,7 @@ fn sessions_info_returns_some_for_known_id() {
 fn sessions_info_returns_none_for_unknown_id() {
     let _g = ENV_LOCK.lock();
     let (tmp, _, project_dir) = seed_projects(0);
-    point_sdk_at(&tmp);
+    let _guard = point_sdk_at(&tmp);
     let info = forged::methods::sessions::info(
         "00000000-0000-4000-8000-deadbeefface".into(),
         Some(project_dir),
@@ -329,7 +358,7 @@ fn sessions_messages_returns_full_transcript_with_watermark() {
     });
     std::fs::write(&path, body).unwrap();
 
-    point_sdk_at(&tmp);
+    let _guard = point_sdk_at(&tmp);
     let r = forged::methods::sessions::messages(sid.into(), Some(project_dir)).unwrap();
     assert_eq!(r.messages.len(), 2);
     assert_eq!(
@@ -343,7 +372,7 @@ fn sessions_messages_returns_full_transcript_with_watermark() {
 fn sessions_messages_empty_transcript_returns_none_watermark() {
     let _g = ENV_LOCK.lock();
     let (tmp, _, project_dir) = seed_projects(0);
-    point_sdk_at(&tmp);
+    let _guard = point_sdk_at(&tmp);
     let r = forged::methods::sessions::messages(
         "00000000-0000-4000-8000-bbbbbbbbbbbb".into(),
         Some(project_dir),
@@ -357,7 +386,7 @@ fn sessions_messages_empty_transcript_returns_none_watermark() {
 fn sessions_list_subagents_returns_empty_for_session_with_no_subagents() {
     let _g = ENV_LOCK.lock();
     let (tmp, _, project_dir) = seed_projects(1);
-    point_sdk_at(&tmp);
+    let _guard = point_sdk_at(&tmp);
     let r = forged::methods::sessions::list_subagents(
         "00000000-0000-4000-8000-000000000000".into(),
         Some(project_dir),
@@ -370,7 +399,7 @@ fn sessions_list_subagents_returns_empty_for_session_with_no_subagents() {
 fn sessions_subagent_messages_empty_for_unknown_subagent() {
     let _g = ENV_LOCK.lock();
     let (tmp, _, project_dir) = seed_projects(1);
-    point_sdk_at(&tmp);
+    let _guard = point_sdk_at(&tmp);
     let r = forged::methods::sessions::subagent_messages(
         "00000000-0000-4000-8000-000000000000".into(),
         "sub_unknown".into(),
@@ -401,7 +430,7 @@ fn sessions_project_key_none_uses_cwd() {
 fn sessions_rename_writes_custom_title() {
     let _g = ENV_LOCK.lock();
     let (tmp, _, project_dir) = seed_projects(1);
-    point_sdk_at(&tmp);
+    let _guard = point_sdk_at(&tmp);
     let sid = "00000000-0000-4000-8000-000000000000".to_string();
     forged::methods::sessions::rename(
         sid.clone(),
@@ -419,7 +448,7 @@ fn sessions_rename_writes_custom_title() {
 fn sessions_tag_sets_then_clears() {
     let _g = ENV_LOCK.lock();
     let (tmp, _, project_dir) = seed_projects(1);
-    point_sdk_at(&tmp);
+    let _guard = point_sdk_at(&tmp);
     let sid = "00000000-0000-4000-8000-000000000000".to_string();
 
     forged::methods::sessions::tag(
@@ -448,7 +477,7 @@ fn sessions_delete_removes_jsonl() {
     let path = dir.join(format!("{sid}.jsonl"));
     assert!(path.exists());
 
-    point_sdk_at(&tmp);
+    let _guard = point_sdk_at(&tmp);
     forged::methods::sessions::delete(sid, Some(project_dir)).unwrap();
     assert!(!path.exists());
 }
@@ -474,7 +503,7 @@ fn sessions_fork_creates_a_new_session_with_copied_entries() {
     });
     std::fs::write(&path, body).unwrap();
 
-    point_sdk_at(&tmp);
+    let _guard = point_sdk_at(&tmp);
     let result = forged::methods::sessions::fork(
         sid.into(),
         Some("22222222-2222-4222-8222-222222222222".into()),
@@ -571,6 +600,17 @@ async fn session_stop_task_proxies_to_client() {
 // =============================================================================
 // M3.7 — MCP + context handlers
 // =============================================================================
+//
+// TODO: the M3.6/M3.7 round-trip tests below (interrupt, set_model,
+// rewind_files, stop_task, mcp.status, context.get) currently assert
+// "the dispatch path reached the actor" rather than "the right
+// `forge_sdk::Client::*` method got called". Strengthening would
+// require either (a) extending mock_claude_control.sh to echo back
+// the method name, or (b) introducing a Client trait abstraction
+// behind a feature flag so we can swap a mock Client. Both are
+// heavier than warranted for the current parity-first phase; the
+// current shape locks the dispatch contract (no SessionNotFound, no
+// "actor gone" InternalError) and is regression-safe.
 
 #[tokio::test]
 async fn mcp_status_proxies_through_actor() {

@@ -1,0 +1,7 @@
+{"dir":"out","line":"{\"jsonrpc\":\"2.0\",\"method\":\"client.identify\",\"params\":{\"connection_id\":\"conn_b\",\"server_version\":\"0.1.64\",\"server_build\":\"dev\"}}"}
+{"dir":"in","line":"{\"jsonrpc\":\"2.0\",\"id\":\"req_2\",\"method\":\"session.subscribe\",\"params\":{\"session_id\":\"sess_demo\"}}"}
+{"dir":"out","line":"{\"jsonrpc\":\"2.0\",\"method\":\"session.role_assigned\",\"params\":{\"session_id\":\"sess_demo\",\"role\":\"primary\",\"primary\":\"conn_b\",\"reason\":\"auto_takeover_on_connect\"}}"}
+{"dir":"out","line":"{\"jsonrpc\":\"2.0\",\"method\":\"session.primary_changed\",\"params\":{\"session_id\":\"sess_demo\",\"primary\":\"conn_b\",\"previous\":\"conn_a\",\"reason\":\"auto_takeover_on_connect\"}}"}
+{"dir":"out","line":"{\"jsonrpc\":\"2.0\",\"id\":\"req_2\",\"result\":{\"replayed\":0,\"live\":true,\"pending_prompts\":[]}}"}
+{"dir":"in","line":"{\"jsonrpc\":\"2.0\",\"id\":\"req_3\",\"method\":\"session.peers\",\"params\":{\"session_id\":\"sess_demo\"}}"}
+{"dir":"out","line":"{\"jsonrpc\":\"2.0\",\"id\":\"req_3\",\"result\":{\"peers\":[{\"connection_id\":\"conn_a\",\"name\":\"A\",\"role\":\"viewer\",\"connected_at\":\"2026-04-25T00:00:00Z\"},{\"connection_id\":\"conn_b\",\"name\":\"B\",\"role\":\"primary\",\"connected_at\":\"2026-04-25T00:00:01Z\"}]}}"}

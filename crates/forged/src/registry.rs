@@ -16,6 +16,31 @@ use tokio::sync::{mpsc, oneshot};
 use crate::connection::{Connection, ConnectionId};
 use crate::session_state::{Command, SessionHandle, SessionId, SessionState};
 
+/// One outstanding reverse-RPC. Tracks `(session_id, conn_id, responder)`
+/// so disconnect cleanup can synthesise an answer for any in-flight
+/// rev request whose answering connection just went away.
+///
+/// `conn_id` is `None` when the request is parked in the per-session
+/// queue (no primary at issue time).
+pub struct OutstandingEntry {
+    /// Session the rev request belongs to.
+    pub session_id: SessionId,
+    /// Conn that owns the answer; `None` when parked.
+    pub conn_id: Option<ConnectionId>,
+    /// Resumes the SDK callback awaiting this answer.
+    pub responder: oneshot::Sender<serde_json::Value>,
+}
+
+impl std::fmt::Debug for OutstandingEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OutstandingEntry")
+            .field("session_id", &self.session_id)
+            .field("conn_id", &self.conn_id)
+            .field("responder", &"<oneshot>")
+            .finish()
+    }
+}
+
 /// Shared daemon state — cloned cheaply (each field is `Arc`-backed) and
 /// passed to every spawned connection handler.
 #[derive(Debug, Clone)]
@@ -34,9 +59,10 @@ pub struct DaemonState {
     /// daemon-wide lock across send attempts.
     pub connections: Arc<Mutex<HashMap<ConnectionId, Connection>>>,
     /// Outstanding reverse-RPC requests keyed by `rev_<uuid>` id. The
-    /// oneshot sender is consumed when the matching response arrives
-    /// (see `crate::reverse_rpc::resolve`).
-    pub outstanding_reverse: Arc<Mutex<HashMap<String, oneshot::Sender<serde_json::Value>>>>,
+    /// outstanding entry carries the session/conn context plus the
+    /// oneshot sender; disconnect cleanup walks this map and synthesises
+    /// answers for entries whose answering conn just went away.
+    pub outstanding_reverse: Arc<Mutex<HashMap<String, OutstandingEntry>>>,
 }
 
 impl DaemonState {
@@ -101,10 +127,67 @@ impl DaemonState {
 
     /// Unregister a connection — removes it from the lookup map and
     /// decrements `connected_clients`. No-op if the id is unknown.
-    pub fn unregister_connection(&self, id: &ConnectionId) {
+    ///
+    /// Returns the list of session ids whose primary slot was cleared
+    /// because they pointed at this conn — callers (the WS read loop)
+    /// fan a `session.primary_changed { primary: null,
+    /// reason: "disconnected" }` notification to subscribers of those
+    /// sessions, and synthesise client-disconnected answers for any
+    /// in-flight reverse-RPC owned by this conn.
+    #[must_use = "callers should fan a session.primary_changed { reason: \"disconnected\" } notification for each cleared session"]
+    pub fn unregister_connection(&self, id: &ConnectionId) -> Vec<SessionId> {
+        // Walk all sessions, drop the conn from subscribers, and clear
+        // the primary slot when it pointed at this conn. Capture which
+        // sessions we touched so the caller can broadcast.
+        let cleared = self.purge_connection_from_sessions(id);
+
+        // Synthesise client-disconnected responses for in-flight
+        // reverse-RPC owned by this conn — without this, the bridges
+        // wait the full 1h timeout. Drain into a Vec so we can drop the
+        // mutex before sending.
+        let to_unblock: Vec<OutstandingEntry> = {
+            let mut o = self.outstanding_reverse.lock();
+            let keys: Vec<String> = o
+                .iter()
+                .filter_map(|(k, v)| {
+                    if v.conn_id.as_ref() == Some(id) {
+                        Some(k.clone())
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            keys.into_iter().filter_map(|k| o.remove(&k)).collect()
+        };
+        for entry in to_unblock {
+            let _ = entry.responder.send(serde_json::json!({
+                "_client_disconnected": true,
+            }));
+        }
+
         if self.connections.lock().remove(id).is_some() {
             *self.connected_clients.lock() -= 1;
         }
+        cleared
+    }
+
+    /// Walk every session and (a) drop `conn_id` from `subscribers`,
+    /// (b) clear the `primary` slot if it pointed at `conn_id`. Returns
+    /// the list of session ids whose primary was cleared so callers
+    /// can broadcast `session.primary_changed`.
+    #[must_use = "callers should fan a session.primary_changed notification for each cleared session"]
+    pub fn purge_connection_from_sessions(&self, conn_id: &ConnectionId) -> Vec<SessionId> {
+        let sessions = self.sessions.lock().clone();
+        let mut cleared = Vec::new();
+        for (sid, handle) in sessions {
+            handle.subscribers.lock().retain(|c| c != conn_id);
+            let mut p = handle.primary.lock();
+            if p.as_ref() == Some(conn_id) {
+                *p = None;
+                cleared.push(sid);
+            }
+        }
+        cleared
     }
 }
 

@@ -45,9 +45,12 @@ async fn app_quits_on_q_keypress() {
     // `q` falls through to the global match arm.
     tx.send(AppEvent::Term(key(KeyCode::Char('q')))).unwrap();
 
-    let result = tokio::time::timeout(Duration::from_secs(2), app::run(&mut terminal, client, rx))
-        .await
-        .expect("app loop did not exit within 2s");
+    let result = tokio::time::timeout(
+        Duration::from_secs(2),
+        app::run(&mut terminal, client, tx.clone(), rx),
+    )
+    .await
+    .expect("app loop did not exit within 2s");
     result.expect("app::run returned Err");
 }
 
@@ -72,9 +75,12 @@ async fn permission_request_event_focuses_modal() {
     tx.send(AppEvent::Term(key(KeyCode::Char('d')))).unwrap();
     tx.send(AppEvent::Term(key(KeyCode::Char('q')))).unwrap();
 
-    let result = tokio::time::timeout(Duration::from_secs(2), app::run(&mut terminal, client, rx))
-        .await
-        .expect("app loop did not exit within 2s");
+    let result = tokio::time::timeout(
+        Duration::from_secs(2),
+        app::run(&mut terminal, client, tx.clone(), rx),
+    )
+    .await
+    .expect("app loop did not exit within 2s");
     result.expect("app::run returned Err");
 }
 
@@ -98,9 +104,12 @@ async fn session_list_loaded_event_populates_list_and_keeps_cursor_in_bounds() {
     .unwrap();
     tx.send(AppEvent::Term(key(KeyCode::Char('q')))).unwrap();
 
-    let result = tokio::time::timeout(Duration::from_secs(2), app::run(&mut terminal, client, rx))
-        .await
-        .expect("app loop did not exit within 2s");
+    let result = tokio::time::timeout(
+        Duration::from_secs(2),
+        app::run(&mut terminal, client, tx.clone(), rx),
+    )
+    .await
+    .expect("app loop did not exit within 2s");
     result.expect("app::run returned Err");
 
     // Reach into App::default + sanity-check: a fresh App has cursor=0,

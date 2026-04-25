@@ -214,13 +214,26 @@ impl Transport for BridgedTransport {
         let Some(mut child) = self.child.take() else {
             return Ok(());
         };
-        match child.wait().await {
-            Ok(status) if status.success() => Ok(()),
-            Ok(status) => Err(SdkError::Process {
+        // Bound `wait()` so a stuck CLI doesn't pin the disconnect
+        // path forever. 5s is generous for normal exit; on timeout we
+        // SIGKILL and surface the failure as a `Process` error.
+        match tokio::time::timeout(std::time::Duration::from_secs(5), child.wait()).await {
+            Ok(Ok(status)) if status.success() => Ok(()),
+            Ok(Ok(status)) => Err(SdkError::Process {
                 exit_code: status.code(),
                 stderr: String::new(),
             }),
-            Err(e) => Err(SdkError::Io(e)),
+            Ok(Err(e)) => Err(SdkError::Io(e)),
+            Err(_elapsed) => {
+                warn!("BridgedTransport::close timed out waiting for child; sending SIGKILL");
+                if let Err(e) = child.kill().await {
+                    warn!(error = %e, "BridgedTransport::close: kill() failed");
+                }
+                Err(SdkError::Process {
+                    exit_code: None,
+                    stderr: String::from("close timeout — child killed"),
+                })
+            }
         }
     }
 }

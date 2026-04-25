@@ -543,6 +543,14 @@ fn spawn_session_actor(
             }
         };
 
+        // Drain any parked prompts before unregistering — otherwise
+        // SDK callbacks awaiting on parked oneshots wait the full 1h
+        // timeout. Each parked prompt gets a synthetic
+        // `_session_closed: true` answer so the bridge unblocks
+        // immediately, plus a `prompts.expired` broadcast so any
+        // subscribers know the prompt is gone.
+        crate::reverse_rpc::drain_prompts_on_session_exit(&state, &session_id);
+
         // Emit session.closed to all subscribers.
         let closed = crate::connection::Outbound::Notification(crate::jsonrpc::Notification::new(
             "session.closed",
