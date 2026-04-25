@@ -22,7 +22,7 @@ use crate::messages::Message;
 use crate::options::Options;
 use crate::permissions::CanUseToolCallback;
 use crate::transport::Transport;
-use crate::transport::codec::{DecodedLine, decode_dispatch, decode_line};
+use crate::transport::codec::{DecodedLine, decode_dispatch};
 use crate::transport::process::Subprocess;
 
 /// An active `claude` binary subprocess.
@@ -318,14 +318,38 @@ impl Client {
                         "control_cancel_request during init; nothing live to cancel"
                     );
                 }
-                _ => {
-                    let msg = decode_line(&line, client.line_number)?;
-                    debug!(
-                        line_number = client.line_number,
-                        "buffering pre-init frame for caller"
-                    );
-                    client.pre_init_messages.push_back(msg);
-                }
+                _ => match decode_dispatch(&line, client.line_number)? {
+                    DecodedLine::Message(msg) => {
+                        debug!(
+                            line_number = client.line_number,
+                            "buffering pre-init frame for caller"
+                        );
+                        client.pre_init_messages.push_back(msg);
+                    }
+                    DecodedLine::Unknown { type_str, raw } => {
+                        tracing::warn!(
+                            type = %type_str,
+                            raw = %raw,
+                            line = client.line_number,
+                            "unknown top-level type during init — buffering as Message::Unknown"
+                        );
+                        client
+                            .pre_init_messages
+                            .push_back(Message::Unknown { type_str, raw });
+                    }
+                    // The outer `match ty` already routed control_* variants
+                    // by string match before reaching here. `DecodedLine`
+                    // is `#[non_exhaustive]`; any future variant that slips
+                    // through this fallthrough gets logged and dropped to
+                    // keep the init loop alive.
+                    other => {
+                        debug!(
+                            line_number = client.line_number,
+                            ?other,
+                            "unexpected DecodedLine during init fallthrough; ignoring"
+                        );
+                    }
+                },
             }
         };
         debug!("client init handshake complete");
@@ -450,15 +474,16 @@ impl Client {
                 }
                 DecodedLine::Unknown { type_str, raw } => {
                     // Forward-compat: the CLI emitted a frame with a `type`
-                    // we don't recognise. Log loudly so anyone watching
-                    // logs notices drift, then skip — keeping the read
-                    // loop alive rather than panicking the whole session.
+                    // we don't recognise. Log so anyone watching logs
+                    // notices drift, then surface as `Message::Unknown`
+                    // so library consumers can match on it programmatically.
                     tracing::warn!(
                         type = %type_str,
                         raw = %raw,
                         line = self.line_number,
-                        "unknown top-level stream-json type — skipping (harness should flag)"
+                        "unknown top-level stream-json type — surfacing as Message::Unknown"
                     );
+                    return Ok(Some(Message::Unknown { type_str, raw }));
                 }
             }
         }

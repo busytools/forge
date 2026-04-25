@@ -101,6 +101,27 @@ fn result_message_roundtrip() {
 }
 
 #[test]
+fn unknown_message_serializes_raw_verbatim() {
+    let raw = json!({
+        "type": "future_thing",
+        "subtype": "experimental",
+        "session_id": "sess_unknown",
+        "payload": {"key": "value", "n": 42},
+    });
+    let msg = Message::Unknown {
+        type_str: "future_thing".to_string(),
+        raw: raw.clone(),
+    };
+    let re = serde_json::to_value(&msg).expect("serialize");
+    assert_eq!(
+        raw, re,
+        "Message::Unknown must emit the original `raw` bytes verbatim — \
+         this is the forward-compat round-trip contract"
+    );
+    assert!(msg.session_id().is_none(), "Unknown carries no session id");
+}
+
+#[test]
 fn user_message_with_tool_result_roundtrip() {
     let raw = json!({
         "type": "user",
