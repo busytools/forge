@@ -109,7 +109,22 @@ async fn handle_connection(
 
     let r = read_loop(read, &conn, &state).await;
 
-    state.unregister_connection(&conn.id);
+    let cleared_sessions = state.unregister_connection(&conn.id);
+    // For each session whose primary was cleared, broadcast
+    // `session.primary_changed { primary: null, reason: "disconnected" }`
+    // so subscribers (viewers + reconnected primary candidates) know.
+    for sid in cleared_sessions {
+        let frame = Outbound::Notification(Notification::new(
+            "session.primary_changed",
+            serde_json::json!({
+                "session_id": sid.0,
+                "primary": serde_json::Value::Null,
+                "previous": conn.id.0,
+                "reason": "disconnected",
+            }),
+        ));
+        crate::broadcast::fanout(&state, &sid, &frame);
+    }
     // Drop our end of the channel so the writer task observes EOF and exits.
     drop(out_tx);
     let _ = writer.await;
@@ -176,16 +191,18 @@ async fn read_loop(
         if is_response {
             let id = v.get("id").and_then(Value::as_str).unwrap_or("");
             if id.starts_with("rev_") {
-                // Use `result` when present; on error responses pass an
-                // object containing the error payload so the SDK
-                // callback can decide how to handle it (currently
-                // permissive — wraps the error as the answer).
-                let value = v
-                    .get("result")
-                    .cloned()
-                    .or_else(|| v.get("error").cloned())
-                    .unwrap_or(Value::Null);
-                crate::reverse_rpc::resolve(state, id, value);
+                // Distinguish success from error: on `result` resolve
+                // normally; on `error` route through `resolve_error`
+                // so the bridges can map to a typed deny with reason
+                // rather than collapsing both cases into a generic
+                // failure.
+                if let Some(result) = v.get("result").cloned() {
+                    crate::reverse_rpc::resolve(state, id, result);
+                } else if let Some(err) = v.get("error") {
+                    crate::reverse_rpc::resolve_error(state, id, err);
+                } else {
+                    crate::reverse_rpc::resolve(state, id, Value::Null);
+                }
             }
             // Either we just resolved a reverse-RPC, or the id didn't
             // match anything outstanding — both cases are silent.
@@ -582,35 +599,41 @@ fn parse_query(q: &str) -> impl Iterator<Item = (String, String)> + '_ {
 }
 
 /// Tiny `application/x-www-form-urlencoded` decoder. Handles `+` →
-/// space and `%XX` hex escapes; passes any non-ASCII or malformed
-/// escape through as a literal byte.
+/// space and `%XX` hex escapes. Decodes byte-by-byte and runs
+/// `String::from_utf8_lossy` on the buffer at the end so multi-byte
+/// UTF-8 sequences (e.g. `%C3%A9` → "é") round-trip correctly. ASCII
+/// characters are preserved; malformed UTF-8 falls back to U+FFFD.
 fn url_decode(s: &str) -> String {
     let bytes = s.as_bytes();
-    let mut out = String::with_capacity(bytes.len());
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
     let mut i = 0;
     while i < bytes.len() {
         match bytes[i] {
             b'+' => {
-                out.push(' ');
+                out.push(b' ');
                 i += 1;
             }
             b'%' if i + 2 < bytes.len() => {
-                let hex = &s[i + 1..i + 3];
-                if let Ok(n) = u8::from_str_radix(hex, 16) {
-                    out.push(char::from(n));
-                    i += 3;
-                } else {
-                    out.push('%');
-                    i += 1;
+                let hex_slice = bytes.get(i + 1..i + 3);
+                let hex_str = hex_slice.and_then(|b| std::str::from_utf8(b).ok());
+                if let Some(h) = hex_str {
+                    if let Ok(n) = u8::from_str_radix(h, 16) {
+                        out.push(n);
+                        i += 3;
+                        continue;
+                    }
                 }
+                // Malformed escape — treat the `%` as a literal byte.
+                out.push(b'%');
+                i += 1;
             }
             other => {
-                out.push(char::from(other));
+                out.push(other);
                 i += 1;
             }
         }
     }
-    out
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 #[cfg(test)]
@@ -645,5 +668,29 @@ mod tests {
     #[test]
     fn url_decode_handles_plus_as_space() {
         assert_eq!(url_decode("foo+bar"), "foo bar");
+    }
+
+    #[test]
+    fn url_decode_decodes_two_byte_utf8_e_acute() {
+        // %C3%A9 — UTF-8 for "é"
+        assert_eq!(url_decode("caf%C3%A9"), "café");
+    }
+
+    #[test]
+    fn url_decode_decodes_three_byte_utf8_check_mark() {
+        // %E2%9C%93 — UTF-8 for "✓"
+        assert_eq!(url_decode("ok%20%E2%9C%93"), "ok ✓");
+    }
+
+    #[test]
+    fn url_decode_substitutes_replacement_char_on_truncated_utf8() {
+        // %C3 by itself is the start of a 2-byte sequence with no
+        // continuation byte — String::from_utf8_lossy substitutes
+        // U+FFFD.
+        let decoded = url_decode("bad%C3");
+        assert!(
+            decoded.contains('\u{FFFD}'),
+            "expected U+FFFD on truncated UTF-8, got {decoded:?}"
+        );
     }
 }

@@ -1,12 +1,17 @@
 //! Replay every committed baseline through forged's JSON-RPC framing
-//! and assert each line is structurally a valid JSON-RPC frame.
+//! and assert each line is structurally a valid JSON-RPC frame AND
+//! decodes cleanly through the typed dispatcher.
 //!
 //! This is the always-on conformance gate — runs on every
 //! `cargo nextest run` / `just check`, no external dependencies.
+//!
+//! Per CLAUDE.md invariant #10(c), every committed baseline must
+//! round-trip through `forged_conformance::decode_full` with no
+//! decode failures and no unknown-method dispatches.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use forged_conformance::{baseline_dir, load_baseline};
+use forged_conformance::{baseline_dir, decode_full, load_baseline};
 
 #[test]
 fn m1_status_baseline_decodes_cleanly() {
@@ -39,6 +44,18 @@ fn m1_status_baseline_decodes_cleanly() {
             e.line
         );
     }
+
+    // Typed decode round-trip.
+    let report = decode_full(&entries);
+    assert!(
+        report.is_clean(),
+        "m1_status baseline failed typed decode: {} successes, {} failures, {} unknown methods\nfailures: {:#?}\nunknown: {:#?}",
+        report.successes,
+        report.failures.len(),
+        report.unknown_methods.len(),
+        report.failures,
+        report.unknown_methods,
+    );
 }
 
 #[test]
@@ -86,5 +103,16 @@ fn all_baselines_decode_cleanly() {
                 e.line
             );
         }
+        // Typed decode for this scenario.
+        let report = decode_full(&entries);
+        assert!(
+            report.is_clean(),
+            "[{scenario}] failed typed decode: {} successes, {} failures, {} unknown methods\nfailures: {:#?}\nunknown: {:#?}",
+            report.successes,
+            report.failures.len(),
+            report.unknown_methods.len(),
+            report.failures,
+            report.unknown_methods,
+        );
     }
 }

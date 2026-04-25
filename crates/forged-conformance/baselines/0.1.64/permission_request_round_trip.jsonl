@@ -1,0 +1,3 @@
+{"dir":"out","line":"{\"jsonrpc\":\"2.0\",\"method\":\"client.identify\",\"params\":{\"connection_id\":\"conn_test\",\"server_version\":\"0.1.64\",\"server_build\":\"dev\"}}"}
+{"dir":"out","line":"{\"jsonrpc\":\"2.0\",\"id\":\"rev_perm1\",\"method\":\"permission.request\",\"params\":{\"session_id\":\"sess_demo\",\"prompt_id\":\"prompt_xyz\",\"params\":{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"ls\"}}}}"}
+{"dir":"in","line":"{\"jsonrpc\":\"2.0\",\"id\":\"rev_perm1\",\"result\":{\"decision\":\"allow\"}}"}

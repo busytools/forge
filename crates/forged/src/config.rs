@@ -72,12 +72,22 @@ pub fn load_default() -> Result<Config, Error> {
 
 /// Path the loader will read by default. Public so tests can assert
 /// resolution behaviour without touching the disk.
+///
+/// Resolution order:
+/// 1. `$XDG_CONFIG_HOME/forged/forged.toml` if `$XDG_CONFIG_HOME` is set.
+/// 2. `$HOME/.config/forged/forged.toml` if `$HOME` is set.
+/// 3. `/etc/forged/forged.toml` as a hard absolute fallback when both
+///    env vars are unset (e.g. minimal containers, daemons running
+///    under restricted users). Never returns a relative path.
 #[must_use]
 pub fn default_path() -> std::path::PathBuf {
     let xdg = std::env::var_os("XDG_CONFIG_HOME").map(std::path::PathBuf::from);
     let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
-    let base = xdg
-        .or_else(|| home.map(|h| h.join(".config")))
-        .unwrap_or_default();
-    base.join("forged").join("forged.toml")
+    if let Some(x) = xdg {
+        return x.join("forged").join("forged.toml");
+    }
+    if let Some(h) = home {
+        return h.join(".config").join("forged").join("forged.toml");
+    }
+    std::path::PathBuf::from("/etc/forged/forged.toml")
 }

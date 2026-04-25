@@ -77,6 +77,25 @@ impl ForgedPermissionBridge {
             }
         };
 
+        // Sentinel: client returned a JSON-RPC error response. Surfaces
+        // as a typed deny with the upstream code+message in the reason,
+        // so logs distinguish "client said deny" from "client errored".
+        if let Some(err) = value.get("_jsonrpc_error") {
+            let code = err.get("code").and_then(Value::as_i64).unwrap_or(-1);
+            let message = err.get("message").and_then(Value::as_str).unwrap_or("");
+            return PermissionDecision::deny(format!("client error {code}: {message}"));
+        }
+        // Sentinel: client disconnected before answering.
+        if value.get("_client_disconnected").is_some() {
+            return PermissionDecision::deny(String::from(
+                "answering client disconnected before responding",
+            ));
+        }
+        // Sentinel: session closed before the prompt was answered.
+        if value.get("_session_closed").is_some() {
+            return PermissionDecision::deny(String::from("session closed before prompt answered"));
+        }
+
         // Wire shape: `{ "decision": "allow"|"deny", "updated_input": ?, "reason": ? }`
         let decision_str = value
             .get("decision")
@@ -130,6 +149,26 @@ impl ForgedHookBridge {
         }
     }
 
+    /// Hook kinds where transport / decode failure must DENY rather
+    /// than passthrough. These are security-critical: a failure-mode
+    /// passthrough is equivalent to "approve any tool call", which
+    /// would silently disable the user's safety controls.
+    fn is_security_critical(&self) -> bool {
+        matches!(self.kind.as_str(), "pre_tool_use" | "permission_request")
+    }
+
+    /// Failure mode for this hook kind. Security-critical hooks deny;
+    /// observational hooks (`post_tool_use`, `stop`, `notification`,
+    /// etc.) passthrough so a hook outage doesn't grind the agent to
+    /// a halt.
+    fn fail_closed_decision(&self, reason: &str) -> HookDecision {
+        if self.is_security_critical() {
+            HookDecision::deny(reason.to_owned())
+        } else {
+            HookDecision::passthrough()
+        }
+    }
+
     /// Marshal the callback's input + context into a `params` JSON blob,
     /// issue the reverse-RPC, and decode the response.
     async fn issue_and_decode<I>(&self, input: I, context: HookContext) -> HookDecision
@@ -140,8 +179,8 @@ impl ForgedHookBridge {
         let input_v = match serde_json::to_value(&input) {
             Ok(v) => v,
             Err(e) => {
-                tracing::warn!(error = %e, hook = %self.kind, "hook bridge: failed to encode input; passthrough");
-                return HookDecision::passthrough();
+                tracing::warn!(error = %e, hook = %self.kind, "hook bridge: failed to encode input; failing closed");
+                return self.fail_closed_decision(&format!("hook bridge encode failure: {e}"));
             }
         };
         let params = serde_json::json!({
@@ -167,10 +206,25 @@ impl ForgedHookBridge {
         {
             Ok(v) => v,
             Err(e) => {
-                tracing::warn!(error = %e, hook = %self.kind, "hook bridge: issue_to_primary failed; passthrough");
-                return HookDecision::passthrough();
+                tracing::warn!(error = %e, hook = %self.kind, "hook bridge: issue_to_primary failed; failing closed");
+                return self.fail_closed_decision(&format!("hook bridge: {e}"));
             }
         };
+
+        // Sentinel: client returned a JSON-RPC error.
+        if let Some(err) = value.get("_jsonrpc_error") {
+            let code = err.get("code").and_then(Value::as_i64).unwrap_or(-1);
+            let message = err.get("message").and_then(Value::as_str).unwrap_or("");
+            return self.fail_closed_decision(&format!("client error {code}: {message}"));
+        }
+        // Sentinel: client disconnected before answering.
+        if value.get("_client_disconnected").is_some() {
+            return self.fail_closed_decision("answering client disconnected before responding");
+        }
+        // Sentinel: session closed before the prompt was answered.
+        if value.get("_session_closed").is_some() {
+            return self.fail_closed_decision("session closed before prompt answered");
+        }
 
         // Wire shape: `{ "decision": "allow"|"deny"|"passthrough", … }`
         decode_hook_decision(&value)
