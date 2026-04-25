@@ -83,17 +83,6 @@ pub fn init(config: &Config) -> Result<(), Error> {
     Ok(())
 }
 
-/// Test variant — same setup. Kept as a named entry point so tests can
-/// signal "intentionally re-initialising; no-op on second call" without
-/// reading like production code.
-///
-/// # Errors
-///
-/// As [`init`].
-pub fn init_for_test(config: &Config) -> Result<(), Error> {
-    init(config)
-}
-
 /// Expand a leading `~/` against `$HOME`. Other paths are passed through
 /// untouched.
 #[must_use]
@@ -131,8 +120,16 @@ fn sweep_old(dir: &Path, retention_days: u32) {
     )) else {
         return;
     };
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(e) => {
+            tracing::warn!(
+                path = %dir.display(),
+                error = %e,
+                "logging::sweep_old: read_dir failed"
+            );
+            return;
+        }
     };
     for entry in entries.flatten() {
         let name = entry.file_name();
@@ -140,11 +137,23 @@ fn sweep_old(dir: &Path, retention_days: u32) {
         if !name_str.starts_with(FORGED_LOG_PREFIX) {
             continue;
         }
-        let Ok(meta) = entry.metadata() else { continue };
-        let Ok(mtime) = meta.modified() else { continue };
+        let Ok(mtime) = entry.metadata().and_then(|m| m.modified()) else {
+            tracing::debug!(
+                path = %entry.path().display(),
+                "logging::sweep_old: skipping entry without modified time"
+            );
+            continue;
+        };
         if mtime < cutoff {
             // Best-effort delete; log dir cleanup never fails a boot.
-            let _ = std::fs::remove_file(entry.path());
+            // Log so operators can spot recurring permission/IO issues.
+            if let Err(e) = std::fs::remove_file(entry.path()) {
+                tracing::warn!(
+                    path = %entry.path().display(),
+                    error = %e,
+                    "logging::sweep_old: remove_file failed"
+                );
+            }
         }
     }
 }

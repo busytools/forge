@@ -39,15 +39,6 @@ pub enum AppEvent {
         /// `tool_input`, optional `prompt_id`).
         params: serde_json::Value,
     },
-    /// A reverse-RPC hook request arrived. Auto-allowed in the v1 MVP.
-    HookRequest {
-        /// Hook kind (e.g. `pre_tool_use`).
-        kind: String,
-        /// JSON-RPC id of the inbound request.
-        rev_id: serde_json::Value,
-        /// Wrapped params from the request.
-        params: serde_json::Value,
-    },
     /// `role_assigned` notification — local primary/viewer state changed.
     RoleChanged(serde_json::Value),
     /// `primary_changed` notification — daemon reports the primary slot
@@ -197,15 +188,6 @@ pub async fn run<B: Backend>(
                     .map(String::from);
                 app.pending_permission = Some(PendingPermission::new(rev_id, params, prompt_id));
                 app.focus = Focus::PermissionModal;
-            }
-            AppEvent::HookRequest {
-                kind,
-                rev_id,
-                params,
-            } => {
-                // For v1, auto-allow non-interactive hooks. Future iterations
-                // will surface them in the UI similar to permissions.
-                let _ = (kind, rev_id, params);
             }
             AppEvent::RoleChanged(p) => {
                 if let Some(r) = p.get("role").and_then(|v| v.as_str()) {

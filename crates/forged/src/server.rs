@@ -189,7 +189,13 @@ async fn read_loop(
             && v.get("id").is_some()
             && (v.get("result").is_some() || v.get("error").is_some());
         if is_response {
-            let id = v.get("id").and_then(Value::as_str).unwrap_or("");
+            let Some(id) = v.get("id").and_then(Value::as_str) else {
+                tracing::debug!(
+                    id = ?v.get("id"),
+                    "received non-string id in JSON-RPC response; ignoring"
+                );
+                continue;
+            };
             if id.starts_with("rev_") {
                 // Distinguish success from error: on `result` resolve
                 // normally; on `error` route through `resolve_error`
@@ -623,7 +629,13 @@ fn url_decode(s: &str) -> String {
                         continue;
                     }
                 }
-                // Malformed escape — treat the `%` as a literal byte.
+                // Malformed escape — treat the `%` as a literal byte and
+                // surface a debug log so operators can trace bad query
+                // strings rather than seeing them silently mangled.
+                tracing::debug!(
+                    bytes = ?hex_slice,
+                    "url_decode: malformed percent escape, passing literal"
+                );
                 out.push(b'%');
                 i += 1;
             }

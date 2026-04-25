@@ -413,8 +413,6 @@ dependencies = [
 name = "forge-tui"
 version = "0.1.64"
 dependencies = [
- "anyhow",
- "async-trait",
  "clap",
  "crossterm",
  "forge-sdk",
@@ -439,7 +437,6 @@ dependencies = [
 name = "forged"
 version = "0.1.64"
 dependencies = [
- "anyhow",
  "async-trait",
  "clap",
  "forge-sdk",

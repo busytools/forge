@@ -15,7 +15,12 @@ pub fn fanout(state: &DaemonState, session_id: &SessionId, frame: &Outbound) {
     let connections = state.connections.lock().clone();
     for sub in subs {
         if let Some(conn) = connections.get(&sub) {
-            let _ = conn.outbound.send(frame.clone());
+            if conn.outbound.send(frame.clone()).is_err() {
+                tracing::trace!(
+                    connection_id = %sub.0,
+                    "fanout: dropping frame to dead subscriber"
+                );
+            }
         }
     }
 }

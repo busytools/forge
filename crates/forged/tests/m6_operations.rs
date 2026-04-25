@@ -74,9 +74,9 @@ fn logging_init_creates_log_dir_if_missing() {
         log_dir: log_dir.to_string_lossy().into_owned(),
         log_retention_days: 14,
     };
-    forged::logging::init_for_test(&config).unwrap();
+    forged::logging::init(&config).unwrap();
     assert!(log_dir.exists(), "init must create log_dir if missing");
     // Idempotency: a second call must not error even though the global
     // subscriber is already installed.
-    forged::logging::init_for_test(&config).unwrap();
+    forged::logging::init(&config).unwrap();
 }

@@ -32,9 +32,19 @@ async fn fresh_permission_request_round_trips_through_send_response() {
             .unwrap(),
     );
 
-    // Wait until the daemon has registered the connection.
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    let conn_id = state.connections.lock().keys().next().cloned().unwrap();
+    // Wait until the daemon has registered the connection. Replaces a
+    // previous timing-dependent `sleep` with a deterministic poll loop
+    // so the test is stable under load.
+    let conn_id = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if let Some(id) = state.connections.lock().keys().next().cloned() {
+                break id;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("connection_id discovery timed out");
 
     // Register a session and pin our connection as the primary.
     let sid = forged::session_state::SessionId("sess_tui_e2e".into());
