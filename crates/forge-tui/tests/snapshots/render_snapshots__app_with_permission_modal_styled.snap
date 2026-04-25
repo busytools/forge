@@ -1,0 +1,49 @@
+---
+source: crates/forge-tui/tests/render_snapshots.rs
+expression: buffer
+---
+Buffer {
+    area: Rect { x: 0, y: 0, width: 80, height: 20 },
+    content: [
+        "┌ Sessions ────────────────┐┌ Conversation ────────────────────────────────────┐",
+        "│                          ││                                                  │",
+        "│                          ││                                                  │",
+        "│                          ││                                                  │",
+        "│                          ││                                                  │",
+        "│                          ││                                                  │",
+        "│               ┌ Permission Request ──────────────────────────┐               │",
+        "│               │[a] Allow  [d] Deny  [Esc] Dismiss            │               │",
+        "│               │                                              │               │",
+        "│               │Tool: Bash                                    │               │",
+        "│               │                                              │               │",
+        "│               │{                                             │               │",
+        "│               │  "command": "ls -la"                         │               │",
+        "│               └──────────────────────────────────────────────┘               │",
+        "│                          ││                                                  │",
+        "│                          ││                                                  │",
+        "│                          ││                                                  │",
+        "│                          ││                                                  │",
+        "└──────────────────────────┘└──────────────────────────────────────────────────┘",
+        "- no session  |  q quit                                                         ",
+    ],
+    styles: [
+        x: 0, y: 0, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
+        x: 16, y: 6, fg: Yellow, bg: Reset, underline: Reset, modifier: NONE,
+        x: 64, y: 6, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
+        x: 16, y: 7, fg: Yellow, bg: Reset, underline: Reset, modifier: NONE,
+        x: 64, y: 7, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
+        x: 16, y: 8, fg: Yellow, bg: Reset, underline: Reset, modifier: NONE,
+        x: 64, y: 8, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
+        x: 16, y: 9, fg: Yellow, bg: Reset, underline: Reset, modifier: NONE,
+        x: 64, y: 9, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
+        x: 16, y: 10, fg: Yellow, bg: Reset, underline: Reset, modifier: NONE,
+        x: 64, y: 10, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
+        x: 16, y: 11, fg: Yellow, bg: Reset, underline: Reset, modifier: NONE,
+        x: 64, y: 11, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
+        x: 16, y: 12, fg: Yellow, bg: Reset, underline: Reset, modifier: NONE,
+        x: 64, y: 12, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
+        x: 16, y: 13, fg: Yellow, bg: Reset, underline: Reset, modifier: NONE,
+        x: 64, y: 13, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
+        x: 0, y: 19, fg: Gray, bg: Reset, underline: Reset, modifier: NONE,
+    ]
+}

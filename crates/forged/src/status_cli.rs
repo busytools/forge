@@ -43,7 +43,11 @@ pub async fn query(addr: &str) -> Result<String, Error> {
                     err.message, err.code
                 )));
             }
-            let result = resp.result.unwrap_or(Value::Null);
+            let result = resp.result.ok_or_else(|| {
+                Error::InternalError(
+                    "daemon returned response with neither result nor error".into(),
+                )
+            })?;
             return Ok(serde_json::to_string_pretty(&result)?);
         }
     }

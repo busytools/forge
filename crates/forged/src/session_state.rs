@@ -115,6 +115,18 @@ pub enum Command {
 /// The actual [`forge_sdk::Client`] lives inside the actor task spawned at
 /// registration time; dispatch handlers send [`Command`]s through
 /// [`SessionState::commands`] to drive it.
+///
+/// # Lock ordering
+///
+/// When multiple locks must be held simultaneously, acquire in this order
+/// to avoid deadlock:
+///
+///   1. `subscribers` (`Mutex<Vec<ConnectionId>>`)
+///   2. `primary` (`Mutex<Option<ConnectionId>>`)
+///
+/// `subscribe` is the only path that holds both at once today; `peers` and
+/// `claim_primary` lock-then-release sequentially. Future additions must
+/// honour the order.
 #[derive(Debug)]
 #[non_exhaustive]
 pub struct SessionState {

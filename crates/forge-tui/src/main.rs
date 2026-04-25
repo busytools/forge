@@ -82,8 +82,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
     // Append `?name=...` (or `&name=...` if there's already a query string).
+    // URL-encode the name so values with spaces / unicode (e.g.
+    // "studio terminal", "café") produce a valid URL — the daemon's
+    // `parse_query` reverses this on the other side.
     let separator = if cli.forged.contains('?') { '&' } else { '?' };
-    let url = format!("{}{}name={}", cli.forged, separator, cli.name);
+    let encoded = urlencode_minimal(&cli.name);
+    let url = format!("{}{}name={}", cli.forged, separator, encoded);
 
     let client = Arc::new(Client::connect(&url).await?);
 
@@ -112,8 +116,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // recognises must have a matching handler here, and we drop kinds
     // the daemon does not recognise (`session_start`, `session_end`).
     // Registered SYNC so the dispatcher auto-replies with the
-    // passthrough decision; the app loop also gets a notification for
-    // visibility.
+    // passthrough decision. No AppEvent is forwarded — the app does
+    // not need to know about auto-allowed hooks; future iterations
+    // will surface them via a separate UI event when interactive
+    // approval lands.
     let known_hook_kinds = [
         "pre_tool_use",
         "post_tool_use",
@@ -128,22 +134,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     ];
     for kind in known_hook_kinds {
         let method = format!("hook.{kind}");
-        let kind_owned = kind.to_string();
-        let tx = event_tx.clone();
-        client.on_reverse_rpc_sync(method, move |rev_id, params| {
-            let tx = tx.clone();
-            let kind_owned = kind_owned.clone();
-            async move {
-                let _ = tx.send(AppEvent::HookRequest {
-                    kind: kind_owned,
-                    rev_id,
-                    params,
-                });
-                // Auto-allow shape: passthrough decision so the
-                // forged-side bridge maps to `HookDecision::passthrough`
-                // and the SDK reads it as "no opinion, proceed".
-                serde_json::json!({"decision": "passthrough"})
-            }
+        client.on_reverse_rpc_sync(method, move |_rev_id, _params| async move {
+            // Auto-allow shape: passthrough decision so the
+            // forged-side bridge maps to `HookDecision::passthrough`
+            // and the SDK reads it as "no opinion, proceed".
+            serde_json::json!({"decision": "passthrough"})
         });
     }
 
@@ -214,4 +209,58 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     result?;
     Ok(())
+}
+
+/// Minimal `application/x-www-form-urlencoded` encoder for the `?name=`
+/// query parameter. Walks the input as bytes and emits `%XX` for any
+/// byte outside the unreserved set (`A-Z`, `a-z`, `0-9`, `_`, `.`, `-`)
+/// — that matches the daemon's `url_decode` inverse so a name like
+/// "studio terminal" or "café" round-trips losslessly.
+fn urlencode_minimal(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for &b in s.as_bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'-') {
+            out.push(b as char);
+        } else {
+            out.push('%');
+            out.push(hex_nibble(b >> 4));
+            out.push(hex_nibble(b & 0x0f));
+        }
+    }
+    out
+}
+
+/// Render a 4-bit value as an uppercase hex digit (`0`-`9`, `A`-`F`).
+fn hex_nibble(n: u8) -> char {
+    match n {
+        0..=9 => (b'0' + n) as char,
+        10..=15 => (b'A' + (n - 10)) as char,
+        _ => '?',
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::urlencode_minimal;
+
+    #[test]
+    fn unreserved_bytes_pass_through_unchanged() {
+        assert_eq!(urlencode_minimal("forge-tui_v1.0"), "forge-tui_v1.0");
+    }
+
+    #[test]
+    fn space_becomes_percent_20() {
+        assert_eq!(urlencode_minimal("studio terminal"), "studio%20terminal");
+    }
+
+    #[test]
+    fn multibyte_utf8_encodes_byte_by_byte() {
+        // "é" is 0xC3 0xA9 in UTF-8.
+        assert_eq!(urlencode_minimal("café"), "caf%C3%A9");
+    }
+
+    #[test]
+    fn ampersand_and_equals_get_encoded() {
+        assert_eq!(urlencode_minimal("a=b&c"), "a%3Db%26c");
+    }
 }
