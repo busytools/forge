@@ -408,28 +408,30 @@
 
 <!-- ─────────────────────────── Post-parity cleanup banner ─────────────────────────── -->
 <div class="cleanup-banner">
-  <h3>Post-parity cleanup — review in progress</h3>
+  <h3>Post-parity cleanup — done</h3>
   <p>
-    Python-parity phase is done (764 + 107 tests green, 4 / 5 feature gaps closed, only
-    upstream-blocked <code>AsyncHookJSONOutput</code> remaining). This branch is the
-    cleanup pass: surfaces that exist for parity-completeness but add no value to what
-    we're actually building on top of the <code>claude</code> binary are being flagged
-    for removal. Two new states appear on the rows below:
+    Python-parity phase is done (639 tests green workspace-wide). Cleanup pass
+    landed on main between <code>1ed2217</code> (2026-04-23, transcript_mirror +
+    SessionStore pipeline cut) and <code>ff92674</code> (SdkBeta drop). Surfaces
+    that existed for parity-completeness but added no value on top of the
+    <code>claude</code> binary have been removed. The only outstanding parity
+    gap is upstream-blocked <code>AsyncHookJSONOutput</code> out-of-band
+    delivery. Two row states cover the cleanup decisions:
   </p>
   <div class="legend-mini">
     <span class="chip s-cut">✂ cut</span>
     <span class="chip s-review">? review</span>
   </div>
   <p style="margin-top: 10px;">
-    <strong style="color: #e07dae;">✂ cut</strong> = decided, execution tracked as a
-    review-queue task and to-be-filed GitHub issue.
-    <strong style="color: #e09770;">? review</strong> = flagged for discussion, not yet
-    decided. Uncheck the matching chip at the top of the tables to hide each slice.
+    <strong style="color: #e07dae;">✂ cut</strong> = done — code removed on main;
+    rows kept as parity-decision history (Python items we chose not to ship).
+    <strong style="color: #e09770;">? review</strong> = still flagged, undecided.
+    Uncheck either chip at the top of the tables to hide that slice.
   </p>
   <p style="margin-top: 10px;">
-    <strong>End state of this branch:</strong> PR communicates the cut proposal visually.
-    Actual code deletion and follow-up work ship in separate PRs driven by the GitHub
-    issues created from the review queue.
+    <strong>Maintenance:</strong> regenerate the rows + diagram when the SDK
+    surface changes (parity-check ritual). Commit the refresh alongside the
+    surface change so collaborators see the same view.
   </p>
 </div>
 
@@ -477,12 +479,11 @@ flowchart LR
   end
 
   subgraph Msg [Messages + content]
-    Messages["Message enum<br>+ variants"]:::parity
-    CBlock["ContentBlock enum<br>+ Text/Thinking/<br>ToolUse/ToolResult/<br>ServerTool*"]:::parity
+    Messages["Message enum<br>+ Unknown fwd-compat"]:::parity
+    CBlock["ContentBlock enum<br>+ Text/Thinking/<br>ToolUse/ToolResult/<br>ServerTool*/Unknown"]:::parity
     Stream["StreamEvent"]:::parity
     RLim["RateLimit{Info,Status,Type}"]:::parity
     TNoti["TaskStarted/Progress/<br>Notification"]:::parity
-    Mirror["MirrorError<br>(as Message variant)"]:::shape
   end
 
   subgraph Perms [Permissions]
@@ -505,31 +506,16 @@ flowchart LR
     ProjKey["project_key_for_directory<br>+ NFC + cwd default"]:::parity
   end
 
-  subgraph SessStore [Session store · PROPOSED CUT]
-    SStore["SessionStore trait<br>Key/Entry/Listing/Subkeys"]:::cut
-    SStoreInM["InMemorySessionStore<br>= MemorySessionStore"]:::cut
-    SStoreFs["FsSessionStore"]:::cut
-    SValid["validate_session_store_options<br>(pure fn)"]:::cut
-    SSum["SessionSummaryEntry<br>+ fold_session_summary"]:::cut
-    SConf["run_session_store_conformance<br>(testing harness)"]:::cut
-  end
-
-  subgraph SessVia [Session · via SessionStore · PROPOSED CUT]
-    SViaScan["*_from_store<br>(5 async variants)"]:::cut
-    SViaMut["*_via_store<br>(4 async variants)"]:::cut
-  end
-
   subgraph MCP [MCP]
     McpCfg["McpServerConfig + status<br>Info/Annotations/Tool"]:::parity
     McpServer["create_sdk_mcp_server<br>(= McpServer::builder)"]:::shape
     McpTool["tool!  macro<br>(= @tool decorator)"]:::shape
   end
 
-  subgraph Ext [Agents / plugins / beta]
+  subgraph Ext [Agents / plugins]
     AgDef["AgentDefinition"]:::parity
     SSrc["SettingSource"]:::parity
-    SPlug["SdkPluginConfig"]:::parity
-    SBeta["SdkBeta"]:::parity
+    SPlug["SdkPluginConfig"]:::review
     SSand["SandboxSettings +<br>NetworkConfig +<br>IgnoreViolations"]:::parity
   end
 
@@ -538,27 +524,16 @@ flowchart LR
   Entry --> Perms
   Entry --> Hooks
   Entry --> SessLocal
-  Entry --> SessStore
-  Entry --> SessVia
   Entry --> MCP
   Entry --> Ext
 
   Client --> Codec
   Client --> Subproc
   Client --> Options
-  Client --> SValid
 
   Query --> Client
 
   Options --> TBudget
-  Options --> SStore
-
-  SStore --> SStoreInM
-  SStore --> SStoreFs
-  SStore --> SSum
-  SStore --> SConf
-
-  SessVia --> SStore
   </pre>
 </div>
 
@@ -648,7 +623,7 @@ flowchart LR
   <thead><tr><th>Python</th><th>forge-sdk</th><th>status</th><th>notes</th></tr></thead>
   <tbody>
     <tr data-s="parity"><td class="py">ClaudeAgentOptions</td><td class="rs">Options + OptionsBuilder</td><td><span class="status status-parity">✓ parity</span></td><td class="notes">Every Python kwarg has a builder method; the argv + env translation is covered by <code>argv_composition.rs</code> + <code>transport_env.rs</code> tests.</td></tr>
-    <tr data-s="parity"><td class="py">PermissionMode</td><td class="rs">PermissionMode</td><td><span class="status status-parity">✓ parity</span></td><td class="notes">Default / AcceptEdits / BypassPermissions / Plan.</td></tr>
+    <tr data-s="parity"><td class="py">PermissionMode</td><td class="rs">PermissionMode</td><td><span class="status status-parity">✓ parity</span></td><td class="notes">Ask / AcceptEdits / Plan / BypassPermissions / Auto / DenyPermissions. Renamed in <code>8a076f3</code> (Default → Ask, DontAsk → DenyPermissions) for clarity.</td></tr>
     <tr data-s="shape"><td class="py">TaskBudget (TypedDict{total:int})</td><td class="rs">task_budget: Option&lt;u64&gt;</td><td><span class="status status-shape">≈ shape</span></td><td class="notes">Python ships a struct so the field-set can grow. forge-sdk collapses to a scalar. Wire shape is identical (<code>{"total": n}</code> on emit). Non-load-bearing today; promote to a struct if a second field arrives.</td></tr>
     <tr data-s="parity"><td class="py">ToolsPreset</td><td class="rs">ToolsPreset</td><td><span class="status status-parity">✓ parity</span></td><td class="notes">Currently one preset (<code>claude_code</code>); enum-ready for future additions.</td></tr>
     <tr data-s="shape"><td class="py">ThinkingConfig{Adaptive,Enabled,Disabled}</td><td class="rs">ThinkingConfig enum</td><td><span class="status status-shape">≈ shape</span></td><td class="notes">Python ships 4 types (base + 3 variants). forge-sdk uses one enum with the same variants — Rust idiom, same wire shape.</td></tr>
@@ -656,7 +631,7 @@ flowchart LR
     <tr data-s="parity"><td class="py">ContextUsageCategory / Response</td><td class="rs">ContextUsageCategory / Response</td><td><span class="status status-parity">✓ parity</span></td><td class="notes">Same fields, same wire shape.</td></tr>
     <tr data-s="parity"><td class="py">SettingSource</td><td class="rs">SettingSource</td><td><span class="status status-parity">✓ parity</span></td><td class="notes">System / Project / User / Local.</td></tr>
     <tr data-s="review"><td class="py">SdkPluginConfig</td><td class="rs">SdkPluginConfig</td><td><span class="status status-review">? review</span></td><td class="notes">Name + version + registry. <strong>Under review:</strong> plugin registration hook — Anthropic-internal extensibility. Unclear whether we ship with plugin support at all. Low cost to keep (just a config struct); non-zero to maintain. Duplicate row in "Agents · plugins · beta" below.</td></tr>
-    <tr data-s="review"><td class="py">SdkBeta</td><td class="rs">SdkBeta</td><td><span class="status status-review">? review</span></td><td class="notes">Enables beta flags consistently. <strong>Under review:</strong> same rationale as SdkPluginConfig — beta flag plumbing, questionable value for a focused tool. Duplicate row below.</td></tr>
+    <tr data-s="cut"><td class="py">SdkBeta</td><td class="rs">SdkBeta</td><td><span class="status status-cut">✂ cut</span></td><td class="notes">Beta flag plumbing, dropped in <code>ff92674</code>. Re-add when forge-sdk needs to gate behaviour behind beta flags. Duplicate row in "Agents · plugins · beta" below.</td></tr>
     <tr data-s="parity"><td class="py">SandboxSettings / NetworkConfig / IgnoreViolations</td><td class="rs">SandboxSettings / NetworkConfig / IgnoreViolations</td><td><span class="status status-parity">✓ parity</span></td><td class="notes">All 3 types + wire encoding match.</td></tr>
   </tbody>
 </table>
@@ -684,14 +659,15 @@ flowchart LR
     <tr data-s="parity"><td class="py">TaskNotificationStatus</td><td class="rs">TaskNotificationStatus</td><td><span class="status status-parity">✓ parity</span></td><td class="notes">Pending / Completed / Failed variants.</td></tr>
     <tr data-s="parity"><td class="py">TaskUsage</td><td class="rs">TaskUsage</td><td><span class="status status-parity">✓ parity</span></td><td class="notes">input/output/cache tokens + cost.</td></tr>
     <tr data-s="parity"><td class="py">StreamEvent</td><td class="rs">StreamEvent</td><td><span class="status status-parity">✓ parity</span></td><td class="notes">Includes parent_tool_use_id.</td></tr>
-    <tr data-s="shape"><td class="py">RateLimitEvent</td><td class="rs">(embedded in Message)</td><td><span class="status status-shape">≈ shape</span></td><td class="notes">No distinct type; rate-limit is carried via Message::System / RateLimitInfo.</td></tr>
+    <tr data-s="parity"><td class="py">RateLimitEvent</td><td class="rs">Message::RateLimitEvent</td><td><span class="status status-parity">✓ parity</span></td><td class="notes">Top-level Message variant carrying RateLimitInfo + uuid + session_id.</td></tr>
     <tr data-s="parity"><td class="py">RateLimitInfo / Status / Type</td><td class="rs">RateLimitInfo / Status / Type</td><td><span class="status status-parity">✓ parity</span></td><td class="notes">Complete.</td></tr>
-    <tr data-s="shape"><td class="py">MirrorErrorMessage</td><td class="rs">Message::MirrorError{…}</td><td><span class="status status-shape">≈ shape</span></td><td class="notes">Variant instead of named class.</td></tr>
+    <tr data-s="cut"><td class="py">MirrorErrorMessage</td><td class="rs">Message::MirrorError</td><td><span class="status status-cut">✂ cut</span></td><td class="notes">Removed in <code>1ed2217</code> alongside transcript_mirror. Mirror errors only surface when transcript-mirror is wired; without that pipeline the variant has no producer.</td></tr>
     <tr data-s="parity"><td class="py">ContentBlock (Union)</td><td class="rs">ContentBlock enum</td><td><span class="status status-parity">✓ parity</span></td><td class="notes">One discriminated union.</td></tr>
     <tr data-s="shape"><td class="py">TextBlock / ThinkingBlock / ToolUseBlock / ToolResultBlock</td><td class="rs">ContentBlock::{Text,Thinking,ToolUse,ToolResult}</td><td><span class="status status-shape">≈ shape</span></td><td class="notes">Variants on the enum.</td></tr>
     <tr data-s="parity"><td class="py">ServerToolUseBlock</td><td class="rs">ContentBlock::ServerToolUse</td><td><span class="status status-parity">✓ parity</span></td><td class="notes">Added 2026-04-22 (third pass) — advisor / web_search / web_fetch / code_execution family.</td></tr>
     <tr data-s="parity"><td class="py">ServerToolResultBlock</td><td class="rs">ContentBlock::ServerToolResult</td><td><span class="status status-parity">✓ parity</span></td><td class="notes">Wire type <code>advisor_tool_result</code>; content opaque per advisor/web/code result shapes.</td></tr>
     <tr data-s="shape"><td class="py">ServerToolName (Literal union)</td><td class="rs">String (inside ServerToolUse)</td><td><span class="status status-shape">≈ shape</span></td><td class="notes">Kept as <code>String</code> so new server-tool kinds don't require an SDK bump.</td></tr>
+    <tr data-s="shape"><td class="py">(no Python equivalent)</td><td class="rs">Message::Unknown</td><td><span class="status status-shape">≈ shape</span></td><td class="notes">Rust-side forward-compat surface. Library consumers iterating <code>Client::next_event()</code> match on this variant to detect frames whose top-level <code>type</code> field forge-sdk doesn't recognise — programmatic alternative to scraping <code>tracing::warn!</code>. Carries <code>{type_str, raw}</code>; serialise emits <code>raw</code> verbatim. Added in <code>4e7f9d6</code>.</td></tr>
   </tbody>
 </table>
 
@@ -706,7 +682,7 @@ flowchart LR
   <thead><tr><th>Python</th><th>forge-sdk</th><th>status</th><th>notes</th></tr></thead>
   <tbody>
     <tr data-s="parity"><td class="py">CanUseTool (callback)</td><td class="rs">CanUseToolCallback</td><td><span class="status status-parity">✓ parity</span></td><td class="notes">Async callback; same argument shape.</td></tr>
-    <tr data-s="parity"><td class="py">ToolPermissionContext</td><td class="rs">ToolPermissionContext</td><td><span class="status status-parity">✓ parity</span></td><td class="notes">Passed through to the can_use_tool callback.</td></tr>
+    <tr data-s="parity"><td class="py">ToolPermissionContext</td><td class="rs">ToolPermissionContext</td><td><span class="status status-parity">✓ parity</span></td><td class="notes">Passed through to the can_use_tool callback. The <code>signal</code> field placeholder was removed in <code>5b24c4a</code> — Python's value isn't load-bearing on the wire and Rust didn't surface it usefully.</td></tr>
     <tr data-s="shape"><td class="py">PermissionResult(Allow|Deny)</td><td class="rs">PermissionDecision (enum)</td><td><span class="status status-shape">≈ shape</span></td><td class="notes">Three Python types → one Rust enum. Fields (updated_input, updated_permissions, message, interrupt) all present.</td></tr>
     <tr data-s="parity"><td class="py">PermissionUpdate</td><td class="rs">PermissionUpdate</td><td><span class="status status-parity">✓ parity</span></td><td class="notes">All destinations + behaviours covered.</td></tr>
   </tbody>
@@ -737,7 +713,7 @@ flowchart LR
     <tr data-s="shape"><td class="py">NotificationHookInput</td><td class="rs">NotificationInput</td><td><span class="status status-shape">≈ shape</span></td><td class="notes"></td></tr>
     <tr data-s="shape"><td class="py">SubagentStartHookInput</td><td class="rs">SubagentStartInput</td><td><span class="status status-shape">≈ shape</span></td><td class="notes"></td></tr>
     <tr data-s="shape"><td class="py">PermissionRequestHookInput</td><td class="rs">PermissionRequestInput</td><td><span class="status status-shape">≈ shape</span></td><td class="notes"></td></tr>
-    <tr data-s="parity"><td class="py">*HookSpecificOutput types (6)</td><td class="rs">matching *SpecificOutput types</td><td><span class="status status-parity">✓ parity</span></td><td class="notes">Notification / SubagentStart / PermissionRequest / PostToolUseFailure / PreToolUse / UserPromptSubmit / SessionStart — all 7 present.</td></tr>
+    <tr data-s="parity"><td class="py">*HookSpecificOutput types</td><td class="rs">matching *SpecificOutput types</td><td><span class="status status-parity">✓ parity</span></td><td class="notes">All 8 present: PreToolUse / PostToolUse / PostToolUseFailure / UserPromptSubmit / SessionStart / Notification / SubagentStart / PermissionRequest.</td></tr>
     <tr data-s="shape"><td class="py">HookJSONOutput (sync)</td><td class="rs">HookDecision</td><td><span class="status status-shape">≈ shape</span></td><td class="notes">Same wire shape; Python's is a Union of Sync/Async.</td></tr>
     <tr data-s="partial"><td class="py">AsyncHookJSONOutput (deferred)</td><td class="rs">HookDecision::defer</td><td><span class="status status-partial">⚠ partial</span></td><td class="notes">ACK emits the <code>{"async": true, "asyncTimeout": …}</code> shape. Out-of-band follow-up delivery is pending — <strong>blocked on upstream</strong> finishing its side of the protocol.</td></tr>
     <tr data-s="shape"><td class="py">HookMatcher</td><td class="rs">HooksBuilder matcher API</td><td><span class="status status-shape">≈ shape</span></td><td class="notes">Builder that assembles the registration map.</td></tr>
@@ -774,7 +750,7 @@ flowchart LR
 <table class="parity" data-section="scan">
   <thead><tr><th>Python</th><th>forge-sdk</th><th>status</th><th>notes</th></tr></thead>
   <tbody>
-    <tr data-s="parity"><td class="py">list_sessions</td><td class="rs">session::scan::list_sessions</td><td><span class="status status-parity">✓ parity</span></td><td class="notes">Pagination + include_worktrees.</td></tr>
+    <tr data-s="parity"><td class="py">list_sessions</td><td class="rs">session::scan::list_sessions</td><td><span class="status status-parity">✓ parity</span></td><td class="notes">Signature: <code>(directory, limit, offset)</code>. Worktree support cut in <code>afc2d07</code> — wasn't earning its keep on top of the binary's own session enumeration.</td></tr>
     <tr data-s="parity"><td class="py">get_session_info</td><td class="rs">session::scan::get_session_info</td><td><span class="status status-parity">✓ parity</span></td><td class="notes">Lite-read (two 64 KiB reads).</td></tr>
     <tr data-s="parity"><td class="py">get_session_messages</td><td class="rs">session::scan::get_session_messages</td><td><span class="status status-parity">✓ parity</span></td><td class="notes">Full transcript parse.</td></tr>
     <tr data-s="parity"><td class="py">list_subagents</td><td class="rs">session::scan::list_subagents</td><td><span class="status status-parity">✓ parity</span></td><td class="notes">Recursive walk into <code>workflows/&lt;run_id&gt;</code>.</td></tr>
@@ -785,16 +761,17 @@ flowchart LR
   </tbody>
 </table>
 
-<h2 class="section-title">Session store + validation <span class="count">proposed cut — entire section</span></h2>
+<h2 class="section-title">Session store + validation <span class="count">cut — landed in <code>1ed2217</code></span></h2>
 <p class="section-intro">
-  <strong style="color: #e07dae;">✂ All 8 rows in this section are proposed for removal.</strong>
-  The <code>SessionStore</code> trait carries zero data beyond what the <code>claude</code>
-  binary already writes to <code>.jsonl</code> on disk (byte-for-byte identical — no enrichment,
-  no derived fields). Its value is callback dispatch + pluggable backend, neither of which
-  earns its keep for a CLI/TUI consuming the binary directly. Re-introduce when
-  <code>forged</code> (planned daemon) concretely needs storage outside
-  <code>$CLAUDE_CONFIG_DIR/projects</code>. Tracked in
-  <a href="#">review task #3</a> (execution) blocked on #2 (decision).
+  <strong style="color: #e07dae;">✂ All 8 rows below were removed on main in <code>1ed2217</code> (2026-04-23).</strong>
+  Rationale at the time of cut: the <code>SessionStore</code> trait carried zero
+  data beyond what the <code>claude</code> binary already writes to
+  <code>.jsonl</code> on disk (byte-for-byte identical — no enrichment, no
+  derived fields). Its value was callback dispatch + pluggable backend, neither
+  of which earned its keep for a CLI/TUI consuming the binary directly. The
+  rows are kept here as a parity-decision record — Python items we audited and
+  chose not to ship — and as a starting point if <code>forged</code> (planned
+  daemon) ever needs storage outside <code>$CLAUDE_CONFIG_DIR/projects</code>.
 </p>
 <table class="parity" data-section="store">
   <thead><tr><th>Python</th><th>forge-sdk</th><th>status</th><th>notes</th></tr></thead>
@@ -810,13 +787,13 @@ flowchart LR
   </tbody>
 </table>
 
-<h2 class="section-title">Session listing · via SessionStore (async variants) <span class="count">proposed cut — entire section</span></h2>
+<h2 class="section-title">Session listing · via SessionStore (async variants) <span class="count">cut — landed in <code>1ed2217</code></span></h2>
 <p class="section-intro">
-  <strong style="color: #e07dae;">✂ All 5 rows are proposed for removal alongside the
-  SessionStore trait.</strong> The <code>*_from_store</code> helpers are the async
-  wrappers that read sessions through a user-supplied <code>SessionStore</code>. They
-  have no purpose once the trait is cut — the filesystem equivalents (under "Session
-  listing — local filesystem" above) stay and cover every current use case.
+  <strong style="color: #e07dae;">✂ All 5 rows below were removed on main alongside the SessionStore trait.</strong>
+  The <code>*_from_store</code> helpers were async wrappers that read sessions
+  through a user-supplied <code>SessionStore</code>. With the trait gone, the
+  filesystem equivalents (under "Session listing — local filesystem" above)
+  cover every use case.
 </p>
 <table class="parity" data-section="viascan">
   <thead><tr><th>Python</th><th>forge-sdk</th><th>status</th><th>notes</th></tr></thead>
@@ -848,7 +825,7 @@ flowchart LR
     <tr data-s="parity"><td class="py">AgentDefinition</td><td class="rs">agents::AgentDefinition</td><td><span class="status status-parity">✓ parity</span></td><td class="notes">Name/description/tools/model.</td></tr>
     <tr data-s="parity"><td class="py">SettingSource</td><td class="rs">SettingSource</td><td><span class="status status-parity">✓ parity</span></td><td class="notes">Also listed under Options — duplicated here for visibility.</td></tr>
     <tr data-s="review"><td class="py">SdkPluginConfig</td><td class="rs">SdkPluginConfig</td><td><span class="status status-review">? review</span></td><td class="notes"><strong>Under review</strong> — see Options section row for rationale. Duplicate entry.</td></tr>
-    <tr data-s="review"><td class="py">SdkBeta</td><td class="rs">SdkBeta</td><td><span class="status status-review">? review</span></td><td class="notes"><strong>Under review</strong> — see Options section row for rationale. Duplicate entry.</td></tr>
+    <tr data-s="cut"><td class="py">SdkBeta</td><td class="rs">SdkBeta</td><td><span class="status status-cut">✂ cut</span></td><td class="notes">Dropped in <code>ff92674</code>. See Options section row for rationale. Duplicate entry.</td></tr>
   </tbody>
 </table>
 
@@ -865,30 +842,34 @@ flowchart LR
 </table>
 
 <!-- ─────────────────────────── What's actually left ─────────────────────────── -->
-<h2 class="section-title">What's actually left <span class="count">seventh-pass update</span></h2>
+<h2 class="section-title">What's actually left <span class="count">post-cleanup state</span></h2>
 <p class="section-intro">
-  Four of the five gaps flagged in the prior pass are now closed. Only one
-  remains, blocked on upstream. Closed items stay listed (struck-through
-  style) so the history is visible.
+  Four of the five seventh-pass gaps were closed (Transport trait, Stream
+  query, SessionSummary, conformance harness). The last two were then rolled
+  back during the cleanup pass — their wire/storage value was never
+  load-bearing. <code>AsyncHookJSONOutput</code> remains the only outstanding
+  parity gap, blocked on upstream. Cards below kept for history.
 </p>
 <div class="gap-grid">
   <div class="gap-card" style="border-left-color: #cc4488;">
-    <h4 style="text-decoration: line-through; text-decoration-color: #cc4488; opacity: 0.8;">✓ SessionSummaryEntry + fold_session_summary <span class="py">session_summary.py</span></h4>
+    <h4 style="text-decoration: line-through; text-decoration-color: #cc4488; opacity: 0.8;">✂ SessionSummaryEntry + fold_session_summary <span class="py">session_summary.py</span></h4>
     <p class="why">
-      <strong style="color: #e07dae;">✂ Rolled back as part of post-parity cleanup.</strong>
-      Ported as <code>src/session/summary.rs</code> in the seventh pass. Being removed
-      because it depends on the <code>SessionStore</code> types (also cut). Incremental
-      summaries are a forged-level concern — reintroduce there if needed.
+      <strong style="color: #e07dae;">Cut on main in <code>1ed2217</code> (2026-04-23).</strong>
+      Briefly lived as <code>src/session/summary.rs</code> in the seventh pass.
+      Removed alongside the <code>SessionStore</code> trait it depends on.
+      Incremental summaries are a <code>forged</code>-level concern — reintroduce
+      there if needed.
     </p>
-    <p class="impact"><strong style="color: #e07dae;">Net effect after cut:</strong> ~14 inline unit tests removed; <code>list_session_summaries</code> optional trait method vanishes with the trait.</p>
+    <p class="impact"><strong style="color: #e07dae;">Net effect after cut:</strong> ~14 inline unit tests removed; <code>list_session_summaries</code> optional trait method vanished with the trait.</p>
   </div>
   <div class="gap-card" style="border-left-color: #cc4488;">
-    <h4 style="text-decoration: line-through; text-decoration-color: #cc4488; opacity: 0.8;">✓ run_session_store_conformance harness <span class="py">testing/session_store_conformance.py</span></h4>
+    <h4 style="text-decoration: line-through; text-decoration-color: #cc4488; opacity: 0.8;">✂ run_session_store_conformance harness <span class="py">testing/session_store_conformance.py</span></h4>
     <p class="why">
-      <strong style="color: #e07dae;">✂ Rolled back as part of post-parity cleanup.</strong>
-      Ported as <code>src/testing.rs</code> in the seventh pass. Being removed alongside
-      the trait it certifies. The subpath-sanitisation bug it caught in
-      <code>MemorySessionStore::list_subkeys</code> goes away with the store itself.
+      <strong style="color: #e07dae;">Cut on main in <code>1ed2217</code> (2026-04-23).</strong>
+      Briefly lived as <code>src/testing.rs</code>. Removed alongside the trait
+      it certified. The subpath-sanitisation bug it caught in
+      <code>MemorySessionStore::list_subkeys</code> went away with the store
+      itself.
     </p>
     <p class="impact"><strong style="color: #e07dae;">Net effect after cut:</strong> 14 contracts + 4 parity tests + <code>tests/session_store_conformance_harness.rs</code> removed.</p>
   </div>
@@ -926,30 +907,22 @@ flowchart LR
   </div>
 </div>
 
-<h2 class="section-title">Testing coverage — Tier 6 mirror <span class="count">complete on 2026-04-22 · section under review</span></h2>
+<h2 class="section-title">Testing coverage — Tier 6 mirror <span class="count">post-cleanup state</span></h2>
 <p class="section-intro">
   The Python SDK's <code>tests/</code> directory is forge-sdk's executable spec
   for behavioural parity. Every new Python test should translate to a Rust
-  test within the same weekly parity-check cycle. As of the sixth pass, every
-  upstream test file in scope has a named Rust counterpart — the weekly
-  parity grep matches on test-name alone.
-</p>
-<p class="section-intro" style="border-left: 3px solid #c27046; padding-left: 10px; background: rgba(194,112,70,0.04);">
-  <strong style="color: #e09770;">? Section under review.</strong> Once the
-  parity phase ends, maintaining this 20-row ledger becomes overhead without
-  proportional value — forge-sdk's own test count tells us how we're doing,
-  and the Python mapping matters less once we're not chasing parity. Options
-  under consideration: (a) trim to aggregate counts only; (b) archive this
-  section to a separate doc (e.g. <code>docs/tier6-archive.html</code>) that's
-  linked from here; (c) keep the ledger but drop weekly-update cadence now
-  that it's "complete." Tracked in the review queue.
+  test within the same weekly parity-check cycle. Every upstream test file
+  in scope has a named Rust counterpart; the weekly parity grep matches on
+  test-name alone. Rows for cut features (<code>SessionStore</code>,
+  transcript mirror) are kept with <strong style="color: #e07dae;">N/A — cut</strong>
+  status so the parity-decision history is preserved.
 </p>
 <table class="parity" data-section="tier6">
   <thead><tr><th>Upstream file</th><th>Upstream lines</th><th>Coverage</th><th>Notes</th></tr></thead>
   <tbody>
     <tr data-s="parity"><td class="py">test_errors.py</td><td class="notes">~300</td><td><span class="status status-parity">✓ complete</span></td><td class="notes">With explicit skips for Python-specific exception introspection.</td></tr>
     <tr data-s="parity"><td class="py">test_message_parser.py</td><td class="notes">966</td><td><span class="status status-parity">✓ 45 / 45</span></td><td class="notes">Completed 2026-04-22 (third pass).</td></tr>
-    <tr data-s="parity"><td class="py">test_session_store_conformance.py</td><td class="notes">270</td><td><span class="status status-parity">✓ 17 / 17</span></td><td class="notes">All 12 validation + project_key cases plus 5 TestInMemorySessionStore cases — the latter now harness-backed via <code>tests/session_store_conformance_harness.rs</code> (seventh pass, 2026-04-22).</td></tr>
+    <tr data-s="cut"><td class="py">test_session_store_conformance.py</td><td class="notes">270</td><td><span class="status status-cut">✂ N/A — cut</span></td><td class="notes">SessionStore conformance harness was removed in <code>1ed2217</code> alongside the trait. Upstream tests no longer mirrored.</td></tr>
     <tr data-s="parity"><td class="py">test_types.py</td><td class="notes">621</td><td><span class="status status-parity">✓ 45 / 45</span></td><td class="notes">6 test classes covering messages / options / hooks / MCP status / agents.</td></tr>
     <tr data-s="parity"><td class="py">test_rate_limit_event_repro.py</td><td class="notes">108</td><td><span class="status status-parity">✓ 5 / 5</span></td><td class="notes">Regression guard for CLI v2.1.45+ rate-limit event shape.</td></tr>
     <tr data-s="parity"><td class="py">test_subprocess_buffering.py</td><td class="notes">385</td><td><span class="status status-parity">✓ 6 / 10 + 4 gap-docs</span></td><td class="notes">tokio::io::duplex drives the assembler; 4 #[ignore] for architectural differences (buffer cap, non-JSON skip).</td></tr>
@@ -960,9 +933,9 @@ flowchart LR
     <tr data-s="parity"><td class="py">test_transport.py</td><td class="notes">1987</td><td><span class="status status-parity">✓ 32 / 73 + 10 N/A</span></td><td class="notes">Extended from subset to full argv coverage. OTEL / SIGTERM-SIGKILL / concurrent-write tests N/A for forge-sdk model.</td></tr>
     <tr data-s="parity"><td class="py">test_sessions.py</td><td class="notes">1843</td><td><span class="status status-parity">✓ 97 / 99 + 2 gaps</span></td><td class="notes">Parity ledger cross-referencing src/session/scan.rs::tests (47 inline unit tests). 2 gap markers: chain-walk + cycle detection.</td></tr>
     <tr data-s="parity"><td class="py">test_session_mutations.py</td><td class="notes">817</td><td><span class="status status-parity">✓ 52 / 52</span></td><td class="notes">Parity ledger.</td></tr>
-    <tr data-s="parity"><td class="py">test_session_resume.py</td><td class="notes">1318</td><td><span class="status status-parity">✓ 7 / 38 + 31 N/A</span></td><td class="notes">Python materialises SessionStore to tmpdir; forge-sdk uses --session-mirror.</td></tr>
-    <tr data-s="parity"><td class="py">test_session_helpers_store.py</td><td class="notes">809</td><td><span class="status status-parity">✓ 41 / 41</span></td><td class="notes">_from_store / _via_store async variants parity ledger.</td></tr>
-    <tr data-s="parity"><td class="py">test_transcript_mirror.py</td><td class="notes">693</td><td><span class="status status-parity">✓ 33 / 33</span></td><td class="notes">Parity ledger.</td></tr>
+    <tr data-s="parity"><td class="py">test_session_resume.py</td><td class="notes">1318</td><td><span class="status status-parity">✓ 7 / 38 + 31 N/A</span></td><td class="notes">Python materialises SessionStore to tmpdir; forge-sdk reads from <code>$CLAUDE_CONFIG_DIR/projects</code> directly. The 31 N/A grew when SessionStore was cut.</td></tr>
+    <tr data-s="cut"><td class="py">test_session_helpers_store.py</td><td class="notes">809</td><td><span class="status status-cut">✂ N/A — cut</span></td><td class="notes">All 41 tests covered <code>*_from_store</code> / <code>*_via_store</code> async variants — both cut in <code>1ed2217</code>. Filesystem equivalents stay covered by other test files.</td></tr>
+    <tr data-s="cut"><td class="py">test_transcript_mirror.py</td><td class="notes">693</td><td><span class="status status-cut">✂ N/A — cut</span></td><td class="notes">transcript_mirror cut in <code>1ed2217</code>. Upstream tests no longer mirrored.</td></tr>
     <tr data-s="parity"><td class="py">test_tool_callbacks.py</td><td class="notes">849</td><td><span class="status status-parity">✓ 18 / 18</span></td><td class="notes">Parity ledger.</td></tr>
     <tr data-s="parity"><td class="py">test_sdk_mcp_integration.py</td><td class="notes">1093</td><td><span class="status status-parity">✓ 16 / 48 + 32 N/A</span></td><td class="notes">32 TypedDict→JSON-schema tests N/A (Rust uses serde + typed structs; schemas pinned at compile time).</td></tr>
     <tr data-s="parity"><td class="py">test_streaming_client.py</td><td class="notes">1314</td><td><span class="status status-parity">✓ 21 / 31 + 10 N/A</span></td><td class="notes">"not_connected" cases N/A by Rust type-system construction.</td></tr>
@@ -970,22 +943,23 @@ flowchart LR
 </table>
 
 <p class="section-intro" style="margin-top: 16px; border-left: 3px solid #cc4488; padding-left: 10px; background: rgba(204,68,136,0.04);">
-  <strong>Out of scope (4 files):</strong> <code>test_example_redis_session_store.py</code>,
+  <strong>Out of scope (5 files):</strong> <code>test_example_redis_session_store.py</code>,
   <code>test_example_redis_session_store_live.py</code>,
   <code>test_example_s3_session_store.py</code>,
   <code>test_example_s3_session_store_live.py</code>,
   <code>test_example_postgres_session_store.py</code> — Python ecosystem-
   specific example stores.
-  <strong style="color: #e07dae;">✂ Becomes entirely moot after SessionStore cut.</strong>
-  Drop this paragraph alongside the trait removal.
+  <strong style="color: #e07dae;">✂ Moot — SessionStore was cut in <code>1ed2217</code>.</strong>
+  Kept here as a footnote so future readers see why we don't mirror these
+  upstream test files.
 </p>
 
 </main>
 
 <footer>
-  forge-sdk parity map · annotated for post-parity cleanup review · tracked on
-  <code>post-parity-cleanup</code> branch (exception to the local-only rule while
-  this cleanup review is active) · data sourced from
+  forge-sdk parity map · post-cleanup state, audited 2026-04-25 · tracked
+  in-tree (regenerate via the parity-check ritual when surface changes) ·
+  data sourced from
   <code>/tmp/claude-agent-sdk-python/src/claude_agent_sdk/__init__.py</code>
   (v0.1.64) and <code>crates/forge-sdk/src/lib.rs</code>
 </footer>
