@@ -1,0 +1,652 @@
+//! M3 — multi-session + listing/mutations + mid-session control.
+//!
+//! Some tests redirect the SDK's projects-dir lookup by mutating
+//! `$CLAUDE_CONFIG_DIR`. Rust 2024 made `std::env::set_var` `unsafe`,
+//! so this crate's `Cargo.toml` down-grades the `unsafe_code` lint
+//! from `forbid` to `deny` and the test file opts in below. Library
+//! code in `forged` stays unsafe-free.
+
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(unsafe_code)]
+
+use std::path::PathBuf;
+use tempfile::TempDir;
+
+use forge_sdk::OptionsBuilder;
+use forged::methods::session::{SpawnResult, parse_spawn_params, spawn};
+use forged::registry::DaemonState;
+
+/// Mock that handles `initialize` + every subsequent `control_request`.
+/// Used by the M3.6 / M3.7 round-trip tests (interrupt, `set_model`,
+/// `mcp.toggle`, …) — `mock_claude.sh` only handles `initialize` and
+/// would deadlock the actor on the first control reply.
+const MOCK_CLAUDE_CONTROL: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../forge-sdk/tests/fixtures/mock_claude_control.sh"
+);
+
+// =============================================================================
+// M3.1 — full Options deserialiser
+// =============================================================================
+
+#[test]
+fn parse_spawn_params_handles_full_options_shape() {
+    let raw = serde_json::json!({
+        "options": {
+            "binary":          "/usr/local/bin/claude",
+            "model":           "claude-opus-4-7",
+            "permission_mode": "ask",
+            "allowed_tools":   ["Read", "Edit", "Bash"],
+            "skills":          ["all"],
+            "max_turns":       10,
+            "max_budget_usd":  0.50,
+            "system_prompt":   { "kind": "preset", "append": null },
+            "cwd":             "/tmp/forge-test",
+            "resume":          null,
+            "fork_session":    false,
+            "continue_conversation": false,
+            "include_partial_messages": true,
+            "extra_args":      { "verbose": null },
+            "env":             { "FOO": "bar" },
+            "betas":           ["context-1m-2025-08-07"]
+        }
+    });
+    let opts = parse_spawn_params(&raw).unwrap();
+    assert_eq!(opts.binary, "/usr/local/bin/claude");
+    assert_eq!(opts.model.as_deref(), Some("claude-opus-4-7"));
+    assert_eq!(opts.allowed_tools, vec!["Read", "Edit", "Bash"]);
+    assert_eq!(opts.skills, vec!["all"]);
+    assert_eq!(opts.max_turns, Some(10));
+    assert!((opts.max_budget_usd.unwrap() - 0.50).abs() < f64::EPSILON);
+    assert_eq!(
+        opts.cwd
+            .as_deref()
+            .map(|p| p.to_string_lossy().into_owned()),
+        Some("/tmp/forge-test".to_string())
+    );
+    assert!(opts.include_partial_messages);
+    assert_eq!(opts.env.get("FOO").map(String::as_str), Some("bar"));
+    assert_eq!(opts.betas, vec!["context-1m-2025-08-07"]);
+    assert!(opts.extra_args.contains_key("verbose"));
+}
+
+#[test]
+fn parse_spawn_params_minimal_only_binary() {
+    let raw = serde_json::json!({ "options": { "binary": "claude" } });
+    let opts = parse_spawn_params(&raw).unwrap();
+    assert_eq!(opts.binary, "claude");
+    assert_eq!(opts.model, None);
+    assert!(opts.allowed_tools.is_empty());
+}
+
+#[test]
+fn parse_spawn_params_empty_object_is_default() {
+    let raw = serde_json::json!({});
+    let opts = parse_spawn_params(&raw).unwrap();
+    // Default binary is "claude" per OptionsBuilder.
+    assert_eq!(opts.binary, "claude");
+}
+
+#[test]
+fn parse_spawn_params_rejects_unknown_permission_mode() {
+    let raw = serde_json::json!({
+        "options": { "binary": "claude", "permission_mode": "shrug" }
+    });
+    let err = parse_spawn_params(&raw).unwrap_err();
+    let s = err.to_string();
+    assert!(
+        s.contains("permission_mode") || s.contains("shrug"),
+        "expected permission_mode mention; got: {s}"
+    );
+}
+
+#[test]
+fn parse_spawn_params_rejects_unknown_field() {
+    let raw = serde_json::json!({
+        "options": { "binary": "claude", "definitely_not_a_field": 42 }
+    });
+    let err = parse_spawn_params(&raw).unwrap_err();
+    let s = err.to_string();
+    assert!(
+        s.contains("unknown field") || s.contains("definitely_not_a_field"),
+        "expected unknown-field mention; got: {s}"
+    );
+}
+
+#[test]
+fn parse_spawn_params_handles_each_permission_mode_variant() {
+    for variant in [
+        "ask",
+        "accept_edits",
+        "plan",
+        "bypass_permissions",
+        "auto",
+        "deny_permissions",
+    ] {
+        let raw = serde_json::json!({
+            "options": { "binary": "claude", "permission_mode": variant }
+        });
+        parse_spawn_params(&raw).unwrap_or_else(|e| panic!("variant {variant}: {e}"));
+    }
+}
+
+#[test]
+fn parse_spawn_params_handles_thinking_variants() {
+    for kind in ["adaptive", "disabled"] {
+        let raw = serde_json::json!({
+            "options": {
+                "binary": "claude",
+                "thinking": { "kind": kind }
+            }
+        });
+        parse_spawn_params(&raw).unwrap_or_else(|e| panic!("kind {kind}: {e}"));
+    }
+    let raw = serde_json::json!({
+        "options": {
+            "binary": "claude",
+            "thinking": { "kind": "enabled", "budget_tokens": 1024 }
+        }
+    });
+    let opts = parse_spawn_params(&raw).unwrap();
+    assert!(opts.thinking.is_some());
+}
+
+#[test]
+fn parse_spawn_params_handles_system_prompt_inline_and_file() {
+    let inline = serde_json::json!({
+        "options": {
+            "binary": "claude",
+            "system_prompt": { "kind": "inline", "text": "say hi" }
+        }
+    });
+    parse_spawn_params(&inline).unwrap();
+
+    let file = serde_json::json!({
+        "options": {
+            "binary": "claude",
+            "system_prompt": { "kind": "file", "path": "/tmp/sp.txt" }
+        }
+    });
+    parse_spawn_params(&file).unwrap();
+}
+
+#[test]
+fn parse_spawn_params_handles_plugins_and_add_dirs() {
+    let raw = serde_json::json!({
+        "options": {
+            "binary": "claude",
+            "add_dirs": ["/tmp/a", "/tmp/b"],
+            "plugins": [{ "kind": "local", "path": "/tmp/plugin" }]
+        }
+    });
+    let opts = parse_spawn_params(&raw).unwrap();
+    assert_eq!(opts.add_dirs.len(), 2);
+    assert_eq!(opts.plugins.len(), 1);
+}
+
+#[test]
+fn parse_spawn_params_handles_effort_levels() {
+    for level in ["low", "medium", "high", "max"] {
+        let raw = serde_json::json!({
+            "options": { "binary": "claude", "effort": level }
+        });
+        parse_spawn_params(&raw).unwrap_or_else(|e| panic!("level {level}: {e}"));
+    }
+    // Numeric effort.
+    let raw = serde_json::json!({
+        "options": { "binary": "claude", "effort": 7 }
+    });
+    let opts = parse_spawn_params(&raw).unwrap();
+    assert!(opts.effort.is_some());
+}
+
+// =============================================================================
+// M3.2 / M3.3 / M3.4 / M3.5 — sessions.* filesystem helpers
+// =============================================================================
+
+/// Seed a temp `$CLAUDE_CONFIG_DIR` with a project that holds N session
+/// jsonl files.
+///
+/// Returns `(tmp, project_subdir, project_directory_path)` where the
+/// `project_directory_path` is what callers pass as the `directory`
+/// arg to the session helpers.
+fn seed_projects(n: usize) -> (TempDir, PathBuf, String) {
+    let tmp = TempDir::new().unwrap();
+
+    // The `directory` argument is canonicalised by forge-sdk before
+    // hashing, so we use a real existing path inside the tmp dir to
+    // avoid `canonicalize` falling back. The tmp's own working subdir
+    // is a real path on disk.
+    let project_directory = tmp.path().join("workdir");
+    std::fs::create_dir_all(&project_directory).unwrap();
+
+    // Compute project key the same way the SDK does — via the public
+    // `project_key_for_directory` helper.
+    let project_key = forge_sdk::session::scan::project_key_for_directory(Some(
+        project_directory.to_str().unwrap(),
+    ));
+    let project_subdir = tmp.path().join("projects").join(&project_key);
+    std::fs::create_dir_all(&project_subdir).unwrap();
+
+    for i in 0..n {
+        // Use canonical UUIDs — forge-sdk validates the format.
+        let sid = format!("00000000-0000-4000-8000-{i:012}");
+        let path = project_subdir.join(format!("{sid}.jsonl"));
+        let line = serde_json::json!({
+            "type": "user",
+            "uuid": format!("uuid_{i}"),
+            "sessionId": sid,
+            "timestamp": format!("2026-04-22T00:00:0{i}.000Z"),
+            "cwd": project_directory.to_str().unwrap(),
+            "message": { "role": "user", "content": format!("hello {i}") }
+        });
+        std::fs::write(&path, format!("{line}\n")).unwrap();
+    }
+
+    let dir_str = project_directory.to_string_lossy().into_owned();
+    (tmp, project_subdir, dir_str)
+}
+
+fn point_sdk_at(tmp: &TempDir) {
+    // SAFETY: tests in this binary are single-threaded around env
+    // mutation per the harness convention; serial execution is
+    // ensured by routing every CLAUDE_CONFIG_DIR-touching test
+    // through the same lock.
+    unsafe {
+        std::env::set_var("CLAUDE_CONFIG_DIR", tmp.path());
+    }
+}
+
+// Serialise tests that mutate $CLAUDE_CONFIG_DIR. Other tests don't
+// touch the env so they can run in parallel.
+static ENV_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+
+#[test]
+fn sessions_list_returns_seeded_entries() {
+    let _g = ENV_LOCK.lock();
+    let (tmp, _projects_dir, project_dir) = seed_projects(3);
+    point_sdk_at(&tmp);
+    let result = forged::methods::sessions::list(Some(project_dir), Some(10), 0).unwrap();
+    assert_eq!(result.len(), 3, "expected 3 seeded sessions");
+}
+
+#[test]
+fn sessions_list_honours_limit_and_offset() {
+    let _g = ENV_LOCK.lock();
+    let (tmp, _, project_dir) = seed_projects(5);
+    point_sdk_at(&tmp);
+    let r = forged::methods::sessions::list(Some(project_dir), Some(2), 1).unwrap();
+    assert_eq!(r.len(), 2);
+}
+
+#[test]
+fn sessions_info_returns_some_for_known_id() {
+    let _g = ENV_LOCK.lock();
+    let (tmp, _, project_dir) = seed_projects(1);
+    point_sdk_at(&tmp);
+    let sid = "00000000-0000-4000-8000-000000000000".to_string();
+    let info = forged::methods::sessions::info(sid.clone(), Some(project_dir)).unwrap();
+    assert!(info.is_some(), "expected Some(SDKSessionInfo)");
+    assert_eq!(info.unwrap().session_id, sid);
+}
+
+#[test]
+fn sessions_info_returns_none_for_unknown_id() {
+    let _g = ENV_LOCK.lock();
+    let (tmp, _, project_dir) = seed_projects(0);
+    point_sdk_at(&tmp);
+    let info = forged::methods::sessions::info(
+        "00000000-0000-4000-8000-deadbeefface".into(),
+        Some(project_dir),
+    )
+    .unwrap();
+    assert!(info.is_none());
+}
+
+#[test]
+fn sessions_messages_returns_full_transcript_with_watermark() {
+    let _g = ENV_LOCK.lock();
+    let (tmp, dir, project_dir) = seed_projects(0);
+    let sid = "00000000-0000-4000-8000-aaaaaaaaaaaa";
+    let path = dir.join(format!("{sid}.jsonl"));
+    let lines = [
+        serde_json::json!({
+            "type": "user", "uuid": "msg_1", "sessionId": sid,
+            "message": { "role": "user", "content": [{"type":"text","text":"hi"}] }
+        }),
+        serde_json::json!({
+            "type": "assistant", "uuid": "msg_2", "sessionId": sid,
+            "message": {
+                "id": "msg_xyz", "role": "assistant", "model": "claude",
+                "content": [{"type":"text","text":"hello"}]
+            }
+        }),
+    ];
+    let body = lines.iter().fold(String::new(), |mut acc, v| {
+        use std::fmt::Write;
+        let _ = writeln!(&mut acc, "{v}");
+        acc
+    });
+    std::fs::write(&path, body).unwrap();
+
+    point_sdk_at(&tmp);
+    let r = forged::methods::sessions::messages(sid.into(), Some(project_dir)).unwrap();
+    assert_eq!(r.messages.len(), 2);
+    assert_eq!(
+        r.watermark.as_deref(),
+        Some("msg_2"),
+        "watermark should be the highest uuid in the transcript"
+    );
+}
+
+#[test]
+fn sessions_messages_empty_transcript_returns_none_watermark() {
+    let _g = ENV_LOCK.lock();
+    let (tmp, _, project_dir) = seed_projects(0);
+    point_sdk_at(&tmp);
+    let r = forged::methods::sessions::messages(
+        "00000000-0000-4000-8000-bbbbbbbbbbbb".into(),
+        Some(project_dir),
+    )
+    .unwrap();
+    assert!(r.messages.is_empty());
+    assert!(r.watermark.is_none());
+}
+
+#[test]
+fn sessions_list_subagents_returns_empty_for_session_with_no_subagents() {
+    let _g = ENV_LOCK.lock();
+    let (tmp, _, project_dir) = seed_projects(1);
+    point_sdk_at(&tmp);
+    let r = forged::methods::sessions::list_subagents(
+        "00000000-0000-4000-8000-000000000000".into(),
+        Some(project_dir),
+    )
+    .unwrap();
+    assert!(r.is_empty());
+}
+
+#[test]
+fn sessions_subagent_messages_empty_for_unknown_subagent() {
+    let _g = ENV_LOCK.lock();
+    let (tmp, _, project_dir) = seed_projects(1);
+    point_sdk_at(&tmp);
+    let r = forged::methods::sessions::subagent_messages(
+        "00000000-0000-4000-8000-000000000000".into(),
+        "sub_unknown".into(),
+        Some(project_dir),
+    )
+    .unwrap();
+    assert!(r.is_empty());
+}
+
+#[test]
+fn sessions_project_key_matches_sdk_output() {
+    let path = "/Users/vedhavyas/Projects/forge";
+    let key = forged::methods::sessions::project_key(Some(path.into())).unwrap();
+    let expected = forge_sdk::session::scan::project_key_for_directory(Some(path));
+    assert_eq!(key, expected);
+}
+
+#[test]
+fn sessions_project_key_none_uses_cwd() {
+    let key = forged::methods::sessions::project_key(None).unwrap();
+    let expected = forge_sdk::session::scan::project_key_for_directory(None);
+    assert_eq!(key, expected);
+}
+
+// ---- Mutations ------------------------------------------------------------
+
+#[test]
+fn sessions_rename_writes_custom_title() {
+    let _g = ENV_LOCK.lock();
+    let (tmp, _, project_dir) = seed_projects(1);
+    point_sdk_at(&tmp);
+    let sid = "00000000-0000-4000-8000-000000000000".to_string();
+    forged::methods::sessions::rename(
+        sid.clone(),
+        "renamed-title".into(),
+        Some(project_dir.clone()),
+    )
+    .unwrap();
+    let info = forged::methods::sessions::info(sid, Some(project_dir))
+        .unwrap()
+        .unwrap();
+    assert_eq!(info.custom_title.as_deref(), Some("renamed-title"));
+}
+
+#[test]
+fn sessions_tag_sets_then_clears() {
+    let _g = ENV_LOCK.lock();
+    let (tmp, _, project_dir) = seed_projects(1);
+    point_sdk_at(&tmp);
+    let sid = "00000000-0000-4000-8000-000000000000".to_string();
+
+    forged::methods::sessions::tag(
+        sid.clone(),
+        Some("design".into()),
+        Some(project_dir.clone()),
+    )
+    .unwrap();
+    let info = forged::methods::sessions::info(sid.clone(), Some(project_dir.clone()))
+        .unwrap()
+        .unwrap();
+    assert_eq!(info.tag.as_deref(), Some("design"));
+
+    forged::methods::sessions::tag(sid.clone(), None, Some(project_dir.clone())).unwrap();
+    let info = forged::methods::sessions::info(sid, Some(project_dir))
+        .unwrap()
+        .unwrap();
+    assert_eq!(info.tag, None);
+}
+
+#[test]
+fn sessions_delete_removes_jsonl() {
+    let _g = ENV_LOCK.lock();
+    let (tmp, dir, project_dir) = seed_projects(1);
+    let sid = "00000000-0000-4000-8000-000000000000".to_string();
+    let path = dir.join(format!("{sid}.jsonl"));
+    assert!(path.exists());
+
+    point_sdk_at(&tmp);
+    forged::methods::sessions::delete(sid, Some(project_dir)).unwrap();
+    assert!(!path.exists());
+}
+
+#[test]
+fn sessions_fork_creates_a_new_session_with_copied_entries() {
+    let _g = ENV_LOCK.lock();
+    let (tmp, dir, project_dir) = seed_projects(0);
+    let sid = "00000000-0000-4000-8000-cccccccccccc";
+    let path = dir.join(format!("{sid}.jsonl"));
+    let lines = [
+        serde_json::json!({"type": "user", "uuid": "11111111-1111-4111-8111-111111111111", "sessionId": sid,
+            "message": {"role":"user","content":[{"type":"text","text":"a"}]}}),
+        serde_json::json!({"type": "user", "uuid": "22222222-2222-4222-8222-222222222222", "sessionId": sid,
+            "message": {"role":"user","content":[{"type":"text","text":"b"}]}}),
+        serde_json::json!({"type": "user", "uuid": "33333333-3333-4333-8333-333333333333", "sessionId": sid,
+            "message": {"role":"user","content":[{"type":"text","text":"c"}]}}),
+    ];
+    let body = lines.iter().fold(String::new(), |mut acc, v| {
+        use std::fmt::Write;
+        let _ = writeln!(&mut acc, "{v}");
+        acc
+    });
+    std::fs::write(&path, body).unwrap();
+
+    point_sdk_at(&tmp);
+    let result = forged::methods::sessions::fork(
+        sid.into(),
+        Some("22222222-2222-4222-8222-222222222222".into()),
+        None,
+        Some(project_dir),
+    )
+    .unwrap();
+    assert!(
+        !result.session_id.is_empty(),
+        "fork should mint a new session id"
+    );
+}
+
+// =============================================================================
+// M3.6 — mid-session control (interrupt / set_permission_mode / set_model /
+// rewind_files / stop_task)
+// =============================================================================
+
+/// Spawn a session backed by `mock_claude_control.sh` which responds
+/// to every `control_request` — required for any M3.6 / M3.7
+/// round-trip test. The plain `mock_claude.sh` only answers
+/// `initialize`.
+async fn spawn_control_mock_session(state: &DaemonState) -> forged::session_state::SessionId {
+    let opts = OptionsBuilder::new().binary(MOCK_CLAUDE_CONTROL).build();
+    let SpawnResult { session_id, .. } = spawn(state, opts).await.unwrap();
+    session_id
+}
+
+#[tokio::test]
+async fn session_interrupt_proxies_to_client() {
+    let state = DaemonState::new();
+    let session_id = spawn_control_mock_session(&state).await;
+    let res = forged::methods::session::interrupt(&state, &session_id).await;
+    assert!(res.is_ok(), "interrupt: {res:?}");
+}
+
+#[tokio::test]
+async fn session_interrupt_returns_session_not_found_for_unknown() {
+    let state = DaemonState::new();
+    let unknown = forged::session_state::SessionId("sess_bogus".into());
+    let err = forged::methods::session::interrupt(&state, &unknown)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, forged::Error::SessionNotFound(_)));
+}
+
+#[tokio::test]
+async fn session_set_permission_mode_proxies_to_client() {
+    let state = DaemonState::new();
+    let session_id = spawn_control_mock_session(&state).await;
+    let res = forged::methods::session::set_permission_mode(
+        &state,
+        &session_id,
+        forge_sdk::PermissionMode::Auto,
+    )
+    .await;
+    assert!(res.is_ok(), "set_permission_mode: {res:?}");
+}
+
+#[tokio::test]
+async fn session_set_model_proxies_to_client() {
+    let state = DaemonState::new();
+    let session_id = spawn_control_mock_session(&state).await;
+    let res =
+        forged::methods::session::set_model(&state, &session_id, Some("claude-opus-4-7".into()))
+            .await;
+    assert!(res.is_ok(), "set_model: {res:?}");
+}
+
+#[tokio::test]
+async fn session_set_model_with_none_reverts_default() {
+    let state = DaemonState::new();
+    let session_id = spawn_control_mock_session(&state).await;
+    let res = forged::methods::session::set_model(&state, &session_id, None).await;
+    assert!(res.is_ok(), "set_model(None): {res:?}");
+}
+
+#[tokio::test]
+async fn session_rewind_files_proxies_to_client() {
+    let state = DaemonState::new();
+    let session_id = spawn_control_mock_session(&state).await;
+    let res = forged::methods::session::rewind_files(&state, &session_id, "msg_test".into()).await;
+    assert!(res.is_ok(), "rewind_files: {res:?}");
+}
+
+#[tokio::test]
+async fn session_stop_task_proxies_to_client() {
+    let state = DaemonState::new();
+    let session_id = spawn_control_mock_session(&state).await;
+    let res = forged::methods::session::stop_task(&state, &session_id, "task_test".into()).await;
+    assert!(res.is_ok(), "stop_task: {res:?}");
+}
+
+// =============================================================================
+// M3.7 — MCP + context handlers
+// =============================================================================
+
+#[tokio::test]
+async fn mcp_status_proxies_through_actor() {
+    let state = DaemonState::new();
+    let session_id = spawn_control_mock_session(&state).await;
+    // mock_claude_control.sh replies `{"servers":[]}` — wrong shape vs
+    // McpStatusResponse — so the SDK returns a `MessageParse` Sdk
+    // error. The contract under test is that the call reaches the
+    // actor (no SessionNotFound, no "actor gone" InternalError).
+    let res = forged::methods::mcp::status(&state, &session_id).await;
+    if let Err(e) = &res {
+        assert!(
+            !matches!(e, forged::Error::SessionNotFound(_)),
+            "must not be SessionNotFound: {e:?}"
+        );
+        let s = e.to_string();
+        assert!(
+            !s.contains("actor gone") && !s.contains("dropped reply"),
+            "actor must not have died: {e:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn mcp_status_returns_session_not_found_for_unknown() {
+    let state = DaemonState::new();
+    let unknown = forged::session_state::SessionId("sess_bogus".into());
+    let err = forged::methods::mcp::status(&state, &unknown)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, forged::Error::SessionNotFound(_)));
+}
+
+#[tokio::test]
+async fn mcp_reconnect_proxies_to_client() {
+    let state = DaemonState::new();
+    let session_id = spawn_control_mock_session(&state).await;
+    let res = forged::methods::mcp::reconnect(&state, &session_id, "some_server").await;
+    assert!(res.is_ok(), "mcp_reconnect: {res:?}");
+}
+
+#[tokio::test]
+async fn mcp_toggle_proxies_to_client() {
+    let state = DaemonState::new();
+    let session_id = spawn_control_mock_session(&state).await;
+    let res = forged::methods::mcp::toggle(&state, &session_id, "some_server", true).await;
+    assert!(res.is_ok(), "mcp_toggle: {res:?}");
+}
+
+#[tokio::test]
+async fn context_get_proxies_through_actor() {
+    let state = DaemonState::new();
+    let session_id = spawn_control_mock_session(&state).await;
+    // Mock returns `{"used":0,"budget":200000}` — wrong shape vs
+    // ContextUsageResponse. Test contract: the dispatch path reaches
+    // the actor. Either Ok or Sdk parse error is fine.
+    let res = forged::methods::context::get(&state, &session_id).await;
+    if let Err(e) = &res {
+        assert!(
+            !matches!(e, forged::Error::SessionNotFound(_)),
+            "must not be SessionNotFound: {e:?}"
+        );
+        let s = e.to_string();
+        assert!(
+            !s.contains("actor gone") && !s.contains("dropped reply"),
+            "actor must not have died: {e:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn context_get_returns_session_not_found_for_unknown() {
+    let state = DaemonState::new();
+    let unknown = forged::session_state::SessionId("sess_bogus".into());
+    let err = forged::methods::context::get(&state, &unknown)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, forged::Error::SessionNotFound(_)));
+}

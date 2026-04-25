@@ -8,8 +8,26 @@ authors.workspace = true
 rust-version.workspace = true
 description = "Daemon that wraps forge-sdk over a JSON-RPC 2.0 WebSocket wire."
 
-[lints]
-workspace = true
+# Mirrors workspace lints except `unsafe_code` is `deny` rather than
+# `forbid` so M3 tests can opt in to `unsafe { std::env::set_var(...) }`
+# via a file-scoped `#![allow(unsafe_code)]`. Library code in this
+# crate keeps the workspace-wide guarantee — the lone test that uses
+# unsafe is `tests/m3_listing.rs`, which fronts the env mutation
+# behind a parking_lot Mutex so tests don't race on
+# `$CLAUDE_CONFIG_DIR`.
+[lints.rust]
+unsafe_code = "deny"
+missing_docs = "warn"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+exit = "deny"
+todo = "deny"
+unimplemented = "deny"
+module_name_repetitions = "allow"
 
 [[bin]]
 name = "forged"
