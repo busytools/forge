@@ -339,10 +339,18 @@ impl Client {
         // the initialize control_response + first user message, so
         // session_id stays empty here and `next_event` populates it
         // when the first session-scoped frame drains.
+        // Filter out empty strings: a `Message::System` with
+        // `session_id: Some("")` would otherwise short-circuit
+        // `find_map` and bind an empty id, blocking the proper
+        // late-bind via `capture_session_id_from`.
         client.session_id = client
             .pre_init_messages
             .iter()
-            .find_map(|m| m.session_id().map(str::to_string))
+            .find_map(|m| {
+                m.session_id()
+                    .filter(|id| !id.is_empty())
+                    .map(str::to_string)
+            })
             .unwrap_or_default();
         // Drop the `system/init` frame so callers of `next_event` see
         // the clean post-init stream. Python SDK consumes init inside

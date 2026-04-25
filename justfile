@@ -38,9 +38,11 @@ conformance-capture test:
     FORGE_WIRE_CAPTURE=1 cargo nextest run -p forge-conformance \
         --no-capture --run-ignored only {{test}}
 
-# Build docs with warnings as errors (matches the parity-check ritual).
+# Build docs with warnings as errors (matches CI's `cargo doc --workspace`
+# step so a broken intra-doc link in any workspace crate fails locally,
+# not only on CI).
 doc:
-    RUSTDOCFLAGS="-D warnings" cargo doc --no-deps -p forge-sdk
+    RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 
 # Full pre-commit / pre-PR verification loop.
 check: fmt-check clippy test-all doc

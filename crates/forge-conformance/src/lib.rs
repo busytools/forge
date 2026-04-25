@@ -369,9 +369,23 @@ where
                 return Err(e);
             }
             Err(_timeout) => {
-                // 30 s without a frame — `drive` must have drained the
-                // Result already. Break and let the end_input path
-                // handle cleanup + trailing frames.
+                // 30 s without a frame. Two legitimate causes:
+                // (a) `drive` already drained the `Result` inside its
+                //     closure — common for scenarios that issue
+                //     follow-up control_requests after consuming the
+                //     turn (e.g. `context_usage`, `rewind_files`).
+                // (b) The CLI is genuinely hung. The harness can't
+                //     distinguish the two without a signal from
+                //     `drive`. Log loudly so a real hang surfaces in
+                //     the test output instead of silently passing as
+                //     "no Result frame seen". `summary` stays `None`,
+                //     which the post-drain summary line already
+                //     reports as "NO Result frame".
+                eprintln!(
+                    "{scenario}: 30s read_timeout fired with no Result \
+                     frame seen — `drive` may have drained it OR the \
+                     CLI is hung. Proceeding to cleanup."
+                );
                 break;
             }
         }
@@ -385,11 +399,23 @@ where
     // (some CLI paths emit a final `system:close` or trailing
     // `rate_limit_event`). Errors from writes during trailing
     // handlers (`BrokenPipe`) are expected here — stdin is closed.
+    // Other errors (decoder regressions, malformed JSON, mid-drain
+    // shape drift) are NOT expected and would otherwise be hidden;
+    // log them loudly so they surface in the captured trace's
+    // diagnostics instead of being promoted into a baseline.
     let trailing_timeout = std::time::Duration::from_secs(5);
     while let Ok(evt) = tokio::time::timeout(trailing_timeout, client.next_event()).await {
         match evt {
             Ok(Some(_)) => {}
-            Ok(None) | Err(_) => break,
+            Ok(None) => break,
+            Err(Error::Io(io)) if io.kind() == std::io::ErrorKind::BrokenPipe => break,
+            Err(e) => {
+                eprintln!(
+                    "{scenario}: trailing-drain saw non-BrokenPipe error: {e}. \
+                     Continuing to dump partial trace."
+                );
+                break;
+            }
         }
     }
     if let Err(e) = client.disconnect().await {

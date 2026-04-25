@@ -19,12 +19,13 @@
 //! 2. **Redact** PII so the redactor's output is safe to commit as a
 //!    fixture: replace assistant / user message text with `<redacted
 //!    N bytes>` stubs, replace `tool_use` inputs and `tool_result`
-//!    bodies with placeholders, drop large `data` blobs from
-//!    `document` / `image` content blocks, map session / uuid /
-//!    `request_id` values to stable opaque tokens, and (defence in
-//!    depth via [`scrub_paths_recursive`]) rewrite any `/Users/<name>`,
-//!    `/home/<name>`, `/Volumes/<name>` segment that survives in
-//!    arbitrary string fields to `<redacted-home>`.
+//!    bodies with placeholders, replace large `data` blobs in
+//!    `document` / `image` content blocks with size-tagged stubs,
+//!    map session / uuid / `request_id` values to stable opaque
+//!    tokens, and rewrite any `/Users/<name>`, `/home/<name>`,
+//!    `/Volumes/<name>` segment that survives in arbitrary string
+//!    fields (defence-in-depth on top of structural redaction) to
+//!    `<redacted-home>`.
 //!
 //! The redactor is deterministic: a given input line produces the same
 //! output line, so fixtures regenerate cleanly under version control.
@@ -36,11 +37,12 @@ use std::sync::OnceLock;
 
 use serde_json::Value;
 
-/// Regex matching `/Users/<name>/`, `/home/<name>/`, and `$HOME` paths so
-/// any string field that survives the structural redaction (e.g. inside
-/// `Unknown` blocks, MCP tool names, server-injected error messages) gets
-/// scrubbed. Compiled once; substitutes opaque `<redacted-path>` markers
-/// preserving whatever follows the home segment.
+/// Regex matching `/Users/<name>`, `/home/<name>`, and `/Volumes/<name>`
+/// path prefixes so any string field that survives the structural
+/// redaction (e.g. inside `Unknown` blocks, MCP tool names,
+/// server-injected error messages) gets scrubbed. Compiled once;
+/// substitutes opaque `<redacted-home>` markers, preserving whatever
+/// path tail follows the home segment.
 fn path_regex() -> &'static regex::Regex {
     static RE: OnceLock<regex::Regex> = OnceLock::new();
     RE.get_or_init(|| {
@@ -60,7 +62,31 @@ fn scrub_paths_recursive(v: &mut Value) {
             *s = path_regex().replace_all(s, "<redacted-home>").into_owned();
         }
         Value::Array(a) => a.iter_mut().for_each(scrub_paths_recursive),
-        Value::Object(o) => o.values_mut().for_each(scrub_paths_recursive),
+        Value::Object(o) => {
+            // First scrub every value in place.
+            for val in o.values_mut() {
+                scrub_paths_recursive(val);
+            }
+            // Then scrub object KEYS too — fixture readers should see
+            // no leaks even when a path appears as a map key (env-var
+            // dumps, file-history snapshots, future Anthropic API
+            // shapes that key by absolute path). Build a replacement
+            // map only when at least one key changes.
+            let needs_rewrite = o.keys().any(|k| path_regex().is_match(k));
+            if needs_rewrite {
+                let entries: Vec<(String, Value)> = o
+                    .iter_mut()
+                    .map(|(k, v)| {
+                        let new_key = path_regex().replace_all(k, "<redacted-home>").into_owned();
+                        (new_key, v.take())
+                    })
+                    .collect();
+                o.clear();
+                for (k, v) in entries {
+                    o.insert(k, v);
+                }
+            }
+        }
         _ => {}
     }
 }
@@ -271,8 +297,10 @@ fn redact_content_block(block: &mut Value, state: &mut RedactState) {
             // Anthropic API document/image block. Shape:
             // `{"type":"<kind>","source":{"type":"base64",
             //   "media_type":"<mime>","data":"<base64 bytes>"}}`.
-            // The `data` field can be megabytes — drop it entirely.
-            // Keep `media_type` so fixtures document what kind of
+            // The `data` field can be megabytes — replace with a
+            // size-tagged stub (`<redacted-<kind>-data Nb>`) so the
+            // fixture records the shape but not the content. Keep
+            // `media_type` so fixtures document what kind of
             // attachment was present.
             if let Some(Value::Object(src)) = obj.get_mut("source") {
                 if let Some(Value::String(d)) = src.get_mut("data") {
