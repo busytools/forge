@@ -136,73 +136,10 @@ impl PromptQueue {
             .map(|p| PendingPromptView {
                 prompt_id: p.prompt_id.clone(),
                 kind: p.kind.as_wire(),
-                issued_at: format_iso8601(p.issued_at),
-                expires_at: format_iso8601(p.expires_at),
+                issued_at: crate::iso8601::format_iso8601(p.issued_at),
+                expires_at: crate::iso8601::format_iso8601(p.expires_at),
                 params: p.params.clone(),
             })
             .collect()
-    }
-}
-
-/// Hand-rolled ISO-8601 conversion to keep the dep set minimal.
-/// Good enough for v1 wire-shape display; swap to `time` or `chrono`
-/// if precision / leap-seconds matter downstream.
-fn format_iso8601(t: SystemTime) -> String {
-    let dur = t.duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
-    let secs = dur.as_secs();
-    let (y, m, d, hh, mm, ss) = secs_to_ymdhms(secs);
-    format!("{y:04}-{m:02}-{d:02}T{hh:02}:{mm:02}:{ss:02}Z")
-}
-
-#[allow(clippy::cast_possible_truncation)]
-fn secs_to_ymdhms(mut secs: u64) -> (u32, u32, u32, u32, u32, u32) {
-    let ss = (secs % 60) as u32;
-    secs /= 60;
-    let mm = (secs % 60) as u32;
-    secs /= 60;
-    let hh = (secs % 24) as u32;
-    secs /= 24;
-    let mut days = secs as u32;
-    let mut y: u32 = 1970;
-    loop {
-        let in_year = days_in_year(y);
-        if days < in_year {
-            break;
-        }
-        days -= in_year;
-        y += 1;
-    }
-    let mut m: u32 = 1;
-    loop {
-        let in_month = days_in_month(y, m);
-        if days < in_month {
-            break;
-        }
-        days -= in_month;
-        m += 1;
-    }
-    (y, m, days + 1, hh, mm, ss)
-}
-
-const fn is_leap(y: u32) -> bool {
-    (y % 4 == 0 && y % 100 != 0) || (y % 400 == 0)
-}
-
-const fn days_in_year(y: u32) -> u32 {
-    if is_leap(y) { 366 } else { 365 }
-}
-
-const fn days_in_month(y: u32, m: u32) -> u32 {
-    match m {
-        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
-        4 | 6 | 9 | 11 => 30,
-        2 => {
-            if is_leap(y) {
-                29
-            } else {
-                28
-            }
-        }
-        _ => 0,
     }
 }
