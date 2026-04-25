@@ -5,10 +5,13 @@
 
 pub use error::Error;
 
+pub mod bridged_transport;
+pub mod broadcast;
 pub mod connection;
 pub mod error;
 pub mod jsonrpc;
 pub mod methods;
 pub mod registry;
 pub mod server;
+pub mod session_state;
 pub mod status_cli;

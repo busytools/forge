@@ -18,6 +18,19 @@ pub struct Connection {
     pub outbound: mpsc::UnboundedSender<Outbound>,
 }
 
+impl Connection {
+    /// Construct a connection with the given id, no display name yet, and
+    /// the supplied outbound channel.
+    #[must_use]
+    pub fn new(id: ConnectionId, outbound: mpsc::UnboundedSender<Outbound>) -> Self {
+        Self {
+            id,
+            name: None,
+            outbound,
+        }
+    }
+}
+
 /// Stable identifier for a [`Connection`].
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ConnectionId(pub String);
