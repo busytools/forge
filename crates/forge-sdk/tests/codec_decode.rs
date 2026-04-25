@@ -102,3 +102,42 @@ fn dispatch_rejects_control_cancel_missing_request_id() {
         "error should mention the missing field"
     );
 }
+
+#[test]
+fn dispatch_routes_control_response_missing_request_id_to_unknown() {
+    use forge_sdk::transport::codec::{DecodedLine, decode_dispatch};
+
+    // A `control_response` lacking `/response/request_id` is wire
+    // corruption — it must NOT decode as a "valid" `ControlResponse`
+    // with empty id (which would let the conformance harness count it
+    // toward `control_responses` instead of flagging the drift).
+    let line = r#"{"type":"control_response","response":{"subtype":"success","response":{}}}"#;
+    let decoded = decode_dispatch(line, 1).expect("decode succeeds");
+    match decoded {
+        DecodedLine::Unknown { type_str, .. } => {
+            assert!(
+                type_str.contains("control_response"),
+                "type_str should mention control_response, got: {type_str}"
+            );
+            assert!(
+                type_str.contains("missing"),
+                "type_str should mention the missing field, got: {type_str}"
+            );
+        }
+        other => panic!("expected DecodedLine::Unknown, got: {other:?}"),
+    }
+}
+
+#[test]
+fn dispatch_routes_well_formed_control_response_to_control_response() {
+    use forge_sdk::transport::codec::{DecodedLine, decode_dispatch};
+
+    let line = r#"{"type":"control_response","response":{"subtype":"success","request_id":"r0","response":{}}}"#;
+    let decoded = decode_dispatch(line, 1).expect("decode succeeds");
+    match decoded {
+        DecodedLine::ControlResponse { request_id, .. } => {
+            assert_eq!(request_id, "r0");
+        }
+        other => panic!("expected ControlResponse, got: {other:?}"),
+    }
+}
