@@ -923,3 +923,123 @@ impl OptionsBuilder {
         self.inner
     }
 }
+
+#[cfg(test)]
+mod tests_skills_option {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+    #[allow(unused_imports)]
+    use super::*;
+
+    use crate::OptionsBuilder;
+
+    #[test]
+    fn skills_default_empty() {
+        let opts = OptionsBuilder::new().build();
+        assert!(opts.skills.is_empty());
+        assert!(opts.allowed_tools.is_empty());
+        assert!(opts.setting_sources.is_none());
+        // Python `_internal/query.py:204` omits the field unless the
+        // caller set it; forge-sdk matches via Option<bool>.
+        assert!(opts.exclude_dynamic_sections.is_none());
+    }
+
+    #[test]
+    fn skills_with_all_marker() {
+        let opts = OptionsBuilder::new().skills(["all"]).build();
+        assert_eq!(opts.skills, vec!["all".to_string()]);
+    }
+
+    #[test]
+    fn skills_with_concrete_names() {
+        let opts = OptionsBuilder::new()
+            .skills(["create-story", "another-skill"])
+            .build();
+        assert_eq!(opts.skills.len(), 2);
+    }
+
+    #[test]
+    fn explicit_setting_sources_override_default() {
+        let opts = OptionsBuilder::new()
+            .skills(["create-story"])
+            .setting_sources(["local"])
+            .build();
+        assert_eq!(opts.setting_sources, Some(vec!["local".to_string()]));
+    }
+
+    #[test]
+    fn allowed_tools_round_trip() {
+        let opts = OptionsBuilder::new()
+            .allowed_tools(["Read", "Grep"])
+            .build();
+        assert_eq!(opts.allowed_tools, vec!["Read".to_string(), "Grep".into()]);
+    }
+
+    #[test]
+    fn exclude_dynamic_sections_toggles() {
+        let opts = OptionsBuilder::new().exclude_dynamic_sections(true).build();
+        assert_eq!(opts.exclude_dynamic_sections, Some(true));
+    }
+}
+
+#[cfg(test)]
+mod tests_options_build {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+    #[allow(unused_imports)]
+    use super::*;
+
+    use std::path::PathBuf;
+
+    use crate::{OptionsBuilder, PermissionMode};
+
+    #[test]
+    fn default_options() {
+        let opts = OptionsBuilder::new().build();
+        assert_eq!(opts.binary, "claude");
+        assert!(opts.cwd.is_none());
+        assert!(opts.resume.is_none());
+        assert_eq!(opts.permission_mode, PermissionMode::Ask);
+        assert!(opts.model.is_none());
+    }
+
+    #[test]
+    fn builder_sets_model_and_cwd() {
+        let opts = OptionsBuilder::new()
+            .model("claude-opus-4-5")
+            .cwd("/tmp/project")
+            .build();
+        assert_eq!(opts.model.as_deref(), Some("claude-opus-4-5"));
+        assert_eq!(opts.cwd, Some(PathBuf::from("/tmp/project")));
+    }
+
+    #[test]
+    fn builder_sets_resume_session() {
+        let opts = OptionsBuilder::new().resume("sess_abc").build();
+        assert_eq!(opts.resume.as_deref(), Some("sess_abc"));
+    }
+
+    #[test]
+    fn builder_sets_permission_mode() {
+        let opts = OptionsBuilder::new()
+            .permission_mode(PermissionMode::AcceptEdits)
+            .build();
+        assert_eq!(opts.permission_mode, PermissionMode::AcceptEdits);
+    }
+
+    #[test]
+    fn builder_sets_custom_binary() {
+        let opts = OptionsBuilder::new()
+            .binary("/usr/local/bin/claude")
+            .build();
+        assert_eq!(opts.binary, "/usr/local/bin/claude");
+    }
+
+    #[test]
+    fn builder_stores_can_use_tool_callback() {
+        use crate::{PermissionDecision, ToolPermissionContext};
+
+        let opts = OptionsBuilder::new()
+            .can_use_tool(|_ctx: ToolPermissionContext| async move { PermissionDecision::allow() })
+            .build();
+        assert!(opts.can_use_tool.is_some());
+    }
+}
