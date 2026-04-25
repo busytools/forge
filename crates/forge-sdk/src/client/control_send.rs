@@ -70,33 +70,47 @@ impl Client {
                 let resp_request_id = value
                     .pointer("/response/request_id")
                     .and_then(serde_json::Value::as_str);
-                if resp_request_id == Some(&request_id) {
-                    let resp_subtype = value
-                        .pointer("/response/subtype")
-                        .and_then(serde_json::Value::as_str);
-                    if resp_subtype == Some("success") {
-                        return Ok(value
-                            .pointer("/response/response")
-                            .cloned()
-                            .unwrap_or(serde_json::Value::Null));
-                    }
-                    let err = value
-                        .pointer("/response/error")
-                        .and_then(serde_json::Value::as_str)
-                        .map_or_else(
-                            || {
-                                format!(
-                                    "no `error` string field; full response: {}",
-                                    value.pointer("/response").map_or_else(
-                                        || "<missing>".to_string(),
-                                        ToString::to_string
-                                    )
-                                )
-                            },
-                            ToString::to_string,
-                        );
-                    return Err(Error::message_parse(format!("{subtype} failed: {err}")));
+                if resp_request_id != Some(&request_id) {
+                    // ID mismatch on a control_response: this is a
+                    // response to a different outbound request (which
+                    // shouldn't happen — `send_control` is the only
+                    // path that issues outbound control_requests, and
+                    // the previous wait must have returned before we
+                    // entered this loop). Log explicitly and continue
+                    // — falling through to the generic "unexpected
+                    // frame" warn below would muddy the diagnosis.
+                    tracing::warn!(
+                        got_id = ?resp_request_id,
+                        expected_id = %request_id,
+                        %subtype,
+                        "control_response request_id mismatch during outbound wait — dropping frame"
+                    );
+                    continue;
                 }
+                let resp_subtype = value
+                    .pointer("/response/subtype")
+                    .and_then(serde_json::Value::as_str);
+                if resp_subtype == Some("success") {
+                    return Ok(value
+                        .pointer("/response/response")
+                        .cloned()
+                        .unwrap_or(serde_json::Value::Null));
+                }
+                let err = value
+                    .pointer("/response/error")
+                    .and_then(serde_json::Value::as_str)
+                    .map_or_else(
+                        || {
+                            format!(
+                                "no `error` string field; full response: {}",
+                                value
+                                    .pointer("/response")
+                                    .map_or_else(|| "<missing>".to_string(), ToString::to_string)
+                            )
+                        },
+                        ToString::to_string,
+                    );
+                return Err(Error::message_parse(format!("{subtype} failed: {err}")));
             }
             // Inbound `control_request` (CLI → SDK) interleaved with our
             // outbound wait — most commonly `hook_callback` / `mcp_message`

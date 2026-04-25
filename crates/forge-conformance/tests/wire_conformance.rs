@@ -164,7 +164,9 @@ async fn wire_capture_trivial_prompt() {
             }
         }
     }
-    let _ = client.disconnect().await;
+    if let Err(e) = client.disconnect().await {
+        eprintln!("trivial: disconnect failed (non-fatal, trace already captured): {e}");
+    }
 
     let trace_path = dump_trace("trivial");
     let log = log_arc.lock().unwrap();

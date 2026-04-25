@@ -288,7 +288,6 @@ pub type AgentMap = HashMap<String, AgentDefinition>;
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-    #[allow(unused_imports)]
     use super::*;
 
     use crate::{OptionsBuilder, PermissionMode};
