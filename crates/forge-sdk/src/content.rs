@@ -85,11 +85,38 @@ pub enum ContentBlock {
         content: Value,
     },
 
+    /// Document attachment (PDF, etc.) inlined into a user turn. The
+    /// Anthropic API supports these directly — when the user attaches
+    /// a file to a Claude Code conversation, the CLI emits
+    /// `{"type":"document","source":{"type":"base64",
+    /// "media_type":"<mime>","data":"<base64>"}}` (or `"type":"url"` /
+    /// `"type":"text"` for the alternate source variants).
+    ///
+    /// `source` stays a [`Value`] rather than a typed struct because
+    /// Anthropic's source schema branches on `source.type`
+    /// (`base64` / `url` / `text` / `content`) and each variant
+    /// carries different fields — keeping it as a JSON object lets
+    /// new source types decode without an SDK bump.
+    Document {
+        /// Source of the document — JSON object whose `type` field
+        /// discriminates between `base64`, `url`, `text`, `content`.
+        source: Value,
+    },
+
+    /// Image attachment (JPEG / PNG / GIF / WEBP) inlined into a user
+    /// turn. Same shape as [`ContentBlock::Document`] but with
+    /// `"type":"image"` on the wire. Surfaced when a user pastes or
+    /// attaches an image in a Claude Code conversation.
+    Image {
+        /// Source of the image — JSON object whose `type` field
+        /// discriminates between `base64`, `url`, etc.
+        source: Value,
+    },
+
     /// Forward-compat fallback for content block types forge-sdk
-    /// doesn't model explicitly (e.g. Anthropic API's `document`
-    /// block used for PDF inputs, or future block types). Callers
-    /// can branch on `type_str` + inspect `raw` — the decoder never
-    /// errors on an unrecognised block. Mirrors the top-level
+    /// doesn't model explicitly. Callers can branch on `type_str` +
+    /// inspect `raw` — the decoder never errors on an unrecognised
+    /// block. Mirrors the top-level
     /// [`DecodedLine::Unknown`](crate::transport::codec::DecodedLine)
     /// fallback pattern.
     Unknown {
@@ -156,6 +183,18 @@ impl Serialize for ContentBlock {
                     "type": "advisor_tool_result",
                     "tool_use_id": tool_use_id,
                     "content": content,
+                })
+            }
+            ContentBlock::Document { source } => {
+                serde_json::json!({
+                    "type": "document",
+                    "source": source,
+                })
+            }
+            ContentBlock::Image { source } => {
+                serde_json::json!({
+                    "type": "image",
+                    "source": source,
                 })
             }
             ContentBlock::Unknown { raw, .. } => raw.clone(),
@@ -237,6 +276,12 @@ impl<'de> Deserialize<'de> for ContentBlock {
                     .unwrap_or_default()
                     .to_string(),
                 content: raw.get("content").cloned().unwrap_or(Value::Null),
+            }),
+            "document" => Ok(ContentBlock::Document {
+                source: raw.get("source").cloned().unwrap_or(Value::Null),
+            }),
+            "image" => Ok(ContentBlock::Image {
+                source: raw.get("source").cloned().unwrap_or(Value::Null),
             }),
             other => Ok(ContentBlock::Unknown {
                 type_str: other.to_string(),
