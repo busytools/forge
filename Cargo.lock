@@ -434,6 +434,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "forged-conformance"
+version = "0.1.64"
+dependencies = [
+ "async-trait",
+ "forged",
+ "futures-util",
+ "parking_lot",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-tungstenite",
+]
+
+[[package]]
 name = "futures-core"
 version = "0.3.32"
 source = "registry+https://github.com/rust-lang/crates.io-index"
