@@ -1,0 +1,26 @@
+[package]
+name = "forged-conformance"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "Wire-conformance harness for the forged↔client JSON-RPC wire."
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+forged = { path = "../forged" }
+tokio = { workspace = true }
+tokio-tungstenite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+async-trait.workspace = true
+parking_lot.workspace = true
+futures-util = "0.3"
+
+[dev-dependencies]
+tempfile.workspace = true
