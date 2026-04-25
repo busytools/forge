@@ -17,10 +17,14 @@
 //!    persistence fields, map `parentUuid` → `parent_tool_use_id`
 //!    where appropriate.
 //! 2. **Redact** PII so the redactor's output is safe to commit as a
-//!    fixture: replace `/Users/<name>/…` paths, replace assistant /
-//!    user message text with `<redacted N bytes>` stubs, replace
-//!    `tool_use` inputs and `tool_result` bodies with placeholders,
-//!    map session / uuid / request_id values to stable opaque tokens.
+//!    fixture: replace assistant / user message text with `<redacted
+//!    N bytes>` stubs, replace `tool_use` inputs and `tool_result`
+//!    bodies with placeholders, drop large `data` blobs from
+//!    `document` / `image` content blocks, map session / uuid /
+//!    `request_id` values to stable opaque tokens, and (defence in
+//!    depth via [`scrub_paths_recursive`]) rewrite any `/Users/<name>`,
+//!    `/home/<name>`, `/Volumes/<name>` segment that survives in
+//!    arbitrary string fields to `<redacted-home>`.
 //!
 //! The redactor is deterministic: a given input line produces the same
 //! output line, so fixtures regenerate cleanly under version control.
@@ -28,10 +32,40 @@
 #![allow(clippy::too_many_lines)]
 
 use std::collections::HashMap;
+use std::sync::OnceLock;
 
 use serde_json::Value;
 
-/// Per-run state so that each distinct session_id / uuid gets a stable
+/// Regex matching `/Users/<name>/`, `/home/<name>/`, and `$HOME` paths so
+/// any string field that survives the structural redaction (e.g. inside
+/// `Unknown` blocks, MCP tool names, server-injected error messages) gets
+/// scrubbed. Compiled once; substitutes opaque `<redacted-path>` markers
+/// preserving whatever follows the home segment.
+fn path_regex() -> &'static regex::Regex {
+    static RE: OnceLock<regex::Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        regex::Regex::new(r"(/Users/[^/\s\\]+|/home/[^/\s\\]+|/Volumes/[^/\s\\]+)")
+            .expect("redactor path regex must compile")
+    })
+}
+
+/// Recursively walk a JSON value and rewrite every absolute home path
+/// segment to `<redacted-home>`. Defence-in-depth on top of the
+/// structural redaction (which strips `text` / `tool_use_input` /
+/// `tool_result_content`); catches any path leak that survives in
+/// less-common fields.
+fn scrub_paths_recursive(v: &mut Value) {
+    match v {
+        Value::String(s) if path_regex().is_match(s) => {
+            *s = path_regex().replace_all(s, "<redacted-home>").into_owned();
+        }
+        Value::Array(a) => a.iter_mut().for_each(scrub_paths_recursive),
+        Value::Object(o) => o.values_mut().for_each(scrub_paths_recursive),
+        _ => {}
+    }
+}
+
+/// Per-run state so that each distinct `session_id` / uuid gets a stable
 /// opaque token. Reused across every line in the same transformation
 /// pass so references inside a single session stay consistent.
 #[derive(Default)]
@@ -154,6 +188,12 @@ pub fn transform_persistence_line(
             msg.insert("id".into(), Value::String(state.opaque("msg", &mid)));
         }
     }
+
+    // Defence-in-depth: scrub home paths from any string anywhere in the
+    // transformed tree before serialising. Catches leaks in fields the
+    // structural redactor doesn't enumerate (Unknown blocks' arbitrary
+    // string fields, MCP tool names, server error messages, etc.).
+    scrub_paths_recursive(&mut v);
 
     let out = serde_json::to_string(&v).map_err(|e| format!("json serialise: {e}"))?;
     Ok(Some(out))

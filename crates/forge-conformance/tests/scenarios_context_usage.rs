@@ -1,6 +1,6 @@
-//! Live-capture scenario: outbound `get_context_usage` control_request.
+//! Live-capture scenario: outbound `get_context_usage` `control_request`.
 //!
-//! Exercises another outbound control_request subtype
+//! Exercises another outbound `control_request` subtype
 //! (`get_context_usage`) alongside the full conversation path. Useful
 //! for validating that forge-sdk's token/budget query path decodes its
 //! `control_response` body cleanly against the real CLI.

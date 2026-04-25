@@ -14,6 +14,7 @@ use serde_json::Value;
 /// A single block inside an assistant turn's `content` array or a user
 /// message's tool-result envelope.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum ContentBlock {
     /// Plain text from the assistant.
     Text {
@@ -277,12 +278,25 @@ impl<'de> Deserialize<'de> for ContentBlock {
                     .to_string(),
                 content: raw.get("content").cloned().unwrap_or(Value::Null),
             }),
-            "document" => Ok(ContentBlock::Document {
-                source: raw.get("source").cloned().unwrap_or(Value::Null),
-            }),
-            "image" => Ok(ContentBlock::Image {
-                source: raw.get("source").cloned().unwrap_or(Value::Null),
-            }),
+            "document" | "image" => {
+                let source = raw.get("source").cloned().unwrap_or(Value::Null);
+                if source.is_null() {
+                    // Required field per Anthropic API spec — log so a
+                    // CLI bug emitting a partial block surfaces in
+                    // logs instead of decoding silently to a
+                    // semantically-broken `Document { source: Null }`.
+                    tracing::warn!(
+                        kind = %ty,
+                        "content block decoded with missing/null `source`; \
+                         consumer-side branching on `source[\"type\"]` will see Null"
+                    );
+                }
+                Ok(if ty == "document" {
+                    ContentBlock::Document { source }
+                } else {
+                    ContentBlock::Image { source }
+                })
+            }
             other => Ok(ContentBlock::Unknown {
                 type_str: other.to_string(),
                 raw,

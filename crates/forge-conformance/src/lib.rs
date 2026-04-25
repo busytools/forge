@@ -213,7 +213,7 @@ pub struct DecodeReport {
     /// Count of `control_cancel_request` frames.
     pub control_cancels: usize,
     /// Count of `control_response` frames (replies from the CLI to our
-    /// outbound control_requests — initialize, set_model, interrupt, …).
+    /// outbound `control_requests` — initialize, `set_model`, interrupt, …).
     pub control_responses: usize,
     /// Unrecognised `type` values seen. Each entry is the `type` string
     /// the CLI sent.
@@ -242,7 +242,7 @@ impl DecodeReport {
 /// Caller supplies:
 /// - `scenario`: a short slug (e.g. `"bash_tool"`) used in trace filenames.
 /// - `options`: fully-built [`forge_sdk::Options`] — set tools,
-///   permission_mode, hooks, MCP servers, etc. here.
+///   `permission_mode`, hooks, MCP servers, etc. here.
 /// - `drive`: async closure that drives the scenario once the client is
 ///   ready. Typically calls `send_user_message(...)` and may register
 ///   turn-specific state.
@@ -264,6 +264,7 @@ impl DecodeReport {
 /// - Transport panics are propagated.
 /// - Trace file I/O failure.
 /// - Decode-completeness regression in the captured inbound frames.
+#[allow(clippy::too_many_lines)]
 pub async fn run_live_scenario<F, Fut>(
     scenario: &str,
     options: forge_sdk::Options,
@@ -288,8 +289,7 @@ where
         std::fs::create_dir_all(&target).expect("create wire-traces dir");
         let ts = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
+            .map_or(0, |d| d.as_secs());
         let path = target.join(format!("capture-{tag}-{ts}.jsonl"));
         let body = log.to_jsonl().expect("jsonl serialise");
         std::fs::write(&path, body).expect("write trace");
@@ -388,34 +388,42 @@ where
     let trailing_timeout = std::time::Duration::from_secs(5);
     while let Ok(evt) = tokio::time::timeout(trailing_timeout, client.next_event()).await {
         match evt {
-            Ok(Some(_)) => continue,
+            Ok(Some(_)) => {}
             Ok(None) | Err(_) => break,
         }
     }
-    let _ = client.disconnect().await;
+    if let Err(e) = client.disconnect().await {
+        eprintln!("{scenario}: disconnect failed (non-fatal, trace already captured): {e}");
+    }
 
     // Successful (or at least drained) run — dump the trace, verify every
     // inbound line decodes. Failure here is a hard panic.
     let log = log_arc.lock().unwrap();
     let trace_path = dump(&log, scenario);
     let report = decode_all_inbound(&log);
-    if !report.is_clean() {
-        panic!(
-            "{scenario}: decode regressions in captured trace\n\
-             trace: {}\n\
-             report: {report:#?}",
-            trace_path.display()
-        );
-    }
-    eprintln!(
-        "{scenario}: captured in={} out={} | turns={} cost_usd={:?} duration_ms={} | trace={}",
-        log.inbound().len(),
-        log.outbound().len(),
-        summary.map(|(t, _, _)| t).unwrap_or(0),
-        summary.and_then(|(_, c, _)| c),
-        summary.map(|(_, _, d)| d).unwrap_or(0),
+    assert!(
+        report.is_clean(),
+        "{scenario}: decode regressions in captured trace\n\
+         trace: {}\n\
+         report: {report:#?}",
         trace_path.display()
     );
+    match summary {
+        Some((turns, cost, dur)) => eprintln!(
+            "{scenario}: captured in={} out={} | turns={turns} cost_usd={cost:?} \
+             duration_ms={dur} | trace={}",
+            log.inbound().len(),
+            log.outbound().len(),
+            trace_path.display()
+        ),
+        None => eprintln!(
+            "{scenario}: captured in={} out={} | NO Result frame (early termination, \
+             drive likely drained it) | trace={}",
+            log.inbound().len(),
+            log.outbound().len(),
+            trace_path.display()
+        ),
+    }
 
     Ok(Some(ScenarioCapture {
         trace_path,
@@ -468,6 +476,11 @@ pub fn decode_all_inbound(log: &TraceLog) -> DecodeReport {
             Ok(DecodedLine::Unknown { type_str, .. }) => {
                 report.unknown_types.push(type_str);
             }
+            // `DecodedLine` is `#[non_exhaustive]` — future variants
+            // surface as a count, not an error. Update categories
+            // in `DecodeReport` if you add a variant that needs
+            // dedicated tracking.
+            Ok(_) => {}
             Err(e) => report.decode_errors.push((idx, format!("{e}"))),
         }
     }

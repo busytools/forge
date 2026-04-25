@@ -1,9 +1,9 @@
-//! Live-capture scenario: outbound `mcp_status` control_request.
+//! Live-capture scenario: outbound `mcp_status` `control_request`.
 //!
-//! Exercises the non-initialize outbound control_request path. After
+//! Exercises the non-initialize outbound `control_request` path. After
 //! spawn completes (initialize handshake done), the scenario issues
 //! `mcp_status` — the CLI responds with its server-connection
-//! snapshot. This is the simplest non-initialize control_request we can
+//! snapshot. This is the simplest non-initialize `control_request` we can
 //! probe cheaply.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]

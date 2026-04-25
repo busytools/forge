@@ -3,7 +3,7 @@
 //!
 //! Drives the `/compact` slash command as a user message. When
 //! successful, the CLI emits a `compact_boundary` user-message chunk
-//! and may call registered PreCompact hooks first.
+//! and may call registered `PreCompact` hooks first.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 

@@ -22,6 +22,7 @@ impl Client {
     /// in-process host, hook callbacks to the minted callback id, and
     /// `can_use_tool` requests to the permission callback. Any other
     /// subtype gets an `unsupported control-request subtype` error.
+    #[allow(clippy::too_many_lines)]
     pub(super) async fn handle_control(&mut self, req: ControlRequest) -> Result<(), Error> {
         // Capture the original input here — we need it to echo into
         // `updatedInput` when the callback supplies no override.
@@ -74,12 +75,24 @@ impl Client {
                 },
             ) => {
                 // Decode Python's typed `PermissionUpdate` suggestions out
-                // of the raw `Vec<Value>` the decoder captured. Unrecog-
-                // nised entries drop silently so CLI schema evolution
-                // doesn't tank the callback.
+                // of the raw `Vec<Value>` the decoder captured. CLI schema
+                // evolution can introduce new variants — log loudly when
+                // dropping so drift is visible (mirrors the Unknown-variant
+                // pattern used elsewhere) instead of silently emptying the
+                // suggestions list and breaking permission UX.
                 let suggestions: Vec<crate::permissions::PermissionUpdate> = permission_suggestions
                     .iter()
-                    .filter_map(|v| serde_json::from_value(v.clone()).ok())
+                    .filter_map(|v| match serde_json::from_value(v.clone()) {
+                        Ok(s) => Some(s),
+                        Err(e) => {
+                            tracing::warn!(
+                                error = %e,
+                                raw = %v,
+                                "permission_suggestion failed to decode; dropping (CLI schema drift?)"
+                            );
+                            None
+                        }
+                    })
                     .collect();
                 let ctx = ToolPermissionContext::new(
                     tool_name.clone(),

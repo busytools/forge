@@ -9,12 +9,16 @@ rust-version.workspace = true
 description = "Wire-conformance harness + test fixtures for forge-sdk. Kept out of the forge-sdk crate proper so the SDK surface stays lean."
 publish = false
 
+[lints]
+workspace = true
+
 [dependencies]
 forge-sdk = { path = "../forge-sdk", version = "=0.1.64" }
 tokio = { workspace = true }
 serde.workspace = true
 serde_json.workspace = true
 async-trait.workspace = true
+regex.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
