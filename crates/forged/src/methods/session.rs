@@ -214,14 +214,24 @@ pub struct SubscribeParams {
     pub since: Option<String>,
 }
 
-/// `session.subscribe` — register `conn` as a subscriber of `session_id`.
-/// The session's actor task is already running (spawned at `session.spawn`);
-/// this just adds `conn` to the subscriber list so the broadcast helper
-/// fans events to it.
+/// `session.subscribe` — register `conn` as a subscriber of `session_id`
+/// and assume the primary role per D11's broadcast-with-named-primary
+/// model.
+///
+/// **Connect = auto-primary.** The first subscriber becomes primary
+/// (`reason: "initial"`); subsequent subscribers auto-takeover
+/// (`reason: "auto_takeover_on_connect"`) and the previously-primary
+/// client is demoted to viewer (`reason: "demoted"`). A
+/// `session.role_assigned` notification fires on the new primary
+/// (always) and the displaced primary (when distinct); a
+/// `session.primary_changed` notification fans out to every subscriber.
 ///
 /// Surfaces any reverse-RPC prompts currently parked in the session's
 /// queue (M4) so the new client can answer them via `prompts.respond`
-/// without missing prompts that arrived before they connected.
+/// without missing prompts that arrived before they connected. Combined
+/// with the takeover semantics above, this is the regression-tested
+/// hand-off path: when the original primary disconnects mid-prompt and
+/// a new client connects, the parked prompt surfaces here.
 ///
 /// # Errors
 ///
@@ -236,16 +246,83 @@ pub fn subscribe(
         .get_session(session_id)
         .ok_or_else(|| Error::SessionNotFound(session_id.0.clone()))?;
 
-    {
+    // Atomically (a) add conn to subscribers if not already present and
+    // (b) flip the primary slot to point at conn. Capture the previous
+    // primary so we can decide whether to fire role_assigned("demoted")
+    // and how to label the primary_changed reason.
+    let old_primary = {
         let mut subs = handle.subscribers.lock();
         if !subs.contains(&conn.id) {
             subs.push(conn.id.clone());
         }
-        let mut primary = handle.primary.lock();
-        if primary.is_none() {
-            *primary = Some(conn.id.clone());
+        let mut primary_guard = handle.primary.lock();
+        let prev = primary_guard.clone();
+        *primary_guard = Some(conn.id.clone());
+        prev
+    };
+
+    let displaced_other = matches!(&old_primary, Some(prev) if prev != &conn.id);
+    let reason: &str = if displaced_other {
+        "auto_takeover_on_connect"
+    } else {
+        "initial"
+    };
+
+    // Notify the new primary of their role. Always — even if conn was
+    // already primary (re-subscribe), so clients can rely on receiving
+    // a role frame after every successful subscribe.
+    let _ = conn
+        .outbound
+        .send(crate::connection::Outbound::Notification(
+            crate::jsonrpc::Notification::new(
+                "session.role_assigned",
+                serde_json::json!({
+                    "session_id": session_id.0,
+                    "role": "primary",
+                    "primary": conn.id.0,
+                    "reason": reason,
+                }),
+            ),
+        ));
+
+    // If we displaced a different primary, notify them of the demotion.
+    if displaced_other {
+        if let Some(old) = old_primary.as_ref() {
+            // Snapshot the connection's outbound channel without
+            // holding the connections lock while we send.
+            let outbound = state
+                .connections
+                .lock()
+                .get(old)
+                .map(|c| c.outbound.clone());
+            if let Some(out) = outbound {
+                let _ = out.send(crate::connection::Outbound::Notification(
+                    crate::jsonrpc::Notification::new(
+                        "session.role_assigned",
+                        serde_json::json!({
+                            "session_id": session_id.0,
+                            "role": "viewer",
+                            "primary": conn.id.0,
+                            "reason": "demoted",
+                        }),
+                    ),
+                ));
+            }
         }
     }
+
+    // Broadcast primary_changed to all subscribers (viewers + new primary).
+    let primary_changed =
+        crate::connection::Outbound::Notification(crate::jsonrpc::Notification::new(
+            "session.primary_changed",
+            serde_json::json!({
+                "session_id": session_id.0,
+                "primary": conn.id.0,
+                "previous": old_primary.as_ref().map(|c| c.0.clone()),
+                "reason": reason,
+            }),
+        ));
+    crate::broadcast::fanout(state, session_id, &primary_changed);
 
     let pending_views = handle.prompts.snapshot_for_wire();
     let pending_prompts = pending_views
