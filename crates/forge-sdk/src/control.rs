@@ -230,6 +230,13 @@ impl<'de> Deserialize<'de> for ControlRequestKind {
                     tool_use_id,
                 })
             }
+            // Forward-compat catch-all. NOTE: when adding a new known
+            // `ControlRequestKind` variant, add a matching arm above —
+            // the `#[non_exhaustive]` on the enum protects external
+            // callers from exhaustive matches but doesn't enforce
+            // anything inside this hand-rolled `Deserialize`. A new
+            // variant without an arm here will silently land in
+            // `Unknown` instead of being recognised.
             other => Ok(Self::Unknown {
                 subtype: other.to_string(),
                 raw,
