@@ -4,7 +4,7 @@
 //! The CLI emits `stream_event` frames (Anthropic-API streaming chunks)
 //! only when started with `--include-partial-messages`. This scenario
 //! turns that on and drives a prompt whose response is long enough to
-//! produce at least one stream_event.
+//! produce at least one `stream_event`.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 

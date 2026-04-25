@@ -26,7 +26,7 @@ fn all_baselines_decode_cleanly() {
 
     let mut scenarios: Vec<String> = std::fs::read_dir(&dir)
         .expect("read baseline_dir")
-        .filter_map(|e| e.ok())
+        .filter_map(std::result::Result::ok)
         .filter_map(|e| {
             let name = e.file_name().to_string_lossy().to_string();
             name.strip_suffix(".jsonl").map(str::to_string)

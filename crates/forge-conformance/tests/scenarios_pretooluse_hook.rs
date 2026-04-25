@@ -1,4 +1,4 @@
-//! Live-capture scenario: PreToolUse hook callback.
+//! Live-capture scenario: `PreToolUse` hook callback.
 //!
 //! Registers a callback that permits Bash tool invocations and tags a
 //! marker in the response path. Exercises the `hook_callback`

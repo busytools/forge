@@ -291,9 +291,6 @@ mod tests {
     #[allow(unused_imports)]
     use super::*;
 
-    use crate::agents::{
-        AgentDefinition, AgentMcpServerRef, AgentMemory, EffortLevel, EffortPreset,
-    };
     use crate::{OptionsBuilder, PermissionMode};
     use serde_json::json;
 

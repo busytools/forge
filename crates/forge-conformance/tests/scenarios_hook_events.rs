@@ -1,7 +1,7 @@
 //! Live-capture scenarios: every hook event type the SDK supports.
 //!
 //! Each hook variant uses the same wire shape (inbound `hook_callback`
-//! control_request, outbound `control_response`) but distinct
+//! `control_request`, outbound `control_response`) but distinct
 //! `hook_event_name` strings. Separate scenarios per event capture the
 //! name-specific payload shapes and give the replay harness a
 //! regression guard per hook surface.

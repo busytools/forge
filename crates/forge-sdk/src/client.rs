@@ -202,9 +202,7 @@ impl Client {
         //
         // So `spawn_inner` only waits for the control_response; the real
         // `session_id` arrives later on the first user message and gets
-        // plumbed through `next_event`. An earlier version of this code
-        // read init before sending initialize, which deadlocked against
-        // the CLI's ordering. Verified in
+        // plumbed through `next_event`. Pinned by
         // `crates/forge-conformance/tests/wire_conformance.rs`.
         sub.write_line(&init_line).await?;
 
@@ -247,16 +245,21 @@ impl Client {
                 .unwrap_or("");
             match ty {
                 "control_response" => {
-                    let matches = value
+                    let resp_request_id = value
                         .pointer("/response/request_id")
-                        .and_then(serde_json::Value::as_str)
-                        == Some(&init_request_id);
-                    if !matches {
-                        tracing::warn!(
-                            line = %line.trim_end(),
-                            "control_response during init with unexpected request_id"
-                        );
-                        continue;
+                        .and_then(serde_json::Value::as_str);
+                    if resp_request_id != Some(&init_request_id) {
+                        // The SDK has only sent ONE control_request at this
+                        // point (the initialize). Any control_response with a
+                        // different request_id means the CLI is responding to
+                        // something we never sent — wire corruption or a CLI
+                        // bug. Hard-fail rather than swallow.
+                        return Err(Error::message_parse(format!(
+                            "init: control_response request_id mismatch \
+                             (expected {init_request_id:?}, got {resp_request_id:?}); \
+                             raw line: {}",
+                            line.trim_end()
+                        )));
                     }
                     let resp_subtype = value
                         .pointer("/response/subtype")
@@ -271,10 +274,24 @@ impl Client {
                             v => Some(v),
                         };
                     }
+                    // No `error` string field — surface the full response
+                    // payload so a user staring at the failure can debug
+                    // what the CLI actually rejected.
                     let err_msg = value
                         .pointer("/response/error")
                         .and_then(serde_json::Value::as_str)
-                        .unwrap_or("unknown error");
+                        .map_or_else(
+                            || {
+                                format!(
+                                    "no `error` string field; full response: {}",
+                                    value.pointer("/response").map_or_else(
+                                        || "<missing>".to_string(),
+                                        ToString::to_string
+                                    )
+                                )
+                            },
+                            ToString::to_string,
+                        );
                     return Err(Error::message_parse(format!(
                         "initialize failed: {err_msg}"
                     )));
@@ -510,9 +527,16 @@ impl Client {
     /// Useful for testing with an in-memory transport, or for hosting
     /// the `claude` binary in a non-local environment (remote SSH,
     /// containerised sandbox, etc.). The passed transport MUST be
-    /// ready to serve I/O — this constructor immediately reads the
-    /// CLI's `system`/`init` line and sends the `initialize`
-    /// `control_request`.
+    /// ready to serve I/O — this constructor sends an `initialize`
+    /// `control_request` first, then drains the response (interleaved
+    /// with any `control_request`s the CLI sends in the meantime,
+    /// e.g. MCP `mcp_message` bootstrap calls). Any `system/init`
+    /// frame the CLI emits is captured along the way and surfaced
+    /// via [`session_id()`](Self::session_id) / [`next_event`](Self::next_event).
+    /// Mock `Transport` implementations should respond to the
+    /// outbound `initialize` request — they do NOT need to emit
+    /// `system/init` first (the real CLI gates that frame on a
+    /// later user message; matching that ordering avoids deadlocks).
     ///
     /// All initialisation logic (MCP host wiring, hook registry) runs
     /// identically to [`spawn`](Self::spawn) — only the I/O
