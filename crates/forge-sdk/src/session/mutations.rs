@@ -209,8 +209,7 @@ pub fn fork_session(
             saw_boundary = true;
         }
         out_lines.push(
-            serde_json::to_string(&value)
-                .map_err(|e| Error::message_parse(format!("encode fork entry: {e}")))?,
+            serde_json::to_string(&value).map_err(|e| Error::encode("fork session entry", e))?,
         );
         if saw_boundary {
             break;
@@ -241,7 +240,7 @@ pub fn fork_session(
             "customTitle": final_title,
             "sessionId": new_session_id,
         }))
-        .map_err(|e| Error::message_parse(format!("encode fork title: {e}")))?;
+        .map_err(|e| Error::encode("fork session title", e))?;
         out_lines.push(title_entry);
     }
 
@@ -330,8 +329,8 @@ fn append_to_session(
             format!("session {session_id} not found"),
         ))
     })?;
-    let mut line = serde_json::to_string(payload)
-        .map_err(|e| Error::message_parse(format!("encode mutation payload: {e}")))?;
+    let mut line =
+        serde_json::to_string(payload).map_err(|e| Error::encode("mutation payload", e))?;
     line.push('\n');
     append_line(&path, line.as_bytes())
 }

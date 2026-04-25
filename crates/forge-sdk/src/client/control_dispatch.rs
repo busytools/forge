@@ -119,9 +119,10 @@ impl Client {
             let updated_permissions = if perms.is_empty() {
                 None
             } else {
-                Some(serde_json::to_value(perms).map_err(|e| {
-                    Error::message_parse(format!("could not encode updated_permissions: {e}"))
-                })?)
+                Some(
+                    serde_json::to_value(perms)
+                        .map_err(|e| Error::encode("updated_permissions", e))?,
+                )
             };
             AllowBehavior::Allow {
                 updated_input: decision
@@ -265,7 +266,7 @@ impl Client {
                 },
             };
             let mut line = serde_json::to_string(&ctrl)
-                .map_err(|e| Error::message_parse(format!("deferred hook encode: {e}")))?;
+                .map_err(|e| Error::encode("deferred hook payload", e))?;
             line.push('\n');
             self.sub.write_line(&line).await?;
             return Ok(());
@@ -313,8 +314,8 @@ impl Client {
                 response: response_body,
             },
         };
-        let mut line = serde_json::to_string(&ctrl)
-            .map_err(|e| Error::message_parse(format!("hook response encode: {e}")))?;
+        let mut line =
+            serde_json::to_string(&ctrl).map_err(|e| Error::encode("hook response", e))?;
         line.push('\n');
         self.sub.write_line(&line).await?;
         Ok(())

@@ -172,8 +172,7 @@ pub fn encode_user_prompt(prompt: &str, session_id: &str) -> Result<String, Erro
         "session_id": session_id,
         "parent_tool_use_id": null,
     });
-    let mut line = serde_json::to_string(&payload)
-        .map_err(|e| Error::message_parse(format!("could not encode prompt: {e}")))?;
+    let mut line = serde_json::to_string(&payload).map_err(|e| Error::encode("user prompt", e))?;
     line.push('\n');
     Ok(line)
 }
