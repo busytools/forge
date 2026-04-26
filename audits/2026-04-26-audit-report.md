@@ -296,6 +296,35 @@ If the scope changes (sharing forged with a collaborator, public-interface deplo
 ### Result-shape inconsistency across methods (multiple files)
 - **Found by:** api-reviewer (high confidence). `session.spawn` returns `{ session_id }` directly; `sessions.list` wraps `{ sessions: [...] }`; `sessions.list_subagents` wraps `{ subagent_ids: [...] }`; `sessions.subagent_messages` wraps `{ messages: [...] }`; `sessions.messages` returns typed `MessagesResult`; `sessions.project_key` wraps `{ project_key: "..." }`; `sessions.info` returns bare `Option<SDKSessionInfo>` (null when missing); `sessions.fork` returns `{ session_id }`; `session.peers` wraps `{ peers: [...] }`. Pick one convention — typed result struct with named fields for every method.
 
+## Deferred follow-ups (applied in second pass)
+
+These findings are real but were not addressed in the 2026-04-26
+cleanup branch — either the fix is design-heavy enough to warrant a
+focused effort, or the savings don't justify the churn. Tracked here
+so a future cleanup can pick them up.
+
+- **`methods/session.rs` god file split** (architecture-reviewer,
+  important) — file dropped from 1053 → ~930 LoC after the
+  `dispatch_command` and `become_primary` refactors removed the
+  inline boilerplate. Still on the wrong side of the 500-LoC
+  guideline. Split into `methods/session/{actor,wire_options}.rs`
+  is mechanical but multi-file; deferred.
+- **Bounded mpsc channels with slow-subscriber eviction**
+  (api-reviewer, important reliability) — the `outstanding_reverse`
+  cap landed (1024 entries, returns Overloaded). The per-connection
+  outbound and per-session command channels are still
+  `mpsc::unbounded_channel` though — bounding them needs a coherent
+  eviction policy (drop-oldest? evict the slow subscriber? close the
+  connection?) plus role-aware behaviour for the primary vs viewer
+  case. Deferred until the policy is designed.
+- **Dispatch table `typed_call` helper** (code-simplifier,
+  important) — the `match parse_params { Ok(p) => ..., Err(e) =>
+  Err(e) }` shape across ~25 arms in `server.rs::dispatch` is
+  verbose but readable; the typed_call helper would change every
+  arm and save ~25 LoC of "Err(e) => Err(e)" lines. The savings
+  don't clearly justify the churn relative to other items in this
+  audit. Deferred.
+
 ## Removed under personal-use threat model
 
 These findings from the original specialist reports were dropped because their severity required an adversarial assumption that does not hold for forge:
