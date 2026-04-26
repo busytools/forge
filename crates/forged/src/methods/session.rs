@@ -250,8 +250,19 @@ pub fn subscribe(
     state: &DaemonState,
     conn: &crate::connection::Connection,
     session_id: &SessionId,
-    _since: Option<String>,
+    since: Option<&str>,
 ) -> Result<SubscribeResult, Error> {
+    // M5 stub — no replay buffer is implemented yet, so any caller that
+    // requests resume gets a typed ReplayUnavailable. Clients should
+    // refetch via sessions.messages and fall through to live mode. Once
+    // the replay buffer lands, this branch turns into "find offset, replay
+    // the events" and `buffer_window_seconds` will reflect the configured
+    // retention.
+    if since.is_some() {
+        return Err(Error::ReplayUnavailable {
+            buffer_window_seconds: 0,
+        });
+    }
     let handle = state
         .get_session(session_id)
         .ok_or_else(|| Error::SessionNotFound(session_id.0.clone()))?;
