@@ -19,7 +19,7 @@
 //! The replay path doesn't only check JSON-RPC framing — it dispatches
 //! every inbound request on `method` and validates the params against
 //! the daemon's wire-shape param structs (`SendUserMessageParams`,
-//! `SubscribeParams`, etc.) re-exported via `forged::methods::session`
+//! `SubscribeParams`, etc.) re-exported via `forge_daemon::methods::session`
 //! et al. Outbound responses correlate by `id` against the inbound
 //! request's method — once we know the method we know the result
 //! shape. Notifications dispatch on `method` too. Anything that fails
@@ -315,7 +315,7 @@ fn decode_request_params(method: &str, params: &serde_json::Value) -> Result<(),
         "session.spawn" => {
             // Params shape is the wire-Options blob; re-validate via
             // the public dispatcher entry point.
-            let _ = forged::methods::session::parse_spawn_params(params)
+            let _ = forge_daemon::methods::session::parse_spawn_params(params)
                 .map_err(|e| KnownReason::Failed(e.to_string()))?;
             Ok(())
         }
@@ -400,17 +400,21 @@ fn decode_response_result(method: &str, result: &serde_json::Value) -> Result<()
         "daemon.status" => from_value::<ResponseDaemonStatus>(result.clone())
             .map(|_| ())
             .map_err(|e| KnownReason::Failed(e.to_string())),
-        "session.spawn" => from_value::<forged::methods::session::SpawnResult>(result.clone())
-            .map(|_| ())
-            .map_err(|e| KnownReason::Failed(e.to_string())),
-        "session.subscribe" => {
-            from_value::<forged::methods::session::SubscribeResult>(result.clone())
+        "session.spawn" => {
+            from_value::<forge_daemon::methods::session::SpawnResult>(result.clone())
                 .map(|_| ())
                 .map_err(|e| KnownReason::Failed(e.to_string()))
         }
-        "session.peers" => from_value::<forged::methods::multi_client::PeersResult>(result.clone())
-            .map(|_| ())
-            .map_err(|e| KnownReason::Failed(e.to_string())),
+        "session.subscribe" => {
+            from_value::<forge_daemon::methods::session::SubscribeResult>(result.clone())
+                .map(|_| ())
+                .map_err(|e| KnownReason::Failed(e.to_string()))
+        }
+        "session.peers" => {
+            from_value::<forge_daemon::methods::multi_client::PeersResult>(result.clone())
+                .map(|_| ())
+                .map_err(|e| KnownReason::Failed(e.to_string()))
+        }
         // No-content methods — null result expected.
         "session.send_user_message"
         | "session.unsubscribe"
@@ -443,7 +447,7 @@ fn decode_response_result(method: &str, result: &serde_json::Value) -> Result<()
     }
 }
 
-/// Owned-strings mirror of [`forged::methods::daemon::DaemonStatus`] —
+/// Owned-strings mirror of [`forge_daemon::methods::daemon::DaemonStatus`] —
 /// the original carries `version: &'static str` so it cannot round-
 /// trip through `Value → struct`. Field-equivalent for shape checks.
 #[derive(serde::Deserialize)]

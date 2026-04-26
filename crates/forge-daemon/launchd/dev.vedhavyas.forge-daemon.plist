@@ -2,7 +2,7 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>Label</key>           <string>dev.vedhavyas.forged</string>
+  <key>Label</key>           <string>dev.vedhavyas.forge-daemon</string>
   <key>UserName</key>        <string>__USERNAME__</string>
   <key>RunAtLoad</key>       <true/>
   <key>KeepAlive</key>       <true/>
@@ -12,7 +12,7 @@
     <string>/bin/bash</string>
     <string>-c</string>
     <string>until /sbin/ifconfig | /usr/bin/grep -q "__WG_IP__"; do sleep 2; done
-            exec /usr/local/bin/forged listen</string>
+            exec /usr/local/bin/forge-daemon listen</string>
   </array>
 
   <key>EnvironmentVariables</key>
@@ -20,12 +20,12 @@
     <key>HOME</key>                <string>/Users/__USERNAME__</string>
     <key>PATH</key>                <string>/usr/local/bin:/usr/bin:/bin</string>
     <key>CLAUDE_CONFIG_DIR</key>   <string>/Users/__USERNAME__/.claude-subspace</string>
-    <key>RUST_LOG</key>            <string>forged=info,forge_sdk=warn</string>
+    <key>RUST_LOG</key>            <string>forge_daemon=info,forge_sdk=warn</string>
   </dict>
 
   <key>StandardOutPath</key>
-  <string>/Users/__USERNAME__/Library/Logs/forged/forged.stdout.log</string>
+  <string>/Users/__USERNAME__/Library/Logs/forge-daemon/forge-daemon.stdout.log</string>
   <key>StandardErrorPath</key>
-  <string>/Users/__USERNAME__/Library/Logs/forged/forged.stderr.log</string>
+  <string>/Users/__USERNAME__/Library/Logs/forge-daemon/forge-daemon.stderr.log</string>
 </dict>
 </plist>

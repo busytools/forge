@@ -1,6 +1,6 @@
-//! `forged.toml` config loader. Default path:
-//! `$XDG_CONFIG_HOME/forged/forged.toml` falling back to
-//! `~/.config/forged/forged.toml`.
+//! `forge-daemon.toml` config loader. Default path:
+//! `$XDG_CONFIG_HOME/forge-daemon/forge-daemon.toml` falling back to
+//! `~/.config/forge-daemon/forge-daemon.toml`.
 //!
 //! See plan §M6.1 for the schema. Missing file is a non-error and yields
 //! [`Config::default()`]; other I/O / parse errors propagate.
@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::Error;
 
-/// Daemon configuration loaded from `forged.toml`.
+/// Daemon configuration loaded from `forge-daemon.toml`.
 ///
 /// Unknown fields are rejected (`#[serde(deny_unknown_fields)]`) so a typo
 /// in operator-edited config surfaces as a parse error instead of being
@@ -33,7 +33,7 @@ impl Default for Config {
         let home = std::env::var("HOME").unwrap_or_else(|_| "/".into());
         Self {
             bind: vec!["127.0.0.1:7373".into()],
-            log_dir: format!("{home}/Library/Logs/forged"),
+            log_dir: format!("{home}/Library/Logs/forge-daemon"),
             log_retention_days: 14,
         }
     }
@@ -48,15 +48,15 @@ impl Default for Config {
 /// code for "operator gave us bad input"). Config errors only surface at
 /// daemon startup, but the mapping keeps things consistent.
 pub fn load_from_str(toml: &str) -> Result<Config, Error> {
-    toml::from_str(toml).map_err(|e| Error::InvalidRequest(format!("forged.toml: {e}")))
+    toml::from_str(toml).map_err(|e| Error::InvalidRequest(format!("forge-daemon.toml: {e}")))
 }
 
 /// Load the config from the default path. If the file is missing, return
 /// [`Config::default()`].
 ///
 /// Resolution order:
-/// 1. `$XDG_CONFIG_HOME/forged/forged.toml` if `$XDG_CONFIG_HOME` is set.
-/// 2. `$HOME/.config/forged/forged.toml` otherwise.
+/// 1. `$XDG_CONFIG_HOME/forge-daemon/forge-daemon.toml` if `$XDG_CONFIG_HOME` is set.
+/// 2. `$HOME/.config/forge-daemon/forge-daemon.toml` otherwise.
 ///
 /// # Errors
 ///
@@ -74,9 +74,9 @@ pub fn load_default() -> Result<Config, Error> {
 /// resolution behaviour without touching the disk.
 ///
 /// Resolution order:
-/// 1. `$XDG_CONFIG_HOME/forged/forged.toml` if `$XDG_CONFIG_HOME` is set.
-/// 2. `$HOME/.config/forged/forged.toml` if `$HOME` is set.
-/// 3. `/etc/forged/forged.toml` as a hard absolute fallback when both
+/// 1. `$XDG_CONFIG_HOME/forge-daemon/forge-daemon.toml` if `$XDG_CONFIG_HOME` is set.
+/// 2. `$HOME/.config/forge-daemon/forge-daemon.toml` if `$HOME` is set.
+/// 3. `/etc/forge-daemon/forge-daemon.toml` as a hard absolute fallback when both
 ///    env vars are unset (e.g. minimal containers, daemons running
 ///    under restricted users). Never returns a relative path.
 #[must_use]
@@ -84,10 +84,13 @@ pub fn default_path() -> std::path::PathBuf {
     let xdg = std::env::var_os("XDG_CONFIG_HOME").map(std::path::PathBuf::from);
     let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
     if let Some(x) = xdg {
-        return x.join("forged").join("forged.toml");
+        return x.join("forge-daemon").join("forge-daemon.toml");
     }
     if let Some(h) = home {
-        return h.join(".config").join("forged").join("forged.toml");
+        return h
+            .join(".config")
+            .join("forge-daemon")
+            .join("forge-daemon.toml");
     }
-    std::path::PathBuf::from("/etc/forged/forged.toml")
+    std::path::PathBuf::from("/etc/forge-daemon/forge-daemon.toml")
 }

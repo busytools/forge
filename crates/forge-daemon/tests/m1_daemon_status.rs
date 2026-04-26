@@ -4,8 +4,8 @@
 
 use std::time::Duration;
 
-use forged::Error;
-use forged::jsonrpc::{ErrorObject, Request, Response};
+use forge_daemon::Error;
+use forge_daemon::jsonrpc::{ErrorObject, Request, Response};
 use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message as WsMsg;
@@ -63,9 +63,10 @@ async fn daemon_status_returns_uptime_and_version() {
     let started_at = std::time::Instant::now()
         .checked_sub(std::time::Duration::from_secs(10))
         .unwrap();
-    let result =
-        forged::methods::daemon::status(&forged::registry::DaemonState::new_for_test(started_at))
-            .await;
+    let result = forge_daemon::methods::daemon::status(
+        &forge_daemon::registry::DaemonState::new_for_test(started_at),
+    )
+    .await;
     let v = result.unwrap();
     assert!(v.uptime_seconds >= 10);
     assert_eq!(v.version, env!("CARGO_PKG_VERSION"));
@@ -76,10 +77,10 @@ async fn daemon_status_returns_uptime_and_version() {
 #[tokio::test]
 async fn server_accepts_ws_and_answers_daemon_status() {
     // Bind to ephemeral port on loopback.
-    let state = forged::registry::DaemonState::new();
+    let state = forge_daemon::registry::DaemonState::new();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(forged::server::run(listener, state));
+    let handle = tokio::spawn(forge_daemon::server::run(listener, state));
 
     // Give it a moment to start accepting.
     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -120,10 +121,10 @@ async fn malformed_json_body_yields_parse_error_response_with_null_id() {
     use tokio_tungstenite::connect_async;
     use tokio_tungstenite::tungstenite::Message as WsMsg;
 
-    let state = forged::registry::DaemonState::new();
+    let state = forge_daemon::registry::DaemonState::new();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    tokio::spawn(forged::server::run(listener, state));
+    tokio::spawn(forge_daemon::server::run(listener, state));
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     let (mut ws, _) = connect_async(format!("ws://{addr}/")).await.unwrap();
@@ -157,10 +158,10 @@ async fn valid_json_with_missing_method_yields_invalid_request_error() {
     use tokio_tungstenite::connect_async;
     use tokio_tungstenite::tungstenite::Message as WsMsg;
 
-    let state = forged::registry::DaemonState::new();
+    let state = forge_daemon::registry::DaemonState::new();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    tokio::spawn(forged::server::run(listener, state));
+    tokio::spawn(forge_daemon::server::run(listener, state));
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     let (mut ws, _) = connect_async(format!("ws://{addr}/")).await.unwrap();
@@ -198,10 +199,10 @@ async fn binary_ws_frame_is_ignored_without_killing_connection() {
     use tokio_tungstenite::connect_async;
     use tokio_tungstenite::tungstenite::Message as WsMsg;
 
-    let state = forged::registry::DaemonState::new();
+    let state = forge_daemon::registry::DaemonState::new();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    tokio::spawn(forged::server::run(listener, state));
+    tokio::spawn(forge_daemon::server::run(listener, state));
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     let (mut ws, _) = connect_async(format!("ws://{addr}/")).await.unwrap();
@@ -210,7 +211,7 @@ async fn binary_ws_frame_is_ignored_without_killing_connection() {
     // Send a binary frame — should be ignored.
     ws.send(WsMsg::Binary(vec![0u8, 1, 2, 3])).await.unwrap();
     // Follow with a normal request.
-    let req = forged::jsonrpc::Request::new(
+    let req = forge_daemon::jsonrpc::Request::new(
         "daemon.status",
         serde_json::json!({}),
         serde_json::json!(99),
@@ -237,13 +238,15 @@ async fn binary_ws_frame_is_ignored_without_killing_connection() {
 #[tokio::test]
 async fn status_cli_prints_uptime_to_stdout() {
     // Spin up a daemon on an ephemeral port.
-    let state = forged::registry::DaemonState::new();
+    let state = forge_daemon::registry::DaemonState::new();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    let _handle = tokio::spawn(forged::server::run(listener, state));
+    let _handle = tokio::spawn(forge_daemon::server::run(listener, state));
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
-    let out = forged::status_cli::query(&addr.to_string()).await.unwrap();
+    let out = forge_daemon::status_cli::query(&addr.to_string())
+        .await
+        .unwrap();
     assert!(out.contains("uptime_seconds"));
     assert!(out.contains(env!("CARGO_PKG_VERSION")));
 }

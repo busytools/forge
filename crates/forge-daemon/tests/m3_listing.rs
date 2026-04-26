@@ -17,9 +17,9 @@ mod common {
 use std::path::PathBuf;
 use tempfile::TempDir;
 
+use forge_daemon::methods::session::{SpawnResult, parse_spawn_params, spawn};
+use forge_daemon::registry::DaemonState;
 use forge_sdk::OptionsBuilder;
-use forged::methods::session::{SpawnResult, parse_spawn_params, spawn};
-use forged::registry::DaemonState;
 
 use crate::common::env_guard::EnvGuard;
 use crate::common::env_lock::ENV_LOCK;
@@ -271,7 +271,7 @@ fn sessions_list_returns_seeded_entries() {
     let _g = ENV_LOCK.lock();
     let (tmp, _projects_dir, project_dir) = seed_projects(3);
     let _guard = point_sdk_at(&tmp);
-    let result = forged::methods::sessions::list(Some(project_dir), Some(10), 0).unwrap();
+    let result = forge_daemon::methods::sessions::list(Some(project_dir), Some(10), 0).unwrap();
     assert_eq!(result.sessions.len(), 3, "expected 3 seeded sessions");
 }
 
@@ -280,7 +280,7 @@ fn sessions_list_honours_limit_and_offset() {
     let _g = ENV_LOCK.lock();
     let (tmp, _, project_dir) = seed_projects(5);
     let _guard = point_sdk_at(&tmp);
-    let r = forged::methods::sessions::list(Some(project_dir), Some(2), 1).unwrap();
+    let r = forge_daemon::methods::sessions::list(Some(project_dir), Some(2), 1).unwrap();
     assert_eq!(r.sessions.len(), 2);
 }
 
@@ -290,7 +290,7 @@ fn sessions_info_returns_some_for_known_id() {
     let (tmp, _, project_dir) = seed_projects(1);
     let _guard = point_sdk_at(&tmp);
     let sid = "00000000-0000-4000-8000-000000000000".to_string();
-    let info = forged::methods::sessions::info(sid.clone().into(), Some(project_dir))
+    let info = forge_daemon::methods::sessions::info(sid.clone().into(), Some(project_dir))
         .unwrap()
         .info;
     assert!(info.is_some(), "expected Some(SDKSessionInfo)");
@@ -302,7 +302,7 @@ fn sessions_info_returns_none_for_unknown_id() {
     let _g = ENV_LOCK.lock();
     let (tmp, _, project_dir) = seed_projects(0);
     let _guard = point_sdk_at(&tmp);
-    let info = forged::methods::sessions::info(
+    let info = forge_daemon::methods::sessions::info(
         "00000000-0000-4000-8000-deadbeefface".into(),
         Some(project_dir),
     )
@@ -338,7 +338,7 @@ fn sessions_messages_returns_full_transcript_with_watermark() {
     std::fs::write(&path, body).unwrap();
 
     let _guard = point_sdk_at(&tmp);
-    let r = forged::methods::sessions::messages(sid.into(), Some(project_dir)).unwrap();
+    let r = forge_daemon::methods::sessions::messages(sid.into(), Some(project_dir)).unwrap();
     assert_eq!(r.messages.len(), 2);
     assert_eq!(
         r.watermark.as_deref(),
@@ -352,7 +352,7 @@ fn sessions_messages_empty_transcript_returns_none_watermark() {
     let _g = ENV_LOCK.lock();
     let (tmp, _, project_dir) = seed_projects(0);
     let _guard = point_sdk_at(&tmp);
-    let r = forged::methods::sessions::messages(
+    let r = forge_daemon::methods::sessions::messages(
         "00000000-0000-4000-8000-bbbbbbbbbbbb".into(),
         Some(project_dir),
     )
@@ -366,7 +366,7 @@ fn sessions_list_subagents_returns_empty_for_session_with_no_subagents() {
     let _g = ENV_LOCK.lock();
     let (tmp, _, project_dir) = seed_projects(1);
     let _guard = point_sdk_at(&tmp);
-    let r = forged::methods::sessions::list_subagents(
+    let r = forge_daemon::methods::sessions::list_subagents(
         "00000000-0000-4000-8000-000000000000".into(),
         Some(project_dir),
     )
@@ -379,7 +379,7 @@ fn sessions_subagent_messages_empty_for_unknown_subagent() {
     let _g = ENV_LOCK.lock();
     let (tmp, _, project_dir) = seed_projects(1);
     let _guard = point_sdk_at(&tmp);
-    let r = forged::methods::sessions::subagent_messages(
+    let r = forge_daemon::methods::sessions::subagent_messages(
         "00000000-0000-4000-8000-000000000000".into(),
         "sub_unknown".into(),
         Some(project_dir),
@@ -391,14 +391,14 @@ fn sessions_subagent_messages_empty_for_unknown_subagent() {
 #[test]
 fn sessions_project_key_matches_sdk_output() {
     let path = "/Users/vedhavyas/Projects/forge";
-    let key = forged::methods::sessions::project_key(Some(path.into())).unwrap();
+    let key = forge_daemon::methods::sessions::project_key(Some(path.into())).unwrap();
     let expected = forge_sdk::session::scan::project_key_for_directory(Some(path));
     assert_eq!(key.project_key, expected);
 }
 
 #[test]
 fn sessions_project_key_none_uses_cwd() {
-    let key = forged::methods::sessions::project_key(None).unwrap();
+    let key = forge_daemon::methods::sessions::project_key(None).unwrap();
     let expected = forge_sdk::session::scan::project_key_for_directory(None);
     assert_eq!(key.project_key, expected);
 }
@@ -411,13 +411,13 @@ fn sessions_rename_writes_custom_title() {
     let (tmp, _, project_dir) = seed_projects(1);
     let _guard = point_sdk_at(&tmp);
     let sid = "00000000-0000-4000-8000-000000000000".to_string();
-    forged::methods::sessions::rename(
+    forge_daemon::methods::sessions::rename(
         sid.clone().into(),
         "renamed-title".into(),
         Some(project_dir.clone()),
     )
     .unwrap();
-    let info = forged::methods::sessions::info(sid.into(), Some(project_dir))
+    let info = forge_daemon::methods::sessions::info(sid.into(), Some(project_dir))
         .unwrap()
         .info
         .unwrap();
@@ -431,20 +431,21 @@ fn sessions_tag_sets_then_clears() {
     let _guard = point_sdk_at(&tmp);
     let sid = "00000000-0000-4000-8000-000000000000".to_string();
 
-    forged::methods::sessions::tag(
+    forge_daemon::methods::sessions::tag(
         sid.clone().into(),
         Some("design".into()),
         Some(project_dir.clone()),
     )
     .unwrap();
-    let info = forged::methods::sessions::info(sid.clone().into(), Some(project_dir.clone()))
+    let info = forge_daemon::methods::sessions::info(sid.clone().into(), Some(project_dir.clone()))
         .unwrap()
         .info
         .unwrap();
     assert_eq!(info.tag.as_deref(), Some("design"));
 
-    forged::methods::sessions::tag(sid.clone().into(), None, Some(project_dir.clone())).unwrap();
-    let info = forged::methods::sessions::info(sid.into(), Some(project_dir))
+    forge_daemon::methods::sessions::tag(sid.clone().into(), None, Some(project_dir.clone()))
+        .unwrap();
+    let info = forge_daemon::methods::sessions::info(sid.into(), Some(project_dir))
         .unwrap()
         .info
         .unwrap();
@@ -460,7 +461,7 @@ fn sessions_delete_removes_jsonl() {
     assert!(path.exists());
 
     let _guard = point_sdk_at(&tmp);
-    forged::methods::sessions::delete(sid.into(), Some(project_dir)).unwrap();
+    forge_daemon::methods::sessions::delete(sid.into(), Some(project_dir)).unwrap();
     assert!(!path.exists());
 }
 
@@ -486,7 +487,7 @@ fn sessions_fork_creates_a_new_session_with_copied_entries() {
     std::fs::write(&path, body).unwrap();
 
     let _guard = point_sdk_at(&tmp);
-    let result = forged::methods::sessions::fork(
+    let result = forge_daemon::methods::sessions::fork(
         sid.into(),
         Some("22222222-2222-4222-8222-222222222222".into()),
         None,
@@ -508,7 +509,7 @@ fn sessions_fork_creates_a_new_session_with_copied_entries() {
 /// to every `control_request` — required for any M3.6 / M3.7
 /// round-trip test. The plain `mock_claude.sh` only answers
 /// `initialize`.
-async fn spawn_control_mock_session(state: &DaemonState) -> forged::session_state::SessionId {
+async fn spawn_control_mock_session(state: &DaemonState) -> forge_daemon::session_state::SessionId {
     let opts = OptionsBuilder::new().binary(MOCK_CLAUDE_CONTROL).build();
     let SpawnResult { session_id, .. } = spawn(state, opts).await.unwrap();
     session_id
@@ -518,25 +519,25 @@ async fn spawn_control_mock_session(state: &DaemonState) -> forged::session_stat
 async fn session_interrupt_proxies_to_client() {
     let state = DaemonState::new();
     let session_id = spawn_control_mock_session(&state).await;
-    let res = forged::methods::session::interrupt(&state, &session_id).await;
+    let res = forge_daemon::methods::session::interrupt(&state, &session_id).await;
     assert!(res.is_ok(), "interrupt: {res:?}");
 }
 
 #[tokio::test]
 async fn session_interrupt_returns_session_not_found_for_unknown() {
     let state = DaemonState::new();
-    let unknown = forged::session_state::SessionId("sess_bogus".into());
-    let err = forged::methods::session::interrupt(&state, &unknown)
+    let unknown = forge_daemon::session_state::SessionId("sess_bogus".into());
+    let err = forge_daemon::methods::session::interrupt(&state, &unknown)
         .await
         .unwrap_err();
-    assert!(matches!(err, forged::Error::SessionNotFound(_)));
+    assert!(matches!(err, forge_daemon::Error::SessionNotFound(_)));
 }
 
 #[tokio::test]
 async fn session_set_permission_mode_proxies_to_client() {
     let state = DaemonState::new();
     let session_id = spawn_control_mock_session(&state).await;
-    let res = forged::methods::session::set_permission_mode(
+    let res = forge_daemon::methods::session::set_permission_mode(
         &state,
         &session_id,
         forge_sdk::PermissionMode::Auto,
@@ -549,9 +550,12 @@ async fn session_set_permission_mode_proxies_to_client() {
 async fn session_set_model_proxies_to_client() {
     let state = DaemonState::new();
     let session_id = spawn_control_mock_session(&state).await;
-    let res =
-        forged::methods::session::set_model(&state, &session_id, Some("claude-opus-4-7".into()))
-            .await;
+    let res = forge_daemon::methods::session::set_model(
+        &state,
+        &session_id,
+        Some("claude-opus-4-7".into()),
+    )
+    .await;
     assert!(res.is_ok(), "set_model: {res:?}");
 }
 
@@ -559,7 +563,7 @@ async fn session_set_model_proxies_to_client() {
 async fn session_set_model_with_none_reverts_default() {
     let state = DaemonState::new();
     let session_id = spawn_control_mock_session(&state).await;
-    let res = forged::methods::session::set_model(&state, &session_id, None).await;
+    let res = forge_daemon::methods::session::set_model(&state, &session_id, None).await;
     assert!(res.is_ok(), "set_model(None): {res:?}");
 }
 
@@ -567,7 +571,8 @@ async fn session_set_model_with_none_reverts_default() {
 async fn session_rewind_files_proxies_to_client() {
     let state = DaemonState::new();
     let session_id = spawn_control_mock_session(&state).await;
-    let res = forged::methods::session::rewind_files(&state, &session_id, "msg_test".into()).await;
+    let res =
+        forge_daemon::methods::session::rewind_files(&state, &session_id, "msg_test".into()).await;
     assert!(res.is_ok(), "rewind_files: {res:?}");
 }
 
@@ -575,7 +580,8 @@ async fn session_rewind_files_proxies_to_client() {
 async fn session_stop_task_proxies_to_client() {
     let state = DaemonState::new();
     let session_id = spawn_control_mock_session(&state).await;
-    let res = forged::methods::session::stop_task(&state, &session_id, "task_test".into()).await;
+    let res =
+        forge_daemon::methods::session::stop_task(&state, &session_id, "task_test".into()).await;
     assert!(res.is_ok(), "stop_task: {res:?}");
 }
 
@@ -619,7 +625,7 @@ async fn session_interrupt_dispatches_subtype_via_echo() {
 
     let state = DaemonState::new();
     let session_id = spawn_control_mock_session(&state).await;
-    forged::methods::session::interrupt(&state, &session_id)
+    forge_daemon::methods::session::interrupt(&state, &session_id)
         .await
         .unwrap();
 
@@ -649,7 +655,7 @@ async fn mcp_status_dispatches_subtype_via_echo() {
     // mock returns `{"servers":[]}` and the SDK errors out on parse.
     // Test contract: the SUBTYPE echoed is `mcp_status`, regardless
     // of how the SDK then surfaces the parse error.
-    let _ = forged::methods::mcp::status(&state, &session_id).await;
+    let _ = forge_daemon::methods::mcp::status(&state, &session_id).await;
 
     for _ in 0..50 {
         let lines = read_echo_file(&echo_path);
@@ -671,7 +677,7 @@ async fn context_get_dispatches_subtype_via_echo() {
 
     let state = DaemonState::new();
     let session_id = spawn_control_mock_session(&state).await;
-    let _ = forged::methods::context::get(&state, &session_id).await;
+    let _ = forge_daemon::methods::context::get(&state, &session_id).await;
 
     for _ in 0..50 {
         let lines = read_echo_file(&echo_path);
@@ -692,10 +698,10 @@ async fn mcp_status_proxies_through_actor() {
     // McpStatusResponse — so the SDK returns a `MessageParse` Sdk
     // error. The contract under test is that the call reaches the
     // actor (no SessionNotFound, no "actor gone" InternalError).
-    let res = forged::methods::mcp::status(&state, &session_id).await;
+    let res = forge_daemon::methods::mcp::status(&state, &session_id).await;
     if let Err(e) = &res {
         assert!(
-            !matches!(e, forged::Error::SessionNotFound(_)),
+            !matches!(e, forge_daemon::Error::SessionNotFound(_)),
             "must not be SessionNotFound: {e:?}"
         );
         let s = e.to_string();
@@ -709,18 +715,18 @@ async fn mcp_status_proxies_through_actor() {
 #[tokio::test]
 async fn mcp_status_returns_session_not_found_for_unknown() {
     let state = DaemonState::new();
-    let unknown = forged::session_state::SessionId("sess_bogus".into());
-    let err = forged::methods::mcp::status(&state, &unknown)
+    let unknown = forge_daemon::session_state::SessionId("sess_bogus".into());
+    let err = forge_daemon::methods::mcp::status(&state, &unknown)
         .await
         .unwrap_err();
-    assert!(matches!(err, forged::Error::SessionNotFound(_)));
+    assert!(matches!(err, forge_daemon::Error::SessionNotFound(_)));
 }
 
 #[tokio::test]
 async fn mcp_reconnect_proxies_to_client() {
     let state = DaemonState::new();
     let session_id = spawn_control_mock_session(&state).await;
-    let res = forged::methods::mcp::reconnect(&state, &session_id, "some_server").await;
+    let res = forge_daemon::methods::mcp::reconnect(&state, &session_id, "some_server").await;
     assert!(res.is_ok(), "mcp_reconnect: {res:?}");
 }
 
@@ -728,7 +734,7 @@ async fn mcp_reconnect_proxies_to_client() {
 async fn mcp_toggle_proxies_to_client() {
     let state = DaemonState::new();
     let session_id = spawn_control_mock_session(&state).await;
-    let res = forged::methods::mcp::toggle(&state, &session_id, "some_server", true).await;
+    let res = forge_daemon::methods::mcp::toggle(&state, &session_id, "some_server", true).await;
     assert!(res.is_ok(), "mcp_toggle: {res:?}");
 }
 
@@ -739,10 +745,10 @@ async fn context_get_proxies_through_actor() {
     // Mock returns `{"used":0,"budget":200000}` — wrong shape vs
     // ContextUsageResponse. Test contract: the dispatch path reaches
     // the actor. Either Ok or Sdk parse error is fine.
-    let res = forged::methods::context::get(&state, &session_id).await;
+    let res = forge_daemon::methods::context::get(&state, &session_id).await;
     if let Err(e) = &res {
         assert!(
-            !matches!(e, forged::Error::SessionNotFound(_)),
+            !matches!(e, forge_daemon::Error::SessionNotFound(_)),
             "must not be SessionNotFound: {e:?}"
         );
         let s = e.to_string();
@@ -756,9 +762,9 @@ async fn context_get_proxies_through_actor() {
 #[tokio::test]
 async fn context_get_returns_session_not_found_for_unknown() {
     let state = DaemonState::new();
-    let unknown = forged::session_state::SessionId("sess_bogus".into());
-    let err = forged::methods::context::get(&state, &unknown)
+    let unknown = forge_daemon::session_state::SessionId("sess_bogus".into());
+    let err = forge_daemon::methods::context::get(&state, &unknown)
         .await
         .unwrap_err();
-    assert!(matches!(err, forged::Error::SessionNotFound(_)));
+    assert!(matches!(err, forge_daemon::Error::SessionNotFound(_)));
 }

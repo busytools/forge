@@ -5,7 +5,7 @@
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
-use forged::prompt_queue::{PendingPrompt, PromptKind, PromptQueue};
+use forge_daemon::prompt_queue::{PendingPrompt, PromptKind, PromptQueue};
 
 // ============================================================================
 // M4.1 — PromptQueue data structure
@@ -119,19 +119,19 @@ fn hook_kind_renders_with_hook_dot_prefix_on_wire() {
 
 #[tokio::test]
 async fn issue_to_primary_sends_request_and_resolves_on_response() {
-    let state = Arc::new(forged::registry::DaemonState::new());
+    let state = Arc::new(forge_daemon::registry::DaemonState::new());
 
     // Register a fake connection with a captured outbound channel.
     let (out_tx, mut out_rx) =
-        tokio::sync::mpsc::channel(forged::connection::OUTBOUND_CHANNEL_CAPACITY);
-    let conn = forged::connection::Connection::new(
-        forged::connection::ConnectionId("conn_test".into()),
+        tokio::sync::mpsc::channel(forge_daemon::connection::OUTBOUND_CHANNEL_CAPACITY);
+    let conn = forge_daemon::connection::Connection::new(
+        forge_daemon::connection::ConnectionId("conn_test".into()),
         out_tx,
     );
     state.register_connection(conn.clone());
 
     // Register a session with conn as primary.
-    let sid = forged::session_state::SessionId("sess_rev".into());
+    let sid = forge_daemon::session_state::SessionId("sess_rev".into());
     let (handle, _rx) = state.register_session(sid.clone());
     *handle.primary.lock() = Some(conn.id.clone());
 
@@ -139,12 +139,12 @@ async fn issue_to_primary_sends_request_and_resolves_on_response() {
     let st_for_issue = state.clone();
     let sid_for_issue = sid.clone();
     let issue = tokio::spawn(async move {
-        forged::reverse_rpc::issue_to_primary(
+        forge_daemon::reverse_rpc::issue_to_primary(
             &st_for_issue,
             &sid_for_issue,
             "permission.request",
             serde_json::json!({"foo": "bar"}),
-            forged::prompt_queue::PromptKind::Permission,
+            forge_daemon::prompt_queue::PromptKind::Permission,
             Duration::from_secs(3600),
         )
         .await
@@ -153,7 +153,7 @@ async fn issue_to_primary_sends_request_and_resolves_on_response() {
     // Wait for the daemon to send the reverse-RPC request out.
     let outbound_frame = out_rx.recv().await.unwrap();
     let req = match outbound_frame {
-        forged::connection::Outbound::Request(r) => r,
+        forge_daemon::connection::Outbound::Request(r) => r,
         other => panic!("expected Outbound::Request, got {other:?}"),
     };
     assert_eq!(req.method, "permission.request");
@@ -161,7 +161,7 @@ async fn issue_to_primary_sends_request_and_resolves_on_response() {
     assert!(rev_id.starts_with("rev_"));
 
     // Simulate the client answering by injecting a response into the daemon.
-    forged::reverse_rpc::resolve(&state, &rev_id, serde_json::json!({"decision": "allow"}));
+    forge_daemon::reverse_rpc::resolve(&state, &rev_id, serde_json::json!({"decision": "allow"}));
 
     let result = issue.await.unwrap().unwrap();
     assert_eq!(result["decision"], serde_json::json!("allow"));
@@ -169,8 +169,8 @@ async fn issue_to_primary_sends_request_and_resolves_on_response() {
 
 #[tokio::test]
 async fn issue_with_no_primary_parks_in_queue() {
-    let state = Arc::new(forged::registry::DaemonState::new());
-    let sid = forged::session_state::SessionId("sess_no_primary".into());
+    let state = Arc::new(forge_daemon::registry::DaemonState::new());
+    let sid = forge_daemon::session_state::SessionId("sess_no_primary".into());
     let (handle, _rx) = state.register_session(sid.clone());
     assert!(handle.primary.lock().is_none());
 
@@ -178,12 +178,12 @@ async fn issue_with_no_primary_parks_in_queue() {
     let st = state.clone();
     let sid_for = sid.clone();
     let issue = tokio::spawn(async move {
-        forged::reverse_rpc::issue_to_primary(
+        forge_daemon::reverse_rpc::issue_to_primary(
             &st,
             &sid_for,
             "permission.request",
             serde_json::json!({}),
-            forged::prompt_queue::PromptKind::Permission,
+            forge_daemon::prompt_queue::PromptKind::Permission,
             Duration::from_millis(150),
         )
         .await
@@ -207,46 +207,46 @@ async fn issue_with_no_primary_parks_in_queue() {
 
 #[tokio::test]
 async fn issue_unknown_session_returns_session_not_found() {
-    let state = Arc::new(forged::registry::DaemonState::new());
-    let sid = forged::session_state::SessionId("sess_does_not_exist".into());
-    let r = forged::reverse_rpc::issue_to_primary(
+    let state = Arc::new(forge_daemon::registry::DaemonState::new());
+    let sid = forge_daemon::session_state::SessionId("sess_does_not_exist".into());
+    let r = forge_daemon::reverse_rpc::issue_to_primary(
         &state,
         &sid,
         "permission.request",
         serde_json::json!({}),
-        forged::prompt_queue::PromptKind::Permission,
+        forge_daemon::prompt_queue::PromptKind::Permission,
         Duration::from_secs(1),
     )
     .await;
     let err = r.unwrap_err();
     assert!(
-        matches!(err, forged::Error::SessionNotFound(_)),
+        matches!(err, forge_daemon::Error::SessionNotFound(_)),
         "expected SessionNotFound, got {err:?}"
     );
 }
 
 #[tokio::test]
 async fn timeout_emits_prompts_expired_to_subscribers() {
-    let state = Arc::new(forged::registry::DaemonState::new());
-    let sid = forged::session_state::SessionId("sess_timeout".into());
+    let state = Arc::new(forge_daemon::registry::DaemonState::new());
+    let sid = forge_daemon::session_state::SessionId("sess_timeout".into());
     let (handle, _rx) = state.register_session(sid.clone());
 
     // Subscribe a fake connection so we can observe `prompts.expired`.
     let (sub_tx, mut sub_rx) =
-        tokio::sync::mpsc::channel(forged::connection::OUTBOUND_CHANNEL_CAPACITY);
-    let sub_conn = forged::connection::Connection::new(
-        forged::connection::ConnectionId("conn_sub".into()),
+        tokio::sync::mpsc::channel(forge_daemon::connection::OUTBOUND_CHANNEL_CAPACITY);
+    let sub_conn = forge_daemon::connection::Connection::new(
+        forge_daemon::connection::ConnectionId("conn_sub".into()),
         sub_tx,
     );
     state.register_connection(sub_conn.clone());
     handle.subscribers.lock().push(sub_conn.id.clone());
 
-    let r = forged::reverse_rpc::issue_to_primary(
+    let r = forge_daemon::reverse_rpc::issue_to_primary(
         &state,
         &sid,
         "permission.request",
         serde_json::json!({}),
-        forged::prompt_queue::PromptKind::Permission,
+        forge_daemon::prompt_queue::PromptKind::Permission,
         Duration::from_millis(100),
     )
     .await;
@@ -255,7 +255,7 @@ async fn timeout_emits_prompts_expired_to_subscribers() {
     // The subscriber should have received a `prompts.expired` notification.
     let frame = sub_rx.recv().await.unwrap();
     let n = match frame {
-        forged::connection::Outbound::Notification(n) => n,
+        forge_daemon::connection::Outbound::Notification(n) => n,
         other => panic!("expected Notification, got {other:?}"),
     };
     assert_eq!(n.method, "prompts.expired");
@@ -271,23 +271,25 @@ async fn timeout_emits_prompts_expired_to_subscribers() {
 
 #[tokio::test]
 async fn prompts_respond_resolves_a_queued_prompt() {
-    let state = forged::registry::DaemonState::new();
-    let sid = forged::session_state::SessionId("sess_park".into());
+    let state = forge_daemon::registry::DaemonState::new();
+    let sid = forge_daemon::session_state::SessionId("sess_park".into());
     let (handle, _rx) = state.register_session(sid.clone());
 
     // Park a prompt manually with a oneshot we can await.
     let (tx, rx) = tokio::sync::oneshot::channel();
-    handle.prompts.enqueue(forged::prompt_queue::PendingPrompt {
-        prompt_id: "prompt_xyz".into(),
-        kind: forged::prompt_queue::PromptKind::Permission,
-        issued_at: SystemTime::now(),
-        expires_at: SystemTime::now() + Duration::from_secs(3600),
-        params: serde_json::json!({}),
-        responder: tx,
-        rev_id: None,
-    });
+    handle
+        .prompts
+        .enqueue(forge_daemon::prompt_queue::PendingPrompt {
+            prompt_id: "prompt_xyz".into(),
+            kind: forge_daemon::prompt_queue::PromptKind::Permission,
+            issued_at: SystemTime::now(),
+            expires_at: SystemTime::now() + Duration::from_secs(3600),
+            params: serde_json::json!({}),
+            responder: tx,
+            rev_id: None,
+        });
 
-    forged::methods::prompts::respond(
+    forge_daemon::methods::prompts::respond(
         &state,
         &sid,
         "prompt_xyz",
@@ -302,11 +304,11 @@ async fn prompts_respond_resolves_a_queued_prompt() {
 
 #[test]
 fn prompts_respond_unknown_prompt_id_returns_invalid_params() {
-    let state = forged::registry::DaemonState::new();
-    let sid = forged::session_state::SessionId("sess_park2".into());
+    let state = forge_daemon::registry::DaemonState::new();
+    let sid = forge_daemon::session_state::SessionId("sess_park2".into());
     let _kept = state.register_session(sid.clone());
 
-    let err = forged::methods::prompts::respond(
+    let err = forge_daemon::methods::prompts::respond(
         &state,
         &sid,
         "prompt_does_not_exist",
@@ -314,40 +316,42 @@ fn prompts_respond_unknown_prompt_id_returns_invalid_params() {
     )
     .unwrap_err();
     assert!(
-        matches!(err, forged::Error::InvalidParams(_)),
+        matches!(err, forge_daemon::Error::InvalidParams(_)),
         "expected InvalidParams, got {err:?}"
     );
 }
 
 #[test]
 fn prompts_respond_unknown_session_returns_session_not_found() {
-    let state = forged::registry::DaemonState::new();
-    let sid = forged::session_state::SessionId("sess_unknown".into());
-    let err =
-        forged::methods::prompts::respond(&state, &sid, "p", serde_json::json!({})).unwrap_err();
+    let state = forge_daemon::registry::DaemonState::new();
+    let sid = forge_daemon::session_state::SessionId("sess_unknown".into());
+    let err = forge_daemon::methods::prompts::respond(&state, &sid, "p", serde_json::json!({}))
+        .unwrap_err();
     assert!(
-        matches!(err, forged::Error::SessionNotFound(_)),
+        matches!(err, forge_daemon::Error::SessionNotFound(_)),
         "expected SessionNotFound, got {err:?}"
     );
 }
 
 #[test]
 fn snapshot_for_wire_includes_pending_prompts() {
-    let state = forged::registry::DaemonState::new();
-    let sid = forged::session_state::SessionId("sess_pend".into());
+    let state = forge_daemon::registry::DaemonState::new();
+    let sid = forge_daemon::session_state::SessionId("sess_pend".into());
     let (handle, _rx) = state.register_session(sid.clone());
     let (tx, _rx2) = tokio::sync::oneshot::channel();
-    handle.prompts.enqueue(forged::prompt_queue::PendingPrompt {
-        prompt_id: "prompt_q".into(),
-        kind: forged::prompt_queue::PromptKind::Hook {
-            kind: "pre_tool_use".into(),
-        },
-        issued_at: SystemTime::now(),
-        expires_at: SystemTime::now() + Duration::from_secs(3600),
-        params: serde_json::json!({"tool_name": "Bash"}),
-        responder: tx,
-        rev_id: None,
-    });
+    handle
+        .prompts
+        .enqueue(forge_daemon::prompt_queue::PendingPrompt {
+            prompt_id: "prompt_q".into(),
+            kind: forge_daemon::prompt_queue::PromptKind::Hook {
+                kind: "pre_tool_use".into(),
+            },
+            issued_at: SystemTime::now(),
+            expires_at: SystemTime::now() + Duration::from_secs(3600),
+            params: serde_json::json!({"tool_name": "Bash"}),
+            responder: tx,
+            rev_id: None,
+        });
 
     let snapshot = handle.prompts.snapshot_for_wire();
     assert_eq!(snapshot.len(), 1);
@@ -357,29 +361,31 @@ fn snapshot_for_wire_includes_pending_prompts() {
 
 #[test]
 fn subscribe_returns_pending_prompts_in_response() {
-    use forged::methods::session::{SubscribeResult, subscribe};
+    use forge_daemon::methods::session::{SubscribeResult, subscribe};
 
-    let state = forged::registry::DaemonState::new();
-    let sid = forged::session_state::SessionId("sess_sub".into());
+    let state = forge_daemon::registry::DaemonState::new();
+    let sid = forge_daemon::session_state::SessionId("sess_sub".into());
     let (handle, _rx) = state.register_session(sid.clone());
 
     // Park a prompt.
     let (tx, _rx2) = tokio::sync::oneshot::channel();
-    handle.prompts.enqueue(forged::prompt_queue::PendingPrompt {
-        prompt_id: "prompt_for_subscribe".into(),
-        kind: forged::prompt_queue::PromptKind::Permission,
-        issued_at: SystemTime::now(),
-        expires_at: SystemTime::now() + Duration::from_secs(3600),
-        params: serde_json::json!({"tool_name": "Edit"}),
-        responder: tx,
-        rev_id: None,
-    });
+    handle
+        .prompts
+        .enqueue(forge_daemon::prompt_queue::PendingPrompt {
+            prompt_id: "prompt_for_subscribe".into(),
+            kind: forge_daemon::prompt_queue::PromptKind::Permission,
+            issued_at: SystemTime::now(),
+            expires_at: SystemTime::now() + Duration::from_secs(3600),
+            params: serde_json::json!({"tool_name": "Edit"}),
+            responder: tx,
+            rev_id: None,
+        });
 
     // Build a fake connection (subscribe needs one).
     let (out_tx, _out_rx) =
-        tokio::sync::mpsc::channel(forged::connection::OUTBOUND_CHANNEL_CAPACITY);
-    let conn = forged::connection::Connection::new(
-        forged::connection::ConnectionId("conn_sub".into()),
+        tokio::sync::mpsc::channel(forge_daemon::connection::OUTBOUND_CHANNEL_CAPACITY);
+    let conn = forge_daemon::connection::Connection::new(
+        forge_daemon::connection::ConnectionId("conn_sub".into()),
         out_tx,
     );
 
@@ -410,9 +416,9 @@ fn subscribe_returns_pending_prompts_in_response() {
 
 #[tokio::test]
 async fn rev_error_response_resolves_with_typed_jsonrpc_error_sentinel() {
-    use forged::registry::OutstandingEntry;
-    let state = Arc::new(forged::registry::DaemonState::new());
-    let sid = forged::session_state::SessionId("sess_err_1".into());
+    use forge_daemon::registry::OutstandingEntry;
+    let state = Arc::new(forge_daemon::registry::DaemonState::new());
+    let sid = forge_daemon::session_state::SessionId("sess_err_1".into());
     let _kept = state.register_session(sid.clone());
     let (tx, rx) = tokio::sync::oneshot::channel();
     state.outstanding_reverse.lock().insert(
@@ -425,7 +431,7 @@ async fn rev_error_response_resolves_with_typed_jsonrpc_error_sentinel() {
         },
     );
 
-    forged::reverse_rpc::resolve_error(
+    forge_daemon::reverse_rpc::resolve_error(
         &state,
         "rev_e1",
         &serde_json::json!({"code": -32601, "message": "method not found"}),
@@ -441,9 +447,9 @@ async fn rev_error_response_resolves_with_typed_jsonrpc_error_sentinel() {
 
 #[tokio::test]
 async fn rev_error_with_arbitrary_code_carries_through_unchanged() {
-    use forged::registry::OutstandingEntry;
-    let state = Arc::new(forged::registry::DaemonState::new());
-    let sid = forged::session_state::SessionId("sess_err_2".into());
+    use forge_daemon::registry::OutstandingEntry;
+    let state = Arc::new(forge_daemon::registry::DaemonState::new());
+    let sid = forge_daemon::session_state::SessionId("sess_err_2".into());
     let _kept = state.register_session(sid.clone());
     let (tx, rx) = tokio::sync::oneshot::channel();
     state.outstanding_reverse.lock().insert(
@@ -456,7 +462,7 @@ async fn rev_error_with_arbitrary_code_carries_through_unchanged() {
         },
     );
 
-    forged::reverse_rpc::resolve_error(
+    forge_daemon::reverse_rpc::resolve_error(
         &state,
         "rev_e2",
         &serde_json::json!({"code": -1, "message": "x"}),
@@ -473,7 +479,7 @@ async fn rev_value_null_resolves_to_typed_deny_via_unknown_decision() {
     // not a `_session_closed` sentinel, and not an `{decision: ...}` shape.
     // The bridge must surface it as a deny with "unknown decision".
     let value = serde_json::Value::Null;
-    let decision = forged::sdk_callbacks::decode_permission_response(&value);
+    let decision = forge_daemon::sdk_callbacks::decode_permission_response(&value);
     assert!(!decision.is_allow(), "expected deny");
 }
 
@@ -481,7 +487,7 @@ async fn rev_value_null_resolves_to_typed_deny_via_unknown_decision() {
 async fn rev_value_decision_42_resolves_to_typed_deny() {
     // {"decision": 42} — string-required field is a number.
     let value = serde_json::json!({"decision": 42});
-    let decision = forged::sdk_callbacks::decode_permission_response(&value);
+    let decision = forge_daemon::sdk_callbacks::decode_permission_response(&value);
     assert!(!decision.is_allow());
 }
 
@@ -489,7 +495,7 @@ async fn rev_value_decision_42_resolves_to_typed_deny() {
 async fn rev_value_empty_object_resolves_to_typed_deny() {
     // {} — no decision key at all. Wire shape default is "deny".
     let value = serde_json::json!({});
-    let decision = forged::sdk_callbacks::decode_permission_response(&value);
+    let decision = forge_daemon::sdk_callbacks::decode_permission_response(&value);
     assert!(!decision.is_allow());
 }
 
@@ -502,7 +508,7 @@ async fn rev_value_missing_decision_key_resolves_to_typed_deny() {
     // The fix prioritises operator visibility over reason-passthrough:
     // a malformed payload should look distinct from a deliberate deny.
     let value = serde_json::json!({"reason": "no decision present"});
-    let decision = forged::sdk_callbacks::decode_permission_response(&value);
+    let decision = forge_daemon::sdk_callbacks::decode_permission_response(&value);
     assert!(!decision.is_allow());
     assert_eq!(decision.reason(), Some("missing decision field"));
 }
@@ -514,7 +520,7 @@ async fn rev_value_missing_decision_key_resolves_to_typed_deny() {
 #[test]
 fn perm_bridge_jsonrpc_error_sentinel_denies_with_code_and_message() {
     let v = serde_json::json!({"_jsonrpc_error": {"code": -32601, "message": "method not found"}});
-    let d = forged::sdk_callbacks::decode_permission_response(&v);
+    let d = forge_daemon::sdk_callbacks::decode_permission_response(&v);
     assert!(!d.is_allow());
     let reason = d.reason().unwrap_or("");
     assert!(reason.contains("-32601"), "reason: {reason}");
@@ -524,7 +530,7 @@ fn perm_bridge_jsonrpc_error_sentinel_denies_with_code_and_message() {
 #[test]
 fn perm_bridge_client_disconnected_sentinel_denies() {
     let v = serde_json::json!({"_client_disconnected": true});
-    let d = forged::sdk_callbacks::decode_permission_response(&v);
+    let d = forge_daemon::sdk_callbacks::decode_permission_response(&v);
     assert!(!d.is_allow());
     assert_eq!(
         d.reason(),
@@ -535,7 +541,7 @@ fn perm_bridge_client_disconnected_sentinel_denies() {
 #[test]
 fn perm_bridge_session_closed_sentinel_denies() {
     let v = serde_json::json!({"_session_closed": true});
-    let d = forged::sdk_callbacks::decode_permission_response(&v);
+    let d = forge_daemon::sdk_callbacks::decode_permission_response(&v);
     assert!(!d.is_allow());
     assert_eq!(d.reason(), Some("session closed before prompt answered"));
 }
@@ -543,7 +549,7 @@ fn perm_bridge_session_closed_sentinel_denies() {
 #[test]
 fn perm_bridge_unknown_decision_denies() {
     let v = serde_json::json!({"decision": "shrug"});
-    let d = forged::sdk_callbacks::decode_permission_response(&v);
+    let d = forge_daemon::sdk_callbacks::decode_permission_response(&v);
     assert!(!d.is_allow());
     let reason = d.reason().unwrap_or("");
     assert!(reason.contains("unknown decision"), "reason: {reason}");
@@ -584,28 +590,28 @@ fn assert_is_passthrough(d: &forge_sdk::HookDecision, ctx: &str) {
 #[test]
 fn hook_bridge_pre_tool_use_jsonrpc_error_denies() {
     let v = serde_json::json!({"_jsonrpc_error": {"code": -32601, "message": "denied"}});
-    let d = forged::sdk_callbacks::decode_hook_response("pre_tool_use", &v);
+    let d = forge_daemon::sdk_callbacks::decode_hook_response("pre_tool_use", &v);
     assert_is_deny(&d, "pre_tool_use jsonrpc_error");
 }
 
 #[test]
 fn hook_bridge_pre_tool_use_client_disconnected_denies() {
     let v = serde_json::json!({"_client_disconnected": true});
-    let d = forged::sdk_callbacks::decode_hook_response("pre_tool_use", &v);
+    let d = forge_daemon::sdk_callbacks::decode_hook_response("pre_tool_use", &v);
     assert_is_deny(&d, "pre_tool_use client_disconnected");
 }
 
 #[test]
 fn hook_bridge_pre_tool_use_session_closed_denies() {
     let v = serde_json::json!({"_session_closed": true});
-    let d = forged::sdk_callbacks::decode_hook_response("pre_tool_use", &v);
+    let d = forge_daemon::sdk_callbacks::decode_hook_response("pre_tool_use", &v);
     assert_is_deny(&d, "pre_tool_use session_closed");
 }
 
 #[test]
 fn hook_bridge_pre_tool_use_encode_error_denies() {
     let v = serde_json::json!({"_encode_error": {"message": "non-serializable input"}});
-    let d = forged::sdk_callbacks::decode_hook_response("pre_tool_use", &v);
+    let d = forge_daemon::sdk_callbacks::decode_hook_response("pre_tool_use", &v);
     assert_is_deny(&d, "pre_tool_use encode_error");
 }
 
@@ -619,7 +625,7 @@ fn hook_bridge_pre_tool_use_unknown_decision_denies() {
     // through `fail_closed_decision(kind, ...)` so `pre_tool_use` and
     // `permission_request` deny while observational kinds passthrough.
     let v = serde_json::json!({"decision": "shrug"});
-    let d = forged::sdk_callbacks::decode_hook_response("pre_tool_use", &v);
+    let d = forge_daemon::sdk_callbacks::decode_hook_response("pre_tool_use", &v);
     assert_is_deny(&d, "pre_tool_use unknown decision");
 }
 
@@ -630,7 +636,7 @@ fn hook_bridge_post_tool_use_unknown_decision_passthroughs() {
     // so a flapping client doesn't break the agent. Locks the
     // kind-aware fail-closed contract from both directions.
     let v = serde_json::json!({"decision": "shrug"});
-    let d = forged::sdk_callbacks::decode_hook_response("post_tool_use", &v);
+    let d = forge_daemon::sdk_callbacks::decode_hook_response("post_tool_use", &v);
     assert_is_passthrough(&d, "post_tool_use unknown decision");
 }
 
@@ -641,7 +647,7 @@ fn hook_bridge_pre_tool_use_missing_decision_field_denies() {
     // passthrough (via `unwrap_or("passthrough")`), which bypassed the
     // fail-closed contract entirely.
     let v = serde_json::json!({});
-    let d = forged::sdk_callbacks::decode_hook_response("pre_tool_use", &v);
+    let d = forge_daemon::sdk_callbacks::decode_hook_response("pre_tool_use", &v);
     assert_is_deny(&d, "pre_tool_use missing decision");
 }
 
@@ -650,7 +656,7 @@ fn hook_bridge_post_tool_use_missing_decision_field_passthroughs() {
     // Round 3 — fix I1 sibling. Observational kinds passthrough on
     // missing decision; the fail-closed-decision lookup honours kind.
     let v = serde_json::json!({});
-    let d = forged::sdk_callbacks::decode_hook_response("post_tool_use", &v);
+    let d = forge_daemon::sdk_callbacks::decode_hook_response("post_tool_use", &v);
     assert_is_passthrough(&d, "post_tool_use missing decision");
 }
 
@@ -659,56 +665,56 @@ fn hook_bridge_permission_request_unknown_decision_denies() {
     // Round 3 — fix I1. permission_request is also security-critical;
     // unknown decision must deny.
     let v = serde_json::json!({"decision": "maybe"});
-    let d = forged::sdk_callbacks::decode_hook_response("permission_request", &v);
+    let d = forge_daemon::sdk_callbacks::decode_hook_response("permission_request", &v);
     assert_is_deny(&d, "permission_request unknown decision");
 }
 
 #[test]
 fn hook_bridge_permission_request_missing_decision_field_denies() {
     let v = serde_json::json!({});
-    let d = forged::sdk_callbacks::decode_hook_response("permission_request", &v);
+    let d = forge_daemon::sdk_callbacks::decode_hook_response("permission_request", &v);
     assert_is_deny(&d, "permission_request missing decision");
 }
 
 #[test]
 fn hook_bridge_permission_request_jsonrpc_error_denies() {
     let v = serde_json::json!({"_jsonrpc_error": {"code": -32601, "message": "denied"}});
-    let d = forged::sdk_callbacks::decode_hook_response("permission_request", &v);
+    let d = forge_daemon::sdk_callbacks::decode_hook_response("permission_request", &v);
     assert_is_deny(&d, "permission_request jsonrpc_error");
 }
 
 #[test]
 fn hook_bridge_permission_request_client_disconnected_denies() {
     let v = serde_json::json!({"_client_disconnected": true});
-    let d = forged::sdk_callbacks::decode_hook_response("permission_request", &v);
+    let d = forge_daemon::sdk_callbacks::decode_hook_response("permission_request", &v);
     assert_is_deny(&d, "permission_request client_disconnected");
 }
 
 #[test]
 fn hook_bridge_permission_request_session_closed_denies() {
     let v = serde_json::json!({"_session_closed": true});
-    let d = forged::sdk_callbacks::decode_hook_response("permission_request", &v);
+    let d = forge_daemon::sdk_callbacks::decode_hook_response("permission_request", &v);
     assert_is_deny(&d, "permission_request session_closed");
 }
 
 #[test]
 fn hook_bridge_post_tool_use_jsonrpc_error_passthroughs() {
     let v = serde_json::json!({"_jsonrpc_error": {"code": -32601, "message": "x"}});
-    let d = forged::sdk_callbacks::decode_hook_response("post_tool_use", &v);
+    let d = forge_daemon::sdk_callbacks::decode_hook_response("post_tool_use", &v);
     assert_is_passthrough(&d, "post_tool_use jsonrpc_error");
 }
 
 #[test]
 fn hook_bridge_post_tool_use_client_disconnected_passthroughs() {
     let v = serde_json::json!({"_client_disconnected": true});
-    let d = forged::sdk_callbacks::decode_hook_response("post_tool_use", &v);
+    let d = forge_daemon::sdk_callbacks::decode_hook_response("post_tool_use", &v);
     assert_is_passthrough(&d, "post_tool_use client_disconnected");
 }
 
 #[test]
 fn hook_bridge_post_tool_use_session_closed_passthroughs() {
     let v = serde_json::json!({"_session_closed": true});
-    let d = forged::sdk_callbacks::decode_hook_response("post_tool_use", &v);
+    let d = forge_daemon::sdk_callbacks::decode_hook_response("post_tool_use", &v);
     assert_is_passthrough(&d, "post_tool_use session_closed");
 }
 
@@ -716,21 +722,21 @@ fn hook_bridge_post_tool_use_session_closed_passthroughs() {
 fn hook_bridge_notification_session_closed_passthroughs() {
     // Sanity: another observational kind should also passthrough.
     let v = serde_json::json!({"_session_closed": true});
-    let d = forged::sdk_callbacks::decode_hook_response("notification", &v);
+    let d = forge_daemon::sdk_callbacks::decode_hook_response("notification", &v);
     assert_is_passthrough(&d, "notification session_closed");
 }
 
 #[test]
 fn hook_bridge_post_tool_use_transport_error_passthroughs() {
     let v = serde_json::json!({"_transport_error": {"message": "timed out"}});
-    let d = forged::sdk_callbacks::decode_hook_response("post_tool_use", &v);
+    let d = forge_daemon::sdk_callbacks::decode_hook_response("post_tool_use", &v);
     assert_is_passthrough(&d, "post_tool_use transport_error");
 }
 
 #[test]
 fn hook_bridge_pre_tool_use_transport_error_denies() {
     let v = serde_json::json!({"_transport_error": {"message": "timed out"}});
-    let d = forged::sdk_callbacks::decode_hook_response("pre_tool_use", &v);
+    let d = forge_daemon::sdk_callbacks::decode_hook_response("pre_tool_use", &v);
     assert_is_deny(&d, "pre_tool_use transport_error");
 }
 
@@ -748,7 +754,7 @@ fn perm_bridge_allow_with_updated_input_carries_through() {
         "decision": "allow",
         "updated_input": {"command": "ls -A"},
     });
-    let d = forged::sdk_callbacks::decode_permission_response(&v);
+    let d = forge_daemon::sdk_callbacks::decode_permission_response(&v);
     assert!(d.is_allow(), "expected allow, got deny");
     let updated = d
         .updated_input()
@@ -761,7 +767,7 @@ fn perm_bridge_plain_allow_has_no_updated_input() {
     // Sanity guard so the test above is meaningful — plain allow
     // should NOT surface `updated_input`.
     let v = serde_json::json!({"decision": "allow"});
-    let d = forged::sdk_callbacks::decode_permission_response(&v);
+    let d = forge_daemon::sdk_callbacks::decode_permission_response(&v);
     assert!(d.is_allow());
     assert!(d.updated_input().is_none());
 }
@@ -772,7 +778,7 @@ fn hook_bridge_replace_input_carries_through() {
         "decision": "replace_input",
         "updated_input": {"file_path": "/safe/path"},
     });
-    let d = forged::sdk_callbacks::decode_hook_response("pre_tool_use", &v);
+    let d = forge_daemon::sdk_callbacks::decode_hook_response("pre_tool_use", &v);
     // replace_input is encoded as Allow with updated_input. The
     // callback view: `is_allow() == true`, `updated_input()` carries
     // the substitution.
@@ -794,7 +800,7 @@ fn hook_bridge_decodes_all_sync_output_fields() {
         "stopReason": "policy violation",
         "systemMessage": "Unsafe tool",
     });
-    let d = forged::sdk_callbacks::decode_hook_response("post_tool_use", &v);
+    let d = forge_daemon::sdk_callbacks::decode_hook_response("post_tool_use", &v);
     assert_eq!(d.continue_execution(), Some(false));
     assert_eq!(d.suppress_output(), Some(true));
     assert_eq!(d.stop_reason(), Some("policy violation"));
@@ -821,18 +827,18 @@ fn hook_bridge_decodes_all_sync_output_fields() {
 )]
 #[tokio::test]
 async fn drain_prompts_on_session_exit_drains_parked_and_in_flight() {
-    use forged::registry::OutstandingEntry;
+    use forge_daemon::registry::OutstandingEntry;
 
-    let state = Arc::new(forged::registry::DaemonState::new());
-    let sid = forged::session_state::SessionId("sess_drain_round2".into());
+    let state = Arc::new(forge_daemon::registry::DaemonState::new());
+    let sid = forge_daemon::session_state::SessionId("sess_drain_round2".into());
     let (handle, _rx) = state.register_session(sid.clone());
 
     // Subscribe a fake connection so we can observe the
     // `prompts.expired` broadcasts.
     let (sub_tx, mut sub_rx) =
-        tokio::sync::mpsc::channel(forged::connection::OUTBOUND_CHANNEL_CAPACITY);
-    let sub_conn = forged::connection::Connection::new(
-        forged::connection::ConnectionId("conn_drain_obs".into()),
+        tokio::sync::mpsc::channel(forge_daemon::connection::OUTBOUND_CHANNEL_CAPACITY);
+    let sub_conn = forge_daemon::connection::Connection::new(
+        forge_daemon::connection::ConnectionId("conn_drain_obs".into()),
         sub_tx,
     );
     state.register_connection(sub_conn.clone());
@@ -840,27 +846,31 @@ async fn drain_prompts_on_session_exit_drains_parked_and_in_flight() {
 
     // Two parked prompts directly via handle.prompts.enqueue.
     let (q_tx_a, q_rx_a) = tokio::sync::oneshot::channel();
-    handle.prompts.enqueue(forged::prompt_queue::PendingPrompt {
-        prompt_id: "prompt_park_a".into(),
-        kind: forged::prompt_queue::PromptKind::Permission,
-        issued_at: SystemTime::now(),
-        expires_at: SystemTime::now() + Duration::from_secs(3600),
-        params: serde_json::json!({}),
-        responder: q_tx_a,
-        rev_id: None,
-    });
+    handle
+        .prompts
+        .enqueue(forge_daemon::prompt_queue::PendingPrompt {
+            prompt_id: "prompt_park_a".into(),
+            kind: forge_daemon::prompt_queue::PromptKind::Permission,
+            issued_at: SystemTime::now(),
+            expires_at: SystemTime::now() + Duration::from_secs(3600),
+            params: serde_json::json!({}),
+            responder: q_tx_a,
+            rev_id: None,
+        });
     let (q_tx_b, q_rx_b) = tokio::sync::oneshot::channel();
-    handle.prompts.enqueue(forged::prompt_queue::PendingPrompt {
-        prompt_id: "prompt_park_b".into(),
-        kind: forged::prompt_queue::PromptKind::Hook {
-            kind: "post_tool_use".into(),
-        },
-        issued_at: SystemTime::now(),
-        expires_at: SystemTime::now() + Duration::from_secs(3600),
-        params: serde_json::json!({}),
-        responder: q_tx_b,
-        rev_id: None,
-    });
+    handle
+        .prompts
+        .enqueue(forge_daemon::prompt_queue::PendingPrompt {
+            prompt_id: "prompt_park_b".into(),
+            kind: forge_daemon::prompt_queue::PromptKind::Hook {
+                kind: "post_tool_use".into(),
+            },
+            issued_at: SystemTime::now(),
+            expires_at: SystemTime::now() + Duration::from_secs(3600),
+            params: serde_json::json!({}),
+            responder: q_tx_b,
+            rev_id: None,
+        });
 
     // Two in-flight outstanding-reverse entries.
     let (rev_tx_x, rev_rx_x) = tokio::sync::oneshot::channel();
@@ -885,7 +895,7 @@ async fn drain_prompts_on_session_exit_drains_parked_and_in_flight() {
     );
 
     // Drain.
-    forged::reverse_rpc::drain_prompts_on_session_exit(&state, &sid);
+    forge_daemon::reverse_rpc::drain_prompts_on_session_exit(&state, &sid);
 
     // Each oneshot should have received `_session_closed: true`.
     for (label, rx) in [
@@ -914,7 +924,7 @@ async fn drain_prompts_on_session_exit_drains_parked_and_in_flight() {
     // can dismiss the right modal.
     let mut emitted_prompt_ids: Vec<String> = Vec::new();
     while let Ok(frame) = sub_rx.try_recv() {
-        if let forged::connection::Outbound::Notification(n) = frame {
+        if let forge_daemon::connection::Outbound::Notification(n) = frame {
             if n.method == "prompts.expired" {
                 let pid = n
                     .params
@@ -968,15 +978,15 @@ async fn drain_prompts_on_session_exit_drains_parked_and_in_flight() {
 /// `_client_disconnected` answer), NOT the full 1h timeout.
 #[tokio::test]
 async fn outstanding_reverse_unblocks_when_answering_conn_disconnects() {
-    use forged::registry::OutstandingEntry;
-    let state = Arc::new(forged::registry::DaemonState::new());
-    let sid = forged::session_state::SessionId("sess_disc".into());
+    use forge_daemon::registry::OutstandingEntry;
+    let state = Arc::new(forge_daemon::registry::DaemonState::new());
+    let sid = forge_daemon::session_state::SessionId("sess_disc".into());
     let _kept = state.register_session(sid.clone());
 
     let (out_tx, _out_rx) =
-        tokio::sync::mpsc::channel(forged::connection::OUTBOUND_CHANNEL_CAPACITY);
-    let conn = forged::connection::Connection::new(
-        forged::connection::ConnectionId("conn_disc".into()),
+        tokio::sync::mpsc::channel(forge_daemon::connection::OUTBOUND_CHANNEL_CAPACITY);
+    let conn = forge_daemon::connection::Connection::new(
+        forge_daemon::connection::ConnectionId("conn_disc".into()),
         out_tx,
     );
     state.register_connection(conn.clone());
@@ -1021,10 +1031,10 @@ async fn ws_response_with_rev_id_resolves_outstanding_reverse_rpc() {
     use tokio_tungstenite::tungstenite::Message as WsMsg;
 
     // Bring up a real server bound to an ephemeral port.
-    let state = forged::registry::DaemonState::new();
+    let state = forge_daemon::registry::DaemonState::new();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    tokio::spawn(forged::server::run(listener, state.clone()));
+    tokio::spawn(forge_daemon::server::run(listener, state.clone()));
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     let url = format!("ws://{addr}/");
@@ -1051,7 +1061,7 @@ async fn ws_response_with_rev_id_resolves_outstanding_reverse_rpc() {
     .expect("connection_id discovery timed out");
 
     // Manually register a session and mark this connection as primary.
-    let sid = forged::session_state::SessionId("sess_e2e".into());
+    let sid = forge_daemon::session_state::SessionId("sess_e2e".into());
     let (handle, _rx) = state.register_session(sid.clone());
     *handle.primary.lock() = Some(conn_id.clone());
 
@@ -1060,12 +1070,12 @@ async fn ws_response_with_rev_id_resolves_outstanding_reverse_rpc() {
     let state_arc = Arc::new(state.clone());
     let sid_for = sid.clone();
     let issue = tokio::spawn(async move {
-        forged::reverse_rpc::issue_to_primary(
+        forge_daemon::reverse_rpc::issue_to_primary(
             &state_arc,
             &sid_for,
             "permission.request",
             serde_json::json!({"hello": "world"}),
-            forged::prompt_queue::PromptKind::Permission,
+            forge_daemon::prompt_queue::PromptKind::Permission,
             Duration::from_secs(5),
         )
         .await
@@ -1105,10 +1115,10 @@ async fn ws_response_with_rev_id_error_resolves_with_typed_jsonrpc_error_sentine
     use tokio_tungstenite::connect_async;
     use tokio_tungstenite::tungstenite::Message as WsMsg;
 
-    let state = forged::registry::DaemonState::new();
+    let state = forge_daemon::registry::DaemonState::new();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    tokio::spawn(forged::server::run(listener, state.clone()));
+    tokio::spawn(forge_daemon::server::run(listener, state.clone()));
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     let url = format!("ws://{addr}/");
@@ -1131,19 +1141,19 @@ async fn ws_response_with_rev_id_error_resolves_with_typed_jsonrpc_error_sentine
     .await
     .expect("connection_id discovery timed out");
 
-    let sid = forged::session_state::SessionId("sess_e2e_err".into());
+    let sid = forge_daemon::session_state::SessionId("sess_e2e_err".into());
     let (handle, _rx) = state.register_session(sid.clone());
     *handle.primary.lock() = Some(conn_id.clone());
 
     let state_arc = Arc::new(state.clone());
     let sid_for = sid.clone();
     let issue = tokio::spawn(async move {
-        forged::reverse_rpc::issue_to_primary(
+        forge_daemon::reverse_rpc::issue_to_primary(
             &state_arc,
             &sid_for,
             "permission.request",
             serde_json::json!({"hello": "world"}),
-            forged::prompt_queue::PromptKind::Permission,
+            forge_daemon::prompt_queue::PromptKind::Permission,
             Duration::from_secs(5),
         )
         .await
@@ -1182,10 +1192,10 @@ async fn ws_prompts_respond_resolves_queued_prompt_end_to_end() {
     use tokio_tungstenite::connect_async;
     use tokio_tungstenite::tungstenite::Message as WsMsg;
 
-    let state = forged::registry::DaemonState::new();
+    let state = forge_daemon::registry::DaemonState::new();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    tokio::spawn(forged::server::run(listener, state.clone()));
+    tokio::spawn(forge_daemon::server::run(listener, state.clone()));
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     let url = format!("ws://{addr}/");
@@ -1195,23 +1205,25 @@ async fn ws_prompts_respond_resolves_queued_prompt_end_to_end() {
     let _ = ws.next().await;
 
     // Register a session with no primary so the prompt parks in the queue.
-    let sid = forged::session_state::SessionId("sess_park_e2e".into());
+    let sid = forge_daemon::session_state::SessionId("sess_park_e2e".into());
     let (handle, _rx) = state.register_session(sid.clone());
 
     // Park a prompt manually.
     let (tx, rx) = tokio::sync::oneshot::channel();
-    handle.prompts.enqueue(forged::prompt_queue::PendingPrompt {
-        prompt_id: "prompt_e2e".into(),
-        kind: forged::prompt_queue::PromptKind::Permission,
-        issued_at: SystemTime::now(),
-        expires_at: SystemTime::now() + Duration::from_secs(3600),
-        params: serde_json::json!({}),
-        responder: tx,
-        rev_id: None,
-    });
+    handle
+        .prompts
+        .enqueue(forge_daemon::prompt_queue::PendingPrompt {
+            prompt_id: "prompt_e2e".into(),
+            kind: forge_daemon::prompt_queue::PromptKind::Permission,
+            issued_at: SystemTime::now(),
+            expires_at: SystemTime::now() + Duration::from_secs(3600),
+            params: serde_json::json!({}),
+            responder: tx,
+            rev_id: None,
+        });
 
     // Send `prompts.respond`.
-    let req = forged::jsonrpc::Request::new(
+    let req = forge_daemon::jsonrpc::Request::new(
         "prompts.respond",
         serde_json::json!({
             "session_id": "sess_park_e2e",
@@ -1267,8 +1279,8 @@ async fn ws_prompts_respond_resolves_queued_prompt_end_to_end() {
 
 #[tokio::test]
 async fn prompts_respond_resolves_via_outstanding_reverse_when_prompt_carries_rev_id() {
-    let state = Arc::new(forged::registry::DaemonState::new());
-    let sid = forged::session_state::SessionId("sess_c1".into());
+    let state = Arc::new(forge_daemon::registry::DaemonState::new());
+    let sid = forge_daemon::session_state::SessionId("sess_c1".into());
     // Register a session with no primary so issue_to_primary parks.
     let (handle, _rx) = state.register_session(sid.clone());
 
@@ -1278,12 +1290,12 @@ async fn prompts_respond_resolves_via_outstanding_reverse_when_prompt_carries_re
     let st_for_issue = state.clone();
     let sid_for_issue = sid.clone();
     let issue = tokio::spawn(async move {
-        forged::reverse_rpc::issue_to_primary(
+        forge_daemon::reverse_rpc::issue_to_primary(
             &st_for_issue,
             &sid_for_issue,
             "permission.request",
             serde_json::json!({"tool_name": "Bash", "tool_input": {"command": "ls"}}),
-            forged::prompt_queue::PromptKind::Permission,
+            forge_daemon::prompt_queue::PromptKind::Permission,
             // 5s timeout — plenty of headroom for the test path.
             Duration::from_secs(5),
         )
@@ -1321,7 +1333,7 @@ async fn prompts_respond_resolves_via_outstanding_reverse_when_prompt_carries_re
     // routes through the `Some(rev_id)` branch which calls
     // `reverse_rpc::resolve` directly, without going through the
     // queue's responder. The awaiting issuer must see the answer.
-    forged::methods::prompts::respond(
+    forge_daemon::methods::prompts::respond(
         &state,
         &sid,
         &prompt_id,

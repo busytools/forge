@@ -390,6 +390,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "forge-daemon"
+version = "0.1.64"
+dependencies = [
+ "async-trait",
+ "clap",
+ "forge-sdk",
+ "futures-util",
+ "parking_lot",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-tungstenite",
+ "toml",
+ "tracing",
+ "tracing-appender",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
 name = "forge-sdk"
 version = "0.1.64"
 dependencies = [
@@ -415,7 +437,7 @@ version = "0.1.64"
 dependencies = [
  "clap",
  "crossterm",
- "forged",
+ "forge-daemon",
  "futures-util",
  "insta",
  "parking_lot",
@@ -433,33 +455,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "forged"
-version = "0.1.64"
-dependencies = [
- "async-trait",
- "clap",
- "forge-sdk",
- "futures-util",
- "parking_lot",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "tokio-tungstenite",
- "toml",
- "tracing",
- "tracing-appender",
- "tracing-subscriber",
- "uuid",
-]
-
-[[package]]
 name = "forged-conformance"
 version = "0.1.64"
 dependencies = [
+ "forge-daemon",
  "forge-sdk",
- "forged",
  "futures-util",
  "parking_lot",
  "serde",

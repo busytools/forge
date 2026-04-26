@@ -13,12 +13,12 @@ use ratatui::backend::TestBackend;
 use tokio::sync::mpsc;
 
 fn spawn_forged() -> std::net::SocketAddr {
-    let state = forged::registry::DaemonState::new();
+    let state = forge_daemon::registry::DaemonState::new();
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
     let addr = listener.local_addr().unwrap();
     let listener = tokio::net::TcpListener::from_std(listener).unwrap();
-    tokio::spawn(forged::server::run(listener, state));
+    tokio::spawn(forge_daemon::server::run(listener, state));
     addr
 }
 
