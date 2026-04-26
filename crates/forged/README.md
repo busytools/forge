@@ -13,17 +13,17 @@ cargo install --path . --root /usr/local
 USERNAME=$(whoami)
 WG_IP="10.x.x.x"          # your Studio's WireGuard address
 sed -e "s/__USERNAME__/$USERNAME/g" -e "s/__WG_IP__/$WG_IP/g" \
-    launchd/com.stargate.forged.plist \
-    | sudo tee /Library/LaunchDaemons/com.stargate.forged.plist > /dev/null
-sudo chown root:wheel /Library/LaunchDaemons/com.stargate.forged.plist
-sudo chmod 644         /Library/LaunchDaemons/com.stargate.forged.plist
+    launchd/dev.example.forged.plist \
+    | sudo tee /Library/LaunchDaemons/dev.example.forged.plist > /dev/null
+sudo chown root:wheel /Library/LaunchDaemons/dev.example.forged.plist
+sudo chmod 644         /Library/LaunchDaemons/dev.example.forged.plist
 
 # Bootstrap + enable
-sudo launchctl bootstrap system /Library/LaunchDaemons/com.stargate.forged.plist
-sudo launchctl enable system/com.stargate.forged
+sudo launchctl bootstrap system /Library/LaunchDaemons/dev.example.forged.plist
+sudo launchctl enable system/dev.example.forged
 
 # Verify
-launchctl print system/com.stargate.forged
+launchctl print system/dev.example.forged
 forged status
 ```
 
