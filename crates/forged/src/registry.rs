@@ -61,11 +61,9 @@ impl std::fmt::Debug for OutstandingEntry {
 pub struct DaemonState {
     /// Wall-clock instant the daemon started accepting connections.
     pub started_at: Instant,
-    /// Active session count, surfaced via `daemon.status`.
-    pub active_sessions: Arc<Mutex<usize>>,
-    /// Connected WS client count, surfaced via `daemon.status`.
-    pub connected_clients: Arc<Mutex<usize>>,
-    /// Live sessions keyed by daemon-minted [`SessionId`].
+    /// Live sessions keyed by daemon-minted [`SessionId`]. The map's
+    /// `len()` is the authoritative active-session count surfaced via
+    /// `daemon.status`.
     pub sessions: Arc<Mutex<HashMap<SessionId, SessionHandle>>>,
     /// Live connections keyed by [`ConnectionId`]. Cloned on each fanout so
     /// the broadcast helper can address subscribers without holding the
@@ -91,8 +89,6 @@ impl DaemonState {
     pub fn new_for_test(started_at: Instant) -> Self {
         Self {
             started_at,
-            active_sessions: Arc::new(Mutex::new(0)),
-            connected_clients: Arc::new(Mutex::new(0)),
             sessions: Arc::new(Mutex::new(HashMap::new())),
             connections: Arc::new(Mutex::new(HashMap::new())),
             outstanding_reverse: Arc::new(Mutex::new(HashMap::new())),
@@ -114,15 +110,12 @@ impl DaemonState {
         let (tx, rx) = mpsc::unbounded_channel();
         let handle = Arc::new(SessionState::new(id.clone(), tx));
         self.sessions.lock().insert(id, handle.clone());
-        *self.active_sessions.lock() += 1;
         (handle, rx)
     }
 
     /// Unregister a session. No-op if the id is unknown.
     pub fn unregister_session(&self, id: &SessionId) {
-        if self.sessions.lock().remove(id).is_some() {
-            *self.active_sessions.lock() -= 1;
-        }
+        self.sessions.lock().remove(id);
     }
 
     /// Look up a session by id.
@@ -131,11 +124,10 @@ impl DaemonState {
         self.sessions.lock().get(id).cloned()
     }
 
-    /// Register a connection — adds it to the lookup map and bumps the
-    /// `connected_clients` counter atomically.
+    /// Register a connection — adds it to the lookup map. The map's
+    /// `len()` is the authoritative connected-client count.
     pub fn register_connection(&self, conn: Connection) {
         self.connections.lock().insert(conn.id.clone(), conn);
-        *self.connected_clients.lock() += 1;
     }
 
     /// Unregister a connection — removes it from the lookup map and
@@ -197,9 +189,7 @@ impl DaemonState {
             }
         }
 
-        if self.connections.lock().remove(id).is_some() {
-            *self.connected_clients.lock() -= 1;
-        }
+        self.connections.lock().remove(id);
         cleared
     }
 
