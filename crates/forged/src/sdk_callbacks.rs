@@ -236,7 +236,7 @@ impl ForgedHookBridge {
 /// is equivalent to "approve any tool call", which would silently
 /// disable the user's safety controls.
 #[must_use]
-pub fn is_security_critical(kind: &str) -> bool {
+fn is_security_critical(kind: &str) -> bool {
     matches!(kind, "pre_tool_use" | "permission_request")
 }
 
@@ -244,7 +244,7 @@ pub fn is_security_critical(kind: &str) -> bool {
 /// hooks (`post_tool_use`, `stop`, `notification`, etc.) passthrough so
 /// a hook outage doesn't grind the agent to a halt.
 #[must_use]
-pub fn fail_closed_decision(kind: &str, reason: &str) -> HookDecision {
+fn fail_closed_decision(kind: &str, reason: &str) -> HookDecision {
     if is_security_critical(kind) {
         HookDecision::deny(reason.to_owned())
     } else {

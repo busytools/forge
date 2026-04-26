@@ -415,7 +415,6 @@ version = "0.1.64"
 dependencies = [
  "clap",
  "crossterm",
- "forge-sdk",
  "forged",
  "futures-util",
  "insta",
@@ -459,7 +458,6 @@ dependencies = [
 name = "forged-conformance"
 version = "0.1.64"
 dependencies = [
- "async-trait",
  "forge-sdk",
  "forged",
  "futures-util",
