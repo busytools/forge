@@ -157,16 +157,31 @@ pub struct SendUserMessageParams {
     pub prompt: String,
 }
 
+/// Soft cap on `session.send_user_message` prompt size. Defensive
+/// hygiene against accidentally pasting a giant blob — even in the
+/// single-user trust model the prompt is held in three places (incoming
+/// WS buffer, parsed `Request::params`, `Command` enum) before reaching
+/// claude's stdin, so the multiplier matters. 1 MiB is well above
+/// realistic prompt sizes.
+const MAX_PROMPT_BYTES: usize = 1 << 20;
+
 /// `session.send_user_message` — forward a prompt to the underlying claude.
 ///
 /// # Errors
 ///
-/// `SessionNotFound` if the id is unknown; `Sdk` for transport errors.
+/// `SessionNotFound` if the id is unknown; `Sdk` for transport errors;
+/// `InvalidParams` if the prompt exceeds [`MAX_PROMPT_BYTES`].
 pub async fn send_user_message(
     state: &DaemonState,
     session_id: &SessionId,
     prompt: &str,
 ) -> Result<(), Error> {
+    if prompt.len() > MAX_PROMPT_BYTES {
+        return Err(Error::InvalidParams(format!(
+            "prompt: exceeds {MAX_PROMPT_BYTES} bytes (got {})",
+            prompt.len()
+        )));
+    }
     let handle = state
         .get_session(session_id)
         .ok_or_else(|| Error::SessionNotFound(session_id.0.clone()))?;
