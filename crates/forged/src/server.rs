@@ -577,14 +577,14 @@ struct SessionsListParams {
 
 #[derive(serde::Deserialize)]
 struct SessionsInfoParams {
-    session_id: String,
+    session_id: crate::session_state::SessionId,
     #[serde(default)]
     directory: Option<String>,
 }
 
 #[derive(serde::Deserialize)]
 struct SessionsSubagentMessagesParams {
-    session_id: String,
+    session_id: crate::session_state::SessionId,
     subagent_id: String,
     #[serde(default)]
     directory: Option<String>,
@@ -598,7 +598,7 @@ struct SessionsProjectKeyParams {
 
 #[derive(serde::Deserialize)]
 struct SessionsRenameParams {
-    session_id: String,
+    session_id: crate::session_state::SessionId,
     title: String,
     #[serde(default)]
     directory: Option<String>,
@@ -606,7 +606,7 @@ struct SessionsRenameParams {
 
 #[derive(serde::Deserialize)]
 struct SessionsTagParams {
-    session_id: String,
+    session_id: crate::session_state::SessionId,
     #[serde(default)]
     tag: Option<String>,
     #[serde(default)]
@@ -615,7 +615,7 @@ struct SessionsTagParams {
 
 #[derive(serde::Deserialize)]
 struct SessionsForkParams {
-    session_id: String,
+    session_id: crate::session_state::SessionId,
     #[serde(default)]
     up_to_message_id: Option<String>,
     #[serde(default)]
