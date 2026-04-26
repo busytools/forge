@@ -247,6 +247,14 @@ pub fn drain_prompts_on_session_exit(state: &DaemonState, session_id: &SessionId
     }
 }
 
+/// Soft cap on the daemon-wide outstanding-reverse map. Even in the
+/// single-user trust model, a session that emits hook-heavy traffic
+/// while no primary is connected will accumulate parked prompts for up
+/// to `HOOK_TIMEOUT_SECS` (1h). Cap prevents the map from growing
+/// unboundedly across an idle hour; new prompts are denied with
+/// security-critical fail-closed semantics until headroom returns.
+const OUTSTANDING_REVERSE_CAP: usize = 1024;
+
 /// Issue a reverse-RPC to the session's primary, or park in the queue
 /// if no primary is connected. Returns the client's response value (or
 /// times out per `timeout`).
@@ -259,14 +267,7 @@ pub fn drain_prompts_on_session_exit(state: &DaemonState, session_id: &SessionId
 ///
 /// - [`Error::SessionNotFound`] if the session id is unknown.
 /// - [`Error::TemporarilyUnavailable`] on timeout or channel drop.
-/// Soft cap on the daemon-wide outstanding-reverse map. Even in the
-/// single-user trust model, a session that emits hook-heavy traffic
-/// while no primary is connected will accumulate parked prompts for up
-/// to HOOK_TIMEOUT_SECS (1h). Cap prevents the map from growing
-/// unboundedly across an idle hour; new prompts are denied with
-/// security-critical fail-closed semantics until headroom returns.
-const OUTSTANDING_REVERSE_CAP: usize = 1024;
-
+/// - [`Error::Overloaded`] when `outstanding_reverse` is at cap.
 pub async fn issue_to_primary(
     state: &DaemonState,
     session_id: &SessionId,
