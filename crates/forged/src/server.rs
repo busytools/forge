@@ -315,207 +315,192 @@ async fn dispatch(req: &Request, conn: &Connection, state: &DaemonState) -> Resp
             .await
             .and_then(|s| serde_json::to_value(s).map_err(Error::Json)),
         // ---- session.* ------------------------------------------------------
+        // session.spawn is the one method that doesn't fit typed_call: its
+        // params shape is hand-rolled by parse_spawn_params (not a derive)
+        // because WireOptions is internal to methods::session::wire_options.
         "session.spawn" => {
-            let raw = req
-                .params
-                .clone()
-                .unwrap_or_else(|| Value::Object(serde_json::Map::default()));
-            match methods::session::parse_spawn_params(&raw) {
-                Ok(params) => methods::session::spawn(state, params)
-                    .await
-                    .and_then(|r| serde_json::to_value(r).map_err(Error::Json)),
-                Err(e) => Err(e),
+            async {
+                let raw = req
+                    .params
+                    .clone()
+                    .unwrap_or_else(|| Value::Object(serde_json::Map::default()));
+                let params = methods::session::parse_spawn_params(&raw)?;
+                serde_json::to_value(methods::session::spawn(state, params).await?)
+                    .map_err(Error::Json)
             }
+            .await
         }
         "session.send_user_message" => {
-            match parse_params::<methods::session::SendUserMessageParams>(req.params.as_ref()) {
-                Ok(p) => methods::session::send_user_message(state, &p.session_id, &p.prompt)
-                    .await
-                    .map(|()| Value::Null),
-                Err(e) => Err(e),
-            }
+            typed_call(
+                req,
+                |p: methods::session::SendUserMessageParams| async move {
+                    methods::session::send_user_message(state, &p.session_id, &p.prompt).await
+                },
+            )
+            .await
         }
         "session.subscribe" => {
-            match parse_params::<methods::session::SubscribeParams>(req.params.as_ref()) {
-                Ok(p) => {
-                    methods::session::subscribe(state, conn, &p.session_id, p.since.as_deref())
-                        .and_then(|r| serde_json::to_value(r).map_err(Error::Json))
-                }
-                Err(e) => Err(e),
-            }
+            typed_call(req, |p: methods::session::SubscribeParams| async move {
+                methods::session::subscribe(state, conn, &p.session_id, p.since.as_deref())
+            })
+            .await
         }
         "session.unsubscribe" => {
-            match parse_params::<methods::session::UnsubscribeParams>(req.params.as_ref()) {
-                Ok(p) => {
-                    methods::session::unsubscribe(state, conn, &p.session_id).map(|()| Value::Null)
-                }
-                Err(e) => Err(e),
-            }
+            typed_call(req, |p: methods::session::UnsubscribeParams| async move {
+                methods::session::unsubscribe(state, conn, &p.session_id)
+            })
+            .await
         }
         "session.disconnect" => {
-            match parse_params::<methods::session::DisconnectParams>(req.params.as_ref()) {
-                Ok(p) => methods::session::disconnect(state, &p.session_id)
-                    .await
-                    .map(|()| Value::Null),
-                Err(e) => Err(e),
-            }
+            typed_call(req, |p: methods::session::DisconnectParams| async move {
+                methods::session::disconnect(state, &p.session_id).await
+            })
+            .await
         }
         "session.end_input" => {
-            match parse_params::<methods::session::EndInputParams>(req.params.as_ref()) {
-                Ok(p) => methods::session::end_input(state, &p.session_id)
-                    .await
-                    .map(|()| Value::Null),
-                Err(e) => Err(e),
-            }
+            typed_call(req, |p: methods::session::EndInputParams| async move {
+                methods::session::end_input(state, &p.session_id).await
+            })
+            .await
         }
-        "session.interrupt" => match parse_params::<SessionIdOnlyParams>(req.params.as_ref()) {
-            Ok(p) => methods::session::interrupt(state, &p.session_id)
-                .await
-                .map(|()| Value::Null),
-            Err(e) => Err(e),
-        },
+        "session.interrupt" => {
+            typed_call(req, |p: SessionIdOnlyParams| async move {
+                methods::session::interrupt(state, &p.session_id).await
+            })
+            .await
+        }
         "session.set_permission_mode" => {
-            match parse_params::<SetPermissionModeParams>(req.params.as_ref()) {
-                Ok(p) => match parse_permission_mode(&p.mode) {
-                    Ok(mode) => methods::session::set_permission_mode(state, &p.session_id, mode)
-                        .await
-                        .map(|()| Value::Null),
-                    Err(e) => Err(e),
-                },
-                Err(e) => Err(e),
-            }
+            typed_call(req, |p: SetPermissionModeParams| async move {
+                let mode = parse_permission_mode(&p.mode)?;
+                methods::session::set_permission_mode(state, &p.session_id, mode).await
+            })
+            .await
         }
-        "session.set_model" => match parse_params::<SetModelParams>(req.params.as_ref()) {
-            Ok(p) => methods::session::set_model(state, &p.session_id, p.model)
-                .await
-                .map(|()| Value::Null),
-            Err(e) => Err(e),
-        },
-        "session.rewind_files" => match parse_params::<RewindFilesParams>(req.params.as_ref()) {
-            Ok(p) => methods::session::rewind_files(state, &p.session_id, p.user_message_id)
-                .await
-                .map(|()| Value::Null),
-            Err(e) => Err(e),
-        },
-        "session.stop_task" => match parse_params::<StopTaskParams>(req.params.as_ref()) {
-            Ok(p) => methods::session::stop_task(state, &p.session_id, p.task_id)
-                .await
-                .map(|()| Value::Null),
-            Err(e) => Err(e),
-        },
+        "session.set_model" => {
+            typed_call(req, |p: SetModelParams| async move {
+                methods::session::set_model(state, &p.session_id, p.model).await
+            })
+            .await
+        }
+        "session.rewind_files" => {
+            typed_call(req, |p: RewindFilesParams| async move {
+                methods::session::rewind_files(state, &p.session_id, p.user_message_id).await
+            })
+            .await
+        }
+        "session.stop_task" => {
+            typed_call(req, |p: StopTaskParams| async move {
+                methods::session::stop_task(state, &p.session_id, p.task_id).await
+            })
+            .await
+        }
         // ---- sessions.* (filesystem) ----------------------------------------
-        "sessions.list" => match parse_params::<SessionsListParams>(req.params.as_ref()) {
-            Ok(p) => methods::sessions::list(p.directory, p.limit, p.offset).and_then(|v| {
-                serde_json::to_value(serde_json::json!({ "sessions": v })).map_err(Error::Json)
-            }),
-            Err(e) => Err(e),
-        },
-        "sessions.info" => match parse_params::<SessionsInfoParams>(req.params.as_ref()) {
-            Ok(p) => methods::sessions::info(p.session_id, p.directory)
-                .and_then(|v| serde_json::to_value(v).map_err(Error::Json)),
-            Err(e) => Err(e),
-        },
-        "sessions.messages" => match parse_params::<SessionsInfoParams>(req.params.as_ref()) {
-            Ok(p) => methods::sessions::messages(p.session_id, p.directory)
-                .and_then(|v| serde_json::to_value(v).map_err(Error::Json)),
-            Err(e) => Err(e),
-        },
+        "sessions.list" => {
+            typed_call(req, |p: SessionsListParams| async move {
+                methods::sessions::list(p.directory, p.limit, p.offset)
+            })
+            .await
+        }
+        "sessions.info" => {
+            typed_call(req, |p: SessionsInfoParams| async move {
+                methods::sessions::info(p.session_id, p.directory)
+            })
+            .await
+        }
+        "sessions.messages" => {
+            typed_call(req, |p: SessionsInfoParams| async move {
+                methods::sessions::messages(p.session_id, p.directory)
+            })
+            .await
+        }
         "sessions.list_subagents" => {
-            match parse_params::<SessionsInfoParams>(req.params.as_ref()) {
-                Ok(p) => {
-                    methods::sessions::list_subagents(p.session_id, p.directory).and_then(|v| {
-                        serde_json::to_value(serde_json::json!({ "subagent_ids": v }))
-                            .map_err(Error::Json)
-                    })
-                }
-                Err(e) => Err(e),
-            }
+            typed_call(req, |p: SessionsInfoParams| async move {
+                methods::sessions::list_subagents(p.session_id, p.directory)
+            })
+            .await
         }
         "sessions.subagent_messages" => {
-            match parse_params::<SessionsSubagentMessagesParams>(req.params.as_ref()) {
-                Ok(p) => {
-                    methods::sessions::subagent_messages(p.session_id, p.subagent_id, p.directory)
-                        .and_then(|v| {
-                            serde_json::to_value(serde_json::json!({ "messages": v }))
-                                .map_err(Error::Json)
-                        })
-                }
-                Err(e) => Err(e),
-            }
+            typed_call(req, |p: SessionsSubagentMessagesParams| async move {
+                methods::sessions::subagent_messages(p.session_id, p.subagent_id, p.directory)
+            })
+            .await
         }
         "sessions.project_key" => {
-            match parse_params::<SessionsProjectKeyParams>(req.params.as_ref()) {
-                Ok(p) => methods::sessions::project_key(p.path).and_then(|v| {
-                    serde_json::to_value(serde_json::json!({ "project_key": v }))
-                        .map_err(Error::Json)
-                }),
-                Err(e) => Err(e),
-            }
+            typed_call(req, |p: SessionsProjectKeyParams| async move {
+                methods::sessions::project_key(p.path)
+            })
+            .await
         }
-        "sessions.rename" => match parse_params::<SessionsRenameParams>(req.params.as_ref()) {
-            Ok(p) => {
-                methods::sessions::rename(p.session_id, p.title, p.directory).map(|()| Value::Null)
-            }
-            Err(e) => Err(e),
-        },
-        "sessions.tag" => match parse_params::<SessionsTagParams>(req.params.as_ref()) {
-            Ok(p) => methods::sessions::tag(p.session_id, p.tag, p.directory).map(|()| Value::Null),
-            Err(e) => Err(e),
-        },
-        "sessions.delete" => match parse_params::<SessionsInfoParams>(req.params.as_ref()) {
-            Ok(p) => methods::sessions::delete(p.session_id, p.directory).map(|()| Value::Null),
-            Err(e) => Err(e),
-        },
-        "sessions.fork" => match parse_params::<SessionsForkParams>(req.params.as_ref()) {
-            Ok(p) => {
+        "sessions.rename" => {
+            typed_call(req, |p: SessionsRenameParams| async move {
+                methods::sessions::rename(p.session_id, p.title, p.directory)
+            })
+            .await
+        }
+        "sessions.tag" => {
+            typed_call(req, |p: SessionsTagParams| async move {
+                methods::sessions::tag(p.session_id, p.tag, p.directory)
+            })
+            .await
+        }
+        "sessions.delete" => {
+            typed_call(req, |p: SessionsInfoParams| async move {
+                methods::sessions::delete(p.session_id, p.directory)
+            })
+            .await
+        }
+        "sessions.fork" => {
+            typed_call(req, |p: SessionsForkParams| async move {
                 methods::sessions::fork(p.session_id, p.up_to_message_id, p.title, p.directory)
-                    .and_then(|v| serde_json::to_value(v).map_err(Error::Json))
-            }
-            Err(e) => Err(e),
-        },
+            })
+            .await
+        }
         // ---- mcp.* ---------------------------------------------------------
-        "mcp.status" => match parse_params::<SessionIdOnlyParams>(req.params.as_ref()) {
-            Ok(p) => methods::mcp::status(state, &p.session_id)
-                .await
-                .and_then(|r| serde_json::to_value(r).map_err(Error::Json)),
-            Err(e) => Err(e),
-        },
-        "mcp.reconnect" => match parse_params::<McpReconnectParams>(req.params.as_ref()) {
-            Ok(p) => methods::mcp::reconnect(state, &p.session_id, &p.server_name)
-                .await
-                .map(|()| Value::Null),
-            Err(e) => Err(e),
-        },
-        "mcp.toggle" => match parse_params::<McpToggleParams>(req.params.as_ref()) {
-            Ok(p) => methods::mcp::toggle(state, &p.session_id, &p.server_name, p.enabled)
-                .await
-                .map(|()| Value::Null),
-            Err(e) => Err(e),
-        },
+        "mcp.status" => {
+            typed_call(req, |p: SessionIdOnlyParams| async move {
+                methods::mcp::status(state, &p.session_id).await
+            })
+            .await
+        }
+        "mcp.reconnect" => {
+            typed_call(req, |p: McpReconnectParams| async move {
+                methods::mcp::reconnect(state, &p.session_id, &p.server_name).await
+            })
+            .await
+        }
+        "mcp.toggle" => {
+            typed_call(req, |p: McpToggleParams| async move {
+                methods::mcp::toggle(state, &p.session_id, &p.server_name, p.enabled).await
+            })
+            .await
+        }
         // ---- context.* -----------------------------------------------------
-        "context.get" => match parse_params::<SessionIdOnlyParams>(req.params.as_ref()) {
-            Ok(p) => methods::context::get(state, &p.session_id)
-                .await
-                .and_then(|r| serde_json::to_value(r).map_err(Error::Json)),
-            Err(e) => Err(e),
-        },
+        "context.get" => {
+            typed_call(req, |p: SessionIdOnlyParams| async move {
+                methods::context::get(state, &p.session_id).await
+            })
+            .await
+        }
         // ---- prompts.* (M4) ------------------------------------------------
-        "prompts.respond" => match parse_params::<PromptsRespondParams>(req.params.as_ref()) {
-            Ok(p) => methods::prompts::respond(state, &p.session_id, &p.prompt_id, p.result)
-                .map(|()| Value::Null),
-            Err(e) => Err(e),
-        },
+        "prompts.respond" => {
+            typed_call(req, |p: PromptsRespondParams| async move {
+                methods::prompts::respond(state, &p.session_id, &p.prompt_id, p.result)
+            })
+            .await
+        }
         // ---- session.* multi-client (M5) -----------------------------------
-        "session.claim_primary" => match parse_params::<SessionIdOnlyParams>(req.params.as_ref()) {
-            Ok(p) => methods::multi_client::claim_primary(state, &conn.id, &p.session_id)
-                .map(|()| Value::Null),
-            Err(e) => Err(e),
-        },
-        "session.peers" => match parse_params::<SessionIdOnlyParams>(req.params.as_ref()) {
-            Ok(p) => methods::multi_client::peers(state, &p.session_id)
-                .and_then(|r| serde_json::to_value(r).map_err(Error::Json)),
-            Err(e) => Err(e),
-        },
+        "session.claim_primary" => {
+            typed_call(req, |p: SessionIdOnlyParams| async move {
+                methods::multi_client::claim_primary(state, &conn.id, &p.session_id)
+            })
+            .await
+        }
+        "session.peers" => {
+            typed_call(req, |p: SessionIdOnlyParams| async move {
+                methods::multi_client::peers(state, &p.session_id)
+            })
+            .await
+        }
         other => Err(Error::MethodNotFound(other.to_string())),
     };
     match result {
@@ -533,6 +518,27 @@ fn parse_params<T: for<'de> serde::Deserialize<'de>>(params: Option<&Value>) -> 
         .cloned()
         .unwrap_or_else(|| Value::Object(serde_json::Map::default()));
     serde_json::from_value(raw).map_err(|e| Error::InvalidParams(e.to_string()))
+}
+
+/// Generic dispatch helper: parse the request's `params` into the
+/// closure's input type, run the (possibly async) handler, and
+/// serialise the typed result back into a JSON-RPC `Value`. The closure
+/// returns `Result<R, Error>` for some `R: Serialize`; both `R = ()`
+/// (which serialises to `null`) and richly typed results work
+/// uniformly.
+///
+/// Lifts each dispatch arm out of the `match parse_params { Ok(p) =>
+/// ..., Err(e) => Err(e) }` shape. Arms collapse from 4 lines to 1.
+async fn typed_call<P, R, F, Fut>(req: &Request, f: F) -> Result<Value, Error>
+where
+    P: for<'de> serde::Deserialize<'de>,
+    R: serde::Serialize,
+    F: FnOnce(P) -> Fut,
+    Fut: std::future::Future<Output = Result<R, Error>>,
+{
+    let p = parse_params::<P>(req.params.as_ref())?;
+    let r = f(p).await?;
+    serde_json::to_value(r).map_err(Error::Json)
 }
 
 use crate::session_state::parse_permission_mode;
