@@ -222,13 +222,23 @@ async fn read_loop(
             && v.get("id").is_some()
             && (v.get("result").is_some() || v.get("error").is_some());
         if is_response {
-            let Some(id) = v.get("id").and_then(Value::as_str) else {
-                tracing::warn!(
-                    id = ?v.get("id"),
-                    "received non-string id in JSON-RPC response; ignoring"
-                );
-                continue;
+            // JSON-RPC 2.0 §4.2 allows id to be string OR number. The
+            // daemon's reverse-RPC issuer always uses string `rev_<uuid>`,
+            // but a strict client mirroring the inbound id type might
+            // reply with a number. Stringify for lookup; null / bool /
+            // composite ids are genuinely malformed.
+            let id_owned = match v.get("id") {
+                Some(Value::String(s)) => s.clone(),
+                Some(Value::Number(n)) => n.to_string(),
+                other => {
+                    tracing::warn!(
+                        id = ?other,
+                        "received malformed id in JSON-RPC response (expected string or number); ignoring"
+                    );
+                    continue;
+                }
             };
+            let id = id_owned.as_str();
             if id.starts_with("rev_") {
                 // Distinguish success from error: on `result` resolve
                 // normally; on `error` route through `resolve_error`
