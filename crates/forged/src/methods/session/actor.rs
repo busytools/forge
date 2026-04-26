@@ -1,0 +1,222 @@
+//! Session actor task — owns the [`forge_sdk::Client`] for the lifetime
+//! of one session and drives it via a `tokio::select!` loop over the
+//! command channel and `next_event`.
+//!
+//! Extracted from `methods/session.rs` (audit 2026-04-26 god-file
+//! split). The handler proxies in `methods::session` enqueue
+//! [`Command`]s on the session's mpsc; the actor dequeues and runs
+//! them on `&mut Client`. Outbound `next_event` results fan out to
+//! subscribers as `session.event` notifications.
+
+use forge_sdk::Client;
+
+use crate::Error;
+use crate::registry::DaemonState;
+use crate::session_state::{Command, SessionHandle};
+
+/// Extract a stable per-message identifier when one exists. Used as the
+/// `event_id` field on `session.event` notifications.
+///
+/// `forge_sdk::Message` carries a `uuid` field on most variants but not all
+/// — `Error`, `Unknown`, `System`, plus `Assistant`/`User`/`Result` when
+/// the CLI hasn't been configured to emit them. Callers should treat the
+/// empty string as "no id".
+#[must_use]
+pub(crate) fn message_event_id(msg: &forge_sdk::Message) -> &str {
+    use forge_sdk::Message;
+    match msg {
+        Message::Assistant { uuid, .. }
+        | Message::User { uuid, .. }
+        | Message::Result { uuid, .. } => uuid.as_deref().unwrap_or(""),
+        Message::TaskStarted { uuid, .. }
+        | Message::TaskProgress { uuid, .. }
+        | Message::TaskNotification { uuid, .. }
+        | Message::RateLimitEvent { uuid, .. }
+        | Message::StreamEvent { uuid, .. } => uuid.as_str(),
+        // `System`, `Error`, `Unknown`, plus any future `non_exhaustive`
+        // variants — fall through to the empty-string sentinel.
+        _ => {
+            // Round 4 — fix m1. Trace the variant we couldn't extract
+            // a UUID from so future SDK variant additions are
+            // discoverable in operator traces rather than silently
+            // emitting empty `event_id` strings.
+            tracing::trace!(
+                ?msg,
+                "message_event_id: unrecognised variant; emitting empty"
+            );
+            ""
+        }
+    }
+}
+
+/// Spawn the actor task that exclusively owns `client` for the lifetime
+/// of the session.
+///
+/// The actor `select!`s between:
+///
+/// 1. Inbound [`Command`]s from dispatch handlers — runs them on the
+///    [`Client`].
+/// 2. Outbound `next_event` calls — fans each [`forge_sdk::Message`]
+///    to the session's subscribers as a `session.event` notification.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one match arm per Command variant by design; the actor's command dispatch table is the natural shape"
+)]
+pub(crate) fn spawn_session_actor(
+    state: DaemonState,
+    handle: &SessionHandle,
+    mut client: Client,
+    mut commands: tokio::sync::mpsc::UnboundedReceiver<Command>,
+) {
+    let session_id = handle.id.clone();
+    tokio::spawn(async move {
+        // KNOWN HAZARD — actor cancels handle_control mid-write.
+        //
+        // tokio::select! drops the unselected future when any branch
+        // wins. `client.next_event()` internally awaits
+        // `client.handle_control(req)` which performs `write_line(...)`
+        // for hook callbacks / MCP messages / can_use_tool replies. If
+        // a `Command` arrives while next_event is mid-handle_control,
+        // select! cancels the next_event future, which drops the
+        // in-flight write — the CLI never receives its control_response
+        // and the session deadlocks until HOOK_TIMEOUT_SECS (1h).
+        //
+        // The audit-suggested `Box::pin(client.next_event())` hold
+        // across iterations sounds right but doesn't actually fix it:
+        // the cmd branch still needs &mut client for its handlers, and
+        // the borrow checker rejects coexistent &mut next_fut + cmd
+        // handler borrow. The real fix is structural — split Client's
+        // write path so handle_control can run on a tokio::spawn'd task
+        // (the writer's mpsc handle is Send + 'static), letting the
+        // write complete regardless of select! cancellation. That's an
+        // SDK-surface change tracked as a follow-up; in practice the
+        // race window (cmd arrives DURING handle_control's write_line
+        // ack) is narrow enough that no production deadlock has been
+        // observed across the M0–M7 milestones. Audit 2026-04-26
+        // (bug-hunter, medium confidence). See
+        // project_forged_actor_pattern.md and the actor-cancellation
+        // entry in auto-memory for context.
+        let reason: &'static str = loop {
+            tokio::select! {
+                biased;
+                cmd = commands.recv() => {
+                    let Some(cmd) = cmd else {
+                        // Senders all dropped — session is being torn down.
+                        break "actor_idle";
+                    };
+                    match cmd {
+                        Command::SendUserMessage { prompt, reply } => {
+                            let r = client.send_user_message(&prompt).await.map_err(Error::Sdk);
+                            let _ = reply.send(r);
+                        }
+                        Command::EndInput { reply } => {
+                            let r = client.end_input().await.map_err(Error::Sdk);
+                            let _ = reply.send(r);
+                        }
+                        Command::Disconnect { reply } => {
+                            let r = client.disconnect().await.map_err(Error::Sdk);
+                            let _ = reply.send(r);
+                            break "disconnect";
+                        }
+                        Command::Interrupt { reply } => {
+                            let r = client.interrupt().await.map_err(Error::Sdk);
+                            let _ = reply.send(r);
+                        }
+                        Command::SetPermissionMode { mode, reply } => {
+                            let r = client.set_permission_mode(mode).await.map_err(Error::Sdk);
+                            let _ = reply.send(r);
+                        }
+                        Command::SetModel { model, reply } => {
+                            let r = client
+                                .set_model(model.as_deref())
+                                .await
+                                .map_err(Error::Sdk);
+                            let _ = reply.send(r);
+                        }
+                        Command::RewindFiles { user_message_id, reply } => {
+                            let r = client
+                                .rewind_files(&user_message_id)
+                                .await
+                                .map_err(Error::Sdk);
+                            let _ = reply.send(r);
+                        }
+                        Command::StopTask { task_id, reply } => {
+                            let r = client.stop_task(&task_id).await.map_err(Error::Sdk);
+                            let _ = reply.send(r);
+                        }
+                        Command::McpStatus { reply } => {
+                            let r = client.mcp_status().await.map_err(Error::Sdk);
+                            let _ = reply.send(r);
+                        }
+                        Command::McpReconnect { server_name, reply } => {
+                            let r = client
+                                .mcp_reconnect(&server_name)
+                                .await
+                                .map_err(Error::Sdk);
+                            let _ = reply.send(r);
+                        }
+                        Command::McpToggle { server_name, enabled, reply } => {
+                            let r = client
+                                .mcp_toggle(&server_name, enabled)
+                                .await
+                                .map_err(Error::Sdk);
+                            let _ = reply.send(r);
+                        }
+                        Command::ContextGet { reply } => {
+                            let r = client.get_context_usage().await.map_err(Error::Sdk);
+                            let _ = reply.send(r);
+                        }
+                    }
+                }
+                next = client.next_event() => {
+                    match next {
+                        Ok(Some(msg)) => {
+                            let is_terminal = matches!(msg, forge_sdk::Message::Result { .. });
+                            let event_id = message_event_id(&msg).to_owned();
+                            let frame = crate::connection::Outbound::Notification(
+                                crate::jsonrpc::Notification::new(
+                                    "session.event",
+                                    serde_json::json!({
+                                        "session_id": session_id.0,
+                                        "event_id": event_id,
+                                        "message": msg,
+                                    }),
+                                ),
+                            );
+                            crate::broadcast::fanout(&state, &session_id, &frame);
+                            if is_terminal {
+                                break "result_frame";
+                            }
+                        }
+                        Ok(None) => break "disconnected",
+                        Err(e) => {
+                            tracing::warn!(session_id = %session_id.0, error = %e, "next_event error");
+                            break "error";
+                        }
+                    }
+                }
+            }
+        };
+
+        // Drain any parked prompts before unregistering — otherwise
+        // SDK callbacks awaiting on parked oneshots wait the full 1h
+        // timeout. Each parked prompt gets a synthetic
+        // `_session_closed: true` answer so the bridge unblocks
+        // immediately, plus a `prompts.expired` broadcast so any
+        // subscribers know the prompt is gone.
+        crate::reverse_rpc::drain_prompts_on_session_exit(&state, &session_id);
+
+        // Emit session.closed to all subscribers.
+        let closed = crate::connection::Outbound::Notification(crate::jsonrpc::Notification::new(
+            "session.closed",
+            serde_json::json!({
+                "session_id": session_id.0,
+                "reason": reason,
+            }),
+        ));
+        crate::broadcast::fanout(&state, &session_id, &closed);
+
+        // Unregister the session — frees state.
+        state.unregister_session(&session_id);
+    });
+}
