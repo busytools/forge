@@ -66,7 +66,7 @@ pub(crate) fn spawn_session_actor(
     state: DaemonState,
     handle: &SessionHandle,
     mut client: Client,
-    mut commands: tokio::sync::mpsc::UnboundedReceiver<Command>,
+    mut commands: tokio::sync::mpsc::Receiver<Command>,
 ) {
     let session_id = handle.id.clone();
     tokio::spawn(async move {

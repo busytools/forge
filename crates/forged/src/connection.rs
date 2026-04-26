@@ -8,6 +8,16 @@ use uuid::Uuid;
 
 use crate::jsonrpc::{Notification, Request, Response};
 
+/// Per-connection outbound buffer. Sized so a sleeping or otherwise
+/// slow viewer can absorb a reasonable burst of `session.event`
+/// notifications + reverse-RPC traffic before backpressure surfaces. A
+/// chatty Claude turn with `--include-partial-messages` emits ~hundreds
+/// of frames; 4096 is several seconds of buffered output. When the
+/// channel fills, [`crate::broadcast::fanout`] drops the frame for
+/// that conn (and emits a warn log) rather than blocking the
+/// fan-out — see the eviction discussion in audit 2026-04-26.
+pub const OUTBOUND_CHANNEL_CAPACITY: usize = 4096;
+
 /// A connected client. One instance per WS connection.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
@@ -22,7 +32,10 @@ pub struct Connection {
     /// handshake completed. Surfaced to clients via `session.peers`.
     pub connected_at_iso: String,
     /// Outbound channel — anything written here goes to the client.
-    pub outbound: mpsc::UnboundedSender<Outbound>,
+    /// Bounded at [`OUTBOUND_CHANNEL_CAPACITY`]; senders use
+    /// `try_send` so a slow client can't apply backpressure to the
+    /// daemon's broadcast / response paths.
+    pub outbound: mpsc::Sender<Outbound>,
 }
 
 impl Connection {
@@ -30,7 +43,7 @@ impl Connection {
     /// no display name yet, and the current wall-clock time as the
     /// connection-established timestamp.
     #[must_use]
-    pub fn new(id: ConnectionId, outbound: mpsc::UnboundedSender<Outbound>) -> Self {
+    pub fn new(id: ConnectionId, outbound: mpsc::Sender<Outbound>) -> Self {
         Self::with_metadata(id, None, SystemTime::now(), outbound)
     }
 
@@ -43,7 +56,7 @@ impl Connection {
         id: ConnectionId,
         name: Option<String>,
         connected_at: SystemTime,
-        outbound: mpsc::UnboundedSender<Outbound>,
+        outbound: mpsc::Sender<Outbound>,
     ) -> Self {
         Self {
             id,

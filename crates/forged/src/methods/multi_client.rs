@@ -79,7 +79,7 @@ pub(crate) fn become_primary(
     match caller_outbound {
         Some(out) => {
             if out
-                .send(Outbound::Notification(Notification::new(
+                .try_send(Outbound::Notification(Notification::new(
                     "session.role_assigned",
                     serde_json::json!({
                         "session_id": session_id.0,
@@ -118,7 +118,7 @@ pub(crate) fn become_primary(
                 .map(|c| c.outbound.clone());
             if let Some(out) = old_outbound {
                 if out
-                    .send(Outbound::Notification(Notification::new(
+                    .try_send(Outbound::Notification(Notification::new(
                         "session.role_assigned",
                         serde_json::json!({
                             "session_id": session_id.0,

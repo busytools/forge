@@ -91,7 +91,7 @@ async fn handle_connection(
     let name = captured_name.lock().clone();
 
     let (write, read) = ws.split();
-    let (out_tx, out_rx) = mpsc::unbounded_channel::<Outbound>();
+    let (out_tx, out_rx) = mpsc::channel::<Outbound>(crate::connection::OUTBOUND_CHANNEL_CAPACITY);
     let conn =
         Connection::with_metadata(ConnectionId::new(), name, SystemTime::now(), out_tx.clone());
     state.register_connection(conn.clone());
@@ -102,7 +102,7 @@ async fn handle_connection(
     // Send the initial client.identify notification through the same channel
     // so it interleaves correctly with later traffic.
     if out_tx
-        .send(Outbound::Notification(Notification::new(
+        .try_send(Outbound::Notification(Notification::new(
             "client.identify",
             serde_json::json!({
                 "connection_id": conn.id.0,
@@ -151,7 +151,7 @@ async fn handle_connection(
 
 async fn write_loop(
     mut write: SplitSink<WebSocketStream<TcpStream>, WsMsg>,
-    mut rx: mpsc::UnboundedReceiver<Outbound>,
+    mut rx: mpsc::Receiver<Outbound>,
 ) -> Result<(), Error> {
     while let Some(frame) = rx.recv().await {
         let text = match frame.to_text() {
@@ -203,7 +203,7 @@ async fn read_loop(
                 // attributable during incident response.
                 if conn
                     .outbound
-                    .send(Outbound::Response(Response::error(
+                    .try_send(Outbound::Response(Response::error(
                         Value::Null,
                         Error::ParseError(e.to_string()).to_jsonrpc(),
                     )))
@@ -211,7 +211,7 @@ async fn read_loop(
                 {
                     tracing::trace!(
                         conn_id = %conn.id.0,
-                        "server: parse-error response send dropped (writer task gone)"
+                        "server: parse-error response send dropped (writer task gone or full)"
                     );
                 }
                 continue;
@@ -273,7 +273,7 @@ async fn read_loop(
                 // drops so they're attributable.
                 if conn
                     .outbound
-                    .send(Outbound::Response(Response::error(
+                    .try_send(Outbound::Response(Response::error(
                         Value::Null,
                         Error::ParseError(e.to_string()).to_jsonrpc(),
                     )))
@@ -281,7 +281,7 @@ async fn read_loop(
                 {
                     tracing::trace!(
                         conn_id = %conn.id.0,
-                        "server: invalid-request response send dropped (writer task gone)"
+                        "server: invalid-request response send dropped (writer task gone or full)"
                     );
                 }
                 continue;
@@ -293,7 +293,7 @@ async fn read_loop(
         // error envelope) reaches a closed `outbound` only when the
         // writer task already exited; surface drops so they're
         // attributable in operator logs.
-        if conn.outbound.send(Outbound::Response(resp)).is_err() {
+        if conn.outbound.try_send(Outbound::Response(resp)).is_err() {
             tracing::trace!(
                 conn_id = %conn.id.0,
                 "server: dispatch response send dropped (writer task gone)"
