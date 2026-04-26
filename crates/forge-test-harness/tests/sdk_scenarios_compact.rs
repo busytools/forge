@@ -7,10 +7,10 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use forge_conformance::run_live_scenario;
 use forge_sdk::{
     HookContext, HookDecision, HooksBuilder, OptionsBuilder, PermissionMode, PreCompactInput,
 };
+use forge_test_harness::sdk_wire::run_live_scenario;
 
 #[tokio::test]
 #[ignore = "burns real Anthropic API tokens; opt-in via FORGE_WIRE_CAPTURE=1"]

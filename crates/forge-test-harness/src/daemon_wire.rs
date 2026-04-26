@@ -1,16 +1,17 @@
-//! Wire-conformance harness for forged. Mirrors the design of
-//! `crates/forge-conformance/` (which captures the forge-sdk ↔ claude
-//! wire); here we capture the forged ↔ client wire.
+//! Wire-conformance harness for forge-daemon. Mirrors the design of
+//! [`super::sdk_wire`] (which captures the forge-sdk ↔ claude wire);
+//! here we capture the forge-daemon ↔ client wire.
 //!
 //! ## Two modes
 //!
-//! - **Live capture** (`FORGED_WIRE_CAPTURE=1`) — spin up a real forged
-//!   on an ephemeral port, drive the scenario, dump the bidirectional
-//!   trace to `target/forged-wire-traces/`. Promote a captured file
-//!   into `baselines/<forged-version>/<scenario>.jsonl` to lock the
-//!   baseline.
+//! - **Live capture** (`FORGE_DAEMON_WIRE_CAPTURE=1`) — spin up a real
+//!   forge-daemon on an ephemeral port, drive the scenario, dump the
+//!   bidirectional trace to `target/forge-daemon-wire-traces/`.
+//!   Promote a captured file into
+//!   `baselines/daemon/<forge-daemon-version>/<scenario>.jsonl` to
+//!   lock the baseline.
 //! - **Replay** (default) — load the committed baseline and run typed
-//!   wire-shape decode through forged's JSON-RPC framing types.
+//!   wire-shape decode through forge-daemon's JSON-RPC framing types.
 //!   Replay keeps the harness on the `cargo nextest run` happy-path
 //!   with no external dependencies.
 //!
@@ -27,23 +28,24 @@
 //! [`DecodeReport::is_clean`] returns false. CLI invariant #10(c)
 //! mandates clean decode for committed baselines.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-/// Forged version baselines were captured against. Bumped in lockstep
-/// with `Cargo.toml` workspace version. When this changes a fresh
-/// baseline directory is created and live-capture re-runs are needed.
-pub const PINNED_FORGED_VERSION: &str = env!("CARGO_PKG_VERSION");
+/// forge-daemon version baselines were captured against. Bumped in
+/// lockstep with `Cargo.toml` workspace version. When this changes a
+/// fresh baseline directory is created and live-capture re-runs are
+/// needed.
+pub const PINNED_DAEMON_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Path to the directory holding committed baselines for the current
-/// pinned forged version.
+/// pinned forge-daemon version. Resolves to
+/// `crates/forge-test-harness/baselines/daemon/<PINNED_DAEMON_VERSION>/`.
 #[must_use]
 pub fn baseline_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("baselines")
-        .join(PINNED_FORGED_VERSION)
+        .join("daemon")
+        .join(PINNED_DAEMON_VERSION)
 }
 
 /// Load a committed baseline trace from `baselines/<version>/<scenario>.jsonl`.

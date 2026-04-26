@@ -203,7 +203,7 @@ impl Client {
         // So `spawn_inner` only waits for the control_response; the real
         // `session_id` arrives later on the first user message and gets
         // plumbed through `next_event`. Pinned by
-        // `crates/forge-conformance/tests/wire_conformance.rs`.
+        // `crates/forge-test-harness/tests/wire_conformance.rs`.
         sub.write_line(&init_line).await?;
 
         // Build a partial client now so the init loop can dispatch any

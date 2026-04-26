@@ -13,9 +13,9 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use async_trait::async_trait;
-use forge_conformance::run_live_scenario;
 use forge_sdk::mcp::{McpServerBuilder, Tool, ToolInput, ToolOutput};
 use forge_sdk::{OptionsBuilder, PermissionMode};
+use forge_test_harness::sdk_wire::run_live_scenario;
 use serde_json::json;
 
 struct GreetTool;

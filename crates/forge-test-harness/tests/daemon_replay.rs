@@ -6,19 +6,19 @@
 //! `cargo nextest run` / `just check`, no external dependencies.
 //!
 //! Per CLAUDE.md invariant #10(c), every committed baseline must
-//! round-trip through `forged_conformance::decode_full` with no
+//! round-trip through `forge_test_harness::daemon_wire::decode_full` with no
 //! decode failures and no unknown-method dispatches.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use forged_conformance::{baseline_dir, decode_full, load_baseline};
+use forge_test_harness::daemon_wire::{baseline_dir, decode_full, load_baseline};
 
 #[test]
 fn m1_status_baseline_decodes_cleanly() {
     let entries = load_baseline("m1_status");
     assert!(
         !entries.is_empty(),
-        "m1_status baseline must be non-empty (capture via FORGED_WIRE_CAPTURE=1 capture_m1_status)"
+        "m1_status baseline must be non-empty (capture via FORGE_DAEMON_WIRE_CAPTURE=1 capture_m1_status)"
     );
     for (i, e) in entries.iter().enumerate() {
         let v: serde_json::Value = serde_json::from_str(&e.line)

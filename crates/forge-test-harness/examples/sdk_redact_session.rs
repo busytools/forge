@@ -2,7 +2,7 @@
 //! baseline. Run:
 //!
 //! ```bash
-//! cargo run -p forge-conformance --example redact_session -- \
+//! cargo run -p forge-test-harness --example redact_session -- \
 //!   <input-session.jsonl> <output-baseline.jsonl>
 //! ```
 //!
@@ -17,7 +17,7 @@
 
 use std::process::ExitCode;
 
-use forge_conformance::session_redact::redact_session_path;
+use forge_test_harness::sdk_wire::session_redact::redact_session_path;
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().collect();

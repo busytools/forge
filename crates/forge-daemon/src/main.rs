@@ -102,6 +102,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         Cmd::Status => {
+            // TODO: should instead get the address from config
             forge_daemon::status_cli::run("127.0.0.1:7373").await?;
             Ok(())
         }

@@ -11,7 +11,9 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use forge_conformance::{PINNED_CLI_VERSION, baseline_dir, decode_all_inbound, load_baseline};
+use forge_test_harness::sdk_wire::{
+    PINNED_CLI_VERSION, baseline_dir, decode_all_inbound, load_baseline,
+};
 
 #[test]
 fn all_baselines_decode_cleanly() {
