@@ -43,16 +43,27 @@ pub fn list(
     Ok(session::scan::list_sessions(directory, limit, offset))
 }
 
+/// Result shape for `sessions.info`.
+#[derive(Debug, Clone, serde::Serialize)]
+#[non_exhaustive]
+pub struct InfoResult {
+    /// The session info, or `null` when the session id is unknown.
+    pub info: Option<SDKSessionInfo>,
+}
+
 /// `sessions.info` — see wire spec §7.4.7.
 ///
 /// # Errors
 ///
-/// Infallible today; returns `Ok(None)` when the session id is unknown.
+/// Infallible today; the wrapped `info` is `None` when the session id
+/// is unknown.
 pub fn info(
     session_id: SessionId,
     directory: Option<String>,
-) -> Result<Option<SDKSessionInfo>, Error> {
-    Ok(session::scan::get_session_info(&session_id.0, directory))
+) -> Result<InfoResult, Error> {
+    Ok(InfoResult {
+        info: session::scan::get_session_info(&session_id.0, directory),
+    })
 }
 
 /// Return shape for `sessions.messages` — full transcript plus a
