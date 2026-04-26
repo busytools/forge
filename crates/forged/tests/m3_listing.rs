@@ -289,7 +289,7 @@ fn sessions_info_returns_some_for_known_id() {
     let (tmp, _, project_dir) = seed_projects(1);
     let _guard = point_sdk_at(&tmp);
     let sid = "00000000-0000-4000-8000-000000000000".to_string();
-    let info = forged::methods::sessions::info(sid.clone(), Some(project_dir)).unwrap();
+    let info = forged::methods::sessions::info(sid.clone().into(), Some(project_dir)).unwrap();
     assert!(info.is_some(), "expected Some(SDKSessionInfo)");
     assert_eq!(info.unwrap().session_id, sid);
 }
@@ -408,12 +408,12 @@ fn sessions_rename_writes_custom_title() {
     let _guard = point_sdk_at(&tmp);
     let sid = "00000000-0000-4000-8000-000000000000".to_string();
     forged::methods::sessions::rename(
-        sid.clone(),
+        sid.clone().into(),
         "renamed-title".into(),
         Some(project_dir.clone()),
     )
     .unwrap();
-    let info = forged::methods::sessions::info(sid, Some(project_dir))
+    let info = forged::methods::sessions::info(sid.into(), Some(project_dir))
         .unwrap()
         .unwrap();
     assert_eq!(info.custom_title.as_deref(), Some("renamed-title"));
@@ -427,18 +427,18 @@ fn sessions_tag_sets_then_clears() {
     let sid = "00000000-0000-4000-8000-000000000000".to_string();
 
     forged::methods::sessions::tag(
-        sid.clone(),
+        sid.clone().into(),
         Some("design".into()),
         Some(project_dir.clone()),
     )
     .unwrap();
-    let info = forged::methods::sessions::info(sid.clone(), Some(project_dir.clone()))
+    let info = forged::methods::sessions::info(sid.clone().into(), Some(project_dir.clone()))
         .unwrap()
         .unwrap();
     assert_eq!(info.tag.as_deref(), Some("design"));
 
-    forged::methods::sessions::tag(sid.clone(), None, Some(project_dir.clone())).unwrap();
-    let info = forged::methods::sessions::info(sid, Some(project_dir))
+    forged::methods::sessions::tag(sid.clone().into(), None, Some(project_dir.clone())).unwrap();
+    let info = forged::methods::sessions::info(sid.into(), Some(project_dir))
         .unwrap()
         .unwrap();
     assert_eq!(info.tag, None);
@@ -453,7 +453,7 @@ fn sessions_delete_removes_jsonl() {
     assert!(path.exists());
 
     let _guard = point_sdk_at(&tmp);
-    forged::methods::sessions::delete(sid, Some(project_dir)).unwrap();
+    forged::methods::sessions::delete(sid.into(), Some(project_dir)).unwrap();
     assert!(!path.exists());
 }
 

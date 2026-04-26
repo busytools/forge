@@ -18,6 +18,7 @@ use forge_sdk::SessionMessage;
 use forge_sdk::session;
 
 use crate::Error;
+use crate::session_state::SessionId;
 
 // =============================================================================
 // Listing — M3.2 / M3.3 / M3.4
@@ -48,10 +49,10 @@ pub fn list(
 ///
 /// Infallible today; returns `Ok(None)` when the session id is unknown.
 pub fn info(
-    session_id: String,
+    session_id: SessionId,
     directory: Option<String>,
 ) -> Result<Option<SDKSessionInfo>, Error> {
-    Ok(session::scan::get_session_info(&session_id, directory))
+    Ok(session::scan::get_session_info(&session_id.0, directory))
 }
 
 /// Return shape for `sessions.messages` — full transcript plus a
@@ -76,8 +77,8 @@ pub struct MessagesResult {
 ///
 /// Infallible today — returns an empty Vec + `None` watermark when the
 /// transcript can't be located or is empty.
-pub fn messages(session_id: String, directory: Option<String>) -> Result<MessagesResult, Error> {
-    let messages = session::scan::get_session_messages(&session_id, directory);
+pub fn messages(session_id: SessionId, directory: Option<String>) -> Result<MessagesResult, Error> {
+    let messages = session::scan::get_session_messages(&session_id.0, directory);
     let watermark = messages.last().map(|m| m.uuid.clone());
     Ok(MessagesResult {
         messages,
@@ -90,8 +91,8 @@ pub fn messages(session_id: String, directory: Option<String>) -> Result<Message
 /// # Errors
 ///
 /// Infallible today.
-pub fn list_subagents(session_id: String, directory: Option<String>) -> Result<Vec<String>, Error> {
-    Ok(session::scan::list_subagents(&session_id, directory))
+pub fn list_subagents(session_id: SessionId, directory: Option<String>) -> Result<Vec<String>, Error> {
+    Ok(session::scan::list_subagents(&session_id.0, directory))
 }
 
 /// `sessions.subagent_messages` — see wire spec §7.4.7.
@@ -100,12 +101,12 @@ pub fn list_subagents(session_id: String, directory: Option<String>) -> Result<V
 ///
 /// Infallible today.
 pub fn subagent_messages(
-    session_id: String,
+    session_id: SessionId,
     subagent_id: String,
     directory: Option<String>,
 ) -> Result<Vec<SessionMessage>, Error> {
     Ok(session::scan::get_subagent_messages(
-        &session_id,
+        &session_id.0,
         &subagent_id,
         directory,
         None,
@@ -132,8 +133,8 @@ pub fn project_key(path: Option<String>) -> Result<String, Error> {
 ///
 /// Bubbles [`forge_sdk::Error`] if the session jsonl is missing or
 /// unwriteable.
-pub fn rename(session_id: String, title: String, directory: Option<String>) -> Result<(), Error> {
-    session::mutations::rename_session(&session_id, &title, directory.as_deref())
+pub fn rename(session_id: SessionId, title: String, directory: Option<String>) -> Result<(), Error> {
+    session::mutations::rename_session(&session_id.0, &title, directory.as_deref())
         .map_err(Error::Sdk)
 }
 
@@ -143,11 +144,11 @@ pub fn rename(session_id: String, title: String, directory: Option<String>) -> R
 ///
 /// Bubbles [`forge_sdk::Error`].
 pub fn tag(
-    session_id: String,
+    session_id: SessionId,
     tag: Option<String>,
     directory: Option<String>,
 ) -> Result<(), Error> {
-    session::mutations::tag_session(&session_id, tag.as_deref(), directory.as_deref())
+    session::mutations::tag_session(&session_id.0, tag.as_deref(), directory.as_deref())
         .map_err(Error::Sdk)
 }
 
@@ -156,8 +157,8 @@ pub fn tag(
 /// # Errors
 ///
 /// Bubbles [`forge_sdk::Error`].
-pub fn delete(session_id: String, directory: Option<String>) -> Result<(), Error> {
-    session::mutations::delete_session(&session_id, directory.as_deref()).map_err(Error::Sdk)
+pub fn delete(session_id: SessionId, directory: Option<String>) -> Result<(), Error> {
+    session::mutations::delete_session(&session_id.0, directory.as_deref()).map_err(Error::Sdk)
 }
 
 /// Result of [`fork`].
@@ -178,13 +179,13 @@ pub struct ForkResult {
 ///
 /// Bubbles [`forge_sdk::Error`].
 pub fn fork(
-    session_id: String,
+    session_id: SessionId,
     up_to_message_id: Option<String>,
     title: Option<String>,
     directory: Option<String>,
 ) -> Result<ForkResult, Error> {
     let r = session::mutations::fork_session(
-        &session_id,
+        &session_id.0,
         directory.as_deref(),
         up_to_message_id.as_deref(),
         title.as_deref(),
