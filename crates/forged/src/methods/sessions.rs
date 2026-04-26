@@ -32,6 +32,14 @@ const SESSIONS_LIST_DEFAULT_LIMIT: usize = 200;
 /// from pulling an unbounded result set.
 const SESSIONS_LIST_MAX_LIMIT: usize = 1000;
 
+/// Result shape for `sessions.list`.
+#[derive(Debug, Clone, serde::Serialize)]
+#[non_exhaustive]
+pub struct ListResult {
+    /// The matched session-info rows.
+    pub sessions: Vec<SDKSessionInfo>,
+}
+
 /// `sessions.list` — see wire spec §7.4.7.
 ///
 /// `directory` is the project directory whose sessions to list. `None`
@@ -47,7 +55,7 @@ pub fn list(
     directory: Option<String>,
     limit: Option<usize>,
     offset: usize,
-) -> Result<Vec<SDKSessionInfo>, Error> {
+) -> Result<ListResult, Error> {
     let effective = match limit {
         Some(n) if n > SESSIONS_LIST_MAX_LIMIT => {
             return Err(Error::InvalidParams(format!(
@@ -57,11 +65,9 @@ pub fn list(
         Some(n) => n,
         None => SESSIONS_LIST_DEFAULT_LIMIT,
     };
-    Ok(session::scan::list_sessions(
-        directory,
-        Some(effective),
-        offset,
-    ))
+    Ok(ListResult {
+        sessions: session::scan::list_sessions(directory, Some(effective), offset),
+    })
 }
 
 /// Result shape for `sessions.info`.
@@ -115,6 +121,14 @@ pub fn messages(session_id: SessionId, directory: Option<String>) -> Result<Mess
     })
 }
 
+/// Result shape for `sessions.list_subagents`.
+#[derive(Debug, Clone, serde::Serialize)]
+#[non_exhaustive]
+pub struct ListSubagentsResult {
+    /// The subagent ids found under this session's `subagents/` dir.
+    pub subagent_ids: Vec<String>,
+}
+
 /// `sessions.list_subagents` — see wire spec §7.4.7.
 ///
 /// # Errors
@@ -123,8 +137,18 @@ pub fn messages(session_id: SessionId, directory: Option<String>) -> Result<Mess
 pub fn list_subagents(
     session_id: SessionId,
     directory: Option<String>,
-) -> Result<Vec<String>, Error> {
-    Ok(session::scan::list_subagents(&session_id.0, directory))
+) -> Result<ListSubagentsResult, Error> {
+    Ok(ListSubagentsResult {
+        subagent_ids: session::scan::list_subagents(&session_id.0, directory),
+    })
+}
+
+/// Result shape for `sessions.subagent_messages`.
+#[derive(Debug, Clone, serde::Serialize)]
+#[non_exhaustive]
+pub struct SubagentMessagesResult {
+    /// The subagent's message transcript.
+    pub messages: Vec<SessionMessage>,
 }
 
 /// `sessions.subagent_messages` — see wire spec §7.4.7.
@@ -136,14 +160,25 @@ pub fn subagent_messages(
     session_id: SessionId,
     subagent_id: String,
     directory: Option<String>,
-) -> Result<Vec<SessionMessage>, Error> {
-    Ok(session::scan::get_subagent_messages(
-        &session_id.0,
-        &subagent_id,
-        directory,
-        None,
-        0,
-    ))
+) -> Result<SubagentMessagesResult, Error> {
+    Ok(SubagentMessagesResult {
+        messages: session::scan::get_subagent_messages(
+            &session_id.0,
+            &subagent_id,
+            directory,
+            None,
+            0,
+        ),
+    })
+}
+
+/// Result shape for `sessions.project_key`.
+#[derive(Debug, Clone, serde::Serialize)]
+#[non_exhaustive]
+pub struct ProjectKeyResult {
+    /// The project key derived from the supplied path (or cwd when
+    /// path is None).
+    pub project_key: String,
 }
 
 /// `sessions.project_key` — see wire spec §7.4.7.
@@ -151,8 +186,10 @@ pub fn subagent_messages(
 /// # Errors
 ///
 /// Infallible today.
-pub fn project_key(path: Option<String>) -> Result<String, Error> {
-    Ok(session::scan::project_key_for_directory(path.as_deref()))
+pub fn project_key(path: Option<String>) -> Result<ProjectKeyResult, Error> {
+    Ok(ProjectKeyResult {
+        project_key: session::scan::project_key_for_directory(path.as_deref()),
+    })
 }
 
 // =============================================================================
