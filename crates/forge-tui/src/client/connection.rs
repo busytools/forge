@@ -185,6 +185,18 @@ impl Client {
         let value = rx.await.map_err(|_| ClientError::Closed)?;
         // value is a serde_json::Value of either { result: ... } or { error: ... }
         if let Some(err) = value.get("error") {
+            // Round 4 — fix M5. Daemon's error envelope must include
+            // both `code` and `message` per JSON-RPC 2.0 §5.1. Missing
+            // either points at a wire-spec-violating daemon (or a
+            // mid-version mismatch) — log so operators can grep.
+            // Defaults below preserve forward-progress: callers still
+            // get a typed error rather than a panic.
+            if err.get("code").is_none() || err.get("message").is_none() {
+                tracing::warn!(
+                    error = ?err,
+                    "daemon error response missing code or message"
+                );
+            }
             let code = i32::try_from(
                 err.get("code")
                     .and_then(serde_json::Value::as_i64)

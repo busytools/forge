@@ -11,10 +11,14 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
+use crossterm::event::KeyCode;
+use forge_tui::app::{App, Focus, PendingPermission};
 use forge_tui::client::Client;
+use forged::prompt_queue::{PendingPrompt, PromptKind};
 use parking_lot::Mutex;
+use tokio::sync::mpsc;
 
 #[tokio::test]
 async fn fresh_permission_request_round_trips_through_send_response() {
@@ -105,4 +109,162 @@ async fn fresh_permission_request_round_trips_through_send_response() {
 
     let value = issue.await.unwrap().unwrap();
     assert_eq!(value["decision"], serde_json::json!("allow"));
+}
+
+/// Round 4 — fix I1 regression test. Cross-session permission routing.
+///
+/// Locks the contract that `input::answer_permission` routes
+/// `prompts.respond` on the `session_id` carried in the prompt's params,
+/// NOT on `app.current_session`. The user can be primary on multiple
+/// sessions simultaneously; viewing session A while a permission modal
+/// fires for session B must answer B (the originator), not A.
+///
+/// Prior to the fix, the modal used `app.current_session.clone()` as the
+/// `session_id` for `prompts.respond`, so a user viewing session A while
+/// a queued prompt fires from session B would fan their answer to A,
+/// where the daemon would return `InvalidParams("prompt_id ... not in
+/// queue")` and the originating B-side SDK callback would wait the full
+/// 1-hour timeout.
+#[tokio::test]
+async fn answer_permission_routes_to_params_session_not_current_session() {
+    let state = forged::registry::DaemonState::new();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let addr = listener.local_addr().unwrap();
+    let listener = tokio::net::TcpListener::from_std(listener).unwrap();
+    tokio::spawn(forged::server::run(listener, state.clone()));
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let client = Arc::new(
+        Client::connect(&format!("ws://{addr}/?name=tui-cross-session"))
+            .await
+            .unwrap(),
+    );
+
+    // Wait for the daemon to register our connection.
+    let conn_id = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if let Some(id) = state.connections.lock().keys().next().cloned() {
+                break id;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("connection_id discovery timed out");
+
+    // Register two sessions; pin our connection as primary on BOTH.
+    // Mimics the production case where one TUI client is primary on
+    // multiple concurrent sessions.
+    let sid_a = forged::session_state::SessionId("sess_A".into());
+    let sid_b = forged::session_state::SessionId("sess_B".into());
+    let (handle_a, _rx_a) = state.register_session(sid_a.clone());
+    let (handle_b, _rx_b) = state.register_session(sid_b.clone());
+    *handle_a.primary.lock() = Some(conn_id.clone());
+    *handle_b.primary.lock() = Some(conn_id.clone());
+
+    // Issue a `permission.request` on session B. The daemon routes it
+    // through the primary (us); the rev path captures the rev_id and
+    // would normally let `Client::send_response` resolve it. For this
+    // test, we want the queued-prompt code path
+    // (`prompt_id` is set in `PendingPermission`), which is what
+    // `app.rs`'s `PermissionRequest` handler does when params carry a
+    // `prompt_id`.
+    //
+    // Instead of going through reverse-RPC issuance and forcing the
+    // queued path on the daemon side, park a prompt directly on
+    // session B's queue and synthesize a `PendingPermission` for it.
+    // This is exactly what the TUI sees after a reconnect: the
+    // `session.subscribe` response surfaces queued prompts and the app
+    // builds a `PendingPermission { rev_id, params, prompt_id: Some }`.
+    let prompt_id_b = "prompt_under_test_for_B";
+    let rev_id_b = "rev_under_test_for_B";
+
+    // Park the prompt + record the outstanding-reverse entry so
+    // `prompts.respond` resolves it. Mirrors `reverse_rpc::park_in_queue`
+    // but inlined here so the test owns the responder receiver and can
+    // assert which session the answer landed on.
+    let (responder_tx, responder_rx) = tokio::sync::oneshot::channel::<serde_json::Value>();
+    let (queue_tx, _queue_rx) = tokio::sync::oneshot::channel::<serde_json::Value>();
+    handle_b.prompts.enqueue(PendingPrompt {
+        prompt_id: prompt_id_b.into(),
+        kind: PromptKind::Permission,
+        issued_at: SystemTime::now(),
+        expires_at: SystemTime::now() + Duration::from_secs(60),
+        params: serde_json::json!({"tool_name": "Bash", "tool_input": {"command": "ls"}}),
+        responder: queue_tx,
+        rev_id: Some(rev_id_b.into()),
+    });
+    state.outstanding_reverse.lock().insert(
+        rev_id_b.into(),
+        forged::registry::OutstandingEntry {
+            session_id: sid_b.clone(),
+            conn_id: None,
+            prompt_id: prompt_id_b.into(),
+            responder: responder_tx,
+        },
+    );
+
+    // Build the App as the user would see it after subscribing to A
+    // and then receiving a queued-prompt PermissionRequest for B. The
+    // params carry the daemon's envelope: session_id=B, prompt_id=B's
+    // prompt id.
+    let mut app = App::default();
+    app.current_session = Some("sess_A".into()); // user is viewing A
+    app.focus = Focus::PermissionModal;
+    app.pending_permission = Some(PendingPermission::new(
+        serde_json::Value::Null,
+        serde_json::json!({
+            "session_id": "sess_B",   // daemon-attached envelope: prompt is B's
+            "prompt_id": prompt_id_b,
+            "tool_name": "Bash",
+            "tool_input": {"command": "ls"},
+        }),
+        Some(prompt_id_b.into()),
+    ));
+
+    // Drive the keypress through the public input handler. `event_tx`
+    // is unused for the permission-modal path but the signature
+    // requires it.
+    let (event_tx, _event_rx) = mpsc::unbounded_channel();
+    let quit = forge_tui::input::handle_key(&mut app, KeyCode::Char('a'), &client, &event_tx).await;
+    assert_eq!(quit, Some(false), "permission allow must not quit the loop");
+
+    // The daemon's `prompts.respond` handler runs synchronously in the
+    // dispatcher; the TUI's `client.call` returns once the daemon
+    // sends back the response. By the time `handle_key` returns, the
+    // outstanding-reverse entry should have been resolved with our
+    // `{"decision": "allow"}` answer.
+    let answer = tokio::time::timeout(Duration::from_secs(2), responder_rx)
+        .await
+        .expect("daemon did not resolve the responder within 2s")
+        .expect("responder channel was dropped without an answer");
+    assert_eq!(
+        answer["decision"],
+        serde_json::json!("allow"),
+        "session B's responder must have received our 'allow' answer; got {answer}"
+    );
+
+    // Session A's queue must be empty — the modal must NOT have
+    // misrouted the answer to A. (Pre-fix, `app.current_session` was
+    // "sess_A" so `prompts.respond` would have hit A and returned
+    // `InvalidParams("prompt_id ... not in queue")`, leaving B's
+    // responder forever stuck.)
+    assert_eq!(
+        handle_a.prompts.snapshot().len(),
+        0,
+        "session A had no parked prompt and must remain so"
+    );
+    assert_eq!(
+        handle_b.prompts.snapshot().len(),
+        0,
+        "session B's prompt must have been consumed by prompts.respond"
+    );
+
+    // Status message must NOT show a routing error.
+    assert!(
+        app.status_msg.is_empty(),
+        "answer_permission must not surface an error; got: {}",
+        app.status_msg
+    );
 }

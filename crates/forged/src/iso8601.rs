@@ -50,7 +50,18 @@ pub fn secs_to_ymdhms(mut secs: u64) -> (u32, u32, u32, u32, u32, u32) {
     // function's contract (deterministic decomposition) for any
     // valid `SystemTime` while still surfacing weirdness as
     // year-overflow rather than nonsense.
-    let mut days: u32 = u32::try_from(secs).unwrap_or(u32::MAX);
+    //
+    // Round 4 — fix m2. Promoted the saturating arm from "silent
+    // saturation" to a warn so the (extremely improbable) overflow
+    // path is visible in operator traces rather than producing a
+    // year-11M timestamp without explanation.
+    let mut days: u32 = u32::try_from(secs).unwrap_or_else(|_| {
+        tracing::warn!(
+            secs,
+            "secs_to_ymdhms: days saturating to u32::MAX; calendar output will be capped at year ~11M"
+        );
+        u32::MAX
+    });
     let mut y: u32 = 1970;
     loop {
         let in_year = days_in_year(y);

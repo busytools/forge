@@ -101,14 +101,29 @@ async fn handle_connection(
 
     // Send the initial client.identify notification through the same channel
     // so it interleaves correctly with later traffic.
-    let _ = out_tx.send(Outbound::Notification(Notification::new(
-        "client.identify",
-        serde_json::json!({
-            "connection_id": conn.id.0,
-            "server_version": env!("CARGO_PKG_VERSION"),
-            "server_build": option_env!("FORGED_BUILD_SHA").unwrap_or("dev"),
-        }),
-    )));
+    if out_tx
+        .send(Outbound::Notification(Notification::new(
+            "client.identify",
+            serde_json::json!({
+                "connection_id": conn.id.0,
+                "server_version": env!("CARGO_PKG_VERSION"),
+                "server_build": option_env!("FORGED_BUILD_SHA").unwrap_or("dev"),
+            }),
+        )))
+        .is_err()
+    {
+        // Round 4 — fix M2. The writer task drains `out_rx` and only
+        // closes when its end of the channel is dropped — at handshake
+        // time we haven't dropped it yet, so reaching this branch means
+        // the writer task already exited (panic, transport already
+        // dead). Surface it so a borked handshake leaves a trail in
+        // operator logs; the read loop will also exit shortly when the
+        // socket signals closed.
+        tracing::warn!(
+            conn_id = %conn.id.0,
+            "client.identify send failed at handshake (writer task gone)"
+        );
+    }
 
     let r = read_loop(read, &conn, &state).await;
 
@@ -212,9 +227,16 @@ async fn read_loop(
                 } else {
                     crate::reverse_rpc::resolve(state, id, Value::Null);
                 }
+            } else {
+                // Round 4 — fix M1. Inbound JSON-RPC response with a
+                // non-`rev_` id reaches this branch only when a client
+                // forges a reply for an id the daemon never issued
+                // (the daemon's own outbound requests all use `rev_`
+                // prefixes). Trace the drop so misbehaving clients
+                // are visible in operator logs rather than silently
+                // dropped on the floor.
+                tracing::trace!(id, "received response for non-rev id; ignoring");
             }
-            // Either we just resolved a reverse-RPC, or the id didn't
-            // match anything outstanding — both cases are silent.
             continue;
         }
 
