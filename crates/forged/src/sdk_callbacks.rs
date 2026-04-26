@@ -114,10 +114,17 @@ pub fn decode_permission_response(value: &Value) -> PermissionDecision {
     }
 
     // Wire shape: `{ "decision": "allow"|"deny", "updated_input": ?, "reason": ? }`
-    let decision_str = value
-        .get("decision")
-        .and_then(Value::as_str)
-        .unwrap_or("deny");
+    // Round 4 — fix M4. Previously a missing `decision` field silently
+    // collapsed into "deny" with an empty reason — symmetrical with the
+    // hook bridge's missing-decision branch, but without a log it was
+    // indistinguishable from a deliberate deny in operator traces. Now
+    // we warn on the malformed-shape path so the silent fallback is
+    // visible (e.g. a buggy client sending `{}` instead of
+    // `{"decision":"deny"}`).
+    let Some(decision_str) = value.get("decision").and_then(Value::as_str) else {
+        tracing::warn!(?value, "permission bridge: missing decision field; denying");
+        return PermissionDecision::deny("missing decision field");
+    };
     let updated_input = value.get("updated_input").cloned();
     let reason = value
         .get("reason")

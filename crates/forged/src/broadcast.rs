@@ -16,7 +16,13 @@ pub fn fanout(state: &DaemonState, session_id: &SessionId, frame: &Outbound) {
     for sub in subs {
         if let Some(conn) = connections.get(&sub) {
             if conn.outbound.send(frame.clone()).is_err() {
-                tracing::trace!(
+                // Round 4 — fix m4. Promoted from trace to debug.
+                // Operators may want to grep for this during incident
+                // response (e.g. when investigating notification loss
+                // for a flapping client) — debug is the lowest level
+                // visible by default with `RUST_LOG=forged=debug`,
+                // whereas trace requires explicit opt-in.
+                tracing::debug!(
                     connection_id = %sub.0,
                     "fanout: dropping frame to dead subscriber"
                 );

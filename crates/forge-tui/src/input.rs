@@ -124,25 +124,51 @@ async fn answer_permission(app: &mut App, client: &Arc<Client>, decision: &str) 
     };
     let result = serde_json::json!({"decision": decision});
 
-    let outcome: Result<(), String> = if let Some(prompt_id) = p.prompt_id.as_ref() {
-        // Prompt came from the queue — answer via prompts.respond.
-        client
-            .call::<_, serde_json::Value>(
-                "prompts.respond",
-                serde_json::json!({
-                    "session_id": app.current_session.clone().unwrap_or_default(),
-                    "prompt_id": prompt_id,
-                    "result": result,
-                }),
-            )
-            .await
-            .map(|_| ())
-            .map_err(|e| e.to_string())
-    } else {
-        // Fresh reverse-RPC — answer with the captured rev_id.
-        client
-            .send_response(p.rev_id.clone(), result)
-            .map_err(|e| e.to_string())
+    // Round 4 — fix I1. Cross-session routing bug: previously
+    // `prompts.respond` used `app.current_session` to identify the
+    // session whose prompt is being answered, which routes to the
+    // wrong session whenever the user is the primary on multiple
+    // sessions and a modal for B fires while they're viewing A.
+    // Source the session_id from the prompt's params instead — the
+    // daemon's reverse-RPC envelope carries it alongside `prompt_id`,
+    // so it always names the session that originated the prompt.
+    let session_id_from_params = p
+        .params
+        .get("session_id")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+
+    let outcome: Result<(), String> = match (p.prompt_id.as_ref(), session_id_from_params.as_ref())
+    {
+        (Some(prompt_id), Some(sid)) => {
+            // Prompt came from the queue — answer via prompts.respond,
+            // routing on the session_id the daemon attached to the
+            // envelope rather than the user's currently-viewed session.
+            client
+                .call::<_, serde_json::Value>(
+                    "prompts.respond",
+                    serde_json::json!({
+                        "session_id": sid,
+                        "prompt_id": prompt_id,
+                        "result": result,
+                    }),
+                )
+                .await
+                .map(|_| ())
+                .map_err(|e| e.to_string())
+        }
+        (Some(_), None) => {
+            tracing::warn!(
+                "answer_permission: queued prompt missing session_id in params; cannot route"
+            );
+            Err("queued prompt missing session_id".into())
+        }
+        (None, _) => {
+            // Fresh reverse-RPC — answer with the captured rev_id.
+            client
+                .send_response(p.rev_id.clone(), result)
+                .map_err(|e| e.to_string())
+        }
     };
 
     app.focus = Focus::Conversation;

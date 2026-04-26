@@ -73,15 +73,29 @@ pub fn claim_primary(
         .get(caller)
         .map(|c| c.outbound.clone());
     if let Some(out) = caller_outbound {
-        let _ = out.send(Outbound::Notification(Notification::new(
-            "session.role_assigned",
-            serde_json::json!({
-                "session_id": session_id.0,
-                "role": "primary",
-                "primary": caller.0,
-                "reason": "claim",
-            }),
-        )));
+        if out
+            .send(Outbound::Notification(Notification::new(
+                "session.role_assigned",
+                serde_json::json!({
+                    "session_id": session_id.0,
+                    "role": "primary",
+                    "primary": caller.0,
+                    "reason": "claim",
+                }),
+            )))
+            .is_err()
+        {
+            // Round 4 — fix M3. Caller's writer task gone between the
+            // connections-map snapshot and the send. Don't fail the
+            // claim — the role state is already updated and other
+            // subscribers see it via the primary_changed broadcast
+            // below — but log so the silent drop is visible.
+            tracing::warn!(
+                caller_id = %caller.0,
+                session_id = %session_id.0,
+                "claim_primary: caller's role_assigned notification dropped (writer task gone)"
+            );
+        }
     } else {
         // Round 3 — fix M2. The caller's connection was unregistered
         // between the WS dispatch (which reached this method) and
@@ -104,15 +118,28 @@ pub fn claim_primary(
                 .get(old)
                 .map(|c| c.outbound.clone());
             if let Some(out) = old_outbound {
-                let _ = out.send(Outbound::Notification(Notification::new(
-                    "session.role_assigned",
-                    serde_json::json!({
-                        "session_id": session_id.0,
-                        "role": "viewer",
-                        "primary": caller.0,
-                        "reason": "demoted",
-                    }),
-                )));
+                if out
+                    .send(Outbound::Notification(Notification::new(
+                        "session.role_assigned",
+                        serde_json::json!({
+                            "session_id": session_id.0,
+                            "role": "viewer",
+                            "primary": caller.0,
+                            "reason": "demoted",
+                        }),
+                    )))
+                    .is_err()
+                {
+                    // Round 4 — fix M3. Displaced primary's writer
+                    // task gone between snapshot and send. Don't roll
+                    // back the claim; just log so the silent drop is
+                    // attributable.
+                    tracing::warn!(
+                        displaced_id = %old.0,
+                        session_id = %session_id.0,
+                        "claim_primary: displaced primary's role_assigned dropped (writer task gone)"
+                    );
+                }
             }
         }
     }
