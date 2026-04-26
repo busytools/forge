@@ -259,6 +259,14 @@ pub fn drain_prompts_on_session_exit(state: &DaemonState, session_id: &SessionId
 ///
 /// - [`Error::SessionNotFound`] if the session id is unknown.
 /// - [`Error::TemporarilyUnavailable`] on timeout or channel drop.
+/// Soft cap on the daemon-wide outstanding-reverse map. Even in the
+/// single-user trust model, a session that emits hook-heavy traffic
+/// while no primary is connected will accumulate parked prompts for up
+/// to HOOK_TIMEOUT_SECS (1h). Cap prevents the map from growing
+/// unboundedly across an idle hour; new prompts are denied with
+/// security-critical fail-closed semantics until headroom returns.
+const OUTSTANDING_REVERSE_CAP: usize = 1024;
+
 pub async fn issue_to_primary(
     state: &DaemonState,
     session_id: &SessionId,
@@ -270,6 +278,16 @@ pub async fn issue_to_primary(
     let handle = state
         .get_session(session_id)
         .ok_or_else(|| Error::SessionNotFound(session_id.0.clone()))?;
+
+    if state.outstanding_reverse.lock().len() >= OUTSTANDING_REVERSE_CAP {
+        tracing::warn!(
+            cap = OUTSTANDING_REVERSE_CAP,
+            method = %method,
+            session = %session_id.0,
+            "outstanding_reverse at cap; rejecting new reverse-RPC with Overloaded"
+        );
+        return Err(Error::Overloaded);
+    }
 
     let prompt_id = format!("prompt_{}", Uuid::new_v4());
     let rev_id = format!("rev_{}", Uuid::new_v4());
