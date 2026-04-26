@@ -46,6 +46,11 @@ pub enum ClientError {
     /// The client's outbound channel is closed (transport gone).
     #[error("client closed")]
     Closed,
+    /// Attempted to subscribe to a session that is already subscribed
+    /// from this client. The first subscription's stream is still live;
+    /// the caller should reuse it instead of re-subscribing.
+    #[error("session {0} is already subscribed on this client")]
+    DuplicateSubscription(String),
 }
 
 /// Convenience alias for client operation results.
@@ -230,7 +235,16 @@ impl Client {
         session_id: &str,
     ) -> Result<tokio_stream::wrappers::UnboundedReceiverStream<serde_json::Value>> {
         let (tx, rx) = mpsc::unbounded_channel::<serde_json::Value>();
-        self.subscriptions.lock().insert(session_id.into(), tx);
+        // Reject duplicate subscribes — silently overwriting would
+        // disconnect the original UnboundedReceiver from the transport
+        // and the caller would see a frozen pane with no signal.
+        {
+            let mut subs = self.subscriptions.lock();
+            if subs.contains_key(session_id) {
+                return Err(ClientError::DuplicateSubscription(session_id.to_owned()));
+            }
+            subs.insert(session_id.into(), tx);
+        }
         match self
             .call::<_, serde_json::Value>(
                 "session.subscribe",
