@@ -67,7 +67,8 @@ fn parse_spawn_params_handles_full_options_shape() {
     assert_eq!(opts.options.max_turns, Some(10));
     assert!((opts.options.max_budget_usd.unwrap() - 0.50).abs() < f64::EPSILON);
     assert_eq!(
-        opts.options.cwd
+        opts.options
+            .cwd
             .as_deref()
             .map(|p| p.to_string_lossy().into_owned()),
         Some("/tmp/forge-test".to_string())
