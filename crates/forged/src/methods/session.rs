@@ -104,31 +104,12 @@ pub struct SpawnParams {
     pub hooks: Vec<WireHookSpec>,
 }
 
-impl SpawnParams {
-    /// Construct from raw [`Options`] with no hook registrations. Used by
-    /// tests + direct callers that don't go through the wire deserialiser.
-    #[must_use]
-    pub fn from_options(options: Options) -> Self {
+impl From<Options> for SpawnParams {
+    fn from(options: Options) -> Self {
         Self {
             options,
             hooks: Vec::new(),
         }
-    }
-}
-
-impl From<Options> for SpawnParams {
-    fn from(options: Options) -> Self {
-        Self::from_options(options)
-    }
-}
-
-// Deref so existing tests written against `Options`-returning
-// `parse_spawn_params` can continue to read fields like `opts.binary`
-// directly. The hooks list lives at `opts.hooks` separately.
-impl std::ops::Deref for SpawnParams {
-    type Target = Options;
-    fn deref(&self) -> &Options {
-        &self.options
     }
 }
 
