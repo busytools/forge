@@ -196,9 +196,9 @@ pub async fn send_user_message(
             prompt: prompt.to_owned(),
             reply,
         })
-        .map_err(|_| Error::InternalError("session actor gone".into()))?;
+        .map_err(|_| Error::SessionNotFound(session_id.0.clone()))?;
     recv.await
-        .map_err(|_| Error::InternalError("session actor dropped reply channel".into()))?
+        .map_err(|_| Error::SessionNotFound(session_id.0.clone()))?
 }
 
 /// Result of `session.subscribe`.
@@ -424,9 +424,9 @@ pub async fn disconnect(state: &DaemonState, session_id: &SessionId) -> Result<(
     handle
         .commands
         .send(Command::Disconnect { reply })
-        .map_err(|_| Error::InternalError("session actor gone".into()))?;
+        .map_err(|_| Error::SessionNotFound(session_id.0.clone()))?;
     recv.await
-        .map_err(|_| Error::InternalError("session actor dropped reply channel".into()))?
+        .map_err(|_| Error::SessionNotFound(session_id.0.clone()))?
 }
 
 /// Wire-shape parameters for `session.end_input`.
@@ -452,9 +452,9 @@ pub async fn end_input(state: &DaemonState, session_id: &SessionId) -> Result<()
     handle
         .commands
         .send(Command::EndInput { reply })
-        .map_err(|_| Error::InternalError("session actor gone".into()))?;
+        .map_err(|_| Error::SessionNotFound(session_id.0.clone()))?;
     recv.await
-        .map_err(|_| Error::InternalError("session actor dropped reply channel".into()))?
+        .map_err(|_| Error::SessionNotFound(session_id.0.clone()))?
 }
 
 /// Spawn the actor task that exclusively owns `client` for the lifetime of
@@ -954,9 +954,9 @@ pub async fn interrupt(state: &DaemonState, session_id: &SessionId) -> Result<()
     handle
         .commands
         .send(Command::Interrupt { reply })
-        .map_err(|_| Error::InternalError("session actor gone".into()))?;
+        .map_err(|_| Error::SessionNotFound(session_id.0.clone()))?;
     recv.await
-        .map_err(|_| Error::InternalError("session actor dropped reply channel".into()))?
+        .map_err(|_| Error::SessionNotFound(session_id.0.clone()))?
 }
 
 /// `session.set_permission_mode` — switch the permission flow mid-session.
@@ -976,9 +976,9 @@ pub async fn set_permission_mode(
     handle
         .commands
         .send(Command::SetPermissionMode { mode, reply })
-        .map_err(|_| Error::InternalError("session actor gone".into()))?;
+        .map_err(|_| Error::SessionNotFound(session_id.0.clone()))?;
     recv.await
-        .map_err(|_| Error::InternalError("session actor dropped reply channel".into()))?
+        .map_err(|_| Error::SessionNotFound(session_id.0.clone()))?
 }
 
 /// `session.set_model` — switch the active model mid-session. `None`
@@ -999,9 +999,9 @@ pub async fn set_model(
     handle
         .commands
         .send(Command::SetModel { model, reply })
-        .map_err(|_| Error::InternalError("session actor gone".into()))?;
+        .map_err(|_| Error::SessionNotFound(session_id.0.clone()))?;
     recv.await
-        .map_err(|_| Error::InternalError("session actor dropped reply channel".into()))?
+        .map_err(|_| Error::SessionNotFound(session_id.0.clone()))?
 }
 
 /// `session.rewind_files` — ask the CLI to revert file edits since the
@@ -1025,9 +1025,9 @@ pub async fn rewind_files(
             user_message_id,
             reply,
         })
-        .map_err(|_| Error::InternalError("session actor gone".into()))?;
+        .map_err(|_| Error::SessionNotFound(session_id.0.clone()))?;
     recv.await
-        .map_err(|_| Error::InternalError("session actor dropped reply channel".into()))?
+        .map_err(|_| Error::SessionNotFound(session_id.0.clone()))?
 }
 
 /// `session.stop_task` — kill an in-flight sub-agent task.
@@ -1047,7 +1047,7 @@ pub async fn stop_task(
     handle
         .commands
         .send(Command::StopTask { task_id, reply })
-        .map_err(|_| Error::InternalError("session actor gone".into()))?;
+        .map_err(|_| Error::SessionNotFound(session_id.0.clone()))?;
     recv.await
-        .map_err(|_| Error::InternalError("session actor dropped reply channel".into()))?
+        .map_err(|_| Error::SessionNotFound(session_id.0.clone()))?
 }
