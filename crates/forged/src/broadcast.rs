@@ -21,6 +21,18 @@ pub fn fanout(state: &DaemonState, session_id: &SessionId, frame: &Outbound) {
                     "fanout: dropping frame to dead subscriber"
                 );
             }
+        } else {
+            // Round 3 — fix M5. TOCTOU race: the subscribers list
+            // referenced a connection that was unregistered between
+            // the subscribers-snapshot and the connections-snapshot
+            // above. The subscriber's own cleanup path will purge
+            // the entry; trace so the inconsistency window is
+            // visible if it ever becomes load-bearing.
+            tracing::trace!(
+                connection_id = %sub.0,
+                session_id = %session_id.0,
+                "fanout: subscriber not in connections map (TOCTOU race?)"
+            );
         }
     }
 }

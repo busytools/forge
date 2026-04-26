@@ -131,62 +131,128 @@ async fn session_list_loaded_event_populates_list_and_keeps_cursor_in_bounds() {
     );
 }
 
-#[tokio::test]
-async fn prompts_expired_with_non_matching_id_does_not_dismiss_open_modal() {
-    // Drive the loop through:
-    //   1. Open permission modal (prompt_A)
-    //   2. Emit prompts.expired for prompt_B (non-matching)
-    //   3. Quit via 'd' (deny — closes modal cleanly)  → 'q' to exit
+#[test]
+fn prompts_expired_with_non_matching_id_does_not_dismiss_open_modal() {
+    // Round 3 — fix I3. Replaces the round-2 test-theatre version:
+    // that test passed in BOTH a broken AND a fixed world because it
+    // only checked that the loop terminated, never that the modal
+    // remained open across the bogus expiry.
     //
-    // The contract under test: the prompt_B expiry MUST NOT dismiss
-    // the prompt_A modal. We verify by checking that 'd' (the
-    // permission-modal "deny" key) is consumed cleanly by the
-    // PermissionModal focus — i.e., the modal was still open when
-    // 'd' arrived. If the expiry had wrongly dismissed the modal, the
-    // 'd' would fall through to the "_ => None" branch and become a
-    // no-op, but the loop would still process subsequent events,
-    // including the 'q' that follows.
+    // Buffer-comparison strategy (non-invasive — no Arc<Mutex<App>>
+    // hook into the loop). The discrimination test is:
     //
-    // We don't have a direct way to inspect post-loop App state, but
-    // the rendered buffer at the *time of quit* tells us whether the
-    // modal was open: if 'd' didn't pop the modal, the rendered
-    // content stays in PermissionModal focus until 'd' fires. Since
-    // the loop processes events one at a time and 'd' (allowed in
-    // PermissionModal) closes the modal, by the time 'q' fires the
-    // modal should be gone — but the test's value is in confirming
-    // the loop didn't panic and the events were drained in order.
-    let addr = spawn_forged();
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    let client = Arc::new(Client::connect(&format!("ws://{addr}/")).await.unwrap());
-    let backend = TestBackend::new(80, 20);
-    let mut terminal = Terminal::new(backend).unwrap();
+    //   1. Open permission modal for prompt_A.
+    //   2. Drive the loop just long enough to render once
+    //      (the modal is visible in the rendered buffer).
+    //   3. Capture that buffer as the "expected with modal" snapshot.
+    //   4. Restart the loop, this time also injecting a
+    //      `PromptsExpired` for prompt_B AFTER the modal is open.
+    //   5. Drive long enough for the expiry to be processed and
+    //      re-render.
+    //   6. Capture the buffer again — assert it STILL shows the
+    //      modal text (i.e. byte-for-byte the same as step 3).
+    //
+    // If the matcher were broken (the bogus expiry dismissed the
+    // modal), the step-6 buffer would lose the modal frame and
+    // would NOT match step 3.
+    //
+    // We render via two independent runs because the only way to
+    // capture mid-loop state without invasive hooks is to reach
+    // termination cleanly. Each run uses TestBackend so the buffer
+    // survives Drop.
 
-    let (tx, rx) = mpsc::unbounded_channel::<AppEvent>();
-    // Open a permission modal for prompt_A.
-    tx.send(AppEvent::PermissionRequest {
+    fn capture_buffer_after_events(events: Vec<AppEvent>) -> String {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async move {
+            let addr = spawn_forged();
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            let client = Arc::new(Client::connect(&format!("ws://{addr}/")).await.unwrap());
+            let backend = TestBackend::new(80, 20);
+            let mut terminal = Terminal::new(backend).unwrap();
+
+            let (tx, rx) = mpsc::unbounded_channel::<AppEvent>();
+            for e in events {
+                tx.send(e).unwrap();
+            }
+            tx.send(AppEvent::Quit).unwrap();
+
+            tokio::time::timeout(
+                Duration::from_secs(2),
+                app::run(&mut terminal, client, tx.clone(), rx),
+            )
+            .await
+            .expect("app loop did not exit within 2s")
+            .expect("app::run returned Err");
+
+            // Concatenate cell symbols row-by-row so we can compare
+            // visible-text content rather than raw cell coordinates.
+            let buffer = terminal.backend().buffer();
+            let area = buffer.area();
+            let mut s = String::with_capacity(usize::from(area.width) * usize::from(area.height));
+            for y in 0..area.height {
+                for x in 0..area.width {
+                    s.push_str(buffer[(x, y)].symbol());
+                }
+                s.push('\n');
+            }
+            s
+        })
+    }
+
+    // Baseline: open prompt_A modal, no expiry.
+    let baseline_with_modal = capture_buffer_after_events(vec![AppEvent::PermissionRequest {
         rev_id: serde_json::Value::Null,
         params: serde_json::json!({
             "tool_name": "Bash",
+            "tool_input": {"command": "ls"},
             "prompt_id": "prompt_A",
         }),
-    })
-    .unwrap();
-    // Non-matching expiry — must NOT dismiss.
-    tx.send(AppEvent::PromptsExpired(serde_json::json!({
-        "session_id": "sess_unrelated",
-        "prompt_id": "prompt_B",
-        "reason": "timeout",
-        "fallback": "deny",
-    })))
-    .unwrap();
-    // Use Quit explicitly to bypass the q-vs-modal-key collision.
-    tx.send(AppEvent::Quit).unwrap();
+    }]);
 
-    let result = tokio::time::timeout(
-        Duration::from_secs(2),
-        app::run(&mut terminal, client, tx.clone(), rx),
-    )
-    .await
-    .expect("app loop did not exit within 2s");
-    result.expect("app::run returned Err");
+    // The modal renders SOMETHING tool-name-shaped — assert visibility
+    // before we rely on matching it.
+    assert!(
+        baseline_with_modal.contains("Bash"),
+        "baseline should render the permission-modal Bash content; got:\n{baseline_with_modal}"
+    );
+
+    // Test: open prompt_A modal, then fire bogus expiry for prompt_B.
+    let after_bogus_expiry = capture_buffer_after_events(vec![
+        AppEvent::PermissionRequest {
+            rev_id: serde_json::Value::Null,
+            params: serde_json::json!({
+                "tool_name": "Bash",
+                "tool_input": {"command": "ls"},
+                "prompt_id": "prompt_A",
+            }),
+        },
+        AppEvent::PromptsExpired(serde_json::json!({
+            "session_id": "sess_unrelated",
+            "prompt_id": "prompt_B",
+            "reason": "timeout",
+            "fallback": "deny",
+        })),
+    ]);
+
+    // Discrimination assertion: the rendered buffer must STILL show
+    // the modal after the bogus expiry. If the matcher were broken
+    // (rev_id used as prompt_id, or prompt_id check skipped), the
+    // expiry would dismiss the modal and the buffer would lose its
+    // modal content — diverging from the baseline.
+    assert!(
+        after_bogus_expiry.contains("Bash"),
+        "non-matching prompts.expired must NOT dismiss the open modal;\n\
+         baseline was:\n{baseline_with_modal}\n\
+         after-bogus-expiry was:\n{after_bogus_expiry}"
+    );
+    // Stronger: byte-for-byte equality between baseline and post-expiry
+    // proves the expiry was a no-op — no state mutation reached the
+    // render.
+    assert_eq!(
+        baseline_with_modal, after_bogus_expiry,
+        "non-matching prompts.expired must not change rendered output"
+    );
 }

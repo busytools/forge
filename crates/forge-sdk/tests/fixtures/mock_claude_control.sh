@@ -3,6 +3,15 @@
 # outbound control_request at a time and replies with a matching
 # control_response. Used exclusively by the control-subtype
 # integration tests — never emits user-message or result frames.
+#
+# Round 3 — M8. When `FORGED_MOCK_ECHO_SUBTYPE` is set, every
+# observed control_request's subtype is appended (one per line) to
+# the file at `$FORGED_MOCK_ECHO_SUBTYPE`. M3 dispatch tests can read
+# the file post-call to discriminate "the right Client::* method
+# fired" from "the dispatch path reached the actor" — strengthening
+# the dispatch contract beyond the current "no SessionNotFound, no
+# actor-gone" check. Default (env unset) keeps the mock byte-for-byte
+# compatible with existing forge-sdk tests.
 
 set -euo pipefail
 
@@ -35,6 +44,14 @@ print(json.dumps({
 ' 2>/dev/null || echo '{"request_id":"","subtype":""}')
     req_id=$(printf '%s' "$parsed" | python3 -c 'import sys, json; print(json.load(sys.stdin).get("request_id",""))' 2>/dev/null || echo "")
     subtype=$(printf '%s' "$parsed" | python3 -c 'import sys, json; print(json.load(sys.stdin).get("subtype",""))' 2>/dev/null || echo "")
+
+    # Optional: echo the observed subtype so dispatch tests can
+    # discriminate between code paths. Gated on env var so the mock
+    # stays byte-for-byte compatible with existing forge-sdk tests
+    # that don't set this.
+    if [[ -n "${FORGED_MOCK_ECHO_SUBTYPE:-}" ]]; then
+        printf '%s\n' "$subtype" >> "$FORGED_MOCK_ECHO_SUBTYPE"
+    fi
 
     case "$subtype" in
         mcp_status)

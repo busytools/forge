@@ -2,9 +2,9 @@
 //! `Client`.
 //!
 //! 1. Daemon issues `permission.request` to the registered primary client.
-//! 2. The `Client::on_reverse_rpc` handler captures the `rev_id` and forwards
-//!    it through a oneshot channel (mimicking what `main.rs` does, except
-//!    the answer comes from the test rather than a keypress).
+//! 2. The `Client::on_reverse_rpc_deferred` handler captures the `rev_id`
+//!    and forwards it through a oneshot channel (mimicking what `main.rs`
+//!    does, except the answer comes from the test rather than a keypress).
 //! 3. `Client::send_response(rev_id, ...)` ships the answer back.
 //! 4. The daemon's `issue_to_primary` future resolves with the answer.
 

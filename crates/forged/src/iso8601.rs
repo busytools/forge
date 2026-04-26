@@ -42,7 +42,15 @@ pub fn secs_to_ymdhms(mut secs: u64) -> (u32, u32, u32, u32, u32, u32) {
     secs /= 60;
     let hh = (secs % 24) as u32;
     secs /= 24;
-    let mut days = secs as u32;
+    // Round 3 — fix M6. Saturating cast: `secs` here is the days
+    // count after dividing out h/m/s. It exceeds `u32::MAX` only on
+    // timestamps far beyond any plausible input (year ~11 million),
+    // but the previous `secs as u32` would silently wrap, producing
+    // garbage calendar output. Saturating to `u32::MAX` keeps the
+    // function's contract (deterministic decomposition) for any
+    // valid `SystemTime` while still surfacing weirdness as
+    // year-overflow rather than nonsense.
+    let mut days: u32 = u32::try_from(secs).unwrap_or(u32::MAX);
     let mut y: u32 = 1970;
     loop {
         let in_year = days_in_year(y);

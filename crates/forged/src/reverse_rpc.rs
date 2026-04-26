@@ -63,6 +63,7 @@ fn try_send_to_primary(
         OutstandingEntry {
             session_id: session_id.clone(),
             conn_id: Some(pid.clone()),
+            prompt_id: prompt_id.to_owned(),
             responder: tx,
         },
     );
@@ -156,6 +157,7 @@ fn park_in_queue(args: ParkArgs<'_>) {
         OutstandingEntry {
             session_id: session_id.clone(),
             conn_id: None,
+            prompt_id: prompt_id.to_owned(),
             responder: tx,
         },
     );
@@ -206,11 +208,12 @@ pub fn drain_prompts_on_session_exit(state: &DaemonState, session_id: &SessionId
 
     // Walk outstanding_reverse for in-flight entries owned by this
     // session and resolve them with the synthetic _session_closed
-    // sentinel. We can't recover the original prompt_id here because
-    // outstanding_reverse keys by `rev_id`; emit prompts.expired with
-    // the rev_id as the prompt_id field so subscribers still see one
-    // notification per drained entry.
-    let drained: Vec<(String, OutstandingEntry)> = {
+    // sentinel. The entry now carries the original `prompt_<uuid>`
+    // alongside the rev_<uuid>; emit `prompts.expired` keyed on
+    // `prompt_id` so the TUI's matcher (which compares against
+    // `PendingPermission::prompt_id`, a `prompt_<uuid>`) can dismiss
+    // the corresponding modal cleanly.
+    let drained: Vec<OutstandingEntry> = {
         let mut o = state.outstanding_reverse.lock();
         let keys: Vec<String> = o
             .iter()
@@ -222,15 +225,14 @@ pub fn drain_prompts_on_session_exit(state: &DaemonState, session_id: &SessionId
                 }
             })
             .collect();
-        keys.into_iter()
-            .filter_map(|k| o.remove(&k).map(|v| (k, v)))
-            .collect()
+        keys.into_iter().filter_map(|k| o.remove(&k)).collect()
     };
-    for (rev_id, entry) in drained {
+    for entry in drained {
+        let prompt_id = entry.prompt_id.clone();
         let _ = entry.responder.send(serde_json::json!({
             "_session_closed": true,
         }));
-        notify_disconnect_expired(state, session_id, &rev_id);
+        notify_disconnect_expired(state, session_id, &prompt_id);
     }
 }
 

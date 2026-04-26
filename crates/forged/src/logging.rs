@@ -118,6 +118,18 @@ fn sweep_old(dir: &Path, retention_days: u32) {
     let Some(cutoff) = std::time::SystemTime::now().checked_sub(std::time::Duration::from_secs(
         u64::from(retention_days) * 86_400,
     )) else {
+        // Round 3 — fix M7. `checked_sub` returns None when the
+        // retention window exceeds the representable SystemTime
+        // range — practically impossible with u32 days but worth
+        // making visible if it ever fires (misconfigured
+        // `retention_days` value or platform with skewed epoch).
+        // Without the log, the silent return looks identical to
+        // "nothing to sweep", masking a configuration error.
+        tracing::warn!(
+            retention_days,
+            "logging::sweep_old: retention window exceeds SystemTime range; \
+             skipping sweep (check log_retention_days)"
+        );
         return;
     };
     let entries = match std::fs::read_dir(dir) {

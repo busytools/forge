@@ -200,9 +200,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tokio::spawn(async move {
         use futures_util::StreamExt;
         let mut events = crossterm::event::EventStream::new();
-        while let Some(Ok(e)) = events.next().await {
-            if term_tx.send(AppEvent::Term(e)).is_err() {
-                break;
+        while let Some(item) = events.next().await {
+            match item {
+                Ok(e) => {
+                    if term_tx.send(AppEvent::Term(e)).is_err() {
+                        break;
+                    }
+                }
+                Err(e) => {
+                    // Round 3 — fix M1. Previously the loop silently
+                    // dropped Err items via `while let Some(Ok(e))`,
+                    // so a transient terminal-read error would close
+                    // the event pump without a trace and the user
+                    // would see a frozen UI. Log and break instead —
+                    // the panic guard restores the terminal on Drop.
+                    tracing::warn!(error = %e, "crossterm event stream Err; closing input pump");
+                    break;
+                }
             }
         }
     });
