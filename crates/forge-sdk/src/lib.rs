@@ -51,9 +51,9 @@ pub(crate) mod request_id;
 pub mod session;
 pub mod transport;
 
-pub use client::Client;
+pub use client::{Client, ControlDispatchHandle, EventOrControl};
 pub use error::Error;
-pub use transport::Transport;
+pub use transport::{AsyncWriter, Transport};
 // Top-level message + content re-exports so consumers can say
 // `use forge_sdk::{AssistantEnvelope, StopReason, RateLimitInfo, ...}`
 // instead of reaching through `forge_sdk::messages::*`. Matches the
