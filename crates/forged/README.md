@@ -13,17 +13,17 @@ cargo install --path . --root /usr/local
 USERNAME=$(whoami)
 WG_IP="10.x.x.x"          # your Studio's WireGuard address
 sed -e "s/__USERNAME__/$USERNAME/g" -e "s/__WG_IP__/$WG_IP/g" \
-    launchd/com.subspace.forged.plist \
-    | sudo tee /Library/LaunchDaemons/com.subspace.forged.plist > /dev/null
-sudo chown root:wheel /Library/LaunchDaemons/com.subspace.forged.plist
-sudo chmod 644         /Library/LaunchDaemons/com.subspace.forged.plist
+    launchd/dev.vedhavyas.forged.plist \
+    | sudo tee /Library/LaunchDaemons/dev.vedhavyas.forged.plist > /dev/null
+sudo chown root:wheel /Library/LaunchDaemons/dev.vedhavyas.forged.plist
+sudo chmod 644         /Library/LaunchDaemons/dev.vedhavyas.forged.plist
 
 # Bootstrap + enable
-sudo launchctl bootstrap system /Library/LaunchDaemons/com.subspace.forged.plist
-sudo launchctl enable system/com.subspace.forged
+sudo launchctl bootstrap system /Library/LaunchDaemons/dev.vedhavyas.forged.plist
+sudo launchctl enable system/dev.vedhavyas.forged
 
 # Verify
-launchctl print system/com.subspace.forged
+launchctl print system/dev.vedhavyas.forged
 forged status
 ```
 
