@@ -523,20 +523,7 @@ fn parse_params<T: for<'de> serde::Deserialize<'de>>(params: Option<&Value>) -> 
     serde_json::from_value(raw).map_err(|e| Error::InvalidParams(e.to_string()))
 }
 
-/// Translate a wire-shape `permission_mode` string into the SDK enum.
-fn parse_permission_mode(s: &str) -> Result<forge_sdk::PermissionMode, Error> {
-    match s {
-        "ask" => Ok(forge_sdk::PermissionMode::Ask),
-        "accept_edits" => Ok(forge_sdk::PermissionMode::AcceptEdits),
-        "plan" => Ok(forge_sdk::PermissionMode::Plan),
-        "bypass_permissions" => Ok(forge_sdk::PermissionMode::BypassPermissions),
-        "auto" => Ok(forge_sdk::PermissionMode::Auto),
-        "deny_permissions" => Ok(forge_sdk::PermissionMode::DenyPermissions),
-        other => Err(Error::InvalidParams(format!(
-            "permission_mode: unknown variant '{other}'"
-        ))),
-    }
-}
+use crate::session_state::parse_permission_mode;
 
 // ---- Param shapes scoped to dispatch -----------------------------------
 
