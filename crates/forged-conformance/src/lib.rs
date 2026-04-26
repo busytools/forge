@@ -535,6 +535,14 @@ struct NotifyClientIdentify {
     server_build: String,
 }
 
+/// Round 3 — fix M11 (highest-value tightening). Replaces the
+/// `serde_json::Value` typed-decode escape hatch on `message` with
+/// `forge_sdk::Message`, which catches schema drift on session-event
+/// payloads (the most-frequent baseline frame) instead of silently
+/// accepting any JSON. The other Notify* shapes use `Value` for
+/// optional fields that can legitimately be `null`/`object`/`array`
+/// (`primary`, `previous`); replacing those is left as a follow-up
+/// TODO since each cascades into multiple fixes.
 #[derive(serde::Deserialize)]
 struct NotifySessionEvent {
     #[allow(dead_code)]
@@ -542,7 +550,7 @@ struct NotifySessionEvent {
     #[allow(dead_code)]
     event_id: serde_json::Value,
     #[allow(dead_code)]
-    message: serde_json::Value,
+    message: forge_sdk::Message,
 }
 
 #[derive(serde::Deserialize)]

@@ -234,40 +234,6 @@ impl Client {
         }
     }
 
-    /// Register a reverse-RPC handler. Back-compat alias for
-    /// [`Client::on_reverse_rpc_deferred`] — the handler returns its
-    /// answer asynchronously via [`Client::send_response`] from
-    /// elsewhere (e.g. a UI keypress).
-    ///
-    /// **Caveat:** the returned future's value is IGNORED. Use
-    /// [`Client::on_reverse_rpc_sync`] for handlers that produce the
-    /// answer themselves (auto-allow hooks, etc.). The
-    /// `Output = serde_json::Value` shape here is a vestige from the
-    /// original API; the returned value is dropped because the
-    /// dispatcher cannot tell whether the future intends to "be the
-    /// answer" or "register handler state and let `send_response` do
-    /// the work." `_sync` and `_deferred` make the intent explicit.
-    #[deprecated(
-        note = "use on_reverse_rpc_sync or on_reverse_rpc_deferred — this drops the future's return value"
-    )]
-    pub fn on_reverse_rpc<F, Fut>(&self, method: impl Into<String>, handler: F)
-    where
-        F: Fn(serde_json::Value, serde_json::Value) -> Fut + Send + Sync + 'static,
-        Fut: std::future::Future<Output = serde_json::Value> + Send + 'static,
-    {
-        // Wrap so the handler's return value is dropped — back-compat
-        // shape, captures the historical behaviour where the returned
-        // future was implicitly fire-and-forget. New code should pick
-        // `_sync` or `_deferred` explicitly.
-        let h = Arc::new(handler);
-        self.on_reverse_rpc_deferred(method, move |rev_id, params| {
-            let h = h.clone();
-            async move {
-                let _ = (h)(rev_id, params).await;
-            }
-        });
-    }
-
     /// Register a SYNC reverse-RPC handler. The handler computes and
     /// returns the answer; the dispatcher awaits the future and
     /// auto-replies via [`Client::send_response`] using the captured
@@ -348,6 +314,10 @@ async fn write_loop(
     let _ = sink.close().await;
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "round 3 — fix M3 added explicit error logging on the method-not-found serialise path; splitting the dispatcher into helpers obscures the inbound-frame discriminator flow"
+)]
 async fn read_loop(
     mut stream: SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>,
     responses: ResponseTable,
@@ -441,8 +411,30 @@ async fn read_loop(
                     "id": rev_id,
                     "error": { "code": -32601, "message": format!("no handler for {method}") },
                 });
-                if let Ok(s) = serde_json::to_string(&resp) {
-                    let _ = out_tx.send(s);
+                // Round 3 — fix M3. Previously a serialisation Err
+                // was silently swallowed via `if let Ok(...)`. Log
+                // the warn so the daemon-side timeout path is
+                // attributable rather than mysterious. The fallback
+                // is to drop the error response — the caller's
+                // reverse-RPC will eventually time out on the
+                // daemon's side, which is the right deny semantics
+                // for security-critical kinds.
+                match serde_json::to_string(&resp) {
+                    Ok(s) => {
+                        if out_tx.send(s).is_err() {
+                            tracing::warn!(
+                                method = %method,
+                                "method-not-found response: outbound channel closed"
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            method = %method,
+                            error = %e,
+                            "method-not-found response: serialise failed; dropping"
+                        );
+                    }
                 }
             }
         } else {
