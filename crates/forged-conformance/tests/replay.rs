@@ -61,13 +61,11 @@ fn m1_status_baseline_decodes_cleanly() {
 #[test]
 fn all_baselines_decode_cleanly() {
     let dir = baseline_dir();
-    if !dir.exists() {
-        eprintln!(
-            "no baselines directory at {} — skipping (run a live capture first)",
-            dir.display()
-        );
-        return;
-    }
+    assert!(
+        dir.exists(),
+        "baseline directory missing at {} — committed baselines are required for the wire-conformance gate (CLAUDE.md invariant #10c)",
+        dir.display()
+    );
 
     let mut scenarios: Vec<String> = std::fs::read_dir(&dir)
         .expect("read baseline_dir")
@@ -79,13 +77,18 @@ fn all_baselines_decode_cleanly() {
         .collect();
     scenarios.sort();
 
-    if scenarios.is_empty() {
-        eprintln!(
-            "no baselines in {} — skipping. Capture some with FORGED_WIRE_CAPTURE=1.",
-            dir.display()
-        );
-        return;
-    }
+    // Round 3 — fix M9. Replace silent "no baselines, skipping" with
+    // a hard assert so deleting / corrupting the baselines directory
+    // fails the gate rather than passing with no work done. The
+    // current minimum (4 baselines: m1_status, multi_client_takeover,
+    // permission_request_round_trip, session_subscribe_basic) is the
+    // floor; future scenarios push the count up but never below.
+    assert!(
+        scenarios.len() >= 4,
+        "expected at least 4 baselines (m1_status, multi_client_takeover, \
+         permission_request_round_trip, session_subscribe_basic); found {}: {scenarios:?}",
+        scenarios.len()
+    );
 
     for scenario in &scenarios {
         let entries = load_baseline(scenario);

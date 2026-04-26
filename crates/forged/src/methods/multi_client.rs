@@ -82,6 +82,17 @@ pub fn claim_primary(
                 "reason": "claim",
             }),
         )));
+    } else {
+        // Round 3 — fix M2. The caller's connection was unregistered
+        // between the WS dispatch (which reached this method) and
+        // the lookup here — should not happen in production but
+        // worth surfacing if it does, since the caller's
+        // role_assigned notification is silently dropped.
+        tracing::warn!(
+            caller_id = %caller.0,
+            session_id = %session_id.0,
+            "claim_primary: caller's outbound channel not in connections map"
+        );
     }
 
     // Notify the displaced primary (if there was a different one) of demotion.

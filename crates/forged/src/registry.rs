@@ -16,17 +16,29 @@ use tokio::sync::{mpsc, oneshot};
 use crate::connection::{Connection, ConnectionId};
 use crate::session_state::{Command, SessionHandle, SessionId, SessionState};
 
-/// One outstanding reverse-RPC. Tracks `(session_id, conn_id, responder)`
-/// so disconnect cleanup can synthesise an answer for any in-flight
-/// rev request whose answering connection just went away.
+/// One outstanding reverse-RPC. Tracks
+/// `(session_id, conn_id, prompt_id, responder)` so disconnect cleanup
+/// can synthesise an answer for any in-flight rev request whose
+/// answering connection just went away.
 ///
 /// `conn_id` is `None` when the request is parked in the per-session
 /// queue (no primary at issue time).
+///
+/// `prompt_id` mirrors the queue's `PendingPrompt::prompt_id` so that
+/// session-exit drains can emit `prompts.expired` notifications keyed
+/// on the user-visible `prompt_<uuid>` (which the TUI's
+/// `PromptsExpired` matcher compares against `pp.prompt_id`) rather
+/// than the daemon-internal `rev_<uuid>`.
 pub struct OutstandingEntry {
     /// Session the rev request belongs to.
     pub session_id: SessionId,
     /// Conn that owns the answer; `None` when parked.
     pub conn_id: Option<ConnectionId>,
+    /// `prompt_<uuid>` minted by `issue_to_primary` for this rev. Carried
+    /// alongside the responder so the drain path can emit
+    /// `prompts.expired` with the user-visible prompt id, not the
+    /// internal rev id.
+    pub prompt_id: String,
     /// Resumes the SDK callback awaiting this answer.
     pub responder: oneshot::Sender<serde_json::Value>,
 }
@@ -36,6 +48,7 @@ impl std::fmt::Debug for OutstandingEntry {
         f.debug_struct("OutstandingEntry")
             .field("session_id", &self.session_id)
             .field("conn_id", &self.conn_id)
+            .field("prompt_id", &self.prompt_id)
             .field("responder", &"<oneshot>")
             .finish()
     }

@@ -417,6 +417,7 @@ async fn rev_error_response_resolves_with_typed_jsonrpc_error_sentinel() {
         OutstandingEntry {
             session_id: sid,
             conn_id: None,
+            prompt_id: "prompt_e1".into(),
             responder: tx,
         },
     );
@@ -447,6 +448,7 @@ async fn rev_error_with_arbitrary_code_carries_through_unchanged() {
         OutstandingEntry {
             session_id: sid,
             conn_id: None,
+            prompt_id: "prompt_e2".into(),
             responder: tx,
         },
     );
@@ -600,16 +602,64 @@ fn hook_bridge_pre_tool_use_encode_error_denies() {
 }
 
 #[test]
-fn hook_bridge_pre_tool_use_unknown_decision_passthroughs() {
-    // unknown decision in the wire response (NOT a sentinel) — the
-    // decoded `decision` falls through to passthrough per
-    // `decode_hook_decision`. This locks the contract that "unknown
-    // decision in wire response" is observed but doesn't deny — the
-    // deny-on-fail behaviour kicks in only on transport/encode/etc.
-    // failures.
+fn hook_bridge_pre_tool_use_unknown_decision_denies() {
+    // Round 3 — fix I1. Unknown decision on a security-critical hook
+    // must DENY, not passthrough. Previously this fell through to
+    // `HookDecision::passthrough` regardless of `kind`, which silently
+    // approved the tool call when the client returned a typo'd or
+    // unknown decision string. The fix: route unknown decisions
+    // through `fail_closed_decision(kind, ...)` so `pre_tool_use` and
+    // `permission_request` deny while observational kinds passthrough.
     let v = serde_json::json!({"decision": "shrug"});
     let d = forged::sdk_callbacks::decode_hook_response("pre_tool_use", &v);
-    assert_is_passthrough(&d, "pre_tool_use unknown decision");
+    assert_is_deny(&d, "pre_tool_use unknown decision");
+}
+
+#[test]
+fn hook_bridge_post_tool_use_unknown_decision_passthroughs() {
+    // Round 3 — fix I1 sibling. Observational kinds (post_tool_use,
+    // stop, notification, …) keep passthrough on unknown decisions
+    // so a flapping client doesn't break the agent. Locks the
+    // kind-aware fail-closed contract from both directions.
+    let v = serde_json::json!({"decision": "shrug"});
+    let d = forged::sdk_callbacks::decode_hook_response("post_tool_use", &v);
+    assert_is_passthrough(&d, "post_tool_use unknown decision");
+}
+
+#[test]
+fn hook_bridge_pre_tool_use_missing_decision_field_denies() {
+    // Round 3 — fix I1. Missing `decision` field on a security-critical
+    // kind must DENY. Previously the missing-field default was
+    // passthrough (via `unwrap_or("passthrough")`), which bypassed the
+    // fail-closed contract entirely.
+    let v = serde_json::json!({});
+    let d = forged::sdk_callbacks::decode_hook_response("pre_tool_use", &v);
+    assert_is_deny(&d, "pre_tool_use missing decision");
+}
+
+#[test]
+fn hook_bridge_post_tool_use_missing_decision_field_passthroughs() {
+    // Round 3 — fix I1 sibling. Observational kinds passthrough on
+    // missing decision; the fail-closed-decision lookup honours kind.
+    let v = serde_json::json!({});
+    let d = forged::sdk_callbacks::decode_hook_response("post_tool_use", &v);
+    assert_is_passthrough(&d, "post_tool_use missing decision");
+}
+
+#[test]
+fn hook_bridge_permission_request_unknown_decision_denies() {
+    // Round 3 — fix I1. permission_request is also security-critical;
+    // unknown decision must deny.
+    let v = serde_json::json!({"decision": "maybe"});
+    let d = forged::sdk_callbacks::decode_hook_response("permission_request", &v);
+    assert_is_deny(&d, "permission_request unknown decision");
+}
+
+#[test]
+fn hook_bridge_permission_request_missing_decision_field_denies() {
+    let v = serde_json::json!({});
+    let d = forged::sdk_callbacks::decode_hook_response("permission_request", &v);
+    assert_is_deny(&d, "permission_request missing decision");
 }
 
 #[test]
@@ -677,6 +727,73 @@ fn hook_bridge_pre_tool_use_transport_error_denies() {
 }
 
 // ============================================================================
+// Affirmative-with-payload decode tests (round 3 — fix I5).
+//
+// Lock the contract that allow + updated_input on `permission.request`,
+// and `replace_input` on hook bridges, both carry their payload through
+// to the typed decision rather than getting silently flattened.
+// ============================================================================
+
+#[test]
+fn perm_bridge_allow_with_updated_input_carries_through() {
+    let v = serde_json::json!({
+        "decision": "allow",
+        "updated_input": {"command": "ls -A"},
+    });
+    let d = forged::sdk_callbacks::decode_permission_response(&v);
+    assert!(d.is_allow(), "expected allow, got deny");
+    let updated = d
+        .updated_input()
+        .expect("allow with updated_input must surface the value");
+    assert_eq!(updated["command"], serde_json::json!("ls -A"));
+}
+
+#[test]
+fn perm_bridge_plain_allow_has_no_updated_input() {
+    // Sanity guard so the test above is meaningful — plain allow
+    // should NOT surface `updated_input`.
+    let v = serde_json::json!({"decision": "allow"});
+    let d = forged::sdk_callbacks::decode_permission_response(&v);
+    assert!(d.is_allow());
+    assert!(d.updated_input().is_none());
+}
+
+#[test]
+fn hook_bridge_replace_input_carries_through() {
+    let v = serde_json::json!({
+        "decision": "replace_input",
+        "updated_input": {"file_path": "/safe/path"},
+    });
+    let d = forged::sdk_callbacks::decode_hook_response("pre_tool_use", &v);
+    // replace_input is encoded as Allow with updated_input. The
+    // callback view: `is_allow() == true`, `updated_input()` carries
+    // the substitution.
+    assert!(d.is_allow(), "replace_input must read as allow");
+    let updated = d
+        .updated_input()
+        .expect("replace_input must carry updated_input");
+    assert_eq!(updated["file_path"], serde_json::json!("/safe/path"));
+}
+
+#[test]
+fn hook_bridge_decodes_all_sync_output_fields() {
+    // Round 3 — fix I6. Lock that every Python SyncHookJSONOutput
+    // control field round-trips through `decode_hook_response`.
+    let v = serde_json::json!({
+        "decision": "passthrough",
+        "continue": false,
+        "suppressOutput": true,
+        "stopReason": "policy violation",
+        "systemMessage": "Unsafe tool",
+    });
+    let d = forged::sdk_callbacks::decode_hook_response("post_tool_use", &v);
+    assert_eq!(d.continue_execution(), Some(false));
+    assert_eq!(d.suppress_output(), Some(true));
+    assert_eq!(d.stop_reason(), Some("policy violation"));
+    assert_eq!(d.system_message(), Some("Unsafe tool"));
+}
+
+// ============================================================================
 // drain_prompts_on_session_exit (round 2 — fix C2)
 //
 // Spec: when the session actor exits, every parked prompt AND every
@@ -689,6 +806,10 @@ fn hook_bridge_pre_tool_use_transport_error_denies() {
 #[allow(
     clippy::similar_names,
     reason = "test fixtures use a/b/x/y suffixes for parallel oneshot pairs; renaming to dissimilar names hurts readability"
+)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "round 3 — fix I2 added prompt_id assertions inline; splitting into helpers obscures the fixture-by-fixture flow"
 )]
 #[tokio::test]
 async fn drain_prompts_on_session_exit_drains_parked_and_in_flight() {
@@ -740,6 +861,7 @@ async fn drain_prompts_on_session_exit_drains_parked_and_in_flight() {
         OutstandingEntry {
             session_id: sid.clone(),
             conn_id: None,
+            prompt_id: "prompt_inflight_x".into(),
             responder: rev_tx_x,
         },
     );
@@ -748,6 +870,7 @@ async fn drain_prompts_on_session_exit_drains_parked_and_in_flight() {
         OutstandingEntry {
             session_id: sid.clone(),
             conn_id: None,
+            prompt_id: "prompt_inflight_y".into(),
             responder: rev_tx_y,
         },
     );
@@ -774,19 +897,53 @@ async fn drain_prompts_on_session_exit_drains_parked_and_in_flight() {
     }
 
     // Subscriber should see 4 prompts.expired notifications (2 parked +
-    // 2 in-flight). Drain everything and count.
-    let mut expired_count = 0;
+    // 2 in-flight). Drain everything and assert the emitted prompt_ids
+    // are the user-visible `prompt_<uuid>`s — NOT the daemon-internal
+    // `rev_<uuid>`s. The drain path's contract (round 3 — fix I2) is
+    // that subscribers see prompt-id-keyed expiry so the TUI's matcher
+    // (`PromptsExpired::prompt_id` against `PendingPermission::prompt_id`)
+    // can dismiss the right modal.
+    let mut emitted_prompt_ids: Vec<String> = Vec::new();
     while let Ok(frame) = sub_rx.try_recv() {
         if let forged::connection::Outbound::Notification(n) = frame {
             if n.method == "prompts.expired" {
-                expired_count += 1;
+                let pid = n
+                    .params
+                    .as_ref()
+                    .and_then(|p| p.get("prompt_id"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                emitted_prompt_ids.push(pid);
             }
         }
     }
     assert_eq!(
-        expired_count, 4,
-        "expected 4 prompts.expired notifications, got {expired_count}"
+        emitted_prompt_ids.len(),
+        4,
+        "expected 4 prompts.expired notifications, got {emitted_prompt_ids:?}"
     );
+    // Sort so order doesn't matter; assertion is on set membership.
+    emitted_prompt_ids.sort();
+    let mut expected = vec![
+        "prompt_park_a".to_string(),
+        "prompt_park_b".to_string(),
+        "prompt_inflight_x".to_string(),
+        "prompt_inflight_y".to_string(),
+    ];
+    expected.sort();
+    assert_eq!(
+        emitted_prompt_ids, expected,
+        "drain must emit user-visible prompt_<uuid>s, never rev_<uuid>s"
+    );
+    // Defensive: confirm none of the emitted ids accidentally leaked
+    // the rev_ prefix.
+    for pid in &emitted_prompt_ids {
+        assert!(
+            !pid.starts_with("rev_"),
+            "drain emitted rev_id where prompt_id was expected: {pid}"
+        );
+    }
 
     // Both maps fully drained.
     assert_eq!(handle.prompts.snapshot().len(), 0);
@@ -823,6 +980,7 @@ async fn outstanding_reverse_unblocks_when_answering_conn_disconnects() {
         OutstandingEntry {
             session_id: sid.clone(),
             conn_id: Some(conn.id.clone()),
+            prompt_id: "prompt_disc".into(),
             responder: tx,
         },
     );
@@ -1076,4 +1234,117 @@ async fn ws_prompts_respond_resolves_queued_prompt_end_to_end() {
     let answer = rx.await.unwrap();
     assert_eq!(answer["decision"], serde_json::json!("allow"));
     assert_eq!(handle.prompts.snapshot().len(), 0);
+}
+
+// ============================================================================
+// C1 (round 3) — prompts.respond rev_id-Some hot path.
+//
+// The production path through `methods::prompts::respond` has two
+// branches: `rev_id: Some(...)` (the path real reverse-RPC traffic
+// takes — calls `reverse_rpc::resolve` directly so the SDK-side
+// handler unblocks synchronously) and `rev_id: None` (a fallback for
+// legacy / direct-test enqueues).
+//
+// Every prior test exercises the rev_id-None branch. This locks the
+// rev_id-Some branch end-to-end:
+//
+//   1. `issue_to_primary` with no primary parks — populates BOTH
+//      `handle.prompts` (with rev_id) AND `outstanding_reverse`.
+//   2. `prompts::respond(state, sid, prompt_id, ...)` resolves via
+//      the rev_id; the awaiting `issue_to_primary` future unblocks.
+//   3. Both maps are drained.
+// ============================================================================
+
+#[tokio::test]
+async fn prompts_respond_resolves_via_outstanding_reverse_when_prompt_carries_rev_id() {
+    let state = Arc::new(forged::registry::DaemonState::new());
+    let sid = forged::session_state::SessionId("sess_c1".into());
+    // Register a session with no primary so issue_to_primary parks.
+    let (handle, _rx) = state.register_session(sid.clone());
+
+    // Spawn the issuer in the background — it'll park because there
+    // is no primary, populating both `handle.prompts` AND
+    // `outstanding_reverse` with a matching rev_id.
+    let st_for_issue = state.clone();
+    let sid_for_issue = sid.clone();
+    let issue = tokio::spawn(async move {
+        forged::reverse_rpc::issue_to_primary(
+            &st_for_issue,
+            &sid_for_issue,
+            "permission.request",
+            serde_json::json!({"tool_name": "Bash", "tool_input": {"command": "ls"}}),
+            forged::prompt_queue::PromptKind::Permission,
+            // 5s timeout — plenty of headroom for the test path.
+            Duration::from_secs(5),
+        )
+        .await
+    });
+
+    // Poll until the prompt is parked (rather than sleeping a fixed
+    // duration). `tokio::task::yield_now` keeps us cache-warm and
+    // avoids flakes on slow CI.
+    let prompt_id = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let snap = handle.prompts.snapshot();
+            if let Some(id) = snap.first().cloned() {
+                break id;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("prompt did not appear in queue within 2s");
+    assert!(
+        prompt_id.starts_with("prompt_"),
+        "expected prompt_<uuid>, got {prompt_id}"
+    );
+
+    // Sanity: the parked prompt carries a rev_id (rev_<uuid>) and the
+    // outstanding-reverse map mirrors it.
+    let outstanding_count_before = state.outstanding_reverse.lock().len();
+    assert_eq!(
+        outstanding_count_before, 1,
+        "expected one outstanding entry mirroring the parked prompt, got {outstanding_count_before}"
+    );
+
+    // Production hot path: prompts::respond with the prompt_id —
+    // routes through the `Some(rev_id)` branch which calls
+    // `reverse_rpc::resolve` directly, without going through the
+    // queue's responder. The awaiting issuer must see the answer.
+    forged::methods::prompts::respond(
+        &state,
+        &sid,
+        &prompt_id,
+        serde_json::json!({"decision": "allow"}),
+    )
+    .expect("prompts::respond returned an error");
+
+    // The issue future resolves with the answer fed via prompts.respond.
+    let value = tokio::time::timeout(Duration::from_secs(2), issue)
+        .await
+        .expect("issue_to_primary did not resolve within 2s")
+        .expect("issue task panicked")
+        .expect("issue_to_primary returned Err");
+    assert_eq!(
+        value["decision"],
+        serde_json::json!("allow"),
+        "expected the response prompts.respond fed in, got {value}"
+    );
+    // Confirm the response came from the rev_id-Some hot path — NOT
+    // the queue's sentinel (which would carry no payload).
+    assert!(
+        !value.is_null(),
+        "rev_id-Some path must deliver the supplied answer, not the queue sentinel"
+    );
+
+    // Both maps fully drained — outstanding-reverse via `resolve()`,
+    // queue via the `prompts::respond` `take()`.
+    assert!(
+        state.outstanding_reverse.lock().is_empty(),
+        "outstanding_reverse must be empty after prompts.respond resolves the rev_id"
+    );
+    assert!(
+        handle.prompts.snapshot().is_empty(),
+        "prompts queue must be empty after prompts.respond consumes the entry"
+    );
 }

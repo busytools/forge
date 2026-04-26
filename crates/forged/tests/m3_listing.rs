@@ -11,6 +11,7 @@
 
 mod common {
     pub mod env_guard;
+    pub mod env_lock;
 }
 
 use std::path::PathBuf;
@@ -21,6 +22,7 @@ use forged::methods::session::{SpawnResult, parse_spawn_params, spawn};
 use forged::registry::DaemonState;
 
 use crate::common::env_guard::EnvGuard;
+use crate::common::env_lock::ENV_LOCK;
 
 /// Mock that handles `initialize` + every subsequent `control_request`.
 /// Used by the M3.6 / M3.7 round-trip tests (interrupt, `set_model`,
@@ -258,8 +260,10 @@ fn point_sdk_at(tmp: &TempDir) -> EnvGuard {
 }
 
 // Serialise tests that mutate $CLAUDE_CONFIG_DIR. Other tests don't
-// touch the env so they can run in parallel.
-static ENV_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+// touch the env so they can run in parallel. The lock itself lives in
+// `common::env_lock` (round 3 — fix M10) so it's shared with other
+// test files (`m6_operations.rs`) that also mutate env state — without
+// a shared lock, tests across files could race.
 
 #[test]
 fn sessions_list_returns_seeded_entries() {
@@ -572,16 +576,106 @@ async fn session_stop_task_proxies_to_client() {
 // M3.7 — MCP + context handlers
 // =============================================================================
 //
-// TODO: the M3.6/M3.7 round-trip tests below (interrupt, set_model,
-// rewind_files, stop_task, mcp.status, context.get) currently assert
-// "the dispatch path reached the actor" rather than "the right
-// `forge_sdk::Client::*` method got called". Strengthening would
-// require either (a) extending mock_claude_control.sh to echo back
-// the method name, or (b) introducing a Client trait abstraction
-// behind a feature flag so we can swap a mock Client. Both are
-// heavier than warranted for the current parity-first phase; the
-// current shape locks the dispatch contract (no SessionNotFound, no
-// "actor gone" InternalError) and is regression-safe.
+// Round 3 — fix M8 (partial). The mock now supports an opt-in
+// `FORGED_MOCK_ECHO_SUBTYPE` env var that echoes every observed
+// control_request subtype to a temp file. The `*_dispatches_subtype`
+// strengthening tests below read that file post-call to assert the
+// right `Client::*` method fired — no longer just "the actor stayed
+// alive".
+//
+// The original M3.6/M3.7 round-trip tests (interrupt, set_model,
+// rewind_files, stop_task, mcp.status, context.get) still keep their
+// "no SessionNotFound / no actor-gone" shape — the M8 echo path adds
+// a stronger sibling test rather than rewriting every existing one.
+// Future work: port every round-trip test to use the echo, deleting
+// the weaker variants.
+
+/// Read the contents of the subtype-echo file as a Vec<String> of
+/// non-empty lines. Helper for the strengthening tests below.
+fn read_echo_file(path: &std::path::Path) -> Vec<String> {
+    std::fs::read_to_string(path)
+        .map(|s| {
+            s.lines()
+                .filter(|l| !l.trim().is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[tokio::test]
+async fn session_interrupt_dispatches_subtype_via_echo() {
+    let _g = ENV_LOCK.lock_async().await;
+    let tmp = TempDir::new().unwrap();
+    let echo_path = tmp.path().join("subtypes.log");
+    let _echo_guard = EnvGuard::new("FORGED_MOCK_ECHO_SUBTYPE", &echo_path);
+
+    let state = DaemonState::new();
+    let session_id = spawn_control_mock_session(&state).await;
+    forged::methods::session::interrupt(&state, &session_id)
+        .await
+        .unwrap();
+
+    // Give the mock a beat to flush the line — control requests
+    // round-trip via two mpsc channels and a subprocess.
+    for _ in 0..50 {
+        let lines = read_echo_file(&echo_path);
+        if lines.iter().any(|l| l == "interrupt") {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    let lines = read_echo_file(&echo_path);
+    panic!("expected 'interrupt' subtype echoed; got {lines:?}");
+}
+
+#[tokio::test]
+async fn mcp_status_dispatches_subtype_via_echo() {
+    let _g = ENV_LOCK.lock_async().await;
+    let tmp = TempDir::new().unwrap();
+    let echo_path = tmp.path().join("subtypes.log");
+    let _echo_guard = EnvGuard::new("FORGED_MOCK_ECHO_SUBTYPE", &echo_path);
+
+    let state = DaemonState::new();
+    let session_id = spawn_control_mock_session(&state).await;
+    // The status response shape is wrong for McpStatusResponse — the
+    // mock returns `{"servers":[]}` and the SDK errors out on parse.
+    // Test contract: the SUBTYPE echoed is `mcp_status`, regardless
+    // of how the SDK then surfaces the parse error.
+    let _ = forged::methods::mcp::status(&state, &session_id).await;
+
+    for _ in 0..50 {
+        let lines = read_echo_file(&echo_path);
+        if lines.iter().any(|l| l == "mcp_status") {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    let lines = read_echo_file(&echo_path);
+    panic!("expected 'mcp_status' subtype echoed; got {lines:?}");
+}
+
+#[tokio::test]
+async fn context_get_dispatches_subtype_via_echo() {
+    let _g = ENV_LOCK.lock_async().await;
+    let tmp = TempDir::new().unwrap();
+    let echo_path = tmp.path().join("subtypes.log");
+    let _echo_guard = EnvGuard::new("FORGED_MOCK_ECHO_SUBTYPE", &echo_path);
+
+    let state = DaemonState::new();
+    let session_id = spawn_control_mock_session(&state).await;
+    let _ = forged::methods::context::get(&state, &session_id).await;
+
+    for _ in 0..50 {
+        let lines = read_echo_file(&echo_path);
+        if lines.iter().any(|l| l == "get_context_usage") {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    let lines = read_echo_file(&echo_path);
+    panic!("expected 'get_context_usage' subtype echoed; got {lines:?}");
+}
 
 #[tokio::test]
 async fn mcp_status_proxies_through_actor() {

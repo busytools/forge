@@ -533,25 +533,37 @@ async fn session_closed_emits_actor_idle_reason_when_all_senders_dropped() {
             break;
         }
     }
-    // Soft assertion — the actor's exit timing depends on tokio's
-    // scheduler observing the mpsc close. The actor is `select!`ing
-    // between `commands.recv()` and `client.next_event()`; with the
-    // control mock the `next_event` future blocks indefinitely
-    // (mock waits for input), and `select!` only polls `commands.recv()`
-    // when the next_event future yields. We don't have a portable way
-    // to kill the mock subprocess from outside the daemon process —
-    // the actor owns the Client which owns the BridgedTransport which
-    // owns the Child. Without that hook, the documented behaviour is
-    // "broadcast fires once tokio happens to schedule the actor to
-    // poll commands again" (e.g. on the next yield point inside the
-    // SDK). The hard contract — no panic, no state corruption when
-    // senders go away — is locked by the test reaching this point
-    // without a poisoned mutex or hang.
+    // Soft assertion (round 3 — fix I4 acknowledgement):
+    //
+    // Round 2's commit message claimed this was a hard fail; it is
+    // not. The actor's exit timing depends on tokio's scheduler
+    // observing the mpsc close. The actor is `select!`ing between
+    // `commands.recv()` and `client.next_event()`; with the control
+    // mock the `next_event` future blocks indefinitely (mock waits
+    // for input), and `select!` only polls `commands.recv()` when
+    // the next_event future yields. We don't have a portable way to
+    // kill the mock subprocess from outside the daemon process —
+    // the actor owns the Client which owns the BridgedTransport
+    // which owns the Child. Without that hook, the documented
+    // behaviour is "broadcast fires once tokio happens to schedule
+    // the actor to poll commands again" (e.g. on the next yield
+    // point inside the SDK).
+    //
+    // The hard contract — no panic, no state corruption when senders
+    // go away — IS locked by the test reaching this point without a
+    // poisoned mutex or hang. The session.closed-on-actor-idle
+    // assertion remains soft until the actor exposes either a
+    // `cancellation_token`-style shutdown signal or the actor-owned
+    // mock-subprocess kill plumbing referenced above.
+    //
+    // TODO(forged): expose a `Client::shutdown()` /
+    //   `Actor::cancel()` hook so this test can deterministically
+    //   trigger actor exit instead of relying on scheduler timing.
     if !saw_close {
         eprintln!(
             "WARN: session.closed not observed within 8s — actor may still be in next_event \
-             waiting on the control mock. The test invariant (no panic / no state corruption) \
-             is preserved."
+             waiting on the control mock. The hard contract (no panic / no state corruption) \
+             is preserved; the soft assertion is documented in the test comment + TODO."
         );
     }
 }

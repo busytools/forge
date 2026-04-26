@@ -287,6 +287,156 @@ async fn capture_permission_request_round_trip() {
     let _ = dump_trace("permission_request_round_trip", &trace);
 }
 
+/// Drive an `?name=studio-terminal` handshake plus a `daemon.status`
+/// round trip. Round 3 — fix M12. The `client.identify` wire payload
+/// does NOT carry the name (the name is server-side metadata
+/// surfaced via `session.peers`), so the captured trace is shape-
+/// equivalent to `m1_status` — but the name flows through the URL
+/// query to the server. The baseline locks that contract.
+#[tokio::test]
+#[ignore = "live capture; opt-in via FORGED_WIRE_CAPTURE=1"]
+async fn capture_client_identify_with_name() {
+    if std::env::var("FORGED_WIRE_CAPTURE").is_err() {
+        eprintln!("FORGED_WIRE_CAPTURE not set; skipping");
+        return;
+    }
+
+    let state = forged::registry::DaemonState::new();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let _h = tokio::spawn(forged::server::run(listener, state));
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let trace = Arc::new(Mutex::new(Vec::<TraceEntry>::new()));
+
+    // Connect WITH a name parameter — exercises the server's
+    // `?name=` parsing path.
+    let url = format!("ws://{addr}/?name=studio-terminal");
+    let (mut ws, _) = connect_async(&url).await.unwrap();
+
+    let WsMsg::Text(t) = ws.next().await.unwrap().unwrap() else {
+        panic!("expected first frame to be Text (client.identify)");
+    };
+    trace.lock().push(TraceEntry {
+        dir: "out".into(),
+        line: t,
+    });
+
+    let req = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "daemon.status",
+        "params": {}
+    });
+    let body = serde_json::to_string(&req).unwrap();
+    trace.lock().push(TraceEntry {
+        dir: "in".into(),
+        line: body.clone(),
+    });
+    ws.send(WsMsg::Text(body)).await.unwrap();
+
+    let WsMsg::Text(t) = ws.next().await.unwrap().unwrap() else {
+        panic!("expected response frame to be Text");
+    };
+    trace.lock().push(TraceEntry {
+        dir: "out".into(),
+        line: t,
+    });
+
+    let _ = dump_trace("client_identify_with_name", &trace);
+}
+
+/// Drive a `permission.request` round trip where the client returns
+/// a JSON-RPC error response (`{"error": {...}}`) instead of a
+/// `{"result": ...}`. The daemon's `resolve_error` path wraps the
+/// error in the `_jsonrpc_error` sentinel; the bridge then maps it
+/// to a typed deny. Round 3 — fix M12. Mirrors the hand-authored
+/// `permission_request_jsonrpc_error.jsonl` baseline.
+#[tokio::test]
+#[ignore = "live capture; opt-in via FORGED_WIRE_CAPTURE=1"]
+async fn capture_permission_request_jsonrpc_error() {
+    if std::env::var("FORGED_WIRE_CAPTURE").is_err() {
+        eprintln!("FORGED_WIRE_CAPTURE not set; skipping");
+        return;
+    }
+
+    let state = forged::registry::DaemonState::new();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let _h = tokio::spawn(forged::server::run(listener, state.clone()));
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let trace = Arc::new(Mutex::new(Vec::<TraceEntry>::new()));
+    let url = format!("ws://{addr}/");
+    let (mut ws, _) = connect_async(&url).await.unwrap();
+
+    let WsMsg::Text(t) = ws.next().await.unwrap().unwrap() else {
+        panic!("expected text frame")
+    };
+    trace.lock().push(TraceEntry {
+        dir: "out".into(),
+        line: t,
+    });
+
+    // Wait for the daemon to register the connection so we can pin
+    // the connection as primary on a fake session.
+    let conn_id = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if let Some(id) = state.connections.lock().keys().next().cloned() {
+                break id;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("connection_id discovery timed out");
+
+    let sid = forged::session_state::SessionId("sess_demo".into());
+    let (handle, _rx) = state.register_session(sid.clone());
+    *handle.primary.lock() = Some(conn_id.clone());
+
+    // Daemon issues the reverse-RPC; capture the outbound frame.
+    let state_arc = std::sync::Arc::new(state.clone());
+    let sid_for = sid.clone();
+    let issue = tokio::spawn(async move {
+        forged::reverse_rpc::issue_to_primary(
+            &state_arc,
+            &sid_for,
+            "permission.request",
+            serde_json::json!({"tool_name": "Bash", "tool_input": {"command": "rm -rf /"}}),
+            forged::prompt_queue::PromptKind::Permission,
+            Duration::from_secs(5),
+        )
+        .await
+    });
+
+    let WsMsg::Text(t) = ws.next().await.unwrap().unwrap() else {
+        panic!("expected text frame")
+    };
+    let v: serde_json::Value = serde_json::from_str(&t).unwrap();
+    let rev_id = v["id"].as_str().unwrap().to_string();
+    trace.lock().push(TraceEntry {
+        dir: "out".into(),
+        line: t,
+    });
+
+    // Client answers with a JSON-RPC error — capture inbound.
+    let resp = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": rev_id,
+        "error": {"code": -32601, "message": "client refused: dangerous command"},
+    });
+    let resp_body = serde_json::to_string(&resp).unwrap();
+    trace.lock().push(TraceEntry {
+        dir: "in".into(),
+        line: resp_body.clone(),
+    });
+    ws.send(WsMsg::Text(resp_body)).await.unwrap();
+    let _ = issue.await.unwrap();
+
+    let _ = dump_trace("permission_request_jsonrpc_error", &trace);
+}
+
 /// Drive an auto-takeover round trip with two clients, capture the
 /// trace from the second client's perspective. Mirrors the hand-
 /// authored `multi_client_takeover.jsonl` baseline.

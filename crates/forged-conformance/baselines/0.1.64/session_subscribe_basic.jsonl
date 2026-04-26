@@ -3,4 +3,4 @@
 {"dir":"out","line":"{\"jsonrpc\":\"2.0\",\"method\":\"session.role_assigned\",\"params\":{\"session_id\":\"sess_demo\",\"role\":\"primary\",\"primary\":\"conn_test\",\"reason\":\"initial\"}}"}
 {"dir":"out","line":"{\"jsonrpc\":\"2.0\",\"method\":\"session.primary_changed\",\"params\":{\"session_id\":\"sess_demo\",\"primary\":\"conn_test\",\"previous\":null,\"reason\":\"initial\"}}"}
 {"dir":"out","line":"{\"jsonrpc\":\"2.0\",\"id\":\"req_1\",\"result\":{\"replayed\":0,\"live\":true,\"pending_prompts\":[]}}"}
-{"dir":"out","line":"{\"jsonrpc\":\"2.0\",\"method\":\"session.event\",\"params\":{\"session_id\":\"sess_demo\",\"event_id\":\"msg_1\",\"message\":{\"type\":\"user\"}}}"}
+{"dir":"out","line":"{\"jsonrpc\":\"2.0\",\"method\":\"session.event\",\"params\":{\"session_id\":\"sess_demo\",\"event_id\":\"msg_1\",\"message\":{\"type\":\"user\",\"session_id\":\"sess_demo\",\"message\":{\"role\":\"user\",\"content\":\"hello\"}}}}"}

@@ -285,7 +285,7 @@ pub fn decode_hook_response(kind: &str, value: &Value) -> HookDecision {
     }
 
     // Wire shape: `{ "decision": "allow"|"deny"|"passthrough", … }`
-    decode_hook_decision(value)
+    decode_hook_decision(kind, value)
 }
 
 /// Decode the wire-shape `decision` blob returned from a `hook.<kind>`
@@ -303,11 +303,23 @@ pub fn decode_hook_response(kind: &str, value: &Value) -> HookDecision {
 ///   "systemMessage": ?
 /// }
 /// ```
-fn decode_hook_decision(value: &Value) -> HookDecision {
-    let decision_str = value
-        .get("decision")
-        .and_then(Value::as_str)
-        .unwrap_or("passthrough");
+///
+/// `kind` drives the fail-closed / fail-open decision when the wire
+/// shape is malformed (missing `decision` field, unknown decision
+/// variant). Security-critical kinds (`pre_tool_use`,
+/// `permission_request`) deny on malformed input; observational kinds
+/// (`post_tool_use`, `stop`, `notification`, …) passthrough so a
+/// flapping client doesn't grind the agent to a halt.
+fn decode_hook_decision(kind: &str, value: &Value) -> HookDecision {
+    // Missing decision key — security-critical hooks must NOT default
+    // to passthrough; fail closed instead. Round 3 — fix I1.
+    let Some(decision_str) = value.get("decision").and_then(Value::as_str) else {
+        tracing::warn!(
+            hook = %kind,
+            "hook bridge: missing decision field; failing per kind policy"
+        );
+        return fail_closed_decision(kind, "hook bridge: missing decision field");
+    };
     let updated_input = value.get("updated_input").cloned();
     let reason = value
         .get("reason")
@@ -320,8 +332,12 @@ fn decode_hook_decision(value: &Value) -> HookDecision {
         ("deny", _) => HookDecision::deny(reason.clone().unwrap_or_default()),
         ("passthrough", _) => HookDecision::passthrough(),
         (other, _) => {
-            tracing::warn!(decision = %other, "hook bridge: unknown decision; passthrough");
-            HookDecision::passthrough()
+            tracing::warn!(
+                decision = %other,
+                hook = %kind,
+                "hook bridge: unknown decision; failing per kind policy"
+            );
+            return fail_closed_decision(kind, &format!("hook bridge: unknown decision '{other}'"));
         }
     };
 

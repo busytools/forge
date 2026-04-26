@@ -460,6 +460,7 @@ name = "forged-conformance"
 version = "0.1.64"
 dependencies = [
  "async-trait",
+ "forge-sdk",
  "forged",
  "futures-util",
  "parking_lot",

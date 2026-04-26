@@ -5,15 +5,19 @@
 
 mod common {
     pub mod env_guard;
+    pub mod env_lock;
 }
 
 use forged::config::{Config, load_from_str};
 
 use crate::common::env_guard::EnvGuard;
+use crate::common::env_lock::ENV_LOCK;
 
-// Serialise tests that mutate XDG_CONFIG_HOME / HOME — the env-var
-// space is process-global so concurrent mutations would race.
-static ENV_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+// Round 3 — fix M10. ENV_LOCK lives in `common::env_lock` so this
+// crate's env-mutating tests in m3_listing.rs and m6_operations.rs
+// share one process-wide lock — without it, the two files' static
+// locks would let tests across files run concurrently and race the
+// global env-var space.
 
 #[test]
 fn config_defaults_when_missing_file() {
