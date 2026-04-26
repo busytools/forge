@@ -18,8 +18,8 @@
 
 use std::time::{Duration, SystemTime};
 
-use forged::registry::DaemonState;
-use forged::session_state::SessionId;
+use forge_daemon::registry::DaemonState;
+use forge_daemon::session_state::SessionId;
 use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message as WsMsg;
@@ -35,7 +35,7 @@ async fn spawn_daemon() -> (DaemonState, std::net::SocketAddr) {
     let state = DaemonState::new();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    tokio::spawn(forged::server::run(listener, state.clone()));
+    tokio::spawn(forge_daemon::server::run(listener, state.clone()));
     tokio::time::sleep(Duration::from_millis(50)).await;
     (state, addr)
 }
@@ -50,7 +50,7 @@ async fn drain_for_response<S>(
     ws: &mut S,
     target_id: &serde_json::Value,
     parked: &mut Vec<serde_json::Value>,
-) -> forged::jsonrpc::Response
+) -> forge_daemon::jsonrpc::Response
 where
     S: futures_util::Stream<Item = Result<WsMsg, tokio_tungstenite::tungstenite::Error>> + Unpin,
 {
@@ -166,7 +166,7 @@ async fn single_subscribe_emits_initial_role_and_primary_changed() {
     let mut parked = Vec::new();
     let _ = drain_for_method(&mut ws, "client.identify", &mut parked).await;
 
-    let spawn_req = forged::jsonrpc::Request::new(
+    let spawn_req = forge_daemon::jsonrpc::Request::new(
         "session.spawn",
         serde_json::json!({"options": {"binary": MOCK_CLAUDE}}),
         serde_json::json!(1),
@@ -184,7 +184,7 @@ async fn single_subscribe_emits_initial_role_and_primary_changed() {
         .unwrap()
         .to_string();
 
-    let sub = forged::jsonrpc::Request::new(
+    let sub = forge_daemon::jsonrpc::Request::new(
         "session.subscribe",
         serde_json::json!({"session_id": session_id}),
         serde_json::json!(2),
@@ -223,7 +223,7 @@ async fn second_subscribe_auto_takes_primary_demoting_first() {
     let _ = drain_for_method(&mut ws_b, "client.identify", &mut parked_b).await;
 
     // A spawns a session.
-    let spawn_req = forged::jsonrpc::Request::new(
+    let spawn_req = forge_daemon::jsonrpc::Request::new(
         "session.spawn",
         serde_json::json!({"options": {"binary": MOCK_CLAUDE}}),
         serde_json::json!(1),
@@ -242,7 +242,7 @@ async fn second_subscribe_auto_takes_primary_demoting_first() {
         .to_string();
 
     // A subscribes — becomes initial primary.
-    let sub_a = forged::jsonrpc::Request::new(
+    let sub_a = forge_daemon::jsonrpc::Request::new(
         "session.subscribe",
         serde_json::json!({"session_id": session_id}),
         serde_json::json!(2),
@@ -267,7 +267,7 @@ async fn second_subscribe_auto_takes_primary_demoting_first() {
     );
 
     // B subscribes — auto-takes; A demoted.
-    let sub_b = forged::jsonrpc::Request::new(
+    let sub_b = forge_daemon::jsonrpc::Request::new(
         "session.subscribe",
         serde_json::json!({"session_id": session_id}),
         serde_json::json!(3),
@@ -318,15 +318,15 @@ async fn second_subscribe_auto_takes_primary_demoting_first() {
 /// 3. Both receive `session.primary_changed { reason: "claimed" }`.
 #[tokio::test]
 async fn claim_primary_demotes_existing_and_promotes_caller() {
-    use forged::connection::{Connection, ConnectionId};
+    use forge_daemon::connection::{Connection, ConnectionId};
     use tokio::sync::mpsc;
 
     let state = DaemonState::new();
     let sid = SessionId("sess_claim".into());
     let (handle, _rx) = state.register_session(sid.clone());
 
-    let (a_tx, mut a_rx) = mpsc::channel(forged::connection::OUTBOUND_CHANNEL_CAPACITY);
-    let (b_tx, mut b_rx) = mpsc::channel(forged::connection::OUTBOUND_CHANNEL_CAPACITY);
+    let (a_tx, mut a_rx) = mpsc::channel(forge_daemon::connection::OUTBOUND_CHANNEL_CAPACITY);
+    let (b_tx, mut b_rx) = mpsc::channel(forge_daemon::connection::OUTBOUND_CHANNEL_CAPACITY);
     let conn_a = Connection::with_metadata(
         ConnectionId("conn_A".into()),
         Some("A".into()),
@@ -351,7 +351,7 @@ async fn claim_primary_demotes_existing_and_promotes_caller() {
     *handle.primary.lock() = Some(conn_a.id.clone());
 
     // B claims primary.
-    forged::methods::multi_client::claim_primary(&state, &conn_b.id, &sid).unwrap();
+    forge_daemon::methods::multi_client::claim_primary(&state, &conn_b.id, &sid).unwrap();
 
     // Primary slot should now point at B.
     assert_eq!(*handle.primary.lock(), Some(conn_b.id.clone()));
@@ -361,7 +361,7 @@ async fn claim_primary_demotes_existing_and_promotes_caller() {
     let mut b_saw_role = false;
     let mut b_saw_pc = false;
     while let Ok(frame) = b_rx.try_recv() {
-        if let forged::connection::Outbound::Notification(n) = frame {
+        if let forge_daemon::connection::Outbound::Notification(n) = frame {
             match n.method.as_str() {
                 "session.role_assigned" => {
                     let p = n.params.unwrap();
@@ -389,7 +389,7 @@ async fn claim_primary_demotes_existing_and_promotes_caller() {
     let mut a_saw_demoted = false;
     let mut a_saw_pc = false;
     while let Ok(frame) = a_rx.try_recv() {
-        if let forged::connection::Outbound::Notification(n) = frame {
+        if let forge_daemon::connection::Outbound::Notification(n) = frame {
             match n.method.as_str() {
                 "session.role_assigned" => {
                     let p = n.params.unwrap();
@@ -416,14 +416,14 @@ async fn claim_primary_demotes_existing_and_promotes_caller() {
 /// claim (per the contract documented on `multi_client::claim_primary`).
 #[tokio::test]
 async fn claim_primary_self_claim_is_idempotent_but_still_notifies() {
-    use forged::connection::{Connection, ConnectionId};
+    use forge_daemon::connection::{Connection, ConnectionId};
     use tokio::sync::mpsc;
 
     let state = DaemonState::new();
     let sid = SessionId("sess_self_claim".into());
     let (handle, _rx) = state.register_session(sid.clone());
 
-    let (a_tx, mut a_rx) = mpsc::channel(forged::connection::OUTBOUND_CHANNEL_CAPACITY);
+    let (a_tx, mut a_rx) = mpsc::channel(forge_daemon::connection::OUTBOUND_CHANNEL_CAPACITY);
     let conn_a = Connection::with_metadata(
         ConnectionId("conn_A".into()),
         Some("A".into()),
@@ -435,7 +435,7 @@ async fn claim_primary_self_claim_is_idempotent_but_still_notifies() {
     *handle.primary.lock() = Some(conn_a.id.clone());
 
     // Self-claim — A is already primary.
-    forged::methods::multi_client::claim_primary(&state, &conn_a.id, &sid).unwrap();
+    forge_daemon::methods::multi_client::claim_primary(&state, &conn_a.id, &sid).unwrap();
 
     // Primary slot still points at A.
     assert_eq!(*handle.primary.lock(), Some(conn_a.id.clone()));
@@ -446,7 +446,7 @@ async fn claim_primary_self_claim_is_idempotent_but_still_notifies() {
     let mut saw_role = false;
     let mut saw_pc = false;
     while let Ok(frame) = a_rx.try_recv() {
-        if let forged::connection::Outbound::Notification(n) = frame {
+        if let forge_daemon::connection::Outbound::Notification(n) = frame {
             match n.method.as_str() {
                 "session.role_assigned" => {
                     let p = n.params.unwrap();
@@ -472,32 +472,32 @@ async fn claim_primary_self_claim_is_idempotent_but_still_notifies() {
 
 #[test]
 fn claim_primary_unknown_session_returns_session_not_found() {
-    use forged::connection::ConnectionId;
+    use forge_daemon::connection::ConnectionId;
     let state = DaemonState::new();
     let unknown = SessionId("sess_does_not_exist".into());
-    let err = forged::methods::multi_client::claim_primary(
+    let err = forge_daemon::methods::multi_client::claim_primary(
         &state,
         &ConnectionId("conn_X".into()),
         &unknown,
     )
     .unwrap_err();
     assert!(
-        matches!(err, forged::Error::SessionNotFound(_)),
+        matches!(err, forge_daemon::Error::SessionNotFound(_)),
         "expected SessionNotFound, got {err:?}"
     );
 }
 
 #[test]
 fn peers_returns_role_and_name_per_subscriber() {
-    use forged::connection::{Connection, ConnectionId};
+    use forge_daemon::connection::{Connection, ConnectionId};
     use tokio::sync::mpsc;
 
     let state = DaemonState::new();
     let sid = SessionId("sess_peers".into());
     let (handle, _rx) = state.register_session(sid.clone());
 
-    let (a_tx, _a_rx) = mpsc::channel(forged::connection::OUTBOUND_CHANNEL_CAPACITY);
-    let (b_tx, _b_rx) = mpsc::channel(forged::connection::OUTBOUND_CHANNEL_CAPACITY);
+    let (a_tx, _a_rx) = mpsc::channel(forge_daemon::connection::OUTBOUND_CHANNEL_CAPACITY);
+    let (b_tx, _b_rx) = mpsc::channel(forge_daemon::connection::OUTBOUND_CHANNEL_CAPACITY);
     let conn_a = Connection::with_metadata(
         ConnectionId("conn_A".into()),
         Some("studio".into()),
@@ -520,7 +520,7 @@ fn peers_returns_role_and_name_per_subscriber() {
     }
     *handle.primary.lock() = Some(conn_a.id.clone());
 
-    let result = forged::methods::multi_client::peers(&state, &sid).unwrap();
+    let result = forge_daemon::methods::multi_client::peers(&state, &sid).unwrap();
     assert_eq!(result.peers.len(), 2);
 
     let a_entry = result
@@ -556,7 +556,7 @@ async fn ws_session_peers_returns_subscribers_with_roles() {
     let _ = drain_for_method(&mut ws_b, "client.identify", &mut parked_b).await;
 
     // A spawns + subscribes.
-    let spawn_req = forged::jsonrpc::Request::new(
+    let spawn_req = forge_daemon::jsonrpc::Request::new(
         "session.spawn",
         serde_json::json!({"options": {"binary": MOCK_CLAUDE}}),
         serde_json::json!(1),
@@ -574,7 +574,7 @@ async fn ws_session_peers_returns_subscribers_with_roles() {
         .unwrap()
         .to_string();
 
-    let sub_a = forged::jsonrpc::Request::new(
+    let sub_a = forge_daemon::jsonrpc::Request::new(
         "session.subscribe",
         serde_json::json!({"session_id": session_id}),
         serde_json::json!(2),
@@ -585,7 +585,7 @@ async fn ws_session_peers_returns_subscribers_with_roles() {
     let _ = drain_for_response(&mut ws_a, &serde_json::json!(2), &mut parked_a).await;
 
     // B subscribes (auto-takeover; B is now primary, A is viewer).
-    let sub_b = forged::jsonrpc::Request::new(
+    let sub_b = forge_daemon::jsonrpc::Request::new(
         "session.subscribe",
         serde_json::json!({"session_id": session_id}),
         serde_json::json!(3),
@@ -596,7 +596,7 @@ async fn ws_session_peers_returns_subscribers_with_roles() {
     let _ = drain_for_response(&mut ws_b, &serde_json::json!(3), &mut parked_b).await;
 
     // Ask peers from B.
-    let peers = forged::jsonrpc::Request::new(
+    let peers = forge_daemon::jsonrpc::Request::new(
         "session.peers",
         serde_json::json!({"session_id": session_id}),
         serde_json::json!(4),
@@ -649,7 +649,7 @@ async fn disconnect_purges_dead_conn_from_subscribers_and_clears_primary() {
     let _ = drain_for_method(&mut ws_a, "client.identify", &mut parked_a).await;
 
     // A spawns + subscribes — A is initial primary.
-    let spawn_req = forged::jsonrpc::Request::new(
+    let spawn_req = forge_daemon::jsonrpc::Request::new(
         "session.spawn",
         serde_json::json!({"options": {"binary": MOCK_CLAUDE}}),
         serde_json::json!(1),
@@ -667,7 +667,7 @@ async fn disconnect_purges_dead_conn_from_subscribers_and_clears_primary() {
         .unwrap()
         .to_string();
 
-    let sub_a = forged::jsonrpc::Request::new(
+    let sub_a = forge_daemon::jsonrpc::Request::new(
         "session.subscribe",
         serde_json::json!({"session_id": session_id}),
         serde_json::json!(2),
@@ -691,7 +691,7 @@ async fn disconnect_purges_dead_conn_from_subscribers_and_clears_primary() {
     let mut parked_b = Vec::new();
     let _ = drain_for_method(&mut ws_b, "client.identify", &mut parked_b).await;
 
-    let peers = forged::jsonrpc::Request::new(
+    let peers = forge_daemon::jsonrpc::Request::new(
         "session.peers",
         serde_json::json!({"session_id": session_id}),
         serde_json::json!(99),
@@ -725,7 +725,7 @@ async fn disconnect_broadcasts_primary_changed_with_disconnected_reason() {
     let mut parked_a = Vec::new();
     let _ = drain_for_method(&mut ws_a, "client.identify", &mut parked_a).await;
 
-    let spawn_req = forged::jsonrpc::Request::new(
+    let spawn_req = forge_daemon::jsonrpc::Request::new(
         "session.spawn",
         serde_json::json!({"options": {"binary": MOCK_CLAUDE}}),
         serde_json::json!(1),
@@ -743,7 +743,7 @@ async fn disconnect_broadcasts_primary_changed_with_disconnected_reason() {
         .unwrap()
         .to_string();
 
-    let sub_a = forged::jsonrpc::Request::new(
+    let sub_a = forge_daemon::jsonrpc::Request::new(
         "session.subscribe",
         serde_json::json!({"session_id": session_id}),
         serde_json::json!(2),
@@ -759,7 +759,7 @@ async fn disconnect_broadcasts_primary_changed_with_disconnected_reason() {
     let mut parked_b = Vec::new();
     let _ = drain_for_method(&mut ws_b, "client.identify", &mut parked_b).await;
 
-    let sub_b = forged::jsonrpc::Request::new(
+    let sub_b = forge_daemon::jsonrpc::Request::new(
         "session.subscribe",
         serde_json::json!({"session_id": session_id}),
         serde_json::json!(3),
@@ -827,7 +827,7 @@ async fn disconnect_broadcasts_primary_changed_with_disconnected_reason() {
 /// `prompts.respond` compose correctly.
 #[tokio::test]
 async fn permission_request_hands_off_via_queue_on_takeover() {
-    use forged::prompt_queue::{PendingPrompt, PromptKind};
+    use forge_daemon::prompt_queue::{PendingPrompt, PromptKind};
 
     let (state, addr) = spawn_daemon().await;
 
@@ -847,7 +847,7 @@ async fn permission_request_hands_off_via_queue_on_takeover() {
     let (handle, _rx) = state.register_session(sid.clone());
 
     // A subscribes — becomes initial primary.
-    let sub_a = forged::jsonrpc::Request::new(
+    let sub_a = forge_daemon::jsonrpc::Request::new(
         "session.subscribe",
         serde_json::json!({"session_id": sid.0}),
         serde_json::json!(1),
@@ -875,7 +875,7 @@ async fn permission_request_hands_off_via_queue_on_takeover() {
 
     // B subscribes — auto-takeover; B's subscribe response should
     // include the parked prompt.
-    let sub_b = forged::jsonrpc::Request::new(
+    let sub_b = forge_daemon::jsonrpc::Request::new(
         "session.subscribe",
         serde_json::json!({"session_id": sid.0}),
         serde_json::json!(2),
@@ -904,7 +904,7 @@ async fn permission_request_hands_off_via_queue_on_takeover() {
     assert_eq!(*handle.primary.lock(), Some(b_conn_id));
 
     // B answers via prompts.respond.
-    let respond = forged::jsonrpc::Request::new(
+    let respond = forge_daemon::jsonrpc::Request::new(
         "prompts.respond",
         serde_json::json!({
             "session_id": sid.0,

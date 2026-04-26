@@ -13,7 +13,7 @@ publish = false
 workspace = true
 
 [dependencies]
-forged = { path = "../forged" }
+forge-daemon = { path = "../forge-daemon" }
 forge-sdk = { path = "../forge-sdk" }
 tokio = { workspace = true }
 tokio-tungstenite.workspace = true

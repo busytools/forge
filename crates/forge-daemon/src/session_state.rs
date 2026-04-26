@@ -25,7 +25,7 @@ use crate::connection::ConnectionId;
 /// human-paced.
 pub(crate) const COMMAND_CHANNEL_CAPACITY: usize = 256;
 
-/// Session id minted by forged on `session.spawn`.
+/// Session id minted by forge-daemon on `session.spawn`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct SessionId(pub String);
 

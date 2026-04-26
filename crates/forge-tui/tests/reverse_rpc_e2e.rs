@@ -14,20 +14,20 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use crossterm::event::KeyCode;
+use forge_daemon::prompt_queue::{PendingPrompt, PromptKind};
 use forge_tui::app::{App, Focus, PendingPermission};
 use forge_tui::client::Client;
-use forged::prompt_queue::{PendingPrompt, PromptKind};
 use parking_lot::Mutex;
 use tokio::sync::mpsc;
 
 #[tokio::test]
 async fn fresh_permission_request_round_trips_through_send_response() {
-    let state = forged::registry::DaemonState::new();
+    let state = forge_daemon::registry::DaemonState::new();
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
     let addr = listener.local_addr().unwrap();
     let listener = tokio::net::TcpListener::from_std(listener).unwrap();
-    tokio::spawn(forged::server::run(listener, state.clone()));
+    tokio::spawn(forge_daemon::server::run(listener, state.clone()));
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     let client = Arc::new(
@@ -51,7 +51,7 @@ async fn fresh_permission_request_round_trips_through_send_response() {
     .expect("connection_id discovery timed out");
 
     // Register a session and pin our connection as the primary.
-    let sid = forged::session_state::SessionId("sess_tui_e2e".into());
+    let sid = forge_daemon::session_state::SessionId("sess_tui_e2e".into());
     let (handle, _rx) = state.register_session(sid.clone());
     *handle.primary.lock() = Some(conn_id.clone());
 
@@ -74,12 +74,12 @@ async fn fresh_permission_request_round_trips_through_send_response() {
     let state_arc = Arc::new(state.clone());
     let sid_for = sid.clone();
     let issue = tokio::spawn(async move {
-        forged::reverse_rpc::issue_to_primary(
+        forge_daemon::reverse_rpc::issue_to_primary(
             &state_arc,
             &sid_for,
             "permission.request",
             serde_json::json!({"tool_name": "Bash", "tool_input": {"command": "ls"}}),
-            forged::prompt_queue::PromptKind::Permission,
+            forge_daemon::prompt_queue::PromptKind::Permission,
             Duration::from_secs(5),
         )
         .await
@@ -127,12 +127,12 @@ async fn fresh_permission_request_round_trips_through_send_response() {
 /// 1-hour timeout.
 #[tokio::test]
 async fn answer_permission_routes_to_params_session_not_current_session() {
-    let state = forged::registry::DaemonState::new();
+    let state = forge_daemon::registry::DaemonState::new();
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
     let addr = listener.local_addr().unwrap();
     let listener = tokio::net::TcpListener::from_std(listener).unwrap();
-    tokio::spawn(forged::server::run(listener, state.clone()));
+    tokio::spawn(forge_daemon::server::run(listener, state.clone()));
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     let client = Arc::new(
@@ -156,8 +156,8 @@ async fn answer_permission_routes_to_params_session_not_current_session() {
     // Register two sessions; pin our connection as primary on BOTH.
     // Mimics the production case where one TUI client is primary on
     // multiple concurrent sessions.
-    let sid_a = forged::session_state::SessionId("sess_A".into());
-    let sid_b = forged::session_state::SessionId("sess_B".into());
+    let sid_a = forge_daemon::session_state::SessionId("sess_A".into());
+    let sid_b = forge_daemon::session_state::SessionId("sess_B".into());
     let (handle_a, _rx_a) = state.register_session(sid_a.clone());
     let (handle_b, _rx_b) = state.register_session(sid_b.clone());
     *handle_a.primary.lock() = Some(conn_id.clone());
@@ -197,7 +197,7 @@ async fn answer_permission_routes_to_params_session_not_current_session() {
     });
     state.outstanding_reverse.lock().insert(
         rev_id_b.into(),
-        forged::registry::OutstandingEntry {
+        forge_daemon::registry::OutstandingEntry {
             session_id: sid_b.clone(),
             conn_id: None,
             prompt_id: prompt_id_b.into(),

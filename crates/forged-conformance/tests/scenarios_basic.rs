@@ -40,10 +40,10 @@ async fn capture_m1_status() {
     }
 
     // 1. Bind forged on ephemeral port.
-    let state = forged::registry::DaemonState::new();
+    let state = forge_daemon::registry::DaemonState::new();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    let _h = tokio::spawn(forged::server::run(listener, state));
+    let _h = tokio::spawn(forge_daemon::server::run(listener, state));
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     // 2. Trace sink.
@@ -147,10 +147,10 @@ async fn capture_session_subscribe_basic() {
         return;
     }
 
-    let state = forged::registry::DaemonState::new();
+    let state = forge_daemon::registry::DaemonState::new();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    let _h = tokio::spawn(forged::server::run(listener, state.clone()));
+    let _h = tokio::spawn(forge_daemon::server::run(listener, state.clone()));
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     let trace = Arc::new(Mutex::new(Vec::<TraceEntry>::new()));
@@ -168,7 +168,7 @@ async fn capture_session_subscribe_basic() {
 
     // Manually register a fake session — capture the subscribe round
     // trip without needing a real subprocess.
-    let sid = forged::session_state::SessionId("sess_demo".into());
+    let sid = forge_daemon::session_state::SessionId("sess_demo".into());
     let _registered = state.register_session(sid.clone());
 
     let req = serde_json::json!({
@@ -210,10 +210,10 @@ async fn capture_permission_request_round_trip() {
         return;
     }
 
-    let state = forged::registry::DaemonState::new();
+    let state = forge_daemon::registry::DaemonState::new();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    let _h = tokio::spawn(forged::server::run(listener, state.clone()));
+    let _h = tokio::spawn(forge_daemon::server::run(listener, state.clone()));
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     let trace = Arc::new(Mutex::new(Vec::<TraceEntry>::new()));
@@ -241,7 +241,7 @@ async fn capture_permission_request_round_trip() {
     .await
     .expect("connection_id discovery timed out");
 
-    let sid = forged::session_state::SessionId("sess_demo".into());
+    let sid = forge_daemon::session_state::SessionId("sess_demo".into());
     let (handle, _rx) = state.register_session(sid.clone());
     *handle.primary.lock() = Some(conn_id.clone());
 
@@ -249,12 +249,12 @@ async fn capture_permission_request_round_trip() {
     let state_arc = std::sync::Arc::new(state.clone());
     let sid_for = sid.clone();
     let issue = tokio::spawn(async move {
-        forged::reverse_rpc::issue_to_primary(
+        forge_daemon::reverse_rpc::issue_to_primary(
             &state_arc,
             &sid_for,
             "permission.request",
             serde_json::json!({"tool_name": "Bash", "tool_input": {"command": "ls"}}),
-            forged::prompt_queue::PromptKind::Permission,
+            forge_daemon::prompt_queue::PromptKind::Permission,
             Duration::from_secs(5),
         )
         .await
@@ -301,10 +301,10 @@ async fn capture_client_identify_with_name() {
         return;
     }
 
-    let state = forged::registry::DaemonState::new();
+    let state = forge_daemon::registry::DaemonState::new();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    let _h = tokio::spawn(forged::server::run(listener, state));
+    let _h = tokio::spawn(forge_daemon::server::run(listener, state));
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     let trace = Arc::new(Mutex::new(Vec::<TraceEntry>::new()));
@@ -360,10 +360,10 @@ async fn capture_permission_request_jsonrpc_error() {
         return;
     }
 
-    let state = forged::registry::DaemonState::new();
+    let state = forge_daemon::registry::DaemonState::new();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    let _h = tokio::spawn(forged::server::run(listener, state.clone()));
+    let _h = tokio::spawn(forge_daemon::server::run(listener, state.clone()));
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     let trace = Arc::new(Mutex::new(Vec::<TraceEntry>::new()));
@@ -391,7 +391,7 @@ async fn capture_permission_request_jsonrpc_error() {
     .await
     .expect("connection_id discovery timed out");
 
-    let sid = forged::session_state::SessionId("sess_demo".into());
+    let sid = forge_daemon::session_state::SessionId("sess_demo".into());
     let (handle, _rx) = state.register_session(sid.clone());
     *handle.primary.lock() = Some(conn_id.clone());
 
@@ -399,12 +399,12 @@ async fn capture_permission_request_jsonrpc_error() {
     let state_arc = std::sync::Arc::new(state.clone());
     let sid_for = sid.clone();
     let issue = tokio::spawn(async move {
-        forged::reverse_rpc::issue_to_primary(
+        forge_daemon::reverse_rpc::issue_to_primary(
             &state_arc,
             &sid_for,
             "permission.request",
             serde_json::json!({"tool_name": "Bash", "tool_input": {"command": "rm -rf /"}}),
-            forged::prompt_queue::PromptKind::Permission,
+            forge_daemon::prompt_queue::PromptKind::Permission,
             Duration::from_secs(5),
         )
         .await
@@ -448,10 +448,10 @@ async fn capture_multi_client_takeover() {
         return;
     }
 
-    let state = forged::registry::DaemonState::new();
+    let state = forge_daemon::registry::DaemonState::new();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    let _h = tokio::spawn(forged::server::run(listener, state.clone()));
+    let _h = tokio::spawn(forge_daemon::server::run(listener, state.clone()));
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     let url_a = format!("ws://{addr}/?name=A");
@@ -463,7 +463,7 @@ async fn capture_multi_client_takeover() {
     let _ = ws_a.next().await;
 
     // Manually register a fake session.
-    let sid = forged::session_state::SessionId("sess_demo".into());
+    let sid = forge_daemon::session_state::SessionId("sess_demo".into());
     let _kept = state.register_session(sid.clone());
 
     // A subscribes (becomes initial primary). Drain everything for A.
