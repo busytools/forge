@@ -99,7 +99,7 @@ impl Error {
     /// - [`Error::ReplayUnavailable`] → `{ "buffer_window_seconds": N }`
     /// - [`Error::SessionNotFound`] → `{ "session_id": "..." }`
     /// - [`Error::SubscriptionNotFound`] → `{ "session_id": "..." }`
-    /// - [`Error::Sdk(forge_sdk::Error::Process)`] → `{ "exit_code": N }`
+    /// - [`Error::Sdk`] wrapping `forge_sdk::Error::Process` → `{ "exit_code": N }`
     #[must_use]
     pub fn to_jsonrpc(&self) -> ErrorObject {
         let data = match self {

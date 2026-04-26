@@ -57,10 +57,7 @@ pub struct InfoResult {
 ///
 /// Infallible today; the wrapped `info` is `None` when the session id
 /// is unknown.
-pub fn info(
-    session_id: SessionId,
-    directory: Option<String>,
-) -> Result<InfoResult, Error> {
+pub fn info(session_id: SessionId, directory: Option<String>) -> Result<InfoResult, Error> {
     Ok(InfoResult {
         info: session::scan::get_session_info(&session_id.0, directory),
     })
@@ -102,7 +99,10 @@ pub fn messages(session_id: SessionId, directory: Option<String>) -> Result<Mess
 /// # Errors
 ///
 /// Infallible today.
-pub fn list_subagents(session_id: SessionId, directory: Option<String>) -> Result<Vec<String>, Error> {
+pub fn list_subagents(
+    session_id: SessionId,
+    directory: Option<String>,
+) -> Result<Vec<String>, Error> {
     Ok(session::scan::list_subagents(&session_id.0, directory))
 }
 
@@ -144,7 +144,11 @@ pub fn project_key(path: Option<String>) -> Result<String, Error> {
 ///
 /// Bubbles [`forge_sdk::Error`] if the session jsonl is missing or
 /// unwriteable.
-pub fn rename(session_id: SessionId, title: String, directory: Option<String>) -> Result<(), Error> {
+pub fn rename(
+    session_id: SessionId,
+    title: String,
+    directory: Option<String>,
+) -> Result<(), Error> {
     session::mutations::rename_session(&session_id.0, &title, directory.as_deref())
         .map_err(Error::Sdk)
 }

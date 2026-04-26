@@ -289,7 +289,9 @@ fn sessions_info_returns_some_for_known_id() {
     let (tmp, _, project_dir) = seed_projects(1);
     let _guard = point_sdk_at(&tmp);
     let sid = "00000000-0000-4000-8000-000000000000".to_string();
-    let info = forged::methods::sessions::info(sid.clone().into(), Some(project_dir)).unwrap().info;
+    let info = forged::methods::sessions::info(sid.clone().into(), Some(project_dir))
+        .unwrap()
+        .info;
     assert!(info.is_some(), "expected Some(SDKSessionInfo)");
     assert_eq!(info.unwrap().session_id, sid);
 }
