@@ -103,11 +103,11 @@ impl DaemonState {
     /// session (no real subprocess) and inspect the registry without a
     /// running actor.
     #[must_use = "the caller must consume the command receiver to drive the session"]
-    pub fn register_session(
-        &self,
-        id: SessionId,
-    ) -> (SessionHandle, mpsc::UnboundedReceiver<Command>) {
-        let (tx, rx) = mpsc::unbounded_channel();
+    pub fn register_session(&self, id: SessionId) -> (SessionHandle, mpsc::Receiver<Command>) {
+        // Bounded — a misbehaving client looping mutation methods can no
+        // longer pile up commands faster than the actor processes them.
+        // 256 is well over realistic burst depth for normal dispatch.
+        let (tx, rx) = mpsc::channel(crate::session_state::COMMAND_CHANNEL_CAPACITY);
         let handle = Arc::new(SessionState::new(id.clone(), tx));
         self.sessions.lock().insert(id, handle.clone());
         (handle, rx)

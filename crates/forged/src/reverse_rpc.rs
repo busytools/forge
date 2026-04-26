@@ -87,7 +87,7 @@ fn try_send_to_primary(
         }),
         Value::String(rev_id.to_owned()),
     );
-    if out.send(Outbound::Request(req)).is_ok() {
+    if out.try_send(Outbound::Request(req)).is_ok() {
         return Ok(());
     }
     // Channel closed — peel back the responder so it isn't leaked in
