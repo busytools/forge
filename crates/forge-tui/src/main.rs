@@ -171,11 +171,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         .and_then(|s| s.as_array())
                         .cloned()
                         .unwrap_or_default();
-                    let _ = tx.send(AppEvent::SessionListLoaded(items));
+                    if tx.send(AppEvent::SessionListLoaded(items)).is_err() {
+                        tracing::trace!("sessions.list result dropped — receiver gone");
+                    }
                 }
                 Err(e) => {
                     tracing::warn!(error = %e, "sessions.list failed; rendering empty list");
-                    let _ = tx.send(AppEvent::SessionListLoadFailed(e.to_string()));
+                    if tx
+                        .send(AppEvent::SessionListLoadFailed(e.to_string()))
+                        .is_err()
+                    {
+                        tracing::trace!("sessions.list failure event dropped — receiver gone");
+                    }
                 }
             }
         });
