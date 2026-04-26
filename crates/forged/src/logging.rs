@@ -72,14 +72,20 @@ pub fn init(config: &Config) -> Result<(), Error> {
         .with_target(true)
         .with_filter(EnvFilter::new("forged::audit=info"));
 
-    // `try_init` is the idempotent variant — second call returns Err but
-    // we ignore it because the first install is the one that wins.
-    let _ = Registry::default()
+    // `try_init` returns Err when a subscriber is already installed
+    // (typical under tests or re-exec scenarios). The first install wins
+    // by contract, so we treat this as a no-op — but surface anything we
+    // didn't expect via stderr because the very subsystem we'd normally
+    // log to is what just failed.
+    if let Err(e) = Registry::default()
         .with(env)
         .with(events_layer)
         .with(errors_layer)
         .with(audit_layer)
-        .try_init();
+        .try_init()
+    {
+        eprintln!("forged: tracing init skipped — subscriber already set ({e})");
+    }
     Ok(())
 }
 
