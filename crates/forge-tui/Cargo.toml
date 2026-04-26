@@ -29,7 +29,7 @@ ratatui.workspace = true
 crossterm = { workspace = true, features = ["event-stream"] }
 uuid.workspace = true
 parking_lot.workspace = true
-futures-util = "0.3"
+futures-util.workspace = true
 
 [dev-dependencies]
 forged = { path = "../forged" }
@@ -37,4 +37,3 @@ forge-sdk = { path = "../forge-sdk" }
 insta = { workspace = true }
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
-futures-util = "0.3"
