@@ -69,15 +69,33 @@ fn try_send_to_primary(
     // correct trade. If the trust model changes, switch to a "tentative"
     // flag on insert + confirm-after-send + reject-on-resolve-if-not-
     // confirmed scheme.
-    state.outstanding_reverse.lock().insert(
-        rev_id.to_owned(),
-        OutstandingEntry {
-            session_id: session_id.clone(),
-            conn_id: Some(pid.clone()),
-            prompt_id: prompt_id.to_owned(),
-            responder: tx,
-        },
-    );
+    {
+        // Atomic check-and-insert under one lock guard. Eliminates the
+        // TOCTOU between the cap check and the entry insert that the
+        // earlier "check-then-(unlock)-then-insert" pattern allowed —
+        // concurrent issuers could each pass the check before any
+        // insert and briefly exceed OUTSTANDING_REVERSE_CAP. Audit
+        // 2026-04-26 second-pass minor.
+        let mut outstanding = state.outstanding_reverse.lock();
+        if outstanding.len() >= OUTSTANDING_REVERSE_CAP {
+            tracing::warn!(
+                cap = OUTSTANDING_REVERSE_CAP,
+                method = %method,
+                session = %session_id.0,
+                "outstanding_reverse at cap; rejecting new reverse-RPC with Overloaded"
+            );
+            return Err(tx);
+        }
+        outstanding.insert(
+            rev_id.to_owned(),
+            OutstandingEntry {
+                session_id: session_id.clone(),
+                conn_id: Some(pid.clone()),
+                prompt_id: prompt_id.to_owned(),
+                responder: tx,
+            },
+        );
+    }
     let req = Request::new(
         method,
         serde_json::json!({
@@ -131,7 +149,11 @@ struct ParkArgs<'a> {
 /// responder is consumed but the SDK-side handler is unblocked
 /// synchronously through the outstanding-reverse path. No spawned-task
 /// bridge means no race against the timeout cleanup.
-fn park_in_queue(args: ParkArgs<'_>) {
+///
+/// Returns `Err(tx)` if the cap is exceeded (caller should surface as
+/// [`Error::Overloaded`]); on success, ownership of `tx` is moved
+/// into the outstanding-reverse table.
+fn park_in_queue(args: ParkArgs<'_>) -> Result<(), oneshot::Sender<Value>> {
     let ParkArgs {
         state,
         session_id,
@@ -143,8 +165,32 @@ fn park_in_queue(args: ParkArgs<'_>) {
         tx,
     } = args;
     let Some(handle) = state.get_session(session_id) else {
-        return;
+        return Err(tx);
     };
+    // Atomic cap-check + insert into outstanding_reverse, mirroring
+    // the pattern in try_send_to_primary. The queue enqueue happens
+    // unconditionally after — the queue itself isn't capped here
+    // (it's session-scoped, so per-session backpressure is implicit).
+    {
+        let mut outstanding = state.outstanding_reverse.lock();
+        if outstanding.len() >= OUTSTANDING_REVERSE_CAP {
+            tracing::warn!(
+                cap = OUTSTANDING_REVERSE_CAP,
+                session = %session_id.0,
+                "outstanding_reverse at cap; rejecting parked reverse-RPC with Overloaded"
+            );
+            return Err(tx);
+        }
+        outstanding.insert(
+            rev_id.to_owned(),
+            OutstandingEntry {
+                session_id: session_id.clone(),
+                conn_id: None,
+                prompt_id: prompt_id.to_owned(),
+                responder: tx,
+            },
+        );
+    }
     // The queue's responder is a sentinel kept around so disconnect
     // cleanup can take + drop the queue entry without affecting the
     // outstanding-reverse path. The actual SDK-side answer flows
@@ -160,18 +206,7 @@ fn park_in_queue(args: ParkArgs<'_>) {
         responder: queue_tx,
         rev_id: Some(rev_id.to_owned()),
     });
-    // Stash the outstanding entry so `prompts.respond` (which calls
-    // `resolve(rev_id)`) drains it. Connection-disconnect cleanup
-    // skips it because `conn_id` is None.
-    state.outstanding_reverse.lock().insert(
-        rev_id.to_owned(),
-        OutstandingEntry {
-            session_id: session_id.clone(),
-            conn_id: None,
-            prompt_id: prompt_id.to_owned(),
-            responder: tx,
-        },
-    );
+    Ok(())
 }
 
 /// Notify a session's subscribers that one or more pending prompts
@@ -280,30 +315,22 @@ pub async fn issue_to_primary(
         .get_session(session_id)
         .ok_or_else(|| Error::SessionNotFound(session_id.0.clone()))?;
 
-    if state.outstanding_reverse.lock().len() >= OUTSTANDING_REVERSE_CAP {
-        tracing::warn!(
-            cap = OUTSTANDING_REVERSE_CAP,
-            method = %method,
-            session = %session_id.0,
-            "outstanding_reverse at cap; rejecting new reverse-RPC with Overloaded"
-        );
-        return Err(Error::Overloaded);
-    }
-
     let prompt_id = format!("prompt_{}", Uuid::new_v4());
     let rev_id = format!("rev_{}", Uuid::new_v4());
     let (tx, rx) = oneshot::channel::<Value>();
 
-    // Hot path: deliver to the primary if one is connected.
+    // Hot path: deliver to the primary if one is connected. Cap check
+    // is atomic with the insert inside try_send_to_primary +
+    // park_in_queue; either succeeds-with-cap-honored or returns the
+    // responder back to us so we can surface Overloaded.
     let send_result =
         try_send_to_primary(state, session_id, &rev_id, method, &prompt_id, &params, tx);
 
     if let Err(returned_tx) = send_result {
-        // No primary OR primary's channel is closed — park in queue.
-        // Use the helper so the outstanding-entry table also reflects
-        // the parked state (with conn_id=None so disconnect cleanup
-        // skips it).
-        park_in_queue(ParkArgs {
+        // No primary, primary's channel was closed, OR cap was hit.
+        // park_in_queue tries the same atomic check-and-insert; if it
+        // also returns the responder we surface Overloaded.
+        if let Err(rejected_tx) = park_in_queue(ParkArgs {
             state,
             session_id,
             rev_id: &rev_id,
@@ -312,7 +339,13 @@ pub async fn issue_to_primary(
             params,
             timeout,
             tx: returned_tx,
-        });
+        }) {
+            // Both the primary-send and the queue-park rejected (cap
+            // hit or session gone). Drop the responder; surface
+            // Overloaded so the caller's hook bridge can fail-closed.
+            drop(rejected_tx);
+            return Err(Error::Overloaded);
+        }
     }
 
     match tokio::time::timeout(timeout, rx).await {
