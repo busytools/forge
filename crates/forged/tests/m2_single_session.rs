@@ -23,7 +23,7 @@ fn register_session_increments_active_count() {
     let state = DaemonState::new();
     let id = SessionId("sess_test_1".into());
     let _kept = state.register_session(id.clone());
-    assert_eq!(*state.active_sessions.lock(), 1);
+    assert_eq!(state.sessions.lock().len(), 1);
     assert!(state.sessions.lock().contains_key(&id));
 }
 
@@ -33,7 +33,7 @@ fn unregister_session_decrements_count() {
     let id = SessionId("sess_test_2".into());
     let _kept = state.register_session(id.clone());
     state.unregister_session(&id);
-    assert_eq!(*state.active_sessions.lock(), 0);
+    assert_eq!(state.sessions.lock().len(), 0);
     assert!(!state.sessions.lock().contains_key(&id));
 }
 
@@ -43,7 +43,7 @@ async fn session_spawn_creates_a_client_and_registers() {
     let opts = OptionsBuilder::new().binary(MOCK_CLAUDE).build();
     let SpawnResult { session_id, .. } = spawn(&state, opts).await.unwrap();
     assert!(session_id.0.starts_with("sess_"));
-    assert_eq!(*state.active_sessions.lock(), 1);
+    assert_eq!(state.sessions.lock().len(), 1);
     assert!(state.get_session(&session_id).is_some());
 }
 
@@ -233,7 +233,7 @@ async fn disconnect_unregisters_session() {
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
     assert!(state.get_session(&session_id).is_none());
-    assert_eq!(*state.active_sessions.lock(), 0);
+    assert_eq!(state.sessions.lock().len(), 0);
 }
 
 #[tokio::test]

@@ -37,8 +37,8 @@ pub struct DaemonStatus {
 pub async fn status(state: &DaemonState) -> Result<DaemonStatus, Error> {
     Ok(DaemonStatus {
         uptime_seconds: state.started_at.elapsed().as_secs(),
-        active_sessions: *state.active_sessions.lock(),
-        connected_clients: *state.connected_clients.lock(),
+        active_sessions: state.sessions.lock().len(),
+        connected_clients: state.connections.lock().len(),
         last_error: None,
         version: env!("CARGO_PKG_VERSION"),
         build: option_env!("FORGED_BUILD_SHA").unwrap_or("dev"),
