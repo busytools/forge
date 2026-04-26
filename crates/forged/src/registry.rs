@@ -208,7 +208,7 @@ impl DaemonState {
     /// the list of session ids whose primary was cleared so callers
     /// can broadcast `session.primary_changed`.
     #[must_use = "callers should fan a session.primary_changed notification for each cleared session"]
-    pub fn purge_connection_from_sessions(&self, conn_id: &ConnectionId) -> Vec<SessionId> {
+    fn purge_connection_from_sessions(&self, conn_id: &ConnectionId) -> Vec<SessionId> {
         let sessions = self.sessions.lock().clone();
         let mut cleared = Vec::new();
         for (sid, handle) in sessions {

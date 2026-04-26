@@ -166,7 +166,7 @@ fn park_in_queue(args: ParkArgs<'_>) {
 /// Notify a session's subscribers that one or more pending prompts
 /// have expired because the conn that was answering them disconnected.
 /// Called from the WS read loop's connection-cleanup path.
-pub fn notify_disconnect_expired(state: &DaemonState, session_id: &SessionId, prompt_id: &str) {
+fn notify_disconnect_expired(state: &DaemonState, session_id: &SessionId, prompt_id: &str) {
     let frame = Outbound::Notification(Notification::new(
         "prompts.expired",
         serde_json::json!({
