@@ -25,7 +25,7 @@ impl Request {
     #[must_use]
     pub fn new(method: impl Into<String>, params: Value, id: Value) -> Self {
         Self {
-            jsonrpc: JsonRpcVersion,
+            jsonrpc: JsonRpcVersion::V2_0,
             id,
             method: method.into(),
             params: Some(params),
@@ -50,7 +50,7 @@ impl Notification {
     #[must_use]
     pub fn new(method: impl Into<String>, params: Value) -> Self {
         Self {
-            jsonrpc: JsonRpcVersion,
+            jsonrpc: JsonRpcVersion::V2_0,
             method: method.into(),
             params: Some(params),
         }
@@ -77,7 +77,7 @@ impl Response {
     #[must_use]
     pub fn success(id: Value, result: Value) -> Self {
         Self {
-            jsonrpc: JsonRpcVersion,
+            jsonrpc: JsonRpcVersion::V2_0,
             id,
             result: Some(result),
             error: None,
@@ -88,7 +88,7 @@ impl Response {
     #[must_use]
     pub fn error(id: Value, err: ErrorObject) -> Self {
         Self {
-            jsonrpc: JsonRpcVersion,
+            jsonrpc: JsonRpcVersion::V2_0,
             id,
             result: None,
             error: Some(err),
@@ -109,24 +109,13 @@ pub struct ErrorObject {
 }
 
 /// Marker type that always serialises as the literal string `"2.0"`.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct JsonRpcVersion;
-
-impl Serialize for JsonRpcVersion {
-    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        s.serialize_str("2.0")
-    }
-}
-
-impl<'de> Deserialize<'de> for JsonRpcVersion {
-    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        let s = String::deserialize(d)?;
-        if s == "2.0" {
-            Ok(Self)
-        } else {
-            Err(serde::de::Error::custom(format!(
-                "expected jsonrpc 2.0, got {s}"
-            )))
-        }
-    }
+/// Modeled as a single-variant enum so serde derives the
+/// strict-validation behaviour (rejects anything but "2.0" on
+/// deserialize) for free.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+pub enum JsonRpcVersion {
+    /// JSON-RPC 2.0 — the only version we speak.
+    #[default]
+    #[serde(rename = "2.0")]
+    V2_0,
 }
