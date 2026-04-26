@@ -17,6 +17,8 @@
 
 use crate::Error;
 use crate::client::Client;
+use crate::messages::Message;
+use crate::transport::codec::{DecodedLine, decode_dispatch};
 
 impl Client {
     /// Issue an outbound `control_request` with the given `subtype` and
@@ -28,6 +30,10 @@ impl Client {
     /// - [`Error::MessageParse`] when the CLI replies with an error
     ///   subtype or a malformed frame.
     /// - [`Error::Io`] on pipe read/write failure.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the wait loop fans out across success / error / interleaved control_request / interleaved message variants — splitting it would obscure the single ordered protocol"
+    )]
     pub(super) async fn send_control(
         &mut self,
         subtype: &str,
@@ -128,11 +134,48 @@ impl Client {
                 self.handle_control(req).await?;
                 continue;
             }
-            tracing::warn!(
-                line = %response_line,
-                %subtype,
-                "unexpected frame while awaiting control response"
-            );
+            // Anything else interleaved on the stream is a regular
+            // message frame — assistant / user / system / result /
+            // stream_event / rate_limit_event. The CLI is free to
+            // produce these between our control_request and its
+            // control_response, especially with --include-partial-
+            // messages. Drop here would silently corrupt the
+            // conversation transcript. Buffer instead, mirroring
+            // spawn_inner's pre-init handling — next_event drains the
+            // buffer before reading new lines.
+            match decode_dispatch(&response_line, self.line_number)? {
+                DecodedLine::Message(msg) => {
+                    tracing::debug!(
+                        line_number = self.line_number,
+                        %subtype,
+                        "buffering interleaved message frame during outbound control wait"
+                    );
+                    self.pre_init_messages.push_back(msg);
+                }
+                DecodedLine::Unknown { type_str, raw } => {
+                    tracing::warn!(
+                        type = %type_str,
+                        raw = %raw,
+                        line = self.line_number,
+                        %subtype,
+                        "unknown top-level type during control wait — buffering as Message::Unknown"
+                    );
+                    self.pre_init_messages
+                        .push_back(Message::Unknown { type_str, raw });
+                }
+                // control_* variants were already matched above; any
+                // other DecodedLine slipping through is a future variant
+                // we don't yet recognise. Log and drop to keep the wait
+                // alive — re-issuing the request is the consumer's fix.
+                other => {
+                    tracing::debug!(
+                        line_number = self.line_number,
+                        ?other,
+                        %subtype,
+                        "unexpected DecodedLine during control wait fallthrough; ignoring"
+                    );
+                }
+            }
         }
     }
 
