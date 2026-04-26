@@ -48,9 +48,8 @@ parking_lot.workspace = true
 toml.workspace = true
 async-trait.workspace = true
 uuid.workspace = true
-futures-util = "0.3"
+futures-util.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
-futures-util = "0.3"
