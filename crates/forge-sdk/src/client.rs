@@ -376,10 +376,16 @@ impl Client {
                     .map(str::to_string)
             })
             .unwrap_or_default();
-        // Drop the `system/init` frame so callers of `next_event` see
-        // the clean post-init stream. Python SDK consumes init inside
-        // `query._fetch_init` and never surfaces it to callers;
-        // forge-sdk mirrors that contract.
+        // Drop the `system/init` frame from the **pre-init buffer** so
+        // callers of `next_event` start with the clean post-init stream.
+        // Python SDK consumes init inside `query._fetch_init` and never
+        // surfaces it to callers; forge-sdk mirrors that contract.
+        //
+        // Note: this filter only applies to the pre-init buffer captured
+        // during spawn. A `system/init` frame arriving on the live stream
+        // (which would be unusual — the CLI emits init exactly once per
+        // spawn / resume, and that frame is captured pre-init) would
+        // surface untouched, matching Python's behaviour.
         client.pre_init_messages.retain(|m| {
             !matches!(
                 m,
