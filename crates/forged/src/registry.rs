@@ -173,9 +173,28 @@ impl DaemonState {
             keys.into_iter().filter_map(|k| o.remove(&k)).collect()
         };
         for entry in to_unblock {
-            let _ = entry.responder.send(serde_json::json!({
-                "_client_disconnected": true,
-            }));
+            // Round 5 — symmetry trace. The responder is a
+            // `oneshot::Sender<Value>`; `.send` returns `Err(value)` when
+            // the receiver has already been dropped. That happens when
+            // the SDK callback for this rev was cancelled on its side
+            // (session shutdown raced disconnect cleanup). Benign drop —
+            // the answer is no longer needed — but tracing makes
+            // late-stage drops attributable during incident response.
+            let session_id = entry.session_id.clone();
+            let prompt_id = entry.prompt_id.clone();
+            if entry
+                .responder
+                .send(serde_json::json!({
+                    "_client_disconnected": true,
+                }))
+                .is_err()
+            {
+                tracing::trace!(
+                    session_id = %session_id.0,
+                    prompt_id = %prompt_id,
+                    "registry: disconnect-cleanup responder receiver gone (callback already cancelled)"
+                );
+            }
         }
 
         if self.connections.lock().remove(id).is_some() {
