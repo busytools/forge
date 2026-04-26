@@ -263,109 +263,22 @@ pub fn subscribe(
         .get_session(session_id)
         .ok_or_else(|| Error::SessionNotFound(session_id.0.clone()))?;
 
-    // Atomically (a) add conn to subscribers if not already present and
-    // (b) flip the primary slot to point at conn. Capture the previous
-    // primary so we can decide whether to fire role_assigned("demoted")
-    // and how to label the primary_changed reason.
-    let old_primary = {
-        let mut subs = handle.subscribers.lock();
-        if !subs.contains(&conn.id) {
-            subs.push(conn.id.clone());
-        }
-        let mut primary_guard = handle.primary.lock();
-        let prev = primary_guard.clone();
-        *primary_guard = Some(conn.id.clone());
-        prev
-    };
-
-    let displaced_other = matches!(&old_primary, Some(prev) if prev != &conn.id);
-    let reason: &str = if displaced_other {
-        "auto_takeover_on_connect"
-    } else {
-        "initial"
-    };
-
-    // Notify the new primary of their role. Always — even if conn was
-    // already primary (re-subscribe), so clients can rely on receiving
-    // a role frame after every successful subscribe.
-    if conn
-        .outbound
-        .send(crate::connection::Outbound::Notification(
-            crate::jsonrpc::Notification::new(
-                "session.role_assigned",
-                serde_json::json!({
-                    "session_id": session_id.0,
-                    "role": "primary",
-                    "primary": conn.id.0,
-                    "reason": reason,
-                }),
-            ),
-        ))
-        .is_err()
-    {
-        // Round 4 — fix M3. Auto-takeover path: caller's outbound
-        // writer is gone. Subscribe still completes (primary slot is
-        // already updated, broadcast follows below) but the caller
-        // won't get their role_assigned — log so the drop is visible
-        // in operator traces.
-        tracing::warn!(
-            caller_id = %conn.id.0,
-            session_id = %session_id.0,
-            "subscribe: caller's role_assigned notification dropped (writer task gone)"
-        );
-    }
-
-    // If we displaced a different primary, notify them of the demotion.
-    if displaced_other {
-        if let Some(old) = old_primary.as_ref() {
-            // Snapshot the connection's outbound channel without
-            // holding the connections lock while we send.
-            let outbound = state
-                .connections
-                .lock()
-                .get(old)
-                .map(|c| c.outbound.clone());
-            if let Some(out) = outbound {
-                if out
-                    .send(crate::connection::Outbound::Notification(
-                        crate::jsonrpc::Notification::new(
-                            "session.role_assigned",
-                            serde_json::json!({
-                                "session_id": session_id.0,
-                                "role": "viewer",
-                                "primary": conn.id.0,
-                                "reason": "demoted",
-                            }),
-                        ),
-                    ))
-                    .is_err()
-                {
-                    // Round 4 — fix M3. Auto-takeover path: displaced
-                    // primary's writer is gone between snapshot + send.
-                    // Subscribe still completes; log so the silent
-                    // drop is attributable.
-                    tracing::warn!(
-                        displaced_id = %old.0,
-                        session_id = %session_id.0,
-                        "subscribe: displaced primary's role_assigned dropped (writer task gone)"
-                    );
-                }
-            }
-        }
-    }
-
-    // Broadcast primary_changed to all subscribers (viewers + new primary).
-    let primary_changed =
-        crate::connection::Outbound::Notification(crate::jsonrpc::Notification::new(
-            "session.primary_changed",
-            serde_json::json!({
-                "session_id": session_id.0,
-                "primary": conn.id.0,
-                "previous": old_primary.as_ref().map(|c| c.0.clone()),
-                "reason": reason,
-            }),
-        ));
-    crate::broadcast::fanout(state, session_id, &primary_changed);
+    // Use the shared `become_primary` helper so subscribe and claim
+    // share the same atomic-swap + notification trio. Subscribe's
+    // distinguishing details: the role/broadcast reasons depend on
+    // whether the slot was empty (initial) or held by a different conn
+    // (auto_takeover_on_connect).
+    crate::methods::multi_client::become_primary(
+        state,
+        &handle,
+        session_id,
+        &conn.id,
+        "initial",                  // role_reason_initial
+        "auto_takeover_on_connect", // role_reason_takeover
+        "initial",                  // broadcast_reason_initial
+        "auto_takeover_on_connect", // broadcast_reason_takeover
+        "subscribe",
+    );
 
     let pending_views = handle.prompts.snapshot_for_wire();
     let pending_prompts = pending_views
