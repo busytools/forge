@@ -11,12 +11,38 @@
 //! [`Client::spawn_with_transport`](crate::Client::spawn_with_transport).
 //! The shipped [`process::Subprocess`] is one implementation.
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
 
 use crate::Error;
 
 pub mod codec;
 pub mod process;
+
+/// Shareable, `Send + Sync` writer half. Some transports (e.g. the
+/// daemon's `BridgedTransport`) split read from write under the hood
+/// and can hand out an mpsc-backed writer that's safe to clone into
+/// `tokio::spawn`'d tasks. Consumers that want the actor pattern (a
+/// long-running `next_event` in one task + concurrent commands +
+/// detached `handle_control` dispatch in another) need this — the
+/// `Transport` trait's `&mut self`-bound `write_line` doesn't allow
+/// concurrent writes.
+///
+/// Default-implemented transports return `None` from
+/// [`Transport::try_clone_writer`]; transports that can be split should
+/// override.
+#[async_trait]
+pub trait AsyncWriter: Send + Sync + std::fmt::Debug {
+    /// Write one line of stream-json to the transport. Caller supplies
+    /// the trailing `\n` (matches [`Transport::write_line`]).
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Io`] on write failure or after the transport has
+    /// closed its write half.
+    async fn write_line(&self, line: &str) -> Result<(), Error>;
+}
 
 /// Abstract I/O surface that [`Client`](crate::Client) drives. Mirrors
 /// Python SDK's `Transport` abstract base (`_internal/transport/__init__.py`).
@@ -74,4 +100,16 @@ pub trait Transport: Send + Sync + 'static {
     /// [`Error::Process`] / [`Error::Io`] — implementors surface
     /// shutdown errors to the caller rather than swallowing.
     async fn close(&mut self) -> Result<(), Error>;
+
+    /// Optional shareable writer handle. Transports that split read
+    /// from write internally (mpsc-bridged, multi-task) return
+    /// `Some(...)`; transports whose write side requires `&mut self`
+    /// (the default [`process::Subprocess`]) return `None`.
+    ///
+    /// When `Some(...)`, the returned [`AsyncWriter`] is safe to clone
+    /// into `tokio::spawn`'d tasks. This is what enables the daemon's
+    /// actor pattern — see [`crate::Client::try_dispatch_handle`].
+    fn try_clone_writer(&self) -> Option<Arc<dyn AsyncWriter>> {
+        None
+    }
 }
