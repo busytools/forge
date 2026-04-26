@@ -24,23 +24,44 @@ use crate::session_state::SessionId;
 // Listing — M3.2 / M3.3 / M3.4
 // =============================================================================
 
+/// Default page size when `limit` is unset on `sessions.list`. Caps the
+/// response at a reasonable size so a TUI doing an initial-load doesn't
+/// pull thousands of rows in one round-trip.
+const SESSIONS_LIST_DEFAULT_LIMIT: usize = 200;
+/// Hard ceiling on the caller-requested `limit`. Prevents a single call
+/// from pulling an unbounded result set.
+const SESSIONS_LIST_MAX_LIMIT: usize = 1000;
+
 /// `sessions.list` — see wire spec §7.4.7.
 ///
 /// `directory` is the project directory whose sessions to list. `None`
 /// scans every project under the configured projects-dir.
+/// `limit = None` means "use [`SESSIONS_LIST_DEFAULT_LIMIT`]"; the
+/// effective limit is then clamped at [`SESSIONS_LIST_MAX_LIMIT`].
 ///
 /// # Errors
 ///
-/// Currently infallible — [`forge_sdk::session::scan::list_sessions`]
-/// returns the matching rows directly. Wrapped in `Result` so future
-/// failure modes (e.g. permission errors when scanning a forbidden
-/// directory) can be added without a breaking API change.
+/// [`Error::InvalidParams`] when `limit` exceeds
+/// [`SESSIONS_LIST_MAX_LIMIT`].
 pub fn list(
     directory: Option<String>,
     limit: Option<usize>,
     offset: usize,
 ) -> Result<Vec<SDKSessionInfo>, Error> {
-    Ok(session::scan::list_sessions(directory, limit, offset))
+    let effective = match limit {
+        Some(n) if n > SESSIONS_LIST_MAX_LIMIT => {
+            return Err(Error::InvalidParams(format!(
+                "sessions.list: limit ({n}) exceeds maximum ({SESSIONS_LIST_MAX_LIMIT})",
+            )));
+        }
+        Some(n) => n,
+        None => SESSIONS_LIST_DEFAULT_LIMIT,
+    };
+    Ok(session::scan::list_sessions(
+        directory,
+        Some(effective),
+        offset,
+    ))
 }
 
 /// Result shape for `sessions.info`.
