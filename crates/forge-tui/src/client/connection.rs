@@ -210,20 +210,28 @@ impl Client {
     ///
     /// # Errors
     ///
-    /// [`ClientError`] on subscribe call failure.
+    /// [`ClientError`] on subscribe call failure. On error, the local
+    /// mpsc registration is rolled back so the subscription table
+    /// doesn't leak entries pointing at dropped receivers.
     pub async fn subscribe_session(
         &self,
         session_id: &str,
     ) -> Result<tokio_stream::wrappers::UnboundedReceiverStream<serde_json::Value>> {
         let (tx, rx) = mpsc::unbounded_channel::<serde_json::Value>();
         self.subscriptions.lock().insert(session_id.into(), tx);
-        let _: serde_json::Value = self
-            .call(
+        match self
+            .call::<_, serde_json::Value>(
                 "session.subscribe",
                 serde_json::json!({"session_id": session_id}),
             )
-            .await?;
-        Ok(tokio_stream::wrappers::UnboundedReceiverStream::new(rx))
+            .await
+        {
+            Ok(_) => Ok(tokio_stream::wrappers::UnboundedReceiverStream::new(rx)),
+            Err(e) => {
+                self.subscriptions.lock().remove(session_id);
+                Err(e)
+            }
+        }
     }
 
     /// Register a reverse-RPC handler. Back-compat alias for
@@ -239,6 +247,9 @@ impl Client {
     /// dispatcher cannot tell whether the future intends to "be the
     /// answer" or "register handler state and let `send_response` do
     /// the work." `_sync` and `_deferred` make the intent explicit.
+    #[deprecated(
+        note = "use on_reverse_rpc_sync or on_reverse_rpc_deferred — this drops the future's return value"
+    )]
     pub fn on_reverse_rpc<F, Fut>(&self, method: impl Into<String>, handler: F)
     where
         F: Fn(serde_json::Value, serde_json::Value) -> Fut + Send + Sync + 'static,
@@ -438,9 +449,20 @@ async fn read_loop(
             // Notification.
             if method == "session.event" {
                 if let Some(sid) = params.get("session_id").and_then(|s| s.as_str()) {
-                    if let Some(tx) = subscriptions.lock().get(sid) {
-                        let _ = tx.send(params);
-                        continue;
+                    let send_result = {
+                        let table = subscriptions.lock();
+                        table.get(sid).map(|tx| tx.send(params.clone()))
+                    };
+                    match send_result {
+                        Some(Ok(())) => continue,
+                        Some(Err(_)) => {
+                            // Receiver dropped — purge so future
+                            // subscribe attempts get a fresh entry
+                            // rather than colliding on the dead one.
+                            subscriptions.lock().remove(sid);
+                            continue;
+                        }
+                        None => { /* fall through to notifications channel */ }
                     }
                 }
             }

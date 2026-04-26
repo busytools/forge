@@ -410,6 +410,66 @@ async fn claim_primary_demotes_existing_and_promotes_caller() {
     assert!(a_saw_pc, "A did not receive primary_changed");
 }
 
+/// Calling `claim_primary` while already primary is idempotent for
+/// the role state but still emits the role + `primary_changed`
+/// notifications — clients can rely on a frame after every successful
+/// claim (per the contract documented on `multi_client::claim_primary`).
+#[tokio::test]
+async fn claim_primary_self_claim_is_idempotent_but_still_notifies() {
+    use forged::connection::{Connection, ConnectionId};
+    use tokio::sync::mpsc;
+
+    let state = DaemonState::new();
+    let sid = SessionId("sess_self_claim".into());
+    let (handle, _rx) = state.register_session(sid.clone());
+
+    let (a_tx, mut a_rx) = mpsc::unbounded_channel();
+    let conn_a = Connection::with_metadata(
+        ConnectionId("conn_A".into()),
+        Some("A".into()),
+        SystemTime::now(),
+        a_tx,
+    );
+    state.register_connection(conn_a.clone());
+    handle.subscribers.lock().push(conn_a.id.clone());
+    *handle.primary.lock() = Some(conn_a.id.clone());
+
+    // Self-claim — A is already primary.
+    forged::methods::multi_client::claim_primary(&state, &conn_a.id, &sid).unwrap();
+
+    // Primary slot still points at A.
+    assert_eq!(*handle.primary.lock(), Some(conn_a.id.clone()));
+
+    // A should have received both role_assigned (reason=claim) and
+    // primary_changed (reason=claimed). previous == primary == A
+    // because no other primary was displaced.
+    let mut saw_role = false;
+    let mut saw_pc = false;
+    while let Ok(frame) = a_rx.try_recv() {
+        if let forged::connection::Outbound::Notification(n) = frame {
+            match n.method.as_str() {
+                "session.role_assigned" => {
+                    let p = n.params.unwrap();
+                    assert_eq!(p["role"].as_str(), Some("primary"));
+                    assert_eq!(p["reason"].as_str(), Some("claim"));
+                    assert_eq!(p["primary"].as_str(), Some("conn_A"));
+                    saw_role = true;
+                }
+                "session.primary_changed" => {
+                    let p = n.params.unwrap();
+                    assert_eq!(p["primary"].as_str(), Some("conn_A"));
+                    assert_eq!(p["previous"].as_str(), Some("conn_A"));
+                    assert_eq!(p["reason"].as_str(), Some("claimed"));
+                    saw_pc = true;
+                }
+                _ => {}
+            }
+        }
+    }
+    assert!(saw_role, "self-claim must still emit role_assigned");
+    assert!(saw_pc, "self-claim must still emit primary_changed");
+}
+
 #[test]
 fn claim_primary_unknown_session_returns_session_not_found() {
     use forged::connection::ConnectionId;
@@ -810,6 +870,7 @@ async fn permission_request_hands_off_via_queue_on_takeover() {
         expires_at: SystemTime::now() + Duration::from_secs(3600),
         params: serde_json::json!({"tool_name": "Bash", "tool_input": {}}),
         responder: resp_tx,
+        rev_id: None,
     });
 
     // B subscribes — auto-takeover; B's subscribe response should

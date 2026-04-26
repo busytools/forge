@@ -80,6 +80,14 @@ fn app_with_permission_modal_renders() {
 
 /// Styling-aware canonical snapshot — keeps colour/modifier regressions
 /// visible. Only kept on this one case so the rest can stay content-only.
+///
+/// NOTE: this snapshot is keyed on cell coordinates, so any layout
+/// shift (modal width/height, padding, border characters) bursts it.
+/// Recovery is `cargo insta accept` after manually verifying the new
+/// rendering looks right. If layout churn becomes a chronic
+/// maintenance burden, refactor to walk cells and assert
+/// `(symbol, fg, bg, modifier)` tuples by content rather than by
+/// `(x, y)`.
 #[test]
 fn app_with_permission_modal_styled() {
     let mut app = App::default();

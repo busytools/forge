@@ -56,13 +56,12 @@ async fn fresh_permission_request_round_trips_through_send_response() {
     let captured: Arc<Mutex<Option<serde_json::Value>>> = Arc::new(Mutex::new(None));
     {
         let captured = captured.clone();
-        client.on_reverse_rpc("permission.request", move |rev_id, _params| {
+        client.on_reverse_rpc_deferred("permission.request", move |rev_id, _params| {
             let captured = captured.clone();
             async move {
                 *captured.lock() = Some(rev_id);
-                // Returned future is ignored — the answer flows back via
-                // send_response below.
-                serde_json::Value::Null
+                // The answer flows back via send_response below — the
+                // _deferred handler intentionally returns no value.
             }
         });
     }

@@ -299,3 +299,68 @@ fn spawn_writer_task(stdin: ChildStdin, mut rx: mpsc::UnboundedReceiver<WriterCm
         }
     });
 }
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+    use super::*;
+    use std::time::Duration;
+
+    /// Build a [`BridgedTransport`] wrapping a long-running mock that
+    /// ignores stdin (`/bin/sleep 30`). Ignores the [`Options`] argv
+    /// because the helper bypasses [`build_args`] — we only care about
+    /// the close-timeout path here, not the spawn arguments.
+    fn spawn_sleep_transport(secs: u64) -> BridgedTransport {
+        let mut cmd = Command::new("/bin/sleep");
+        cmd.arg(secs.to_string());
+        cmd.stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        cmd.kill_on_drop(true);
+        let mut child = cmd.spawn().expect("spawn /bin/sleep");
+        let stdin = child.stdin.take().expect("stdin");
+        let stdout = child.stdout.take().expect("stdout");
+        let _ = child.stderr.take();
+
+        let (reader_tx, reader_rx) = mpsc::unbounded_channel();
+        spawn_reader_task(stdout, reader_tx);
+        let (writer_tx, writer_rx) = mpsc::unbounded_channel();
+        spawn_writer_task(stdin, writer_rx);
+
+        BridgedTransport {
+            writer_tx,
+            reader_rx,
+            child: Some(child),
+        }
+    }
+
+    /// `close()` must SIGKILL a subprocess that ignores stdin EOF
+    /// rather than hang on `wait()`. Bound documented at 5s; the test
+    /// allows ~1s slack for tokio scheduling.
+    #[tokio::test]
+    async fn close_kills_unresponsive_child_within_5s() {
+        let mut t = spawn_sleep_transport(30);
+
+        let start = tokio::time::Instant::now();
+        let result = t.close().await;
+        let elapsed = start.elapsed();
+
+        // The 5s timeout is the documented bound; allow ~1s slack for
+        // scheduling. Treat anything <= 6s as success.
+        assert!(
+            elapsed <= Duration::from_secs(6),
+            "close() took {elapsed:?}, expected <= 6s"
+        );
+        // Result is the Process error path with stderr noting the kill.
+        match result {
+            Err(SdkError::Process { stderr, .. }) => {
+                assert!(
+                    stderr.contains("close timeout"),
+                    "expected stderr to mention close timeout, got: {stderr}"
+                );
+            }
+            other => panic!("expected Process error from kill, got {other:?}"),
+        }
+    }
+}

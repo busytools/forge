@@ -30,6 +30,10 @@ pub enum AppEvent {
     SessionFrame(serde_json::Value),
     /// Initial session list snapshot (loaded once at startup).
     SessionListLoaded(Vec<serde_json::Value>),
+    /// `sessions.list` failed at startup. Carries the human-readable
+    /// error message so the app loop can surface it on the status line
+    /// rather than silently rendering an empty list.
+    SessionListLoadFailed(String),
     /// A reverse-RPC `permission.request` arrived.
     PermissionRequest {
         /// JSON-RPC id of the inbound request — must be echoed back via
@@ -181,6 +185,9 @@ pub async fn run<B: Backend>(
                     app.session_list_cursor = app.session_list.len().saturating_sub(1);
                 }
             }
+            AppEvent::SessionListLoadFailed(message) => {
+                app.status_msg = format!("session list load failed: {message}");
+            }
             AppEvent::PermissionRequest { rev_id, params } => {
                 let prompt_id = params
                     .get("prompt_id")
@@ -220,10 +227,14 @@ pub async fn run<B: Backend>(
                     app.status_msg = format!("session closed: {reason}");
                 }
             }
-            AppEvent::PromptsExpired(_) => {
-                // Drop any pending modal whose prompt expired.
-                if let Some(p) = &app.pending_permission {
-                    if p.prompt_id.is_some() {
+            AppEvent::PromptsExpired(p) => {
+                // Drop the pending modal only if its prompt_id matches
+                // the expiry notification — without this, a stray
+                // expiry for a sibling session would dismiss an
+                // unrelated open modal.
+                let expired_id = p.get("prompt_id").and_then(|v| v.as_str());
+                if let (Some(pp), Some(expired_id)) = (&app.pending_permission, expired_id) {
+                    if pp.prompt_id.as_deref() == Some(expired_id) {
                         app.pending_permission = None;
                         app.focus = Focus::Conversation;
                         app.status_msg = "permission prompt expired".into();

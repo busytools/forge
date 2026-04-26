@@ -8,6 +8,7 @@
 use clap::Parser;
 use tokio::net::TcpListener;
 
+use forged::bind_check::is_loopback_bind;
 use forged::registry::DaemonState;
 
 #[derive(Parser, Debug)]
@@ -88,14 +89,4 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Ok(())
         }
     }
-}
-
-/// Heuristic check — is this bind address loopback-only? We strip the
-/// optional `host:port` form and consult the literal prefix; explicit
-/// IPv6 brackets are honoured (`[::1]:N`).
-fn is_loopback_bind(bind: &str) -> bool {
-    bind.starts_with("127.")
-        || bind.starts_with("[::1]")
-        || bind.starts_with("localhost")
-        || bind.starts_with("[::1")
 }

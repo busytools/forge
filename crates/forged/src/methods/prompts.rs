@@ -13,9 +13,11 @@ use crate::session_state::SessionId;
 /// `prompts.respond` — resolve a queued reverse-RPC.
 ///
 /// Looks up the named session, takes the prompt with `prompt_id` from
-/// its queue (consuming the oneshot sender), and forwards `result`
-/// over the channel. The awaiting reverse-RPC handler wakes and
-/// returns the value to the SDK callback.
+/// its queue (consuming the queue's oneshot sender), and resolves the
+/// outstanding-reverse entry (if any) directly via
+/// [`crate::reverse_rpc::resolve`]. This is the atomic point of
+/// commitment — the answer reaches the SDK-side handler synchronously,
+/// without a spawned-task bridge that could race the timeout cleanup.
 ///
 /// # Errors
 ///
@@ -36,12 +38,18 @@ pub fn respond(
             "prompt_id {prompt_id} not in queue (expired or already answered)"
         )));
     };
-    // Send through the oneshot — the awaiting reverse-RPC handler wakes.
-    // If the receiver has been dropped (e.g. timeout fired between
-    // `take` and `send`), the value is silently discarded — there's no
-    // handler left to receive it. Surface a debug log so the timeout
-    // race is visible in operator traces rather than vanishing silently.
-    if prompt.responder.send(result).is_err() {
+
+    // Direct resolve via the rev_id captured at park time. The
+    // outstanding-reverse responder is the SDK-side handler's oneshot;
+    // resolving it synchronously here closes the door on the timeout
+    // path racing us. If the prompt was enqueued without a rev_id
+    // (legacy path / direct test enqueue), fall back to sending
+    // through the queue's responder so existing behavior is preserved.
+    if let Some(rev_id) = prompt.rev_id.as_deref() {
+        crate::reverse_rpc::resolve(state, rev_id, result);
+    } else if prompt.responder.send(result).is_err() {
+        // No rev_id and the queue receiver is gone — surface a debug
+        // log so the timeout race is visible in operator traces.
         tracing::debug!(
             prompt_id = %prompt.prompt_id,
             "prompts.respond: responder receiver dropped (timeout race)"
