@@ -86,7 +86,7 @@ pub fn init(config: &Config) -> Result<(), Error> {
 /// Expand a leading `~/` against `$HOME`. Other paths are passed through
 /// untouched.
 #[must_use]
-pub fn expand_home(p: &str) -> PathBuf {
+fn expand_home(p: &str) -> PathBuf {
     if let Some(rest) = p.strip_prefix("~/") {
         if let Ok(home) = std::env::var("HOME") {
             return PathBuf::from(home).join(rest);

@@ -35,7 +35,7 @@ pub fn format_iso8601(t: SystemTime) -> String {
     reason = "modulo arithmetic bounds the values to u32 ranges (e.g. seconds % 60); truncation is intended"
 )]
 #[must_use]
-pub fn secs_to_ymdhms(mut secs: u64) -> (u32, u32, u32, u32, u32, u32) {
+fn secs_to_ymdhms(mut secs: u64) -> (u32, u32, u32, u32, u32, u32) {
     let ss = (secs % 60) as u32;
     secs /= 60;
     let mm = (secs % 60) as u32;
