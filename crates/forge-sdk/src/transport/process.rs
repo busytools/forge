@@ -290,7 +290,9 @@ impl Subprocess {
         // Give the stderr drain task a chance to finish emitting lines
         // after the subprocess exits. The task self-terminates on EOF.
         if let Some(task) = self.stderr_task.take() {
-            let _ = task.await;
+            if let Err(e) = task.await {
+                warn!(error = %e, "stderr drain task ended abnormally");
+            }
         }
         if !status.success() {
             warn!(?status, "claude subprocess exited non-zero during shutdown");
