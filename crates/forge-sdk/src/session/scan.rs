@@ -198,12 +198,32 @@ fn resolve_subagents_dir(session_id: &str, directory: Option<&str>) -> Option<Pa
 
 fn parse_session_messages<R: std::io::Read>(reader: R) -> Vec<SessionMessage> {
     let mut out = Vec::new();
-    for line in BufReader::new(reader).lines().map_while(Result::ok) {
+    let mut line_iter = BufReader::new(reader).lines().enumerate();
+    while let Some((idx, line_res)) = line_iter.next() {
+        let line = match line_res {
+            Ok(l) => l,
+            Err(e) => {
+                tracing::warn!(
+                    line_no = idx,
+                    error = %e,
+                    "session scan: read failed; truncating message list"
+                );
+                break;
+            }
+        };
         if line.is_empty() {
             continue;
         }
-        let Ok(value) = serde_json::from_str::<Value>(&line) else {
-            continue;
+        let value = match serde_json::from_str::<Value>(&line) {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::debug!(
+                    line_no = idx,
+                    error = %e,
+                    "session scan: skipping unparseable line"
+                );
+                continue;
+            }
         };
         let kind = match value.get("type").and_then(Value::as_str) {
             Some("user") => SessionMessageKind::User,
