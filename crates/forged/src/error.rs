@@ -92,12 +92,34 @@ impl Error {
     }
 
     /// Convert to the wire-shape [`ErrorObject`] for a JSON-RPC response.
+    ///
+    /// Variants carrying structured payload populate the `data` field so
+    /// clients can recover machine-readable context without regex-parsing
+    /// the human-readable message:
+    /// - [`Error::ReplayUnavailable`] → `{ "buffer_window_seconds": N }`
+    /// - [`Error::SessionNotFound`] → `{ "session_id": "..." }`
+    /// - [`Error::SubscriptionNotFound`] → `{ "session_id": "..." }`
+    /// - [`Error::Sdk(forge_sdk::Error::Process)`] → `{ "exit_code": N }`
     #[must_use]
     pub fn to_jsonrpc(&self) -> ErrorObject {
+        let data = match self {
+            Self::ReplayUnavailable {
+                buffer_window_seconds,
+            } => Some(serde_json::json!({
+                "buffer_window_seconds": buffer_window_seconds,
+            })),
+            Self::SessionNotFound(id) | Self::SubscriptionNotFound(id) => {
+                Some(serde_json::json!({ "session_id": id }))
+            }
+            Self::Sdk(forge_sdk::Error::Process { exit_code, .. }) => {
+                Some(serde_json::json!({ "exit_code": exit_code }))
+            }
+            _ => None,
+        };
         ErrorObject {
             code: self.code(),
             message: self.to_string(),
-            data: None,
+            data,
         }
     }
 }
