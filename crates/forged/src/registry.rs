@@ -130,8 +130,9 @@ impl DaemonState {
         self.connections.lock().insert(conn.id.clone(), conn);
     }
 
-    /// Unregister a connection — removes it from the lookup map and
-    /// decrements `connected_clients`. No-op if the id is unknown.
+    /// Unregister a connection — removes it from the lookup map. The
+    /// `connections` map's `len()` reflects the new connected-client
+    /// count for `daemon.status`. No-op if the id is unknown.
     ///
     /// Returns the list of session ids whose primary slot was cleared
     /// because they pointed at this conn — callers (the WS read loop)

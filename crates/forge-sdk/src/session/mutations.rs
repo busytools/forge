@@ -167,11 +167,19 @@ pub fn fork_session(
     // naive streaming approach leaves the parentUuid pointing at a UUID
     // that doesn't exist in the forked transcript.
     let mut raw_lines: Vec<String> = Vec::new();
-    for line in BufReader::new(fs::File::open(&source)?)
-        .lines()
-        .map_while(Result::ok)
-    {
-        raw_lines.push(line);
+    for (idx, line_res) in BufReader::new(fs::File::open(&source)?).lines().enumerate() {
+        match line_res {
+            Ok(l) => raw_lines.push(l),
+            Err(e) => {
+                tracing::warn!(
+                    line_no = idx,
+                    error = %e,
+                    source = %source.display(),
+                    "fork: read failed; truncating source transcript — fork will be partial"
+                );
+                break;
+            }
+        }
     }
 
     // Pass 1 — mint a new UUID for every entry that has one, so
@@ -404,12 +412,32 @@ fn derive_fork_title(source: &Path) -> Option<String> {
     let mut custom_title: Option<String> = None;
     let mut ai_title: Option<String> = None;
     let mut first_prompt: Option<String> = None;
-    for line in BufReader::new(file).lines().map_while(Result::ok) {
+    for (idx, line_res) in BufReader::new(file).lines().enumerate() {
+        let line = match line_res {
+            Ok(l) => l,
+            Err(e) => {
+                tracing::warn!(
+                    line_no = idx,
+                    error = %e,
+                    source = %source.display(),
+                    "fork title scan: read failed; using best-effort title from lines read so far"
+                );
+                break;
+            }
+        };
         if line.is_empty() {
             continue;
         }
-        let Ok(value) = serde_json::from_str::<Value>(&line) else {
-            continue;
+        let value = match serde_json::from_str::<Value>(&line) {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::debug!(
+                    line_no = idx,
+                    error = %e,
+                    "fork title scan: skipping unparseable line"
+                );
+                continue;
+            }
         };
         if let Some(v) = value.get("customTitle").and_then(Value::as_str) {
             custom_title = Some(v.to_string());
