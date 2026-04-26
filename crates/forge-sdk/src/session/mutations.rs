@@ -177,15 +177,24 @@ pub fn fork_session(
     // Pass 1 — mint a new UUID for every entry that has one, so
     // parentUuid references always find a mapping.
     let mut uuid_remap: HashMap<String, String> = HashMap::new();
-    for line in &raw_lines {
+    for (idx, line) in raw_lines.iter().enumerate() {
         if line.is_empty() {
             continue;
         }
-        if let Ok(value) = serde_json::from_str::<Value>(line) {
-            if let Some(old) = value.get("uuid").and_then(Value::as_str) {
-                uuid_remap
-                    .entry(old.to_string())
-                    .or_insert_with(|| Uuid::new_v4().to_string());
+        match serde_json::from_str::<Value>(line) {
+            Ok(value) => {
+                if let Some(old) = value.get("uuid").and_then(Value::as_str) {
+                    uuid_remap
+                        .entry(old.to_string())
+                        .or_insert_with(|| Uuid::new_v4().to_string());
+                }
+            }
+            Err(e) => {
+                tracing::debug!(
+                    line_no = idx,
+                    error = %e,
+                    "fork pass 1: skipping unparseable line; pass 2 will copy it verbatim"
+                );
             }
         }
     }
