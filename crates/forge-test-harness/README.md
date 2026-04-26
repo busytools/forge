@@ -1,12 +1,15 @@
-# forge-conformance
+# forge-test-harness
 
-Wire-conformance harness for forge-sdk. Verifies that forge-sdk's wire
-contract with the `claude` CLI is intact for a specific pinned CLI
-version.
+Wire-conformance harness for forge. Two scopes:
 
-**Not a library consumers use.** Dev tooling only. Kept in a sibling
-workspace crate so the forge-sdk crate stays focused on the SDK surface
-library consumers actually use.
+- **`sdk_wire`** — forge-sdk ↔ `claude` CLI stream-json
+- **`daemon_wire`** — forge-daemon ↔ client JSON-RPC over WS
+
+Each scope ships scenarios + committed baselines + a replay test that
+runs on every `cargo nextest run`. Live capture is opt-in via
+`FORGE_WIRE_CAPTURE=1` (sdk) / `FORGE_DAEMON_WIRE_CAPTURE=1` (daemon).
+
+**Not a library consumers use.** Dev tooling only.
 
 ## The model
 
@@ -47,7 +50,7 @@ line to `target/wire-traces/capture-<scenario>-<ts>.jsonl`, then:
 2. Verifies every captured inbound line decodes cleanly.
 3. If you want, the fresh capture can be promoted into the committed
    baseline with `cp target/wire-traces/capture-*.jsonl
-   crates/forge-conformance/baselines/<version>/<scenario>.jsonl`.
+   crates/forge-test-harness/baselines/sdk/<version>/<scenario>.jsonl`.
 
 Burns real API tokens. Runs only when you explicitly enable it. Used
 to capture fresh baselines when the pinned CLI version bumps, or to
@@ -58,14 +61,14 @@ binary.
 
 ```bash
 # Replay mode — offline, always safe:
-cargo nextest run -p forge-conformance
+cargo nextest run -p forge-test-harness
 
 # Live capture — burns tokens:
-FORGE_WIRE_CAPTURE=1 cargo nextest run -p forge-conformance \
+FORGE_WIRE_CAPTURE=1 cargo nextest run -p forge-test-harness \
   --no-capture --run-ignored all
 
 # Single live scenario:
-FORGE_WIRE_CAPTURE=1 cargo nextest run -p forge-conformance \
+FORGE_WIRE_CAPTURE=1 cargo nextest run -p forge-test-harness \
   --no-capture --run-ignored only wire_capture_trivial_prompt
 ```
 
@@ -86,7 +89,7 @@ FORGE_WIRE_CAPTURE=1 cargo nextest run -p forge-conformance \
 ## Directory layout
 
 ```
-crates/forge-conformance/
+crates/forge-test-harness/
 ├── Cargo.toml                          # workspace member, not published
 ├── README.md                           # this file
 ├── src/
@@ -131,7 +134,7 @@ Run it against all of the developer's recorded sessions:
 
 ```bash
 FORGE_REAL_SESSIONS=$HOME/.claude-subspace/projects \
-  cargo nextest run -p forge-conformance --no-capture \
+  cargo nextest run -p forge-test-harness --no-capture \
   real_session_decode_probe
 ```
 
@@ -143,9 +146,9 @@ To produce a redacted, **committed** baseline from a specific
 session:
 
 ```bash
-cargo run -p forge-conformance --example redact_session -- \
+cargo run -p forge-test-harness --example redact_session -- \
   $HOME/.claude-subspace/projects/<slug>/<session>.jsonl \
-  crates/forge-conformance/baselines/2.1.117/real_session_<name>.jsonl
+  crates/forge-test-harness/baselines/sdk/2.1.117/real_session_<name>.jsonl
 ```
 
 One sample lives at `baselines/2.1.117/real_session_sample.jsonl`

@@ -6,7 +6,7 @@
 //! The persistence format is a near-superset of the stream-json wire
 //! protocol but uses camelCase (`sessionId`) and carries extra
 //! persistence-only fields (`parentUuid`, `cwd`, `timestamp`, …). A
-//! transformer in [`forge_conformance::session_redact`] rewrites each
+//! transformer in [`forge_test_harness::sdk_wire::session_redact`] rewrites each
 //! line into wire shape + redacts PII.
 //!
 //! When `FORGE_REAL_SESSIONS=<path>` is set, this test walks that
@@ -19,7 +19,7 @@
 //!
 //! ```bash
 //! FORGE_REAL_SESSIONS=$HOME/.claude-subspace/projects \
-//!   cargo nextest run -p forge-conformance --no-capture \
+//!   cargo nextest run -p forge-test-harness --no-capture \
 //!   real_session_decode_probe
 //! ```
 //!
@@ -32,10 +32,10 @@
 
 use std::path::{Path, PathBuf};
 
-use forge_conformance::session_redact::redact_session_file;
 use forge_sdk::Message;
 use forge_sdk::content::ContentBlock;
 use forge_sdk::transport::codec::{DecodedLine, decode_dispatch};
+use forge_test_harness::sdk_wire::session_redact::redact_session_file;
 
 /// Walk a decoded `Message` for any `ContentBlock::Unknown` variants
 /// and surface them as `(type_str, snippet)` pairs. The snippet is a

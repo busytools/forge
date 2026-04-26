@@ -3,20 +3,20 @@
 //! These tests are `#[ignore]` by default — they spin up a real forged on
 //! an ephemeral loopback port, drive a WS client through the scenario,
 //! capture the bidirectional trace as JSONL under
-//! `target/forged-wire-traces/`, and exit.
+//! `target/forge-daemon-wire-traces/`, and exit.
 //!
-//! Opt in with `FORGED_WIRE_CAPTURE=1` and `--run-ignored only`:
+//! Opt in with `FORGE_DAEMON_WIRE_CAPTURE=1` and `--run-ignored only`:
 //!
 //! ```bash
-//! FORGED_WIRE_CAPTURE=1 cargo nextest run -p forged-conformance \
+//! FORGE_DAEMON_WIRE_CAPTURE=1 cargo nextest run -p forge-test-harness \
 //!   --no-capture --run-ignored only capture_m1_status
 //! ```
 //!
 //! Promote a captured trace into the committed baseline:
 //!
 //! ```bash
-//! cp target/forged-wire-traces/m1_status-*.jsonl \
-//!    crates/forged-conformance/baselines/0.1.64/m1_status.jsonl
+//! cp target/forge-daemon-wire-traces/m1_status-*.jsonl \
+//!    crates/forge-test-harness/baselines/daemon/0.1.64/m1_status.jsonl
 //! ```
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -29,13 +29,13 @@ use parking_lot::Mutex;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message as WsMsg;
 
-use forged_conformance::{PINNED_FORGED_VERSION, TraceEntry};
+use forge_test_harness::daemon_wire::{PINNED_DAEMON_VERSION, TraceEntry};
 
 #[tokio::test]
-#[ignore = "live capture; opt-in via FORGED_WIRE_CAPTURE=1"]
+#[ignore = "live capture; opt-in via FORGE_DAEMON_WIRE_CAPTURE=1"]
 async fn capture_m1_status() {
-    if std::env::var("FORGED_WIRE_CAPTURE").is_err() {
-        eprintln!("FORGED_WIRE_CAPTURE not set; skipping");
+    if std::env::var("FORGE_DAEMON_WIRE_CAPTURE").is_err() {
+        eprintln!("FORGE_DAEMON_WIRE_CAPTURE not set; skipping");
         return;
     }
 
@@ -86,7 +86,7 @@ async fn capture_m1_status() {
 
     // 4. Dump to disk.
     let target = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../target/forged-wire-traces");
+        .join("../../target/forge-daemon-wire-traces");
     std::fs::create_dir_all(&target).unwrap();
     let ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -102,18 +102,18 @@ async fn capture_m1_status() {
     std::fs::write(&path, body).unwrap();
     eprintln!("captured trace: {}", path.display());
     eprintln!(
-        "promote with: cp {} crates/forged-conformance/baselines/{}/m1_status.jsonl",
+        "promote with: cp {} crates/forge-test-harness/baselines/daemon/{}/m1_status.jsonl",
         path.display(),
-        PINNED_FORGED_VERSION
+        PINNED_DAEMON_VERSION
     );
 }
 
-/// Helper: dump a captured trace to `target/forged-wire-traces/`. The
+/// Helper: dump a captured trace to `target/forge-daemon-wire-traces/`. The
 /// caller hands us the trace + scenario name; we name the file
 /// `<scenario>-<unix-ts>.jsonl` so multiple captures don't collide.
 fn dump_trace(scenario: &str, trace: &Mutex<Vec<TraceEntry>>) -> std::path::PathBuf {
     let target = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../target/forged-wire-traces");
+        .join("../../target/forge-daemon-wire-traces");
     std::fs::create_dir_all(&target).unwrap();
     let ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -129,9 +129,9 @@ fn dump_trace(scenario: &str, trace: &Mutex<Vec<TraceEntry>>) -> std::path::Path
     std::fs::write(&path, body).unwrap();
     eprintln!("captured trace: {}", path.display());
     eprintln!(
-        "promote with: cp {} crates/forged-conformance/baselines/{}/{scenario}.jsonl",
+        "promote with: cp {} crates/forge-test-harness/baselines/daemon/{}/{scenario}.jsonl",
         path.display(),
-        PINNED_FORGED_VERSION
+        PINNED_DAEMON_VERSION
     );
     path
 }
@@ -140,10 +140,10 @@ fn dump_trace(scenario: &str, trace: &Mutex<Vec<TraceEntry>>) -> std::path::Path
 /// the trace. The session is registered manually so the capture
 /// doesn't require a real subprocess.
 #[tokio::test]
-#[ignore = "live capture; opt-in via FORGED_WIRE_CAPTURE=1"]
+#[ignore = "live capture; opt-in via FORGE_DAEMON_WIRE_CAPTURE=1"]
 async fn capture_session_subscribe_basic() {
-    if std::env::var("FORGED_WIRE_CAPTURE").is_err() {
-        eprintln!("FORGED_WIRE_CAPTURE not set; skipping");
+    if std::env::var("FORGE_DAEMON_WIRE_CAPTURE").is_err() {
+        eprintln!("FORGE_DAEMON_WIRE_CAPTURE not set; skipping");
         return;
     }
 
@@ -203,10 +203,10 @@ async fn capture_session_subscribe_basic() {
 /// the trace. The captured shape mirrors the hand-authored
 /// `permission_request_round_trip.jsonl` baseline.
 #[tokio::test]
-#[ignore = "live capture; opt-in via FORGED_WIRE_CAPTURE=1"]
+#[ignore = "live capture; opt-in via FORGE_DAEMON_WIRE_CAPTURE=1"]
 async fn capture_permission_request_round_trip() {
-    if std::env::var("FORGED_WIRE_CAPTURE").is_err() {
-        eprintln!("FORGED_WIRE_CAPTURE not set; skipping");
+    if std::env::var("FORGE_DAEMON_WIRE_CAPTURE").is_err() {
+        eprintln!("FORGE_DAEMON_WIRE_CAPTURE not set; skipping");
         return;
     }
 
@@ -294,10 +294,10 @@ async fn capture_permission_request_round_trip() {
 /// equivalent to `m1_status` — but the name flows through the URL
 /// query to the server. The baseline locks that contract.
 #[tokio::test]
-#[ignore = "live capture; opt-in via FORGED_WIRE_CAPTURE=1"]
+#[ignore = "live capture; opt-in via FORGE_DAEMON_WIRE_CAPTURE=1"]
 async fn capture_client_identify_with_name() {
-    if std::env::var("FORGED_WIRE_CAPTURE").is_err() {
-        eprintln!("FORGED_WIRE_CAPTURE not set; skipping");
+    if std::env::var("FORGE_DAEMON_WIRE_CAPTURE").is_err() {
+        eprintln!("FORGE_DAEMON_WIRE_CAPTURE not set; skipping");
         return;
     }
 
@@ -353,10 +353,10 @@ async fn capture_client_identify_with_name() {
 /// to a typed deny. Round 3 — fix M12. Mirrors the hand-authored
 /// `permission_request_jsonrpc_error.jsonl` baseline.
 #[tokio::test]
-#[ignore = "live capture; opt-in via FORGED_WIRE_CAPTURE=1"]
+#[ignore = "live capture; opt-in via FORGE_DAEMON_WIRE_CAPTURE=1"]
 async fn capture_permission_request_jsonrpc_error() {
-    if std::env::var("FORGED_WIRE_CAPTURE").is_err() {
-        eprintln!("FORGED_WIRE_CAPTURE not set; skipping");
+    if std::env::var("FORGE_DAEMON_WIRE_CAPTURE").is_err() {
+        eprintln!("FORGE_DAEMON_WIRE_CAPTURE not set; skipping");
         return;
     }
 
@@ -441,10 +441,10 @@ async fn capture_permission_request_jsonrpc_error() {
 /// trace from the second client's perspective. Mirrors the hand-
 /// authored `multi_client_takeover.jsonl` baseline.
 #[tokio::test]
-#[ignore = "live capture; opt-in via FORGED_WIRE_CAPTURE=1"]
+#[ignore = "live capture; opt-in via FORGE_DAEMON_WIRE_CAPTURE=1"]
 async fn capture_multi_client_takeover() {
-    if std::env::var("FORGED_WIRE_CAPTURE").is_err() {
-        eprintln!("FORGED_WIRE_CAPTURE not set; skipping");
+    if std::env::var("FORGE_DAEMON_WIRE_CAPTURE").is_err() {
+        eprintln!("FORGE_DAEMON_WIRE_CAPTURE not set; skipping");
         return;
     }
 

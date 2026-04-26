@@ -172,11 +172,7 @@ impl BridgedTransport {
 #[async_trait]
 impl Transport for BridgedTransport {
     async fn read_line(&mut self) -> Result<Option<String>, SdkError> {
-        match self.reader_rx.recv().await {
-            Some(line) => line,
-            // Reader task dropped its sender — subprocess closed stdout.
-            None => Ok(None),
-        }
+        self.reader_rx.recv().await.unwrap_or_else(|| Ok(None))
     }
 
     async fn write_line(&mut self, line: &str) -> Result<(), SdkError> {

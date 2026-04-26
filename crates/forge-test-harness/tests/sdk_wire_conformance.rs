@@ -18,7 +18,7 @@
 //!
 //! ```bash
 //! # Uses whatever CLAUDE_CONFIG_DIR currently resolves to.
-//! FORGE_WIRE_CAPTURE=1 cargo nextest run -p forge-conformance --no-capture
+//! FORGE_WIRE_CAPTURE=1 cargo nextest run -p forge-test-harness --no-capture
 //! ```
 //!
 //! Opt-in because this burns real API tokens (small — a trivial
@@ -28,9 +28,9 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use forge_conformance::{RecordingTransport, TraceLog, decode_all_inbound};
 use forge_sdk::transport::process::Subprocess;
 use forge_sdk::{Client, Message, OptionsBuilder};
+use forge_test_harness::sdk_wire::{RecordingTransport, TraceLog, decode_all_inbound};
 
 fn timestamp_tag() -> String {
     let secs = SystemTime::now()

@@ -21,7 +21,7 @@
 //!
 //! ## Baselines
 //!
-//! Committed baselines live under `crates/forge-conformance/baselines/
+//! Committed baselines live under `crates/forge-test-harness/baselines/sdk/
 //! <cli-version>/<scenario>.jsonl`. Each scenario knows its own name;
 //! the `cli-version` dir rotates when we bump the pinned CLI version
 //! through the upgrade ritual.
@@ -141,11 +141,13 @@ impl Transport for RecordingTransport {
 pub const PINNED_CLI_VERSION: &str = "2.1.117";
 
 /// Directory holding the committed trace baselines for the pinned CLI
-/// version.
+/// version. Resolves to
+/// `crates/forge-test-harness/baselines/sdk/<PINNED_CLI_VERSION>/`.
 #[must_use]
 pub fn baseline_dir() -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("baselines")
+        .join("sdk")
         .join(PINNED_CLI_VERSION)
 }
 
@@ -164,7 +166,7 @@ pub fn load_baseline(scenario: &str) -> TraceLog {
     let body = std::fs::read_to_string(&path).unwrap_or_else(|e| {
         panic!(
             "missing baseline for scenario '{scenario}' at {}: {e}. \
-             Run `FORGE_WIRE_CAPTURE=1 cargo nextest run -p forge-conformance \
+             Run `FORGE_WIRE_CAPTURE=1 cargo nextest run -p forge-test-harness \
              --run-ignored only <live_capture_test>` to capture it.",
             path.display()
         )
