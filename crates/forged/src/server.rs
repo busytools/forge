@@ -70,7 +70,10 @@ async fn handle_connection(
     // larger than the success variant. We never return Err from the
     // callback (any handshake-level rejection is reserved for future
     // auth work), so the size delta isn't a concern here.
-    #[allow(clippy::result_large_err)]
+    #[allow(
+        clippy::result_large_err,
+        reason = "tungstenite's handshake-callback Err variant is large; we never return Err from this callback so the size delta is dead-code"
+    )]
     let ws = tokio_tungstenite::accept_hdr_async(stream, move |req: &TungReq, resp: TungResp| {
         if let Some(query) = req.uri().query() {
             for (k, v) in parse_query(query) {
@@ -190,7 +193,7 @@ async fn read_loop(
             && (v.get("result").is_some() || v.get("error").is_some());
         if is_response {
             let Some(id) = v.get("id").and_then(Value::as_str) else {
-                tracing::debug!(
+                tracing::warn!(
                     id = ?v.get("id"),
                     "received non-string id in JSON-RPC response; ignoring"
                 );
@@ -232,7 +235,10 @@ async fn read_loop(
     Ok(())
 }
 
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one match arm per supported method by design; splitting would obscure the dispatch table"
+)]
 async fn dispatch(req: &Request, conn: &Connection, state: &DaemonState) -> Response {
     let id = req.id.clone();
     let result: Result<Value, Error> = match req.method.as_str() {

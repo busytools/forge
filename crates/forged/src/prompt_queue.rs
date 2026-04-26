@@ -57,6 +57,13 @@ pub struct PendingPrompt {
     /// takes ownership; on `take()`, ownership transfers to the caller,
     /// who sends the response and lets the oneshot drop.
     pub responder: oneshot::Sender<serde_json::Value>,
+    /// `rev_id` of the originating reverse-RPC, when the prompt was
+    /// parked via `park_in_queue` (M4). `prompts.respond` uses this to
+    /// directly resolve the outstanding-reverse entry alongside the
+    /// queue responder, avoiding a spawned-task bridging race against
+    /// the timeout path. `None` for prompts enqueued directly by tests
+    /// or test fixtures that aren't backed by an outstanding entry.
+    pub rev_id: Option<String>,
 }
 
 impl std::fmt::Debug for PendingPrompt {
@@ -68,6 +75,7 @@ impl std::fmt::Debug for PendingPrompt {
             .field("expires_at", &self.expires_at)
             .field("params", &self.params)
             .field("responder", &"<oneshot>")
+            .field("rev_id", &self.rev_id)
             .finish()
     }
 }

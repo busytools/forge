@@ -533,14 +533,26 @@ async fn session_closed_emits_actor_idle_reason_when_all_senders_dropped() {
             break;
         }
     }
+    // Soft assertion — the actor's exit timing depends on tokio's
+    // scheduler observing the mpsc close. The actor is `select!`ing
+    // between `commands.recv()` and `client.next_event()`; with the
+    // control mock the `next_event` future blocks indefinitely
+    // (mock waits for input), and `select!` only polls `commands.recv()`
+    // when the next_event future yields. We don't have a portable way
+    // to kill the mock subprocess from outside the daemon process —
+    // the actor owns the Client which owns the BridgedTransport which
+    // owns the Child. Without that hook, the documented behaviour is
+    // "broadcast fires once tokio happens to schedule the actor to
+    // poll commands again" (e.g. on the next yield point inside the
+    // SDK). The hard contract — no panic, no state corruption when
+    // senders go away — is locked by the test reaching this point
+    // without a poisoned mutex or hang.
     if !saw_close {
-        // Don't hard-fail — the actor's exit timing depends on
-        // tokio's scheduler picking up the mpsc close. The contract
-        // we care about is that no panic / state corruption happens
-        // when senders go away mid-session; if the broadcast didn't
-        // fire within 8s on this scheduler, the test is non-flake by
-        // virtue of NOT having tripped any hard invariant.
-        eprintln!("WARN: session.closed not observed within 8s — actor may still be in next_event");
+        eprintln!(
+            "WARN: session.closed not observed within 8s — actor may still be in next_event \
+             waiting on the control mock. The test invariant (no panic / no state corruption) \
+             is preserved."
+        );
     }
 }
 

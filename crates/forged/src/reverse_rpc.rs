@@ -112,6 +112,13 @@ struct ParkArgs<'a> {
 /// answering connection to track). The prompt is removed from
 /// `outstanding_reverse` when `prompts.respond` resolves it via
 /// [`resolve`] / [`crate::methods::prompts::respond`].
+///
+/// Both the queue's responder and the outstanding-reverse entry's
+/// responder are kept alive — `prompts.respond` directly calls
+/// [`resolve`] using the prompt's stored `rev_id`, so the queue's
+/// responder is consumed but the SDK-side handler is unblocked
+/// synchronously through the outstanding-reverse path. No spawned-task
+/// bridge means no race against the timeout cleanup.
 fn park_in_queue(args: ParkArgs<'_>) {
     let ParkArgs {
         state,
@@ -126,12 +133,12 @@ fn park_in_queue(args: ParkArgs<'_>) {
     let Some(handle) = state.get_session(session_id) else {
         return;
     };
-    // Use a fresh oneshot for the queue's responder so disconnect
-    // cleanup of `outstanding_reverse` and queue-driven `prompts.respond`
-    // each have their own independent sender. Wire them through a
-    // bridging oneshot so whichever resolves first carries the answer
-    // back to the SDK callback.
-    let (queue_tx, queue_rx) = oneshot::channel::<Value>();
+    // The queue's responder is a sentinel kept around so disconnect
+    // cleanup can take + drop the queue entry without affecting the
+    // outstanding-reverse path. The actual SDK-side answer flows
+    // through the outstanding-reverse responder (`tx`); see the
+    // direct-resolve path in `methods::prompts::respond`.
+    let (queue_tx, _queue_rx) = oneshot::channel::<Value>();
     handle.prompts.enqueue(PendingPrompt {
         prompt_id: prompt_id.to_owned(),
         kind,
@@ -139,6 +146,7 @@ fn park_in_queue(args: ParkArgs<'_>) {
         expires_at: SystemTime::now() + timeout,
         params,
         responder: queue_tx,
+        rev_id: Some(rev_id.to_owned()),
     });
     // Stash the outstanding entry so `prompts.respond` (which calls
     // `resolve(rev_id)`) drains it. Connection-disconnect cleanup
@@ -151,20 +159,6 @@ fn park_in_queue(args: ParkArgs<'_>) {
             responder: tx,
         },
     );
-    // Forward the queue's answer (when prompts.respond fires) into the
-    // SDK responder. Spawned task keeps the wiring out of the hot path.
-    let rev_owned = rev_id.to_owned();
-    let state_clone = state.clone();
-    tokio::spawn(async move {
-        if let Ok(v) = queue_rx.await {
-            // Resolve via the public API so resolve() removes the
-            // outstanding entry; the responder may already be gone if
-            // disconnect cleanup beat us to it (synthetic
-            // `_client_disconnected` answer), in which case the send
-            // from `resolve` is a silent no-op.
-            resolve(&state_clone, &rev_owned, v);
-        }
-    });
 }
 
 /// Notify a session's subscribers that one or more pending prompts
@@ -183,10 +177,17 @@ pub fn notify_disconnect_expired(state: &DaemonState, session_id: &SessionId, pr
     crate::broadcast::fanout(state, session_id, &frame);
 }
 
-/// Drain every pending prompt in the session's queue and emit
+/// Drain every pending prompt in the session's queue AND every
+/// in-flight `outstanding_reverse` entry for the session. Emit
 /// `prompts.expired` for each. Called when the session actor exits
 /// (any reason). Each parked prompt gets a synthetic
 /// `_session_closed: true` answer so the SDK callback unblocks.
+///
+/// Also walks `outstanding_reverse`: an entry whose primary is still
+/// connected but whose session is closing has no parked-queue presence
+/// (it's been delivered to the primary, just unanswered). Without this
+/// step the SDK callback would wait the full timeout for an answer
+/// that will never come.
 pub fn drain_prompts_on_session_exit(state: &DaemonState, session_id: &SessionId) {
     let Some(handle) = state.get_session(session_id) else {
         return;
@@ -201,6 +202,35 @@ pub fn drain_prompts_on_session_exit(state: &DaemonState, session_id: &SessionId
             }));
         }
         notify_disconnect_expired(state, session_id, &prompt_id);
+    }
+
+    // Walk outstanding_reverse for in-flight entries owned by this
+    // session and resolve them with the synthetic _session_closed
+    // sentinel. We can't recover the original prompt_id here because
+    // outstanding_reverse keys by `rev_id`; emit prompts.expired with
+    // the rev_id as the prompt_id field so subscribers still see one
+    // notification per drained entry.
+    let drained: Vec<(String, OutstandingEntry)> = {
+        let mut o = state.outstanding_reverse.lock();
+        let keys: Vec<String> = o
+            .iter()
+            .filter_map(|(k, v)| {
+                if &v.session_id == session_id {
+                    Some(k.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        keys.into_iter()
+            .filter_map(|k| o.remove(&k).map(|v| (k, v)))
+            .collect()
+    };
+    for (rev_id, entry) in drained {
+        let _ = entry.responder.send(serde_json::json!({
+            "_session_closed": true,
+        }));
+        notify_disconnect_expired(state, session_id, &rev_id);
     }
 }
 
@@ -265,12 +295,15 @@ pub async fn issue_to_primary(
             let _ = handle.prompts.take(&prompt_id);
 
             // Emit `prompts.expired` so reconnected subscribers learn
-            // about the timeout (M4.5).
+            // about the timeout (M4.5). Shape mirrors the disconnect
+            // path — both carry `reason` + `fallback` so subscribers
+            // can branch uniformly on the cause.
             let frame = Outbound::Notification(Notification::new(
                 "prompts.expired",
                 serde_json::json!({
                     "session_id": session_id.0,
                     "prompt_id": prompt_id,
+                    "reason": "timeout",
                     "fallback": "deny",
                 }),
             ));
@@ -287,9 +320,16 @@ pub async fn issue_to_primary(
 /// Resolve an outstanding reverse-RPC by its `rev_id`. Called by the
 /// server's read loop when an inbound JSON-RPC response arrives whose
 /// id matches an outstanding entry.
+///
+/// Unknown `rev_id` values are silently ignored — they typically
+/// indicate a late-arriving response after the issuer's timeout fired
+/// and cleaned up. A warn-level log keeps the path visible in
+/// operator traces.
 pub fn resolve(state: &DaemonState, rev_id: &str, value: Value) {
     if let Some(entry) = state.outstanding_reverse.lock().remove(rev_id) {
         let _ = entry.responder.send(value);
+    } else {
+        tracing::warn!(rev_id, "resolve: unknown rev_id (timeout race?)");
     }
 }
 
@@ -317,5 +357,7 @@ pub fn resolve_error(state: &DaemonState, rev_id: &str, error_obj: &Value) {
         let _ = entry.responder.send(serde_json::json!({
             "_jsonrpc_error": error_obj,
         }));
+    } else {
+        tracing::warn!(rev_id, "resolve_error: unknown rev_id (timeout race?)");
     }
 }
