@@ -21,6 +21,18 @@ use crate::connection::ConnectionId;
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct SessionId(pub String);
 
+impl From<String> for SessionId {
+    fn from(s: String) -> Self {
+        Self(s)
+    }
+}
+
+impl From<&str> for SessionId {
+    fn from(s: &str) -> Self {
+        Self(s.to_owned())
+    }
+}
+
 /// Translate a wire-shape `permission_mode` `snake_case` string into the
 /// SDK enum. Single source of truth for the `snake_case` → enum mapping;
 /// shared between `session.spawn` (`parse_spawn_params`) and
