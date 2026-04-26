@@ -783,20 +783,7 @@ pub fn parse_spawn_params(raw: &Value) -> Result<SpawnParams, Error> {
         b = b.resume(resume);
     }
     if let Some(mode_str) = wire.permission_mode.as_deref() {
-        let mode = match mode_str {
-            "ask" => PermissionMode::Ask,
-            "accept_edits" => PermissionMode::AcceptEdits,
-            "plan" => PermissionMode::Plan,
-            "bypass_permissions" => PermissionMode::BypassPermissions,
-            "auto" => PermissionMode::Auto,
-            "deny_permissions" => PermissionMode::DenyPermissions,
-            other => {
-                return Err(Error::InvalidParams(format!(
-                    "permission_mode: unknown variant '{other}'"
-                )));
-            }
-        };
-        b = b.permission_mode(mode);
+        b = b.permission_mode(crate::session_state::parse_permission_mode(mode_str)?);
     }
     if !wire.allowed_tools.is_empty() {
         b = b.allowed_tools(wire.allowed_tools);
