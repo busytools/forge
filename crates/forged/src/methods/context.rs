@@ -5,11 +5,10 @@
 //! session's mpsc and awaits the actor's reply.
 
 use forge_sdk::ContextUsageResponse;
-use tokio::sync::oneshot;
 
 use crate::Error;
 use crate::registry::DaemonState;
-use crate::session_state::{Command, SessionId};
+use crate::session_state::{Command, SessionId, dispatch_command};
 
 /// `context.get` — query current context-window usage for the named
 /// session. Returns the typed [`ContextUsageResponse`] describing
@@ -23,14 +22,5 @@ pub async fn get(
     state: &DaemonState,
     session_id: &SessionId,
 ) -> Result<ContextUsageResponse, Error> {
-    let handle = state
-        .get_session(session_id)
-        .ok_or_else(|| Error::SessionNotFound(session_id.0.clone()))?;
-    let (reply, recv) = oneshot::channel();
-    handle
-        .commands
-        .send(Command::ContextGet { reply })
-        .map_err(|_| Error::SessionNotFound(session_id.0.clone()))?;
-    recv.await
-        .map_err(|_| Error::SessionNotFound(session_id.0.clone()))?
+    dispatch_command(state, session_id, |reply| Command::ContextGet { reply }).await
 }

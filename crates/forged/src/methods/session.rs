@@ -16,8 +16,9 @@ use forge_sdk::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::sync::oneshot;
 use tracing::info;
+
+use crate::session_state::dispatch_command;
 use uuid::Uuid;
 
 use crate::Error;
@@ -182,19 +183,11 @@ pub async fn send_user_message(
             prompt.len()
         )));
     }
-    let handle = state
-        .get_session(session_id)
-        .ok_or_else(|| Error::SessionNotFound(session_id.0.clone()))?;
-    let (reply, recv) = oneshot::channel();
-    handle
-        .commands
-        .send(Command::SendUserMessage {
-            prompt: prompt.to_owned(),
-            reply,
-        })
-        .map_err(|_| Error::SessionNotFound(session_id.0.clone()))?;
-    recv.await
-        .map_err(|_| Error::SessionNotFound(session_id.0.clone()))?
+    dispatch_command(state, session_id, |reply| Command::SendUserMessage {
+        prompt: prompt.to_owned(),
+        reply,
+    })
+    .await
 }
 
 /// Result of `session.subscribe`.
@@ -337,16 +330,7 @@ pub struct DisconnectParams {
 ///
 /// `SessionNotFound` if the id is unknown; `Sdk` for transport errors.
 pub async fn disconnect(state: &DaemonState, session_id: &SessionId) -> Result<(), Error> {
-    let handle = state
-        .get_session(session_id)
-        .ok_or_else(|| Error::SessionNotFound(session_id.0.clone()))?;
-    let (reply, recv) = oneshot::channel();
-    handle
-        .commands
-        .send(Command::Disconnect { reply })
-        .map_err(|_| Error::SessionNotFound(session_id.0.clone()))?;
-    recv.await
-        .map_err(|_| Error::SessionNotFound(session_id.0.clone()))?
+    dispatch_command(state, session_id, |reply| Command::Disconnect { reply }).await
 }
 
 /// Wire-shape parameters for `session.end_input`.
@@ -365,16 +349,7 @@ pub struct EndInputParams {
 ///
 /// `SessionNotFound` if the id is unknown; `Sdk` for transport errors.
 pub async fn end_input(state: &DaemonState, session_id: &SessionId) -> Result<(), Error> {
-    let handle = state
-        .get_session(session_id)
-        .ok_or_else(|| Error::SessionNotFound(session_id.0.clone()))?;
-    let (reply, recv) = oneshot::channel();
-    handle
-        .commands
-        .send(Command::EndInput { reply })
-        .map_err(|_| Error::SessionNotFound(session_id.0.clone()))?;
-    recv.await
-        .map_err(|_| Error::SessionNotFound(session_id.0.clone()))?
+    dispatch_command(state, session_id, |reply| Command::EndInput { reply }).await
 }
 
 /// Spawn the actor task that exclusively owns `client` for the lifetime of
@@ -889,16 +864,7 @@ pub fn parse_spawn_params(raw: &Value) -> Result<SpawnParams, Error> {
 ///
 /// `SessionNotFound` if the id is unknown; `Sdk` for transport errors.
 pub async fn interrupt(state: &DaemonState, session_id: &SessionId) -> Result<(), Error> {
-    let handle = state
-        .get_session(session_id)
-        .ok_or_else(|| Error::SessionNotFound(session_id.0.clone()))?;
-    let (reply, recv) = oneshot::channel();
-    handle
-        .commands
-        .send(Command::Interrupt { reply })
-        .map_err(|_| Error::SessionNotFound(session_id.0.clone()))?;
-    recv.await
-        .map_err(|_| Error::SessionNotFound(session_id.0.clone()))?
+    dispatch_command(state, session_id, |reply| Command::Interrupt { reply }).await
 }
 
 /// `session.set_permission_mode` — switch the permission flow mid-session.
@@ -911,16 +877,11 @@ pub async fn set_permission_mode(
     session_id: &SessionId,
     mode: PermissionMode,
 ) -> Result<(), Error> {
-    let handle = state
-        .get_session(session_id)
-        .ok_or_else(|| Error::SessionNotFound(session_id.0.clone()))?;
-    let (reply, recv) = oneshot::channel();
-    handle
-        .commands
-        .send(Command::SetPermissionMode { mode, reply })
-        .map_err(|_| Error::SessionNotFound(session_id.0.clone()))?;
-    recv.await
-        .map_err(|_| Error::SessionNotFound(session_id.0.clone()))?
+    dispatch_command(state, session_id, |reply| Command::SetPermissionMode {
+        mode,
+        reply,
+    })
+    .await
 }
 
 /// `session.set_model` — switch the active model mid-session. `None`
@@ -934,16 +895,7 @@ pub async fn set_model(
     session_id: &SessionId,
     model: Option<String>,
 ) -> Result<(), Error> {
-    let handle = state
-        .get_session(session_id)
-        .ok_or_else(|| Error::SessionNotFound(session_id.0.clone()))?;
-    let (reply, recv) = oneshot::channel();
-    handle
-        .commands
-        .send(Command::SetModel { model, reply })
-        .map_err(|_| Error::SessionNotFound(session_id.0.clone()))?;
-    recv.await
-        .map_err(|_| Error::SessionNotFound(session_id.0.clone()))?
+    dispatch_command(state, session_id, |reply| Command::SetModel { model, reply }).await
 }
 
 /// `session.rewind_files` — ask the CLI to revert file edits since the
@@ -957,19 +909,11 @@ pub async fn rewind_files(
     session_id: &SessionId,
     user_message_id: String,
 ) -> Result<(), Error> {
-    let handle = state
-        .get_session(session_id)
-        .ok_or_else(|| Error::SessionNotFound(session_id.0.clone()))?;
-    let (reply, recv) = oneshot::channel();
-    handle
-        .commands
-        .send(Command::RewindFiles {
-            user_message_id,
-            reply,
-        })
-        .map_err(|_| Error::SessionNotFound(session_id.0.clone()))?;
-    recv.await
-        .map_err(|_| Error::SessionNotFound(session_id.0.clone()))?
+    dispatch_command(state, session_id, |reply| Command::RewindFiles {
+        user_message_id,
+        reply,
+    })
+    .await
 }
 
 /// `session.stop_task` — kill an in-flight sub-agent task.
@@ -982,14 +926,5 @@ pub async fn stop_task(
     session_id: &SessionId,
     task_id: String,
 ) -> Result<(), Error> {
-    let handle = state
-        .get_session(session_id)
-        .ok_or_else(|| Error::SessionNotFound(session_id.0.clone()))?;
-    let (reply, recv) = oneshot::channel();
-    handle
-        .commands
-        .send(Command::StopTask { task_id, reply })
-        .map_err(|_| Error::SessionNotFound(session_id.0.clone()))?;
-    recv.await
-        .map_err(|_| Error::SessionNotFound(session_id.0.clone()))?
+    dispatch_command(state, session_id, |reply| Command::StopTask { task_id, reply }).await
 }
