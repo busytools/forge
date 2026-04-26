@@ -49,10 +49,10 @@ started.
     surface.** If a feature touches stdin/stdout framing (new
     control_request subtypes, new message types, new hook events,
     new tool integrations) it ships with:
-    (a) a live-capture scenario in `crates/forge-conformance/tests/`
+    (a) a live-capture scenario in `crates/forge-test-harness/tests/`
     (opt-in via `FORGE_WIRE_CAPTURE=1`, drives the real CLI),
     (b) the captured baseline trace committed to
-    `crates/forge-conformance/baselines/<PINNED_CLI_VERSION>/`,
+    `crates/forge-test-harness/baselines/sdk/<PINNED_CLI_VERSION>/`,
     (c) clean replay in `tests/replay.rs::all_baselines_decode_cleanly`
     (every inbound line round-trips through forge-sdk's decoder
     without surfacing `DecodedLine::Unknown` or decode errors).
@@ -165,16 +165,16 @@ record the resolution in the parity log.
 
 ## Wire-conformance cheatsheet
 
-- `crates/forge-conformance/` holds the harness. Replay mode runs
+- `crates/forge-test-harness/` holds the harness. Replay mode runs
   on every `cargo nextest run` — offline, no API cost.
 - Live capture: `FORGE_WIRE_CAPTURE=1 cargo nextest run \
-  -p forge-conformance --no-capture --run-ignored only <test>` —
+  -p forge-test-harness --no-capture --run-ignored only <test>` —
   burns API tokens against whatever profile the shell's
   `CLAUDE_CONFIG_DIR` points at. The captured trace lands in
   `target/wire-traces/` and can be promoted to the baseline
   directory for that pinned CLI version.
 - Baselines live under
-  `crates/forge-conformance/baselines/<PINNED_CLI_VERSION>/`.
+  `crates/forge-test-harness/baselines/sdk/<PINNED_CLI_VERSION>/`.
   When bumping the pinned CLI, re-capture every baseline and
   diff against the old set — divergences are the release-note
   material.
