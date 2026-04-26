@@ -30,7 +30,7 @@ pub async fn get(
     handle
         .commands
         .send(Command::ContextGet { reply })
-        .map_err(|_| Error::InternalError("session actor gone".into()))?;
+        .map_err(|_| Error::SessionNotFound(session_id.0.clone()))?;
     recv.await
-        .map_err(|_| Error::InternalError("session actor dropped reply channel".into()))?
+        .map_err(|_| Error::SessionNotFound(session_id.0.clone()))?
 }

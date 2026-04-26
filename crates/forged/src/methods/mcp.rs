@@ -30,9 +30,9 @@ pub async fn status(
     handle
         .commands
         .send(Command::McpStatus { reply })
-        .map_err(|_| Error::InternalError("session actor gone".into()))?;
+        .map_err(|_| Error::SessionNotFound(session_id.0.clone()))?;
     recv.await
-        .map_err(|_| Error::InternalError("session actor dropped reply channel".into()))?
+        .map_err(|_| Error::SessionNotFound(session_id.0.clone()))?
 }
 
 /// `mcp.reconnect` — drop and re-establish the named MCP server's
@@ -56,9 +56,9 @@ pub async fn reconnect(
             server_name: server_name.to_owned(),
             reply,
         })
-        .map_err(|_| Error::InternalError("session actor gone".into()))?;
+        .map_err(|_| Error::SessionNotFound(session_id.0.clone()))?;
     recv.await
-        .map_err(|_| Error::InternalError("session actor dropped reply channel".into()))?
+        .map_err(|_| Error::SessionNotFound(session_id.0.clone()))?
 }
 
 /// `mcp.toggle` — enable / disable a named MCP server.
@@ -83,7 +83,7 @@ pub async fn toggle(
             enabled,
             reply,
         })
-        .map_err(|_| Error::InternalError("session actor gone".into()))?;
+        .map_err(|_| Error::SessionNotFound(session_id.0.clone()))?;
     recv.await
-        .map_err(|_| Error::InternalError("session actor dropped reply channel".into()))?
+        .map_err(|_| Error::SessionNotFound(session_id.0.clone()))?
 }
