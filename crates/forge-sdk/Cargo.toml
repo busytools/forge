@@ -31,4 +31,4 @@ tokio-stream = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 anyhow = { workspace = true }
 tempfile = { workspace = true }
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-subscriber = { workspace = true }
