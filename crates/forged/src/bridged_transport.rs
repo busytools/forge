@@ -136,16 +136,20 @@ impl BridgedTransport {
         })?;
 
         // Drain stderr on a background task so the pipe never blocks.
-        // No one consumes it in M2, so we just discard.
+        // No one consumes it in M2, so we just log and discard.
         tokio::spawn(async move {
             let mut reader = BufReader::new(stderr);
             let mut buf = String::new();
             loop {
                 buf.clear();
                 match reader.read_line(&mut buf).await {
-                    Ok(0) | Err(_) => break,
+                    Ok(0) => break,
                     Ok(_) => {
                         warn!(line = %buf.trim_end(), "claude stderr");
+                    }
+                    Err(e) => {
+                        warn!(error = %e, "claude stderr read failed");
+                        break;
                     }
                 }
             }
@@ -201,7 +205,10 @@ impl Transport for BridgedTransport {
         if self.writer_tx.send(WriterCmd::EndInput(ack_tx)).is_err() {
             return Ok(());
         }
-        ack_rx.await.unwrap_or(Ok(()))
+        ack_rx.await.unwrap_or_else(|_| {
+            warn!("BridgedTransport::end_input: ack channel dropped");
+            Ok(())
+        })
     }
 
     async fn close(&mut self) -> Result<(), SdkError> {
