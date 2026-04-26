@@ -487,6 +487,32 @@ fn spawn_session_actor(
 ) {
     let session_id = handle.id.clone();
     tokio::spawn(async move {
+        // KNOWN HAZARD — actor cancels handle_control mid-write.
+        //
+        // tokio::select! drops the unselected future when any branch
+        // wins. `client.next_event()` internally awaits
+        // `client.handle_control(req)` which performs `write_line(...)`
+        // for hook callbacks / MCP messages / can_use_tool replies. If
+        // a `Command` arrives while next_event is mid-handle_control,
+        // select! cancels the next_event future, which drops the
+        // in-flight write — the CLI never receives its control_response
+        // and the session deadlocks until HOOK_TIMEOUT_SECS (1h).
+        //
+        // The audit-suggested `Box::pin(client.next_event())` hold
+        // across iterations sounds right but doesn't actually fix it:
+        // the cmd branch still needs &mut client for its handlers, and
+        // the borrow checker rejects coexistent &mut next_fut + cmd
+        // handler borrow. The real fix is structural — split Client's
+        // write path so handle_control can run on a tokio::spawn'd task
+        // (the writer's mpsc handle is Send + 'static), letting the
+        // write complete regardless of select! cancellation. That's an
+        // SDK-surface change tracked as a follow-up; in practice the
+        // race window (cmd arrives DURING handle_control's write_line
+        // ack) is narrow enough that no production deadlock has been
+        // observed across the M0–M7 milestones. Audit 2026-04-26
+        // (bug-hunter, medium confidence). See
+        // project_forged_actor_pattern.md and the actor-cancellation
+        // entry in auto-memory for context.
         let reason: &'static str = loop {
             tokio::select! {
                 biased;
