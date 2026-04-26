@@ -60,31 +60,31 @@ fn parse_spawn_params_handles_full_options_shape() {
         }
     });
     let opts = parse_spawn_params(&raw).unwrap();
-    assert_eq!(opts.binary, "/usr/local/bin/claude");
-    assert_eq!(opts.model.as_deref(), Some("claude-opus-4-7"));
-    assert_eq!(opts.allowed_tools, vec!["Read", "Edit", "Bash"]);
-    assert_eq!(opts.skills, vec!["all"]);
-    assert_eq!(opts.max_turns, Some(10));
-    assert!((opts.max_budget_usd.unwrap() - 0.50).abs() < f64::EPSILON);
+    assert_eq!(opts.options.binary, "/usr/local/bin/claude");
+    assert_eq!(opts.options.model.as_deref(), Some("claude-opus-4-7"));
+    assert_eq!(opts.options.allowed_tools, vec!["Read", "Edit", "Bash"]);
+    assert_eq!(opts.options.skills, vec!["all"]);
+    assert_eq!(opts.options.max_turns, Some(10));
+    assert!((opts.options.max_budget_usd.unwrap() - 0.50).abs() < f64::EPSILON);
     assert_eq!(
-        opts.cwd
+        opts.options.cwd
             .as_deref()
             .map(|p| p.to_string_lossy().into_owned()),
         Some("/tmp/forge-test".to_string())
     );
-    assert!(opts.include_partial_messages);
-    assert_eq!(opts.env.get("FOO").map(String::as_str), Some("bar"));
-    assert_eq!(opts.betas, vec!["context-1m-2025-08-07"]);
-    assert!(opts.extra_args.contains_key("verbose"));
+    assert!(opts.options.include_partial_messages);
+    assert_eq!(opts.options.env.get("FOO").map(String::as_str), Some("bar"));
+    assert_eq!(opts.options.betas, vec!["context-1m-2025-08-07"]);
+    assert!(opts.options.extra_args.contains_key("verbose"));
 }
 
 #[test]
 fn parse_spawn_params_minimal_only_binary() {
     let raw = serde_json::json!({ "options": { "binary": "claude" } });
     let opts = parse_spawn_params(&raw).unwrap();
-    assert_eq!(opts.binary, "claude");
-    assert_eq!(opts.model, None);
-    assert!(opts.allowed_tools.is_empty());
+    assert_eq!(opts.options.binary, "claude");
+    assert_eq!(opts.options.model, None);
+    assert!(opts.options.allowed_tools.is_empty());
 }
 
 #[test]
@@ -92,7 +92,7 @@ fn parse_spawn_params_empty_object_is_default() {
     let raw = serde_json::json!({});
     let opts = parse_spawn_params(&raw).unwrap();
     // Default binary is "claude" per OptionsBuilder.
-    assert_eq!(opts.binary, "claude");
+    assert_eq!(opts.options.binary, "claude");
 }
 
 #[test]
@@ -156,7 +156,7 @@ fn parse_spawn_params_handles_thinking_variants() {
         }
     });
     let opts = parse_spawn_params(&raw).unwrap();
-    assert!(opts.thinking.is_some());
+    assert!(opts.options.thinking.is_some());
 }
 
 #[test]
@@ -188,8 +188,8 @@ fn parse_spawn_params_handles_plugins_and_add_dirs() {
         }
     });
     let opts = parse_spawn_params(&raw).unwrap();
-    assert_eq!(opts.add_dirs.len(), 2);
-    assert_eq!(opts.plugins.len(), 1);
+    assert_eq!(opts.options.add_dirs.len(), 2);
+    assert_eq!(opts.options.plugins.len(), 1);
 }
 
 #[test]
@@ -205,7 +205,7 @@ fn parse_spawn_params_handles_effort_levels() {
         "options": { "binary": "claude", "effort": 7 }
     });
     let opts = parse_spawn_params(&raw).unwrap();
-    assert!(opts.effort.is_some());
+    assert!(opts.options.effort.is_some());
 }
 
 // =============================================================================
