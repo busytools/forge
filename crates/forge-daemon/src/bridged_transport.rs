@@ -34,6 +34,7 @@
 use std::process::Stdio;
 
 use async_trait::async_trait;
+use forge_sdk::AsyncWriter;
 use forge_sdk::Error as SdkError;
 use forge_sdk::Options;
 use forge_sdk::Transport;
@@ -62,6 +63,13 @@ pub struct BridgedTransport {
     writer_tx: mpsc::UnboundedSender<WriterCmd>,
     /// Inbound channel from the reader task.
     reader_rx: mpsc::UnboundedReceiver<Result<Option<String>, SdkError>>,
+    /// Handle to the writer task. `close` aborts it so the child's
+    /// stdin closes promptly even when external `BridgedWriter` clones
+    /// (handed out via [`Transport::try_clone_writer`]) still hold
+    /// `writer_tx` clones alive — without the abort the writer task
+    /// would wait for every clone to drop and the child wouldn't see
+    /// EOF on stdin until then.
+    writer_task: Option<tokio::task::JoinHandle<()>>,
     /// The actual subprocess handle — kept around so `close` can wait
     /// for exit before returning.
     child: Option<Child>,
@@ -159,11 +167,12 @@ impl BridgedTransport {
         spawn_reader_task(stdout, reader_tx);
 
         let (writer_tx, writer_rx) = mpsc::unbounded_channel();
-        spawn_writer_task(stdin, writer_rx);
+        let writer_task = spawn_writer_task(stdin, writer_rx);
 
         Ok(Self {
             writer_tx,
             reader_rx,
+            writer_task: Some(writer_task),
             child: Some(child),
         })
     }
@@ -207,12 +216,34 @@ impl Transport for BridgedTransport {
         })
     }
 
+    fn try_clone_writer(&self) -> Option<std::sync::Arc<dyn AsyncWriter>> {
+        // The writer task is mpsc-driven; cloning the sender is cheap
+        // and Send + 'static, so wrapping it as an AsyncWriter lets the
+        // daemon's actor `tokio::spawn` control_request dispatch on
+        // independent tasks.
+        Some(std::sync::Arc::new(BridgedWriter {
+            writer_tx: self.writer_tx.clone(),
+        }))
+    }
+
     async fn close(&mut self) -> Result<(), SdkError> {
-        // Drop the writer channel — the writer task will close stdin and
-        // exit. The reader task will exit when stdout EOFs.
-        // Reconstructing the field by replacing it with a closed channel.
+        // Drop the writer channel — the writer task will close stdin
+        // and exit. Reconstructing the field by replacing it with a
+        // closed channel.
+        //
+        // External `BridgedWriter` clones (handed out via
+        // try_clone_writer for the actor pattern) may still hold
+        // writer_tx clones; the writer task wouldn't normally see
+        // every-sender-dropped until those die. To force prompt
+        // stdin-closure on the child, abort the writer task directly.
+        // In-flight write_line acks on cloned writers will resolve
+        // with `BridgedWriter task dropped ack` — correct semantics
+        // for a closed transport.
         let (closed_tx, _closed_rx) = mpsc::unbounded_channel();
         self.writer_tx = closed_tx;
+        if let Some(handle) = self.writer_task.take() {
+            handle.abort();
+        }
 
         let Some(mut child) = self.child.take() else {
             return Ok(());
@@ -238,6 +269,42 @@ impl Transport for BridgedTransport {
                 })
             }
         }
+    }
+}
+
+/// Cloneable writer half of [`BridgedTransport`] — an
+/// [`AsyncWriter`] that pushes onto the writer task's mpsc. Multiple
+/// clones can write concurrently; the writer task serialises onto the
+/// child's stdin in arrival order.
+///
+/// Returned by [`BridgedTransport::try_clone_writer`]. Hot path for
+/// the actor pattern (closes audit 2026-04-26 G1) — the daemon's
+/// session actor `tokio::spawn`s `ControlDispatchHandle::dispatch`
+/// for each inbound `control_request`, and that handle holds an
+/// `Arc<BridgedWriter>` pulled from this method.
+#[derive(Debug, Clone)]
+struct BridgedWriter {
+    writer_tx: mpsc::UnboundedSender<WriterCmd>,
+}
+
+#[async_trait]
+impl AsyncWriter for BridgedWriter {
+    async fn write_line(&self, line: &str) -> Result<(), SdkError> {
+        let (ack_tx, ack_rx) = oneshot::channel();
+        self.writer_tx
+            .send(WriterCmd::Write(line.to_owned(), ack_tx))
+            .map_err(|_| {
+                SdkError::Io(std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "BridgedWriter task gone",
+                ))
+            })?;
+        ack_rx.await.map_err(|_| {
+            SdkError::Io(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "BridgedWriter task dropped ack",
+            ))
+        })?
     }
 }
 
@@ -275,7 +342,10 @@ fn spawn_reader_task(
     });
 }
 
-fn spawn_writer_task(stdin: ChildStdin, mut rx: mpsc::UnboundedReceiver<WriterCmd>) {
+fn spawn_writer_task(
+    stdin: ChildStdin,
+    mut rx: mpsc::UnboundedReceiver<WriterCmd>,
+) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut stdin = Some(stdin);
         while let Some(cmd) = rx.recv().await {
@@ -300,7 +370,7 @@ fn spawn_writer_task(stdin: ChildStdin, mut rx: mpsc::UnboundedReceiver<WriterCm
                 }
             }
         }
-    });
+    })
 }
 
 #[cfg(test)]
@@ -329,11 +399,12 @@ mod tests {
         let (reader_tx, reader_rx) = mpsc::unbounded_channel();
         spawn_reader_task(stdout, reader_tx);
         let (writer_tx, writer_rx) = mpsc::unbounded_channel();
-        spawn_writer_task(stdin, writer_rx);
+        let writer_task = spawn_writer_task(stdin, writer_rx);
 
         BridgedTransport {
             writer_tx,
             reader_rx,
+            writer_task: Some(writer_task),
             child: Some(child),
         }
     }

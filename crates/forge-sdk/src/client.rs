@@ -7,8 +7,27 @@
 //! dispatching lives in [`control_dispatch`]; outbound `control_request`
 //! issuance lives in [`control_send`].
 
-mod control_dispatch;
+pub mod control_dispatch;
 mod control_send;
+
+pub use control_dispatch::ControlDispatchHandle;
+
+/// What [`Client::next_event_returning_control`] returns: either a
+/// regular [`Message`] (which the caller fans out to consumers) or an
+/// inbound [`crate::control::ControlRequest`] that the caller must
+/// dispatch (typically by `tokio::spawn`-ing
+/// [`ControlDispatchHandle::dispatch`]).
+#[non_exhaustive]
+#[derive(Debug)]
+pub enum EventOrControl {
+    /// A regular stream-json message — fan out to consumers.
+    Message(Message),
+    /// An inbound `control_request` — dispatch via
+    /// [`ControlDispatchHandle::dispatch`] (or fall back to
+    /// `Client::handle_control` if the transport doesn't support
+    /// the actor pattern).
+    Control(crate::control::ControlRequest),
+}
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
@@ -493,6 +512,90 @@ impl Client {
                 }
             }
         }
+    }
+
+    // EventOrControl + ControlDispatchHandle wired up below; declared
+    // adjacent to next_event_returning_control / try_dispatch_handle.
+
+    /// Variant of [`next_event`](Self::next_event) that does NOT
+    /// dispatch inbound `control_request`s — it returns them to the
+    /// caller as [`EventOrControl::Control`]. Use this with
+    /// [`try_dispatch_handle`](Self::try_dispatch_handle) when you
+    /// want the actor pattern: a long-running `next_event` in one
+    /// task, while inbound control requests dispatch on
+    /// `tokio::spawn`'d tasks via the cloned handle.
+    ///
+    /// Closes audit 2026-04-26 G1 — the cancel-mid-callback deadlock
+    /// where `tokio::select!` over commands + `next_event` could drop
+    /// `handle_control` mid-write_line.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`next_event`](Self::next_event).
+    pub async fn next_event_returning_control(&mut self) -> Result<Option<EventOrControl>, Error> {
+        if let Some(buffered) = self.pre_init_messages.pop_front() {
+            self.capture_session_id_from(&buffered);
+            return Ok(Some(EventOrControl::Message(buffered)));
+        }
+        loop {
+            let Some(line) = self.sub.read_line().await? else {
+                return Ok(None);
+            };
+            self.line_number += 1;
+            match decode_dispatch(&line, self.line_number)? {
+                DecodedLine::Message(msg) => {
+                    self.capture_session_id_from(&msg);
+                    return Ok(Some(EventOrControl::Message(msg)));
+                }
+                DecodedLine::Control(req) => {
+                    return Ok(Some(EventOrControl::Control(req)));
+                }
+                DecodedLine::ControlCancel { request_id } => {
+                    tracing::debug!(%request_id, "control_cancel_request received; nothing to cancel");
+                }
+                DecodedLine::ControlResponse { request_id, .. } => {
+                    tracing::warn!(
+                        %request_id,
+                        "unexpected control_response outside send_control loop — dropping"
+                    );
+                }
+                DecodedLine::Unknown { type_str, raw } => {
+                    tracing::warn!(
+                        type = %type_str,
+                        raw = %raw,
+                        line = self.line_number,
+                        "unknown top-level stream-json type — surfacing as Message::Unknown"
+                    );
+                    return Ok(Some(EventOrControl::Message(Message::Unknown {
+                        type_str,
+                        raw,
+                    })));
+                }
+            }
+        }
+    }
+
+    /// Get a clonable handle for dispatching inbound `control_request`s
+    /// on a separate task. Returns `None` if the underlying transport
+    /// doesn't support concurrent writes (i.e.
+    /// [`Transport::try_clone_writer`](crate::transport::Transport::try_clone_writer)
+    /// returns `None`).
+    ///
+    /// The shipped [`Subprocess`](crate::transport::process::Subprocess)
+    /// transport returns `None` here — its writer side is owned and
+    /// not safe to clone. Use a custom transport (e.g. the daemon's
+    /// `BridgedTransport`) that splits read from write under the hood
+    /// for the actor pattern.
+    #[must_use]
+    pub fn try_dispatch_handle(&self) -> Option<ControlDispatchHandle> {
+        let writer = self.sub.try_clone_writer()?;
+        Some(ControlDispatchHandle::new(
+            writer,
+            self.can_use_tool.clone(),
+            self.mcp_hosts.clone(),
+            self.hook_callbacks.clone(),
+            self.session_id.clone(),
+        ))
     }
 
     /// Populate `self.session_id` from the first message that carries
