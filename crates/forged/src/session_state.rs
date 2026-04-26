@@ -21,6 +21,29 @@ use crate::connection::ConnectionId;
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct SessionId(pub String);
 
+/// Translate a wire-shape `permission_mode` `snake_case` string into the
+/// SDK enum. Single source of truth for the `snake_case` → enum mapping;
+/// shared between `session.spawn` (`parse_spawn_params`) and
+/// `session.set_permission_mode` (`server.rs` dispatch).
+///
+/// # Errors
+///
+/// Returns [`Error::InvalidParams`] if `s` is not one of the six
+/// recognised wire values.
+pub(crate) fn parse_permission_mode(s: &str) -> Result<PermissionMode, Error> {
+    match s {
+        "ask" => Ok(PermissionMode::Ask),
+        "accept_edits" => Ok(PermissionMode::AcceptEdits),
+        "plan" => Ok(PermissionMode::Plan),
+        "bypass_permissions" => Ok(PermissionMode::BypassPermissions),
+        "auto" => Ok(PermissionMode::Auto),
+        "deny_permissions" => Ok(PermissionMode::DenyPermissions),
+        other => Err(Error::InvalidParams(format!(
+            "permission_mode: unknown variant '{other}'"
+        ))),
+    }
+}
+
 /// Commands the dispatch handlers send to a session's actor task.
 ///
 /// Each command carries a [`oneshot::Sender`] for the actor's reply so the
