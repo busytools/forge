@@ -73,6 +73,11 @@ pub struct NotificationFrame {
 }
 
 /// Reverse-RPC handler dispatch mode.
+///
+/// `Clone` is derived rather than implemented manually because the
+/// inner trait objects are `Arc`-wrapped already; cloning the variant
+/// is cheap.
+#[derive(Clone)]
 enum ReverseHandlerKind {
     /// Sync: handler returns the answer; the dispatcher awaits and
     /// auto-replies via `send_response`. Use for hooks that auto-allow.
@@ -404,7 +409,7 @@ async fn read_loop(
         if v.get("id").is_some() {
             // Reverse-RPC request from the daemon.
             let rev_id = v.get("id").cloned().unwrap_or(serde_json::Value::Null);
-            let handler = reverse_handlers.lock().get(&method).cloned_kind();
+            let handler = reverse_handlers.lock().get(&method).cloned();
             if let Some(kind) = handler {
                 match kind {
                     ReverseHandlerKind::Sync(h) => {
@@ -519,18 +524,5 @@ async fn read_loop(
     }
 }
 
-// Helper: clone the inner handler out of a borrow without making
-// `ReverseHandlerKind` itself Clone (the inner Arc trait objects
-// already provide cheap clones).
-trait OptionExt {
-    fn cloned_kind(self) -> Option<ReverseHandlerKind>;
-}
-
-impl OptionExt for Option<&ReverseHandlerKind> {
-    fn cloned_kind(self) -> Option<ReverseHandlerKind> {
-        self.map(|k| match k {
-            ReverseHandlerKind::Sync(h) => ReverseHandlerKind::Sync(h.clone()),
-            ReverseHandlerKind::Deferred(h) => ReverseHandlerKind::Deferred(h.clone()),
-        })
-    }
-}
+// (OptionExt::cloned_kind removed — ReverseHandlerKind now derives
+// Clone, and Option::cloned() handles the &T → T cloning directly.)
