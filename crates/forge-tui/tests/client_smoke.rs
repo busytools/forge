@@ -7,12 +7,12 @@ use std::time::Duration;
 use forge_tui::client::Client;
 
 fn spawn_forged() -> std::net::SocketAddr {
-    let state = forged::registry::DaemonState::new();
+    let state = forge_daemon::registry::DaemonState::new();
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
     let addr = listener.local_addr().unwrap();
     let listener = tokio::net::TcpListener::from_std(listener).unwrap();
-    tokio::spawn(forged::server::run(listener, state));
+    tokio::spawn(forge_daemon::server::run(listener, state));
     addr
 }
 
@@ -63,12 +63,12 @@ async fn client_send_response_does_not_panic_on_unknown_rev_id() {
 async fn client_subscribe_yields_session_events_via_stream() {
     use futures_util::StreamExt;
 
-    let state = forged::registry::DaemonState::new();
+    let state = forge_daemon::registry::DaemonState::new();
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
     let addr = listener.local_addr().unwrap();
     let listener = tokio::net::TcpListener::from_std(listener).unwrap();
-    tokio::spawn(forged::server::run(listener, state.clone()));
+    tokio::spawn(forge_daemon::server::run(listener, state.clone()));
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     let client = Client::connect(&format!("ws://{addr}/?name=tui-test"))
@@ -77,23 +77,25 @@ async fn client_subscribe_yields_session_events_via_stream() {
 
     // Register a fake session in the daemon (no real subprocess) so the
     // subscribe call has somewhere to land.
-    let sid = forged::session_state::SessionId("sess_sub_test".into());
+    let sid = forge_daemon::session_state::SessionId("sess_sub_test".into());
     let (_handle, _rx) = state.register_session(sid.clone());
 
     let mut events = client.subscribe_session("sess_sub_test").await.unwrap();
 
     // Fan out a notification through the daemon's broadcast helper.
-    forged::broadcast::fanout(
+    forge_daemon::broadcast::fanout(
         &state,
         &sid,
-        &forged::connection::Outbound::Notification(forged::jsonrpc::Notification::new(
-            "session.event",
-            serde_json::json!({
-                "session_id": "sess_sub_test",
-                "event_id": 1,
-                "message": {"type": "user", "message": {"content": [{"type": "text", "text": "hi"}]}},
-            }),
-        )),
+        &forge_daemon::connection::Outbound::Notification(
+            forge_daemon::jsonrpc::Notification::new(
+                "session.event",
+                serde_json::json!({
+                    "session_id": "sess_sub_test",
+                    "event_id": 1,
+                    "message": {"type": "user", "message": {"content": [{"type": "text", "text": "hi"}]}},
+                }),
+            ),
+        ),
     );
 
     let evt = tokio::time::timeout(Duration::from_secs(3), events.next())

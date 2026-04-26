@@ -1,4 +1,4 @@
-//! forged binary — daemon entrypoint.
+//! forge-daemon binary — daemon entrypoint.
 
 #![allow(
     clippy::print_stdout,
@@ -8,14 +8,14 @@
 use clap::Parser;
 use tokio::net::TcpListener;
 
-use forged::bind_check::is_loopback_bind;
-use forged::registry::DaemonState;
+use forge_daemon::bind_check::is_loopback_bind;
+use forge_daemon::registry::DaemonState;
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "forged",
+    name = "forge-daemon",
     version,
-    about = "forge daemon — JSON-RPC over WS wire to claude sessions"
+    about = "forge-daemon — JSON-RPC over WS wire to claude sessions"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -38,8 +38,8 @@ enum Cmd {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let config = forged::config::load_default()?;
-    forged::logging::init(&config)?;
+    let config = forge_daemon::config::load_default()?;
+    forge_daemon::logging::init(&config)?;
 
     let cli = Cli::parse();
     match cli.cmd.unwrap_or(Cmd::Listen { addr: None }) {
@@ -51,7 +51,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 None => config.bind.clone(),
             };
 
-            // Warn loud and clear on non-loopback binds — forged has no
+            // Warn loud and clear on non-loopback binds — forge-daemon has no
             // app-layer auth in this milestone; anyone with network
             // access to the listening port can drive `session.spawn`
             // and run arbitrary commands. Loopback / WireGuard mesh is
@@ -71,7 +71,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 tracing::info!(%bind, "listening");
                 let st = state.clone();
                 handles.push(tokio::spawn(async move {
-                    forged::server::run(listener, st).await
+                    forge_daemon::server::run(listener, st).await
                 }));
             }
 
@@ -102,7 +102,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         Cmd::Status => {
-            forged::status_cli::run("127.0.0.1:7373").await?;
+            forge_daemon::status_cli::run("127.0.0.1:7373").await?;
             Ok(())
         }
     }

@@ -14,13 +14,13 @@ use std::time::Duration;
 use forge_tui::client::Client;
 use futures_util::StreamExt;
 
-fn spawn_forged() -> (forged::registry::DaemonState, std::net::SocketAddr) {
-    let state = forged::registry::DaemonState::new();
+fn spawn_forged() -> (forge_daemon::registry::DaemonState, std::net::SocketAddr) {
+    let state = forge_daemon::registry::DaemonState::new();
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
     let addr = listener.local_addr().unwrap();
     let listener = tokio::net::TcpListener::from_std(listener).unwrap();
-    tokio::spawn(forged::server::run(listener, state.clone()));
+    tokio::spawn(forge_daemon::server::run(listener, state.clone()));
     (state, addr)
 }
 
@@ -34,7 +34,7 @@ async fn subscribe_session_round_trips_notification_into_stream() {
         .unwrap();
 
     // Register a fake session in the daemon.
-    let sid = forged::session_state::SessionId("sess_routing".into());
+    let sid = forge_daemon::session_state::SessionId("sess_routing".into());
     let (_handle, _rx) = state.register_session(sid.clone());
 
     // Subscribe via Client::subscribe_session — this registers a
@@ -42,17 +42,19 @@ async fn subscribe_session_round_trips_notification_into_stream() {
     let mut stream = client.subscribe_session("sess_routing").await.unwrap();
 
     // Fan a session.event notification through the broadcast helper.
-    forged::broadcast::fanout(
+    forge_daemon::broadcast::fanout(
         &state,
         &sid,
-        &forged::connection::Outbound::Notification(forged::jsonrpc::Notification::new(
-            "session.event",
-            serde_json::json!({
-                "session_id": "sess_routing",
-                "event_id": "msg_42",
-                "message": {"type": "user", "message": {"content": "hi"}},
-            }),
-        )),
+        &forge_daemon::connection::Outbound::Notification(
+            forge_daemon::jsonrpc::Notification::new(
+                "session.event",
+                serde_json::json!({
+                    "session_id": "sess_routing",
+                    "event_id": "msg_42",
+                    "message": {"type": "user", "message": {"content": "hi"}},
+                }),
+            ),
+        ),
     );
 
     let frame = tokio::time::timeout(Duration::from_secs(3), stream.next())
@@ -92,24 +94,26 @@ async fn unrouted_notifications_arrive_on_notifications_channel() {
     let conn_id = state.connections.lock().keys().next().cloned().unwrap();
 
     // Register a session and pin our connection as primary.
-    let sid = forged::session_state::SessionId("sess_notif".into());
+    let sid = forge_daemon::session_state::SessionId("sess_notif".into());
     let (handle, _rx) = state.register_session(sid.clone());
     *handle.primary.lock() = Some(conn_id.clone());
     handle.subscribers.lock().push(conn_id.clone());
 
     // Send a primary_changed via fanout.
-    forged::broadcast::fanout(
+    forge_daemon::broadcast::fanout(
         &state,
         &sid,
-        &forged::connection::Outbound::Notification(forged::jsonrpc::Notification::new(
-            "session.primary_changed",
-            serde_json::json!({
-                "session_id": "sess_notif",
-                "primary": conn_id.0,
-                "previous": null,
-                "reason": "test_fanout",
-            }),
-        )),
+        &forge_daemon::connection::Outbound::Notification(
+            forge_daemon::jsonrpc::Notification::new(
+                "session.primary_changed",
+                serde_json::json!({
+                    "session_id": "sess_notif",
+                    "primary": conn_id.0,
+                    "previous": null,
+                    "reason": "test_fanout",
+                }),
+            ),
+        ),
     );
 
     // The forge-tui Client should route this to the notifications mpsc.
@@ -144,7 +148,7 @@ async fn sync_reverse_rpc_handler_auto_replies() {
     let conn_id = state.connections.lock().keys().next().cloned().unwrap();
 
     // Register a session, pin our connection as primary.
-    let sid = forged::session_state::SessionId("sess_sync".into());
+    let sid = forge_daemon::session_state::SessionId("sess_sync".into());
     let (handle, _rx) = state.register_session(sid.clone());
     *handle.primary.lock() = Some(conn_id.clone());
 
@@ -158,12 +162,12 @@ async fn sync_reverse_rpc_handler_auto_replies() {
     let state_arc = std::sync::Arc::new(state.clone());
     let sid_for = sid.clone();
     let issue = tokio::spawn(async move {
-        forged::reverse_rpc::issue_to_primary(
+        forge_daemon::reverse_rpc::issue_to_primary(
             &state_arc,
             &sid_for,
             "hook.pre_tool_use",
             serde_json::json!({"input": {}, "context": {}}),
-            forged::prompt_queue::PromptKind::Hook {
+            forge_daemon::prompt_queue::PromptKind::Hook {
                 kind: "pre_tool_use".into(),
             },
             Duration::from_secs(5),

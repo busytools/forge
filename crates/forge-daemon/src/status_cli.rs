@@ -1,4 +1,4 @@
-//! `forged status` subcommand. Connects to a local forged over loopback,
+//! `forge-daemon status` subcommand. Connects to a local forge-daemon over loopback,
 //! issues `daemon.status`, prints the JSON result to stdout.
 
 use futures_util::{SinkExt, StreamExt};
@@ -9,7 +9,7 @@ use tokio_tungstenite::tungstenite::Message as WsMsg;
 use crate::Error;
 use crate::jsonrpc::{Request, Response};
 
-/// Query a forged daemon at `addr` (e.g. `127.0.0.1:7373`) and return the
+/// Query a forge-daemon at `addr` (e.g. `127.0.0.1:7373`) and return the
 /// pretty-printed JSON status.
 ///
 /// # Errors
@@ -53,7 +53,7 @@ pub async fn query(addr: &str) -> Result<String, Error> {
     }
 }
 
-/// Run the `forged status` subcommand — print the result of [`query`] to stdout.
+/// Run the `forge-daemon status` subcommand — print the result of [`query`] to stdout.
 ///
 /// # Errors
 ///

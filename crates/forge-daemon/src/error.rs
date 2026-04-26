@@ -1,9 +1,9 @@
-//! forged Error type. Mirrors the JSON-RPC error code allocations from
+//! forge-daemon Error type. Mirrors the JSON-RPC error code allocations from
 //! the wire spec §7.4.15.
 
 use crate::jsonrpc::ErrorObject;
 
-/// All errors surfaced by forged operations.
+/// All errors surfaced by forge-daemon operations.
 ///
 /// Each variant maps deterministically to a JSON-RPC error code via
 /// [`Error::code`]; bridging into a wire-shape `ErrorObject` is done by
@@ -28,7 +28,7 @@ pub enum Error {
     #[error("internal error: {0}")]
     InternalError(String),
 
-    // -32000 family — forged transport
+    // -32000 family — forge-daemon transport
     /// Daemon is shutting down and refusing new requests (-32000).
     #[error("daemon shutting down")]
     ShuttingDown,

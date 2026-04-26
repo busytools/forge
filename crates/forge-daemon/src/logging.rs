@@ -1,8 +1,8 @@
 //! Logging setup. Three rolling-file streams under `config.log_dir`:
 //!
-//! - `forged.events.log` — INFO+ structured events
-//! - `forged.errors.log` — WARN+ filter for quick scanning
-//! - `forged.audit.log` — per-WS-connection records (target = `forged::audit`)
+//! - `forge-daemon.events.log` — INFO+ structured events
+//! - `forge-daemon.errors.log` — WARN+ filter for quick scanning
+//! - `forge-daemon.audit.log` — per-WS-connection records (target = `forge_daemon::audit`)
 //!
 //! Daily rotation; retention is enforced by a sweep at startup that
 //! deletes files older than `log_retention_days`.
@@ -17,10 +17,10 @@ use tracing_subscriber::{EnvFilter, Layer, Registry, fmt};
 use crate::Error;
 use crate::config::Config;
 
-/// Filename prefix shared by every log file forged emits. The retention
-/// sweep filters on this so we never touch unrelated files in the log
-/// directory.
-const FORGED_LOG_PREFIX: &str = "forged.";
+/// Filename prefix shared by every log file the daemon emits. The
+/// retention sweep filters on this so we never touch unrelated files in
+/// the log directory.
+const FORGE_DAEMON_LOG_PREFIX: &str = "forge-daemon.";
 
 /// Initialise logging based on the daemon config.
 ///
@@ -39,23 +39,23 @@ pub fn init(config: &Config) -> Result<(), Error> {
     std::fs::create_dir_all(&dir).map_err(Error::Io)?;
     sweep_old(&dir, config.log_retention_days);
 
-    let events = build_appender(&dir, "forged.events.log")?;
-    let errors = build_appender(&dir, "forged.errors.log")?;
-    let audit = build_appender(&dir, "forged.audit.log")?;
+    let events = build_appender(&dir, "forge-daemon.events.log")?;
+    let errors = build_appender(&dir, "forge-daemon.errors.log")?;
+    let audit = build_appender(&dir, "forge-daemon.audit.log")?;
 
-    // Default RUST_LOG: forged at INFO, forge_sdk at WARN. Operator can
-    // override with `RUST_LOG=forged=debug` etc.
+    // Default RUST_LOG: forge_daemon at INFO, forge_sdk at WARN. Operator
+    // can override with `RUST_LOG=forge_daemon=debug` etc.
     let env = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("forged=info,forge_sdk=warn"));
+        .unwrap_or_else(|_| EnvFilter::new("forge_daemon=info,forge_sdk=warn"));
 
     // Events: everything not specifically scoped to audit. We exclude
-    // the `forged::audit` target so the audit stream doesn't double-tee
+    // the `forge_daemon::audit` target so the audit stream doesn't double-tee
     // into events.
     let events_layer = fmt::layer()
         .with_writer(events)
         .with_target(true)
         .with_filter(EnvFilter::new(
-            "forged=info,forge_sdk=warn,forged::audit=off",
+            "forge_daemon=info,forge_sdk=warn,forge_daemon::audit=off",
         ));
 
     // Errors: WARN+ across the workspace, again excluding audit to keep
@@ -63,14 +63,14 @@ pub fn init(config: &Config) -> Result<(), Error> {
     let errors_layer = fmt::layer()
         .with_writer(errors)
         .with_target(true)
-        .with_filter(EnvFilter::new("warn,forged::audit=off"));
+        .with_filter(EnvFilter::new("warn,forge_daemon::audit=off"));
 
-    // Audit: only `forged::audit` events (target-scoped). INFO+ keeps
+    // Audit: only `forge_daemon::audit` events (target-scoped). INFO+ keeps
     // routine connection-open / connection-close traceable.
     let audit_layer = fmt::layer()
         .with_writer(audit)
         .with_target(true)
-        .with_filter(EnvFilter::new("forged::audit=info"));
+        .with_filter(EnvFilter::new("forge_daemon::audit=info"));
 
     // `try_init` returns Err when a subscriber is already installed
     // (typical under tests or re-exec scenarios). The first install wins
@@ -84,7 +84,7 @@ pub fn init(config: &Config) -> Result<(), Error> {
         .with(audit_layer)
         .try_init()
     {
-        eprintln!("forged: tracing init skipped — subscriber already set ({e})");
+        eprintln!("forge-daemon: tracing init skipped — subscriber already set ({e})");
     }
     Ok(())
 }
@@ -117,7 +117,7 @@ fn build_appender(
 }
 
 /// Walk `dir`, deleting files whose mtime is older than `retention_days`
-/// AND whose filename starts with `forged.`. The prefix filter is
+/// AND whose filename starts with `forge-daemon.`. The prefix filter is
 /// belt-and-braces — a misconfigured `log_dir` pointing at a shared
 /// directory shouldn't take out unrelated state.
 fn sweep_old(dir: &Path, retention_days: u32) {
@@ -152,7 +152,7 @@ fn sweep_old(dir: &Path, retention_days: u32) {
     for entry in entries.flatten() {
         let name = entry.file_name();
         let name_str = name.to_string_lossy();
-        if !name_str.starts_with(FORGED_LOG_PREFIX) {
+        if !name_str.starts_with(FORGE_DAEMON_LOG_PREFIX) {
             continue;
         }
         let Ok(mtime) = entry.metadata().and_then(|m| m.modified()) else {
@@ -185,7 +185,7 @@ fn sweep_old(dir: &Path, retention_days: u32) {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
-    use super::{FORGED_LOG_PREFIX, expand_home, sweep_old};
+    use super::{FORGE_DAEMON_LOG_PREFIX, expand_home, sweep_old};
     use std::fs;
     use std::time::{Duration, SystemTime};
 
@@ -206,8 +206,8 @@ mod tests {
     fn sweep_old_deletes_only_forged_prefixed_files_past_retention() {
         let tmp = tempfile::TempDir::new().unwrap();
         let dir = tmp.path();
-        let old = dir.join(format!("{FORGED_LOG_PREFIX}events.log.2020-01-01"));
-        let recent = dir.join(format!("{FORGED_LOG_PREFIX}events.log.9999-12-31"));
+        let old = dir.join(format!("{FORGE_DAEMON_LOG_PREFIX}events.log.2020-01-01"));
+        let recent = dir.join(format!("{FORGE_DAEMON_LOG_PREFIX}events.log.9999-12-31"));
         let unrelated = dir.join("README.txt");
         fs::write(&old, "old").unwrap();
         fs::write(&recent, "recent").unwrap();

@@ -2,10 +2,10 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use forge_daemon::methods::session::{SpawnResult, spawn};
+use forge_daemon::registry::DaemonState;
+use forge_daemon::session_state::SessionId;
 use forge_sdk::OptionsBuilder;
-use forged::methods::session::{SpawnResult, spawn};
-use forged::registry::DaemonState;
-use forged::session_state::SessionId;
 
 const MOCK_CLAUDE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -53,7 +53,7 @@ async fn send_user_message_writes_to_subprocess() {
     let opts = OptionsBuilder::new().binary(MOCK_CLAUDE).build();
     let SpawnResult { session_id, .. } = spawn(&state, opts).await.unwrap();
 
-    let r = forged::methods::session::send_user_message(&state, &session_id, "hi").await;
+    let r = forge_daemon::methods::session::send_user_message(&state, &session_id, "hi").await;
     assert!(r.is_ok(), "send_user_message: {r:?}");
 }
 
@@ -61,10 +61,10 @@ async fn send_user_message_writes_to_subprocess() {
 async fn send_user_message_returns_session_not_found() {
     let state = DaemonState::new();
     let unknown = SessionId("sess_does_not_exist".into());
-    let err = forged::methods::session::send_user_message(&state, &unknown, "hi")
+    let err = forge_daemon::methods::session::send_user_message(&state, &unknown, "hi")
         .await
         .unwrap_err();
-    assert!(matches!(err, forged::Error::SessionNotFound(_)));
+    assert!(matches!(err, forge_daemon::Error::SessionNotFound(_)));
 }
 
 // ---- WS round-trip integration tests --------------------------------------
@@ -82,7 +82,7 @@ async fn start_server_and_connect() -> (
     let state = DaemonState::new();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    tokio::spawn(forged::server::run(listener, state.clone()));
+    tokio::spawn(forge_daemon::server::run(listener, state.clone()));
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     let url = format!("ws://{addr}/");
     let (ws, _) = connect_async(&url).await.unwrap();
@@ -92,7 +92,7 @@ async fn start_server_and_connect() -> (
 async fn drain_until_response<S>(
     ws: &mut S,
     target_id: &serde_json::Value,
-) -> forged::jsonrpc::Response
+) -> forge_daemon::jsonrpc::Response
 where
     S: futures_util::Stream<
             Item = Result<
@@ -116,7 +116,7 @@ async fn subscribe_receives_session_events() {
     let (_state, mut ws) = start_server_and_connect().await;
 
     // Spawn session.
-    let spawn_req = forged::jsonrpc::Request::new(
+    let spawn_req = forge_daemon::jsonrpc::Request::new(
         "session.spawn",
         serde_json::json!({"options": {"binary": MOCK_CLAUDE}}),
         serde_json::json!(1),
@@ -135,7 +135,7 @@ async fn subscribe_receives_session_events() {
         .to_string();
 
     // Subscribe.
-    let sub = forged::jsonrpc::Request::new(
+    let sub = forge_daemon::jsonrpc::Request::new(
         "session.subscribe",
         serde_json::json!({"session_id": session_id}),
         serde_json::json!(2),
@@ -147,7 +147,7 @@ async fn subscribe_receives_session_events() {
     assert!(sub_resp.error.is_none(), "subscribe error: {sub_resp:?}");
 
     // Send a user message — expect at least one session.event notification.
-    let send = forged::jsonrpc::Request::new(
+    let send = forge_daemon::jsonrpc::Request::new(
         "session.send_user_message",
         serde_json::json!({"session_id": session_id, "prompt": "hi"}),
         serde_json::json!(3),
@@ -179,23 +179,23 @@ async fn subscribe_receives_session_events() {
 
 #[tokio::test]
 async fn unsubscribe_removes_connection_from_subscribers() {
-    use forged::connection::{Connection, ConnectionId};
+    use forge_daemon::connection::{Connection, ConnectionId};
     use tokio::sync::mpsc;
 
     let state = DaemonState::new();
     let opts = OptionsBuilder::new().binary(MOCK_CLAUDE).build();
     let SpawnResult { session_id, .. } = spawn(&state, opts).await.unwrap();
 
-    let (tx, _rx) = mpsc::channel(forged::connection::OUTBOUND_CHANNEL_CAPACITY);
+    let (tx, _rx) = mpsc::channel(forge_daemon::connection::OUTBOUND_CHANNEL_CAPACITY);
     let conn = Connection::new(ConnectionId("conn_test_1".into()), tx);
 
-    forged::methods::session::subscribe(&state, &conn, &session_id, None).unwrap();
+    forge_daemon::methods::session::subscribe(&state, &conn, &session_id, None).unwrap();
     {
         let handle = state.get_session(&session_id).unwrap();
         assert!(handle.subscribers.lock().contains(&conn.id));
     }
 
-    forged::methods::session::unsubscribe(&state, &conn, &session_id).unwrap();
+    forge_daemon::methods::session::unsubscribe(&state, &conn, &session_id).unwrap();
     let handle = state.get_session(&session_id).unwrap();
     assert!(!handle.subscribers.lock().contains(&conn.id));
     assert_eq!(*handle.primary.lock(), None);
@@ -203,15 +203,15 @@ async fn unsubscribe_removes_connection_from_subscribers() {
 
 #[tokio::test]
 async fn unsubscribe_returns_session_not_found_for_unknown_id() {
-    use forged::connection::{Connection, ConnectionId};
+    use forge_daemon::connection::{Connection, ConnectionId};
     use tokio::sync::mpsc;
 
     let state = DaemonState::new();
-    let (tx, _rx) = mpsc::channel(forged::connection::OUTBOUND_CHANNEL_CAPACITY);
+    let (tx, _rx) = mpsc::channel(forge_daemon::connection::OUTBOUND_CHANNEL_CAPACITY);
     let conn = Connection::new(ConnectionId("conn_test_2".into()), tx);
     let unknown = SessionId("sess_does_not_exist".into());
-    let err = forged::methods::session::unsubscribe(&state, &conn, &unknown).unwrap_err();
-    assert!(matches!(err, forged::Error::SessionNotFound(_)));
+    let err = forge_daemon::methods::session::unsubscribe(&state, &conn, &unknown).unwrap_err();
+    assert!(matches!(err, forge_daemon::Error::SessionNotFound(_)));
 }
 
 #[tokio::test]
@@ -220,7 +220,7 @@ async fn disconnect_unregisters_session() {
     let opts = OptionsBuilder::new().binary(MOCK_CLAUDE).build();
     let SpawnResult { session_id, .. } = spawn(&state, opts).await.unwrap();
 
-    forged::methods::session::disconnect(&state, &session_id)
+    forge_daemon::methods::session::disconnect(&state, &session_id)
         .await
         .unwrap();
 
@@ -241,7 +241,7 @@ async fn session_closed_notification_fires_on_subprocess_exit() {
     let (state, mut ws) = start_server_and_connect().await;
 
     // Spawn + subscribe.
-    let spawn_req = forged::jsonrpc::Request::new(
+    let spawn_req = forge_daemon::jsonrpc::Request::new(
         "session.spawn",
         serde_json::json!({"options": {"binary": MOCK_CLAUDE}}),
         serde_json::json!(1),
@@ -259,7 +259,7 @@ async fn session_closed_notification_fires_on_subprocess_exit() {
         .unwrap()
         .to_string();
 
-    let sub = forged::jsonrpc::Request::new(
+    let sub = forge_daemon::jsonrpc::Request::new(
         "session.subscribe",
         serde_json::json!({"session_id": session_id}),
         serde_json::json!(2),
@@ -272,7 +272,7 @@ async fn session_closed_notification_fires_on_subprocess_exit() {
     // Send a user message — the mock emits a Result frame and then sits
     // waiting for the next user message. The Result is terminal per
     // M2.6, so the actor emits `session.closed` and unregisters.
-    let send = forged::jsonrpc::Request::new(
+    let send = forge_daemon::jsonrpc::Request::new(
         "session.send_user_message",
         serde_json::json!({"session_id": session_id, "prompt": "bye"}),
         serde_json::json!(3),
@@ -327,7 +327,7 @@ async fn session_closed_notification_fires_on_subprocess_exit() {
 async fn session_closed_emits_disconnect_reason_when_disconnect_called() {
     let (state, mut ws) = start_server_and_connect().await;
 
-    let spawn_req = forged::jsonrpc::Request::new(
+    let spawn_req = forge_daemon::jsonrpc::Request::new(
         "session.spawn",
         serde_json::json!({"options": {"binary": MOCK_CLAUDE}}),
         serde_json::json!(1),
@@ -345,7 +345,7 @@ async fn session_closed_emits_disconnect_reason_when_disconnect_called() {
         .unwrap()
         .to_string();
 
-    let sub = forged::jsonrpc::Request::new(
+    let sub = forge_daemon::jsonrpc::Request::new(
         "session.subscribe",
         serde_json::json!({"session_id": session_id}),
         serde_json::json!(2),
@@ -356,7 +356,7 @@ async fn session_closed_emits_disconnect_reason_when_disconnect_called() {
     let _ = drain_until_response(&mut ws, &serde_json::json!(2)).await;
 
     // Issue a session.disconnect.
-    let disc = forged::jsonrpc::Request::new(
+    let disc = forge_daemon::jsonrpc::Request::new(
         "session.disconnect",
         serde_json::json!({"session_id": session_id}),
         serde_json::json!(3),
@@ -401,7 +401,7 @@ async fn session_closed_emits_disconnect_reason_when_disconnect_called() {
 async fn session_closed_emits_terminal_reason_on_subprocess_exit() {
     let (state, mut ws) = start_server_and_connect().await;
 
-    let spawn_req = forged::jsonrpc::Request::new(
+    let spawn_req = forge_daemon::jsonrpc::Request::new(
         "session.spawn",
         serde_json::json!({"options": {"binary": MOCK_CLAUDE}}),
         serde_json::json!(1),
@@ -419,7 +419,7 @@ async fn session_closed_emits_terminal_reason_on_subprocess_exit() {
         .unwrap()
         .to_string();
 
-    let sub = forged::jsonrpc::Request::new(
+    let sub = forge_daemon::jsonrpc::Request::new(
         "session.subscribe",
         serde_json::json!({"session_id": session_id}),
         serde_json::json!(2),
@@ -430,7 +430,7 @@ async fn session_closed_emits_terminal_reason_on_subprocess_exit() {
     let _ = drain_until_response(&mut ws, &serde_json::json!(2)).await;
 
     // Trigger end-of-stream from the mock by sending end_input.
-    let ei = forged::jsonrpc::Request::new(
+    let ei = forge_daemon::jsonrpc::Request::new(
         "session.end_input",
         serde_json::json!({"session_id": session_id}),
         serde_json::json!(3),
@@ -476,7 +476,7 @@ async fn session_closed_emits_terminal_reason_on_subprocess_exit() {
 /// mock won't EOF on its own.
 #[tokio::test]
 async fn session_closed_emits_actor_idle_reason_when_all_senders_dropped() {
-    use forged::connection::{Connection, ConnectionId};
+    use forge_daemon::connection::{Connection, ConnectionId};
     use tokio::sync::mpsc;
 
     // Use the control mock — it waits for input rather than emitting
@@ -491,7 +491,7 @@ async fn session_closed_emits_actor_idle_reason_when_all_senders_dropped() {
     let opts = OptionsBuilder::new().binary(MOCK_CLAUDE_CONTROL).build();
     let SpawnResult { session_id, .. } = spawn(&state, opts).await.unwrap();
 
-    let (sub_tx, mut sub_rx) = mpsc::channel(forged::connection::OUTBOUND_CHANNEL_CAPACITY);
+    let (sub_tx, mut sub_rx) = mpsc::channel(forge_daemon::connection::OUTBOUND_CHANNEL_CAPACITY);
     let sub_conn = Connection::new(ConnectionId("conn_idle_obs".into()), sub_tx);
     state.register_connection(sub_conn.clone());
     {
@@ -515,7 +515,7 @@ async fn session_closed_emits_actor_idle_reason_when_all_senders_dropped() {
             .await
             .ok()
             .flatten();
-        let Some(forged::connection::Outbound::Notification(n)) = frame else {
+        let Some(forge_daemon::connection::Outbound::Notification(n)) = frame else {
             continue;
         };
         if n.method == "session.closed" {
@@ -574,7 +574,7 @@ async fn end_input_drains_subprocess_to_completion() {
     let opts = OptionsBuilder::new().binary(MOCK_CLAUDE).build();
     let SpawnResult { session_id, .. } = spawn(&state, opts).await.unwrap();
 
-    forged::methods::session::end_input(&state, &session_id)
+    forge_daemon::methods::session::end_input(&state, &session_id)
         .await
         .unwrap();
 

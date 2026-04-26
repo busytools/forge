@@ -1,5 +1,5 @@
 [package]
-name = "forged"
+name = "forge-daemon"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -30,7 +30,7 @@ unimplemented = "deny"
 module_name_repetitions = "allow"
 
 [[bin]]
-name = "forged"
+name = "forge-daemon"
 path = "src/main.rs"
 
 [dependencies]

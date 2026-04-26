@@ -34,7 +34,7 @@ use crate::registry::DaemonState;
 ///
 /// Returns when the listener fails to accept (e.g. the listener is closed).
 pub async fn run(listener: TcpListener, state: DaemonState) -> Result<(), Error> {
-    info!(addr = ?listener.local_addr()?, "forged listening");
+    info!(addr = ?listener.local_addr()?, "forge-daemon listening");
     loop {
         match listener.accept().await {
             Ok((stream, peer)) => {
