@@ -56,8 +56,19 @@ fn try_send_to_primary(
     let Some(out) = outbound else {
         return Err(tx);
     };
-    // Stash the responder before sending so we don't race with the
-    // response arriving before we record the awaiter.
+    // Stash the responder BEFORE sending. The reverse race — "send first,
+    // insert after" — would let a fast reply travel out → client → back →
+    // resolve() while this task is still suspended between out.send() and
+    // outstanding_reverse.insert(); resolve() would then miss the entry
+    // and silently drop the answer. Audit 2026-04-26 (bug-hunter,
+    // medium confidence) suggested reordering to avoid the symmetric
+    // "fake reply slips into a not-yet-sent rev_id slot" race. In a
+    // single-user trust model the latter requires either UUID collision
+    // (astronomically unlikely with v4) or an adversarial peer (out of
+    // scope per project_trust_model.md), so the current ordering is the
+    // correct trade. If the trust model changes, switch to a "tentative"
+    // flag on insert + confirm-after-send + reject-on-resolve-if-not-
+    // confirmed scheme.
     state.outstanding_reverse.lock().insert(
         rev_id.to_owned(),
         OutstandingEntry {
