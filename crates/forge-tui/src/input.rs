@@ -2,8 +2,10 @@
 //!
 //! - `q` quits.
 //! - `a` / `d` answer the permission modal.
-//! - `Esc` closes the permission modal without answering (defaults to deny
-//!   on disconnect; user can re-issue).
+//! - `Esc` dismisses the permission modal by submitting a deny response
+//!   (equivalent to pressing `d`). Previously closed the modal without
+//!   answering, leaving the prompt parked on the daemon for the full
+//!   1-hour `HOOK_TIMEOUT_SECS`.
 //! - `Up` / `Down` / `Enter` navigate the session list.
 //! - `p` claims primary when in viewer mode.
 //
@@ -47,7 +49,14 @@ pub async fn handle_key(
                 return Some(false);
             }
             KeyCode::Esc => {
-                app.focus = Focus::Conversation;
+                // Esc dismisses the modal by submitting a deny response
+                // — clears pending_permission, sends the deny via
+                // prompts.respond / send_response (whichever the prompt
+                // shape requires), and returns focus to Conversation.
+                // Without this, the modal would close visually but the
+                // reverse-RPC would park on the daemon for the full
+                // 1-hour HOOK_TIMEOUT_SECS, blocking the agent.
+                answer_permission(app, client, "deny").await;
                 return Some(false);
             }
             _ => return None,
