@@ -195,3 +195,37 @@ impl SessionState {
 
 /// Reference-counted handle to a [`SessionState`].
 pub type SessionHandle = Arc<SessionState>;
+
+/// Look up the session, build a [`Command`] (the closure receives the
+/// reply oneshot it must include in the variant), enqueue it on the
+/// actor's mpsc, and await the actor's reply. Returns the actor's
+/// reply value or maps any channel failure to
+/// [`Error::SessionNotFound`].
+///
+/// 12+ method handlers in `methods/{session,mcp,context}.rs` follow
+/// this exact shape; consolidating it here keeps the four error sites
+/// (lookup miss, mpsc send failure, oneshot recv failure, and the
+/// inner [`Error`] that the actor returned) in one place.
+///
+/// # Errors
+///
+/// [`Error::SessionNotFound`] when the session id is unknown OR the
+/// actor's command channel / reply channel has gone (effectively
+/// "session terminated"). The actor's own [`Error`] return is
+/// propagated unchanged.
+pub(crate) async fn dispatch_command<R>(
+    state: &crate::registry::DaemonState,
+    session_id: &SessionId,
+    build: impl FnOnce(oneshot::Sender<Result<R, Error>>) -> Command,
+) -> Result<R, Error> {
+    let handle = state
+        .get_session(session_id)
+        .ok_or_else(|| Error::SessionNotFound(session_id.0.clone()))?;
+    let (reply, recv) = oneshot::channel();
+    handle
+        .commands
+        .send(build(reply))
+        .map_err(|_| Error::SessionNotFound(session_id.0.clone()))?;
+    recv.await
+        .map_err(|_| Error::SessionNotFound(session_id.0.clone()))?
+}
