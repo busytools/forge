@@ -77,7 +77,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             // Wait for any listener task to finish — typically forever, until SIGTERM.
             // The first task to exit (clean or otherwise) brings the daemon down.
-            let (result, _idx, _rest) = futures_util::future::select_all(handles).await;
+            let (result, _idx, rest) = futures_util::future::select_all(handles).await;
+
+            // Abort the remaining listener tasks and log any non-cancellation
+            // errors so a second bind failure during shutdown isn't lost.
+            for handle in rest {
+                handle.abort();
+                match handle.await {
+                    Ok(Ok(())) => {}
+                    Ok(Err(e)) => {
+                        tracing::warn!(error = %e, "secondary listener exited with error during shutdown");
+                    }
+                    Err(join_err) if join_err.is_cancelled() => {}
+                    Err(join_err) => {
+                        tracing::warn!(error = %join_err, "secondary listener task panicked during shutdown");
+                    }
+                }
+            }
+
             match result {
                 Ok(Ok(())) => Ok(()),
                 Ok(Err(e)) => Err(Box::new(e) as Box<dyn std::error::Error>),
