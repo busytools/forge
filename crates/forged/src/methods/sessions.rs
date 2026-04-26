@@ -36,13 +36,13 @@ const SESSIONS_LIST_MAX_LIMIT: usize = 1000;
 ///
 /// `directory` is the project directory whose sessions to list. `None`
 /// scans every project under the configured projects-dir.
-/// `limit = None` means "use [`SESSIONS_LIST_DEFAULT_LIMIT`]"; the
-/// effective limit is then clamped at [`SESSIONS_LIST_MAX_LIMIT`].
+/// `limit = None` means "use the default page size" (200); any
+/// caller-supplied `limit` is rejected if it exceeds the hard ceiling
+/// (1000).
 ///
 /// # Errors
 ///
-/// [`Error::InvalidParams`] when `limit` exceeds
-/// [`SESSIONS_LIST_MAX_LIMIT`].
+/// [`Error::InvalidParams`] when `limit` exceeds the hard ceiling.
 pub fn list(
     directory: Option<String>,
     limit: Option<usize>,
