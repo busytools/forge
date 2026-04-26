@@ -170,7 +170,7 @@ const MAX_PROMPT_BYTES: usize = 1 << 20;
 /// # Errors
 ///
 /// `SessionNotFound` if the id is unknown; `Sdk` for transport errors;
-/// `InvalidParams` if the prompt exceeds [`MAX_PROMPT_BYTES`].
+/// `InvalidParams` if the prompt exceeds the internal 1 MiB cap.
 pub async fn send_user_message(
     state: &DaemonState,
     session_id: &SessionId,
