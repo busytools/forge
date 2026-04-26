@@ -198,8 +198,7 @@ fn resolve_subagents_dir(session_id: &str, directory: Option<&str>) -> Option<Pa
 
 fn parse_session_messages<R: std::io::Read>(reader: R) -> Vec<SessionMessage> {
     let mut out = Vec::new();
-    let mut line_iter = BufReader::new(reader).lines().enumerate();
-    while let Some((idx, line_res)) = line_iter.next() {
+    for (idx, line_res) in BufReader::new(reader).lines().enumerate() {
         let line = match line_res {
             Ok(l) => l,
             Err(e) => {
