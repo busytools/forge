@@ -432,7 +432,10 @@ pub async fn end_input(state: &DaemonState, session_id: &SessionId) -> Result<()
 /// On a terminal frame (`Message::Result`), `Ok(None)` from `next_event`,
 /// or any transport error, the actor emits a `session.closed` notification
 /// and unregisters the session from the daemon (M2.6).
-#[allow(clippy::too_many_lines)] // one match arm per Command variant
+#[allow(
+    clippy::too_many_lines,
+    reason = "one match arm per Command variant by design; the actor's command dispatch table is the natural shape"
+)]
 fn spawn_session_actor(
     state: DaemonState,
     handle: &SessionHandle,
@@ -583,7 +586,10 @@ fn spawn_session_actor(
 /// silently dropped.
 #[derive(Debug, Clone, Default, serde::Deserialize)]
 #[serde(default, deny_unknown_fields)]
-#[allow(clippy::struct_excessive_bools)] // mirrors Options field-for-field
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "mirrors Options field-for-field; mirroring a foreign struct's bool flags is intentional"
+)]
 struct WireOptions {
     binary: Option<String>,
     cwd: Option<String>,
@@ -714,7 +720,10 @@ enum WireEffort {
 /// [`Error::InvalidParams`] when the `options` blob fails serde
 /// deserialisation, references an unknown enum variant (e.g. an
 /// unrecognised `permission_mode`), or carries an unknown field.
-#[allow(clippy::too_many_lines)] // one builder call per Options field by design
+#[allow(
+    clippy::too_many_lines,
+    reason = "one builder call per Options field by design; collapsing would obscure the wire-shape mapping"
+)]
 pub fn parse_spawn_params(raw: &Value) -> Result<SpawnParams, Error> {
     let opts_v = raw
         .get("options")

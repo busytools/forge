@@ -9,12 +9,18 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #![allow(unsafe_code)]
 
+mod common {
+    pub mod env_guard;
+}
+
 use std::path::PathBuf;
 use tempfile::TempDir;
 
 use forge_sdk::OptionsBuilder;
 use forged::methods::session::{SpawnResult, parse_spawn_params, spawn};
 use forged::registry::DaemonState;
+
+use crate::common::env_guard::EnvGuard;
 
 /// Mock that handles `initialize` + every subsequent `control_request`.
 /// Used by the M3.6 / M3.7 round-trip tests (interrupt, `set_model`,
@@ -245,41 +251,6 @@ fn seed_projects(n: usize) -> (TempDir, PathBuf, String) {
 
     let dir_str = project_directory.to_string_lossy().into_owned();
     (tmp, project_subdir, dir_str)
-}
-
-/// RAII guard that snapshots an env var on construction, applies the
-/// new value, and restores the original on drop. Survives test panics
-/// (Drop runs even if the test fn unwinds) — without this, a panicking
-/// test that mutated `CLAUDE_CONFIG_DIR` would leak into every
-/// subsequent test in the same process.
-struct EnvGuard {
-    key: &'static str,
-    prior: Option<std::ffi::OsString>,
-}
-
-impl EnvGuard {
-    fn new(key: &'static str, value: impl AsRef<std::ffi::OsStr>) -> Self {
-        let prior = std::env::var_os(key);
-        // SAFETY: tests in this binary are serialised around env
-        // mutation via `ENV_LOCK`; the guard restores the original
-        // value on drop even if the test panics.
-        unsafe {
-            std::env::set_var(key, value);
-        }
-        Self { key, prior }
-    }
-}
-
-impl Drop for EnvGuard {
-    fn drop(&mut self) {
-        // SAFETY: same as new() — serialised access via ENV_LOCK.
-        unsafe {
-            match &self.prior {
-                Some(v) => std::env::set_var(self.key, v),
-                None => std::env::remove_var(self.key),
-            }
-        }
-    }
 }
 
 fn point_sdk_at(tmp: &TempDir) -> EnvGuard {

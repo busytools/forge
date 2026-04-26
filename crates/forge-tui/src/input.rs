@@ -6,6 +6,13 @@
 //!   on disconnect; user can re-issue).
 //! - `Up` / `Down` / `Enter` navigate the session list.
 //! - `p` claims primary when in viewer mode.
+//
+// TODO: branch-coverage tests for each key path (Up / Down / Enter /
+// claim / answer_permission) need a mock `Client`. Adding a
+// `ClientApi` trait abstraction is heavier than the current parity-
+// first phase warrants; the e2e flows are covered indirectly by
+// `tests/app_smoke.rs`. Revisit once forge-tui's Client surface
+// stabilises.
 
 use std::sync::Arc;
 

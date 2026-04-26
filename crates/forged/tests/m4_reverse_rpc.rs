@@ -28,6 +28,7 @@ fn enqueue_then_take_by_id_returns_the_prompt_and_removes_it() {
         expires_at: SystemTime::now() + Duration::from_secs(3600),
         params: serde_json::json!({}),
         responder: tx,
+        rev_id: None,
     };
     q.enqueue(prompt);
     assert_eq!(q.snapshot().len(), 1);
@@ -50,6 +51,7 @@ fn snapshot_is_jsonable_with_iso8601_timestamps() {
         expires_at: issued + Duration::from_secs(3600),
         params: serde_json::json!({"foo": "bar"}),
         responder: tx,
+        rev_id: None,
     };
     q.enqueue(prompt);
 
@@ -77,6 +79,7 @@ async fn responder_oneshot_resolves_when_take_then_send() {
         expires_at: SystemTime::now() + Duration::from_secs(3600),
         params: serde_json::json!({}),
         responder: tx,
+        rev_id: None,
     });
     let taken = q.take("prompt_resp").unwrap();
     taken
@@ -279,6 +282,7 @@ async fn prompts_respond_resolves_a_queued_prompt() {
         expires_at: SystemTime::now() + Duration::from_secs(3600),
         params: serde_json::json!({}),
         responder: tx,
+        rev_id: None,
     });
 
     forged::methods::prompts::respond(
@@ -340,6 +344,7 @@ fn snapshot_for_wire_includes_pending_prompts() {
         expires_at: SystemTime::now() + Duration::from_secs(3600),
         params: serde_json::json!({"tool_name": "Bash"}),
         responder: tx,
+        rev_id: None,
     });
 
     let snapshot = handle.prompts.snapshot_for_wire();
@@ -365,6 +370,7 @@ fn subscribe_returns_pending_prompts_in_response() {
         expires_at: SystemTime::now() + Duration::from_secs(3600),
         params: serde_json::json!({"tool_name": "Edit"}),
         responder: tx,
+        rev_id: None,
     });
 
     // Build a fake connection (subscribe needs one).
@@ -462,7 +468,7 @@ async fn rev_value_null_resolves_to_typed_deny_via_unknown_decision() {
     // not a `_session_closed` sentinel, and not an `{decision: ...}` shape.
     // The bridge must surface it as a deny with "unknown decision".
     let value = serde_json::Value::Null;
-    let decision = decode_perm_decision_from_value(&value);
+    let decision = forged::sdk_callbacks::decode_permission_response(&value);
     assert!(!decision.is_allow(), "expected deny");
 }
 
@@ -470,7 +476,7 @@ async fn rev_value_null_resolves_to_typed_deny_via_unknown_decision() {
 async fn rev_value_decision_42_resolves_to_typed_deny() {
     // {"decision": 42} — string-required field is a number.
     let value = serde_json::json!({"decision": 42});
-    let decision = decode_perm_decision_from_value(&value);
+    let decision = forged::sdk_callbacks::decode_permission_response(&value);
     assert!(!decision.is_allow());
 }
 
@@ -478,7 +484,7 @@ async fn rev_value_decision_42_resolves_to_typed_deny() {
 async fn rev_value_empty_object_resolves_to_typed_deny() {
     // {} — no decision key at all. Wire shape default is "deny".
     let value = serde_json::json!({});
-    let decision = decode_perm_decision_from_value(&value);
+    let decision = forged::sdk_callbacks::decode_permission_response(&value);
     assert!(!decision.is_allow());
 }
 
@@ -486,51 +492,305 @@ async fn rev_value_empty_object_resolves_to_typed_deny() {
 async fn rev_value_missing_decision_key_resolves_to_typed_deny() {
     // {"reason": "..."} — only `reason`, no `decision` key.
     let value = serde_json::json!({"reason": "no decision present"});
-    let decision = decode_perm_decision_from_value(&value);
+    let decision = forged::sdk_callbacks::decode_permission_response(&value);
     assert!(!decision.is_allow());
     assert_eq!(decision.reason(), Some("no decision present"));
 }
 
-/// Test helper: replays the permission-bridge `decode_*` logic
-/// against a raw value and returns the resulting [`PermissionDecision`].
-/// Mirrors the wire-shape branch in `ForgedPermissionBridge::issue_and_decode`
-/// without going through reverse-RPC issuance.
-fn decode_perm_decision_from_value(value: &serde_json::Value) -> forge_sdk::PermissionDecision {
-    use forge_sdk::PermissionDecision;
-    if let Some(err) = value.get("_jsonrpc_error") {
-        let code = err
-            .get("code")
-            .and_then(serde_json::Value::as_i64)
-            .unwrap_or(-1);
-        let message = err
-            .get("message")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("");
-        return PermissionDecision::deny(format!("client error {code}: {message}"));
+// ============================================================================
+// Permission-bridge sentinel coverage (round 2 — fix C5)
+// ============================================================================
+
+#[test]
+fn perm_bridge_jsonrpc_error_sentinel_denies_with_code_and_message() {
+    let v = serde_json::json!({"_jsonrpc_error": {"code": -32601, "message": "method not found"}});
+    let d = forged::sdk_callbacks::decode_permission_response(&v);
+    assert!(!d.is_allow());
+    let reason = d.reason().unwrap_or("");
+    assert!(reason.contains("-32601"), "reason: {reason}");
+    assert!(reason.contains("method not found"), "reason: {reason}");
+}
+
+#[test]
+fn perm_bridge_client_disconnected_sentinel_denies() {
+    let v = serde_json::json!({"_client_disconnected": true});
+    let d = forged::sdk_callbacks::decode_permission_response(&v);
+    assert!(!d.is_allow());
+    assert_eq!(
+        d.reason(),
+        Some("answering client disconnected before responding")
+    );
+}
+
+#[test]
+fn perm_bridge_session_closed_sentinel_denies() {
+    let v = serde_json::json!({"_session_closed": true});
+    let d = forged::sdk_callbacks::decode_permission_response(&v);
+    assert!(!d.is_allow());
+    assert_eq!(d.reason(), Some("session closed before prompt answered"));
+}
+
+#[test]
+fn perm_bridge_unknown_decision_denies() {
+    let v = serde_json::json!({"decision": "shrug"});
+    let d = forged::sdk_callbacks::decode_permission_response(&v);
+    assert!(!d.is_allow());
+    let reason = d.reason().unwrap_or("");
+    assert!(reason.contains("unknown decision"), "reason: {reason}");
+    assert!(reason.contains("shrug"), "reason: {reason}");
+}
+
+// ============================================================================
+// Hook-bridge sentinel coverage (round 2 — fix C1)
+//
+// Spec: pre_tool_use + permission_request are SECURITY-CRITICAL — sentinel
+// failure modes must DENY. All other hook kinds (post_tool_use,
+// notification, stop, etc.) are OBSERVATIONAL — sentinels passthrough so a
+// hook outage doesn't deadlock the agent.
+//
+// `HookDecision::is_allow` returns true for both Allow and Passthrough;
+// Deny is the only !is_allow shape. We tell Allow / Passthrough apart by
+// `reason()` (only Deny has one) + `updated_input()` (only Allow with
+// substitution has one).
+// ============================================================================
+
+fn assert_is_deny(d: &forge_sdk::HookDecision, ctx: &str) {
+    assert!(!d.is_allow(), "{ctx}: expected deny, got allow/passthrough");
+    assert!(d.reason().is_some(), "{ctx}: deny without reason");
+}
+
+fn assert_is_passthrough(d: &forge_sdk::HookDecision, ctx: &str) {
+    assert!(d.is_allow(), "{ctx}: expected passthrough, got deny");
+    assert!(
+        d.reason().is_none(),
+        "{ctx}: passthrough/allow should have no reason"
+    );
+    assert!(
+        d.updated_input().is_none(),
+        "{ctx}: passthrough should not carry updated_input"
+    );
+}
+
+#[test]
+fn hook_bridge_pre_tool_use_jsonrpc_error_denies() {
+    let v = serde_json::json!({"_jsonrpc_error": {"code": -32601, "message": "denied"}});
+    let d = forged::sdk_callbacks::decode_hook_response("pre_tool_use", &v);
+    assert_is_deny(&d, "pre_tool_use jsonrpc_error");
+}
+
+#[test]
+fn hook_bridge_pre_tool_use_client_disconnected_denies() {
+    let v = serde_json::json!({"_client_disconnected": true});
+    let d = forged::sdk_callbacks::decode_hook_response("pre_tool_use", &v);
+    assert_is_deny(&d, "pre_tool_use client_disconnected");
+}
+
+#[test]
+fn hook_bridge_pre_tool_use_session_closed_denies() {
+    let v = serde_json::json!({"_session_closed": true});
+    let d = forged::sdk_callbacks::decode_hook_response("pre_tool_use", &v);
+    assert_is_deny(&d, "pre_tool_use session_closed");
+}
+
+#[test]
+fn hook_bridge_pre_tool_use_encode_error_denies() {
+    let v = serde_json::json!({"_encode_error": {"message": "non-serializable input"}});
+    let d = forged::sdk_callbacks::decode_hook_response("pre_tool_use", &v);
+    assert_is_deny(&d, "pre_tool_use encode_error");
+}
+
+#[test]
+fn hook_bridge_pre_tool_use_unknown_decision_passthroughs() {
+    // unknown decision in the wire response (NOT a sentinel) — the
+    // decoded `decision` falls through to passthrough per
+    // `decode_hook_decision`. This locks the contract that "unknown
+    // decision in wire response" is observed but doesn't deny — the
+    // deny-on-fail behaviour kicks in only on transport/encode/etc.
+    // failures.
+    let v = serde_json::json!({"decision": "shrug"});
+    let d = forged::sdk_callbacks::decode_hook_response("pre_tool_use", &v);
+    assert_is_passthrough(&d, "pre_tool_use unknown decision");
+}
+
+#[test]
+fn hook_bridge_permission_request_jsonrpc_error_denies() {
+    let v = serde_json::json!({"_jsonrpc_error": {"code": -32601, "message": "denied"}});
+    let d = forged::sdk_callbacks::decode_hook_response("permission_request", &v);
+    assert_is_deny(&d, "permission_request jsonrpc_error");
+}
+
+#[test]
+fn hook_bridge_permission_request_client_disconnected_denies() {
+    let v = serde_json::json!({"_client_disconnected": true});
+    let d = forged::sdk_callbacks::decode_hook_response("permission_request", &v);
+    assert_is_deny(&d, "permission_request client_disconnected");
+}
+
+#[test]
+fn hook_bridge_permission_request_session_closed_denies() {
+    let v = serde_json::json!({"_session_closed": true});
+    let d = forged::sdk_callbacks::decode_hook_response("permission_request", &v);
+    assert_is_deny(&d, "permission_request session_closed");
+}
+
+#[test]
+fn hook_bridge_post_tool_use_jsonrpc_error_passthroughs() {
+    let v = serde_json::json!({"_jsonrpc_error": {"code": -32601, "message": "x"}});
+    let d = forged::sdk_callbacks::decode_hook_response("post_tool_use", &v);
+    assert_is_passthrough(&d, "post_tool_use jsonrpc_error");
+}
+
+#[test]
+fn hook_bridge_post_tool_use_client_disconnected_passthroughs() {
+    let v = serde_json::json!({"_client_disconnected": true});
+    let d = forged::sdk_callbacks::decode_hook_response("post_tool_use", &v);
+    assert_is_passthrough(&d, "post_tool_use client_disconnected");
+}
+
+#[test]
+fn hook_bridge_post_tool_use_session_closed_passthroughs() {
+    let v = serde_json::json!({"_session_closed": true});
+    let d = forged::sdk_callbacks::decode_hook_response("post_tool_use", &v);
+    assert_is_passthrough(&d, "post_tool_use session_closed");
+}
+
+#[test]
+fn hook_bridge_notification_session_closed_passthroughs() {
+    // Sanity: another observational kind should also passthrough.
+    let v = serde_json::json!({"_session_closed": true});
+    let d = forged::sdk_callbacks::decode_hook_response("notification", &v);
+    assert_is_passthrough(&d, "notification session_closed");
+}
+
+#[test]
+fn hook_bridge_post_tool_use_transport_error_passthroughs() {
+    let v = serde_json::json!({"_transport_error": {"message": "timed out"}});
+    let d = forged::sdk_callbacks::decode_hook_response("post_tool_use", &v);
+    assert_is_passthrough(&d, "post_tool_use transport_error");
+}
+
+#[test]
+fn hook_bridge_pre_tool_use_transport_error_denies() {
+    let v = serde_json::json!({"_transport_error": {"message": "timed out"}});
+    let d = forged::sdk_callbacks::decode_hook_response("pre_tool_use", &v);
+    assert_is_deny(&d, "pre_tool_use transport_error");
+}
+
+// ============================================================================
+// drain_prompts_on_session_exit (round 2 — fix C2)
+//
+// Spec: when the session actor exits, every parked prompt AND every
+// in-flight outstanding_reverse entry for that session must be
+// drained. Each gets a synthetic `_session_closed: true` answer so
+// the SDK callback unblocks; subscribers see one `prompts.expired`
+// notification per drained entry.
+// ============================================================================
+
+#[allow(
+    clippy::similar_names,
+    reason = "test fixtures use a/b/x/y suffixes for parallel oneshot pairs; renaming to dissimilar names hurts readability"
+)]
+#[tokio::test]
+async fn drain_prompts_on_session_exit_drains_parked_and_in_flight() {
+    use forged::registry::OutstandingEntry;
+
+    let state = Arc::new(forged::registry::DaemonState::new());
+    let sid = forged::session_state::SessionId("sess_drain_round2".into());
+    let (handle, _rx) = state.register_session(sid.clone());
+
+    // Subscribe a fake connection so we can observe the
+    // `prompts.expired` broadcasts.
+    let (sub_tx, mut sub_rx) = tokio::sync::mpsc::unbounded_channel();
+    let sub_conn = forged::connection::Connection::new(
+        forged::connection::ConnectionId("conn_drain_obs".into()),
+        sub_tx,
+    );
+    state.register_connection(sub_conn.clone());
+    handle.subscribers.lock().push(sub_conn.id.clone());
+
+    // Two parked prompts directly via handle.prompts.enqueue.
+    let (q_tx_a, q_rx_a) = tokio::sync::oneshot::channel();
+    handle.prompts.enqueue(forged::prompt_queue::PendingPrompt {
+        prompt_id: "prompt_park_a".into(),
+        kind: forged::prompt_queue::PromptKind::Permission,
+        issued_at: SystemTime::now(),
+        expires_at: SystemTime::now() + Duration::from_secs(3600),
+        params: serde_json::json!({}),
+        responder: q_tx_a,
+        rev_id: None,
+    });
+    let (q_tx_b, q_rx_b) = tokio::sync::oneshot::channel();
+    handle.prompts.enqueue(forged::prompt_queue::PendingPrompt {
+        prompt_id: "prompt_park_b".into(),
+        kind: forged::prompt_queue::PromptKind::Hook {
+            kind: "post_tool_use".into(),
+        },
+        issued_at: SystemTime::now(),
+        expires_at: SystemTime::now() + Duration::from_secs(3600),
+        params: serde_json::json!({}),
+        responder: q_tx_b,
+        rev_id: None,
+    });
+
+    // Two in-flight outstanding-reverse entries.
+    let (rev_tx_x, rev_rx_x) = tokio::sync::oneshot::channel();
+    let (rev_tx_y, rev_rx_y) = tokio::sync::oneshot::channel();
+    state.outstanding_reverse.lock().insert(
+        "rev_inflight_x".into(),
+        OutstandingEntry {
+            session_id: sid.clone(),
+            conn_id: None,
+            responder: rev_tx_x,
+        },
+    );
+    state.outstanding_reverse.lock().insert(
+        "rev_inflight_y".into(),
+        OutstandingEntry {
+            session_id: sid.clone(),
+            conn_id: None,
+            responder: rev_tx_y,
+        },
+    );
+
+    // Drain.
+    forged::reverse_rpc::drain_prompts_on_session_exit(&state, &sid);
+
+    // Each oneshot should have received `_session_closed: true`.
+    for (label, rx) in [
+        ("park_a", q_rx_a),
+        ("park_b", q_rx_b),
+        ("inflight_x", rev_rx_x),
+        ("inflight_y", rev_rx_y),
+    ] {
+        let v = tokio::time::timeout(Duration::from_millis(100), rx)
+            .await
+            .unwrap_or_else(|_| panic!("{label}: drain did not resolve oneshot"))
+            .unwrap_or_else(|_| panic!("{label}: oneshot dropped without value"));
+        assert_eq!(
+            v.get("_session_closed"),
+            Some(&serde_json::json!(true)),
+            "{label}: expected _session_closed sentinel, got {v}"
+        );
     }
-    if value.get("_client_disconnected").is_some() {
-        return PermissionDecision::deny(String::from(
-            "answering client disconnected before responding",
-        ));
+
+    // Subscriber should see 4 prompts.expired notifications (2 parked +
+    // 2 in-flight). Drain everything and count.
+    let mut expired_count = 0;
+    while let Ok(frame) = sub_rx.try_recv() {
+        if let forged::connection::Outbound::Notification(n) = frame {
+            if n.method == "prompts.expired" {
+                expired_count += 1;
+            }
+        }
     }
-    if value.get("_session_closed").is_some() {
-        return PermissionDecision::deny(String::from("session closed before prompt answered"));
-    }
-    let decision_str = value
-        .get("decision")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("deny");
-    let updated_input = value.get("updated_input").cloned();
-    let reason = value
-        .get("reason")
-        .and_then(serde_json::Value::as_str)
-        .map(String::from);
-    match (decision_str, updated_input) {
-        ("allow", None) => PermissionDecision::allow(),
-        ("allow", Some(updates)) => PermissionDecision::allow_with_input(updates),
-        ("deny", _) => PermissionDecision::deny(reason.unwrap_or_default()),
-        (other, _) => PermissionDecision::deny(format!("unknown decision: {other}")),
-    }
+    assert_eq!(
+        expired_count, 4,
+        "expected 4 prompts.expired notifications, got {expired_count}"
+    );
+
+    // Both maps fully drained.
+    assert_eq!(handle.prompts.snapshot().len(), 0);
+    assert_eq!(state.outstanding_reverse.lock().len(), 0);
 }
 
 // ============================================================================
@@ -665,6 +925,89 @@ async fn ws_response_with_rev_id_resolves_outstanding_reverse_rpc() {
     assert_eq!(value["decision"], serde_json::json!("allow"));
 }
 
+/// End-to-end (round 2 — fix C3): WS frame
+/// `{id: "rev_…", error: {…}}` flows `read_loop` → `resolve_error` →
+/// `outstanding_reverse` → bridge → typed deny via the `_jsonrpc_error`
+/// sentinel. The piece-wise tests above lock the `resolve_error` /
+/// `decode_permission_response` paths separately; this one wires them
+/// together through the actual server.
+#[tokio::test]
+async fn ws_response_with_rev_id_error_resolves_with_typed_jsonrpc_error_sentinel() {
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::connect_async;
+    use tokio_tungstenite::tungstenite::Message as WsMsg;
+
+    let state = forged::registry::DaemonState::new();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(forged::server::run(listener, state.clone()));
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let url = format!("ws://{addr}/");
+    let (mut ws, _) = connect_async(&url).await.unwrap();
+
+    // Drain client.identify.
+    let WsMsg::Text(t) = ws.next().await.unwrap().unwrap() else {
+        panic!("expected text frame")
+    };
+    assert!(t.contains("client.identify"));
+
+    let conn_id = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if let Some(id) = state.connections.lock().keys().next().cloned() {
+                break id;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("connection_id discovery timed out");
+
+    let sid = forged::session_state::SessionId("sess_e2e_err".into());
+    let (handle, _rx) = state.register_session(sid.clone());
+    *handle.primary.lock() = Some(conn_id.clone());
+
+    let state_arc = Arc::new(state.clone());
+    let sid_for = sid.clone();
+    let issue = tokio::spawn(async move {
+        forged::reverse_rpc::issue_to_primary(
+            &state_arc,
+            &sid_for,
+            "permission.request",
+            serde_json::json!({"hello": "world"}),
+            forged::prompt_queue::PromptKind::Permission,
+            Duration::from_secs(5),
+        )
+        .await
+    });
+
+    // Receive the reverse-RPC frame the daemon issued.
+    let WsMsg::Text(t) = ws.next().await.unwrap().unwrap() else {
+        panic!("expected text frame")
+    };
+    let v: serde_json::Value = serde_json::from_str(&t).unwrap();
+    let rev_id = v["id"].as_str().unwrap().to_string();
+    assert!(rev_id.starts_with("rev_"));
+
+    // Send back a JSON-RPC error response.
+    let resp = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": rev_id,
+        "error": {"code": -32601, "message": "denied"},
+    });
+    ws.send(WsMsg::Text(resp.to_string())).await.unwrap();
+
+    // The issuing future should resolve with the typed `_jsonrpc_error`
+    // sentinel (raw value, not yet decoded into PermissionDecision —
+    // decode_permission_response would do that step).
+    let value = issue.await.unwrap().unwrap();
+    let err = value
+        .get("_jsonrpc_error")
+        .expect("missing _jsonrpc_error sentinel");
+    assert_eq!(err["code"], serde_json::json!(-32601));
+    assert_eq!(err["message"], serde_json::json!("denied"));
+}
+
 #[tokio::test]
 async fn ws_prompts_respond_resolves_queued_prompt_end_to_end() {
     use futures_util::{SinkExt, StreamExt};
@@ -696,6 +1039,7 @@ async fn ws_prompts_respond_resolves_queued_prompt_end_to_end() {
         expires_at: SystemTime::now() + Duration::from_secs(3600),
         params: serde_json::json!({}),
         responder: tx,
+        rev_id: None,
     });
 
     // Send `prompts.respond`.

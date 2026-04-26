@@ -149,15 +149,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tokio::spawn(async move {
             let result: Result<serde_json::Value, _> =
                 client.call("sessions.list", serde_json::json!({})).await;
-            let items = match result {
-                Ok(v) => v
-                    .get("sessions")
-                    .and_then(|s| s.as_array())
-                    .cloned()
-                    .unwrap_or_default(),
-                Err(_) => Vec::new(),
-            };
-            let _ = tx.send(AppEvent::SessionListLoaded(items));
+            match result {
+                Ok(v) => {
+                    let items = v
+                        .get("sessions")
+                        .and_then(|s| s.as_array())
+                        .cloned()
+                        .unwrap_or_default();
+                    let _ = tx.send(AppEvent::SessionListLoaded(items));
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "sessions.list failed; rendering empty list");
+                    let _ = tx.send(AppEvent::SessionListLoadFailed(e.to_string()));
+                }
+            }
         });
     }
 
