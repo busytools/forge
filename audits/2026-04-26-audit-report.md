@@ -296,34 +296,56 @@ If the scope changes (sharing forged with a collaborator, public-interface deplo
 ### Result-shape inconsistency across methods (multiple files)
 - **Found by:** api-reviewer (high confidence). `session.spawn` returns `{ session_id }` directly; `sessions.list` wraps `{ sessions: [...] }`; `sessions.list_subagents` wraps `{ subagent_ids: [...] }`; `sessions.subagent_messages` wraps `{ messages: [...] }`; `sessions.messages` returns typed `MessagesResult`; `sessions.project_key` wraps `{ project_key: "..." }`; `sessions.info` returns bare `Option<SDKSessionInfo>` (null when missing); `sessions.fork` returns `{ session_id }`; `session.peers` wraps `{ peers: [...] }`. Pick one convention — typed result struct with named fields for every method.
 
-## Deferred follow-ups (applied in second pass)
+## Closeout — second cleanup pass
 
-These findings are real but were not addressed in the 2026-04-26
-cleanup branch — either the fix is design-heavy enough to warrant a
-focused effort, or the savings don't justify the churn. Tracked here
-so a future cleanup can pick them up.
+All three originally-deferred items now landed:
 
-- **`methods/session.rs` god file split** (architecture-reviewer,
-  important) — file dropped from 1053 → ~930 LoC after the
-  `dispatch_command` and `become_primary` refactors removed the
-  inline boilerplate. Still on the wrong side of the 500-LoC
-  guideline. Split into `methods/session/{actor,wire_options}.rs`
-  is mechanical but multi-file; deferred.
-- **Bounded mpsc channels with slow-subscriber eviction**
-  (api-reviewer, important reliability) — the `outstanding_reverse`
-  cap landed (1024 entries, returns Overloaded). The per-connection
-  outbound and per-session command channels are still
-  `mpsc::unbounded_channel` though — bounding them needs a coherent
-  eviction policy (drop-oldest? evict the slow subscriber? close the
-  connection?) plus role-aware behaviour for the primary vs viewer
-  case. Deferred until the policy is designed.
-- **Dispatch table `typed_call` helper** (code-simplifier,
-  important) — the `match parse_params { Ok(p) => ..., Err(e) =>
-  Err(e) }` shape across ~25 arms in `server.rs::dispatch` is
-  verbose but readable; the typed_call helper would change every
-  arm and save ~25 LoC of "Err(e) => Err(e)" lines. The savings
-  don't clearly justify the churn relative to other items in this
-  audit. Deferred.
+- **`methods/session.rs` god-file split** (architecture-reviewer,
+  important) → split into `session.rs` (404 LoC handlers) +
+  `session/actor.rs` (222 LoC) + `session/wire_options.rs` (340
+  LoC). No behaviour change.
+- **Dispatch `typed_call` helper** (code-simplifier, important) →
+  helper extracted; 25 dispatch arms migrated. Result-shape
+  unification rounded out — `sessions.{list,list_subagents,
+  subagent_messages,project_key}` now return typed wrapper structs
+  (`ListResult`, `ListSubagentsResult`, etc.) instead of inline
+  `serde_json::json!({"...": v})` wraps in the dispatch arms. Wire
+  shape unchanged.
+- **Bounded mpsc with slow-subscriber drop policy** (api-reviewer,
+  important reliability) → per-conn outbound bounded at 4096 frames,
+  per-session command channel bounded at 256 (constants
+  `connection::OUTBOUND_CHANNEL_CAPACITY`,
+  `session_state::COMMAND_CHANNEL_CAPACITY`). Senders use
+  `try_send`. `broadcast::fanout` warn-logs and drops the frame for
+  a slow subscriber rather than evicting them — they can refetch via
+  `sessions.messages` if they care. `dispatch_command` maps Full →
+  `Error::Overloaded`, Closed → `SessionNotFound`.
+
+## Documented hazard, not fixed
+
+- **Actor cancels `handle_control` mid-callback** (bug-hunter,
+  medium confidence) — when a `Command` arrives while
+  `handle_control` is awaiting a slow callback (reverse-RPC for
+  hooks / `can_use_tool` / MCP message), `tokio::select!` drops the
+  next_event future and the in-flight callback await is cancelled.
+  The audit's `Box::pin` proposal doesn't compile (borrow-checker
+  rejects co-existent `&mut next_fut` + cmd-handler `&mut client`).
+  The real fix is structural: forge-sdk needs to expose a clonable
+  writer handle and a non-dispatching `next_event` variant so the
+  forged actor can `tokio::spawn(handle_control_with_writer(...))`
+  and let the dispatch run to completion regardless of select!
+  cancellation. That's a meaningful SDK API expansion (additive,
+  parity-safe) deferred as a focused follow-up. Rationale:
+  - Race window is narrow — the cmd channel must arrive AND
+    handle_control must be mid-callback at the same instant.
+  - No production deadlock has been observed across M0–M7 milestones
+    on the user's three-Mac setup.
+  - The structural fix would touch forge-sdk's public Transport
+    trait + Client API and benefits from focused design rather than
+    being squeezed into a cleanup branch.
+  See `KNOWN HAZARD` block in
+  `crates/forged/src/methods/session/actor.rs` and
+  `project_actor_cancellation_watch.md` in auto-memory.
 
 ## Removed under personal-use threat model
 
