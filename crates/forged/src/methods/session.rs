@@ -895,7 +895,11 @@ pub async fn set_model(
     session_id: &SessionId,
     model: Option<String>,
 ) -> Result<(), Error> {
-    dispatch_command(state, session_id, |reply| Command::SetModel { model, reply }).await
+    dispatch_command(state, session_id, |reply| Command::SetModel {
+        model,
+        reply,
+    })
+    .await
 }
 
 /// `session.rewind_files` — ask the CLI to revert file edits since the
@@ -926,5 +930,9 @@ pub async fn stop_task(
     session_id: &SessionId,
     task_id: String,
 ) -> Result<(), Error> {
-    dispatch_command(state, session_id, |reply| Command::StopTask { task_id, reply }).await
+    dispatch_command(state, session_id, |reply| Command::StopTask {
+        task_id,
+        reply,
+    })
+    .await
 }
