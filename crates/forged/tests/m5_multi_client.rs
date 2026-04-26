@@ -325,8 +325,8 @@ async fn claim_primary_demotes_existing_and_promotes_caller() {
     let sid = SessionId("sess_claim".into());
     let (handle, _rx) = state.register_session(sid.clone());
 
-    let (a_tx, mut a_rx) = mpsc::unbounded_channel();
-    let (b_tx, mut b_rx) = mpsc::unbounded_channel();
+    let (a_tx, mut a_rx) = mpsc::channel(forged::connection::OUTBOUND_CHANNEL_CAPACITY);
+    let (b_tx, mut b_rx) = mpsc::channel(forged::connection::OUTBOUND_CHANNEL_CAPACITY);
     let conn_a = Connection::with_metadata(
         ConnectionId("conn_A".into()),
         Some("A".into()),
@@ -423,7 +423,7 @@ async fn claim_primary_self_claim_is_idempotent_but_still_notifies() {
     let sid = SessionId("sess_self_claim".into());
     let (handle, _rx) = state.register_session(sid.clone());
 
-    let (a_tx, mut a_rx) = mpsc::unbounded_channel();
+    let (a_tx, mut a_rx) = mpsc::channel(forged::connection::OUTBOUND_CHANNEL_CAPACITY);
     let conn_a = Connection::with_metadata(
         ConnectionId("conn_A".into()),
         Some("A".into()),
@@ -496,8 +496,8 @@ fn peers_returns_role_and_name_per_subscriber() {
     let sid = SessionId("sess_peers".into());
     let (handle, _rx) = state.register_session(sid.clone());
 
-    let (a_tx, _a_rx) = mpsc::unbounded_channel();
-    let (b_tx, _b_rx) = mpsc::unbounded_channel();
+    let (a_tx, _a_rx) = mpsc::channel(forged::connection::OUTBOUND_CHANNEL_CAPACITY);
+    let (b_tx, _b_rx) = mpsc::channel(forged::connection::OUTBOUND_CHANNEL_CAPACITY);
     let conn_a = Connection::with_metadata(
         ConnectionId("conn_A".into()),
         Some("studio".into()),

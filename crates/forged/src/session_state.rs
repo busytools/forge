@@ -17,6 +17,14 @@ use tokio::sync::{mpsc, oneshot};
 use crate::Error;
 use crate::connection::ConnectionId;
 
+/// Per-session command channel capacity. Bounded so a misbehaving
+/// caller can't queue commands faster than the actor processes them
+/// (which would otherwise leak unboundedly under
+/// `HOOK_TIMEOUT_SECS`). 256 is well over realistic burst depth for
+/// normal dispatch — the daemon's typical command rate is
+/// human-paced.
+pub(crate) const COMMAND_CHANNEL_CAPACITY: usize = 256;
+
 /// Session id minted by forged on `session.spawn`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct SessionId(pub String);
@@ -168,7 +176,7 @@ pub struct SessionState {
     /// Daemon-minted session id (`sess_<uuid>`).
     pub id: SessionId,
     /// Command channel into the session's actor task.
-    pub commands: mpsc::UnboundedSender<Command>,
+    pub commands: mpsc::Sender<Command>,
     /// Connection IDs subscribed to this session's events. Broadcast target.
     pub subscribers: Mutex<Vec<ConnectionId>>,
     /// Primary client (single-client model in M2; multi-client lands in M5).
@@ -182,7 +190,7 @@ pub struct SessionState {
 impl SessionState {
     /// Construct fresh session state given its actor's command sender.
     #[must_use]
-    pub fn new(id: SessionId, commands: mpsc::UnboundedSender<Command>) -> Self {
+    pub fn new(id: SessionId, commands: mpsc::Sender<Command>) -> Self {
         Self {
             id,
             commands,
@@ -222,10 +230,17 @@ pub(crate) async fn dispatch_command<R>(
         .get_session(session_id)
         .ok_or_else(|| Error::SessionNotFound(session_id.0.clone()))?;
     let (reply, recv) = oneshot::channel();
-    handle
-        .commands
-        .send(build(reply))
-        .map_err(|_| Error::SessionNotFound(session_id.0.clone()))?;
+    // try_send so a flooded actor can't pile up commands. Full =
+    // backpressure (queue at COMMAND_CHANNEL_CAPACITY); Closed = actor
+    // gone. Both surface to the caller as Overloaded /
+    // SessionNotFound respectively so client retry logic can branch.
+    match handle.commands.try_send(build(reply)) {
+        Ok(()) => {}
+        Err(mpsc::error::TrySendError::Full(_)) => return Err(Error::Overloaded),
+        Err(mpsc::error::TrySendError::Closed(_)) => {
+            return Err(Error::SessionNotFound(session_id.0.clone()));
+        }
+    }
     recv.await
         .map_err(|_| Error::SessionNotFound(session_id.0.clone()))?
 }

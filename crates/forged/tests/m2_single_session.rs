@@ -186,7 +186,7 @@ async fn unsubscribe_removes_connection_from_subscribers() {
     let opts = OptionsBuilder::new().binary(MOCK_CLAUDE).build();
     let SpawnResult { session_id, .. } = spawn(&state, opts).await.unwrap();
 
-    let (tx, _rx) = mpsc::unbounded_channel();
+    let (tx, _rx) = mpsc::channel(forged::connection::OUTBOUND_CHANNEL_CAPACITY);
     let conn = Connection::new(ConnectionId("conn_test_1".into()), tx);
 
     forged::methods::session::subscribe(&state, &conn, &session_id, None).unwrap();
@@ -207,7 +207,7 @@ async fn unsubscribe_returns_session_not_found_for_unknown_id() {
     use tokio::sync::mpsc;
 
     let state = DaemonState::new();
-    let (tx, _rx) = mpsc::unbounded_channel();
+    let (tx, _rx) = mpsc::channel(forged::connection::OUTBOUND_CHANNEL_CAPACITY);
     let conn = Connection::new(ConnectionId("conn_test_2".into()), tx);
     let unknown = SessionId("sess_does_not_exist".into());
     let err = forged::methods::session::unsubscribe(&state, &conn, &unknown).unwrap_err();
@@ -491,7 +491,7 @@ async fn session_closed_emits_actor_idle_reason_when_all_senders_dropped() {
     let opts = OptionsBuilder::new().binary(MOCK_CLAUDE_CONTROL).build();
     let SpawnResult { session_id, .. } = spawn(&state, opts).await.unwrap();
 
-    let (sub_tx, mut sub_rx) = mpsc::unbounded_channel();
+    let (sub_tx, mut sub_rx) = mpsc::channel(forged::connection::OUTBOUND_CHANNEL_CAPACITY);
     let sub_conn = Connection::new(ConnectionId("conn_idle_obs".into()), sub_tx);
     state.register_connection(sub_conn.clone());
     {

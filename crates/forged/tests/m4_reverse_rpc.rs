@@ -122,7 +122,8 @@ async fn issue_to_primary_sends_request_and_resolves_on_response() {
     let state = Arc::new(forged::registry::DaemonState::new());
 
     // Register a fake connection with a captured outbound channel.
-    let (out_tx, mut out_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (out_tx, mut out_rx) =
+        tokio::sync::mpsc::channel(forged::connection::OUTBOUND_CHANNEL_CAPACITY);
     let conn = forged::connection::Connection::new(
         forged::connection::ConnectionId("conn_test".into()),
         out_tx,
@@ -231,7 +232,8 @@ async fn timeout_emits_prompts_expired_to_subscribers() {
     let (handle, _rx) = state.register_session(sid.clone());
 
     // Subscribe a fake connection so we can observe `prompts.expired`.
-    let (sub_tx, mut sub_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (sub_tx, mut sub_rx) =
+        tokio::sync::mpsc::channel(forged::connection::OUTBOUND_CHANNEL_CAPACITY);
     let sub_conn = forged::connection::Connection::new(
         forged::connection::ConnectionId("conn_sub".into()),
         sub_tx,
@@ -374,7 +376,8 @@ fn subscribe_returns_pending_prompts_in_response() {
     });
 
     // Build a fake connection (subscribe needs one).
-    let (out_tx, _out_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (out_tx, _out_rx) =
+        tokio::sync::mpsc::channel(forged::connection::OUTBOUND_CHANNEL_CAPACITY);
     let conn = forged::connection::Connection::new(
         forged::connection::ConnectionId("conn_sub".into()),
         out_tx,
@@ -826,7 +829,8 @@ async fn drain_prompts_on_session_exit_drains_parked_and_in_flight() {
 
     // Subscribe a fake connection so we can observe the
     // `prompts.expired` broadcasts.
-    let (sub_tx, mut sub_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (sub_tx, mut sub_rx) =
+        tokio::sync::mpsc::channel(forged::connection::OUTBOUND_CHANNEL_CAPACITY);
     let sub_conn = forged::connection::Connection::new(
         forged::connection::ConnectionId("conn_drain_obs".into()),
         sub_tx,
@@ -969,7 +973,8 @@ async fn outstanding_reverse_unblocks_when_answering_conn_disconnects() {
     let sid = forged::session_state::SessionId("sess_disc".into());
     let _kept = state.register_session(sid.clone());
 
-    let (out_tx, _out_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (out_tx, _out_rx) =
+        tokio::sync::mpsc::channel(forged::connection::OUTBOUND_CHANNEL_CAPACITY);
     let conn = forged::connection::Connection::new(
         forged::connection::ConnectionId("conn_disc".into()),
         out_tx,
