@@ -337,8 +337,10 @@ async fn dispatch(req: &Request, conn: &Connection, state: &DaemonState) -> Resp
         }
         "session.subscribe" => {
             match parse_params::<methods::session::SubscribeParams>(req.params.as_ref()) {
-                Ok(p) => methods::session::subscribe(state, conn, &p.session_id, p.since.as_deref())
-                    .and_then(|r| serde_json::to_value(r).map_err(Error::Json)),
+                Ok(p) => {
+                    methods::session::subscribe(state, conn, &p.session_id, p.since.as_deref())
+                        .and_then(|r| serde_json::to_value(r).map_err(Error::Json))
+                }
                 Err(e) => Err(e),
             }
         }
