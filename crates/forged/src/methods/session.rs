@@ -153,7 +153,17 @@ pub fn message_event_id(msg: &forge_sdk::Message) -> &str {
         | Message::StreamEvent { uuid, .. } => uuid.as_str(),
         // `System`, `Error`, `Unknown`, plus any future `non_exhaustive`
         // variants — fall through to the empty-string sentinel.
-        _ => "",
+        _ => {
+            // Round 4 — fix m1. Trace the variant we couldn't extract
+            // a UUID from so future SDK variant additions are
+            // discoverable in operator traces rather than silently
+            // emitting empty `event_id` strings.
+            tracing::trace!(
+                ?msg,
+                "message_event_id: unrecognised variant; emitting empty"
+            );
+            ""
+        }
     }
 }
 
@@ -271,7 +281,7 @@ pub fn subscribe(
     // Notify the new primary of their role. Always — even if conn was
     // already primary (re-subscribe), so clients can rely on receiving
     // a role frame after every successful subscribe.
-    let _ = conn
+    if conn
         .outbound
         .send(crate::connection::Outbound::Notification(
             crate::jsonrpc::Notification::new(
@@ -283,7 +293,20 @@ pub fn subscribe(
                     "reason": reason,
                 }),
             ),
-        ));
+        ))
+        .is_err()
+    {
+        // Round 4 — fix M3. Auto-takeover path: caller's outbound
+        // writer is gone. Subscribe still completes (primary slot is
+        // already updated, broadcast follows below) but the caller
+        // won't get their role_assigned — log so the drop is visible
+        // in operator traces.
+        tracing::warn!(
+            caller_id = %conn.id.0,
+            session_id = %session_id.0,
+            "subscribe: caller's role_assigned notification dropped (writer task gone)"
+        );
+    }
 
     // If we displaced a different primary, notify them of the demotion.
     if displaced_other {
@@ -296,17 +319,30 @@ pub fn subscribe(
                 .get(old)
                 .map(|c| c.outbound.clone());
             if let Some(out) = outbound {
-                let _ = out.send(crate::connection::Outbound::Notification(
-                    crate::jsonrpc::Notification::new(
-                        "session.role_assigned",
-                        serde_json::json!({
-                            "session_id": session_id.0,
-                            "role": "viewer",
-                            "primary": conn.id.0,
-                            "reason": "demoted",
-                        }),
-                    ),
-                ));
+                if out
+                    .send(crate::connection::Outbound::Notification(
+                        crate::jsonrpc::Notification::new(
+                            "session.role_assigned",
+                            serde_json::json!({
+                                "session_id": session_id.0,
+                                "role": "viewer",
+                                "primary": conn.id.0,
+                                "reason": "demoted",
+                            }),
+                        ),
+                    ))
+                    .is_err()
+                {
+                    // Round 4 — fix M3. Auto-takeover path: displaced
+                    // primary's writer is gone between snapshot + send.
+                    // Subscribe still completes; log so the silent
+                    // drop is attributable.
+                    tracing::warn!(
+                        displaced_id = %old.0,
+                        session_id = %session_id.0,
+                        "subscribe: displaced primary's role_assigned dropped (writer task gone)"
+                    );
+                }
             }
         }
     }

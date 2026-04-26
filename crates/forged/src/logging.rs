@@ -150,7 +150,13 @@ fn sweep_old(dir: &Path, retention_days: u32) {
             continue;
         }
         let Ok(mtime) = entry.metadata().and_then(|m| m.modified()) else {
-            tracing::debug!(
+            // Round 4 — fix m3. Promoted from debug to warn: a stat
+            // failure on the daemon's own log directory is an
+            // operator-actionable signal (permission flap, FS
+            // unmount, etc.). The sweep silently skipping the entry
+            // means the file isn't getting cleaned up and the
+            // problem could grow unbounded — surface it.
+            tracing::warn!(
                 path = %entry.path().display(),
                 "logging::sweep_old: skipping entry without modified time"
             );

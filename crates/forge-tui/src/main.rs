@@ -105,7 +105,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             move |rev_id: serde_json::Value, params: serde_json::Value| {
                 let tx = tx.clone();
                 async move {
-                    let _ = tx.send(AppEvent::PermissionRequest { rev_id, params });
+                    // Round 4 — fix M6. App event channel closes only
+                    // on shutdown (the receiver is owned by `app::run`);
+                    // a send-fail here means the user already quit but
+                    // a permission request slipped through the read
+                    // loop. Without the log, the daemon's reverse-RPC
+                    // would sit until its 1-hour timeout — make the
+                    // drop visible so the long wait is attributable.
+                    if tx
+                        .send(AppEvent::PermissionRequest { rev_id, params })
+                        .is_err()
+                    {
+                        tracing::warn!(
+                            "permission.request received but app event channel closed; \
+                             daemon will time out (~1h) since send_response is not invoked"
+                        );
+                    }
                 }
             },
         );

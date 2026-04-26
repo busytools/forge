@@ -492,11 +492,16 @@ async fn rev_value_empty_object_resolves_to_typed_deny() {
 
 #[tokio::test]
 async fn rev_value_missing_decision_key_resolves_to_typed_deny() {
-    // {"reason": "..."} — only `reason`, no `decision` key.
+    // {"reason": "..."} — only `reason`, no `decision` key. Round 4 —
+    // fix M4 made the missing-decision branch warn-and-return-deny
+    // with a fixed reason ("missing decision field") rather than
+    // silently falling through to "deny" with the user-supplied reason.
+    // The fix prioritises operator visibility over reason-passthrough:
+    // a malformed payload should look distinct from a deliberate deny.
     let value = serde_json::json!({"reason": "no decision present"});
     let decision = forged::sdk_callbacks::decode_permission_response(&value);
     assert!(!decision.is_allow());
-    assert_eq!(decision.reason(), Some("no decision present"));
+    assert_eq!(decision.reason(), Some("missing decision field"));
 }
 
 // ============================================================================
