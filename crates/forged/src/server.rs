@@ -195,10 +195,25 @@ async fn read_loop(
         let v: Value = match serde_json::from_str(&text) {
             Ok(v) => v,
             Err(e) => {
-                let _ = conn.outbound.send(Outbound::Response(Response::error(
-                    Value::Null,
-                    Error::ParseError(e.to_string()).to_jsonrpc(),
-                )));
+                // Round 5 — symmetry trace. The writer task drains
+                // `conn.outbound`; reaching the err branch means it
+                // already exited (panic, transport closed). Benign —
+                // the read loop will exit shortly when the socket
+                // signals closed — but tracing makes late drops
+                // attributable during incident response.
+                if conn
+                    .outbound
+                    .send(Outbound::Response(Response::error(
+                        Value::Null,
+                        Error::ParseError(e.to_string()).to_jsonrpc(),
+                    )))
+                    .is_err()
+                {
+                    tracing::trace!(
+                        conn_id = %conn.id.0,
+                        "server: parse-error response send dropped (writer task gone)"
+                    );
+                }
                 continue;
             }
         };
@@ -243,16 +258,37 @@ async fn read_loop(
         let req: Request = match serde_json::from_value(v) {
             Ok(r) => r,
             Err(e) => {
-                let _ = conn.outbound.send(Outbound::Response(Response::error(
-                    Value::Null,
-                    Error::ParseError(e.to_string()).to_jsonrpc(),
-                )));
+                // Round 5 — symmetry trace. Same writer-task drain
+                // path as above; surface invalid-request response
+                // drops so they're attributable.
+                if conn
+                    .outbound
+                    .send(Outbound::Response(Response::error(
+                        Value::Null,
+                        Error::ParseError(e.to_string()).to_jsonrpc(),
+                    )))
+                    .is_err()
+                {
+                    tracing::trace!(
+                        conn_id = %conn.id.0,
+                        "server: invalid-request response send dropped (writer task gone)"
+                    );
+                }
                 continue;
             }
         };
 
         let resp = dispatch(&req, conn, state).await;
-        let _ = conn.outbound.send(Outbound::Response(resp));
+        // Round 5 — symmetry trace. Dispatched response (success or
+        // error envelope) reaches a closed `outbound` only when the
+        // writer task already exited; surface drops so they're
+        // attributable in operator logs.
+        if conn.outbound.send(Outbound::Response(resp)).is_err() {
+            tracing::trace!(
+                conn_id = %conn.id.0,
+                "server: dispatch response send dropped (writer task gone)"
+            );
+        }
     }
     Ok(())
 }

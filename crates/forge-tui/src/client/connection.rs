@@ -363,7 +363,18 @@ async fn read_loop(
                 .unwrap_or("")
                 .to_string();
             if let Some(tx) = responses.lock().remove(&id) {
-                let _ = tx.send(v);
+                // Round 5 — symmetry trace. The receiver is held by
+                // the awaiting `Client::call`; reaching the err
+                // branch means the caller's future was dropped before
+                // the daemon answered (caller cancelled / future
+                // aborted). Benign — the response is no longer needed —
+                // but tracing makes late-stage drops attributable.
+                if tx.send(v).is_err() {
+                    tracing::trace!(
+                        id = %id,
+                        "client: response receiver was dropped before resolution (caller cancelled)"
+                    );
+                }
             }
             continue;
         }
@@ -473,7 +484,23 @@ async fn read_loop(
             // Anything else (role_assigned, primary_changed, closed,
             // prompts.expired, …) goes to the Client-wide
             // notifications channel for the app layer to drain.
-            let _ = notifications_tx.send(NotificationFrame { method, params });
+            //
+            // Round 5 — symmetry trace. Reaching the err branch means
+            // the receiver returned by `Client::notifications()` was
+            // dropped (or never taken — the channel is buffered, so
+            // this only fires after explicit drop). Benign drop, but
+            // tracing makes the loss attributable. Clone the method
+            // up front so it's still in scope for the trace.
+            let method_for_trace = method.clone();
+            if notifications_tx
+                .send(NotificationFrame { method, params })
+                .is_err()
+            {
+                tracing::trace!(
+                    method = %method_for_trace,
+                    "client: notification receiver was dropped before delivery"
+                );
+            }
         }
     }
 }
