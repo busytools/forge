@@ -625,12 +625,21 @@ fn spawn_session_actor(
 /// it here too; when the SDK drops a field we drop it here and document
 /// the back-compat in the changelog.
 ///
-/// Fields the daemon does NOT accept on the wire (because they have no
-/// meaningful JSON representation across the boundary — function
-/// callbacks, stderr handlers, in-process MCP server handles) are
-/// silently ignored. The deserialiser uses `deny_unknown_fields` so
-/// typos in supported field names surface as errors rather than being
-/// silently dropped.
+/// **Fields without wire representation:** `can_use_tool`,
+/// `hooks_callback`, in-process `mcp_servers`, custom stderr handlers,
+/// and any other field whose value is a Rust function, trait object, or
+/// in-process handle. Hooks fan out over reverse-RPC instead — see
+/// [`WireHookSpec`].
+///
+/// `deny_unknown_fields` is set so typos in supported field names
+/// surface as errors rather than being silently dropped — but the same
+/// validation is what produces the "unknown field" error a client sees
+/// when they pass `can_use_tool`. The wire-spec doc and SDK API ref
+/// must document the supported subset to keep the experience clear; a
+/// future enhancement could capture the unsupported names and emit a
+/// targeted "this field has no wire representation" error instead of
+/// the generic "unknown field" message, but the cost/benefit of a
+/// custom Deserialize impl outweighs the ergonomic win for now.
 #[derive(Debug, Clone, Default, serde::Deserialize)]
 #[serde(default, deny_unknown_fields)]
 #[allow(
