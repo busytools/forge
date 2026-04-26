@@ -272,7 +272,7 @@ fn sessions_list_returns_seeded_entries() {
     let (tmp, _projects_dir, project_dir) = seed_projects(3);
     let _guard = point_sdk_at(&tmp);
     let result = forged::methods::sessions::list(Some(project_dir), Some(10), 0).unwrap();
-    assert_eq!(result.len(), 3, "expected 3 seeded sessions");
+    assert_eq!(result.sessions.len(), 3, "expected 3 seeded sessions");
 }
 
 #[test]
@@ -281,7 +281,7 @@ fn sessions_list_honours_limit_and_offset() {
     let (tmp, _, project_dir) = seed_projects(5);
     let _guard = point_sdk_at(&tmp);
     let r = forged::methods::sessions::list(Some(project_dir), Some(2), 1).unwrap();
-    assert_eq!(r.len(), 2);
+    assert_eq!(r.sessions.len(), 2);
 }
 
 #[test]
@@ -371,7 +371,7 @@ fn sessions_list_subagents_returns_empty_for_session_with_no_subagents() {
         Some(project_dir),
     )
     .unwrap();
-    assert!(r.is_empty());
+    assert!(r.subagent_ids.is_empty());
 }
 
 #[test]
@@ -385,7 +385,7 @@ fn sessions_subagent_messages_empty_for_unknown_subagent() {
         Some(project_dir),
     )
     .unwrap();
-    assert!(r.is_empty());
+    assert!(r.messages.is_empty());
 }
 
 #[test]
@@ -393,14 +393,14 @@ fn sessions_project_key_matches_sdk_output() {
     let path = "/Users/dev/Projects/forge";
     let key = forged::methods::sessions::project_key(Some(path.into())).unwrap();
     let expected = forge_sdk::session::scan::project_key_for_directory(Some(path));
-    assert_eq!(key, expected);
+    assert_eq!(key.project_key, expected);
 }
 
 #[test]
 fn sessions_project_key_none_uses_cwd() {
     let key = forged::methods::sessions::project_key(None).unwrap();
     let expected = forge_sdk::session::scan::project_key_for_directory(None);
-    assert_eq!(key, expected);
+    assert_eq!(key.project_key, expected);
 }
 
 // ---- Mutations ------------------------------------------------------------
