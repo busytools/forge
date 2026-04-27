@@ -1,20 +1,29 @@
 //! # forge-sdk
 //!
-//! A Rust port of Anthropic's [`claude-agent-sdk`](https://github.com/anthropics/claude-agent-sdk-python)
-//! at API-parity with the Python implementation. Spawns the `claude` CLI binary
-//! as a subprocess and speaks stream-json over stdio.
+//! A peer reference implementation in Rust of a client for Anthropic's
+//! `claude` CLI. Spawns the binary as a subprocess and speaks
+//! stream-json over stdio. Wire compatibility with the CLI is the only
+//! hard external invariant; API shape is whatever serves
+//! [`forge-daemon`](https://github.com/vedhavyas/forge/tree/main/crates/forge-daemon)
+//! and [`forge-tui`](https://github.com/vedhavyas/forge/tree/main/crates/forge-tui)
+//! best.
 //!
 //! ## Design
 //!
-//! The SDK is a thin wrapper around the `claude` binary. All agentic work —
-//! tool dispatch, conversation history, session persistence — happens inside
-//! the CLI itself. This crate is responsible for:
+//! The SDK is a thin wrapper around the `claude` binary. All agentic
+//! work — tool dispatch, conversation history, session persistence —
+//! happens inside the CLI itself. This crate is responsible for:
 //!
 //! - Spawning the subprocess with the right flags.
 //! - Parsing the stream-json output into typed Rust values.
 //! - Serialising user messages into stream-json input.
 //! - Bridging the `can_use_tool` callback (when enabled) across the wire.
 //! - Hosting in-process MCP tool servers that the `claude` binary can call.
+//!
+//! [`Client`] is `Clone`-able; all commands take `&self`. Internally
+//! a reader task owns the subprocess after init, decodes lines,
+//! dispatches inbound `control_request`s on detached tasks, and
+//! routes outbound `control_response`s to per-request waiters.
 //!
 //! ## Minimal example
 //!
