@@ -582,10 +582,11 @@ impl Client {
     /// returns `None`).
     ///
     /// The shipped [`Subprocess`](crate::transport::process::Subprocess)
-    /// transport returns `None` here — its writer side is owned and
-    /// not safe to clone. Use a custom transport (e.g. the daemon's
-    /// `BridgedTransport`) that splits read from write under the hood
-    /// for the actor pattern.
+    /// transport drives stdin through an internal writer task and
+    /// hands out a clonable writer here, so this returns `Some` for
+    /// any client built via [`spawn`](Self::spawn). Custom transports
+    /// (passed via [`spawn_with_transport`](Self::spawn_with_transport))
+    /// must override [`Transport::try_clone_writer`] to opt in.
     #[must_use]
     pub fn try_dispatch_handle(&self) -> Option<ControlDispatchHandle> {
         let writer = self.sub.try_clone_writer()?;

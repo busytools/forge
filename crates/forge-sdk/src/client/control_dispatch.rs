@@ -359,9 +359,10 @@ impl Client {
 // dispatch and the cancel preemption no longer matters — the spawned
 // task runs to completion regardless of select! cancellation.
 //
-// Available only on transports that override
-// [`Transport::try_clone_writer`]. Subprocess (the SDK default) does
-// not; use the daemon's `BridgedTransport` for the actor pattern.
+// Available on any transport that overrides
+// [`Transport::try_clone_writer`]. The shipped Subprocess does — its
+// writer task accepts mpsc clones — so any client built via
+// [`Client::spawn`] supports the actor pattern out of the box.
 // =============================================================================
 
 /// Clonable bundle of state + writer that dispatches a single

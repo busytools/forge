@@ -15,8 +15,8 @@
 //! [`forge_sdk::Client::next_event_returning_control`] which returns
 //! the request to the actor; the actor then `tokio::spawn`s
 //! [`forge_sdk::ControlDispatchHandle::dispatch`] on a separate task
-//! that holds an [`forge_sdk::AsyncWriter`] clone of the
-//! [`crate::bridged_transport::BridgedTransport`] writer.
+//! that holds an [`forge_sdk::AsyncWriter`] clone of the SDK's
+//! [`Subprocess`](forge_sdk::transport::process::Subprocess) writer.
 //!
 //! That detachment closes the audit 2026-04-26 G1 hazard: a `Command`
 //! preempting `next_event` mid-callback no longer cancels the
@@ -90,13 +90,12 @@ pub(crate) fn spawn_session_actor(
     // `tokio::spawn`'d task so the write completes regardless of
     // the actor's `select!` cancellation. Closes audit 2026-04-26 G1.
     //
-    // BridgedTransport returns `Some` here; if we ever swap to a
-    // transport that returns `None` from `try_clone_writer` the actor
-    // would panic, which is the right blast radius — silently
-    // falling back to inline dispatch would re-introduce the cancel
-    // hazard.
+    // Subprocess returns `Some` here; if we ever swap to a transport
+    // that returns `None` from `try_clone_writer` the actor would
+    // panic, which is the right blast radius — silently falling back
+    // to inline dispatch would re-introduce the cancel hazard.
     let Some(dispatch_handle): Option<ControlDispatchHandle> = client.try_dispatch_handle() else {
-        // BridgedTransport always returns Some from try_clone_writer.
+        // Subprocess always returns Some from try_clone_writer.
         // Reaching None means a future swap to a single-task transport;
         // refuse to start rather than silently re-introduce the
         // cancel-mid-callback hazard.

@@ -20,16 +20,16 @@ use crate::Error;
 pub mod codec;
 pub mod process;
 
-/// Shareable, `Send + Sync` writer half. Some transports (e.g. the
-/// daemon's `BridgedTransport`) split read from write under the hood
-/// and can hand out an mpsc-backed writer that's safe to clone into
-/// `tokio::spawn`'d tasks. Consumers that want the actor pattern (a
-/// long-running `next_event` in one task + concurrent commands +
-/// detached `handle_control` dispatch in another) need this — the
-/// `Transport` trait's `&mut self`-bound `write_line` doesn't allow
-/// concurrent writes.
+/// Shareable, `Send + Sync` writer half. Transports that split read
+/// from write under the hood (e.g. the shipped
+/// [`process::Subprocess`]) hand out an mpsc-backed writer that's safe
+/// to clone into `tokio::spawn`'d tasks. Consumers that want the actor
+/// pattern (a long-running `next_event` in one task + concurrent
+/// commands + detached `handle_control` dispatch in another) need
+/// this — the `Transport` trait's `&mut self`-bound `write_line`
+/// doesn't allow concurrent writes.
 ///
-/// Default-implemented transports return `None` from
+/// Default-implementations return `None` from
 /// [`Transport::try_clone_writer`]; transports that can be split should
 /// override.
 #[async_trait]

@@ -39,11 +39,13 @@ pub struct SpawnResult {
 /// `session.spawn` — create a new claude session inside the daemon and
 /// boot its actor task.
 ///
-/// Uses [`crate::bridged_transport::BridgedTransport`] rather than
-/// [`forge_sdk::Client::spawn`] so the actor can [`tokio::select!`]
-/// between [`forge_sdk::Client::next_event`] reads and command-driven
-/// writes without holding the [`Client`] lock across blocking I/O. See
-/// the bridged-transport module docs for the full rationale.
+/// The SDK's [`Subprocess`](forge_sdk::transport::process::Subprocess)
+/// drives subprocess I/O over internal mpsc channels, so
+/// [`Client::next_event`] is cancel-safe and
+/// [`Client::try_dispatch_handle`](forge_sdk::Client::try_dispatch_handle)
+/// hands out a clonable writer for detached `control_request` dispatch.
+/// The session actor uses both — see the actor module for the loop
+/// shape.
 ///
 /// Wires in M4's reverse-RPC bridges before spawning:
 ///   - [`ForgedPermissionBridge`](crate::sdk_callbacks::ForgedPermissionBridge)
@@ -81,12 +83,7 @@ pub async fn spawn(
         options.hooks = hooks;
     }
 
-    let bridge = crate::bridged_transport::BridgedTransport::spawn(&options)
-        .await
-        .map_err(Error::Sdk)?;
-    let client = Client::spawn_with_transport(options, Box::new(bridge))
-        .await
-        .map_err(Error::Sdk)?;
+    let client = Client::spawn(options).await.map_err(Error::Sdk)?;
     let (handle, rx) = state.register_session(session_id.clone());
     spawn_session_actor(state.clone(), &handle, client, rx);
     info!(session_id = %session_id.0, "session spawned");
