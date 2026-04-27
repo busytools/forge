@@ -1,184 +1,188 @@
 # forge — project guide
 
-A Rust workspace hosting `forge-sdk` (a feature-parity Rust port of
-Anthropic's [`claude-agent-sdk`](https://github.com/anthropics/claude-agent-sdk-python))
-and — later — `forged` (daemon) and `forge-tui` (terminal client).
+A Rust workspace for personal-use agentic tooling around Anthropic's
+`claude` CLI. Four components:
 
-## Current state (2026-04-22)
+- **`forge-sdk`** — wraps the `claude` binary. Exposes a
+  structured-message API to library consumers (today, just `forge-daemon`).
+- **`forge-daemon`** — wraps `forge-sdk` as a single Client per
+  session. Multiplexes multiple WebSocket clients onto each session
+  via JSON-RPC. Runs as a launchd daemon on each Mac.
+- **`forge-tui`** — terminal client. Talks to `forge-daemon` over WS.
+  Optional / experimental; the daemon's wire surface is the contract,
+  not this client.
+- **`forge-test-harness`** — wire-conformance harness. Two scopes:
+  `sdk_wire` (forge-sdk ↔ claude CLI) and `daemon_wire` (daemon ↔
+  client). Replay-based offline tests + opt-in live capture.
 
-- **`forge-sdk` at v0.1.64 parity-complete** with Python
-  `claude-agent-sdk` v0.1.64. 764 tests + 107 ignored green; every
-  in-scope Python test file (14/14) has a named Rust counterpart
-  under `crates/forge-sdk/tests/python_parity/`. Only remaining
-  parity gap is `AsyncHookJSONOutput` out-of-band delivery —
-  upstream-blocked, tracked in the auto-memory weekly-watch entry.
-- Full surface map: `docs/forge-sdk-parity-map.html` (interactive;
-  tracked in git so collaborators see the same view — regenerate
-  via the parity-check ritual when surface changes land).
-- Full parity log + weekly runbook: `PARITY.md`.
-- Release history: `docs/CHANGELOG.md`.
+## Project scope
 
-`forged` and `forge-tui` are downstream milestones that haven't
-started.
+**Personal use only.** Single user across multiple Macs (WireGuard
+mesh between them). No public release planned. No multi-tenant
+threat model. See `project_trust_model.md` in auto-memory before
+running any audit or considering security hardening — findings whose
+severity depends on adversarial assumptions get demoted or dropped.
 
-## Non-negotiable invariants
+## Vision: simple, efficient, capable — Rust-native
 
-1. **Feature-parity target is Python `claude-agent-sdk`.** Not a
-   subset, not a re-imagining. Every public type and function in
-   Python has a Rust counterpart.
-2. **The `claude` binary is source of truth.** We spawn it as a
-   subprocess and speak stream-json — same as Python does. We never
-   re-implement the agentic loop or hit the Anthropic API directly.
-3. **Stream-json wire compatibility is byte-identical with Python's
-   SDK.** If stdin/stdout differ given the same inputs, that's a bug.
-4. **TDD discipline.** Failing test → run it → watch it fail →
-   implement → run it → watch it pass → commit. Do not write code
-   before tests.
-5. **Frequent commits.** One logical unit = one commit. Commits are
-   small and reversible.
-6. **No `mod.rs`.** Module files sit next to their directory
-   (`foo.rs` + `foo/`).
-7. **Nightly Rust, pinned.** `rust-toolchain.toml` locks a specific
-   nightly date.
-8. **Clippy pedantic + deny `unwrap_used` / `expect_used` / `panic`
-   / `exit` / `todo` / `unimplemented`** in non-test code. CI
-   enforces.
-9. **`cargo nextest run`, not `cargo test`.** Locally use
-   `just check` to run tests + clippy + fmt + docs in one shot.
-10. **Wire-conformance harness is mandatory for every new wire
-    surface.** If a feature touches stdin/stdout framing (new
-    control_request subtypes, new message types, new hook events,
-    new tool integrations) it ships with:
-    (a) a live-capture scenario in `crates/forge-test-harness/tests/`
-    (opt-in via `FORGE_WIRE_CAPTURE=1`, drives the real CLI),
-    (b) the captured baseline trace committed to
-    `crates/forge-test-harness/baselines/sdk/<PINNED_CLI_VERSION>/`,
-    (c) clean replay in `tests/replay.rs::all_baselines_decode_cleanly`
-    (every inbound line round-trips through forge-sdk's decoder
-    without surfacing `DecodedLine::Unknown` or decode errors).
-    The harness catches CLI-SDK deadlocks, ordering drift, and
-    silent encode regressions that unit tests miss — see
-    `project_wire_init_ordering` in auto-memory for the
-    canonical example of why this invariant exists.
+forge **is no longer a feature-parity port of Python's
+`claude-agent-sdk`.** Both projects are reference implementations
+that wrap the same `claude` CLI; they happen to share a wire
+contract with that binary. forge gets to be its own thing — better,
+simpler, and more efficient than the Python SDK where the language
+permits.
 
-## Weekly parity check — PROACTIVE OWNERSHIP
+Concretely:
 
-forge-sdk's purpose is feature parity. Anthropic ships the Python
-SDK at ~3–4 releases/month; if forge-sdk falls behind, we've
-re-created the exact problem (rusty community crates lagging
-upstream) that forge-sdk exists to solve. The weekly check is the
-non-negotiable forcing function.
-
-### Cadence + proactive reminder
-
-**Every Monday** (or first working day of the week), proactively
-message the user:
-
-> "It's parity-check Monday. Python `claude-agent-sdk` upstream last
-> reviewed at <version>. Want me to run the check now?"
-
-The user may defer, batch, or green-light it. But it is **the
-agent's job to surface the prompt**, not the user's to remember.
-
-### Runbook
-
-Follow [`docs/parity-check.md`](docs/parity-check.md). State lives
-in [`PARITY.md`](PARITY.md) — the weekly entry writes there.
-
-### Outstanding watch items (see auto-memory)
-
-- `AsyncHookJSONOutput` out-of-band hook-response delivery — the
-  one open parity gap. Upstream hasn't shipped the follow-up frame
-  spec. Weekly check must probe for it; if found, surface to the
-  user and plan the port. Details in
-  `~/.claude-*/projects/-Users-dev-Projects-forge/memory/project_asynchookjsonoutput_watch.md`.
-
-### Test mirroring — the parity gate
-
-Python's own `tests/` directory is forge-sdk's executable spec.
-Every Python test has a named Rust counterpart in
-`crates/forge-sdk/tests/python_parity/`. A weekly parity check
-diffs `tests/` alongside source — every new/changed Python test
-must translate to a Rust test in the same week.
+- **Drop the public-API parity contract.** forge-sdk's API shape is
+  whatever serves `forge-daemon` and `forge-tui` best. We don't
+  carry single-task constraints from Python's async-generator
+  pattern. We don't preserve method names that are awkward in Rust.
+  We don't ship public types just because Python has them.
+- **Lean into Rust.** Concurrent reads + writes + dispatch on the
+  same Client (the actor pattern) is first-class, not an escape
+  hatch. Channels-based public APIs are preferred over mutex-locked
+  &mut self call sites. Internal mpsc-bridging is part of the SDK,
+  not a daemon-side workaround.
+- **The `claude` CLI is still source of truth.** We spawn it as a
+  subprocess and speak stream-json with it. We don't re-implement
+  the agentic loop or hit the Anthropic API directly. That part of
+  the parity story stays — it's how `claude` works.
+- **Stream-json wire compatibility with the CLI is mandatory.** If
+  forge-sdk's stdin/stdout to `claude` differs from what `claude`
+  expects, that's a bug. The wire-conformance harness enforces this
+  on every `cargo nextest run`.
 
 ## Hard rules
 
-- **Never commit LLM-generated planning docs.** User-level plans
-  stay at `~/.claude-stargate/plans/`. Reference by URL or relative
-  comment, not a committed copy.
-- **Gated actions still gated.** `gh pr merge`, `git push --force`
-  to `main`, `git tag` + push, `cargo publish` — each needs
-  explicit user approval per global CLAUDE.md. Feature-branch
-  pushes, PR creation, `gh pr comment`, and non-force `git push`
-  to `main` (for milestone landings) are routine per the project's
-  `feedback_forge_git_override.md`.
-- **One commit per logical unit.** Commit messages cite the round
-  or unit (e.g. "feat(forge-sdk): query_stream() returns Stream…").
-- **`docs/forge-sdk-parity-map.html` is tracked.** Regenerate it
-  whenever the SDK surface changes (parity-check ritual rebuilds
-  it) and commit the refreshed file alongside the surface change
-  so collaborators see the same view.
+1. **The `claude` binary is source of truth.** Spawn it, speak
+   stream-json, never reach the Anthropic API directly.
+2. **Stream-json wire-compatibility with `claude`.** Byte-identical
+   to what `claude` expects on stdin and what we decode from its
+   stdout. The wire-conformance harness is the enforcement
+   mechanism.
+3. **TDD discipline.** Failing test → run it → watch it fail →
+   implement → run it → watch it pass → commit. Apply when the test
+   shape is obvious; for exploratory refactors, integration tests
+   are sufficient.
+4. **Frequent commits.** One logical unit = one commit. Commits are
+   small and reversible.
+5. **No `mod.rs`.** Module files sit next to their directory
+   (`foo.rs` + `foo/`).
+6. **Nightly Rust, pinned.** `rust-toolchain.toml` locks a specific
+   nightly date. Bump deliberately.
+7. **Clippy pedantic + deny `unwrap_used` / `expect_used` /
+   `panic` / `exit` / `todo` / `unimplemented`** in non-test code.
+8. **`cargo nextest run`, not `cargo test`.** Locally use `just
+   check` to run fmt + clippy + nextest + docs in one shot.
+9. **Wire-conformance harness is mandatory for new wire surface.**
+   New control_request subtypes, message types, hook events, tool
+   integrations ship with: (a) a live-capture scenario, (b) the
+   captured baseline trace under
+   `crates/forge-test-harness/baselines/sdk/<PINNED_CLI_VERSION>/`,
+   (c) clean replay so every inbound line round-trips through the
+   decoder without `DecodedLine::Unknown` or decode errors.
+10. **Never commit LLM-generated planning docs.** User plans stay at
+    `~/.claude-stargate/plans/`.
+11. **Gated actions still gated.** `cargo publish`, `git push
+    --force` to `main`, `git tag` + push need explicit approval.
+    Feature-branch pushes, PR creation, `gh pr comment`, non-force
+    push to `main` for milestone landings, and `gh pr merge` are
+    routine per project overrides.
+
+## Weekly upstream-watch (NEW shape)
+
+forge **does not feature-parity-track Python**. The weekly ritual is
+now an *idea-scanning* exercise:
+
+> **Every Monday** (or first working day of the week), proactively
+> message the user:
+>
+> > "Upstream-watch Monday. Python `claude-agent-sdk` last reviewed at
+> > <version>. Want me to scan for new features that might be worth
+> > pulling in?"
+
+The scan flow:
+
+1. Diff Python `src/` and `tests/` against the previously-reviewed
+   version (or against the recorded baseline in
+   `~/.claude-stargate/plans/upstream-watch-<date>.md`).
+2. For each new public API, hook event, control_request subtype, or
+   stream-json variant: ask "does this make forge more capable for
+   our use case?" If yes, propose a port — but **port it the
+   forge-native way**, not by mirroring Python's API shape.
+3. New stream-json shapes the CLI emits MUST be supported in the
+   decoder (those are wire facts, not parity choices). Surface the
+   addition to the user; commit the decoder + a wire-conformance
+   scenario in the same week.
+4. Old `PARITY.md` lineage is archived; the watch is now a forward-
+   looking idea log.
+
+There is no contract that says "every public Python type maps to a
+Rust type". There is no test-mirroring requirement. Drop the
+`crates/forge-sdk/tests/python_parity/` 1:1 mapping when it gets in
+the way of a cleaner Rust API; keep the tests that genuinely cover
+behaviour we care about.
 
 ## Style + Rust idiom
 
-- **Workspace-level deps by default.** Pin versions once in
-  `[workspace.dependencies]`; per-crate manifests use
-  `{ workspace = true }`.
+- **Workspace-level deps by default.** Pin once in
+  `[workspace.dependencies]`, consume with `{ workspace = true }`.
 - **Error types:** `thiserror` for library crates, `anyhow` for
   binaries / examples / tests. Never mix.
 - **Tracing:** `tracing` crate for all structured logs. Never
-  `println!` / `eprintln!` in library code.
+  `println!` / `eprintln!` in library code (binaries can use
+  `eprintln!` only when the tracing subsystem itself failed).
 - **`#[non_exhaustive]`** on public struct + enum types expected to
   grow. Builder pattern with `#[must_use]` for configurable inputs.
 - **Subprocess patterns:** `tokio::process::Command` for streaming
   I/O; `cmd_lib` for fire-and-forget shell.
-- **Don't reinvent upstream.** When porting, use idiomatic Rust
-  patterns that preserve full behavioural parity — losing a feature
-  to be "cleaner" is a regression.
-
-## Team context (for team-lead agents)
-
-If you're operating as the lead of a `forge` team:
-
-- Proactive memory lives at `~/.claude-*/projects/-Users-dev-Projects-forge/memory/`.
-- Cross-project TIL still goes to `~/.claude/memory/til/`.
-- Team notes at `~/.claude/teams/forge/team-notes.md` (create if missing).
-- Other team leads available: aware, dotfiles, gateway-backend,
-  data-modules, nf-core, stargate, web-api, architect. Dispatch
-  via `ws teams ask <name> "APPROVED: ..."` when cross-project work
-  is needed.
-
-## Who to ask when in doubt
-
-The user. Direct, concise; use `AskUserQuestion` for structured
-decisions. Never silently work around ambiguities — surface them,
-record the resolution in the parity log.
+- **Channels-based APIs over &mut self.** When a public type needs
+  to be used across tasks (the daemon's typical pattern), prefer
+  exposing channels / `&self` methods over `&mut self` methods that
+  force a Mutex or actor wrapper at the call site. Internal bridging
+  is the library's responsibility, not the consumer's.
 
 ## Quick-start for a new session
 
 1. `git log main --oneline -10` — recent landings.
-2. `just check` — full gate (nextest + clippy + fmt + docs).
-3. `open docs/forge-sdk-parity-map.html` — surface + parity map.
-4. `cat PARITY.md | head -50` — current parity state.
-5. Read the latest handoff in the auto-memory directory for round-
-   specific context (what landed, what's next).
+2. `just check` — full gate (fmt + clippy + nextest + docs).
+3. `open docs/forge-sdk-parity-map.html` — current SDK surface (not
+   a parity gate; just a navigation map).
+4. Read the latest `handoff_*` in
+   `~/.claude-gateway/projects/-Users-dev-Projects-forge/memory/`
+   for round-specific context.
+5. Read `project_vision.md` in auto-memory for the
+   simple/efficient/capable direction; read `project_trust_model.md`
+   for personal-use threat-model context.
 
 ## Wire-conformance cheatsheet
 
 - `crates/forge-test-harness/` holds the harness. Replay mode runs
   on every `cargo nextest run` — offline, no API cost.
-- Live capture: `FORGE_WIRE_CAPTURE=1 cargo nextest run \
-  -p forge-test-harness --no-capture --run-ignored only <test>` —
-  burns API tokens against whatever profile the shell's
-  `CLAUDE_CONFIG_DIR` points at. The captured trace lands in
-  `target/wire-traces/` and can be promoted to the baseline
-  directory for that pinned CLI version.
+- Live capture: `FORGE_WIRE_CAPTURE=1 cargo nextest run -p
+  forge-test-harness --no-capture --run-ignored only sdk_<test>`
+  for SDK scenarios; `FORGE_DAEMON_WIRE_CAPTURE=1 ... daemon_<test>`
+  for daemon scenarios.
 - Baselines live under
-  `crates/forge-test-harness/baselines/sdk/<PINNED_CLI_VERSION>/`.
-  When bumping the pinned CLI, re-capture every baseline and
-  diff against the old set — divergences are the release-note
-  material.
-- Adding a scenario: write a `tests/scenarios_<name>.rs` using the
-  `run_live_scenario` helper, run it with `FORGE_WIRE_CAPTURE=1`,
-  `cp target/wire-traces/capture-<name>-*.jsonl` into the
-  baselines dir, commit test + baseline together.
+  `crates/forge-test-harness/baselines/sdk/<PINNED_CLI_VERSION>/`
+  and `crates/forge-test-harness/baselines/daemon/<DAEMON_VERSION>/`.
+- Adding a scenario: write a `tests/sdk_scenarios_<name>.rs` (or
+  `daemon_scenarios_<name>.rs`), run with the env var, `cp` the
+  capture into the appropriate baselines dir, commit test +
+  baseline together.
+
+## Team context (for team-lead agents)
+
+- Proactive memory lives at
+  `~/.claude-*/projects/-Users-dev-Projects-forge/memory/`.
+- Cross-project TIL goes to `~/.claude/memory/til/`.
+- Team notes at `~/.claude/teams/forge/team-notes.md` if needed.
+- Other team leads: aware, dotfiles, gateway-backend, data-modules,
+  nf-core, stargate, web-api, architect. Dispatch via `ws teams
+  ask <name> "APPROVED: ..."` when cross-project work is needed.
+
+## Who to ask when in doubt
+
+The user. Direct, concise; use `AskUserQuestion` for structured
+decisions. Never silently work around ambiguities.
