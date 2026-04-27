@@ -1,6 +1,6 @@
 //! Session actor task — owns the [`forge_sdk::Client`] for the lifetime
 //! of one session and drives it via a `tokio::select!` loop over the
-//! command channel and `next_event_returning_control`.
+//! command channel and [`forge_sdk::Client::next_event`].
 //!
 //! Extracted from `methods/session.rs` (audit 2026-04-26 god-file
 //! split). The handler proxies in `methods::session` enqueue
@@ -11,20 +11,15 @@
 //! ## Control-request dispatch
 //!
 //! Inbound `control_request`s (hook callbacks, MCP messages,
-//! `can_use_tool`) are NOT dispatched on the actor. The actor uses
-//! [`forge_sdk::Client::next_event_returning_control`] which returns
-//! the request to the actor; the actor then `tokio::spawn`s
-//! [`forge_sdk::ControlDispatchHandle::dispatch`] on a separate task
-//! that holds an [`forge_sdk::AsyncWriter`] clone of the SDK's
-//! [`Subprocess`](forge_sdk::transport::process::Subprocess) writer.
-//!
-//! That detachment closes the audit 2026-04-26 G1 hazard: a `Command`
-//! preempting `next_event` mid-callback no longer cancels the
-//! callback's eventual `control_response` write — the spawned task
-//! runs to completion regardless of the actor's `select!`
-//! cancellation.
+//! `can_use_tool`) are dispatched **inside the SDK** on
+//! `tokio::spawn`'d tasks — see
+//! [`forge_sdk::Client::next_event`] for the detachment story. That
+//! closes the audit 2026-04-26 G1 hazard (the actor's `select!`
+//! cancellation no longer drops a `control_response` write
+//! mid-flight) and means the actor itself only ever observes
+//! [`forge_sdk::Message`]s.
 
-use forge_sdk::{Client, ControlDispatchHandle, EventOrControl};
+use forge_sdk::Client;
 
 use crate::Error;
 use crate::registry::DaemonState;
@@ -85,26 +80,6 @@ pub(crate) fn spawn_session_actor(
     mut commands: tokio::sync::mpsc::Receiver<Command>,
 ) {
     let session_id = handle.id.clone();
-    // Pull the dispatch handle once — it's cheap-clonable. Each
-    // inbound control_request gets its own clone moved into a
-    // `tokio::spawn`'d task so the write completes regardless of
-    // the actor's `select!` cancellation. Closes audit 2026-04-26 G1.
-    //
-    // Subprocess returns `Some` here; if we ever swap to a transport
-    // that returns `None` from `try_clone_writer` the actor would
-    // panic, which is the right blast radius — silently falling back
-    // to inline dispatch would re-introduce the cancel hazard.
-    let Some(dispatch_handle): Option<ControlDispatchHandle> = client.try_dispatch_handle() else {
-        // Subprocess always returns Some from try_clone_writer.
-        // Reaching None means a future swap to a single-task transport;
-        // refuse to start rather than silently re-introduce the
-        // cancel-mid-callback hazard.
-        tracing::error!(
-            session_id = %handle.id.0,
-            "session actor: transport does not support try_clone_writer; refusing to spawn"
-        );
-        return;
-    };
     tokio::spawn(async move {
         let reason: &'static str = loop {
             tokio::select! {
@@ -178,32 +153,9 @@ pub(crate) fn spawn_session_actor(
                         }
                     }
                 }
-                next = client.next_event_returning_control() => {
+                next = client.next_event() => {
                     match next {
-                        Ok(Some(EventOrControl::Control(req))) => {
-                            // Detached dispatch: clone the handle, move
-                            // into a spawn'd task. The task writes its
-                            // control_response via the cloned writer
-                            // regardless of whether the actor's
-                            // select! cancels this branch on the next
-                            // iteration. Errors are logged; the
-                            // session continues — a control_request
-                            // failure is per-request, not session-level.
-                            let handle = dispatch_handle.clone();
-                            let sid = session_id.clone();
-                            tokio::spawn(async move {
-                                if let Err(e) = handle.dispatch(req).await {
-                                    tracing::warn!(
-                                        session_id = %sid.0,
-                                        error = %e,
-                                        "control_dispatch failed",
-                                    );
-                                }
-                            });
-                            // Keep listening — fall through to the next
-                            // select! iteration without breaking.
-                        }
-                        Ok(Some(EventOrControl::Message(msg))) => {
+                        Ok(Some(msg)) => {
                             let is_terminal = matches!(msg, forge_sdk::Message::Result { .. });
                             let event_id = message_event_id(&msg).to_owned();
                             let frame = crate::connection::Outbound::Notification(
@@ -222,16 +174,6 @@ pub(crate) fn spawn_session_actor(
                             }
                         }
                         Ok(None) => break "disconnected",
-                        Ok(Some(_)) => {
-                            // Forward-compat: EventOrControl is
-                            // non_exhaustive. Future SDK variants
-                            // (e.g. a separate ControlCancel surface)
-                            // log + skip rather than panic.
-                            tracing::debug!(
-                                session_id = %session_id.0,
-                                "next_event_returning_control: unhandled variant",
-                            );
-                        }
                         Err(e) => {
                             tracing::warn!(session_id = %session_id.0, error = %e, "next_event error");
                             break "error";

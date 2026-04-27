@@ -103,12 +103,18 @@ pub trait Transport: Send + Sync + 'static {
 
     /// Optional shareable writer handle. Transports that split read
     /// from write internally (mpsc-bridged, multi-task) return
-    /// `Some(...)`; transports whose write side requires `&mut self`
-    /// (the default [`process::Subprocess`]) return `None`.
+    /// `Some(...)`; transports without a clonable writer half return
+    /// `None`.
     ///
     /// When `Some(...)`, the returned [`AsyncWriter`] is safe to clone
-    /// into `tokio::spawn`'d tasks. This is what enables the daemon's
-    /// actor pattern — see [`crate::Client::try_dispatch_handle`].
+    /// into `tokio::spawn`'d tasks. This is what lets
+    /// [`Client::next_event`](crate::Client::next_event) detach
+    /// inbound `control_request` dispatch onto a `tokio::spawn`'d
+    /// task — closing the audit 2026-04-26 G1 cancel-mid-callback
+    /// hazard for callers that `tokio::select!` over `next_event` and
+    /// a command channel. The shipped
+    /// [`process::Subprocess`] implements this; custom transports
+    /// must override to opt in.
     fn try_clone_writer(&self) -> Option<Arc<dyn AsyncWriter>> {
         None
     }

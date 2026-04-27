@@ -7,27 +7,10 @@
 //! dispatching lives in [`control_dispatch`]; outbound `control_request`
 //! issuance lives in [`control_send`].
 
-pub mod control_dispatch;
+pub(crate) mod control_dispatch;
 mod control_send;
 
-pub use control_dispatch::ControlDispatchHandle;
-
-/// What [`Client::next_event_returning_control`] returns: either a
-/// regular [`Message`] (which the caller fans out to consumers) or an
-/// inbound [`crate::control::ControlRequest`] that the caller must
-/// dispatch (typically by `tokio::spawn`-ing
-/// [`ControlDispatchHandle::dispatch`]).
-#[non_exhaustive]
-#[derive(Debug)]
-pub enum EventOrControl {
-    /// A regular stream-json message — fan out to consumers.
-    Message(Message),
-    /// An inbound `control_request` — dispatch via
-    /// [`ControlDispatchHandle::dispatch`] (or fall back to
-    /// `Client::handle_control` if the transport doesn't support
-    /// the actor pattern).
-    Control(crate::control::ControlRequest),
-}
+pub(crate) use control_dispatch::ControlDispatchHandle;
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
@@ -447,9 +430,18 @@ impl Client {
     /// Read the next stream-json **regular** message from the subprocess.
     ///
     /// Control requests (permission checks, MCP messages, hook callbacks)
-    /// are handled transparently: when one arrives, the client dispatches
-    /// to the right callback and writes a `control_response` back, then
-    /// loops to the next line. Callers only ever see regular `Message`s.
+    /// are handled transparently. When the underlying transport supports
+    /// concurrent writes (the shipped
+    /// [`Subprocess`](crate::transport::process::Subprocess) does), each
+    /// inbound `control_request` is dispatched on a `tokio::spawn`'d
+    /// task using a cloned writer — so callers can `tokio::select!`
+    /// over `next_event` + a command channel without risking the
+    /// audit-2026-04-26 G1 cancel-mid-callback hazard.
+    ///
+    /// Falls back to inline dispatch when the transport's
+    /// [`try_clone_writer`](crate::transport::Transport::try_clone_writer)
+    /// returns `None` — that path keeps single-task callers working
+    /// at the cost of cancel-safety on `select!`.
     ///
     /// Returns `Ok(None)` at end-of-stream (subprocess exited).
     ///
@@ -475,15 +467,16 @@ impl Client {
                     return Ok(Some(msg));
                 }
                 DecodedLine::Control(req) => {
-                    self.handle_control(req).await?;
+                    self.dispatch_control_detached(req).await?;
                 }
                 DecodedLine::ControlCancel { request_id } => {
                     // Python SDK (`_internal/query.py:274-280`) cancels the
                     // in-flight control handler tied to `request_id`.
-                    // forge-sdk dispatches control handlers synchronously on
-                    // the read loop, so by the time we see the cancel frame
-                    // the handler has already completed — there is nothing
-                    // live to cancel. Log and drop, keeping the loop alive.
+                    // forge-sdk's detached dispatcher runs each handler on
+                    // its own task; by the time we see the cancel frame
+                    // the handler has typically completed. Log and drop,
+                    // keeping the loop alive — abort on cancel-mid-flight
+                    // would race the response write anyway.
                     tracing::debug!(%request_id, "control_cancel_request received; nothing to cancel");
                 }
                 DecodedLine::ControlResponse { request_id, .. } => {
@@ -514,81 +507,32 @@ impl Client {
         }
     }
 
-    // EventOrControl + ControlDispatchHandle wired up below; declared
-    // adjacent to next_event_returning_control / try_dispatch_handle.
-
-    /// Variant of [`next_event`](Self::next_event) that does NOT
-    /// dispatch inbound `control_request`s — it returns them to the
-    /// caller as [`EventOrControl::Control`]. Use this with
-    /// [`try_dispatch_handle`](Self::try_dispatch_handle) when you
-    /// want the actor pattern: a long-running `next_event` in one
-    /// task, while inbound control requests dispatch on
-    /// `tokio::spawn`'d tasks via the cloned handle.
-    ///
-    /// Closes audit 2026-04-26 G1 — the cancel-mid-callback deadlock
-    /// where `tokio::select!` over commands + `next_event` could drop
-    /// `handle_control` mid-write_line.
-    ///
-    /// # Errors
-    ///
-    /// Same as [`next_event`](Self::next_event).
-    pub async fn next_event_returning_control(&mut self) -> Result<Option<EventOrControl>, Error> {
-        if let Some(buffered) = self.pre_init_messages.pop_front() {
-            self.capture_session_id_from(&buffered);
-            return Ok(Some(EventOrControl::Message(buffered)));
-        }
-        loop {
-            let Some(line) = self.sub.read_line().await? else {
-                return Ok(None);
-            };
-            self.line_number += 1;
-            match decode_dispatch(&line, self.line_number)? {
-                DecodedLine::Message(msg) => {
-                    self.capture_session_id_from(&msg);
-                    return Ok(Some(EventOrControl::Message(msg)));
+    /// Dispatch one inbound `control_request` from the read loop.
+    /// Detaches onto a `tokio::spawn`'d task when the transport
+    /// supports concurrent writes (the cancel-safe path); falls back
+    /// to inline dispatch otherwise.
+    async fn dispatch_control_detached(
+        &mut self,
+        req: crate::control::ControlRequest,
+    ) -> Result<(), Error> {
+        if let Some(handle) = self.try_dispatch_handle() {
+            tokio::spawn(async move {
+                if let Err(e) = handle.dispatch(req).await {
+                    tracing::warn!(error = %e, "control_dispatch failed");
                 }
-                DecodedLine::Control(req) => {
-                    return Ok(Some(EventOrControl::Control(req)));
-                }
-                DecodedLine::ControlCancel { request_id } => {
-                    tracing::debug!(%request_id, "control_cancel_request received; nothing to cancel");
-                }
-                DecodedLine::ControlResponse { request_id, .. } => {
-                    tracing::warn!(
-                        %request_id,
-                        "unexpected control_response outside send_control loop — dropping"
-                    );
-                }
-                DecodedLine::Unknown { type_str, raw } => {
-                    tracing::warn!(
-                        type = %type_str,
-                        raw = %raw,
-                        line = self.line_number,
-                        "unknown top-level stream-json type — surfacing as Message::Unknown"
-                    );
-                    return Ok(Some(EventOrControl::Message(Message::Unknown {
-                        type_str,
-                        raw,
-                    })));
-                }
-            }
+            });
+            Ok(())
+        } else {
+            // Custom transports without try_clone_writer fall back to
+            // inline dispatch. Same correctness, just no select!-safety.
+            self.handle_control(req).await
         }
     }
 
-    /// Get a clonable handle for dispatching inbound `control_request`s
-    /// on a separate task. Returns `None` if the underlying transport
-    /// doesn't support concurrent writes (i.e.
-    /// [`Transport::try_clone_writer`](crate::transport::Transport::try_clone_writer)
-    /// returns `None`).
-    ///
-    /// The shipped [`Subprocess`](crate::transport::process::Subprocess)
-    /// transport drives stdin through an internal writer task and
-    /// hands out a clonable writer here, so this returns `Some` for
-    /// any client built via [`spawn`](Self::spawn). Custom transports
-    /// (passed via [`spawn_with_transport`](Self::spawn_with_transport))
-    /// must override [`Transport::try_clone_writer`] to opt in.
-    #[must_use]
-    pub fn try_dispatch_handle(&self) -> Option<ControlDispatchHandle> {
+    /// Build a clonable dispatch handle from the current transport's
+    /// writer half. Internal — callers don't need this; `next_event`
+    /// uses it directly to detach control dispatch.
+    fn try_dispatch_handle(&self) -> Option<ControlDispatchHandle> {
         let writer = self.sub.try_clone_writer()?;
         Some(ControlDispatchHandle::new(
             writer,

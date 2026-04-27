@@ -1,6 +1,6 @@
-//! Inbound `control_request` dispatch: `Client::handle_control` routes
-//! permission checks, MCP JSON-RPC, and hook callbacks to the appropriate
-//! handler and writes the matching `control_response`.
+//! Inbound `control_request` dispatch: routes permission checks, MCP
+//! JSON-RPC, and hook callbacks to the appropriate handler and writes
+//! the matching `control_response`.
 //!
 //! Split out from `client.rs` (audit finding I5) to separate inbound
 //! dispatch from outbound control issuance and from the lifecycle /
@@ -8,19 +8,20 @@
 //!
 //! ## Two dispatch paths
 //!
-//! 1. **Inline** (`Client::handle_control`) — used by
-//!    [`Client::next_event`] for single-task consumers. Writes via
-//!    `&mut self.sub`.
-//! 2. **Detached** ([`ControlDispatchHandle::dispatch`]) — used by
-//!    consumers that want the actor pattern (long-running `next_event`
-//!    in one task + concurrent commands in another). Writes via a
-//!    cloned [`AsyncWriter`] handle. Each dispatch is `tokio::spawn`'d
-//!    so a slow callback can't block the actor's command loop. Closes
-//!    the audit 2026-04-26 G1 hazard (cancel-mid-write deadlock).
+//! 1. **Inline** (`Client::handle_control`) — used during `spawn`
+//!    init and during `send_control`'s outbound wait. Writes via
+//!    `&mut self.sub`. Single-task: no concurrent reader, no cancel
+//!    risk.
+//! 2. **Detached** (private `ControlDispatchHandle::dispatch`) —
+//!    invoked by [`Client::next_event`] for every inbound
+//!    `control_request` once the read loop is running. Each request
+//!    is dispatched on its own `tokio::spawn`'d task using a cloned
+//!    writer, so a slow callback can't block the read loop AND the
+//!    `tokio::select!` cancel hazard (audit 2026-04-26 G1) doesn't
+//!    apply.
 //!
-//! The two paths share their logic: each terminal `write_line` call
-//! goes through an internal trait, and both code paths call the same
-//! orchestration.
+//! Both paths share their orchestration; only the writer they reach
+//! for differs.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -347,32 +348,32 @@ impl Client {
 // =============================================================================
 // Detached dispatch — closes audit 2026-04-26 G1 hazard.
 //
-// `Client::handle_control` writes via `&mut self.sub` and runs inline
-// inside `next_event`. When the daemon's session actor select!s
-// `next_event` against a command channel, a cmd preempting an
-// in-flight `handle_control` cancels it mid-callback and the CLI
-// never gets its `control_response` (deadlock for HOOK_TIMEOUT_SECS).
+// `Client::handle_control` writes via `&mut self.sub` — running inline
+// would expose an `await` chain to the caller's `tokio::select!`
+// cancellation, dropping the `control_response` write mid-flight and
+// hanging the CLI for HOOK_TIMEOUT_SECS.
 //
 // `ControlDispatchHandle` is a clonable bundle of writer + callbacks
 // + state. Its `dispatch` method runs the same logic but via an
-// `AsyncWriter` clone, so the daemon's actor can `tokio::spawn` the
+// `AsyncWriter` clone, so `Client::next_event` can `tokio::spawn` the
 // dispatch and the cancel preemption no longer matters — the spawned
 // task runs to completion regardless of select! cancellation.
 //
 // Available on any transport that overrides
 // [`Transport::try_clone_writer`]. The shipped Subprocess does — its
 // writer task accepts mpsc clones — so any client built via
-// [`Client::spawn`] supports the actor pattern out of the box.
+// [`Client::spawn`] gets the cancel-safe behaviour out of the box.
 // =============================================================================
 
 /// Clonable bundle of state + writer that dispatches a single
-/// `control_request`. Constructed via [`Client::try_dispatch_handle`].
+/// `control_request`. Internal — built fresh by `next_event` per
+/// inbound request.
 ///
 /// Each field is `Arc`-backed (or `Clone`); cloning the handle is
 /// cheap. Designed to be moved into a `tokio::spawn`'d task per
 /// inbound `control_request`.
 #[derive(Clone)]
-pub struct ControlDispatchHandle {
+pub(crate) struct ControlDispatchHandle {
     writer: Arc<dyn AsyncWriter>,
     can_use_tool: Option<Arc<dyn CanUseToolCallback>>,
     mcp_hosts: McpHosts,
@@ -427,7 +428,7 @@ impl ControlDispatchHandle {
     /// failures from [`Error::message_parse`] / [`Error::encode`],
     /// and write failures from the underlying writer.
     #[allow(clippy::too_many_lines)]
-    pub async fn dispatch(&self, req: ControlRequest) -> Result<(), Error> {
+    pub(crate) async fn dispatch(&self, req: ControlRequest) -> Result<(), Error> {
         let original_input = req.original_tool_input().cloned();
 
         if let ControlRequestKind::Unknown { subtype, raw } = &req.request {
