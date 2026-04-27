@@ -692,7 +692,7 @@ fn parse_session_info_from_lite(
         .and_then(|l| extract_last_json_string_field(l, "tag"))
         .filter(|v| !v.is_empty());
     let created_at = extract_json_string_field(first_line, "timestamp")
-        .and_then(|ts| chrono_like_parse_ms(&ts).ok());
+        .and_then(|ts| parse_rfc3339_ms(&ts).ok());
 
     Some(SDKSessionInfo {
         session_id: session_id.to_string(),
@@ -708,69 +708,12 @@ fn parse_session_info_from_lite(
     })
 }
 
-/// Best-effort ISO-8601 → milliseconds converter. No chrono dep; handles
-/// the specific `YYYY-MM-DDTHH:MM:SS(.sss)?Z` shape the CLI emits.
-pub(crate) fn chrono_like_parse_ms(ts: &str) -> Result<u64, ()> {
-    // Example: "2026-04-22T04:15:27.123Z"
-    let bytes = ts.as_bytes();
-    if bytes.len() < 20 || !ts.ends_with('Z') {
-        return Err(());
-    }
-    let year: i32 = ts.get(0..4).and_then(|s| s.parse().ok()).ok_or(())?;
-    let month: u32 = ts.get(5..7).and_then(|s| s.parse().ok()).ok_or(())?;
-    let day: u32 = ts.get(8..10).and_then(|s| s.parse().ok()).ok_or(())?;
-    let hour: u32 = ts.get(11..13).and_then(|s| s.parse().ok()).ok_or(())?;
-    let minute: u32 = ts.get(14..16).and_then(|s| s.parse().ok()).ok_or(())?;
-    let second: u32 = ts.get(17..19).and_then(|s| s.parse().ok()).ok_or(())?;
-    // Sub-second fragment — normalise to 3-digit millis. "x.5Z" → 500,
-    // "x.123456Z" → 123 (not 123456, which was ~2 minutes wrong).
-    let mut millis: u32 = 0;
-    if bytes.get(19) == Some(&b'.') {
-        let ms_end = ts.find('Z').unwrap_or(bytes.len());
-        if let Some(frag) = ts.get(20..ms_end) {
-            let mut buf = String::with_capacity(3);
-            for ch in frag.chars().take(3) {
-                buf.push(ch);
-            }
-            while buf.len() < 3 {
-                buf.push('0');
-            }
-            millis = buf.parse::<u32>().unwrap_or(0).min(999);
-        }
-    }
-
-    // Simple epoch conversion valid for 1970-02-01 through ~2300. Cap
-    // the upper year so a malformed "99999-..." timestamp can't spin
-    // the leap-year loop ~98 000 iterations per entry.
-    if !(1970..=2300).contains(&year) {
-        return Err(());
-    }
-    let mut days: u64 = 0;
-    for y in 1970..year {
-        let leap = is_leap(y);
-        days += if leap { 366 } else { 365 };
-    }
-    let ml = month_lengths(year);
-    for (i, len) in ml.iter().enumerate() {
-        let idx = u32::try_from(i).unwrap_or(u32::MAX);
-        if idx + 1 >= month {
-            break;
-        }
-        days += u64::from(*len);
-    }
-    days += u64::from(day.saturating_sub(1));
-    let total_seconds: u64 =
-        days * 86_400 + u64::from(hour) * 3_600 + u64::from(minute) * 60 + u64::from(second);
-    Ok(total_seconds * 1_000 + u64::from(millis))
-}
-
-fn is_leap(year: i32) -> bool {
-    (year % 4 == 0 && year % 100 != 0) || year % 400 == 0
-}
-
-fn month_lengths(year: i32) -> [u32; 12] {
-    let feb = if is_leap(year) { 29 } else { 28 };
-    [31, feb, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+/// Parse the CLI's RFC-3339 timestamp (e.g. `2026-04-22T04:15:27.123Z`)
+/// into Unix epoch milliseconds. Sub-millisecond precision is truncated.
+pub(crate) fn parse_rfc3339_ms(ts: &str) -> Result<u64, time::error::Parse> {
+    let dt = time::OffsetDateTime::parse(ts, &time::format_description::well_known::Rfc3339)?;
+    let nanos = dt.unix_timestamp_nanos();
+    Ok(u64::try_from(nanos / 1_000_000).unwrap_or(0))
 }
 
 #[cfg(test)]
@@ -823,10 +766,7 @@ mod tests {
 
     #[test]
     fn iso_parser_handles_millis() {
-        let ms = chrono_like_parse_ms("2026-04-22T00:00:00.500Z").unwrap();
-        // 2026-04-22 is 20200 days after 1970-01-01.
-        // Verify via cross-check: seconds = 20200 * 86400.
-        // We don't hard-code; just check the ms portion adds correctly.
+        let ms = parse_rfc3339_ms("2026-04-22T00:00:00.500Z").unwrap();
         assert_eq!(ms % 1000, 500);
     }
 
