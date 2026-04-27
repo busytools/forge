@@ -268,28 +268,12 @@ pub fn fork_session(
     })
 }
 
-/// Crate-internal wrapper so other modules (e.g. `sessions_via_store`) can
-/// reuse the same validator without duplicating the regex/format logic.
-/// Not part of the public API.
-///
-/// True if `s` is a canonical 8-4-4-4-12 hex UUID string. Shared across
-/// modules that need a stateless pre-flight check.
+/// True if `s` is a canonical 8-4-4-4-12 hyphenated UUID. The length
+/// guard rejects the hyphenless / braced / URN forms that
+/// `Uuid::try_parse` otherwise accepts — session ids on disk are always
+/// the hyphenated form the CLI emits.
 pub(crate) fn is_valid_uuid(s: &str) -> bool {
-    let parts: Vec<&str> = s.split('-').collect();
-    parts.len() == 5
-        && matches!(
-            (
-                parts[0].len(),
-                parts[1].len(),
-                parts[2].len(),
-                parts[3].len(),
-                parts[4].len()
-            ),
-            (8, 4, 4, 4, 12)
-        )
-        && parts
-            .iter()
-            .all(|p| p.chars().all(|c| c.is_ascii_hexdigit()))
+    s.len() == 36 && Uuid::try_parse(s).is_ok()
 }
 
 fn validate_uuid(s: &str) -> Result<(), Error> {

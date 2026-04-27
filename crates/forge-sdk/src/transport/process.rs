@@ -410,16 +410,6 @@ impl Subprocess {
 
         child_result
     }
-
-    /// Consuming alias for [`close`](Self::close). Kept for backward
-    /// compatibility with pre-`Transport`-trait callers.
-    ///
-    /// # Errors
-    ///
-    /// Same as [`close`](Self::close).
-    pub async fn shutdown(mut self) -> Result<(), Error> {
-        self.close().await
-    }
 }
 
 /// Cloneable writer half of [`Subprocess`] — pushes onto the writer
