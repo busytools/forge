@@ -76,7 +76,7 @@ pub(crate) fn message_event_id(msg: &forge_sdk::Message) -> &str {
 pub(crate) fn spawn_session_actor(
     state: DaemonState,
     handle: &SessionHandle,
-    mut client: Client,
+    client: Client,
     mut commands: tokio::sync::mpsc::Receiver<Command>,
 ) {
     let session_id = handle.id.clone();

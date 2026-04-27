@@ -20,7 +20,7 @@ async fn spawn_captures_session_id() {
 #[tokio::test]
 async fn send_and_receive_full_turn() {
     let opts = OptionsBuilder::new().binary(mock_binary_path()).build();
-    let mut client = Client::spawn(opts).await.expect("spawn");
+    let client = Client::spawn(opts).await.expect("spawn");
     client.send_user_message("hi").await.expect("send");
 
     let msg = client.next_event().await.expect("next").expect("assistant");
@@ -40,7 +40,7 @@ async fn send_and_receive_full_turn() {
 #[tokio::test]
 async fn disconnect_after_send_does_not_hang() {
     let opts = OptionsBuilder::new().binary(mock_binary_path()).build();
-    let mut client = Client::spawn(opts).await.expect("spawn");
+    let client = Client::spawn(opts).await.expect("spawn");
     client.send_user_message("hi").await.expect("send");
     // Drain.
     let _ = client.next_event().await;

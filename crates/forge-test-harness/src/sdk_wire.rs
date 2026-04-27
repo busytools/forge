@@ -34,6 +34,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use forge_sdk::Error;
+use forge_sdk::transport::AsyncWriter;
 use forge_sdk::transport::Transport;
 use forge_sdk::transport::codec::{DecodedLine, decode_dispatch};
 use forge_sdk::transport::process::Subprocess;
@@ -131,6 +132,40 @@ impl Transport for RecordingTransport {
 
     async fn close(&mut self) -> Result<(), Error> {
         self.inner.close().await
+    }
+
+    fn try_clone_writer(&self) -> Option<Arc<dyn AsyncWriter>> {
+        let inner = self.inner.try_clone_writer()?;
+        Some(Arc::new(RecordingWriter {
+            inner,
+            log: self.log.clone(),
+        }))
+    }
+}
+
+/// Cloneable writer half of [`RecordingTransport`] — tees outbound
+/// lines into the shared trace log before delegating to the inner
+/// [`AsyncWriter`]. Returned by
+/// [`RecordingTransport::try_clone_writer`] so the SDK runtime can
+/// detach control-request dispatch onto independent tasks.
+#[derive(Debug)]
+struct RecordingWriter {
+    inner: Arc<dyn AsyncWriter>,
+    log: Arc<Mutex<TraceLog>>,
+}
+
+#[async_trait]
+impl AsyncWriter for RecordingWriter {
+    async fn write_line(&self, line: &str) -> Result<(), Error> {
+        self.log
+            .lock()
+            .entries
+            .push(("out", line.trim_end_matches('\n').to_string()));
+        self.inner.write_line(line).await
+    }
+
+    async fn end_input(&self) -> Result<(), Error> {
+        self.inner.end_input().await
     }
 }
 
@@ -312,7 +347,7 @@ where
         })?;
 
     // Hand off to the scenario driver — on failure dump a partial trace.
-    let mut client = match drive(client).await {
+    let client = match drive(client).await {
         Ok(c) => c,
         Err(e) => {
             let log = log_arc.lock();

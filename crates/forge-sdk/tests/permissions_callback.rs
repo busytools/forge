@@ -27,7 +27,7 @@ async fn allow_path_completes_turn() {
             }
         })
         .build();
-    let mut client = Client::spawn(opts).await.expect("spawn");
+    let client = Client::spawn(opts).await.expect("spawn");
     client.send_user_message("edit please").await.expect("send");
 
     // First visible event: the assistant turn AFTER the control round-trip.
@@ -64,7 +64,7 @@ async fn deny_path_completes_turn_with_denial_text() {
             PermissionDecision::deny(format!("cannot touch {}", ctx.tool_input["file_path"]))
         })
         .build();
-    let mut client = Client::spawn(opts).await.expect("spawn");
+    let client = Client::spawn(opts).await.expect("spawn");
     client.send_user_message("edit please").await.expect("send");
 
     let msg = client.next_event().await.expect("next").expect("assistant");
@@ -92,7 +92,7 @@ async fn allow_with_updated_input_propagates() {
             PermissionDecision::allow_with_input(json!({"file_path": "/tmp/redirected.txt"}))
         })
         .build();
-    let mut client = Client::spawn(opts).await.expect("spawn");
+    let client = Client::spawn(opts).await.expect("spawn");
     client.send_user_message("edit please").await.expect("send");
 
     let msg = client.next_event().await.expect("next").expect("assistant");

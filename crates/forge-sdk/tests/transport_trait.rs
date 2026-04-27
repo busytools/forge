@@ -1,48 +1,40 @@
 //! Verifies the public [`Transport`] trait + `Client::spawn_with_transport`
-//! injection path. Mirrors Python SDK's extensibility surface where
-//! users implement `Transport` for custom I/O (remote, in-memory,
-//! containerised).
+//! injection path. Used by `forge-test-harness`'s wire-recording
+//! transport for conformance baselines.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::collections::VecDeque;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use forge_sdk::{Client, Error, Message, OptionsBuilder, Transport};
+use forge_sdk::{AsyncWriter, Client, Error, Message, OptionsBuilder, Transport};
 
-/// In-memory transport driven by a scripted queue of stdout lines.
-/// Writes are captured so tests can assert what the client sent.
-struct MockTransport {
+/// Shared state between the [`MockTransport`] read side and its
+/// clonable [`MockWriter`]. The mock auto-replies to any
+/// `initialize` `control_request` by pushing a success response onto
+/// the stdout queue, so the init handshake completes without
+/// scripted choreography.
+#[derive(Default, Debug)]
+struct MockState {
     stdout: Mutex<VecDeque<String>>,
     writes: Mutex<Vec<String>>,
-    ended_input: Mutex<bool>,
     closed: Mutex<bool>,
 }
 
-impl MockTransport {
-    fn new(lines: Vec<&str>) -> Self {
-        Self {
-            stdout: Mutex::new(lines.into_iter().map(String::from).collect()),
-            writes: Mutex::new(Vec::new()),
-            ended_input: Mutex::new(false),
-            closed: Mutex::new(false),
-        }
-    }
-}
-
-#[async_trait]
-impl Transport for MockTransport {
-    async fn read_line(&mut self) -> Result<Option<String>, Error> {
-        Ok(self.stdout.lock().unwrap().pop_front())
+impl MockState {
+    fn seed(&self, line: &str) {
+        self.stdout.lock().unwrap().push_back(line.to_string());
     }
 
-    async fn write_line(&mut self, line: &str) -> Result<(), Error> {
+    fn record_write_and_auto_reply(&self, line: &str) {
         self.writes.lock().unwrap().push(line.to_string());
-        // On an initialize request, push the matching control_response
-        // onto the stdout queue so the test harness keeps marching.
+        // On any outbound control_request, push a matching success
+        // control_response onto the stdout queue. This makes the
+        // mock work for the init handshake AND any in-flight
+        // send_control calls without per-test scripting.
         if let Ok(value) = serde_json::from_str::<serde_json::Value>(line.trim()) {
-            if value.get("type").and_then(|v| v.as_str()) == Some("control_request") {
+            if value.get("type").and_then(serde_json::Value::as_str) == Some("control_request") {
                 if let Some(req_id) = value.get("request_id").and_then(serde_json::Value::as_str) {
                     let response = format!(
                         r#"{{"type":"control_response","response":{{"subtype":"success","request_id":"{req_id}","response":{{}}}}}}"#
@@ -51,16 +43,68 @@ impl Transport for MockTransport {
                 }
             }
         }
+    }
+}
+
+struct MockTransport {
+    state: Arc<MockState>,
+}
+
+impl MockTransport {
+    fn new(lines: Vec<&str>) -> (Self, Arc<MockState>) {
+        let state = Arc::new(MockState::default());
+        for line in lines {
+            state.seed(line);
+        }
+        (
+            Self {
+                state: state.clone(),
+            },
+            state,
+        )
+    }
+}
+
+#[async_trait]
+impl Transport for MockTransport {
+    async fn read_line(&mut self) -> Result<Option<String>, Error> {
+        Ok(self.state.stdout.lock().unwrap().pop_front())
+    }
+
+    async fn write_line(&mut self, line: &str) -> Result<(), Error> {
+        self.state.record_write_and_auto_reply(line);
         Ok(())
     }
 
     async fn end_input(&mut self) -> Result<(), Error> {
-        *self.ended_input.lock().unwrap() = true;
         Ok(())
     }
 
     async fn close(&mut self) -> Result<(), Error> {
-        *self.closed.lock().unwrap() = true;
+        *self.state.closed.lock().unwrap() = true;
+        Ok(())
+    }
+
+    fn try_clone_writer(&self) -> Option<Arc<dyn AsyncWriter>> {
+        Some(Arc::new(MockWriter {
+            state: self.state.clone(),
+        }))
+    }
+}
+
+#[derive(Debug)]
+struct MockWriter {
+    state: Arc<MockState>,
+}
+
+#[async_trait]
+impl AsyncWriter for MockWriter {
+    async fn write_line(&self, line: &str) -> Result<(), Error> {
+        self.state.record_write_and_auto_reply(line);
+        Ok(())
+    }
+
+    async fn end_input(&self) -> Result<(), Error> {
         Ok(())
     }
 }
@@ -70,9 +114,9 @@ impl Transport for MockTransport {
 #[tokio::test]
 async fn spawn_with_transport_smoke() {
     let init = r#"{"type":"system","subtype":"init","session_id":"mock-xyz","cwd":"/tmp","tools":[],"mcp_servers":[],"model":"claude","permissionMode":"default","apiKeySource":"env"}"#;
-    let mock = Box::new(MockTransport::new(vec![init]));
+    let (mock, _state) = MockTransport::new(vec![init]);
     let opts = OptionsBuilder::new().binary("unused").build();
-    let client = Client::spawn_with_transport(opts, mock)
+    let client = Client::spawn_with_transport(opts, Box::new(mock))
         .await
         .expect("spawn_with_transport");
     assert_eq!(client.session_id(), "mock-xyz");
@@ -83,19 +127,17 @@ async fn spawn_with_transport_smoke() {
 /// after the init line is drained.
 #[tokio::test]
 async fn spawn_with_transport_sends_initialize() {
-    // Capture a reference to the mock before boxing so we can inspect
-    // the writes after disconnect.
-    use std::sync::Arc;
-    let mock = Arc::new(MockTransportShared::default());
-    mock.seed_stdout(r#"{"type":"system","subtype":"init","session_id":"s","cwd":"/tmp","tools":[],"mcp_servers":[],"model":"claude","permissionMode":"default","apiKeySource":"env"}"#);
-    let boxed: Box<dyn Transport> = Box::new(MockTransportShared::clone_arc(&mock));
-    let client =
-        Client::spawn_with_transport(OptionsBuilder::new().binary("unused").build(), boxed)
-            .await
-            .expect("spawn");
+    let init = r#"{"type":"system","subtype":"init","session_id":"s","cwd":"/tmp","tools":[],"mcp_servers":[],"model":"claude","permissionMode":"default","apiKeySource":"env"}"#;
+    let (mock, state) = MockTransport::new(vec![init]);
+    let client = Client::spawn_with_transport(
+        OptionsBuilder::new().binary("unused").build(),
+        Box::new(mock),
+    )
+    .await
+    .expect("spawn");
     client.disconnect().await.expect("disconnect");
 
-    let writes = mock.writes.lock().unwrap();
+    let writes = state.writes.lock().unwrap();
     let init_req_seen = writes.iter().any(|l| {
         l.contains("\"type\":\"control_request\"") && l.contains("\"subtype\":\"initialize\"")
     });
@@ -105,7 +147,7 @@ async fn spawn_with_transport_sends_initialize() {
         &*writes
     );
     assert!(
-        *mock.closed.lock().unwrap(),
+        *state.closed.lock().unwrap(),
         "client must call close() on the transport during disconnect"
     );
 }
@@ -118,9 +160,9 @@ async fn spawn_with_transport_sends_initialize() {
 async fn next_event_surfaces_unknown_top_level_type() {
     let init = r#"{"type":"system","subtype":"init","session_id":"mock-zzz","cwd":"/tmp","tools":[],"mcp_servers":[],"model":"claude","permissionMode":"default","apiKeySource":"env"}"#;
     let drift = r#"{"type":"future_thing","subtype":"experimental","payload":{"k":"v"}}"#;
-    let mock = Box::new(MockTransport::new(vec![init, drift]));
+    let (mock, _state) = MockTransport::new(vec![init, drift]);
     let opts = OptionsBuilder::new().binary("unused").build();
-    let mut client = Client::spawn_with_transport(opts, mock)
+    let client = Client::spawn_with_transport(opts, Box::new(mock))
         .await
         .expect("spawn_with_transport");
 
@@ -146,52 +188,4 @@ async fn next_event_surfaces_unknown_top_level_type() {
         other => panic!("expected Message::Unknown, got: {other:?}"),
     }
     client.disconnect().await.expect("disconnect");
-}
-
-// Arc-shared mock so the test can retain a handle after boxing for
-// assertions.
-#[derive(Default)]
-struct MockTransportShared {
-    stdout: Mutex<VecDeque<String>>,
-    writes: Mutex<Vec<String>>,
-    closed: Mutex<bool>,
-}
-
-impl MockTransportShared {
-    fn seed_stdout(&self, line: &str) {
-        self.stdout.lock().unwrap().push_back(line.to_string());
-    }
-    fn clone_arc(arc: &std::sync::Arc<Self>) -> MockTransportShareHandle {
-        MockTransportShareHandle(arc.clone())
-    }
-}
-
-struct MockTransportShareHandle(std::sync::Arc<MockTransportShared>);
-
-#[async_trait]
-impl Transport for MockTransportShareHandle {
-    async fn read_line(&mut self) -> Result<Option<String>, Error> {
-        Ok(self.0.stdout.lock().unwrap().pop_front())
-    }
-    async fn write_line(&mut self, line: &str) -> Result<(), Error> {
-        self.0.writes.lock().unwrap().push(line.to_string());
-        if let Ok(value) = serde_json::from_str::<serde_json::Value>(line.trim()) {
-            if value.get("type").and_then(|v| v.as_str()) == Some("control_request") {
-                if let Some(req_id) = value.get("request_id").and_then(serde_json::Value::as_str) {
-                    let response = format!(
-                        r#"{{"type":"control_response","response":{{"subtype":"success","request_id":"{req_id}","response":{{}}}}}}"#
-                    );
-                    self.0.stdout.lock().unwrap().push_back(response);
-                }
-            }
-        }
-        Ok(())
-    }
-    async fn end_input(&mut self) -> Result<(), Error> {
-        Ok(())
-    }
-    async fn close(&mut self) -> Result<(), Error> {
-        *self.0.closed.lock().unwrap() = true;
-        Ok(())
-    }
 }

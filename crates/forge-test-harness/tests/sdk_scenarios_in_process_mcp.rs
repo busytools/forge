@@ -54,7 +54,7 @@ async fn wire_capture_in_process_mcp() {
         .mcp_server("probe", server)
         .build();
 
-    run_live_scenario("in_process_mcp", opts, |mut client| async move {
+    run_live_scenario("in_process_mcp", opts, |client| async move {
         client
             .send_user_message(
                 "Call the mcp__probe__greet tool with name=\"forge\" \

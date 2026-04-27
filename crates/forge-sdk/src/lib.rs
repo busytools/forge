@@ -23,7 +23,7 @@
 //! use forge_sdk::{Client, OptionsBuilder};
 //!
 //! let options = OptionsBuilder::new().build();
-//! let mut client = Client::spawn(options).await?;
+//! let client = Client::spawn(options).await?;
 //! client.send_user_message("hello").await?;
 //! while let Some(event) = client.next_event().await? {
 //!     println!("{event:?}");
@@ -115,7 +115,7 @@ pub async fn query(
     prompt: impl AsRef<str>,
     options: Option<Options>,
 ) -> Result<Vec<messages::Message>> {
-    let mut client = Client::spawn(options.unwrap_or_default()).await?;
+    let client = Client::spawn(options.unwrap_or_default()).await?;
     client.send_user_message(prompt.as_ref()).await?;
     let messages = client.receive_response().await?;
     client.disconnect().await?;
@@ -143,7 +143,7 @@ pub fn query_stream(
     let prompt = prompt.into();
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Result<messages::Message>>();
     tokio::spawn(async move {
-        let mut client = match Client::spawn(options.unwrap_or_default()).await {
+        let client = match Client::spawn(options.unwrap_or_default()).await {
             Ok(c) => c,
             Err(e) => {
                 let _ = tx.send(Err(e));

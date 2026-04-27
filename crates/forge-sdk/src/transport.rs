@@ -42,6 +42,15 @@ pub trait AsyncWriter: Send + Sync + std::fmt::Debug {
     /// [`Error::Io`] on write failure or after the transport has
     /// closed its write half.
     async fn write_line(&self, line: &str) -> Result<(), Error>;
+
+    /// Close the write half so the remote sees EOF on stdin. Idempotent.
+    /// After this call, [`write_line`](Self::write_line) MUST return an
+    /// error.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Io`] on flush failure.
+    async fn end_input(&self) -> Result<(), Error>;
 }
 
 /// Abstract I/O surface that [`Client`](crate::Client) drives. Mirrors

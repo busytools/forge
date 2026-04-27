@@ -99,7 +99,7 @@ async fn wire_capture_trivial_prompt() {
     };
 
     let spawn_result = Client::spawn_with_transport(opts, Box::new(transport)).await;
-    let mut client = match spawn_result {
+    let client = match spawn_result {
         Ok(c) => c,
         Err(e) => {
             let path = dump_trace("trivial-spawn-failed");

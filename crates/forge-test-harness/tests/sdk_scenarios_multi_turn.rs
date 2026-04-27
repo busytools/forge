@@ -17,7 +17,7 @@ async fn wire_capture_multi_turn() {
         .permission_mode(PermissionMode::AcceptEdits)
         .build();
 
-    run_live_scenario("multi_turn", opts, |mut client| async move {
+    run_live_scenario("multi_turn", opts, |client| async move {
         // Turn 1 — drain the Result in-scenario so the harness's
         // main drain picks up turn 2's Result instead.
         client

@@ -27,7 +27,7 @@ async fn wire_capture_compact() {
         .hooks(hooks)
         .build();
 
-    run_live_scenario("compact", opts, |mut client| async move {
+    run_live_scenario("compact", opts, |client| async move {
         // First, a real turn so there's something to compact.
         client
             .send_user_message("Reply with only the word ALPHA.")

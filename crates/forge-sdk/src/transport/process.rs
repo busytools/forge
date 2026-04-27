@@ -473,6 +473,19 @@ impl AsyncWriter for SharedWriter {
             ))
         })?
     }
+
+    async fn end_input(&self) -> Result<(), Error> {
+        let (ack_tx, ack_rx) = oneshot::channel();
+        // Writer task already exited (e.g. previous end_input or close)
+        // → treat as no-op, matching `Subprocess::end_input`.
+        if self.writer_tx.send(WriterCmd::EndInput(ack_tx)).is_err() {
+            return Ok(());
+        }
+        ack_rx.await.unwrap_or_else(|_| {
+            warn!("SharedWriter::end_input: ack channel dropped");
+            Ok(())
+        })
+    }
 }
 
 fn spawn_reader_task(

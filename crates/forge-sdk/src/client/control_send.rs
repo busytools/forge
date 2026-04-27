@@ -1,191 +1,33 @@
-//! Outbound `control_request` senders: the generic [`send_control`]
-//! primitive plus the nine typed wrappers consumers call
-//! (`interrupt`, `set_permission_mode`, `set_model`, `rewind_files`,
-//! `mcp_reconnect`, `mcp_toggle`, `stop_task`, `mcp_status`,
-//! `get_context_usage`), including `_raw` escape hatches for
-//! `mcp_status` and `get_context_usage`.
+//! Outbound `control_request` typed wrappers — the user-facing
+//! commands (`interrupt`, `set_permission_mode`, `set_model`,
+//! `rewind_files`, `mcp_reconnect`, `mcp_toggle`, `stop_task`,
+//! `mcp_status`, `get_context_usage`) plus the `_raw` escape hatches
+//! for `mcp_status` and `get_context_usage`.
+//!
+//! All methods take `&self` and route through
+//! [`Client::send_control`] (which lives in `client.rs`); the reader
+//! task routes the matching `control_response` back via the
+//! `pending_controls` map. Concurrent calls are safe — the writer
+//! mpsc serialises onto stdin in arrival order, and each
+//! `request_id` gets its own oneshot waiter.
 //!
 //! Session forking lives elsewhere: the spawn-time
 //! [`Options::fork_session`](crate::Options) flag (surfaced via
 //! `--fork-session`) and the offline
 //! [`fork_session`](crate::session::mutations::fork_session) free
-//! function. Python SDK v0.1.64 does not define a runtime
-//! `fork_session` `control_request` subtype.
-//!
-//! Split out from `client.rs` (audit finding I5) to separate outbound
-//! control issuance from inbound dispatch / lifecycle.
+//! function.
 
 use crate::Error;
 use crate::client::Client;
-use crate::messages::Message;
-use crate::transport::codec::{DecodedLine, decode_dispatch};
 
 impl Client {
-    /// Issue an outbound `control_request` with the given `subtype` and
-    /// body, await the matching `control_response`, and return the inner
-    /// `response` value on success.
-    ///
-    /// # Errors
-    ///
-    /// - [`Error::MessageParse`] when the CLI replies with an error
-    ///   subtype or a malformed frame.
-    /// - [`Error::Io`] on pipe read/write failure.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the wait loop fans out across success / error / interleaved control_request / interleaved message variants — splitting it would obscure the single ordered protocol"
-    )]
-    pub(super) async fn send_control(
-        &mut self,
-        subtype: &str,
-        extra: serde_json::Value,
-    ) -> Result<serde_json::Value, Error> {
-        let request_id = crate::request_id::next();
-        let mut request_body = serde_json::Map::new();
-        request_body.insert(
-            "subtype".into(),
-            serde_json::Value::String(subtype.to_string()),
-        );
-        if let serde_json::Value::Object(extra_map) = extra {
-            for (k, v) in extra_map {
-                request_body.insert(k, v);
-            }
-        }
-        let envelope = serde_json::json!({
-            "type": "control_request",
-            "request_id": request_id,
-            "request": serde_json::Value::Object(request_body),
-        });
-        let mut line = serde_json::to_string(&envelope)
-            .map_err(|e| Error::encode("control_request envelope", e))?;
-        line.push('\n');
-        self.sub.write_line(&line).await?;
-
-        loop {
-            let Some(response_line) = self.sub.read_line().await? else {
-                return Err(Error::Connection {
-                    reason: format!("subprocess closed before {subtype} response"),
-                });
-            };
-            self.line_number += 1;
-            let value: serde_json::Value =
-                serde_json::from_str(&response_line).map_err(|source| Error::JsonDecode {
-                    line: self.line_number,
-                    source,
-                })?;
-            if value.get("type").and_then(serde_json::Value::as_str) == Some("control_response") {
-                let resp_request_id = value
-                    .pointer("/response/request_id")
-                    .and_then(serde_json::Value::as_str);
-                if resp_request_id != Some(&request_id) {
-                    // ID mismatch on a control_response: this is a
-                    // response to a different outbound request (which
-                    // shouldn't happen — `send_control` is the only
-                    // path that issues outbound control_requests, and
-                    // the previous wait must have returned before we
-                    // entered this loop). Log explicitly and continue
-                    // — falling through to the generic "unexpected
-                    // frame" warn below would muddy the diagnosis.
-                    tracing::warn!(
-                        got_id = ?resp_request_id,
-                        expected_id = %request_id,
-                        %subtype,
-                        "control_response request_id mismatch during outbound wait — dropping frame"
-                    );
-                    continue;
-                }
-                let resp_subtype = value
-                    .pointer("/response/subtype")
-                    .and_then(serde_json::Value::as_str);
-                if resp_subtype == Some("success") {
-                    return Ok(value
-                        .pointer("/response/response")
-                        .cloned()
-                        .unwrap_or(serde_json::Value::Null));
-                }
-                let err = value
-                    .pointer("/response/error")
-                    .and_then(serde_json::Value::as_str)
-                    .map_or_else(
-                        || {
-                            format!(
-                                "no `error` string field; full response: {}",
-                                value
-                                    .pointer("/response")
-                                    .map_or_else(|| "<missing>".to_string(), ToString::to_string)
-                            )
-                        },
-                        ToString::to_string,
-                    );
-                return Err(Error::message_parse(format!("{subtype} failed: {err}")));
-            }
-            // Inbound `control_request` (CLI → SDK) interleaved with our
-            // outbound wait — most commonly `hook_callback` / `mcp_message`
-            // / `can_use_tool`. Without dispatching them, the CLI hangs
-            // waiting for our reply and effectively deadlocks the session.
-            // Mirror the behaviour `spawn_inner` uses during init.
-            if value.get("type").and_then(serde_json::Value::as_str) == Some("control_request") {
-                let req: crate::control::ControlRequest =
-                    serde_json::from_value(value).map_err(|e| {
-                        Error::message_parse(format!(
-                            "line {}: control_request decode during {subtype} wait: {e}",
-                            self.line_number
-                        ))
-                    })?;
-                self.handle_control(req).await?;
-                continue;
-            }
-            // Anything else interleaved on the stream is a regular
-            // message frame — assistant / user / system / result /
-            // stream_event / rate_limit_event. The CLI is free to
-            // produce these between our control_request and its
-            // control_response, especially with --include-partial-
-            // messages. Drop here would silently corrupt the
-            // conversation transcript. Buffer instead, mirroring
-            // spawn_inner's pre-init handling — next_event drains the
-            // buffer before reading new lines.
-            match decode_dispatch(&response_line, self.line_number)? {
-                DecodedLine::Message(msg) => {
-                    tracing::debug!(
-                        line_number = self.line_number,
-                        %subtype,
-                        "buffering interleaved message frame during outbound control wait"
-                    );
-                    self.pre_init_messages.push_back(msg);
-                }
-                DecodedLine::Unknown { type_str, raw } => {
-                    tracing::warn!(
-                        type = %type_str,
-                        raw = %raw,
-                        line = self.line_number,
-                        %subtype,
-                        "unknown top-level type during control wait — buffering as Message::Unknown"
-                    );
-                    self.pre_init_messages
-                        .push_back(Message::Unknown { type_str, raw });
-                }
-                // control_* variants were already matched above; any
-                // other DecodedLine slipping through is a future variant
-                // we don't yet recognise. Log and drop to keep the wait
-                // alive — re-issuing the request is the consumer's fix.
-                other => {
-                    tracing::debug!(
-                        line_number = self.line_number,
-                        ?other,
-                        %subtype,
-                        "unexpected DecodedLine during control wait fallthrough; ignoring"
-                    );
-                }
-            }
-        }
-    }
-
     /// Ask the CLI to interrupt the current turn (cancel in-flight tool
     /// calls and return control to the SDK).
     ///
     /// # Errors
     ///
     /// See the outbound control error cases.
-    pub async fn interrupt(&mut self) -> Result<(), Error> {
+    pub async fn interrupt(&self) -> Result<(), Error> {
         self.send_control("interrupt", serde_json::json!({}))
             .await?;
         Ok(())
@@ -197,7 +39,7 @@ impl Client {
     ///
     /// See the outbound control error cases.
     pub async fn set_permission_mode(
-        &mut self,
+        &self,
         mode: crate::options::PermissionMode,
     ) -> Result<(), Error> {
         self.send_control(
@@ -210,26 +52,24 @@ impl Client {
 
     /// Switch the model mid-session. Pass `Some("claude-sonnet-4-6")` or
     /// similar to pick a specific model; `None` reverts to the CLI
-    /// default. Wire shape mirrors Python SDK `_internal/query.py:688-695`
-    /// — `{"subtype": "set_model", "model": <string or null>}`.
+    /// default. Wire shape: `{"subtype": "set_model", "model": <string or null>}`.
     ///
     /// # Errors
     ///
     /// See the outbound control error cases.
-    pub async fn set_model(&mut self, model: Option<&str>) -> Result<(), Error> {
+    pub async fn set_model(&self, model: Option<&str>) -> Result<(), Error> {
         self.send_control("set_model", serde_json::json!({"model": model}))
             .await?;
         Ok(())
     }
 
     /// Ask the CLI to revert file edits made since the given user message.
-    /// Required field shape matches Python SDK `types.py:1497` —
-    /// `{"subtype": "rewind_files", "user_message_id": "..."}`.
+    /// Required field shape: `{"subtype": "rewind_files", "user_message_id": "..."}`.
     ///
     /// # Errors
     ///
     /// See the outbound control error cases.
-    pub async fn rewind_files(&mut self, user_message_id: &str) -> Result<(), Error> {
+    pub async fn rewind_files(&self, user_message_id: &str) -> Result<(), Error> {
         self.send_control(
             "rewind_files",
             serde_json::json!({"user_message_id": user_message_id}),
@@ -240,12 +80,12 @@ impl Client {
 
     /// Reconnect a named MCP server (asks the CLI to drop + re-establish
     /// its connection to the named server). Wire shape uses camelCase
-    /// `serverName` per Python SDK `types.py:1505`.
+    /// `serverName`.
     ///
     /// # Errors
     ///
     /// See the outbound control error cases.
-    pub async fn mcp_reconnect(&mut self, server_name: &str) -> Result<(), Error> {
+    pub async fn mcp_reconnect(&self, server_name: &str) -> Result<(), Error> {
         self.send_control(
             "mcp_reconnect",
             serde_json::json!({"serverName": server_name}),
@@ -255,12 +95,12 @@ impl Client {
     }
 
     /// Toggle a named MCP server on/off. Wire shape uses camelCase
-    /// `serverName` per Python SDK `types.py:1513`.
+    /// `serverName`.
     ///
     /// # Errors
     ///
     /// See the outbound control error cases.
-    pub async fn mcp_toggle(&mut self, server_name: &str, enabled: bool) -> Result<(), Error> {
+    pub async fn mcp_toggle(&self, server_name: &str, enabled: bool) -> Result<(), Error> {
         self.send_control(
             "mcp_toggle",
             serde_json::json!({"serverName": server_name, "enabled": enabled}),
@@ -270,13 +110,12 @@ impl Client {
     }
 
     /// Kill an in-flight sub-agent task by its `task_id` (from the
-    /// `TaskStarted` system message). Matches Python SDK
-    /// `types.py:1519` — `{"subtype": "stop_task", "task_id": "..."}`.
+    /// `TaskStarted` system message).
     ///
     /// # Errors
     ///
     /// See the outbound control error cases.
-    pub async fn stop_task(&mut self, task_id: &str) -> Result<(), Error> {
+    pub async fn stop_task(&self, task_id: &str) -> Result<(), Error> {
         self.send_control("stop_task", serde_json::json!({"task_id": task_id}))
             .await?;
         Ok(())
@@ -289,7 +128,7 @@ impl Client {
     /// See the outbound control error cases, plus [`Error::MessageParse`]
     /// when the CLI payload doesn't match
     /// [`McpStatusResponse`](crate::public_types::McpStatusResponse).
-    pub async fn mcp_status(&mut self) -> Result<crate::public_types::McpStatusResponse, Error> {
+    pub async fn mcp_status(&self) -> Result<crate::public_types::McpStatusResponse, Error> {
         let raw = self
             .send_control("mcp_status", serde_json::json!({}))
             .await?;
@@ -303,12 +142,12 @@ impl Client {
     /// # Errors
     ///
     /// See the outbound control error cases.
-    pub async fn mcp_status_raw(&mut self) -> Result<serde_json::Value, Error> {
+    pub async fn mcp_status_raw(&self) -> Result<serde_json::Value, Error> {
         self.send_control("mcp_status", serde_json::json!({})).await
     }
 
-    /// Query current context usage (tokens consumed vs. budget). Returns
-    /// the typed response.
+    /// Query current context usage (tokens consumed vs. budget).
+    /// Returns the typed response.
     ///
     /// # Errors
     ///
@@ -316,7 +155,7 @@ impl Client {
     /// when the CLI payload doesn't match
     /// [`ContextUsageResponse`](crate::public_types::ContextUsageResponse).
     pub async fn get_context_usage(
-        &mut self,
+        &self,
     ) -> Result<crate::public_types::ContextUsageResponse, Error> {
         let raw = self
             .send_control("get_context_usage", serde_json::json!({}))
@@ -325,14 +164,14 @@ impl Client {
             .map_err(|e| Error::message_parse(format!("get_context_usage: {e}")))
     }
 
-    /// Query current context usage, returning the raw JSON payload. Use
-    /// this when the CLI returns fields not yet modelled by
+    /// Query current context usage, returning the raw JSON payload.
+    /// Use this when the CLI returns fields not yet modelled by
     /// [`ContextUsageResponse`](crate::public_types::ContextUsageResponse).
     ///
     /// # Errors
     ///
     /// See the outbound control error cases.
-    pub async fn get_context_usage_raw(&mut self) -> Result<serde_json::Value, Error> {
+    pub async fn get_context_usage_raw(&self) -> Result<serde_json::Value, Error> {
         self.send_control("get_context_usage", serde_json::json!({}))
             .await
     }

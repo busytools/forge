@@ -41,11 +41,11 @@ pub struct SpawnResult {
 ///
 /// The SDK's [`Subprocess`](forge_sdk::transport::process::Subprocess)
 /// drives subprocess I/O over internal mpsc channels, so
-/// [`Client::next_event`] is cancel-safe and
-/// [`Client::try_dispatch_handle`](forge_sdk::Client::try_dispatch_handle)
-/// hands out a clonable writer for detached `control_request` dispatch.
-/// The session actor uses both — see the actor module for the loop
-/// shape.
+/// [`Client::next_event`] is cancel-safe and the SDK's reader task
+/// internally `tokio::spawn`s `control_request` dispatch on detached
+/// tasks via a clonable writer. The session actor just runs a plain
+/// `select!` between command and `next_event` — see the actor module
+/// for the loop shape.
 ///
 /// Wires in M4's reverse-RPC bridges before spawning:
 ///   - [`ForgedPermissionBridge`](crate::sdk_callbacks::ForgedPermissionBridge)
