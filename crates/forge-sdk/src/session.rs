@@ -5,8 +5,8 @@
 //!
 //! - [`scan`] — offline filesystem scanners (`list_sessions`,
 //!   `get_session_info`, `get_session_messages`, `list_subagents`,
-//!   `get_subagent_messages`) plus the Python `_read_session_lite`
-//!   head+tail optimisation.
+//!   `get_subagent_messages`) with a head+tail lite-read so 100 MiB
+//!   transcripts cost two 64 KiB reads rather than a full scan.
 //! - [`mutations`] — in-place mutations (`rename_session`,
 //!   `tag_session`, `delete_session`, `fork_session`) operating on
 //!   local JSONL transcripts.

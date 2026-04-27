@@ -791,7 +791,7 @@ fn hook_bridge_replace_input_carries_through() {
 
 #[test]
 fn hook_bridge_decodes_all_sync_output_fields() {
-    // Round 3 — fix I6. Lock that every Python SyncHookJSONOutput
+    // Round 3 — fix I6. Lock that every SyncHookJSONOutput
     // control field round-trips through `decode_hook_response`.
     let v = serde_json::json!({
         "decision": "passthrough",

@@ -1,25 +1,18 @@
 //! Offline session scanners — stateless filesystem helpers that read
 //! transcripts from `~/.claude/projects/<project_key>/*.jsonl`.
 //!
-//! Ports the public entry points of Python SDK v0.1.64
-//! `_internal/sessions.py`:
-//!
 //! - [`list_sessions`] — lists sessions, either for one project or all.
 //! - [`get_session_info`] — reads metadata for one session by ID.
 //! - [`get_session_messages`] — reads the full transcript for one session.
 //!
-//! Session metadata ([`list_sessions`], [`get_session_info`]) is extracted
-//! via an internal head + tail lite read — mirrors Python's
-//! `_read_session_lite` / `_parse_session_info_from_lite` so a 100 MiB
+//! Session metadata ([`list_sessions`], [`get_session_info`]) is
+//! extracted via an internal head + tail lite read so a 100 MiB
 //! transcript costs two 64 KiB reads rather than a full scan.
 //!
-//! Subagent helpers ([`list_subagents`], [`get_subagent_messages`]) read
-//! `agent-<id>.jsonl` files under `<session_id>/subagents/` and recurse
-//! into nested subdirectories (e.g. `workflows/<run_id>/`) to match
-//! Python's layout.
-//!
-//! Not yet ported: the `SessionStore`-backed `*_from_store` variants
-//! from `_internal/sessions.py`. Follow-up work.
+//! Subagent helpers ([`list_subagents`], [`get_subagent_messages`])
+//! read `agent-<id>.jsonl` files under `<session_id>/subagents/` and
+//! recurse into nested subdirectories (e.g. `workflows/<run_id>/`)
+//! to match the CLI's on-disk layout.
 
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
@@ -35,7 +28,7 @@ use crate::session::mutations::projects_dir;
 const MAX_SANITIZED_LENGTH: usize = 200;
 
 /// Size of the head / tail byte buffer for lite metadata reads.
-/// Python SDK constant (`_internal/sessions.py:29`) — match exactly so
+/// the CLI constant — match exactly so
 /// the two implementations slice transcripts at the same boundary.
 const LITE_READ_BUF_SIZE: u64 = 65_536;
 
@@ -49,18 +42,16 @@ pub(crate) fn sanitize_path_public(name: &str) -> String {
 }
 
 /// Map a directory path to the CLI's on-disk project key. Canonicalises
-/// the path first and then applies the CLI's JS-style sanitisation hash.
-/// Mirrors Python SDK's `project_key_for_directory`
-/// (`_internal/session_store.py`). `None` defaults to `"."` (the
-/// process's current working directory), matching Python's
-/// `directory: str | Path | None = None` signature.
+/// the path first and then applies the CLI's JS-style sanitisation
+/// hash. `None` defaults to `"."` (the process's current working
+/// directory).
 #[must_use]
 pub fn project_key_for_directory(path: Option<&str>) -> String {
     sanitize_path(&canonicalize_path(path.unwrap_or(".")))
 }
 
 /// Resolve a directory to its realpath and apply NFC normalisation.
-/// Mirrors Python's `_canonicalize_path` (`_internal/sessions.py:147-153`)
+/// Wraps the CLI's `_canonicalize_path`
 /// — falls back to the input (NFC-normalised) when the path can't be
 /// canonicalised (most commonly because it doesn't exist). NFC is
 /// essential on filesystems that don't auto-normalise (Linux ext4,
@@ -78,8 +69,7 @@ fn canonicalize_path(path: &str) -> String {
 /// `<projects_dir>/<project_key>/<session_id>/subagents/agent-<agent_id>.jsonl`
 /// and may be nested in further subdirectories (e.g.
 /// `subagents/workflows/<run_id>/agent-<agent_id>.jsonl`) — this
-/// function recursively walks the tree. Ported from Python SDK v0.1.64
-/// `list_subagents` (`_internal/sessions.py:1273-1316`).
+/// function recursively walks the tree.
 ///
 /// Returns an empty Vec when `session_id` is not a valid UUID, the
 /// session has no subagents directory, or no `agent-*.jsonl` files are
@@ -99,8 +89,7 @@ pub fn list_subagents(session_id: &str, directory: Option<String>) -> Vec<String
         .collect()
 }
 
-/// Read a subagent's transcript in chronological order. Mirrors Python
-/// SDK's `get_subagent_messages` (`_internal/sessions.py:1318-1383`).
+/// Read a subagent's transcript in chronological order.
 ///
 /// `agent_id` is the id returned by [`list_subagents`] (the part between
 /// `agent-` and `.jsonl` in the on-disk filename). `limit` caps the
@@ -124,8 +113,8 @@ pub fn get_subagent_messages(
     let Some(subagents_dir) = resolve_subagents_dir(session_id, directory.as_deref()) else {
         return Vec::new();
     };
-    // Walk the tree — the file may live directly under subagents/ or in
-    // a nested subdirectory (Python `workflows/<runId>/` pattern).
+    // Walk the tree — the file may live directly under subagents/ or
+    // in a nested subdirectory (e.g. `workflows/<run_id>/`).
     let Some((_, path)) = collect_agent_files(&subagents_dir)
         .into_iter()
         .find(|(found, _)| found == agent_id)
@@ -139,10 +128,10 @@ pub fn get_subagent_messages(
     apply_limit_offset(all, limit, offset)
 }
 
-/// Recursively walk `base_dir` and collect `(agent_id, file_path)` for
-/// every file named `agent-<agent_id>.jsonl`. Returned entries are
-/// sorted by filename within each directory (matches Python's
-/// `sorted(current_dir.iterdir(), key=lambda p: p.name)`).
+/// Recursively walk `base_dir` and collect `(agent_id, file_path)`
+/// for every file named `agent-<agent_id>.jsonl`. Returned entries
+/// are sorted by filename within each directory (matches the CLI's
+/// on-disk traversal order so [`list_subagents`] is reproducible).
 fn collect_agent_files(base_dir: &Path) -> Vec<(String, PathBuf)> {
     let mut out = Vec::new();
     walk_agent_files(base_dir, &mut out);
@@ -257,10 +246,10 @@ fn parse_session_messages<R: std::io::Read>(reader: R) -> Vec<SessionMessage> {
     out
 }
 
-/// Sanitise a path the same way the `claude` CLI does — non-alphanumerics
-/// become hyphens, and overlong paths are truncated with a base-36 hash
-/// suffix (matching JS's `String.prototype.hashCode` trick). Ported from
-/// Python `_sanitize_path` (`sessions.py:100-110`).
+/// Sanitise a path the same way the `claude` CLI does —
+/// non-alphanumerics become hyphens, and overlong paths are
+/// truncated with a base-36 hash suffix (matching JS's
+/// `String.prototype.hashCode` trick).
 fn sanitize_path(name: &str) -> String {
     let sanitized: String = name
         .chars()
@@ -408,12 +397,10 @@ pub fn get_session_messages(session_id: &str, directory: Option<String>) -> Vec<
 
 // ---------------------------------------------------------------------------
 // Lite read — head + tail metadata extraction without full-file scan.
-// Ported from Python SDK v0.1.64 `_internal/sessions.py:347-441`.
 // ---------------------------------------------------------------------------
 
 /// Head / tail snapshot of a session file — enough to recover all
-/// [`SDKSessionInfo`] fields without a full scan. Python equivalent:
-/// `_LiteSessionFile` (`sessions.py:336-347`).
+/// [`SDKSessionInfo`] fields without a full scan.
 struct LiteSessionFile {
     mtime: u64,
     size: u64,
@@ -549,8 +536,8 @@ fn unescape_json_string(raw: &str) -> String {
 /// Extract the first meaningful user prompt from a JSONL head chunk.
 /// Skips `tool_result`, `isMeta`, `isCompactSummary`, slash-command
 /// messages (with command-name fallback), and the fixed-prefix skip
-/// patterns Python's `_SKIP_FIRST_PROMPT_PATTERN` matches. Truncates to
-/// 200 chars with an ellipsis. Ported from `sessions.py:255-330`.
+/// patterns the CLI's `_SKIP_FIRST_PROMPT_PATTERN` matches. Truncates to
+/// 200 chars with an ellipsis.
 #[allow(clippy::too_many_lines)]
 fn extract_first_prompt_from_head(head: &str) -> Option<String> {
     let mut command_fallback: Option<String> = None;
@@ -634,7 +621,7 @@ pub(crate) fn extract_command_name(s: &str) -> Option<String> {
     Some(after[..close].to_string())
 }
 
-/// Fixed-prefix counterpart to Python's `_SKIP_FIRST_PROMPT_PATTERN`.
+/// Fixed-prefix counterpart to the CLI's `_SKIP_FIRST_PROMPT_PATTERN`.
 pub(crate) fn should_skip_first_prompt(s: &str) -> bool {
     const PREFIXES: [&str; 4] = [
         "<local-command-stdout>",
@@ -666,9 +653,9 @@ fn read_session_info(path: &Path) -> Option<SDKSessionInfo> {
     parse_session_info_from_lite(&session_id, &lite, None)
 }
 
-/// Ported from Python `_parse_session_info_from_lite`
-/// (`sessions.py:418-502`). Skips sidechain transcripts and metadata-only
-/// sessions (no summary after all fallbacks).
+/// Build an [`SDKSessionInfo`] from a lite head/tail read. Skips
+/// sidechain transcripts and metadata-only sessions (no summary
+/// after all fallbacks).
 fn parse_session_info_from_lite(
     session_id: &str,
     lite: &LiteSessionFile,
@@ -807,7 +794,7 @@ mod tests {
 
     #[test]
     fn simple_hash_matches_known_value() {
-        // Python reference: _simple_hash("foo") → "26di" (computed from the
+        // Reference: _simple_hash("foo") → "26di" (computed from the
         // same 32-bit JS-style hash algorithm).
         assert_eq!(simple_hash("foo"), "26di");
     }
@@ -992,8 +979,8 @@ mod tests {
 
     // ---------------------------------------------------------------------
     // Subagent-listing helpers — the recursive walk + filename filter
-    // ported from Python `_collect_agent_files`
-    // (`_internal/sessions.py:1200-1228`).
+    //
+    //.
     // ---------------------------------------------------------------------
 
     fn write_tmp_file(path: &Path, body: &str) {
@@ -1026,8 +1013,8 @@ mod tests {
 
     #[test]
     fn collect_agent_files_recurses_into_nested_subdirs() {
-        // Python writes subagents at `workflows/<run_id>/agent-<id>.jsonl`
-        // (`_internal/sessions.py:1282`). Walk must find them.
+        // The CLI writes subagents at `workflows/<run_id>/agent-<id>.jsonl`
+        //. Walk must find them.
         let tmp = tempfile::tempdir().unwrap();
         let base = tmp.path();
         write_tmp_file(

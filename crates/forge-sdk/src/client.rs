@@ -14,8 +14,8 @@
 //!   per-request oneshots so [`Client::send_control`] callers can
 //!   `await` their typed reply.
 //! - The writer half is a clonable [`crate::transport::AsyncWriter`]
-//!   pulled from [`Transport::try_clone_writer`]; outbound writes go
-//!   through it without contending on `&mut self`.
+//!   cloned from [`Subprocess`](crate::transport::process::Subprocess);
+//!   outbound writes go through it without contending on `&mut self`.
 
 pub(crate) mod control_dispatch;
 mod control_send;
@@ -37,17 +37,16 @@ use crate::client::runtime::{
 use crate::mcp::orchestration::McpHosts;
 use crate::messages::Message;
 use crate::options::Options;
-use crate::transport::Transport;
 use crate::transport::codec::{DecodedLine, decode_dispatch};
 use crate::transport::process::Subprocess;
 
 /// An active `claude` binary subprocess.
 ///
 /// Construct via [`spawn`](Self::spawn). The init handshake
-/// ([`initialize` `control_request`](https://github.com/anthropics/claude-agent-sdk-python/blob/main/src/claude_agent_sdk/_internal/query.py#L196-L214))
-/// runs inside `spawn`; the `system/init` frame is consumed and its
-/// session id cached on [`session_id()`](Self::session_id). Callers
-/// of [`next_event`](Self::next_event) see the clean conversational
+/// (`initialize` `control_request` + drained response) runs inside
+/// `spawn`; the `system/init` frame is consumed and its session id
+/// cached on [`session_id()`](Self::session_id). Callers of
+/// [`next_event`](Self::next_event) see the clean conversational
 /// stream starting with hook/assistant/user frames.
 ///
 /// `Client` is `Clone`. All clones share the same underlying
@@ -61,7 +60,7 @@ pub struct Client {
 
 struct ClientInner {
     /// Cloned writer (mpsc-backed via the transport's writer task).
-    writer: Arc<dyn crate::transport::AsyncWriter>,
+    writer: std::sync::Arc<dyn crate::transport::AsyncWriter>,
     /// Cached response from the `initialize` `control_request` —
     /// populated during spawn and never mutated afterwards.
     initialization_result: Option<serde_json::Value>,
@@ -101,46 +100,18 @@ impl std::fmt::Debug for Client {
 impl Client {
     /// Spawn `claude` with the given options and run the init handshake.
     ///
+    /// Wire-recording for conformance baselines is configured via
+    /// [`Options::tee_inbound`](crate::Options) /
+    /// [`Options::tee_outbound`](crate::Options) callbacks — the
+    /// `forge-test-harness` crate drives this.
+    ///
     /// # Errors
     ///
     /// Any [`Error`] variant; see field docs.
-    pub async fn spawn(options: Options) -> Result<Self, Error> {
-        let sub = Subprocess::spawn(&options).await?;
-        Self::spawn_inner(options, Box::new(sub)).await
-    }
-
-    /// Spawn a client around a caller-supplied [`Transport`]
-    /// implementation, bypassing the internal `Subprocess` construction.
-    ///
-    /// Used by `forge-test-harness`'s `RecordingTransport` to capture
-    /// the wire bytes for conformance baselines. The transport MUST
-    /// override [`Transport::try_clone_writer`] to return `Some` —
-    /// the new channels-based runtime requires a clonable writer for
-    /// detached control dispatch and outbound `send_control` routing.
-    ///
-    /// # Errors
-    ///
-    /// Any [`Error`] variant — see [`Client::spawn`]. Additionally,
-    /// returns [`Error::Connection`] when the supplied transport's
-    /// `try_clone_writer` returns `None`.
-    pub async fn spawn_with_transport(
-        options: Options,
-        transport: Box<dyn Transport>,
-    ) -> Result<Self, Error> {
-        Self::spawn_inner(options, transport).await
-    }
-
-    /// Common spawn path. Runs the init handshake inline (sends
-    /// `initialize`, drains the response, dispatches any interleaved
-    /// `control_request`s inline since the reader task isn't running
-    /// yet), then transitions to the reader-task runtime.
     #[allow(clippy::too_many_lines)]
-    async fn spawn_inner(options: Options, mut sub: Box<dyn Transport>) -> Result<Self, Error> {
-        let writer = sub.try_clone_writer().ok_or_else(|| Error::Connection {
-            reason: "transport does not support try_clone_writer; \
-                     forge-sdk's runtime requires a clonable writer"
-                .into(),
-        })?;
+    pub async fn spawn(options: Options) -> Result<Self, Error> {
+        let mut sub = Subprocess::spawn(&options).await?;
+        let writer = sub.clone_writer();
         let session_id = new_shared_session_id();
         let mcp_hosts = McpHosts::new(
             options.mcp_servers.clone(),
@@ -160,8 +131,8 @@ impl Client {
             session_id.clone(),
         );
 
-        // Build the initialize control_request body. Python SDK keeps
-        // the same field-inclusion rules (`_internal/query.py:196-207`):
+        // Build the initialize control_request body. the CLI keeps
+        // the same field-inclusion rules:
         // `hooks` always present (null when empty), `agents` /
         // `excludeDynamicSections` / `skills` only when explicitly set.
         let agents_payload = if options.agents.is_empty() {
@@ -335,7 +306,7 @@ impl Client {
                             }
                         }
                         // Drop `system/init` from the pre-init buffer —
-                        // Python SDK consumes it inside `query._fetch_init`
+                        // the CLI consumes it inside `query._fetch_init`
                         // and never surfaces it to callers; we mirror.
                         if !matches!(
                             msg,

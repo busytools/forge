@@ -62,11 +62,10 @@ pub mod transport;
 
 pub use client::Client;
 pub use error::Error;
-pub use transport::{AsyncWriter, Transport};
 // Top-level message + content re-exports so consumers can say
 // `use forge_sdk::{AssistantEnvelope, StopReason, RateLimitInfo, ...}`
 // instead of reaching through `forge_sdk::messages::*`. Matches the
-// Python SDK's flat `__init__.py` surface.
+// the flat `__init__.py` surface.
 #[doc(hidden)]
 pub use crate::mcp::macros::__private;
 pub use content::ContentBlock;
@@ -104,16 +103,15 @@ pub type Result<T, E = Error> = core::result::Result<T, E>;
 
 /// One-shot helper that spawns a client, sends a single prompt, drains
 /// every message up to and including the terminal [`messages::Message::Result`]
-/// frame, and disconnects. Mirrors Python SDK's top-level `query()`
+/// frame, and disconnects. SDK's top-level `query()`
 /// helper (`query.py:11-40`).
 ///
 /// `options` is optional — pass `None` for the default configuration,
-/// matching Python's `options: ClaudeAgentOptions | None = None`
-/// keyword-only argument.
+/// passing `None` requests the CLI's defaults.
 ///
-/// Collects every message before returning. For streaming consumption
-/// (message-by-message as the CLI emits them, matching Python's
-/// `AsyncIterator[Message]` return shape), use [`query_stream`].
+/// Collects every message before returning. For streaming
+/// consumption (message-by-message as the CLI emits them), use
+/// [`query_stream`].
 ///
 /// # Errors
 ///
@@ -136,7 +134,7 @@ pub async fn query(
 /// CLI emits it, closing once the terminal `Message::Result` frame
 /// has been delivered (or on error).
 ///
-/// Mirrors Python SDK's `query()` return shape
+/// SDK's `query()` return shape
 /// (`AsyncIterator[Message]`, `query.py:11`). Use this when you want
 /// to react to partial assistant turns, tool-use blocks, or
 /// rate-limit events as they arrive rather than waiting for the
@@ -191,7 +189,7 @@ pub fn query_stream(
             }
         }
         // Same surface-disconnect-error treatment on the happy-path
-        // exit. Mirrors `query()`'s `client.disconnect().await?` —
+        // exit. query()`'s `client.disconnect().await?` —
         // streaming consumers shouldn't be in a worse position than
         // one-shot consumers when the subprocess fails to clean up.
         if let Err(e) = client.disconnect().await {

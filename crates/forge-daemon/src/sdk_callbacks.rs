@@ -348,7 +348,7 @@ fn decode_hook_decision(kind: &str, value: &Value) -> HookDecision {
         }
     };
 
-    // Optional control fields — Python's SyncHookJSONOutput shape.
+    // Optional control fields — match the SyncHookJSONOutput shape.
     if let Some(b) = value.get("continue").and_then(Value::as_bool) {
         d = d.with_continue(b);
     }

@@ -3,7 +3,7 @@
 //! Drives the model through a `Task` tool invocation so the CLI emits
 //! the `task_started` / `task_progress` / `task_notification` message
 //! family. Exercises forge-sdk's decoder for sub-agent lifecycle frames
-//! (Python `TaskStartedMessage` / `TaskProgressMessage` /
+//! (`TaskStartedMessage` / `TaskProgressMessage` /
 //! `TaskNotificationMessage`).
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]

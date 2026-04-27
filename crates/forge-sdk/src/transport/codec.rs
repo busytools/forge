@@ -18,7 +18,7 @@ pub enum DecodedLine {
     /// The CLI has withdrawn a previously-issued `control_request` — the
     /// handler matching `request_id` should be cancelled if still in flight.
     /// Wire shape `{"type":"control_cancel_request","request_id":"..."}`
-    /// per Python SDK `_internal/query.py:274-280`.
+    ///.
     ControlCancel {
         /// `request_id` of the `control_request` being withdrawn.
         request_id: String,
@@ -160,12 +160,9 @@ pub fn decode_dispatch(line: &str, line_number: u64) -> Result<DecodedLine, Erro
 /// [`Error::MessageParse`] wrapping a JSON serialization failure
 /// (extraordinarily rare for string inputs; included for totality).
 pub fn encode_user_prompt(prompt: &str, session_id: &str) -> Result<String, Error> {
-    // Python `client.py:260-267` sends `content` as a bare string for
-    // plain-text prompts. forge-sdk matches byte-for-byte so argv +
-    // stdin dumps line up between the two SDKs when a caller wants to
-    // compare them. The CLI accepts both the bare-string and
-    // `[{"type":"text","text":prompt}]` shapes, but parity means
-    // emitting the simpler form.
+    // The CLI accepts both the bare-string and
+    // `[{"type":"text","text":prompt}]` shapes for `content` on
+    // user turns. forge-sdk emits the simpler bare-string form.
     let payload = json!({
         "type": "user",
         "message": {"role": "user", "content": prompt},

@@ -1,6 +1,6 @@
 //! Hook callbacks — 10 hook kinds dispatched by opaque `callback_id`.
 //!
-//! Mirrors Python SDK's `HookMatcher` / `HookContext` machinery. Callbacks
+//! SDK's `HookMatcher` / `HookContext` machinery. Callbacks
 //! are registered at initialize time; the CLI emits `hook_callback`
 //! `control_request`s with an opaque `callback_id` (minted by the SDK) plus
 //! an `input` payload whose `hook_event_name` discriminates concrete types.
@@ -36,7 +36,7 @@ pub use outputs::{
 pub use registry::{Hooks, HooksBuilder};
 
 /// Identifies which hook point a callback is registered for. Ten event
-/// kinds mirrored from Python SDK v0.1.64 (`types.py:216-227`), plus
+/// kinds mirrored from the CLI v0.1.64, plus
 /// `Unknown` as a fallback for forward-compatibility.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum HookKind {
@@ -132,8 +132,6 @@ mod tests_hooks_types {
     use serde_json::json;
 
     /// Shared `BaseHookInput` fields the CLI emits on every hook input.
-    ///
-    /// Ported from claude-agent-sdk-python v0.1.64 `src/claude_agent_sdk/types.py:231-237`.
     #[test]
     fn base_hook_input_parses_required_fields() {
         let raw = json!({
@@ -440,8 +438,8 @@ mod tests_hooks_types {
 
     // ---------------------------------------------------------------------------
     // SyncHookJSONOutput control fields — with_continue / with_suppress_output /
-    // with_stop_reason / with_system_message. Mirrors Python's SyncHookJSONOutput
-    // (types.py:463-505). The accessors need to expose what the callback set so
+    // with_stop_reason / with_system_message. Wraps the CLI's SyncHookJSONOutput
+    //. The accessors need to expose what the callback set so
     // handle_hook_callback can emit them on the wire.
     // ---------------------------------------------------------------------------
 

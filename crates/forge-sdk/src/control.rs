@@ -2,7 +2,7 @@
 //!
 //! These carry out-of-band requests that the SDK must answer synchronously,
 //! such as permission checks (`can_use_tool`). See `docs/protocol-notes.md`
-//! for the observed Python SDK wire shapes we mirror here.
+//! for the observed the CLI wire shapes we mirror here.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -40,8 +40,7 @@ pub enum ControlRequestType {
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub enum ControlRequestKind {
-    /// A permission check for a tool call. Matches Python SDK
-    /// `SDKControlPermissionRequest` at types.py:1283-1291.
+    /// A permission check for a tool call.
     CanUseTool {
         /// Tool name the model wants to invoke.
         tool_name: String,
@@ -294,7 +293,7 @@ pub enum ControlResponseKind {
 /// Serialisable shape for the `response` field inside a successful
 /// `can_use_tool` response.
 ///
-/// Mirrors Python's `PermissionResultAllow` / `PermissionResultDeny`.
+/// Wraps the CLI's `PermissionResultAllow` / `PermissionResultDeny`.
 /// NOTE: wire keys are camelCase (`updatedInput`, `updatedPermissions`) —
 /// do not rename to `snake_case`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -302,7 +301,7 @@ pub enum ControlResponseKind {
 pub enum AllowBehavior {
     /// Allow the call. `updated_input` is ALWAYS populated on the wire —
     /// when the callback had no override, caller must echo the original
-    /// `input` into this field (Python always does).
+    /// `input` into this field (the CLI always does).
     Allow {
         /// The input to invoke the tool with (possibly modified by the
         /// callback). Serialised on the wire as `updatedInput`.
@@ -322,8 +321,8 @@ pub enum AllowBehavior {
     Deny {
         /// Feedback forwarded to the model.
         message: String,
-        /// Interrupt flag. Python emits this only when truthy
-        /// (`_internal/query.py:373-376`); mirror that by skipping when
+        /// Interrupt flag. The CLI emits this only when truthy
+        ///; mirror that by skipping when
         /// `false`.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         interrupt: bool,
@@ -354,7 +353,7 @@ impl ControlRequest {
 
     /// For a `CanUseTool` request, return a reference to the original
     /// `input` JSON. Used to echo the original input back in an allow
-    /// response when the callback supplied no override (Python SDK always
+    /// response when the callback supplied no override (the CLI always
     /// populates `updatedInput`).
     #[must_use]
     pub fn original_tool_input(&self) -> Option<&Value> {
@@ -417,7 +416,7 @@ mod tests_control_types {
         };
         let raw = serde_json::to_value(&allow).expect("ser");
         assert_eq!(raw["behavior"], "allow");
-        // CRITICAL: Python wire is camelCase `updatedInput`, not snake_case.
+        // CRITICAL: wire is camelCase `updatedInput`, not snake_case.
         assert_eq!(raw["updatedInput"]["file_path"], "/tmp/x");
         assert!(
             raw.get("updated_input").is_none(),

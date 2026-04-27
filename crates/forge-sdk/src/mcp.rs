@@ -1,7 +1,7 @@
 //! In-process MCP server hosting.
 //!
 //! Exposes Rust functions as MCP tools that the `claude` binary can call
-//! during agentic work. Mirrors Python SDK's `create_sdk_mcp_server`
+//! during agentic work. SDK's `create_sdk_mcp_server`
 //! + `@tool` decorator model.
 //!
 //! See `docs/protocol-notes.md` for observed wire details.

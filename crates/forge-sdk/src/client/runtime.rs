@@ -9,12 +9,12 @@
 //! 1. [`Client::spawn`] runs the init handshake inline (sends the
 //!    `initialize` `control_request`, drains the response, captures
 //!    any pre-init Messages).
-//! 2. Once init completes, [`spawn_reader_task`] takes ownership of the
-//!    [`Transport`](crate::transport::Transport), the dispatch handle,
-//!    the events channel, and any pre-init Messages.
+//! 2. Once init completes, [`spawn_reader_task`] takes ownership of
+//!    the [`Subprocess`], the dispatch handle, the events channel,
+//!    and any pre-init Messages.
 //! 3. The reader task pre-pumps the buffered messages, then loops on
-//!    `transport.read_line()` until shutdown / EOF / I/O error.
-//! 4. On exit, the reader task closes the transport and drains
+//!    `subprocess.read_line()` until shutdown / EOF / I/O error.
+//! 4. On exit, the reader task closes the subprocess and drains
 //!    `pending_controls` with an EOF error so blocked
 //!    [`send_control`] callers wake up.
 
@@ -28,8 +28,8 @@ use tokio::task::JoinHandle;
 use crate::Error;
 use crate::client::ControlDispatchHandle;
 use crate::messages::Message;
-use crate::transport::Transport;
 use crate::transport::codec::{DecodedLine, decode_dispatch};
+use crate::transport::process::Subprocess;
 
 /// Outcome of one outbound `control_request` — either the success
 /// payload (the inner `response` JSON) or a typed error.
@@ -45,7 +45,7 @@ pub(crate) type PendingControls = Arc<Mutex<HashMap<String, oneshot::Sender<Cont
 /// events channel), closes the transport and drains pending controls
 /// with an EOF error so blocked `send_control` callers wake up.
 pub(crate) fn spawn_reader_task(
-    mut transport: Box<dyn Transport>,
+    mut subprocess: Subprocess,
     dispatch: ControlDispatchHandle,
     pending_controls: PendingControls,
     events_tx: mpsc::UnboundedSender<Result<Message, Error>>,
@@ -57,7 +57,7 @@ pub(crate) fn spawn_reader_task(
         for msg in pre_init_messages {
             dispatch.capture_session_id_from(&msg);
             if events_tx.send(Ok(msg)).is_err() {
-                close_transport(&mut transport).await;
+                close_subprocess(&mut subprocess).await;
                 drain_pending(&pending_controls).await;
                 return;
             }
@@ -68,7 +68,7 @@ pub(crate) fn spawn_reader_task(
             tokio::select! {
                 biased;
                 _ = &mut shutdown_rx => break,
-                line = transport.read_line() => {
+                line = subprocess.read_line() => {
                     match line {
                         Ok(Some(line)) => {
                             line_number += 1;
@@ -94,7 +94,7 @@ pub(crate) fn spawn_reader_task(
             }
         }
 
-        close_transport(&mut transport).await;
+        close_subprocess(&mut subprocess).await;
         drain_pending(&pending_controls).await;
     })
 }
@@ -196,9 +196,9 @@ async fn handle_line(
     }
 }
 
-async fn close_transport(transport: &mut Box<dyn Transport>) {
-    if let Err(e) = transport.close().await {
-        tracing::debug!(error = %e, "reader task: transport close error");
+async fn close_subprocess(subprocess: &mut Subprocess) {
+    if let Err(e) = subprocess.close().await {
+        tracing::debug!(error = %e, "reader task: subprocess close error");
     }
 }
 

@@ -2,25 +2,25 @@
 //!
 //! ## I/O architecture
 //!
-//! The subprocess's stdin and stdout each run inside a dedicated tokio
-//! task; the [`Subprocess`] surface talks to them over mpsc channels.
-//! This buys two properties the [`Transport`](super::Transport) trait's
-//! `&mut self` shape can't provide on its own:
+//! The subprocess's stdin and stdout each run inside a dedicated
+//! tokio task; the [`Subprocess`] surface talks to them over mpsc
+//! channels. Two properties fall out:
 //!
 //! - **Cancel-safe reads.** [`tokio::io::AsyncBufReadExt::read_line`]
-//!   is documented as not cancel-safe, but [`mpsc::Receiver::recv`] is.
-//!   Driving stdout through a reader task lets callers `tokio::select!`
-//!   over [`Subprocess::read_line`] without losing already-consumed
-//!   bytes.
-//! - **Concurrent writes.** Cloning the writer-side mpsc is cheap and
-//!   `Send + 'static`. [`Subprocess::try_clone_writer`] hands out an
-//!   [`AsyncWriter`] backed by the same writer task, so detached
-//!   control-request dispatch (the daemon's actor pattern) can write
-//!   concurrently with the reader without serialising on `&mut self`.
+//!   is documented as not cancel-safe, but [`mpsc::Receiver::recv`]
+//!   is. Driving stdout through a reader task lets callers
+//!   `tokio::select!` over [`Subprocess::read_line`] without losing
+//!   already-consumed bytes.
+//! - **Concurrent writes.** Cloning the writer-side mpsc is cheap
+//!   and `Send + 'static`. The `Subprocess::clone_writer` helper
+//!   hands out a clonable writer backed by the same writer task,
+//!   so detached control-request dispatch (the daemon's actor
+//!   pattern) can write concurrently with the reader without
+//!   serialising on `&mut self`.
 //!
-//! Closes audit 2026-04-26 G1 directly inside the SDK — every spawned
-//! [`Client`](crate::Client) gets cancel-safe reads + concurrent
-//! writes for free.
+//! Closes audit 2026-04-26 G1 directly inside the SDK — every
+//! spawned [`Client`](crate::Client) gets cancel-safe reads +
+//! concurrent writes for free.
 
 use std::process::Stdio;
 use std::sync::Arc;
@@ -34,7 +34,7 @@ use tracing::{debug, warn};
 
 use crate::Error;
 use crate::argv::build_args;
-use crate::options::Options;
+use crate::options::{Options, WireTee};
 use crate::transport::AsyncWriter;
 
 /// Default upper bound on `close()` wait-for-exit. After this elapses,
@@ -183,14 +183,14 @@ impl Subprocess {
             cmd.current_dir(cwd);
         }
 
-        // Env setup — mirrors Python
-        // `_internal/transport/subprocess_cli.py:395-437`:
+        // Env setup — mirrors the CLI
+        //:
         //
         // 1. Start from parent env, filtering out `CLAUDECODE` so SDK-
         //    spawned subprocesses don't think they're nested inside a
         //    Claude Code parent (upstream issue #573).
         // 2. Inject `CLAUDE_CODE_ENTRYPOINT=sdk-rs` (overridable via
-        //    `options.env`). Python SDK stamps `sdk-py` here; forge-sdk
+        //    `options.env`). the CLI stamps `sdk-py` here; forge-sdk
         //    identifies as Rust for honest attribution.
         // 3. Let `options.env` override anything the SDK would
         //    otherwise default, EXCEPT `CLAUDE_AGENT_SDK_VERSION` —
@@ -212,11 +212,9 @@ impl Subprocess {
             cmd.env("PWD", cwd);
         }
 
-        // `options.user` must setuid the child — Python
-        // `subprocess_cli.py:458` passes it to `anyio.open_process`'s
-        // `user=` kwarg. Rust's analogue is `tokio::process::Command`'s
-        // inherent `uid()` method on Unix; no-op on other targets so
-        // the option stays a Unix-only knob.
+        // `options.user` must setuid the child — `tokio::process::Command`
+        // exposes `uid()` on Unix; no-op on other targets, so the
+        // option stays a Unix-only knob.
         #[cfg(unix)]
         if let Some(user) = &options.user {
             match user.parse::<u32>() {
@@ -226,7 +224,7 @@ impl Subprocess {
                 Err(_) => {
                     tracing::warn!(
                         %user,
-                        "Options::user did not parse as a uid; ignoring (Python accepts a numeric uid)"
+                        "Options::user did not parse as a uid; ignoring (wire accepts a numeric uid)"
                     );
                 }
             }
@@ -260,10 +258,10 @@ impl Subprocess {
 
         let buf_capacity = options.max_buffer_size.filter(|n| *n > 0);
         let (reader_tx, reader_rx) = mpsc::unbounded_channel();
-        spawn_reader_task(stdout, buf_capacity, reader_tx);
+        spawn_reader_task(stdout, buf_capacity, options.tee_inbound.clone(), reader_tx);
 
         let (writer_tx, writer_rx) = mpsc::unbounded_channel();
-        let writer_task = spawn_writer_task(stdin, writer_rx);
+        let writer_task = spawn_writer_task(stdin, options.tee_outbound.clone(), writer_rx);
 
         Ok(Self {
             writer_tx,
@@ -344,10 +342,10 @@ impl Subprocess {
     /// pattern) so a slow callback can't block the reader / command
     /// loop.
     #[must_use]
-    pub fn try_clone_writer(&self) -> Option<Arc<dyn AsyncWriter>> {
-        Some(Arc::new(SharedWriter {
+    pub(crate) fn clone_writer(&self) -> Arc<dyn AsyncWriter> {
+        Arc::new(SharedWriter {
             writer_tx: self.writer_tx.clone(),
-        }))
+        })
     }
 
     /// Graceful shutdown: close stdin, wait for the subprocess to
@@ -424,25 +422,6 @@ impl Subprocess {
     }
 }
 
-#[async_trait::async_trait]
-impl super::Transport for Subprocess {
-    async fn read_line(&mut self) -> Result<Option<String>, Error> {
-        Subprocess::read_line(self).await
-    }
-    async fn write_line(&mut self, line: &str) -> Result<(), Error> {
-        Subprocess::write_line(self, line).await
-    }
-    async fn end_input(&mut self) -> Result<(), Error> {
-        Subprocess::end_input(self).await
-    }
-    async fn close(&mut self) -> Result<(), Error> {
-        Subprocess::close(self).await
-    }
-    fn try_clone_writer(&self) -> Option<Arc<dyn AsyncWriter>> {
-        Subprocess::try_clone_writer(self)
-    }
-}
-
 /// Cloneable writer half of [`Subprocess`] — pushes onto the writer
 /// task's mpsc. Multiple clones can write concurrently; the writer
 /// task serialises onto the child's stdin in arrival order.
@@ -492,6 +471,7 @@ impl AsyncWriter for SharedWriter {
 fn spawn_reader_task(
     stdout: ChildStdout,
     buf_capacity: Option<usize>,
+    tee: Option<WireTee>,
     tx: mpsc::UnboundedSender<Result<Option<String>, Error>>,
 ) {
     tokio::spawn(async move {
@@ -513,6 +493,9 @@ fn spawn_reader_task(
                     while matches!(line.chars().last(), Some('\n' | '\r')) {
                         line.pop();
                     }
+                    if let Some(cb) = tee.as_ref() {
+                        cb(&line);
+                    }
                     if tx.send(Ok(Some(line))).is_err() {
                         // Receiver gone — caller dropped the transport.
                         break;
@@ -529,6 +512,7 @@ fn spawn_reader_task(
 
 fn spawn_writer_task(
     stdin: ChildStdin,
+    tee: Option<WireTee>,
     mut rx: mpsc::UnboundedReceiver<WriterCmd>,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
@@ -536,6 +520,9 @@ fn spawn_writer_task(
         while let Some(cmd) = rx.recv().await {
             match cmd {
                 WriterCmd::Write(line, ack) => {
+                    if let Some(cb) = tee.as_ref() {
+                        cb(line.trim_end_matches('\n'));
+                    }
                     let result = if let Some(s) = stdin.as_mut() {
                         match s.write_all(line.as_bytes()).await {
                             Ok(()) => s.flush().await.map_err(Error::Io),
@@ -610,9 +597,9 @@ mod tests {
 
         let stderr_task = tokio::spawn(drain_stderr(stderr, None));
         let (reader_tx, reader_rx) = mpsc::unbounded_channel();
-        spawn_reader_task(stdout, None, reader_tx);
+        spawn_reader_task(stdout, None, None, reader_tx);
         let (writer_tx, writer_rx) = mpsc::unbounded_channel();
-        let writer_task = spawn_writer_task(stdin, writer_rx);
+        let writer_task = spawn_writer_task(stdin, None, writer_rx);
 
         Subprocess {
             writer_tx,

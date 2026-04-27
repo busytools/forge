@@ -32,12 +32,9 @@ pub mod session_redact;
 
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use forge_sdk::Error;
-use forge_sdk::transport::AsyncWriter;
-use forge_sdk::transport::Transport;
+use forge_sdk::OptionsBuilder;
 use forge_sdk::transport::codec::{DecodedLine, decode_dispatch};
-use forge_sdk::transport::process::Subprocess;
 use parking_lot::Mutex;
 
 /// One captured line in a trace.
@@ -85,88 +82,27 @@ impl TraceLog {
     }
 }
 
-/// Transport wrapper that tees every line through to a shared log while
-/// delegating the actual I/O to the wrapped `Subprocess`.
-pub struct RecordingTransport {
-    inner: Subprocess,
-    log: Arc<Mutex<TraceLog>>,
-}
-
-impl RecordingTransport {
-    /// Wrap a live `Subprocess`. Returns the wrapper + a shared handle to
-    /// the trace log so the caller can read it back after shutdown.
-    #[must_use]
-    pub fn new(inner: Subprocess) -> (Self, Arc<Mutex<TraceLog>>) {
-        let log = Arc::new(Mutex::new(TraceLog::default()));
-        (
-            Self {
-                inner,
-                log: log.clone(),
-            },
-            log,
-        )
-    }
-}
-
-#[async_trait]
-impl Transport for RecordingTransport {
-    async fn read_line(&mut self) -> Result<Option<String>, Error> {
-        let line = self.inner.read_line().await?;
-        if let Some(ref s) = line {
-            self.log.lock().entries.push(("in", s.clone()));
-        }
-        Ok(line)
-    }
-
-    async fn write_line(&mut self, line: &str) -> Result<(), Error> {
-        self.log
-            .lock()
-            .entries
-            .push(("out", line.trim_end_matches('\n').to_string()));
-        self.inner.write_line(line).await
-    }
-
-    async fn end_input(&mut self) -> Result<(), Error> {
-        self.inner.end_input().await
-    }
-
-    async fn close(&mut self) -> Result<(), Error> {
-        self.inner.close().await
-    }
-
-    fn try_clone_writer(&self) -> Option<Arc<dyn AsyncWriter>> {
-        let inner = self.inner.try_clone_writer()?;
-        Some(Arc::new(RecordingWriter {
-            inner,
-            log: self.log.clone(),
-        }))
-    }
-}
-
-/// Cloneable writer half of [`RecordingTransport`] — tees outbound
-/// lines into the shared trace log before delegating to the inner
-/// [`AsyncWriter`]. Returned by
-/// [`RecordingTransport::try_clone_writer`] so the SDK runtime can
-/// detach control-request dispatch onto independent tasks.
-#[derive(Debug)]
-struct RecordingWriter {
-    inner: Arc<dyn AsyncWriter>,
-    log: Arc<Mutex<TraceLog>>,
-}
-
-#[async_trait]
-impl AsyncWriter for RecordingWriter {
-    async fn write_line(&self, line: &str) -> Result<(), Error> {
-        self.log
-            .lock()
-            .entries
-            .push(("out", line.trim_end_matches('\n').to_string()));
-        self.inner.write_line(line).await
-    }
-
-    async fn end_input(&self) -> Result<(), Error> {
-        self.inner.end_input().await
-    }
+/// Install inbound + outbound wire-tee callbacks on a builder so the
+/// resulting [`forge_sdk::Options`] captures every stream-json line
+/// the SDK exchanges with the `claude` subprocess. Returns the
+/// configured builder + a shared handle to the trace log.
+///
+/// Replaces the old `RecordingTransport` wrapper — the SDK no longer
+/// has a public `Transport` trait, and capturing wire bytes is now a
+/// spawn-time configuration concern, not a transport-injection one.
+#[must_use]
+pub fn attach_recording(builder: OptionsBuilder) -> (OptionsBuilder, Arc<Mutex<TraceLog>>) {
+    let log = Arc::new(Mutex::new(TraceLog::default()));
+    let log_in = log.clone();
+    let log_out = log.clone();
+    let builder = builder
+        .tee_inbound(move |line: &str| {
+            log_in.lock().entries.push(("in", line.to_string()));
+        })
+        .tee_outbound(move |line: &str| {
+            log_out.lock().entries.push(("out", line.to_string()));
+        });
+    (builder, log)
 }
 
 /// Pinned CLI version these baselines were captured against.
@@ -316,8 +252,23 @@ where
         return Ok(None);
     }
 
-    let sub = Subprocess::spawn(&options).await?;
-    let (transport, log_arc) = RecordingTransport::new(sub);
+    // Install wire-recording tees on the supplied options. The harness
+    // takes a fully-configured Options (built by the scenario), so we
+    // wrap it: rebuild via `OptionsBuilder::from_options` if it
+    // existed, else mutate the fields directly.
+    let log_arc = Arc::new(Mutex::new(TraceLog::default()));
+    let options = {
+        let log_in = log_arc.clone();
+        let log_out = log_arc.clone();
+        let mut opts = options;
+        opts.tee_inbound = Some(Arc::new(move |line: &str| {
+            log_in.lock().entries.push(("in", line.to_string()));
+        }));
+        opts.tee_outbound = Some(Arc::new(move |line: &str| {
+            log_out.lock().entries.push(("out", line.to_string()));
+        }));
+        opts
+    };
 
     // Scope-local helper to dump the trace regardless of how the test ends.
     let dump = |log: &TraceLog, tag: &str| -> std::path::PathBuf {
@@ -333,18 +284,16 @@ where
         path
     };
 
-    let client = forge_sdk::Client::spawn_with_transport(options, Box::new(transport))
-        .await
-        .inspect_err(|_e| {
-            let log = log_arc.lock();
-            let path = dump(&log, &format!("{scenario}-spawn-failed"));
-            eprintln!(
-                "{scenario}: spawn_with_transport failed, trace at {} [in={} out={}]",
-                path.display(),
-                log.inbound().len(),
-                log.outbound().len()
-            );
-        })?;
+    let client = forge_sdk::Client::spawn(options).await.inspect_err(|_e| {
+        let log = log_arc.lock();
+        let path = dump(&log, &format!("{scenario}-spawn-failed"));
+        eprintln!(
+            "{scenario}: Client::spawn failed, trace at {} [in={} out={}]",
+            path.display(),
+            log.inbound().len(),
+            log.outbound().len()
+        );
+    })?;
 
     // Hand off to the scenario driver — on failure dump a partial trace.
     let client = match drive(client).await {

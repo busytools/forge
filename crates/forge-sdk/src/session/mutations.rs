@@ -1,5 +1,4 @@
-//! Filesystem-backed session mutations. Ports the public entry points of
-//! Python SDK v0.1.64 `_internal/session_mutations.py`:
+//! Filesystem-backed session mutations:
 //!
 //! - [`rename_session`] — appends a `custom-title` JSONL entry.
 //! - [`tag_session`] — appends a `tag` JSONL entry (pass `None` to clear).

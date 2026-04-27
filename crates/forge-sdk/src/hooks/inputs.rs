@@ -1,6 +1,6 @@
 //! Typed input payloads for each hook event.
 //!
-//! Mirrors claude-agent-sdk-python v0.1.64 `types.py:231-344`. Every concrete
+//! Mirrors  Every concrete
 //! input flattens [`BaseHookInput`] so callbacks can access `session_id`,
 //! `transcript_path`, `cwd`, and (optionally) `permission_mode` without
 //! reaching back into [`super::HookContext`].
@@ -8,12 +8,10 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// Fields shared by every hook input the CLI emits.
-///
-/// Ported from claude-agent-sdk-python v0.1.64 `src/claude_agent_sdk/types.py:231-237`
-/// (`BaseHookInput` `TypedDict`). Every concrete input type below flattens
-/// this struct so callbacks can access `session_id`, `transcript_path`,
-/// `cwd`, and (optionally) `permission_mode` without reaching back into
+/// Fields shared by every hook input the CLI emits. Every concrete
+/// input type below flattens this struct so callbacks can access
+/// `session_id`, `transcript_path`, `cwd`, and (optionally)
+/// `permission_mode` without reaching back into
 /// [`super::HookContext`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BaseHookInput {
@@ -30,13 +28,12 @@ pub struct BaseHookInput {
     pub permission_mode: Option<String>,
 }
 
-/// Optional sub-agent attribution present on tool-lifecycle hook inputs
-/// (`PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `PermissionRequest`).
-///
-/// Ported from `types.py:246-263` (`_SubagentContextMixin`). Fields are
-/// populated when the hook fires inside a `Task`-spawned sub-agent so
-/// tool events can be attributed back to the right agent when multiple
-/// sub-agents interleave over the same control channel.
+/// Optional sub-agent attribution present on tool-lifecycle hook
+/// inputs (`PreToolUse`, `PostToolUse`, `PostToolUseFailure`,
+/// `PermissionRequest`). Fields are populated when the hook fires
+/// inside a `Task`-spawned sub-agent so tool events can be
+/// attributed back to the right agent when multiple sub-agents
+/// interleave over the same control channel.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SubagentContext {
     /// Sub-agent identifier. Matches the `agent_id` emitted by that
@@ -48,7 +45,7 @@ pub struct SubagentContext {
     pub agent_type: Option<String>,
 }
 
-/// Input payload for `PreToolUse`. Ported from `types.py:266-272`.
+/// Input payload for `PreToolUse`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PreToolUseInput {
     /// Shared hook context (`session_id`, `transcript_path`, `cwd`, …).
@@ -66,7 +63,7 @@ pub struct PreToolUseInput {
     pub tool_use_id: String,
 }
 
-/// Input payload for `PostToolUse`. Ported from `types.py:275-282`.
+/// Input payload for `PostToolUse`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PostToolUseInput {
     /// Shared hook context.
@@ -85,7 +82,7 @@ pub struct PostToolUseInput {
     pub tool_use_id: String,
 }
 
-/// Input payload for `PostToolUseFailure`. Ported from `types.py:285-292`.
+/// Input payload for `PostToolUseFailure`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PostToolUseFailureInput {
     /// Shared hook context.
@@ -108,7 +105,7 @@ pub struct PostToolUseFailureInput {
     pub is_interrupt: Option<bool>,
 }
 
-/// Input payload for `UserPromptSubmit`. Ported from `types.py:294-298`.
+/// Input payload for `UserPromptSubmit`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserPromptSubmitInput {
     /// Shared hook context.
@@ -118,7 +115,7 @@ pub struct UserPromptSubmitInput {
     pub prompt: String,
 }
 
-/// Input payload for `Stop`. Ported from `types.py:301-305`.
+/// Input payload for `Stop`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StopInput {
     /// Shared hook context.
@@ -130,7 +127,7 @@ pub struct StopInput {
     pub stop_hook_active: bool,
 }
 
-/// Input payload for `SubagentStop`. Ported from `types.py:308-314`.
+/// Input payload for `SubagentStop`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubagentStopInput {
     /// Shared hook context.
@@ -146,7 +143,7 @@ pub struct SubagentStopInput {
     pub agent_type: String,
 }
 
-/// Input payload for `PreCompact`. Ported from `types.py:317-321`.
+/// Input payload for `PreCompact`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PreCompactInput {
     /// Shared hook context.
@@ -160,7 +157,7 @@ pub struct PreCompactInput {
     pub custom_instructions: Option<String>,
 }
 
-/// Input payload for `Notification`. Ported from `types.py:324-328`.
+/// Input payload for `Notification`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NotificationInput {
     /// Shared hook context.
@@ -175,7 +172,7 @@ pub struct NotificationInput {
     pub notification_type: String,
 }
 
-/// Input payload for `SubagentStart`. Ported from `types.py:331-335`.
+/// Input payload for `SubagentStart`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubagentStartInput {
     /// Shared hook context.
@@ -187,7 +184,7 @@ pub struct SubagentStartInput {
     pub agent_type: String,
 }
 
-/// Input payload for `PermissionRequest`. Ported from `types.py:338-344`.
+/// Input payload for `PermissionRequest`.
 ///
 /// Observed when the CLI asks the SDK to confirm a tool invocation. This is
 /// distinct from the `can_use_tool` `control_request` path — `PermissionRequest`

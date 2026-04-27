@@ -1,9 +1,9 @@
 //! `AgentDefinition` and the nested types it carries.
 //!
-//! Mirrors Python SDK v0.1.64 `AgentDefinition` (`types.py:82-99`). The
+//! `AgentDefinition`. The
 //! struct is forwarded via the `initialize` `control_request`'s `agents`
 //! field when [`Options::agents`](crate::options::Options::agents) is
-//! non-empty. Python's wire serialisation drops unset fields (`None`);
+//! non-empty. the CLI's wire serialisation drops unset fields (`None`);
 //! we match that via `skip_serializing_if = "Option::is_none"`.
 
 use std::collections::HashMap;
@@ -166,8 +166,8 @@ impl AgentDefinition {
     }
 }
 
-/// `CLAUDE.md` scope surfaced to a subagent. Mirrors Python's
-/// `Literal["user", "project", "local"]` (`types.py:92`).
+/// `CLAUDE.md` scope surfaced to a subagent. Wire shape:
+/// `Literal["user", "project", "local"]`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum AgentMemory {
@@ -181,7 +181,7 @@ pub enum AgentMemory {
 
 /// One entry in [`AgentDefinition::mcp_servers`]. Either the name of an MCP
 /// server configured at the top level, or an inline `{name: config}` object.
-/// Matches Python's `list[str | dict[str, Any]]` type (`types.py:94`).
+/// Matches the CLI's `list[str | dict[str, Any]]` type.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum AgentMcpServerRef {
@@ -238,8 +238,8 @@ mod inline_mcp_server {
     }
 }
 
-/// Reasoning-effort hint on a subagent. Mirrors Python's
-/// `Literal["low","medium","high","max"] | int` (`types.py:98`).
+/// Reasoning-effort hint on a subagent. Wire shape:
+/// `Literal["low","medium","high","max"] | int`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum EffortLevel {
@@ -250,8 +250,8 @@ pub enum EffortLevel {
 }
 
 impl EffortLevel {
-    /// String form suitable for passing via `--effort <value>` or any
-    /// other CLI surface that expects a Python-style literal-or-int.
+    /// String form suitable for passing via `--effort <value>` or
+    /// any other CLI surface that expects a literal-or-int.
     #[must_use]
     pub fn as_cli_arg(&self) -> String {
         match self {
@@ -266,7 +266,7 @@ impl EffortLevel {
     }
 }
 
-/// Named reasoning-effort presets. Mirrors Python's
+/// Named reasoning-effort presets. Wire shape:
 /// `Literal["low","medium","high","max"]`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
