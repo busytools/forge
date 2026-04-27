@@ -18,8 +18,9 @@
 //!   control-request dispatch (the daemon's actor pattern) can write
 //!   concurrently with the reader without serialising on `&mut self`.
 //!
-//! Closes audit 2026-04-26 G1 directly inside the SDK — no daemon-side
-//! `BridgedTransport` bridge required.
+//! Closes audit 2026-04-26 G1 directly inside the SDK — every spawned
+//! [`Client`](crate::Client) gets cancel-safe reads + concurrent
+//! writes for free.
 
 use std::process::Stdio;
 use std::sync::Arc;

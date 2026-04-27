@@ -5,8 +5,9 @@
 //! Extracted from `methods/session.rs` (audit 2026-04-26 god-file
 //! split). The handler proxies in `methods::session` enqueue
 //! [`Command`]s on the session's mpsc; the actor dequeues and runs
-//! them on `&mut Client`. Outbound message events fan out to
-//! subscribers as `session.event` notifications.
+//! them on `&Client` (the SDK's command methods all take `&self`
+//! against an `Arc`-backed handle). Outbound message events fan out
+//! to subscribers as `session.event` notifications.
 //!
 //! ## Control-request dispatch
 //!

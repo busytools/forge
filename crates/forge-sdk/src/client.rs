@@ -32,13 +32,11 @@ use tracing::debug;
 
 use crate::Error;
 use crate::client::runtime::{
-    ControlOutcome, PendingControls, SharedSessionId, new_shared_session_id, spawn_reader_task,
+    PendingControls, SharedSessionId, new_shared_session_id, spawn_reader_task,
 };
-use crate::hooks::ErasedHookCallback;
 use crate::mcp::orchestration::McpHosts;
 use crate::messages::Message;
 use crate::options::Options;
-use crate::permissions::CanUseToolCallback;
 use crate::transport::Transport;
 use crate::transport::codec::{DecodedLine, decode_dispatch};
 use crate::transport::process::Subprocess;
@@ -540,13 +538,4 @@ impl Client {
             }),
         }
     }
-}
-
-// Tame the unused-import lint for items only the spawn_inner module
-// references in transitive type positions.
-#[allow(dead_code)]
-fn _phantom_imports() {
-    let _: Option<&dyn CanUseToolCallback> = None;
-    let _: Option<&dyn ErasedHookCallback> = None;
-    let _: Option<&ControlOutcome> = None;
 }

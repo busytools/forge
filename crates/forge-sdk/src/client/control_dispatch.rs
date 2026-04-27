@@ -34,16 +34,12 @@ use crate::transport::AsyncWriter;
 // =============================================================================
 // Detached dispatch — closes audit 2026-04-26 G1 hazard.
 //
-// `Client::handle_control` writes via `&mut self.sub` — running inline
-// would expose an `await` chain to the caller's `tokio::select!`
-// cancellation, dropping the `control_response` write mid-flight and
-// hanging the CLI for HOOK_TIMEOUT_SECS.
-//
-// `ControlDispatchHandle` is a clonable bundle of writer + callbacks
-// + state. Its `dispatch` method runs the same logic but via an
-// `AsyncWriter` clone, so `Client::next_event` can `tokio::spawn` the
-// dispatch and the cancel preemption no longer matters — the spawned
-// task runs to completion regardless of select! cancellation.
+// Inbound `control_request`s go through `dispatch`, which writes the
+// matching `control_response` via a clonable [`AsyncWriter`]. The
+// reader task in [`crate::client::runtime`] `tokio::spawn`s a fresh
+// task per inbound request so a slow callback can't block the read
+// loop AND cancellation of the actor's `select!` over a command
+// channel + `next_event` cannot drop the response write mid-flight.
 //
 // Available on any transport that overrides
 // [`Transport::try_clone_writer`]. The shipped Subprocess does — its
@@ -52,8 +48,9 @@ use crate::transport::AsyncWriter;
 // =============================================================================
 
 /// Clonable bundle of state + writer that dispatches a single
-/// `control_request`. Internal — built fresh by `next_event` per
-/// inbound request.
+/// `control_request`. Internal — built once during
+/// [`Client::spawn`](crate::Client::spawn) and cloned by the reader
+/// task per inbound request.
 ///
 /// Each field is `Arc`-backed (or `Clone`); cloning the handle is
 /// cheap. Designed to be moved into a `tokio::spawn`'d task per
@@ -117,11 +114,11 @@ impl ControlDispatchHandle {
         }
     }
 
-    /// Dispatch one inbound `control_request`. Mirrors
-    /// `Client::handle_control`'s logic but writes via the cloned
-    /// [`AsyncWriter`] instead of `&mut self.sub`. Safe to call from
-    /// a `tokio::spawn`'d task — runs to completion regardless of
-    /// caller cancellation.
+    /// Dispatch one inbound `control_request`. Routes the request
+    /// to the right handler (MCP, hook callback, `can_use_tool`) and
+    /// writes the matching `control_response` via the cloned
+    /// [`AsyncWriter`]. Safe to call from a `tokio::spawn`'d task —
+    /// runs to completion regardless of caller cancellation.
     ///
     /// # Errors
     ///
