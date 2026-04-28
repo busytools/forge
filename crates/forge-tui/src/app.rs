@@ -227,7 +227,9 @@ pub async fn run<B: Backend>(
 ) -> std::io::Result<()> {
     let mut frames = 0_u64;
     loop {
-        terminal.draw(|f| crate::ui::render(f, &app))?;
+        terminal
+            .draw(|f| crate::ui::render(f, &app))
+            .map_err(|e| std::io::Error::other(format!("draw failed: {e}")))?;
         frames += 1;
         if frames == 1 {
             tracing::info!(

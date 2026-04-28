@@ -31,6 +31,15 @@ uuid.workspace = true
 parking_lot.workspace = true
 futures-util.workspace = true
 
+# Tier A primitives lifted from claude-code-rust
+ansi-to-tui.workspace = true
+pulldown-cmark.workspace = true
+similar.workspace = true
+syntect.workspace = true
+tui-markdown.workspace = true
+unicode-segmentation.workspace = true
+unicode-width.workspace = true
+
 [dev-dependencies]
 forge-daemon = { path = "../forge-daemon" }
 insta = { workspace = true }

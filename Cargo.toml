@@ -32,8 +32,17 @@ clap = { version = "4", features = ["derive"] }
 tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 toml = "0.8"
-ratatui = "0.29"
-crossterm = "0.28"
+ratatui = { version = "0.30", features = ["unstable-rendered-line-info"] }
+crossterm = "0.29"
+
+# Tier A primitives lifted from claude-code-rust
+ansi-to-tui = "8"
+pulldown-cmark = "0.13"
+similar = "3"
+syntect = { version = "5", default-features = false, features = ["default-fancy"] }
+tui-markdown = "=0.3.7"
+unicode-segmentation = "1.12"
+unicode-width = "0.2"
 
 # Dev-only
 proptest = "1"

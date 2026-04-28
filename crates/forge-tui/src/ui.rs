@@ -11,6 +11,14 @@ pub mod permission_modal;
 pub mod picker;
 pub mod theme;
 
+// Phase 1 — Tier A primitives lifted from `claude-code-rust`. Not yet
+// wired into the render path; consumers come in Phase 3+.
+pub mod document_table;
+pub mod layout;
+pub mod markdown;
+pub mod two_column_list;
+pub mod wrap;
+
 use ratatui::Frame;
 
 use crate::app::{App, Screen};
