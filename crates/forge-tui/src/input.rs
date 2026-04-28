@@ -124,20 +124,54 @@ fn open_session(
     app.screen = Screen::Conversation;
     app.draft.clear();
 
-    let client = client.clone();
-    let event_tx = event_tx.clone();
+    // Subscribe in parallel with the historical fetch.
+    let subscribe_client = client.clone();
+    let subscribe_tx = event_tx.clone();
+    let subscribe_sid = sid.clone();
     tokio::spawn(async move {
-        match client.subscribe_session(&sid).await {
+        match subscribe_client.subscribe_session(&subscribe_sid).await {
             Ok(mut stream) => {
                 use futures_util::StreamExt;
                 while let Some(frame) = stream.next().await {
-                    if event_tx.send(AppEvent::SessionFrame(frame)).is_err() {
+                    if subscribe_tx
+                        .send(AppEvent::SessionFrame(frame))
+                        .is_err()
+                    {
                         break;
                     }
                 }
             }
             Err(e) => {
-                tracing::warn!(error = %e, sid = %sid, "session.subscribe failed");
+                tracing::warn!(error = %e, sid = %subscribe_sid, "session.subscribe failed");
+            }
+        }
+    });
+
+    // Fetch the historical transcript so the conversation view is
+    // pre-populated rather than blank until the next assistant turn.
+    let history_client = client.clone();
+    let history_tx = event_tx.clone();
+    tokio::spawn(async move {
+        let result: Result<serde_json::Value, _> = history_client
+            .call(
+                "sessions.messages",
+                serde_json::json!({"session_id": sid}),
+            )
+            .await;
+        match result {
+            Ok(v) => {
+                let messages = v
+                    .get("messages")
+                    .and_then(|m| m.as_array())
+                    .cloned()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter_map(|entry| entry.get("message").cloned())
+                    .collect();
+                let _ = history_tx.send(AppEvent::HistoricalLoaded(messages));
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, sid = %sid, "sessions.messages failed");
             }
         }
     });

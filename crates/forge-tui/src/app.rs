@@ -81,6 +81,10 @@ pub enum AppEvent {
     },
     /// `session.event` notification payload (chat stream chunk).
     SessionFrame(serde_json::Value),
+    /// `sessions.messages` historical transcript loaded for the
+    /// session we just opened. Replaces `app.messages` to seed the
+    /// conversation view before live events start arriving.
+    HistoricalLoaded(Vec<serde_json::Value>),
     /// `sessions.list` snapshot loaded.
     SessionListLoaded(Vec<serde_json::Value>),
     /// `sessions.list` failed at startup.
@@ -196,6 +200,7 @@ impl App {
 /// # Errors
 ///
 /// Terminal I/O errors propagate.
+#[allow(clippy::too_many_lines, reason = "event-handler match needs to stay in one place")]
 pub async fn run<B: Backend>(
     terminal: &mut Terminal<B>,
     client: Arc<Client>,
@@ -203,12 +208,22 @@ pub async fn run<B: Backend>(
     event_tx: mpsc::UnboundedSender<AppEvent>,
     mut events: mpsc::UnboundedReceiver<AppEvent>,
 ) -> std::io::Result<()> {
+    let mut frames = 0_u64;
     loop {
         terminal.draw(|f| crate::ui::render(f, &app))?;
+        frames += 1;
+        if frames == 1 {
+            tracing::info!(
+                screen = ?app.screen,
+                connection = ?app.connection,
+                "first frame drawn"
+            );
+        }
 
         let Some(event) = events.recv().await else {
             break;
         };
+        tracing::debug!(?event, ?app.screen, "event");
         match event {
             AppEvent::Quit => break,
             AppEvent::Term(Event::Key(k)) if k.kind == KeyEventKind::Press => {
@@ -255,6 +270,15 @@ pub async fn run<B: Backend>(
                 if let Some(msg) = frame.get("message").cloned() {
                     app.messages.push(msg);
                 }
+            }
+            AppEvent::HistoricalLoaded(history) => {
+                // Seed the transcript view. If live events have already
+                // arrived (race between subscribe and history fetch),
+                // they're appended after — slight ordering glitch is
+                // acceptable in v1.
+                let live = std::mem::take(&mut app.messages);
+                app.messages = history;
+                app.messages.extend(live);
             }
 
             AppEvent::PermissionRequest { rev_id, params } => {

@@ -76,7 +76,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .and_then(|p| p.to_str().map(String::from))
         .unwrap_or_default();
 
+    tracing::info!(url = %url, "connecting to forge-daemon");
     let client = Arc::new(Client::connect(&url).await?);
+    tracing::info!("connected; entering app loop");
 
     let (event_tx, event_rx) = mpsc::unbounded_channel::<AppEvent>();
 
