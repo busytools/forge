@@ -341,7 +341,7 @@ async fn dispatch(req: &Request, conn: &Connection, state: &DaemonState) -> Resp
         }
         "session.subscribe" => {
             typed_call(req, |p: methods::session::SubscribeParams| async move {
-                methods::session::subscribe(state, conn, &p.session_id, p.since.as_deref())
+                methods::session::subscribe(state, conn, &p.session_id, p.since.as_deref()).await
             })
             .await
         }

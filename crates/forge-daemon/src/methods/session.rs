@@ -62,12 +62,23 @@ pub async fn spawn(
     state: &DaemonState,
     params: impl Into<SpawnParams>,
 ) -> Result<SpawnResult, Error> {
-    let SpawnParams {
-        mut options,
-        hooks: hook_specs,
-    } = params.into();
-
+    let SpawnParams { options, hooks } = params.into();
     let session_id = SessionId(format!("sess_{}", Uuid::new_v4()));
+    spawn_with_id(state, session_id.clone(), options, hooks).await?;
+    Ok(SpawnResult { session_id })
+}
+
+/// Internal spawn helper — same body as [`spawn`] but with a
+/// caller-provided session id and an unwrapped return shape. Lets
+/// [`subscribe`] auto-resume an on-disk transcript and register it
+/// under the historical UUID so the subscriber doesn't need to chase a
+/// freshly-minted id.
+pub(crate) async fn spawn_with_id(
+    state: &DaemonState,
+    session_id: SessionId,
+    mut options: Options,
+    hook_specs: Vec<WireHookSpec>,
+) -> Result<(), Error> {
     let state_arc = Arc::new(state.clone());
 
     // Attach the reverse-RPC permission bridge so `can_use_tool` over
@@ -87,7 +98,7 @@ pub async fn spawn(
     let (handle, rx) = state.register_session(session_id.clone());
     spawn_session_actor(state.clone(), &handle, client, rx);
     info!(session_id = %session_id.0, "session spawned");
-    Ok(SpawnResult { session_id })
+    Ok(())
 }
 
 /// Parsed `session.spawn` params: the configured [`Options`] plus the
@@ -199,7 +210,7 @@ pub struct SubscribeParams {
 /// # Errors
 ///
 /// `SessionNotFound` if the id is unknown.
-pub fn subscribe(
+pub async fn subscribe(
     state: &DaemonState,
     conn: &crate::connection::Connection,
     session_id: &SessionId,
@@ -216,6 +227,37 @@ pub fn subscribe(
             buffer_window_seconds: 0,
         });
     }
+
+    // Auto-resume on subscribe-miss: if the id isn't an active session
+    // but matches an on-disk transcript, resume it under the same id.
+    // The cwd from the on-disk session info is critical — `claude
+    // --resume <sid>` looks the session up under the project keyed by
+    // cwd, so a daemon-default cwd (whatever the daemon was launched
+    // from) makes claude bail with "session not found" and close
+    // stdout before the initialize control_response, surfacing as
+    // forge_sdk::Error::Connection (-32101).
+    if state.get_session(session_id).is_none() {
+        if let Some(info) = forge_sdk::session::scan::get_session_info(&session_id.0, None) {
+            info!(session_id = %session_id.0, "subscribe: auto-resuming on-disk session");
+            let mut builder =
+                forge_sdk::OptionsBuilder::new().resume(session_id.0.clone());
+            if let Some(cwd) = info.cwd.as_deref() {
+                builder = builder.cwd(cwd);
+            }
+            // Forward claude's stderr to operator logs so spawn
+            // failures (CLI version mismatch, missing binary,
+            // resume-target rejected) show up in events.log instead
+            // of vanishing.
+            let sid_for_log = session_id.0.clone();
+            let options = builder
+                .stderr(move |line| {
+                    tracing::warn!(session_id = %sid_for_log, "claude stderr: {line}");
+                })
+                .build();
+            spawn_with_id(state, session_id.clone(), options, Vec::new()).await?;
+        }
+    }
+
     let handle = state
         .get_session(session_id)
         .ok_or_else(|| Error::SessionNotFound(session_id.0.clone()))?;
