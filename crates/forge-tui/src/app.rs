@@ -1,15 +1,13 @@
 //! TUI app state machine + event loop.
 //!
-//! Three input streams converge on the `AppEvent` channel that the loop
-//! drains:
-//! - Terminal events (keys, resize) via `crossterm::event::EventStream`.
-//! - Daemon notifications (`session.event`, `role_assigned`,
-//!   `primary_changed`, `prompts.expired`).
-//! - Reverse-RPC inbound (`permission.request`, `hook.<kind>`).
+//! `App` is the single source of truth for what's rendered. The run
+//! loop drains [`AppEvent`]s from one channel that three sources feed:
+//! terminal input, daemon notifications, and reverse-RPC requests.
 //!
-//! All reverse-RPC handlers in `main.rs` capture the `rev_id` and forward
-//! it through `AppEvent::PermissionRequest` so the keypress handler can
-//! later answer via [`crate::client::Client::send_response`].
+//! Screen transitions happen inside the run loop in response to events.
+//! E.g. `SessionListLoaded` flips us from `Screen::Connecting` to
+//! `Screen::Picker`; `Enter` on a picker row flips to
+//! `Screen::Conversation` after issuing `session.subscribe`.
 
 use std::sync::Arc;
 
@@ -20,112 +18,108 @@ use tokio::sync::mpsc;
 
 use crate::client::Client;
 
-/// All events the app loop handles, regardless of source.
-#[derive(Debug)]
+/// Top-level UI screen. Each screen owns its own layout + input rules.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[non_exhaustive]
-pub enum AppEvent {
-    /// Raw terminal event from `crossterm::event::EventStream`.
-    Term(crossterm::event::Event),
-    /// A `session.event` notification payload.
-    SessionFrame(serde_json::Value),
-    /// Initial session list snapshot (loaded once at startup).
-    SessionListLoaded(Vec<serde_json::Value>),
-    /// `sessions.list` failed at startup. Carries the human-readable
-    /// error message so the app loop can surface it on the status line
-    /// rather than silently rendering an empty list.
-    SessionListLoadFailed(String),
-    /// A reverse-RPC `permission.request` arrived.
-    PermissionRequest {
-        /// JSON-RPC id of the inbound request — must be echoed back via
-        /// [`crate::client::Client::send_response`] when the user answers.
-        rev_id: serde_json::Value,
-        /// Wrapped params from the request (the daemon passes `tool_name`,
-        /// `tool_input`, optional `prompt_id`).
-        params: serde_json::Value,
-    },
-    /// `role_assigned` notification — local primary/viewer state changed.
-    RoleChanged(serde_json::Value),
-    /// `primary_changed` notification — daemon reports the primary slot
-    /// for some session has been claimed/cleared.
-    PrimaryChanged(serde_json::Value),
-    /// `session.closed` notification — daemon emits when the session
-    /// actor exits (any reason). Carries `{session_id, reason}`.
-    SessionClosed(serde_json::Value),
-    /// `prompts.expired` notification — drop matching modal.
-    PromptsExpired(serde_json::Value),
-    /// External quit signal (currently unused; provided for tests).
-    Quit,
-}
-
-/// Whole-app state. Owned by the event loop; mutated in place.
-#[derive(Debug, Default)]
-#[non_exhaustive]
-pub struct App {
-    /// Currently subscribed session, if any.
-    pub current_session: Option<String>,
-    /// Conversation transcript for `current_session` — appended to as
-    /// `session.event` frames arrive.
-    pub messages: Vec<serde_json::Value>,
-    /// Local primary/viewer role for `current_session`.
-    pub role: Role,
-    /// Active permission modal, if a reverse-RPC is awaiting an answer.
-    pub pending_permission: Option<PendingPermission>,
-    /// Filesystem-level session list (loaded once at startup).
-    pub session_list: Vec<serde_json::Value>,
-    /// Current keyboard focus.
-    pub focus: Focus,
-    /// One-line status message rendered at the bottom of the screen.
-    pub status_msg: String,
-    /// Cursor position in the session list panel.
-    pub session_list_cursor: usize,
-}
-
-/// Which UI element currently consumes keys.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum Focus {
-    /// Session list panel (default at startup).
+pub enum Screen {
+    /// WS handshake in progress; initial picker load pending.
     #[default]
-    SessionList,
-    /// Conversation panel (after picking a session).
+    Connecting,
+    /// Picking a session from the list (or starting a new one).
+    Picker,
+    /// Watching/driving a subscribed session.
     Conversation,
-    /// Modal answering a permission request.
-    PermissionModal,
+    /// WS dropped; retry overlay.
+    Disconnected,
+}
+
+/// Connection state — drives the footer connection glyph.
+/// Independent of [`Screen`] because the user can still be reading
+/// chat history while we reconnect underneath.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub enum ConnectionState {
+    /// Initial handshake.
+    #[default]
+    Connecting,
+    /// Live link to the daemon.
+    Connected,
+    /// Backoff retry pending.
+    Reconnecting {
+        /// Seconds until the next retry attempt.
+        next_retry_secs: u32,
+    },
+    /// Gave up retrying or the user dismissed.
+    Disconnected,
 }
 
 /// Local primary/viewer role for the currently subscribed session.
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[non_exhaustive]
 pub enum Role {
-    /// No session subscribed yet.
+    /// No session subscribed.
     #[default]
     Vacant,
-    /// We are the primary (callbacks/permission requests come to us).
+    /// We hold primary; permission/hook requests come to us.
     Primary,
-    /// We are a viewer (only see notifications; can claim primary).
+    /// Someone else holds primary; we read but don't answer.
     Viewer,
+}
+
+/// Every event the run loop handles, regardless of source.
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum AppEvent {
+    /// Raw terminal input.
+    Term(Event),
+    /// WS link came up.
+    Connected,
+    /// WS link dropped; backoff timer carries seconds until next retry.
+    Disconnected {
+        /// Seconds until next retry attempt.
+        next_retry_secs: u32,
+    },
+    /// `session.event` notification payload (chat stream chunk).
+    SessionFrame(serde_json::Value),
+    /// `sessions.list` snapshot loaded.
+    SessionListLoaded(Vec<serde_json::Value>),
+    /// `sessions.list` failed at startup.
+    SessionListLoadFailed(String),
+    /// Reverse-RPC `permission.request` arrived.
+    PermissionRequest {
+        /// JSON-RPC id of the inbound request — must be echoed back.
+        rev_id: serde_json::Value,
+        /// Original params (`tool_name`, `tool_input`, optional `prompt_id`).
+        params: serde_json::Value,
+    },
+    /// `session.role_assigned` — local role flip.
+    RoleChanged(serde_json::Value),
+    /// `session.primary_changed` — daemon broadcast.
+    PrimaryChanged(serde_json::Value),
+    /// `session.closed` — session actor exited.
+    SessionClosed(serde_json::Value),
+    /// `prompts.expired` — drop matching modal.
+    PromptsExpired(serde_json::Value),
+    /// External quit signal.
+    Quit,
 }
 
 /// Snapshot of an outstanding permission request awaiting user input.
 #[derive(Debug)]
 #[non_exhaustive]
 pub struct PendingPermission {
-    /// JSON-RPC id of the originating reverse-RPC; required to answer
-    /// fresh requests via [`crate::client::Client::send_response`].
+    /// JSON-RPC id of the originating reverse-RPC.
     pub rev_id: serde_json::Value,
-    /// Original params (`tool_name`, `tool_input`, etc.).
+    /// Original params from the request.
     pub params: serde_json::Value,
-    /// Set when the prompt came in via the persisted queue (after
-    /// reconnect). Queued prompts are answered via `prompts.respond`
-    /// rather than a synchronous reverse-RPC response.
+    /// Set when the prompt came in via the daemon's queue (after
+    /// reconnect). Queued prompts answer via `prompts.respond` rather
+    /// than a synchronous reverse-RPC response.
     pub prompt_id: Option<String>,
 }
 
 impl PendingPermission {
-    /// Construct a `PendingPermission`. Forward-compatible because the
-    /// type is `#[non_exhaustive]`; downstream code must use this rather
-    /// than the struct literal so future fields are added without
-    /// breaking changes.
+    /// Construct a `PendingPermission`.
     #[must_use]
     pub fn new(
         rev_id: serde_json::Value,
@@ -136,6 +130,60 @@ impl PendingPermission {
             rev_id,
             params,
             prompt_id,
+        }
+    }
+}
+
+/// Top-level mutable state. Owned by the run loop.
+#[derive(Debug, Default)]
+#[non_exhaustive]
+pub struct App {
+    // Foreground
+    /// Active screen.
+    pub screen: Screen,
+    /// Connection state for the footer glyph.
+    pub connection: ConnectionState,
+
+    // Footer display
+    /// Daemon URL (e.g. `ws://127.0.0.1:7373/`).
+    pub daemon_url: String,
+    /// Working directory at startup.
+    pub cwd: String,
+
+    // Picker
+    /// Sessions returned by `sessions.list` for `cwd`.
+    pub session_list: Vec<serde_json::Value>,
+    /// Selected row in the picker (0 = "New session" pseudo-row).
+    pub picker_cursor: usize,
+
+    // Conversation
+    /// Currently subscribed session id.
+    pub current_session: Option<String>,
+    /// Conversation transcript — appended by `SessionFrame`.
+    pub messages: Vec<serde_json::Value>,
+    /// Input draft buffer.
+    pub draft: String,
+    /// Local primary/viewer role for `current_session`.
+    pub role: Role,
+
+    // Modal
+    /// Active permission modal, if any.
+    pub pending_permission: Option<PendingPermission>,
+
+    // Misc
+    /// One-line status/toast message.
+    pub status_msg: String,
+}
+
+impl App {
+    /// Construct an `App` with the daemon URL + cwd captured at startup
+    /// for footer display.
+    #[must_use]
+    pub fn new(daemon_url: String, cwd: String) -> Self {
+        Self {
+            daemon_url,
+            cwd,
+            ..Self::default()
         }
     }
 }
@@ -151,11 +199,10 @@ impl PendingPermission {
 pub async fn run<B: Backend>(
     terminal: &mut Terminal<B>,
     client: Arc<Client>,
+    mut app: App,
     event_tx: mpsc::UnboundedSender<AppEvent>,
     mut events: mpsc::UnboundedReceiver<AppEvent>,
 ) -> std::io::Result<()> {
-    let mut app = App::default();
-
     loop {
         terminal.draw(|f| crate::ui::render(f, &app))?;
 
@@ -165,37 +212,69 @@ pub async fn run<B: Backend>(
         match event {
             AppEvent::Quit => break,
             AppEvent::Term(Event::Key(k)) if k.kind == KeyEventKind::Press => {
-                if let Some(quit) =
-                    crate::input::handle_key(&mut app, k.code, &client, &event_tx).await
-                {
-                    if quit {
-                        break;
-                    }
+                if crate::input::handle_key(&mut app, k.code, &client, &event_tx).await {
+                    break;
                 }
             }
             AppEvent::Term(_) => {}
+
+            AppEvent::Connected => {
+                app.connection = ConnectionState::Connected;
+                if app.screen == Screen::Disconnected {
+                    // Reconnected — return to the conversation if we
+                    // had one; otherwise back to the picker.
+                    app.screen = if app.current_session.is_some() {
+                        Screen::Conversation
+                    } else {
+                        Screen::Picker
+                    };
+                }
+            }
+            AppEvent::Disconnected { next_retry_secs } => {
+                app.connection = ConnectionState::Reconnecting { next_retry_secs };
+                app.screen = Screen::Disconnected;
+            }
+
+            AppEvent::SessionListLoaded(items) => {
+                app.session_list = items;
+                if app.picker_cursor > app.session_list.len() {
+                    app.picker_cursor = app.session_list.len();
+                }
+                if app.screen == Screen::Connecting {
+                    app.screen = Screen::Picker;
+                }
+            }
+            AppEvent::SessionListLoadFailed(message) => {
+                app.status_msg = format!("session list load failed: {message}");
+                if app.screen == Screen::Connecting {
+                    app.screen = Screen::Picker;
+                }
+            }
+
             AppEvent::SessionFrame(frame) => {
                 if let Some(msg) = frame.get("message").cloned() {
                     app.messages.push(msg);
                 }
             }
-            AppEvent::SessionListLoaded(items) => {
-                app.session_list = items;
-                if app.session_list_cursor >= app.session_list.len() {
-                    app.session_list_cursor = app.session_list.len().saturating_sub(1);
-                }
-            }
-            AppEvent::SessionListLoadFailed(message) => {
-                app.status_msg = format!("session list load failed: {message}");
-            }
+
             AppEvent::PermissionRequest { rev_id, params } => {
                 let prompt_id = params
                     .get("prompt_id")
                     .and_then(|v| v.as_str())
                     .map(String::from);
-                app.pending_permission = Some(PendingPermission::new(rev_id, params, prompt_id));
-                app.focus = Focus::PermissionModal;
+                app.pending_permission =
+                    Some(PendingPermission::new(rev_id, params, prompt_id));
             }
+            AppEvent::PromptsExpired(p) => {
+                let expired_id = p.get("prompt_id").and_then(|v| v.as_str());
+                if let (Some(pp), Some(expired_id)) = (&app.pending_permission, expired_id) {
+                    if pp.prompt_id.as_deref() == Some(expired_id) {
+                        app.pending_permission = None;
+                        app.status_msg = "permission prompt expired".into();
+                    }
+                }
+            }
+
             AppEvent::RoleChanged(p) => {
                 if let Some(r) = p.get("role").and_then(|v| v.as_str()) {
                     app.role = match r {
@@ -206,39 +285,21 @@ pub async fn run<B: Backend>(
                 }
             }
             AppEvent::PrimaryChanged(p) => {
-                // The local `app.role` is owned by `RoleChanged`
-                // (from `session.role_assigned`) — `primary_changed`
-                // is a session-wide broadcast, not a per-client role
-                // update. Surface to the status line so the user can
-                // see who is currently primary.
                 let primary = p
                     .get("primary")
                     .and_then(|v| v.as_str())
                     .map_or_else(|| "<none>".into(), String::from);
-                app.status_msg = format!("primary changed: {primary}");
+                app.status_msg = format!("primary now: {primary}");
             }
             AppEvent::SessionClosed(p) => {
                 let sid_closed = p.get("session_id").and_then(|v| v.as_str()).unwrap_or("");
                 let reason = p.get("reason").and_then(|v| v.as_str()).unwrap_or("");
                 if app.current_session.as_deref() == Some(sid_closed) {
                     app.current_session = None;
+                    app.messages.clear();
                     app.role = Role::Vacant;
-                    app.focus = Focus::SessionList;
+                    app.screen = Screen::Picker;
                     app.status_msg = format!("session closed: {reason}");
-                }
-            }
-            AppEvent::PromptsExpired(p) => {
-                // Drop the pending modal only if its prompt_id matches
-                // the expiry notification — without this, a stray
-                // expiry for a sibling session would dismiss an
-                // unrelated open modal.
-                let expired_id = p.get("prompt_id").and_then(|v| v.as_str());
-                if let (Some(pp), Some(expired_id)) = (&app.pending_permission, expired_id) {
-                    if pp.prompt_id.as_deref() == Some(expired_id) {
-                        app.pending_permission = None;
-                        app.focus = Focus::Conversation;
-                        app.status_msg = "permission prompt expired".into();
-                    }
                 }
             }
         }

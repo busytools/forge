@@ -1,129 +1,190 @@
-//! Keybindings.
+//! Per-screen key dispatch.
 //!
-//! - `q` quits.
-//! - `a` / `d` answer the permission modal.
-//! - `Esc` dismisses the permission modal by submitting a deny response
-//!   (equivalent to pressing `d`). Previously closed the modal without
-//!   answering, leaving the prompt parked on the daemon for the full
-//!   1-hour `HOOK_TIMEOUT_SECS`.
-//! - `Up` / `Down` / `Enter` navigate the session list.
-//! - `p` claims primary when in viewer mode.
-//
-// TODO: branch-coverage tests for each key path (Up / Down / Enter /
-// claim / answer_permission) need a mock `Client`. Adding a
-// `ClientApi` trait abstraction is heavier than the current parity-
-// first phase warrants; the e2e flows are covered indirectly by
-// `tests/app_smoke.rs`. Revisit once forge-tui's Client surface
-// stabilises.
+//! Returns `true` when the loop should quit; `false` otherwise.
 
 use std::sync::Arc;
 
 use crossterm::event::KeyCode;
 use tokio::sync::mpsc;
 
-use crate::app::{App, AppEvent, Focus, Role};
+use crate::app::{App, AppEvent, Role, Screen};
 use crate::client::Client;
 
-/// Handle a key press.
+/// Handle a single key press. Modal first, then per-screen dispatch.
 ///
-/// Returns `Some(true)` to quit; `Some(false)` to keep running with
-/// state updated; `None` if the key was unhandled.
-///
-/// `event_tx` is forwarded to the Enter-on-session-list path so the
-/// background subscription pump can post `AppEvent::SessionFrame` back
-/// into the app loop. Other paths don't need it.
+/// Returns `true` to quit, `false` to keep running.
 pub async fn handle_key(
     app: &mut App,
     key: KeyCode,
     client: &Arc<Client>,
     event_tx: &mpsc::UnboundedSender<AppEvent>,
-) -> Option<bool> {
-    if let Focus::PermissionModal = app.focus {
-        match key {
-            KeyCode::Char('a') => {
-                answer_permission(app, client, "allow").await;
-                return Some(false);
-            }
-            KeyCode::Char('d') => {
-                answer_permission(app, client, "deny").await;
-                return Some(false);
-            }
-            KeyCode::Esc => {
-                // Esc dismisses the modal by submitting a deny response
-                // — clears pending_permission, sends the deny via
-                // prompts.respond / send_response (whichever the prompt
-                // shape requires), and returns focus to Conversation.
-                // Without this, the modal would close visually but the
-                // reverse-RPC would park on the daemon for the full
-                // 1-hour HOOK_TIMEOUT_SECS, blocking the agent.
-                answer_permission(app, client, "deny").await;
-                return Some(false);
-            }
-            _ => return None,
-        }
+) -> bool {
+    if app.pending_permission.is_some() {
+        handle_modal_key(app, key, client).await;
+        return false;
     }
 
+    match app.screen {
+        Screen::Connecting => handle_connecting_key(key),
+        Screen::Picker => handle_picker_key(app, key, client, event_tx).await,
+        Screen::Conversation => handle_conversation_key(app, key, client).await,
+        Screen::Disconnected => handle_disconnected_key(key),
+    }
+}
+
+fn handle_connecting_key(key: KeyCode) -> bool {
+    matches!(key, KeyCode::Char('q' | 'Q'))
+}
+
+fn handle_disconnected_key(key: KeyCode) -> bool {
+    matches!(key, KeyCode::Char('q' | 'Q'))
+}
+
+async fn handle_modal_key(app: &mut App, key: KeyCode, client: &Arc<Client>) {
     match key {
-        KeyCode::Char('q') => Some(true),
-        KeyCode::Char('p') if app.role == Role::Viewer => {
-            if let Some(sid) = app.current_session.clone() {
-                let result = client
-                    .call::<_, serde_json::Value>(
-                        "session.claim_primary",
-                        serde_json::json!({"session_id": sid}),
-                    )
-                    .await;
-                if let Err(e) = result {
-                    app.status_msg = format!("claim failed: {e}");
+        KeyCode::Char('a' | 'A') => {
+            answer_permission(app, client, "allow").await;
+        }
+        KeyCode::Char('d' | 'D') | KeyCode::Esc => {
+            answer_permission(app, client, "deny").await;
+        }
+        _ => {}
+    }
+}
+
+async fn handle_picker_key(
+    app: &mut App,
+    key: KeyCode,
+    client: &Arc<Client>,
+    event_tx: &mpsc::UnboundedSender<AppEvent>,
+) -> bool {
+    let row_count = app.session_list.len() + 1; // +1 for "New session" pseudo-row
+
+    match key {
+        KeyCode::Char('q' | 'Q') => return true,
+        KeyCode::Up => {
+            app.picker_cursor = app.picker_cursor.saturating_sub(1);
+        }
+        KeyCode::Down if app.picker_cursor + 1 < row_count => {
+            app.picker_cursor += 1;
+        }
+        KeyCode::Enter => {
+            if app.picker_cursor == 0 {
+                spawn_new_session(app, client, event_tx).await;
+            } else if let Some(session) = app.session_list.get(app.picker_cursor - 1) {
+                if let Some(sid) = session.get("session_id").and_then(|v| v.as_str()) {
+                    open_session(app, sid.to_string(), client, event_tx);
                 }
             }
-            Some(false)
         }
-        KeyCode::Up if app.focus == Focus::SessionList => {
-            app.session_list_cursor = app.session_list_cursor.saturating_sub(1);
-            Some(false)
+        _ => {}
+    }
+    false
+}
+
+async fn handle_conversation_key(
+    app: &mut App,
+    key: KeyCode,
+    client: &Arc<Client>,
+) -> bool {
+    match key {
+        KeyCode::Esc => {
+            app.screen = Screen::Picker;
+            app.current_session = None;
+            app.messages.clear();
+            app.role = Role::Vacant;
+            app.draft.clear();
         }
-        KeyCode::Down if app.focus == Focus::SessionList => {
-            if app.session_list_cursor + 1 < app.session_list.len() {
-                app.session_list_cursor += 1;
+        KeyCode::Char(c) => {
+            if c == 'q' && app.draft.is_empty() {
+                // q on an empty draft = quit; while typing, q is a literal char
+                return true;
             }
-            Some(false)
+            app.draft.push(c);
         }
-        KeyCode::Enter if app.focus == Focus::SessionList => {
-            if let Some(s) = app.session_list.get(app.session_list_cursor) {
-                if let Some(sid) = s.get("session_id").and_then(|v| v.as_str()) {
-                    let sid_owned = sid.to_string();
-                    app.current_session = Some(sid_owned.clone());
-                    app.focus = Focus::Conversation;
-                    // Subscribe via `Client::subscribe_session` so the
-                    // returned mpsc gets pumped through `event_tx` as
-                    // `AppEvent::SessionFrame`. Calling
-                    // `client.call("session.subscribe", ...)` directly
-                    // would issue the daemon RPC but skip the local
-                    // mpsc registration — every notification would be
-                    // silently dropped by the read loop.
-                    let client = client.clone();
-                    let event_tx = event_tx.clone();
-                    tokio::spawn(async move {
-                        match client.subscribe_session(&sid_owned).await {
-                            Ok(mut stream) => {
-                                use futures_util::StreamExt;
-                                while let Some(frame) = stream.next().await {
-                                    if event_tx.send(AppEvent::SessionFrame(frame)).is_err() {
-                                        break;
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                tracing::warn!(error = %e, sid = %sid_owned, "session.subscribe failed");
-                            }
-                        }
-                    });
+        KeyCode::Backspace => {
+            app.draft.pop();
+        }
+        KeyCode::Enter => {
+            send_draft(app, client).await;
+        }
+        _ => {}
+    }
+    false
+}
+
+fn open_session(
+    app: &mut App,
+    sid: String,
+    client: &Arc<Client>,
+    event_tx: &mpsc::UnboundedSender<AppEvent>,
+) {
+    app.current_session = Some(sid.clone());
+    app.messages.clear();
+    app.screen = Screen::Conversation;
+    app.draft.clear();
+
+    let client = client.clone();
+    let event_tx = event_tx.clone();
+    tokio::spawn(async move {
+        match client.subscribe_session(&sid).await {
+            Ok(mut stream) => {
+                use futures_util::StreamExt;
+                while let Some(frame) = stream.next().await {
+                    if event_tx.send(AppEvent::SessionFrame(frame)).is_err() {
+                        break;
+                    }
                 }
             }
-            Some(false)
+            Err(e) => {
+                tracing::warn!(error = %e, sid = %sid, "session.subscribe failed");
+            }
         }
-        _ => None,
+    });
+}
+
+async fn spawn_new_session(
+    app: &mut App,
+    client: &Arc<Client>,
+    event_tx: &mpsc::UnboundedSender<AppEvent>,
+) {
+    // Minimal default spawn — daemon defaults the binary, etc.
+    let result = client
+        .call::<_, serde_json::Value>(
+            "session.spawn",
+            serde_json::json!({"options": {}}),
+        )
+        .await;
+    match result {
+        Ok(v) => {
+            if let Some(sid) = v.get("session_id").and_then(|v| v.as_str()) {
+                open_session(app, sid.to_string(), client, event_tx);
+            } else {
+                app.status_msg = "session.spawn: no session_id in result".into();
+            }
+        }
+        Err(e) => {
+            app.status_msg = format!("session.spawn failed: {}", friendly_error(&e.to_string()));
+        }
+    }
+}
+
+async fn send_draft(app: &mut App, client: &Arc<Client>) {
+    let Some(sid) = app.current_session.clone() else {
+        return;
+    };
+    let prompt = std::mem::take(&mut app.draft);
+    if prompt.trim().is_empty() {
+        return;
+    }
+    let result = client
+        .call::<_, serde_json::Value>(
+            "session.send_user_message",
+            serde_json::json!({"session_id": sid, "prompt": prompt}),
+        )
+        .await;
+    if let Err(e) = result {
+        app.status_msg = format!("send failed: {}", friendly_error(&e.to_string()));
     }
 }
 
@@ -133,14 +194,6 @@ async fn answer_permission(app: &mut App, client: &Arc<Client>, decision: &str) 
     };
     let result = serde_json::json!({"decision": decision});
 
-    // Round 4 — fix I1. Cross-session routing bug: previously
-    // `prompts.respond` used `app.current_session` to identify the
-    // session whose prompt is being answered, which routes to the
-    // wrong session whenever the user is the primary on multiple
-    // sessions and a modal for B fires while they're viewing A.
-    // Source the session_id from the prompt's params instead — the
-    // daemon's reverse-RPC envelope carries it alongside `prompt_id`,
-    // so it always names the session that originated the prompt.
     let session_id_from_params = p
         .params
         .get("session_id")
@@ -149,39 +202,43 @@ async fn answer_permission(app: &mut App, client: &Arc<Client>, decision: &str) 
 
     let outcome: Result<(), String> = match (p.prompt_id.as_ref(), session_id_from_params.as_ref())
     {
-        (Some(prompt_id), Some(sid)) => {
-            // Prompt came from the queue — answer via prompts.respond,
-            // routing on the session_id the daemon attached to the
-            // envelope rather than the user's currently-viewed session.
-            client
-                .call::<_, serde_json::Value>(
-                    "prompts.respond",
-                    serde_json::json!({
-                        "session_id": sid,
-                        "prompt_id": prompt_id,
-                        "result": result,
-                    }),
-                )
-                .await
-                .map(|_| ())
-                .map_err(|e| e.to_string())
-        }
-        (Some(_), None) => {
-            tracing::warn!(
-                "answer_permission: queued prompt missing session_id in params; cannot route"
-            );
-            Err("queued prompt missing session_id".into())
-        }
-        (None, _) => {
-            // Fresh reverse-RPC — answer with the captured rev_id.
-            client
-                .send_response(p.rev_id.clone(), result)
-                .map_err(|e| e.to_string())
-        }
+        (Some(prompt_id), Some(sid)) => client
+            .call::<_, serde_json::Value>(
+                "prompts.respond",
+                serde_json::json!({
+                    "session_id": sid,
+                    "prompt_id": prompt_id,
+                    "result": result,
+                }),
+            )
+            .await
+            .map(|_| ())
+            .map_err(|e| e.to_string()),
+        (Some(_), None) => Err("queued prompt missing session_id".into()),
+        (None, _) => client
+            .send_response(p.rev_id.clone(), result)
+            .map_err(|e| e.to_string()),
     };
 
-    app.focus = Focus::Conversation;
     if let Err(e) = outcome {
-        app.status_msg = format!("permission answer failed: {e}");
+        app.status_msg = format!("permission answer failed: {}", friendly_error(&e));
     }
+}
+
+/// Map raw daemon error messages to user-facing strings.
+/// Strips the JSON-RPC `-32xxx` prefix when present.
+fn friendly_error(raw: &str) -> String {
+    // Pattern: "daemon error code -32101: <message>"
+    if let Some(rest) = raw.strip_prefix("daemon error code ") {
+        if let Some((code_str, msg)) = rest.split_once(": ") {
+            return match code_str {
+                "-32002" => format!("session not found: {msg}"),
+                "-32100" => format!("claude binary not found: {msg}"),
+                "-32101" => format!("claude exited unexpectedly: {msg}"),
+                "-32102" => format!("subprocess error: {msg}"),
+                _ => msg.to_string(),
+            };
+        }
+    }
+    raw.to_string()
 }
