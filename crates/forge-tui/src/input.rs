@@ -93,13 +93,13 @@ async fn handle_conversation_key(
             app.screen = Screen::Picker;
             app.current_session = None;
             app.messages.clear();
+            app.rendered_lines.clear();
             app.role = Role::Vacant;
             app.draft.clear();
             app.conv_scroll_back = 0;
         }
         // Scroll-from-bottom: `conv_scroll_back` = lines back from live
-        // tail. `+1` = up (older), `-1` = down (newer). `0` is the
-        // live tail.
+        // tail. Higher = older content; `0` is the live tail.
         KeyCode::PageUp => {
             app.conv_scroll_back = app.conv_scroll_back.saturating_add(PAGE_STEP);
         }
@@ -107,11 +107,13 @@ async fn handle_conversation_key(
             app.conv_scroll_back = app.conv_scroll_back.saturating_sub(PAGE_STEP);
         }
         // Trackpad arrives as Up/Down arrow keys with mouse capture off.
+        // 3 lines per arrow event so a fast swipe travels visibly —
+        // Ghostty/iTerm only deliver ~5-10 events per swipe.
         KeyCode::Up => {
-            app.conv_scroll_back = app.conv_scroll_back.saturating_add(1);
+            app.conv_scroll_back = app.conv_scroll_back.saturating_add(3);
         }
         KeyCode::Down => {
-            app.conv_scroll_back = app.conv_scroll_back.saturating_sub(1);
+            app.conv_scroll_back = app.conv_scroll_back.saturating_sub(3);
         }
         KeyCode::Home => {
             app.conv_scroll_back = u16::MAX; // render clamps to top

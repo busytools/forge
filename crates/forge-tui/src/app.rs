@@ -173,6 +173,11 @@ pub struct App {
     /// `0` = pinned to bottom (auto-tail). Larger = scrolled further
     /// back into history. Render clamps to actual max.
     pub conv_scroll_back: u16,
+    /// Cached pre-built styled lines for the current `messages`. Saves
+    /// the per-keypress rebuild cost when scrolling a large transcript
+    /// (1000+ messages = thousands of allocations per arrow event
+    /// otherwise). Invalidated whenever `messages` changes.
+    pub rendered_lines: Vec<ratatui::text::Line<'static>>,
 
     // Modal
     /// Active permission modal, if any.
@@ -193,6 +198,14 @@ impl App {
             cwd,
             ..Self::default()
         }
+    }
+
+    /// Rebuild the conversation render cache from `self.messages`.
+    /// Call after any mutation of `messages`. Cheap to call on a fresh
+    /// session (no messages yet); expensive once but the cost is paid
+    /// once per turn rather than once per keypress.
+    pub fn rebuild_rendered_lines(&mut self) {
+        self.rendered_lines = crate::ui::conversation::build_lines(&self.messages);
     }
 }
 
@@ -276,6 +289,7 @@ pub async fn run<B: Backend>(
             AppEvent::SessionFrame(frame) => {
                 if let Some(msg) = frame.get("message").cloned() {
                     app.messages.push(msg);
+                    app.rebuild_rendered_lines();
                     // No tail-follow logic needed — scroll-from-bottom
                     // model means "0" is always the live tail.
                 }
@@ -287,6 +301,7 @@ pub async fn run<B: Backend>(
                 let live = std::mem::take(&mut app.messages);
                 app.messages = history;
                 app.messages.extend(live);
+                app.rebuild_rendered_lines();
                 // Pin to bottom so the user sees the most recent turns.
                 app.conv_scroll_back = 0;
             }
@@ -342,7 +357,7 @@ pub async fn run<B: Backend>(
     Ok(())
 }
 
-const MOUSE_SCROLL_STEP: u16 = 3;
+const MOUSE_SCROLL_STEP: u16 = 5;
 
 fn handle_mouse(app: &mut App, m: MouseEvent) {
     if app.screen != Screen::Conversation {

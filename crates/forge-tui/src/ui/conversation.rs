@@ -61,21 +61,20 @@ fn render_separator(frame: &mut Frame<'_>, area: Rect) {
 }
 
 fn render_body(frame: &mut Frame<'_>, app: &App, area: Rect) {
-    let lines = build_message_lines(&app.messages);
+    // Read the prebuilt lines from the App cache. `App::rebuild_rendered_lines`
+    // refreshes this whenever messages change, so scrolling never has
+    // to rebuild — just adjusts the scroll offset.
     #[allow(
         clippy::cast_possible_truncation,
         reason = "u16 truncation for terminal scroll offset; clamping happens below"
     )]
-    let total = lines.len().min(u16::MAX as usize) as u16;
+    let total = app.rendered_lines.len().min(u16::MAX as usize) as u16;
     let viewport = area.height;
     let max_scroll = total.saturating_sub(viewport);
-    // `conv_scroll_back` is distance from live tail in lines.
-    // Clamp to max_scroll (can't scroll past oldest). Compute the
-    // actual top-line offset for `Paragraph::scroll`.
     let scroll_back = app.conv_scroll_back.min(max_scroll);
     let scroll = max_scroll - scroll_back;
 
-    let para = Paragraph::new(lines)
+    let para = Paragraph::new(app.rendered_lines.clone())
         .wrap(Wrap { trim: false })
         .scroll((scroll, 0));
     frame.render_widget(para, area);
@@ -115,7 +114,12 @@ fn render_help(frame: &mut Frame<'_>, area: Rect) {
 /// Build the styled lines for the conversation body. Minimal chrome:
 /// each turn is content prefixed with a thin colored bar in the role's
 /// color; turns separated by a single blank line.
-fn build_message_lines(messages: &[serde_json::Value]) -> Vec<Line<'_>> {
+///
+/// Public so `App::rebuild_rendered_lines` can rebuild the cache.
+/// Returns owned `Line<'static>`s so the cache can persist across
+/// frames.
+#[must_use]
+pub fn build_lines(messages: &[serde_json::Value]) -> Vec<Line<'static>> {
     let mut out: Vec<Line<'_>> = Vec::with_capacity(messages.len() * 4);
 
     for (idx, msg) in messages.iter().enumerate() {
@@ -130,7 +134,7 @@ fn build_message_lines(messages: &[serde_json::Value]) -> Vec<Line<'_>> {
 /// Convert one message JSON into styled lines. Format:
 /// `▎ <content>` per line, where `▎` is colored by role.
 /// No banner, no bg tint — just a vertical bar to delimit turns.
-fn render_message(msg: &serde_json::Value) -> Vec<Line<'_>> {
+fn render_message(msg: &serde_json::Value) -> Vec<Line<'static>> {
     let role = msg
         .get("role")
         .and_then(|v| v.as_str())
@@ -150,13 +154,13 @@ fn render_message(msg: &serde_json::Value) -> Vec<Line<'_>> {
 
 /// Prepend a colored bar `▎` and a space so message content sits in a
 /// visually-grouped column.
-fn prefix_with_bar(line: Line<'_>, bar_style: Style) -> Line<'_> {
+fn prefix_with_bar(line: Line<'static>, bar_style: Style) -> Line<'static> {
     let mut spans = vec![Span::styled("▎ ", bar_style)];
     spans.extend(line.spans);
     Line::from(spans)
 }
 
-fn content_lines(msg: &serde_json::Value) -> Vec<Line<'_>> {
+fn content_lines(msg: &serde_json::Value) -> Vec<Line<'static>> {
     let Some(content) = msg.get("content") else {
         return vec![Line::from(Span::styled(msg.to_string(), theme::dim()))];
     };
@@ -166,7 +170,7 @@ fn content_lines(msg: &serde_json::Value) -> Vec<Line<'_>> {
     }
 
     if let Some(arr) = content.as_array() {
-        let mut lines: Vec<Line<'_>> = Vec::new();
+        let mut lines: Vec<Line<'static>> = Vec::new();
         for item in arr {
             let kind = item.get("type").and_then(|v| v.as_str()).unwrap_or("?");
             match kind {
