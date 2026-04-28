@@ -19,6 +19,14 @@ pub mod markdown;
 pub mod two_column_list;
 pub mod wrap;
 
+// Phase 3a — diff + highlight (depend on `state::model::Diff`).
+pub mod diff;
+pub mod highlight;
+
+// Forge-internal style helpers consumed by the legacy hand-rolled UI;
+// removed when those files are replaced in Phase 4.
+pub mod style;
+
 use ratatui::Frame;
 
 use crate::app::{App, Screen};

@@ -16,11 +16,11 @@ use crate::ui::theme;
 /// Render the footer into `area` (1 line tall).
 pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let (glyph, glyph_color) = connection_glyph(app.connection);
-    let separator = Span::styled(" │ ", theme::dim());
+    let separator = Span::styled(" │ ", crate::ui::style::dim());
 
     let mut spans: Vec<Span<'_>> = Vec::with_capacity(8);
     spans.push(Span::styled(format!("{glyph} "), Style::default().fg(glyph_color)));
-    spans.push(Span::styled(daemon_label(app), theme::text()));
+    spans.push(Span::styled(daemon_label(app), crate::ui::style::text()));
     spans.push(separator.clone());
 
     spans.push(session_span(app));
@@ -29,11 +29,11 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
     spans.push(role_span(app));
     spans.push(separator.clone());
 
-    spans.push(Span::styled(short_cwd(&app.cwd), theme::dim()));
+    spans.push(Span::styled(short_cwd(&app.cwd), crate::ui::style::dim()));
 
     if !app.status_msg.is_empty() {
         spans.push(separator);
-        spans.push(Span::styled(app.status_msg.as_str(), theme::dim()));
+        spans.push(Span::styled(app.status_msg.as_str(), crate::ui::style::dim()));
     }
 
     let para = Paragraph::new(Line::from(spans));
@@ -42,9 +42,9 @@ pub fn render(frame: &mut Frame<'_>, app: &App, area: Rect) {
 
 fn connection_glyph(state: ConnectionState) -> (&'static str, ratatui::style::Color) {
     match state {
-        ConnectionState::Connected => ("●", theme::OK),
-        ConnectionState::Connecting | ConnectionState::Reconnecting { .. } => ("◌", theme::WARN),
-        ConnectionState::Disconnected => ("✗", theme::ERR),
+        ConnectionState::Connected => ("●", ratatui::style::Color::Green),
+        ConnectionState::Connecting | ConnectionState::Reconnecting { .. } => ("◌", theme::STATUS_WARNING),
+        ConnectionState::Disconnected => ("✗", theme::STATUS_ERROR),
     }
 }
 
@@ -66,21 +66,21 @@ fn strip_ws_scheme(url: &str) -> &str {
 fn session_span(app: &App) -> Span<'_> {
     match (&app.screen, &app.current_session) {
         (Screen::Conversation, Some(sid)) => {
-            Span::styled(format!("session: {}", short_sid(sid)), theme::text())
+            Span::styled(format!("session: {}", short_sid(sid)), crate::ui::style::text())
         }
-        _ => Span::styled("session: ─", theme::dim()),
+        _ => Span::styled("session: ─", crate::ui::style::dim()),
     }
 }
 
 fn role_span(app: &App) -> Span<'_> {
     match (&app.screen, app.role) {
         (Screen::Conversation, Role::Primary) => {
-            Span::styled("primary", Style::default().fg(theme::OK))
+            Span::styled("primary", Style::default().fg(ratatui::style::Color::Green))
         }
         (Screen::Conversation, Role::Viewer) => {
-            Span::styled("viewer", Style::default().fg(theme::INFO))
+            Span::styled("viewer", Style::default().fg(theme::SUBAGENT_TOKEN))
         }
-        _ => Span::styled("─", theme::dim()),
+        _ => Span::styled("─", crate::ui::style::dim()),
     }
 }
 

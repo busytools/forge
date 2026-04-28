@@ -43,7 +43,7 @@ pub fn render(frame: &mut Frame<'_>, app: &App) {
 
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(theme::ERR));
+        .border_style(Style::default().fg(theme::STATUS_ERROR));
 
     let inner = block.inner(h[1]);
     frame.render_widget(block, h[1]);
@@ -51,12 +51,12 @@ pub fn render(frame: &mut Frame<'_>, app: &App) {
     let lines = vec![
         Line::from(Span::styled(
             "✗  Lost connection to forge-daemon",
-            Style::default().fg(theme::ERR),
+            Style::default().fg(theme::STATUS_ERROR),
         )),
         Line::from(""),
-        Line::from(Span::styled(retry_text(app.connection), theme::dim())),
+        Line::from(Span::styled(retry_text(app.connection), crate::ui::style::dim())),
         Line::from(""),
-        Line::from(Span::styled("[r] retry now    [q] quit", theme::dim())),
+        Line::from(Span::styled("[r] retry now    [q] quit", crate::ui::style::dim())),
     ];
 
     let para = Paragraph::new(lines).alignment(Alignment::Center);

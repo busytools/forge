@@ -1,68 +1,74 @@
-//! Color + style constants shared across screens.
+#![allow(
+    dead_code,
+    missing_docs,
+    clippy::pedantic,
+    reason = "lifted upstream from claude-code-rust"
+)]
+//! Theme constants lifted from claude-code-rust `ui/theme.rs`.
+//!
+//! `RUST_ORANGE` (the brand orange), `DIM`, `SEPARATOR_CHAR`, status
+//! colors, and `tool_name_label()` for per-tool icon + label glyphs.
 
-use ratatui::style::{Color, Modifier, Style};
 
-/// Accent — used for selection highlights, "new session" entry,
-/// streaming cursor.
-pub const ACCENT: Color = Color::Rgb(244, 118, 0); // rust orange
+use ratatui::style::Color;
 
-/// Dim — secondary text (timestamps, help bar, inactive borders).
+// Accent
+pub const RUST_ORANGE: Color = Color::Rgb(244, 118, 0);
+
+// UI chrome
 pub const DIM: Color = Color::DarkGray;
+pub const PROMPT_CHAR: &str = "\u{276f}";
+pub const SEPARATOR_CHAR: &str = "\u{2500}";
 
-/// Success / connected.
-pub const OK: Color = Color::Green;
+// Role header colors
+pub const ROLE_ASSISTANT: Color = RUST_ORANGE;
 
-/// Warning / reconnecting.
-pub const WARN: Color = Color::Yellow;
-
-/// Error / disconnected.
-pub const ERR: Color = Color::Red;
-
-/// Viewer / informational accent.
-pub const INFO: Color = Color::LightBlue;
-
-/// Subtle dark fill for user-message blocks (matches
-/// claude-code-rust's `USER_MSG_BG`).
+// User message background
 pub const USER_MSG_BG: Color = Color::Rgb(40, 44, 52);
 
-/// Default text style (terminal foreground).
-#[must_use]
-pub fn text() -> Style {
-    Style::default()
+// Tool status icons
+pub const ICON_COMPLETED: &str = "\u{2713}";
+pub const ICON_FAILED: &str = "\u{2717}";
+
+// Status colors
+pub const STATUS_ERROR: Color = Color::Red;
+pub const STATUS_WARNING: Color = Color::Yellow;
+pub const SLASH_COMMAND: Color = Color::LightMagenta;
+pub const SUBAGENT_TOKEN: Color = Color::LightBlue;
+
+/// SDK tool icon + label pair. Monochrome Unicode symbols.
+/// Unknown tool names fall back to a generic Tool label.
+pub fn tool_name_label(sdk_tool_name: &str) -> (&'static str, &'static str) {
+    match sdk_tool_name {
+        "Read" => ("\u{2b1a}", "Read"),
+        "Write" => ("\u{25a3}", "Write"),
+        "Edit" => ("\u{25a3}", "Edit"),
+        "MultiEdit" => ("\u{25a3}", "MultiEdit"),
+        "NotebookEdit" => ("\u{25a3}", "NotebookEdit"),
+        "Delete" => ("\u{25a3}", "Delete"),
+        "Move" => ("\u{21c4}", "Move"),
+        "Glob" => ("\u{2315}", "Glob"),
+        "Grep" => ("\u{2315}", "Grep"),
+        "LS" => ("\u{2315}", "LS"),
+        "Bash" => ("\u{27e9}", "Bash"),
+        "Task" | "Agent" => ("\u{25c7}", "Subagent"),
+        "WebFetch" => ("\u{2295}", "WebFetch"),
+        "WebSearch" => ("\u{2295}", "WebSearch"),
+        "ExitPlanMode" => ("\u{2299}", "ExitPlanMode"),
+        "TodoWrite" => ("\u{25cc}", "TodoWrite"),
+        "Config" => ("\u{2299}", "Config"),
+        "EnterWorktree" => ("\u{21c4}", "EnterWorktree"),
+        _ => ("\u{25cb}", "Tool"),
+    }
 }
 
-/// Dim text — for low-priority annotations.
-#[must_use]
-pub fn dim() -> Style {
-    Style::default().fg(DIM)
-}
+#[cfg(test)]
+mod tests {
+    use super::tool_name_label;
 
-/// Selected row (reverse-video on accent).
-#[must_use]
-pub fn selected() -> Style {
-    Style::default().fg(Color::White).bg(ACCENT).add_modifier(Modifier::BOLD)
-}
-
-/// Title / heading.
-#[must_use]
-pub fn heading() -> Style {
-    Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
-}
-
-/// Tool icon + label, mirroring the claude-code-rust mapping. Falls
-/// back to a generic glyph for unknown tools.
-#[must_use]
-pub fn tool_glyph(tool: &str) -> &'static str {
-    match tool {
-        "Read" => "⬚",
-        "Write" | "Edit" | "MultiEdit" | "NotebookEdit" | "Delete" => "□",
-        "Move" | "EnterWorktree" => "⇄",
-        "Glob" | "Grep" | "LS" => "⌕",
-        "Bash" => "⟩",
-        "Task" | "Agent" => "◇",
-        "WebFetch" | "WebSearch" => "⊕",
-        "ExitPlanMode" | "Config" => "⊙",
-        "TodoWrite" => "◌",
-        _ => "○",
+    #[test]
+    fn task_and_agent_share_subagent_label_and_icon() {
+        assert_eq!(tool_name_label("Task"), ("\u{25c7}", "Subagent"));
+        assert_eq!(tool_name_label("Agent"), ("\u{25c7}", "Subagent"));
     }
 }

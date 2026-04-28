@@ -36,10 +36,10 @@ pub fn render(frame: &mut Frame<'_>, app: &App) {
 fn render_header(frame: &mut Frame<'_>, app: &App, area: ratatui::layout::Rect) {
     let count = app.session_list.len();
     let line = Line::from(vec![
-        Span::styled("Sessions for ", theme::dim()),
-        Span::styled(short_cwd(&app.cwd), theme::text()),
-        Span::styled(format!("    {count} session"), theme::dim()),
-        Span::styled(if count == 1 { "" } else { "s" }, theme::dim()),
+        Span::styled("Sessions for ", crate::ui::style::dim()),
+        Span::styled(short_cwd(&app.cwd), crate::ui::style::text()),
+        Span::styled(format!("    {count} session"), crate::ui::style::dim()),
+        Span::styled(if count == 1 { "" } else { "s" }, crate::ui::style::dim()),
     ]);
     let para = Paragraph::new(vec![line, Line::from("")]);
     frame.render_widget(para, area);
@@ -61,7 +61,7 @@ fn render_list(frame: &mut Frame<'_>, app: &App, area: ratatui::layout::Rect) {
 
     let block = Block::default()
         .borders(Borders::TOP)
-        .border_style(theme::dim());
+        .border_style(crate::ui::style::dim());
     let para = Paragraph::new(lines).block(block);
     frame.render_widget(para, area);
 }
@@ -69,9 +69,9 @@ fn render_list(frame: &mut Frame<'_>, app: &App, area: ratatui::layout::Rect) {
 fn line_for_new_session(selected: bool) -> Line<'static> {
     let marker = if selected { ">" } else { " " };
     let style = if selected {
-        theme::selected()
+        crate::ui::style::selected()
     } else {
-        Style::default().fg(theme::ACCENT)
+        Style::default().fg(theme::RUST_ORANGE)
     };
     Line::from(Span::styled(format!("{marker} ✨  New session"), style))
 }
@@ -93,14 +93,14 @@ fn line_for_session(session: &serde_json::Value, selected: bool) -> Line<'_> {
 
     let marker = if selected { ">" } else { " " };
     let style = if selected {
-        theme::selected()
+        crate::ui::style::selected()
     } else {
         Style::default()
     };
     Line::from(vec![
         Span::styled(format!("{marker} "), style),
-        Span::styled("○ ", theme::dim()),
-        Span::styled(format!("{sid_short}  "), theme::dim()),
+        Span::styled("○ ", crate::ui::style::dim()),
+        Span::styled(format!("{sid_short}  "), crate::ui::style::dim()),
         Span::styled(truncate(title, 60), style),
     ])
 }
@@ -108,7 +108,7 @@ fn line_for_session(session: &serde_json::Value, selected: bool) -> Line<'_> {
 fn render_help(frame: &mut Frame<'_>, area: ratatui::layout::Rect) {
     let line = Line::from(Span::styled(
         "↑↓ navigate   Enter open   q quit",
-        theme::dim(),
+        crate::ui::style::dim(),
     ));
     frame.render_widget(Paragraph::new(line), area);
 }

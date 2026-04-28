@@ -55,7 +55,7 @@ fn render_separator(frame: &mut Frame<'_>, area: Rect) {
     }
     let line = Line::from(Span::styled(
         "─".repeat(usize::from(area.width)),
-        theme::dim(),
+        crate::ui::style::dim(),
     ));
     frame.render_widget(Paragraph::new(line), area);
 }
@@ -82,12 +82,12 @@ fn render_body(frame: &mut Frame<'_>, app: &App, area: Rect) {
 
 fn render_input(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let mut spans = vec![
-        Span::styled("❯ ", Style::default().fg(theme::ACCENT)),
-        Span::styled(app.draft.as_str(), theme::text()),
+        Span::styled("❯ ", Style::default().fg(theme::RUST_ORANGE)),
+        Span::styled(app.draft.as_str(), crate::ui::style::text()),
         Span::styled("▏", Style::default().add_modifier(Modifier::SLOW_BLINK)),
     ];
     if app.draft.is_empty() {
-        spans.insert(2, Span::styled("type a message…", theme::dim()));
+        spans.insert(2, Span::styled("type a message…", crate::ui::style::dim()));
     }
     let para = Paragraph::new(Line::from(spans)).wrap(Wrap { trim: false });
     frame.render_widget(para, area);
@@ -96,17 +96,17 @@ fn render_input(frame: &mut Frame<'_>, app: &App, area: Rect) {
 fn render_help(frame: &mut Frame<'_>, area: Rect) {
     let scroll_hint = " ".to_string();
     let line = Line::from(vec![
-        Span::styled("Enter", theme::heading()),
-        Span::styled(" send  ", theme::dim()),
-        Span::styled("PgUp/PgDn/wheel", theme::heading()),
-        Span::styled(" scroll  ", theme::dim()),
-        Span::styled("End", theme::heading()),
-        Span::styled(" follow  ", theme::dim()),
-        Span::styled("Esc", theme::heading()),
-        Span::styled(" picker  ", theme::dim()),
-        Span::styled("q", theme::heading()),
-        Span::styled(" quit", theme::dim()),
-        Span::styled(scroll_hint, theme::dim()),
+        Span::styled("Enter", crate::ui::style::heading()),
+        Span::styled(" send  ", crate::ui::style::dim()),
+        Span::styled("PgUp/PgDn/wheel", crate::ui::style::heading()),
+        Span::styled(" scroll  ", crate::ui::style::dim()),
+        Span::styled("End", crate::ui::style::heading()),
+        Span::styled(" follow  ", crate::ui::style::dim()),
+        Span::styled("Esc", crate::ui::style::heading()),
+        Span::styled(" picker  ", crate::ui::style::dim()),
+        Span::styled("q", crate::ui::style::heading()),
+        Span::styled(" quit", crate::ui::style::dim()),
+        Span::styled(scroll_hint, crate::ui::style::dim()),
     ]);
     frame.render_widget(Paragraph::new(line), area);
 }
@@ -140,8 +140,8 @@ fn render_message(msg: &serde_json::Value) -> Vec<Line<'static>> {
         .and_then(|v| v.as_str())
         .unwrap_or("system");
     let bar_color = match role {
-        "user" => theme::INFO,
-        "assistant" => theme::ACCENT,
+        "user" => theme::SUBAGENT_TOKEN,
+        "assistant" => theme::RUST_ORANGE,
         _ => theme::DIM,
     };
     let bar_style = Style::default().fg(bar_color);
@@ -162,7 +162,7 @@ fn prefix_with_bar(line: Line<'static>, bar_style: Style) -> Line<'static> {
 
 fn content_lines(msg: &serde_json::Value) -> Vec<Line<'static>> {
     let Some(content) = msg.get("content") else {
-        return vec![Line::from(Span::styled(msg.to_string(), theme::dim()))];
+        return vec![Line::from(Span::styled(msg.to_string(), crate::ui::style::dim()))];
     };
 
     if let Some(s) = content.as_str() {
@@ -176,24 +176,22 @@ fn content_lines(msg: &serde_json::Value) -> Vec<Line<'static>> {
             match kind {
                 "text" => {
                     if let Some(text) = item.get("text").and_then(|v| v.as_str()) {
-                        for l in text.lines() {
-                            lines.push(Line::from(l.to_string()));
-                        }
+                        lines.extend(super::markdown::render_markdown_safe(text, None));
                     }
                 }
                 "tool_use" => {
                     let name = item.get("name").and_then(|v| v.as_str()).unwrap_or("?");
                     let preview = tool_input_preview(item.get("input"));
-                    let glyph = theme::tool_glyph(name);
+                    let glyph = theme::tool_name_label(name).0;
                     lines.push(Line::from(vec![
-                        Span::styled(format!("{glyph} "), Style::default().fg(theme::INFO)),
+                        Span::styled(format!("{glyph} "), Style::default().fg(theme::SUBAGENT_TOKEN)),
                         Span::styled(
                             name.to_string(),
                             Style::default()
-                                .fg(theme::INFO)
+                                .fg(theme::SUBAGENT_TOKEN)
                                 .add_modifier(Modifier::BOLD),
                         ),
-                        Span::styled(format!("  {preview}"), theme::dim()),
+                        Span::styled(format!("  {preview}"), crate::ui::style::dim()),
                     ]));
                 }
                 "tool_result" => {
@@ -205,8 +203,8 @@ fn content_lines(msg: &serde_json::Value) -> Vec<Line<'static>> {
                             |s| truncate_one_line(&s, 80),
                         );
                     lines.push(Line::from(vec![
-                        Span::styled("  ⤷ ", theme::dim()),
-                        Span::styled(snippet, theme::dim()),
+                        Span::styled("  ⤷ ", crate::ui::style::dim()),
+                        Span::styled(snippet, crate::ui::style::dim()),
                     ]));
                 }
                 "thinking" => {
@@ -220,7 +218,7 @@ fn content_lines(msg: &serde_json::Value) -> Vec<Line<'static>> {
                 other => {
                     lines.push(Line::from(Span::styled(
                         format!("[{other}]"),
-                        theme::dim(),
+                        crate::ui::style::dim(),
                     )));
                 }
             }
@@ -228,7 +226,7 @@ fn content_lines(msg: &serde_json::Value) -> Vec<Line<'static>> {
         return lines;
     }
 
-    vec![Line::from(Span::styled(content.to_string(), theme::dim()))]
+    vec![Line::from(Span::styled(content.to_string(), crate::ui::style::dim()))]
 }
 
 fn value_as_text(v: &serde_json::Value) -> Option<String> {

@@ -39,7 +39,7 @@ pub fn render(frame: &mut Frame<'_>, p: &PendingPermission) {
 
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(theme::ACCENT))
+        .border_style(Style::default().fg(theme::RUST_ORANGE))
         .title(" ⚡ Permission request ");
     let inner = block.inner(modal_area);
     frame.render_widget(block, modal_area);
@@ -57,18 +57,18 @@ pub fn render(frame: &mut Frame<'_>, p: &PendingPermission) {
     let lines = vec![
         Line::from(""),
         Line::from(vec![
-            Span::styled("  Tool:    ", theme::dim()),
+            Span::styled("  Tool:    ", crate::ui::style::dim()),
             Span::styled(tool_name.to_string(), Style::default()),
         ]),
         Line::from(vec![
-            Span::styled("  Input:   ", theme::dim()),
+            Span::styled("  Input:   ", crate::ui::style::dim()),
             Span::styled(truncate(&tool_input, 56), Style::default()),
         ]),
         Line::from(""),
         Line::from(""),
         Line::from(Span::styled(
             "  [a] Accept    [d] Deny    [Esc] cancel",
-            theme::dim(),
+            crate::ui::style::dim(),
         )),
     ];
 
