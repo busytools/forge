@@ -11,7 +11,6 @@ use std::sync::Arc;
 
 use clap::Parser;
 use crossterm::ExecutableCommand;
-use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
@@ -42,14 +41,16 @@ impl TerminalGuard {
     fn enter() -> std::io::Result<Self> {
         enable_raw_mode()?;
         stdout().execute(EnterAlternateScreen)?;
-        stdout().execute(EnableMouseCapture)?;
+        // We deliberately do NOT enable mouse capture — terminals
+        // (Ghostty, iTerm, kitty) forward trackpad scroll as arrow
+        // key events to alt-screen apps when capture is off. Capturing
+        // mouse breaks native trackpad scroll, which the user expects.
         Ok(Self)
     }
 }
 
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
-        let _ = stdout().execute(DisableMouseCapture);
         let _ = stdout().execute(LeaveAlternateScreen);
         let _ = disable_raw_mode();
     }

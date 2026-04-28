@@ -113,47 +113,71 @@ fn render_help(frame: &mut Frame<'_>, area: Rect) {
 }
 
 /// Build the styled lines for the conversation body.
+/// `width` is the renderable width — used to pad user-message lines so
+/// the bg tint reaches the right edge.
 fn build_message_lines(messages: &[serde_json::Value], width: u16) -> Vec<Line<'_>> {
     let mut out: Vec<Line<'_>> = Vec::with_capacity(messages.len() * 4);
-    let sep_width = usize::from(width.clamp(1, 200));
-    let separator = Line::from(Span::styled(
-        "─".repeat(sep_width.saturating_sub(2)),
-        theme::dim(),
-    ));
 
     for (idx, msg) in messages.iter().enumerate() {
         if idx > 0 {
             out.push(Line::from(""));
-            out.push(separator.clone());
-            out.push(Line::from(""));
         }
-        out.extend(render_message(msg));
+        out.extend(render_message(msg, width));
+        out.push(Line::from(""));
     }
     out
 }
 
-/// Convert one message JSON into styled lines: a role label followed
-/// by content. No banner glyph — claude-code-rust style is just the
-/// label in the role's accent color, on its own line.
-fn render_message(msg: &serde_json::Value) -> Vec<Line<'_>> {
+/// Convert one message JSON into styled lines. User turns get a subtle
+/// bg tint to delimit them visually; assistant turns sit on the
+/// terminal default bg with an accent role label.
+fn render_message(msg: &serde_json::Value, width: u16) -> Vec<Line<'_>> {
     let role = msg
         .get("role")
         .and_then(|v| v.as_str())
         .unwrap_or("system");
+    let is_user = role == "user";
     let (label, label_color) = match role {
-        "user" => ("You", theme::INFO),
-        "assistant" => ("Claude", theme::ACCENT),
-        "system" => ("System", theme::DIM),
+        "user" => ("YOU", theme::INFO),
+        "assistant" => ("CLAUDE", theme::ACCENT),
+        "system" => ("SYSTEM", theme::DIM),
         other => (other, theme::DIM),
     };
 
-    let mut out = vec![Line::from(Span::styled(
-        label.to_string(),
-        Style::default().fg(label_color).add_modifier(Modifier::BOLD),
-    ))];
-    out.push(Line::from(""));
-    out.extend(content_lines(msg));
+    let mut out: Vec<Line<'_>> = Vec::new();
+    out.push(pad_to_width(
+        Line::from(Span::styled(
+            label.to_string(),
+            Style::default().fg(label_color).add_modifier(Modifier::BOLD),
+        )),
+        width,
+        is_user,
+    ));
+    out.push(pad_to_width(Line::from(""), width, is_user));
+    for line in content_lines(msg) {
+        out.push(pad_to_width(line, width, is_user));
+    }
     out
+}
+
+/// Pad `line` with trailing spaces to reach `width` and apply a subtle
+/// dark bg if `is_user` is set, so user turns render as a tinted block.
+fn pad_to_width(line: Line<'_>, width: u16, is_user: bool) -> Line<'_> {
+    let mut spans = line.spans;
+    let used: usize = spans
+        .iter()
+        .map(|s| s.content.chars().count())
+        .sum();
+    let target = usize::from(width);
+    if used < target {
+        spans.push(Span::raw(" ".repeat(target - used)));
+    }
+    if is_user {
+        for span in &mut spans {
+            span.style = span.style.bg(theme::USER_MSG_BG);
+        }
+    }
+    Line::from(spans)
 }
 
 fn content_lines(msg: &serde_json::Value) -> Vec<Line<'_>> {

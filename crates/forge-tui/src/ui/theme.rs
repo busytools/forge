@@ -21,6 +21,10 @@ pub const ERR: Color = Color::Red;
 /// Viewer / informational accent.
 pub const INFO: Color = Color::LightBlue;
 
+/// Subtle dark fill for user-message blocks (matches
+/// claude-code-rust's `USER_MSG_BG`).
+pub const USER_MSG_BG: Color = Color::Rgb(40, 44, 52);
+
 /// Default text style (terminal foreground).
 #[must_use]
 pub fn text() -> Style {

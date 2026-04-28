@@ -104,8 +104,16 @@ async fn handle_conversation_key(
         }
         KeyCode::PageDown => {
             app.conv_scroll = app.conv_scroll.saturating_add(SCROLL_STEP);
-            // A subsequent render clamps + flips off user_scrolled if we
-            // hit the bottom — keep auto-follow ergonomic.
+        }
+        // Trackpad scroll arrives as Up/Down arrow events in alt-screen
+        // mode when mouse capture is off. Treat them as 1-line scroll
+        // so a flick of the trackpad scrolls the body smoothly.
+        KeyCode::Up => {
+            app.conv_user_scrolled = true;
+            app.conv_scroll = app.conv_scroll.saturating_sub(1);
+        }
+        KeyCode::Down => {
+            app.conv_scroll = app.conv_scroll.saturating_add(1);
         }
         KeyCode::Home => {
             app.conv_user_scrolled = true;
