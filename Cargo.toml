@@ -21,7 +21,7 @@ async-trait = "0.1"
 getrandom = "0.3"
 hex = "0.4"
 uuid = { version = "1", features = ["v4"] }
-time = { version = "0.3", features = ["parsing"] }
+time = { version = "0.3", features = ["parsing", "formatting"] }
 unicode-normalization = "0.1"
 tokio-stream = "0.1"
 regex = "1"

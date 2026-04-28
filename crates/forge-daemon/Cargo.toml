@@ -49,6 +49,7 @@ toml.workspace = true
 async-trait.workspace = true
 uuid.workspace = true
 futures-util.workspace = true
+time.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
