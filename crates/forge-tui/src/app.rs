@@ -169,6 +169,11 @@ pub struct App {
     pub draft: String,
     /// Local primary/viewer role for `current_session`.
     pub role: Role,
+    /// Scroll offset (top line) for the conversation body.
+    pub conv_scroll: u16,
+    /// True when the user has scrolled up — suspends auto-scroll on
+    /// new events. End / live tail-follow clears it.
+    pub conv_user_scrolled: bool,
 
     // Modal
     /// Active permission modal, if any.
@@ -269,16 +274,24 @@ pub async fn run<B: Backend>(
             AppEvent::SessionFrame(frame) => {
                 if let Some(msg) = frame.get("message").cloned() {
                     app.messages.push(msg);
+                    // Tail-follow: if user hasn't paged up, stay at
+                    // bottom (render clamps `u16::MAX` to `max_scroll`).
+                    if !app.conv_user_scrolled {
+                        app.conv_scroll = u16::MAX;
+                    }
                 }
             }
             AppEvent::HistoricalLoaded(history) => {
                 // Seed the transcript view. If live events have already
                 // arrived (race between subscribe and history fetch),
-                // they're appended after — slight ordering glitch is
-                // acceptable in v1.
+                // they're appended after.
                 let live = std::mem::take(&mut app.messages);
                 app.messages = history;
                 app.messages.extend(live);
+                // Drop the user to the bottom on first paint so they
+                // see the most recent turns.
+                app.conv_scroll = u16::MAX;
+                app.conv_user_scrolled = false;
             }
 
             AppEvent::PermissionRequest { rev_id, params } => {

@@ -87,6 +87,7 @@ async fn handle_conversation_key(
     key: KeyCode,
     client: &Arc<Client>,
 ) -> bool {
+    const SCROLL_STEP: u16 = 10;
     match key {
         KeyCode::Esc => {
             app.screen = Screen::Picker;
@@ -94,6 +95,25 @@ async fn handle_conversation_key(
             app.messages.clear();
             app.role = Role::Vacant;
             app.draft.clear();
+            app.conv_scroll = 0;
+            app.conv_user_scrolled = false;
+        }
+        KeyCode::PageUp => {
+            app.conv_user_scrolled = true;
+            app.conv_scroll = app.conv_scroll.saturating_sub(SCROLL_STEP);
+        }
+        KeyCode::PageDown => {
+            app.conv_scroll = app.conv_scroll.saturating_add(SCROLL_STEP);
+            // A subsequent render clamps + flips off user_scrolled if we
+            // hit the bottom — keep auto-follow ergonomic.
+        }
+        KeyCode::Home => {
+            app.conv_user_scrolled = true;
+            app.conv_scroll = 0;
+        }
+        KeyCode::End => {
+            app.conv_user_scrolled = false;
+            app.conv_scroll = u16::MAX; // render clamps to actual bottom
         }
         KeyCode::Char(c) => {
             if c == 'q' && app.draft.is_empty() {
