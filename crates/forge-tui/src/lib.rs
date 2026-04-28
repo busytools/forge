@@ -5,6 +5,9 @@
 //! Conversation, Disconnected) owns its own layout and input rules.
 
 pub mod app;
+pub mod cache_policy;
 pub mod client;
 pub mod input;
+pub mod perf;
+pub mod state;
 pub mod ui;
