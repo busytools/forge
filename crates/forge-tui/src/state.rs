@@ -11,7 +11,15 @@
 
 pub mod agent_types;
 pub mod block_cache;
+pub mod cache_metrics;
+pub mod dialog;
+pub mod focus;
+pub mod git_context;
 pub mod messages;
 pub mod model;
+pub mod paste_burst;
 pub mod tool_call_info;
 pub mod types;
+pub mod viewport;
+
+pub use viewport::{LayoutInvalidation, LayoutRemeasureReason};

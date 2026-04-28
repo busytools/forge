@@ -8,6 +8,7 @@ pub mod app;
 pub mod cache_policy;
 pub mod client;
 pub mod input;
+pub mod logging;
 pub mod perf;
 pub mod state;
 pub mod ui;
