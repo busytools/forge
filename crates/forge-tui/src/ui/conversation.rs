@@ -61,19 +61,19 @@ fn render_separator(frame: &mut Frame<'_>, area: Rect) {
 }
 
 fn render_body(frame: &mut Frame<'_>, app: &App, area: Rect) {
-    let lines = build_message_lines(&app.messages, area.width);
+    let lines = build_message_lines(&app.messages);
     #[allow(
         clippy::cast_possible_truncation,
-        reason = "u16 truncation for terminal scroll offset; max_scroll clamps"
+        reason = "u16 truncation for terminal scroll offset; clamping happens below"
     )]
     let total = lines.len().min(u16::MAX as usize) as u16;
     let viewport = area.height;
     let max_scroll = total.saturating_sub(viewport);
-    let scroll = if app.conv_user_scrolled {
-        app.conv_scroll.min(max_scroll)
-    } else {
-        max_scroll
-    };
+    // `conv_scroll_back` is distance from live tail in lines.
+    // Clamp to max_scroll (can't scroll past oldest). Compute the
+    // actual top-line offset for `Paragraph::scroll`.
+    let scroll_back = app.conv_scroll_back.min(max_scroll);
+    let scroll = max_scroll - scroll_back;
 
     let para = Paragraph::new(lines)
         .wrap(Wrap { trim: false })
@@ -112,71 +112,47 @@ fn render_help(frame: &mut Frame<'_>, area: Rect) {
     frame.render_widget(Paragraph::new(line), area);
 }
 
-/// Build the styled lines for the conversation body.
-/// `width` is the renderable width — used to pad user-message lines so
-/// the bg tint reaches the right edge.
-fn build_message_lines(messages: &[serde_json::Value], width: u16) -> Vec<Line<'_>> {
+/// Build the styled lines for the conversation body. Minimal chrome:
+/// each turn is content prefixed with a thin colored bar in the role's
+/// color; turns separated by a single blank line.
+fn build_message_lines(messages: &[serde_json::Value]) -> Vec<Line<'_>> {
     let mut out: Vec<Line<'_>> = Vec::with_capacity(messages.len() * 4);
 
     for (idx, msg) in messages.iter().enumerate() {
         if idx > 0 {
             out.push(Line::from(""));
         }
-        out.extend(render_message(msg, width));
-        out.push(Line::from(""));
+        out.extend(render_message(msg));
     }
     out
 }
 
-/// Convert one message JSON into styled lines. User turns get a subtle
-/// bg tint to delimit them visually; assistant turns sit on the
-/// terminal default bg with an accent role label.
-fn render_message(msg: &serde_json::Value, width: u16) -> Vec<Line<'_>> {
+/// Convert one message JSON into styled lines. Format:
+/// `▎ <content>` per line, where `▎` is colored by role.
+/// No banner, no bg tint — just a vertical bar to delimit turns.
+fn render_message(msg: &serde_json::Value) -> Vec<Line<'_>> {
     let role = msg
         .get("role")
         .and_then(|v| v.as_str())
         .unwrap_or("system");
-    let is_user = role == "user";
-    let (label, label_color) = match role {
-        "user" => ("YOU", theme::INFO),
-        "assistant" => ("CLAUDE", theme::ACCENT),
-        "system" => ("SYSTEM", theme::DIM),
-        other => (other, theme::DIM),
+    let bar_color = match role {
+        "user" => theme::INFO,
+        "assistant" => theme::ACCENT,
+        _ => theme::DIM,
     };
+    let bar_style = Style::default().fg(bar_color);
 
-    let mut out: Vec<Line<'_>> = Vec::new();
-    out.push(pad_to_width(
-        Line::from(Span::styled(
-            label.to_string(),
-            Style::default().fg(label_color).add_modifier(Modifier::BOLD),
-        )),
-        width,
-        is_user,
-    ));
-    out.push(pad_to_width(Line::from(""), width, is_user));
-    for line in content_lines(msg) {
-        out.push(pad_to_width(line, width, is_user));
-    }
-    out
+    content_lines(msg)
+        .into_iter()
+        .map(|line| prefix_with_bar(line, bar_style))
+        .collect()
 }
 
-/// Pad `line` with trailing spaces to reach `width` and apply a subtle
-/// dark bg if `is_user` is set, so user turns render as a tinted block.
-fn pad_to_width(line: Line<'_>, width: u16, is_user: bool) -> Line<'_> {
-    let mut spans = line.spans;
-    let used: usize = spans
-        .iter()
-        .map(|s| s.content.chars().count())
-        .sum();
-    let target = usize::from(width);
-    if used < target {
-        spans.push(Span::raw(" ".repeat(target - used)));
-    }
-    if is_user {
-        for span in &mut spans {
-            span.style = span.style.bg(theme::USER_MSG_BG);
-        }
-    }
+/// Prepend a colored bar `▎` and a space so message content sits in a
+/// visually-grouped column.
+fn prefix_with_bar(line: Line<'_>, bar_style: Style) -> Line<'_> {
+    let mut spans = vec![Span::styled("▎ ", bar_style)];
+    spans.extend(line.spans);
     Line::from(spans)
 }
 

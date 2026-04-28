@@ -169,11 +169,10 @@ pub struct App {
     pub draft: String,
     /// Local primary/viewer role for `current_session`.
     pub role: Role,
-    /// Scroll offset (top line) for the conversation body.
-    pub conv_scroll: u16,
-    /// True when the user has scrolled up — suspends auto-scroll on
-    /// new events. End / live tail-follow clears it.
-    pub conv_user_scrolled: bool,
+    /// Distance from the bottom of the conversation body, in lines.
+    /// `0` = pinned to bottom (auto-tail). Larger = scrolled further
+    /// back into history. Render clamps to actual max.
+    pub conv_scroll_back: u16,
 
     // Modal
     /// Active permission modal, if any.
@@ -277,11 +276,8 @@ pub async fn run<B: Backend>(
             AppEvent::SessionFrame(frame) => {
                 if let Some(msg) = frame.get("message").cloned() {
                     app.messages.push(msg);
-                    // Tail-follow: if user hasn't paged up, stay at
-                    // bottom (render clamps `u16::MAX` to `max_scroll`).
-                    if !app.conv_user_scrolled {
-                        app.conv_scroll = u16::MAX;
-                    }
+                    // No tail-follow logic needed — scroll-from-bottom
+                    // model means "0" is always the live tail.
                 }
             }
             AppEvent::HistoricalLoaded(history) => {
@@ -291,10 +287,8 @@ pub async fn run<B: Backend>(
                 let live = std::mem::take(&mut app.messages);
                 app.messages = history;
                 app.messages.extend(live);
-                // Drop the user to the bottom on first paint so they
-                // see the most recent turns.
-                app.conv_scroll = u16::MAX;
-                app.conv_user_scrolled = false;
+                // Pin to bottom so the user sees the most recent turns.
+                app.conv_scroll_back = 0;
             }
 
             AppEvent::PermissionRequest { rev_id, params } => {
@@ -357,13 +351,10 @@ fn handle_mouse(app: &mut App, m: MouseEvent) {
     let step = MOUSE_SCROLL_STEP;
     match m.kind {
         MouseEventKind::ScrollUp => {
-            app.conv_user_scrolled = true;
-            app.conv_scroll = app.conv_scroll.saturating_sub(step);
+            app.conv_scroll_back = app.conv_scroll_back.saturating_add(step);
         }
         MouseEventKind::ScrollDown => {
-            app.conv_scroll = app.conv_scroll.saturating_add(step);
-            // The render path clamps to max_scroll; if PgDn put us at
-            // bottom, flip user_scrolled off elsewhere.
+            app.conv_scroll_back = app.conv_scroll_back.saturating_sub(step);
         }
         _ => {}
     }

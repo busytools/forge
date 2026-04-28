@@ -87,7 +87,7 @@ async fn handle_conversation_key(
     key: KeyCode,
     client: &Arc<Client>,
 ) -> bool {
-    const SCROLL_STEP: u16 = 10;
+    const PAGE_STEP: u16 = 10;
     match key {
         KeyCode::Esc => {
             app.screen = Screen::Picker;
@@ -95,33 +95,29 @@ async fn handle_conversation_key(
             app.messages.clear();
             app.role = Role::Vacant;
             app.draft.clear();
-            app.conv_scroll = 0;
-            app.conv_user_scrolled = false;
+            app.conv_scroll_back = 0;
         }
+        // Scroll-from-bottom: `conv_scroll_back` = lines back from live
+        // tail. `+1` = up (older), `-1` = down (newer). `0` is the
+        // live tail.
         KeyCode::PageUp => {
-            app.conv_user_scrolled = true;
-            app.conv_scroll = app.conv_scroll.saturating_sub(SCROLL_STEP);
+            app.conv_scroll_back = app.conv_scroll_back.saturating_add(PAGE_STEP);
         }
         KeyCode::PageDown => {
-            app.conv_scroll = app.conv_scroll.saturating_add(SCROLL_STEP);
+            app.conv_scroll_back = app.conv_scroll_back.saturating_sub(PAGE_STEP);
         }
-        // Trackpad scroll arrives as Up/Down arrow events in alt-screen
-        // mode when mouse capture is off. Treat them as 1-line scroll
-        // so a flick of the trackpad scrolls the body smoothly.
+        // Trackpad arrives as Up/Down arrow keys with mouse capture off.
         KeyCode::Up => {
-            app.conv_user_scrolled = true;
-            app.conv_scroll = app.conv_scroll.saturating_sub(1);
+            app.conv_scroll_back = app.conv_scroll_back.saturating_add(1);
         }
         KeyCode::Down => {
-            app.conv_scroll = app.conv_scroll.saturating_add(1);
+            app.conv_scroll_back = app.conv_scroll_back.saturating_sub(1);
         }
         KeyCode::Home => {
-            app.conv_user_scrolled = true;
-            app.conv_scroll = 0;
+            app.conv_scroll_back = u16::MAX; // render clamps to top
         }
         KeyCode::End => {
-            app.conv_user_scrolled = false;
-            app.conv_scroll = u16::MAX; // render clamps to actual bottom
+            app.conv_scroll_back = 0;
         }
         KeyCode::Char(c) => {
             if c == 'q' && app.draft.is_empty() {
