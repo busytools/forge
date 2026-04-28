@@ -11,7 +11,7 @@
 
 use std::sync::Arc;
 
-use crossterm::event::{Event, KeyEventKind};
+use crossterm::event::{Event, KeyEventKind, MouseEvent, MouseEventKind};
 use ratatui::Terminal;
 use ratatui::backend::Backend;
 use tokio::sync::mpsc;
@@ -236,6 +236,9 @@ pub async fn run<B: Backend>(
                     break;
                 }
             }
+            AppEvent::Term(Event::Mouse(m)) => {
+                handle_mouse(&mut app, m);
+            }
             AppEvent::Term(_) => {}
 
             AppEvent::Connected => {
@@ -343,4 +346,25 @@ pub async fn run<B: Backend>(
     }
 
     Ok(())
+}
+
+const MOUSE_SCROLL_STEP: u16 = 3;
+
+fn handle_mouse(app: &mut App, m: MouseEvent) {
+    if app.screen != Screen::Conversation {
+        return;
+    }
+    let step = MOUSE_SCROLL_STEP;
+    match m.kind {
+        MouseEventKind::ScrollUp => {
+            app.conv_user_scrolled = true;
+            app.conv_scroll = app.conv_scroll.saturating_sub(step);
+        }
+        MouseEventKind::ScrollDown => {
+            app.conv_scroll = app.conv_scroll.saturating_add(step);
+            // The render path clamps to max_scroll; if PgDn put us at
+            // bottom, flip user_scrolled off elsewhere.
+        }
+        _ => {}
+    }
 }

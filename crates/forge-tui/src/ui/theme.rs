@@ -4,7 +4,7 @@ use ratatui::style::{Color, Modifier, Style};
 
 /// Accent — used for selection highlights, "new session" entry,
 /// streaming cursor.
-pub const ACCENT: Color = Color::Rgb(206, 66, 43); // rust orange
+pub const ACCENT: Color = Color::Rgb(244, 118, 0); // rust orange
 
 /// Dim — secondary text (timestamps, help bar, inactive borders).
 pub const DIM: Color = Color::DarkGray;
@@ -43,4 +43,22 @@ pub fn selected() -> Style {
 #[must_use]
 pub fn heading() -> Style {
     Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
+}
+
+/// Tool icon + label, mirroring the claude-code-rust mapping. Falls
+/// back to a generic glyph for unknown tools.
+#[must_use]
+pub fn tool_glyph(tool: &str) -> &'static str {
+    match tool {
+        "Read" => "⬚",
+        "Write" | "Edit" | "MultiEdit" | "NotebookEdit" | "Delete" => "□",
+        "Move" | "EnterWorktree" => "⇄",
+        "Glob" | "Grep" | "LS" => "⌕",
+        "Bash" => "⟩",
+        "Task" | "Agent" => "◇",
+        "WebFetch" | "WebSearch" => "⊕",
+        "ExitPlanMode" | "Config" => "⊙",
+        "TodoWrite" => "◌",
+        _ => "○",
+    }
 }
