@@ -1,10 +1,10 @@
-//! `AgentDefinition` and the nested types it carries.
+//! [`SubagentDefinition`] and the nested types it carries.
 //!
-//! `AgentDefinition`. The
-//! struct is forwarded via the `initialize` `control_request`'s `agents`
-//! field when [`Options::agents`](crate::options::Options::agents) is
-//! non-empty. the CLI's wire serialisation drops unset fields (`None`);
-//! we match that via `skip_serializing_if = "Option::is_none"`.
+//! Forwarded to the CLI via the `initialize` `control_request`'s
+//! `agents` field when [`Options::subagents`](crate::options::Options::subagents)
+//! is non-empty. Unset fields are skipped on the wire via
+//! `skip_serializing_if = "Option::is_none"` so the JSON shape matches
+//! what the CLI expects.
 
 use std::collections::HashMap;
 
@@ -16,13 +16,13 @@ use crate::options::PermissionMode;
 /// One subagent declaration. Passed by name in the initialize payload so
 /// the `claude` binary can spawn it on `Task(description, subagent=<name>)`.
 ///
-/// Construct via [`AgentDefinition::new`] + the `with_*` fluent setters —
+/// Construct via [`SubagentDefinition::new`] + the `with_*` fluent setters —
 /// the struct is `#[non_exhaustive]` so future parity drops can land
 /// without breaking callers.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[non_exhaustive]
-pub struct AgentDefinition {
+pub struct SubagentDefinition {
     /// Short description shown to the main agent when it picks a subagent.
     pub description: String,
     /// System prompt the subagent runs with.
@@ -42,12 +42,12 @@ pub struct AgentDefinition {
     pub skills: Option<Vec<String>>,
     /// Which `CLAUDE.md` scope to surface.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub memory: Option<AgentMemory>,
+    pub memory: Option<SubagentMemory>,
     /// MCP servers available to this subagent. Each entry is either a named
     /// reference to a top-level server or an inline `{name: config}`
     /// definition. Wire key is `mcpServers`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub mcp_servers: Option<Vec<AgentMcpServerRef>>,
+    pub mcp_servers: Option<Vec<SubagentMcpServerRef>>,
     /// Seed turn injected at subagent start. Wire key is `initialPrompt`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub initial_prompt: Option<String>,
@@ -67,7 +67,7 @@ pub struct AgentDefinition {
     pub permission_mode: Option<PermissionMode>,
 }
 
-impl AgentDefinition {
+impl SubagentDefinition {
     /// Construct the minimum-viable definition (description + prompt only).
     #[must_use]
     pub fn new(description: impl Into<String>, prompt: impl Into<String>) -> Self {
@@ -118,14 +118,14 @@ impl AgentDefinition {
 
     /// Select which `CLAUDE.md` scope to surface.
     #[must_use]
-    pub fn with_memory(mut self, memory: AgentMemory) -> Self {
+    pub fn with_memory(mut self, memory: SubagentMemory) -> Self {
         self.memory = Some(memory);
         self
     }
 
     /// Attach the MCP servers this subagent should see.
     #[must_use]
-    pub fn with_mcp_servers(mut self, servers: Vec<AgentMcpServerRef>) -> Self {
+    pub fn with_mcp_servers(mut self, servers: Vec<SubagentMcpServerRef>) -> Self {
         self.mcp_servers = Some(servers);
         self
     }
@@ -170,7 +170,7 @@ impl AgentDefinition {
 /// `Literal["user", "project", "local"]`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub enum AgentMemory {
+pub enum SubagentMemory {
     /// User-scope (`~/.claude/CLAUDE.md`).
     User,
     /// Project-scope (`<repo>/CLAUDE.md`).
@@ -179,12 +179,12 @@ pub enum AgentMemory {
     Local,
 }
 
-/// One entry in [`AgentDefinition::mcp_servers`]. Either the name of an MCP
+/// One entry in [`SubagentDefinition::mcp_servers`]. Either the name of an MCP
 /// server configured at the top level, or an inline `{name: config}` object.
 /// Matches the CLI's `list[str | dict[str, Any]]` type.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
-pub enum AgentMcpServerRef {
+pub enum SubagentMcpServerRef {
     /// Named reference to a top-level MCP server.
     Named(String),
     /// Inline declaration. On the wire, emitted as `{<name>: <config>}`.
@@ -281,9 +281,9 @@ pub enum EffortPreset {
     Max,
 }
 
-/// Map of subagent-name → [`AgentDefinition`] attached to
+/// Map of subagent-name → [`SubagentDefinition`] attached to
 /// [`Options`](crate::options::Options). Empty by default.
-pub type AgentMap = HashMap<String, AgentDefinition>;
+pub type SubagentMap = HashMap<String, SubagentDefinition>;
 
 #[cfg(test)]
 mod tests {
@@ -295,7 +295,7 @@ mod tests {
 
     #[test]
     fn minimal_definition_serialises_to_description_and_prompt_only() {
-        let def = AgentDefinition::new("A helpful subagent", "You are a task runner.");
+        let def = SubagentDefinition::new("A helpful subagent", "You are a task runner.");
         let v = serde_json::to_value(&def).expect("ser");
         assert_eq!(
             v,
@@ -308,13 +308,13 @@ mod tests {
 
     #[test]
     fn full_definition_round_trips_with_camel_case_keys() {
-        let def = AgentDefinition::new("d", "p")
+        let def = SubagentDefinition::new("d", "p")
             .with_tools(vec!["Edit".into(), "Read".into()])
             .with_disallowed_tools(vec!["Bash".into()])
             .with_model("claude-opus-4-7")
             .with_skills(vec!["web-search".into()])
-            .with_memory(AgentMemory::Project)
-            .with_mcp_servers(vec![AgentMcpServerRef::Named("github".into())])
+            .with_memory(SubagentMemory::Project)
+            .with_mcp_servers(vec![SubagentMcpServerRef::Named("github".into())])
             .with_initial_prompt("hello world")
             .with_max_turns(25)
             .with_background(true)
@@ -334,13 +334,13 @@ mod tests {
         assert_eq!(v["background"], true);
         assert_eq!(v["effort"], "high");
         assert_eq!(v["permissionMode"], "acceptEdits");
-        let back: AgentDefinition = serde_json::from_value(v).expect("de");
+        let back: SubagentDefinition = serde_json::from_value(v).expect("de");
         assert_eq!(back, def);
     }
 
     #[test]
     fn effort_accepts_numeric_value() {
-        let def = AgentDefinition::new("d", "p").with_effort(EffortLevel::Numeric(42));
+        let def = SubagentDefinition::new("d", "p").with_effort(EffortLevel::Numeric(42));
         let v = serde_json::to_value(&def).expect("ser");
         assert_eq!(v["effort"], 42);
     }
@@ -360,9 +360,9 @@ mod tests {
     #[test]
     fn memory_values_match_python_literal() {
         for (m, wire) in [
-            (AgentMemory::User, "user"),
-            (AgentMemory::Project, "project"),
-            (AgentMemory::Local, "local"),
+            (SubagentMemory::User, "user"),
+            (SubagentMemory::Project, "project"),
+            (SubagentMemory::Local, "local"),
         ] {
             assert_eq!(serde_json::to_value(m).unwrap(), json!(wire));
         }
@@ -371,7 +371,7 @@ mod tests {
     #[test]
     fn inline_mcp_server_serialises_as_single_key_object() {
         let def =
-            AgentDefinition::new("d", "p").with_mcp_servers(vec![AgentMcpServerRef::Inline {
+            SubagentDefinition::new("d", "p").with_mcp_servers(vec![SubagentMcpServerRef::Inline {
                 name: "local".into(),
                 config: json!({"type": "stdio", "command": "my-server"}),
             }]);
@@ -384,7 +384,7 @@ mod tests {
 
     #[test]
     fn none_fields_are_omitted_from_wire_matching_python_asdict_filter() {
-        let def = AgentDefinition::new("d", "p").with_max_turns(5);
+        let def = SubagentDefinition::new("d", "p").with_max_turns(5);
         let v = serde_json::to_value(&def).expect("ser");
         let obj = v.as_object().expect("object");
         assert!(obj.contains_key("description"));
@@ -397,19 +397,19 @@ mod tests {
     }
 
     #[test]
-    fn options_builder_agent_registers_under_name() {
+    fn options_builder_subagent_registers_under_name() {
         let options = OptionsBuilder::new()
-            .agent(
+            .subagent(
                 "researcher",
-                AgentDefinition::new("Researches a topic", "You search and summarise."),
+                SubagentDefinition::new("Researches a topic", "You search and summarise."),
             )
-            .agent(
+            .subagent(
                 "coder",
-                AgentDefinition::new("Writes code", "You write Rust."),
+                SubagentDefinition::new("Writes code", "You write Rust."),
             )
             .build();
-        assert_eq!(options.agents.len(), 2);
-        assert!(options.agents.contains_key("researcher"));
-        assert!(options.agents.contains_key("coder"));
+        assert_eq!(options.subagents.len(), 2);
+        assert!(options.subagents.contains_key("researcher"));
+        assert!(options.subagents.contains_key("coder"));
     }
 }

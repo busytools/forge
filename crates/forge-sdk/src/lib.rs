@@ -44,7 +44,6 @@
 #![doc(html_root_url = "https://docs.rs/forge-sdk/0.1.64")]
 #![forbid(unsafe_code)]
 
-pub mod agents;
 pub mod argv;
 mod client;
 pub mod content;
@@ -58,6 +57,7 @@ pub(crate) mod permissions;
 pub(crate) mod public_types;
 pub(crate) mod request_id;
 pub mod session;
+pub mod subagents;
 pub mod transport;
 
 pub use client::Client;

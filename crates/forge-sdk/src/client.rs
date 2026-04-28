@@ -135,12 +135,12 @@ impl Client {
         // the same field-inclusion rules:
         // `hooks` always present (null when empty), `agents` /
         // `excludeDynamicSections` / `skills` only when explicitly set.
-        let agents_payload = if options.agents.is_empty() {
+        let agents_payload = if options.subagents.is_empty() {
             None
         } else {
             Some(
-                serde_json::to_value(&options.agents)
-                    .map_err(|e| Error::encode("agents map", e))?,
+                serde_json::to_value(&options.subagents)
+                    .map_err(|e| Error::encode("subagents map", e))?,
             )
         };
         let skills_payload: Vec<String> = options

@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::agents::{AgentDefinition, EffortLevel};
+use crate::subagents::{EffortLevel, SubagentDefinition};
 use crate::mcp::McpServer;
 use crate::permissions::CanUseToolCallback;
 
@@ -138,9 +138,9 @@ pub struct Options {
     pub projects_dir: Option<PathBuf>,
     /// Subagent definitions forwarded via the `initialize`
     /// `control_request`'s `agents` field. Key is the subagent name
-    /// the model picks; value is the [`AgentDefinition`]. Empty by
+    /// the model picks; value is the [`SubagentDefinition`]. Empty by
     /// default.
-    pub agents: HashMap<String, AgentDefinition>,
+    pub subagents: HashMap<String, SubagentDefinition>,
     /// System prompt configuration. `None` = inherit CLI default.
     /// `Some` emits `--system-prompt`, `--system-prompt-file`, or
     /// `--append-system-prompt` depending on variant.
@@ -252,7 +252,7 @@ impl Default for Options {
             permission_prompt_tool_name: None,
             minimum_cli_version: Some("2.0.0".into()),
             projects_dir: None,
-            agents: HashMap::new(),
+            subagents: HashMap::new(),
             system_prompt: None,
             tools: None,
             disallowed_tools: Vec::new(),
@@ -489,7 +489,10 @@ impl std::fmt::Debug for Options {
             )
             .field("minimum_cli_version", &self.minimum_cli_version)
             .field("projects_dir", &self.projects_dir)
-            .field("agents", &format!("<{} agents>", self.agents.len()))
+            .field(
+                "subagents",
+                &format!("<{} subagents>", self.subagents.len()),
+            )
             .field("system_prompt", &self.system_prompt)
             .field("tools", &self.tools)
             .field("disallowed_tools", &self.disallowed_tools)
@@ -704,15 +707,15 @@ impl OptionsBuilder {
     /// Register a subagent under `name`. Forwards to the CLI via the
     /// `initialize` `control_request`'s `agents` field.
     #[must_use]
-    pub fn agent(mut self, name: impl Into<String>, def: AgentDefinition) -> Self {
-        self.inner.agents.insert(name.into(), def);
+    pub fn subagent(mut self, name: impl Into<String>, def: SubagentDefinition) -> Self {
+        self.inner.subagents.insert(name.into(), def);
         self
     }
 
     /// Replace the whole subagent map in one go.
     #[must_use]
-    pub fn agents(mut self, agents: HashMap<String, AgentDefinition>) -> Self {
-        self.inner.agents = agents;
+    pub fn subagents(mut self, subagents: HashMap<String, SubagentDefinition>) -> Self {
+        self.inner.subagents = subagents;
         self
     }
 
