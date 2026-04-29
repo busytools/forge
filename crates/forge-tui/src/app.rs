@@ -1,13 +1,6 @@
-//! TUI app state machine + event loop.
-//!
-//! `App` is the single source of truth for what's rendered. The run
-//! loop drains [`AppEvent`]s from one channel that three sources feed:
-//! terminal input, daemon notifications, and reverse-RPC requests.
-//!
-//! Screen transitions happen inside the run loop in response to events.
-//! E.g. `SessionListLoaded` flips us from `Screen::Connecting` to
-//! `Screen::Picker`; `Enter` on a picker row flips to
-//! `Screen::Conversation` after issuing `session.subscribe`.
+//! TUI app event loop. The mutable state lives in
+//! [`crate::state::app::App`]; this module owns the event-loop runtime
+//! that drains [`AppEvent`]s + drives the renderer.
 
 use std::sync::Arc;
 
@@ -18,53 +11,12 @@ use tokio::sync::mpsc;
 
 use crate::client::Client;
 
-/// Top-level UI screen. Each screen owns its own layout + input rules.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-#[non_exhaustive]
-pub enum Screen {
-    /// WS handshake in progress; initial picker load pending.
-    #[default]
-    Connecting,
-    /// Picking a session from the list (or starting a new one).
-    Picker,
-    /// Watching/driving a subscribed session.
-    Conversation,
-    /// WS dropped; retry overlay.
-    Disconnected,
-}
-
-/// Connection state — drives the footer connection glyph.
-/// Independent of [`Screen`] because the user can still be reading
-/// chat history while we reconnect underneath.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-#[non_exhaustive]
-pub enum ConnectionState {
-    /// Initial handshake.
-    #[default]
-    Connecting,
-    /// Live link to the daemon.
-    Connected,
-    /// Backoff retry pending.
-    Reconnecting {
-        /// Seconds until the next retry attempt.
-        next_retry_secs: u32,
-    },
-    /// Gave up retrying or the user dismissed.
-    Disconnected,
-}
-
-/// Local primary/viewer role for the currently subscribed session.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-#[non_exhaustive]
-pub enum Role {
-    /// No session subscribed.
-    #[default]
-    Vacant,
-    /// We hold primary; permission/hook requests come to us.
-    Primary,
-    /// Someone else holds primary; we read but don't answer.
-    Viewer,
-}
+// Re-exports so legacy `use crate::app::App` etc. keep compiling.
+// The canonical types live in `state::app`.
+pub use crate::state::app::{
+    ActiveView as Screen, App, ConnectionState, PendingPermission, Role,
+};
+use crate::state::app::ActiveView;
 
 /// Every event the run loop handles, regardless of source.
 #[derive(Debug)]
@@ -82,8 +34,7 @@ pub enum AppEvent {
     /// `session.event` notification payload (chat stream chunk).
     SessionFrame(serde_json::Value),
     /// `sessions.messages` historical transcript loaded for the
-    /// session we just opened. Replaces `app.messages` to seed the
-    /// conversation view before live events start arriving.
+    /// session we just opened.
     HistoricalLoaded(Vec<serde_json::Value>),
     /// `sessions.list` snapshot loaded.
     SessionListLoaded(Vec<serde_json::Value>),
@@ -108,111 +59,7 @@ pub enum AppEvent {
     Quit,
 }
 
-/// Snapshot of an outstanding permission request awaiting user input.
-#[derive(Debug)]
-#[non_exhaustive]
-pub struct PendingPermission {
-    /// JSON-RPC id of the originating reverse-RPC.
-    pub rev_id: serde_json::Value,
-    /// Original params from the request.
-    pub params: serde_json::Value,
-    /// Set when the prompt came in via the daemon's queue (after
-    /// reconnect). Queued prompts answer via `prompts.respond` rather
-    /// than a synchronous reverse-RPC response.
-    pub prompt_id: Option<String>,
-}
-
-impl PendingPermission {
-    /// Construct a `PendingPermission`.
-    #[must_use]
-    pub fn new(
-        rev_id: serde_json::Value,
-        params: serde_json::Value,
-        prompt_id: Option<String>,
-    ) -> Self {
-        Self {
-            rev_id,
-            params,
-            prompt_id,
-        }
-    }
-}
-
-/// Top-level mutable state. Owned by the run loop.
-#[derive(Debug, Default)]
-#[non_exhaustive]
-pub struct App {
-    // Foreground
-    /// Active screen.
-    pub screen: Screen,
-    /// Connection state for the footer glyph.
-    pub connection: ConnectionState,
-
-    // Footer display
-    /// Daemon URL (e.g. `ws://127.0.0.1:7373/`).
-    pub daemon_url: String,
-    /// Working directory at startup.
-    pub cwd: String,
-
-    // Picker
-    /// Sessions returned by `sessions.list` for `cwd`.
-    pub session_list: Vec<serde_json::Value>,
-    /// Selected row in the picker (0 = "New session" pseudo-row).
-    pub picker_cursor: usize,
-
-    // Conversation
-    /// Currently subscribed session id.
-    pub current_session: Option<String>,
-    /// Conversation transcript — appended by `SessionFrame`.
-    pub messages: Vec<serde_json::Value>,
-    /// Input draft buffer.
-    pub draft: String,
-    /// Local primary/viewer role for `current_session`.
-    pub role: Role,
-    /// Distance from the bottom of the conversation body, in lines.
-    /// `0` = pinned to bottom (auto-tail). Larger = scrolled further
-    /// back into history. Render clamps to actual max.
-    pub conv_scroll_back: u16,
-    /// Cached pre-built styled lines for the current `messages`. Saves
-    /// the per-keypress rebuild cost when scrolling a large transcript
-    /// (1000+ messages = thousands of allocations per arrow event
-    /// otherwise). Invalidated whenever `messages` changes.
-    pub rendered_lines: Vec<ratatui::text::Line<'static>>,
-
-    // Modal
-    /// Active permission modal, if any.
-    pub pending_permission: Option<PendingPermission>,
-
-    // Misc
-    /// One-line status/toast message.
-    pub status_msg: String,
-}
-
-impl App {
-    /// Construct an `App` with the daemon URL + cwd captured at startup
-    /// for footer display.
-    #[must_use]
-    pub fn new(daemon_url: String, cwd: String) -> Self {
-        Self {
-            daemon_url,
-            cwd,
-            ..Self::default()
-        }
-    }
-
-    /// Rebuild the conversation render cache from `self.messages`.
-    /// Call after any mutation of `messages`. Cheap to call on a fresh
-    /// session (no messages yet); expensive once but the cost is paid
-    /// once per turn rather than once per keypress.
-    pub fn rebuild_rendered_lines(&mut self) {
-        self.rendered_lines = crate::ui::conversation::build_lines(&self.messages);
-    }
-}
-
 /// Run the app event loop until quit.
-///
-/// `event_tx` is forwarded into key handlers so background tasks
-/// (subscription pumps, etc.) can post `AppEvent`s back into the loop.
 ///
 /// # Errors
 ///
@@ -233,7 +80,7 @@ pub async fn run<B: Backend>(
         frames += 1;
         if frames == 1 {
             tracing::info!(
-                screen = ?app.screen,
+                view = ?app.active_view,
                 connection = ?app.connection,
                 "first frame drawn"
             );
@@ -242,7 +89,6 @@ pub async fn run<B: Backend>(
         let Some(event) = events.recv().await else {
             break;
         };
-        tracing::debug!(?event, ?app.screen, "event");
         match event {
             AppEvent::Quit => break,
             AppEvent::Term(Event::Key(k)) if k.kind == KeyEventKind::Press => {
@@ -257,19 +103,17 @@ pub async fn run<B: Backend>(
 
             AppEvent::Connected => {
                 app.connection = ConnectionState::Connected;
-                if app.screen == Screen::Disconnected {
-                    // Reconnected — return to the conversation if we
-                    // had one; otherwise back to the picker.
-                    app.screen = if app.current_session.is_some() {
-                        Screen::Conversation
+                if app.active_view == ActiveView::Disconnected {
+                    app.active_view = if app.current_session.is_some() {
+                        ActiveView::Chat
                     } else {
-                        Screen::Picker
+                        ActiveView::SessionPicker
                     };
                 }
             }
             AppEvent::Disconnected { next_retry_secs } => {
                 app.connection = ConnectionState::Reconnecting { next_retry_secs };
-                app.screen = Screen::Disconnected;
+                app.active_view = ActiveView::Disconnected;
             }
 
             AppEvent::SessionListLoaded(items) => {
@@ -277,34 +121,46 @@ pub async fn run<B: Backend>(
                 if app.picker_cursor > app.session_list.len() {
                     app.picker_cursor = app.session_list.len();
                 }
-                if app.screen == Screen::Connecting {
-                    app.screen = Screen::Picker;
+                if app.active_view == ActiveView::Connecting {
+                    app.active_view = ActiveView::SessionPicker;
                 }
             }
             AppEvent::SessionListLoadFailed(message) => {
                 app.status_msg = format!("session list load failed: {message}");
-                if app.screen == Screen::Connecting {
-                    app.screen = Screen::Picker;
+                if app.active_view == ActiveView::Connecting {
+                    app.active_view = ActiveView::SessionPicker;
                 }
             }
 
             AppEvent::SessionFrame(frame) => {
                 if let Some(msg) = frame.get("message").cloned() {
-                    app.messages.push(msg);
+                    // Legacy renderer path: keep raw JSON.
+                    app.legacy_messages.push(msg.clone());
                     app.rebuild_rendered_lines();
-                    // No tail-follow logic needed — scroll-from-bottom
-                    // model means "0" is always the live tail.
+                    // Lifted renderer path: parse to ChatMessage when shape recognised.
+                    if let Some(chat_msg) =
+                        crate::state::wire_adapter::json_to_chat_message(&msg)
+                    {
+                        app.messages.push(chat_msg);
+                        app.message_retained_bytes.push(0);
+                    }
                 }
             }
             AppEvent::HistoricalLoaded(history) => {
-                // Seed the transcript view. If live events have already
-                // arrived (race between subscribe and history fetch),
-                // they're appended after.
-                let live = std::mem::take(&mut app.messages);
-                app.messages = history;
-                app.messages.extend(live);
+                let live_legacy = std::mem::take(&mut app.legacy_messages);
+                app.legacy_messages.clone_from(&history);
+                app.legacy_messages.extend(live_legacy);
                 app.rebuild_rendered_lines();
-                // Pin to bottom so the user sees the most recent turns.
+
+                let live_lifted = std::mem::take(&mut app.messages);
+                for h in &history {
+                    if let Some(cm) = crate::state::wire_adapter::json_to_chat_message(h) {
+                        app.messages.push(cm);
+                    }
+                }
+                app.messages.extend(live_lifted);
+                app.message_retained_bytes.resize(app.messages.len(), 0);
+
                 app.conv_scroll_back = 0;
             }
 
@@ -347,9 +203,11 @@ pub async fn run<B: Backend>(
                 let reason = p.get("reason").and_then(|v| v.as_str()).unwrap_or("");
                 if app.current_session.as_deref() == Some(sid_closed) {
                     app.current_session = None;
+                    app.legacy_messages.clear();
                     app.messages.clear();
+                    app.message_retained_bytes.clear();
                     app.role = Role::Vacant;
-                    app.screen = Screen::Picker;
+                    app.active_view = ActiveView::SessionPicker;
                     app.status_msg = format!("session closed: {reason}");
                 }
             }
@@ -362,7 +220,7 @@ pub async fn run<B: Backend>(
 const MOUSE_SCROLL_STEP: u16 = 5;
 
 fn handle_mouse(app: &mut App, m: MouseEvent) {
-    if app.screen != Screen::Conversation {
+    if app.active_view != ActiveView::Chat {
         return;
     }
     let step = MOUSE_SCROLL_STEP;

@@ -64,8 +64,8 @@ fn strip_ws_scheme(url: &str) -> &str {
 }
 
 fn session_span(app: &App) -> Span<'_> {
-    match (&app.screen, &app.current_session) {
-        (Screen::Conversation, Some(sid)) => {
+    match (&app.active_view, &app.current_session) {
+        (Screen::Chat, Some(sid)) => {
             Span::styled(format!("session: {}", short_sid(sid)), crate::ui::style::text())
         }
         _ => Span::styled("session: ─", crate::ui::style::dim()),
@@ -73,11 +73,11 @@ fn session_span(app: &App) -> Span<'_> {
 }
 
 fn role_span(app: &App) -> Span<'_> {
-    match (&app.screen, app.role) {
-        (Screen::Conversation, Role::Primary) => {
+    match (&app.active_view, app.role) {
+        (Screen::Chat, Role::Primary) => {
             Span::styled("primary", Style::default().fg(ratatui::style::Color::Green))
         }
-        (Screen::Conversation, Role::Viewer) => {
+        (Screen::Chat, Role::Viewer) => {
             Span::styled("viewer", Style::default().fg(theme::SUBAGENT_TOKEN))
         }
         _ => Span::styled("─", crate::ui::style::dim()),

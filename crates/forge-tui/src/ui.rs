@@ -38,10 +38,10 @@ use crate::app::{App, Screen};
 
 /// Render one frame for the current `app` state.
 pub fn render(frame: &mut Frame<'_>, app: &App) {
-    match app.screen {
+    match app.active_view {
         Screen::Connecting => connecting::render(frame, app),
-        Screen::Picker => picker::render(frame, app),
-        Screen::Conversation => conversation::render(frame, app),
+        Screen::SessionPicker => picker::render(frame, app),
+        Screen::Chat => conversation::render(frame, app),
         Screen::Disconnected => disconnected::render(frame, app),
     }
 

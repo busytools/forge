@@ -95,7 +95,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     spawn_terminal_event_pump(&event_tx);
 
-    let app_state = app::App::new(daemon_url, cwd);
+    let app_state = forge_tui::state::app::App::with_session_context(daemon_url, cwd);
     let result = app::run(&mut terminal, client, app_state, event_tx, event_rx).await;
 
     drop(terminal);

@@ -24,10 +24,10 @@ pub async fn handle_key(
         return false;
     }
 
-    match app.screen {
+    match app.active_view {
         Screen::Connecting => handle_connecting_key(key),
-        Screen::Picker => handle_picker_key(app, key, client, event_tx).await,
-        Screen::Conversation => handle_conversation_key(app, key, client).await,
+        Screen::SessionPicker => handle_picker_key(app, key, client, event_tx).await,
+        Screen::Chat => handle_conversation_key(app, key, client).await,
         Screen::Disconnected => handle_disconnected_key(key),
     }
 }
@@ -90,9 +90,9 @@ async fn handle_conversation_key(
     const PAGE_STEP: u16 = 10;
     match key {
         KeyCode::Esc => {
-            app.screen = Screen::Picker;
+            app.active_view = Screen::SessionPicker;
             app.current_session = None;
-            app.messages.clear();
+            app.legacy_messages.clear(); app.messages.clear();
             app.rendered_lines.clear();
             app.role = Role::Vacant;
             app.draft.clear();
@@ -146,8 +146,8 @@ fn open_session(
     event_tx: &mpsc::UnboundedSender<AppEvent>,
 ) {
     app.current_session = Some(sid.clone());
-    app.messages.clear();
-    app.screen = Screen::Conversation;
+    app.legacy_messages.clear(); app.messages.clear();
+    app.active_view = Screen::Chat;
     app.draft.clear();
 
     // Subscribe in parallel with the historical fetch.
