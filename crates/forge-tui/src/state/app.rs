@@ -241,6 +241,81 @@ pub struct App {
     pub last_frame_at: Option<Instant>,
     pub last_chat_render_trace_state: Option<ChatRenderTraceState>,
     pub(crate) last_active_turn_height_state: Option<(usize, bool, bool)>,
+
+    // ---- forge-side fields (not in upstream) ----
+    /// WS daemon URL for footer display + reconnect.
+    pub daemon_url: String,
+    /// Connection lifecycle for the footer connection glyph.
+    pub connection: ConnectionState,
+    /// Local primary/viewer role for `current_session`.
+    pub role: Role,
+    /// One-line status/toast message rendered above the input.
+    pub status_msg: String,
+    /// Active permission modal awaiting user input.
+    pub pending_permission: Option<PendingPermission>,
+}
+
+/// Connection state — drives the footer connection glyph. Forge-specific.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub enum ConnectionState {
+    /// Initial handshake.
+    #[default]
+    Connecting,
+    /// Live link to the daemon.
+    Connected,
+    /// Backoff retry pending.
+    Reconnecting {
+        /// Seconds until the next retry attempt.
+        next_retry_secs: u32,
+    },
+    /// Gave up retrying or the user dismissed.
+    Disconnected,
+}
+
+/// Local primary/viewer role for the currently subscribed session.
+/// Forge-specific (mirrors daemon's role assignment).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub enum Role {
+    /// No session subscribed.
+    #[default]
+    Vacant,
+    /// We hold primary; permission/hook requests come to us.
+    Primary,
+    /// Someone else holds primary; we read but don't answer.
+    Viewer,
+}
+
+/// Snapshot of an outstanding permission request awaiting user input.
+/// Forge-specific (daemon's reverse-RPC permission modal).
+#[derive(Debug)]
+#[non_exhaustive]
+pub struct PendingPermission {
+    /// JSON-RPC id of the originating reverse-RPC.
+    pub rev_id: serde_json::Value,
+    /// Original params from the request.
+    pub params: serde_json::Value,
+    /// Set when the prompt came in via the daemon's queue (after
+    /// reconnect). Queued prompts answer via `prompts.respond` rather
+    /// than a synchronous reverse-RPC response.
+    pub prompt_id: Option<String>,
+}
+
+impl PendingPermission {
+    /// Construct a `PendingPermission`.
+    #[must_use]
+    pub fn new(
+        rev_id: serde_json::Value,
+        params: serde_json::Value,
+        prompt_id: Option<String>,
+    ) -> Self {
+        Self {
+            rev_id,
+            params,
+            prompt_id,
+        }
+    }
 }
 
 impl App {
@@ -595,6 +670,12 @@ impl Default for App {
             last_frame_at: None,
             last_chat_render_trace_state: None,
             last_active_turn_height_state: None,
+
+            daemon_url: String::new(),
+            connection: ConnectionState::default(),
+            role: Role::default(),
+            status_msg: String::new(),
+            pending_permission: None,
         }
     }
 }
