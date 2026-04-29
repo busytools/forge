@@ -115,6 +115,14 @@ pub async fn run<B: Backend>(
             AppEvent::Term(Event::FocusLost) => {
                 app.notifications.on_focus_lost();
             }
+            AppEvent::Term(Event::Paste(text)) if app.active_view == ActiveView::Chat => {
+                if app.input.append_to_active_paste_block(&text) {
+                    // Appended to an in-progress paste split across
+                    // multiple `Paste` events.
+                } else {
+                    let _label = app.input.insert_paste_block(&text);
+                }
+            }
             AppEvent::Term(_) => {}
 
             AppEvent::Connected => {

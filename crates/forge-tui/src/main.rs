@@ -11,7 +11,9 @@ use std::sync::Arc;
 
 use clap::Parser;
 use crossterm::ExecutableCommand;
-use crossterm::event::{DisableFocusChange, EnableFocusChange};
+use crossterm::event::{
+    DisableBracketedPaste, DisableFocusChange, EnableBracketedPaste, EnableFocusChange,
+};
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
@@ -46,6 +48,10 @@ impl TerminalGuard {
         // FocusGained/FocusLost events. Used by NotificationManager to
         // suppress notifications while the window is focused.
         let _ = stdout().execute(EnableFocusChange);
+        // Enable bracketed paste so multi-character pastes arrive as a
+        // single Event::Paste instead of streaming one Char per byte
+        // (which would interleave with text the user is actively typing).
+        let _ = stdout().execute(EnableBracketedPaste);
         // We deliberately do NOT enable mouse capture — terminals
         // (Ghostty, iTerm, kitty) forward trackpad scroll as arrow
         // key events to alt-screen apps when capture is off. Capturing
@@ -56,6 +62,7 @@ impl TerminalGuard {
 
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
+        let _ = stdout().execute(DisableBracketedPaste);
         let _ = stdout().execute(DisableFocusChange);
         let _ = stdout().execute(LeaveAlternateScreen);
         let _ = disable_raw_mode();
