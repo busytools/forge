@@ -1,11 +1,9 @@
 //! Top-level render dispatch.
 
 pub mod connecting;
-pub mod conversation;
 pub mod disconnected;
 pub mod footer;
 pub mod permission_modal;
-pub mod picker;
 pub mod theme;
 
 // Tier A primitives lifted from claude-code-rust.

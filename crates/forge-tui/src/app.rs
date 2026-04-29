@@ -146,7 +146,6 @@ pub async fn run<B: Backend>(
             AppEvent::SessionListLoaded(items) => {
                 app.recent_sessions =
                     crate::state::wire_adapter::session_list_to_recent_sessions(&items);
-                app.session_list = items;
                 let max_idx = app.recent_sessions.len().saturating_sub(1);
                 if app.session_picker.selected > max_idx {
                     app.session_picker.selected = max_idx;
@@ -164,10 +163,6 @@ pub async fn run<B: Backend>(
 
             AppEvent::SessionFrame(frame) => {
                 if let Some(msg) = frame.get("message").cloned() {
-                    // Legacy renderer path: keep raw JSON.
-                    app.legacy_messages.push(msg.clone());
-                    app.rebuild_rendered_lines();
-                    // Lifted renderer path: parse + apply to ChatMessage / existing tool calls.
                     crate::state::wire_adapter::apply_session_event(&mut app, &msg);
                     // Turn-complete notification on `result` frames.
                     if msg.get("type").and_then(|v| v.as_str()) == Some("result") {
@@ -179,12 +174,7 @@ pub async fn run<B: Backend>(
                 }
             }
             AppEvent::HistoricalLoaded(history) => {
-                let live_legacy = std::mem::take(&mut app.legacy_messages);
-                app.legacy_messages.clone_from(&history);
-                app.legacy_messages.extend(live_legacy);
-                app.rebuild_rendered_lines();
-
-                // Lifted: replay historical events in chronological order so
+                // Replay historical events in chronological order so
                 // tool_use blocks are indexed before their tool_results arrive.
                 let live_lifted = std::mem::take(&mut app.messages);
                 let live_retained = std::mem::take(&mut app.message_retained_bytes);
@@ -196,8 +186,6 @@ pub async fn run<B: Backend>(
                 app.messages.extend(live_lifted);
                 app.message_retained_bytes.resize(history_len, 0);
                 app.message_retained_bytes.extend(live_retained);
-
-                app.conv_scroll_back = 0;
             }
 
             AppEvent::PermissionRequest { rev_id, params } => {
@@ -264,7 +252,6 @@ pub async fn run<B: Backend>(
                 let reason = p.get("reason").and_then(|v| v.as_str()).unwrap_or("");
                 if app.current_session.as_deref() == Some(sid_closed) {
                     app.current_session = None;
-                    app.legacy_messages.clear();
                     app.messages.clear();
                     app.message_retained_bytes.clear();
                     app.role = Role::Vacant;
@@ -388,19 +375,18 @@ fn attach_inline_permission(
     true
 }
 
-const MOUSE_SCROLL_STEP: u16 = 5;
+const MOUSE_SCROLL_STEP: usize = 5;
 
 fn handle_mouse(app: &mut App, m: MouseEvent) {
     if app.active_view != ActiveView::Chat {
         return;
     }
-    let step = MOUSE_SCROLL_STEP;
     match m.kind {
         MouseEventKind::ScrollUp => {
-            app.conv_scroll_back = app.conv_scroll_back.saturating_add(step);
+            app.viewport.scroll_up(MOUSE_SCROLL_STEP);
         }
         MouseEventKind::ScrollDown => {
-            app.conv_scroll_back = app.conv_scroll_back.saturating_sub(step);
+            app.viewport.scroll_down(MOUSE_SCROLL_STEP);
         }
         _ => {}
     }

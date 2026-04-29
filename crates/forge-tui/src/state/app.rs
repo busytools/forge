@@ -273,27 +273,8 @@ pub struct App {
     pub status_msg: String,
     /// Active permission modal awaiting user input.
     pub pending_permission: Option<PendingPermission>,
-    /// Sessions returned by daemon's `sessions.list` for `cwd`. Raw
-    /// JSON so the daemon's column set can evolve without forcing a
-    /// type lift here. Legacy picker reads this; the lifted picker
-    /// reads `recent_sessions` (upstream-shape `RecentSessionInfo`).
-    pub session_list: Vec<serde_json::Value>,
-    /// Selected row in the legacy picker (0 = "New session" pseudo-row).
-    pub picker_cursor: usize,
     /// Currently subscribed session id (forge-shape `String`).
     pub current_session: Option<String>,
-    /// Legacy plain-text input draft. The lifted input uses
-    /// `input: InputState` (tui-textarea) instead.
-    pub draft: String,
-    /// Distance from the bottom of the conversation body, in lines
-    /// (legacy scroll model). The lifted chat uses viewport.
-    pub conv_scroll_back: u16,
-    /// Cached pre-built styled lines for the legacy renderer.
-    /// Invalidated whenever `legacy_messages` changes.
-    pub rendered_lines: Vec<ratatui::text::Line<'static>>,
-    /// Conversation transcript as raw daemon `session.event` payloads
-    /// (legacy renderer). The lifted renderer uses `messages`.
-    pub legacy_messages: Vec<serde_json::Value>,
 }
 
 /// Connection state — drives the footer connection glyph. Forge-specific.
@@ -859,13 +840,7 @@ impl Default for App {
             role: Role::default(),
             status_msg: String::new(),
             pending_permission: None,
-            session_list: Vec::new(),
-            picker_cursor: 0,
             current_session: None,
-            draft: String::new(),
-            conv_scroll_back: 0,
-            rendered_lines: Vec::new(),
-            legacy_messages: Vec::new(),
         }
     }
 }
@@ -883,8 +858,4 @@ impl App {
         }
     }
 
-    /// Rebuild the legacy conversation render cache from `legacy_messages`.
-    pub fn rebuild_rendered_lines(&mut self) {
-        self.rendered_lines = crate::ui::conversation::build_lines(&self.legacy_messages);
-    }
 }

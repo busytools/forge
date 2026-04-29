@@ -82,7 +82,7 @@ async fn handle_picker_key(
     false
 }
 
-const PAGE_STEP: u16 = 10;
+const PAGE_STEP: usize = 10;
 
 async fn handle_conversation_key(
     app: &mut App,
@@ -119,14 +119,10 @@ async fn handle_conversation_key(
             }
             app.active_view = Screen::SessionPicker;
             app.current_session = None;
-            app.legacy_messages.clear();
             app.messages.clear();
-            app.rendered_lines.clear();
             app.role = Role::Vacant;
             app.input.clear();
-            app.draft.clear();
             app.tool_call_index.clear();
-            app.conv_scroll_back = 0;
         }
         // F1 toggles the lifted help overlay.
         KeyCode::F(1) => {
@@ -136,29 +132,15 @@ async fn handle_conversation_key(
         KeyCode::Char('t' | 'T') if ctrl && !app.todos.is_empty() => {
             app.show_todo_panel = !app.show_todo_panel;
         }
-        // Scroll-from-bottom: `conv_scroll_back` = lines back from live
-        // tail. Higher = older content; `0` is the live tail.
-        KeyCode::PageUp => {
-            app.conv_scroll_back = app.conv_scroll_back.saturating_add(PAGE_STEP);
-        }
-        KeyCode::PageDown => {
-            app.conv_scroll_back = app.conv_scroll_back.saturating_sub(PAGE_STEP);
-        }
-        // Trackpad arrives as Up/Down arrow keys with mouse capture off.
-        // 3 lines per arrow event so a fast swipe travels visibly —
-        // Ghostty/iTerm only deliver ~5-10 events per swipe.
-        KeyCode::Up => {
-            app.conv_scroll_back = app.conv_scroll_back.saturating_add(3);
-        }
-        KeyCode::Down => {
-            app.conv_scroll_back = app.conv_scroll_back.saturating_sub(3);
-        }
-        KeyCode::Home => {
-            app.conv_scroll_back = u16::MAX; // render clamps to top
-        }
-        KeyCode::End => {
-            app.conv_scroll_back = 0;
-        }
+        // Page-/arrow-/home-/end-driven scroll on the lifted chat viewport.
+        // Trackpad arrives as Up/Down arrow keys with mouse capture off
+        // (3 lines per event so a fast swipe travels visibly).
+        KeyCode::PageUp => app.viewport.scroll_up(PAGE_STEP),
+        KeyCode::PageDown => app.viewport.scroll_down(PAGE_STEP),
+        KeyCode::Up => app.viewport.scroll_up(3),
+        KeyCode::Down => app.viewport.scroll_down(3),
+        KeyCode::Home => app.viewport.scroll_up(usize::MAX),
+        KeyCode::End => app.viewport.scroll_down(usize::MAX),
         KeyCode::Char(c) if !ctrl => {
             if c == 'q' && app.input.is_empty() {
                 // q on empty input = quit; while typing, q is a literal char.
@@ -260,12 +242,10 @@ fn open_session(
     event_tx: &mpsc::UnboundedSender<AppEvent>,
 ) {
     app.current_session = Some(sid.clone());
-    app.legacy_messages.clear();
     app.messages.clear();
     app.tool_call_index.clear();
     app.active_view = Screen::Chat;
     app.input.clear();
-    app.draft.clear();
 
     // Subscribe in parallel with the historical fetch.
     let subscribe_client = client.clone();
@@ -493,7 +473,6 @@ async fn send_draft(app: &mut App, client: &Arc<Client>) {
         return;
     }
     app.input.clear();
-    app.draft.clear();
     let result = client
         .call::<_, serde_json::Value>(
             "session.send_user_message",
