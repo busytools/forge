@@ -75,7 +75,7 @@ pub async fn run<B: Backend>(
     let mut frames = 0_u64;
     loop {
         terminal
-            .draw(|f| crate::ui::render(f, &app))
+            .draw(|f| crate::ui::render(f, &mut app))
             .map_err(|e| std::io::Error::other(format!("draw failed: {e}")))?;
         frames += 1;
         if frames == 1 {
