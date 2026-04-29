@@ -234,6 +234,9 @@ pub struct App {
     // ---- render cadence ----
     pub needs_redraw: bool,
     pub perf: Option<crate::perf::Profiler>,
+    /// Cross-cutting cache metrics accumulator (enforcement counts,
+    /// watermarks, rate limits).
+    pub cache_metrics: crate::state::cache_metrics::CacheMetrics,
     pub render_cache_budget: RenderCacheBudget,
     pub(crate) render_cache_slots:
         Vec<Vec<crate::state::render_budget::RenderCacheSlotState>>,
@@ -474,6 +477,29 @@ impl App {
     pub fn set_todos(&mut self, todos: Vec<TodoItem>) {
         self.todos = todos;
         self.cached_todo_compact = None;
+    }
+
+    /// Bulk-invalidate viewport state for a set of message indices.
+    /// Lifted verbatim from upstream.
+    pub(crate) fn invalidate_message_set<I>(&mut self, indices: I)
+    where
+        I: IntoIterator<Item = usize>,
+    {
+        let unique: std::collections::BTreeSet<_> =
+            indices.into_iter().filter(|&idx| idx < self.messages.len()).collect();
+        for idx in unique {
+            self.viewport.invalidate_message(idx);
+        }
+    }
+
+    /// Whether motion should be reduced (slower spinners etc.). Reads
+    /// from `config_options` snapshot; defaults to false.
+    #[must_use]
+    pub fn prefers_reduced_motion_effective(&self) -> bool {
+        self.config_options
+            .get("reduced_motion")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false)
     }
 
     /// Apply a layout invalidation to the viewport. Lifted verbatim
@@ -782,6 +808,7 @@ impl Default for App {
 
             needs_redraw: true,
             perf: None,
+            cache_metrics: crate::state::cache_metrics::CacheMetrics::default(),
             render_cache_budget: RenderCacheBudget::default(),
             render_cache_slots: Vec::new(),
             render_cache_total_bytes: 0,
