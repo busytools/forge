@@ -27,6 +27,11 @@ pub mod highlight;
 // removed when those files are replaced in Phase 4.
 pub mod style;
 
+// Phase 3b.7 — Tier B UI lifted from upstream, parallel to legacy
+// hand-rolled `ui::footer`/etc. Renderer keeps the legacy path until
+// the lifted set is complete; cutover swaps the module pointer.
+pub mod lifted;
+
 use ratatui::Frame;
 
 use crate::app::{App, Screen};

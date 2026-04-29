@@ -278,8 +278,25 @@ impl App {
     /// git_context watcher; returns None when cwd is outside a repo
     /// or branch hasn't resolved yet.
     #[must_use]
-    pub fn git_branch(&self) -> Option<String> {
-        self.git_context.branch_name().map(str::to_string)
+    pub fn git_branch(&self) -> Option<&str> {
+        self.git_context.branch_name()
+    }
+
+    /// Resolved thinking effort. Reads from `config_options` snapshot
+    /// pushed by the daemon; falls back to `Medium` until the daemon
+    /// wire surface ships the value (cuts list: ConfigState).
+    #[must_use]
+    pub fn thinking_effort_effective(&self) -> model::EffortLevel {
+        self.config_options
+            .get("thinking_effort")
+            .and_then(serde_json::Value::as_str)
+            .and_then(|s| match s {
+                "low" => Some(model::EffortLevel::Low),
+                "medium" => Some(model::EffortLevel::Medium),
+                "high" => Some(model::EffortLevel::High),
+                _ => None,
+            })
+            .unwrap_or(model::EffortLevel::Medium)
     }
 
     /// Mark the next frame as forced-redraw (e.g. after viewport
