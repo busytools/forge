@@ -190,7 +190,9 @@ pub struct HistoryRetentionPolicy {
 
 impl Default for HistoryRetentionPolicy {
     fn default() -> Self {
-        Self { max_bytes: DEFAULT_HISTORY_RETENTION_MAX_BYTES }
+        Self {
+            max_bytes: DEFAULT_HISTORY_RETENTION_MAX_BYTES,
+        }
     }
 }
 

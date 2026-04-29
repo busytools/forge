@@ -24,19 +24,33 @@ pub enum ClientEvent {
         response_tx: tokio::sync::oneshot::Sender<model::RequestQuestionResponse>,
     },
     /// MCP elicitation request that needs auth or other MCP input.
-    McpElicitationRequest { request: crate::agent::types::ElicitationRequest },
+    McpElicitationRequest {
+        request: crate::agent::types::ElicitationRequest,
+    },
     /// MCP elicitation completed in the SDK.
-    McpElicitationCompleted { elicitation_id: String, server_name: Option<String> },
+    McpElicitationCompleted {
+        elicitation_id: String,
+        server_name: Option<String>,
+    },
     /// MCP auth redirect returned directly by the SDK auth call.
-    McpAuthRedirect { redirect: crate::agent::types::McpAuthRedirect },
+    McpAuthRedirect {
+        redirect: crate::agent::types::McpAuthRedirect,
+    },
     /// MCP operation failed and should be surfaced in the MCP config UI.
-    McpOperationError { error: crate::agent::types::McpOperationError },
+    McpOperationError {
+        error: crate::agent::types::McpOperationError,
+    },
     /// A prompt turn completed successfully.
-    TurnComplete { terminal_reason: Option<crate::agent::types::TerminalReason> },
+    TurnComplete {
+        terminal_reason: Option<crate::agent::types::TerminalReason>,
+    },
     /// `cancel` notification was accepted by the bridge.
     TurnCancelled,
     /// A prompt turn failed with an error.
-    TurnError { message: String, terminal_reason: Option<crate::agent::types::TerminalReason> },
+    TurnError {
+        message: String,
+        terminal_reason: Option<crate::agent::types::TerminalReason>,
+    },
     /// A prompt turn failed with bridge-provided classification metadata.
     TurnErrorClassified {
         message: String,
@@ -55,7 +69,10 @@ pub enum ClientEvent {
     /// Background connection failed.
     ConnectionFailed(String),
     /// Authentication is required before a session can be created.
-    AuthRequired { method_name: String, method_description: String },
+    AuthRequired {
+        method_name: String,
+        method_description: String,
+    },
     /// Slash-command execution failed with a user-facing error.
     SlashCommandError(String),
     /// Session runtime plugin reload completed successfully.
@@ -72,19 +89,35 @@ pub enum ClientEvent {
         history_updates: Vec<model::SessionUpdate>,
     },
     /// Recent sessions discovered via SDK session listing.
-    SessionsListed { sessions: Vec<crate::agent::types::SessionListEntry> },
+    SessionsListed {
+        sessions: Vec<crate::agent::types::SessionListEntry>,
+    },
     /// Startup update check found a newer published version.
-    UpdateAvailable { latest_version: String, current_version: String },
+    UpdateAvailable {
+        latest_version: String,
+        current_version: String,
+    },
     /// Startup Claude Code status check detected degraded/outage conditions.
-    ServiceStatus { severity: ServiceStatusSeverity, message: String },
+    ServiceStatus {
+        severity: ServiceStatusSeverity,
+        message: String,
+    },
     /// /login completed via `claude auth login` -- credentials stored, ready to start a session.
-    AuthCompleted { conn: Rc<crate::agent::client::AgentConnection> },
+    AuthCompleted {
+        conn: Rc<crate::agent::client::AgentConnection>,
+    },
     /// /logout completed via `claude auth logout`.
     LogoutCompleted,
     /// Status snapshot received from bridge (account info).
-    StatusSnapshotReceived { session_id: String, account: crate::agent::types::AccountInfo },
+    StatusSnapshotReceived {
+        session_id: String,
+        account: crate::agent::types::AccountInfo,
+    },
     /// Session context window usage received from bridge.
-    ContextUsageReceived { session_id: String, percentage: Option<u8> },
+    ContextUsageReceived {
+        session_id: String,
+        percentage: Option<u8>,
+    },
     /// MCP server snapshot received from bridge.
     McpSnapshotReceived {
         session_id: String,
@@ -96,7 +129,11 @@ pub enum ClientEvent {
     /// Usage refresh completed successfully.
     UsageSnapshotReceived { epoch: u64, snapshot: UsageSnapshot },
     /// Usage refresh failed.
-    UsageRefreshFailed { epoch: u64, message: String, source: UsageSourceKind },
+    UsageRefreshFailed {
+        epoch: u64,
+        message: String,
+        source: UsageSourceKind,
+    },
     /// Claude CLI plugin inventory refresh completed.
     PluginsInventoryUpdated {
         cwd_raw: String,
@@ -106,7 +143,10 @@ pub enum ClientEvent {
     /// Claude CLI plugin inventory refresh failed.
     PluginsInventoryRefreshFailed { cwd_raw: String, message: String },
     /// Plugin CLI action completed and returned a refreshed inventory snapshot.
-    PluginsCliActionSucceeded { cwd_raw: String, result: PluginsCliActionSuccess },
+    PluginsCliActionSucceeded {
+        cwd_raw: String,
+        result: PluginsCliActionSuccess,
+    },
     /// Plugin CLI action failed.
     PluginsCliActionFailed { cwd_raw: String, message: String },
     /// Fatal app error that should terminate and map to an exit code.
