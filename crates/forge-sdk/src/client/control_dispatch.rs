@@ -103,13 +103,13 @@ impl ControlDispatchHandle {
     /// non-empty id has been bound. Called by the reader task on every
     /// message.
     pub(crate) fn capture_session_id_from(&self, msg: &crate::messages::Message) {
-        if let Some(id) = msg.session_id() {
-            if !id.is_empty() {
-                let mut current = self.session_id.write();
-                if current.is_empty() {
-                    *current = id.to_string();
-                    tracing::debug!(session_id = %*current, "client session_id bound");
-                }
+        if let Some(id) = msg.session_id()
+            && !id.is_empty()
+        {
+            let mut current = self.session_id.write();
+            if current.is_empty() {
+                *current = id.to_string();
+                tracing::debug!(session_id = %*current, "client session_id bound");
             }
         }
     }

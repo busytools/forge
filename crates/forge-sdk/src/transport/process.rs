@@ -402,10 +402,10 @@ impl Subprocess {
 
         // Best-effort drain of the stderr task. We don't surface its
         // status — it's a logging sink.
-        if let Some(task) = self.stderr_task.take() {
-            if let Err(e) = task.await {
-                debug!(error = %e, "stderr drain task ended abnormally");
-            }
+        if let Some(task) = self.stderr_task.take()
+            && let Err(e) = task.await
+        {
+            debug!(error = %e, "stderr drain task ended abnormally");
         }
 
         child_result

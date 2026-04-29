@@ -38,11 +38,13 @@ pulldown-cmark.workspace = true
 similar.workspace = true
 syntect.workspace = true
 tui-markdown.workspace = true
+tui-textarea = { workspace = true }
 unicode-segmentation.workspace = true
 unicode-width.workspace = true
 
 [dev-dependencies]
 forge-daemon = { path = "../forge-daemon" }
 insta = { workspace = true }
+pretty_assertions.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }

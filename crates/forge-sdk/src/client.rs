@@ -297,12 +297,12 @@ impl Client {
                         // callers reading session_id() right after
                         // spawn see a real value when the CLI happens
                         // to emit init early.
-                        if let Some(id) = msg.session_id() {
-                            if !id.is_empty() {
-                                let mut current = session_id.write();
-                                if current.is_empty() {
-                                    *current = id.to_string();
-                                }
+                        if let Some(id) = msg.session_id()
+                            && !id.is_empty()
+                        {
+                            let mut current = session_id.write();
+                            if current.is_empty() {
+                                *current = id.to_string();
                             }
                         }
                         // Drop `system/init` from the pre-init buffer —

@@ -318,11 +318,11 @@ pub async fn run<B: Backend>(
             }
             AppEvent::PromptsExpired(p) => {
                 let expired_id = p.get("prompt_id").and_then(|v| v.as_str());
-                if let (Some(pp), Some(expired_id)) = (&app.pending_permission, expired_id) {
-                    if pp.prompt_id.as_deref() == Some(expired_id) {
-                        app.pending_permission = None;
-                        app.status_msg = "permission prompt expired".into();
-                    }
+                if let (Some(pp), Some(expired_id)) = (&app.pending_permission, expired_id)
+                    && pp.prompt_id.as_deref() == Some(expired_id)
+                {
+                    app.pending_permission = None;
+                    app.status_msg = "permission prompt expired".into();
                 }
             }
 

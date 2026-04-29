@@ -109,34 +109,33 @@ pub(crate) fn become_primary(
     }
 
     // 3. Notify displaced primary (if distinct) of demotion.
-    if displaced_other {
-        if let Some(old) = old_primary.as_ref() {
-            let old_outbound = state
-                .connections
-                .lock()
-                .get(old)
-                .map(|c| c.outbound.clone());
-            if let Some(out) = old_outbound {
-                if out
-                    .try_send(Outbound::Notification(Notification::new(
-                        "session.role_assigned",
-                        serde_json::json!({
-                            "session_id": session_id.0,
-                            "role": "viewer",
-                            "primary": caller.0,
-                            "reason": "demoted",
-                        }),
-                    )))
-                    .is_err()
-                {
-                    tracing::warn!(
-                        displaced_id = %old.0,
-                        session_id = %session_id.0,
-                        log_site,
-                        "displaced primary's role_assigned dropped (writer task gone)"
-                    );
-                }
-            }
+    if displaced_other
+        && let Some(old) = old_primary.as_ref()
+    {
+        let old_outbound = state
+            .connections
+            .lock()
+            .get(old)
+            .map(|c| c.outbound.clone());
+        if let Some(out) = old_outbound
+            && out
+                .try_send(Outbound::Notification(Notification::new(
+                    "session.role_assigned",
+                    serde_json::json!({
+                        "session_id": session_id.0,
+                        "role": "viewer",
+                        "primary": caller.0,
+                        "reason": "demoted",
+                    }),
+                )))
+                .is_err()
+        {
+            tracing::warn!(
+                displaced_id = %old.0,
+                session_id = %session_id.0,
+                log_site,
+                "displaced primary's role_assigned dropped (writer task gone)"
+            );
         }
     }
 

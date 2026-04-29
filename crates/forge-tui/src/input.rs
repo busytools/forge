@@ -71,10 +71,10 @@ async fn handle_picker_key(
         KeyCode::Enter => {
             if app.picker_cursor == 0 {
                 spawn_new_session(app, client, event_tx).await;
-            } else if let Some(session) = app.session_list.get(app.picker_cursor - 1) {
-                if let Some(sid) = session.get("session_id").and_then(|v| v.as_str()) {
-                    open_session(app, sid.to_string(), client, event_tx);
-                }
+            } else if let Some(session) = app.session_list.get(app.picker_cursor - 1)
+                && let Some(sid) = session.get("session_id").and_then(|v| v.as_str())
+            {
+                open_session(app, sid.to_string(), client, event_tx);
             }
         }
         _ => {}
@@ -289,16 +289,16 @@ async fn answer_permission(app: &mut App, client: &Arc<Client>, decision: &str) 
 /// Strips the JSON-RPC `-32xxx` prefix when present.
 fn friendly_error(raw: &str) -> String {
     // Pattern: "daemon error code -32101: <message>"
-    if let Some(rest) = raw.strip_prefix("daemon error code ") {
-        if let Some((code_str, msg)) = rest.split_once(": ") {
-            return match code_str {
-                "-32002" => format!("session not found: {msg}"),
-                "-32100" => format!("claude binary not found: {msg}"),
-                "-32101" => format!("claude exited unexpectedly: {msg}"),
-                "-32102" => format!("subprocess error: {msg}"),
-                _ => msg.to_string(),
-            };
-        }
+    if let Some(rest) = raw.strip_prefix("daemon error code ")
+        && let Some((code_str, msg)) = rest.split_once(": ")
+    {
+        return match code_str {
+            "-32002" => format!("session not found: {msg}"),
+            "-32100" => format!("claude binary not found: {msg}"),
+            "-32101" => format!("claude exited unexpectedly: {msg}"),
+            "-32102" => format!("subprocess error: {msg}"),
+            _ => msg.to_string(),
+        };
     }
     raw.to_string()
 }

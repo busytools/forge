@@ -691,12 +691,12 @@ fn url_decode(s: &str) -> String {
             b'%' if i + 2 < bytes.len() => {
                 let hex_slice = bytes.get(i + 1..i + 3);
                 let hex_str = hex_slice.and_then(|b| std::str::from_utf8(b).ok());
-                if let Some(h) = hex_str {
-                    if let Ok(n) = u8::from_str_radix(h, 16) {
-                        out.push(n);
-                        i += 3;
-                        continue;
-                    }
+                if let Some(h) = hex_str
+                    && let Ok(n) = u8::from_str_radix(h, 16)
+                {
+                    out.push(n);
+                    i += 3;
+                    continue;
                 }
                 // Malformed escape — treat the `%` as a literal byte and
                 // surface a debug log so operators can trace bad query

@@ -92,10 +92,10 @@ fn short_cwd(cwd: &str) -> String {
     if cwd.is_empty() {
         return "─".into();
     }
-    if let Ok(home) = std::env::var("HOME") {
-        if let Some(rest) = cwd.strip_prefix(&home) {
-            return format!("~{rest}");
-        }
+    if let Ok(home) = std::env::var("HOME")
+        && let Some(rest) = cwd.strip_prefix(&home)
+    {
+        return format!("~{rest}");
     }
     cwd.to_string()
 }

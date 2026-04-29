@@ -12,9 +12,11 @@
 pub mod agent_types;
 pub mod block_cache;
 pub mod cache_metrics;
+pub mod clipboard_image;
 pub mod dialog;
 pub mod focus;
 pub mod git_context;
+pub mod input;
 pub mod messages;
 pub mod model;
 pub mod paste_burst;

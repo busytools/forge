@@ -236,26 +236,26 @@ pub async fn subscribe(
     // from) makes claude bail with "session not found" and close
     // stdout before the initialize control_response, surfacing as
     // forge_sdk::Error::Connection (-32101).
-    if state.get_session(session_id).is_none() {
-        if let Some(info) = forge_sdk::session::scan::get_session_info(&session_id.0, None) {
-            info!(session_id = %session_id.0, "subscribe: auto-resuming on-disk session");
-            let mut builder =
-                forge_sdk::OptionsBuilder::new().resume(session_id.0.clone());
-            if let Some(cwd) = info.cwd.as_deref() {
-                builder = builder.cwd(cwd);
-            }
-            // Forward claude's stderr to operator logs so spawn
-            // failures (CLI version mismatch, missing binary,
-            // resume-target rejected) show up in events.log instead
-            // of vanishing.
-            let sid_for_log = session_id.0.clone();
-            let options = builder
-                .stderr(move |line| {
-                    tracing::warn!(session_id = %sid_for_log, "claude stderr: {line}");
-                })
-                .build();
-            spawn_with_id(state, session_id.clone(), options, Vec::new()).await?;
+    if state.get_session(session_id).is_none()
+        && let Some(info) = forge_sdk::session::scan::get_session_info(&session_id.0, None)
+    {
+        info!(session_id = %session_id.0, "subscribe: auto-resuming on-disk session");
+        let mut builder =
+            forge_sdk::OptionsBuilder::new().resume(session_id.0.clone());
+        if let Some(cwd) = info.cwd.as_deref() {
+            builder = builder.cwd(cwd);
         }
+        // Forward claude's stderr to operator logs so spawn
+        // failures (CLI version mismatch, missing binary,
+        // resume-target rejected) show up in events.log instead
+        // of vanishing.
+        let sid_for_log = session_id.0.clone();
+        let options = builder
+            .stderr(move |line| {
+                tracing::warn!(session_id = %sid_for_log, "claude stderr: {line}");
+            })
+            .build();
+        spawn_with_id(state, session_id.clone(), options, Vec::new()).await?;
     }
 
     let handle = state

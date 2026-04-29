@@ -106,14 +106,14 @@ pub fn delete_session(session_id: &str, directory: Option<&str>) -> Result<(), E
     // `list_subagents` will keep returning phantom entries.
     if let Some(parent) = path.parent() {
         let subagents = parent.join(session_id);
-        if let Err(e) = fs::remove_dir_all(&subagents) {
-            if e.kind() != std::io::ErrorKind::NotFound {
-                tracing::warn!(
-                    path = %subagents.display(),
-                    error = %e,
-                    "failed to clean up sibling subagents directory"
-                );
-            }
+        if let Err(e) = fs::remove_dir_all(&subagents)
+            && e.kind() != std::io::ErrorKind::NotFound
+        {
+            tracing::warn!(
+                path = %subagents.display(),
+                error = %e,
+                "failed to clean up sibling subagents directory"
+            );
         }
     }
     Ok(())
@@ -372,10 +372,9 @@ pub(crate) fn remap_entry_fields(
             .get(parent_key)
             .and_then(Value::as_str)
             .map(ToOwned::to_owned)
+            && let Some(mapped) = uuid_remap.get(&parent)
         {
-            if let Some(mapped) = uuid_remap.get(&parent) {
-                obj.insert(parent_key.into(), Value::String(mapped.clone()));
-            }
+            obj.insert(parent_key.into(), Value::String(mapped.clone()));
         }
     }
     for key in ["sessionId", "session_id"] {
@@ -431,14 +430,12 @@ fn derive_fork_title(source: &Path) -> Option<String> {
         if first_prompt.is_none()
             && value.get("type").and_then(Value::as_str) == Some("user")
             && value.get("parent_tool_use_id").is_none_or(Value::is_null)
-        {
-            if let Some(content) = value
+            && let Some(content) = value
                 .get("message")
                 .and_then(|m| m.get("content"))
                 .and_then(Value::as_str)
-            {
-                first_prompt = Some(content.to_string());
-            }
+        {
+            first_prompt = Some(content.to_string());
         }
     }
     custom_title.or(ai_title).or(first_prompt)
