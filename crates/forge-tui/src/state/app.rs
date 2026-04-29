@@ -201,6 +201,8 @@ pub struct App {
     pub file_index: crate::state::file_index::FileIndexState,
     /// `@` mention autocomplete dropdown state.
     pub mention: Option<crate::state::mention::MentionState>,
+    /// `&name` subagent autocomplete dropdown state.
+    pub subagent: Option<crate::state::subagent::SubagentState>,
     /// Channel: file_index scanner -> drain_events on each frame.
     pub file_index_event_tx: std::sync::mpsc::Sender<crate::state::file_index::FileIndexEvent>,
     /// Channel: drain_events consumes scanner events.
@@ -559,6 +561,7 @@ impl Default for App {
             pending_paste_text: String::new(),
             file_index: crate::state::file_index::FileIndexState::default(),
             mention: None,
+            subagent: None,
             file_index_event_tx: file_index_tx,
             file_index_event_rx: file_index_rx,
             pending_paste_session: None,

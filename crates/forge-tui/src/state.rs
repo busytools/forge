@@ -27,6 +27,7 @@ pub mod model;
 pub mod paste_burst;
 pub mod permissions;
 pub mod questions;
+pub mod subagent;
 pub mod tool_call_info;
 pub mod types;
 pub mod view;
