@@ -924,17 +924,17 @@ async fn drain_prompts_on_session_exit_drains_parked_and_in_flight() {
     // can dismiss the right modal.
     let mut emitted_prompt_ids: Vec<String> = Vec::new();
     while let Ok(frame) = sub_rx.try_recv() {
-        if let forge_daemon::connection::Outbound::Notification(n) = frame {
-            if n.method == "prompts.expired" {
-                let pid = n
-                    .params
-                    .as_ref()
-                    .and_then(|p| p.get("prompt_id"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                emitted_prompt_ids.push(pid);
-            }
+        if let forge_daemon::connection::Outbound::Notification(n) = frame
+            && n.method == "prompts.expired"
+        {
+            let pid = n
+                .params
+                .as_ref()
+                .and_then(|p| p.get("prompt_id"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            emitted_prompt_ids.push(pid);
         }
     }
     assert_eq!(
