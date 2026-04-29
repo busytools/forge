@@ -43,7 +43,10 @@ struct DropdownMeta {
 pub fn is_active(app: &App) -> bool {
     app.mention.is_some()
         || app.slash.as_ref().is_some_and(|s| !s.candidates.is_empty())
-        || app.subagent.as_ref().is_some_and(|s| !s.candidates.is_empty())
+        || app
+            .subagent
+            .as_ref()
+            .is_some_and(|s| !s.candidates.is_empty())
 }
 
 #[allow(clippy::cast_possible_truncation)]
@@ -87,16 +90,27 @@ pub fn render(frame: &mut Frame, input_area: Rect, app: &App) {
     let (anchor_row, anchor_col) =
         wrapped_visual_pos(app.input.lines(), trigger_row, trigger_col, text_area.width);
 
-    let anchor_x = text_area.x.saturating_add(anchor_col).min(text_area.right().saturating_sub(1));
+    let anchor_x = text_area
+        .x
+        .saturating_add(anchor_col)
+        .min(text_area.right().saturating_sub(1));
     let (x, width) = choose_dropdown_x(anchor_x, text_area.x, text_area.right(), text_area.width);
     if width == 0 {
         return;
     }
 
-    let anchor_y = text_area.y.saturating_add(anchor_row).min(text_area.bottom().saturating_sub(1));
+    let anchor_y = text_area
+        .y
+        .saturating_add(anchor_row)
+        .min(text_area.bottom().saturating_sub(1));
     let y = choose_dropdown_y(anchor_y, height, frame.area().y, frame.area().bottom());
 
-    let dropdown_area = Rect { x, y, width, height };
+    let dropdown_area = Rect {
+        x,
+        y,
+        width,
+        height,
+    };
     let meta = dropdown_meta(&dropdown);
     let lines = dropdown_lines(&dropdown, &meta);
 
@@ -145,7 +159,12 @@ fn dropdown_meta(dropdown: &Dropdown<'_>) -> DropdownMeta {
             } else {
                 m.dialog.visible_range(m.candidates.len(), MAX_VISIBLE)
             };
-            DropdownMeta { visible_count, start, end, title: " Files & Folders ".to_owned() }
+            DropdownMeta {
+                visible_count,
+                start,
+                end,
+                title: " Files & Folders ".to_owned(),
+            }
         }
         Dropdown::Slash(s) => {
             let visible_count = s.candidates.len().min(MAX_VISIBLE);
@@ -156,7 +175,12 @@ fn dropdown_meta(dropdown: &Dropdown<'_>) -> DropdownMeta {
                     format!(" {} Args ({}) ", command, s.candidates.len())
                 }
             };
-            DropdownMeta { visible_count, start, end, title }
+            DropdownMeta {
+                visible_count,
+                start,
+                end,
+                title,
+            }
         }
         Dropdown::Subagent(s) => {
             let visible_count = s.candidates.len().min(MAX_VISIBLE);
@@ -199,7 +223,10 @@ fn dropdown_lines(dropdown: &Dropdown<'_>, meta: &DropdownMeta) -> Vec<Line<'sta
 
 fn mention_placeholder_line(mention: &mention::MentionState) -> Line<'static> {
     let message = mention.placeholder_message().unwrap_or_default();
-    Line::from(Span::styled(format!("   {message}"), Style::default().fg(theme::DIM)))
+    Line::from(Span::styled(
+        format!("   {message}"),
+        Style::default().fg(theme::DIM),
+    ))
 }
 
 fn mention_candidate_line(
@@ -256,7 +283,10 @@ fn slash_candidate_line(
 
     if let Some(secondary) = &candidate.secondary {
         spans.push(Span::styled("  ", Style::default().fg(theme::DIM)));
-        spans.push(Span::styled(secondary.clone(), Style::default().fg(theme::DIM)));
+        spans.push(Span::styled(
+            secondary.clone(),
+            Style::default().fg(theme::DIM),
+        ));
     }
 
     Line::from(spans)
@@ -299,7 +329,9 @@ fn push_selection_prefix(spans: &mut Vec<Span<'static>>, is_selected: bool) {
     if is_selected {
         spans.push(Span::styled(
             " \u{25b8} ",
-            Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(theme::RUST_ORANGE)
+                .add_modifier(Modifier::BOLD),
         ));
     } else {
         spans.push(Span::raw("   "));
@@ -333,7 +365,12 @@ fn find_case_insensitive_range(haystack: &str, needle: &str) -> Option<(usize, u
             folded_haystack.push(lower_ch);
         }
         let fold_end = folded_haystack.len();
-        segments.push(FoldSegment { fold_start, fold_end, orig_start, orig_end });
+        segments.push(FoldSegment {
+            fold_start,
+            fold_end,
+            orig_start,
+            orig_end,
+        });
     }
 
     let folded_match_start = folded_haystack.find(&folded_needle)?;
@@ -365,7 +402,9 @@ fn push_highlighted_text(
     }
     spans.push(Span::styled(
         matched.to_owned(),
-        Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
+        Style::default()
+            .fg(theme::RUST_ORANGE)
+            .add_modifier(Modifier::BOLD),
     ));
     if !after.is_empty() {
         spans.push(Span::raw(after.to_owned()));
@@ -383,8 +422,11 @@ fn choose_dropdown_x(
     }
 
     let preferred_width = text_area_width.clamp(1, MAX_WIDTH);
-    let width =
-        if text_area_width >= MIN_WIDTH { preferred_width.max(MIN_WIDTH) } else { preferred_width };
+    let width = if text_area_width >= MIN_WIDTH {
+        preferred_width.max(MIN_WIDTH)
+    } else {
+        preferred_width
+    };
 
     let anchor_x = anchor_x.clamp(area_left, area_right.saturating_sub(1));
     let mut x = anchor_x;
@@ -458,7 +500,9 @@ fn choose_dropdown_y(anchor_y: u16, height: u16, frame_top: u16, frame_bottom: u
         return frame_top;
     }
 
-    let below_y = anchor_y.saturating_add(1).saturating_add(ANCHOR_VERTICAL_GAP);
+    let below_y = anchor_y
+        .saturating_add(1)
+        .saturating_add(ANCHOR_VERTICAL_GAP);
     let rows_below_with_gap = frame_bottom.saturating_sub(below_y);
     let fits_below_with_gap = height <= rows_below_with_gap;
 
@@ -493,4 +537,3 @@ fn choose_dropdown_y(anchor_y: u16, height: u16, frame_top: u16, frame_bottom: u
 
     y.clamp(frame_top, max_y)
 }
-

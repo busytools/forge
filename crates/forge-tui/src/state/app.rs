@@ -53,7 +53,11 @@ pub struct TerminalToolCallRef {
 impl TerminalToolCallRef {
     #[must_use]
     pub fn new(terminal_id: String, msg_idx: usize, block_idx: usize) -> Self {
-        Self { terminal_id, msg_idx, block_idx }
+        Self {
+            terminal_id,
+            msg_idx,
+            block_idx,
+        }
     }
 }
 
@@ -248,8 +252,7 @@ pub struct App {
     /// watermarks, rate limits).
     pub cache_metrics: crate::state::cache_metrics::CacheMetrics,
     pub render_cache_budget: RenderCacheBudget,
-    pub(crate) render_cache_slots:
-        Vec<Vec<crate::state::render_budget::RenderCacheSlotState>>,
+    pub(crate) render_cache_slots: Vec<Vec<crate::state::render_budget::RenderCacheSlotState>>,
     pub(crate) render_cache_total_bytes: usize,
     pub(crate) render_cache_protected_bytes: usize,
     pub(crate) render_cache_evictable:
@@ -497,8 +500,10 @@ impl App {
     where
         I: IntoIterator<Item = usize>,
     {
-        let unique: std::collections::BTreeSet<_> =
-            indices.into_iter().filter(|&idx| idx < self.messages.len()).collect();
+        let unique: std::collections::BTreeSet<_> = indices
+            .into_iter()
+            .filter(|&idx| idx < self.messages.len())
+            .collect();
         for idx in unique {
             self.viewport.invalidate_message(idx);
         }
@@ -528,7 +533,8 @@ impl App {
                 if self.messages.is_empty() {
                     return;
                 }
-                self.viewport.invalidate_all_messages(LayoutRemeasureReason::Global);
+                self.viewport
+                    .invalidate_all_messages(LayoutRemeasureReason::Global);
                 self.viewport.bump_layout_generation();
             }
             LayoutInvalidation::Resize => {
@@ -567,9 +573,7 @@ impl App {
         self.active_turn_assistant_message_idx = self
             .messages
             .get(idx)
-            .is_some_and(|msg| {
-                matches!(msg.role, crate::state::messages::MessageRole::Assistant)
-            })
+            .is_some_and(|msg| matches!(msg.role, crate::state::messages::MessageRole::Assistant))
             .then_some(idx);
     }
 
@@ -642,17 +646,18 @@ impl App {
 
     /// Shift / drop turn-notice ref msg indices after a message removal at `idx`.
     pub(crate) fn shift_turn_notice_refs_for_remove(&mut self, idx: usize) {
-        self.turn_notice_refs.retain_mut(|notice_ref| match &mut notice_ref.location {
-            TurnNoticeLocation::Inline { msg_idx, .. }
-            | TurnNoticeLocation::Standalone { msg_idx } => match idx.cmp(msg_idx) {
-                std::cmp::Ordering::Less => {
-                    *msg_idx = msg_idx.saturating_sub(1);
-                    true
-                }
-                std::cmp::Ordering::Equal => false,
-                std::cmp::Ordering::Greater => true,
-            },
-        });
+        self.turn_notice_refs
+            .retain_mut(|notice_ref| match &mut notice_ref.location {
+                TurnNoticeLocation::Inline { msg_idx, .. }
+                | TurnNoticeLocation::Standalone { msg_idx } => match idx.cmp(msg_idx) {
+                    std::cmp::Ordering::Less => {
+                        *msg_idx = msg_idx.saturating_sub(1);
+                        true
+                    }
+                    std::cmp::Ordering::Equal => false,
+                    std::cmp::Ordering::Greater => true,
+                },
+            });
     }
 
     /// Remap turn-notice refs after a bulk message drop.
@@ -660,16 +665,17 @@ impl App {
         &mut self,
         old_to_new: &[Option<usize>],
     ) {
-        self.turn_notice_refs.retain_mut(|notice_ref| match &mut notice_ref.location {
-            TurnNoticeLocation::Inline { msg_idx, .. }
-            | TurnNoticeLocation::Standalone { msg_idx } => {
-                let Some(new_idx) = old_to_new.get(*msg_idx).copied().flatten() else {
-                    return false;
-                };
-                *msg_idx = new_idx;
-                true
-            }
-        });
+        self.turn_notice_refs
+            .retain_mut(|notice_ref| match &mut notice_ref.location {
+                TurnNoticeLocation::Inline { msg_idx, .. }
+                | TurnNoticeLocation::Standalone { msg_idx } => {
+                    let Some(new_idx) = old_to_new.get(*msg_idx).copied().flatten() else {
+                        return false;
+                    };
+                    *msg_idx = new_idx;
+                    true
+                }
+            });
     }
 
     /// Whether the input draft has any user text. Used by focus
@@ -696,8 +702,7 @@ impl App {
 
         if self.pending_interaction_ids.is_empty() {
             clear_inline_interaction_focus(self);
-        } else if self.focus_owner() == FocusOwner::Permission
-            || !self.has_draft_input_for_focus()
+        } else if self.focus_owner() == FocusOwner::Permission || !self.has_draft_input_for_focus()
         {
             focus_next_inline_interaction(self);
         } else {
@@ -857,5 +862,4 @@ impl App {
             ..Self::default()
         }
     }
-
 }

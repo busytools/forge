@@ -10,7 +10,6 @@
 //! `app/state/block_cache.rs`. Stores rendered ratatui Lines with
 //! version tracking; `store/get/invalidate` keyed by content hash.
 
-
 use std::cell::Cell;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -55,7 +54,13 @@ struct CacheLineSegment {
 impl CacheLineSegment {
     #[must_use]
     fn new(start: usize, end: usize) -> Self {
-        Self { start, end, wrapped_height: 0, wrapped_width: 0, wrapped_height_valid: false }
+        Self {
+            start,
+            end,
+            wrapped_height: 0,
+            wrapped_width: 0,
+            wrapped_height_valid: false,
+        }
     }
 }
 
@@ -268,7 +273,9 @@ fn build_line_segments(
 }
 
 fn line_utf8_bytes(line: &ratatui::text::Line<'static>) -> usize {
-    let span_bytes =
-        line.spans.iter().fold(0usize, |acc, span| acc.saturating_add(span.content.len()));
+    let span_bytes = line
+        .spans
+        .iter()
+        .fold(0usize, |acc, span| acc.saturating_add(span.content.len()));
     span_bytes.saturating_add(1)
 }

@@ -64,7 +64,11 @@ impl ScrollbarGeometry {
 }
 
 #[must_use]
-#[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
 pub fn compute_scrollbar_geometry(
     content_height: usize,
     viewport_height: usize,
@@ -87,7 +91,12 @@ pub fn compute_scrollbar_geometry(
         ((scroll_pos.clamp(0.0, max_scroll as f32) / max_scroll as f32) * track_space as f32)
             .round() as usize
     };
-    Some(ScrollbarGeometry { thumb_top, thumb_size, track_space, max_scroll })
+    Some(ScrollbarGeometry {
+        thumb_top,
+        thumb_size,
+        track_space,
+        max_scroll,
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -316,7 +325,10 @@ impl ChatViewport {
     /// Return the number of stale messages awaiting remeasurement.
     #[must_use]
     pub fn stale_message_count(&self) -> usize {
-        self.stale_message_heights.iter().filter(|stale| **stale).count()
+        self.stale_message_heights
+            .iter()
+            .filter(|stale| **stale)
+            .count()
     }
 
     /// Return the oldest stale message index, if any.
@@ -370,7 +382,9 @@ impl ChatViewport {
 
         if let Some(plan) = self.remeasure_plan
             && (plan.scroll_anchor_index >= count
-                || plan.preserved_scroll_anchor.is_some_and(|anchor| anchor.index >= count)
+                || plan
+                    .preserved_scroll_anchor
+                    .is_some_and(|anchor| anchor.index >= count)
                 || plan.priority_start >= count
                 || plan.priority_end >= count
                 || plan.next_below > count)
@@ -415,7 +429,12 @@ impl ChatViewport {
     /// Return whether a message height is exact at the current width.
     #[must_use]
     pub fn message_height_is_current(&self, idx: usize) -> bool {
-        if self.stale_message_heights.get(idx).copied().unwrap_or(false) {
+        if self
+            .stale_message_heights
+            .get(idx)
+            .copied()
+            .unwrap_or(false)
+        {
             return false;
         }
         if self.message_heights_width == self.width {
@@ -485,7 +504,12 @@ impl ChatViewport {
     /// Pop the next message that must be remeasured before the general queue continues.
     pub fn next_priority_remeasure(&mut self) -> Option<usize> {
         while let Some(idx) = self.priority_remeasure.pop() {
-            if self.stale_message_heights.get(idx).copied().unwrap_or(false) {
+            if self
+                .stale_message_heights
+                .get(idx)
+                .copied()
+                .unwrap_or(false)
+            {
                 return Some(idx);
             }
         }
@@ -499,13 +523,19 @@ impl ChatViewport {
         }
         let (anchor_index, anchor_offset) = self.current_scroll_anchor();
         let preserved_scroll_anchor = if self.auto_scroll {
-            self.remeasure_plan.and_then(|plan| plan.preserved_scroll_anchor)
-        } else if let Some(anchor) =
-            self.remeasure_plan.and_then(|plan| plan.preserved_scroll_anchor)
+            self.remeasure_plan
+                .and_then(|plan| plan.preserved_scroll_anchor)
+        } else if let Some(anchor) = self
+            .remeasure_plan
+            .and_then(|plan| plan.preserved_scroll_anchor)
         {
             Some(anchor)
         } else {
-            Some(PreservedScrollAnchor { reason, index: anchor_index, offset: anchor_offset })
+            Some(PreservedScrollAnchor {
+                reason,
+                index: anchor_index,
+                offset: anchor_offset,
+            })
         };
         self.remeasure_plan = Some(LayoutRemeasurePlan::from_scroll_anchor(
             reason,
@@ -625,7 +655,8 @@ impl ChatViewport {
     #[must_use]
     pub fn scroll_anchor_to_restore(&self) -> Option<(usize, usize)> {
         self.remeasure_plan.and_then(|plan| {
-            plan.preserved_scroll_anchor.map(|anchor| (anchor.index, anchor.offset))
+            plan.preserved_scroll_anchor
+                .map(|anchor| (anchor.index, anchor.offset))
         })
     }
 
@@ -634,7 +665,8 @@ impl ChatViewport {
     pub fn ready_scroll_anchor_to_restore(&self) -> Option<(usize, usize)> {
         self.remeasure_plan.and_then(|plan| {
             plan.preserved_scroll_anchor.and_then(|anchor| {
-                self.prefix_is_exact_through(anchor.index).then_some((anchor.index, anchor.offset))
+                self.prefix_is_exact_through(anchor.index)
+                    .then_some((anchor.index, anchor.offset))
             })
         })
     }
@@ -657,9 +689,13 @@ impl ChatViewport {
         if self.message_heights.is_empty() {
             return None;
         }
-        let start = plan.scroll_anchor_index.min(self.message_heights.len().saturating_sub(1));
+        let start = plan
+            .scroll_anchor_index
+            .min(self.message_heights.len().saturating_sub(1));
         let mut end = start;
-        let needed_rows = plan.scroll_anchor_offset.saturating_add(viewport_height.max(1));
+        let needed_rows = plan
+            .scroll_anchor_offset
+            .saturating_add(viewport_height.max(1));
         let mut covered_rows = self.message_height(start);
         while end + 1 < self.message_heights.len() && covered_rows < needed_rows {
             end += 1;
@@ -676,9 +712,14 @@ impl ChatViewport {
         }
         let anchor_index = anchor_index.min(self.message_heights.len().saturating_sub(1));
         let anchor_height = self.message_height(anchor_index);
-        let clamped_offset =
-            if anchor_height == 0 { 0 } else { anchor_offset.min(anchor_height.saturating_sub(1)) };
-        let scroll = self.cumulative_height_before(anchor_index).saturating_add(clamped_offset);
+        let clamped_offset = if anchor_height == 0 {
+            0
+        } else {
+            anchor_offset.min(anchor_height.saturating_sub(1))
+        };
+        let scroll = self
+            .cumulative_height_before(anchor_index)
+            .saturating_add(clamped_offset);
         self.scroll_target = scroll;
         self.scroll_pos = scroll as f32;
         self.scroll_offset = scroll;
@@ -755,7 +796,11 @@ impl ChatViewport {
         };
 
         let start = start.min(n.saturating_sub(1));
-        let mut acc = if start == 0 { 0 } else { self.height_prefix_sums[start - 1] };
+        let mut acc = if start == 0 {
+            0
+        } else {
+            self.height_prefix_sums[start - 1]
+        };
         for idx in start..n {
             acc = acc.saturating_add(self.message_heights[idx]);
             self.height_prefix_sums[idx] = acc;
@@ -773,7 +818,11 @@ impl ChatViewport {
     /// Cumulative height of messages `0..idx` (O(1) via prefix sums).
     #[must_use]
     pub fn cumulative_height_before(&self, idx: usize) -> usize {
-        if idx == 0 { 0 } else { self.height_prefix_sums.get(idx - 1).copied().unwrap_or(0) }
+        if idx == 0 {
+            0
+        } else {
+            self.height_prefix_sums.get(idx - 1).copied().unwrap_or(0)
+        }
     }
 
     /// Binary search for the first message whose cumulative range overlaps `scroll_offset`.
@@ -832,7 +881,11 @@ impl ChatViewport {
                 return idx;
             }
         }
-        if acc == 0 { 0 } else { self.message_heights.len().saturating_sub(1) }
+        if acc == 0 {
+            0
+        } else {
+            self.message_heights.len().saturating_sub(1)
+        }
     }
 
     fn cumulative_height_before_in_estimates(&self, idx: usize) -> usize {
@@ -845,11 +898,23 @@ impl ChatViewport {
         }
         let end = idx.min(self.message_heights.len().saturating_sub(1));
         if self.message_heights_width == self.width {
-            return !self.stale_message_heights.iter().take(end + 1).any(|stale| *stale);
+            return !self
+                .stale_message_heights
+                .iter()
+                .take(end + 1)
+                .any(|stale| *stale);
         }
         !(0..=end).any(|message_idx| {
-            self.stale_message_heights.get(message_idx).copied().unwrap_or(true)
-                || self.measured_message_widths.get(message_idx).copied().unwrap_or(0) != self.width
+            self.stale_message_heights
+                .get(message_idx)
+                .copied()
+                .unwrap_or(true)
+                || self
+                    .measured_message_widths
+                    .get(message_idx)
+                    .copied()
+                    .unwrap_or(0)
+                    != self.width
         })
     }
 

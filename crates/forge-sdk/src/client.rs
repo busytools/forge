@@ -317,7 +317,11 @@ impl Client {
                         // and never surfaces it to callers; we mirror.
                         // Cache its `data` so `forge-daemon` can read
                         // model / mcp / slash-command info off it.
-                        if let Message::System { ref subtype, ref data, .. } = msg
+                        if let Message::System {
+                            ref subtype,
+                            ref data,
+                            ..
+                        } = msg
                             && subtype == "init"
                         {
                             cached_init_data = Some(data.clone());

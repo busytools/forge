@@ -123,14 +123,22 @@ pub fn detect_mention_at_cursor(
 
 /// Activate mention autocomplete after the user types `@`.
 pub fn activate(app: &mut App) {
-    let detection =
-        detect_mention_at_cursor(app.input.lines(), app.input.cursor_row(), app.input.cursor_col());
+    let detection = detect_mention_at_cursor(
+        app.input.lines(),
+        app.input.cursor_row(),
+        app.input.cursor_col(),
+    );
 
     let Some((trigger_row, trigger_col, query)) = detection else {
         return;
     };
 
-    app.mention = Some(MentionState::new(trigger_row, trigger_col, query, Vec::new()));
+    app.mention = Some(MentionState::new(
+        trigger_row,
+        trigger_col,
+        query,
+        Vec::new(),
+    ));
     // Upstream also clears app.slash / app.subagent here (mutually
     // exclusive autocompletes). Forge has not lifted those yet, so
     // nothing to clear; restore when slash/ + subagent.rs land.
@@ -139,8 +147,11 @@ pub fn activate(app: &mut App) {
 
 /// Update the query and re-filter candidates while mention is active.
 pub fn update_query(app: &mut App) {
-    let detection =
-        detect_mention_at_cursor(app.input.lines(), app.input.cursor_row(), app.input.cursor_col());
+    let detection = detect_mention_at_cursor(
+        app.input.lines(),
+        app.input.cursor_row(),
+        app.input.cursor_col(),
+    );
 
     let Some((trigger_row, trigger_col, query)) = detection else {
         deactivate(app);
@@ -199,7 +210,11 @@ fn refresh_query_state(app: &mut App) {
 }
 
 fn sync_focus(app: &mut App) {
-    if app.mention.as_ref().is_some_and(MentionState::has_selectable_candidates) {
+    if app
+        .mention
+        .as_ref()
+        .is_some_and(MentionState::has_selectable_candidates)
+    {
         app.claim_focus_target(FocusTarget::Mention);
     } else {
         app.release_focus_target(FocusTarget::Mention);
@@ -210,9 +225,12 @@ fn sync_focus(app: &mut App) {
 /// - If cursor is inside a valid `@mention` token, activate/update autocomplete.
 /// - Otherwise, deactivate mention autocomplete.
 pub fn sync_with_cursor(app: &mut App) {
-    let in_mention =
-        detect_mention_at_cursor(app.input.lines(), app.input.cursor_row(), app.input.cursor_col())
-            .is_some();
+    let in_mention = detect_mention_at_cursor(
+        app.input.lines(),
+        app.input.cursor_row(),
+        app.input.cursor_col(),
+    )
+    .is_some();
     match (in_mention, app.mention.is_some()) {
         (true, true) => update_query(app),
         (true, false) => activate(app),
@@ -245,19 +263,24 @@ pub fn confirm_selection(app: &mut App) {
         return;
     }
 
-    let mention_end =
-        (trigger_col + 1..chars.len()).find(|&i| chars[i].is_whitespace()).unwrap_or(chars.len());
+    let mention_end = (trigger_col + 1..chars.len())
+        .find(|&i| chars[i].is_whitespace())
+        .unwrap_or(chars.len());
 
     let before: String = chars[..trigger_col].iter().collect();
     let after: String = chars[mention_end..].iter().collect();
-    let replacement =
-        if after.is_empty() { format!("@{rel_path} ") } else { format!("@{rel_path}") };
+    let replacement = if after.is_empty() {
+        format!("@{rel_path} ")
+    } else {
+        format!("@{rel_path}")
+    };
 
     let new_line = format!("{before}{replacement}{after}");
     let new_cursor_col = trigger_col + replacement.chars().count();
 
     lines[trigger_row] = new_line;
-    app.input.replace_lines_and_cursor(lines, trigger_row, new_cursor_col);
+    app.input
+        .replace_lines_and_cursor(lines, trigger_row, new_cursor_col);
 }
 
 /// Deactivate mention autocomplete.
@@ -272,14 +295,18 @@ pub fn deactivate(app: &mut App) {
 /// Move selection up in the candidate list.
 pub fn move_up(app: &mut App) {
     if let Some(ref mut mention) = app.mention {
-        mention.dialog.move_up(mention.candidates.len(), MAX_VISIBLE);
+        mention
+            .dialog
+            .move_up(mention.candidates.len(), MAX_VISIBLE);
     }
 }
 
 /// Move selection down in the candidate list.
 pub fn move_down(app: &mut App) {
     if let Some(ref mut mention) = app.mention {
-        mention.dialog.move_down(mention.candidates.len(), MAX_VISIBLE);
+        mention
+            .dialog
+            .move_down(mention.candidates.len(), MAX_VISIBLE);
     }
 }
 
@@ -312,4 +339,3 @@ pub fn find_mention_spans(text: &str) -> Vec<(usize, usize, String)> {
 
     spans
 }
-

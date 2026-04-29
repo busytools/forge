@@ -11,9 +11,9 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::subagents::{EffortLevel, SubagentDefinition};
 use crate::mcp::McpServer;
 use crate::permissions::CanUseToolCallback;
+use crate::subagents::{EffortLevel, SubagentDefinition};
 
 /// Per-line callback used by [`Options::tee_inbound`] and
 /// [`Options::tee_outbound`] to capture the wire bytes the SDK

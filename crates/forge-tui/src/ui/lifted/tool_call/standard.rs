@@ -53,7 +53,9 @@ pub(super) fn render_tool_call_title(
         Span::styled(format!("  {icon} "), Style::default().fg(icon_color)),
         Span::styled(
             format!("{kind_icon} "),
-            Style::default().fg(ratatui::style::Color::White).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(ratatui::style::Color::White)
+                .add_modifier(Modifier::BOLD),
         ),
     ];
 
@@ -75,14 +77,19 @@ pub(super) fn render_tool_call_body(tc: &ToolCallInfo, width: u16) -> Vec<Line<'
 
 #[must_use]
 pub(super) fn tool_call_body_depends_on_width(tc: &ToolCallInfo) -> bool {
-    tc.content.iter().any(|content| matches!(content, model::ToolCallContent::Diff(_)))
+    tc.content
+        .iter()
+        .any(|content| matches!(content, model::ToolCallContent::Diff(_)))
 }
 
 #[must_use]
 pub(super) fn tool_call_effectively_collapsed(tc: &ToolCallInfo, tools_collapsed: bool) -> bool {
     let has_permission = tc.pending_permission.is_some();
     let has_question = tc.pending_question.is_some();
-    let has_diff = tc.content.iter().any(|c| matches!(c, model::ToolCallContent::Diff(_)));
+    let has_diff = tc
+        .content
+        .iter()
+        .any(|c| matches!(c, model::ToolCallContent::Diff(_)));
     tools_collapsed && !has_diff && !has_permission && !has_question
 }
 
@@ -138,8 +145,10 @@ pub(super) fn content_summary(tc: &ToolCallInfo) -> String {
     if tc.terminal_id.is_some() {
         if let Some(ref output) = tc.terminal_output {
             let stripped_output = highlight::strip_ansi(output);
-            if matches!(tc.status, model::ToolCallStatus::Failed | model::ToolCallStatus::Killed)
-                && let Some(first_line) = failed_execute_first_line(&stripped_output)
+            if matches!(
+                tc.status,
+                model::ToolCallStatus::Failed | model::ToolCallStatus::Killed
+            ) && let Some(first_line) = failed_execute_first_line(&stripped_output)
             {
                 return if first_line.chars().count() > 80 {
                     let truncated: String = first_line.chars().take(77).collect();
@@ -182,7 +191,10 @@ pub(super) fn content_summary(tc: &ToolCallInfo) -> String {
                     );
                 }
                 if let Some(text) = resource.text.as_deref() {
-                    let first = text.lines().find(|line| !line.trim().is_empty()).unwrap_or("");
+                    let first = text
+                        .lines()
+                        .find(|line| !line.trim().is_empty())
+                        .unwrap_or("");
                     return truncate_summary_line(first, DEFAULT_COLLAPSED_TEXT_SUMMARY_LIMIT);
                 }
                 return resource.uri.clone();
@@ -235,8 +247,10 @@ fn render_tool_content(tc: &ToolCallInfo, width: u16) -> Vec<Line<'static>> {
     if is_execute {
         if let Some(ref output) = tc.terminal_output {
             let stripped_output = highlight::strip_ansi(output);
-            if matches!(tc.status, model::ToolCallStatus::Failed | model::ToolCallStatus::Killed)
-                && let Some(first_line) = failed_execute_first_line(&stripped_output)
+            if matches!(
+                tc.status,
+                model::ToolCallStatus::Failed | model::ToolCallStatus::Killed
+            ) && let Some(first_line) = failed_execute_first_line(&stripped_output)
             {
                 lines.push(Line::from(Span::styled(
                     first_line,
@@ -246,7 +260,10 @@ fn render_tool_content(tc: &ToolCallInfo, width: u16) -> Vec<Line<'static>> {
                 lines.extend(highlight::render_terminal_output(output));
             }
         } else if matches!(tc.status, model::ToolCallStatus::InProgress) {
-            lines.push(Line::from(Span::styled("running...", Style::default().fg(theme::DIM))));
+            lines.push(Line::from(Span::styled(
+                "running...",
+                Style::default().fg(theme::DIM),
+            )));
         }
         debug_failed_tool_render(tc);
         return lines;
@@ -259,8 +276,11 @@ fn render_tool_content(tc: &ToolCallInfo, width: u16) -> Vec<Line<'static>> {
                     lines.extend(render_plan_content(&diff.new_text));
                 } else {
                     let raw = render_diff(diff, width.saturating_sub(DIFF_BODY_INDENT_WIDTH));
-                    let raw =
-                        if tc.sdk_tool_name == "Write" { cap_write_diff_lines(raw) } else { raw };
+                    let raw = if tc.sdk_tool_name == "Write" {
+                        cap_write_diff_lines(raw)
+                    } else {
+                        raw
+                    };
                     lines.extend(indent_rendered_lines(raw, DIFF_BODY_INDENT));
                 }
             }
@@ -297,14 +317,18 @@ fn render_plan_content(text: &str) -> Vec<Line<'static>> {
 
 fn render_text_content(tc: &ToolCallInfo, text: &str, lines: &mut Vec<Line<'static>>) {
     let stripped = strip_outer_code_fence(text);
-    if matches!(tc.status, model::ToolCallStatus::Failed | model::ToolCallStatus::Killed)
-        && let Some(msg) = extract_tool_use_error_message(&stripped)
+    if matches!(
+        tc.status,
+        model::ToolCallStatus::Failed | model::ToolCallStatus::Killed
+    ) && let Some(msg) = extract_tool_use_error_message(&stripped)
     {
         lines.extend(render_tool_use_error_content(&msg));
         return;
     }
-    if matches!(tc.status, model::ToolCallStatus::Failed | model::ToolCallStatus::Killed)
-        && looks_like_internal_error(&stripped)
+    if matches!(
+        tc.status,
+        model::ToolCallStatus::Failed | model::ToolCallStatus::Killed
+    ) && looks_like_internal_error(&stripped)
     {
         lines.extend(render_internal_failure_content(&stripped));
         return;
@@ -320,8 +344,11 @@ fn render_text_content(tc: &ToolCallInfo, text: &str, lines: &mut Vec<Line<'stat
         return;
     };
     for line in markdown::render_markdown_safe(&md_source, None) {
-        let owned: Vec<Span<'static>> =
-            line.spans.into_iter().map(|s| Span::styled(s.content.into_owned(), s.style)).collect();
+        let owned: Vec<Span<'static>> = line
+            .spans
+            .into_iter()
+            .map(|s| Span::styled(s.content.into_owned(), s.style))
+            .collect();
         lines.push(Line::from(owned));
     }
 }
@@ -336,8 +363,10 @@ fn render_mcp_resource_content(
     }
     if let Some(blob_saved_to) = &resource.blob_saved_to {
         let saved_path = blob_saved_to.to_string_lossy().into_owned();
-        let text_mentions_path =
-            resource.text.as_deref().is_some_and(|text| text.contains(saved_path.as_str()));
+        let text_mentions_path = resource
+            .text
+            .as_deref()
+            .is_some_and(|text| text.contains(saved_path.as_str()));
         if !text_mentions_path {
             lines.push(Line::from(vec![
                 Span::styled(
@@ -349,7 +378,10 @@ fn render_mcp_resource_content(
         }
     }
     if lines.is_empty() {
-        lines.push(Line::from(Span::styled(resource.uri.clone(), Style::default().fg(theme::DIM))));
+        lines.push(Line::from(Span::styled(
+            resource.uri.clone(),
+            Style::default().fg(theme::DIM),
+        )));
     }
     lines
 }
@@ -389,7 +421,9 @@ pub(super) fn cap_write_diff_lines(lines: Vec<Line<'static>>) -> Vec<Line<'stati
     out.push(Line::default());
     out.push(Line::from(Span::styled(
         format!("... {omitted} diff lines omitted ..."),
-        Style::default().fg(theme::DIM).add_modifier(Modifier::ITALIC),
+        Style::default()
+            .fg(theme::DIM)
+            .add_modifier(Modifier::ITALIC),
     )));
     out.push(Line::default());
     out.extend(lines.iter().skip(tail_start).cloned());

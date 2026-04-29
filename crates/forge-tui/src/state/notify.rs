@@ -101,7 +101,9 @@ impl NotificationManager {
     pub const fn new() -> Self {
         // Default to `true` (focused) so that terminals which do not support
         // DECSET 1004 never fire spurious notifications.
-        Self { terminal_focused: true }
+        Self {
+            terminal_focused: true,
+        }
     }
 
     /// Call when the terminal emits a `FocusGained` event.
@@ -160,16 +162,20 @@ fn ring_bell() {
 /// Errors are silently discarded -- the bell is the reliable fallback.
 fn send_desktop_notification(event: NotifyEvent) {
     let (summary, body) = match event {
-        NotifyEvent::PermissionRequired => {
-            ("Claude Code", "Permission required -- waiting for your approval")
-        }
+        NotifyEvent::PermissionRequired => (
+            "Claude Code",
+            "Permission required -- waiting for your approval",
+        ),
         NotifyEvent::QuestionRequired => {
             ("Claude Code", "Question required -- waiting for your input")
         }
         NotifyEvent::TurnComplete => ("Claude Code", "Turn complete"),
     };
     std::thread::spawn(move || {
-        let _ = notify_rust::Notification::new().summary(summary).body(body).show();
+        let _ = notify_rust::Notification::new()
+            .summary(summary)
+            .body(body)
+            .show();
     });
 }
 
@@ -186,14 +192,20 @@ fn notification_plan(
     capabilities: TerminalCapabilities,
     event: NotifyEvent,
 ) -> NotificationPlan {
-    let osc9_text = capabilities.osc9_notifications.then(|| notification_text(event));
+    let osc9_text = capabilities
+        .osc9_notifications
+        .then(|| notification_text(event));
     match channel {
-        PreferredNotifChannel::NotificationsDisabled => {
-            NotificationPlan { ring_bell: false, send_desktop: false, osc9_text: None }
-        }
-        PreferredNotifChannel::TerminalBell => {
-            NotificationPlan { ring_bell: true, send_desktop: false, osc9_text: None }
-        }
+        PreferredNotifChannel::NotificationsDisabled => NotificationPlan {
+            ring_bell: false,
+            send_desktop: false,
+            osc9_text: None,
+        },
+        PreferredNotifChannel::TerminalBell => NotificationPlan {
+            ring_bell: true,
+            send_desktop: false,
+            osc9_text: None,
+        },
         // "Auto / iTerm2" replaced the original always-bell-plus-desktop behavior.
         // Preserve that reliable fallback whenever OSC 9 is unavailable.
         PreferredNotifChannel::Iterm2 => NotificationPlan {
@@ -201,12 +213,16 @@ fn notification_plan(
             send_desktop: osc9_text.is_none(),
             osc9_text,
         },
-        PreferredNotifChannel::Ghostty => {
-            NotificationPlan { ring_bell: false, send_desktop: osc9_text.is_none(), osc9_text }
-        }
-        PreferredNotifChannel::Iterm2WithBell => {
-            NotificationPlan { ring_bell: true, send_desktop: osc9_text.is_none(), osc9_text }
-        }
+        PreferredNotifChannel::Ghostty => NotificationPlan {
+            ring_bell: false,
+            send_desktop: osc9_text.is_none(),
+            osc9_text,
+        },
+        PreferredNotifChannel::Iterm2WithBell => NotificationPlan {
+            ring_bell: true,
+            send_desktop: osc9_text.is_none(),
+            osc9_text,
+        },
     }
 }
 
@@ -279,7 +295,10 @@ mod tests {
     #[test]
     fn defaults_to_focused() {
         let mgr = NotificationManager::new();
-        assert!(mgr.is_focused(), "should default to focused to suppress spurious notifications");
+        assert!(
+            mgr.is_focused(),
+            "should default to focused to suppress spurious notifications"
+        );
     }
 
     #[test]
@@ -302,10 +321,16 @@ mod tests {
         assert_eq!(
             notification_plan(
                 PreferredNotifChannel::NotificationsDisabled,
-                TerminalCapabilities { osc9_notifications: true },
+                TerminalCapabilities {
+                    osc9_notifications: true
+                },
                 NotifyEvent::TurnComplete,
             ),
-            NotificationPlan { ring_bell: false, send_desktop: false, osc9_text: None }
+            NotificationPlan {
+                ring_bell: false,
+                send_desktop: false,
+                osc9_text: None
+            }
         );
     }
 
@@ -314,10 +339,16 @@ mod tests {
         assert_eq!(
             notification_plan(
                 PreferredNotifChannel::TerminalBell,
-                TerminalCapabilities { osc9_notifications: true },
+                TerminalCapabilities {
+                    osc9_notifications: true
+                },
                 NotifyEvent::TurnComplete,
             ),
-            NotificationPlan { ring_bell: true, send_desktop: false, osc9_text: None }
+            NotificationPlan {
+                ring_bell: true,
+                send_desktop: false,
+                osc9_text: None
+            }
         );
     }
 
@@ -326,7 +357,9 @@ mod tests {
         assert_eq!(
             notification_plan(
                 PreferredNotifChannel::Iterm2,
-                TerminalCapabilities { osc9_notifications: true },
+                TerminalCapabilities {
+                    osc9_notifications: true
+                },
                 NotifyEvent::TurnComplete,
             ),
             NotificationPlan {
@@ -342,10 +375,16 @@ mod tests {
         assert_eq!(
             notification_plan(
                 PreferredNotifChannel::Iterm2,
-                TerminalCapabilities { osc9_notifications: false },
+                TerminalCapabilities {
+                    osc9_notifications: false
+                },
                 NotifyEvent::TurnComplete,
             ),
-            NotificationPlan { ring_bell: true, send_desktop: true, osc9_text: None }
+            NotificationPlan {
+                ring_bell: true,
+                send_desktop: true,
+                osc9_text: None
+            }
         );
     }
 
@@ -354,7 +393,9 @@ mod tests {
         assert_eq!(
             notification_plan(
                 PreferredNotifChannel::Iterm2WithBell,
-                TerminalCapabilities { osc9_notifications: true },
+                TerminalCapabilities {
+                    osc9_notifications: true
+                },
                 NotifyEvent::PermissionRequired,
             ),
             NotificationPlan {
@@ -370,10 +411,16 @@ mod tests {
         assert_eq!(
             notification_plan(
                 PreferredNotifChannel::Iterm2WithBell,
-                TerminalCapabilities { osc9_notifications: false },
+                TerminalCapabilities {
+                    osc9_notifications: false
+                },
                 NotifyEvent::PermissionRequired,
             ),
-            NotificationPlan { ring_bell: true, send_desktop: true, osc9_text: None }
+            NotificationPlan {
+                ring_bell: true,
+                send_desktop: true,
+                osc9_text: None
+            }
         );
     }
 
@@ -382,7 +429,9 @@ mod tests {
         assert_eq!(
             notification_plan(
                 PreferredNotifChannel::Ghostty,
-                TerminalCapabilities { osc9_notifications: true },
+                TerminalCapabilities {
+                    osc9_notifications: true
+                },
                 NotifyEvent::TurnComplete,
             ),
             NotificationPlan {

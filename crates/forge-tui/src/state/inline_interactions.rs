@@ -104,8 +104,13 @@ pub(super) fn set_interaction_focused(app: &mut App, queue_index: usize, focused
 
 pub(super) fn focused_interaction_is_active(app: &App) -> bool {
     focused_interaction(app).is_some_and(|tc| {
-        tc.pending_permission.as_ref().is_some_and(|permission| permission.focused)
-            || tc.pending_question.as_ref().is_some_and(|question| question.focused)
+        tc.pending_permission
+            .as_ref()
+            .is_some_and(|permission| permission.focused)
+            || tc
+                .pending_question
+                .as_ref()
+                .is_some_and(|question| question.focused)
     })
 }
 
@@ -145,7 +150,12 @@ pub(super) fn clear_inline_interaction_focus(app: &mut App) {
         }
     }
 
-    if changed || matches!(app.focus_owner(), crate::state::focus::FocusOwner::Permission) {
+    if changed
+        || matches!(
+            app.focus_owner(),
+            crate::state::focus::FocusOwner::Permission
+        )
+    {
         app.release_focus_target(FocusTarget::Permission);
         app.normalize_focus_stack();
     }
@@ -180,12 +190,18 @@ pub(super) fn normalize_pending_interaction_queue(app: &mut App) {
     }
 
     if changed {
-        let permission_has_focus = matches!(app.focus_owner(), crate::state::focus::FocusOwner::Permission);
+        let permission_has_focus = matches!(
+            app.focus_owner(),
+            crate::state::focus::FocusOwner::Permission
+        );
         for idx in 0..app.pending_interaction_ids.len() {
             set_interaction_focused(app, idx, permission_has_focus && idx == 0);
         }
     }
-    if matches!(app.focus_owner(), crate::state::focus::FocusOwner::Permission) {
+    if matches!(
+        app.focus_owner(),
+        crate::state::focus::FocusOwner::Permission
+    ) {
         app.claim_focus_target(FocusTarget::Permission);
         app.normalize_focus_stack();
     }

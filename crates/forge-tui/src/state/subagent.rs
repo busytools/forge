@@ -71,8 +71,9 @@ fn detect_subagent_at_cursor(
         return None;
     }
 
-    let token_end =
-        (token_start + 1..chars.len()).find(|&i| chars[i].is_whitespace()).unwrap_or(chars.len());
+    let token_end = (token_start + 1..chars.len())
+        .find(|&i| chars[i].is_whitespace())
+        .unwrap_or(chars.len());
     if cursor_col <= token_start || cursor_col > token_end {
         return None;
     }
@@ -95,18 +96,28 @@ fn detect_subagent_at_cursor(
         return None;
     }
 
-    if chars[token_start + 1..token_end].iter().any(|ch| !is_subagent_char(*ch)) {
+    if chars[token_start + 1..token_end]
+        .iter()
+        .any(|ch| !is_subagent_char(*ch))
+    {
         return None;
     }
     let query: String = chars[token_start + 1..cursor_col].iter().collect();
 
-    Some(SubagentDetection { trigger_row: cursor_row, trigger_col: token_start, query })
+    Some(SubagentDetection {
+        trigger_row: cursor_row,
+        trigger_col: token_start,
+        query,
+    })
 }
 
 fn candidate_matches(candidate: &SubagentCandidate, query_lower: &str) -> bool {
     candidate.name.to_lowercase().contains(query_lower)
         || candidate.description.to_lowercase().contains(query_lower)
-        || candidate.model.as_ref().is_some_and(|model| model.to_lowercase().contains(query_lower))
+        || candidate
+            .model
+            .as_ref()
+            .is_some_and(|model| model.to_lowercase().contains(query_lower))
 }
 
 fn filter_candidates(
@@ -167,7 +178,9 @@ pub fn update_query(app: &mut App) {
         subagent.trigger_col = next_state.trigger_col;
         subagent.query = next_state.query;
         subagent.candidates = next_state.candidates;
-        subagent.dialog.clamp(subagent.candidates.len(), MAX_VISIBLE);
+        subagent
+            .dialog
+            .clamp(subagent.candidates.len(), MAX_VISIBLE);
     } else {
         app.subagent = Some(next_state);
         app.claim_focus_target(FocusTarget::Mention);
@@ -192,13 +205,17 @@ pub fn deactivate(app: &mut App) {
 
 pub fn move_up(app: &mut App) {
     if let Some(ref mut subagent) = app.subagent {
-        subagent.dialog.move_up(subagent.candidates.len(), MAX_VISIBLE);
+        subagent
+            .dialog
+            .move_up(subagent.candidates.len(), MAX_VISIBLE);
     }
 }
 
 pub fn move_down(app: &mut App) {
     if let Some(ref mut subagent) = app.subagent {
-        subagent.dialog.move_down(subagent.candidates.len(), MAX_VISIBLE);
+        subagent
+            .dialog
+            .move_down(subagent.candidates.len(), MAX_VISIBLE);
     }
 }
 
@@ -304,4 +321,3 @@ pub fn find_subagent_spans(text: &str) -> Vec<(usize, usize, String)> {
 
     spans
 }
-

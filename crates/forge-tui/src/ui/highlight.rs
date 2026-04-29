@@ -9,7 +9,6 @@
 //! Syntect-backed code highlighting lifted from `ui/highlight.rs`.
 //! ANSI passthrough, language-aware code blocks, shell-command spans.
 
-
 use super::diff;
 use ansi_to_tui::IntoText as _;
 use ratatui::style::{Color, Modifier, Style};
@@ -85,8 +84,9 @@ pub(crate) fn render_terminal_output(text: &str) -> Vec<Line<'static>> {
 }
 
 pub(crate) fn highlight_code(text: &str, language: Option<&str>) -> Vec<Line<'static>> {
-    let syntax =
-        language.and_then(find_syntax).unwrap_or_else(|| SYNTAX_SET.find_syntax_plain_text());
+    let syntax = language
+        .and_then(find_syntax)
+        .unwrap_or_else(|| SYNTAX_SET.find_syntax_plain_text());
     highlight_with_syntax(text, syntax)
 }
 
@@ -139,7 +139,11 @@ fn highlight_line(line: &str, highlighter: &mut HighlightLines<'_>) -> Line<'sta
                     }
                 })
                 .collect::<Vec<_>>();
-            if spans.is_empty() { Line::default() } else { Line::from(spans) }
+            if spans.is_empty() {
+                Line::default()
+            } else {
+                Line::from(spans)
+            }
         }
         Err(err) => {
             tracing::warn!(
@@ -158,8 +162,10 @@ fn plain_text_lines(text: &str) -> Vec<Line<'static>> {
     if text.is_empty() {
         return vec![Line::default()];
     }
-    let mut lines: Vec<Line<'static>> =
-        text.split('\n').map(|line| Line::from(line.to_owned())).collect();
+    let mut lines: Vec<Line<'static>> = text
+        .split('\n')
+        .map(|line| Line::from(line.to_owned()))
+        .collect();
     if lines.is_empty() {
         lines.push(Line::default());
     }
@@ -225,7 +231,11 @@ mod tests {
     #[test]
     fn highlight_code_preserves_text() {
         let rendered = highlight_code("fn main() {}\n", Some("rs"));
-        let text: String = rendered[0].spans.iter().map(|span| span.content.as_ref()).collect();
+        let text: String = rendered[0]
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
         assert!(text.contains("fn"));
         assert!(text.contains("main"));
     }

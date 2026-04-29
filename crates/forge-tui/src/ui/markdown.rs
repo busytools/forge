@@ -48,23 +48,34 @@ fn render_with_tui_markdown(text: &str, bg: Option<Color>) -> Vec<Line<'static>>
                 .spans
                 .into_iter()
                 .map(|span| {
-                    let style =
-                        if let Some(bg_color) = bg { span.style.bg(bg_color) } else { span.style };
+                    let style = if let Some(bg_color) = bg {
+                        span.style.bg(bg_color)
+                    } else {
+                        span.style
+                    };
                     Span::styled(span.content.into_owned(), style)
                 })
                 .collect();
-            let line_style =
-                if let Some(bg_color) = bg { line.style.bg(bg_color) } else { line.style };
+            let line_style = if let Some(bg_color) = bg {
+                line.style.bg(bg_color)
+            } else {
+                line.style
+            };
             Line::from(owned_spans).style(line_style)
         })
         .collect()
 }
 
 fn plain_text_fallback(text: &str, bg: Option<Color>) -> Vec<Line<'static>> {
-    let style =
-        if let Some(bg_color) = bg { Style::default().bg(bg_color) } else { Style::default() };
+    let style = if let Some(bg_color) = bg {
+        Style::default().bg(bg_color)
+    } else {
+        Style::default()
+    };
 
-    text.split('\n').map(|line| Line::from(Span::styled(line.to_owned(), style))).collect()
+    text.split('\n')
+        .map(|line| Line::from(Span::styled(line.to_owned(), style)))
+        .collect()
 }
 
 #[cfg(test)]
@@ -91,7 +102,10 @@ mod tests {
         for input in inputs {
             let result = catch_unwind(|| render_markdown_safe(input, None));
             assert!(result.is_ok(), "input triggered panic: {input}");
-            assert!(!result.unwrap().is_empty(), "input rendered zero lines: {input}");
+            assert!(
+                !result.unwrap().is_empty(),
+                "input rendered zero lines: {input}"
+            );
         }
     }
 

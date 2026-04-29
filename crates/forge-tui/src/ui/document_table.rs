@@ -11,7 +11,6 @@
 //! per-cell styling. Used by chat content renderer for embedded
 //! tables (e.g. `| Header | Header |\n|---|---|`).
 
-
 use super::markdown;
 use super::wrap::{
     StyledChunk, blank_line, display_width, line_display_width, pad_line_to_width,
@@ -83,8 +82,17 @@ enum MarkdownBlock {
 
 impl DocumentTable {
     fn column_count(&self) -> usize {
-        let body_cols = self.rows.iter().map(|row| row.cells.len()).max().unwrap_or(0);
-        self.header.cells.len().max(self.alignments.len()).max(body_cols)
+        let body_cols = self
+            .rows
+            .iter()
+            .map(|row| row.cells.len())
+            .max()
+            .unwrap_or(0);
+        self.header
+            .cells
+            .len()
+            .max(self.alignments.len())
+            .max(body_cols)
     }
 
     fn render_lines(&self, width: u16, bg: Option<Color>) -> Vec<Line<'static>> {
@@ -149,7 +157,9 @@ fn parser_options() -> Options {
 
 fn split_markdown_tables(text: &str) -> Vec<MarkdownBlock> {
     let mut blocks = Vec::new();
-    let mut parser = Parser::new_ext(text, parser_options()).into_offset_iter().peekable();
+    let mut parser = Parser::new_ext(text, parser_options())
+        .into_offset_iter()
+        .peekable();
     let mut text_start = 0usize;
 
     loop {
@@ -158,7 +168,9 @@ fn split_markdown_tables(text: &str) -> Vec<MarkdownBlock> {
         };
         if let Event::Start(Tag::Table(alignments)) = event {
             if text_start < range.start {
-                blocks.push(MarkdownBlock::Text(text[text_start..range.start].to_owned()));
+                blocks.push(MarkdownBlock::Text(
+                    text[text_start..range.start].to_owned(),
+                ));
             }
 
             let mut table_end = range.end;
@@ -217,7 +229,10 @@ where
             }
             Event::End(TagEnd::TableCell) => {
                 if let Some(cell) = current_cell.take() {
-                    current_row.get_or_insert_with(TableRowAst::default).cells.push(cell.finish());
+                    current_row
+                        .get_or_insert_with(TableRowAst::default)
+                        .cells
+                        .push(cell.finish());
                 }
             }
             Event::End(TagEnd::Table) => break,
@@ -306,7 +321,10 @@ impl CellBuilder {
     fn push_code(&mut self, text: &str) {
         self.flush_current();
         let style = self.current_style.add_modifier(Modifier::REVERSED);
-        self.chunks.push(StyledChunk { text: text.to_owned(), style });
+        self.chunks.push(StyledChunk {
+            text: text.to_owned(),
+            style,
+        });
     }
 
     fn start_tag(&mut self, tag: &Tag<'_>) {
@@ -324,8 +342,10 @@ impl CellBuilder {
     }
 
     fn end_tag(&mut self, tag: TagEnd) {
-        let styled =
-            matches!(tag, TagEnd::Strong | TagEnd::Emphasis | TagEnd::Strikethrough | TagEnd::Link);
+        let styled = matches!(
+            tag,
+            TagEnd::Strong | TagEnd::Emphasis | TagEnd::Strikethrough | TagEnd::Link
+        );
         if !styled {
             return;
         }
@@ -347,7 +367,11 @@ impl CellBuilder {
 
     fn finish(mut self) -> TableCellAst {
         self.flush_current();
-        let plain_text: String = self.chunks.iter().map(|chunk| chunk.text.as_str()).collect();
+        let plain_text: String = self
+            .chunks
+            .iter()
+            .map(|chunk| chunk.text.as_str())
+            .collect();
         let (preferred_width, soft_min_width) = measure_cell_widths(&plain_text);
         TableCellAst {
             chunks: self.chunks,
@@ -393,7 +417,11 @@ fn resolve_layout(
     }
 
     let _ = policy.allow_stacked_fallback;
-    ResolvedTableLayout { mode: TableLayoutMode::Stacked, column_widths: Vec::new(), spacing: 0 }
+    ResolvedTableLayout {
+        mode: TableLayoutMode::Stacked,
+        column_widths: Vec::new(),
+        spacing: 0,
+    }
 }
 
 fn resolve_grid_layout(
@@ -404,13 +432,19 @@ fn resolve_grid_layout(
     min_column_width: usize,
 ) -> Option<ResolvedTableLayout> {
     if metrics.is_empty() {
-        return Some(ResolvedTableLayout { mode, column_widths: Vec::new(), spacing });
+        return Some(ResolvedTableLayout {
+            mode,
+            column_widths: Vec::new(),
+            spacing,
+        });
     }
 
     let spacing_budget = spacing.saturating_mul(metrics.len().saturating_sub(1));
     let available = total_width.saturating_sub(spacing_budget);
-    let soft_floor_total: usize =
-        metrics.iter().map(|metric| metric.soft_min.max(min_column_width)).sum();
+    let soft_floor_total: usize = metrics
+        .iter()
+        .map(|metric| metric.soft_min.max(min_column_width))
+        .sum();
     if available < soft_floor_total {
         return None;
     }
@@ -419,7 +453,11 @@ fn resolve_grid_layout(
     }
 
     let column_widths = solve_column_widths(metrics, available, min_column_width);
-    Some(ResolvedTableLayout { mode, column_widths, spacing })
+    Some(ResolvedTableLayout {
+        mode,
+        column_widths,
+        spacing,
+    })
 }
 
 fn measure_cell_widths(text: &str) -> (usize, usize) {
@@ -434,7 +472,13 @@ fn measure_cell_widths(text: &str) -> (usize, usize) {
 }
 
 fn collect_column_metrics(table: &DocumentTable, cols: usize) -> Vec<ColumnMetrics> {
-    let mut metrics = vec![ColumnMetrics { preferred: 1, soft_min: 1 }; cols];
+    let mut metrics = vec![
+        ColumnMetrics {
+            preferred: 1,
+            soft_min: 1
+        };
+        cols
+    ];
     for row in std::iter::once(&table.header).chain(table.rows.iter()) {
         for (idx, cell) in row.cells.iter().enumerate() {
             metrics[idx].preferred = metrics[idx].preferred.max(cell.preferred_width);
@@ -453,8 +497,10 @@ fn solve_column_widths(
         return Vec::new();
     }
 
-    let mut widths: Vec<usize> =
-        metrics.iter().map(|metric| metric.preferred.max(min_column_width)).collect();
+    let mut widths: Vec<usize> = metrics
+        .iter()
+        .map(|metric| metric.preferred.max(min_column_width))
+        .collect();
     let soft_floor: Vec<usize> = metrics
         .iter()
         .zip(widths.iter())
@@ -502,7 +548,11 @@ fn render_grid_lines(
         layout.spacing,
     );
     if !lines.is_empty() {
-        lines.push(render_separator_line(&layout.column_widths, layout.spacing, row_style));
+        lines.push(render_separator_line(
+            &layout.column_widths,
+            layout.spacing,
+            row_style,
+        ));
     }
     for row in &table.rows {
         lines.extend(render_row_lines(
@@ -527,8 +577,15 @@ fn render_row_lines(
     let mut row_height = 1usize;
 
     for (idx, width) in widths.iter().copied().enumerate() {
-        let alignment = alignments.get(idx).copied().unwrap_or(ColumnAlignment::Left);
-        let cell = row.cells.get(idx).cloned().unwrap_or_else(TableCellAst::empty);
+        let alignment = alignments
+            .get(idx)
+            .copied()
+            .unwrap_or(ColumnAlignment::Left);
+        let cell = row
+            .cells
+            .get(idx)
+            .cloned()
+            .unwrap_or_else(TableCellAst::empty);
         let rendered = render_cell_lines(&cell, width, alignment, base_style);
         row_height = row_height.max(rendered.len());
         cell_lines.push(rendered);
@@ -614,10 +671,12 @@ fn align_line_to_width(
     };
 
     if left_pad > 0 {
-        line.spans.insert(0, Span::styled(" ".repeat(left_pad), base_style));
+        line.spans
+            .insert(0, Span::styled(" ".repeat(left_pad), base_style));
     }
     if right_pad > 0 {
-        line.spans.push(Span::styled(" ".repeat(right_pad), base_style));
+        line.spans
+            .push(Span::styled(" ".repeat(right_pad), base_style));
     }
     line
 }
@@ -647,7 +706,11 @@ fn render_stacked_lines(
                 .map(|cell| cell.plain_text.trim())
                 .filter(|text| !text.is_empty())
                 .map_or_else(|| format!("Column {}", col_idx + 1), str::to_owned);
-            let value = row.cells.get(col_idx).cloned().unwrap_or_else(TableCellAst::empty);
+            let value = row
+                .cells
+                .get(col_idx)
+                .cloned()
+                .unwrap_or_else(TableCellAst::empty);
             lines.extend(render_stacked_pair(
                 &label,
                 &value,
@@ -739,7 +802,12 @@ mod tests {
     fn render_strings(text: &str, width: u16) -> Vec<String> {
         render_markdown_with_tables(text, width, None)
             .into_iter()
-            .map(|line| line.spans.into_iter().map(|span| span.content.into_owned()).collect())
+            .map(|line| {
+                line.spans
+                    .into_iter()
+                    .map(|span| span.content.into_owned())
+                    .collect()
+            })
             .collect()
     }
 
@@ -826,8 +894,16 @@ mod tests {
         let input = "| col |\n| --- |\n| **bold** and `code` |\n";
         let rendered = render_markdown_with_tables(input, 24, None);
         let body = &rendered[2];
-        assert!(body.spans.iter().any(|span| span.style.add_modifier.contains(Modifier::BOLD)));
-        assert!(body.spans.iter().any(|span| span.style.add_modifier.contains(Modifier::REVERSED)));
+        assert!(
+            body.spans
+                .iter()
+                .any(|span| span.style.add_modifier.contains(Modifier::BOLD))
+        );
+        assert!(
+            body.spans
+                .iter()
+                .any(|span| span.style.add_modifier.contains(Modifier::REVERSED))
+        );
     }
 
     #[test]

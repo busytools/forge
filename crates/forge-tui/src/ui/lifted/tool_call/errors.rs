@@ -24,10 +24,15 @@ pub(super) fn render_internal_failure_content(payload: &str) -> Vec<Line<'static
     let summary = summarize_internal_error(payload);
     let mut lines = vec![Line::from(Span::styled(
         "Internal Agent SDK error",
-        Style::default().fg(theme::STATUS_ERROR).add_modifier(Modifier::BOLD),
+        Style::default()
+            .fg(theme::STATUS_ERROR)
+            .add_modifier(Modifier::BOLD),
     ))];
     if !summary.is_empty() {
-        lines.push(Line::from(Span::styled(summary, Style::default().fg(theme::STATUS_ERROR))));
+        lines.push(Line::from(Span::styled(
+            summary,
+            Style::default().fg(theme::STATUS_ERROR),
+        )));
     }
     lines
 }
@@ -37,13 +42,19 @@ pub(super) fn render_tool_use_error_content(message: &str) -> Vec<Line<'static>>
         .lines()
         .filter(|line| !line.trim().is_empty())
         .map(|line| {
-            Line::from(Span::styled(line.to_owned(), Style::default().fg(theme::STATUS_ERROR)))
+            Line::from(Span::styled(
+                line.to_owned(),
+                Style::default().fg(theme::STATUS_ERROR),
+            ))
         })
         .collect()
 }
 
 pub(super) fn debug_failed_tool_render(tc: &ToolCallInfo) {
-    if !matches!(tc.status, model::ToolCallStatus::Failed | model::ToolCallStatus::Killed) {
+    if !matches!(
+        tc.status,
+        model::ToolCallStatus::Failed | model::ToolCallStatus::Killed
+    ) {
         return;
     }
 
@@ -97,7 +108,11 @@ pub(super) fn failed_execute_first_line(output: &str) -> Option<String> {
     if let Some(msg) = extract_tool_use_error_message(output) {
         return Some(msg);
     }
-    output.lines().find(|line| !line.trim().is_empty()).map(str::trim).map(str::to_owned)
+    output
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .map(str::trim)
+        .map(str::to_owned)
 }
 
 pub(super) fn looks_like_internal_error(input: &str) -> bool {

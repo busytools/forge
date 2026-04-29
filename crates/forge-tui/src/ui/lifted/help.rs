@@ -36,7 +36,10 @@ const HELP_BUILTIN_SLASH_COMMANDS: [(&str, &str); 9] = [
     ("/login", "Authenticate with Claude"),
     ("/logout", "Sign out of Claude"),
     ("/mcp", "Open MCP"),
-    ("/opus-version", "Pin the Opus alias version for this folder"),
+    (
+        "/opus-version",
+        "Pin the Opus alias version for this folder",
+    ),
     ("/plugins", "Open plugins"),
     ("/status", "Show session status"),
     ("/usage", "Open usage"),
@@ -159,7 +162,13 @@ fn render_two_column_help(
         lines.push(Line::default());
     }
 
-    lines.extend(two_column_list::render_lines(&list_items, name_width, desc_width, COLUMN_GAP, 1));
+    lines.extend(two_column_list::render_lines(
+        &list_items,
+        name_width,
+        desc_width,
+        COLUMN_GAP,
+        1,
+    ));
 
     for _ in 0..HELP_VERTICAL_PADDING_LINES {
         lines.push(Line::default());
@@ -232,7 +241,10 @@ fn build_key_help_items(app: &App) -> Vec<(String, String)> {
         ("Ctrl+l".to_owned(), "Redraw screen".to_owned()),
         ("Shift+Tab".to_owned(), "Cycle mode".to_owned()),
         ("Ctrl+o".to_owned(), "Toggle tool collapse".to_owned()),
-        ("Ctrl+t".to_owned(), "Toggle todos (when available)".to_owned()),
+        (
+            "Ctrl+t".to_owned(),
+            "Toggle todos (when available)".to_owned(),
+        ),
         // Chat scrolling
         ("Ctrl+Up/Down".to_owned(), "Scroll chat".to_owned()),
         ("Mouse wheel".to_owned(), "Scroll chat".to_owned()),
@@ -278,7 +290,10 @@ fn build_key_help_items(app: &App) -> Vec<(String, String)> {
     }
 
     // Turn control
-    if matches!(app.status, crate::state::types::AppStatus::Thinking | crate::state::types::AppStatus::Running) {
+    if matches!(
+        app.status,
+        crate::state::types::AppStatus::Thinking | crate::state::types::AppStatus::Running
+    ) {
         items.push(("Esc".to_owned(), "Cancel current turn".to_owned()));
     } else if focus_owner == FocusOwner::TodoList {
         items.push(("Esc".to_owned(), "Exit todo focus".to_owned()));
@@ -317,8 +332,10 @@ fn focused_question_prompt(app: &App) -> bool {
     let Some((mi, bi)) = app.lookup_tool_call(tool_id) else {
         return false;
     };
-    let Some(MessageBlock::ToolCall(tc)) =
-        app.messages.get(mi).and_then(|message| message.blocks.get(bi))
+    let Some(MessageBlock::ToolCall(tc)) = app
+        .messages
+        .get(mi)
+        .and_then(|message| message.blocks.get(bi))
     else {
         return false;
     };
@@ -339,7 +356,9 @@ fn blocked_input_help_items(input_line: &str) -> Vec<(String, String)> {
 }
 
 fn pending_command_help_label(app: &App) -> String {
-    app.pending_command_label.clone().unwrap_or_else(|| "Processing command...".to_owned())
+    app.pending_command_label
+        .clone()
+        .unwrap_or_else(|| "Processing command...".to_owned())
 }
 
 pub(crate) fn key_help_items(app: &App) -> Vec<(String, String)> {
@@ -384,8 +403,11 @@ fn build_slash_command_items(
         .collect();
 
     for cmd in &app.available_commands {
-        let name =
-            if cmd.name.starts_with('/') { cmd.name.clone() } else { format!("/{}", cmd.name) };
+        let name = if cmd.name.starts_with('/') {
+            cmd.name.clone()
+        } else {
+            format!("/{}", cmd.name)
+        };
         match commands.get_mut(&name) {
             Some(existing) if !cmd.description.trim().is_empty() => {
                 existing.clone_from(&cmd.description);
@@ -406,8 +428,11 @@ fn build_slash_command_items(
     }
 
     for (name, desc) in commands {
-        let description =
-            if desc.trim().is_empty() { "No description provided".to_owned() } else { desc };
+        let description = if desc.trim().is_empty() {
+            "No description provided".to_owned()
+        } else {
+            desc
+        };
         rows.push((name, description));
     }
 
@@ -467,13 +492,18 @@ fn help_item_column_widths(items: &[(String, String)], inner_width: usize) -> (u
         return (inner_width, 1);
     }
 
-    let max_name_width =
-        items.iter().map(|(name, _)| display_width(name.as_str())).max().unwrap_or(0);
+    let max_name_width = items
+        .iter()
+        .map(|(name, _)| display_width(name.as_str()))
+        .max()
+        .unwrap_or(0);
     let share_cap =
         inner_width.saturating_mul(SUBAGENT_NAME_MAX_SHARE_NUM) / SUBAGENT_NAME_MAX_SHARE_DEN;
     let min_name_width = SUBAGENT_NAME_MIN_WIDTH.min(share_cap.max(1));
-    let preferred_name_width =
-        max_name_width.max(min_name_width).min(SUBAGENT_NAME_MAX_WIDTH).min(share_cap.max(1));
+    let preferred_name_width = max_name_width
+        .max(min_name_width)
+        .min(SUBAGENT_NAME_MAX_WIDTH)
+        .min(share_cap.max(1));
     let max_name_fit = inner_width.saturating_sub(COLUMN_GAP + 1);
     let name_width = preferred_name_width.clamp(1, max_name_fit.max(1));
     let desc_width = inner_width.saturating_sub(name_width + COLUMN_GAP).max(1);
@@ -483,17 +513,23 @@ fn help_item_column_widths(items: &[(String, String)], inner_width: usize) -> (u
 
 fn help_title(view: HelpView) -> Line<'static> {
     let keys_style = if matches!(view, HelpView::Keys) {
-        Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(theme::RUST_ORANGE)
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(theme::DIM)
     };
     let slash_style = if matches!(view, HelpView::SlashCommands) {
-        Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(theme::RUST_ORANGE)
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(theme::DIM)
     };
     let subagent_style = if matches!(view, HelpView::Subagents) {
-        Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(theme::RUST_ORANGE)
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(theme::DIM)
     };
@@ -507,7 +543,9 @@ fn help_title(view: HelpView) -> Line<'static> {
     Line::from(vec![
         Span::styled(
             " Help ",
-            Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(theme::RUST_ORANGE)
+                .add_modifier(Modifier::BOLD),
         ),
         Span::styled("[", Style::default().fg(theme::DIM)),
         Span::styled("Keys", keys_style),
@@ -554,7 +592,10 @@ fn format_item_cell_lines(item: &(String, String), width: usize) -> Vec<Line<'st
         ]));
         rest = remaining;
     } else {
-        lines.push(Line::from(Span::styled(label, Style::default().add_modifier(Modifier::BOLD))));
+        lines.push(Line::from(Span::styled(
+            label,
+            Style::default().add_modifier(Modifier::BOLD),
+        )));
     }
 
     while !rest.is_empty() {
@@ -566,7 +607,11 @@ fn format_item_cell_lines(item: &(String, String), width: usize) -> Vec<Line<'st
         rest = remaining;
     }
 
-    if lines.is_empty() { vec![Line::default()] } else { lines }
+    if lines.is_empty() {
+        vec![Line::default()]
+    } else {
+        lines
+    }
 }
 
 fn build_two_column_items(
@@ -581,7 +626,9 @@ fn build_two_column_items(
             let abs_index = absolute_start + view_index;
             let is_selected = abs_index == selected;
             let left_style = if is_selected {
-                Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .fg(theme::RUST_ORANGE)
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::default().add_modifier(Modifier::BOLD)
             };
@@ -599,4 +646,3 @@ fn build_two_column_items(
         })
         .collect()
 }
-

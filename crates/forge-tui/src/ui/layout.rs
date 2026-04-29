@@ -58,7 +58,15 @@ pub fn compute(area: Rect, input_lines: u16, todo_height: u16, help_height: u16)
             Constraint::Length(2),
         ])
         .areas(area);
-        AppLayout { body, input_sep, todo, input, input_bottom_sep, help, footer: Some(footer) }
+        AppLayout {
+            body,
+            input_sep,
+            todo,
+            input,
+            input_bottom_sep,
+            help,
+            footer: Some(footer),
+        }
     }
 }
 
@@ -113,7 +121,9 @@ mod tests {
     #[test]
     fn normal_layout_respects_requested_sections_and_footer_contract() {
         let layout = compute(area(80, 24), 5, 3, 2);
-        let footer = layout.footer.expect("normal layout should include a footer");
+        let footer = layout
+            .footer
+            .expect("normal layout should include a footer");
 
         assert_eq!(layout.input_sep.height, 1);
         assert_eq!(layout.todo.height, 3);

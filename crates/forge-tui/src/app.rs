@@ -13,10 +13,8 @@ use crate::client::Client;
 
 // Re-exports so legacy `use crate::app::App` etc. keep compiling.
 // The canonical types live in `state::app`.
-pub use crate::state::app::{
-    ActiveView as Screen, App, ConnectionState, PendingPermission, Role,
-};
 use crate::state::app::ActiveView;
+pub use crate::state::app::{ActiveView as Screen, App, ConnectionState, PendingPermission, Role};
 
 /// Every event the run loop handles, regardless of source.
 #[derive(Debug)]
@@ -77,7 +75,10 @@ pub enum AppEvent {
 /// # Errors
 ///
 /// Terminal I/O errors propagate.
-#[allow(clippy::too_many_lines, reason = "event-handler match needs to stay in one place")]
+#[allow(
+    clippy::too_many_lines,
+    reason = "event-handler match needs to stay in one place"
+)]
 pub async fn run<B: Backend>(
     terminal: &mut Terminal<B>,
     client: Arc<Client>,
@@ -296,12 +297,12 @@ fn attach_inline_permission(
     prompt_id: Option<String>,
     params: &serde_json::Value,
 ) -> bool {
-    use crate::state::model::{
-        PermissionOption, PermissionOptionKind, RequestPermissionOutcome,
-    };
+    use crate::state::model::{PermissionOption, PermissionOptionKind, RequestPermissionOutcome};
     use crate::state::tool_call_info::InlinePermission;
 
-    let Some((mi, bi)) = app.lookup_tool_call(tool_id) else { return false };
+    let Some((mi, bi)) = app.lookup_tool_call(tool_id) else {
+        return false;
+    };
     let Some(crate::state::messages::MessageBlock::ToolCall(tc)) =
         app.messages.get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
     else {
@@ -341,16 +342,25 @@ fn attach_inline_permission(
         .and_then(|v| v.as_str())
         .map(String::from);
     tokio::spawn(async move {
-        let Ok(response) = response_rx.await else { return };
+        let Ok(response) = response_rx.await else {
+            return;
+        };
         let decision = match response.outcome {
             RequestPermissionOutcome::Selected(selected) => {
-                if selected.option_id == "allow" { "allow" } else { "deny" }
+                if selected.option_id == "allow" {
+                    "allow"
+                } else {
+                    "deny"
+                }
             }
             RequestPermissionOutcome::Cancelled => "deny",
         };
         let body = serde_json::json!({"decision": decision});
 
-        let result = match (translator_prompt_id.as_ref(), translator_session_id.as_ref()) {
+        let result = match (
+            translator_prompt_id.as_ref(),
+            translator_session_id.as_ref(),
+        ) {
             (Some(pid), Some(sid)) => translator_client
                 .call::<_, serde_json::Value>(
                     "prompts.respond",

@@ -43,7 +43,10 @@ pub(crate) fn display_width(text: &str) -> usize {
 
 #[must_use]
 pub(crate) fn line_display_width(line: &Line<'_>) -> usize {
-    line.spans.iter().map(|span| display_width(span.content.as_ref())).sum()
+    line.spans
+        .iter()
+        .map(|span| display_width(span.content.as_ref()))
+        .sum()
 }
 
 #[must_use]
@@ -94,10 +97,21 @@ pub(crate) fn take_prefix_by_width(text: &str, width: usize) -> (String, String)
 
 #[must_use]
 pub(crate) fn wrap_plain(text: &str, width: usize) -> Vec<String> {
-    wrap_styled_chunks(&[StyledChunk { text: text.to_owned(), style: Style::default() }], width)
-        .into_iter()
-        .map(|line| line.spans.into_iter().map(|span| span.content.into_owned()).collect())
-        .collect()
+    wrap_styled_chunks(
+        &[StyledChunk {
+            text: text.to_owned(),
+            style: Style::default(),
+        }],
+        width,
+    )
+    .into_iter()
+    .map(|line| {
+        line.spans
+            .into_iter()
+            .map(|span| span.content.into_owned())
+            .collect()
+    })
+    .collect()
 }
 
 #[must_use]
@@ -168,7 +182,8 @@ pub(crate) fn pad_line_to_width(
 ) -> Line<'static> {
     let padding = width.saturating_sub(line_display_width(&line));
     if padding > 0 {
-        line.spans.push(Span::styled(" ".repeat(padding), padding_style));
+        line.spans
+            .push(Span::styled(" ".repeat(padding), padding_style));
     }
     line
 }
@@ -303,17 +318,26 @@ mod tests {
 
     #[test]
     fn wrap_plain_preserves_explicit_newlines() {
-        assert_eq!(wrap_plain("alpha\nbeta", 16), vec!["alpha".to_owned(), "beta".to_owned()]);
+        assert_eq!(
+            wrap_plain("alpha\nbeta", 16),
+            vec!["alpha".to_owned(), "beta".to_owned()]
+        );
     }
 
     #[test]
     fn wrap_plain_handles_cjk_width() {
-        assert_eq!(wrap_plain("你好 世界", 4), vec!["你好".to_owned(), "世界".to_owned()]);
+        assert_eq!(
+            wrap_plain("你好 世界", 4),
+            vec!["你好".to_owned(), "世界".to_owned()]
+        );
     }
 
     #[test]
     fn wrap_plain_wraps_long_emoji_graphemes() {
-        assert_eq!(wrap_plain("👩‍💻👩‍💻👩‍💻", 4), vec!["👩‍💻👩‍💻".to_owned(), "👩‍💻".to_owned()]);
+        assert_eq!(
+            wrap_plain("👩‍💻👩‍💻👩‍💻", 4),
+            vec!["👩‍💻👩‍💻".to_owned(), "👩‍💻".to_owned()]
+        );
     }
 
     #[test]
@@ -325,6 +349,11 @@ mod tests {
             }],
             32,
         );
-        assert!(lines[0].spans[0].style.add_modifier.contains(Modifier::BOLD));
+        assert!(
+            lines[0].spans[0]
+                .style
+                .add_modifier
+                .contains(Modifier::BOLD)
+        );
     }
 }

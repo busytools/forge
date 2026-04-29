@@ -84,11 +84,7 @@ async fn handle_picker_key(
 
 const PAGE_STEP: usize = 10;
 
-async fn handle_conversation_key(
-    app: &mut App,
-    key: KeyEvent,
-    client: &Arc<Client>,
-) -> bool {
+async fn handle_conversation_key(app: &mut App, key: KeyEvent, client: &Arc<Client>) -> bool {
     // Inline permissions / questions intercept first when an interaction
     // is queued (focused or otherwise). The state machine handles
     // arrow-key navigation, Tab cycling, and Ctrl+y / Ctrl+n shortcuts;
@@ -163,7 +159,10 @@ async fn handle_conversation_key(
 
 fn autocomplete_active(app: &App) -> bool {
     app.mention.is_some()
-        || app.subagent.as_ref().is_some_and(|s| !s.candidates.is_empty())
+        || app
+            .subagent
+            .as_ref()
+            .is_some_and(|s| !s.candidates.is_empty())
         || app.slash.as_ref().is_some_and(|s| !s.candidates.is_empty())
 }
 
@@ -186,10 +185,7 @@ fn handle_autocomplete_key(app: &mut App, key: KeyEvent) -> bool {
         .subagent
         .as_ref()
         .is_some_and(|s| !s.candidates.is_empty());
-    let slash_active = app
-        .slash
-        .as_ref()
-        .is_some_and(|s| !s.candidates.is_empty());
+    let slash_active = app.slash.as_ref().is_some_and(|s| !s.candidates.is_empty());
     match key.code {
         KeyCode::Up => {
             if mention_active {
@@ -256,10 +252,7 @@ fn open_session(
             Ok(mut stream) => {
                 use futures_util::StreamExt;
                 while let Some(frame) = stream.next().await {
-                    if subscribe_tx
-                        .send(AppEvent::SessionFrame(frame))
-                        .is_err()
-                    {
+                    if subscribe_tx.send(AppEvent::SessionFrame(frame)).is_err() {
                         break;
                     }
                 }
@@ -313,10 +306,7 @@ fn spawn_slash_catalog_fetch(
 ) {
     tokio::spawn(async move {
         match client
-            .call::<_, serde_json::Value>(
-                "slash.list",
-                serde_json::json!({"session_id": sid}),
-            )
+            .call::<_, serde_json::Value>("slash.list", serde_json::json!({"session_id": sid}))
             .await
         {
             Ok(v) => {
@@ -332,7 +322,8 @@ fn spawn_slash_catalog_fetch(
                                     .and_then(|v| v.as_str())
                                     .unwrap_or("");
                                 Some(crate::state::model::AvailableCommand::new(
-                                    name, description,
+                                    name,
+                                    description,
                                 ))
                             })
                             .collect()
@@ -445,10 +436,7 @@ async fn spawn_new_session(
 ) {
     // Minimal default spawn — daemon defaults the binary, etc.
     let result = client
-        .call::<_, serde_json::Value>(
-            "session.spawn",
-            serde_json::json!({"options": {}}),
-        )
+        .call::<_, serde_json::Value>("session.spawn", serde_json::json!({"options": {}}))
         .await;
     match result {
         Ok(v) => {

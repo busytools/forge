@@ -54,16 +54,33 @@ pub struct FileIndexWatchHandle {
 
 pub enum FileIndexChange {
     Upsert(FileCandidate),
-    RemoveExact { rel_path: String },
-    RemovePrefix { rel_prefix: String },
-    ReplacePrefix { rel_prefix: String, entries: Vec<FileCandidate> },
+    RemoveExact {
+        rel_path: String,
+    },
+    RemovePrefix {
+        rel_prefix: String,
+    },
+    ReplacePrefix {
+        rel_prefix: String,
+        entries: Vec<FileCandidate>,
+    },
 }
 
 pub enum FileIndexEvent {
-    ScanBatch { generation: u64, entries: Vec<FileCandidate> },
-    ScanFinished { generation: u64 },
-    FsBatch { generation: u64, changes: Vec<FileIndexChange> },
-    RebuildRequested { generation: u64 },
+    ScanBatch {
+        generation: u64,
+        entries: Vec<FileCandidate>,
+    },
+    ScanFinished {
+        generation: u64,
+    },
+    FsBatch {
+        generation: u64,
+        changes: Vec<FileIndexChange>,
+    },
+    RebuildRequested {
+        generation: u64,
+    },
 }
 
 #[derive(Default)]
@@ -112,8 +129,12 @@ pub fn restart(app: &mut App) {
         respect_gitignore,
         app.file_index_event_tx.clone(),
     ));
-    app.file_index.watch =
-        Some(spawn_watch(&root, generation, respect_gitignore, app.file_index_event_tx.clone()));
+    app.file_index.watch = Some(spawn_watch(
+        &root,
+        generation,
+        respect_gitignore,
+        app.file_index_event_tx.clone(),
+    ));
 }
 
 pub fn ensure_started(app: &mut App) {
@@ -158,7 +179,10 @@ pub fn visible_candidates(
 }
 
 pub fn rank_and_truncate_candidates(candidates: &mut Vec<FileCandidate>, query_lower: &str) {
-    let tiers: Vec<Option<u8>> = candidates.iter().map(|c| match_tier(c, query_lower)).collect();
+    let tiers: Vec<Option<u8>> = candidates
+        .iter()
+        .map(|c| match_tier(c, query_lower))
+        .collect();
     let mut indices: Vec<usize> = (0..candidates.len()).collect();
     indices.sort_by(|&i, &j| {
         tiers[i]
@@ -191,7 +215,10 @@ fn match_tier(candidate: &FileCandidate, query_lower: &str) -> Option<u8> {
 
 fn apply_event(app: &mut App, event: FileIndexEvent) {
     match event {
-        FileIndexEvent::ScanBatch { generation, entries } => {
+        FileIndexEvent::ScanBatch {
+            generation,
+            entries,
+        } => {
             if generation != app.file_index.generation {
                 return;
             }
@@ -212,7 +239,10 @@ fn apply_event(app: &mut App, event: FileIndexEvent) {
             app.file_index.scan = None;
             refresh_after_mutation(app);
         }
-        FileIndexEvent::FsBatch { generation, changes } => {
+        FileIndexEvent::FsBatch {
+            generation,
+            changes,
+        } => {
             if generation != app.file_index.generation {
                 return;
             }
@@ -252,7 +282,10 @@ fn apply_change(entries: &mut BTreeMap<String, FileCandidate>, change: FileIndex
         FileIndexChange::RemovePrefix { rel_prefix } => {
             entries.retain(|path, _| !path.starts_with(&rel_prefix));
         }
-        FileIndexChange::ReplacePrefix { rel_prefix, entries: next_entries } => {
+        FileIndexChange::ReplacePrefix {
+            rel_prefix,
+            entries: next_entries,
+        } => {
             entries.retain(|path, _| !path.starts_with(&rel_prefix));
             for entry in next_entries {
                 entries.insert(entry.rel_path.clone(), entry);
@@ -277,7 +310,10 @@ fn spawn_scan(
                 return true;
             }
             event_tx
-                .send(FileIndexEvent::ScanBatch { generation, entries: std::mem::take(&mut batch) })
+                .send(FileIndexEvent::ScanBatch {
+                    generation,
+                    entries: std::mem::take(&mut batch),
+                })
                 .is_ok()
         };
         if !for_each_candidate(
@@ -290,7 +326,12 @@ fn spawn_scan(
             return;
         }
         if !batch.is_empty()
-            && event_tx.send(FileIndexEvent::ScanBatch { generation, entries: batch }).is_err()
+            && event_tx
+                .send(FileIndexEvent::ScanBatch {
+                    generation,
+                    entries: batch,
+                })
+                .is_err()
         {
             return;
         }
@@ -319,9 +360,11 @@ fn spawn_watch(
                 return;
             }
         };
-        if let Err(err) =
-            notify::Watcher::watch(&mut watcher, &root_for_thread, notify::RecursiveMode::Recursive)
-        {
+        if let Err(err) = notify::Watcher::watch(
+            &mut watcher,
+            &root_for_thread,
+            notify::RecursiveMode::Recursive,
+        ) {
             tracing::warn!(%err, "file index watcher start failed");
             return;
         }
@@ -384,7 +427,10 @@ fn normalize_watch_event(
         _ => Vec::new(),
     };
 
-    (!changes.is_empty()).then_some(FileIndexEvent::FsBatch { generation, changes })
+    (!changes.is_empty()).then_some(FileIndexEvent::FsBatch {
+        generation,
+        changes,
+    })
 }
 
 fn matches_ignore_semantics_change(root: &Path, paths: &[PathBuf]) -> bool {
@@ -398,7 +444,10 @@ fn matches_ignore_semantics_change(root: &Path, paths: &[PathBuf]) -> bool {
             || rel.ends_with("/.ignore")
     }) || paths.iter().any(|path| {
         path.file_name().is_some_and(|name| name == "exclude")
-            && path.parent().and_then(Path::file_name).is_some_and(|name| name == "info")
+            && path
+                .parent()
+                .and_then(Path::file_name)
+                .is_some_and(|name| name == "info")
             && path
                 .parent()
                 .and_then(Path::parent)
@@ -436,8 +485,12 @@ fn collect_remove_changes(root: &Path, paths: &[PathBuf]) -> Vec<FileIndexChange
         let Some(rel_path) = normalize_relative_path(root, path) else {
             continue;
         };
-        changes.push(FileIndexChange::RemoveExact { rel_path: rel_path.clone() });
-        changes.push(FileIndexChange::RemovePrefix { rel_prefix: ensure_dir_suffix(rel_path) });
+        changes.push(FileIndexChange::RemoveExact {
+            rel_path: rel_path.clone(),
+        });
+        changes.push(FileIndexChange::RemovePrefix {
+            rel_prefix: ensure_dir_suffix(rel_path),
+        });
     }
     changes
 }
@@ -471,7 +524,9 @@ fn collect_parent_rescan_changes(
     let mut changes = Vec::new();
     let mut seen_prefixes = BTreeSet::new();
     for path in paths {
-        let Some(parent) = path.parent() else { continue };
+        let Some(parent) = path.parent() else {
+            continue;
+        };
         let Some(change) = replace_subtree_change(root, parent, respect_gitignore) else {
             continue;
         };
@@ -490,9 +545,16 @@ fn replace_subtree_change(
     path: &Path,
     respect_gitignore: bool,
 ) -> Option<FileIndexChange> {
-    let rel_prefix = if path == root { String::new() } else { normalized_prefix(root, path)? };
+    let rel_prefix = if path == root {
+        String::new()
+    } else {
+        normalized_prefix(root, path)?
+    };
     let entries = scan_subtree(root, path, respect_gitignore);
-    Some(FileIndexChange::ReplacePrefix { rel_prefix, entries })
+    Some(FileIndexChange::ReplacePrefix {
+        rel_prefix,
+        entries,
+    })
 }
 
 fn for_each_candidate(
@@ -515,7 +577,9 @@ fn for_each_candidate(
             return false;
         }
         let Ok(entry) = result else { continue };
-        let Some(candidate) = candidate_from_entry(root, &entry) else { continue };
+        let Some(candidate) = candidate_from_entry(root, &entry) else {
+            continue;
+        };
         if !emit(candidate) {
             return false;
         }
@@ -531,10 +595,16 @@ fn collect_candidates(
     cancel: Option<&Arc<AtomicBool>>,
 ) -> Vec<FileCandidate> {
     let mut candidates = Vec::new();
-    let _ = for_each_candidate(root, walk_root, respect_gitignore, cancel, &mut |candidate| {
-        candidates.push(candidate);
-        true
-    });
+    let _ = for_each_candidate(
+        root,
+        walk_root,
+        respect_gitignore,
+        cancel,
+        &mut |candidate| {
+            candidates.push(candidate);
+            true
+        },
+    );
     candidates
 }
 
@@ -554,7 +624,11 @@ fn candidate_from_entry(root: &Path, entry: &ignore::DirEntry) -> Option<FileCan
     }
 
     let depth = rel_str.matches('/').count();
-    let rel_path = if is_dir { format!("{rel_str}/") } else { rel_str };
+    let rel_path = if is_dir {
+        format!("{rel_str}/")
+    } else {
+        rel_str
+    };
     let modified = entry
         .metadata()
         .ok()
@@ -563,7 +637,14 @@ fn candidate_from_entry(root: &Path, entry: &ignore::DirEntry) -> Option<FileCan
     let rel_path_lower = rel_path.to_lowercase();
     let basename_lower = candidate_basename(&rel_path).to_lowercase();
 
-    Some(FileCandidate { rel_path, rel_path_lower, basename_lower, depth, modified, is_dir })
+    Some(FileCandidate {
+        rel_path,
+        rel_path_lower,
+        basename_lower,
+        depth,
+        modified,
+        is_dir,
+    })
 }
 
 fn normalize_relative_path(root: &Path, path: &Path) -> Option<String> {
@@ -606,7 +687,9 @@ impl ScanOverrides {
 
     fn blocks(&self, rel_path: &str) -> bool {
         self.exact_paths.contains(rel_path)
-            || self.blocked_prefixes.iter().any(|prefix| rel_path.starts_with(prefix))
+            || self
+                .blocked_prefixes
+                .iter()
+                .any(|prefix| rel_path.starts_with(prefix))
     }
 }
-

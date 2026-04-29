@@ -33,8 +33,11 @@ pub fn render(frame: &mut Frame<'_>, app: &App) {
         ])
         .split(body);
 
-    let title = Paragraph::new(Line::from(Span::styled("forge", crate::ui::style::heading())))
-        .alignment(Alignment::Center);
+    let title = Paragraph::new(Line::from(Span::styled(
+        "forge",
+        crate::ui::style::heading(),
+    )))
+    .alignment(Alignment::Center);
 
     let url_line = Paragraph::new(Line::from(vec![
         Span::styled("connecting to ", crate::ui::style::dim()),

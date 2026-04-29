@@ -7,7 +7,6 @@
 //! Cache split policy lifted from claude-code-rust `app/cache_policy.rs`.
 //! Used by BlockCache to decide when to split a long content block.
 
-
 pub const DEFAULT_CACHE_SPLIT_SOFT_LIMIT_BYTES: usize = 1536;
 pub const DEFAULT_CACHE_SPLIT_HARD_LIMIT_BYTES: usize = 4096;
 pub const DEFAULT_TOOL_PREVIEW_LIMIT_BYTES: usize = 2048;
@@ -110,15 +109,23 @@ pub fn find_text_split(text: &str, policy: CacheSplitPolicy) -> Option<TextSplit
         && let Some(split_at) = pick_text_split_candidate(soft_newline, soft_sentence)
         && split_at < bytes.len()
     {
-        return Some(TextSplitDecision { split_at, kind: TextSplitKind::Generic });
+        return Some(TextSplitDecision {
+            split_at,
+            kind: TextSplitKind::Generic,
+        });
     }
 
     if bytes.len() >= policy.hard_limit_bytes
-        && let Some(split_at) =
-            hard_newline.or(post_hard_newline).or(hard_sentence).or(post_hard_sentence)
+        && let Some(split_at) = hard_newline
+            .or(post_hard_newline)
+            .or(hard_sentence)
+            .or(post_hard_sentence)
         && split_at < bytes.len()
     {
-        return Some(TextSplitDecision { split_at, kind: TextSplitKind::Generic });
+        return Some(TextSplitDecision {
+            split_at,
+            kind: TextSplitKind::Generic,
+        });
     }
 
     None

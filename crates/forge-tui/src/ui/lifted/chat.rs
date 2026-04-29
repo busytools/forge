@@ -8,8 +8,8 @@
     reason = "lifted upstream from claude-code-rust"
 )]
 
-use crate::state::cache_metrics;
 use crate::state::app::App;
+use crate::state::cache_metrics;
 use crate::state::messages::{MessageBlock, MessageRole};
 use crate::state::types::{AppStatus, SelectionKind, SelectionState};
 use crate::state::viewport::ScrollbarGeometry;
@@ -83,7 +83,10 @@ struct ScrolledRenderData {
 }
 
 fn chat_content_area(area: Rect) -> Rect {
-    Rect { width: area.width.saturating_sub(CHAT_SCROLLBAR_WIDTH), ..area }
+    Rect {
+        width: area.width.saturating_sub(CHAT_SCROLLBAR_WIDTH),
+        ..area
+    }
 }
 
 fn chat_scrollbar_area(area: Rect) -> Option<Rect> {
@@ -131,8 +134,10 @@ fn update_visual_heights(
     width: u16,
     viewport_height: usize,
 ) -> HeightUpdateStats {
-    let _t =
-        app.perf.as_ref().map(|p| p.start_with("chat::update_heights", "msgs", app.messages.len()));
+    let _t = app
+        .perf
+        .as_ref()
+        .map(|p| p.start_with("chat::update_heights", "msgs", app.messages.len()));
     app.viewport.sync_message_count(app.messages.len());
 
     let msg_count = app.messages.len();
@@ -151,7 +156,8 @@ fn update_visual_heights(
         .remeasure_anchor_window(viewport_height)
         .or_else(|| app.viewport.current_visible_window(viewport_height))
         .unwrap_or((0, 0));
-    app.viewport.ensure_remeasure_anchor(visible_start, visible_end, msg_count);
+    app.viewport
+        .ensure_remeasure_anchor(visible_start, visible_end, msg_count);
 
     while let Some(i) = app.viewport.next_priority_remeasure() {
         let is_last = i + 1 == msg_count;
@@ -333,7 +339,11 @@ fn sync_chat_layout(app: &mut App, area: Rect, base_spinner: SpinnerState) -> us
         "msgs",
         height_stats.measured_msgs,
     );
-    crate::perf::mark_with("chat::update_heights_reused_msgs", "msgs", height_stats.reused_msgs);
+    crate::perf::mark_with(
+        "chat::update_heights_reused_msgs",
+        "msgs",
+        height_stats.reused_msgs,
+    );
     crate::perf::mark_with(
         "chat::update_heights_measured_lines",
         "lines",
@@ -345,7 +355,8 @@ fn sync_chat_layout(app: &mut App, area: Rect, base_spinner: SpinnerState) -> us
         app.viewport.rebuild_prefix_sums();
     }
     if let Some((anchor_idx, anchor_offset)) = app.viewport.ready_scroll_anchor_to_restore() {
-        app.viewport.restore_scroll_anchor(anchor_idx, anchor_offset);
+        app.viewport
+            .restore_scroll_anchor(anchor_idx, anchor_offset);
     }
 
     let content_height = app.viewport.total_message_height();
@@ -405,11 +416,22 @@ fn build_scrolled_render_data(
             .perf
             .as_ref()
             .map(|p| p.start_with("chat::render_msgs", "msgs", app.messages.len()));
-        render_culled_messages(app, base, width, scroll_offset, viewport_height, &mut all_lines)
+        render_culled_messages(
+            app,
+            base,
+            width,
+            scroll_offset,
+            viewport_height,
+            &mut all_lines,
+        )
     };
     crate::perf::mark_with("chat::render_scrolled_lines", "lines", all_lines.len());
     crate::perf::mark_with("chat::render_scrolled_msgs", "msgs", stats.rendered_msgs);
-    crate::perf::mark_with("chat::render_scrolled_first_visible", "idx", stats.first_visible);
+    crate::perf::mark_with(
+        "chat::render_scrolled_first_visible",
+        "idx",
+        stats.first_visible,
+    );
     crate::perf::mark_with("chat::render_scrolled_start", "idx", stats.render_start);
 
     let paragraph = {
@@ -420,7 +442,12 @@ fn build_scrolled_render_data(
         Paragraph::new(Text::from(all_lines)).wrap(Wrap { trim: false })
     };
 
-    ScrolledRenderData { paragraph, stats, max_scroll, scroll_offset }
+    ScrolledRenderData {
+        paragraph,
+        stats,
+        max_scroll,
+        scroll_offset,
+    }
 }
 
 /// Long content: smooth scroll + viewport culling.
@@ -454,10 +481,13 @@ fn render_scrolled(
 
     app.rendered_chat_area = area;
     {
-        let _t = app
-            .perf
-            .as_ref()
-            .map(|p| p.start_with("chat::render_widget", "scroll", render_data.stats.local_scroll));
+        let _t = app.perf.as_ref().map(|p| {
+            p.start_with(
+                "chat::render_widget",
+                "scroll",
+                render_data.stats.local_scroll,
+            )
+        });
         frame.render_widget(
             render_data
                 .paragraph
@@ -479,7 +509,10 @@ pub(super) fn refresh_selection_snapshot(app: &mut App) {
 
     let base_spinner = build_base_spinner(app);
     let content_height = sync_chat_layout(app, area, base_spinner);
-    let _t = app.perf.as_ref().map(|p| p.start("chat::selection_capture"));
+    let _t = app
+        .perf
+        .as_ref()
+        .map(|p| p.start("chat::selection_capture"));
     let render_data = build_scrolled_render_data(
         app,
         base_spinner,
@@ -512,7 +545,11 @@ fn paragraph_scroll_offset(scroll_offset: usize) -> u16 {
     })
 }
 
-#[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss, clippy::cast_sign_loss)]
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
 fn clamp_scroll_to_content(
     viewport: &mut crate::state::viewport::ChatViewport,
     max_scroll: usize,
@@ -550,7 +587,11 @@ fn ease_value(current: &mut f32, target: f32, factor: f32) {
     }
 }
 
-#[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
 fn smooth_scrollbar_geometry(
     viewport: &mut crate::state::viewport::ChatViewport,
     target: ScrollbarGeometry,
@@ -564,14 +605,27 @@ fn smooth_scrollbar_geometry(
         viewport.scrollbar_thumb_top = target_top;
         viewport.scrollbar_thumb_size = target_size;
     } else {
-        ease_value(&mut viewport.scrollbar_thumb_top, target_top, SCROLLBAR_TOP_EASE);
-        ease_value(&mut viewport.scrollbar_thumb_size, target_size, SCROLLBAR_SIZE_EASE);
+        ease_value(
+            &mut viewport.scrollbar_thumb_top,
+            target_top,
+            SCROLLBAR_TOP_EASE,
+        );
+        ease_value(
+            &mut viewport.scrollbar_thumb_size,
+            target_size,
+            SCROLLBAR_SIZE_EASE,
+        );
     }
 
     let mut thumb_size = viewport.scrollbar_thumb_size.round() as usize;
-    thumb_size = thumb_size.max(SCROLLBAR_MIN_THUMB_HEIGHT).min(viewport_height);
+    thumb_size = thumb_size
+        .max(SCROLLBAR_MIN_THUMB_HEIGHT)
+        .min(viewport_height);
     let max_top = viewport_height.saturating_sub(thumb_size);
-    let thumb_top = viewport.scrollbar_thumb_top.round().clamp(0.0, max_top as f32) as usize;
+    let thumb_top = viewport
+        .scrollbar_thumb_top
+        .round()
+        .clamp(0.0, max_top as f32) as usize;
 
     ScrollbarGeometry {
         thumb_top,
@@ -613,8 +667,12 @@ fn render_scrollbar_overlay(
             cell.set_style(rail_style);
         }
     }
-    let thumb_top = geometry.thumb_top.min(area.height.saturating_sub(1) as usize);
-    let thumb_end = thumb_top.saturating_add(geometry.thumb_size).min(area.height as usize);
+    let thumb_top = geometry
+        .thumb_top
+        .min(area.height.saturating_sub(1) as usize);
+    let thumb_end = thumb_top
+        .saturating_add(geometry.thumb_size)
+        .min(area.height as usize);
     for row in thumb_top..thumb_end {
         let y = area.y.saturating_add(row as u16);
         if let Some(cell) = buf.cell_mut((rail_x, y)) {
@@ -717,7 +775,11 @@ fn render_culled_messages(
     }
 }
 
-#[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss, clippy::cast_sign_loss)]
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
 pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     let _t = app.perf.as_ref().map(|p| p.start("chat::render"));
     crate::perf::mark_with("chat::message_count", "msgs", app.messages.len());
@@ -733,7 +795,15 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
         crate::perf::mark_with("chat::path_scrolled", "active", 1);
     }
 
-    render_scrolled(frame, content_area, app, base_spinner, width, content_height, viewport_height);
+    render_scrolled(
+        frame,
+        content_area,
+        app,
+        base_spinner,
+        width,
+        content_height,
+        viewport_height,
+    );
 
     if let Some(sel) = app.selection
         && sel.kind == SelectionKind::Chat
@@ -826,18 +896,39 @@ fn remember_render_trace_state(
     true
 }
 
-#[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
 fn enforce_and_emit_cache_metrics(app: &mut App) {
     let budget_stats = app.enforce_render_cache_budget();
-    crate::perf::mark_with("cache::bytes_before", "bytes", budget_stats.total_before_bytes);
-    crate::perf::mark_with("cache::bytes_after", "bytes", budget_stats.total_after_bytes);
-    crate::perf::mark_with("cache::protected_bytes", "bytes", budget_stats.protected_bytes);
+    crate::perf::mark_with(
+        "cache::bytes_before",
+        "bytes",
+        budget_stats.total_before_bytes,
+    );
+    crate::perf::mark_with(
+        "cache::bytes_after",
+        "bytes",
+        budget_stats.total_after_bytes,
+    );
+    crate::perf::mark_with(
+        "cache::protected_bytes",
+        "bytes",
+        budget_stats.protected_bytes,
+    );
     crate::perf::mark_with("cache::evicted_bytes", "bytes", budget_stats.evicted_bytes);
-    crate::perf::mark_with("cache::evicted_blocks", "count", budget_stats.evicted_blocks);
+    crate::perf::mark_with(
+        "cache::evicted_blocks",
+        "count",
+        budget_stats.evicted_blocks,
+    );
 
     // -- Accumulate and conditionally log render cache metrics --
-    let should_log =
-        app.cache_metrics.record_render_enforcement(&budget_stats, &app.render_cache_budget);
+    let should_log = app
+        .cache_metrics
+        .record_render_enforcement(&budget_stats, &app.render_cache_budget);
 
     let render_utilization_pct = if app.render_cache_budget.max_bytes > 0 {
         (app.render_cache_budget.last_total_bytes as f32 / app.render_cache_budget.max_bytes as f32)
@@ -911,15 +1002,25 @@ struct SelectionOverlay {
 impl Widget for SelectionOverlay {
     #[allow(clippy::cast_possible_truncation)]
     fn render(self, area: Rect, buf: &mut Buffer) {
-        let (start, end) =
-            { let (a,b) = (self.selection.start, self.selection.end); if (a.row,a.col) <= (b.row,b.col) { (a,b) } else { (b,a) } };
+        let (start, end) = {
+            let (a, b) = (self.selection.start, self.selection.end);
+            if (a.row, a.col) <= (b.row, b.col) {
+                (a, b)
+            } else {
+                (b, a)
+            }
+        };
         for row in start.row..=end.row {
             let y = area.y.saturating_add(row as u16);
             if y >= area.bottom() {
                 break;
             }
             let row_start = if row == start.row { start.col } else { 0 };
-            let row_end = if row == end.row { end.col } else { area.width as usize };
+            let row_end = if row == end.row {
+                end.col
+            } else {
+                area.width as usize
+            };
             for col in row_start..row_end {
                 let x = area.x.saturating_add(col as u16);
                 if x >= area.right() {
@@ -940,7 +1041,9 @@ fn render_lines_from_paragraph(
     scroll_offset: usize,
 ) -> Vec<String> {
     let mut buf = Buffer::empty(area);
-    let widget = paragraph.clone().scroll((paragraph_scroll_offset(scroll_offset), 0));
+    let widget = paragraph
+        .clone()
+        .scroll((paragraph_scroll_offset(scroll_offset), 0));
     widget.render(area, &mut buf);
     let mut lines = Vec::with_capacity(area.height as usize);
     for y in 0..area.height {

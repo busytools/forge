@@ -96,7 +96,10 @@ impl GitContextState {
                 match event_rx.try_recv() {
                     Ok(Ok(event)) => {
                         if event.need_rescan()
-                            || self.repo.as_ref().is_some_and(|repo| repo.is_relevant_event(&event))
+                            || self
+                                .repo
+                                .as_ref()
+                                .is_some_and(|repo| repo.is_relevant_event(&event))
                         {
                             should_refresh = true;
                         }
@@ -217,7 +220,9 @@ impl ResolvedRepo {
                 common_git_dir: normalize_path(&common_git_dir),
                 head_path: normalize_path(&effective_git_dir.join("HEAD")),
                 packed_refs_path: normalize_path(&common_git_dir.join("packed-refs")),
-                commondir_path: commondir_path.exists().then(|| normalize_path(&commondir_path)),
+                commondir_path: commondir_path
+                    .exists()
+                    .then(|| normalize_path(&commondir_path)),
                 heads_dir: normalize_path(&heads_dir),
             });
         }
@@ -277,16 +282,28 @@ impl ResolvedRepo {
 
     fn watch_directories(&self) -> Vec<(PathBuf, RecursiveMode)> {
         let mut watched = BTreeMap::new();
-        insert_watch_path(&mut watched, self.worktree_root.clone(), RecursiveMode::NonRecursive);
+        insert_watch_path(
+            &mut watched,
+            self.worktree_root.clone(),
+            RecursiveMode::NonRecursive,
+        );
         insert_watch_path(
             &mut watched,
             self.effective_git_dir.clone(),
             RecursiveMode::NonRecursive,
         );
-        insert_watch_path(&mut watched, self.common_git_dir.clone(), RecursiveMode::NonRecursive);
+        insert_watch_path(
+            &mut watched,
+            self.common_git_dir.clone(),
+            RecursiveMode::NonRecursive,
+        );
 
         if self.heads_dir.exists() {
-            insert_watch_path(&mut watched, self.heads_dir.clone(), RecursiveMode::Recursive);
+            insert_watch_path(
+                &mut watched,
+                self.heads_dir.clone(),
+                RecursiveMode::Recursive,
+            );
         }
 
         watched.into_iter().collect()
@@ -311,7 +328,9 @@ fn insert_watch_path(
 
 fn parse_gitdir_target(dot_git_path: &Path) -> Option<PathBuf> {
     let content = fs::read_to_string(dot_git_path).ok()?;
-    let raw = content.lines().find_map(|line| line.trim().strip_prefix("gitdir:"))?;
+    let raw = content
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("gitdir:"))?;
     let target = raw.trim();
     (!target.is_empty()).then(|| PathBuf::from(target))
 }
@@ -323,7 +342,11 @@ fn read_optional_target(path: &Path) -> Option<PathBuf> {
 }
 
 fn resolve_relative_path(base: &Path, target: &Path) -> PathBuf {
-    if target.is_absolute() { normalize_path(target) } else { normalize_path(&base.join(target)) }
+    if target.is_absolute() {
+        normalize_path(target)
+    } else {
+        normalize_path(&base.join(target))
+    }
 }
 
 fn normalize_path(path: &Path) -> PathBuf {
@@ -343,7 +366,11 @@ fn normalize_path(path: &Path) -> PathBuf {
         }
     }
 
-    if normalized.as_os_str().is_empty() { PathBuf::from(".") } else { normalized }
+    if normalized.as_os_str().is_empty() {
+        PathBuf::from(".")
+    } else {
+        normalized
+    }
 }
 
 #[cfg(test)]
@@ -365,8 +392,14 @@ mod tests {
     fn create_standard_repo(root: &Path, branch: &str) -> PathBuf {
         let repo = root.join("repo");
         fs::create_dir_all(repo.join("src")).expect("create repo");
-        write_file(&repo.join(".git").join("HEAD"), &format!("ref: refs/heads/{branch}\n"));
-        write_file(&repo.join(".git").join("refs").join("heads").join(branch), "deadbeef\n");
+        write_file(
+            &repo.join(".git").join("HEAD"),
+            &format!("ref: refs/heads/{branch}\n"),
+        );
+        write_file(
+            &repo.join(".git").join("refs").join("heads").join(branch),
+            "deadbeef\n",
+        );
         repo
     }
 
@@ -376,9 +409,15 @@ mod tests {
         let common = root.join("admin").join("common");
         fs::create_dir_all(repo.join("src")).expect("create worktree");
         write_file(&repo.join(".git"), "gitdir: ../admin/worktrees/wt-1\n");
-        write_file(&effective.join("HEAD"), &format!("ref: refs/heads/{branch}\n"));
+        write_file(
+            &effective.join("HEAD"),
+            &format!("ref: refs/heads/{branch}\n"),
+        );
         write_file(&effective.join("commondir"), "../../common\n");
-        write_file(&common.join("refs").join("heads").join(branch), "cafebabe\n");
+        write_file(
+            &common.join("refs").join("heads").join(branch),
+            "cafebabe\n",
+        );
         repo
     }
 
@@ -406,10 +445,17 @@ mod tests {
             resolved.effective_git_dir,
             dir.path().join("admin").join("worktrees").join("wt-1")
         );
-        assert_eq!(resolved.common_git_dir, dir.path().join("admin").join("common"));
+        assert_eq!(
+            resolved.common_git_dir,
+            dir.path().join("admin").join("common")
+        );
         assert_eq!(
             resolved.heads_dir,
-            dir.path().join("admin").join("common").join("refs").join("heads")
+            dir.path()
+                .join("admin")
+                .join("common")
+                .join("refs")
+                .join("heads")
         );
     }
 
@@ -432,7 +478,10 @@ mod tests {
         write_file(&repo.join(".git").join("HEAD"), "0123456789abcdef\n");
         let resolved = ResolvedRepo::discover(&repo).expect("repo");
 
-        assert_eq!(resolved.resolve_branch_state(), BranchDisplayState::Detached);
+        assert_eq!(
+            resolved.resolve_branch_state(),
+            BranchDisplayState::Detached
+        );
     }
 
     #[test]
@@ -467,9 +516,17 @@ mod tests {
         let repo = create_standard_repo(dir.path(), "main");
         let mut state = GitContextState::default();
         assert!(state.sync_to_cwd(&repo));
-        write_file(&repo.join(".git").join("HEAD"), "ref: refs/heads/feature/footer\n");
         write_file(
-            &repo.join(".git").join("refs").join("heads").join("feature").join("footer"),
+            &repo.join(".git").join("HEAD"),
+            "ref: refs/heads/feature/footer\n",
+        );
+        write_file(
+            &repo
+                .join(".git")
+                .join("refs")
+                .join("heads")
+                .join("feature")
+                .join("footer"),
             "feedface\n",
         );
 

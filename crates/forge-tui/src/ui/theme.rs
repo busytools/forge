@@ -9,7 +9,6 @@
 //! `RUST_ORANGE` (the brand orange), `DIM`, `SEPARATOR_CHAR`, status
 //! colors, and `tool_name_label()` for per-tool icon + label glyphs.
 
-
 use ratatui::style::Color;
 
 // Accent

@@ -122,8 +122,11 @@ pub fn render_tool_call_cached_with_tools_collapsed(
     let body_depends_on_width = standard::tool_call_body_depends_on_width(tc);
 
     // Expanded body: use cache if valid, otherwise render and cache.
-    let cached_body =
-        if body_depends_on_width { tc.cache.get_for_width(width) } else { tc.cache.get() };
+    let cached_body = if body_depends_on_width {
+        tc.cache.get_for_width(width)
+    } else {
+        tc.cache.get()
+    };
     if let Some(cached_body) = cached_body {
         crate::perf::mark_with("tc::cache_hit_body", "lines", cached_body.len());
         out.extend_from_slice(cached_body);
@@ -136,8 +139,11 @@ pub fn render_tool_call_cached_with_tools_collapsed(
         } else {
             tc.cache.store(body);
         }
-        let stored =
-            if body_depends_on_width { tc.cache.get_for_width(width) } else { tc.cache.get() };
+        let stored = if body_depends_on_width {
+            tc.cache.get_for_width(width)
+        } else {
+            tc.cache.get()
+        };
         if let Some(stored) = stored {
             out.extend_from_slice(stored);
         }
@@ -186,8 +192,9 @@ pub fn measure_tool_call_height_cached_with_tools_collapsed(
     }
 
     let title = standard::render_tool_call_title(tc, render_context, width, spinner_frame);
-    let title_h =
-        Paragraph::new(Text::from(vec![title])).wrap(Wrap { trim: false }).line_count(width);
+    let title_h = Paragraph::new(Text::from(vec![title]))
+        .wrap(Wrap { trim: false })
+        .line_count(width);
     let has_body = !(tc.content.is_empty()
         && tc.pending_permission.is_none()
         && tc.pending_question.is_none());
@@ -209,8 +216,11 @@ pub fn measure_tool_call_height_cached_with_tools_collapsed(
     }
 
     let body_depends_on_width = standard::tool_call_body_depends_on_width(tc);
-    let cached_body =
-        if body_depends_on_width { tc.cache.get_for_width(width) } else { tc.cache.get() };
+    let cached_body = if body_depends_on_width {
+        tc.cache.get_for_width(width)
+    } else {
+        tc.cache.get()
+    };
     if cached_body.is_some() {
         if let Some(body_h) = tc.cache.height_at(width) {
             let total = title_h + body_h;
@@ -221,7 +231,9 @@ pub fn measure_tool_call_height_cached_with_tools_collapsed(
             let total = title_h + body_h;
             tc.record_measured_height(width, total, layout_generation);
             let cached_len = if body_depends_on_width {
-                tc.cache.get_for_width(width).map_or(1, |body| body.len() + 1)
+                tc.cache
+                    .get_for_width(width)
+                    .map_or(1, |body| body.len() + 1)
             } else {
                 tc.cache.get().map_or(1, |body| body.len() + 1)
             };
@@ -230,8 +242,9 @@ pub fn measure_tool_call_height_cached_with_tools_collapsed(
     }
 
     let body = standard::render_tool_call_body(tc, width);
-    let body_h =
-        Paragraph::new(Text::from(body.clone())).wrap(Wrap { trim: false }).line_count(width);
+    let body_h = Paragraph::new(Text::from(body.clone()))
+        .wrap(Wrap { trim: false })
+        .line_count(width);
     if body_depends_on_width {
         tc.cache.store_for_width(body, width);
     } else {
@@ -241,7 +254,9 @@ pub fn measure_tool_call_height_cached_with_tools_collapsed(
     let total = title_h + body_h;
     tc.record_measured_height(width, total, layout_generation);
     let cached_len = if body_depends_on_width {
-        tc.cache.get_for_width(width).map_or(1, |body| body.len() + 1)
+        tc.cache
+            .get_for_width(width)
+            .map_or(1, |body| body.len() + 1)
     } else {
         tc.cache.get().map_or(1, |body| body.len() + 1)
     };
@@ -253,13 +268,22 @@ pub fn measure_tool_call_height_cached_with_tools_collapsed(
 // ---------------------------------------------------------------------------
 
 fn markdown_inline_spans(input: &str) -> Vec<Span<'static>> {
-    markdown::render_markdown_safe(input, None).into_iter().next().map_or_else(Vec::new, |line| {
-        line.spans.into_iter().map(|s| Span::styled(s.content.into_owned(), s.style)).collect()
-    })
+    markdown::render_markdown_safe(input, None)
+        .into_iter()
+        .next()
+        .map_or_else(Vec::new, |line| {
+            line.spans
+                .into_iter()
+                .map(|s| Span::styled(s.content.into_owned(), s.style))
+                .collect()
+        })
 }
 
 fn spans_width(spans: &[Span<'static>]) -> usize {
-    spans.iter().map(|s| UnicodeWidthStr::width(s.content.as_ref())).sum()
+    spans
+        .iter()
+        .map(|s| UnicodeWidthStr::width(s.content.as_ref()))
+        .sum()
 }
 
 fn truncate_spans_to_width(spans: Vec<Span<'static>>, max_width: usize) -> Vec<Span<'static>> {
@@ -301,21 +325,27 @@ fn tool_output_badge_spans(tc: &ToolCallInfo) -> Vec<Span<'static>> {
     if tc.assistant_auto_backgrounded() {
         badges.push(Span::styled(
             "  [assistant backgrounded]",
-            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
         ));
     }
 
     if tc.task_is_backgrounded() {
         badges.push(Span::styled(
             "  [backgrounded]",
-            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
         ));
     }
 
     if tc.verification_nudge_needed() {
         badges.push(Span::styled(
             "  [verification needed]",
-            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
         ));
     }
 
@@ -340,4 +370,3 @@ fn tool_display_title<'a>(
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
-

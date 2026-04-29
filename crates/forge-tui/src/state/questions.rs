@@ -101,7 +101,10 @@ fn move_question_option_to_end(app: &mut App) {
 }
 
 fn question_notes_byte_index(notes: &str, cursor: usize) -> usize {
-    notes.char_indices().nth(cursor).map_or(notes.len(), |(idx, _)| idx)
+    notes
+        .char_indices()
+        .nth(cursor)
+        .map_or(notes.len(), |(idx, _)| idx)
 }
 
 fn insert_question_note_char(app: &mut App, ch: char) {
@@ -305,9 +308,11 @@ fn respond_question(app: &mut App) {
                 tool_call_id = %tool_id,
                 selected_option_count = selected_indices.len(),
             );
-            let _ = pending.response_tx.send(model::RequestQuestionResponse::new(
-                model::RequestQuestionOutcome::Cancelled,
-            ));
+            let _ = pending
+                .response_tx
+                .send(model::RequestQuestionResponse::new(
+                    model::RequestQuestionOutcome::Cancelled,
+                ));
         } else {
             tracing::debug!(
                 target: crate::logging::targets::APP_PERMISSION,
@@ -318,11 +323,14 @@ fn respond_question(app: &mut App) {
                 selected_option_count = selected_option_ids.len(),
                 has_annotation = annotation.is_some(),
             );
-            let _ = pending.response_tx.send(model::RequestQuestionResponse::new(
-                model::RequestQuestionOutcome::Answered(
-                    model::AnsweredQuestionOutcome::new(selected_option_ids).annotation(annotation),
-                ),
-            ));
+            let _ = pending
+                .response_tx
+                .send(model::RequestQuestionResponse::new(
+                    model::RequestQuestionOutcome::Answered(
+                        model::AnsweredQuestionOutcome::new(selected_option_ids)
+                            .annotation(annotation),
+                    ),
+                ));
         }
         tc.mark_tool_call_layout_dirty();
         invalidated = true;
@@ -353,7 +361,9 @@ fn respond_question_cancel(app: &mut App) {
     if let Some(pending) = tc.pending_question.take() {
         let _ = pending
             .response_tx
-            .send(model::RequestQuestionResponse::new(model::RequestQuestionOutcome::Cancelled));
+            .send(model::RequestQuestionResponse::new(
+                model::RequestQuestionOutcome::Cancelled,
+            ));
         tc.mark_tool_call_layout_dirty();
         app.sync_render_cache_slot(mi, bi);
         app.recompute_message_retained_bytes(mi);
@@ -458,4 +468,3 @@ pub(super) fn handle_question_key(
         _ => None,
     }
 }
-

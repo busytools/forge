@@ -8,7 +8,6 @@
 //! State types lifted from claude-code-rust `app/state/types.rs`.
 //! Mode info, login hints, scrollbar geometry, focus owners, etc.
 
-
 use crate::state::model;
 use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -201,7 +200,9 @@ pub struct HistoryRetentionPolicy {
 
 impl Default for HistoryRetentionPolicy {
     fn default() -> Self {
-        Self { max_bytes: DEFAULT_HISTORY_RETENTION_MAX_BYTES }
+        Self {
+            max_bytes: DEFAULT_HISTORY_RETENTION_MAX_BYTES,
+        }
     }
 }
 

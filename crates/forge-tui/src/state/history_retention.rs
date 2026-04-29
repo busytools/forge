@@ -36,8 +36,11 @@ impl crate::state::app::App {
         insert_idx: usize,
     ) -> Option<(usize, usize)> {
         anchor.map(|(anchor_idx, anchor_offset)| {
-            let next_idx =
-                if anchor_idx >= insert_idx { anchor_idx.saturating_add(1) } else { anchor_idx };
+            let next_idx = if anchor_idx >= insert_idx {
+                anchor_idx.saturating_add(1)
+            } else {
+                anchor_idx
+            };
             (next_idx, anchor_offset)
         })
     }
@@ -119,9 +122,10 @@ impl crate::state::app::App {
         match content {
             model::ToolCallContent::Content(inner) => match &inner.content {
                 model::ContentBlock::Text(text) => text.text.capacity(),
-                model::ContentBlock::Image(image) => {
-                    image.data.capacity().saturating_add(image.mime_type.capacity())
-                }
+                model::ContentBlock::Image(image) => image
+                    .data
+                    .capacity()
+                    .saturating_add(image.mime_type.capacity()),
             },
             model::ToolCallContent::Diff(diff) => diff
                 .path
@@ -134,7 +138,10 @@ impl crate::state::app::App {
                 .saturating_add(resource.mime_type.as_ref().map_or(0, String::capacity))
                 .saturating_add(resource.text.as_ref().map_or(0, String::capacity))
                 .saturating_add(
-                    resource.blob_saved_to.as_ref().map_or(0, std::path::PathBuf::capacity),
+                    resource
+                        .blob_saved_to
+                        .as_ref()
+                        .map_or(0, std::path::PathBuf::capacity),
                 ),
             model::ToolCallContent::Terminal(term) => term.terminal_id.capacity(),
         }
@@ -150,7 +157,9 @@ impl crate::state::app::App {
             .saturating_add(tc.terminal_command.as_ref().map_or(0, String::capacity))
             .saturating_add(tc.terminal_output.as_ref().map_or(0, String::capacity))
             .saturating_add(
-                tc.content.capacity().saturating_mul(size_of::<model::ToolCallContent>()),
+                tc.content
+                    .capacity()
+                    .saturating_mul(size_of::<model::ToolCallContent>()),
             );
 
         total = total.saturating_add(tc.raw_input_bytes);
@@ -158,9 +167,14 @@ impl crate::state::app::App {
             total = total.saturating_add(Self::measure_tool_content_bytes(content));
         }
         if let Some(permission) = &tc.pending_permission {
-            total = total.saturating_add(size_of::<InlinePermission>()).saturating_add(
-                permission.options.capacity().saturating_mul(size_of::<model::PermissionOption>()),
-            );
+            total = total
+                .saturating_add(size_of::<InlinePermission>())
+                .saturating_add(
+                    permission
+                        .options
+                        .capacity()
+                        .saturating_mul(size_of::<model::PermissionOption>()),
+                );
             for option in &permission.options {
                 total = total
                     .saturating_add(option.option_id.capacity())
@@ -199,8 +213,11 @@ impl crate::state::app::App {
     /// allocation sizes rather than content-length heuristics.
     #[must_use]
     pub fn measure_message_bytes(msg: &ChatMessage) -> usize {
-        let mut total = size_of::<ChatMessage>()
-            .saturating_add(msg.blocks.capacity().saturating_mul(size_of::<MessageBlock>()));
+        let mut total = size_of::<ChatMessage>().saturating_add(
+            msg.blocks
+                .capacity()
+                .saturating_mul(size_of::<MessageBlock>()),
+        );
         if msg.usage.is_some() {
             total = total.saturating_add(size_of::<MessageUsage>());
         }
@@ -220,9 +237,10 @@ impl crate::state::app::App {
                     if let Some(dedup_key) = &block.dedup_key {
                         total = total.saturating_add(size_of_val(dedup_key));
                         total = total.saturating_add(match dedup_key {
-                            NoticeDedupKey::RateLimit(incident) => {
-                                incident.rate_limit_type.as_ref().map_or(0, String::capacity)
-                            }
+                            NoticeDedupKey::RateLimit(incident) => incident
+                                .rate_limit_type
+                                .as_ref()
+                                .map_or(0, String::capacity),
                             NoticeDedupKey::ApiRetry => 0,
                         });
                     }
@@ -239,8 +257,8 @@ impl crate::state::app::App {
                         .saturating_add(welcome.session_id.capacity());
                 }
                 MessageBlock::ImageAttachment(_) => {
-                    total =
-                        total.saturating_add(size_of::<crate::state::messages::ImageAttachmentBlock>());
+                    total = total
+                        .saturating_add(size_of::<crate::state::messages::ImageAttachmentBlock>());
                 }
             }
         }
@@ -354,8 +372,10 @@ impl crate::state::app::App {
             self.rebuild_history_retention_accounting();
             return;
         };
-        self.retained_history_bytes =
-            self.retained_history_bytes.saturating_sub(*old_bytes).saturating_add(new_bytes);
+        self.retained_history_bytes = self
+            .retained_history_bytes
+            .saturating_sub(*old_bytes)
+            .saturating_add(new_bytes);
         *old_bytes = new_bytes;
     }
 
@@ -371,10 +391,14 @@ impl crate::state::app::App {
             for (block_idx, block) in msg.blocks.iter_mut().enumerate() {
                 if let MessageBlock::ToolCall(tc) = block {
                     let tc = tc.as_mut();
-                    self.tool_call_index.insert(tc.id.clone(), (msg_idx, block_idx));
+                    self.tool_call_index
+                        .insert(tc.id.clone(), (msg_idx, block_idx));
                     if let Some(terminal_id) = Self::tracked_terminal_id_for_tool(tc) {
-                        let entry =
-                            crate::state::app::TerminalToolCallRef::new(terminal_id, msg_idx, block_idx);
+                        let entry = crate::state::app::TerminalToolCallRef::new(
+                            terminal_id,
+                            msg_idx,
+                            block_idx,
+                        );
                         if terminal_tool_call_membership.insert(entry.clone()) {
                             terminal_tool_calls.push(entry);
                         }
@@ -392,7 +416,8 @@ impl crate::state::app::App {
         }
         self.terminal_tool_calls = terminal_tool_calls;
         self.terminal_tool_call_membership = terminal_tool_call_membership;
-        self.tool_call_scopes.retain(|id, _| self.tool_call_index.contains_key(id));
+        self.tool_call_scopes
+            .retain(|id, _| self.tool_call_index.contains_key(id));
         for msg in &self.messages {
             for block in &msg.blocks {
                 let MessageBlock::ToolCall(tc) = block else {
@@ -419,9 +444,14 @@ impl crate::state::app::App {
 
         let interaction_set: HashSet<&str> =
             pending_interaction_ids.iter().map(String::as_str).collect();
-        self.pending_interaction_ids.retain(|id| interaction_set.contains(id.as_str()));
+        self.pending_interaction_ids
+            .retain(|id| interaction_set.contains(id.as_str()));
         for id in pending_interaction_ids {
-            if !self.pending_interaction_ids.iter().any(|existing| existing == &id) {
+            if !self
+                .pending_interaction_ids
+                .iter()
+                .any(|existing| existing == &id)
+            {
                 self.pending_interaction_ids.push(id);
             }
         }
@@ -429,8 +459,10 @@ impl crate::state::app::App {
         if let Some(first_id) = self.pending_interaction_ids.first().cloned() {
             self.claim_focus_target(crate::state::focus::FocusTarget::Permission);
             if let Some((msg_idx, block_idx)) = self.lookup_tool_call(&first_id)
-                && let Some(MessageBlock::ToolCall(tc)) =
-                    self.messages.get_mut(msg_idx).and_then(|m| m.blocks.get_mut(block_idx))
+                && let Some(MessageBlock::ToolCall(tc)) = self
+                    .messages
+                    .get_mut(msg_idx)
+                    .and_then(|m| m.blocks.get_mut(block_idx))
             {
                 if let Some(permission) = tc.pending_permission.as_mut() {
                     permission.focused = true;
@@ -447,8 +479,11 @@ impl crate::state::app::App {
 
     #[must_use]
     fn format_mib_tenths(bytes: usize) -> String {
-        let tenths =
-            (u128::try_from(bytes).unwrap_or(u128::MAX).saturating_mul(10) + 524_288) / 1_048_576;
+        let tenths = (u128::try_from(bytes)
+            .unwrap_or(u128::MAX)
+            .saturating_mul(10)
+            + 524_288)
+            / 1_048_576;
         format!("{}.{}", tenths / 10, tenths % 10)
     }
 
@@ -468,7 +503,10 @@ impl crate::state::app::App {
         preserved_anchor: Option<(usize, usize)>,
     ) -> Option<(usize, usize)> {
         self.ensure_history_retention_accounting();
-        let marker_idx = self.messages.iter().position(Self::is_history_hidden_marker_message);
+        let marker_idx = self
+            .messages
+            .iter()
+            .position(Self::is_history_hidden_marker_message);
         if self.history_retention_stats.total_dropped_messages == 0 {
             if let Some(idx) = marker_idx {
                 self.remove_message_tracked(idx);
@@ -498,7 +536,9 @@ impl crate::state::app::App {
         }
 
         let insert_idx = usize::from(
-            self.messages.first().is_some_and(|msg| matches!(msg.role, MessageRole::Welcome)),
+            self.messages
+                .first()
+                .is_some_and(|msg| matches!(msg.role, MessageRole::Welcome)),
         );
         self.insert_message_tracked(
             insert_idx,
@@ -530,7 +570,11 @@ impl crate::state::app::App {
                 {
                     continue;
                 }
-                let bytes = self.message_retained_bytes.get(msg_idx).copied().unwrap_or(0);
+                let bytes = self
+                    .message_retained_bytes
+                    .get(msg_idx)
+                    .copied()
+                    .unwrap_or(0);
                 if bytes == 0 {
                     continue;
                 }
@@ -573,8 +617,10 @@ impl crate::state::app::App {
             .history_retention_stats
             .total_dropped_messages
             .saturating_add(stats.dropped_messages);
-        self.history_retention_stats.total_dropped_bytes =
-            self.history_retention_stats.total_dropped_bytes.saturating_add(stats.dropped_bytes);
+        self.history_retention_stats.total_dropped_bytes = self
+            .history_retention_stats
+            .total_dropped_bytes
+            .saturating_add(stats.dropped_bytes);
 
         preserved_anchor = self.upsert_history_hidden_marker(preserved_anchor);
         self.viewport.sync_message_count(self.messages.len());
@@ -598,7 +644,11 @@ impl crate::state::app::App {
         crate::perf::mark_with("history::bytes_after", "bytes", stats.total_after_bytes);
         crate::perf::mark_with("history::dropped_messages", "count", stats.dropped_messages);
         crate::perf::mark_with("history::dropped_bytes", "bytes", stats.dropped_bytes);
-        crate::perf::mark_with("history::total_dropped", "count", stats.total_dropped_messages);
+        crate::perf::mark_with(
+            "history::total_dropped",
+            "count",
+            stats.total_dropped_messages,
+        );
 
         stats
     }
@@ -609,8 +659,10 @@ impl crate::state::app::App {
         active_turn_owner: Option<usize>,
         preserved_anchor: Option<(usize, usize)>,
     ) -> Option<(usize, usize)> {
-        let drop_set: HashSet<usize> =
-            drop_candidates.iter().map(|candidate| candidate.msg_idx).collect();
+        let drop_set: HashSet<usize> = drop_candidates
+            .iter()
+            .map(|candidate| candidate.msg_idx)
+            .collect();
 
         let mut retained = Vec::with_capacity(self.messages.len().saturating_sub(drop_set.len()));
         let mut retained_bytes = Vec::with_capacity(retained.capacity());

@@ -594,7 +594,10 @@ pub fn count_text_chars(text: &str) -> usize {
 }
 
 fn paste_placeholder_label(idx: usize, char_count: usize) -> String {
-    format!("{PASTE_PREFIX}{} - {char_count} chars{PASTE_SUFFIX}", idx + 1)
+    format!(
+        "{PASTE_PREFIX}{} - {char_count} chars{PASTE_SUFFIX}",
+        idx + 1
+    )
 }
 
 fn find_next_placeholder_with_suffix(
@@ -643,7 +646,9 @@ fn next_free_paste_block_index(lines: &[String], paste_blocks: &[String]) -> usi
             cursor = end;
         }
     }
-    used.iter().position(|in_use| !*in_use).unwrap_or(paste_blocks.len())
+    used.iter()
+        .position(|in_use| !*in_use)
+        .unwrap_or(paste_blocks.len())
 }
 
 fn find_placeholder_ending_at_col(line: &str, cursor_col: usize) -> Option<(usize, usize, usize)> {
@@ -723,7 +728,11 @@ mod tests {
         ];
 
         for (text, char_index, expected) in cases {
-            assert_eq!(char_to_byte_index(text, char_index), expected, "{text:?} at {char_index}");
+            assert_eq!(
+                char_to_byte_index(text, char_index),
+                expected,
+                "{text:?} at {char_index}"
+            );
         }
     }
 
@@ -1589,7 +1598,10 @@ mod tests {
     fn parse_placeholder_before_cursor_detects_inline_placeholder() {
         let line = "a[Pasted Text 2 - 42 chars]tail";
         let cursor_col = "a[Pasted Text 2 - 42 chars]".chars().count();
-        assert_eq!(parse_paste_placeholder_before_cursor(line, cursor_col), Some(1));
+        assert_eq!(
+            parse_paste_placeholder_before_cursor(line, cursor_col),
+            Some(1)
+        );
     }
 
     #[test]
@@ -1610,7 +1622,10 @@ mod tests {
         let _ = input.set_cursor_col("before".chars().count());
         input.insert_paste_block(&"x".repeat(1001));
 
-        assert_eq!(input.lines(), vec!["before[Pasted Text 1 - 1001 chars]after"]);
+        assert_eq!(
+            input.lines(),
+            vec!["before[Pasted Text 1 - 1001 chars]after"]
+        );
         assert_eq!(input.text(), format!("before{}after", "x".repeat(1001)));
     }
 

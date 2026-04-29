@@ -54,9 +54,15 @@ pub fn render(frame: &mut Frame<'_>, app: &App) {
             Style::default().fg(theme::STATUS_ERROR),
         )),
         Line::from(""),
-        Line::from(Span::styled(retry_text(app.connection), crate::ui::style::dim())),
+        Line::from(Span::styled(
+            retry_text(app.connection),
+            crate::ui::style::dim(),
+        )),
         Line::from(""),
-        Line::from(Span::styled("[r] retry now    [q] quit", crate::ui::style::dim())),
+        Line::from(Span::styled(
+            "[r] retry now    [q] quit",
+            crate::ui::style::dim(),
+        )),
     ];
 
     let para = Paragraph::new(lines).alignment(Alignment::Center);

@@ -10,7 +10,6 @@
 //! `app/state/messages.rs`. Streaming-aware markdown blocks, notice
 //! blocks, tool-call blocks, image attachments, welcome banners.
 
-
 use super::block_cache::BlockCache;
 use super::tool_call_info::ToolCallInfo;
 use super::types::MessageUsage;
@@ -32,7 +31,12 @@ pub struct ChatMessage {
 impl ChatMessage {
     #[must_use]
     pub fn new(role: MessageRole, blocks: Vec<MessageBlock>, usage: Option<MessageUsage>) -> Self {
-        Self { role, blocks, usage, render_cache: MessageRenderCache::default() }
+        Self {
+            role,
+            blocks,
+            usage,
+            render_cache: MessageRenderCache::default(),
+        }
     }
 
     #[must_use]
@@ -119,12 +123,16 @@ pub struct MessageRenderCache {
 #[derive(Clone)]
 pub enum CachedMessageSegment {
     Blank,
-    Lines { lines: Vec<Line<'static>>, height: usize },
+    Lines {
+        lines: Vec<Line<'static>>,
+        height: usize,
+    },
 }
 
 impl MessageRenderCache {
     fn touch(&self) {
-        self.last_access_tick.set(super::block_cache::next_cache_access_tick());
+        self.last_access_tick
+            .set(super::block_cache::next_cache_access_tick());
     }
 
     #[must_use]
@@ -167,7 +175,10 @@ impl MessageRenderCache {
         height: usize,
         wrapped_lines: usize,
     ) {
-        let cached_bytes = segments.iter().map(CachedMessageSegment::cached_bytes).sum();
+        let cached_bytes = segments
+            .iter()
+            .map(CachedMessageSegment::cached_bytes)
+            .sum();
         self.key = Some(key);
         self.segments = segments;
         self.cached_bytes = cached_bytes;
@@ -225,13 +236,18 @@ pub fn hash_welcome_block_content(block: &WelcomeBlock) -> u64 {
 
 fn random_welcome_tip_seed() -> u64 {
     let mut hasher = DefaultHasher::new();
-    SystemTime::now().duration_since(UNIX_EPOCH).ok().hash(&mut hasher);
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .hash(&mut hasher);
     hasher.finish()
 }
 
 fn line_utf8_bytes(line: &Line<'static>) -> usize {
-    let span_bytes =
-        line.spans.iter().fold(0usize, |acc, span| acc.saturating_add(span.content.len()));
+    let span_bytes = line
+        .spans
+        .iter()
+        .fold(0usize, |acc, span| acc.saturating_add(span.content.len()));
     span_bytes.saturating_add(1)
 }
 
@@ -257,7 +273,12 @@ struct MarkdownChunk {
 
 impl MarkdownChunk {
     fn new(range: Range<usize>) -> Self {
-        Self { range, rendered: None, render_key: None, dirty: true }
+        Self {
+            range,
+            rendered: None,
+            render_key: None,
+            dirty: true,
+        }
     }
 }
 
@@ -490,7 +511,11 @@ pub struct NoticeBlock {
 impl NoticeBlock {
     #[must_use]
     pub fn new(severity: SystemSeverity, text: String) -> Self {
-        Self { severity, text: TextBlock::new(text), dedup_key: None }
+        Self {
+            severity,
+            text: TextBlock::new(text),
+            dedup_key: None,
+        }
     }
 
     #[must_use]
@@ -535,7 +560,10 @@ pub struct ImageAttachmentBlock {
 impl ImageAttachmentBlock {
     #[must_use]
     pub fn new(count: usize) -> Self {
-        Self { count, cache: BlockCache::default() }
+        Self {
+            count,
+            cache: BlockCache::default(),
+        }
     }
 }
 

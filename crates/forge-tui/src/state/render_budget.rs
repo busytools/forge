@@ -9,8 +9,8 @@
 )]
 
 use crate::state::messages::MessageBlock;
-use crate::state::types::{AppStatus, CacheBudgetEnforceStats};
 use crate::state::model;
+use crate::state::types::{AppStatus, CacheBudgetEnforceStats};
 use std::cmp::Reverse;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -36,7 +36,9 @@ impl crate::state::app::App {
 
     #[must_use]
     fn is_message_render_cache_slot(&self, msg_idx: usize, slot_idx: usize) -> bool {
-        self.messages.get(msg_idx).is_some_and(|msg| slot_idx == msg.blocks.len())
+        self.messages
+            .get(msg_idx)
+            .is_some_and(|msg| slot_idx == msg.blocks.len())
     }
 
     #[must_use]
@@ -61,7 +63,8 @@ impl crate::state::app::App {
         if !self.is_streaming_tail_protected() {
             return None;
         }
-        self.active_turn_assistant_idx().or_else(|| self.messages.len().checked_sub(1))
+        self.active_turn_assistant_idx()
+            .or_else(|| self.messages.len().checked_sub(1))
     }
 
     #[must_use]
@@ -78,7 +81,10 @@ impl crate::state::app::App {
     #[must_use]
     fn is_render_cache_block_protected(&self, msg_idx: usize, block_idx: usize) -> bool {
         let tail_protected = self.protected_streaming_message_idx() == Some(msg_idx);
-        let Some(block) = self.messages.get(msg_idx).and_then(|msg| msg.blocks.get(block_idx))
+        let Some(block) = self
+            .messages
+            .get(msg_idx)
+            .and_then(|msg| msg.blocks.get(block_idx))
         else {
             return false;
         };
@@ -147,8 +153,9 @@ impl crate::state::app::App {
                 self.render_cache_total_bytes =
                     self.render_cache_total_bytes.saturating_add(cached_bytes);
                 if protected {
-                    self.render_cache_protected_bytes =
-                        self.render_cache_protected_bytes.saturating_add(cached_bytes);
+                    self.render_cache_protected_bytes = self
+                        .render_cache_protected_bytes
+                        .saturating_add(cached_bytes);
                 } else if let Some(key) = Self::render_cache_slot_key(msg_idx, block_idx, &slot) {
                     self.render_cache_evictable.insert(key);
                 }
@@ -159,11 +166,13 @@ impl crate::state::app::App {
                 last_access_tick: msg.render_cache.last_access_tick(),
                 protected: self.is_render_cache_message_protected(msg_idx),
             };
-            self.render_cache_total_bytes =
-                self.render_cache_total_bytes.saturating_add(message_slot.cached_bytes);
+            self.render_cache_total_bytes = self
+                .render_cache_total_bytes
+                .saturating_add(message_slot.cached_bytes);
             if message_slot.protected {
-                self.render_cache_protected_bytes =
-                    self.render_cache_protected_bytes.saturating_add(message_slot.cached_bytes);
+                self.render_cache_protected_bytes = self
+                    .render_cache_protected_bytes
+                    .saturating_add(message_slot.cached_bytes);
             } else if let Some(key) =
                 Self::render_cache_slot_key(msg_idx, msg.blocks.len(), &message_slot)
             {
@@ -183,8 +192,11 @@ impl crate::state::app::App {
 
     pub(crate) fn sync_render_cache_slot(&mut self, msg_idx: usize, block_idx: usize) {
         self.ensure_render_cache_accounting();
-        let Some(old_slot) =
-            self.render_cache_slots.get(msg_idx).and_then(|slots| slots.get(block_idx)).copied()
+        let Some(old_slot) = self
+            .render_cache_slots
+            .get(msg_idx)
+            .and_then(|slots| slots.get(block_idx))
+            .copied()
         else {
             self.rebuild_render_cache_accounting();
             return;
@@ -193,11 +205,13 @@ impl crate::state::app::App {
         if let Some(old_key) = Self::render_cache_slot_key(msg_idx, block_idx, &old_slot) {
             self.render_cache_evictable.remove(&old_key);
         }
-        self.render_cache_total_bytes =
-            self.render_cache_total_bytes.saturating_sub(old_slot.cached_bytes);
+        self.render_cache_total_bytes = self
+            .render_cache_total_bytes
+            .saturating_sub(old_slot.cached_bytes);
         if old_slot.protected {
-            self.render_cache_protected_bytes =
-                self.render_cache_protected_bytes.saturating_sub(old_slot.cached_bytes);
+            self.render_cache_protected_bytes = self
+                .render_cache_protected_bytes
+                .saturating_sub(old_slot.cached_bytes);
         }
 
         let new_slot = if self.is_message_render_cache_slot(msg_idx, block_idx) {
@@ -211,7 +225,10 @@ impl crate::state::app::App {
                 protected: self.is_render_cache_message_protected(msg_idx),
             }
         } else {
-            let Some(block) = self.messages.get(msg_idx).and_then(|msg| msg.blocks.get(block_idx))
+            let Some(block) = self
+                .messages
+                .get(msg_idx)
+                .and_then(|msg| msg.blocks.get(block_idx))
             else {
                 self.rebuild_render_cache_accounting();
                 return;
@@ -235,11 +252,13 @@ impl crate::state::app::App {
             return;
         }
 
-        self.render_cache_total_bytes =
-            self.render_cache_total_bytes.saturating_add(new_slot.cached_bytes);
+        self.render_cache_total_bytes = self
+            .render_cache_total_bytes
+            .saturating_add(new_slot.cached_bytes);
         if new_slot.protected {
-            self.render_cache_protected_bytes =
-                self.render_cache_protected_bytes.saturating_add(new_slot.cached_bytes);
+            self.render_cache_protected_bytes = self
+                .render_cache_protected_bytes
+                .saturating_add(new_slot.cached_bytes);
         } else if let Some(new_key) = Self::render_cache_slot_key(msg_idx, block_idx, &new_slot) {
             self.render_cache_evictable.insert(new_key);
         }
@@ -253,7 +272,12 @@ impl crate::state::app::App {
         };
         let block_count = msg.blocks.len();
         let slot_count = Self::render_cache_slot_count_for_message(msg);
-        if self.render_cache_slots.get(msg_idx).map_or(usize::MAX, Vec::len) != slot_count {
+        if self
+            .render_cache_slots
+            .get(msg_idx)
+            .map_or(usize::MAX, Vec::len)
+            != slot_count
+        {
             self.rebuild_render_cache_accounting();
             return;
         }
@@ -335,7 +359,9 @@ impl crate::state::app::App {
         stats.protected_bytes = self.render_cache_protected_bytes;
 
         // Budget comparison uses only non-protected (evictable) bytes.
-        let budgeted_bytes = stats.total_before_bytes.saturating_sub(stats.protected_bytes);
+        let budgeted_bytes = stats
+            .total_before_bytes
+            .saturating_sub(stats.protected_bytes);
 
         if budgeted_bytes <= self.render_cache_budget.max_bytes {
             self.render_cache_budget.last_total_bytes = budgeted_bytes;
@@ -365,8 +391,10 @@ impl crate::state::app::App {
 
         self.render_cache_budget.last_total_bytes = current_budgeted;
         self.render_cache_budget.last_evicted_bytes = stats.evicted_bytes;
-        self.render_cache_budget.total_evictions =
-            self.render_cache_budget.total_evictions.saturating_add(stats.evicted_blocks);
+        self.render_cache_budget.total_evictions = self
+            .render_cache_budget
+            .total_evictions
+            .saturating_add(stats.evicted_blocks);
 
         stats
     }

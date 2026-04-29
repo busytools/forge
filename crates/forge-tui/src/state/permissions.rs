@@ -33,7 +33,10 @@ fn focused_option_index_where<F>(app: &App, mut predicate: F) -> Option<usize>
 where
     F: FnMut(&model::PermissionOption) -> bool,
 {
-    focused_permission(app)?.options.iter().position(&mut predicate)
+    focused_permission(app)?
+        .options
+        .iter()
+        .position(&mut predicate)
 }
 
 fn normalized_option_tokens(option: &model::PermissionOption) -> String {
@@ -89,7 +92,10 @@ fn option_is_reject_fallback(option: &model::PermissionOption) -> bool {
 pub(super) fn focused_permission_is_plan_approval(app: &App) -> bool {
     focused_permission(app).is_some_and(|pending| {
         pending.options.iter().any(|opt| {
-            matches!(opt.kind, PermissionOptionKind::PlanApprove | PermissionOptionKind::PlanReject)
+            matches!(
+                opt.kind,
+                PermissionOptionKind::PlanApprove | PermissionOptionKind::PlanReject
+            )
         })
     })
 }
@@ -281,11 +287,13 @@ fn respond_permission(app: &mut App, override_index: Option<usize>) {
                 option_name = %opt.name,
                 option_kind = ?opt.kind,
             );
-            let _ = pending.response_tx.send(model::RequestPermissionResponse::new(
-                model::RequestPermissionOutcome::Selected(model::SelectedPermissionOutcome::new(
-                    opt.option_id.clone(),
-                )),
-            ));
+            let _ = pending
+                .response_tx
+                .send(model::RequestPermissionResponse::new(
+                    model::RequestPermissionOutcome::Selected(
+                        model::SelectedPermissionOutcome::new(opt.option_id.clone()),
+                    ),
+                ));
         } else {
             tracing::warn!(
                 target: crate::logging::targets::APP_PERMISSION,
@@ -308,4 +316,3 @@ fn respond_permission(app: &mut App, override_index: Option<usize>) {
 
     focus_next_inline_interaction(app);
 }
-

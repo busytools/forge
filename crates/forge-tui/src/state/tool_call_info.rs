@@ -9,7 +9,6 @@
 //! UI-side tool call container with status, content, pending
 //! permission/question slots, and a render cache.
 
-
 use super::block_cache::BlockCache;
 use crate::state::model;
 
@@ -149,21 +148,36 @@ impl ToolCallInfo {
 
     #[must_use]
     pub fn task_is_backgrounded(&self) -> bool {
-        self.task_metadata.as_ref().and_then(|metadata| metadata.is_backgrounded).unwrap_or(false)
+        self.task_metadata
+            .as_ref()
+            .and_then(|metadata| metadata.is_backgrounded)
+            .unwrap_or(false)
     }
 
     #[must_use]
     pub fn hidden_unless_focused_interaction(&self) -> bool {
         self.hidden
-            && !self.pending_permission.as_ref().is_some_and(|permission| permission.focused)
-            && !self.pending_question.as_ref().is_some_and(|question| question.focused)
+            && !self
+                .pending_permission
+                .as_ref()
+                .is_some_and(|permission| permission.focused)
+            && !self
+                .pending_question
+                .as_ref()
+                .is_some_and(|question| question.focused)
     }
 
     #[must_use]
     pub fn is_hidden_focused_interaction(&self) -> bool {
         self.hidden
-            && (self.pending_permission.as_ref().is_some_and(|permission| permission.focused)
-                || self.pending_question.as_ref().is_some_and(|question| question.focused))
+            && (self
+                .pending_permission
+                .as_ref()
+                .is_some_and(|permission| permission.focused)
+                || self
+                    .pending_question
+                    .as_ref()
+                    .is_some_and(|question| question.focused))
     }
 
     #[must_use]
@@ -207,7 +221,9 @@ impl ToolCallInfo {
         if self.raw_input == raw_input {
             return false;
         }
-        self.raw_input_bytes = raw_input.as_ref().map_or(0, Self::estimate_json_value_bytes);
+        self.raw_input_bytes = raw_input
+            .as_ref()
+            .map_or(0, Self::estimate_json_value_bytes);
         self.raw_input = raw_input;
         true
     }

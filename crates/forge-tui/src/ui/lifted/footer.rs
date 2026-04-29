@@ -125,8 +125,10 @@ fn split_footer_columns_hint(
     };
 
     let left_min_width = left_min_width.min(area.width);
-    let available_right =
-        area.width.saturating_sub(left_min_width).saturating_sub(FOOTER_COLUMN_GAP);
+    let available_right = area
+        .width
+        .saturating_sub(left_min_width)
+        .saturating_sub(FOOTER_COLUMN_GAP);
     if available_right == 0 {
         return (area, zero_width_rect(area));
     }
@@ -137,10 +139,19 @@ fn split_footer_columns_hint(
         return (area, zero_width_rect(area));
     }
 
-    let left_width = area.width.saturating_sub(right_width).saturating_sub(FOOTER_COLUMN_GAP);
-    let left = Rect { width: left_width, ..area };
+    let left_width = area
+        .width
+        .saturating_sub(right_width)
+        .saturating_sub(FOOTER_COLUMN_GAP);
+    let left = Rect {
+        width: left_width,
+        ..area
+    };
     let right = Rect {
-        x: left.x.saturating_add(left_width).saturating_add(FOOTER_COLUMN_GAP),
+        x: left
+            .x
+            .saturating_add(left_width)
+            .saturating_add(FOOTER_COLUMN_GAP),
         width: right_width,
         ..area
     };
@@ -148,7 +159,11 @@ fn split_footer_columns_hint(
 }
 
 fn zero_width_rect(area: Rect) -> Rect {
-    Rect { x: area.x.saturating_add(area.width), width: 0, ..area }
+    Rect {
+        x: area.x.saturating_add(area.width),
+        width: 0,
+        ..area
+    }
 }
 
 fn build_primary_line(app: &App) -> Line<'static> {
@@ -251,7 +266,10 @@ fn build_context_line(app: &App, max_width: usize) -> Line<'static> {
 
     if let Some(branch_value) = branch_value {
         spans.push(Span::styled(" (", Style::default().fg(theme::DIM)));
-        spans.push(Span::styled(branch_value, Style::default().fg(FOOTER_CONTEXT_VALUE)));
+        spans.push(Span::styled(
+            branch_value,
+            Style::default().fg(FOOTER_CONTEXT_VALUE),
+        ));
         spans.push(Span::styled(")", Style::default().fg(theme::DIM)));
     }
 
@@ -272,8 +290,9 @@ fn context_values(app: &App, max_width: usize) -> Option<(String, Option<String>
             let branch_width = UnicodeWidthStr::width(branch)
                 .min(available_values.saturating_sub(MIN_CONTEXT_LOCATION_WIDTH));
             let branch_value = fit_footer_right_text(branch, branch_width);
-            let branch_display_width =
-                branch_value.as_ref().map_or(0, |value| UnicodeWidthStr::width(value.as_str()));
+            let branch_display_width = branch_value
+                .as_ref()
+                .map_or(0, |value| UnicodeWidthStr::width(value.as_str()));
             let location_width = available_values.saturating_sub(branch_display_width);
             if let Some(location_value) = fit_location_value(&app.cwd, location_width) {
                 return Some((location_value, branch_value));
@@ -379,7 +398,10 @@ fn mcp_needs_auth_count(app: &App) -> usize {
         .servers
         .iter()
         .filter(|server| {
-            matches!(server.status, crate::state::agent_types::McpServerConnectionStatus::NeedsAuth)
+            matches!(
+                server.status,
+                crate::state::agent_types::McpServerConnectionStatus::NeedsAuth
+            )
         })
         .count()
 }
@@ -399,4 +421,3 @@ fn mode_color(mode_id: &str) -> Color {
         _ => Color::Magenta,
     }
 }
-

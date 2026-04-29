@@ -39,11 +39,16 @@ pub(super) fn render_execute_content(tc: &ToolCallInfo) -> Vec<Line<'static>> {
     if let Some(ref cmd) = tc.terminal_command {
         let mut spans = vec![Span::styled(
             "$ ",
-            Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(theme::RUST_ORANGE)
+                .add_modifier(Modifier::BOLD),
         )];
         let mut command_spans = highlight::highlight_shell_command(cmd);
         if command_spans.is_empty() {
-            command_spans.push(Span::styled(cmd.clone(), Style::default().fg(Color::Yellow)));
+            command_spans.push(Span::styled(
+                cmd.clone(),
+                Style::default().fg(Color::Yellow),
+            ));
         }
         spans.extend(command_spans);
         lines.push(Line::from(spans));
@@ -54,8 +59,10 @@ pub(super) fn render_execute_content(tc: &ToolCallInfo) -> Vec<Line<'static>> {
 
     if let Some(ref output) = tc.terminal_output {
         let stripped_output = highlight::strip_ansi(output);
-        if matches!(tc.status, model::ToolCallStatus::Failed | model::ToolCallStatus::Killed)
-            && let Some(first_line) = failed_execute_first_line(&stripped_output)
+        if matches!(
+            tc.status,
+            model::ToolCallStatus::Failed | model::ToolCallStatus::Killed
+        ) && let Some(first_line) = failed_execute_first_line(&stripped_output)
         {
             body_lines.push(Line::from(Span::styled(
                 first_line,
@@ -77,7 +84,10 @@ pub(super) fn render_execute_content(tc: &ToolCallInfo) -> Vec<Line<'static>> {
             }
         }
     } else if matches!(tc.status, model::ToolCallStatus::InProgress) {
-        body_lines.push(Line::from(Span::styled("running...", Style::default().fg(theme::DIM))));
+        body_lines.push(Line::from(Span::styled(
+            "running...",
+            Style::default().fg(theme::DIM),
+        )));
     }
 
     lines.extend(body_lines);
@@ -113,10 +123,15 @@ pub(super) fn render_execute_with_borders(
     let line_budget = width as usize;
     let left_prefix = vec![
         Span::styled("  \u{256D}\u{2500}", border),
-        Span::styled(format!(" {status_icon_str} "), Style::default().fg(icon_color)),
+        Span::styled(
+            format!(" {status_icon_str} "),
+            Style::default().fg(icon_color),
+        ),
         Span::styled(
             format!("{tool_label} "),
-            Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
         ),
     ];
     let badge_spans = tool_output_badge_spans(tc);
@@ -147,7 +162,10 @@ pub(super) fn render_execute_with_borders(
 
     // Bottom border
     let bottom_fill: String = "\u{2500}".repeat(inner_w.saturating_sub(2));
-    out.push(Line::from(Span::styled(format!("  \u{2570}{bottom_fill}\u{256F}"), border)));
+    out.push(Line::from(Span::styled(
+        format!("  \u{2570}{bottom_fill}\u{256F}"),
+        border,
+    )));
 
     out
 }

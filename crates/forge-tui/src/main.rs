@@ -73,8 +73,7 @@ impl Drop for TerminalGuard {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt()
         .with_env_filter(
-            EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| EnvFilter::new("forge_tui=info")),
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("forge_tui=info")),
         )
         .with_writer(std::io::stderr)
         .init();
@@ -116,10 +115,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn register_reverse_rpc_handlers(
-    client: &Arc<Client>,
-    event_tx: &mpsc::UnboundedSender<AppEvent>,
-) {
+fn register_reverse_rpc_handlers(client: &Arc<Client>, event_tx: &mpsc::UnboundedSender<AppEvent>) {
     // permission.request — deferred: app loop answers via send_response
     // when the user picks Allow/Deny.
     {

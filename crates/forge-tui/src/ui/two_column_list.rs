@@ -79,11 +79,17 @@ pub(crate) fn render_lines(
         }
 
         let left_lines = wrap_styled_chunks(
-            &[StyledChunk { text: item.left.clone(), style: item.left_style }],
+            &[StyledChunk {
+                text: item.left.clone(),
+                style: item.left_style,
+            }],
             left_width,
         );
         let right_lines = wrap_styled_chunks(
-            &[StyledChunk { text: item.right.clone(), style: item.right_style }],
+            &[StyledChunk {
+                text: item.right.clone(),
+                style: item.right_style,
+            }],
             right_width,
         );
         lines.extend(join_column_lines(left_lines, right_lines, left_width, gap));
@@ -112,12 +118,17 @@ pub(crate) fn join_column_lines(
 
     let mut lines = Vec::with_capacity(row_height);
     for idx in 0..row_height {
-        let mut line =
-            pad_line_to_width(std::mem::take(&mut left_lines[idx]), left_width, Style::default());
+        let mut line = pad_line_to_width(
+            std::mem::take(&mut left_lines[idx]),
+            left_width,
+            Style::default(),
+        );
         if gap > 0 {
-            line.spans.push(Span::styled(" ".repeat(gap), Style::default()));
+            line.spans
+                .push(Span::styled(" ".repeat(gap), Style::default()));
         }
-        line.spans.extend(std::mem::take(&mut right_lines[idx].spans));
+        line.spans
+            .extend(std::mem::take(&mut right_lines[idx].spans));
         lines.push(line);
     }
 

@@ -41,7 +41,9 @@ pub fn apply_session_event(app: &mut App, message: &serde_json::Value) -> bool {
         _ => return false,
     };
 
-    let Some(content) = inner.get("content") else { return false };
+    let Some(content) = inner.get("content") else {
+        return false;
+    };
 
     let mut blocks: Vec<MessageBlock> = Vec::new();
     let mut applied_any_tool_result = false;
@@ -139,8 +141,14 @@ pub fn json_to_chat_message(message: &serde_json::Value) -> Option<ChatMessage> 
 }
 
 fn parse_tool_use_block(item: &serde_json::Value) -> Option<MessageBlock> {
-    let id = item.get("id").and_then(serde_json::Value::as_str)?.to_owned();
-    let name = item.get("name").and_then(serde_json::Value::as_str)?.to_owned();
+    let id = item
+        .get("id")
+        .and_then(serde_json::Value::as_str)?
+        .to_owned();
+    let name = item
+        .get("name")
+        .and_then(serde_json::Value::as_str)?
+        .to_owned();
     let input = item.get("input").cloned();
     let info = ToolCallInfo::from_tool_use(id, name, input);
     Some(MessageBlock::ToolCall(Box::new(info)))
@@ -153,7 +161,9 @@ fn apply_tool_result(app: &mut App, item: &serde_json::Value) -> bool {
     let Some((msg_idx, block_idx)) = app.lookup_tool_call(tool_use_id) else {
         return false;
     };
-    let Some(message) = app.messages.get_mut(msg_idx) else { return false };
+    let Some(message) = app.messages.get_mut(msg_idx) else {
+        return false;
+    };
     let Some(MessageBlock::ToolCall(tool_call)) = message.blocks.get_mut(block_idx) else {
         return false;
     };
@@ -239,7 +249,9 @@ pub fn json_to_mcp_servers(value: &serde_json::Value) -> Vec<McpServerStatus> {
     let Some(servers) = value.get("mcp_servers").or_else(|| value.get("mcpServers")) else {
         return Vec::new();
     };
-    let Some(arr) = servers.as_array() else { return Vec::new() };
+    let Some(arr) = servers.as_array() else {
+        return Vec::new();
+    };
     arr.iter().filter_map(json_to_mcp_server).collect()
 }
 
@@ -279,7 +291,9 @@ fn json_to_mcp_server(value: &serde_json::Value) -> Option<McpServerStatus> {
 /// (0–100). Returns `None` when `percentage` is missing or out of range.
 #[must_use]
 pub fn json_to_context_usage_percent(value: &serde_json::Value) -> Option<u8> {
-    let pct = value.get("percentage").and_then(serde_json::Value::as_f64)?;
+    let pct = value
+        .get("percentage")
+        .and_then(serde_json::Value::as_f64)?;
     if !pct.is_finite() {
         return None;
     }
@@ -348,9 +362,12 @@ fn json_to_recent_session(value: &serde_json::Value) -> Option<RecentSessionInfo
 
 fn text_block_for_role(text: String, role: &MessageRole) -> MessageBlock {
     match role {
-        MessageRole::System(severity) => MessageBlock::Notice(
-            crate::state::messages::NoticeBlock::new(severity.unwrap_or(SystemSeverity::Info), text),
-        ),
+        MessageRole::System(severity) => {
+            MessageBlock::Notice(crate::state::messages::NoticeBlock::new(
+                severity.unwrap_or(SystemSeverity::Info),
+                text,
+            ))
+        }
         _ => MessageBlock::Text(TextBlock::new(text)),
     }
 }

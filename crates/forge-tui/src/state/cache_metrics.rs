@@ -429,7 +429,10 @@ mod tests {
             }
         }
 
-        assert!(fired_again, "history log should fire again after some delay");
+        assert!(
+            fired_again,
+            "history log should fire again after some delay"
+        );
         assert!(!m.record_history_enforcement(&stats, policy));
         assert!(m.history_enforcement_count >= 3);
     }
@@ -466,7 +469,10 @@ mod tests {
         let mut m = CacheMetrics::default();
 
         let kind = m.check_warn_condition(95.0, 50.0, 0);
-        assert!(matches!(kind, Some(CacheWarnKind::HighRenderUtilization(_))));
+        assert!(matches!(
+            kind,
+            Some(CacheWarnKind::HighRenderUtilization(_))
+        ));
         assert!(m.check_warn_condition(95.0, 50.0, 0).is_none());
 
         let mut fired_again = false;
@@ -477,7 +483,10 @@ mod tests {
             }
         }
 
-        assert!(fired_again, "warn should eventually fire again after cooldown");
+        assert!(
+            fired_again,
+            "warn should eventually fire again after cooldown"
+        );
     }
 
     #[test]
@@ -511,14 +520,25 @@ mod tests {
             last_evicted_bytes: 0,
             total_evictions: 0,
         };
-        let retention_stats =
-            HistoryRetentionStats { total_after_bytes: 750, ..Default::default() };
+        let retention_stats = HistoryRetentionStats {
+            total_after_bytes: 750,
+            ..Default::default()
+        };
         let policy = HistoryRetentionPolicy { max_bytes: 1000 };
         let metrics = CacheMetrics::default();
         let viewport = ChatViewport::new();
 
-        let snap =
-            build_snapshot(&budget, &retention_stats, policy, &metrics, &viewport, 10, 2, 1, 0);
+        let snap = build_snapshot(
+            &budget,
+            &retention_stats,
+            policy,
+            &metrics,
+            &viewport,
+            10,
+            2,
+            1,
+            0,
+        );
 
         assert!((snap.render_utilization_pct - 50.0).abs() < 0.01);
         assert!((snap.history_utilization_pct - 75.0).abs() < 0.01);

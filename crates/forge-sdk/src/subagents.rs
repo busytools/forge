@@ -370,11 +370,12 @@ mod tests {
 
     #[test]
     fn inline_mcp_server_serialises_as_single_key_object() {
-        let def =
-            SubagentDefinition::new("d", "p").with_mcp_servers(vec![SubagentMcpServerRef::Inline {
+        let def = SubagentDefinition::new("d", "p").with_mcp_servers(vec![
+            SubagentMcpServerRef::Inline {
                 name: "local".into(),
                 config: json!({"type": "stdio", "command": "my-server"}),
-            }]);
+            },
+        ]);
         let v = serde_json::to_value(&def).expect("ser");
         assert_eq!(
             v["mcpServers"],

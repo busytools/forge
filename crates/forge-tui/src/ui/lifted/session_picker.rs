@@ -45,7 +45,10 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         .border_style(Style::default().fg(theme::DIM));
     frame.render_widget(outer, area);
 
-    let inner = area.inner(Margin { vertical: 1, horizontal: 2 });
+    let inner = area.inner(Margin {
+        vertical: 1,
+        horizontal: 2,
+    });
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -59,7 +62,9 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
             "Select a session to resume",
-            Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(theme::RUST_ORANGE)
+                .add_modifier(Modifier::BOLD),
         ))),
         chunks[0],
     );
@@ -112,7 +117,9 @@ fn render_session_list(frame: &mut Frame, area: Rect, app: &mut App) {
     for (idx, session) in app.recent_sessions[start..end].iter().enumerate() {
         let selected = start + idx == app.session_picker.selected;
         let base_style = if selected {
-            Style::default().fg(ratatui::style::Color::White).bg(theme::RUST_ORANGE)
+            Style::default()
+                .fg(ratatui::style::Color::White)
+                .bg(theme::RUST_ORANGE)
         } else {
             Style::default()
         };
@@ -126,7 +133,10 @@ fn render_session_list(frame: &mut Frame, area: Rect, app: &mut App) {
         }
     }
 
-    frame.render_widget(Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false }), area);
+    frame.render_widget(
+        Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false }),
+        area,
+    );
 }
 
 fn footer_text(app: &App) -> &'static str {
@@ -138,7 +148,11 @@ fn footer_text(app: &App) -> &'static str {
 }
 
 fn display_primary(session: &RecentSessionInfo) -> String {
-    format!("{} - {}", format_relative_age(session.last_modified_ms), display_title(session))
+    format!(
+        "{} - {}",
+        format_relative_age(session.last_modified_ms),
+        display_title(session)
+    )
 }
 
 fn display_title(session: &RecentSessionInfo) -> String {
@@ -146,7 +160,12 @@ fn display_title(session: &RecentSessionInfo) -> String {
         .custom_title
         .as_deref()
         .filter(|value| !value.trim().is_empty())
-        .or_else(|| session.first_prompt.as_deref().filter(|value| !value.trim().is_empty()))
+        .or_else(|| {
+            session
+                .first_prompt
+                .as_deref()
+                .filter(|value| !value.trim().is_empty())
+        })
         .or_else(|| {
             let summary = session.summary.trim();
             (!summary.is_empty()).then_some(summary)
@@ -158,7 +177,11 @@ fn display_title(session: &RecentSessionInfo) -> String {
 fn truncate(value: &str, max_chars: usize) -> String {
     let mut chars = value.chars();
     let truncated: String = chars.by_ref().take(max_chars).collect();
-    if chars.next().is_some() { format!("{truncated}...") } else { truncated }
+    if chars.next().is_some() {
+        format!("{truncated}...")
+    } else {
+        truncated
+    }
 }
 
 fn format_relative_age(last_modified_ms: u64) -> String {
@@ -185,4 +208,3 @@ fn format_relative_age(last_modified_ms: u64) -> String {
     let hours = (delta / (60 * 60)) % 24;
     format!("{days}d {hours}h ago")
 }
-

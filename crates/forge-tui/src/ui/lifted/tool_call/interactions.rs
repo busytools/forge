@@ -72,14 +72,21 @@ pub(super) fn render_permission_lines(
         if is_selected {
             spans.push(Span::styled(
                 "\u{25b8} ",
-                Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(theme::RUST_ORANGE)
+                    .add_modifier(Modifier::BOLD),
             ));
         }
 
-        spans.push(Span::styled(format!("{icon} "), Style::default().fg(icon_color)));
+        spans.push(Span::styled(
+            format!("{icon} "),
+            Style::default().fg(icon_color),
+        ));
 
         let name_style = if is_selected {
-            Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(theme::RUST_ORANGE)
+                .add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(Color::Gray)
         };
@@ -118,11 +125,21 @@ fn permission_display_lines(
     perm: &InlinePermission,
 ) -> Option<Vec<Line<'static>>> {
     let display = perm.display.as_ref()?;
-    let title = display.title.as_ref().map(|value| value.trim()).filter(|value| !value.is_empty());
-    let display_name =
-        display.display_name.as_ref().map(|value| value.trim()).filter(|value| !value.is_empty());
-    let description =
-        display.description.as_ref().map(|value| value.trim()).filter(|value| !value.is_empty());
+    let title = display
+        .title
+        .as_ref()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty());
+    let display_name = display
+        .display_name
+        .as_ref()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty());
+    let description = display
+        .description
+        .as_ref()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty());
     if title.is_none() && display_name.is_none() && description.is_none() {
         return None;
     }
@@ -136,7 +153,9 @@ fn permission_display_lines(
     if let Some(title) = header {
         lines.push(Line::from(Span::styled(
             format!("  {title}"),
-            Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
         )));
     }
     if let Some(description) = description {
@@ -165,7 +184,10 @@ fn normalize_permission_header(value: &str) -> String {
 
 fn is_plan_approval_permission(perm: &InlinePermission) -> bool {
     perm.options.iter().any(|opt| {
-        matches!(opt.kind, PermissionOptionKind::PlanApprove | PermissionOptionKind::PlanReject)
+        matches!(
+            opt.kind,
+            PermissionOptionKind::PlanApprove | PermissionOptionKind::PlanReject
+        )
     })
 }
 
@@ -224,7 +246,9 @@ fn render_plan_approval_lines(tc: &ToolCallInfo, perm: &InlinePermission) -> Vec
         };
 
         let name_style = if is_selected {
-            Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(theme::RUST_ORANGE)
+                .add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(Color::Gray)
         };
@@ -233,12 +257,17 @@ fn render_plan_approval_lines(tc: &ToolCallInfo, perm: &InlinePermission) -> Vec
         if is_selected {
             line_spans.push(Span::styled(
                 "  \u{25b8} ",
-                Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(theme::RUST_ORANGE)
+                    .add_modifier(Modifier::BOLD),
             ));
         } else {
             line_spans.push(Span::raw("    "));
         }
-        line_spans.push(Span::styled(format!("{icon} "), Style::default().fg(icon_color)));
+        line_spans.push(Span::styled(
+            format!("{icon} "),
+            Style::default().fg(icon_color),
+        ));
         line_spans.push(Span::styled(opt.name.clone(), name_style));
         line_spans.push(Span::styled(shortcut, Style::default().fg(theme::DIM)));
         lines.push(Line::from(line_spans));
@@ -265,7 +294,9 @@ pub(super) fn render_question_lines(question: &InlineQuestion) -> Vec<Line<'stat
             Span::styled("  ? ", Style::default().fg(theme::RUST_ORANGE)),
             Span::styled(
                 format!("{}{}", question.prompt.header, progress),
-                Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
             ),
         ]),
     ];
@@ -305,13 +336,17 @@ pub(super) fn render_question_lines(question: &InlineQuestion) -> Vec<Line<'stat
             if selected {
                 spans.push(Span::styled(
                     "\u{25b8} ",
-                    Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(theme::RUST_ORANGE)
+                        .add_modifier(Modifier::BOLD),
                 ));
             } else {
                 spans.push(Span::styled("  ", Style::default().fg(theme::DIM)));
             }
             let style = if selected {
-                Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(Color::Gray)
             };
@@ -326,9 +361,15 @@ pub(super) fn render_question_lines(question: &InlineQuestion) -> Vec<Line<'stat
         for (i, opt) in question.prompt.options.iter().enumerate() {
             let selected = i == question.focused_option_index;
             let checked = question.selected_option_indices.contains(&i);
-            let bullet = if selected { "  \u{25b8} " } else { "  \u{25cb} " };
+            let bullet = if selected {
+                "  \u{25b8} "
+            } else {
+                "  \u{25cb} "
+            };
             let name_style = if selected {
-                Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(Color::Gray)
             };
@@ -351,7 +392,11 @@ pub(super) fn render_question_lines(question: &InlineQuestion) -> Vec<Line<'stat
                 ),
                 Span::styled(opt.label.clone(), name_style),
             ]));
-            if let Some(desc) = opt.description.as_ref().map(|d| d.trim()).filter(|d| !d.is_empty())
+            if let Some(desc) = opt
+                .description
+                .as_ref()
+                .map(|d| d.trim())
+                .filter(|d| !d.is_empty())
             {
                 lines.push(Line::from(Span::styled(
                     format!("      {desc}"),
@@ -372,7 +417,9 @@ pub(super) fn render_question_lines(question: &InlineQuestion) -> Vec<Line<'stat
         lines.push(Line::default());
         lines.push(Line::from(Span::styled(
             "  Preview",
-            Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
         )));
         for row in preview.lines() {
             lines.push(Line::from(Span::styled(
@@ -385,11 +432,24 @@ pub(super) fn render_question_lines(question: &InlineQuestion) -> Vec<Line<'stat
     lines.push(Line::default());
     lines.push(Line::from(vec![
         Span::styled(
-            format!("  Notes{}: ", if question.editing_notes { " [editing]" } else { "" }),
-            Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+            format!(
+                "  Notes{}: ",
+                if question.editing_notes {
+                    " [editing]"
+                } else {
+                    ""
+                }
+            ),
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
-            if question.notes.is_empty() { "<empty>".to_owned() } else { question.notes.clone() },
+            if question.notes.is_empty() {
+                "<empty>".to_owned()
+            } else {
+                question.notes.clone()
+            },
             if question.editing_notes {
                 Style::default().fg(Color::White)
             } else {
@@ -408,4 +468,3 @@ pub(super) fn render_question_lines(question: &InlineQuestion) -> Vec<Line<'stat
     )));
     lines
 }
-

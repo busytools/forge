@@ -126,9 +126,10 @@ pub fn update_query(app: &mut App) {
     if let Some(slash) = app.slash.as_mut() {
         slash.query = query;
         slash.candidates = candidates;
-        slash
-            .dialog
-            .clamp(slash.candidates.len(), slash.candidates.len().min(MAX_VISIBLE));
+        slash.dialog.clamp(
+            slash.candidates.len(),
+            slash.candidates.len().min(MAX_VISIBLE),
+        );
     }
 }
 
@@ -148,7 +149,9 @@ pub fn sync_with_cursor(app: &mut App) {
 }
 
 pub fn confirm_selection(app: &mut App) {
-    let Some(slash) = app.slash.take() else { return };
+    let Some(slash) = app.slash.take() else {
+        return;
+    };
     let Some(candidate) = slash.candidates.get(slash.dialog.selected) else {
         return;
     };
@@ -168,9 +171,10 @@ pub fn move_up(app: &mut App) {
     if let Some(slash) = app.slash.as_mut()
         && !slash.candidates.is_empty()
     {
-        slash
-            .dialog
-            .move_up(slash.candidates.len(), slash.candidates.len().min(MAX_VISIBLE));
+        slash.dialog.move_up(
+            slash.candidates.len(),
+            slash.candidates.len().min(MAX_VISIBLE),
+        );
     }
 }
 
@@ -178,9 +182,10 @@ pub fn move_down(app: &mut App) {
     if let Some(slash) = app.slash.as_mut()
         && !slash.candidates.is_empty()
     {
-        slash
-            .dialog
-            .move_down(slash.candidates.len(), slash.candidates.len().min(MAX_VISIBLE));
+        slash.dialog.move_down(
+            slash.candidates.len(),
+            slash.candidates.len().min(MAX_VISIBLE),
+        );
     }
 }
 

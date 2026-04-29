@@ -109,9 +109,7 @@ pub(crate) fn become_primary(
     }
 
     // 3. Notify displaced primary (if distinct) of demotion.
-    if displaced_other
-        && let Some(old) = old_primary.as_ref()
-    {
+    if displaced_other && let Some(old) = old_primary.as_ref() {
         let old_outbound = state
             .connections
             .lock()

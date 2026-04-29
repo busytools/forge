@@ -11,9 +11,9 @@
 use crate::state::block_cache::BlockCache;
 use crate::state::messages::{
     CachedMessageSegment, ChatMessage, IncrementalMarkdown, MarkdownRenderKey, MessageBlock,
-    MessageBlockRenderSignature, MessageRenderCache, MessageRenderCacheKey,
-    MessageRenderSignature, MessageRole, SystemSeverity, TextBlock, WelcomeBlock,
-    hash_text_block_content, hash_welcome_block_content,
+    MessageBlockRenderSignature, MessageRenderCache, MessageRenderCacheKey, MessageRenderSignature,
+    MessageRole, SystemSeverity, TextBlock, WelcomeBlock, hash_text_block_content,
+    hash_welcome_block_content,
 };
 use crate::ui::lifted::tool_call;
 use crate::ui::theme;
@@ -89,7 +89,11 @@ struct MessageLayout {
 
 impl MessageLayout {
     fn new() -> Self {
-        Self { segments: Vec::new(), height: 0, wrapped_lines: 0 }
+        Self {
+            segments: Vec::new(),
+            height: 0,
+            wrapped_lines: 0,
+        }
     }
 
     fn push_blank(&mut self) {
@@ -110,7 +114,8 @@ impl MessageLayout {
         if height == 0 {
             return;
         }
-        self.segments.push(MessageLayoutSegment::Lines { lines, height });
+        self.segments
+            .push(MessageLayoutSegment::Lines { lines, height });
         self.height += height;
         self.wrapped_lines += wrapped_lines;
     }
@@ -119,7 +124,10 @@ impl MessageLayout {
 #[derive(Clone)]
 enum MessageLayoutSegment {
     Blank,
-    Lines { lines: Vec<Line<'static>>, height: usize },
+    Lines {
+        lines: Vec<Line<'static>>,
+        height: usize,
+    },
 }
 
 impl MessageLayoutSegment {
@@ -164,7 +172,9 @@ impl<'a> MessageRenderContext<'a> {
 fn assistant_role_label_line() -> Line<'static> {
     let spans = vec![Span::styled(
         "Claude",
-        Style::default().fg(theme::ROLE_ASSISTANT).add_modifier(Modifier::BOLD),
+        Style::default()
+            .fg(theme::ROLE_ASSISTANT)
+            .add_modifier(Modifier::BOLD),
     )];
 
     Line::from(spans)
@@ -182,7 +192,10 @@ pub(crate) fn render_message_with_tools_collapsed(
         None,
         width,
         0,
-        MessageRenderOptions { tools_collapsed, include_trailing_separator: true },
+        MessageRenderOptions {
+            tools_collapsed,
+            include_trailing_separator: true,
+        },
     );
     render_message_internal(msg, spinner, render_context, out);
 }
@@ -200,7 +213,10 @@ pub(crate) fn render_message_with_tools_collapsed_and_separator(
         None,
         width,
         0,
-        MessageRenderOptions { tools_collapsed, include_trailing_separator },
+        MessageRenderOptions {
+            tools_collapsed,
+            include_trailing_separator,
+        },
     );
     render_message_internal(msg, spinner, render_context, out);
 }
@@ -219,7 +235,10 @@ pub(crate) fn render_message_with_tools_collapsed_and_separator_and_layout_gener
         None,
         width,
         layout_generation,
-        MessageRenderOptions { tools_collapsed, include_trailing_separator },
+        MessageRenderOptions {
+            tools_collapsed,
+            include_trailing_separator,
+        },
     );
     render_message_with_tools_collapsed_and_separator_and_layout_generation_with_mode(
         msg,
@@ -340,7 +359,13 @@ fn append_assistant_blocks(
             continue;
         }
 
-        append_assistant_block(&mut msg.blocks[idx], spinner, render_context, layout, &mut state);
+        append_assistant_block(
+            &mut msg.blocks[idx],
+            spinner,
+            render_context,
+            layout,
+            &mut state,
+        );
 
         if let Some((deferred_idx, render_after_idx)) = deferred_interaction
             && render_after_idx == idx
@@ -501,7 +526,11 @@ fn trailing_gap_for_text_like_block(
     rendered_height: usize,
     trailing_blank_lines: usize,
 ) -> usize {
-    if !has_visible_content && rendered_height == 0 { 0 } else { trailing_blank_lines }
+    if !has_visible_content && rendered_height == 0 {
+        0
+    } else {
+        trailing_blank_lines
+    }
 }
 
 fn append_system_blocks(msg: &mut ChatMessage, width: u16, layout: &mut MessageLayout) {
@@ -616,7 +645,10 @@ pub fn measure_message_height_cached_with_tools_collapsed_and_separator_and_mode
         current_mode_id,
         width,
         layout_generation,
-        MessageRenderOptions { tools_collapsed, include_trailing_separator },
+        MessageRenderOptions {
+            tools_collapsed,
+            include_trailing_separator,
+        },
     );
     let cache = get_or_build_message_render_cache(msg, spinner, render_context);
     (cache.height(), cache.wrapped_lines())
@@ -663,7 +695,10 @@ pub(crate) fn render_message_from_offset_with_tools_collapsed(
         spinner,
         width,
         layout_generation,
-        MessageRenderOptions { tools_collapsed, include_trailing_separator: true },
+        MessageRenderOptions {
+            tools_collapsed,
+            include_trailing_separator: true,
+        },
         skip_rows,
         out,
     )
@@ -790,8 +825,12 @@ fn get_or_build_message_render_cache<'a>(
         let layout = build_message_layout(msg, spinner, render_context);
         let height = layout.height;
         let wrapped_lines = layout.wrapped_lines;
-        let segments =
-            layout.segments.iter().cloned().map(MessageLayoutSegment::into_cached).collect();
+        let segments = layout
+            .segments
+            .iter()
+            .cloned()
+            .map(MessageLayoutSegment::into_cached)
+            .collect();
         msg.render_cache.store(key, segments, height, wrapped_lines);
     }
     &msg.render_cache
@@ -866,9 +905,9 @@ fn build_message_block_render_signature(
             pending_question: tc.pending_question.is_some(),
             frame: tool_call_needs_spinner_frame(tc).then_some(spinner.frame),
         },
-        MessageBlock::Welcome(block) => {
-            MessageBlockRenderSignature::Welcome { content_hash: hash_welcome_block_content(block) }
-        }
+        MessageBlock::Welcome(block) => MessageBlockRenderSignature::Welcome {
+            content_hash: hash_welcome_block_content(block),
+        },
         MessageBlock::ImageAttachment(block) => {
             MessageBlockRenderSignature::ImageAttachment { count: block.count }
         }
@@ -892,7 +931,9 @@ fn rendered_lines_height(lines: &[Line<'static>], width: u16) -> usize {
     if lines.is_empty() {
         return 0;
     }
-    Paragraph::new(Text::from(lines.to_vec())).wrap(Wrap { trim: false }).line_count(width)
+    Paragraph::new(Text::from(lines.to_vec()))
+        .wrap(Wrap { trim: false })
+        .line_count(width)
 }
 
 fn rendered_line_height(line: &Line<'static>, width: u16) -> usize {
@@ -935,7 +976,11 @@ fn welcome_block_layout(block: &mut WelcomeBlock, width: u16) -> RenderedBlockLa
         height
     });
     let wrapped_lines = if had_height { 0 } else { lines.len() };
-    RenderedBlockLayout { lines, height, wrapped_lines }
+    RenderedBlockLayout {
+        lines,
+        height,
+        wrapped_lines,
+    }
 }
 
 fn text_block_layout(
@@ -953,7 +998,11 @@ fn text_block_layout(
         height
     });
     let wrapped_lines = if had_height { 0 } else { lines.len() };
-    RenderedBlockLayout { lines, height, wrapped_lines }
+    RenderedBlockLayout {
+        lines,
+        height,
+        wrapped_lines,
+    }
 }
 
 fn assistant_text_block_layout(
@@ -992,7 +1041,9 @@ fn count_leading_blank_lines(lines: &[Line<'static>]) -> usize {
 }
 
 fn line_is_blank(line: &Line<'_>) -> bool {
-    line.spans.iter().all(|span| span.content.as_ref().chars().all(char::is_whitespace))
+    line.spans
+        .iter()
+        .all(|span| span.content.as_ref().chars().all(char::is_whitespace))
 }
 
 fn should_skip_whole_block(
@@ -1017,7 +1068,9 @@ fn role_label_line(role: &MessageRole) -> Line<'static> {
     match role {
         MessageRole::Welcome => Line::from(Span::styled(
             "Overview",
-            Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(theme::RUST_ORANGE)
+                .add_modifier(Modifier::BOLD),
         )),
         MessageRole::User => Line::from(Span::styled(
             "User",
@@ -1034,12 +1087,18 @@ fn system_role_label_line(severity: SystemSeverity) -> Line<'static> {
         SystemSeverity::Warning => ("Warning", theme::STATUS_WARNING),
         SystemSeverity::Error => ("Error", theme::STATUS_ERROR),
     };
-    Line::from(Span::styled(label, Style::default().fg(color).add_modifier(Modifier::BOLD)))
+    Line::from(Span::styled(
+        label,
+        Style::default().fg(color).add_modifier(Modifier::BOLD),
+    ))
 }
 
 fn thinking_line(frame: usize) -> Line<'static> {
     let ch = SPINNER_FRAMES[frame % SPINNER_FRAMES.len()];
-    Line::from(Span::styled(format!("{ch} Thinking..."), Style::default().fg(theme::DIM)))
+    Line::from(Span::styled(
+        format!("{ch} Thinking..."),
+        Style::default().fg(theme::DIM),
+    ))
 }
 
 fn compacting_line(frame: usize) -> Line<'static> {
@@ -1064,14 +1123,22 @@ fn welcome_lines(block: &WelcomeBlock, _width: u16) -> Vec<Line<'static>> {
     lines.push(Line::default());
 
     lines.push(Line::from(vec![
-        Span::styled(format!("{pad}Version:      "), Style::default().fg(theme::DIM)),
+        Span::styled(
+            format!("{pad}Version:      "),
+            Style::default().fg(theme::DIM),
+        ),
         Span::styled(block.version.clone(), Style::default().fg(theme::DIM)),
     ]));
     lines.push(Line::from(vec![
-        Span::styled(format!("{pad}Subscription: "), Style::default().fg(theme::DIM)),
+        Span::styled(
+            format!("{pad}Subscription: "),
+            Style::default().fg(theme::DIM),
+        ),
         Span::styled(
             block.subscription.clone(),
-            Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(theme::RUST_ORANGE)
+                .add_modifier(Modifier::BOLD),
         ),
     ]));
     lines.push(Line::from(Span::styled(
@@ -1114,7 +1181,9 @@ fn render_welcome_cached(block: &mut WelcomeBlock, width: u16, out: &mut Vec<Lin
     let fresh = welcome_lines(block, width);
     let h = {
         let _t = crate::perf::start_with("msg::wrap_height", "lines", fresh.len());
-        Paragraph::new(Text::from(fresh.clone())).wrap(Wrap { trim: false }).line_count(width)
+        Paragraph::new(Text::from(fresh.clone()))
+            .wrap(Wrap { trim: false })
+            .line_count(width)
     };
     block.cache.store(fresh);
     block.cache.set_height(h, width);
@@ -1201,7 +1270,11 @@ pub(super) fn render_text_cached(
         }
         crate::ui::document_table::render_markdown_with_tables(&preprocessed, width, bg)
     };
-    let render_key = MarkdownRenderKey { width, bg, preserve_newlines };
+    let render_key = MarkdownRenderKey {
+        width,
+        bg,
+        preserve_newlines,
+    };
 
     // Ensure any previously invalidated paragraph caches are re-rendered
     let _ = text;
@@ -1215,7 +1288,9 @@ pub(super) fn render_text_cached(
     // but for completed messages it persists.
     let h = {
         let _t = crate::perf::start_with("msg::wrap_height", "lines", fresh.len());
-        Paragraph::new(Text::from(fresh.clone())).wrap(Wrap { trim: false }).line_count(width)
+        Paragraph::new(Text::from(fresh.clone()))
+            .wrap(Wrap { trim: false })
+            .line_count(width)
     };
     cache.store(fresh);
     cache.set_height(h, width);
@@ -1260,4 +1335,3 @@ fn force_markdown_line_breaks(text: &str) -> String {
     }
     out
 }
-

@@ -9,7 +9,6 @@
 //! Unified-diff renderer lifted from claude-code-rust `ui/diff.rs`.
 //! Renders `Diff` model values plus raw unified-diff strings.
 
-
 use crate::state::model;
 use crate::ui::theme;
 use crate::ui::wrap::{StyledChunk, display_width, wrap_styled_chunks};
@@ -32,8 +31,16 @@ pub fn render_diff(diff: &model::Diff, width: u16) -> Vec<Line<'static>> {
     let old = diff.old_text.as_deref().unwrap_or("");
     let new = &diff.new_text;
     let text_diff = TextDiff::from_lines(old, new);
-    let line_number_width = old.lines().count().max(new.lines().count()).max(1).to_string().len();
-    let content_width = usize::from(width).saturating_sub(line_number_width + 5).max(1);
+    let line_number_width = old
+        .lines()
+        .count()
+        .max(new.lines().count())
+        .max(1)
+        .to_string()
+        .len();
+    let content_width = usize::from(width)
+        .saturating_sub(line_number_width + 5)
+        .max(1);
 
     // Use unified diff with 3 lines of context -- only shows changed hunks
     // instead of the full file content.
@@ -130,9 +137,13 @@ fn render_raw_diff_line(line: &str) -> Line<'static> {
         || line.starts_with("rename from ")
         || line.starts_with("rename to ")
     {
-        Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(Color::White)
+            .add_modifier(Modifier::BOLD)
     } else if line.starts_with("@@") {
-        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD)
     } else if line.starts_with("+++ ") {
         Style::default().fg(Color::Green)
     } else if line.starts_with("--- ") {
@@ -142,7 +153,9 @@ fn render_raw_diff_line(line: &str) -> Line<'static> {
     } else if line.starts_with('-') {
         Style::default().fg(Color::Red)
     } else if line.starts_with('\\') {
-        Style::default().fg(theme::DIM).add_modifier(Modifier::ITALIC)
+        Style::default()
+            .fg(theme::DIM)
+            .add_modifier(Modifier::ITALIC)
     } else {
         Style::default().fg(theme::DIM)
     };
@@ -167,7 +180,11 @@ fn format_compact_hunk_header(header: &str) -> String {
             if new_range.count > 0 {
                 parts.push(format_range("+", new_range));
             }
-            if parts.is_empty() { "lines".to_owned() } else { format!("lines {}", parts.join(" ")) }
+            if parts.is_empty() {
+                "lines".to_owned()
+            } else {
+                format!("lines {}", parts.join(" "))
+            }
         },
     )
 }
@@ -182,8 +199,13 @@ fn parse_unified_hunk_header(header: &str) -> Option<(HunkRange, HunkRange)> {
 
 fn parse_prefixed_hunk_range(token: &str, prefix: char) -> Option<HunkRange> {
     let raw = token.strip_prefix(prefix)?;
-    let (start, count) = raw.split_once(',').map_or((raw, "1"), |(start, count)| (start, count));
-    Some(HunkRange { start: start.parse().ok()?, count: count.parse().ok()? })
+    let (start, count) = raw
+        .split_once(',')
+        .map_or((raw, "1"), |(start, count)| (start, count));
+    Some(HunkRange {
+        start: start.parse().ok()?,
+        count: count.parse().ok()?,
+    })
 }
 
 fn format_range(prefix: &str, range: HunkRange) -> String {
@@ -210,7 +232,13 @@ fn render_wrapped_diff_row(
         vec![Line::default()]
     } else {
         let wrapped_width = content_width.saturating_sub(leading_indent_width).max(1);
-        wrap_styled_chunks(&[StyledChunk { text: content.to_owned(), style }], wrapped_width)
+        wrap_styled_chunks(
+            &[StyledChunk {
+                text: content.to_owned(),
+                style,
+            }],
+            wrapped_width,
+        )
     };
 
     let line_number_text = line_number.map_or_else(
@@ -268,7 +296,11 @@ pub fn lang_from_title(title: &str) -> String {
         .find_map(|token| {
             let ext = token.rsplit('.').next()?;
             // Ignore if the "extension" is the whole token (no dot found)
-            if ext.len() < token.len() { Some(ext.to_lowercase()) } else { None }
+            if ext.len() < token.len() {
+                Some(ext.to_lowercase())
+            } else {
+                None
+            }
         })
         .unwrap_or_default()
 }
@@ -352,8 +384,11 @@ mod tests {
                 .repository(Some("acme/project".to_owned())),
             80,
         );
-        let repository_line: String =
-            lines[0].spans.iter().map(|span| span.content.as_ref()).collect();
+        let repository_line: String = lines[0]
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
         assert!(repository_line.contains("[acme/project]"));
     }
 
@@ -384,11 +419,20 @@ mod tests {
         );
         let rendered: Vec<String> = lines
             .iter()
-            .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect())
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect()
+            })
             .collect();
 
         assert!(rendered.iter().any(|line| line.contains("lines +1")));
-        assert!(rendered.iter().any(|line| line.contains("1  +  This is a long")));
+        assert!(
+            rendered
+                .iter()
+                .any(|line| line.contains("1  +  This is a long"))
+        );
         assert!(rendered.iter().any(|line| line.starts_with("      ")));
         assert!(!rendered.iter().any(|line| line == "tmp.md"));
     }
@@ -404,11 +448,24 @@ mod tests {
         );
         let rendered: Vec<String> = lines
             .iter()
-            .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect())
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect()
+            })
             .collect();
 
-        assert!(rendered.iter().any(|line| line.contains("+      if true {")));
-        assert!(rendered.iter().any(|line| line.contains("+          return;")));
+        assert!(
+            rendered
+                .iter()
+                .any(|line| line.contains("+      if true {"))
+        );
+        assert!(
+            rendered
+                .iter()
+                .any(|line| line.contains("+          return;"))
+        );
     }
 
     #[test]
@@ -423,18 +480,34 @@ mod tests {
         );
         let rendered: Vec<String> = lines
             .iter()
-            .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect())
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect()
+            })
             .collect();
 
-        assert!(rendered.iter().any(|line| line.contains("+          This is a")));
+        assert!(
+            rendered
+                .iter()
+                .any(|line| line.contains("+          This is a"))
+        );
         assert!(rendered.iter().any(|line| line.contains("indentation")));
-        assert!(rendered.iter().any(|line| line.starts_with("              ")));
+        assert!(
+            rendered
+                .iter()
+                .any(|line| line.starts_with("              "))
+        );
     }
 
     #[test]
     fn compact_hunk_header_omits_empty_side_and_uses_ranges() {
         assert_eq!(format_compact_hunk_header("@@ -0,0 +1,7 @@"), "lines +1-7");
-        assert_eq!(format_compact_hunk_header("@@ -4,3 +4,5 @@"), "lines -4-6 +4-8");
+        assert_eq!(
+            format_compact_hunk_header("@@ -4,3 +4,5 @@"),
+            "lines -4-6 +4-8"
+        );
         assert_eq!(format_compact_hunk_header("@@ -8 +8 @@"), "lines -8 +8");
     }
 
@@ -479,7 +552,10 @@ mod tests {
 
         let unsupported = ["main.rs", "style.css", "", "somemdx", "file.md.bak"];
         for path in unsupported {
-            assert!(!is_markdown_file(path), "path should not be markdown: {path:?}");
+            assert!(
+                !is_markdown_file(path),
+                "path should not be markdown: {path:?}"
+            );
         }
     }
 }

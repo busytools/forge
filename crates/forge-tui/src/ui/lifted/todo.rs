@@ -60,10 +60,17 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
 /// The line is cached on `App` and only rebuilt when `set_todos()` invalidates.
 fn render_closed(frame: &mut Frame, area: Rect, app: &mut App) {
     if app.cached_todo_compact.is_none() {
-        let completed = app.todos.iter().filter(|t| t.status == TodoStatus::Completed).count();
+        let completed = app
+            .todos
+            .iter()
+            .filter(|t| t.status == TodoStatus::Completed)
+            .count();
         let total = app.todos.len();
 
-        let current = app.todos.iter().find(|t| t.status == TodoStatus::InProgress);
+        let current = app
+            .todos
+            .iter()
+            .find(|t| t.status == TodoStatus::InProgress);
         let task_text = match current {
             Some(t) if !t.active_form.is_empty() => t.active_form.clone(),
             Some(t) => t.content.clone(),
@@ -82,7 +89,10 @@ fn render_closed(frame: &mut Frame, area: Rect, app: &mut App) {
 
         app.cached_todo_compact = Some(Line::from(vec![
             Span::styled("[", Style::default().fg(theme::DIM)),
-            Span::styled(format!("{completed}/{total}"), Style::default().fg(theme::RUST_ORANGE)),
+            Span::styled(
+                format!("{completed}/{total}"),
+                Style::default().fg(theme::RUST_ORANGE),
+            ),
             Span::styled("] ", Style::default().fg(theme::DIM)),
             Span::styled(task_text, Style::default().fg(Color::White)),
         ]));
@@ -117,7 +127,10 @@ fn render_open(frame: &mut Frame, area: Rect, app: &mut App) {
     let active_idx = if todo_has_focus {
         app.todo_selected.min(total.saturating_sub(1))
     } else {
-        app.todos.iter().position(|t| t.status == TodoStatus::InProgress).unwrap_or(0)
+        app.todos
+            .iter()
+            .position(|t| t.status == TodoStatus::InProgress)
+            .unwrap_or(0)
     };
     if active_idx < app.todo_scroll {
         app.todo_scroll = active_idx;
@@ -127,7 +140,13 @@ fn render_open(frame: &mut Frame, area: Rect, app: &mut App) {
 
     let mut lines: Vec<Line<'static>> = Vec::with_capacity(visible);
 
-    for (i, todo) in app.todos.iter().enumerate().skip(app.todo_scroll).take(visible) {
+    for (i, todo) in app
+        .todos
+        .iter()
+        .enumerate()
+        .skip(app.todo_scroll)
+        .take(visible)
+    {
         let (icon, icon_color) = match todo.status {
             TodoStatus::Completed => ("\u{2713}", Color::Green), // ✓
             TodoStatus::InProgress => ("\u{25b8}", theme::RUST_ORANGE), // ▸
@@ -135,12 +154,12 @@ fn render_open(frame: &mut Frame, area: Rect, app: &mut App) {
         };
 
         let mut text_style = match todo.status {
-            TodoStatus::Completed => {
-                Style::default().fg(theme::DIM).add_modifier(Modifier::CROSSED_OUT)
-            }
-            TodoStatus::InProgress => {
-                Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
-            }
+            TodoStatus::Completed => Style::default()
+                .fg(theme::DIM)
+                .add_modifier(Modifier::CROSSED_OUT),
+            TodoStatus::InProgress => Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
             TodoStatus::Pending => Style::default().fg(Color::Gray),
         };
         if todo_has_focus && i == app.todo_selected {

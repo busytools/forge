@@ -73,13 +73,28 @@ fn has_cancel_hint(app: &App) -> bool {
 fn has_prompt_suggestion_hint(app: &App) -> bool {
     app.input.is_empty()
         && app.focus_owner() == FocusOwner::Input
-        && app.prompt_suggestion.as_deref().is_some_and(|suggestion| !suggestion.trim().is_empty())
+        && app
+            .prompt_suggestion
+            .as_deref()
+            .is_some_and(|suggestion| !suggestion.trim().is_empty())
 }
 
 pub(crate) fn hint_line_count(app: &App) -> u16 {
-    let login = if has_login_hint(app) { LOGIN_HINT_LINES } else { 0 };
-    let cancel = if has_cancel_hint(app) { CANCEL_HINT_LINES } else { 0 };
-    let suggestion = if has_prompt_suggestion_hint(app) { PROMPT_SUGGESTION_HINT_LINES } else { 0 };
+    let login = if has_login_hint(app) {
+        LOGIN_HINT_LINES
+    } else {
+        0
+    };
+    let cancel = if has_cancel_hint(app) {
+        CANCEL_HINT_LINES
+    } else {
+        0
+    };
+    let suggestion = if has_prompt_suggestion_hint(app) {
+        PROMPT_SUGGESTION_HINT_LINES
+    } else {
+        0
+    };
     login + cancel + suggestion
 }
 
@@ -102,13 +117,20 @@ pub(crate) fn compute_render_geometry(area: Rect, hint_lines: u16) -> InputRende
     let padded = Rect {
         x: input_main_area.x.saturating_add(INPUT_PAD),
         y: input_main_area.y,
-        width: input_main_area.width.saturating_sub(INPUT_PAD * 2 + INPUT_RIGHT_PAD),
+        width: input_main_area
+            .width
+            .saturating_sub(INPUT_PAD * 2 + INPUT_RIGHT_PAD),
         height: input_main_area.height,
     };
     let [prompt, text] =
         Layout::horizontal([Constraint::Length(PROMPT_WIDTH), Constraint::Min(1)]).areas(padded);
 
-    InputRenderGeometry { hint_pad, padded, prompt, text }
+    InputRenderGeometry {
+        hint_pad,
+        padded,
+        prompt,
+        text,
+    }
 }
 
 #[allow(clippy::cast_possible_truncation, clippy::too_many_lines)]
@@ -133,8 +155,12 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
                     Style::default().fg(theme::DIM),
                 )),
             ];
-            let login_area =
-                Rect { x: hint_pad.x, y: hint_y, width: hint_pad.width, height: LOGIN_HINT_LINES };
+            let login_area = Rect {
+                x: hint_pad.x,
+                y: hint_y,
+                width: hint_pad.width,
+                height: LOGIN_HINT_LINES,
+            };
             frame.render_widget(Paragraph::new(lines), login_area);
             hint_y = hint_y.saturating_add(LOGIN_HINT_LINES);
         }
@@ -148,8 +174,12 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
                     Style::default().fg(theme::DIM),
                 ),
             ]);
-            let cancel_area =
-                Rect { x: hint_pad.x, y: hint_y, width: hint_pad.width, height: CANCEL_HINT_LINES };
+            let cancel_area = Rect {
+                x: hint_pad.x,
+                y: hint_y,
+                width: hint_pad.width,
+                height: CANCEL_HINT_LINES,
+            };
             frame.render_widget(Paragraph::new(cancel_line), cancel_area);
             hint_y = hint_y.saturating_add(CANCEL_HINT_LINES);
         }
@@ -159,7 +189,10 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
         {
             let suggestion_line = Line::from(vec![
                 Span::styled("Suggestion: ", Style::default().fg(theme::DIM)),
-                Span::styled(suggestion.trim().to_owned(), Style::default().fg(Color::White)),
+                Span::styled(
+                    suggestion.trim().to_owned(),
+                    Style::default().fg(Color::White),
+                ),
                 Span::styled("    Tab to accept", Style::default().fg(theme::DIM)),
             ]);
             let suggestion_area = Rect {
@@ -177,7 +210,10 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
         let spinner_ch = SPINNER_FRAMES[app.spinner_frame % SPINNER_FRAMES.len()];
         let line = Line::from(vec![
             Span::styled(format!("{spinner_ch} "), Style::default().fg(theme::DIM)),
-            Span::styled("Connecting to Claude Code...", Style::default().fg(theme::DIM)),
+            Span::styled(
+                "Connecting to Claude Code...",
+                Style::default().fg(theme::DIM),
+            ),
         ]);
         frame.render_widget(Paragraph::new(line), geometry.padded);
         return;
@@ -185,7 +221,10 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
 
     if app.status == AppStatus::CommandPending {
         let spinner_ch = SPINNER_FRAMES[app.spinner_frame % SPINNER_FRAMES.len()];
-        let label = app.pending_command_label.as_deref().unwrap_or("Processing command...");
+        let label = app
+            .pending_command_label
+            .as_deref()
+            .unwrap_or("Processing command...");
         let line = Line::from(vec![
             Span::styled(format!("{spinner_ch} "), Style::default().fg(theme::DIM)),
             Span::styled(label.to_owned(), Style::default().fg(theme::DIM)),
@@ -222,7 +261,10 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
 
     configure_input_textarea(app);
     app.rendered_input_area = geometry.text;
-    if app.selection.is_some_and(|selection| selection.kind == crate::state::types::SelectionKind::Input) {
+    if app
+        .selection
+        .is_some_and(|selection| selection.kind == crate::state::types::SelectionKind::Input)
+    {
         refresh_selection_snapshot(app);
     }
     frame.render_widget(app.input.editor(), geometry.text);
@@ -235,7 +277,10 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
 }
 
 pub(super) fn refresh_selection_snapshot(app: &mut App) {
-    if !app.selection.is_some_and(|selection| selection.kind == crate::state::types::SelectionKind::Input) {
+    if !app
+        .selection
+        .is_some_and(|selection| selection.kind == crate::state::types::SelectionKind::Input)
+    {
         return;
     }
 
@@ -273,7 +318,9 @@ fn apply_textarea_highlights(textarea: &mut TextArea<'_>, lines: &[String]) {
     let mention_style = Style::default().fg(Color::Cyan);
     let subagent_style = Style::default().fg(theme::SUBAGENT_TOKEN);
     let paste_style = Style::default().fg(Color::Green);
-    let image_badge_style = Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD);
+    let image_badge_style = Style::default()
+        .fg(Color::Cyan)
+        .add_modifier(Modifier::BOLD);
 
     for (row, line) in lines.iter().enumerate() {
         if let Some((start, end)) = slash_command_range(line) {
@@ -323,8 +370,9 @@ fn slash_command_range(line: &str) -> Option<(usize, usize)> {
     if line.as_bytes().get(start).copied() != Some(b'/') {
         return None;
     }
-    let rel_end =
-        line[start..].find(char::is_whitespace).unwrap_or_else(|| line.len().saturating_sub(start));
+    let rel_end = line[start..]
+        .find(char::is_whitespace)
+        .unwrap_or_else(|| line.len().saturating_sub(start));
     let end = start + rel_end;
     if end <= start + 1 {
         return None;
@@ -340,14 +388,22 @@ impl Widget for SelectionOverlay {
     #[allow(clippy::cast_possible_truncation)]
     fn render(self, area: Rect, buf: &mut Buffer) {
         let (a, b) = (self.selection.start, self.selection.end);
-        let (start, end) = if (a.row, a.col) <= (b.row, b.col) { (a, b) } else { (b, a) };
+        let (start, end) = if (a.row, a.col) <= (b.row, b.col) {
+            (a, b)
+        } else {
+            (b, a)
+        };
         for row in start.row..=end.row {
             let y = area.y.saturating_add(row as u16);
             if y >= area.bottom() {
                 break;
             }
             let row_start = if row == start.row { start.col } else { 0 };
-            let row_end = if row == end.row { end.col } else { area.width as usize };
+            let row_end = if row == end.row {
+                end.col
+            } else {
+                area.width as usize
+            };
             for col in row_start..row_end {
                 let x = area.x.saturating_add(col as u16);
                 if x >= area.right() {
@@ -381,9 +437,11 @@ fn render_lines_from_textarea(textarea: &TextArea<'_>, area: Rect) -> Vec<String
 /// Called by the layout to allocate the correct input area height.
 pub fn visual_line_count(app: &mut App, area_width: u16) -> u16 {
     let hint = hint_line_count(app);
-    let content_width =
-        area_width.saturating_sub(INPUT_PAD * 2 + INPUT_RIGHT_PAD).saturating_sub(PROMPT_WIDTH);
-    let input_lines = app.input.measure_visual_lines(content_width, MAX_INPUT_HEIGHT);
+    let content_width = area_width
+        .saturating_sub(INPUT_PAD * 2 + INPUT_RIGHT_PAD)
+        .saturating_sub(PROMPT_WIDTH);
+    let input_lines = app
+        .input
+        .measure_visual_lines(content_width, MAX_INPUT_HEIGHT);
     hint + input_lines
 }
-

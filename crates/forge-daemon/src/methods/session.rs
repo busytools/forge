@@ -240,8 +240,7 @@ pub async fn subscribe(
         && let Some(info) = forge_sdk::session::scan::get_session_info(&session_id.0, None)
     {
         info!(session_id = %session_id.0, "subscribe: auto-resuming on-disk session");
-        let mut builder =
-            forge_sdk::OptionsBuilder::new().resume(session_id.0.clone());
+        let mut builder = forge_sdk::OptionsBuilder::new().resume(session_id.0.clone());
         if let Some(cwd) = info.cwd.as_deref() {
             builder = builder.cwd(cwd);
         }
@@ -464,8 +463,7 @@ pub async fn slash_list(
     state: &DaemonState,
     session_id: &SessionId,
 ) -> Result<SlashListResult, Error> {
-    let pairs =
-        dispatch_command(state, session_id, |reply| Command::SlashList { reply }).await?;
+    let pairs = dispatch_command(state, session_id, |reply| Command::SlashList { reply }).await?;
     let commands = pairs
         .into_iter()
         .map(|(name, description)| SlashCommandEntry { name, description })
