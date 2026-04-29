@@ -65,6 +65,9 @@ pub enum AppEvent {
     },
     /// `mcp.status` poll reply — list of MCP servers and their state.
     McpStatusSnapshot(serde_json::Value),
+    /// `slash.list` reply — slash-command catalog from the CLI's
+    /// init payload, used to populate `app.available_commands`.
+    AvailableCommandsLoaded(Vec<crate::state::model::AvailableCommand>),
     /// External quit signal.
     Quit,
 }
@@ -281,6 +284,9 @@ pub async fn run<B: Backend>(
             }
             AppEvent::McpStatusSnapshot(value) => {
                 app.mcp.servers = crate::state::wire_adapter::json_to_mcp_servers(&value);
+            }
+            AppEvent::AvailableCommandsLoaded(commands) => {
+                app.available_commands = commands;
             }
         }
     }

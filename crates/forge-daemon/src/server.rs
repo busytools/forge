@@ -487,6 +487,12 @@ async fn dispatch(req: &Request, conn: &Connection, state: &DaemonState) -> Resp
             })
             .await
         }
+        "slash.list" => {
+            typed_call(req, |p: SessionIdOnlyParams| async move {
+                methods::session::slash_list(state, &p.session_id).await
+            })
+            .await
+        }
         // ---- prompts.* (M4) ------------------------------------------------
         "prompts.respond" => {
             typed_call(req, |p: PromptsRespondParams| async move {

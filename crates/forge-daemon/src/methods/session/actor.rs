@@ -165,6 +165,27 @@ pub(crate) fn spawn_session_actor(
                         Command::CurrentModel { reply } => {
                             let _ = reply.send(Ok(current_model.clone()));
                         }
+                        Command::SlashList { reply } => {
+                            let commands = client
+                                .initial_session_data()
+                                .and_then(|d| d.get("slash_commands"))
+                                .and_then(serde_json::Value::as_array)
+                                .map(|arr| {
+                                    arr.iter()
+                                        .filter_map(|cmd| {
+                                            let name =
+                                                cmd.get("name").and_then(|v| v.as_str())?;
+                                            let description = cmd
+                                                .get("description")
+                                                .and_then(|v| v.as_str())
+                                                .unwrap_or("");
+                                            Some((name.to_owned(), description.to_owned()))
+                                        })
+                                        .collect()
+                                })
+                                .unwrap_or_default();
+                            let _ = reply.send(Ok(commands));
+                        }
                     }
                 }
                 next = client.next_event() => {

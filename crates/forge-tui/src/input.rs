@@ -182,22 +182,30 @@ async fn handle_conversation_key(
 fn autocomplete_active(app: &App) -> bool {
     app.mention.is_some()
         || app.subagent.as_ref().is_some_and(|s| !s.candidates.is_empty())
+        || app.slash.as_ref().is_some_and(|s| !s.candidates.is_empty())
 }
 
-/// Drive `state::mention` + `state::subagent` activation off the current
-/// input/cursor state. Called after every keystroke that mutates the
-/// input editor so the menu opens/closes/refreshes naturally.
+/// Drive `state::mention` + `state::subagent` + `state::slash` activation
+/// off the current input/cursor state. Called after every keystroke that
+/// mutates the input editor so the menus open/close/refresh naturally.
 fn sync_autocomplete_with_cursor(app: &mut App) {
     crate::state::mention::sync_with_cursor(app);
     crate::state::subagent::sync_with_cursor(app);
+    crate::state::slash::sync_with_cursor(app);
 }
 
 /// Intercept Up/Down/Enter/Esc when an autocomplete menu is open.
-/// Returns `true` when the keystroke was consumed.
+/// Returns `true` when the keystroke was consumed. Mention takes
+/// priority, then subagent, then slash — only one menu can be active
+/// at a time in practice (different triggers).
 fn handle_autocomplete_key(app: &mut App, key: KeyEvent) -> bool {
     let mention_active = app.mention.is_some();
     let subagent_active = app
         .subagent
+        .as_ref()
+        .is_some_and(|s| !s.candidates.is_empty());
+    let slash_active = app
+        .slash
         .as_ref()
         .is_some_and(|s| !s.candidates.is_empty());
     match key.code {
@@ -206,6 +214,8 @@ fn handle_autocomplete_key(app: &mut App, key: KeyEvent) -> bool {
                 crate::state::mention::move_up(app);
             } else if subagent_active {
                 crate::state::subagent::move_up(app);
+            } else if slash_active {
+                crate::state::slash::move_up(app);
             }
             true
         }
@@ -214,6 +224,8 @@ fn handle_autocomplete_key(app: &mut App, key: KeyEvent) -> bool {
                 crate::state::mention::move_down(app);
             } else if subagent_active {
                 crate::state::subagent::move_down(app);
+            } else if slash_active {
+                crate::state::slash::move_down(app);
             }
             true
         }
@@ -222,6 +234,8 @@ fn handle_autocomplete_key(app: &mut App, key: KeyEvent) -> bool {
                 crate::state::mention::confirm_selection(app);
             } else if subagent_active {
                 crate::state::subagent::confirm_selection(app);
+            } else if slash_active {
+                crate::state::slash::confirm_selection(app);
             }
             true
         }
@@ -230,6 +244,8 @@ fn handle_autocomplete_key(app: &mut App, key: KeyEvent) -> bool {
                 crate::state::mention::deactivate(app);
             } else if subagent_active {
                 crate::state::subagent::deactivate(app);
+            } else if slash_active {
+                crate::state::slash::deactivate(app);
             }
             true
         }
@@ -304,7 +320,51 @@ fn open_session(
         }
     });
 
-    spawn_footer_poller(client.clone(), event_tx.clone(), sid);
+    spawn_footer_poller(client.clone(), event_tx.clone(), sid.clone());
+    spawn_slash_catalog_fetch(client.clone(), event_tx.clone(), sid);
+}
+
+/// One-shot fetch of the CLI's slash-command catalog. Populates
+/// `app.available_commands` so the `/` autocomplete menu has data.
+fn spawn_slash_catalog_fetch(
+    client: Arc<Client>,
+    event_tx: mpsc::UnboundedSender<AppEvent>,
+    sid: String,
+) {
+    tokio::spawn(async move {
+        match client
+            .call::<_, serde_json::Value>(
+                "slash.list",
+                serde_json::json!({"session_id": sid}),
+            )
+            .await
+        {
+            Ok(v) => {
+                let commands: Vec<crate::state::model::AvailableCommand> = v
+                    .get("commands")
+                    .and_then(serde_json::Value::as_array)
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|cmd| {
+                                let name = cmd.get("name").and_then(|v| v.as_str())?;
+                                let description = cmd
+                                    .get("description")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("");
+                                Some(crate::state::model::AvailableCommand::new(
+                                    name, description,
+                                ))
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let _ = event_tx.send(AppEvent::AvailableCommandsLoaded(commands));
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, sid = %sid, "slash.list failed");
+            }
+        }
+    });
 }
 
 /// Footer poller: every ~1s, fetch `session.current_model` +

@@ -433,6 +433,46 @@ pub async fn current_model(
     Ok(CurrentModelResult { model })
 }
 
+/// One slash-command entry in `slash.list`. Mirrors the CLI's
+/// `init.slash_commands[*]` shape (subset).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct SlashCommandEntry {
+    /// Command name, e.g. `"help"` (no leading slash).
+    pub name: String,
+    /// Human-readable description from the CLI's catalog.
+    pub description: String,
+}
+
+/// Result shape for `slash.list`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct SlashListResult {
+    /// Slash commands the CLI advertises in its `system/init` payload.
+    pub commands: Vec<SlashCommandEntry>,
+}
+
+/// `slash.list` — return the slash-command catalog from the CLI's
+/// init payload. Forge-tui uses this for autocomplete; the actual
+/// dispatch happens by sending `/<name> <args>` as a user message,
+/// which the CLI parses and runs internally.
+///
+/// # Errors
+///
+/// `SessionNotFound` if the id is unknown.
+pub async fn slash_list(
+    state: &DaemonState,
+    session_id: &SessionId,
+) -> Result<SlashListResult, Error> {
+    let pairs =
+        dispatch_command(state, session_id, |reply| Command::SlashList { reply }).await?;
+    let commands = pairs
+        .into_iter()
+        .map(|(name, description)| SlashCommandEntry { name, description })
+        .collect();
+    Ok(SlashListResult { commands })
+}
+
 /// `session.rewind_files` — ask the CLI to revert file edits since the
 /// supplied user message.
 ///
