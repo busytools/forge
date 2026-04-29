@@ -6,5 +6,6 @@
 
 pub mod footer;
 pub mod help;
+pub mod input;
 pub mod session_picker;
 pub mod todo;
