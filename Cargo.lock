@@ -701,6 +701,7 @@ name = "forge-tui"
 version = "0.1.64"
 dependencies = [
  "ansi-to-tui",
+ "anyhow",
  "clap",
  "crossterm",
  "forge-daemon",

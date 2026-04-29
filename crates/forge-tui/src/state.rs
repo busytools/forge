@@ -10,6 +10,7 @@
 //! footer / picker UI are wired.
 
 pub mod agent_types;
+pub mod app;
 pub mod block_cache;
 pub mod cache_metrics;
 pub mod clipboard_image;
