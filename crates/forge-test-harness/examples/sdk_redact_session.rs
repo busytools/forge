@@ -75,11 +75,11 @@ fn main() -> ExitCode {
         }
     };
     eprintln!("{summary}");
-    if let Some(cap) = max_frames {
-        if lines.len() > cap {
-            eprintln!("trimming from {} frames to --max-frames={cap}", lines.len());
-            lines.truncate(cap);
-        }
+    if let Some(cap) = max_frames
+        && lines.len() > cap
+    {
+        eprintln!("trimming from {} frames to --max-frames={cap}", lines.len());
+        lines.truncate(cap);
     }
 
     // Emit one `{"dir":"in","line":"..."}` entry per frame, matching
