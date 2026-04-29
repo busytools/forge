@@ -1,3 +1,5 @@
 pub mod types;
 
-pub use types::{UsageSnapshot, UsageSourceKind, UsageSourceMode, UsageState, UsageWindow};
+pub use types::{
+    ModeInfo, ModeState, UsageSnapshot, UsageSourceKind, UsageSourceMode, UsageState, UsageWindow,
+};
