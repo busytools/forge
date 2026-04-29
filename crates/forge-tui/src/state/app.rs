@@ -416,6 +416,54 @@ impl App {
     /// `history_retention.rs` lifts; until then the parallel arrays
     /// stay zero-initialised and history retention is not enforced.
     pub fn recompute_message_retained_bytes(&mut self, _msg_idx: usize) {}
+
+    /// Whether the input draft has any user text. Used by focus
+    /// routing to decide whether Enter should submit or focus the
+    /// pending permission queue.
+    #[must_use]
+    pub fn has_draft_input_for_focus(&self) -> bool {
+        !self.input.is_empty()
+    }
+
+    /// Re-derive focus claims from current chat state. Lifted from
+    /// upstream; called on view changes and on incoming
+    /// permission/question events.
+    pub fn rebuild_chat_focus_from_state(&mut self) {
+        use crate::state::inline_interactions::{
+            clear_inline_interaction_focus, focus_next_inline_interaction,
+        };
+
+        if self.active_view != ActiveView::Chat {
+            return;
+        }
+
+        self.normalize_focus_stack();
+
+        if self.pending_interaction_ids.is_empty() {
+            clear_inline_interaction_focus(self);
+        } else if self.focus_owner() == FocusOwner::Permission
+            || !self.has_draft_input_for_focus()
+        {
+            focus_next_inline_interaction(self);
+        } else {
+            clear_inline_interaction_focus(self);
+        }
+
+        if self.autocomplete_focus_available() {
+            self.claim_focus_target(FocusTarget::Mention);
+        } else {
+            self.release_focus_target(FocusTarget::Mention);
+        }
+
+        if self.is_help_active()
+            && self.pending_interaction_ids.is_empty()
+            && !self.autocomplete_focus_available()
+        {
+            self.claim_focus_target(FocusTarget::Help);
+        } else {
+            self.release_focus_target(FocusTarget::Help);
+        }
+    }
 }
 
 impl Default for App {

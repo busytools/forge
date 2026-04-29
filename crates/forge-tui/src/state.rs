@@ -27,6 +27,7 @@ pub mod permissions;
 pub mod questions;
 pub mod tool_call_info;
 pub mod types;
+pub mod view;
 pub mod viewport;
 
 pub use viewport::{LayoutInvalidation, LayoutRemeasureReason};
