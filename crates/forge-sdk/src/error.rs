@@ -1,6 +1,6 @@
 //! Error type for the forge-sdk crate.
 //!
-//! Mirrors the Python SDK's exception hierarchy in a single `thiserror` enum.
+//! Single typed error in a single `thiserror` enum.
 //! Every fallible public API returns `Result<T, Error>`.
 
 use std::io;
@@ -12,7 +12,7 @@ use thiserror::Error;
 pub enum Error {
     /// The `claude` binary (or a custom replacement) was not found on `PATH`.
     ///
-    /// Mirrors Python's `CLINotFoundError`.
+    /// Wraps the CLI's `CLINotFoundError`.
     #[error("claude CLI binary `{binary}` not found on PATH")]
     CliNotFound {
         /// The binary path or name that was attempted.
@@ -21,7 +21,7 @@ pub enum Error {
 
     /// The subprocess exited with a non-zero status or was terminated by a signal.
     ///
-    /// Mirrors Python's `ProcessError`.
+    /// Wraps the CLI's `ProcessError`.
     #[error("claude subprocess failed (exit code {exit_code:?}): {stderr}")]
     Process {
         /// Exit status, if the process exited normally.
@@ -32,7 +32,7 @@ pub enum Error {
 
     /// Could not establish or maintain the stdio connection to the subprocess.
     ///
-    /// Mirrors Python's `CLIConnectionError`.
+    /// Wraps the CLI's `CLIConnectionError`.
     #[error("connection to claude subprocess failed: {reason}")]
     Connection {
         /// Human-readable explanation.
@@ -41,7 +41,7 @@ pub enum Error {
 
     /// A line of stream-json from the subprocess could not be parsed as JSON.
     ///
-    /// Mirrors Python's `CLIJSONDecodeError`.
+    /// Wraps the CLI's `CLIJSONDecodeError`.
     #[error("stream-json decode failed at line {line}: {source}")]
     JsonDecode {
         /// 1-based line number of the offending line.
@@ -53,9 +53,9 @@ pub enum Error {
 
     /// A stream-json message parsed as JSON but did not match any known message schema.
     ///
-    /// Mirrors Python's `MessageParseError` (`_errors.py:48-55`), including
+    /// Wraps the CLI's `MessageParseError` (`_errors.py:48-55`), including
     /// the optional `data` field that carries the offending payload when
-    /// one is available. Python reads this as a `dict[str, Any] | None`;
+    /// one is available. the CLI reads this as a `dict[str, Any] | None`;
     /// forge-sdk types it as `Option<serde_json::Value>` so callers
     /// inspecting the failure can recover the decoded JSON without
     /// re-parsing the error message.
@@ -105,7 +105,7 @@ impl Error {
     }
 
     /// Construct a [`Error::MessageParse`] that carries the offending
-    /// payload alongside the reason — mirrors Python's
+    /// payload alongside the reason — mirrors the CLI's
     /// `MessageParseError(msg, data)`.
     #[must_use]
     pub fn message_parse_with_data(reason: impl Into<String>, data: serde_json::Value) -> Self {

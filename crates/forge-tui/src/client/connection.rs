@@ -481,23 +481,23 @@ async fn read_loop(
             }
         } else {
             // Notification.
-            if method == "session.event" {
-                if let Some(sid) = params.get("session_id").and_then(|s| s.as_str()) {
-                    let send_result = {
-                        let table = subscriptions.lock();
-                        table.get(sid).map(|tx| tx.send(params.clone()))
-                    };
-                    match send_result {
-                        Some(Ok(())) => continue,
-                        Some(Err(_)) => {
-                            // Receiver dropped — purge so future
-                            // subscribe attempts get a fresh entry
-                            // rather than colliding on the dead one.
-                            subscriptions.lock().remove(sid);
-                            continue;
-                        }
-                        None => { /* fall through to notifications channel */ }
+            if method == "session.event"
+                && let Some(sid) = params.get("session_id").and_then(|s| s.as_str())
+            {
+                let send_result = {
+                    let table = subscriptions.lock();
+                    table.get(sid).map(|tx| tx.send(params.clone()))
+                };
+                match send_result {
+                    Some(Ok(())) => continue,
+                    Some(Err(_)) => {
+                        // Receiver dropped — purge so future
+                        // subscribe attempts get a fresh entry
+                        // rather than colliding on the dead one.
+                        subscriptions.lock().remove(sid);
+                        continue;
                     }
+                    None => { /* fall through to notifications channel */ }
                 }
             }
             // Anything else (role_assigned, primary_changed, closed,

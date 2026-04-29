@@ -151,6 +151,20 @@ pub enum Command {
         /// Reply channel for the typed [`ContextUsageResponse`](forge_sdk::ContextUsageResponse).
         reply: oneshot::Sender<Result<forge_sdk::ContextUsageResponse, Error>>,
     },
+    /// `session.current_model` — return the model id captured from
+    /// the CLI's `system/init` payload (and updated by `set_model`).
+    CurrentModel {
+        /// Reply channel.
+        reply: oneshot::Sender<Result<Option<String>, Error>>,
+    },
+    /// `slash.list` — return the slash-command catalog the CLI exposed
+    /// in its `system/init` payload. Forge's TUI uses this for
+    /// autocomplete; commands themselves are sent back as user-message
+    /// text and the CLI handles dispatch.
+    SlashList {
+        /// Reply channel: list of `(name, description)` pairs.
+        reply: oneshot::Sender<Result<Vec<(String, String)>, Error>>,
+    },
 }
 
 /// Per-session state visible to dispatch handlers + the broadcast helper.

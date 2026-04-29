@@ -21,7 +21,7 @@ async fn main() -> Result<()> {
     let opts = OptionsBuilder::new()
         .permission_mode(PermissionMode::BypassPermissions)
         .build();
-    let mut client = Client::spawn(opts).await?;
+    let client = Client::spawn(opts).await?;
     println!("session: {}", client.session_id());
 
     client.send_user_message(&prompt).await?;

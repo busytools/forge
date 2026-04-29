@@ -1,17 +1,18 @@
 # forge-sdk
 
-Rust port of Anthropic's [`claude-agent-sdk`](https://github.com/anthropics/claude-agent-sdk-python).
+A peer reference implementation in Rust of a client for Anthropic's
+`claude` CLI. Spawns the binary, speaks stream-json over stdio,
+exposes the agentic surface as typed Rust messages + commands. Wire
+contract with the CLI is the only hard external invariant; API shape
+is whatever serves [`forge-daemon`](../forge-daemon) and
+[`forge-tui`](../forge-tui) best.
 
-## Status
+Not a Python-parity port. See [`PARITY.md`](../../PARITY.md) for the
+history of the parity-tracking era and the
+[`CLAUDE.md`](../../CLAUDE.md) workspace guide for the current
+direction.
 
-- **v0.1.64** — feature + behavioural parity with Python
-  `claude-agent-sdk` v0.1.64. 764 tests + 107 ignored green; every
-  in-scope Python test file (14/14) has a named Rust counterpart.
-  Only remaining parity gap: `AsyncHookJSONOutput` out-of-band
-  delivery (upstream-blocked). Not yet published to crates.io.
 - Release history: [`../../docs/CHANGELOG.md`](../../docs/CHANGELOG.md).
-- Full surface map: [`../../docs/forge-sdk-parity-map.html`](../../docs/forge-sdk-parity-map.html)
-  (local-only; regenerated on surface changes).
 
 ## Public surface
 
@@ -21,8 +22,8 @@ Core types and functions exposed from the crate root:
   `Client::spawn_with_transport(options, transport)`, `query()`,
   `query_stream()`.
 - **Transport extension** — `pub trait Transport` for injecting
-  custom I/O (remote, in-memory, containerised). `Subprocess` is
-  the shipped in-process implementation.
+  custom I/O (e.g. wire-recording in `forge-test-harness`).
+  `Subprocess` is the shipped in-process implementation.
 - **Messages** — `Message` enum (variants for Assistant, User,
   System, Result, TaskStarted/Progress/Notification, RateLimitEvent,
   MirrorError, StreamEvent), `AssistantEnvelope`, `UserEnvelope`,
@@ -109,8 +110,9 @@ Full gate (tests + clippy + fmt + docs) via:
 just check
 ```
 
-Weekly parity with Python upstream follows
-[`../../docs/parity-check.md`](../../docs/parity-check.md).
+The Monday upstream-watch ritual lives in
+[`../../CLAUDE.md`](../../CLAUDE.md) — scan Python `claude-agent-sdk`
+for new ideas worth pulling in (forge-native, not 1:1 parity).
 
 ## Licence
 

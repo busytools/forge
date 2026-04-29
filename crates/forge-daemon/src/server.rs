@@ -341,7 +341,7 @@ async fn dispatch(req: &Request, conn: &Connection, state: &DaemonState) -> Resp
         }
         "session.subscribe" => {
             typed_call(req, |p: methods::session::SubscribeParams| async move {
-                methods::session::subscribe(state, conn, &p.session_id, p.since.as_deref())
+                methods::session::subscribe(state, conn, &p.session_id, p.since.as_deref()).await
             })
             .await
         }
@@ -478,6 +478,18 @@ async fn dispatch(req: &Request, conn: &Connection, state: &DaemonState) -> Resp
         "context.get" => {
             typed_call(req, |p: SessionIdOnlyParams| async move {
                 methods::context::get(state, &p.session_id).await
+            })
+            .await
+        }
+        "session.current_model" => {
+            typed_call(req, |p: SessionIdOnlyParams| async move {
+                methods::session::current_model(state, &p.session_id).await
+            })
+            .await
+        }
+        "slash.list" => {
+            typed_call(req, |p: SessionIdOnlyParams| async move {
+                methods::session::slash_list(state, &p.session_id).await
             })
             .await
         }
@@ -691,12 +703,12 @@ fn url_decode(s: &str) -> String {
             b'%' if i + 2 < bytes.len() => {
                 let hex_slice = bytes.get(i + 1..i + 3);
                 let hex_str = hex_slice.and_then(|b| std::str::from_utf8(b).ok());
-                if let Some(h) = hex_str {
-                    if let Ok(n) = u8::from_str_radix(h, 16) {
-                        out.push(n);
-                        i += 3;
-                        continue;
-                    }
+                if let Some(h) = hex_str
+                    && let Ok(n) = u8::from_str_radix(h, 16)
+                {
+                    out.push(n);
+                    i += 3;
+                    continue;
                 }
                 // Malformed escape — treat the `%` as a literal byte and
                 // surface a debug log so operators can trace bad query

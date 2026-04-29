@@ -359,8 +359,8 @@ fn snapshot_for_wire_includes_pending_prompts() {
     assert_eq!(snapshot[0].params["tool_name"], serde_json::json!("Bash"));
 }
 
-#[test]
-fn subscribe_returns_pending_prompts_in_response() {
+#[tokio::test]
+async fn subscribe_returns_pending_prompts_in_response() {
     use forge_daemon::methods::session::{SubscribeResult, subscribe};
 
     let state = forge_daemon::registry::DaemonState::new();
@@ -391,7 +391,7 @@ fn subscribe_returns_pending_prompts_in_response() {
 
     let SubscribeResult {
         pending_prompts, ..
-    } = subscribe(&state, &conn, &sid, None).unwrap();
+    } = subscribe(&state, &conn, &sid, None).await.unwrap();
 
     assert_eq!(pending_prompts.len(), 1);
     assert_eq!(
@@ -791,7 +791,7 @@ fn hook_bridge_replace_input_carries_through() {
 
 #[test]
 fn hook_bridge_decodes_all_sync_output_fields() {
-    // Round 3 — fix I6. Lock that every Python SyncHookJSONOutput
+    // Round 3 — fix I6. Lock that every SyncHookJSONOutput
     // control field round-trips through `decode_hook_response`.
     let v = serde_json::json!({
         "decision": "passthrough",

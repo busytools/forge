@@ -28,9 +28,8 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use forge_sdk::transport::process::Subprocess;
 use forge_sdk::{Client, Message, OptionsBuilder};
-use forge_test_harness::sdk_wire::{RecordingTransport, TraceLog, decode_all_inbound};
+use forge_test_harness::sdk_wire::{TraceLog, attach_recording, decode_all_inbound};
 
 fn timestamp_tag() -> String {
     let secs = SystemTime::now()
@@ -79,10 +78,8 @@ async fn wire_capture_trivial_prompt() {
     // the developer's profile produces. Decoder must tolerate that anyway
     // (it's what real library consumers will see), and our `Unknown`
     // fallbacks plus pre-init buffering keep the harness robust.
-    let opts = OptionsBuilder::new().max_turns(1).build();
-
-    let sub = Subprocess::spawn(&opts).await.expect("spawn subprocess");
-    let (transport, log_arc) = RecordingTransport::new(sub);
+    let (builder, log_arc) = attach_recording(OptionsBuilder::new().max_turns(1));
+    let opts = builder.build();
 
     // Scope guard: always dump whatever we captured, even on a panic partway
     // through — so failing spawns still give us a trace for post-mortem.
@@ -98,13 +95,12 @@ async fn wire_capture_trivial_prompt() {
         path
     };
 
-    let spawn_result = Client::spawn_with_transport(opts, Box::new(transport)).await;
-    let mut client = match spawn_result {
+    let client = match Client::spawn(opts).await {
         Ok(c) => c,
         Err(e) => {
             let path = dump_trace("trivial-spawn-failed");
             panic!(
-                "Client::spawn_with_transport failed — trace written to {}: {e}",
+                "Client::spawn failed — trace written to {}: {e}",
                 path.display()
             );
         }

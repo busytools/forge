@@ -1,7 +1,7 @@
 //! Top-level stream-json message shapes.
 //!
 //! Every line the `claude --output-format stream-json` binary emits is one
-//! of these variants. Mirrors Python SDK's `AssistantMessage`, `UserMessage`,
+//! of these variants. SDK's `AssistantMessage`, `UserMessage`,
 //! `SystemMessage` (plus task-lifecycle + mirror-error subclasses),
 //! `ResultMessage`, and `RateLimitEvent`.
 
@@ -30,13 +30,13 @@ pub enum Message {
         parent_tool_use_id: Option<String>,
         /// Classification of a failure the CLI attributes to this turn
         /// (e.g. `rate_limit`, `billing_error`). `None` for successful
-        /// turns. Ported from Python `AssistantMessage.error`
-        /// (`types.py:922` + `message_parser.py:137`).
+        /// turns. `AssistantMessage.error`
+        ///
         error: Option<AssistantMessageError>,
         /// Stable identifier for this assistant turn, used for file
         /// checkpointing (`enable_file_checkpointing=true`) and as the
         /// target of [`Client::rewind_files`](crate::Client::rewind_files).
-        /// Python `AssistantMessage.uuid` (`types.py:928`).
+        /// the CLI `AssistantMessage.uuid`.
         uuid: Option<String>,
     },
 
@@ -50,13 +50,13 @@ pub enum Message {
         parent_tool_use_id: Option<String>,
         /// Stable identifier for this user turn — the `user_message_id`
         /// [`Client::rewind_files`](crate::Client::rewind_files) takes.
-        /// Python `UserMessage.uuid` (`types.py:910`). `None` unless the
+        /// the CLI `UserMessage.uuid`. `None` unless the
         /// CLI is configured to emit them
         /// (`extra_args={"replay-user-messages": None}`).
         uuid: Option<String>,
         /// Raw tool-result payload the CLI attaches when this user turn
-        /// reports a tool's output. Python `UserMessage.tool_use_result`
-        /// (`types.py:912`); forge-sdk passes it through as a
+        /// reports a tool's output. the CLI `UserMessage.tool_use_result`
+        ///; forge-sdk passes it through as a
         /// [`Value`] since the upstream type is `dict[str, Any]`.
         tool_use_result: Option<Value>,
     },
@@ -74,7 +74,7 @@ pub enum Message {
     },
 
     /// A sub-agent `Task` has started running. Subtype `"task_started"`.
-    /// Mirrors Python SDK v0.1.64 `TaskStartedMessage` (`types.py:951-965`).
+    /// `TaskStartedMessage`.
     TaskStarted {
         /// Stable identifier for this task instance.
         task_id: String,
@@ -91,8 +91,8 @@ pub enum Message {
     },
 
     /// Periodic progress update while a sub-agent `Task` is in flight.
-    /// Subtype `"task_progress"`. Mirrors Python SDK v0.1.64
-    /// `TaskProgressMessage` (`types.py:967-983`).
+    /// Subtype `"task_progress"`. v0.1.64
+    /// `TaskProgressMessage`.
     TaskProgress {
         /// Stable identifier for this task instance.
         task_id: String,
@@ -111,8 +111,8 @@ pub enum Message {
     },
 
     /// Terminal notification when a sub-agent `Task` completes, fails, or is
-    /// stopped. Subtype `"task_notification"`. Mirrors Python SDK v0.1.64
-    /// `TaskNotificationMessage` (`types.py:986-1002`).
+    /// stopped. Subtype `"task_notification"`. v0.1.64
+    /// `TaskNotificationMessage`.
     TaskNotification {
         /// Stable identifier for this task instance.
         task_id: String,
@@ -134,8 +134,8 @@ pub enum Message {
 
     /// Rate-limit state transition. The CLI emits this when the current
     /// rate-limit window changes state (e.g. `allowed` → `allowed_warning`).
-    /// Wire shape mirrors Python SDK v0.1.64 `types.py:1054-1107` +
-    /// `_internal/message_parser.py:242-262`.
+    /// Wire shape mirrors +
+    ///.
     RateLimitEvent {
         /// Rate-limit snapshot at the moment of the transition.
         rate_limit_info: RateLimitInfo,
@@ -147,10 +147,10 @@ pub enum Message {
 
     /// End-of-turn or end-of-session summary with cost and usage.
     ///
-    /// Field coverage matches Python `ResultMessage` (`types.py:1023-1039` +
-    /// `_internal/message_parser.py:205-227`). Only six fields are required
-    /// on the wire — every other field is `Option<...>` because Python's
-    /// `data.get(...)` never raises when missing.
+    /// Only six fields are required on the wire (`subtype`,
+    /// `session_id`, `is_error`, `num_turns`, `duration_ms`,
+    /// `duration_api_ms`); every other field is `Option<...>` because
+    /// the CLI omits them silently when not applicable.
     Result {
         /// Result discriminant (e.g. `"success"`, `"error_during_execution"`).
         subtype: String,
@@ -170,8 +170,8 @@ pub enum Message {
         /// Total cost so far in USD. `None` when the CLI can't compute
         /// or doesn't report (free-tier sessions, error-path results).
         total_cost_usd: Option<f64>,
-        /// Aggregate token usage for the turn. Optional in Python
-        /// (`types.py:1034`).
+        /// Aggregate token usage for the turn. Optional — the CLI
+        /// omits the field on error-path frames.
         usage: Option<Usage>,
         /// Plain-text result body when the turn produced one (e.g. the
         /// assistant's final output).
@@ -181,7 +181,7 @@ pub enum Message {
         /// schema. Passed through verbatim.
         structured_output: Option<Value>,
         /// Per-model usage breakdown. Wire key is camelCase
-        /// `modelUsage` (matches Python's `data.get("modelUsage")`).
+        /// `modelUsage` (matches the CLI's `data.get("modelUsage")`).
         model_usage: Option<Value>,
         /// Permissions denied during the turn, surfaced so callers can
         /// audit `can_use_tool` outcomes.
@@ -196,9 +196,9 @@ pub enum Message {
     /// [`Options::include_partial_messages`](crate::Options) is set. The
     /// CLI forwards raw Anthropic-API stream events (`message_start`,
     /// `content_block_delta`, `message_delta`, `message_stop`) without
-    /// coalescing them into complete turns. Mirrors Python SDK's
-    /// `StreamEvent` (`types.py:1043-1050`,
-    /// `_internal/message_parser.py:229-240`).
+    /// coalescing them into complete turns. SDK's
+    /// `StreamEvent`
+    ///).
     StreamEvent {
         /// Unique identifier for this stream event.
         uuid: String,
@@ -211,13 +211,14 @@ pub enum Message {
     },
 
     /// Fatal transport error injected into the message stream when the
-    /// CLI's read loop fails. Python SDK emits this at
-    /// `_internal/query.py:315` as a last-gasp signal before teardown;
-    /// forge-sdk preserves the same shape so callers draining
-    /// [`Client::next_event`](crate::Client::next_event) see the failure
-    /// on the iterator rather than via a side channel.
+    /// CLI's read loop fails. the CLI emits this at
+    /// as a last-gasp signal before teardown — emitted by the
+    /// CLI's read loop. forge-sdk surfaces it via
+    /// [`Client::next_event`](crate::Client::next_event) so callers
+    /// see the failure on the iterator rather than via a side
+    /// channel.
     Error {
-        /// The failure message as Python stringified it.
+        /// The failure message as the CLI stringified it.
         error: String,
     },
 
@@ -279,8 +280,7 @@ impl Message {
 /// The Anthropic-API-shaped envelope inside an `Assistant` message.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AssistantEnvelope {
-    /// Message id from the Anthropic API. Corresponds to Python's
-    /// `AssistantMessage.message_id` (`types.py:926`).
+    /// Message id from the Anthropic API.
     pub id: String,
     /// Fixed value `"assistant"`.
     pub role: String,
@@ -294,15 +294,14 @@ pub struct AssistantEnvelope {
     /// Stop sequence that triggered end-of-turn, if any.
     #[serde(default)]
     pub stop_sequence: Option<String>,
-    /// Token usage for this turn. Optional — Python reads it as
-    /// `data["message"].get("usage")` (`message_parser.py:135`), and
-    /// error-path frames don't carry a usage block.
+    /// Token usage for this turn. Optional — error-path frames
+    /// don't carry a usage block.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<Usage>,
 }
 
 /// Classification of a failure the CLI attributes to an assistant turn.
-/// Ported from Python `AssistantMessageError` union (`types.py:897-904`).
+/// `AssistantMessageError` union.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AssistantMessageError {
@@ -326,9 +325,8 @@ pub struct UserEnvelope {
     /// Fixed value `"user"`.
     pub role: String,
     /// Content blocks — usually `ToolResult` blocks when reporting
-    /// tool outputs. Wire shape is `list | str` per Python
-    /// `types.py:910` + `_internal/message_parser.py:89-94`: a bare
-    /// string is accepted on the way in and normalised into a single
+    /// tool outputs. Wire shape is `list | str`: a bare string is
+    /// accepted on the way in and normalised into a single
     /// [`ContentBlock::Text`] block; serialising always emits the
     /// list form.
     #[serde(deserialize_with = "deserialize_user_content")]
@@ -364,8 +362,8 @@ pub enum StopReason {
     ToolUse,
 }
 
-/// Rate-limit window status. Ported from Python's
-/// `Literal["allowed", "allowed_warning", "rejected"]` in `types.py:1054`.
+/// Rate-limit window status. Wire literal:
+/// `"allowed" | "allowed_warning" | "rejected"`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RateLimitStatus {
@@ -377,7 +375,7 @@ pub enum RateLimitStatus {
     Rejected,
 }
 
-/// Which rate-limit window applies. Ported from `types.py:1055-1057`.
+/// Which rate-limit window applies.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RateLimitType {
@@ -395,7 +393,7 @@ pub enum RateLimitType {
 
 /// Rate-limit snapshot emitted inside a [`Message::RateLimitEvent`].
 ///
-/// Mirrors Python SDK v0.1.64 `RateLimitInfo` (`types.py:1061-1088`). Inner
+/// `RateLimitInfo`. Inner
 /// field names on the wire are camelCase (`resetsAt`, `rateLimitType`,
 /// `overageStatus`, `overageResetsAt`, `overageDisabledReason`) per the CLI
 /// spec, while the outer frame uses `snake_case`.
@@ -438,9 +436,8 @@ pub struct RateLimitInfo {
     )]
     pub overage_disabled_reason: Option<String>,
     /// Echo of the raw CLI payload so callers can introspect fields
-    /// forge-sdk doesn't yet type. Mirrors Python's
-    /// `RateLimitInfo.raw` (`types.py:1083`); serde's `flatten` makes
-    /// this the catch-all bucket for unknown keys on the wire.
+    /// forge-sdk doesn't yet type. serde's `flatten` makes this the
+    /// catch-all bucket for unknown keys on the wire.
     #[serde(flatten, default, skip_serializing_if = "serde_json::Map::is_empty")]
     pub raw: serde_json::Map<String, serde_json::Value>,
 }
@@ -462,7 +459,7 @@ pub struct Usage {
 
 /// Usage counters reported inside task-progress and task-notification frames.
 ///
-/// Mirrors Python SDK v0.1.64 `TaskUsage` (`types.py:939-944`).
+/// `TaskUsage`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TaskUsage {
     /// Tokens consumed across all model calls in this task so far.
@@ -474,8 +471,8 @@ pub struct TaskUsage {
 }
 
 /// Terminal status of a sub-agent `Task` reported via
-/// [`Message::TaskNotification`]. Mirrors Python's
-/// `Literal["completed", "failed", "stopped"]` (`types.py:948`).
+/// [`Message::TaskNotification`]. Wire literal:
+/// `"completed" | "failed" | "stopped"`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskNotificationStatus {
@@ -737,15 +734,14 @@ impl From<MessageRepr> for Message {
                 session_id,
                 data,
             })) => {
-                // Python `SystemMessage.data` carries the FULL original
-                // dict including `type`, `subtype`, and `session_id`
-                // (`_internal/message_parser.py:196-199` +
-                // `types.py:932-935`). Rust's serde `#[flatten]` on the
-                // private `GenericSystemRepr` strips those fields
-                // because they're claimed by explicit sibling fields
-                // and the outer tag dispatch. Rehydrate so callers
-                // reading `data["subtype"]` (the Python idiom) see the
-                // same shape.
+                // The CLI's system message wire shape carries the
+                // FULL original dict in `data` — including `type`,
+                // `subtype`, and `session_id`. Rust's serde
+                // `#[flatten]` on the private `GenericSystemRepr`
+                // strips those fields because they're claimed by
+                // explicit sibling fields and the outer tag dispatch.
+                // Rehydrate so callers reading `data["subtype"]` see
+                // the unified shape.
                 let mut full_data = data;
                 if let Value::Object(map) = &mut full_data {
                     map.insert("type".into(), Value::String("system".into()));
@@ -854,10 +850,10 @@ impl From<Message> for MessageRepr {
                 data,
             } => {
                 // `data` now carries the full shape (including `type`,
-                // `subtype`, `session_id`) to match Python. On the way
-                // back out, strip those keys from the flatten payload
-                // so the outer tag-dispatch + explicit sibling fields
-                // don't produce duplicates on the wire.
+                // `subtype`, `session_id`). On the way back out, strip
+                // those keys from the flatten payload so the outer
+                // tag-dispatch + explicit sibling fields don't produce
+                // duplicates on the wire.
                 let mut flat = data;
                 if let Value::Object(map) = &mut flat {
                     map.remove("type");
@@ -998,8 +994,9 @@ mod tests_result_message_fields {
     use crate::Message;
     use serde_json::json;
 
-    /// Minimum-viable result frame — only the six required fields. Python
-    /// accepts this; forge-sdk must too.
+    /// Minimum-viable result frame — only the six required fields.
+    /// The CLI emits this on error-path turns; forge-sdk must accept
+    /// it.
     #[test]
     fn minimal_result_parses_without_cost_or_usage() {
         let raw = json!({
@@ -1496,8 +1493,8 @@ mod tests_stream_event_and_error_frames {
 
     #[test]
     fn error_frame_parses() {
-        // Emitted by Python `_internal/query.py:315` when the read loop
-        // itself hits a fatal exception. forge-sdk preserves the shape.
+        // The CLI emits this when its read loop hits a fatal
+        // exception. forge-sdk preserves the shape on the wire.
         let line = r#"{"type":"error","error":"connection closed unexpectedly"}"#;
         let msg = decode_line(line, 1).expect("decode");
         match msg {
@@ -1565,7 +1562,7 @@ mod tests_message_extras {
 
     #[test]
     fn assistant_error_enum_wire_names() {
-        // Each variant must serialize to the Python literal.
+        // Each variant must serialize to its wire literal.
         for (variant, wire) in [
             (
                 AssistantMessageError::AuthenticationFailed,
@@ -1617,10 +1614,9 @@ mod tests_message_extras {
 
     #[test]
     fn assistant_frame_without_usage_now_parses() {
-        // Python reads usage as `data["message"].get("usage")`
-        // (message_parser.py:135) — optional. Error-path assistant frames
-        // omit it. Forge-sdk must parse them (regression guard against the
-        // pre-2026-04-22 required-`usage` shape).
+        // Usage is optional on the wire — error-path assistant
+        // frames omit it. forge-sdk must parse them (regression
+        // guard against the pre-2026-04-22 required-`usage` shape).
         let raw = json!({
             "type": "assistant",
             "session_id": "sess",

@@ -6,7 +6,6 @@
 pub use error::Error;
 
 pub mod bind_check;
-pub mod bridged_transport;
 pub mod broadcast;
 pub mod config;
 pub mod connection;

@@ -1,163 +1,104 @@
-//! TUI app state machine + event loop.
-//!
-//! Three input streams converge on the `AppEvent` channel that the loop
-//! drains:
-//! - Terminal events (keys, resize) via `crossterm::event::EventStream`.
-//! - Daemon notifications (`session.event`, `role_assigned`,
-//!   `primary_changed`, `prompts.expired`).
-//! - Reverse-RPC inbound (`permission.request`, `hook.<kind>`).
-//!
-//! All reverse-RPC handlers in `main.rs` capture the `rev_id` and forward
-//! it through `AppEvent::PermissionRequest` so the keypress handler can
-//! later answer via [`crate::client::Client::send_response`].
+//! TUI app event loop. The mutable state lives in
+//! [`crate::state::app::App`]; this module owns the event-loop runtime
+//! that drains [`AppEvent`]s + drives the renderer.
 
 use std::sync::Arc;
 
-use crossterm::event::{Event, KeyEventKind};
+use crossterm::event::{Event, KeyEventKind, MouseEvent, MouseEventKind};
 use ratatui::Terminal;
 use ratatui::backend::Backend;
 use tokio::sync::mpsc;
 
 use crate::client::Client;
 
-/// All events the app loop handles, regardless of source.
+// Re-exports so legacy `use crate::app::App` etc. keep compiling.
+// The canonical types live in `state::app`.
+use crate::state::app::ActiveView;
+pub use crate::state::app::{ActiveView as Screen, App, ConnectionState, PendingPermission, Role};
+
+/// Every event the run loop handles, regardless of source.
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum AppEvent {
-    /// Raw terminal event from `crossterm::event::EventStream`.
-    Term(crossterm::event::Event),
-    /// A `session.event` notification payload.
+    /// Raw terminal input.
+    Term(Event),
+    /// WS link came up.
+    Connected,
+    /// WS link dropped; backoff timer carries seconds until next retry.
+    Disconnected {
+        /// Seconds until next retry attempt.
+        next_retry_secs: u32,
+    },
+    /// `session.event` notification payload (chat stream chunk).
     SessionFrame(serde_json::Value),
-    /// Initial session list snapshot (loaded once at startup).
+    /// `sessions.messages` historical transcript loaded for the
+    /// session we just opened.
+    HistoricalLoaded(Vec<serde_json::Value>),
+    /// `sessions.list` snapshot loaded.
     SessionListLoaded(Vec<serde_json::Value>),
-    /// `sessions.list` failed at startup. Carries the human-readable
-    /// error message so the app loop can surface it on the status line
-    /// rather than silently rendering an empty list.
+    /// `sessions.list` failed at startup.
     SessionListLoadFailed(String),
-    /// A reverse-RPC `permission.request` arrived.
+    /// Reverse-RPC `permission.request` arrived.
     PermissionRequest {
-        /// JSON-RPC id of the inbound request — must be echoed back via
-        /// [`crate::client::Client::send_response`] when the user answers.
+        /// JSON-RPC id of the inbound request — must be echoed back.
         rev_id: serde_json::Value,
-        /// Wrapped params from the request (the daemon passes `tool_name`,
-        /// `tool_input`, optional `prompt_id`).
+        /// Original params (`tool_name`, `tool_input`, optional `prompt_id`).
         params: serde_json::Value,
     },
-    /// `role_assigned` notification — local primary/viewer state changed.
+    /// `session.role_assigned` — local role flip.
     RoleChanged(serde_json::Value),
-    /// `primary_changed` notification — daemon reports the primary slot
-    /// for some session has been claimed/cleared.
+    /// `session.primary_changed` — daemon broadcast.
     PrimaryChanged(serde_json::Value),
-    /// `session.closed` notification — daemon emits when the session
-    /// actor exits (any reason). Carries `{session_id, reason}`.
+    /// `session.closed` — session actor exited.
     SessionClosed(serde_json::Value),
-    /// `prompts.expired` notification — drop matching modal.
+    /// `prompts.expired` — drop matching modal.
     PromptsExpired(serde_json::Value),
-    /// External quit signal (currently unused; provided for tests).
+    /// `session.current_model` poll reply — model id from CLI's
+    /// system/init payload (kept in sync with `session.set_model`).
+    CurrentModelSnapshot(Option<String>),
+    /// `context.get` poll reply — current-context-window usage.
+    ContextUsageSnapshot {
+        /// Used context as a percent of the model's window.
+        percent: Option<u8>,
+    },
+    /// `mcp.status` poll reply — list of MCP servers and their state.
+    McpStatusSnapshot(serde_json::Value),
+    /// `slash.list` reply — slash-command catalog from the CLI's
+    /// init payload, used to populate `app.available_commands`.
+    AvailableCommandsLoaded(Vec<crate::state::model::AvailableCommand>),
+    /// External quit signal.
     Quit,
-}
-
-/// Whole-app state. Owned by the event loop; mutated in place.
-#[derive(Debug, Default)]
-#[non_exhaustive]
-pub struct App {
-    /// Currently subscribed session, if any.
-    pub current_session: Option<String>,
-    /// Conversation transcript for `current_session` — appended to as
-    /// `session.event` frames arrive.
-    pub messages: Vec<serde_json::Value>,
-    /// Local primary/viewer role for `current_session`.
-    pub role: Role,
-    /// Active permission modal, if a reverse-RPC is awaiting an answer.
-    pub pending_permission: Option<PendingPermission>,
-    /// Filesystem-level session list (loaded once at startup).
-    pub session_list: Vec<serde_json::Value>,
-    /// Current keyboard focus.
-    pub focus: Focus,
-    /// One-line status message rendered at the bottom of the screen.
-    pub status_msg: String,
-    /// Cursor position in the session list panel.
-    pub session_list_cursor: usize,
-}
-
-/// Which UI element currently consumes keys.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum Focus {
-    /// Session list panel (default at startup).
-    #[default]
-    SessionList,
-    /// Conversation panel (after picking a session).
-    Conversation,
-    /// Modal answering a permission request.
-    PermissionModal,
-}
-
-/// Local primary/viewer role for the currently subscribed session.
-#[derive(Debug, Default, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum Role {
-    /// No session subscribed yet.
-    #[default]
-    Vacant,
-    /// We are the primary (callbacks/permission requests come to us).
-    Primary,
-    /// We are a viewer (only see notifications; can claim primary).
-    Viewer,
-}
-
-/// Snapshot of an outstanding permission request awaiting user input.
-#[derive(Debug)]
-#[non_exhaustive]
-pub struct PendingPermission {
-    /// JSON-RPC id of the originating reverse-RPC; required to answer
-    /// fresh requests via [`crate::client::Client::send_response`].
-    pub rev_id: serde_json::Value,
-    /// Original params (`tool_name`, `tool_input`, etc.).
-    pub params: serde_json::Value,
-    /// Set when the prompt came in via the persisted queue (after
-    /// reconnect). Queued prompts are answered via `prompts.respond`
-    /// rather than a synchronous reverse-RPC response.
-    pub prompt_id: Option<String>,
-}
-
-impl PendingPermission {
-    /// Construct a `PendingPermission`. Forward-compatible because the
-    /// type is `#[non_exhaustive]`; downstream code must use this rather
-    /// than the struct literal so future fields are added without
-    /// breaking changes.
-    #[must_use]
-    pub fn new(
-        rev_id: serde_json::Value,
-        params: serde_json::Value,
-        prompt_id: Option<String>,
-    ) -> Self {
-        Self {
-            rev_id,
-            params,
-            prompt_id,
-        }
-    }
 }
 
 /// Run the app event loop until quit.
 ///
-/// `event_tx` is forwarded into key handlers so background tasks
-/// (subscription pumps, etc.) can post `AppEvent`s back into the loop.
-///
 /// # Errors
 ///
 /// Terminal I/O errors propagate.
+#[allow(
+    clippy::too_many_lines,
+    reason = "event-handler match needs to stay in one place"
+)]
 pub async fn run<B: Backend>(
     terminal: &mut Terminal<B>,
     client: Arc<Client>,
+    mut app: App,
     event_tx: mpsc::UnboundedSender<AppEvent>,
     mut events: mpsc::UnboundedReceiver<AppEvent>,
 ) -> std::io::Result<()> {
-    let mut app = App::default();
-
+    let mut frames = 0_u64;
     loop {
-        terminal.draw(|f| crate::ui::render(f, &app))?;
+        terminal
+            .draw(|f| crate::ui::render(f, &mut app))
+            .map_err(|e| std::io::Error::other(format!("draw failed: {e}")))?;
+        frames += 1;
+        if frames == 1 {
+            tracing::info!(
+                view = ?app.active_view,
+                connection = ?app.connection,
+                "first frame drawn"
+            );
+        }
 
         let Some(event) = events.recv().await else {
             break;
@@ -165,37 +106,132 @@ pub async fn run<B: Backend>(
         match event {
             AppEvent::Quit => break,
             AppEvent::Term(Event::Key(k)) if k.kind == KeyEventKind::Press => {
-                if let Some(quit) =
-                    crate::input::handle_key(&mut app, k.code, &client, &event_tx).await
-                {
-                    if quit {
-                        break;
-                    }
+                if crate::input::handle_key(&mut app, k, &client, &event_tx).await {
+                    break;
+                }
+            }
+            AppEvent::Term(Event::Mouse(m)) => {
+                handle_mouse(&mut app, m);
+            }
+            AppEvent::Term(Event::FocusGained) => {
+                app.notifications.on_focus_gained();
+            }
+            AppEvent::Term(Event::FocusLost) => {
+                app.notifications.on_focus_lost();
+            }
+            AppEvent::Term(Event::Paste(text)) if app.active_view == ActiveView::Chat => {
+                if app.input.append_to_active_paste_block(&text) {
+                    // Appended to an in-progress paste split across
+                    // multiple `Paste` events.
+                } else {
+                    let _label = app.input.insert_paste_block(&text);
                 }
             }
             AppEvent::Term(_) => {}
-            AppEvent::SessionFrame(frame) => {
-                if let Some(msg) = frame.get("message").cloned() {
-                    app.messages.push(msg);
+
+            AppEvent::Connected => {
+                app.connection = ConnectionState::Connected;
+                if app.active_view == ActiveView::Disconnected {
+                    app.active_view = if app.current_session.is_some() {
+                        ActiveView::Chat
+                    } else {
+                        ActiveView::SessionPicker
+                    };
                 }
             }
+            AppEvent::Disconnected { next_retry_secs } => {
+                app.connection = ConnectionState::Reconnecting { next_retry_secs };
+                app.active_view = ActiveView::Disconnected;
+            }
+
             AppEvent::SessionListLoaded(items) => {
-                app.session_list = items;
-                if app.session_list_cursor >= app.session_list.len() {
-                    app.session_list_cursor = app.session_list.len().saturating_sub(1);
+                app.recent_sessions =
+                    crate::state::wire_adapter::session_list_to_recent_sessions(&items);
+                let max_idx = app.recent_sessions.len().saturating_sub(1);
+                if app.session_picker.selected > max_idx {
+                    app.session_picker.selected = max_idx;
+                }
+                if app.active_view == ActiveView::Connecting {
+                    app.active_view = ActiveView::SessionPicker;
                 }
             }
             AppEvent::SessionListLoadFailed(message) => {
                 app.status_msg = format!("session list load failed: {message}");
+                if app.active_view == ActiveView::Connecting {
+                    app.active_view = ActiveView::SessionPicker;
+                }
             }
+
+            AppEvent::SessionFrame(frame) => {
+                if let Some(msg) = frame.get("message").cloned() {
+                    crate::state::wire_adapter::apply_session_event(&mut app, &msg);
+                    // Turn-complete notification on `result` frames.
+                    if msg.get("type").and_then(|v| v.as_str()) == Some("result") {
+                        app.notifications.notify(
+                            crate::state::notify::PreferredNotifChannel::default(),
+                            crate::state::notify::NotifyEvent::TurnComplete,
+                        );
+                    }
+                }
+            }
+            AppEvent::HistoricalLoaded(history) => {
+                // Replay historical events in chronological order so
+                // tool_use blocks are indexed before their tool_results arrive.
+                let live_lifted = std::mem::take(&mut app.messages);
+                let live_retained = std::mem::take(&mut app.message_retained_bytes);
+                app.tool_call_index.clear();
+                for h in &history {
+                    crate::state::wire_adapter::apply_session_event(&mut app, h);
+                }
+                let history_len = app.messages.len();
+                app.messages.extend(live_lifted);
+                app.message_retained_bytes.resize(history_len, 0);
+                app.message_retained_bytes.extend(live_retained);
+            }
+
             AppEvent::PermissionRequest { rev_id, params } => {
+                app.notifications.notify(
+                    crate::state::notify::PreferredNotifChannel::default(),
+                    crate::state::notify::NotifyEvent::PermissionRequired,
+                );
                 let prompt_id = params
                     .get("prompt_id")
                     .and_then(|v| v.as_str())
                     .map(String::from);
-                app.pending_permission = Some(PendingPermission::new(rev_id, params, prompt_id));
-                app.focus = Focus::PermissionModal;
+                let tool_use_id = params
+                    .get("context")
+                    .and_then(|c| c.get("tool_use_id"))
+                    .and_then(|v| v.as_str())
+                    .map(String::from);
+                let attached_inline = if let Some(ref tool_id) = tool_use_id
+                    && app.lookup_tool_call(tool_id).is_some()
+                {
+                    attach_inline_permission(
+                        &mut app,
+                        &client,
+                        tool_id,
+                        rev_id.clone(),
+                        prompt_id.clone(),
+                        &params,
+                    )
+                } else {
+                    false
+                };
+                if !attached_inline {
+                    app.pending_permission =
+                        Some(PendingPermission::new(rev_id, params, prompt_id));
+                }
             }
+            AppEvent::PromptsExpired(p) => {
+                let expired_id = p.get("prompt_id").and_then(|v| v.as_str());
+                if let (Some(pp), Some(expired_id)) = (&app.pending_permission, expired_id)
+                    && pp.prompt_id.as_deref() == Some(expired_id)
+                {
+                    app.pending_permission = None;
+                    app.status_msg = "permission prompt expired".into();
+                }
+            }
+
             AppEvent::RoleChanged(p) => {
                 if let Some(r) = p.get("role").and_then(|v| v.as_str()) {
                     app.role = match r {
@@ -206,43 +242,162 @@ pub async fn run<B: Backend>(
                 }
             }
             AppEvent::PrimaryChanged(p) => {
-                // The local `app.role` is owned by `RoleChanged`
-                // (from `session.role_assigned`) — `primary_changed`
-                // is a session-wide broadcast, not a per-client role
-                // update. Surface to the status line so the user can
-                // see who is currently primary.
                 let primary = p
                     .get("primary")
                     .and_then(|v| v.as_str())
                     .map_or_else(|| "<none>".into(), String::from);
-                app.status_msg = format!("primary changed: {primary}");
+                app.status_msg = format!("primary now: {primary}");
             }
             AppEvent::SessionClosed(p) => {
                 let sid_closed = p.get("session_id").and_then(|v| v.as_str()).unwrap_or("");
                 let reason = p.get("reason").and_then(|v| v.as_str()).unwrap_or("");
                 if app.current_session.as_deref() == Some(sid_closed) {
                     app.current_session = None;
+                    app.messages.clear();
+                    app.message_retained_bytes.clear();
                     app.role = Role::Vacant;
-                    app.focus = Focus::SessionList;
+                    app.active_view = ActiveView::SessionPicker;
                     app.status_msg = format!("session closed: {reason}");
                 }
             }
-            AppEvent::PromptsExpired(p) => {
-                // Drop the pending modal only if its prompt_id matches
-                // the expiry notification — without this, a stray
-                // expiry for a sibling session would dismiss an
-                // unrelated open modal.
-                let expired_id = p.get("prompt_id").and_then(|v| v.as_str());
-                if let (Some(pp), Some(expired_id)) = (&app.pending_permission, expired_id) {
-                    if pp.prompt_id.as_deref() == Some(expired_id) {
-                        app.pending_permission = None;
-                        app.focus = Focus::Conversation;
-                        app.status_msg = "permission prompt expired".into();
-                    }
-                }
+
+            AppEvent::CurrentModelSnapshot(model_id) => {
+                app.current_model = model_id
+                    .as_deref()
+                    .map(crate::state::wire_adapter::current_model_from_id);
+                crate::state::tab_title::update(&app);
+            }
+            AppEvent::ContextUsageSnapshot { percent } => {
+                app.session_usage.context_usage_percent = percent;
+            }
+            AppEvent::McpStatusSnapshot(value) => {
+                app.mcp.servers = crate::state::wire_adapter::json_to_mcp_servers(&value);
+            }
+            AppEvent::AvailableCommandsLoaded(commands) => {
+                app.available_commands = commands;
             }
         }
     }
 
     Ok(())
+}
+
+/// Build an `InlinePermission` for `tool_id` and attach it to the matching
+/// tool-call card. Spawns a translator task that, on user response, calls
+/// either `prompts.respond` (if a `prompt_id` is set) or `send_response`
+/// (raw reverse-RPC) with `{decision: "allow"|"deny"}`.
+///
+/// Returns `true` when the inline permission was successfully attached.
+/// Caller falls back to the legacy modal when this returns `false`.
+fn attach_inline_permission(
+    app: &mut App,
+    client: &Arc<Client>,
+    tool_id: &str,
+    rev_id: serde_json::Value,
+    prompt_id: Option<String>,
+    params: &serde_json::Value,
+) -> bool {
+    use crate::state::model::{PermissionOption, PermissionOptionKind, RequestPermissionOutcome};
+    use crate::state::tool_call_info::InlinePermission;
+
+    let Some((mi, bi)) = app.lookup_tool_call(tool_id) else {
+        return false;
+    };
+    let Some(crate::state::messages::MessageBlock::ToolCall(tc)) =
+        app.messages.get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
+    else {
+        return false;
+    };
+
+    let options = vec![
+        PermissionOption::new("allow", "Allow", PermissionOptionKind::AllowOnce),
+        PermissionOption::new("deny", "Deny", PermissionOptionKind::RejectOnce),
+    ];
+    let (response_tx, response_rx) = tokio::sync::oneshot::channel();
+    let perm = InlinePermission {
+        options,
+        display: None,
+        response_tx,
+        selected_index: 0,
+        focused: false,
+    };
+    tc.pending_permission = Some(perm);
+    tc.mark_tool_call_layout_dirty();
+
+    let tool_id_owned = tool_id.to_owned();
+    if !app
+        .pending_interaction_ids
+        .iter()
+        .any(|id| id == &tool_id_owned)
+    {
+        app.pending_interaction_ids.push(tool_id_owned);
+    }
+    app.rebuild_chat_focus_from_state();
+
+    let translator_client = client.clone();
+    let translator_rev_id = rev_id;
+    let translator_prompt_id = prompt_id;
+    let translator_session_id = params
+        .get("session_id")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+    tokio::spawn(async move {
+        let Ok(response) = response_rx.await else {
+            return;
+        };
+        let decision = match response.outcome {
+            RequestPermissionOutcome::Selected(selected) => {
+                if selected.option_id == "allow" {
+                    "allow"
+                } else {
+                    "deny"
+                }
+            }
+            RequestPermissionOutcome::Cancelled => "deny",
+        };
+        let body = serde_json::json!({"decision": decision});
+
+        let result = match (
+            translator_prompt_id.as_ref(),
+            translator_session_id.as_ref(),
+        ) {
+            (Some(pid), Some(sid)) => translator_client
+                .call::<_, serde_json::Value>(
+                    "prompts.respond",
+                    serde_json::json!({
+                        "session_id": sid,
+                        "prompt_id": pid,
+                        "result": body,
+                    }),
+                )
+                .await
+                .map(|_| ())
+                .map_err(|e| e.to_string()),
+            (Some(_), None) => Err("inline permission missing session_id".to_owned()),
+            (None, _) => translator_client
+                .send_response(translator_rev_id, body)
+                .map_err(|e| e.to_string()),
+        };
+        if let Err(e) = result {
+            tracing::warn!(error = %e, "inline permission response failed");
+        }
+    });
+    true
+}
+
+const MOUSE_SCROLL_STEP: usize = 5;
+
+fn handle_mouse(app: &mut App, m: MouseEvent) {
+    if app.active_view != ActiveView::Chat {
+        return;
+    }
+    match m.kind {
+        MouseEventKind::ScrollUp => {
+            app.viewport.scroll_up(MOUSE_SCROLL_STEP);
+        }
+        MouseEventKind::ScrollDown => {
+            app.viewport.scroll_down(MOUSE_SCROLL_STEP);
+        }
+        _ => {}
+    }
 }

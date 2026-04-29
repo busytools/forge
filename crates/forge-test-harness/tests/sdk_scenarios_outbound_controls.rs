@@ -17,7 +17,7 @@ async fn wire_capture_set_model() {
         .permission_mode(PermissionMode::AcceptEdits)
         .build();
 
-    run_live_scenario("set_model", opts, |mut client| async move {
+    run_live_scenario("set_model", opts, |client| async move {
         client.set_model(Some("claude-sonnet-4-6")).await?;
         client
             .send_user_message("Reply with only the word OK.")
@@ -39,7 +39,7 @@ async fn wire_capture_mcp_reconnect() {
         .permission_mode(PermissionMode::AcceptEdits)
         .build();
 
-    run_live_scenario("mcp_reconnect", opts, |mut client| async move {
+    run_live_scenario("mcp_reconnect", opts, |client| async move {
         let status = client.mcp_status().await?;
         let Some(server) = status.mcp_servers.first() else {
             eprintln!("mcp_reconnect: no MCP servers in profile; still capturing init + skip");
@@ -65,7 +65,7 @@ async fn wire_capture_mcp_toggle() {
         .permission_mode(PermissionMode::AcceptEdits)
         .build();
 
-    run_live_scenario("mcp_toggle", opts, |mut client| async move {
+    run_live_scenario("mcp_toggle", opts, |client| async move {
         let status = client.mcp_status().await?;
         let Some(server) = status.mcp_servers.first() else {
             eprintln!("mcp_toggle: no MCP servers in profile; still capturing init + skip");
@@ -103,7 +103,7 @@ async fn wire_capture_rewind_files() {
         .extra_arg("replay-user-messages", None)
         .build();
 
-    run_live_scenario("rewind_files", opts, |mut client| async move {
+    run_live_scenario("rewind_files", opts, |client| async move {
         client
             .send_user_message("Reply with only the word OK.")
             .await?;
@@ -141,7 +141,7 @@ async fn wire_capture_stop_task() {
         .allowed_tools(vec!["Task".to_string(), "Bash".to_string()])
         .build();
 
-    run_live_scenario("stop_task", opts, |mut client| async move {
+    run_live_scenario("stop_task", opts, |client| async move {
         client
             .send_user_message(
                 "Use the Task tool with subagent_type=\"general-purpose\" \
@@ -183,7 +183,7 @@ async fn wire_capture_interrupt() {
         .permission_mode(PermissionMode::AcceptEdits)
         .build();
 
-    run_live_scenario("interrupt", opts, |mut client| async move {
+    run_live_scenario("interrupt", opts, |client| async move {
         client
             .send_user_message("Count from 1 to 500 slowly, one number per line. Take your time.")
             .await?;

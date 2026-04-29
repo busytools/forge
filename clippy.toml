@@ -2,4 +2,4 @@ disallowed-methods = [
     { path = "std::panic::catch_unwind", reason = "library code should use Result, not catch_unwind" },
 ]
 avoid-breaking-exported-api = true
-msrv = "1.85.0"
+msrv = "1.88.0"

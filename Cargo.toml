@@ -8,7 +8,7 @@ edition = "2024"
 license = "MIT"
 repository = "https://github.com/vedhavyas/forge"
 authors = ["Vedhavyas Singareddi <ved@subspace.network>"]
-rust-version = "1.85"
+rust-version = "1.88"
 
 [workspace.dependencies]
 tokio = { version = "1.42", features = ["rt-multi-thread", "process", "io-util", "macros", "sync", "time", "fs"] }
@@ -21,6 +21,7 @@ async-trait = "0.1"
 getrandom = "0.3"
 hex = "0.4"
 uuid = { version = "1", features = ["v4"] }
+time = { version = "0.3", features = ["parsing", "formatting"] }
 unicode-normalization = "0.1"
 tokio-stream = "0.1"
 regex = "1"
@@ -31,12 +32,26 @@ clap = { version = "4", features = ["derive"] }
 tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 toml = "0.8"
-ratatui = "0.29"
-crossterm = "0.28"
+ratatui = { version = "0.30", features = ["unstable-rendered-line-info"] }
+crossterm = "0.29"
+
+# Tier A primitives lifted from claude-code-rust
+ansi-to-tui = "8"
+ignore = "0.4"
+notify = "8"
+notify-rust = "4"
+pulldown-cmark = "0.13"
+similar = "3"
+syntect = { version = "5", default-features = false, features = ["default-fancy"] }
+tui-markdown = "=0.3.7"
+tui-textarea = { package = "tui-textarea-2", version = "0.10" }
+unicode-segmentation = "1.12"
+unicode-width = "0.2"
 
 # Dev-only
 proptest = "1"
 insta = { version = "1", features = ["yaml"] }
+pretty_assertions = "1"
 tempfile = "3"
 
 [workspace.lints.rust]

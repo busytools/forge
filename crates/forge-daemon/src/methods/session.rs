@@ -39,11 +39,13 @@ pub struct SpawnResult {
 /// `session.spawn` — create a new claude session inside the daemon and
 /// boot its actor task.
 ///
-/// Uses [`crate::bridged_transport::BridgedTransport`] rather than
-/// [`forge_sdk::Client::spawn`] so the actor can [`tokio::select!`]
-/// between [`forge_sdk::Client::next_event`] reads and command-driven
-/// writes without holding the [`Client`] lock across blocking I/O. See
-/// the bridged-transport module docs for the full rationale.
+/// The SDK's [`Subprocess`](forge_sdk::transport::process::Subprocess)
+/// drives subprocess I/O over internal mpsc channels, so
+/// [`Client::next_event`] is cancel-safe and the SDK's reader task
+/// internally `tokio::spawn`s `control_request` dispatch on detached
+/// tasks via a clonable writer. The session actor just runs a plain
+/// `select!` between command and `next_event` — see the actor module
+/// for the loop shape.
 ///
 /// Wires in M4's reverse-RPC bridges before spawning:
 ///   - [`ForgedPermissionBridge`](crate::sdk_callbacks::ForgedPermissionBridge)
@@ -60,12 +62,23 @@ pub async fn spawn(
     state: &DaemonState,
     params: impl Into<SpawnParams>,
 ) -> Result<SpawnResult, Error> {
-    let SpawnParams {
-        mut options,
-        hooks: hook_specs,
-    } = params.into();
-
+    let SpawnParams { options, hooks } = params.into();
     let session_id = SessionId(format!("sess_{}", Uuid::new_v4()));
+    spawn_with_id(state, session_id.clone(), options, hooks).await?;
+    Ok(SpawnResult { session_id })
+}
+
+/// Internal spawn helper — same body as [`spawn`] but with a
+/// caller-provided session id and an unwrapped return shape. Lets
+/// [`subscribe`] auto-resume an on-disk transcript and register it
+/// under the historical UUID so the subscriber doesn't need to chase a
+/// freshly-minted id.
+pub(crate) async fn spawn_with_id(
+    state: &DaemonState,
+    session_id: SessionId,
+    mut options: Options,
+    hook_specs: Vec<WireHookSpec>,
+) -> Result<(), Error> {
     let state_arc = Arc::new(state.clone());
 
     // Attach the reverse-RPC permission bridge so `can_use_tool` over
@@ -81,16 +94,11 @@ pub async fn spawn(
         options.hooks = hooks;
     }
 
-    let bridge = crate::bridged_transport::BridgedTransport::spawn(&options)
-        .await
-        .map_err(Error::Sdk)?;
-    let client = Client::spawn_with_transport(options, Box::new(bridge))
-        .await
-        .map_err(Error::Sdk)?;
+    let client = Client::spawn(options).await.map_err(Error::Sdk)?;
     let (handle, rx) = state.register_session(session_id.clone());
     spawn_session_actor(state.clone(), &handle, client, rx);
     info!(session_id = %session_id.0, "session spawned");
-    Ok(SpawnResult { session_id })
+    Ok(())
 }
 
 /// Parsed `session.spawn` params: the configured [`Options`] plus the
@@ -202,7 +210,7 @@ pub struct SubscribeParams {
 /// # Errors
 ///
 /// `SessionNotFound` if the id is unknown.
-pub fn subscribe(
+pub async fn subscribe(
     state: &DaemonState,
     conn: &crate::connection::Connection,
     session_id: &SessionId,
@@ -219,6 +227,36 @@ pub fn subscribe(
             buffer_window_seconds: 0,
         });
     }
+
+    // Auto-resume on subscribe-miss: if the id isn't an active session
+    // but matches an on-disk transcript, resume it under the same id.
+    // The cwd from the on-disk session info is critical — `claude
+    // --resume <sid>` looks the session up under the project keyed by
+    // cwd, so a daemon-default cwd (whatever the daemon was launched
+    // from) makes claude bail with "session not found" and close
+    // stdout before the initialize control_response, surfacing as
+    // forge_sdk::Error::Connection (-32101).
+    if state.get_session(session_id).is_none()
+        && let Some(info) = forge_sdk::session::scan::get_session_info(&session_id.0, None)
+    {
+        info!(session_id = %session_id.0, "subscribe: auto-resuming on-disk session");
+        let mut builder = forge_sdk::OptionsBuilder::new().resume(session_id.0.clone());
+        if let Some(cwd) = info.cwd.as_deref() {
+            builder = builder.cwd(cwd);
+        }
+        // Forward claude's stderr to operator logs so spawn
+        // failures (CLI version mismatch, missing binary,
+        // resume-target rejected) show up in events.log instead
+        // of vanishing.
+        let sid_for_log = session_id.0.clone();
+        let options = builder
+            .stderr(move |line| {
+                tracing::warn!(session_id = %sid_for_log, "claude stderr: {line}");
+            })
+            .build();
+        spawn_with_id(state, session_id.clone(), options, Vec::new()).await?;
+    }
+
     let handle = state
         .get_session(session_id)
         .ok_or_else(|| Error::SessionNotFound(session_id.0.clone()))?;
@@ -366,6 +404,71 @@ pub async fn set_model(
         reply,
     })
     .await
+}
+
+/// Result shape for `session.current_model`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct CurrentModelResult {
+    /// Active model id (e.g. `"claude-opus-4-7[1m]"`). `None` when the
+    /// CLI hasn't reported a model yet (rare — happens between
+    /// session.spawn and the first system/init frame).
+    pub model: Option<String>,
+}
+
+/// `session.current_model` — return the model id captured from the
+/// CLI's `system/init` payload, kept in sync with `session.set_model`
+/// updates. Used by forge-tui's footer poller.
+///
+/// # Errors
+///
+/// `SessionNotFound` if the id is unknown.
+pub async fn current_model(
+    state: &DaemonState,
+    session_id: &SessionId,
+) -> Result<CurrentModelResult, Error> {
+    let model =
+        dispatch_command(state, session_id, |reply| Command::CurrentModel { reply }).await?;
+    Ok(CurrentModelResult { model })
+}
+
+/// One slash-command entry in `slash.list`. Mirrors the CLI's
+/// `init.slash_commands[*]` shape (subset).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct SlashCommandEntry {
+    /// Command name, e.g. `"help"` (no leading slash).
+    pub name: String,
+    /// Human-readable description from the CLI's catalog.
+    pub description: String,
+}
+
+/// Result shape for `slash.list`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct SlashListResult {
+    /// Slash commands the CLI advertises in its `system/init` payload.
+    pub commands: Vec<SlashCommandEntry>,
+}
+
+/// `slash.list` — return the slash-command catalog from the CLI's
+/// init payload. Forge-tui uses this for autocomplete; the actual
+/// dispatch happens by sending `/<name> <args>` as a user message,
+/// which the CLI parses and runs internally.
+///
+/// # Errors
+///
+/// `SessionNotFound` if the id is unknown.
+pub async fn slash_list(
+    state: &DaemonState,
+    session_id: &SessionId,
+) -> Result<SlashListResult, Error> {
+    let pairs = dispatch_command(state, session_id, |reply| Command::SlashList { reply }).await?;
+    let commands = pairs
+        .into_iter()
+        .map(|(name, description)| SlashCommandEntry { name, description })
+        .collect();
+    Ok(SlashListResult { commands })
 }
 
 /// `session.rewind_files` — ask the CLI to revert file edits since the

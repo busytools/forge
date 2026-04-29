@@ -1,9 +1,14 @@
-//! forge-tui — terminal client for the forged daemon.
+//! forge-tui — terminal client for forge-daemon.
 //!
-//! Talks to forged via WS+JSON-RPC. See
-//! `~/.claude-subspace/plans/2026-04-25-forged-wire-spec.md`.
+//! Connects over WS+JSON-RPC, runs a screen-based UI, and renders
+//! `session.event` streams. Each screen (Connecting, Picker,
+//! Conversation, Disconnected) owns its own layout and input rules.
 
 pub mod app;
+pub mod cache_policy;
 pub mod client;
 pub mod input;
+pub mod logging;
+pub mod perf;
+pub mod state;
 pub mod ui;

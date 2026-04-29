@@ -1,6 +1,6 @@
 [package]
 name = "forge-sdk"
-description = "Rust port of Anthropic's claude-agent-sdk. Spawns the claude CLI binary and speaks stream-json."
+description = "Rust client for Anthropic's claude CLI. Spawns the binary and speaks stream-json over stdio."
 categories = ["api-bindings", "asynchronous"]
 keywords = ["claude", "anthropic", "agent", "ai", "sdk"]
 readme = "README.md"
@@ -24,8 +24,10 @@ async-trait = { workspace = true }
 getrandom = { workspace = true }
 hex = { workspace = true }
 uuid = { workspace = true }
+time = { workspace = true }
 unicode-normalization = { workspace = true }
 tokio-stream = { workspace = true }
+parking_lot = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }

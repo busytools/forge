@@ -62,7 +62,7 @@ async fn real_claude_calls_in_process_tool() {
         .mcp_server("probe", server)
         .build();
 
-    let mut client = Client::spawn(opts).await.expect("spawn");
+    let client = Client::spawn(opts).await.expect("spawn");
     client
         .send_user_message(
             "Call the mcp__probe__greet tool with name='world' and reply with exactly what it returns.",

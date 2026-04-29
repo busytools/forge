@@ -32,7 +32,7 @@ async fn wire_capture_pretooluse_hook() {
         .hooks(hooks)
         .build();
 
-    run_live_scenario("pretooluse_hook", opts, |mut client| async move {
+    run_live_scenario("pretooluse_hook", opts, |client| async move {
         client
             .send_user_message(
                 "Run `echo forge-hook-scenario` with the Bash tool and \

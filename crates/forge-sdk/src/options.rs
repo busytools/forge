@@ -1,6 +1,6 @@
 //! Configuration for spawning a `Client`.
 //!
-//! Mirrors Python SDK's `ClaudeAgentOptions`.
+//! SDK's `ClaudeAgentOptions`.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -11,13 +11,19 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::agents::{AgentDefinition, EffortLevel};
 use crate::mcp::McpServer;
 use crate::permissions::CanUseToolCallback;
+use crate::subagents::{EffortLevel, SubagentDefinition};
+
+/// Per-line callback used by [`Options::tee_inbound`] and
+/// [`Options::tee_outbound`] to capture the wire bytes the SDK
+/// exchanges with the `claude` subprocess. The callback receives
+/// lines without a trailing newline.
+pub type WireTee = Arc<dyn Fn(&str) + Send + Sync>;
 
 /// Which permission flow the `claude` binary should use for tool invocations.
 ///
-/// Mirrors Python SDK's `permission_mode` values (all six).
+/// SDK's `permission_mode` values (all six).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum PermissionMode {
     /// Ask for permission on every tool use — the CLI's default behaviour
@@ -37,7 +43,7 @@ pub enum PermissionMode {
     #[serde(rename = "bypassPermissions")]
     BypassPermissions,
     /// Let the binary decide based on tool + context heuristics
-    /// (Python SDK v0.1.57+).
+    /// (the CLI v0.1.57+).
     #[serde(rename = "auto")]
     Auto,
     /// Silently deny any tool invocation that would otherwise require
@@ -71,7 +77,7 @@ impl PermissionMode {
 /// callers.
 #[derive(Clone)]
 #[non_exhaustive]
-#[allow(clippy::struct_excessive_bools)] // mirrors Python's `ClaudeAgentOptions` verbatim
+#[allow(clippy::struct_excessive_bools)] // mirrors the CLI's `ClaudeAgentOptions` verbatim
 pub struct Options {
     /// Path or name of the `claude` binary to spawn.
     pub binary: String,
@@ -91,8 +97,8 @@ pub struct Options {
     /// [`McpServer`].
     pub mcp_servers: Vec<(String, McpServer)>,
     /// External MCP servers — stdio / SSE / HTTP. Mirrors the non-SDK
-    /// variants of Python's `ClaudeAgentOptions.mcp_servers`
-    /// (`types.py:549-572`). Registered alongside in-process servers in
+    /// variants of the CLI's `ClaudeAgentOptions.mcp_servers`
+    ///. Registered alongside in-process servers in
     /// the `--mcp-config` JSON.
     pub external_mcp_servers:
         std::collections::HashMap<String, crate::public_types::McpServerConfig>,
@@ -101,7 +107,7 @@ pub struct Options {
     /// Tool names the model is allowed to invoke. Passed to the CLI as
     /// `--allowedTools <comma,list>`. Empty means "no explicit allowlist".
     pub allowed_tools: Vec<String>,
-    /// Skills to enable. Python SDK supports `"all"` plus concrete names.
+    /// Skills to enable. the CLI supports `"all"` plus concrete names.
     /// Three-channel delivery:
     /// 1. Injected into `--allowedTools` as `Skill` (for `"all"`) or
     ///    `Skill(<name>)`.
@@ -115,32 +121,29 @@ pub struct Options {
     pub setting_sources: Option<Vec<String>>,
     /// Whether to exclude dynamic sections from the system prompt. Wire
     /// shape: `excludeDynamicSections` field in the `initialize`
-    /// `control_request` (NOT a CLI flag — Python SDK delivers this via
+    /// `control_request` (NOT a CLI flag — the CLI delivers this via
     /// the control channel).
     pub exclude_dynamic_sections: Option<bool>,
     /// Orthogonal permission-prompt tool. When set, passed as
-    /// `--permission-prompt-tool <name>`. Mirrors Python
-    /// `ClaudeAgentOptions.permission_prompt_tool_name`.
+    /// `--permission-prompt-tool <name>`.
     pub permission_prompt_tool_name: Option<String>,
-    /// Minimum `claude` binary version required. Default `>= 2.0.0`
-    /// (matches Python SDK v0.1.64 pin at `subprocess_cli.py:29`). When
-    /// `Some`, `Client::spawn` runs `<binary> --version` once and checks
-    /// the reported major version is at least the first component.
+    /// Minimum `claude` binary version required. Default `>= 2.0.0`.
+    /// When `Some`, `Client::spawn` runs `<binary> --version` once
+    /// and checks the reported major version is at least the first
+    /// component.
     pub minimum_cli_version: Option<String>,
     /// Override the directory used by `session::scan::*` to resolve
     /// project keys. When `None`, forge-sdk defaults to
-    /// `$CLAUDE_CONFIG_DIR/projects` or `~/.claude/projects`. Matches
-    /// Python SDK's `_internal/sessions.py` `_get_projects_dir()`.
+    /// `$CLAUDE_CONFIG_DIR/projects` or `~/.claude/projects`.
     pub projects_dir: Option<PathBuf>,
-    /// Subagent definitions forwarded via the `initialize` `control_request`'s
-    /// `agents` field. Key is the subagent name the model picks; value is
-    /// the [`AgentDefinition`]. Empty by default — matching Python SDK
-    /// v0.1.64 `ClaudeAgentOptions.agents` (`types.py:1355`).
-    pub agents: HashMap<String, AgentDefinition>,
-    /// System prompt configuration. `None` = inherit CLI default. `Some`
-    /// emits `--system-prompt`, `--system-prompt-file`, or
-    /// `--append-system-prompt` depending on variant. Ported from Python
-    /// SDK `SystemPromptPreset` / `SystemPromptFile` (`types.py:35-78`).
+    /// Subagent definitions forwarded via the `initialize`
+    /// `control_request`'s `agents` field. Key is the subagent name
+    /// the model picks; value is the [`SubagentDefinition`]. Empty by
+    /// default.
+    pub subagents: HashMap<String, SubagentDefinition>,
+    /// System prompt configuration. `None` = inherit CLI default.
+    /// `Some` emits `--system-prompt`, `--system-prompt-file`, or
+    /// `--append-system-prompt` depending on variant.
     pub system_prompt: Option<SystemPromptKind>,
     /// Base tool set. `None` = CLI default. `Some(ToolsPreset::Default)`
     /// emits `--tools default`; `Some(List(...))` emits `--tools <csv>`.
@@ -166,21 +169,20 @@ pub struct Options {
     /// Spawn-time fork — duplicate `resume`'s session on the first turn.
     /// `--fork-session` (distinct from the offline JSONL-level
     /// [`fork_session`](crate::session::mutations::fork_session) helper;
-    /// Python SDK v0.1.64 has no runtime `fork_session` `control_request`).
+    /// has no runtime `fork_session` `control_request`).
     pub fork_session: bool,
     /// Extra directories surfaced to the CLI via repeated `--add-dir`.
     pub add_dirs: Vec<std::path::PathBuf>,
-    /// Local plugins. Python SDK's `list[SdkPluginConfig]` (`types.py:771-778`).
+    /// Local plugins. Wire shape: `list[SdkPluginConfig]`.
     pub plugins: Vec<SdkPluginConfig>,
     /// Environment variables added to the subprocess env.
     pub env: HashMap<String, String>,
     /// Override `$USER` in the subprocess env.
     pub user: Option<String>,
-    /// Arbitrary forward flags — `{"flag": Some("v")}` emits `--flag v`,
-    /// `{"flag": None}` emits a bare `--flag`. Mirrors Python's
-    /// `extra_args: dict[str, str | None]` (`types.py:1417`).
+    /// Arbitrary forward flags — `{"flag": Some("v")}` emits
+    /// `--flag v`, `{"flag": None}` emits a bare `--flag`.
     pub extra_args: HashMap<String, Option<String>>,
-    /// Reasoning-effort hint. `--effort <level>` — Python's `effort` is a
+    /// Reasoning-effort hint. `--effort <level>` — the CLI's `effort` is a
     /// literal or integer; forge-sdk reuses [`EffortLevel`].
     pub effort: Option<EffortLevel>,
     /// Extended-thinking configuration. Takes precedence over
@@ -191,7 +193,7 @@ pub struct Options {
     pub max_thinking_tokens: Option<u64>,
     /// Task budget: total sub-agent token budget per turn. `--task-budget`.
     pub task_budget: Option<u64>,
-    /// Structured output schema. Python's `output_format` accepts
+    /// Structured output schema. the CLI's `output_format` accepts
     /// `{"type": "json_schema", "schema": {...}}`; forge-sdk accepts the
     /// schema JSON directly for simplicity.
     pub output_format: Option<Value>,
@@ -201,23 +203,33 @@ pub struct Options {
     /// stderr is forwarded to `callback(line)`. Drained in the
     /// background so the pipe never blocks.
     pub stderr: Option<std::sync::Arc<dyn Fn(String) + Send + Sync>>,
+    /// Inbound wire tee. When set, the SDK invokes
+    /// `callback(line)` for every stream-json line read from the
+    /// subprocess stdout BEFORE decoding. Used by
+    /// `forge-test-harness` to capture the raw wire bytes for
+    /// conformance baselines. The callback receives lines without a
+    /// trailing newline.
+    pub tee_inbound: Option<WireTee>,
+    /// Outbound wire tee. When set, the SDK invokes
+    /// `callback(line)` for every stream-json line about to be
+    /// written to the subprocess stdin. Counterpart to
+    /// [`tee_inbound`](Self::tee_inbound). The callback receives
+    /// lines without a trailing newline (the SDK strips it before
+    /// invoking).
+    pub tee_outbound: Option<WireTee>,
     /// Enable file-checkpoint tracking (required for
-    /// [`Client::rewind_files`](crate::Client::rewind_files)). Python
-    /// delivers this via the `CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING`
-    /// env var (`_internal/transport/subprocess_cli.py:436-437`), NOT a
-    /// CLI flag — forge-sdk matches. Field name mirrors Python
-    /// `ClaudeAgentOptions.enable_file_checkpointing`
-    /// (`types.py:1408`).
+    /// [`Client::rewind_files`](crate::Client::rewind_files)).
+    /// Delivered via the `CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING`
+    /// env var (NOT a CLI flag).
     pub enable_file_checkpointing: bool,
     /// Settings: either a file path or an inline JSON string. When
-    /// combined with [`sandbox`](Self::sandbox), forge-sdk parses the JSON
-    /// (or reads the file) and merges `{"sandbox": <sandbox>}` in. Mirrors
-    /// Python's `ClaudeAgentOptions.settings` (`types.py:1410`) +
-    /// `_build_settings_value` in `subprocess_cli.py:111-163`.
+    /// combined with [`sandbox`](Self::sandbox), forge-sdk parses
+    /// the JSON (or reads the file) and merges
+    /// `{"sandbox": <sandbox>}` in.
     pub settings: Option<String>,
-    /// Sandbox configuration — merged into [`settings`](Self::settings)
-    /// JSON when emitted via `--settings`. Mirrors Python's
-    /// `ClaudeAgentOptions.sandbox` (`types.py:1412`).
+    /// Sandbox configuration — merged into
+    /// [`settings`](Self::settings) JSON when emitted via
+    /// `--settings`.
     pub sandbox: Option<crate::public_types::SandboxSettings>,
 }
 
@@ -240,7 +252,7 @@ impl Default for Options {
             permission_prompt_tool_name: None,
             minimum_cli_version: Some("2.0.0".into()),
             projects_dir: None,
-            agents: HashMap::new(),
+            subagents: HashMap::new(),
             system_prompt: None,
             tools: None,
             disallowed_tools: Vec::new(),
@@ -264,6 +276,8 @@ impl Default for Options {
             output_format: None,
             max_buffer_size: None,
             stderr: None,
+            tee_inbound: None,
+            tee_outbound: None,
             enable_file_checkpointing: false,
             settings: None,
             sandbox: None,
@@ -272,9 +286,9 @@ impl Default for Options {
 }
 
 impl Options {
-    /// Return the inner schema JSON of a `{"type":"json_schema","schema":...}`
-    /// `output_format` entry, if present. Mirrors Python's extraction at
-    /// `subprocess_cli.py:366-375`.
+    /// Return the inner schema JSON of a
+    /// `{"type":"json_schema","schema":...}` `output_format` entry,
+    /// if present.
     pub(crate) fn output_format_json_schema(&self) -> Option<String> {
         let format = self.output_format.as_ref()?;
         if format.get("type")?.as_str()? != "json_schema" {
@@ -284,11 +298,9 @@ impl Options {
     }
 
     /// Resolve `settings` + `sandbox` into the single string passed via
-    /// `--settings`. Mirrors Python's `_build_settings_value`
-    /// (`subprocess_cli.py:111-163`), but surfaces sandbox serialisation
-    /// failures rather than silently dropping the sandbox config. Parse
-    /// failures on the user-supplied settings blob log a `warn` and
-    /// continue (Python semantics).
+    /// `--settings`. Surfaces sandbox serialisation failures rather
+    /// than silently dropping the sandbox config. Parse failures on
+    /// the user-supplied settings blob log a `warn` and continue.
     ///
     /// # Errors
     ///
@@ -373,23 +385,22 @@ impl Options {
     }
 }
 
-/// System-prompt configuration. Mirrors Python's discriminated union of
-/// `str | SystemPromptPreset | SystemPromptFile` (`types.py:35-78`).
+/// System-prompt configuration. Wraps the CLI's discriminated union of
+/// `str | SystemPromptPreset | SystemPromptFile`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SystemPromptKind {
     /// Plain string override — `--system-prompt <text>`.
     Inline(String),
     /// Preset (currently only `claude_code`) with optional append + the
     /// `exclude_dynamic_sections` signal that rides along inside the
-    /// `initialize` `control_request` instead of argv. Mirrors Python
-    /// `SystemPromptPreset` (`types.py:43-66`).
+    /// `initialize` `control_request` instead of argv.
     Preset {
         /// Optional append text that lands on argv as
         /// `--append-system-prompt <text>`.
         append: Option<String>,
         /// When `Some`, sent in the `initialize` body as
         /// `excludeDynamicSections`. `None` omits the field, matching
-        /// Python's `_internal/query.py:204` conditional.
+        /// the CLI's conditional.
         exclude_dynamic_sections: Option<bool>,
     },
     /// File-backed prompt — `--system-prompt-file <path>`.
@@ -398,8 +409,8 @@ pub enum SystemPromptKind {
 
 impl SystemPromptKind {
     /// Convenience constructor for the `claude_code` preset with an
-    /// append string. Python `{"type": "preset", "preset":
-    /// "claude_code", "append": ...}`.
+    /// append string. Wire shape:
+    /// `{"type": "preset", "preset": "claude_code", "append": ...}`.
     #[must_use]
     pub fn preset_append(append: impl Into<String>) -> Self {
         Self::Preset {
@@ -409,7 +420,7 @@ impl SystemPromptKind {
     }
 }
 
-/// Tool-base selector. Python's `ToolsPreset` is a dict `{"type":"default"}`;
+/// Tool-base selector. the CLI's `ToolsPreset` is a dict `{"type":"default"}`;
 /// forge-sdk normalises to an enum.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ToolsPreset {
@@ -419,8 +430,8 @@ pub enum ToolsPreset {
     List(Vec<String>),
 }
 
-/// Extended-thinking configuration. Mirrors Python's union of
-/// `Adaptive`, `Enabled`, `Disabled` (`types.py:1325-1338`).
+/// Extended-thinking configuration. Wraps the CLI's union of
+/// `Adaptive`, `Enabled`, `Disabled`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ThinkingConfig {
     /// CLI picks per-turn — `--thinking adaptive`.
@@ -435,8 +446,8 @@ pub enum ThinkingConfig {
     Disabled,
 }
 
-/// Plugin config. Mirrors Python's `SdkPluginConfig`
-/// (`{"type": "local", "path": str}`, `types.py:771-778`).
+/// Plugin config. Wraps the CLI's `SdkPluginConfig`
+/// (`{"type": "local", "path": str}`,).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum SdkPluginConfig {
@@ -478,7 +489,10 @@ impl std::fmt::Debug for Options {
             )
             .field("minimum_cli_version", &self.minimum_cli_version)
             .field("projects_dir", &self.projects_dir)
-            .field("agents", &format!("<{} agents>", self.agents.len()))
+            .field(
+                "subagents",
+                &format!("<{} subagents>", self.subagents.len()),
+            )
             .field("system_prompt", &self.system_prompt)
             .field("tools", &self.tools)
             .field("disallowed_tools", &self.disallowed_tools)
@@ -502,6 +516,14 @@ impl std::fmt::Debug for Options {
             .field("output_format", &self.output_format)
             .field("max_buffer_size", &self.max_buffer_size)
             .field("stderr", &self.stderr.as_ref().map(|_| "<callback>"))
+            .field(
+                "tee_inbound",
+                &self.tee_inbound.as_ref().map(|_| "<callback>"),
+            )
+            .field(
+                "tee_outbound",
+                &self.tee_outbound.as_ref().map(|_| "<callback>"),
+            )
             .field("enable_file_checkpointing", &self.enable_file_checkpointing)
             .field("settings", &self.settings)
             .field("sandbox", &self.sandbox)
@@ -537,9 +559,7 @@ impl OptionsBuilder {
         self
     }
 
-    /// Alias for [`binary`](Self::binary) — matches Python SDK's
-    /// `ClaudeAgentOptions.cli_path` field name so snippets porting
-    /// directly from Python compile unchanged. Accepts any path-like
+    /// Alias for [`binary`](Self::binary) — accepts any path-like
     /// value; forge-sdk stores it as the string the binary is
     /// launched with.
     #[must_use]
@@ -596,7 +616,7 @@ impl OptionsBuilder {
     }
 
     /// Register an external (stdio / SSE / HTTP) MCP server under the
-    /// given name. Non-SDK variants of Python's `mcp_servers` dict.
+    /// given name. Non-SDK variants of the CLI's `mcp_servers` dict.
     #[must_use]
     pub fn external_mcp_server(
         mut self,
@@ -626,7 +646,7 @@ impl OptionsBuilder {
     }
 
     /// Enable skills. Use `"all"` to enable all skills, or list names.
-    /// Python SDK defaults `setting_sources` to `["user", "project"]` when
+    /// the CLI defaults `setting_sources` to `["user", "project"]` when
     /// this is set and `setting_sources` is not explicitly provided.
     #[must_use]
     pub fn skills<I, S>(mut self, skills: I) -> Self
@@ -685,18 +705,17 @@ impl OptionsBuilder {
     }
 
     /// Register a subagent under `name`. Forwards to the CLI via the
-    /// `initialize` `control_request`'s `agents` field. Mirrors Python
-    /// SDK's `ClaudeAgentOptions.agents` dict (`types.py:1355`).
+    /// `initialize` `control_request`'s `agents` field.
     #[must_use]
-    pub fn agent(mut self, name: impl Into<String>, def: AgentDefinition) -> Self {
-        self.inner.agents.insert(name.into(), def);
+    pub fn subagent(mut self, name: impl Into<String>, def: SubagentDefinition) -> Self {
+        self.inner.subagents.insert(name.into(), def);
         self
     }
 
     /// Replace the whole subagent map in one go.
     #[must_use]
-    pub fn agents(mut self, agents: HashMap<String, AgentDefinition>) -> Self {
-        self.inner.agents = agents;
+    pub fn subagents(mut self, subagents: HashMap<String, SubagentDefinition>) -> Self {
+        self.inner.subagents = subagents;
         self
     }
 
@@ -870,7 +889,7 @@ impl OptionsBuilder {
         self
     }
 
-    /// Attach a structured-output schema. Python form:
+    /// Attach a structured-output schema. Wire form:
     /// `{"type":"json_schema","schema":{...}}`.
     #[must_use]
     pub fn output_format(mut self, value: Value) -> Self {
@@ -892,9 +911,29 @@ impl OptionsBuilder {
         self
     }
 
+    /// Attach an inbound wire-tee callback. Receives every
+    /// stream-json line read from the subprocess stdout (without
+    /// trailing newline) before the SDK decodes it. Used by
+    /// `forge-test-harness` to capture conformance baselines.
+    #[must_use]
+    pub fn tee_inbound(mut self, cb: impl Fn(&str) + Send + Sync + 'static) -> Self {
+        self.inner.tee_inbound = Some(Arc::new(cb));
+        self
+    }
+
+    /// Attach an outbound wire-tee callback. Receives every
+    /// stream-json line about to be written to the subprocess stdin
+    /// (without trailing newline). Counterpart to
+    /// [`tee_inbound`](Self::tee_inbound).
+    #[must_use]
+    pub fn tee_outbound(mut self, cb: impl Fn(&str) + Send + Sync + 'static) -> Self {
+        self.inner.tee_outbound = Some(Arc::new(cb));
+        self
+    }
+
     /// Enable file-checkpoint tracking. Delivered via the
-    /// `CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING` env var (matches
-    /// Python).
+    /// `CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING` env var (NOT a
+    /// CLI flag).
     #[must_use]
     pub fn enable_file_checkpointing(mut self, yes: bool) -> Self {
         self.inner.enable_file_checkpointing = yes;
@@ -938,8 +977,8 @@ mod tests_skills_option {
         assert!(opts.skills.is_empty());
         assert!(opts.allowed_tools.is_empty());
         assert!(opts.setting_sources.is_none());
-        // Python `_internal/query.py:204` omits the field unless the
-        // caller set it; forge-sdk matches via Option<bool>.
+        // Default omits the field; the caller must opt in via the
+        // builder.
         assert!(opts.exclude_dynamic_sections.is_none());
     }
 

@@ -9,7 +9,7 @@ use crate::options::{
     Options, PermissionMode, SdkPluginConfig, SystemPromptKind, ThinkingConfig, ToolsPreset,
 };
 
-/// Build the subprocess argv from [`Options`], matching Python SDK's
+/// Build the subprocess argv from [`Options`], SDK's
 /// `_build_command` byte-for-byte where possible. Exposed `pub` so
 /// advanced callers can inspect the argv without spawning.
 ///
@@ -21,14 +21,14 @@ use crate::options::{
 pub fn build_args(options: &Options) -> Result<Vec<String>, Error> {
     let mut args: Vec<String> = Vec::new();
 
-    // Python SDK leads every invocation with these three flags
-    // (`_internal/transport/subprocess_cli.py:207`).
+    // the CLI leads every invocation with these three flags
+    //.
     args.push("--output-format".into());
     args.push("stream-json".into());
     args.push("--verbose".into());
 
-    // system_prompt — Python always emits one of four flag forms
-    // (`subprocess_cli.py:209-218`), including an explicit
+    // system_prompt — the CLI always emits one of four flag forms
+    //, including an explicit
     // `--system-prompt ""` when the option is unset so the CLI
     // doesn't fall back to its builtin prompt. Match byte-for-byte.
     match options.system_prompt.as_ref() {
@@ -54,7 +54,7 @@ pub fn build_args(options: &Options) -> Result<Vec<String>, Error> {
         }
     }
 
-    // tools (base set). Python emits `--tools default` for the preset,
+    // tools (base set). The CLI emits `--tools default` for the preset,
     // `--tools <csv>` for a concrete list, `--tools ""` for an empty list.
     if let Some(tools) = &options.tools {
         match tools {
@@ -69,7 +69,7 @@ pub fn build_args(options: &Options) -> Result<Vec<String>, Error> {
         }
     }
 
-    // --allowedTools (camelCase per Python SDK). Combines explicit
+    // --allowedTools (camelCase on the wire). Combines explicit
     // allowed_tools + Skill injection.
     //
     // `--allowedTools` accepts two Skill syntaxes: bare `Skill` is the
@@ -123,7 +123,7 @@ pub fn build_args(options: &Options) -> Result<Vec<String>, Error> {
         args.push("--permission-prompt-tool".into());
         args.push(name.clone());
     }
-    // Python SDK only emits `--permission-mode` when the caller set
+    // the CLI only emits `--permission-mode` when the caller set
     // one explicitly. We mirror that: the CLI default is already
     // `default`, so omitting the flag on the default variant avoids
     // argv drift and also lets the CLI honour any user-level override.
@@ -142,9 +142,9 @@ pub fn build_args(options: &Options) -> Result<Vec<String>, Error> {
         args.push("--session-id".into());
         args.push(sid.clone());
     }
-    // --settings (with optional sandbox merge). Python's
-    // `_build_settings_value` — resolves settings + sandbox into one CLI
-    // argument, either a file path or an inline JSON string.
+    // --settings (with optional sandbox merge). Resolves settings +
+    // sandbox into one CLI argument, either a file path or an inline
+    // JSON string.
     if let Some(value) = options.build_settings_value()? {
         args.push("--settings".into());
         args.push(value);
@@ -156,7 +156,7 @@ pub fn build_args(options: &Options) -> Result<Vec<String>, Error> {
     }
 
     // MCP: pass --mcp-config '<inline-json>' when servers are registered.
-    // Python SDK uses inline JSON (not a temp file) with {"type": "sdk"}
+    // the CLI uses inline JSON (not a temp file) with {"type": "sdk"}
     // entries to signal in-process hosting; external servers carry their
     // own stdio / SSE / HTTP config verbatim.
     let hosts = McpHosts::new(
@@ -176,10 +176,10 @@ pub fn build_args(options: &Options) -> Result<Vec<String>, Error> {
     }
     // NB: enable_file_checkpointing is delivered via the
     // CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING env var, not a CLI flag
-    // (Python subprocess_cli.py:436-437). Wired in transport/process.rs.
+    // (NOT a CLI flag). Wired in transport/process.rs.
 
     // --setting-sources: explicit override wins; otherwise default to
-    // user,project when skills is set (per Python SDK behaviour).
+    // user,project when skills is set (per the CLI behaviour).
     let setting_sources: Option<Vec<String>> = options.setting_sources.clone().or_else(|| {
         if options.skills.is_empty() {
             None

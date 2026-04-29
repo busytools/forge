@@ -31,7 +31,7 @@ async fn spawn_reads_init_line() {
         line.contains("\"type\":\"system\""),
         "expected init system line, got: {line}"
     );
-    sub.shutdown().await.expect("shutdown");
+    sub.close().await.expect("close");
 }
 
 #[tokio::test]
@@ -51,7 +51,7 @@ async fn send_and_read_roundtrip() {
     let result = sub.read_line().await.expect("read").expect("result");
     assert!(result.contains("\"type\":\"result\""));
 
-    sub.shutdown().await.expect("shutdown");
+    sub.close().await.expect("close");
 }
 
 #[tokio::test]

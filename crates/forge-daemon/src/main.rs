@@ -32,8 +32,15 @@ enum Cmd {
         /// runs.
         addr: Option<String>,
     },
-    /// Show daemon status (connects to local daemon over loopback).
-    Status,
+    /// Show daemon status. Picks the first loopback entry from
+    /// `config.bind` by default; pass an explicit address to query a
+    /// specific listener.
+    Status {
+        /// Address to query (e.g. `127.0.0.1:8080`). When omitted the
+        /// status CLI prefers the first loopback entry in `config.bind`,
+        /// falling back to the first bind, then to the built-in default.
+        addr: Option<String>,
+    },
 }
 
 #[tokio::main]
@@ -43,6 +50,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let cli = Cli::parse();
     match cli.cmd.unwrap_or(Cmd::Listen { addr: None }) {
+        Cmd::Status { addr } => {
+            let resolved: String = match addr {
+                Some(a) => a,
+                None => config
+                    .bind
+                    .iter()
+                    .find(|b| is_loopback_bind(b))
+                    .or_else(|| config.bind.first())
+                    .cloned()
+                    .unwrap_or_else(|| "127.0.0.1:7373".into()),
+            };
+            forge_daemon::status_cli::run(&resolved).await?;
+            Ok(())
+        }
         Cmd::Listen { addr } => {
             let state = DaemonState::new();
             let binds: Vec<String> = match addr {
@@ -100,11 +121,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Ok(Err(e)) => Err(Box::new(e) as Box<dyn std::error::Error>),
                 Err(join_err) => Err(Box::new(join_err) as Box<dyn std::error::Error>),
             }
-        }
-        Cmd::Status => {
-            // TODO: should instead get the address from config
-            forge_daemon::status_cli::run("127.0.0.1:7373").await?;
-            Ok(())
         }
     }
 }
