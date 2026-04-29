@@ -109,6 +109,12 @@ pub async fn run<B: Backend>(
             AppEvent::Term(Event::Mouse(m)) => {
                 handle_mouse(&mut app, m);
             }
+            AppEvent::Term(Event::FocusGained) => {
+                app.notifications.on_focus_gained();
+            }
+            AppEvent::Term(Event::FocusLost) => {
+                app.notifications.on_focus_lost();
+            }
             AppEvent::Term(_) => {}
 
             AppEvent::Connected => {
@@ -152,6 +158,13 @@ pub async fn run<B: Backend>(
                     app.rebuild_rendered_lines();
                     // Lifted renderer path: parse + apply to ChatMessage / existing tool calls.
                     crate::state::wire_adapter::apply_session_event(&mut app, &msg);
+                    // Turn-complete notification on `result` frames.
+                    if msg.get("type").and_then(|v| v.as_str()) == Some("result") {
+                        app.notifications.notify(
+                            crate::state::notify::PreferredNotifChannel::default(),
+                            crate::state::notify::NotifyEvent::TurnComplete,
+                        );
+                    }
                 }
             }
             AppEvent::HistoricalLoaded(history) => {
@@ -177,6 +190,10 @@ pub async fn run<B: Backend>(
             }
 
             AppEvent::PermissionRequest { rev_id, params } => {
+                app.notifications.notify(
+                    crate::state::notify::PreferredNotifChannel::default(),
+                    crate::state::notify::NotifyEvent::PermissionRequired,
+                );
                 let prompt_id = params
                     .get("prompt_id")
                     .and_then(|v| v.as_str())

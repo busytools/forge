@@ -11,6 +11,7 @@ use std::sync::Arc;
 
 use clap::Parser;
 use crossterm::ExecutableCommand;
+use crossterm::event::{DisableFocusChange, EnableFocusChange};
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
@@ -41,6 +42,10 @@ impl TerminalGuard {
     fn enter() -> std::io::Result<Self> {
         enable_raw_mode()?;
         stdout().execute(EnterAlternateScreen)?;
+        // Enable DECSET 1004 focus tracking so the terminal forwards
+        // FocusGained/FocusLost events. Used by NotificationManager to
+        // suppress notifications while the window is focused.
+        let _ = stdout().execute(EnableFocusChange);
         // We deliberately do NOT enable mouse capture — terminals
         // (Ghostty, iTerm, kitty) forward trackpad scroll as arrow
         // key events to alt-screen apps when capture is off. Capturing
@@ -51,6 +56,7 @@ impl TerminalGuard {
 
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
+        let _ = stdout().execute(DisableFocusChange);
         let _ = stdout().execute(LeaveAlternateScreen);
         let _ = disable_raw_mode();
     }

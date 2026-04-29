@@ -225,6 +225,9 @@ pub struct App {
     // ---- git ----
     pub(crate) git_context: GitContextState,
 
+    // ---- desktop notifications ----
+    pub notifications: crate::state::notify::NotificationManager,
+
     // ---- daemon-pushed snapshots ----
     pub session_usage: SessionUsageState,
     pub mcp: McpState,
@@ -821,6 +824,8 @@ impl Default for App {
             pending_images: Vec::new(),
 
             git_context: GitContextState::default(),
+
+            notifications: crate::state::notify::NotificationManager::new(),
 
             session_usage: SessionUsageState::default(),
             mcp: McpState::default(),
