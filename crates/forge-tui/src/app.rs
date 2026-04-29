@@ -120,8 +120,9 @@ pub async fn run<B: Backend>(
                 app.recent_sessions =
                     crate::state::wire_adapter::session_list_to_recent_sessions(&items);
                 app.session_list = items;
-                if app.picker_cursor > app.session_list.len() {
-                    app.picker_cursor = app.session_list.len();
+                let max_idx = app.recent_sessions.len().saturating_sub(1);
+                if app.session_picker.selected > max_idx {
+                    app.session_picker.selected = max_idx;
                 }
                 if app.active_view == ActiveView::Connecting {
                     app.active_view = ActiveView::SessionPicker;

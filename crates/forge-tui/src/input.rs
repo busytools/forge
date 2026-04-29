@@ -58,23 +58,23 @@ async fn handle_picker_key(
     client: &Arc<Client>,
     event_tx: &mpsc::UnboundedSender<AppEvent>,
 ) -> bool {
-    let row_count = app.session_list.len() + 1; // +1 for "New session" pseudo-row
+    let count = app.recent_sessions.len();
 
     match key {
         KeyCode::Char('q' | 'Q') => return true,
         KeyCode::Up => {
-            app.picker_cursor = app.picker_cursor.saturating_sub(1);
+            app.session_picker.selected = app.session_picker.selected.saturating_sub(1);
         }
-        KeyCode::Down if app.picker_cursor + 1 < row_count => {
-            app.picker_cursor += 1;
+        KeyCode::Down if app.session_picker.selected + 1 < count => {
+            app.session_picker.selected += 1;
+        }
+        KeyCode::Esc => {
+            spawn_new_session(app, client, event_tx).await;
         }
         KeyCode::Enter => {
-            if app.picker_cursor == 0 {
-                spawn_new_session(app, client, event_tx).await;
-            } else if let Some(session) = app.session_list.get(app.picker_cursor - 1)
-                && let Some(sid) = session.get("session_id").and_then(|v| v.as_str())
-            {
-                open_session(app, sid.to_string(), client, event_tx);
+            if let Some(session) = app.recent_sessions.get(app.session_picker.selected) {
+                let sid = session.session_id.clone();
+                open_session(app, sid, client, event_tx);
             }
         }
         _ => {}

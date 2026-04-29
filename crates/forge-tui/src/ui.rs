@@ -36,7 +36,7 @@ use crate::app::{App, Screen};
 pub fn render(frame: &mut Frame<'_>, app: &mut App) {
     match app.active_view {
         Screen::Connecting => connecting::render(frame, app),
-        Screen::SessionPicker => picker::render(frame, app),
+        Screen::SessionPicker => lifted::session_picker::render(frame, app),
         Screen::Chat => render_chat_lifted(frame, app),
         Screen::Disconnected => disconnected::render(frame, app),
     }
