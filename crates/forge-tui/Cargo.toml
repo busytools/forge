@@ -36,6 +36,7 @@ futures-util.workspace = true
 ansi-to-tui.workspace = true
 ignore.workspace = true
 notify.workspace = true
+notify-rust.workspace = true
 pulldown-cmark.workspace = true
 similar.workspace = true
 syntect.workspace = true

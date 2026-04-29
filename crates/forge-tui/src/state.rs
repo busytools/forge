@@ -24,6 +24,7 @@ pub mod keys;
 pub mod mention;
 pub mod messages;
 pub mod model;
+pub mod notify;
 pub mod paste_burst;
 pub mod permissions;
 pub mod questions;
