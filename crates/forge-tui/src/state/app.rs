@@ -25,14 +25,22 @@ use crate::state::viewport::{ChatViewport, LayoutInvalidation, LayoutRemeasureRe
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
-/// Active view (Chat / SessionPicker). Upstream had Config / Trusted
-/// variants too; both stay out of the TUI's view enum until the
-/// matching upstream modules lift (see project_forge_tui_cuts_to_revisit).
+/// Active view. Combines upstream's `Chat`/`SessionPicker` with
+/// forge-specific `Connecting`/`Disconnected` overlays (legacy
+/// `Screen` enum's transient states). `Config` and `Trusted` are
+/// dropped per cuts list — those modules aren't lifted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub enum ActiveView {
+    /// WS handshake in progress.
     #[default]
-    Chat,
+    Connecting,
+    /// Picking a session from the list.
     SessionPicker,
+    /// Watching/driving a subscribed session.
+    Chat,
+    /// WS dropped; retry overlay.
+    Disconnected,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
