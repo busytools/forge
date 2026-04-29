@@ -181,8 +181,29 @@ pub async fn run<B: Backend>(
                     .get("prompt_id")
                     .and_then(|v| v.as_str())
                     .map(String::from);
-                app.pending_permission =
-                    Some(PendingPermission::new(rev_id, params, prompt_id));
+                let tool_use_id = params
+                    .get("context")
+                    .and_then(|c| c.get("tool_use_id"))
+                    .and_then(|v| v.as_str())
+                    .map(String::from);
+                let attached_inline = if let Some(ref tool_id) = tool_use_id
+                    && app.lookup_tool_call(tool_id).is_some()
+                {
+                    attach_inline_permission(
+                        &mut app,
+                        &client,
+                        tool_id,
+                        rev_id.clone(),
+                        prompt_id.clone(),
+                        &params,
+                    )
+                } else {
+                    false
+                };
+                if !attached_inline {
+                    app.pending_permission =
+                        Some(PendingPermission::new(rev_id, params, prompt_id));
+                }
             }
             AppEvent::PromptsExpired(p) => {
                 let expired_id = p.get("prompt_id").and_then(|v| v.as_str());
@@ -239,6 +260,100 @@ pub async fn run<B: Backend>(
     }
 
     Ok(())
+}
+
+/// Build an `InlinePermission` for `tool_id` and attach it to the matching
+/// tool-call card. Spawns a translator task that, on user response, calls
+/// either `prompts.respond` (if a `prompt_id` is set) or `send_response`
+/// (raw reverse-RPC) with `{decision: "allow"|"deny"}`.
+///
+/// Returns `true` when the inline permission was successfully attached.
+/// Caller falls back to the legacy modal when this returns `false`.
+fn attach_inline_permission(
+    app: &mut App,
+    client: &Arc<Client>,
+    tool_id: &str,
+    rev_id: serde_json::Value,
+    prompt_id: Option<String>,
+    params: &serde_json::Value,
+) -> bool {
+    use crate::state::model::{
+        PermissionOption, PermissionOptionKind, RequestPermissionOutcome,
+    };
+    use crate::state::tool_call_info::InlinePermission;
+
+    let Some((mi, bi)) = app.lookup_tool_call(tool_id) else { return false };
+    let Some(crate::state::messages::MessageBlock::ToolCall(tc)) =
+        app.messages.get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
+    else {
+        return false;
+    };
+
+    let options = vec![
+        PermissionOption::new("allow", "Allow", PermissionOptionKind::AllowOnce),
+        PermissionOption::new("deny", "Deny", PermissionOptionKind::RejectOnce),
+    ];
+    let (response_tx, response_rx) = tokio::sync::oneshot::channel();
+    let perm = InlinePermission {
+        options,
+        display: None,
+        response_tx,
+        selected_index: 0,
+        focused: false,
+    };
+    tc.pending_permission = Some(perm);
+    tc.mark_tool_call_layout_dirty();
+
+    let tool_id_owned = tool_id.to_owned();
+    if !app
+        .pending_interaction_ids
+        .iter()
+        .any(|id| id == &tool_id_owned)
+    {
+        app.pending_interaction_ids.push(tool_id_owned);
+    }
+    app.rebuild_chat_focus_from_state();
+
+    let translator_client = client.clone();
+    let translator_rev_id = rev_id;
+    let translator_prompt_id = prompt_id;
+    let translator_session_id = params
+        .get("session_id")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+    tokio::spawn(async move {
+        let Ok(response) = response_rx.await else { return };
+        let decision = match response.outcome {
+            RequestPermissionOutcome::Selected(selected) => {
+                if selected.option_id == "allow" { "allow" } else { "deny" }
+            }
+            RequestPermissionOutcome::Cancelled => "deny",
+        };
+        let body = serde_json::json!({"decision": decision});
+
+        let result = match (translator_prompt_id.as_ref(), translator_session_id.as_ref()) {
+            (Some(pid), Some(sid)) => translator_client
+                .call::<_, serde_json::Value>(
+                    "prompts.respond",
+                    serde_json::json!({
+                        "session_id": sid,
+                        "prompt_id": pid,
+                        "result": body,
+                    }),
+                )
+                .await
+                .map(|_| ())
+                .map_err(|e| e.to_string()),
+            (Some(_), None) => Err("inline permission missing session_id".to_owned()),
+            (None, _) => translator_client
+                .send_response(translator_rev_id, body)
+                .map_err(|e| e.to_string()),
+        };
+        if let Err(e) = result {
+            tracing::warn!(error = %e, "inline permission response failed");
+        }
+    });
+    true
 }
 
 const MOUSE_SCROLL_STEP: u16 = 5;

@@ -82,12 +82,23 @@ async fn handle_picker_key(
     false
 }
 
+const PAGE_STEP: u16 = 10;
+
 async fn handle_conversation_key(
     app: &mut App,
     key: KeyEvent,
     client: &Arc<Client>,
 ) -> bool {
-    const PAGE_STEP: u16 = 10;
+    // Inline permissions / questions intercept first when an interaction
+    // is queued (focused or otherwise). The state machine handles
+    // arrow-key navigation, Tab cycling, and Ctrl+y / Ctrl+n shortcuts;
+    // it returns true when the keystroke was consumed.
+    if !app.pending_interaction_ids.is_empty()
+        && crate::state::inline_interactions::handle_inline_interaction_key(app, key)
+    {
+        return false;
+    }
+
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     match key.code {
         KeyCode::Esc => {

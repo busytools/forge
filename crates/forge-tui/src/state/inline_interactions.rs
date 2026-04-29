@@ -232,7 +232,7 @@ pub(super) fn handle_interaction_focus_cycle(
     Some(true)
 }
 
-pub(super) fn handle_inline_interaction_key(app: &mut App, key: KeyEvent) -> bool {
+pub fn handle_inline_interaction_key(app: &mut App, key: KeyEvent) -> bool {
     normalize_pending_interaction_queue(app);
     let interaction_has_focus = focused_interaction_is_active(app);
     let has_question = questions::has_focused_question(app);
