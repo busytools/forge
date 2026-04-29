@@ -92,7 +92,7 @@ pub async fn run<B: Backend>(
         match event {
             AppEvent::Quit => break,
             AppEvent::Term(Event::Key(k)) if k.kind == KeyEventKind::Press => {
-                if crate::input::handle_key(&mut app, k.code, &client, &event_tx).await {
+                if crate::input::handle_key(&mut app, k, &client, &event_tx).await {
                     break;
                 }
             }
@@ -117,6 +117,8 @@ pub async fn run<B: Backend>(
             }
 
             AppEvent::SessionListLoaded(items) => {
+                app.recent_sessions =
+                    crate::state::wire_adapter::session_list_to_recent_sessions(&items);
                 app.session_list = items;
                 if app.picker_cursor > app.session_list.len() {
                     app.picker_cursor = app.session_list.len();

@@ -18,6 +18,7 @@ use crate::state::app::App;
 use crate::state::messages::{ChatMessage, MessageBlock, MessageRole, SystemSeverity, TextBlock};
 use crate::state::model::{self, ToolCallContent};
 use crate::state::tool_call_info::ToolCallInfo;
+use crate::state::types::RecentSessionInfo;
 
 /// Apply a daemon `session.event` payload to `app`. Pushes a new
 /// `ChatMessage` for user/assistant/system text + `tool_use` content;
@@ -187,6 +188,64 @@ fn apply_tool_result(app: &mut App, item: &serde_json::Value) -> bool {
     };
     tool_call.mark_tool_call_render_dirty();
     true
+}
+
+/// Adapt a daemon `sessions.list` array into `Vec<RecentSessionInfo>`
+/// so the lifted `ui::lifted::session_picker` can render the list.
+///
+/// Skips entries missing `session_id` / `summary`. Maps daemon
+/// `last_modified` (ms) → `last_modified_ms`, `file_size` → `file_size_bytes`
+/// (defaulting to `0` when absent).
+#[must_use]
+pub fn session_list_to_recent_sessions(items: &[serde_json::Value]) -> Vec<RecentSessionInfo> {
+    items.iter().filter_map(json_to_recent_session).collect()
+}
+
+fn json_to_recent_session(value: &serde_json::Value) -> Option<RecentSessionInfo> {
+    let session_id = value
+        .get("session_id")
+        .and_then(serde_json::Value::as_str)?
+        .to_owned();
+    let summary = value
+        .get("summary")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("")
+        .to_owned();
+    let last_modified_ms = value
+        .get("last_modified")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
+    let file_size_bytes = value
+        .get("file_size")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
+    let cwd = value
+        .get("cwd")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned);
+    let git_branch = value
+        .get("git_branch")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned);
+    let custom_title = value
+        .get("custom_title")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned);
+    let first_prompt = value
+        .get("first_prompt")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned);
+
+    Some(RecentSessionInfo {
+        session_id,
+        summary,
+        last_modified_ms,
+        file_size_bytes,
+        cwd,
+        git_branch,
+        custom_title,
+        first_prompt,
+    })
 }
 
 fn text_block_for_role(text: String, role: &MessageRole) -> MessageBlock {

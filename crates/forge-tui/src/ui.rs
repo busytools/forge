@@ -46,19 +46,45 @@ pub fn render(frame: &mut Frame<'_>, app: &mut App) {
     }
 }
 
-/// Compose lifted chat + input + footer for the Chat view.
+/// Compose lifted chat + input + footer for the Chat view, plus the
+/// optional todo and help overlays. Layout (top to bottom):
+/// chat | todo | input | help | footer.
 fn render_chat_lifted(frame: &mut Frame<'_>, app: &mut App) {
     let area = frame.area();
+    let todo_height = lifted::todo::compute_height(app);
+    let help_height = lifted::help::compute_height(app, area.width);
+
+    let mut constraints: Vec<Constraint> = Vec::with_capacity(5);
+    constraints.push(Constraint::Min(3)); // chat body
+    if todo_height > 0 {
+        constraints.push(Constraint::Length(todo_height));
+    }
+    constraints.push(Constraint::Length(2)); // input (lifted is two rows)
+    if help_height > 0 {
+        constraints.push(Constraint::Length(help_height));
+    }
+    constraints.push(Constraint::Length(2)); // footer (lifted footer is two rows)
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Min(3),    // chat body
-            Constraint::Length(2), // input
-            Constraint::Length(2), // footer (lifted footer is two rows)
-        ])
+        .constraints(constraints)
         .split(area);
 
-    lifted::chat::render(frame, chunks[0], app);
-    lifted::input::render(frame, chunks[1], app);
-    lifted::footer::render(frame, chunks[2], app);
+    let mut idx = 0;
+    let chat_area = chunks[idx];
+    idx += 1;
+    lifted::chat::render(frame, chat_area, app);
+    if todo_height > 0 {
+        lifted::todo::render(frame, chunks[idx], app);
+        idx += 1;
+    }
+    let input_area = chunks[idx];
+    idx += 1;
+    lifted::input::render(frame, input_area, app);
+    if help_height > 0 {
+        lifted::help::render(frame, chunks[idx], app);
+        idx += 1;
+    }
+    let footer_area = chunks[idx];
+    lifted::footer::render(frame, footer_area, app);
 }

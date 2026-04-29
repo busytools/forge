@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use crossterm::event::KeyCode;
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use tokio::sync::mpsc;
 
 use crate::app::{App, AppEvent, Role, Screen};
@@ -15,20 +15,20 @@ use crate::client::Client;
 /// Returns `true` to quit, `false` to keep running.
 pub async fn handle_key(
     app: &mut App,
-    key: KeyCode,
+    key: KeyEvent,
     client: &Arc<Client>,
     event_tx: &mpsc::UnboundedSender<AppEvent>,
 ) -> bool {
     if app.pending_permission.is_some() {
-        handle_modal_key(app, key, client).await;
+        handle_modal_key(app, key.code, client).await;
         return false;
     }
 
     match app.active_view {
-        Screen::Connecting => handle_connecting_key(key),
-        Screen::SessionPicker => handle_picker_key(app, key, client, event_tx).await,
+        Screen::Connecting => handle_connecting_key(key.code),
+        Screen::SessionPicker => handle_picker_key(app, key.code, client, event_tx).await,
         Screen::Chat => handle_conversation_key(app, key, client).await,
-        Screen::Disconnected => handle_disconnected_key(key),
+        Screen::Disconnected => handle_disconnected_key(key.code),
     }
 }
 
@@ -84,19 +84,40 @@ async fn handle_picker_key(
 
 async fn handle_conversation_key(
     app: &mut App,
-    key: KeyCode,
+    key: KeyEvent,
     client: &Arc<Client>,
 ) -> bool {
     const PAGE_STEP: u16 = 10;
-    match key {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    match key.code {
         KeyCode::Esc => {
+            // Esc closes help/todo overlays before backing out of the chat.
+            if app.help_open {
+                app.help_open = false;
+                return false;
+            }
+            if app.show_todo_panel {
+                app.show_todo_panel = false;
+                return false;
+            }
             app.active_view = Screen::SessionPicker;
             app.current_session = None;
-            app.legacy_messages.clear(); app.messages.clear();
+            app.legacy_messages.clear();
+            app.messages.clear();
             app.rendered_lines.clear();
             app.role = Role::Vacant;
+            app.input.clear();
             app.draft.clear();
+            app.tool_call_index.clear();
             app.conv_scroll_back = 0;
+        }
+        // F1 toggles the lifted help overlay.
+        KeyCode::F(1) => {
+            app.help_open = !app.help_open;
+        }
+        // Ctrl+T toggles the lifted todo panel (no-op when there are no todos).
+        KeyCode::Char('t' | 'T') if ctrl && !app.todos.is_empty() => {
+            app.show_todo_panel = !app.show_todo_panel;
         }
         // Scroll-from-bottom: `conv_scroll_back` = lines back from live
         // tail. Higher = older content; `0` is the live tail.
@@ -121,15 +142,15 @@ async fn handle_conversation_key(
         KeyCode::End => {
             app.conv_scroll_back = 0;
         }
-        KeyCode::Char(c) => {
-            if c == 'q' && app.draft.is_empty() {
-                // q on an empty draft = quit; while typing, q is a literal char
+        KeyCode::Char(c) if !ctrl => {
+            if c == 'q' && app.input.is_empty() {
+                // q on empty input = quit; while typing, q is a literal char.
                 return true;
             }
-            app.draft.push(c);
+            app.input.textarea_insert_char(c);
         }
         KeyCode::Backspace => {
-            app.draft.pop();
+            app.input.textarea_delete_char_before();
         }
         KeyCode::Enter => {
             send_draft(app, client).await;
@@ -146,8 +167,11 @@ fn open_session(
     event_tx: &mpsc::UnboundedSender<AppEvent>,
 ) {
     app.current_session = Some(sid.clone());
-    app.legacy_messages.clear(); app.messages.clear();
+    app.legacy_messages.clear();
+    app.messages.clear();
+    app.tool_call_index.clear();
     app.active_view = Screen::Chat;
+    app.input.clear();
     app.draft.clear();
 
     // Subscribe in parallel with the historical fetch.
@@ -233,10 +257,12 @@ async fn send_draft(app: &mut App, client: &Arc<Client>) {
     let Some(sid) = app.current_session.clone() else {
         return;
     };
-    let prompt = std::mem::take(&mut app.draft);
+    let prompt = app.input.text();
     if prompt.trim().is_empty() {
         return;
     }
+    app.input.clear();
+    app.draft.clear();
     let result = client
         .call::<_, serde_json::Value>(
             "session.send_user_message",
