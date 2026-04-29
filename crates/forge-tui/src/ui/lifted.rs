@@ -5,3 +5,4 @@
 //! renderer cuts over and the legacy modules drop.
 
 pub mod footer;
+pub mod help;

@@ -9,7 +9,7 @@
 )]
 
 use crate::state::dialog;
-use crate::state::focus::FocusManager;
+use crate::state::focus::{FocusContext, FocusManager, FocusOwner, FocusTarget};
 use crate::state::git_context::GitContextState;
 use crate::state::input::{InputSnapshot, InputState};
 use crate::state::messages::{ChatMessage, NoticeDedupKey};
@@ -141,6 +141,11 @@ pub struct App {
     pub help_open: bool,
     pub help_dialog: dialog::DialogState,
     pub help_visible_count: usize,
+
+    /// Spinner label shown while a slash command is in flight. Stays
+    /// `None` in forge until slash command machinery lifts; help.rs
+    /// reads it for the "Processing command…" overlay.
+    pub pending_command_label: Option<String>,
 
     // ---- pending interactions / cancel ----
     pub pending_interaction_ids: Vec<String>,
@@ -282,6 +287,56 @@ impl App {
         self.git_context.branch_name()
     }
 
+    /// Whether the help overlay is open. Trivial accessor for symmetry
+    /// with upstream's API surface.
+    #[must_use]
+    pub fn is_help_active(&self) -> bool {
+        self.help_open
+    }
+
+    /// Whether any autocomplete (mention / slash / subagent) is open.
+    /// Always false in the trimmed App until those modules lift; help
+    /// + footer focus routing keys off this.
+    #[must_use]
+    pub fn autocomplete_focus_available(&self) -> bool {
+        false
+    }
+
+    /// Build the focus context that drives `FocusManager::owner` /
+    /// `claim` lookups. Tracks which focus targets are currently
+    /// available (todo panel visible, autocomplete open, pending
+    /// permission, help overlay).
+    #[must_use]
+    fn focus_context(&self) -> FocusContext {
+        FocusContext::new(
+            self.show_todo_panel && !self.todos.is_empty(),
+            self.autocomplete_focus_available(),
+            !self.pending_interaction_ids.is_empty(),
+        )
+        .with_help(self.is_help_active())
+    }
+
+    /// Current key-routing owner. Layered on top of focus_context to
+    /// resolve which UI element should receive directional keys.
+    #[must_use]
+    pub fn focus_owner(&self) -> FocusOwner {
+        self.focus.owner(self.focus_context())
+    }
+
+    /// Claim key routing for a navigation target (todo, mention, help
+    /// overlay, etc.). The latest claimant wins.
+    pub fn claim_focus_target(&mut self, target: FocusTarget) {
+        let context = self.focus_context();
+        self.focus.claim(target, context);
+    }
+
+    /// Release a key-routing claim previously made via
+    /// `claim_focus_target`.
+    pub fn release_focus_target(&mut self, target: FocusTarget) {
+        let context = self.focus_context();
+        self.focus.release(target, context);
+    }
+
     /// Resolved thinking effort. Reads from `config_options` snapshot
     /// pushed by the daemon; falls back to `Medium` until the daemon
     /// wire surface ships the value (cuts list: ConfigState).
@@ -342,6 +397,7 @@ impl Default for App {
             help_open: false,
             help_dialog: dialog::DialogState::default(),
             help_visible_count: 0,
+            pending_command_label: None,
 
             pending_interaction_ids: Vec::new(),
             cancelled_turn_pending_hint: false,
