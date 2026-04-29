@@ -37,5 +37,6 @@ pub mod tool_call_info;
 pub mod types;
 pub mod view;
 pub mod viewport;
+pub mod wire_adapter;
 
 pub use viewport::{LayoutInvalidation, LayoutRemeasureReason};
