@@ -15,9 +15,10 @@ use crate::state::input::{InputSnapshot, InputState};
 use crate::state::messages::{ChatMessage, NoticeDedupKey};
 use crate::state::model;
 use crate::state::types::{
-    AppStatus, CancelOrigin, HelpView, HistoryRetentionPolicy, HistoryRetentionStats, McpState,
-    ModeState, PasteSessionState, RecentSessionInfo, RenderCacheBudget, ScrollbarDragState,
-    SelectionState, SessionPickerState, SessionUsageState, TodoItem, ToolCallScope,
+    AppStatus, CancelOrigin, HelpView, HistoryRetentionPolicy, HistoryRetentionStats, LoginHint,
+    McpState, ModeState, PasteSessionState, RecentSessionInfo, RenderCacheBudget,
+    ScrollbarDragState, SelectionState, SessionPickerState, SessionUsageState, TodoItem,
+    ToolCallScope,
 };
 use crate::state::viewport::ChatViewport;
 
@@ -131,6 +132,9 @@ pub struct App {
     /// Populated by daemon snapshots; the upstream `config: ConfigState`
     /// editor UI has not been lifted yet.
     pub config_options: std::collections::BTreeMap<String, serde_json::Value>,
+    /// Login hint shown above the input field when authentication is
+    /// required. Daemon pushes this when claude reports `auth_required`.
+    pub login_hint: Option<LoginHint>,
 
     pub should_quit: bool,
     /// Optional fatal error that should be surfaced at CLI boundary.
@@ -389,6 +393,7 @@ impl Default for App {
             cwd_raw: String::new(),
             mode: None,
             config_options: std::collections::BTreeMap::new(),
+            login_hint: None,
 
             should_quit: false,
             exit_error: None,
