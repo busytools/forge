@@ -197,6 +197,14 @@ pub struct App {
     pub pending_submit: Option<InputSnapshot>,
     pub paste_burst: crate::state::paste_burst::PasteBurstDetector,
     pub pending_paste_text: String,
+    /// File-index scanner state for `@` mention autocomplete.
+    pub file_index: crate::state::file_index::FileIndexState,
+    /// `@` mention autocomplete dropdown state.
+    pub mention: Option<crate::state::mention::MentionState>,
+    /// Channel: file_index scanner -> drain_events on each frame.
+    pub file_index_event_tx: std::sync::mpsc::Sender<crate::state::file_index::FileIndexEvent>,
+    /// Channel: drain_events consumes scanner events.
+    pub file_index_event_rx: std::sync::mpsc::Receiver<crate::state::file_index::FileIndexEvent>,
     pub pending_paste_session: Option<PasteSessionState>,
     pub active_paste_session: Option<PasteSessionState>,
     pub next_paste_session_id: u64,
@@ -341,6 +349,17 @@ impl App {
         self.focus.release(target, context);
     }
 
+    /// Whether the file-index scanner should respect `.gitignore`.
+    /// Reads from `config_options` snapshot; defaults to true (matches
+    /// upstream's setting default).
+    #[must_use]
+    pub fn respect_gitignore_effective(&self) -> bool {
+        self.config_options
+            .get("respect_gitignore")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(true)
+    }
+
     /// Resolved thinking effort. Reads from `config_options` snapshot
     /// pushed by the daemon; falls back to `Medium` until the daemon
     /// wire surface ships the value (cuts list: ConfigState).
@@ -468,6 +487,7 @@ impl App {
 
 impl Default for App {
     fn default() -> Self {
+        let (file_index_tx, file_index_rx) = std::sync::mpsc::channel();
         Self {
             active_view: ActiveView::default(),
 
@@ -537,6 +557,10 @@ impl Default for App {
             pending_submit: None,
             paste_burst: crate::state::paste_burst::PasteBurstDetector::default(),
             pending_paste_text: String::new(),
+            file_index: crate::state::file_index::FileIndexState::default(),
+            mention: None,
+            file_index_event_tx: file_index_tx,
+            file_index_event_rx: file_index_rx,
             pending_paste_session: None,
             active_paste_session: None,
             next_paste_session_id: 0,

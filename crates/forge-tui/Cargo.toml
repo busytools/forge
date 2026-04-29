@@ -34,6 +34,7 @@ futures-util.workspace = true
 
 # Tier A primitives lifted from claude-code-rust
 ansi-to-tui.workspace = true
+ignore.workspace = true
 notify.workspace = true
 pulldown-cmark.workspace = true
 similar.workspace = true

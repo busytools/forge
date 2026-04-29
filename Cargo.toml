@@ -37,6 +37,7 @@ crossterm = "0.29"
 
 # Tier A primitives lifted from claude-code-rust
 ansi-to-tui = "8"
+ignore = "0.4"
 notify = "8"
 pulldown-cmark = "0.13"
 similar = "3"
