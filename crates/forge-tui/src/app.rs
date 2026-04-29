@@ -137,13 +137,8 @@ pub async fn run<B: Backend>(
                     // Legacy renderer path: keep raw JSON.
                     app.legacy_messages.push(msg.clone());
                     app.rebuild_rendered_lines();
-                    // Lifted renderer path: parse to ChatMessage when shape recognised.
-                    if let Some(chat_msg) =
-                        crate::state::wire_adapter::json_to_chat_message(&msg)
-                    {
-                        app.messages.push(chat_msg);
-                        app.message_retained_bytes.push(0);
-                    }
+                    // Lifted renderer path: parse + apply to ChatMessage / existing tool calls.
+                    crate::state::wire_adapter::apply_session_event(&mut app, &msg);
                 }
             }
             AppEvent::HistoricalLoaded(history) => {
@@ -152,14 +147,18 @@ pub async fn run<B: Backend>(
                 app.legacy_messages.extend(live_legacy);
                 app.rebuild_rendered_lines();
 
+                // Lifted: replay historical events in chronological order so
+                // tool_use blocks are indexed before their tool_results arrive.
                 let live_lifted = std::mem::take(&mut app.messages);
+                let live_retained = std::mem::take(&mut app.message_retained_bytes);
+                app.tool_call_index.clear();
                 for h in &history {
-                    if let Some(cm) = crate::state::wire_adapter::json_to_chat_message(h) {
-                        app.messages.push(cm);
-                    }
+                    crate::state::wire_adapter::apply_session_event(&mut app, h);
                 }
+                let history_len = app.messages.len();
                 app.messages.extend(live_lifted);
-                app.message_retained_bytes.resize(app.messages.len(), 0);
+                app.message_retained_bytes.resize(history_len, 0);
+                app.message_retained_bytes.extend(live_retained);
 
                 app.conv_scroll_back = 0;
             }

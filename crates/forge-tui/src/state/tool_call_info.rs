@@ -67,6 +67,49 @@ pub enum TerminalSnapshotMode {
 }
 
 impl ToolCallInfo {
+    /// Minimal constructor for newly-arrived `tool_use` blocks parsed
+    /// out of a daemon `session.event`. Forge-shape (not in upstream);
+    /// upstream constructs ToolCallInfo across many code paths in
+    /// `app/events/tool_calls.rs`.
+    #[must_use]
+    pub fn from_tool_use(
+        id: String,
+        sdk_tool_name: String,
+        raw_input: Option<serde_json::Value>,
+    ) -> Self {
+        let raw_input_bytes = raw_input
+            .as_ref()
+            .map_or(0, Self::estimate_json_value_bytes);
+        let title = sdk_tool_name.clone();
+        Self {
+            id,
+            title,
+            sdk_tool_name,
+            raw_input,
+            raw_input_bytes,
+            output_metadata: None,
+            task_metadata: None,
+            status: model::ToolCallStatus::Pending,
+            content: Vec::new(),
+            hidden: false,
+            terminal_id: None,
+            terminal_command: None,
+            terminal_output: None,
+            terminal_output_len: 0,
+            terminal_bytes_seen: 0,
+            terminal_snapshot_mode: TerminalSnapshotMode::AppendOnly,
+            render_epoch: 0,
+            layout_epoch: 0,
+            last_measured_width: 0,
+            last_measured_height: 0,
+            last_measured_layout_epoch: 0,
+            last_measured_layout_generation: 0,
+            cache: BlockCache::default(),
+            pending_permission: None,
+            pending_question: None,
+        }
+    }
+
     pub(crate) fn estimate_json_value_bytes(value: &serde_json::Value) -> usize {
         serde_json::to_string(value).map_or(0, |json| json.len())
     }
