@@ -20,7 +20,7 @@ use crate::state::types::{
     ScrollbarDragState, SelectionState, SessionPickerState, SessionUsageState, TodoItem,
     ToolCallScope,
 };
-use crate::state::viewport::ChatViewport;
+use crate::state::viewport::{ChatViewport, LayoutInvalidation, LayoutRemeasureReason};
 
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
@@ -370,6 +370,52 @@ impl App {
         self.todos = todos;
         self.cached_todo_compact = None;
     }
+
+    /// Apply a layout invalidation to the viewport. Lifted verbatim
+    /// from upstream's `App::invalidate_layout`.
+    pub fn invalidate_layout(&mut self, level: LayoutInvalidation) {
+        match level {
+            LayoutInvalidation::MessageChanged(idx) => {
+                self.viewport.invalidate_message(idx);
+            }
+            LayoutInvalidation::MessagesFrom(idx) => {
+                self.viewport.invalidate_messages_from(idx);
+            }
+            LayoutInvalidation::Global => {
+                if self.messages.is_empty() {
+                    return;
+                }
+                self.viewport.invalidate_all_messages(LayoutRemeasureReason::Global);
+                self.viewport.bump_layout_generation();
+            }
+            LayoutInvalidation::Resize => {
+                debug_assert!(
+                    false,
+                    "Resize should not be dispatched through invalidate_layout"
+                );
+            }
+        }
+    }
+
+    /// Drop focus claims that are no longer valid. Lifted verbatim
+    /// from upstream.
+    pub fn normalize_focus_stack(&mut self) {
+        let context = self.focus_context();
+        self.focus.normalize(context);
+    }
+
+    /// No-op stub. Upstream's `sync_render_cache_slot` reconciles
+    /// `App.render_cache_slots` parallel to `messages[mi].blocks[bi]`;
+    /// forge has not lifted the render-budget infra yet, so this is a
+    /// no-op until `render_budget.rs` lands (cuts list).
+    pub fn sync_render_cache_slot(&mut self, _msg_idx: usize, _block_idx: usize) {}
+
+    /// No-op stub. Upstream's `recompute_message_retained_bytes`
+    /// updates `App.message_retained_bytes[mi]` and the rolling
+    /// `retained_history_bytes` total. Forge will need this when
+    /// `history_retention.rs` lifts; until then the parallel arrays
+    /// stay zero-initialised and history retention is not enforced.
+    pub fn recompute_message_retained_bytes(&mut self, _msg_idx: usize) {}
 }
 
 impl Default for App {
