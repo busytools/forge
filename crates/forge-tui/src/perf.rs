@@ -56,3 +56,19 @@ pub fn mark(_name: &'static str) {}
 
 /// Free-function shorthand with extra payload. No-op.
 pub fn mark_with(_name: &'static str, _extra_name: &'static str, _extra_val: usize) {}
+
+/// Free-function timer start (no-op stub matching upstream signature).
+#[must_use]
+pub fn start(_name: &'static str) -> Option<Timer> {
+    None
+}
+
+/// Free-function timer start with extra payload (no-op stub).
+#[must_use]
+pub fn start_with(
+    _name: &'static str,
+    _extra_name: &'static str,
+    _extra_val: usize,
+) -> Option<Timer> {
+    None
+}

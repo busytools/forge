@@ -15,6 +15,7 @@ pub mod block_cache;
 pub mod cache_metrics;
 pub mod clipboard_image;
 pub mod dialog;
+pub mod error_handling;
 pub mod file_index;
 pub mod focus;
 pub mod git_context;

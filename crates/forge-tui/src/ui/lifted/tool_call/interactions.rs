@@ -1,0 +1,411 @@
+#![allow(
+    dead_code,
+    missing_docs,
+    clippy::pedantic,
+    clippy::disallowed_methods,
+    clippy::while_let_loop,
+    clippy::collapsible_if,
+    reason = "lifted upstream from claude-code-rust"
+)]
+
+//! Inline interaction rendering: permissions, plan approvals, and `AskUserQuestion`.
+
+use crate::state::model::PermissionOptionKind;
+use crate::state::tool_call_info::{InlinePermission, InlineQuestion, ToolCallInfo};
+use crate::ui::theme;
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span};
+
+use super::markdown_inline_spans;
+
+/// Render inline permission options on a single compact line.
+/// Options are dynamic and include shortcuts only when applicable.
+/// Unfocused permissions are dimmed to indicate they don't have keyboard input.
+pub(super) fn render_permission_lines(
+    tc: &ToolCallInfo,
+    perm: &InlinePermission,
+) -> Vec<Line<'static>> {
+    if tc.is_exit_plan_mode_tool() || is_plan_approval_permission(perm) {
+        return render_plan_approval_lines(tc, perm);
+    }
+
+    // Unfocused permissions: show a dimmed "waiting for focus" line
+    if !perm.focused {
+        return vec![
+            Line::default(),
+            Line::from(Span::styled(
+                "  \u{25cb} Waiting for input... (Tab to focus)",
+                Style::default().fg(theme::DIM),
+            )),
+        ];
+    }
+
+    let mut lines = vec![Line::default()];
+    if let Some(display) = permission_display_lines(tc, perm) {
+        lines.extend(display);
+    }
+
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    let dot = Span::styled("  \u{00b7}  ", Style::default().fg(theme::DIM));
+
+    for (i, opt) in perm.options.iter().enumerate() {
+        let is_selected = i == perm.selected_index;
+        let is_allow = matches!(
+            opt.kind,
+            PermissionOptionKind::AllowOnce
+                | PermissionOptionKind::AllowSession
+                | PermissionOptionKind::AllowAlways
+        );
+
+        let (icon, icon_color) = if is_allow {
+            ("\u{2713}", Color::Green) // check
+        } else {
+            ("\u{2717}", Color::Red) // cross
+        };
+
+        // Separator between options
+        if i > 0 {
+            spans.push(dot.clone());
+        }
+
+        // Selection indicator
+        if is_selected {
+            spans.push(Span::styled(
+                "\u{25b8} ",
+                Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
+            ));
+        }
+
+        spans.push(Span::styled(format!("{icon} "), Style::default().fg(icon_color)));
+
+        let name_style = if is_selected {
+            Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::Gray)
+        };
+        let mut name_spans = markdown_inline_spans(&opt.name);
+        if name_spans.is_empty() {
+            spans.push(Span::styled(opt.name.clone(), name_style));
+        } else {
+            for span in &mut name_spans {
+                span.style = span.style.patch(name_style);
+            }
+            spans.extend(name_spans);
+        }
+
+        let shortcut = match opt.kind {
+            PermissionOptionKind::AllowOnce => " (Ctrl+y)",
+            PermissionOptionKind::AllowSession | PermissionOptionKind::AllowAlways => " (Ctrl+a)",
+            PermissionOptionKind::RejectOnce => " (Ctrl+n)",
+            PermissionOptionKind::RejectAlways
+            | PermissionOptionKind::QuestionChoice
+            | PermissionOptionKind::PlanApprove
+            | PermissionOptionKind::PlanReject => "",
+        };
+        spans.push(Span::styled(shortcut, Style::default().fg(theme::DIM)));
+    }
+
+    lines.push(Line::from(spans));
+    lines.push(Line::from(Span::styled(
+        "\u{2190}\u{2192} select  \u{2191}\u{2193} next  enter confirm  esc reject",
+        Style::default().fg(theme::DIM),
+    )));
+    lines
+}
+
+fn permission_display_lines(
+    tc: &ToolCallInfo,
+    perm: &InlinePermission,
+) -> Option<Vec<Line<'static>>> {
+    let display = perm.display.as_ref()?;
+    let title = display.title.as_ref().map(|value| value.trim()).filter(|value| !value.is_empty());
+    let display_name =
+        display.display_name.as_ref().map(|value| value.trim()).filter(|value| !value.is_empty());
+    let description =
+        display.description.as_ref().map(|value| value.trim()).filter(|value| !value.is_empty());
+    if title.is_none() && display_name.is_none() && description.is_none() {
+        return None;
+    }
+
+    let header = title
+        .into_iter()
+        .chain(display_name)
+        .find(|value| !is_redundant_permission_header(tc, value));
+
+    let mut lines = Vec::new();
+    if let Some(title) = header {
+        lines.push(Line::from(Span::styled(
+            format!("  {title}"),
+            Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+        )));
+    }
+    if let Some(description) = description {
+        lines.push(Line::from(vec![
+            Span::raw("    "),
+            Span::styled(description.to_owned(), Style::default().fg(theme::DIM)),
+        ]));
+    }
+    if !lines.is_empty() {
+        lines.push(Line::default());
+    }
+    Some(lines)
+}
+
+fn is_redundant_permission_header(tc: &ToolCallInfo, value: &str) -> bool {
+    let normalized = normalize_permission_header(value);
+    let tool_label = normalize_permission_header(theme::tool_name_label(&tc.sdk_tool_name).1);
+    let sdk_name = normalize_permission_header(&tc.sdk_tool_name);
+    let title = normalize_permission_header(&tc.title);
+    normalized == tool_label || normalized == sdk_name || normalized == title
+}
+
+fn normalize_permission_header(value: &str) -> String {
+    value.trim().to_ascii_lowercase()
+}
+
+fn is_plan_approval_permission(perm: &InlinePermission) -> bool {
+    perm.options.iter().any(|opt| {
+        matches!(opt.kind, PermissionOptionKind::PlanApprove | PermissionOptionKind::PlanReject)
+    })
+}
+
+fn parse_exit_plan_mode_allowed_prompts(raw_input: Option<&serde_json::Value>) -> Vec<String> {
+    let Some(raw) = raw_input else {
+        return Vec::new();
+    };
+    let Some(arr) = raw.get("allowedPrompts").and_then(|v| v.as_array()) else {
+        return Vec::new();
+    };
+    arr.iter()
+        .filter_map(|item| {
+            let prompt = item.get("prompt")?.as_str()?;
+            let tool = item.get("tool")?.as_str()?;
+            Some(format!("{tool}: {prompt}"))
+        })
+        .collect()
+}
+
+fn render_plan_approval_lines(tc: &ToolCallInfo, perm: &InlinePermission) -> Vec<Line<'static>> {
+    if !perm.focused {
+        return vec![
+            Line::default(),
+            Line::from(Span::styled(
+                "  \u{25cb} Waiting for input... (Tab to focus)",
+                Style::default().fg(theme::DIM),
+            )),
+        ];
+    }
+
+    let mut lines = vec![Line::default()];
+
+    // Show pre-approved actions requested by Claude, if any.
+    let allowed_prompts = parse_exit_plan_mode_allowed_prompts(tc.raw_input.as_ref());
+    if !allowed_prompts.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  Pre-approved actions:",
+            Style::default().fg(theme::DIM),
+        )));
+        for prompt_text in allowed_prompts {
+            lines.push(Line::from(vec![
+                Span::styled("    \u{2022} ", Style::default().fg(theme::DIM)),
+                Span::styled(prompt_text, Style::default().fg(Color::White)),
+            ]));
+        }
+        lines.push(Line::default());
+    }
+
+    // Stacked approve / reject options.
+    for (i, opt) in perm.options.iter().enumerate() {
+        let is_selected = i == perm.selected_index;
+        let (icon, icon_color, shortcut) = match opt.kind {
+            PermissionOptionKind::PlanApprove => ("\u{2713}", Color::Green, " [Ctrl+y]"),
+            PermissionOptionKind::PlanReject => ("\u{2717}", Color::Red, " [Ctrl+n]"),
+            _ => ("\u{00b7}", Color::Gray, ""),
+        };
+
+        let name_style = if is_selected {
+            Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::Gray)
+        };
+
+        let mut line_spans: Vec<Span<'static>> = Vec::new();
+        if is_selected {
+            line_spans.push(Span::styled(
+                "  \u{25b8} ",
+                Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
+            ));
+        } else {
+            line_spans.push(Span::raw("    "));
+        }
+        line_spans.push(Span::styled(format!("{icon} "), Style::default().fg(icon_color)));
+        line_spans.push(Span::styled(opt.name.clone(), name_style));
+        line_spans.push(Span::styled(shortcut, Style::default().fg(theme::DIM)));
+        lines.push(Line::from(line_spans));
+    }
+
+    lines.push(Line::from(Span::styled(
+        "  \u{2191}\u{2193} select  enter confirm  Ctrl+y approve  Ctrl+n/esc reject",
+        Style::default().fg(theme::DIM),
+    )));
+
+    lines
+}
+
+#[allow(clippy::too_many_lines)]
+pub(super) fn render_question_lines(question: &InlineQuestion) -> Vec<Line<'static>> {
+    let progress = match question.total_questions {
+        total if total > 0 => format!(" ({}/{total})", question.question_index + 1),
+        _ => String::new(),
+    };
+
+    let mut lines = vec![
+        Line::default(),
+        Line::from(vec![
+            Span::styled("  ? ", Style::default().fg(theme::RUST_ORANGE)),
+            Span::styled(
+                format!("{}{}", question.prompt.header, progress),
+                Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+            ),
+        ]),
+    ];
+
+    for row in question.prompt.question.lines() {
+        lines.push(Line::from(vec![Span::styled(
+            format!("    {row}"),
+            if question.focused {
+                Style::default().fg(theme::RUST_ORANGE)
+            } else {
+                Style::default().fg(Color::Gray)
+            },
+        )]));
+    }
+
+    if !question.focused {
+        lines.push(Line::from(Span::styled(
+            "  waiting for input... (Tab to focus)",
+            Style::default().fg(theme::DIM),
+        )));
+        return lines;
+    }
+
+    let horizontal = question.prompt.options.len() <= 3
+        && question.prompt.options.iter().all(|opt| {
+            opt.description.as_deref().is_none_or(str::is_empty) && opt.label.chars().count() <= 20
+        });
+
+    if horizontal {
+        let mut spans: Vec<Span<'static>> = Vec::new();
+        for (i, opt) in question.prompt.options.iter().enumerate() {
+            if i > 0 {
+                spans.push(Span::styled("  |  ", Style::default().fg(theme::DIM)));
+            }
+            let selected = i == question.focused_option_index;
+            let checked = question.selected_option_indices.contains(&i);
+            if selected {
+                spans.push(Span::styled(
+                    "\u{25b8} ",
+                    Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
+                ));
+            } else {
+                spans.push(Span::styled("  ", Style::default().fg(theme::DIM)));
+            }
+            let style = if selected {
+                Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::Gray)
+            };
+            let marker = if checked { "[x] " } else { "[ ] " };
+            if question.prompt.multi_select {
+                spans.push(Span::styled(marker, Style::default().fg(theme::DIM)));
+            }
+            spans.push(Span::styled(opt.label.clone(), style));
+        }
+        lines.push(Line::from(spans));
+    } else {
+        for (i, opt) in question.prompt.options.iter().enumerate() {
+            let selected = i == question.focused_option_index;
+            let checked = question.selected_option_indices.contains(&i);
+            let bullet = if selected { "  \u{25b8} " } else { "  \u{25cb} " };
+            let name_style = if selected {
+                Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::Gray)
+            };
+            lines.push(Line::from(vec![
+                Span::styled(
+                    bullet,
+                    if selected {
+                        Style::default().fg(theme::RUST_ORANGE)
+                    } else {
+                        Style::default().fg(theme::DIM)
+                    },
+                ),
+                Span::styled(
+                    if question.prompt.multi_select {
+                        if checked { "[x] " } else { "[ ] " }
+                    } else {
+                        ""
+                    },
+                    Style::default().fg(theme::DIM),
+                ),
+                Span::styled(opt.label.clone(), name_style),
+            ]));
+            if let Some(desc) = opt.description.as_ref().map(|d| d.trim()).filter(|d| !d.is_empty())
+            {
+                lines.push(Line::from(Span::styled(
+                    format!("      {desc}"),
+                    Style::default().fg(theme::DIM),
+                )));
+            }
+        }
+    }
+
+    if let Some(preview) = question
+        .prompt
+        .options
+        .get(question.focused_option_index)
+        .and_then(|option| option.preview.as_deref())
+        .map(str::trim)
+        .filter(|preview| !preview.is_empty())
+    {
+        lines.push(Line::default());
+        lines.push(Line::from(Span::styled(
+            "  Preview",
+            Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+        )));
+        for row in preview.lines() {
+            lines.push(Line::from(Span::styled(
+                format!("    {row}"),
+                Style::default().fg(theme::DIM),
+            )));
+        }
+    }
+
+    lines.push(Line::default());
+    lines.push(Line::from(vec![
+        Span::styled(
+            format!("  Notes{}: ", if question.editing_notes { " [editing]" } else { "" }),
+            Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            if question.notes.is_empty() { "<empty>".to_owned() } else { question.notes.clone() },
+            if question.editing_notes {
+                Style::default().fg(Color::White)
+            } else {
+                Style::default().fg(theme::DIM)
+            },
+        ),
+    ]));
+
+    lines.push(Line::from(Span::styled(
+        if question.prompt.multi_select {
+            "  Left/Right move  Space toggle  Tab notes  Enter confirm  Esc cancel"
+        } else {
+            "  Left/Right select  Tab notes  Enter confirm  Esc cancel"
+        },
+        Style::default().fg(theme::DIM),
+    )));
+    lines
+}
+

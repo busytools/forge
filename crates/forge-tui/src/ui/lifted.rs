@@ -8,5 +8,7 @@ pub mod autocomplete;
 pub mod footer;
 pub mod help;
 pub mod input;
+pub mod message;
 pub mod session_picker;
 pub mod todo;
+pub mod tool_call;
