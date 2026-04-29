@@ -28,6 +28,7 @@ pub mod notify;
 pub mod paste_burst;
 pub mod permissions;
 pub mod questions;
+pub mod slash;
 pub mod subagent;
 pub mod tool_call_info;
 pub mod types;

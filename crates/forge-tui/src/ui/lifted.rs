@@ -4,6 +4,7 @@
 //! the upstream-shape `state::app::App` carries enough state, the
 //! renderer cuts over and the legacy modules drop.
 
+pub mod autocomplete;
 pub mod footer;
 pub mod help;
 pub mod input;
