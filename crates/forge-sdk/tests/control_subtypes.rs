@@ -20,14 +20,14 @@ async fn spawn_client() -> Client {
 
 #[tokio::test]
 async fn interrupt_round_trip() {
-    let mut client = spawn_client().await;
+    let client = spawn_client().await;
     client.interrupt().await.expect("interrupt");
     client.disconnect().await.expect("disconnect");
 }
 
 #[tokio::test]
 async fn set_permission_mode_round_trip() {
-    let mut client = spawn_client().await;
+    let client = spawn_client().await;
     client
         .set_permission_mode(PermissionMode::AcceptEdits)
         .await
@@ -37,7 +37,7 @@ async fn set_permission_mode_round_trip() {
 
 #[tokio::test]
 async fn rewind_files_round_trip() {
-    let mut client = spawn_client().await;
+    let client = spawn_client().await;
     client
         .rewind_files("msg_user_01")
         .await
@@ -47,7 +47,7 @@ async fn rewind_files_round_trip() {
 
 #[tokio::test]
 async fn mcp_reconnect_round_trip() {
-    let mut client = spawn_client().await;
+    let client = spawn_client().await;
     client
         .mcp_reconnect("my-server")
         .await
@@ -57,7 +57,7 @@ async fn mcp_reconnect_round_trip() {
 
 #[tokio::test]
 async fn mcp_toggle_round_trip() {
-    let mut client = spawn_client().await;
+    let client = spawn_client().await;
     client
         .mcp_toggle("my-server", false)
         .await
@@ -67,14 +67,14 @@ async fn mcp_toggle_round_trip() {
 
 #[tokio::test]
 async fn stop_task_round_trip() {
-    let mut client = spawn_client().await;
+    let client = spawn_client().await;
     client.stop_task("task_abc").await.expect("stop_task");
     client.disconnect().await.expect("disconnect");
 }
 
 #[tokio::test]
 async fn mcp_status_raw_returns_canned_payload() {
-    let mut client = spawn_client().await;
+    let client = spawn_client().await;
     let resp = client.mcp_status_raw().await.expect("mcp_status");
     assert_eq!(
         resp,
@@ -86,7 +86,7 @@ async fn mcp_status_raw_returns_canned_payload() {
 
 #[tokio::test]
 async fn get_context_usage_raw_returns_canned_payload() {
-    let mut client = spawn_client().await;
+    let client = spawn_client().await;
     let resp = client
         .get_context_usage_raw()
         .await
@@ -101,7 +101,7 @@ async fn get_context_usage_raw_returns_canned_payload() {
 
 #[tokio::test]
 async fn set_model_round_trip_with_model() {
-    let mut client = spawn_client().await;
+    let client = spawn_client().await;
     client
         .set_model(Some("claude-sonnet-4-6"))
         .await
@@ -111,7 +111,7 @@ async fn set_model_round_trip_with_model() {
 
 #[tokio::test]
 async fn set_model_round_trip_with_none_reverts_to_default() {
-    let mut client = spawn_client().await;
+    let client = spawn_client().await;
     // Python accepts `model=None` to revert to CLI default; forge-sdk
     // passes Option<&str>, so None serialises to JSON null.
     client.set_model(None).await.expect("set_model");

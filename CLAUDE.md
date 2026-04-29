@@ -147,12 +147,10 @@ behaviour we care about.
 
 1. `git log main --oneline -10` — recent landings.
 2. `just check` — full gate (fmt + clippy + nextest + docs).
-3. `open docs/forge-sdk-parity-map.html` — current SDK surface (not
-   a parity gate; just a navigation map).
-4. Read the latest `handoff_*` in
+3. Read the latest `handoff_*` in
    `~/.claude-gateway/projects/-Users-dev-Projects-forge/memory/`
    for round-specific context.
-5. Read `project_vision.md` in auto-memory for the
+4. Read `project_vision.md` in auto-memory for the
    simple/efficient/capable direction; read `project_trust_model.md`
    for personal-use threat-model context.
 

@@ -19,7 +19,7 @@ async fn wire_capture_mcp_status() {
         .permission_mode(PermissionMode::AcceptEdits)
         .build();
 
-    run_live_scenario("mcp_status", opts, |mut client| async move {
+    run_live_scenario("mcp_status", opts, |client| async move {
         // Call mcp_status BEFORE sending a user message so the CLI's
         // control_response arrives before any conversation frames —
         // keeps the trace focused on the control round trip.

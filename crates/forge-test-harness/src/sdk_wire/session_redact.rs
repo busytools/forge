@@ -159,11 +159,11 @@ pub fn transform_persistence_line(
         .ok_or_else(|| "top-level not an object".to_string())?;
 
     // Rename sessionId → session_id.
-    if let Some(sid) = obj.remove("sessionId") {
-        if let Some(s) = sid.as_str() {
-            let opaque = state.opaque("session", s);
-            obj.insert("session_id".into(), Value::String(opaque));
-        }
+    if let Some(sid) = obj.remove("sessionId")
+        && let Some(s) = sid.as_str()
+    {
+        let opaque = state.opaque("session", s);
+        obj.insert("session_id".into(), Value::String(opaque));
     }
 
     // Map parentUuid → parent_tool_use_id when present + non-null.
@@ -332,10 +332,10 @@ fn redact_content_block(block: &mut Value, state: &mut RedactState) {
             // Unknown block type — keep shape, scrub any obvious
             // text-carrying fields to be safe.
             for (k, val) in obj.iter_mut() {
-                if let Value::String(s) = val {
-                    if k == "text" || k == "content" || k == "message" {
-                        *val = Value::String(format!("<redacted-{} {}b>", k, s.len()));
-                    }
+                if let Value::String(s) = val
+                    && (k == "text" || k == "content" || k == "message")
+                {
+                    *val = Value::String(format!("<redacted-{} {}b>", k, s.len()));
                 }
             }
         }

@@ -1,6 +1,6 @@
 //! Live-capture scenario: `can_use_tool` callback denies a tool call.
 //!
-//! Matches Python SDK's example
+//! Matches the canonical permission-deny example.
 //! (`examples/tool_permission_callback.py`): register a
 //! `can_use_tool` callback and run in `PermissionMode::Ask` — the CLI
 //! should emit a `can_use_tool` `control_request` per tool use, the
@@ -34,7 +34,7 @@ async fn wire_capture_permission_deny() {
         // `--permission-prompt-tool stdio` tells the CLI to route
         // permission prompts as `can_use_tool` control_requests over
         // the stream-json pipe instead of handling them in-process.
-        // Python SDK's example doesn't set this but Python ships
+        // The canonical example omits this but the CLI ships
         // without the user's `skipAutoPermissionPrompt: true` override;
         // against this developer's profile we need the explicit flag.
         .permission_prompt_tool_name("stdio")
@@ -44,7 +44,7 @@ async fn wire_capture_permission_deny() {
         })
         .build();
 
-    run_live_scenario("permission_deny", opts, |mut client| async move {
+    run_live_scenario("permission_deny", opts, |client| async move {
         // Pick a tool NOT auto-approved by the developer's
         // `settings.json → permissions.allow` list. `Write` and `Edit`
         // typically require permission in Ask mode. Bash is usually

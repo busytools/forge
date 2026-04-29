@@ -93,10 +93,10 @@ pub fn init(config: &Config) -> Result<(), Error> {
 /// untouched.
 #[must_use]
 fn expand_home(p: &str) -> PathBuf {
-    if let Some(rest) = p.strip_prefix("~/") {
-        if let Ok(home) = std::env::var("HOME") {
-            return PathBuf::from(home).join(rest);
-        }
+    if let Some(rest) = p.strip_prefix("~/")
+        && let Ok(home) = std::env::var("HOME")
+    {
+        return PathBuf::from(home).join(rest);
     }
     PathBuf::from(p)
 }

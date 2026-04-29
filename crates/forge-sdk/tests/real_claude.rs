@@ -25,7 +25,7 @@ async fn real_claude_minimal_turn() {
     let opts = OptionsBuilder::new()
         .permission_mode(forge_sdk::PermissionMode::BypassPermissions)
         .build();
-    let mut client = Client::spawn(opts).await.expect("spawn real claude");
+    let client = Client::spawn(opts).await.expect("spawn real claude");
     assert!(
         !client.session_id().is_empty(),
         "session id should be captured"

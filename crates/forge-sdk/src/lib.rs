@@ -1,20 +1,29 @@
 //! # forge-sdk
 //!
-//! A Rust port of Anthropic's [`claude-agent-sdk`](https://github.com/anthropics/claude-agent-sdk-python)
-//! at API-parity with the Python implementation. Spawns the `claude` CLI binary
-//! as a subprocess and speaks stream-json over stdio.
+//! A peer reference implementation in Rust of a client for Anthropic's
+//! `claude` CLI. Spawns the binary as a subprocess and speaks
+//! stream-json over stdio. Wire compatibility with the CLI is the only
+//! hard external invariant; API shape is whatever serves
+//! [`forge-daemon`](https://github.com/busytools/forge/tree/main/crates/forge-daemon)
+//! and [`forge-tui`](https://github.com/busytools/forge/tree/main/crates/forge-tui)
+//! best.
 //!
 //! ## Design
 //!
-//! The SDK is a thin wrapper around the `claude` binary. All agentic work —
-//! tool dispatch, conversation history, session persistence — happens inside
-//! the CLI itself. This crate is responsible for:
+//! The SDK is a thin wrapper around the `claude` binary. All agentic
+//! work — tool dispatch, conversation history, session persistence —
+//! happens inside the CLI itself. This crate is responsible for:
 //!
 //! - Spawning the subprocess with the right flags.
 //! - Parsing the stream-json output into typed Rust values.
 //! - Serialising user messages into stream-json input.
 //! - Bridging the `can_use_tool` callback (when enabled) across the wire.
 //! - Hosting in-process MCP tool servers that the `claude` binary can call.
+//!
+//! [`Client`] is `Clone`-able; all commands take `&self`. Internally
+//! a reader task owns the subprocess after init, decodes lines,
+//! dispatches inbound `control_request`s on detached tasks, and
+//! routes outbound `control_response`s to per-request waiters.
 //!
 //! ## Minimal example
 //!
@@ -23,7 +32,7 @@
 //! use forge_sdk::{Client, OptionsBuilder};
 //!
 //! let options = OptionsBuilder::new().build();
-//! let mut client = Client::spawn(options).await?;
+//! let client = Client::spawn(options).await?;
 //! client.send_user_message("hello").await?;
 //! while let Some(event) = client.next_event().await? {
 //!     println!("{event:?}");
@@ -35,7 +44,6 @@
 #![doc(html_root_url = "https://docs.rs/forge-sdk/0.1.64")]
 #![forbid(unsafe_code)]
 
-pub mod agents;
 pub mod argv;
 mod client;
 pub mod content;
@@ -49,15 +57,15 @@ pub(crate) mod permissions;
 pub(crate) mod public_types;
 pub(crate) mod request_id;
 pub mod session;
+pub mod subagents;
 pub mod transport;
 
-pub use client::{Client, ControlDispatchHandle, EventOrControl};
+pub use client::Client;
 pub use error::Error;
-pub use transport::{AsyncWriter, Transport};
 // Top-level message + content re-exports so consumers can say
 // `use forge_sdk::{AssistantEnvelope, StopReason, RateLimitInfo, ...}`
 // instead of reaching through `forge_sdk::messages::*`. Matches the
-// Python SDK's flat `__init__.py` surface.
+// the flat `__init__.py` surface.
 #[doc(hidden)]
 pub use crate::mcp::macros::__private;
 pub use content::ContentBlock;
@@ -95,16 +103,15 @@ pub type Result<T, E = Error> = core::result::Result<T, E>;
 
 /// One-shot helper that spawns a client, sends a single prompt, drains
 /// every message up to and including the terminal [`messages::Message::Result`]
-/// frame, and disconnects. Mirrors Python SDK's top-level `query()`
+/// frame, and disconnects. SDK's top-level `query()`
 /// helper (`query.py:11-40`).
 ///
 /// `options` is optional — pass `None` for the default configuration,
-/// matching Python's `options: ClaudeAgentOptions | None = None`
-/// keyword-only argument.
+/// passing `None` requests the CLI's defaults.
 ///
-/// Collects every message before returning. For streaming consumption
-/// (message-by-message as the CLI emits them, matching Python's
-/// `AsyncIterator[Message]` return shape), use [`query_stream`].
+/// Collects every message before returning. For streaming
+/// consumption (message-by-message as the CLI emits them), use
+/// [`query_stream`].
 ///
 /// # Errors
 ///
@@ -115,7 +122,7 @@ pub async fn query(
     prompt: impl AsRef<str>,
     options: Option<Options>,
 ) -> Result<Vec<messages::Message>> {
-    let mut client = Client::spawn(options.unwrap_or_default()).await?;
+    let client = Client::spawn(options.unwrap_or_default()).await?;
     client.send_user_message(prompt.as_ref()).await?;
     let messages = client.receive_response().await?;
     client.disconnect().await?;
@@ -127,7 +134,7 @@ pub async fn query(
 /// CLI emits it, closing once the terminal `Message::Result` frame
 /// has been delivered (or on error).
 ///
-/// Mirrors Python SDK's `query()` return shape
+/// SDK's `query()` return shape
 /// (`AsyncIterator[Message]`, `query.py:11`). Use this when you want
 /// to react to partial assistant turns, tool-use blocks, or
 /// rate-limit events as they arrive rather than waiting for the
@@ -143,7 +150,7 @@ pub fn query_stream(
     let prompt = prompt.into();
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Result<messages::Message>>();
     tokio::spawn(async move {
-        let mut client = match Client::spawn(options.unwrap_or_default()).await {
+        let client = match Client::spawn(options.unwrap_or_default()).await {
             Ok(c) => c,
             Err(e) => {
                 let _ = tx.send(Err(e));
@@ -182,7 +189,7 @@ pub fn query_stream(
             }
         }
         // Same surface-disconnect-error treatment on the happy-path
-        // exit. Mirrors `query()`'s `client.disconnect().await?` —
+        // exit. query()`'s `client.disconnect().await?` —
         // streaming consumers shouldn't be in a worse position than
         // one-shot consumers when the subprocess fails to clean up.
         if let Err(e) = client.disconnect().await {

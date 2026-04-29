@@ -189,7 +189,9 @@ async fn unsubscribe_removes_connection_from_subscribers() {
     let (tx, _rx) = mpsc::channel(forge_daemon::connection::OUTBOUND_CHANNEL_CAPACITY);
     let conn = Connection::new(ConnectionId("conn_test_1".into()), tx);
 
-    forge_daemon::methods::session::subscribe(&state, &conn, &session_id, None).unwrap();
+    forge_daemon::methods::session::subscribe(&state, &conn, &session_id, None)
+        .await
+        .unwrap();
     {
         let handle = state.get_session(&session_id).unwrap();
         assert!(handle.subscribers.lock().contains(&conn.id));
@@ -543,7 +545,7 @@ async fn session_closed_emits_actor_idle_reason_when_all_senders_dropped() {
     // for input), and `select!` only polls `commands.recv()` when
     // the next_event future yields. We don't have a portable way to
     // kill the mock subprocess from outside the daemon process —
-    // the actor owns the Client which owns the BridgedTransport
+    // the actor owns the Client which owns the Subprocess transport
     // which owns the Child. Without that hook, the documented
     // behaviour is "broadcast fires once tokio happens to schedule
     // the actor to poll commands again" (e.g. on the next yield

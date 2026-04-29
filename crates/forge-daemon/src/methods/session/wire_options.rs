@@ -7,7 +7,7 @@
 //! `methods::session` is `parse_spawn_params`, which the dispatch
 //! arm + the `forged-conformance` harness call.
 
-use forge_sdk::agents::{EffortLevel, EffortPreset};
+use forge_sdk::subagents::{EffortLevel, EffortPreset};
 use forge_sdk::{OptionsBuilder, SdkPluginConfig, SystemPromptKind, ThinkingConfig};
 use serde_json::Value;
 

@@ -18,7 +18,7 @@ async fn wire_capture_context_usage() {
         .permission_mode(PermissionMode::AcceptEdits)
         .build();
 
-    run_live_scenario("context_usage", opts, |mut client| async move {
+    run_live_scenario("context_usage", opts, |client| async move {
         client
             .send_user_message("Reply with exactly the word OK.")
             .await?;

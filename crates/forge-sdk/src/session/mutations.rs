@@ -1,5 +1,4 @@
-//! Filesystem-backed session mutations. Ports the public entry points of
-//! Python SDK v0.1.64 `_internal/session_mutations.py`:
+//! Filesystem-backed session mutations:
 //!
 //! - [`rename_session`] — appends a `custom-title` JSONL entry.
 //! - [`tag_session`] — appends a `tag` JSONL entry (pass `None` to clear).
@@ -107,14 +106,14 @@ pub fn delete_session(session_id: &str, directory: Option<&str>) -> Result<(), E
     // `list_subagents` will keep returning phantom entries.
     if let Some(parent) = path.parent() {
         let subagents = parent.join(session_id);
-        if let Err(e) = fs::remove_dir_all(&subagents) {
-            if e.kind() != std::io::ErrorKind::NotFound {
-                tracing::warn!(
-                    path = %subagents.display(),
-                    error = %e,
-                    "failed to clean up sibling subagents directory"
-                );
-            }
+        if let Err(e) = fs::remove_dir_all(&subagents)
+            && e.kind() != std::io::ErrorKind::NotFound
+        {
+            tracing::warn!(
+                path = %subagents.display(),
+                error = %e,
+                "failed to clean up sibling subagents directory"
+            );
         }
     }
     Ok(())
@@ -269,28 +268,12 @@ pub fn fork_session(
     })
 }
 
-/// Crate-internal wrapper so other modules (e.g. `sessions_via_store`) can
-/// reuse the same validator without duplicating the regex/format logic.
-/// Not part of the public API.
-///
-/// True if `s` is a canonical 8-4-4-4-12 hex UUID string. Shared across
-/// modules that need a stateless pre-flight check.
+/// True if `s` is a canonical 8-4-4-4-12 hyphenated UUID. The length
+/// guard rejects the hyphenless / braced / URN forms that
+/// `Uuid::try_parse` otherwise accepts — session ids on disk are always
+/// the hyphenated form the CLI emits.
 pub(crate) fn is_valid_uuid(s: &str) -> bool {
-    let parts: Vec<&str> = s.split('-').collect();
-    parts.len() == 5
-        && matches!(
-            (
-                parts[0].len(),
-                parts[1].len(),
-                parts[2].len(),
-                parts[3].len(),
-                parts[4].len()
-            ),
-            (8, 4, 4, 4, 12)
-        )
-        && parts
-            .iter()
-            .all(|p| p.chars().all(|c| c.is_ascii_hexdigit()))
+    s.len() == 36 && Uuid::try_parse(s).is_ok()
 }
 
 fn validate_uuid(s: &str) -> Result<(), Error> {
@@ -389,10 +372,9 @@ pub(crate) fn remap_entry_fields(
             .get(parent_key)
             .and_then(Value::as_str)
             .map(ToOwned::to_owned)
+            && let Some(mapped) = uuid_remap.get(&parent)
         {
-            if let Some(mapped) = uuid_remap.get(&parent) {
-                obj.insert(parent_key.into(), Value::String(mapped.clone()));
-            }
+            obj.insert(parent_key.into(), Value::String(mapped.clone()));
         }
     }
     for key in ["sessionId", "session_id"] {
@@ -448,14 +430,12 @@ fn derive_fork_title(source: &Path) -> Option<String> {
         if first_prompt.is_none()
             && value.get("type").and_then(Value::as_str) == Some("user")
             && value.get("parent_tool_use_id").is_none_or(Value::is_null)
-        {
-            if let Some(content) = value
+            && let Some(content) = value
                 .get("message")
                 .and_then(|m| m.get("content"))
                 .and_then(Value::as_str)
-            {
-                first_prompt = Some(content.to_string());
-            }
+        {
+            first_prompt = Some(content.to_string());
         }
     }
     custom_title.or(ai_title).or(first_prompt)

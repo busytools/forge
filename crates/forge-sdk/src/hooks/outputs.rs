@@ -1,6 +1,6 @@
 //! `hookSpecificOutput` typed wrappers — one per event kind.
 //!
-//! Mirrors claude-agent-sdk-python v0.1.64 `types.py:369-438`. Each event kind
+//! Mirrors  Each event kind
 //! has its own `*HookSpecificOutput` `TypedDict` upstream with a fixed
 //! `hookEventName` discriminator plus event-specific optional fields. The
 //! Rust structs carry a zero-sized `event_name` field that serde always
@@ -12,7 +12,7 @@ use serde_json::Value;
 
 use super::HookKind;
 
-/// Permission decision a `PreToolUse` hook can express. Mirrors Python's
+/// Permission decision a `PreToolUse` hook can express. Wire shape:
 /// `Literal["allow", "deny", "ask"]`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]

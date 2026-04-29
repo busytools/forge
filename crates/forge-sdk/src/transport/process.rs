@@ -1,16 +1,47 @@
 //! `tokio::process` wrapping of the `claude` binary.
+//!
+//! ## I/O architecture
+//!
+//! The subprocess's stdin and stdout each run inside a dedicated
+//! tokio task; the [`Subprocess`] surface talks to them over mpsc
+//! channels. Two properties fall out:
+//!
+//! - **Cancel-safe reads.** [`tokio::io::AsyncBufReadExt::read_line`]
+//!   is documented as not cancel-safe, but [`mpsc::Receiver::recv`]
+//!   is. Driving stdout through a reader task lets callers
+//!   `tokio::select!` over [`Subprocess::read_line`] without losing
+//!   already-consumed bytes.
+//! - **Concurrent writes.** Cloning the writer-side mpsc is cheap
+//!   and `Send + 'static`. The `Subprocess::clone_writer` helper
+//!   hands out a clonable writer backed by the same writer task,
+//!   so detached control-request dispatch (the daemon's actor
+//!   pattern) can write concurrently with the reader without
+//!   serialising on `&mut self`.
+//!
+//! Closes audit 2026-04-26 G1 directly inside the SDK — every
+//! spawned [`Client`](crate::Client) gets cancel-safe reads +
+//! concurrent writes for free.
 
 use std::process::Stdio;
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::{Child, ChildStdin, ChildStdout, Command};
+use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
+use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tracing::{debug, warn};
 
 use crate::Error;
 use crate::argv::build_args;
-use crate::options::Options;
+use crate::options::{Options, WireTee};
+use crate::transport::AsyncWriter;
+
+/// Default upper bound on `close()` wait-for-exit. After this elapses,
+/// the child is SIGKILL'd. 5s is generous for a CLI that's draining
+/// in-flight turns; tests that want to verify the kill path drive
+/// against a process that ignores stdin EOF.
+const CLOSE_WAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Run `<binary> --version` synchronously and return the stdout.
 ///
@@ -75,22 +106,55 @@ pub fn check_cli_version(reported: &str, min_version: &str) -> Result<(), Error>
     Ok(())
 }
 
-/// A live subprocess with owned stdin/stdout handles.
-///
-/// Drop takes best-effort cleanup (sends SIGKILL if still alive). Prefer
-/// [`shutdown`](Self::shutdown) for graceful termination.
+/// Outcome of one writer-task operation. Sent back over a oneshot the
+/// caller provides.
+type IoAck = Result<(), Error>;
+
+/// A write-side command dispatched to the writer task.
 #[derive(Debug)]
+enum WriterCmd {
+    /// Append `line` to stdin and flush.
+    Write(String, oneshot::Sender<IoAck>),
+    /// Drop stdin so the CLI sees EOF.
+    EndInput(oneshot::Sender<IoAck>),
+}
+
+/// A live `claude` subprocess driven over channels.
+///
+/// Spawned via [`Subprocess::spawn`]. Every read goes through the
+/// reader task → mpsc; every write goes through the writer task ←
+/// mpsc. Drop hits `kill_on_drop` cleanup; [`close`](Self::close)
+/// gives a graceful exit path with a 5s timeout before SIGKILL.
 pub struct Subprocess {
-    child: Child,
-    /// `None` after [`Subprocess::end_input`] closes the write half.
-    /// All subsequent [`Subprocess::write_line`] calls error out.
-    stdin: Option<ChildStdin>,
-    stdout: BufReader<ChildStdout>,
+    /// Outbound channel into the writer task. Cloned by
+    /// [`try_clone_writer`](Self::try_clone_writer) so external
+    /// dispatchers can write without contending on `&mut self`.
+    writer_tx: mpsc::UnboundedSender<WriterCmd>,
+    /// Inbound channel from the reader task. Single-consumer.
+    reader_rx: mpsc::UnboundedReceiver<Result<Option<String>, Error>>,
+    /// Writer task handle. [`close`](Self::close) aborts this so the
+    /// child sees stdin EOF promptly even when external writer clones
+    /// still hold `writer_tx` clones — without the abort the writer
+    /// task would wait for every clone to drop and the child wouldn't
+    /// see EOF on stdin until then.
+    writer_task: Option<JoinHandle<()>>,
+    /// Stderr drain task — best-effort logged or forwarded to the
+    /// caller's callback. Joined during [`close`](Self::close).
     stderr_task: Option<JoinHandle<()>>,
-    line_buf: String,
-    /// Captured `Child::wait` result. Populated by the first call to
-    /// [`Subprocess::close`] so subsequent calls are idempotent no-ops.
+    /// The child handle. [`close`](Self::close) waits on it (with
+    /// timeout) and SIGKILLs on hang.
+    child: Option<Child>,
+    /// Idempotency guard for [`close`](Self::close).
     closed: bool,
+}
+
+impl std::fmt::Debug for Subprocess {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Subprocess")
+            .field("child", &self.child.is_some())
+            .field("closed", &self.closed)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Subprocess {
@@ -119,14 +183,14 @@ impl Subprocess {
             cmd.current_dir(cwd);
         }
 
-        // Env setup — mirrors Python
-        // `_internal/transport/subprocess_cli.py:395-437`:
+        // Env setup — mirrors the CLI
+        //:
         //
         // 1. Start from parent env, filtering out `CLAUDECODE` so SDK-
         //    spawned subprocesses don't think they're nested inside a
         //    Claude Code parent (upstream issue #573).
         // 2. Inject `CLAUDE_CODE_ENTRYPOINT=sdk-rs` (overridable via
-        //    `options.env`). Python SDK stamps `sdk-py` here; forge-sdk
+        //    `options.env`). the CLI stamps `sdk-py` here; forge-sdk
         //    identifies as Rust for honest attribution.
         // 3. Let `options.env` override anything the SDK would
         //    otherwise default, EXCEPT `CLAUDE_AGENT_SDK_VERSION` —
@@ -148,11 +212,9 @@ impl Subprocess {
             cmd.env("PWD", cwd);
         }
 
-        // `options.user` must setuid the child — Python
-        // `subprocess_cli.py:458` passes it to `anyio.open_process`'s
-        // `user=` kwarg. Rust's analogue is `tokio::process::Command`'s
-        // inherent `uid()` method on Unix; no-op on other targets so
-        // the option stays a Unix-only knob.
+        // `options.user` must setuid the child — `tokio::process::Command`
+        // exposes `uid()` on Unix; no-op on other targets, so the
+        // option stays a Unix-only knob.
         #[cfg(unix)]
         if let Some(user) = &options.user {
             match user.parse::<u32>() {
@@ -162,7 +224,7 @@ impl Subprocess {
                 Err(_) => {
                     tracing::warn!(
                         %user,
-                        "Options::user did not parse as a uid; ignoring (Python accepts a numeric uid)"
+                        "Options::user did not parse as a uid; ignoring (wire accepts a numeric uid)"
                     );
                 }
             }
@@ -191,47 +253,37 @@ impl Subprocess {
             reason: "stderr pipe missing".into(),
         })?;
 
-        // Drain stderr on a background task so the pipe never blocks.
-        // When options.stderr is Some, forward each line to the callback;
-        // otherwise discard silently.
         let stderr_callback = options.stderr.clone();
-        let stderr_task = tokio::spawn(async move {
-            drain_stderr(stderr, stderr_callback).await;
-        });
+        let stderr_task = tokio::spawn(drain_stderr(stderr, stderr_callback));
 
-        let stdout_reader = match options.max_buffer_size {
-            Some(n) if n > 0 => BufReader::with_capacity(n, stdout),
-            _ => BufReader::new(stdout),
-        };
+        let buf_capacity = options.max_buffer_size.filter(|n| *n > 0);
+        let (reader_tx, reader_rx) = mpsc::unbounded_channel();
+        spawn_reader_task(stdout, buf_capacity, options.tee_inbound.clone(), reader_tx);
+
+        let (writer_tx, writer_rx) = mpsc::unbounded_channel();
+        let writer_task = spawn_writer_task(stdin, options.tee_outbound.clone(), writer_rx);
 
         Ok(Self {
-            child,
-            stdin: Some(stdin),
-            stdout: stdout_reader,
+            writer_tx,
+            reader_rx,
+            writer_task: Some(writer_task),
             stderr_task: Some(stderr_task),
-            line_buf: String::new(),
+            child: Some(child),
             closed: false,
         })
     }
 
     /// Read one line (without the trailing `\n`) from the subprocess stdout.
     ///
-    /// Returns `Ok(None)` at end-of-stream.
+    /// Returns `Ok(None)` at end-of-stream. Cancel-safe.
     ///
     /// # Errors
     ///
     /// [`Error::Io`] on read failure.
     pub async fn read_line(&mut self) -> Result<Option<String>, Error> {
-        self.line_buf.clear();
-        let n = self.stdout.read_line(&mut self.line_buf).await?;
-        if n == 0 {
-            return Ok(None);
-        }
-        // Trim the trailing newline(s).
-        while matches!(self.line_buf.chars().last(), Some('\n' | '\r')) {
-            self.line_buf.pop();
-        }
-        Ok(Some(std::mem::take(&mut self.line_buf)))
+        // Reader task signals EOF by either sending `Ok(None)` or by
+        // closing the channel — both collapse to `Ok(None)` here.
+        self.reader_rx.recv().await.unwrap_or(Ok(None))
     }
 
     /// Write one line of stream-json to the subprocess stdin.
@@ -243,17 +295,23 @@ impl Subprocess {
     /// # Errors
     ///
     /// [`Error::Io`] on write failure, including writes issued after
-    /// [`end_input`](Self::end_input).
+    /// [`end_input`](Self::end_input) or [`close`](Self::close).
     pub async fn write_line(&mut self, line: &str) -> Result<(), Error> {
-        let Some(stdin) = self.stdin.as_mut() else {
-            return Err(Error::Io(std::io::Error::new(
+        let (ack_tx, ack_rx) = oneshot::channel();
+        self.writer_tx
+            .send(WriterCmd::Write(line.to_owned(), ack_tx))
+            .map_err(|_| {
+                Error::Io(std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "Subprocess writer task gone",
+                ))
+            })?;
+        ack_rx.await.map_err(|_| {
+            Error::Io(std::io::Error::new(
                 std::io::ErrorKind::BrokenPipe,
-                "subprocess stdin already closed (end_input called)",
-            )));
-        };
-        stdin.write_all(line.as_bytes()).await?;
-        stdin.flush().await?;
-        Ok(())
+                "Subprocess writer task dropped ack",
+            ))
+        })?
     }
 
     /// Close the subprocess's stdin. Safe to call multiple times.
@@ -262,84 +320,226 @@ impl Subprocess {
     ///
     /// # Errors
     ///
-    /// None today — kept `Result` for [`Transport`](super::Transport)
-    /// trait compatibility.
-    #[allow(clippy::unused_async)] // Trait symmetry: Transport::end_input is async.
+    /// [`Error::Io`] on flush failure.
     pub async fn end_input(&mut self) -> Result<(), Error> {
-        // Dropping the ChildStdin closes the write half.
-        self.stdin = None;
-        Ok(())
+        let (ack_tx, ack_rx) = oneshot::channel();
+        // Writer task already gone (e.g. previous end_input + drop) →
+        // treat as no-op, matching the old direct-stdin behaviour.
+        if self.writer_tx.send(WriterCmd::EndInput(ack_tx)).is_err() {
+            return Ok(());
+        }
+        ack_rx.await.unwrap_or_else(|_| {
+            warn!("Subprocess::end_input: ack channel dropped");
+            Ok(())
+        })
+    }
+
+    /// Hand out a clonable [`AsyncWriter`] backed by the same writer
+    /// task. Multiple clones can write concurrently; the writer task
+    /// serialises onto the child's stdin in arrival order.
+    ///
+    /// Used by detached control-request dispatch (the daemon's actor
+    /// pattern) so a slow callback can't block the reader / command
+    /// loop.
+    #[must_use]
+    pub(crate) fn clone_writer(&self) -> Arc<dyn AsyncWriter> {
+        Arc::new(SharedWriter {
+            writer_tx: self.writer_tx.clone(),
+        })
     }
 
     /// Graceful shutdown: close stdin, wait for the subprocess to
-    /// exit, drain the stderr task. Idempotent — subsequent calls
-    /// are no-ops.
+    /// exit (5s timeout, SIGKILL fallback), drain the stderr task.
+    /// Idempotent — subsequent calls are no-ops.
     ///
     /// # Errors
     ///
-    /// [`Error::Process`] when the subprocess exits non-zero, [`Error::Io`]
-    /// for I/O failure.
+    /// [`Error::Process`] when the subprocess exits non-zero or hits
+    /// the SIGKILL fallback; [`Error::Io`] on wait failure.
     pub async fn close(&mut self) -> Result<(), Error> {
         if self.closed {
             return Ok(());
         }
         self.closed = true;
-        // Close stdin first — signals EOF to the subprocess so it can exit cleanly.
-        self.stdin = None;
-        let status = self.child.wait().await?;
-        // Give the stderr drain task a chance to finish emitting lines
-        // after the subprocess exits. The task self-terminates on EOF.
-        if let Some(task) = self.stderr_task.take() {
-            if let Err(e) = task.await {
-                warn!(error = %e, "stderr drain task ended abnormally");
-            }
-        }
-        if !status.success() {
-            warn!(?status, "claude subprocess exited non-zero during shutdown");
-            return Err(Error::Process {
-                exit_code: status.code(),
-                stderr: String::new(), // stderr capture is best-effort; expanded in M1 polish
-            });
-        }
-        Ok(())
-    }
 
-    /// Consuming alias for [`close`](Self::close). Kept for backward
-    /// compatibility with pre-`Transport`-trait callers.
-    ///
-    /// # Errors
-    ///
-    /// Same as [`close`](Self::close).
-    pub async fn shutdown(mut self) -> Result<(), Error> {
-        self.close().await
+        // Drop our held writer_tx and abort the writer task. The abort
+        // forces stdin closure even if external `SharedWriter` clones
+        // (handed out via `try_clone_writer`) still hold writer_tx
+        // clones — without the abort the writer task would wait for
+        // every clone to drop. In-flight write_line acks on cloned
+        // writers will resolve with the ack-channel-dropped error,
+        // which is correct semantics for a closed transport.
+        let (closed_tx, _closed_rx) = mpsc::unbounded_channel();
+        self.writer_tx = closed_tx;
+        if let Some(handle) = self.writer_task.take() {
+            handle.abort();
+        }
+
+        // Wait for child exit, with a SIGKILL timeout so a stuck CLI
+        // doesn't pin the disconnect path forever.
+        let child_result = if let Some(mut child) = self.child.take() {
+            match tokio::time::timeout(CLOSE_WAIT_TIMEOUT, child.wait()).await {
+                Ok(Ok(status)) if status.success() => Ok(()),
+                Ok(Ok(status)) => Err(Error::Process {
+                    exit_code: status.code(),
+                    stderr: String::new(),
+                }),
+                Ok(Err(e)) => Err(Error::Io(e)),
+                Err(_elapsed) => {
+                    warn!("Subprocess::close timed out waiting for child; sending SIGKILL");
+                    if let Err(e) = child.kill().await {
+                        warn!(error = %e, "Subprocess::close: kill() failed");
+                    }
+                    Err(Error::Process {
+                        exit_code: None,
+                        stderr: String::from("close timeout — child killed"),
+                    })
+                }
+            }
+        } else {
+            Ok(())
+        };
+
+        // Best-effort drain of the stderr task. We don't surface its
+        // status — it's a logging sink.
+        if let Some(task) = self.stderr_task.take()
+            && let Err(e) = task.await
+        {
+            debug!(error = %e, "stderr drain task ended abnormally");
+        }
+
+        child_result
     }
 }
 
-#[async_trait::async_trait]
-impl super::Transport for Subprocess {
-    async fn read_line(&mut self) -> Result<Option<String>, Error> {
-        Subprocess::read_line(self).await
+/// Cloneable writer half of [`Subprocess`] — pushes onto the writer
+/// task's mpsc. Multiple clones can write concurrently; the writer
+/// task serialises onto the child's stdin in arrival order.
+///
+/// Returned by [`Subprocess::try_clone_writer`]. Used by the daemon's
+/// session actor for detached `control_request` dispatch (closes
+/// audit 2026-04-26 G1).
+#[derive(Debug, Clone)]
+struct SharedWriter {
+    writer_tx: mpsc::UnboundedSender<WriterCmd>,
+}
+
+#[async_trait]
+impl AsyncWriter for SharedWriter {
+    async fn write_line(&self, line: &str) -> Result<(), Error> {
+        let (ack_tx, ack_rx) = oneshot::channel();
+        self.writer_tx
+            .send(WriterCmd::Write(line.to_owned(), ack_tx))
+            .map_err(|_| {
+                Error::Io(std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "SharedWriter task gone",
+                ))
+            })?;
+        ack_rx.await.map_err(|_| {
+            Error::Io(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "SharedWriter task dropped ack",
+            ))
+        })?
     }
-    async fn write_line(&mut self, line: &str) -> Result<(), Error> {
-        Subprocess::write_line(self, line).await
+
+    async fn end_input(&self) -> Result<(), Error> {
+        let (ack_tx, ack_rx) = oneshot::channel();
+        // Writer task already exited (e.g. previous end_input or close)
+        // → treat as no-op, matching `Subprocess::end_input`.
+        if self.writer_tx.send(WriterCmd::EndInput(ack_tx)).is_err() {
+            return Ok(());
+        }
+        ack_rx.await.unwrap_or_else(|_| {
+            warn!("SharedWriter::end_input: ack channel dropped");
+            Ok(())
+        })
     }
-    async fn end_input(&mut self) -> Result<(), Error> {
-        Subprocess::end_input(self).await
-    }
-    async fn close(&mut self) -> Result<(), Error> {
-        Subprocess::close(self).await
-    }
+}
+
+fn spawn_reader_task(
+    stdout: ChildStdout,
+    buf_capacity: Option<usize>,
+    tee: Option<WireTee>,
+    tx: mpsc::UnboundedSender<Result<Option<String>, Error>>,
+) {
+    tokio::spawn(async move {
+        let mut reader = match buf_capacity {
+            Some(n) => BufReader::with_capacity(n, stdout),
+            None => BufReader::new(stdout),
+        };
+        let mut buf = String::new();
+        loop {
+            buf.clear();
+            match reader.read_line(&mut buf).await {
+                Ok(0) => {
+                    // EOF — signal end-of-stream and exit.
+                    let _ = tx.send(Ok(None));
+                    break;
+                }
+                Ok(_) => {
+                    let mut line = std::mem::take(&mut buf);
+                    while matches!(line.chars().last(), Some('\n' | '\r')) {
+                        line.pop();
+                    }
+                    if let Some(cb) = tee.as_ref() {
+                        cb(&line);
+                    }
+                    if tx.send(Ok(Some(line))).is_err() {
+                        // Receiver gone — caller dropped the transport.
+                        break;
+                    }
+                }
+                Err(e) => {
+                    let _ = tx.send(Err(Error::Io(e)));
+                    break;
+                }
+            }
+        }
+    });
+}
+
+fn spawn_writer_task(
+    stdin: ChildStdin,
+    tee: Option<WireTee>,
+    mut rx: mpsc::UnboundedReceiver<WriterCmd>,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut stdin = Some(stdin);
+        while let Some(cmd) = rx.recv().await {
+            match cmd {
+                WriterCmd::Write(line, ack) => {
+                    if let Some(cb) = tee.as_ref() {
+                        cb(line.trim_end_matches('\n'));
+                    }
+                    let result = if let Some(s) = stdin.as_mut() {
+                        match s.write_all(line.as_bytes()).await {
+                            Ok(()) => s.flush().await.map_err(Error::Io),
+                            Err(e) => Err(Error::Io(e)),
+                        }
+                    } else {
+                        Err(Error::Io(std::io::Error::new(
+                            std::io::ErrorKind::BrokenPipe,
+                            "stdin already closed (end_input)",
+                        )))
+                    };
+                    let _ = ack.send(result);
+                }
+                WriterCmd::EndInput(ack) => {
+                    drop(stdin.take());
+                    let _ = ack.send(Ok(()));
+                }
+            }
+        }
+    })
 }
 
 /// Background drain for the subprocess stderr pipe. Reads lines as UTF-8
 /// (lossy on invalid bytes) and forwards each to the caller-supplied
 /// callback when set. Silently consumes lines otherwise so the pipe
 /// never blocks.
-async fn drain_stderr(
-    stderr: tokio::process::ChildStderr,
-    callback: Option<Arc<dyn Fn(String) + Send + Sync>>,
-) {
-    use tokio::io::AsyncBufReadExt as _;
+async fn drain_stderr(stderr: ChildStderr, callback: Option<Arc<dyn Fn(String) + Send + Sync>>) {
     let mut reader = BufReader::new(stderr);
     let mut buf = String::new();
     loop {
@@ -359,6 +559,71 @@ async fn drain_stderr(
         }
         if let Some(cb) = callback.as_ref() {
             cb(buf.clone());
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+    use super::*;
+    use std::time::Duration;
+
+    /// Build a [`Subprocess`] wrapping a long-running mock that ignores
+    /// stdin (`/bin/sleep 30`). Bypasses [`build_args`] — only relevant
+    /// to tests that exercise the close-timeout path.
+    fn spawn_sleep_subprocess(secs: u64) -> Subprocess {
+        let mut cmd = Command::new("/bin/sleep");
+        cmd.arg(secs.to_string());
+        cmd.stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        cmd.kill_on_drop(true);
+        let mut child = cmd.spawn().expect("spawn /bin/sleep");
+        let stdin = child.stdin.take().expect("stdin");
+        let stdout = child.stdout.take().expect("stdout");
+        let stderr = child.stderr.take().expect("stderr");
+
+        let stderr_task = tokio::spawn(drain_stderr(stderr, None));
+        let (reader_tx, reader_rx) = mpsc::unbounded_channel();
+        spawn_reader_task(stdout, None, None, reader_tx);
+        let (writer_tx, writer_rx) = mpsc::unbounded_channel();
+        let writer_task = spawn_writer_task(stdin, None, writer_rx);
+
+        Subprocess {
+            writer_tx,
+            reader_rx,
+            writer_task: Some(writer_task),
+            stderr_task: Some(stderr_task),
+            child: Some(child),
+            closed: false,
+        }
+    }
+
+    /// `close()` must SIGKILL a subprocess that ignores stdin EOF
+    /// rather than hang on `wait()`. Bound documented at 5s; allow ~1s
+    /// slack for tokio scheduling.
+    #[tokio::test]
+    async fn close_kills_unresponsive_child_within_5s() {
+        let mut sub = spawn_sleep_subprocess(30);
+
+        let start = tokio::time::Instant::now();
+        let result = sub.close().await;
+        let elapsed = start.elapsed();
+
+        assert!(
+            elapsed <= Duration::from_secs(6),
+            "close() took {elapsed:?}, expected <= 6s"
+        );
+        match result {
+            Err(Error::Process { stderr, .. }) => {
+                assert!(
+                    stderr.contains("close timeout"),
+                    "expected stderr to mention close timeout, got: {stderr}"
+                );
+            }
+            other => panic!("expected Process error from kill, got {other:?}"),
         }
     }
 }

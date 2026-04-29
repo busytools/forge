@@ -29,11 +29,11 @@ parity-with-Python.
 ## What got dropped
 
 - The "every Python public type has a Rust counterpart" rule.
-- The `crates/forge-sdk/tests/python_parity/` 1:1 test-file mapping
-  (the directory may stay during the transition; new SDK work isn't
-  required to maintain the mirror).
-- The `docs/forge-sdk-parity-map.html` parity-coverage view (file
-  may stay as a current-surface map but the parity-coverage column
-  is moot).
+- `crates/forge-sdk/tests/python_parity/` — the 1:1 test-file mapping
+  is gone (deleted 2026-04-27). Behaviour-bearing test coverage lives
+  in `crates/forge-sdk/tests/*.rs` named for what they verify, not
+  for the Python file they shadowed.
+- `docs/forge-sdk-parity-map.html` — the parity-coverage view is
+  gone (deleted 2026-04-27).
 - `docs/parity-check.md` runbook — superseded by the upstream-watch
-  shape in `CLAUDE.md`.
+  shape in `CLAUDE.md` (deleted 2026-04-27).

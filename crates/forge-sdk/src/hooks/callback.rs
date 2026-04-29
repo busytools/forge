@@ -9,10 +9,10 @@ use super::HookContext;
 /// A hook decision.
 ///
 /// The primary shape (allow / deny / replace-input / passthrough) mirrors
-/// Python's `SyncHookJSONOutput.decision` field; the `with_*` builders
-/// attach the optional control fields Python documents alongside it —
+/// the CLI's `SyncHookJSONOutput.decision` field; the `with_*` builders
+/// attach the optional control fields the CLI documents alongside it —
 /// `continue_` / `suppressOutput` / `stopReason` / `systemMessage`. See
-/// `types.py:463-505` + `_internal/query.py:40-55` for the full contract.
+/// + for the full contract.
 #[derive(Debug, Clone)]
 pub struct HookDecision {
     inner: HookDecisionKind,
@@ -32,7 +32,7 @@ enum HookDecisionKind {
     },
     /// No-op — purely observational; continue unchanged.
     Passthrough,
-    /// Deferred-execution ACK — ships Python's `AsyncHookJSONOutput`
+    /// Deferred-execution ACK — ships the CLI's `AsyncHookJSONOutput`
     /// shape (`{"async": true, "asyncTimeout": <ms>}`) so the CLI
     /// knows not to wait on the hook's in-line response. The caller
     /// is expected to deliver the real result out-of-band. Wiring
@@ -86,8 +86,8 @@ impl HookDecision {
         Self::with_inner(HookDecisionKind::Passthrough)
     }
 
-    /// Defer the hook response. Emits Python's `AsyncHookJSONOutput`
-    /// shape (`types.py:448-460`): `{"async": true, "asyncTimeout":
+    /// Defer the hook response. Emits the CLI's `AsyncHookJSONOutput`
+    /// shape: `{"async": true, "asyncTimeout":
     /// <ms>?}`. Pass `None` for no explicit timeout. The CLI will
     /// proceed without waiting for the hook's final verdict; the
     /// caller is expected to deliver the real decision out-of-band
@@ -114,7 +114,7 @@ impl HookDecision {
         }
     }
 
-    /// Attach the Python SDK's `continue_` control field (CLI wire name:
+    /// Attach the `continue_` control field (CLI wire name:
     /// `continue`). Pass `false` to signal that Claude should not proceed
     /// after the hook — typically combined with
     /// [`with_stop_reason`](Self::with_stop_reason).
@@ -124,7 +124,7 @@ impl HookDecision {
         self
     }
 
-    /// Attach the Python SDK's `suppressOutput` control field. When
+    /// Attach the `suppressOutput` control field. When
     /// `true`, the CLI hides stdout from transcript mode.
     #[must_use]
     pub fn with_suppress_output(mut self, suppress: bool) -> Self {
@@ -132,7 +132,7 @@ impl HookDecision {
         self
     }
 
-    /// Attach the Python SDK's `stopReason` control field — the message
+    /// Attach the `stopReason` control field — the message
     /// the CLI shows when `continue` is set to `false`.
     #[must_use]
     pub fn with_stop_reason(mut self, reason: impl Into<String>) -> Self {
@@ -140,7 +140,7 @@ impl HookDecision {
         self
     }
 
-    /// Attach the Python SDK's `systemMessage` control field — a warning
+    /// Attach the `systemMessage` control field — a warning
     /// displayed to the user alongside the hook's decision.
     #[must_use]
     pub fn with_system_message(mut self, msg: impl Into<String>) -> Self {
@@ -173,7 +173,7 @@ impl HookDecision {
     }
 
     /// `continue` control field, if the callback set one. Wire name is
-    /// `continue` (Python stores as `continue_` to dodge the keyword).
+    /// `continue` (stored as `continue_` to dodge the keyword).
     #[must_use]
     pub fn continue_execution(&self) -> Option<bool> {
         self.continue_execution

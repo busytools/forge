@@ -1,6 +1,6 @@
 //! Content blocks inside assistant and user messages.
 //!
-//! Mirrors Python SDK's `TextBlock`, `ThinkingBlock`, `ToolUseBlock`,
+//! SDK's `TextBlock`, `ThinkingBlock`, `ToolUseBlock`,
 //! `ToolResultBlock`. Wire shape is `{"type": "...", ...}`. Unknown
 //! block types land in [`ContentBlock::Unknown`] so the decoder is
 //! forward-compatible with new Anthropic API blocks (`document`,
@@ -55,9 +55,9 @@ pub enum ContentBlock {
     /// (e.g. `advisor`, `web_search`, `web_fetch`). Surfaces alongside
     /// regular `ToolUse` blocks but the caller never returns a result —
     /// the server supplies one in a matching [`ContentBlock::ServerToolResult`].
-    /// Mirrors Python SDK v0.1.64 `ServerToolUseBlock` (`types.py:904-916`).
+    /// `ServerToolUseBlock`.
     ///
-    /// `name` is a discriminator: Python types it as the Literal set
+    /// `name` is a discriminator: typed as the Literal set
     /// `{"advisor", "web_search", "web_fetch", "code_execution",
     /// "bash_code_execution", "text_editor_code_execution",
     /// "tool_search_tool_regex", "tool_search_tool_bm25"}`. forge-sdk
@@ -73,11 +73,10 @@ pub enum ContentBlock {
     },
 
     /// Result block for a server-side tool call (wire type
-    /// `advisor_tool_result`). Mirrors `ToolResult`'s shape but the
-    /// `content` dict is opaque — branch on `content["type"]` to tell
-    /// which concrete server-tool result schema applies (e.g.
-    /// `advisor_result` vs. `advisor_redacted_result`). Mirrors Python
-    /// SDK v0.1.64 `ServerToolResultBlock` (`types.py:919-929`).
+    /// `advisor_tool_result`). Same wire shape as `ToolResult` but
+    /// the `content` dict is opaque — branch on `content["type"]`
+    /// to tell which concrete server-tool result schema applies (e.g.
+    /// `advisor_result` vs. `advisor_redacted_result`).
     ServerToolResult {
         /// The `id` from the corresponding [`ContentBlock::ServerToolUse`] block.
         tool_use_id: String,
@@ -209,7 +208,7 @@ impl<'de> Deserialize<'de> for ContentBlock {
         let raw = Value::deserialize(deserializer)?;
         // Distinguish "missing" (wire corruption) from "unrecognised"
         // (forward-compat drift) so debug logs + `Unknown` payloads carry
-        // the right signal. Mirrors `ControlRequestKind::Deserialize`'s
+        // the right signal. ControlRequestKind::Deserialize`'s
         // sentinel handling in `src/control.rs`.
         let ty = raw
             .get("type")

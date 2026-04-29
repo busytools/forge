@@ -1,12 +1,11 @@
 //! Request ID generator for outbound `control_request` frames.
 //!
-//! Shape: `forge_<counter>_<hex8>` (e.g. `forge_42_3a9f2b0e`). Python
-//! SDK uses `req_<counter>_<hex8>` (`_internal/query.py` counter +
-//! `secrets.token_hex(4)`); forge-sdk diverges on the prefix
-//! deliberately so stream-json logs distinguish forge-sdk-originated
-//! requests from CLI-originated ones at a glance. The CLI treats
-//! request IDs as opaque — it only echoes them back in the matching
-//! `control_response` — so the prefix has no wire-protocol effect.
+//! Shape: `forge_<counter>_<hex8>` (e.g. `forge_42_3a9f2b0e`). The
+//! `forge_` prefix lets stream-json logs distinguish
+//! forge-sdk-originated requests from CLI-originated ones at a
+//! glance. The CLI treats request IDs as opaque — it only echoes
+//! them back in the matching `control_response` — so the prefix
+//! has no wire-protocol effect.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 

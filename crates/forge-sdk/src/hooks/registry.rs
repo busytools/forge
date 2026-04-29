@@ -28,7 +28,7 @@ pub struct Hooks {
     pub(crate) permission_request: Vec<(String, Arc<dyn ErasedHookCallback>)>,
     /// Timeout (seconds) the CLI should apply to every hook callback.
     /// `None` means "use the default forge-sdk emits" (30 — matches
-    /// Python's per-matcher default). Overridable via
+    /// the CLI's per-matcher default). Overridable via
     /// [`HooksBuilder::default_timeout_secs`] for scenarios that need
     /// to provoke `control_cancel_request` on slow callbacks.
     pub(crate) default_timeout_secs: Option<u64>,
@@ -219,8 +219,7 @@ impl HooksBuilder {
     /// initialize `control_request`. The CLI uses this to decide how
     /// long to wait on each `hook_callback` reply before giving up and
     /// emitting a `control_cancel_request`. Default when unset is
-    /// 30 seconds — matches Python SDK's per-matcher default
-    /// (`types.py` `HookMatcher.timeout`). Lower it for scenarios
+    /// 30 seconds. Lower it for scenarios
     /// that deliberately provoke cancellation; raise it for
     /// long-running callbacks (e.g. LLM sub-calls inside a hook).
     #[must_use]

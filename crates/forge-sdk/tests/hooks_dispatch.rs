@@ -28,7 +28,7 @@ async fn pre_tool_use_replaces_input() {
         .hooks(hooks)
         .build();
 
-    let mut client = Client::spawn(opts).await.expect("spawn");
+    let client = Client::spawn(opts).await.expect("spawn");
     client.send_user_message("run bash").await.expect("send");
 
     let msg = client.next_event().await.expect("next").expect("assistant");
@@ -64,7 +64,7 @@ async fn pre_tool_use_deny_propagates() {
         .hooks(hooks)
         .build();
 
-    let mut client = Client::spawn(opts).await.expect("spawn");
+    let client = Client::spawn(opts).await.expect("spawn");
     client.send_user_message("run bash").await.expect("send");
 
     let msg = client.next_event().await.expect("next").expect("assistant");

@@ -1,6 +1,6 @@
 //! Permission callback types.
 //!
-//! Mirrors Python SDK's `PermissionResultAllow`, `PermissionResultDeny`,
+//! SDK's `PermissionResultAllow`, `PermissionResultDeny`,
 //! `ToolPermissionContext`, `CanUseTool` callable, plus the `PermissionUpdate`
 //! family carried on allow results.
 
@@ -27,8 +27,8 @@ pub struct ToolPermissionContext {
     pub agent_id: Option<String>,
     /// Permission-rule suggestions the CLI attached to this request.
     /// Typically populated when the user has in-flight workspace
-    /// permission prompts. Mirrors Python's
-    /// `ToolPermissionContext.suggestions` (`types.py:180`) — populated
+    /// permission prompts. Wire shape:
+    /// `ToolPermissionContext.suggestions` — populated
     /// from the `control_request`'s `permission_suggestions` list, with
     /// unrecognised entries dropped.
     pub suggestions: Vec<PermissionUpdate>,
@@ -67,7 +67,7 @@ impl ToolPermissionContext {
 
 /// The decision a callback returns.
 ///
-/// Mirrors Python's `PermissionResultAllow` / `PermissionResultDeny` as a
+/// Wraps the CLI's `PermissionResultAllow` / `PermissionResultDeny` as a
 /// single enum with constructor helpers.
 #[derive(Debug, Clone)]
 pub struct PermissionDecision {
@@ -123,7 +123,7 @@ impl PermissionDecision {
     /// Attach a list of [`PermissionUpdate`]s to an allow decision. These
     /// are forwarded to the `claude` binary as `updatedPermissions` on the
     /// wire and applied to the session's permission state. No-op on a
-    /// deny decision — Python's `PermissionResultDeny` has no equivalent
+    /// deny decision — the CLI's `PermissionResultDeny` has no equivalent
     /// channel.
     #[must_use]
     pub fn with_updated_permissions(mut self, updates: Vec<PermissionUpdate>) -> Self {
@@ -175,8 +175,8 @@ impl PermissionDecision {
     }
 }
 
-/// Where a [`PermissionUpdate`] should be persisted. Mirrors Python's
-/// `PermissionUpdateDestination` literal (`types.py:103-105`).
+/// Where a [`PermissionUpdate`] should be persisted. Wire shape:
+/// `PermissionUpdateDestination` literal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum PermissionUpdateDestination {
@@ -190,8 +190,8 @@ pub enum PermissionUpdateDestination {
     Session,
 }
 
-/// Policy a rule-based [`PermissionUpdate`] applies. Mirrors Python's
-/// `PermissionBehavior` literal (`types.py:107`).
+/// Policy a rule-based [`PermissionUpdate`] applies. Wire shape:
+/// `PermissionBehavior` literal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum PermissionBehavior {
@@ -204,8 +204,8 @@ pub enum PermissionBehavior {
 }
 
 /// One tool-rule entry inside a rule-based [`PermissionUpdate`].
-/// Mirrors Python's `PermissionRuleValue` (`types.py:110-115`). Wire uses
-/// camelCase (`toolName`, `ruleContent`) per Python's `to_dict`.
+/// Wraps the CLI's `PermissionRuleValue`. Wire uses
+/// camelCase (`toolName`, `ruleContent`) per the CLI's `to_dict`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PermissionRuleValue {
@@ -218,7 +218,7 @@ pub struct PermissionRuleValue {
 }
 
 /// One permission-state mutation attached to an allow decision. Mirrors
-/// Python's `PermissionUpdate` (`types.py:118-170`). Dispatched on `type`.
+/// the CLI's `PermissionUpdate`. Dispatched on `type`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum PermissionUpdate {

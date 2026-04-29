@@ -1,13 +1,13 @@
-//! Pure-Rust mirrors of the Python SDK's public types that don't yet
-//! participate in any wire-path in forge-sdk but are needed for surface
-//! parity. Users construct / inspect these; the serde impls match the
-//! Python wire shape verbatim.
+//! Public types that don't yet participate in any wire-path in
+//! forge-sdk but are useful for callers that build or inspect
+//! configuration values. The serde impls match the CLI's wire shape
+//! exactly.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// Which settings scope to load. Mirrors Python's
-/// `Literal["user", "project", "local"]` (`types.py:32`).
+/// Which settings scope to load. Wire shape:
+/// `Literal["user", "project", "local"]`.
 ///
 /// Combinations are expressed by passing multiple variants — see
 /// [`OptionsBuilder::setting_sources`](crate::OptionsBuilder::setting_sources).
@@ -40,8 +40,8 @@ impl SettingSource {
 }
 
 /// Streaming partial-message event surfaced when
-/// `Options.include_partial_messages` is set. Mirrors Python's
-/// `StreamEvent` (`types.py:1043-1050`).
+/// `Options.include_partial_messages` is set. Wire shape:
+/// `StreamEvent`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StreamEvent {
     /// Unique identifier for this stream event.
@@ -55,8 +55,8 @@ pub struct StreamEvent {
     pub parent_tool_use_id: Option<String>,
 }
 
-/// One session-listing row from `list_sessions()`. Mirrors Python's
-/// `SDKSessionInfo` (`types.py:1265-1298`).
+/// One session-listing row from `list_sessions()`. Wire shape:
+/// `SDKSessionInfo`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SDKSessionInfo {
     /// Session UUID.
@@ -88,9 +88,8 @@ pub struct SDKSessionInfo {
     pub created_at: Option<u64>,
 }
 
-/// One user / assistant message from a session transcript, as returned
-/// by `get_session_messages()`. Mirrors Python's `SessionMessage`
-/// (`types.py:1301-1322`).
+/// One user / assistant message from a session transcript, as
+/// returned by `get_session_messages()`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SessionMessage {
     /// Message kind.
@@ -107,7 +106,7 @@ pub struct SessionMessage {
     pub parent_tool_use_id: Option<String>,
 }
 
-/// User / assistant discriminator. Mirrors Python's
+/// User / assistant discriminator. Wire shape:
 /// `Literal["user", "assistant"]` on `SessionMessage.type`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -118,8 +117,8 @@ pub enum SessionMessageKind {
     Assistant,
 }
 
-/// Possible connection statuses for an MCP server. Mirrors Python's
-/// `McpServerConnectionStatus` (`types.py:654-656`).
+/// Possible connection statuses for an MCP server. Wire shape:
+/// `McpServerConnectionStatus`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum McpServerConnectionStatus {
@@ -135,8 +134,7 @@ pub enum McpServerConnectionStatus {
     Disabled,
 }
 
-/// MCP tool annotations. Mirrors Python's `McpToolAnnotations`
-/// (`types.py:627-635`). Wire keys are camelCase.
+/// MCP tool annotations. Wire keys are camelCase.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct McpToolAnnotations {
@@ -173,8 +171,8 @@ pub struct McpServerInfo {
     pub version: String,
 }
 
-/// Per-server status entry inside [`McpStatusResponse`]. Mirrors Python's
-/// `McpServerStatus` (`types.py:659-684`). Wire shape matches the CLI's
+/// Per-server status entry inside [`McpStatusResponse`]. Wire shape:
+/// `McpServerStatus`. Wire shape matches the CLI's
 /// JSON response.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -189,7 +187,7 @@ pub struct McpServerStatus {
     /// Error message when `status == Failed`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
-    /// Opaque config blob — one of Python's `McpServerStatusConfig`
+    /// Opaque config blob — one of the CLI's `McpServerStatusConfig`
     /// variants. Typed as Value here since the CLI accepts claudeai-proxy
     /// which isn't a first-class forge-sdk input type.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -203,8 +201,8 @@ pub struct McpServerStatus {
     pub tools: Option<Vec<McpToolInfo>>,
 }
 
-/// Response from `Client::mcp_status()`. Mirrors Python's
-/// `McpStatusResponse` (`types.py:687-694`).
+/// Response from `Client::mcp_status()`. Wire shape:
+/// `McpStatusResponse`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct McpStatusResponse {
@@ -213,7 +211,7 @@ pub struct McpStatusResponse {
 }
 
 /// One breakdown row in [`ContextUsageResponse::categories`]. Mirrors
-/// Python's `ContextUsageCategory` (`types.py:697-703`).
+/// the CLI's `ContextUsageCategory`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ContextUsageCategory {
@@ -228,8 +226,8 @@ pub struct ContextUsageCategory {
     pub is_deferred: Option<bool>,
 }
 
-/// Response from `Client::get_context_usage()`. Mirrors Python's
-/// `ContextUsageResponse` (`types.py:706-760`). Only the commonly-used
+/// Response from `Client::get_context_usage()`. Wire shape:
+/// `ContextUsageResponse`. Only the commonly-used
 /// fields are typed here; the `Value`-backed vectors capture the
 /// long-tail fields the CLI emits for the `/context` UI.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -274,9 +272,9 @@ pub struct ContextUsageResponse {
     pub slash_commands: Option<Value>,
 }
 
-/// External MCP server wire-config (non-SDK variants). Mirrors Python's
+/// External MCP server wire-config (non-SDK variants). Wire shape:
 /// `McpStdioServerConfig / McpSSEServerConfig / McpHttpServerConfig`
-/// (`types.py:549-572`). The in-process SDK variant lives on the
+///. The in-process SDK variant lives on the
 /// `McpServer` handle directly — use [`OptionsBuilder::mcp_server`](
 /// crate::OptionsBuilder::mcp_server) for that.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -311,10 +309,10 @@ pub enum McpServerConfig {
     },
 }
 
-/// Bash sandbox configuration — Python's `SandboxSettings`
-/// (`types.py:812-856`). Merged into `--settings` alongside any
-/// explicit `settings` value via Python's `_build_settings_value`
-/// (`subprocess_cli.py:111-163`). Fields are camelCase on the wire.
+/// Bash sandbox configuration — the CLI's `SandboxSettings`
+///. Merged into `--settings` alongside any
+/// explicit `settings` value via the CLI's `_build_settings_value`
+///. Fields are camelCase on the wire.
 ///
 /// **Note:** Filesystem read/write restrictions and network
 /// restrictions are NOT configured here — they travel through the
@@ -350,8 +348,8 @@ pub struct SandboxSettings {
     pub enable_weaker_nested_sandbox: Option<bool>,
 }
 
-/// Sandbox network configuration. Mirrors Python's
-/// `SandboxNetworkConfig` (`types.py:782-798`). Fields are camelCase.
+/// Sandbox network configuration. Wire shape:
+/// `SandboxNetworkConfig`. Fields are camelCase.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SandboxNetworkConfig {
@@ -372,10 +370,9 @@ pub struct SandboxNetworkConfig {
     pub socks_proxy_port: Option<u16>,
 }
 
-/// Violations to ignore in the sandbox. Mirrors Python's
-/// `SandboxIgnoreViolations` (`types.py:800-809`). Note that Python's
-/// field names are `file` (singular) and `network` — these get passed
-/// through as-is.
+/// Violations to ignore in the sandbox. Wire field names are
+/// `file` (singular) and `network`; forge-sdk passes them through
+/// as-is.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct SandboxIgnoreViolations {
     /// File paths for which violations should be ignored.
