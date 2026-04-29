@@ -235,6 +235,13 @@ pub struct App {
     pub needs_redraw: bool,
     pub perf: Option<crate::perf::Profiler>,
     pub render_cache_budget: RenderCacheBudget,
+    pub(crate) render_cache_slots:
+        Vec<Vec<crate::state::render_budget::RenderCacheSlotState>>,
+    pub(crate) render_cache_total_bytes: usize,
+    pub(crate) render_cache_protected_bytes: usize,
+    pub(crate) render_cache_evictable:
+        std::collections::BTreeSet<crate::state::render_budget::RenderCacheEvictionKey>,
+    pub(crate) render_cache_tail_msg_idx: Option<usize>,
     pub history_retention: HistoryRetentionPolicy,
     pub history_retention_stats: HistoryRetentionStats,
     pub fps_ema: Option<f32>,
@@ -502,18 +509,130 @@ impl App {
         self.focus.normalize(context);
     }
 
-    /// No-op stub. Upstream's `sync_render_cache_slot` reconciles
-    /// `App.render_cache_slots` parallel to `messages[mi].blocks[bi]`;
-    /// forge has not lifted the render-budget infra yet, so this is a
-    /// no-op until `render_budget.rs` lands (cuts list).
-    pub fn sync_render_cache_slot(&mut self, _msg_idx: usize, _block_idx: usize) {}
+    // sync_render_cache_slot lifted via state/render_budget.rs impl App.
+    // recompute_message_retained_bytes lifted via state/history_retention.rs impl App.
 
-    /// No-op stub. Upstream's `recompute_message_retained_bytes`
-    /// updates `App.message_retained_bytes[mi]` and the rolling
-    /// `retained_history_bytes` total. Forge will need this when
-    /// `history_retention.rs` lifts; until then the parallel arrays
-    /// stay zero-initialised and history retention is not enforced.
-    pub fn recompute_message_retained_bytes(&mut self, _msg_idx: usize) {}
+    /// Whether the recorded active-turn-assistant index still points at
+    /// a real Assistant message. Lifted from upstream.
+    #[must_use]
+    pub fn active_turn_assistant_idx(&self) -> Option<usize> {
+        self.active_turn_assistant_message_idx.filter(|&idx| {
+            self.messages.get(idx).is_some_and(|msg| {
+                matches!(msg.role, crate::state::messages::MessageRole::Assistant)
+            })
+        })
+    }
+
+    /// Bind the active-turn-assistant message id, if it points at an
+    /// Assistant role message.
+    pub fn bind_active_turn_assistant(&mut self, idx: usize) {
+        self.active_turn_assistant_message_idx = self
+            .messages
+            .get(idx)
+            .is_some_and(|msg| {
+                matches!(msg.role, crate::state::messages::MessageRole::Assistant)
+            })
+            .then_some(idx);
+    }
+
+    /// Drop the active-turn-assistant binding.
+    pub fn clear_active_turn_assistant(&mut self) {
+        self.active_turn_assistant_message_idx = None;
+    }
+
+    /// Drop all turn-local notice refs.
+    pub(crate) fn clear_turn_notice_refs(&mut self) {
+        self.turn_notice_refs.clear();
+    }
+
+    /// Wipe terminal-tool-call indexing.
+    pub(crate) fn clear_terminal_tool_call_tracking(&mut self) {
+        self.terminal_tool_calls.clear();
+        self.terminal_tool_call_membership.clear();
+    }
+
+    /// Terminal id associated with a Pending/InProgress execute tool call,
+    /// if any.
+    #[must_use]
+    pub(crate) fn tracked_terminal_id_for_tool(
+        tc: &crate::state::tool_call_info::ToolCallInfo,
+    ) -> Option<String> {
+        (tc.is_execute_tool()
+            && matches!(
+                tc.status,
+                model::ToolCallStatus::Pending | model::ToolCallStatus::InProgress
+            ))
+        .then(|| tc.terminal_id.clone())
+        .flatten()
+    }
+
+    /// Shift active-turn-assistant index after a message insertion at `idx`.
+    pub(crate) fn shift_active_turn_assistant_for_insert(&mut self, idx: usize) {
+        if let Some(owner_idx) = self.active_turn_assistant_message_idx
+            && idx <= owner_idx
+        {
+            self.active_turn_assistant_message_idx = Some(owner_idx.saturating_add(1));
+        }
+    }
+
+    /// Shift active-turn-assistant index after a message removal at `idx`.
+    pub(crate) fn shift_active_turn_assistant_for_remove(&mut self, idx: usize) {
+        let Some(owner_idx) = self.active_turn_assistant_message_idx else {
+            return;
+        };
+        self.active_turn_assistant_message_idx = match idx.cmp(&owner_idx) {
+            std::cmp::Ordering::Less => Some(owner_idx.saturating_sub(1)),
+            std::cmp::Ordering::Equal => None,
+            std::cmp::Ordering::Greater => Some(owner_idx),
+        };
+    }
+
+    /// Shift turn-notice ref msg indices after a message insertion at `idx`.
+    pub(crate) fn shift_turn_notice_refs_for_insert(&mut self, idx: usize) {
+        for notice_ref in &mut self.turn_notice_refs {
+            match &mut notice_ref.location {
+                TurnNoticeLocation::Inline { msg_idx, .. }
+                | TurnNoticeLocation::Standalone { msg_idx }
+                    if idx <= *msg_idx =>
+                {
+                    *msg_idx = msg_idx.saturating_add(1);
+                }
+                TurnNoticeLocation::Inline { .. } | TurnNoticeLocation::Standalone { .. } => {}
+            }
+        }
+    }
+
+    /// Shift / drop turn-notice ref msg indices after a message removal at `idx`.
+    pub(crate) fn shift_turn_notice_refs_for_remove(&mut self, idx: usize) {
+        self.turn_notice_refs.retain_mut(|notice_ref| match &mut notice_ref.location {
+            TurnNoticeLocation::Inline { msg_idx, .. }
+            | TurnNoticeLocation::Standalone { msg_idx } => match idx.cmp(msg_idx) {
+                std::cmp::Ordering::Less => {
+                    *msg_idx = msg_idx.saturating_sub(1);
+                    true
+                }
+                std::cmp::Ordering::Equal => false,
+                std::cmp::Ordering::Greater => true,
+            },
+        });
+    }
+
+    /// Remap turn-notice refs after a bulk message drop.
+    pub(crate) fn remap_turn_notice_refs_after_message_drop(
+        &mut self,
+        old_to_new: &[Option<usize>],
+    ) {
+        self.turn_notice_refs.retain_mut(|notice_ref| match &mut notice_ref.location {
+            TurnNoticeLocation::Inline { msg_idx, .. }
+            | TurnNoticeLocation::Standalone { msg_idx } => {
+                let Some(new_idx) = old_to_new.get(*msg_idx).copied().flatten() else {
+                    return false;
+                };
+                *msg_idx = new_idx;
+                true
+            }
+        });
+    }
 
     /// Whether the input draft has any user text. Used by focus
     /// routing to decide whether Enter should submit or focus the
@@ -664,6 +783,11 @@ impl Default for App {
             needs_redraw: true,
             perf: None,
             render_cache_budget: RenderCacheBudget::default(),
+            render_cache_slots: Vec::new(),
+            render_cache_total_bytes: 0,
+            render_cache_protected_bytes: 0,
+            render_cache_evictable: std::collections::BTreeSet::new(),
+            render_cache_tail_msg_idx: None,
             history_retention: HistoryRetentionPolicy::default(),
             history_retention_stats: HistoryRetentionStats::default(),
             fps_ema: None,
