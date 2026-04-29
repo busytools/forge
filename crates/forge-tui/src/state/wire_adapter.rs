@@ -14,6 +14,7 @@
 //! permission-prompt content blocks defer to the full upstream
 //! `app/events/*` lift.
 
+use crate::state::agent_types::{McpServerConnectionStatus, McpServerStatus};
 use crate::state::app::App;
 use crate::state::messages::{ChatMessage, MessageBlock, MessageRole, SystemSeverity, TextBlock};
 use crate::state::model::{self, ToolCallContent};
@@ -188,6 +189,103 @@ fn apply_tool_result(app: &mut App, item: &serde_json::Value) -> bool {
     };
     tool_call.mark_tool_call_render_dirty();
     true
+}
+
+/// Build a minimal `state::model::CurrentModel` from a CLI model id
+/// (e.g. `"claude-opus-4-7[1m]"`). Only the fields the lifted footer
+/// reads (`display_name_short`, `supports_effort`) are populated;
+/// everything else carries default-ish values until forge ships
+/// a fuller catalog lookup.
+#[must_use]
+pub fn current_model_from_id(model_id: &str) -> model::CurrentModel {
+    let display_name_short = derive_short_name(model_id);
+    model::CurrentModel {
+        requested_id: None,
+        resolved_id: model_id.to_owned(),
+        display_name_short: display_name_short.clone(),
+        display_name_long: display_name_short,
+        catalog_id: None,
+        supports_effort: false,
+        supported_effort_levels: Vec::new(),
+        supports_fast_mode: None,
+        supports_auto_mode: None,
+        supports_adaptive_thinking: None,
+        is_authoritative: true,
+    }
+}
+
+fn derive_short_name(model_id: &str) -> String {
+    let lower = model_id.to_ascii_lowercase();
+    if lower.contains("opus") {
+        "Opus".to_owned()
+    } else if lower.contains("sonnet") {
+        "Sonnet".to_owned()
+    } else if lower.contains("haiku") {
+        "Haiku".to_owned()
+    } else {
+        model_id.to_owned()
+    }
+}
+
+/// Adapt a daemon `mcp.status` JSON reply into `Vec<McpServerStatus>`
+/// shaped for the lifted footer's `app.mcp.servers`. The daemon emits
+/// `serverInfo` / `name` / `status` (camelCase from the SDK); the TUI
+/// type uses snake_case, so explicit field-by-field copy.
+///
+/// Only fields the footer + tool-call cards actually read are
+/// populated; the rest default. Returns an empty vec on shape errors.
+#[must_use]
+pub fn json_to_mcp_servers(value: &serde_json::Value) -> Vec<McpServerStatus> {
+    let Some(servers) = value.get("mcp_servers").or_else(|| value.get("mcpServers")) else {
+        return Vec::new();
+    };
+    let Some(arr) = servers.as_array() else { return Vec::new() };
+    arr.iter().filter_map(json_to_mcp_server).collect()
+}
+
+fn json_to_mcp_server(value: &serde_json::Value) -> Option<McpServerStatus> {
+    let name = value
+        .get("name")
+        .and_then(serde_json::Value::as_str)?
+        .to_owned();
+    let status = match value.get("status").and_then(serde_json::Value::as_str)? {
+        "connected" => McpServerConnectionStatus::Connected,
+        "failed" => McpServerConnectionStatus::Failed,
+        "needs-auth" | "needsAuth" => McpServerConnectionStatus::NeedsAuth,
+        "pending" => McpServerConnectionStatus::Pending,
+        "disabled" => McpServerConnectionStatus::Disabled,
+        _ => return None,
+    };
+    let error = value
+        .get("error")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned);
+    let scope = value
+        .get("scope")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned);
+    Some(McpServerStatus {
+        name,
+        status,
+        server_info: None,
+        error,
+        config: None,
+        scope,
+        tools: Vec::new(),
+    })
+}
+
+/// Adapt a daemon `context.get` JSON reply into a `u8` percent
+/// (0–100). Returns `None` when `percentage` is missing or out of range.
+#[must_use]
+pub fn json_to_context_usage_percent(value: &serde_json::Value) -> Option<u8> {
+    let pct = value.get("percentage").and_then(serde_json::Value::as_f64)?;
+    if !pct.is_finite() {
+        return None;
+    }
+    let clamped = pct.clamp(0.0, 100.0);
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    Some(clamped.round() as u8)
 }
 
 /// Adapt a daemon `sessions.list` array into `Vec<RecentSessionInfo>`

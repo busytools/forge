@@ -55,6 +55,16 @@ pub enum AppEvent {
     SessionClosed(serde_json::Value),
     /// `prompts.expired` — drop matching modal.
     PromptsExpired(serde_json::Value),
+    /// `session.current_model` poll reply — model id from CLI's
+    /// system/init payload (kept in sync with `session.set_model`).
+    CurrentModelSnapshot(Option<String>),
+    /// `context.get` poll reply — current-context-window usage.
+    ContextUsageSnapshot {
+        /// Used context as a percent of the model's window.
+        percent: Option<u8>,
+    },
+    /// `mcp.status` poll reply — list of MCP servers and their state.
+    McpStatusSnapshot(serde_json::Value),
     /// External quit signal.
     Quit,
 }
@@ -212,6 +222,18 @@ pub async fn run<B: Backend>(
                     app.active_view = ActiveView::SessionPicker;
                     app.status_msg = format!("session closed: {reason}");
                 }
+            }
+
+            AppEvent::CurrentModelSnapshot(model_id) => {
+                app.current_model = model_id
+                    .as_deref()
+                    .map(crate::state::wire_adapter::current_model_from_id);
+            }
+            AppEvent::ContextUsageSnapshot { percent } => {
+                app.session_usage.context_usage_percent = percent;
+            }
+            AppEvent::McpStatusSnapshot(value) => {
+                app.mcp.servers = crate::state::wire_adapter::json_to_mcp_servers(&value);
             }
         }
     }

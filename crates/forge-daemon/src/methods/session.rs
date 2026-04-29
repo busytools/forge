@@ -407,6 +407,32 @@ pub async fn set_model(
     .await
 }
 
+/// Result shape for `session.current_model`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct CurrentModelResult {
+    /// Active model id (e.g. `"claude-opus-4-7[1m]"`). `None` when the
+    /// CLI hasn't reported a model yet (rare — happens between
+    /// session.spawn and the first system/init frame).
+    pub model: Option<String>,
+}
+
+/// `session.current_model` — return the model id captured from the
+/// CLI's `system/init` payload, kept in sync with `session.set_model`
+/// updates. Used by forge-tui's footer poller.
+///
+/// # Errors
+///
+/// `SessionNotFound` if the id is unknown.
+pub async fn current_model(
+    state: &DaemonState,
+    session_id: &SessionId,
+) -> Result<CurrentModelResult, Error> {
+    let model =
+        dispatch_command(state, session_id, |reply| Command::CurrentModel { reply }).await?;
+    Ok(CurrentModelResult { model })
+}
+
 /// `session.rewind_files` — ask the CLI to revert file edits since the
 /// supplied user message.
 ///

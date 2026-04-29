@@ -151,6 +151,12 @@ pub enum Command {
         /// Reply channel for the typed [`ContextUsageResponse`](forge_sdk::ContextUsageResponse).
         reply: oneshot::Sender<Result<forge_sdk::ContextUsageResponse, Error>>,
     },
+    /// `session.current_model` — return the model id captured from
+    /// the CLI's `system/init` payload (and updated by `set_model`).
+    CurrentModel {
+        /// Reply channel.
+        reply: oneshot::Sender<Result<Option<String>, Error>>,
+    },
 }
 
 /// Per-session state visible to dispatch handlers + the broadcast helper.

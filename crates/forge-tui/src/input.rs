@@ -201,11 +201,12 @@ fn open_session(
     // pre-populated rather than blank until the next assistant turn.
     let history_client = client.clone();
     let history_tx = event_tx.clone();
+    let history_sid = sid.clone();
     tokio::spawn(async move {
         let result: Result<serde_json::Value, _> = history_client
             .call(
                 "sessions.messages",
-                serde_json::json!({"session_id": sid}),
+                serde_json::json!({"session_id": history_sid}),
             )
             .await;
         match result {
@@ -221,10 +222,103 @@ fn open_session(
                 let _ = history_tx.send(AppEvent::HistoricalLoaded(messages));
             }
             Err(e) => {
-                tracing::warn!(error = %e, sid = %sid, "sessions.messages failed");
+                tracing::warn!(error = %e, sid = %history_sid, "sessions.messages failed");
             }
         }
     });
+
+    spawn_footer_poller(client.clone(), event_tx.clone(), sid);
+}
+
+/// Footer poller: every ~1s, fetch `session.current_model` +
+/// `context.get` + `mcp.status` and forward to the `AppEvent` handler.
+/// The poller dies when its `event_tx` is dropped (i.e. when the TUI
+/// exits) — graceful by design.
+fn spawn_footer_poller(
+    client: Arc<Client>,
+    event_tx: mpsc::UnboundedSender<AppEvent>,
+    sid: String,
+) {
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(1));
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            ticker.tick().await;
+            if !poll_current_model(&client, &event_tx, &sid).await
+                || !poll_context_usage(&client, &event_tx, &sid).await
+                || !poll_mcp_status(&client, &event_tx, &sid).await
+            {
+                return;
+            }
+        }
+    });
+}
+
+async fn poll_current_model(
+    client: &Arc<Client>,
+    event_tx: &mpsc::UnboundedSender<AppEvent>,
+    sid: &str,
+) -> bool {
+    match client
+        .call::<_, serde_json::Value>(
+            "session.current_model",
+            serde_json::json!({"session_id": sid}),
+        )
+        .await
+    {
+        Ok(v) => {
+            let model_id = v
+                .get("model")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned);
+            event_tx
+                .send(AppEvent::CurrentModelSnapshot(model_id))
+                .is_ok()
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, sid = %sid, "session.current_model failed");
+            true
+        }
+    }
+}
+
+async fn poll_context_usage(
+    client: &Arc<Client>,
+    event_tx: &mpsc::UnboundedSender<AppEvent>,
+    sid: &str,
+) -> bool {
+    match client
+        .call::<_, serde_json::Value>("context.get", serde_json::json!({"session_id": sid}))
+        .await
+    {
+        Ok(v) => {
+            let percent = crate::state::wire_adapter::json_to_context_usage_percent(&v);
+            event_tx
+                .send(AppEvent::ContextUsageSnapshot { percent })
+                .is_ok()
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, sid = %sid, "context.get failed");
+            true
+        }
+    }
+}
+
+async fn poll_mcp_status(
+    client: &Arc<Client>,
+    event_tx: &mpsc::UnboundedSender<AppEvent>,
+    sid: &str,
+) -> bool {
+    match client
+        .call::<_, serde_json::Value>("mcp.status", serde_json::json!({"session_id": sid}))
+        .await
+    {
+        Ok(v) => event_tx.send(AppEvent::McpStatusSnapshot(v)).is_ok(),
+        Err(e) => {
+            tracing::warn!(error = %e, sid = %sid, "mcp.status failed");
+            true
+        }
+    }
 }
 
 async fn spawn_new_session(

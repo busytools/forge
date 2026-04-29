@@ -228,7 +228,6 @@ pub struct App {
     // ---- daemon-pushed snapshots ----
     pub session_usage: SessionUsageState,
     pub mcp: McpState,
-    pub fast_mode_state: model::FastModeState,
     pub runtime_session_state: Option<model::RuntimeSessionState>,
     pub prompt_suggestion: Option<String>,
     pub last_rate_limit_update: Option<model::RateLimitUpdate>,
@@ -825,7 +824,6 @@ impl Default for App {
 
             session_usage: SessionUsageState::default(),
             mcp: McpState::default(),
-            fast_mode_state: model::FastModeState::Off,
             runtime_session_state: None,
             prompt_suggestion: None,
             last_rate_limit_update: None,

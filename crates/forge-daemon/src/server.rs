@@ -481,6 +481,12 @@ async fn dispatch(req: &Request, conn: &Connection, state: &DaemonState) -> Resp
             })
             .await
         }
+        "session.current_model" => {
+            typed_call(req, |p: SessionIdOnlyParams| async move {
+                methods::session::current_model(state, &p.session_id).await
+            })
+            .await
+        }
         // ---- prompts.* (M4) ------------------------------------------------
         "prompts.respond" => {
             typed_call(req, |p: PromptsRespondParams| async move {

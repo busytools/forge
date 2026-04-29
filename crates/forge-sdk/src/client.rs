@@ -64,6 +64,12 @@ struct ClientInner {
     /// Cached response from the `initialize` `control_request` —
     /// populated during spawn and never mutated afterwards.
     initialization_result: Option<serde_json::Value>,
+    /// Captured `system/init` payload (`model`, `tools`, `mcp_servers`,
+    /// `slash_commands`, …). The CLI emits this once after init and the
+    /// SDK strips it from the user-visible `Message` stream; cache it
+    /// here so `forge-daemon` can answer footer / slash queries without
+    /// re-running the handshake.
+    cached_init_data: Option<serde_json::Value>,
     /// Captured session id. The reader task updates it as messages
     /// arrive; consumers read the current value via
     /// [`Client::session_id`].
@@ -210,6 +216,7 @@ impl Client {
         sub.write_line(&init_line).await?;
 
         let mut pre_init_messages: VecDeque<Message> = VecDeque::new();
+        let mut cached_init_data: Option<serde_json::Value> = None;
         let mut line_number: u64 = 0;
         let initialization_result = loop {
             line_number += 1;
@@ -308,10 +315,13 @@ impl Client {
                         // Drop `system/init` from the pre-init buffer —
                         // the CLI consumes it inside `query._fetch_init`
                         // and never surfaces it to callers; we mirror.
-                        if !matches!(
-                            msg,
-                            Message::System { ref subtype, .. } if subtype == "init"
-                        ) {
+                        // Cache its `data` so `forge-daemon` can read
+                        // model / mcp / slash-command info off it.
+                        if let Message::System { ref subtype, ref data, .. } = msg
+                            && subtype == "init"
+                        {
+                            cached_init_data = Some(data.clone());
+                        } else {
                             pre_init_messages.push_back(msg);
                         }
                     }
@@ -352,6 +362,7 @@ impl Client {
         let inner = Arc::new(ClientInner {
             writer,
             initialization_result,
+            cached_init_data,
             session_id,
             pending_controls,
             events_rx: Mutex::new(events_rx),
@@ -369,6 +380,17 @@ impl Client {
     #[must_use]
     pub fn get_server_info(&self) -> Option<&serde_json::Value> {
         self.inner.initialization_result.as_ref()
+    }
+
+    /// Captured `system/init` payload — the CLI's first session-scoped
+    /// frame, carrying `model`, `tools`, `mcp_servers`, `slash_commands`,
+    /// `agents`, `skills`, etc. Stripped from the user-visible `Message`
+    /// stream during init; cached here for callers that need the
+    /// initial session context (e.g. forge-daemon's `session.current_model`
+    /// + `slash.list` RPCs).
+    #[must_use]
+    pub fn initial_session_data(&self) -> Option<&serde_json::Value> {
+        self.inner.cached_init_data.as_ref()
     }
 
     /// The session id captured from the init message. Returns an empty

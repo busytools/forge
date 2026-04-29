@@ -82,6 +82,13 @@ pub(crate) fn spawn_session_actor(
 ) {
     let session_id = handle.id.clone();
     tokio::spawn(async move {
+        // Track the current model id. Seeded from the captured
+        // `system/init` payload, updated on every `Command::SetModel`.
+        let mut current_model: Option<String> = client
+            .initial_session_data()
+            .and_then(|d| d.get("model"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned);
         let reason: &'static str = loop {
             tokio::select! {
                 biased;
@@ -117,6 +124,9 @@ pub(crate) fn spawn_session_actor(
                                 .set_model(model.as_deref())
                                 .await
                                 .map_err(Error::Sdk);
+                            if r.is_ok() {
+                                current_model = model.clone();
+                            }
                             let _ = reply.send(r);
                         }
                         Command::RewindFiles { user_message_id, reply } => {
@@ -151,6 +161,9 @@ pub(crate) fn spawn_session_actor(
                         Command::ContextGet { reply } => {
                             let r = client.get_context_usage().await.map_err(Error::Sdk);
                             let _ = reply.send(r);
+                        }
+                        Command::CurrentModel { reply } => {
+                            let _ = reply.send(Ok(current_model.clone()));
                         }
                     }
                 }

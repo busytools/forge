@@ -154,15 +154,12 @@ fn zero_width_rect(area: Rect) -> Rect {
 fn build_primary_line(app: &App) -> Line<'static> {
     if let Some(ref mode) = app.mode {
         let color = mode_color(&mode.current_mode_id);
-        let (fast_mode_text, fast_mode_color) = fast_mode_badge(app.fast_mode_state);
         let mut spans = Vec::new();
         push_badge(&mut spans, mode.current_mode_name.clone(), color);
         if let Some(model_badge) = footer_model_badge(app) {
             spans.push(Span::raw("  "));
             push_badge(&mut spans, model_badge, FOOTER_CONTEXT_VALUE);
         }
-        spans.push(Span::raw("  "));
-        push_badge(&mut spans, fast_mode_text.to_owned(), fast_mode_color);
         spans.push(Span::raw("  "));
         spans.push(Span::styled("?", Style::default().fg(Color::White)));
         spans.push(Span::styled(" : Help", Style::default().fg(theme::DIM)));
@@ -400,14 +397,6 @@ fn mode_color(mode_id: &str) -> Color {
         "plan" => Color::Blue,
         "bypassPermissions" | "dontAsk" => Color::Red,
         _ => Color::Magenta,
-    }
-}
-
-fn fast_mode_badge(state: model::FastModeState) -> (&'static str, Color) {
-    match state {
-        model::FastModeState::Off => ("FAST:OFF", theme::DIM),
-        model::FastModeState::Cooldown => ("FAST:CD", Color::Yellow),
-        model::FastModeState::On => ("FAST:ON", theme::RUST_ORANGE),
     }
 }
 
