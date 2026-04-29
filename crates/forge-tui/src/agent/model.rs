@@ -81,7 +81,10 @@ pub struct ImageContent {
 impl ImageContent {
     #[must_use]
     pub fn new(data: impl Into<String>, mime_type: impl Into<String>) -> Self {
-        Self { data: data.into(), mime_type: mime_type.into() }
+        Self {
+            data: data.into(),
+            mime_type: mime_type.into(),
+        }
     }
 }
 
@@ -149,7 +152,10 @@ pub struct ToolCallLocation {
 impl ToolCallLocation {
     #[must_use]
     pub fn new(path: impl Into<PathBuf>) -> Self {
-        Self { path: path.into(), line: None }
+        Self {
+            path: path.into(),
+            line: None,
+        }
     }
 
     #[must_use]
@@ -167,7 +173,9 @@ pub struct TerminalToolCallContent {
 impl TerminalToolCallContent {
     #[must_use]
     pub fn new(terminal_id: impl Into<String>) -> Self {
-        Self { terminal_id: terminal_id.into() }
+        Self {
+            terminal_id: terminal_id.into(),
+        }
     }
 }
 
@@ -182,7 +190,12 @@ pub struct Diff {
 impl Diff {
     #[must_use]
     pub fn new(path: impl Into<PathBuf>, new_text: impl Into<String>) -> Self {
-        Self { path: path.into(), old_text: None, new_text: new_text.into(), repository: None }
+        Self {
+            path: path.into(),
+            old_text: None,
+            new_text: new_text.into(),
+            repository: None,
+        }
     }
 
     #[must_use]
@@ -209,7 +222,12 @@ pub struct McpResource {
 impl McpResource {
     #[must_use]
     pub fn new(uri: impl Into<String>) -> Self {
-        Self { uri: uri.into(), mime_type: None, text: None, blob_saved_to: None }
+        Self {
+            uri: uri.into(),
+            mime_type: None,
+            text: None,
+            blob_saved_to: None,
+        }
     }
 
     #[must_use]
@@ -226,8 +244,9 @@ impl McpResource {
 
     #[must_use]
     pub fn blob_saved_to(mut self, blob_saved_to: Option<String>) -> Self {
-        self.blob_saved_to =
-            blob_saved_to.filter(|path| !path.trim().is_empty()).map(PathBuf::from);
+        self.blob_saved_to = blob_saved_to
+            .filter(|path| !path.trim().is_empty())
+            .map(PathBuf::from);
         self
     }
 }
@@ -426,7 +445,11 @@ pub struct ToolCallUpdate {
 impl ToolCallUpdate {
     #[must_use]
     pub fn new(tool_call_id: impl Into<String>, fields: ToolCallUpdateFields) -> Self {
-        Self { tool_call_id: tool_call_id.into(), fields, meta: None }
+        Self {
+            tool_call_id: tool_call_id.into(),
+            fields,
+            meta: None,
+        }
     }
 
     #[must_use]
@@ -444,7 +467,9 @@ pub struct TodoWriteOutputMetadata {
 impl TodoWriteOutputMetadata {
     #[must_use]
     pub fn new() -> Self {
-        Self { verification_nudge_needed: None }
+        Self {
+            verification_nudge_needed: None,
+        }
     }
 
     #[must_use]
@@ -462,7 +487,9 @@ pub struct BashOutputMetadata {
 impl BashOutputMetadata {
     #[must_use]
     pub fn new() -> Self {
-        Self { assistant_auto_backgrounded: None }
+        Self {
+            assistant_auto_backgrounded: None,
+        }
     }
 
     #[must_use]
@@ -569,7 +596,11 @@ impl PlanEntry {
         priority: PlanEntryPriority,
         status: PlanEntryStatus,
     ) -> Self {
-        Self { content: content.into(), priority, status }
+        Self {
+            content: content.into(),
+            priority,
+            status,
+        }
     }
 }
 
@@ -595,7 +626,11 @@ pub struct AvailableCommand {
 impl AvailableCommand {
     #[must_use]
     pub fn new(name: impl Into<String>, description: impl Into<String>) -> Self {
-        Self { name: name.into(), description: description.into(), input_hint: None }
+        Self {
+            name: name.into(),
+            description: description.into(),
+            input_hint: None,
+        }
     }
 
     #[must_use]
@@ -627,7 +662,11 @@ pub struct AvailableAgent {
 impl AvailableAgent {
     #[must_use]
     pub fn new(name: impl Into<String>, description: impl Into<String>) -> Self {
-        Self { name: name.into(), description: description.into(), model: None }
+        Self {
+            name: name.into(),
+            description: description.into(),
+            model: None,
+        }
     }
 
     #[must_use]
@@ -854,7 +893,9 @@ pub struct CurrentModeUpdate {
 impl CurrentModeUpdate {
     #[must_use]
     pub fn new(current_mode_id: impl Into<SessionModeId>) -> Self {
-        Self { current_mode_id: current_mode_id.into() }
+        Self {
+            current_mode_id: current_mode_id.into(),
+        }
     }
 }
 
@@ -1005,7 +1046,12 @@ impl PermissionOption {
         name: impl Into<String>,
         kind: PermissionOptionKind,
     ) -> Self {
-        Self { option_id: option_id.into(), name: name.into(), description: None, kind }
+        Self {
+            option_id: option_id.into(),
+            name: name.into(),
+            description: None,
+            kind,
+        }
     }
 
     #[must_use]
@@ -1026,7 +1072,12 @@ pub struct QuestionOption {
 impl QuestionOption {
     #[must_use]
     pub fn new(option_id: impl Into<String>, label: impl Into<String>) -> Self {
-        Self { option_id: option_id.into(), label: label.into(), description: None, preview: None }
+        Self {
+            option_id: option_id.into(),
+            label: label.into(),
+            description: None,
+            preview: None,
+        }
     }
 
     #[must_use]
@@ -1058,7 +1109,12 @@ impl QuestionPrompt {
         multi_select: bool,
         options: Vec<QuestionOption>,
     ) -> Self {
-        Self { question: question.into(), header: header.into(), multi_select, options }
+        Self {
+            question: question.into(),
+            header: header.into(),
+            multi_select,
+            options,
+        }
     }
 }
 
@@ -1071,7 +1127,10 @@ pub struct QuestionAnnotation {
 impl QuestionAnnotation {
     #[must_use]
     pub fn new() -> Self {
-        Self { preview: None, notes: None }
+        Self {
+            preview: None,
+            notes: None,
+        }
     }
 
     #[must_use]
@@ -1101,7 +1160,9 @@ pub struct SelectedPermissionOutcome {
 impl SelectedPermissionOutcome {
     #[must_use]
     pub fn new(option_id: impl Into<String>) -> Self {
-        Self { option_id: option_id.into() }
+        Self {
+            option_id: option_id.into(),
+        }
     }
 }
 
@@ -1120,7 +1181,10 @@ pub struct AnsweredQuestionOutcome {
 impl AnsweredQuestionOutcome {
     #[must_use]
     pub fn new(selected_option_ids: Vec<String>) -> Self {
-        Self { selected_option_ids, annotation: None }
+        Self {
+            selected_option_ids,
+            annotation: None,
+        }
     }
 
     #[must_use]
@@ -1176,7 +1240,12 @@ impl RequestPermissionRequest {
         options: Vec<PermissionOption>,
         display: Option<PermissionDisplay>,
     ) -> Self {
-        Self { session_id: session_id.into(), tool_call, options, display }
+        Self {
+            session_id: session_id.into(),
+            tool_call,
+            options,
+            display,
+        }
     }
 }
 
@@ -1213,9 +1282,17 @@ impl PermissionDisplay {
 
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.title.as_ref().is_none_or(|value| value.trim().is_empty())
-            && self.display_name.as_ref().is_none_or(|value| value.trim().is_empty())
-            && self.description.as_ref().is_none_or(|value| value.trim().is_empty())
+        self.title
+            .as_ref()
+            .is_none_or(|value| value.trim().is_empty())
+            && self
+                .display_name
+                .as_ref()
+                .is_none_or(|value| value.trim().is_empty())
+            && self
+                .description
+                .as_ref()
+                .is_none_or(|value| value.trim().is_empty())
     }
 }
 
@@ -1237,6 +1314,12 @@ impl RequestQuestionRequest {
         question_index: usize,
         total_questions: usize,
     ) -> Self {
-        Self { session_id: session_id.into(), tool_call, prompt, question_index, total_questions }
+        Self {
+            session_id: session_id.into(),
+            tool_call,
+            prompt,
+            question_index,
+            total_questions,
+        }
     }
 }
