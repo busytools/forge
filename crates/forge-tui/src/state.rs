@@ -33,6 +33,7 @@ pub mod questions;
 pub mod render_budget;
 pub mod slash;
 pub mod subagent;
+pub mod tab_title;
 pub mod tool_call_info;
 pub mod types;
 pub mod view;

@@ -266,6 +266,7 @@ pub async fn run<B: Backend>(
                 app.current_model = model_id
                     .as_deref()
                     .map(crate::state::wire_adapter::current_model_from_id);
+                crate::state::tab_title::update(&app);
             }
             AppEvent::ContextUsageSnapshot { percent } => {
                 app.session_usage.context_usage_percent = percent;
