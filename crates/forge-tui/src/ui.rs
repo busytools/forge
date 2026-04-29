@@ -87,4 +87,9 @@ fn render_chat_lifted(frame: &mut Frame<'_>, app: &mut App) {
     }
     let footer_area = chunks[idx];
     lifted::footer::render(frame, footer_area, app);
+
+    // Autocomplete menu floats above the input row when active.
+    if lifted::autocomplete::is_active(app) {
+        lifted::autocomplete::render(frame, input_area, app);
+    }
 }

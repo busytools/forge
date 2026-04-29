@@ -99,6 +99,12 @@ async fn handle_conversation_key(
         return false;
     }
 
+    // Autocomplete menus consume Up/Down/Enter/Esc when active so the
+    // user can navigate candidates without losing their typed text.
+    if autocomplete_active(app) && handle_autocomplete_key(app, key) {
+        return false;
+    }
+
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     match key.code {
         KeyCode::Esc => {
@@ -159,9 +165,11 @@ async fn handle_conversation_key(
                 return true;
             }
             app.input.textarea_insert_char(c);
+            sync_autocomplete_with_cursor(app);
         }
         KeyCode::Backspace => {
             app.input.textarea_delete_char_before();
+            sync_autocomplete_with_cursor(app);
         }
         KeyCode::Enter => {
             send_draft(app, client).await;
@@ -169,6 +177,64 @@ async fn handle_conversation_key(
         _ => {}
     }
     false
+}
+
+fn autocomplete_active(app: &App) -> bool {
+    app.mention.is_some()
+        || app.subagent.as_ref().is_some_and(|s| !s.candidates.is_empty())
+}
+
+/// Drive `state::mention` + `state::subagent` activation off the current
+/// input/cursor state. Called after every keystroke that mutates the
+/// input editor so the menu opens/closes/refreshes naturally.
+fn sync_autocomplete_with_cursor(app: &mut App) {
+    crate::state::mention::sync_with_cursor(app);
+    crate::state::subagent::sync_with_cursor(app);
+}
+
+/// Intercept Up/Down/Enter/Esc when an autocomplete menu is open.
+/// Returns `true` when the keystroke was consumed.
+fn handle_autocomplete_key(app: &mut App, key: KeyEvent) -> bool {
+    let mention_active = app.mention.is_some();
+    let subagent_active = app
+        .subagent
+        .as_ref()
+        .is_some_and(|s| !s.candidates.is_empty());
+    match key.code {
+        KeyCode::Up => {
+            if mention_active {
+                crate::state::mention::move_up(app);
+            } else if subagent_active {
+                crate::state::subagent::move_up(app);
+            }
+            true
+        }
+        KeyCode::Down => {
+            if mention_active {
+                crate::state::mention::move_down(app);
+            } else if subagent_active {
+                crate::state::subagent::move_down(app);
+            }
+            true
+        }
+        KeyCode::Enter => {
+            if mention_active {
+                crate::state::mention::confirm_selection(app);
+            } else if subagent_active {
+                crate::state::subagent::confirm_selection(app);
+            }
+            true
+        }
+        KeyCode::Esc => {
+            if mention_active {
+                crate::state::mention::deactivate(app);
+            } else if subagent_active {
+                crate::state::subagent::deactivate(app);
+            }
+            true
+        }
+        _ => false,
+    }
 }
 
 fn open_session(
