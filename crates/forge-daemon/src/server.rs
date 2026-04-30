@@ -339,6 +339,16 @@ async fn dispatch(req: &Request, conn: &Connection, state: &DaemonState) -> Resp
             )
             .await
         }
+        "session.send_user_message_blocks" => {
+            typed_call(
+                req,
+                |p: methods::session::SendUserMessageBlocksParams| async move {
+                    methods::session::send_user_message_blocks(state, &p.session_id, p.content)
+                        .await
+                },
+            )
+            .await
+        }
         "session.subscribe" => {
             typed_call(req, |p: methods::session::SubscribeParams| async move {
                 methods::session::subscribe(state, conn, &p.session_id, p.since.as_deref()).await

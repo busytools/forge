@@ -165,6 +165,48 @@ pub async fn send_user_message(
     .await
 }
 
+/// Wire-shape parameters for `session.send_user_message_blocks`. Used
+/// for multi-modal turns (text + image content); plain text turns
+/// should use `session.send_user_message` instead.
+#[derive(Debug, Clone, Deserialize)]
+pub struct SendUserMessageBlocksParams {
+    /// Session id minted by `session.spawn`.
+    pub session_id: SessionId,
+    /// CLI-shaped content block array. Each element is
+    /// `{"type":"text","text":"..."}` or
+    /// `{"type":"image","source":{"type":"base64","media_type":"...","data":"..."}}`.
+    pub content: Vec<serde_json::Value>,
+}
+
+/// `session.send_user_message_blocks` — forward a multi-modal user
+/// turn (text + image blocks) to claude. The cap on payload size is
+/// applied to the serialised JSON length of `content`.
+///
+/// # Errors
+///
+/// `SessionNotFound` if the id is unknown; `Sdk` for transport errors;
+/// `InvalidParams` if the serialised content exceeds the internal
+/// 1 MiB cap or fails to encode.
+pub async fn send_user_message_blocks(
+    state: &DaemonState,
+    session_id: &SessionId,
+    content: Vec<serde_json::Value>,
+) -> Result<(), Error> {
+    let serialised_len = serde_json::to_string(&content)
+        .map_err(|e| Error::InvalidParams(format!("content: encode failed: {e}")))?
+        .len();
+    if serialised_len > MAX_PROMPT_BYTES {
+        return Err(Error::InvalidParams(format!(
+            "content: exceeds {MAX_PROMPT_BYTES} bytes (got {serialised_len})"
+        )));
+    }
+    dispatch_command(state, session_id, |reply| Command::SendUserMessageBlocks {
+        content,
+        reply,
+    })
+    .await
+}
+
 /// Result of `session.subscribe`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[non_exhaustive]
