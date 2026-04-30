@@ -24,9 +24,10 @@ use serde_json::Value;
 
 use crate::agent::bridge::InboundEvent;
 use crate::agent::types::{
-    AccountInfo, ContentBlock as TuiContentBlock, CurrentModel, PermissionDisplay,
-    PermissionOption, PermissionRequest, QuestionOption, QuestionPrompt, QuestionRequest,
-    SessionUpdate, ToolCall,
+    AccountInfo, ContentBlock as TuiContentBlock, CurrentModel, McpServerConnectionStatus,
+    McpServerInfo, McpServerStatus, McpServerStatusConfig, McpTool, McpToolAnnotations,
+    PermissionDisplay, PermissionOption, PermissionRequest, QuestionOption, QuestionPrompt,
+    QuestionRequest, SessionUpdate, ToolCall,
 };
 use crate::agent::wire::{BridgeEvent, EventEnvelope};
 
@@ -513,6 +514,108 @@ pub fn decode_context_usage(
     })
 }
 
+/// `mcp.status` response -> `BridgeEvent::McpSnapshot`. The daemon
+/// emits the SDK's `McpStatusResponse` which uses `rename_all =
+/// "camelCase"` (`mcpServers`, `serverInfo`, `readOnly`, `openWorld`).
+/// TUI's matching types are `snake_case` with subtly different nested
+/// shapes, so this function translates field-by-field rather than
+/// going through a single `from_value`.
+#[must_use]
+pub fn decode_mcp_snapshot(
+    value: &Value,
+    session_id: &str,
+    request_id: Option<String>,
+) -> Option<EventEnvelope> {
+    let servers = value
+        .get("mcpServers")
+        .and_then(Value::as_array)
+        .map(|arr| arr.iter().filter_map(convert_mcp_server).collect())
+        .unwrap_or_default();
+    let error = value
+        .get("error")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    Some(EventEnvelope {
+        request_id,
+        event: BridgeEvent::McpSnapshot {
+            session_id: session_id.to_owned(),
+            servers,
+            error,
+        },
+    })
+}
+
+fn convert_mcp_server(value: &Value) -> Option<McpServerStatus> {
+    let name = value.get("name")?.as_str()?.to_owned();
+    let status = serde_json::from_value::<McpServerConnectionStatus>(
+        value.get("status").cloned().unwrap_or(Value::Null),
+    )
+    .ok()?;
+    let server_info = value.get("serverInfo").and_then(convert_mcp_server_info);
+    let error = value
+        .get("error")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    // SDK's `config` is `Option<Value>` — pass through if it deserializes
+    // to TUI's typed `McpServerStatusConfig`, otherwise drop (the
+    // server entry stays usable; the UI just can't render the config
+    // detail).
+    let config = value
+        .get("config")
+        .cloned()
+        .and_then(|c| serde_json::from_value::<McpServerStatusConfig>(c).ok());
+    let scope = value
+        .get("scope")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let tools = value
+        .get("tools")
+        .and_then(Value::as_array)
+        .map(|arr| arr.iter().filter_map(convert_mcp_tool).collect())
+        .unwrap_or_default();
+    Some(McpServerStatus {
+        name,
+        status,
+        server_info,
+        error,
+        config,
+        scope,
+        tools,
+    })
+}
+
+fn convert_mcp_server_info(value: &Value) -> Option<McpServerInfo> {
+    let name = value.get("name")?.as_str()?.to_owned();
+    let version = value
+        .get("version")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_owned();
+    Some(McpServerInfo { name, version })
+}
+
+fn convert_mcp_tool(value: &Value) -> Option<McpTool> {
+    let name = value.get("name")?.as_str()?.to_owned();
+    let description = value
+        .get("description")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let annotations = value.get("annotations").map(convert_mcp_annotations);
+    Some(McpTool {
+        name,
+        description,
+        annotations,
+    })
+}
+
+fn convert_mcp_annotations(value: &Value) -> McpToolAnnotations {
+    McpToolAnnotations {
+        read_only: value.get("readOnly").and_then(Value::as_bool),
+        destructive: value.get("destructive").and_then(Value::as_bool),
+        open_world: value.get("openWorld").and_then(Value::as_bool),
+    }
+}
+
 /// Clamp a 0..=100 floating-point percentage into a `u8`. Out-of-range
 /// values get clamped to the nearest endpoint; NaN flows to 0.
 fn clamp_percentage_to_u8(p: f64) -> u8 {
@@ -895,6 +998,73 @@ mod tests {
         assert_eq!(account.email.as_deref(), Some("user@example.com"));
         assert_eq!(account.organization.as_deref(), Some("acme"));
         assert_eq!(account.subscription_type.as_deref(), Some("team"));
+    }
+
+    #[test]
+    fn mcp_snapshot_translates_camelcase_to_tui_shape() {
+        let value = json!({
+            "mcpServers": [
+                {
+                    "name": "playwright",
+                    "status": "connected",
+                    "serverInfo": {"name": "playwright", "version": "1.0.0"},
+                    "scope": "user",
+                    "tools": [
+                        {
+                            "name": "browser_click",
+                            "description": "Click an element",
+                            "annotations": {"readOnly": false, "destructive": true},
+                        },
+                    ],
+                },
+                {
+                    "name": "context7",
+                    "status": "needs-auth",
+                    "error": "401 Unauthorized",
+                },
+            ],
+        });
+        let envelope =
+            decode_mcp_snapshot(&value, "sess_1", Some("req_1".into())).expect("envelope");
+        assert_eq!(envelope.request_id.as_deref(), Some("req_1"));
+        let BridgeEvent::McpSnapshot {
+            session_id,
+            servers,
+            error,
+        } = envelope.event
+        else {
+            panic!();
+        };
+        assert_eq!(session_id, "sess_1");
+        assert!(error.is_none());
+        assert_eq!(servers.len(), 2);
+        assert_eq!(servers[0].name, "playwright");
+        assert_eq!(servers[0].status, McpServerConnectionStatus::Connected);
+        let info = servers[0].server_info.as_ref().expect("server_info");
+        assert_eq!(info.name, "playwright");
+        assert_eq!(info.version, "1.0.0");
+        assert_eq!(servers[0].scope.as_deref(), Some("user"));
+        assert_eq!(servers[0].tools.len(), 1);
+        assert_eq!(servers[0].tools[0].name, "browser_click");
+        let annot = servers[0].tools[0].annotations.as_ref().expect("annot");
+        assert_eq!(annot.read_only, Some(false));
+        assert_eq!(annot.destructive, Some(true));
+        assert!(annot.open_world.is_none());
+
+        assert_eq!(servers[1].name, "context7");
+        assert_eq!(servers[1].status, McpServerConnectionStatus::NeedsAuth);
+        assert_eq!(servers[1].error.as_deref(), Some("401 Unauthorized"));
+        assert!(servers[1].server_info.is_none());
+    }
+
+    #[test]
+    fn mcp_snapshot_empty_servers() {
+        let value = json!({"mcpServers": []});
+        let envelope = decode_mcp_snapshot(&value, "sess_1", None).unwrap();
+        let BridgeEvent::McpSnapshot { servers, .. } = envelope.event else {
+            panic!();
+        };
+        assert!(servers.is_empty());
     }
 
     #[test]

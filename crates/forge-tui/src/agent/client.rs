@@ -28,7 +28,8 @@ use tokio::sync::mpsc;
 
 use crate::agent::bridge::{DaemonConnection, InboundEvent, resolve_daemon_url};
 use crate::agent::translate::{
-    ReverseLookup, decode_context_usage, decode_spawn_response, decode_status_snapshot, translate,
+    ReverseLookup, decode_context_usage, decode_mcp_snapshot, decode_spawn_response,
+    decode_status_snapshot, translate,
 };
 use crate::agent::wire::{BridgeCommand, CommandEnvelope, EventEnvelope};
 
@@ -551,8 +552,12 @@ async fn dispatch_command(
             Ok(())
         }
         C::GetMcpSnapshot { session_id } => {
-            conn.call("mcp.status", serde_json::json!({"session_id": session_id}))
+            let result = conn
+                .call("mcp.status", serde_json::json!({"session_id": session_id}))
                 .await?;
+            if let Some(envelope) = decode_mcp_snapshot(&result, &session_id, request_id) {
+                let _ = event_tx.send(envelope);
+            }
             Ok(())
         }
         C::McpReconnect {
