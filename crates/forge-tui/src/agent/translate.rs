@@ -24,8 +24,9 @@ use serde_json::Value;
 
 use crate::agent::bridge::InboundEvent;
 use crate::agent::types::{
-    ContentBlock as TuiContentBlock, PermissionDisplay, PermissionOption, PermissionRequest,
-    QuestionOption, QuestionPrompt, QuestionRequest, SessionUpdate, ToolCall,
+    AccountInfo, ContentBlock as TuiContentBlock, CurrentModel, PermissionDisplay,
+    PermissionOption, PermissionRequest, QuestionOption, QuestionPrompt, QuestionRequest,
+    SessionUpdate, ToolCall,
 };
 use crate::agent::wire::{BridgeEvent, EventEnvelope};
 
@@ -428,6 +429,119 @@ fn empty_question_prompt() -> QuestionPrompt {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Outbound-response decoders.
+//
+// These translate the JSON `result` value from a daemon RPC call into
+// the matching `BridgeEvent` for the TUI. They run inside the writer
+// loop after `conn.call(...)` returns; the writer threads the result
+// through `event_tx` the same way the reader does for notifications.
+// Functions are pure; tests drive them with synthesised JSON.
+// ---------------------------------------------------------------------------
+
+/// `session.spawn` response (`{session_id}`) -> `BridgeEvent::Connected`.
+/// `request_cwd` is the cwd from the original `BridgeCommand::NewSession`
+/// / `CreateSession` / `ResumeSession` (the response doesn't include it).
+/// `current_model` is left as a placeholder; the daemon will emit a
+/// `SessionUpdate::CurrentModelUpdate` once the CLI's `system/init`
+/// message arrives via `session.event`.
+#[must_use]
+pub fn decode_spawn_response(
+    value: &Value,
+    request_cwd: &str,
+    request_id: Option<String>,
+) -> Option<EventEnvelope> {
+    let session_id = value.get("session_id").and_then(Value::as_str)?.to_owned();
+    Some(EventEnvelope {
+        request_id,
+        event: BridgeEvent::Connected {
+            session_id,
+            cwd: request_cwd.to_owned(),
+            current_model: placeholder_current_model(),
+            available_models: Vec::new(),
+            mode: None,
+            history_updates: None,
+        },
+    })
+}
+
+/// `session.status_snapshot` response -> `BridgeEvent::StatusSnapshot`.
+/// The daemon's `AccountSnapshot` is wire-compatible with TUI's
+/// `AccountInfo` (`snake_case`, all-Option fields), so direct
+/// deserialisation is sufficient.
+#[must_use]
+pub fn decode_status_snapshot(
+    value: &Value,
+    session_id: &str,
+    request_id: Option<String>,
+) -> Option<EventEnvelope> {
+    let account: AccountInfo = match serde_json::from_value(value.clone()) {
+        Ok(a) => a,
+        Err(err) => {
+            tracing::warn!(error = %err, "decode_status_snapshot: deserialize failed");
+            return None;
+        }
+    };
+    Some(EventEnvelope {
+        request_id,
+        event: BridgeEvent::StatusSnapshot {
+            session_id: session_id.to_owned(),
+            account,
+        },
+    })
+}
+
+/// `context.get` response -> `BridgeEvent::ContextUsage`. Only the
+/// `percentage` field flows to the TUI; the rest of `ContextUsageResponse`
+/// is daemon-internal detail.
+#[must_use]
+pub fn decode_context_usage(
+    value: &Value,
+    session_id: &str,
+    request_id: Option<String>,
+) -> Option<EventEnvelope> {
+    let percentage = value
+        .get("percentage")
+        .and_then(Value::as_f64)
+        .map(clamp_percentage_to_u8);
+    Some(EventEnvelope {
+        request_id,
+        event: BridgeEvent::ContextUsage {
+            session_id: session_id.to_owned(),
+            percentage,
+        },
+    })
+}
+
+/// Clamp a 0..=100 floating-point percentage into a `u8`. Out-of-range
+/// values get clamped to the nearest endpoint; NaN flows to 0.
+fn clamp_percentage_to_u8(p: f64) -> u8 {
+    if p.is_nan() {
+        return 0;
+    }
+    let clamped = p.clamp(0.0, 100.0).round();
+    // Safe: clamped is in [0.0, 100.0] post-clamp, so the cast is total.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let n = clamped as u8;
+    n
+}
+
+fn placeholder_current_model() -> CurrentModel {
+    CurrentModel {
+        requested_id: None,
+        resolved_id: String::new(),
+        display_name_short: String::new(),
+        display_name_long: String::new(),
+        catalog_id: None,
+        supports_effort: false,
+        supported_effort_levels: Vec::new(),
+        supports_fast_mode: None,
+        supports_auto_mode: None,
+        supports_adaptive_thinking: None,
+        is_authoritative: false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -729,6 +843,89 @@ mod tests {
             panic!();
         };
         assert_eq!(session_id, "sess_1");
+    }
+
+    #[test]
+    fn spawn_response_emits_connected_with_request_cwd() {
+        let value = json!({"session_id": "sess_99"});
+        let envelope =
+            decode_spawn_response(&value, "/tmp/proj", Some("req_1".into())).expect("envelope");
+        assert_eq!(envelope.request_id.as_deref(), Some("req_1"));
+        let BridgeEvent::Connected {
+            session_id,
+            cwd,
+            current_model,
+            available_models,
+            mode,
+            ..
+        } = envelope.event
+        else {
+            panic!();
+        };
+        assert_eq!(session_id, "sess_99");
+        assert_eq!(cwd, "/tmp/proj");
+        assert!(current_model.resolved_id.is_empty());
+        assert!(available_models.is_empty());
+        assert!(mode.is_none());
+    }
+
+    #[test]
+    fn spawn_response_missing_session_id_drops() {
+        let value = json!({});
+        assert!(decode_spawn_response(&value, "/tmp", None).is_none());
+    }
+
+    #[test]
+    fn status_snapshot_decodes_account_info() {
+        let value = json!({
+            "email": "user@example.com",
+            "organization": "acme",
+            "subscription_type": "team",
+            "token_source": "oauth",
+        });
+        let envelope = decode_status_snapshot(&value, "sess_1", None).expect("envelope");
+        let BridgeEvent::StatusSnapshot {
+            session_id,
+            account,
+        } = envelope.event
+        else {
+            panic!();
+        };
+        assert_eq!(session_id, "sess_1");
+        assert_eq!(account.email.as_deref(), Some("user@example.com"));
+        assert_eq!(account.organization.as_deref(), Some("acme"));
+        assert_eq!(account.subscription_type.as_deref(), Some("team"));
+    }
+
+    #[test]
+    fn context_usage_extracts_percentage_and_clamps() {
+        let value = json!({"percentage": 42.7, "total_tokens": 1000});
+        let envelope = decode_context_usage(&value, "sess_1", None).expect("envelope");
+        let BridgeEvent::ContextUsage {
+            session_id,
+            percentage,
+        } = envelope.event
+        else {
+            panic!();
+        };
+        assert_eq!(session_id, "sess_1");
+        assert_eq!(percentage, Some(43));
+
+        // Out-of-range clamps to 100.
+        let value = json!({"percentage": 150.0});
+        let envelope = decode_context_usage(&value, "sess_1", None).unwrap();
+        let BridgeEvent::ContextUsage { percentage, .. } = envelope.event else {
+            panic!();
+        };
+        assert_eq!(percentage, Some(100));
+
+        // Missing percentage -> None (UI shows "—").
+        let value = json!({});
+        let envelope = decode_context_usage(&value, "sess_1", None).unwrap();
+        let BridgeEvent::ContextUsage { percentage, .. } = envelope.event else {
+            panic!();
+        };
+        assert!(percentage.is_none());
     }
 
     #[test]
