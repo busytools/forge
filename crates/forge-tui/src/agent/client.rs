@@ -94,10 +94,10 @@ async fn reader_loop(
     reverse_lookup: ReverseLookup,
 ) {
     while let Some(event) = rx.recv().await {
-        if let Some(envelope) = translate(event, &reverse_lookup)
-            && event_tx.send(envelope).is_err()
-        {
-            break;
+        for envelope in translate(event, &reverse_lookup) {
+            if event_tx.send(envelope).is_err() {
+                return;
+            }
         }
     }
 }

@@ -939,6 +939,7 @@ dependencies = [
  "clap",
  "crossterm",
  "forge-daemon",
+ "forge-sdk",
  "futures-util",
  "ignore",
  "insta",

@@ -17,6 +17,7 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow.workspace = true
+forge-sdk = { path = "../forge-sdk", version = "=0.1.64" }
 tokio = { workspace = true }
 tokio-tungstenite.workspace = true
 tokio-stream.workspace = true
