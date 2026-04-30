@@ -1,4 +1,5 @@
 pub mod dialog;
+pub mod focus;
 pub mod plugins;
 pub mod state;
 
