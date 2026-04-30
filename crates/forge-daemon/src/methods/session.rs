@@ -513,6 +513,35 @@ pub async fn status_snapshot(
     dispatch_command(state, session_id, |reply| Command::StatusSnapshot { reply }).await
 }
 
+/// Result shape for `session.generate_session_title`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct GenerateSessionTitleResult {
+    /// CLI-generated short title.
+    pub title: String,
+}
+
+/// `session.generate_session_title` — ask the CLI to generate a short
+/// title for the session from `description`. Wire-level
+/// `control_request` subtype: `generate_session_title`.
+///
+/// # Errors
+///
+/// `SessionNotFound` if the id is unknown; `Sdk` for transport errors
+/// or unexpected response shape.
+pub async fn generate_session_title(
+    state: &DaemonState,
+    session_id: &SessionId,
+    description: String,
+) -> Result<GenerateSessionTitleResult, Error> {
+    let title = dispatch_command(state, session_id, |reply| Command::GenerateSessionTitle {
+        description,
+        reply,
+    })
+    .await?;
+    Ok(GenerateSessionTitleResult { title })
+}
+
 /// `session.rewind_files` — ask the CLI to revert file edits since the
 /// supplied user message.
 ///

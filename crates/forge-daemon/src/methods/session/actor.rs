@@ -185,6 +185,44 @@ pub(crate) fn spawn_session_actor(
                                 .unwrap_or_default();
                             let _ = reply.send(Ok(account));
                         }
+                        Command::GenerateSessionTitle { description, reply } => {
+                            let r = client
+                                .generate_session_title(&description)
+                                .await
+                                .map_err(Error::Sdk);
+                            let _ = reply.send(r);
+                        }
+                        Command::PluginsReload { reply } => {
+                            let r = client.reload_plugins().await.map_err(Error::Sdk);
+                            let _ = reply.send(r);
+                        }
+                        Command::McpSetServers { servers, reply } => {
+                            let r = client.mcp_set_servers(servers).await.map_err(Error::Sdk);
+                            let _ = reply.send(r);
+                        }
+                        Command::McpAuthenticate { server_name, reply } => {
+                            let r = client
+                                .mcp_authenticate(&server_name)
+                                .await
+                                .map_err(Error::Sdk);
+                            let _ = reply.send(r);
+                        }
+                        Command::McpClearAuth { server_name, reply } => {
+                            let r =
+                                client.mcp_clear_auth(&server_name).await.map_err(Error::Sdk);
+                            let _ = reply.send(r);
+                        }
+                        Command::McpOauthCallback {
+                            server_name,
+                            callback_url,
+                            reply,
+                        } => {
+                            let r = client
+                                .mcp_oauth_callback_url(&server_name, &callback_url)
+                                .await
+                                .map_err(Error::Sdk);
+                            let _ = reply.send(r);
+                        }
                         Command::SlashList { reply } => {
                             let commands = client
                                 .initial_session_data()

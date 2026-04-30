@@ -174,6 +174,52 @@ pub enum Command {
         /// Reply channel.
         reply: oneshot::Sender<Result<crate::methods::session::AccountSnapshot, Error>>,
     },
+    /// `session.generate_session_title` — ask the CLI to generate a
+    /// short title for the session from a description string.
+    GenerateSessionTitle {
+        /// User-provided description seed.
+        description: String,
+        /// Reply channel: the CLI-generated title.
+        reply: oneshot::Sender<Result<String, Error>>,
+    },
+    /// `plugins.reload` — ask the CLI to refresh the session's plugin
+    /// inventory (slash commands, agents, MCP servers).
+    PluginsReload {
+        /// Reply channel: raw JSON the CLI returned, forwarded
+        /// verbatim to the caller.
+        reply: oneshot::Sender<Result<serde_json::Value, Error>>,
+    },
+    /// `mcp.set_servers` — replace the active MCP server set.
+    McpSetServers {
+        /// Server map (name → config) as raw JSON. The CLI parses it.
+        servers: serde_json::Value,
+        /// Reply channel.
+        reply: oneshot::Sender<Result<(), Error>>,
+    },
+    /// `mcp.authenticate` — kick off OAuth for an MCP server.
+    McpAuthenticate {
+        /// Target server name.
+        server_name: String,
+        /// Reply channel: raw CLI response (URL or status object).
+        reply: oneshot::Sender<Result<serde_json::Value, Error>>,
+    },
+    /// `mcp.clear_auth` — drop stored OAuth credentials for a server.
+    McpClearAuth {
+        /// Target server name.
+        server_name: String,
+        /// Reply channel.
+        reply: oneshot::Sender<Result<(), Error>>,
+    },
+    /// `mcp.oauth_callback` — forward the OAuth callback URL to
+    /// complete authentication. CLI subtype: `mcp_oauth_callback_url`.
+    McpOauthCallback {
+        /// Target server name.
+        server_name: String,
+        /// OAuth callback URL the user was redirected to.
+        callback_url: String,
+        /// Reply channel.
+        reply: oneshot::Sender<Result<(), Error>>,
+    },
 }
 
 /// Per-session state visible to dispatch handlers + the broadcast helper.

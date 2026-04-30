@@ -474,6 +474,49 @@ async fn dispatch(req: &Request, conn: &Connection, state: &DaemonState) -> Resp
             })
             .await
         }
+        "mcp.set_servers" => {
+            typed_call(req, |p: McpSetServersParams| async move {
+                methods::mcp::set_servers(state, &p.session_id, p.servers).await
+            })
+            .await
+        }
+        "mcp.authenticate" => {
+            typed_call(req, |p: McpServerNameParams| async move {
+                methods::mcp::authenticate(state, &p.session_id, &p.server_name).await
+            })
+            .await
+        }
+        "mcp.clear_auth" => {
+            typed_call(req, |p: McpServerNameParams| async move {
+                methods::mcp::clear_auth(state, &p.session_id, &p.server_name).await
+            })
+            .await
+        }
+        "mcp.oauth_callback" => {
+            typed_call(req, |p: McpOauthCallbackParams| async move {
+                methods::mcp::oauth_callback(
+                    state,
+                    &p.session_id,
+                    &p.server_name,
+                    &p.callback_url,
+                )
+                .await
+            })
+            .await
+        }
+        "plugins.reload" => {
+            typed_call(req, |p: SessionIdOnlyParams| async move {
+                methods::plugins::reload(state, &p.session_id).await
+            })
+            .await
+        }
+        "session.generate_session_title" => {
+            typed_call(req, |p: GenerateSessionTitleParams| async move {
+                methods::session::generate_session_title(state, &p.session_id, p.description)
+                    .await
+            })
+            .await
+        }
         // ---- context.* -----------------------------------------------------
         "context.get" => {
             typed_call(req, |p: SessionIdOnlyParams| async move {
@@ -661,6 +704,31 @@ struct McpToggleParams {
     session_id: crate::session_state::SessionId,
     server_name: String,
     enabled: bool,
+}
+
+#[derive(serde::Deserialize)]
+struct McpSetServersParams {
+    session_id: crate::session_state::SessionId,
+    servers: serde_json::Value,
+}
+
+#[derive(serde::Deserialize)]
+struct McpServerNameParams {
+    session_id: crate::session_state::SessionId,
+    server_name: String,
+}
+
+#[derive(serde::Deserialize)]
+struct McpOauthCallbackParams {
+    session_id: crate::session_state::SessionId,
+    server_name: String,
+    callback_url: String,
+}
+
+#[derive(serde::Deserialize)]
+struct GenerateSessionTitleParams {
+    session_id: crate::session_state::SessionId,
+    description: String,
 }
 
 #[derive(serde::Deserialize)]
