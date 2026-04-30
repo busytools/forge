@@ -165,6 +165,26 @@ pub(crate) fn spawn_session_actor(
                         Command::CurrentModel { reply } => {
                             let _ = reply.send(Ok(current_model.clone()));
                         }
+                        Command::StatusSnapshot { reply } => {
+                            let account = client
+                                .initial_session_data()
+                                .and_then(|d| d.get("account"))
+                                .map(|v| {
+                                    let s = |k: &str| {
+                                        v.get(k).and_then(|x| x.as_str()).map(str::to_owned)
+                                    };
+                                    crate::methods::session::AccountSnapshot {
+                                        email: s("email"),
+                                        organization: s("organization"),
+                                        subscription_type: s("subscriptionType"),
+                                        token_source: s("tokenSource"),
+                                        api_key_source: s("apiKeySource"),
+                                        api_provider: s("apiProvider"),
+                                    }
+                                })
+                                .unwrap_or_default();
+                            let _ = reply.send(Ok(account));
+                        }
                         Command::SlashList { reply } => {
                             let commands = client
                                 .initial_session_data()

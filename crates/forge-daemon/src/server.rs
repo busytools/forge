@@ -487,6 +487,12 @@ async fn dispatch(req: &Request, conn: &Connection, state: &DaemonState) -> Resp
             })
             .await
         }
+        "session.status_snapshot" => {
+            typed_call(req, |p: SessionIdOnlyParams| async move {
+                methods::session::status_snapshot(state, &p.session_id).await
+            })
+            .await
+        }
         "slash.list" => {
             typed_call(req, |p: SessionIdOnlyParams| async move {
                 methods::session::slash_list(state, &p.session_id).await

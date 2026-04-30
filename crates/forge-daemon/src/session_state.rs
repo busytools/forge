@@ -165,6 +165,15 @@ pub enum Command {
         /// Reply channel: list of `(name, description)` pairs.
         reply: oneshot::Sender<Result<Vec<(String, String)>, Error>>,
     },
+    /// `session.status_snapshot` — return account info captured from
+    /// the CLI's `system/init` payload. The CLI exposes `account` in
+    /// init data (email, organization, subscription, oauth/api source,
+    /// api provider). No `control_request` is issued; this is a pure
+    /// init-data read. Optional fields stay `None` when absent.
+    StatusSnapshot {
+        /// Reply channel.
+        reply: oneshot::Sender<Result<crate::methods::session::AccountSnapshot, Error>>,
+    },
 }
 
 /// Per-session state visible to dispatch handlers + the broadcast helper.

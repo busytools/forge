@@ -471,6 +471,48 @@ pub async fn slash_list(
     Ok(SlashListResult { commands })
 }
 
+/// Account info captured from the CLI's `system/init` payload. CLI
+/// emits `camelCase` fields; daemon RPC normalises to `snake_case`
+/// for forge-tui's `AccountInfo` struct. Every field is optional —
+/// the CLI may omit any of them depending on auth source.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct AccountSnapshot {
+    /// Logged-in user email when first-party OAuth is active.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
+    /// Organization the account belongs to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub organization: Option<String>,
+    /// Subscription tier label (e.g. `"team"`, `"enterprise"`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subscription_type: Option<String>,
+    /// Where the auth token came from (`"oauth"`, `"api_key"`, etc.).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_source: Option<String>,
+    /// Where the API key was loaded from (`"environment"`, `"keychain"`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key_source: Option<String>,
+    /// Active backend: `"firstParty" | "bedrock" | "vertex" | "foundry" | "anthropicAws" | "mantle"`.
+    /// Anthropic OAuth fields only populate when this is `"firstParty"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_provider: Option<String>,
+}
+
+/// `session.status_snapshot` — return the account info the CLI
+/// published in its `system/init` payload. Pure init-data read; no
+/// `control_request` is issued.
+///
+/// # Errors
+///
+/// `SessionNotFound` if the id is unknown.
+pub async fn status_snapshot(
+    state: &DaemonState,
+    session_id: &SessionId,
+) -> Result<AccountSnapshot, Error> {
+    dispatch_command(state, session_id, |reply| Command::StatusSnapshot { reply }).await
+}
+
 /// `session.rewind_files` — ask the CLI to revert file edits since the
 /// supplied user message.
 ///
