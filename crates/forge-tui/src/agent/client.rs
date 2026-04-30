@@ -27,7 +27,9 @@ use serde_json::Value;
 use tokio::sync::mpsc;
 
 use crate::agent::bridge::{DaemonConnection, InboundEvent, resolve_daemon_url};
-use crate::agent::translate::{ReverseLookup, translate};
+use crate::agent::translate::{
+    ReverseLookup, decode_context_usage, decode_spawn_response, decode_status_snapshot, translate,
+};
 use crate::agent::wire::{BridgeCommand, CommandEnvelope, EventEnvelope};
 
 /// Forge-daemon-backed bridge client. Owns the connection + the
@@ -70,6 +72,7 @@ impl BridgeClient {
             Arc::clone(&conn),
             command_rx,
             Arc::clone(&reverse_lookup),
+            event_tx.clone(),
         ));
         tokio::spawn(reader_loop(
             daemon_events_rx,
@@ -335,14 +338,26 @@ impl AgentConnection {
 
 /// Outbound translator: drains the TUI's `command_tx` channel and
 /// converts each `CommandEnvelope` into the matching daemon JSON-RPC
-/// call (or reverse-RPC reply).
+/// call (or reverse-RPC reply). When a call's response carries data
+/// the TUI needs as a `BridgeEvent` (e.g. `session.spawn` -> Connected),
+/// the dispatcher synthesises the envelope and sends it via `event_tx`.
 async fn writer_loop(
     conn: Arc<DaemonConnection>,
     mut rx: mpsc::UnboundedReceiver<CommandEnvelope>,
     reverse_lookup: ReverseLookup,
+    event_tx: mpsc::UnboundedSender<EventEnvelope>,
 ) {
     while let Some(envelope) = rx.recv().await {
-        if let Err(err) = dispatch_command(&conn, &reverse_lookup, envelope.command).await {
+        let request_id = envelope.request_id;
+        if let Err(err) = dispatch_command(
+            &conn,
+            &reverse_lookup,
+            &event_tx,
+            request_id,
+            envelope.command,
+        )
+        .await
+        {
             tracing::warn!(error = %err, "agent writer: dispatch failed");
         }
     }
@@ -351,14 +366,28 @@ async fn writer_loop(
 async fn dispatch_command(
     conn: &DaemonConnection,
     reverse_lookup: &ReverseLookup,
+    event_tx: &mpsc::UnboundedSender<EventEnvelope>,
+    request_id: Option<String>,
     command: BridgeCommand,
 ) -> Result<()> {
     use BridgeCommand as C;
     match command {
         C::Initialize { .. } => Ok(()),
-        C::CreateSession { .. } | C::NewSession { .. } | C::ResumeSession { .. } => Err(
-            anyhow::anyhow!("session spawn: not yet wired in adapter (Round 4 dependency)"),
-        ),
+        C::CreateSession {
+            cwd,
+            resume,
+            launch_settings: _,
+            metadata: _,
+        } => spawn_session(conn, event_tx, request_id, &cwd, resume.as_deref()).await,
+        C::NewSession {
+            cwd,
+            launch_settings: _,
+        } => spawn_session(conn, event_tx, request_id, &cwd, None).await,
+        C::ResumeSession {
+            session_id,
+            launch_settings: _,
+            metadata: _,
+        } => spawn_session(conn, event_tx, request_id, "", Some(&session_id)).await,
         C::Prompt { session_id, chunks } => {
             if chunks.iter().all(|c| c.kind == "text") {
                 let prompt: String = chunks
@@ -493,16 +522,24 @@ async fn dispatch_command(
             Ok(())
         }
         C::GetStatusSnapshot { session_id } => {
-            conn.call(
-                "session.status_snapshot",
-                serde_json::json!({"session_id": session_id}),
-            )
-            .await?;
+            let result = conn
+                .call(
+                    "session.status_snapshot",
+                    serde_json::json!({"session_id": session_id}),
+                )
+                .await?;
+            if let Some(envelope) = decode_status_snapshot(&result, &session_id, request_id) {
+                let _ = event_tx.send(envelope);
+            }
             Ok(())
         }
         C::GetContextUsage { session_id } => {
-            conn.call("context.get", serde_json::json!({"session_id": session_id}))
+            let result = conn
+                .call("context.get", serde_json::json!({"session_id": session_id}))
                 .await?;
+            if let Some(envelope) = decode_context_usage(&result, &session_id, request_id) {
+                let _ = event_tx.send(envelope);
+            }
             Ok(())
         }
         C::ReloadPlugins { session_id } => {
@@ -599,4 +636,35 @@ async fn dispatch_command(
         }
         C::Shutdown => Ok(()),
     }
+}
+
+/// Issue `session.spawn` with the given cwd / resume id, await the
+/// response, and emit `BridgeEvent::Connected` carrying the
+/// daemon-minted session id. The placeholder model fields in the
+/// emitted Connected get superseded by `SessionUpdate::CurrentModelUpdate`
+/// once the CLI's `system/init` arrives via `session.event`.
+async fn spawn_session(
+    conn: &DaemonConnection,
+    event_tx: &mpsc::UnboundedSender<EventEnvelope>,
+    request_id: Option<String>,
+    cwd: &str,
+    resume: Option<&str>,
+) -> Result<()> {
+    let mut options = serde_json::Map::new();
+    if !cwd.is_empty() {
+        options.insert("cwd".into(), Value::String(cwd.to_owned()));
+    }
+    if let Some(id) = resume {
+        options.insert("resume".into(), Value::String(id.to_owned()));
+    }
+    let result = conn
+        .call(
+            "session.spawn",
+            serde_json::json!({"options": Value::Object(options)}),
+        )
+        .await?;
+    if let Some(envelope) = decode_spawn_response(&result, cwd, request_id) {
+        let _ = event_tx.send(envelope);
+    }
+    Ok(())
 }
