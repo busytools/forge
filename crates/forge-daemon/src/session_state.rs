@@ -220,6 +220,17 @@ pub enum Command {
         /// Reply channel.
         reply: oneshot::Sender<Result<(), Error>>,
     },
+    /// `session.send_user_message_blocks` — send a multi-modal user
+    /// turn (text + image content blocks) instead of a plain string
+    /// prompt. Used when the user attached images.
+    SendUserMessageBlocks {
+        /// CLI-shaped content block array — each element is
+        /// `{"type":"text","text":"..."}` or
+        /// `{"type":"image","source":{...}}`. Forwarded verbatim.
+        content: Vec<serde_json::Value>,
+        /// Reply channel.
+        reply: oneshot::Sender<Result<(), Error>>,
+    },
 }
 
 /// Per-session state visible to dispatch handlers + the broadcast helper.

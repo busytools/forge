@@ -223,6 +223,13 @@ pub(crate) fn spawn_session_actor(
                                 .map_err(Error::Sdk);
                             let _ = reply.send(r);
                         }
+                        Command::SendUserMessageBlocks { content, reply } => {
+                            let r = client
+                                .send_user_message_with_content(&content)
+                                .await
+                                .map_err(Error::Sdk);
+                            let _ = reply.send(r);
+                        }
                         Command::SlashList { reply } => {
                             let commands = client
                                 .initial_session_data()

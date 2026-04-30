@@ -173,3 +173,32 @@ pub fn encode_user_prompt(prompt: &str, session_id: &str) -> Result<String, Erro
     line.push('\n');
     Ok(line)
 }
+
+/// Encode a user-turn line with structured content blocks (text +
+/// image) as the message body. Use this when the prompt includes
+/// images or other non-text blocks; for plain text use
+/// [`encode_user_prompt`] which emits the simpler bare-string form.
+///
+/// `content` is forwarded verbatim as the message body's `content`
+/// field — callers must build CLI-compatible block objects (e.g.
+/// `{"type":"text","text":"..."}`,
+/// `{"type":"image","source":{...}}`).
+///
+/// # Errors
+///
+/// [`Error::MessageParse`] wrapping a JSON serialization failure.
+pub fn encode_user_prompt_with_content(
+    content: &[Value],
+    session_id: &str,
+) -> Result<String, Error> {
+    let payload = json!({
+        "type": "user",
+        "message": {"role": "user", "content": content},
+        "session_id": session_id,
+        "parent_tool_use_id": null,
+    });
+    let mut line =
+        serde_json::to_string(&payload).map_err(|e| Error::encode("user prompt blocks", e))?;
+    line.push('\n');
+    Ok(line)
+}

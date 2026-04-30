@@ -415,6 +415,29 @@ impl Client {
         self.inner.writer.write_line(&line).await
     }
 
+    /// Send a user prompt with structured content blocks (text +
+    /// image, etc.) as a stream-json user turn. Use this when the
+    /// prompt is multi-modal; for plain text use
+    /// [`send_user_message`](Self::send_user_message).
+    ///
+    /// `content` is forwarded verbatim as the message body's
+    /// `content` field — callers must build CLI-compatible block
+    /// objects (e.g. `{"type":"text","text":"..."}`,
+    /// `{"type":"image","source":{"type":"base64","media_type":"image/png","data":"..."}}`).
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Io`] on pipe write failure;
+    /// [`Error::MessageParse`] on JSON serialization failure.
+    pub async fn send_user_message_with_content(
+        &self,
+        content: &[serde_json::Value],
+    ) -> Result<(), Error> {
+        let session_id = self.session_id();
+        let line = crate::transport::codec::encode_user_prompt_with_content(content, &session_id)?;
+        self.inner.writer.write_line(&line).await
+    }
+
     /// Read the next stream-json **regular** message from the subprocess.
     ///
     /// Control requests are dispatched transparently inside the reader
