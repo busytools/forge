@@ -2,17 +2,16 @@
 //! forge-daemon's JSON-RPC. Replaces upstream's Node.js-subprocess
 //! `BridgeClient` with a WebSocket client to forge-daemon.
 //!
-//! This module ships in two stages:
+//! Outbound: every `BridgeCommand` variant maps to a daemon JSON-RPC
+//! method call (or reverse-RPC reply) inside the writer task.
 //!
-//! 1. **Outbound side (this commit):** every `BridgeCommand` variant
-//!    maps to a daemon JSON-RPC method call (or reverse-RPC reply)
-//!    inside the writer task.
-//! 2. **Inbound side (Round 4):** translating daemon notifications +
-//!    reverse-RPC requests into upstream's `BridgeEvent` shape needs
-//!    upstream's `ToolCall` / `QuestionPrompt` builders, which arrive
-//!    in Round 4 with the verbatim UI lift. Until then the reader
-//!    task surfaces notifications as raw JSON via the
-//!    `daemon_events_rx` accessor on `BridgeClient`.
+//! Inbound: a reader task drains `DaemonConnection`'s raw inbound
+//! channel, runs each `InboundEvent` through
+//! [`crate::agent::translate::translate`], and ships any synthesised
+//! `EventEnvelope` to the TUI via `event_rx`. Reverse-RPC requests
+//! (`permission.request`, `session.question_request`) populate the
+//! shared `reverse_lookup` so the writer's matching response branch
+//! can find the original JSON-RPC id.
 
 #![allow(
     clippy::missing_errors_doc,
@@ -21,39 +20,30 @@
     clippy::match_same_arms
 )]
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::Result;
-use parking_lot::Mutex;
 use serde_json::Value;
 use tokio::sync::mpsc;
 
 use crate::agent::bridge::{DaemonConnection, InboundEvent, resolve_daemon_url};
-use crate::agent::wire::{BridgeCommand, CommandEnvelope};
-
-/// Per-session state the adapter tracks for translating reverse-RPC
-/// replies back to forge-daemon. Upstream's `BridgeCommand` identifies
-/// permission/question/elicitation responses by `tool_call_id` /
-/// `tool_use_id`; forge-daemon expects the JSON-RPC `id` of the
-/// original Request. This map lets the writer recover the right id.
-type ReverseLookup = Arc<Mutex<HashMap<String, Value>>>;
+use crate::agent::translate::{ReverseLookup, translate};
+use crate::agent::wire::{BridgeCommand, CommandEnvelope, EventEnvelope};
 
 /// Forge-daemon-backed bridge client. Owns the connection + the
-/// outbound translator task.
+/// reader and writer translator tasks.
 pub struct BridgeClient {
     /// Outbound channel — `AgentConnection` pushes `CommandEnvelope`s
     /// here; the writer task drains and translates to JSON-RPC.
     pub command_tx: mpsc::UnboundedSender<CommandEnvelope>,
-    /// Inbound raw-JSON events. Round 4 wires this through to the
-    /// TUI's lifted event handler. Notification + reverse-RPC
-    /// requests carry their original method name and params shape.
-    pub daemon_events_rx: mpsc::UnboundedReceiver<InboundEvent>,
+    /// Inbound `EventEnvelope`s ready for the TUI's event handler.
+    /// The reader task fills this from translated daemon
+    /// notifications and reverse-RPC requests.
+    pub event_rx: mpsc::UnboundedReceiver<EventEnvelope>,
     /// Map keyed by `tool_call_id` / `tool_use_id` /
     /// `elicitation_request_id` → JSON-RPC request id of the
-    /// reverse-RPC. Round 4's reader populates this when surfacing a
-    /// permission/question/elicitation request to the UI; the
-    /// writer's `*Response` handler consumes it.
+    /// reverse-RPC. The reader populates it when surfacing a
+    /// request; the writer's `*Response` branch consumes it.
     pub reverse_lookup: ReverseLookup,
 }
 
@@ -70,21 +60,45 @@ impl BridgeClient {
     pub async fn connect_to(url: &str) -> Result<Self> {
         let (conn, daemon_events_rx) = DaemonConnection::connect(url).await?;
         let conn = Arc::new(conn);
-        let reverse_lookup: ReverseLookup = Arc::new(Mutex::new(HashMap::new()));
+        let reverse_lookup: ReverseLookup =
+            Arc::new(parking_lot::Mutex::new(std::collections::HashMap::new()));
 
         let (command_tx, command_rx) = mpsc::unbounded_channel::<CommandEnvelope>();
+        let (event_tx, event_rx) = mpsc::unbounded_channel::<EventEnvelope>();
 
         tokio::spawn(writer_loop(
             Arc::clone(&conn),
             command_rx,
             Arc::clone(&reverse_lookup),
         ));
+        tokio::spawn(reader_loop(
+            daemon_events_rx,
+            event_tx,
+            Arc::clone(&reverse_lookup),
+        ));
 
         Ok(Self {
             command_tx,
-            daemon_events_rx,
+            event_rx,
             reverse_lookup,
         })
+    }
+}
+
+/// Inbound translator: drains raw `InboundEvent`s from the daemon
+/// connection, runs each through [`translate`], and ships any
+/// synthesised `EventEnvelope` to the TUI.
+async fn reader_loop(
+    mut rx: mpsc::UnboundedReceiver<InboundEvent>,
+    event_tx: mpsc::UnboundedSender<EventEnvelope>,
+    reverse_lookup: ReverseLookup,
+) {
+    while let Some(event) = rx.recv().await {
+        if let Some(envelope) = translate(event, &reverse_lookup)
+            && event_tx.send(envelope).is_err()
+        {
+            break;
+        }
     }
 }
 
