@@ -240,10 +240,7 @@ impl Client {
     /// # Errors
     ///
     /// See the outbound control error cases.
-    pub async fn mcp_authenticate(
-        &self,
-        server_name: &str,
-    ) -> Result<serde_json::Value, Error> {
+    pub async fn mcp_authenticate(&self, server_name: &str) -> Result<serde_json::Value, Error> {
         self.send_control(
             "mcp_authenticate",
             serde_json::json!({"server_name": server_name}),

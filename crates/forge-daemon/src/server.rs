@@ -494,13 +494,8 @@ async fn dispatch(req: &Request, conn: &Connection, state: &DaemonState) -> Resp
         }
         "mcp.oauth_callback" => {
             typed_call(req, |p: McpOauthCallbackParams| async move {
-                methods::mcp::oauth_callback(
-                    state,
-                    &p.session_id,
-                    &p.server_name,
-                    &p.callback_url,
-                )
-                .await
+                methods::mcp::oauth_callback(state, &p.session_id, &p.server_name, &p.callback_url)
+                    .await
             })
             .await
         }
@@ -512,8 +507,7 @@ async fn dispatch(req: &Request, conn: &Connection, state: &DaemonState) -> Resp
         }
         "session.generate_session_title" => {
             typed_call(req, |p: GenerateSessionTitleParams| async move {
-                methods::session::generate_session_title(state, &p.session_id, p.description)
-                    .await
+                methods::session::generate_session_title(state, &p.session_id, p.description).await
             })
             .await
         }

@@ -22,7 +22,9 @@ async fn wire_capture_mcp_authenticate() {
     run_live_scenario("mcp_authenticate", opts, |client| async move {
         // Non-existent server: locks the error-path wire shape; avoids
         // committing real OAuth URLs / tokens to the baseline.
-        let _ = client.mcp_authenticate("forge-test-harness-nonexistent").await;
+        let _ = client
+            .mcp_authenticate("forge-test-harness-nonexistent")
+            .await;
         eprintln!("mcp_authenticate captured (error-path)");
 
         client
