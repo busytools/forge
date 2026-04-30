@@ -1,5 +1,5 @@
-// Copyright 2025 Simon Peter Rothgang
-// SPDX-License-Identifier: Apache-2.0
+// `dead_code` until the App that consumes this state lifts.
+#![allow(dead_code)]
 
 use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
 use std::collections::BTreeMap;
@@ -342,6 +342,8 @@ fn normalize_path(path: &Path) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
     use super::{BranchDisplayState, GitContextState, ResolvedRepo, WATCH_DEBOUNCE};
     use notify::{Event, EventKind};
     use std::fs;
