@@ -21,7 +21,9 @@ async fn wire_capture_mcp_clear_auth() {
     run_live_scenario("mcp_clear_auth", opts, |client| async move {
         // Use a clearly non-existent server name so the trace is
         // deterministic and free of real OAuth tokens.
-        let _ = client.mcp_clear_auth("forge-test-harness-nonexistent").await;
+        let _ = client
+            .mcp_clear_auth("forge-test-harness-nonexistent")
+            .await;
         eprintln!("mcp_clear_auth captured");
 
         client
