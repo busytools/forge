@@ -25,6 +25,11 @@ pub enum PromptKind {
         /// Hook kind in snake-case form (e.g. `"pre_tool_use"`).
         kind: String,
     },
+    /// `session.question_request` reverse-RPC. Sent when the CLI
+    /// invokes the `AskUserQuestion` tool — the daemon forwards the
+    /// questions to the primary client and folds the returned answers
+    /// back into the `can_use_tool` allow response.
+    Question,
 }
 
 impl PromptKind {
@@ -34,6 +39,7 @@ impl PromptKind {
         match self {
             Self::Permission => "permission.request".into(),
             Self::Hook { kind } => format!("hook.{kind}"),
+            Self::Question => "session.question_request".into(),
         }
     }
 }

@@ -50,7 +50,19 @@ impl ForgedPermissionBridge {
     /// Issue the reverse-RPC and decode the wire-shape response into a
     /// [`PermissionDecision`]. Falls back to a deny on transport failure
     /// (the SDK can't surface I/O errors out of the callback).
+    ///
+    /// When `tool_name == "AskUserQuestion"`, routes through the
+    /// question path instead — the CLI's `AskUserQuestion` tool is
+    /// implemented as a `can_use_tool` callback that returns
+    /// `behavior: "allow"` with the user's answers folded into
+    /// `updatedInput.answers`. The daemon forwards the questions to
+    /// the primary client via a `session.question_request` reverse-RPC
+    /// and folds the returned answers back into the original
+    /// `tool_input`.
     async fn issue_and_decode(&self, ctx: ToolPermissionContext) -> PermissionDecision {
+        if ctx.tool_name == "AskUserQuestion" {
+            return self.issue_and_decode_question(ctx).await;
+        }
         let params = serde_json::json!({
             "tool_name": ctx.tool_name,
             "tool_input": ctx.tool_input,
@@ -78,6 +90,43 @@ impl ForgedPermissionBridge {
         };
 
         decode_permission_response(&value)
+    }
+
+    /// `AskUserQuestion` branch of `issue_and_decode`. Issues a
+    /// `session.question_request` reverse-RPC carrying the questions
+    /// payload, awaits the user's answers from the primary client,
+    /// then synthesises a `PermissionDecision::allow_with_input` with
+    /// `{ questions: <original>, answers: <received> }`. The CLI's
+    /// `AskUserQuestion` tool reads `updatedInput.answers` to build
+    /// the `tool_result` the assistant sees.
+    async fn issue_and_decode_question(&self, ctx: ToolPermissionContext) -> PermissionDecision {
+        let questions = ctx
+            .tool_input
+            .get("questions")
+            .cloned()
+            .unwrap_or(Value::Array(Vec::new()));
+        let params = serde_json::json!({
+            "tool_use_id": ctx.tool_use_id,
+            "questions": questions,
+        });
+        let value = match crate::reverse_rpc::issue_to_primary(
+            &self.state,
+            &self.session_id,
+            "session.question_request",
+            params,
+            PromptKind::Question,
+            Duration::from_secs(HOOK_TIMEOUT_SECS),
+        )
+        .await
+        {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!(error = %e, "question bridge: issue_to_primary failed; denying");
+                return PermissionDecision::deny(format!("question bridge: {e}"));
+            }
+        };
+
+        decode_question_response(&value, &ctx.tool_input)
     }
 }
 
@@ -140,6 +189,52 @@ pub fn decode_permission_response(value: &Value) -> PermissionDecision {
             PermissionDecision::deny(format!("unknown decision: {other}"))
         }
     }
+}
+
+/// Decode the wire-shape response of a `session.question_request`
+/// reverse-RPC and fold the answers into the original `tool_input` to
+/// build a `PermissionDecision::allow_with_input`. The CLI's
+/// `AskUserQuestion` tool reads `updatedInput.answers` to construct
+/// the `tool_result` the assistant sees.
+///
+/// Recognises the same disconnect / error / session-closed sentinels
+/// as [`decode_permission_response`]. When the client returns a
+/// missing/malformed shape the CLI receives an empty-answers allow —
+/// matches the upstream bridge's graceful-degradation behaviour
+/// (`tool_result` reads `"User has answered your questions: ."`).
+#[must_use]
+pub fn decode_question_response(value: &Value, original_input: &Value) -> PermissionDecision {
+    if let Some(err) = value.get("_jsonrpc_error") {
+        let code = err.get("code").and_then(Value::as_i64).unwrap_or(-1);
+        let message = err.get("message").and_then(Value::as_str).unwrap_or("");
+        return PermissionDecision::deny(format!("client error {code}: {message}"));
+    }
+    if value.get("_client_disconnected").is_some() {
+        return PermissionDecision::deny(String::from(
+            "answering client disconnected before responding",
+        ));
+    }
+    if value.get("_session_closed").is_some() {
+        return PermissionDecision::deny(String::from("session closed before question answered"));
+    }
+
+    // Wire shape: `{ "outcome": "answered", "answers": {…} }` or
+    // `{ "outcome": "cancelled" }`. A `cancelled` outcome surfaces as
+    // an empty-answers allow so the CLI's `AskUserQuestion` tool
+    // returns the same "no answers" `tool_result` it would produce
+    // against the upstream bridge.
+    let answers = value
+        .get("answers")
+        .cloned()
+        .unwrap_or(Value::Object(serde_json::Map::new()));
+    let questions = original_input
+        .get("questions")
+        .cloned()
+        .unwrap_or(Value::Array(Vec::new()));
+    PermissionDecision::allow_with_input(serde_json::json!({
+        "questions": questions,
+        "answers": answers,
+    }))
 }
 
 impl CanUseToolCallback for ForgedPermissionBridge {
