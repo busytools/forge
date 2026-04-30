@@ -8,23 +8,24 @@
 //!
 //! Functions here are pure: they take `InboundEvent` (or its parts)
 //! plus side-channel state (the `reverse_lookup` map keyed by
-//! `tool_use_id` -> JSON-RPC request id) and return either an
-//! `EventEnvelope` ready to push to the TUI, or `None` for inbound
-//! events that don't map to a bridge event (yet) or that are
-//! unrelated.
+//! `tool_use_id` -> JSON-RPC request id) and return zero, one, or
+//! many `EventEnvelope`s. A single `session.event` notification (an
+//! SDK [`forge_sdk::Message`]) commonly fans out into several
+//! `SessionUpdate` envelopes — one per content block.
 
 #![allow(clippy::missing_errors_doc, clippy::module_name_repetitions)]
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use forge_sdk::{AssistantEnvelope, ContentBlock as SdkContentBlock, Message as SdkMessage};
 use parking_lot::Mutex;
 use serde_json::Value;
 
 use crate::agent::bridge::InboundEvent;
 use crate::agent::types::{
-    PermissionDisplay, PermissionOption, PermissionRequest, QuestionOption, QuestionPrompt,
-    QuestionRequest, ToolCall,
+    ContentBlock as TuiContentBlock, PermissionDisplay, PermissionOption, PermissionRequest,
+    QuestionOption, QuestionPrompt, QuestionRequest, SessionUpdate, ToolCall,
 };
 use crate::agent::wire::{BridgeEvent, EventEnvelope};
 
@@ -33,26 +34,32 @@ use crate::agent::wire::{BridgeEvent, EventEnvelope};
 /// `ElicitationResponse` branches consume this when sending replies.
 pub type ReverseLookup = Arc<Mutex<HashMap<String, Value>>>;
 
-/// Translate one inbound daemon event to a `BridgeEvent`. Returns
-/// `None` for unrecognised methods or malformed payloads (logged at
-/// warn-level inside the helper functions).
+/// Translate one inbound daemon event to zero, one, or many
+/// `BridgeEvent`s. An empty Vec means "ignore this event" — already
+/// logged at debug/warn-level inside helper functions.
 ///
 /// Side effect: may insert into `reverse_lookup` when the event is a
 /// reverse-RPC request whose response will need to be matched back to
 /// its JSON-RPC id.
-pub fn translate(event: InboundEvent, reverse_lookup: &ReverseLookup) -> Option<EventEnvelope> {
+pub fn translate(event: InboundEvent, reverse_lookup: &ReverseLookup) -> Vec<EventEnvelope> {
     match (event.id, event.method.as_str()) {
         (Some(rev_id), "permission.request") => {
             translate_permission_request(rev_id, &event.params, reverse_lookup)
+                .into_iter()
+                .collect()
         }
         (Some(rev_id), "session.question_request") => {
             translate_question_request(rev_id, &event.params, reverse_lookup)
+                .into_iter()
+                .collect()
         }
-        (_, "session.closed") => translate_session_closed(&event.params),
+        (_, "session.closed") => translate_session_closed(&event.params)
+            .into_iter()
+            .collect(),
         (None, "session.event") => translate_session_event(&event.params),
         (id, method) => {
             tracing::debug!(?id, %method, "translate: ignoring inbound event");
-            None
+            Vec::new()
         }
     }
 }
@@ -178,12 +185,105 @@ fn translate_session_closed(params: &Value) -> Option<EventEnvelope> {
     })
 }
 
-/// `session.event` notification: stub for now. Round 4 will translate
-/// the full SDK `Message` shape into `SessionUpdate`/`TurnComplete`/
-/// `TurnError`. For this commit we drop the event silently so the
-/// channel doesn't back up; the TUI lift will replace this body.
-fn translate_session_event(_params: &Value) -> Option<EventEnvelope> {
-    None
+/// `session.event` notification: decode the inner SDK `Message` and
+/// fan out into the corresponding `BridgeEvent` shape(s).
+///
+/// - `Assistant` -> one `SessionUpdate` per content block (text +
+///   thinking land as chunks; `tool_use` blocks become `ToolCall`s).
+/// - `Result` -> `TurnComplete` (or `TurnError` when `is_error`).
+/// - `User`, `System`, `TaskStarted/Progress/Notification`,
+///   `RateLimitEvent`, `StreamEvent`, `Error`, `Unknown` -> dropped
+///   for now; structured handling lands when the lifted UI starts
+///   consuming each variant.
+fn translate_session_event(params: &Value) -> Vec<EventEnvelope> {
+    let Some(session_id) = params
+        .get("session_id")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+    else {
+        tracing::warn!(?params, "session.event: missing session_id");
+        return Vec::new();
+    };
+    let Some(message_value) = params.get("message") else {
+        tracing::warn!("session.event: missing message field");
+        return Vec::new();
+    };
+    let message: SdkMessage = match serde_json::from_value(message_value.clone()) {
+        Ok(m) => m,
+        Err(err) => {
+            tracing::warn!(error = %err, "session.event: failed to deserialize SDK Message");
+            return Vec::new();
+        }
+    };
+
+    match message {
+        SdkMessage::Assistant {
+            message: envelope, ..
+        } => assistant_to_envelopes(&session_id, &envelope),
+        SdkMessage::Result {
+            subtype, is_error, ..
+        } => {
+            let event = if is_error {
+                BridgeEvent::TurnError {
+                    session_id,
+                    message: subtype.clone(),
+                    error_kind: Some(subtype.clone()),
+                    sdk_result_subtype: Some(subtype),
+                    assistant_error: None,
+                    terminal_reason: None,
+                }
+            } else {
+                BridgeEvent::TurnComplete {
+                    session_id,
+                    terminal_reason: None,
+                }
+            };
+            vec![EventEnvelope {
+                request_id: None,
+                event,
+            }]
+        }
+        _ => {
+            tracing::debug!("session.event: variant not yet translated");
+            Vec::new()
+        }
+    }
+}
+
+fn assistant_to_envelopes(session_id: &str, envelope: &AssistantEnvelope) -> Vec<EventEnvelope> {
+    envelope
+        .content
+        .iter()
+        .filter_map(|block| {
+            content_block_to_update(block).map(|update| EventEnvelope {
+                request_id: None,
+                event: BridgeEvent::SessionUpdate {
+                    session_id: session_id.to_owned(),
+                    update,
+                },
+            })
+        })
+        .collect()
+}
+
+fn content_block_to_update(block: &SdkContentBlock) -> Option<SessionUpdate> {
+    match block {
+        SdkContentBlock::Text { text } => Some(SessionUpdate::AgentMessageChunk {
+            content: TuiContentBlock::Text { text: text.clone() },
+        }),
+        SdkContentBlock::Thinking { thinking, .. } => Some(SessionUpdate::AgentThoughtChunk {
+            content: TuiContentBlock::Text {
+                text: thinking.clone(),
+            },
+        }),
+        SdkContentBlock::ToolUse { id, name, input } => Some(SessionUpdate::ToolCall {
+            tool_call: synth_tool_call(id.clone(), name, Some(input)),
+        }),
+        // ToolResult, ServerToolUse/Result, Document and Unknown
+        // blocks are not surfaced to the UI yet — the lifted UI will
+        // pick them up when its renderers learn the shapes.
+        _ => None,
+    }
 }
 
 fn synth_tool_call(tool_call_id: String, tool_name: &str, raw_input: Option<&Value>) -> ToolCall {
@@ -339,6 +439,11 @@ mod tests {
         Arc::new(Mutex::new(HashMap::new()))
     }
 
+    fn one(envelopes: Vec<EventEnvelope>) -> EventEnvelope {
+        assert_eq!(envelopes.len(), 1, "expected exactly one envelope");
+        envelopes.into_iter().next().unwrap()
+    }
+
     #[test]
     fn permission_request_synthesises_event_and_populates_lookup() {
         let lookup = fresh_lookup();
@@ -360,7 +465,7 @@ mod tests {
             }),
         };
 
-        let envelope = translate(event, &lookup).expect("event");
+        let envelope = one(translate(event, &lookup));
         let BridgeEvent::PermissionRequest {
             session_id,
             request,
@@ -402,7 +507,7 @@ mod tests {
             }),
         };
 
-        let envelope = translate(event, &lookup).expect("event");
+        let envelope = one(translate(event, &lookup));
         let BridgeEvent::PermissionRequest { request, .. } = envelope.event else {
             panic!();
         };
@@ -441,7 +546,7 @@ mod tests {
             }),
         };
 
-        let envelope = translate(event, &lookup).expect("event");
+        let envelope = one(translate(event, &lookup));
         let BridgeEvent::QuestionRequest {
             session_id,
             request,
@@ -470,7 +575,7 @@ mod tests {
             method: "session.closed".to_owned(),
             params: json!({"session_id": "sess_1", "reason": "result_frame"}),
         };
-        let envelope = translate(event, &lookup).expect("event");
+        let envelope = one(translate(event, &lookup));
         let BridgeEvent::TurnError {
             session_id,
             message,
@@ -486,14 +591,14 @@ mod tests {
     }
 
     #[test]
-    fn unknown_method_returns_none() {
+    fn unknown_method_returns_empty() {
         let lookup = fresh_lookup();
         let event = InboundEvent {
             id: None,
             method: "unrelated.notification".to_owned(),
             params: json!({}),
         };
-        assert!(translate(event, &lookup).is_none());
+        assert!(translate(event, &lookup).is_empty());
     }
 
     #[test]
@@ -506,7 +611,161 @@ mod tests {
                 "params": {"tool_name": "X", "tool_input": {}, "context": {"tool_use_id": "x"}},
             }),
         };
-        assert!(translate(event, &lookup).is_none());
+        assert!(translate(event, &lookup).is_empty());
         assert!(lookup.lock().is_empty());
+    }
+
+    #[test]
+    fn session_event_assistant_emits_chunk_and_tool_call() {
+        let lookup = fresh_lookup();
+        let event = InboundEvent {
+            id: None,
+            method: "session.event".to_owned(),
+            params: json!({
+                "session_id": "sess_1",
+                "event_id": "evt_1",
+                "message": {
+                    "type": "assistant",
+                    "session_id": "sess_1",
+                    "message": {
+                        "id": "msg_1",
+                        "role": "assistant",
+                        "model": "claude-opus-4-7",
+                        "content": [
+                            {"type": "text", "text": "Hello"},
+                            {
+                                "type": "tool_use",
+                                "id": "tu_x",
+                                "name": "Bash",
+                                "input": {"command": "ls"},
+                            },
+                        ],
+                    },
+                },
+            }),
+        };
+        let envelopes = translate(event, &lookup);
+        assert_eq!(envelopes.len(), 2);
+        let BridgeEvent::SessionUpdate { update, .. } = &envelopes[0].event else {
+            panic!();
+        };
+        let SessionUpdate::AgentMessageChunk { content } = update else {
+            panic!();
+        };
+        let TuiContentBlock::Text { text } = content else {
+            panic!();
+        };
+        assert_eq!(text, "Hello");
+
+        let BridgeEvent::SessionUpdate { update, .. } = &envelopes[1].event else {
+            panic!();
+        };
+        let SessionUpdate::ToolCall { tool_call } = update else {
+            panic!();
+        };
+        assert_eq!(tool_call.tool_call_id, "tu_x");
+        assert_eq!(tool_call.title, "Bash");
+        assert_eq!(tool_call.raw_input, Some(json!({"command": "ls"})));
+    }
+
+    #[test]
+    fn session_event_assistant_thinking_emits_thought_chunk() {
+        let lookup = fresh_lookup();
+        let event = InboundEvent {
+            id: None,
+            method: "session.event".to_owned(),
+            params: json!({
+                "session_id": "sess_1",
+                "event_id": "evt_1",
+                "message": {
+                    "type": "assistant",
+                    "session_id": "sess_1",
+                    "message": {
+                        "id": "msg_2",
+                        "role": "assistant",
+                        "model": "claude-opus-4-7",
+                        "content": [
+                            {"type": "thinking", "thinking": "Hmm.", "signature": "sig"},
+                        ],
+                    },
+                },
+            }),
+        };
+        let envelope = one(translate(event, &lookup));
+        let BridgeEvent::SessionUpdate { update, .. } = envelope.event else {
+            panic!();
+        };
+        let SessionUpdate::AgentThoughtChunk { content } = update else {
+            panic!();
+        };
+        let TuiContentBlock::Text { text } = content else {
+            panic!();
+        };
+        assert_eq!(text, "Hmm.");
+    }
+
+    #[test]
+    fn session_event_result_success_emits_turn_complete() {
+        let lookup = fresh_lookup();
+        let event = InboundEvent {
+            id: None,
+            method: "session.event".to_owned(),
+            params: json!({
+                "session_id": "sess_1",
+                "event_id": "evt_done",
+                "message": {
+                    "type": "result",
+                    "subtype": "success",
+                    "session_id": "sess_1",
+                    "is_error": false,
+                    "num_turns": 1,
+                    "duration_ms": 100,
+                    "duration_api_ms": 80,
+                },
+            }),
+        };
+        let envelope = one(translate(event, &lookup));
+        let BridgeEvent::TurnComplete { session_id, .. } = envelope.event else {
+            panic!();
+        };
+        assert_eq!(session_id, "sess_1");
+    }
+
+    #[test]
+    fn session_event_result_error_emits_turn_error() {
+        let lookup = fresh_lookup();
+        let event = InboundEvent {
+            id: None,
+            method: "session.event".to_owned(),
+            params: json!({
+                "session_id": "sess_1",
+                "event_id": "evt_err",
+                "message": {
+                    "type": "result",
+                    "subtype": "error_during_execution",
+                    "session_id": "sess_1",
+                    "is_error": true,
+                    "num_turns": 2,
+                    "duration_ms": 50,
+                    "duration_api_ms": 30,
+                },
+            }),
+        };
+        let envelope = one(translate(event, &lookup));
+        let BridgeEvent::TurnError {
+            session_id,
+            error_kind,
+            sdk_result_subtype,
+            ..
+        } = envelope.event
+        else {
+            panic!();
+        };
+        assert_eq!(session_id, "sess_1");
+        assert_eq!(error_kind.as_deref(), Some("error_during_execution"));
+        assert_eq!(
+            sdk_result_subtype.as_deref(),
+            Some("error_during_execution")
+        );
     }
 }
