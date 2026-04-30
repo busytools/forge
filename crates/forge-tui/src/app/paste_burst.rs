@@ -1,6 +1,3 @@
-// Copyright 2025 Simon Peter Rothgang
-// SPDX-License-Identifier: Apache-2.0
-
 //! Timing-based paste burst detection for terminals that don't reliably
 //! surface bracketed paste events (notably Windows Terminal with crossterm).
 //!
@@ -374,6 +371,8 @@ impl Default for PasteBurstDetector {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
     use super::*;
 
     fn fast(base: Instant, ms: u64) -> Instant {
