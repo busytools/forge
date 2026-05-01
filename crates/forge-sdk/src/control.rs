@@ -230,10 +230,7 @@ impl<'de> Deserialize<'de> for ControlRequestKind {
                     .get("decision_reason")
                     .and_then(Value::as_str)
                     .map(str::to_string);
-                let title = raw
-                    .get("title")
-                    .and_then(Value::as_str)
-                    .map(str::to_string);
+                let title = raw.get("title").and_then(Value::as_str).map(str::to_string);
                 let display_name = raw
                     .get("display_name")
                     .and_then(Value::as_str)

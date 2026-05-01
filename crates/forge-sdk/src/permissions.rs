@@ -35,7 +35,7 @@ pub struct ToolPermissionContext {
     /// Path the CLI considered out-of-bounds when rejecting the tool
     /// call (e.g. an `Edit` against a file outside the workspace).
     /// `None` when the request is not path-scoped or the CLI didn't
-    /// supply a value. UIs render it as "Claude wanted to touch <path>".
+    /// supply a value. UIs render it as "Claude wanted to touch `<path>`".
     pub blocked_path: Option<String>,
     /// Free-form reason the CLI surfaced for why the request needs
     /// human review (e.g. `"workspace not yet trusted"`). Pass-through
@@ -87,7 +87,7 @@ impl ToolPermissionContext {
 
     /// Attach the optional display fields the CLI surfaces alongside
     /// `tool_name` / `tool_input` so UIs can render rich permission
-    /// prompts ("Claude wants to <title>: <description>"). Each field
+    /// prompts ("Claude wants to `<title>`: `<description>`"). Each field
     /// is independently optional; callers pass `None` for ones the CLI
     /// didn't populate.
     #[must_use]

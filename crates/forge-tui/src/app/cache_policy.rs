@@ -100,15 +100,23 @@ pub fn find_text_split(text: &str, policy: CacheSplitPolicy) -> Option<TextSplit
         && let Some(split_at) = pick_text_split_candidate(soft_newline, soft_sentence)
         && split_at < bytes.len()
     {
-        return Some(TextSplitDecision { split_at, kind: TextSplitKind::Generic });
+        return Some(TextSplitDecision {
+            split_at,
+            kind: TextSplitKind::Generic,
+        });
     }
 
     if bytes.len() >= policy.hard_limit_bytes
-        && let Some(split_at) =
-            hard_newline.or(post_hard_newline).or(hard_sentence).or(post_hard_sentence)
+        && let Some(split_at) = hard_newline
+            .or(post_hard_newline)
+            .or(hard_sentence)
+            .or(post_hard_sentence)
         && split_at < bytes.len()
     {
-        return Some(TextSplitDecision { split_at, kind: TextSplitKind::Generic });
+        return Some(TextSplitDecision {
+            split_at,
+            kind: TextSplitKind::Generic,
+        });
     }
 
     None
