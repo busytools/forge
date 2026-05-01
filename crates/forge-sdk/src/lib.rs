@@ -92,10 +92,10 @@ pub use permissions::{
     PermissionUpdate, PermissionUpdateDestination, ToolPermissionContext,
 };
 pub use public_types::{
-    ContextUsageCategory, ContextUsageResponse, McpServerConfig, McpServerConnectionStatus,
-    McpServerInfo, McpServerStatus, McpStatusResponse, McpToolAnnotations, McpToolInfo,
-    SDKSessionInfo, SandboxIgnoreViolations, SandboxNetworkConfig, SandboxSettings, SessionMessage,
-    SessionMessageKind, SettingSource, StreamEvent,
+    AccountInfo, ContextUsageCategory, ContextUsageResponse, McpServerConfig,
+    McpServerConnectionStatus, McpServerInfo, McpServerStatus, McpStatusResponse,
+    McpToolAnnotations, McpToolInfo, SDKSessionInfo, SandboxIgnoreViolations, SandboxNetworkConfig,
+    SandboxSettings, SessionMessage, SessionMessageKind, SettingSource, StreamEvent,
 };
 
 /// Convenient alias for `Result<T, forge_sdk::Error>`.

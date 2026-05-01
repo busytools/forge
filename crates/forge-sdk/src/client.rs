@@ -404,6 +404,19 @@ impl Client {
         self.inner.session_id.read().clone()
     }
 
+    /// Typed accessor for the `account` block inside the session-init
+    /// payload. Returns `None` until the init frame has arrived or when
+    /// the CLI didn't include an account block (e.g. unauthenticated
+    /// session). The CLI uses camelCase field names; this method
+    /// deserializes via [`AccountInfo`]'s serde definition so callers
+    /// don't have to walk the raw JSON themselves.
+    #[must_use]
+    pub fn account_info(&self) -> Option<crate::public_types::AccountInfo> {
+        let data = self.inner.cached_init_data.as_ref()?;
+        let account = data.get("account")?;
+        serde_json::from_value(account.clone()).ok()
+    }
+
     /// Send a user prompt as a stream-json user turn.
     ///
     /// # Errors
