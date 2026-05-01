@@ -417,6 +417,23 @@ impl Client {
         serde_json::from_value(account.clone()).ok()
     }
 
+    /// Read the user's OAuth credentials from
+    /// `<config_dir>/.credentials.json`, where `<config_dir>` is
+    /// `$CLAUDE_CONFIG_DIR` (when set + non-empty) else
+    /// `$HOME/.claude`. Returns `None` if the file is missing,
+    /// malformed, or `claudeAiOauth.accessToken` is empty.
+    ///
+    /// Unlike [`Client::account_info`] (which deserialises from the
+    /// cached `system/init` payload), credentials are read from disk
+    /// every call — they live outside the CLI's stream-json wire
+    /// surface, so there is no init frame to cache from. Cheap (a
+    /// single small JSON file read) but not free; consumers that poll
+    /// frequently should cache the result themselves.
+    #[must_use]
+    pub fn oauth_credentials(&self) -> Option<crate::public_types::OauthCredentials> {
+        crate::session::paths::load_oauth_credentials()
+    }
+
     /// Send a user prompt as a stream-json user turn.
     ///
     /// # Errors

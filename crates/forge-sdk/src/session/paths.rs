@@ -1,0 +1,226 @@
+//! Shared path resolution for the `claude` CLI's on-disk state, plus
+//! typed accessors for files inside `<config_dir>` that consumers need
+//! a structured view of (currently OAuth credentials).
+//!
+//! Every accessor that reads a file under the user's config directory
+//! goes through `claude_config_dir()` so `$CLAUDE_CONFIG_DIR` is
+//! honoured in exactly one place. Empty-string env values are treated
+//! as unset to match the CLI's own behaviour.
+
+use std::path::PathBuf;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use serde_json::Value;
+
+use crate::public_types::OauthCredentials;
+
+/// Resolve the Claude config directory. Honours `$CLAUDE_CONFIG_DIR`
+/// (ignoring empty-string values), else falls back to
+/// `$HOME/.claude`. Shared across `sessions`, `session_mutations`,
+/// `client`, and any accessor that needs a typed view of an on-disk
+/// CLI artefact.
+pub(crate) fn claude_config_dir() -> PathBuf {
+    let custom = std::env::var("CLAUDE_CONFIG_DIR").ok();
+    let home = std::env::var("HOME").ok();
+    claude_config_dir_from(custom.as_deref(), home.as_deref())
+}
+
+/// Pure variant of [`claude_config_dir`] that takes `CLAUDE_CONFIG_DIR`
+/// and `HOME` as arguments instead of reading the process environment.
+/// Used internally so the env-resolution branches are unit-testable
+/// without mutating shared process state during parallel test runs.
+fn claude_config_dir_from(custom: Option<&str>, home: Option<&str>) -> PathBuf {
+    if let Some(value) = custom {
+        let trimmed = value.trim_end_matches('/');
+        if !trimmed.is_empty() {
+            return PathBuf::from(trimmed);
+        }
+    }
+    PathBuf::from(home.unwrap_or(".")).join(".claude")
+}
+
+/// Resolve the Claude projects directory. Honours `$CLAUDE_CONFIG_DIR`
+/// (ignoring empty-string values), else falls back to
+/// `$HOME/.claude/projects`. Shared across `sessions`,
+/// `session_mutations`, and `client`.
+pub(crate) fn projects_dir() -> PathBuf {
+    claude_config_dir().join("projects")
+}
+
+/// Resolve the path to the OAuth credentials file:
+/// `<config_dir>/.credentials.json`.
+fn credentials_path() -> PathBuf {
+    claude_config_dir().join(".credentials.json")
+}
+
+/// Read + parse the user's OAuth credentials. Returns `None` when:
+///
+/// - the credentials file does not exist or cannot be read,
+/// - the JSON is malformed,
+/// - the `claudeAiOauth.accessToken` field is missing or empty
+///   after trimming.
+///
+/// `expires_at` is `None` when the credentials file omits an expiry
+/// field; otherwise it is the parsed [`SystemTime`] of the
+/// `expiresAt` numeric or stringified-numeric epoch.
+pub(crate) fn load_oauth_credentials() -> Option<OauthCredentials> {
+    load_oauth_credentials_at(&credentials_path())
+}
+
+fn load_oauth_credentials_at(path: &std::path::Path) -> Option<OauthCredentials> {
+    let contents = std::fs::read_to_string(path).ok()?;
+    let json = serde_json::from_str::<Value>(&contents).ok()?;
+    parse_oauth_credentials(&json)
+}
+
+fn parse_oauth_credentials(json: &Value) -> Option<OauthCredentials> {
+    let oauth = json.get("claudeAiOauth")?;
+    let access_token = oauth.get("accessToken")?.as_str()?.trim();
+    if access_token.is_empty() {
+        return None;
+    }
+
+    Some(OauthCredentials {
+        access_token: access_token.to_owned(),
+        expires_at: oauth.get("expiresAt").and_then(parse_timestamp_value),
+    })
+}
+
+fn parse_timestamp_value(value: &Value) -> Option<SystemTime> {
+    match value {
+        Value::Number(number) => number
+            .as_i64()
+            .or_else(|| number.as_u64().and_then(|raw| i64::try_from(raw).ok()))
+            .and_then(system_time_from_epoch),
+        Value::String(raw) => raw.trim().parse::<i64>().ok().and_then(system_time_from_epoch),
+        _ => None,
+    }
+}
+
+fn system_time_from_epoch(raw: i64) -> Option<SystemTime> {
+    if raw < 0 {
+        return None;
+    }
+
+    let raw = u64::try_from(raw).ok()?;
+    if raw >= 1_000_000_000_000 {
+        Some(UNIX_EPOCH + Duration::from_millis(raw))
+    } else {
+        Some(UNIX_EPOCH + Duration::from_secs(raw))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+    use super::*;
+    use std::io::Write;
+
+    #[test]
+    fn config_dir_honours_claude_config_dir_when_set() {
+        let resolved = claude_config_dir_from(Some("/tmp/custom-config"), Some("/home/ignored"));
+        assert_eq!(resolved, PathBuf::from("/tmp/custom-config"));
+    }
+
+    #[test]
+    fn config_dir_strips_trailing_slash_from_claude_config_dir() {
+        let resolved = claude_config_dir_from(Some("/tmp/custom/"), Some("/home/ignored"));
+        assert_eq!(resolved, PathBuf::from("/tmp/custom"));
+    }
+
+    #[test]
+    fn config_dir_falls_back_to_home_when_claude_config_dir_empty() {
+        let resolved = claude_config_dir_from(Some(""), Some("/home/me"));
+        assert_eq!(resolved, PathBuf::from("/home/me/.claude"));
+    }
+
+    #[test]
+    fn config_dir_falls_back_to_home_when_claude_config_dir_unset() {
+        let resolved = claude_config_dir_from(None, Some("/home/me"));
+        assert_eq!(resolved, PathBuf::from("/home/me/.claude"));
+    }
+
+    #[test]
+    fn config_dir_falls_back_to_dot_when_home_unset() {
+        let resolved = claude_config_dir_from(None, None);
+        assert_eq!(resolved, PathBuf::from("./.claude"));
+    }
+
+    #[test]
+    fn returns_none_for_nonexistent_file() {
+        let path = std::path::Path::new("/tmp/forge_sdk_test_nonexistent_credentials.json");
+        assert!(load_oauth_credentials_at(path).is_none());
+    }
+
+    #[test]
+    fn returns_none_for_empty_json() {
+        let mut tmp = tempfile::NamedTempFile::new().expect("tempfile");
+        write!(tmp, "{{}}").expect("write");
+        assert!(load_oauth_credentials_at(tmp.path()).is_none());
+    }
+
+    #[test]
+    fn returns_none_for_empty_access_token() {
+        let mut tmp = tempfile::NamedTempFile::new().expect("tempfile");
+        write!(tmp, r#"{{"claudeAiOauth":{{"accessToken":"","refreshToken":"tok"}}}}"#)
+            .expect("write");
+        assert!(load_oauth_credentials_at(tmp.path()).is_none());
+    }
+
+    #[test]
+    fn returns_credentials_for_valid_oauth() {
+        let mut tmp = tempfile::NamedTempFile::new().expect("tempfile");
+        write!(
+            tmp,
+            r#"{{"claudeAiOauth":{{"accessToken":"sk-ant-oat01-test","refreshToken":"sk-ant-ort01-test","expiresAt":9999999999999}}}}"#
+        )
+        .expect("write");
+        let credentials = load_oauth_credentials_at(tmp.path()).expect("credentials");
+        assert_eq!(credentials.access_token, "sk-ant-oat01-test");
+        assert!(credentials.expires_at.is_some());
+    }
+
+    #[test]
+    fn parses_expiry_in_seconds() {
+        let mut tmp = tempfile::NamedTempFile::new().expect("tempfile");
+        write!(tmp, r#"{{"claudeAiOauth":{{"accessToken":"token","expiresAt":1}}}}"#)
+            .expect("write");
+        let credentials = load_oauth_credentials_at(tmp.path()).expect("credentials");
+        assert_eq!(credentials.expires_at, Some(UNIX_EPOCH + Duration::from_secs(1)));
+    }
+
+    #[test]
+    fn parses_expiry_in_milliseconds() {
+        // Use a non-second-aligned ms epoch so the assertion can't be
+        // satisfied by `Duration::from_secs(...)` — proves the
+        // ms-branch actually fired.
+        let mut tmp = tempfile::NamedTempFile::new().expect("tempfile");
+        write!(
+            tmp,
+            r#"{{"claudeAiOauth":{{"accessToken":"token","expiresAt":1700000000001}}}}"#
+        )
+        .expect("write");
+        let credentials = load_oauth_credentials_at(tmp.path()).expect("credentials");
+        assert_eq!(
+            credentials.expires_at,
+            Some(UNIX_EPOCH + Duration::from_millis(1_700_000_000_001))
+        );
+    }
+
+    #[test]
+    fn parses_expiry_string_form() {
+        let mut tmp = tempfile::NamedTempFile::new().expect("tempfile");
+        write!(tmp, r#"{{"claudeAiOauth":{{"accessToken":"token","expiresAt":"42"}}}}"#)
+            .expect("write");
+        let credentials = load_oauth_credentials_at(tmp.path()).expect("credentials");
+        assert_eq!(credentials.expires_at, Some(UNIX_EPOCH + Duration::from_secs(42)));
+    }
+
+    #[test]
+    fn returns_none_for_malformed_json() {
+        let mut tmp = tempfile::NamedTempFile::new().expect("tempfile");
+        write!(tmp, "not json at all").expect("write");
+        assert!(load_oauth_credentials_at(tmp.path()).is_none());
+    }
+}
