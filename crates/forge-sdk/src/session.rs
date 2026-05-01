@@ -18,5 +18,5 @@
 //! bring-back recipe.
 
 pub mod mutations;
-pub(crate) mod paths;
+pub mod paths;
 pub mod scan;

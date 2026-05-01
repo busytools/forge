@@ -19,7 +19,8 @@ use crate::public_types::OauthCredentials;
 /// `$HOME/.claude`. Shared across `sessions`, `session_mutations`,
 /// `client`, and any accessor that needs a typed view of an on-disk
 /// CLI artefact.
-pub(crate) fn claude_config_dir() -> PathBuf {
+#[must_use]
+pub fn claude_config_dir() -> PathBuf {
     let custom = std::env::var("CLAUDE_CONFIG_DIR").ok();
     let home = std::env::var("HOME").ok();
     claude_config_dir_from(custom.as_deref(), home.as_deref())
