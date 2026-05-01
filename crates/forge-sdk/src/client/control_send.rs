@@ -121,6 +121,38 @@ impl Client {
         Ok(())
     }
 
+    /// Respond to an MCP elicitation request the CLI surfaced via a
+    /// `system/elicitation_request` message. `request_id` is the id
+    /// the CLI attached to the request; `action` selects accept /
+    /// decline / cancel; `content` is the form payload (only meaningful
+    /// for `"accept"`).
+    ///
+    /// # Errors
+    ///
+    /// See the outbound control error cases.
+    pub async fn respond_to_elicitation(
+        &self,
+        request_id: &str,
+        action: &str,
+        content: Option<serde_json::Value>,
+    ) -> Result<(), Error> {
+        let mut body = serde_json::Map::new();
+        body.insert(
+            "request_id".to_owned(),
+            serde_json::Value::String(request_id.to_owned()),
+        );
+        body.insert(
+            "action".to_owned(),
+            serde_json::Value::String(action.to_owned()),
+        );
+        if let Some(c) = content {
+            body.insert("content".to_owned(), c);
+        }
+        self.send_control("elicitation_response", serde_json::Value::Object(body))
+            .await?;
+        Ok(())
+    }
+
     /// Query MCP server status. Returns the typed response.
     ///
     /// # Errors
