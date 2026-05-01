@@ -54,6 +54,16 @@ pub enum ControlRequestKind {
         tool_use_id: String,
         /// Agent identifier when this is a sub-agent request.
         agent_id: Option<String>,
+        /// Free-form reason the CLI surfaced for why human review is
+        /// needed (e.g. `"workspace not yet trusted"`).
+        decision_reason: Option<String>,
+        /// Short title the CLI suggests for the prompt
+        /// (e.g. `"Run tests"`).
+        title: Option<String>,
+        /// Display name for the tool call (often a humanised tool name).
+        display_name: Option<String>,
+        /// Long-form description the CLI surfaces in the prompt body.
+        description: Option<String>,
     },
     /// MCP JSON-RPC message routed in-process. See `mcp` module for the MCP
     /// routing pipeline.
@@ -98,6 +108,10 @@ impl Serialize for ControlRequestKind {
                 blocked_path,
                 tool_use_id,
                 agent_id,
+                decision_reason,
+                title,
+                display_name,
+                description,
             } => {
                 let mut field_count = 4;
                 if !permission_suggestions.is_empty() {
@@ -108,6 +122,11 @@ impl Serialize for ControlRequestKind {
                 }
                 if agent_id.is_some() {
                     field_count += 1;
+                }
+                for opt in [decision_reason, title, display_name, description] {
+                    if opt.is_some() {
+                        field_count += 1;
+                    }
                 }
                 let mut map = serializer.serialize_map(Some(field_count))?;
                 map.serialize_entry("subtype", "can_use_tool")?;
@@ -122,6 +141,18 @@ impl Serialize for ControlRequestKind {
                 map.serialize_entry("tool_use_id", tool_use_id)?;
                 if let Some(aid) = agent_id {
                     map.serialize_entry("agent_id", aid)?;
+                }
+                if let Some(dr) = decision_reason {
+                    map.serialize_entry("decision_reason", dr)?;
+                }
+                if let Some(t) = title {
+                    map.serialize_entry("title", t)?;
+                }
+                if let Some(dn) = display_name {
+                    map.serialize_entry("display_name", dn)?;
+                }
+                if let Some(d) = description {
+                    map.serialize_entry("description", d)?;
                 }
                 map.end()
             }
@@ -195,6 +226,22 @@ impl<'de> Deserialize<'de> for ControlRequestKind {
                     .get("agent_id")
                     .and_then(Value::as_str)
                     .map(str::to_string);
+                let decision_reason = raw
+                    .get("decision_reason")
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
+                let title = raw
+                    .get("title")
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
+                let display_name = raw
+                    .get("display_name")
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
+                let description = raw
+                    .get("description")
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
                 Ok(Self::CanUseTool {
                     tool_name,
                     input,
@@ -202,6 +249,10 @@ impl<'de> Deserialize<'de> for ControlRequestKind {
                     blocked_path,
                     tool_use_id,
                     agent_id,
+                    decision_reason,
+                    title,
+                    display_name,
+                    description,
                 })
             }
             "mcp_message" => {

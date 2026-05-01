@@ -167,7 +167,11 @@ impl ControlDispatchHandle {
                     tool_use_id,
                     agent_id,
                     permission_suggestions,
-                    ..
+                    blocked_path,
+                    decision_reason,
+                    title,
+                    display_name,
+                    description,
                 },
             ) => {
                 let suggestions: Vec<crate::permissions::PermissionUpdate> = permission_suggestions
@@ -190,7 +194,14 @@ impl ControlDispatchHandle {
                     tool_use_id.clone(),
                     agent_id.clone(),
                 )
-                .with_suggestions(suggestions);
+                .with_suggestions(suggestions)
+                .with_display(
+                    blocked_path.clone(),
+                    decision_reason.clone(),
+                    title.clone(),
+                    display_name.clone(),
+                    description.clone(),
+                );
                 cb.call(ctx).await
             }
             (None, ControlRequestKind::CanUseTool { .. }) => {
