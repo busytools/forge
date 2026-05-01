@@ -17,6 +17,7 @@ use serde_json::{Value, json};
 use uuid::Uuid;
 
 use crate::error::Error;
+use crate::session::paths::projects_dir;
 
 /// Outcome of a [`fork_session`] call.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -282,21 +283,6 @@ fn validate_uuid(s: &str) -> Result<(), Error> {
     } else {
         Err(Error::message_parse(format!("Invalid session_id: {s}")))
     }
-}
-
-/// Resolve the Claude projects directory. Honours `$CLAUDE_CONFIG_DIR`
-/// (ignoring empty-string values), else falls back to
-/// `~/.claude/projects`. Shared across `sessions`, `session_mutations`,
-/// and `client`.
-pub(crate) fn projects_dir() -> PathBuf {
-    if let Ok(custom) = std::env::var("CLAUDE_CONFIG_DIR") {
-        let trimmed = custom.trim_end_matches('/');
-        if !trimmed.is_empty() {
-            return PathBuf::from(trimmed).join("projects");
-        }
-    }
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-    PathBuf::from(home).join(".claude").join("projects")
 }
 
 fn find_session_file(session_id: &str, directory: Option<&str>) -> Option<PathBuf> {

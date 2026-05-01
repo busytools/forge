@@ -23,7 +23,7 @@ use unicode_normalization::UnicodeNormalization;
 
 use crate::public_types::{SDKSessionInfo, SessionMessage, SessionMessageKind};
 use crate::session::mutations::is_valid_uuid;
-use crate::session::mutations::projects_dir;
+use crate::session::paths::projects_dir;
 
 const MAX_SANITIZED_LENGTH: usize = 200;
 
