@@ -52,6 +52,7 @@ mod error;
 pub mod hooks;
 pub mod mcp;
 pub(crate) mod messages;
+pub mod oauth_usage;
 mod options;
 pub(crate) mod permissions;
 pub(crate) mod public_types;
@@ -62,6 +63,7 @@ pub mod transport;
 
 pub use client::Client;
 pub use error::Error;
+pub use oauth_usage::{OauthExtraUsage, OauthUsage, OauthUsageError, OauthUsageWindow, oauth_usage};
 // Top-level message + content re-exports so consumers can say
 // `use forge_sdk::{AssistantEnvelope, StopReason, RateLimitInfo, ...}`
 // instead of reaching through `forge_sdk::messages::*`. Matches the

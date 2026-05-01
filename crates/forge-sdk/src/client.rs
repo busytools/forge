@@ -420,18 +420,34 @@ impl Client {
     /// Read the user's OAuth credentials from
     /// `<config_dir>/.credentials.json`, where `<config_dir>` is
     /// `$CLAUDE_CONFIG_DIR` (when set + non-empty) else
-    /// `$HOME/.claude`. Returns `None` if the file is missing,
-    /// malformed, or `claudeAiOauth.accessToken` is empty.
+    /// `$HOME/.claude`. On macOS, falls back to the system keychain
+    /// entry if the file is absent. Returns `None` if neither source
+    /// has a parseable, non-empty `claudeAiOauth.accessToken`.
     ///
     /// Unlike [`Client::account_info`] (which deserialises from the
-    /// cached `system/init` payload), credentials are read from disk
-    /// every call — they live outside the CLI's stream-json wire
-    /// surface, so there is no init frame to cache from. Cheap (a
-    /// single small JSON file read) but not free; consumers that poll
-    /// frequently should cache the result themselves.
+    /// cached `system/init` payload), credentials are read from disk /
+    /// keychain every call — they live outside the CLI's stream-json
+    /// wire surface, so there is no init frame to cache from. Cheap
+    /// for the file path (one small read) but the keychain shell-out
+    /// is comparatively expensive; consumers that poll frequently
+    /// should cache the result themselves.
     #[must_use]
     pub fn oauth_credentials(&self) -> Option<crate::public_types::OauthCredentials> {
         crate::session::paths::load_oauth_credentials()
+    }
+
+    /// Fetch the live OAuth usage payload from the Anthropic API.
+    /// Resolves the bearer token via [`Client::oauth_credentials`]
+    /// and returns the parsed response — the access token never
+    /// crosses the SDK boundary.
+    ///
+    /// # Errors
+    ///
+    /// See [`OauthUsageError`](crate::OauthUsageError) for the failure
+    /// cases (missing/expired credentials, network failure, non-2xx
+    /// response, decode failure).
+    pub async fn oauth_usage(&self) -> Result<crate::OauthUsage, crate::OauthUsageError> {
+        crate::oauth_usage::oauth_usage().await
     }
 
     /// Send a user prompt as a stream-json user turn.
