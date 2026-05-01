@@ -32,6 +32,22 @@ pub struct ToolPermissionContext {
     /// from the `control_request`'s `permission_suggestions` list, with
     /// unrecognised entries dropped.
     pub suggestions: Vec<PermissionUpdate>,
+    /// Path the CLI considered out-of-bounds when rejecting the tool
+    /// call (e.g. an `Edit` against a file outside the workspace).
+    /// `None` when the request is not path-scoped or the CLI didn't
+    /// supply a value. UIs render it as "Claude wanted to touch <path>".
+    pub blocked_path: Option<String>,
+    /// Free-form reason the CLI surfaced for why the request needs
+    /// human review (e.g. `"workspace not yet trusted"`). Pass-through
+    /// for UIs that show it verbatim.
+    pub decision_reason: Option<String>,
+    /// Short title the CLI suggests for the prompt (e.g. `"Run tests"`).
+    pub title: Option<String>,
+    /// Display name for the tool call (often a humanised tool name).
+    pub display_name: Option<String>,
+    /// Long-form description the CLI suggests as additional context
+    /// in the prompt body.
+    pub description: Option<String>,
 }
 
 impl ToolPermissionContext {
@@ -53,6 +69,11 @@ impl ToolPermissionContext {
             tool_use_id: tool_use_id.into(),
             agent_id,
             suggestions: Vec::new(),
+            blocked_path: None,
+            decision_reason: None,
+            title: None,
+            display_name: None,
+            description: None,
         }
     }
 
@@ -61,6 +82,28 @@ impl ToolPermissionContext {
     #[must_use]
     pub fn with_suggestions(mut self, suggestions: Vec<PermissionUpdate>) -> Self {
         self.suggestions = suggestions;
+        self
+    }
+
+    /// Attach the optional display fields the CLI surfaces alongside
+    /// `tool_name` / `tool_input` so UIs can render rich permission
+    /// prompts ("Claude wants to <title>: <description>"). Each field
+    /// is independently optional; callers pass `None` for ones the CLI
+    /// didn't populate.
+    #[must_use]
+    pub fn with_display(
+        mut self,
+        blocked_path: Option<String>,
+        decision_reason: Option<String>,
+        title: Option<String>,
+        display_name: Option<String>,
+        description: Option<String>,
+    ) -> Self {
+        self.blocked_path = blocked_path;
+        self.decision_reason = decision_reason;
+        self.title = title;
+        self.display_name = display_name;
+        self.description = description;
         self
     }
 }
