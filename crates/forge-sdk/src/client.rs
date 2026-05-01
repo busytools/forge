@@ -408,7 +408,7 @@ impl Client {
     /// payload. Returns `None` until the init frame has arrived or when
     /// the CLI didn't include an account block (e.g. unauthenticated
     /// session). The CLI uses camelCase field names; this method
-    /// deserializes via [`AccountInfo`]'s serde definition so callers
+    /// deserializes via [`AccountInfo`](crate::AccountInfo)'s serde definition so callers
     /// don't have to walk the raw JSON themselves.
     #[must_use]
     pub fn account_info(&self) -> Option<crate::public_types::AccountInfo> {
