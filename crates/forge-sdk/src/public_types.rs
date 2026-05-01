@@ -39,6 +39,36 @@ impl SettingSource {
     }
 }
 
+/// Account / subscription info the CLI emits in the session-init
+/// payload. Mirrors the shape `client.initial_session_data()["account"]`
+/// would deserialize to. All fields are optional because the CLI omits
+/// any it can't determine (e.g. `email` is `None` for API-key-only
+/// auth). Wire keys are camelCase to match the CLI; the Rust fields
+/// use `snake_case` via `rename_all`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountInfo {
+    /// Logged-in user email when first-party OAuth is active.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
+    /// Organization the account belongs to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub organization: Option<String>,
+    /// Subscription tier label (e.g. `"team"`, `"enterprise"`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subscription_type: Option<String>,
+    /// Where the auth token came from (`"oauth"`, `"api_key"`, etc.).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_source: Option<String>,
+    /// Where the API key was loaded from (`"environment"`, `"keychain"`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key_source: Option<String>,
+    /// API provider identifier when the request goes through a
+    /// non-Anthropic gateway.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_provider: Option<String>,
+}
+
 /// Streaming partial-message event surfaced when
 /// `Options.include_partial_messages` is set. Wire shape:
 /// `StreamEvent`.
