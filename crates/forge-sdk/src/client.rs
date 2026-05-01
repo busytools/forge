@@ -404,17 +404,42 @@ impl Client {
         self.inner.session_id.read().clone()
     }
 
-    /// Typed accessor for the `account` block inside the session-init
-    /// payload. Returns `None` until the init frame has arrived or when
-    /// the CLI didn't include an account block (e.g. unauthenticated
-    /// session). The CLI uses camelCase field names; this method
-    /// deserializes via [`AccountInfo`](crate::AccountInfo)'s serde definition so callers
-    /// don't have to walk the raw JSON themselves.
+    /// Typed accessor for the user's account profile. Resolution
+    /// order, cheapest first:
+    ///
+    /// 1. Top-level `apiKeySource` from the cached `system/init`
+    ///    payload (when present and not `"none"`). Carries only the
+    ///    auth source — no email/org/subscription.
+    /// 2. `claude auth status` shell-out — the CLI's only source of
+    ///    truth for the full account profile (email, org name,
+    ///    subscription tier). ~50ms latency on first call.
+    ///
+    /// Returns `None` when neither source has data — typically the
+    /// caller is unauthenticated.
     #[must_use]
     pub fn account_info(&self) -> Option<crate::public_types::AccountInfo> {
+        if let Some(info) = self.account_info_from_init() {
+            return Some(info);
+        }
+        crate::auth_status::account_info_from_auth_status()
+    }
+
+    /// Read the bare `apiKeySource` field from the cached
+    /// `system/init` payload. Returns `None` when the payload is
+    /// absent (init not yet arrived), the field is missing, or the
+    /// value is empty / `"none"`.
+    fn account_info_from_init(&self) -> Option<crate::public_types::AccountInfo> {
         let data = self.inner.cached_init_data.as_ref()?;
-        let account = data.get("account")?;
-        serde_json::from_value(account.clone()).ok()
+        let api_key_source = data
+            .get("apiKeySource")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned)
+            .filter(|s| !s.is_empty() && s != "none")?;
+        Some(crate::public_types::AccountInfo {
+            api_key_source: Some(api_key_source.clone()),
+            token_source: Some(api_key_source),
+            ..crate::public_types::AccountInfo::default()
+        })
     }
 
     /// Read the user's OAuth credentials from
