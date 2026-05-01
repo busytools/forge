@@ -199,6 +199,17 @@ pub struct McpServerStatus {
     /// Tools — present when connected.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<McpToolInfo>>,
+    /// Whether the server has been wired with a model-sampling
+    /// callback. CLI-emitted; surfaced for UIs that show a "sampling
+    /// configured" badge next to a server.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sampling_configured: Option<bool>,
+    /// Whether the server *requires* sampling support to function.
+    /// `true` when the server's MCP manifest declares it. UIs use this
+    /// to warn the user when `sampling_configured == Some(false)` and
+    /// `sampling_required == Some(true)`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sampling_required: Option<bool>,
 }
 
 /// Response from `Client::mcp_status()`. Wire shape:
