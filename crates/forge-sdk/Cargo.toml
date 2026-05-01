@@ -23,6 +23,7 @@ tracing = { workspace = true }
 async-trait = { workspace = true }
 getrandom = { workspace = true }
 hex = { workspace = true }
+sha2 = { workspace = true }
 uuid = { workspace = true }
 time = { workspace = true }
 unicode-normalization = { workspace = true }

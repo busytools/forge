@@ -53,18 +53,74 @@ fn credentials_path() -> PathBuf {
     claude_config_dir().join(".credentials.json")
 }
 
-/// Read + parse the user's OAuth credentials. Returns `None` when:
+/// Read + parse the user's OAuth credentials.
 ///
-/// - the credentials file does not exist or cannot be read,
-/// - the JSON is malformed,
-/// - the `claudeAiOauth.accessToken` field is missing or empty
-///   after trimming.
+/// Resolution order matches the `claude` CLI's behaviour as of
+/// 2.1.117:
 ///
-/// `expires_at` is `None` when the credentials file omits an expiry
-/// field; otherwise it is the parsed [`SystemTime`] of the
-/// `expiresAt` numeric or stringified-numeric epoch.
+/// 1. `<config_dir>/.credentials.json` — the on-disk file.
+/// 2. **macOS only:** the system keychain entry
+///    `Claude Code-credentials-<sha256-prefix>` where
+///    `<sha256-prefix>` is the first 8 hex characters of
+///    `SHA256(<config_dir-as-string>)`. The keychain blob holds the
+///    same `{ "claudeAiOauth": { ... } }` JSON the file would.
+///
+/// Returns `None` when neither source has a parseable, non-empty
+/// `claudeAiOauth.accessToken`. `expires_at` is `None` when the
+/// payload omits an expiry field; otherwise it is the parsed
+/// [`SystemTime`] of the `expiresAt` numeric or stringified-numeric
+/// epoch.
 pub(crate) fn load_oauth_credentials() -> Option<OauthCredentials> {
-    load_oauth_credentials_at(&credentials_path())
+    if let Some(creds) = load_oauth_credentials_at(&credentials_path()) {
+        return Some(creds);
+    }
+    #[cfg(target_os = "macos")]
+    {
+        load_oauth_credentials_from_keychain(&claude_config_dir())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        None
+    }
+}
+
+/// Service name the macOS keychain stores Claude Code credentials
+/// under. Encoded as `Claude Code-credentials-<sha256-prefix>` where
+/// `<sha256-prefix>` is the first 8 lowercase hex characters of the
+/// SHA-256 hash of the `<config_dir>` path *as a string*. Same scheme
+/// the official `claude` CLI uses (verified empirically against
+/// 2.1.117 — `~/.claude-{nf,gateway,stargate}` on the dev box all
+/// hashed correctly).
+#[cfg(target_os = "macos")]
+fn keychain_service_name(config_dir: &std::path::Path) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(config_dir.to_string_lossy().as_bytes());
+    let digest = hasher.finalize();
+    let prefix = hex::encode(&digest[..4]);
+    format!("Claude Code-credentials-{prefix}")
+}
+
+/// Read + parse OAuth credentials from the macOS keychain. Shells out
+/// to `security find-generic-password -s <service> -w`, parses the
+/// returned password as the same `claudeAiOauth` JSON shape the
+/// on-disk credentials file uses.
+#[cfg(target_os = "macos")]
+fn load_oauth_credentials_from_keychain(
+    config_dir: &std::path::Path,
+) -> Option<OauthCredentials> {
+    let service = keychain_service_name(config_dir);
+    let output = std::process::Command::new("security")
+        .args(["find-generic-password", "-s", service.as_str(), "-w"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let password = String::from_utf8(output.stdout).ok()?;
+    let trimmed = password.trim_end_matches(['\r', '\n']);
+    let json = serde_json::from_str::<Value>(trimmed).ok()?;
+    parse_oauth_credentials(&json)
 }
 
 fn load_oauth_credentials_at(path: &std::path::Path) -> Option<OauthCredentials> {
@@ -215,6 +271,31 @@ mod tests {
             .expect("write");
         let credentials = load_oauth_credentials_at(tmp.path()).expect("credentials");
         assert_eq!(credentials.expires_at, Some(UNIX_EPOCH + Duration::from_secs(42)));
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn keychain_service_name_uses_sha256_prefix_of_config_dir_string() {
+        // Verified empirically against `claude` 2.1.117 keychain
+        // entries on the development host: each `~/.claude-<flavour>`
+        // produces a service-name whose suffix is the first 8 hex
+        // chars of SHA-256(<absolute-path>).
+        assert_eq!(
+            keychain_service_name(std::path::Path::new("/Users/dev/.claude-profile4")),
+            "Claude Code-credentials-7a8e7f2e"
+        );
+        assert_eq!(
+            keychain_service_name(std::path::Path::new("/Users/dev/.claude-gateway")),
+            "Claude Code-credentials-0ed1d9d0"
+        );
+        assert_eq!(
+            keychain_service_name(std::path::Path::new("/Users/dev/.claude-stargate")),
+            "Claude Code-credentials-afc8bc35"
+        );
+        assert_eq!(
+            keychain_service_name(std::path::Path::new("/Users/dev/.claude")),
+            "Claude Code-credentials-e531d3a4"
+        );
     }
 
     #[test]
