@@ -58,12 +58,14 @@ pub(crate) mod permissions;
 pub(crate) mod public_types;
 pub(crate) mod request_id;
 pub mod session;
+pub mod settings;
 pub mod subagents;
 pub mod transport;
 
 pub use client::Client;
 pub use error::Error;
 pub use oauth_usage::{OauthExtraUsage, OauthUsage, OauthUsageError, OauthUsageWindow, oauth_usage};
+pub use settings::{SettingsDocuments, settings_documents};
 // Top-level message + content re-exports so consumers can say
 // `use forge_sdk::{AssistantEnvelope, StopReason, RateLimitInfo, ...}`
 // instead of reaching through `forge_sdk::messages::*`. Matches the
