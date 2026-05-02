@@ -935,6 +935,15 @@ impl App {
         self.git_context.branch_name()
     }
 
+    /// Structured form of `git_branch()` that distinguishes named
+    /// branches from detached HEAD so renderers can style them
+    /// differently. `NoRepo` and `Unknown` collapse to `None` —
+    /// nothing to show in the chip.
+    #[must_use]
+    pub(crate) fn git_branch_chip(&self) -> Option<crate::app::git_context::BranchChip<'_>> {
+        self.git_context.branch_chip()
+    }
+
     /// Apply a bridge-pushed git context snapshot to the local
     /// cache. Marks `needs_redraw` when the resolved branch changes.
     pub fn apply_git_context_snapshot(
@@ -942,6 +951,11 @@ impl App {
         info: crate::agent::types::GitContextInfo,
     ) {
         self.needs_redraw |= self.git_context.apply_snapshot(info);
+    }
+
+    #[cfg(test)]
+    pub fn set_git_detached_for_test(&mut self) {
+        self.git_context.set_detached_for_test();
     }
 
     #[cfg(test)]
