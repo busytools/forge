@@ -17,12 +17,31 @@ pub(crate) enum BranchDisplayState {
     Unknown,
 }
 
+/// A git-context summary suitable for rendering in the footer chip
+/// or status panel. Distinguishes named branches from detached HEAD
+/// so the renderer can style them differently. `NoRepo` and
+/// `Unknown` collapse to `None` at the call site.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BranchChip<'a> {
+    Named(&'a str),
+    Detached,
+}
+
 impl BranchDisplayState {
     #[must_use]
     pub(crate) fn as_deref(&self) -> Option<&str> {
         match self {
             Self::Named(branch) => Some(branch.as_str()),
             Self::Detached | Self::NoRepo | Self::Unknown => None,
+        }
+    }
+
+    #[must_use]
+    pub(crate) fn as_chip(&self) -> Option<BranchChip<'_>> {
+        match self {
+            Self::Named(branch) => Some(BranchChip::Named(branch.as_str())),
+            Self::Detached => Some(BranchChip::Detached),
+            Self::NoRepo | Self::Unknown => None,
         }
     }
 }
@@ -49,6 +68,11 @@ impl GitContextState {
         self.branch.as_deref()
     }
 
+    #[must_use]
+    pub(crate) fn branch_chip(&self) -> Option<BranchChip<'_>> {
+        self.branch.as_chip()
+    }
+
     /// Apply a bridge-pushed snapshot. Returns `true` when the
     /// resolved branch state changed (i.e. the caller should mark
     /// `needs_redraw`).
@@ -68,11 +92,16 @@ impl GitContextState {
             None => BranchDisplayState::NoRepo,
         };
     }
+
+    #[cfg(test)]
+    pub(crate) fn set_detached_for_test(&mut self) {
+        self.branch = BranchDisplayState::Detached;
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{BranchDisplayState, GitContextState};
+    use super::{BranchChip, BranchDisplayState, GitContextState};
     use crate::agent::types::{GitBranchInfo, GitContextInfo};
 
     #[test]
@@ -118,5 +147,36 @@ mod tests {
         assert_eq!(state.branch_name(), Some("feature/x"));
         state.set_branch_for_test(None);
         assert_eq!(state.branch_name(), None);
+    }
+
+    #[test]
+    fn branch_chip_named_returns_chip() {
+        let mut state = GitContextState::default();
+        state.apply_snapshot(GitContextInfo {
+            branch: GitBranchInfo::Named("main".to_owned()),
+        });
+        assert_eq!(state.branch_chip(), Some(BranchChip::Named("main")));
+    }
+
+    #[test]
+    fn branch_chip_detached_returns_chip() {
+        let mut state = GitContextState::default();
+        state.apply_snapshot(GitContextInfo { branch: GitBranchInfo::Detached });
+        assert_eq!(state.branch_chip(), Some(BranchChip::Detached));
+        // branch_name still collapses Detached to None for legacy callers.
+        assert_eq!(state.branch_name(), None);
+    }
+
+    #[test]
+    fn branch_chip_no_repo_returns_none() {
+        let state = GitContextState::default();
+        assert_eq!(state.branch_chip(), None);
+    }
+
+    #[test]
+    fn branch_chip_unknown_returns_none() {
+        let mut state = GitContextState::default();
+        state.apply_snapshot(GitContextInfo { branch: GitBranchInfo::Unknown });
+        assert_eq!(state.branch_chip(), None);
     }
 }
