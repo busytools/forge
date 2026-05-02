@@ -1,3 +1,6 @@
+// Copyright 2025 Simon Peter Rothgang
+// SPDX-License-Identifier: Apache-2.0
+
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -30,11 +33,17 @@ pub struct AvailableAgent {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
 pub enum EffortLevel {
+    #[serde(rename = "low")]
     Low,
+    #[serde(rename = "medium")]
     Medium,
+    #[serde(rename = "high")]
     High,
+    #[serde(rename = "xhigh")]
+    Xhigh,
+    #[serde(rename = "max")]
+    Max,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -140,14 +149,8 @@ pub enum CompactionTrigger {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ContentBlock {
-    Text {
-        text: String,
-    },
-    Image {
-        mime_type: Option<String>,
-        uri: Option<String>,
-        data: Option<String>,
-    },
+    Text { text: String },
+    Image { mime_type: Option<String>, uri: Option<String>, data: Option<String> },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -387,10 +390,7 @@ pub enum PermissionOutcome {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "outcome", rename_all = "snake_case")]
 pub enum QuestionOutcome {
-    Answered {
-        selected_option_ids: Vec<String>,
-        annotation: Option<QuestionAnnotation>,
-    },
+    Answered { selected_option_ids: Vec<String>, annotation: Option<QuestionAnnotation> },
     Cancelled,
 }
 
@@ -536,6 +536,38 @@ pub struct AccountInfo {
     pub api_provider: Option<String>,
 }
 
+/// OAuth bearer credentials surfaced through the bridge after a
+/// session connect. Mirrors `forge_sdk::OauthCredentials` field-for-
+/// field; field-by-field copy at the worker boundary keeps wire and
+/// SDK sides independent.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OauthCredentialsInfo {
+    pub access_token: String,
+    /// Absolute expiry as a Unix-millisecond epoch. `None` when the
+    /// credentials file did not include an `expiresAt` field.
+    pub expires_at_ms: Option<u64>,
+}
+
+/// Git introspection snapshot pushed by the bridge whenever the
+/// underlying repo's branch state changes. Mirrors
+/// `forge_sdk::GitContext` field-for-field at the worker boundary so
+/// the wire side stays decoupled from the SDK shape.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitContextInfo {
+    pub branch: GitBranchInfo,
+}
+
+/// Branch-resolution states surfaced by the bridge. `Named` carries
+/// the branch name; the other variants are TUI-display sentinels.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
+pub enum GitBranchInfo {
+    Named(String),
+    Detached,
+    NoRepo,
+    Unknown,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum McpServerConnectionStatus {
@@ -628,6 +660,22 @@ pub struct McpServerStatus {
     pub scope: Option<String>,
     #[serde(default)]
     pub tools: Vec<McpTool>,
+    // TODO(cleanup-phase): `sampling_configured` and `sampling_required`
+    // are pure pass-through from `forge_sdk::McpServerStatus`. They
+    // were added so the SDK-side struct could round-trip without
+    // dropping fields, but no upstream UI surface consumes them yet.
+    // Decide during cleanup whether to (a) wire them into the MCP
+    // overlay, or (b) drop them from this TUI-side struct and have
+    // the translator skip them.
+    /// Whether the server has been wired with a model-sampling
+    /// callback. UIs render a "sampling configured" badge.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sampling_configured: Option<bool>,
+    /// Whether the server's MCP manifest declares sampling as
+    /// required. UIs warn when `sampling_configured == Some(false)`
+    /// and `sampling_required == Some(true)`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sampling_required: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -642,8 +690,6 @@ pub struct McpSetServersResult {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-
     use super::{ApiRetryError, SessionUpdate};
 
     #[test]
@@ -660,10 +706,7 @@ mod tests {
 
         assert!(matches!(
             update,
-            SessionUpdate::ApiRetryUpdate {
-                error: ApiRetryError::Unknown,
-                ..
-            }
+            SessionUpdate::ApiRetryUpdate { error: ApiRetryError::Unknown, .. }
         ));
     }
 }

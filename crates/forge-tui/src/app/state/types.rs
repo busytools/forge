@@ -1,3 +1,6 @@
+// Copyright 2025 Simon Peter Rothgang
+// SPDX-License-Identifier: Apache-2.0
+
 use crate::agent::model;
 use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -33,13 +36,6 @@ pub enum PendingCommandAck {
     CurrentMode,
     CurrentModel,
     ConfigOption { option_id: String },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct UpdateNoticeState {
-    pub current_version: String,
-    pub latest_version: String,
-    pub emitted_session_scope_epoch: Option<u64>,
 }
 
 /// A single todo item from Claude's `TodoWrite` tool call.
@@ -190,9 +186,7 @@ pub struct HistoryRetentionPolicy {
 
 impl Default for HistoryRetentionPolicy {
     fn default() -> Self {
-        Self {
-            max_bytes: DEFAULT_HISTORY_RETENTION_MAX_BYTES,
-        }
+        Self { max_bytes: DEFAULT_HISTORY_RETENTION_MAX_BYTES }
     }
 }
 

@@ -1,3 +1,6 @@
+// Copyright 2025 Simon Peter Rothgang
+// SPDX-License-Identifier: Apache-2.0
+
 /// Logical focus target that can claim directional key navigation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FocusTarget {
@@ -33,12 +36,7 @@ impl FocusContext {
         mention_active: bool,
         permission_active: bool,
     ) -> Self {
-        Self {
-            todo_focus_available,
-            mention_active,
-            permission_active,
-            help_active: false,
-        }
+        Self { todo_focus_available, mention_active, permission_active, help_active: false }
     }
 
     #[must_use]

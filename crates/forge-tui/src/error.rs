@@ -1,3 +1,6 @@
+// Copyright 2025 Simon Peter Rothgang
+// SPDX-License-Identifier: Apache-2.0
+
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum AppError {
     #[error("Node.js runtime not found")]

@@ -1,10 +1,13 @@
+// Copyright 2025 Simon Peter Rothgang
+// SPDX-License-Identifier: Apache-2.0
+
 //! Timing-based paste burst detection for terminals that don't reliably
 //! surface bracketed paste events (notably Windows Terminal with crossterm).
 //!
 //! When a user pastes text, the terminal may deliver each character as a
 //! separate `Event::Key(Char(_))` at machine speed. This module detects
 //! such rapid character streams and buffers them into a single paste payload,
-//! which is then routed through `super::App::queue_paste_text` like a
+//! which is then routed through [`super::App::queue_paste_text`] like a
 //! normal `Event::Paste`.
 //!
 //! Design inspired by:
@@ -94,11 +97,7 @@ enum BurstState {
     /// A single fast character is being held. If a second arrives within
     /// `CHAR_INTERVAL`, both move into `Buffering`. Otherwise the held
     /// character is emitted as a normal keystroke on the next `tick()`.
-    Pending {
-        held_char: char,
-        received_at: Instant,
-        retro_prefix: Vec<char>,
-    },
+    Pending { held_char: char, received_at: Instant, retro_prefix: Vec<char> },
     /// Actively accumulating a rapid character stream.
     Buffering,
 }
@@ -156,11 +155,7 @@ impl PasteBurstDetector {
                     CharAction::Passthrough(ch)
                 }
             }
-            BurstState::Pending {
-                held_char,
-                received_at,
-                retro_prefix,
-            } => {
+            BurstState::Pending { held_char, received_at, retro_prefix } => {
                 let within_pending_window =
                     now.saturating_duration_since(*received_at) <= IDLE_TIMEOUT;
                 if is_fast || within_pending_window {
@@ -271,11 +266,7 @@ impl PasteBurstDetector {
     /// Call once per drain cycle (after all events are processed).
     pub fn tick(&mut self, now: Instant) -> Option<FlushAction> {
         match &self.state {
-            BurstState::Pending {
-                held_char,
-                received_at,
-                ..
-            } => {
+            BurstState::Pending { held_char, received_at, .. } => {
                 if now.saturating_duration_since(*received_at) > IDLE_TIMEOUT {
                     let ch = *held_char;
                     self.state = BurstState::Idle;
@@ -319,10 +310,7 @@ impl PasteBurstDetector {
     /// Whether the detector is actively buffering characters.
     #[must_use]
     pub fn is_buffering(&self) -> bool {
-        matches!(
-            self.state,
-            BurstState::Buffering | BurstState::Pending { .. }
-        )
+        matches!(self.state, BurstState::Buffering | BurstState::Pending { .. })
     }
 
     /// Reset burst state on non-character key events (arrows, Esc, etc.).
@@ -386,8 +374,6 @@ impl Default for PasteBurstDetector {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-
     use super::*;
 
     fn fast(base: Instant, ms: u64) -> Instant {
@@ -501,20 +487,14 @@ mod tests {
         assert_eq!(d.on_char('c', fast(t0, 4)), CharAction::RetroCapture(1));
 
         let t_flush = after_idle(t0);
-        assert_eq!(
-            d.tick(t_flush),
-            Some(FlushAction::EmitPaste("abc".to_owned()))
-        );
+        assert_eq!(d.tick(t_flush), Some(FlushAction::EmitPaste("abc".to_owned())));
 
         let t_enter = fast(t_flush, 10);
         assert!(d.on_enter(t_enter));
         assert!(d.is_buffering());
 
         let t_newline_flush = after_idle(t_enter);
-        assert_eq!(
-            d.tick(t_newline_flush),
-            Some(FlushAction::EmitPaste("\n".to_owned()))
-        );
+        assert_eq!(d.tick(t_newline_flush), Some(FlushAction::EmitPaste("\n".to_owned())));
     }
 
     #[test]
