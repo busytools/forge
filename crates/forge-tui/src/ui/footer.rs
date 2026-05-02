@@ -1,4 +1,5 @@
 use crate::agent::model;
+use crate::app::git_context::BranchChip;
 use crate::app::{App, MessageBlock, MessageRole};
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
@@ -233,6 +234,30 @@ fn render_footer_right_info(frame: &mut Frame, area: Rect, right_text: &str, rig
     frame.render_widget(Paragraph::new(line).alignment(Alignment::Right), area);
 }
 
+/// Pre-fitted branch portion of the footer context line. Kind
+/// drives styling at render time (yellow for `Detached`, dim grey
+/// for `Named`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum BranchValue {
+    Named(String),
+    Detached(String),
+}
+
+impl BranchValue {
+    fn text(&self) -> &str {
+        match self {
+            Self::Named(text) | Self::Detached(text) => text.as_str(),
+        }
+    }
+
+    fn color(&self) -> Color {
+        match self {
+            Self::Named(_) => FOOTER_CONTEXT_VALUE,
+            Self::Detached(_) => theme::STATUS_WARNING,
+        }
+    }
+}
+
 fn build_context_line(app: &App, max_width: usize) -> Line<'static> {
     let Some((location_value, branch_value)) = context_values(app, max_width) else {
         return Line::default();
@@ -244,30 +269,43 @@ fn build_context_line(app: &App, max_width: usize) -> Line<'static> {
     ];
 
     if let Some(branch_value) = branch_value {
+        let color = branch_value.color();
         spans.push(Span::styled(" (", Style::default().fg(theme::DIM)));
-        spans.push(Span::styled(branch_value, Style::default().fg(FOOTER_CONTEXT_VALUE)));
+        spans.push(Span::styled(branch_value.text().to_owned(), Style::default().fg(color)));
         spans.push(Span::styled(")", Style::default().fg(theme::DIM)));
     }
 
     Line::from(spans)
 }
 
-fn context_values(app: &App, max_width: usize) -> Option<(String, Option<String>)> {
+fn context_values(app: &App, max_width: usize) -> Option<(String, Option<BranchValue>)> {
     const LOCATION_LABEL_WIDTH: usize = 5;
     const BRANCH_WRAP_WIDTH: usize = 3;
+    const DETACHED_LABEL: &str = "detached";
 
     let location_only_width = max_width.saturating_sub(LOCATION_LABEL_WIDTH);
-    let branch = app.git_branch().filter(|branch| !branch.is_empty());
+    let chip = app.git_branch_chip().filter(|chip| match chip {
+        BranchChip::Named(branch) => !branch.is_empty(),
+        BranchChip::Detached => true,
+    });
 
-    if let Some(branch) = branch {
+    if let Some(chip) = chip {
+        let raw_text = match chip {
+            BranchChip::Named(branch) => branch,
+            BranchChip::Detached => DETACHED_LABEL,
+        };
         let fixed_width = LOCATION_LABEL_WIDTH + BRANCH_WRAP_WIDTH;
         let available_values = max_width.saturating_sub(fixed_width);
         if available_values >= MIN_CONTEXT_LOCATION_WIDTH + MIN_CONTEXT_BRANCH_WIDTH {
-            let branch_width = UnicodeWidthStr::width(branch)
+            let branch_width = UnicodeWidthStr::width(raw_text)
                 .min(available_values.saturating_sub(MIN_CONTEXT_LOCATION_WIDTH));
-            let branch_value = fit_footer_right_text(branch, branch_width);
+            let fitted_text = fit_footer_right_text(raw_text, branch_width);
+            let branch_value = fitted_text.map(|text| match chip {
+                BranchChip::Named(_) => BranchValue::Named(text),
+                BranchChip::Detached => BranchValue::Detached(text),
+            });
             let branch_display_width =
-                branch_value.as_ref().map_or(0, |value| UnicodeWidthStr::width(value.as_str()));
+                branch_value.as_ref().map_or(0, |value| UnicodeWidthStr::width(value.text()));
             let location_width = available_values.saturating_sub(branch_display_width);
             if let Some(location_value) = fit_location_value(&app.cwd, location_width) {
                 return Some((location_value, branch_value));
@@ -622,6 +660,41 @@ mod tests {
             build_context_line(&app, 24).spans.iter().map(|span| span.content.as_ref()).collect();
         assert!(text.starts_with("Loc: "));
         assert!(!text.contains("Branch:"));
+    }
+
+    #[test]
+    fn context_line_shows_detached_label_for_detached_head() {
+        let mut app = App::test_default();
+        app.cwd = "~/repo".into();
+        app.set_git_detached_for_test();
+
+        let line = build_context_line(&app, 80);
+        let text: String = line.spans.iter().map(|span| span.content.as_ref()).collect();
+        assert_eq!(text, "Loc: ~/repo (detached)");
+
+        // The "detached" span carries the warning color so the user
+        // notices they're not on a named branch.
+        let detached_span = line
+            .spans
+            .iter()
+            .find(|span| span.content.as_ref() == "detached")
+            .expect("detached span present");
+        assert_eq!(detached_span.style.fg, Some(theme::STATUS_WARNING));
+    }
+
+    #[test]
+    fn context_line_named_branch_keeps_default_color() {
+        let mut app = App::test_default();
+        app.cwd = "~/repo".into();
+        app.set_git_branch_for_test(Some("main"));
+
+        let line = build_context_line(&app, 80);
+        let main_span = line
+            .spans
+            .iter()
+            .find(|span| span.content.as_ref() == "main")
+            .expect("main span present");
+        assert_eq!(main_span.style.fg, Some(FOOTER_CONTEXT_VALUE));
     }
 
     #[test]

@@ -30,8 +30,12 @@ pub(crate) fn status_lines(app: &App) -> Vec<Line<'static>> {
 
     kv_line(&mut lines, "cwd", &app.cwd);
 
-    if let Some(branch) = app.git_branch() {
-        kv_line(&mut lines, "Git branch", branch);
+    if let Some(chip) = app.git_branch_chip() {
+        let branch_text = match chip {
+            crate::app::git_context::BranchChip::Named(name) => name.to_owned(),
+            crate::app::git_context::BranchChip::Detached => "(detached)".to_owned(),
+        };
+        kv_line(&mut lines, "Git branch", &branch_text);
     }
 
     lines.push(Line::default());
