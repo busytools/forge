@@ -43,10 +43,7 @@ pub fn summarize_internal_error(input: &str) -> String {
     if let Some(msg) = extract_json_string_field(input, "message") {
         return truncate_for_log(&msg);
     }
-    let fallback = input
-        .lines()
-        .find(|line| !line.trim().is_empty())
-        .unwrap_or(input);
+    let fallback = input.lines().find(|line| !line.trim().is_empty()).unwrap_or(input);
     truncate_for_log(fallback.trim())
 }
 
@@ -136,12 +133,7 @@ fn summarize_permission_schema_error(input: &str) -> Option<String> {
     let detail = if let Some(msg) = extract_json_string_field(input, "message") {
         msg
     } else {
-        input
-            .lines()
-            .find(|line| !line.trim().is_empty())
-            .unwrap_or(input)
-            .trim()
-            .to_owned()
+        input.lines().find(|line| !line.trim().is_empty()).unwrap_or(input).trim().to_owned()
     };
 
     Some(format!("Tool permission request failed: {detail}"))
@@ -207,8 +199,6 @@ fn extract_json_string_field(input: &str, field: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-
     use super::{
         TurnErrorClass, classify_turn_error, looks_like_internal_error, parse_turn_error_class,
         summarize_internal_error,
@@ -216,10 +206,7 @@ mod tests {
 
     #[test]
     fn classifies_plan_limit_errors() {
-        assert_eq!(
-            classify_turn_error("HTTP 429 Too Many Requests"),
-            TurnErrorClass::PlanLimit
-        );
+        assert_eq!(classify_turn_error("HTTP 429 Too Many Requests"), TurnErrorClass::PlanLimit);
         assert_eq!(
             classify_turn_error("turn failed: max budget exceeded"),
             TurnErrorClass::PlanLimit
@@ -249,26 +236,14 @@ mod tests {
 
     #[test]
     fn classifies_other_errors() {
-        assert_eq!(
-            classify_turn_error("turn failed: timeout"),
-            TurnErrorClass::Other
-        );
+        assert_eq!(classify_turn_error("turn failed: timeout"), TurnErrorClass::Other);
     }
 
     #[test]
     fn parses_bridge_turn_error_kind_tags() {
-        assert_eq!(
-            parse_turn_error_class("plan_limit"),
-            Some(TurnErrorClass::PlanLimit)
-        );
-        assert_eq!(
-            parse_turn_error_class("auth_required"),
-            Some(TurnErrorClass::AuthRequired)
-        );
-        assert_eq!(
-            parse_turn_error_class("internal"),
-            Some(TurnErrorClass::Internal)
-        );
+        assert_eq!(parse_turn_error_class("plan_limit"), Some(TurnErrorClass::PlanLimit));
+        assert_eq!(parse_turn_error_class("auth_required"), Some(TurnErrorClass::AuthRequired));
+        assert_eq!(parse_turn_error_class("internal"), Some(TurnErrorClass::Internal));
         assert_eq!(parse_turn_error_class("other"), Some(TurnErrorClass::Other));
         assert_eq!(parse_turn_error_class("unexpected"), None);
     }
