@@ -50,6 +50,7 @@ mod client;
 pub mod content;
 pub mod control;
 mod error;
+pub mod git;
 pub mod hooks;
 pub mod mcp;
 pub(crate) mod messages;
@@ -65,6 +66,7 @@ pub mod transport;
 
 pub use client::Client;
 pub use error::Error;
+pub use git::{GitBranch, GitContext, GitContextWatcher, GitError, git_context};
 pub use oauth_usage::{OauthExtraUsage, OauthUsage, OauthUsageError, OauthUsageWindow, oauth_usage};
 pub use session::paths::{claude_config_dir, project_memory, project_memory_path};
 pub use settings::{

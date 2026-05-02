@@ -975,6 +975,7 @@ dependencies = [
  "async-trait",
  "getrandom 0.3.4",
  "hex",
+ "notify",
  "parking_lot",
  "reqwest",
  "serde",
