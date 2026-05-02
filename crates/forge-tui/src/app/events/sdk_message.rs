@@ -150,6 +150,9 @@ fn handle_system(app: &mut App, msg: Message, raw: &Value) {
         "init" => {
             apply_settings_parse_errors(app, data);
         }
+        "compact_boundary" => {
+            apply_compaction_boundary(app, data);
+        }
         _ => {}
     }
     let _ = raw;
@@ -158,6 +161,34 @@ fn handle_system(app: &mut App, msg: Message, raw: &Value) {
 /// Drain `settings_errors` / `settingsErrors` from a System(init)
 /// data record and call the App's settings-parse-error notice handler
 /// once per error.
+/// Parse a System(compact_boundary) record and call the App's
+/// rate_limit::handle_compaction_boundary_update with the typed
+/// boundary value.
+fn apply_compaction_boundary(app: &mut App, data: &Value) {
+    let Some(record) = data.as_object() else { return };
+    let Some(meta) = record.get("compact_metadata").and_then(Value::as_object) else { return };
+    let trigger = meta.get("trigger").and_then(Value::as_str).unwrap_or("");
+    let Some(pre_tokens) = meta
+        .get("pre_tokens")
+        .or_else(|| meta.get("preTokens"))
+        .and_then(Value::as_u64)
+    else {
+        return;
+    };
+    let model_trigger = match trigger {
+        "manual" => crate::agent::model::CompactionTrigger::Manual,
+        "auto" => crate::agent::model::CompactionTrigger::Auto,
+        _ => return,
+    };
+    super::rate_limit::handle_compaction_boundary_update(
+        app,
+        crate::agent::model::CompactionBoundary {
+            trigger: model_trigger,
+            pre_tokens,
+        },
+    );
+}
+
 fn apply_settings_parse_errors(app: &mut App, data: &Value) {
     let Some(record) = data.as_object() else { return };
     let Some(errors) = record

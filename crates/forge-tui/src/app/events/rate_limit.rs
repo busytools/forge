@@ -163,7 +163,7 @@ pub(super) fn handle_rate_limit_update(app: &mut App, update: &model::RateLimitU
     }
 }
 
-pub(super) fn handle_compaction_boundary_update(
+pub(crate) fn handle_compaction_boundary_update(
     app: &mut App,
     boundary: model::CompactionBoundary,
 ) {

@@ -339,29 +339,9 @@ fn handle_system_status(
     // moved to the App's events::sdk_message::handle_system status arm.
 }
 
-fn handle_system_compact_boundary(
-    session: &BridgeSession,
-    msg_record: &Map<String, Value>,
-    out: &mut Vec<BridgeEvent>,
-) {
-    let Some(meta) = msg_record.get("compact_metadata").and_then(Value::as_object) else { return };
-    let trigger = meta.get("trigger").and_then(Value::as_str).unwrap_or("");
-    let pre_tokens = meta
-        .get("pre_tokens")
-        .or_else(|| meta.get("preTokens"))
-        .and_then(Value::as_u64);
-    let Some(pre_tokens) = pre_tokens else { return };
-    let trigger_typed = match trigger {
-        "manual" => crate::agent::types::CompactionTrigger::Manual,
-        "auto" => crate::agent::types::CompactionTrigger::Auto,
-        _ => return,
-    };
-    push_session_update(
-        out,
-        &session.session_id,
-        SessionUpdate::CompactionBoundary { trigger: trigger_typed, pre_tokens },
-    );
-}
+// handle_system_compact_boundary moved to App's
+// events::sdk_message::apply_compaction_boundary on the
+// BridgeEvent::SdkMessage parallel wire.
 
 /// Top-level dispatcher. Routes one `forge_sdk::Message` to its
 /// per-subtype handler. The bridge session captures continuous state
@@ -456,7 +436,7 @@ pub fn handle_sdk_message(
                     handle_system_status(session, msg_record, out);
                 }
                 "compact_boundary" => {
-                    handle_system_compact_boundary(session, msg_record, out);
+                    // CompactionBoundary moved to App handler.
                 }
                 "local_command_output" => {
                     let content = msg_record.get("content").and_then(Value::as_str).unwrap_or("");
