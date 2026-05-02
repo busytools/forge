@@ -1441,14 +1441,14 @@ mod tests {
     fn connected_requests_mcp_snapshot_even_outside_mcp_tab() {
         let (mut app, mut rx) = app_with_bridge_connection();
         app.config.active_tab = crate::app::config::ConfigTab::Status;
-        app.mcp.servers.push(crate::agent::types::McpServerStatus {
+        app.mcp.servers.push(forge_sdk::McpServerStatus {
             name: "supabase".into(),
-            status: crate::agent::types::McpServerConnectionStatus::Connected,
+            status: forge_sdk::McpServerConnectionStatus::Connected,
             server_info: None,
             error: None,
             config: None,
             scope: None,
-            tools: Vec::new(),
+            tools: None,
             sampling_configured: None,
             sampling_required: None,
         });
@@ -1595,7 +1595,7 @@ mod tests {
             seven_day_sonnet: None,
             extra_usage: None,
         });
-        app.account_info = Some(crate::agent::types::AccountInfo {
+        app.account_info = Some(forge_sdk::AccountInfo {
             email: Some("old@example.com".into()),
             organization: None,
             subscription_type: None,
@@ -1755,14 +1755,14 @@ mod tests {
             active_form: String::new(),
         });
         app.mention = Some(mention::MentionState::new(0, 0, String::new(), Vec::new()));
-        app.mcp.servers.push(crate::agent::types::McpServerStatus {
+        app.mcp.servers.push(forge_sdk::McpServerStatus {
             name: "supabase".into(),
-            status: crate::agent::types::McpServerConnectionStatus::Connected,
+            status: forge_sdk::McpServerConnectionStatus::Connected,
             server_info: None,
             error: None,
             config: None,
             scope: None,
-            tools: Vec::new(),
+            tools: None,
             sampling_configured: None,
             sampling_required: None,
         });
@@ -1809,14 +1809,14 @@ mod tests {
     fn session_replaced_requests_mcp_snapshot_even_outside_mcp_tab() {
         let (mut app, mut rx) = app_with_bridge_connection();
         app.config.active_tab = crate::app::config::ConfigTab::Status;
-        app.mcp.servers.push(crate::agent::types::McpServerStatus {
+        app.mcp.servers.push(forge_sdk::McpServerStatus {
             name: "supabase".into(),
-            status: crate::agent::types::McpServerConnectionStatus::Connected,
+            status: forge_sdk::McpServerConnectionStatus::Connected,
             server_info: None,
             error: None,
             config: None,
             scope: None,
-            tools: Vec::new(),
+            tools: None,
             sampling_configured: None,
             sampling_required: None,
         });
@@ -1896,7 +1896,7 @@ mod tests {
             &mut app,
             ClientEvent::StatusSnapshotReceived {
                 session_id: "old-session".into(),
-                account: crate::agent::types::AccountInfo {
+                account: forge_sdk::AccountInfo {
                     email: Some("old@example.com".into()),
                     organization: None,
                     subscription_type: None,
@@ -1925,7 +1925,7 @@ mod tests {
             &mut app,
             ClientEvent::StatusSnapshotReceived {
                 session_id: "session-1".into(),
-                account: crate::agent::types::AccountInfo {
+                account: forge_sdk::AccountInfo {
                     email: None,
                     organization: None,
                     subscription_type: Some("Claude Max".into()),
@@ -1946,14 +1946,14 @@ mod tests {
     fn stale_mcp_snapshot_for_old_session_is_ignored() {
         let mut app = make_test_app();
         app.session_id = Some(model::SessionId::new("current-session"));
-        app.mcp.servers.push(crate::agent::types::McpServerStatus {
+        app.mcp.servers.push(forge_sdk::McpServerStatus {
             name: "current".into(),
-            status: crate::agent::types::McpServerConnectionStatus::Connected,
+            status: forge_sdk::McpServerConnectionStatus::Connected,
             server_info: None,
             error: None,
             config: None,
             scope: None,
-            tools: Vec::new(),
+            tools: None,
             sampling_configured: None,
             sampling_required: None,
         });
@@ -1962,14 +1962,14 @@ mod tests {
             &mut app,
             ClientEvent::McpSnapshotReceived {
                 session_id: "old-session".into(),
-                servers: vec![crate::agent::types::McpServerStatus {
+                servers: vec![forge_sdk::McpServerStatus {
                     name: "stale".into(),
-                    status: crate::agent::types::McpServerConnectionStatus::Connected,
+                    status: forge_sdk::McpServerConnectionStatus::Connected,
                     server_info: None,
                     error: None,
                     config: None,
                     scope: None,
-                    tools: Vec::new(),
+                    tools: None,
             sampling_configured: None,
             sampling_required: None,
                 }],

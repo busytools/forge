@@ -1895,8 +1895,6 @@ mod tests {
 
     #[test]
     fn mcp_details_overlay_renders_selected_server_details() {
-        use std::collections::BTreeMap;
-
         fn buffer_text(buffer: &Buffer) -> String {
             let width = usize::from(buffer.area.width);
             buffer
@@ -1918,29 +1916,30 @@ mod tests {
                 selected_index: 0,
             },
         ));
-        app.mcp.servers = vec![crate::agent::types::McpServerStatus {
+        app.mcp.servers = vec![forge_sdk::McpServerStatus {
             name: "filesystem".to_owned(),
-            status: crate::agent::types::McpServerConnectionStatus::Connected,
-            server_info: Some(crate::agent::types::McpServerInfo {
+            status: forge_sdk::McpServerConnectionStatus::Connected,
+            server_info: Some(forge_sdk::McpServerInfo {
                 name: "Filesystem".to_owned(),
                 version: "1.2.3".to_owned(),
             }),
             error: None,
-            config: Some(crate::agent::types::McpServerStatusConfig::Stdio {
-                command: "npx".to_owned(),
-                args: vec!["@modelcontextprotocol/server-filesystem".to_owned()],
-                env: BTreeMap::new(),
-            }),
+            config: Some(serde_json::json!({
+                "type": "stdio",
+                "command": "npx",
+                "args": ["@modelcontextprotocol/server-filesystem"],
+                "env": {},
+            })),
             scope: Some("project".to_owned()),
-            tools: vec![crate::agent::types::McpTool {
+            tools: Some(vec![forge_sdk::McpToolInfo {
                 name: "read_file".to_owned(),
                 description: Some("Read a file".to_owned()),
-                annotations: Some(crate::agent::types::McpToolAnnotations {
+                annotations: Some(forge_sdk::McpToolAnnotations {
                     read_only: Some(true),
                     destructive: Some(false),
                     open_world: Some(false),
                 }),
-            }],
+            }]),
             sampling_configured: None,
             sampling_required: None,
         }];

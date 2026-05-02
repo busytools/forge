@@ -4,10 +4,9 @@ use super::overlay::{
     render_overlay_shell,
 };
 use super::theme;
-use crate::agent::types::{
-    ElicitationAction, ElicitationMode, McpServerConnectionStatus, McpServerStatus,
-    McpServerStatusConfig,
-};
+use crate::agent::types::{ElicitationAction, ElicitationMode};
+use forge_sdk::{McpServerConnectionStatus, McpServerStatus};
+use serde_json::Value;
 use crate::app::App;
 use crate::app::config::{available_mcp_actions, is_mcp_action_available};
 use ratatui::Frame;
@@ -321,7 +320,11 @@ fn server_detail_lines(server: &McpServerStatus) -> Vec<Line<'static>> {
         ),
         detail_kv("Scope", server.scope.as_deref().unwrap_or("session"), Color::White),
         detail_kv("Transport", transport_label(server.config.as_ref()), Color::White),
-        detail_kv("Tools", &tool_summary(server.tools.len()), Color::White),
+        detail_kv(
+            "Tools",
+            &tool_summary(server.tools.as_deref().map_or(0, <[_]>::len)),
+            Color::White,
+        ),
     ];
 
     if let Some(info) = server.server_info.as_ref() {
@@ -495,25 +498,56 @@ fn auth_redirect_action_lines(
     lines
 }
 
-fn config_lines(config: &McpServerStatusConfig) -> Vec<Line<'static>> {
-    match config {
-        McpServerStatusConfig::Stdio { command, args, env } => {
-            let args_label = if args.is_empty() { "(none)".to_owned() } else { args.join(" ") };
+/// Render the configuration block for a single MCP server. The
+/// SDK exposes the config as `Option<serde_json::Value>` because
+/// the CLI accepts variants forge-sdk doesn't model
+/// (e.g. `claudeai-proxy`); we extract fields by `type` discriminator
+/// inline rather than carrying a typed mirror enum across the
+/// bridge.
+fn config_lines(config: &Value) -> Vec<Line<'static>> {
+    let kind = config.get("type").and_then(Value::as_str).unwrap_or("");
+    match kind {
+        "stdio" => {
+            let command = config.get("command").and_then(Value::as_str).unwrap_or("(missing)");
+            let args = config
+                .get("args")
+                .and_then(Value::as_array)
+                .map(|arr| {
+                    arr.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(" ")
+                })
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| "(none)".to_owned());
+            let env_count = config
+                .get("env")
+                .and_then(Value::as_object)
+                .map_or(0, serde_json::Map::len);
             vec![
                 detail_kv("Command", command, Color::White),
-                detail_kv("Args", &args_label, Color::White),
-                detail_kv("Env", &format!("{} variable(s)", env.len()), Color::White),
+                detail_kv("Args", &args, Color::White),
+                detail_kv("Env", &format!("{env_count} variable(s)"), Color::White),
             ]
         }
-        McpServerStatusConfig::Sse { url, headers }
-        | McpServerStatusConfig::Http { url, headers } => vec![
-            detail_kv("URL", url, Color::White),
-            detail_kv("Headers", &format!("{} configured", headers.len()), Color::White),
-        ],
-        McpServerStatusConfig::Sdk { name } => vec![detail_kv("SDK server", name, Color::White)],
-        McpServerStatusConfig::ClaudeaiProxy { url, id } => {
+        "sse" | "http" => {
+            let url = config.get("url").and_then(Value::as_str).unwrap_or("(missing)");
+            let header_count = config
+                .get("headers")
+                .and_then(Value::as_object)
+                .map_or(0, serde_json::Map::len);
+            vec![
+                detail_kv("URL", url, Color::White),
+                detail_kv("Headers", &format!("{header_count} configured"), Color::White),
+            ]
+        }
+        "sdk" => {
+            let name = config.get("name").and_then(Value::as_str).unwrap_or("(missing)");
+            vec![detail_kv("SDK server", name, Color::White)]
+        }
+        "claudeai-proxy" => {
+            let url = config.get("url").and_then(Value::as_str).unwrap_or("(missing)");
+            let id = config.get("id").and_then(Value::as_str).unwrap_or("(missing)");
             vec![detail_kv("Proxy URL", url, Color::White), detail_kv("Proxy ID", id, Color::White)]
         }
+        _ => Vec::new(),
     }
 }
 
@@ -592,16 +626,27 @@ fn server_summary_line(server: &McpServerStatus) -> String {
     if let Some(info) = server.server_info.as_ref() {
         parts.push(format!("{} {}", info.name, info.version));
     }
-    parts.push(tool_summary(server.tools.len()));
-    match server.config.as_ref() {
-        Some(McpServerStatusConfig::Stdio { command, .. }) => parts.push(format!("cmd {command}")),
-        Some(
-            McpServerStatusConfig::Sse { url, .. }
-            | McpServerStatusConfig::Http { url, .. }
-            | McpServerStatusConfig::ClaudeaiProxy { url, .. },
-        ) => parts.push(url.clone()),
-        Some(McpServerStatusConfig::Sdk { name }) => parts.push(format!("sdk {name}")),
-        None => {}
+    let tool_count = server.tools.as_deref().map_or(0, <[_]>::len);
+    parts.push(tool_summary(tool_count));
+    if let Some(config) = server.config.as_ref() {
+        match config.get("type").and_then(Value::as_str) {
+            Some("stdio") => {
+                if let Some(cmd) = config.get("command").and_then(Value::as_str) {
+                    parts.push(format!("cmd {cmd}"));
+                }
+            }
+            Some("sse" | "http" | "claudeai-proxy") => {
+                if let Some(url) = config.get("url").and_then(Value::as_str) {
+                    parts.push(url.to_owned());
+                }
+            }
+            Some("sdk") => {
+                if let Some(name) = config.get("name").and_then(Value::as_str) {
+                    parts.push(format!("sdk {name}"));
+                }
+            }
+            _ => {}
+        }
     }
     parts.join("  |  ")
 }
@@ -643,14 +688,14 @@ fn status_label(status: McpServerConnectionStatus) -> &'static str {
     }
 }
 
-fn transport_label(config: Option<&McpServerStatusConfig>) -> &'static str {
-    match config {
-        Some(McpServerStatusConfig::Stdio { .. }) => "stdio",
-        Some(McpServerStatusConfig::Sse { .. }) => "sse",
-        Some(McpServerStatusConfig::Http { .. }) => "http",
-        Some(McpServerStatusConfig::Sdk { .. }) => "sdk",
-        Some(McpServerStatusConfig::ClaudeaiProxy { .. }) => "claudeai-proxy",
-        None => "unknown",
+fn transport_label(config: Option<&Value>) -> &'static str {
+    match config.and_then(|c| c.get("type")).and_then(Value::as_str) {
+        Some("stdio") => "stdio",
+        Some("sse") => "sse",
+        Some("http") => "http",
+        Some("sdk") => "sdk",
+        Some("claudeai-proxy") => "claudeai-proxy",
+        _ => "unknown",
     }
 }
 
@@ -707,7 +752,6 @@ mod tests {
     use super::*;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
-    use std::collections::BTreeMap;
 
     fn render_mcp(app: &App, width: u16, height: u16) -> String {
         let backend = TestBackend::new(width, height);
@@ -745,41 +789,40 @@ mod tests {
                 status: McpServerConnectionStatus::NeedsAuth,
                 server_info: None,
                 error: None,
-                config: Some(McpServerStatusConfig::Http {
-                    url: "https://mcp.notion.com/mcp".to_owned(),
-                    headers: BTreeMap::new(),
-                }),
+                config: Some(serde_json::json!({
+                    "type": "http",
+                    "url": "https://mcp.notion.com/mcp",
+                    "headers": {},
+                })),
                 scope: Some("user".to_owned()),
-                tools: vec![],
-            sampling_configured: None,
-            sampling_required: None,
+                tools: Some(vec![]),
+                sampling_configured: None,
+                sampling_required: None,
             },
             McpServerStatus {
                 name: "filesystem".to_owned(),
                 status: McpServerConnectionStatus::Connected,
-                server_info: Some(crate::agent::types::McpServerInfo {
+                server_info: Some(forge_sdk::McpServerInfo {
                     name: "Filesystem".to_owned(),
                     version: "1.2.3".to_owned(),
                 }),
                 error: None,
-                config: Some(McpServerStatusConfig::Stdio {
-                    command: "npx".to_owned(),
-                    args: vec![
-                        "-y".to_owned(),
-                        "@modelcontextprotocol/server-filesystem".to_owned(),
-                    ],
-                    env: BTreeMap::new(),
-                }),
+                config: Some(serde_json::json!({
+                    "type": "stdio",
+                    "command": "npx",
+                    "args": ["-y", "@modelcontextprotocol/server-filesystem"],
+                    "env": {},
+                })),
                 scope: Some("project".to_owned()),
-                tools: vec![crate::agent::types::McpTool {
+                tools: Some(vec![forge_sdk::McpToolInfo {
                     name: "read_file".to_owned(),
                     description: Some("Read a file".to_owned()),
-                    annotations: Some(crate::agent::types::McpToolAnnotations {
+                    annotations: Some(forge_sdk::McpToolAnnotations {
                         read_only: Some(true),
                         destructive: Some(false),
                         open_world: Some(false),
                     }),
-                }],
+                }]),
                 sampling_configured: None,
                 sampling_required: None,
             },

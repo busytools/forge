@@ -4,7 +4,6 @@ use crate::agent::forge_sdk_bridge::ForgeSdkCommand;
 use crate::app::AppStatus;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use serde_json::Value;
-use std::collections::BTreeMap;
 use std::path::Path;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -1254,20 +1253,21 @@ fn mcp_enter_opens_details_overlay_instead_of_closing_config() {
     let (_dir, mut app) = open_settings_test_app();
     app.config.active_tab = ConfigTab::Mcp;
     app.session_id = Some(crate::agent::model::SessionId::new("session-1"));
-    app.mcp.servers = vec![crate::agent::types::McpServerStatus {
+    app.mcp.servers = vec![forge_sdk::McpServerStatus {
         name: "filesystem".to_owned(),
-        status: crate::agent::types::McpServerConnectionStatus::Connected,
+        status: forge_sdk::McpServerConnectionStatus::Connected,
         server_info: None,
         error: None,
-        config: Some(crate::agent::types::McpServerStatusConfig::Stdio {
-            command: "npx".to_owned(),
-            args: vec!["@modelcontextprotocol/server-filesystem".to_owned()],
-            env: BTreeMap::new(),
-        }),
+        config: Some(serde_json::json!({
+            "type": "stdio",
+            "command": "npx",
+            "args": ["@modelcontextprotocol/server-filesystem"],
+            "env": {},
+        })),
         scope: Some("project".to_owned()),
-        tools: vec![],
-            sampling_configured: None,
-            sampling_required: None,
+        tools: Some(vec![]),
+        sampling_configured: None,
+        sampling_required: None,
     }];
 
     handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
@@ -1301,16 +1301,16 @@ fn mcp_tab_refresh_key_requests_snapshot() {
     app.conn = Some(Rc::new(crate::agent::forge_sdk_bridge::ForgeSdkBridge::new(tx)));
     app.session_id = Some(crate::agent::model::SessionId::new("session-1"));
     app.config.active_tab = ConfigTab::Mcp;
-    app.mcp.servers.push(crate::agent::types::McpServerStatus {
+    app.mcp.servers.push(forge_sdk::McpServerStatus {
         name: "stale".to_owned(),
-        status: crate::agent::types::McpServerConnectionStatus::NeedsAuth,
+        status: forge_sdk::McpServerConnectionStatus::NeedsAuth,
         server_info: None,
         error: None,
         config: None,
         scope: None,
-        tools: Vec::new(),
-            sampling_configured: None,
-            sampling_required: None,
+        tools: None,
+        sampling_configured: None,
+        sampling_required: None,
     });
 
     handle_key(&mut app, KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE));
@@ -1353,16 +1353,16 @@ fn refresh_mcp_snapshot_clears_existing_servers_before_request() {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     app.conn = Some(Rc::new(crate::agent::forge_sdk_bridge::ForgeSdkBridge::new(tx)));
     app.session_id = Some(crate::agent::model::SessionId::new("session-1"));
-    app.mcp.servers.push(crate::agent::types::McpServerStatus {
+    app.mcp.servers.push(forge_sdk::McpServerStatus {
         name: "stale".to_owned(),
-        status: crate::agent::types::McpServerConnectionStatus::Connected,
+        status: forge_sdk::McpServerConnectionStatus::Connected,
         server_info: None,
         error: None,
         config: None,
         scope: None,
-        tools: Vec::new(),
-            sampling_configured: None,
-            sampling_required: None,
+        tools: None,
+        sampling_configured: None,
+        sampling_required: None,
     });
 
     refresh_mcp_snapshot(&mut app);
@@ -1392,21 +1392,22 @@ fn refresh_mcp_snapshot_if_needed_skips_outside_mcp_tab() {
 
 #[test]
 fn claudeai_proxy_server_shows_disabled_authenticate_action() {
-    let server = crate::agent::types::McpServerStatus {
+    let server = forge_sdk::McpServerStatus {
         name: "claude.ai Google Calendar".to_owned(),
-        status: crate::agent::types::McpServerConnectionStatus::NeedsAuth,
+        status: forge_sdk::McpServerConnectionStatus::NeedsAuth,
         server_info: None,
         error: Some(
             "MCP server requires authentication but no OAuth token is configured.".to_owned(),
         ),
-        config: Some(crate::agent::types::McpServerStatusConfig::ClaudeaiProxy {
-            url: "https://mcp-proxy.anthropic.com/v1/mcp/server".to_owned(),
-            id: "mcpsrv_REDACTED".to_owned(),
-        }),
+        config: Some(serde_json::json!({
+            "type": "claudeai-proxy",
+            "url": "https://mcp-proxy.anthropic.com/v1/mcp/server",
+            "id": "mcpsrv_REDACTED",
+        })),
         scope: Some("session".to_owned()),
-        tools: Vec::new(),
-            sampling_configured: None,
-            sampling_required: None,
+        tools: None,
+        sampling_configured: None,
+        sampling_required: None,
     };
 
     let actions = available_mcp_actions(&server);

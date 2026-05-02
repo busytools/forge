@@ -472,17 +472,17 @@ pub(crate) fn open_mcp_server_details(
 
 #[must_use]
 pub(crate) fn available_mcp_actions(
-    server: &crate::agent::types::McpServerStatus,
+    server: &forge_sdk::McpServerStatus,
 ) -> Vec<McpServerActionKind> {
     let mut actions = vec![McpServerActionKind::RefreshSnapshot];
-    if matches!(server.status, crate::agent::types::McpServerConnectionStatus::Disabled) {
+    if matches!(server.status, forge_sdk::McpServerConnectionStatus::Disabled) {
         actions.push(McpServerActionKind::Enable);
     } else {
         if matches!(
             server.status,
-            crate::agent::types::McpServerConnectionStatus::NeedsAuth
-                | crate::agent::types::McpServerConnectionStatus::Failed
-                | crate::agent::types::McpServerConnectionStatus::Pending
+            forge_sdk::McpServerConnectionStatus::NeedsAuth
+                | forge_sdk::McpServerConnectionStatus::Failed
+                | forge_sdk::McpServerConnectionStatus::Pending
         ) {
             actions.push(McpServerActionKind::Authenticate);
         }
@@ -495,16 +495,22 @@ pub(crate) fn available_mcp_actions(
 
 #[must_use]
 pub(crate) fn is_mcp_action_available(
-    server: &crate::agent::types::McpServerStatus,
+    server: &forge_sdk::McpServerStatus,
     action: McpServerActionKind,
 ) -> bool {
-    !matches!(
-        (action, server.config.as_ref()),
-        (
-            McpServerActionKind::Authenticate,
-            Some(crate::agent::types::McpServerStatusConfig::ClaudeaiProxy { .. })
-        )
-    )
+    if !matches!(action, McpServerActionKind::Authenticate) {
+        return true;
+    }
+    // Authenticate is unavailable for `claudeai-proxy` servers — the
+    // SDK exposes server.config as `Option<serde_json::Value>` so we
+    // discriminate on the JSON `type` tag inline.
+    let is_claudeai_proxy = server
+        .config
+        .as_ref()
+        .and_then(|c| c.get("type"))
+        .and_then(serde_json::Value::as_str)
+        == Some("claudeai-proxy");
+    !is_claudeai_proxy
 }
 
 pub(crate) fn present_mcp_elicitation_request(
