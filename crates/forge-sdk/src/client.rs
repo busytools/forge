@@ -490,6 +490,25 @@ impl Client {
         crate::settings::settings_documents(cwd)
     }
 
+    /// Write `document` atomically to the settings file
+    /// [`SettingsTarget`](crate::SettingsTarget) resolves to. Mirrors
+    /// the read-side resolution — `User` honours
+    /// `$CLAUDE_CONFIG_DIR`, `ProjectLocal { cwd }` is project-
+    /// relative, `Preferences` is `$HOME`-pinned.
+    ///
+    /// # Errors
+    ///
+    /// [`Error`] when the underlying filesystem operation fails — see
+    /// [`crate::settings::write_settings_document`] for the full
+    /// failure-mode list.
+    pub fn write_settings_document(
+        &self,
+        target: &crate::SettingsTarget,
+        document: &serde_json::Value,
+    ) -> Result<(), crate::Error> {
+        crate::settings::write_settings_document(target, document)
+    }
+
     /// Send a user prompt as a stream-json user turn.
     ///
     /// # Errors
