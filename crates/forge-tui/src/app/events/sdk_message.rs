@@ -122,6 +122,21 @@ fn handle_system(app: &mut App, msg: Message, raw: &Value) {
     match subtype.as_str() {
         "status" => {
             apply_fast_mode_update(app, data);
+            // session status: "compacting" → Compacting, null → Idle.
+            // (Other string values silently ignored, matching upstream.)
+            if let Some(status_field) = data.get("status") {
+                if status_field.as_str() == Some("compacting") {
+                    super::apply_session_status_update(
+                        app,
+                        crate::agent::model::SessionStatus::Compacting,
+                    );
+                } else if status_field.is_null() {
+                    super::apply_session_status_update(
+                        app,
+                        crate::agent::model::SessionStatus::Idle,
+                    );
+                }
+            }
         }
         "session_state_changed" => {
             if let Some(wire_state) = parse_runtime_session_state(data.get("state")) {

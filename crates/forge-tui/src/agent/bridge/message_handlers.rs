@@ -335,23 +335,8 @@ fn handle_system_status(
             SessionUpdate::CurrentModeUpdate { current_mode_id: mode.as_wire().to_owned() },
         );
     }
-    let status = msg_record.get("status");
-    if status.and_then(Value::as_str) == Some("compacting") {
-        push_session_update(
-            out,
-            &session.session_id,
-            SessionUpdate::SessionStatusUpdate {
-                status: crate::agent::types::SessionStatus::Compacting,
-            },
-        );
-    } else if matches!(status, Some(v) if v.is_null()) {
-        push_session_update(
-            out,
-            &session.session_id,
-            SessionUpdate::SessionStatusUpdate { status: crate::agent::types::SessionStatus::Idle },
-        );
-    }
-    // fast_mode_state moved to the App's sdk_message handler.
+    // SessionStatusUpdate (Compacting/Idle) and fast_mode_state both
+    // moved to the App's events::sdk_message::handle_system status arm.
 }
 
 fn handle_system_compact_boundary(

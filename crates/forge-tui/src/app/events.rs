@@ -295,17 +295,7 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
             handle_settings_parse_error(app, file.as_deref(), &path, &message);
         }
         model::SessionUpdate::SessionStatusUpdate(status) => {
-            // TODO(runtime-verification): confirm in real SDK sessions that compaction
-            // status updates are emitted consistently; if not, add a fallback indicator.
-            let was_compacting = app.is_compacting;
-            if matches!(status, model::SessionStatus::Compacting) {
-                app.is_compacting = true;
-            } else {
-                clear_compaction_state(app, true);
-            }
-            if was_compacting && matches!(status, model::SessionStatus::Idle) {
-                crate::app::session_runtime::request_context_usage_refresh(app);
-            }
+            apply_session_status_update(app, status);
             tracing::debug!(
                 target: crate::logging::targets::APP_SESSION,
                 event_name = "session_status_applied",
@@ -318,6 +308,20 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
         model::SessionUpdate::CompactionBoundary(boundary) => {
             rate_limit::handle_compaction_boundary_update(app, boundary);
         }
+    }
+}
+
+pub(super) fn apply_session_status_update(app: &mut App, status: model::SessionStatus) {
+    // TODO(runtime-verification): confirm in real SDK sessions that compaction
+    // status updates are emitted consistently; if not, add a fallback indicator.
+    let was_compacting = app.is_compacting;
+    if matches!(status, model::SessionStatus::Compacting) {
+        app.is_compacting = true;
+    } else {
+        clear_compaction_state(app, true);
+    }
+    if was_compacting && matches!(status, model::SessionStatus::Idle) {
+        crate::app::session_runtime::request_context_usage_refresh(app);
     }
 }
 
