@@ -37,11 +37,11 @@
 
 use std::time::Duration;
 
-use claude_code_rust::agent::client::AgentBridge;
-use claude_code_rust::agent::forge_sdk_bridge::ForgeSdkBridge;
-use claude_code_rust::agent::forge_sdk_worker;
-use claude_code_rust::agent::types::SessionUpdate;
-use claude_code_rust::agent::wire::{BridgeEvent, SessionLaunchSettings};
+use forge_tui::agent::client::AgentBridge;
+use forge_tui::agent::forge_sdk_bridge::ForgeSdkBridge;
+use forge_tui::agent::forge_sdk_worker;
+use forge_tui::agent::types::SessionUpdate;
+use forge_tui::agent::wire::{BridgeEvent, SessionLaunchSettings};
 use std::rc::Rc;
 use tokio::sync::mpsc;
 

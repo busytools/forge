@@ -5,9 +5,9 @@
 // Tool call lifecycle integration tests.
 // Validates the full create -> update -> complete flow for tool calls.
 
-use claude_code_rust::agent::events::ClientEvent;
-use claude_code_rust::agent::model;
-use claude_code_rust::app::{App, AppStatus, MessageBlock, ToolCallInfo, ToolCallScope};
+use forge_tui::agent::events::ClientEvent;
+use forge_tui::agent::model;
+use forge_tui::app::{App, AppStatus, MessageBlock, ToolCallInfo, ToolCallScope};
 use pretty_assertions::assert_eq;
 
 use crate::helpers::{send_client_event, test_app};
