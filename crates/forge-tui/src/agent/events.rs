@@ -80,25 +80,25 @@ pub enum ClientEvent {
     /// /logout completed via `claude auth logout`.
     LogoutCompleted,
     /// Status snapshot received from bridge (account info).
-    StatusSnapshotReceived { session_id: String, account: crate::agent::types::AccountInfo },
+    StatusSnapshotReceived { session_id: String, account: forge_sdk::AccountInfo },
     /// OAuth credentials snapshot received from bridge. `credentials` is
     /// `None` when no credentials file exists or it's empty/malformed.
     OauthCredentialsSnapshotReceived {
         session_id: String,
-        credentials: Option<crate::agent::types::OauthCredentialsInfo>,
+        credentials: Option<forge_sdk::OauthCredentials>,
     },
     /// Git introspection snapshot pushed by the bridge whenever the
     /// repo's branch resolution changes (initial state included).
     GitContextSnapshotReceived {
         session_id: String,
-        context: crate::agent::types::GitContextInfo,
+        context: forge_sdk::GitContext,
     },
     /// Session context window usage received from bridge.
     ContextUsageReceived { session_id: String, percentage: Option<u8> },
     /// MCP server snapshot received from bridge.
     McpSnapshotReceived {
         session_id: String,
-        servers: Vec<crate::agent::types::McpServerStatus>,
+        servers: Vec<forge_sdk::McpServerStatus>,
         error: Option<String>,
     },
     /// Usage refresh task started.

@@ -118,15 +118,15 @@ pub enum BridgeEvent {
     },
     StatusSnapshot {
         session_id: String,
-        account: types::AccountInfo,
+        account: forge_sdk::AccountInfo,
     },
     OauthCredentialsSnapshot {
         session_id: String,
-        credentials: Option<types::OauthCredentialsInfo>,
+        credentials: Option<forge_sdk::OauthCredentials>,
     },
     GitContextSnapshot {
         session_id: String,
-        context: types::GitContextInfo,
+        context: forge_sdk::GitContext,
     },
     ContextUsage {
         session_id: String,
@@ -135,7 +135,7 @@ pub enum BridgeEvent {
     McpSnapshot {
         session_id: String,
         #[serde(default)]
-        servers: Vec<types::McpServerStatus>,
+        servers: Vec<forge_sdk::McpServerStatus>,
         error: Option<String>,
     },
 }

@@ -6,7 +6,7 @@
 //! and consumes `BridgeEvent::GitContextSnapshot` events; this module
 //! is the App-side cache those events feed.
 
-use crate::agent::types::{GitBranchInfo, GitContextInfo};
+use forge_sdk::{GitBranch, GitContext};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) enum BranchDisplayState {
@@ -46,13 +46,16 @@ impl BranchDisplayState {
     }
 }
 
-impl From<GitBranchInfo> for BranchDisplayState {
-    fn from(info: GitBranchInfo) -> Self {
-        match info {
-            GitBranchInfo::Named(name) => Self::Named(name),
-            GitBranchInfo::Detached => Self::Detached,
-            GitBranchInfo::NoRepo => Self::NoRepo,
-            GitBranchInfo::Unknown => Self::Unknown,
+impl From<GitBranch> for BranchDisplayState {
+    fn from(branch: GitBranch) -> Self {
+        match branch {
+            GitBranch::Named(name) => Self::Named(name),
+            GitBranch::Detached => Self::Detached,
+            GitBranch::NoRepo => Self::NoRepo,
+            // `forge_sdk::GitBranch` is `#[non_exhaustive]`; explicit
+            // `Unknown` plus the wildcard for any future variants both
+            // surface as `Unknown` (TUI hides the chip).
+            GitBranch::Unknown | _ => Self::Unknown,
         }
     }
 }
@@ -76,8 +79,8 @@ impl GitContextState {
     /// Apply a bridge-pushed snapshot. Returns `true` when the
     /// resolved branch state changed (i.e. the caller should mark
     /// `needs_redraw`).
-    pub(crate) fn apply_snapshot(&mut self, info: GitContextInfo) -> bool {
-        let next = BranchDisplayState::from(info.branch);
+    pub(crate) fn apply_snapshot(&mut self, context: GitContext) -> bool {
+        let next = BranchDisplayState::from(context.branch);
         if next != self.branch {
             self.branch = next;
             return true;
@@ -102,7 +105,16 @@ impl GitContextState {
 #[cfg(test)]
 mod tests {
     use super::{BranchChip, BranchDisplayState, GitContextState};
-    use crate::agent::types::{GitBranchInfo, GitContextInfo};
+    use forge_sdk::{GitBranch, GitContext};
+
+    fn ctx(branch: GitBranch) -> GitContext {
+        // forge_sdk::GitContext is #[non_exhaustive] but
+        // GitContext::default() yields `branch: GitBranch::NoRepo`;
+        // overwrite the field for test setup.
+        let mut c = GitContext::default();
+        c.branch = branch;
+        c
+    }
 
     #[test]
     fn default_is_no_repo() {
@@ -113,9 +125,7 @@ mod tests {
     #[test]
     fn apply_snapshot_named_returns_true_on_change() {
         let mut state = GitContextState::default();
-        let changed = state.apply_snapshot(GitContextInfo {
-            branch: GitBranchInfo::Named("main".to_owned()),
-        });
+        let changed = state.apply_snapshot(ctx(GitBranch::Named("main".to_owned())));
         assert!(changed);
         assert_eq!(state.branch_name(), Some("main"));
     }
@@ -123,19 +133,15 @@ mod tests {
     #[test]
     fn apply_snapshot_returns_false_on_same() {
         let mut state = GitContextState::default();
-        state.apply_snapshot(GitContextInfo {
-            branch: GitBranchInfo::Named("main".to_owned()),
-        });
-        let changed = state.apply_snapshot(GitContextInfo {
-            branch: GitBranchInfo::Named("main".to_owned()),
-        });
+        state.apply_snapshot(ctx(GitBranch::Named("main".to_owned())));
+        let changed = state.apply_snapshot(ctx(GitBranch::Named("main".to_owned())));
         assert!(!changed);
     }
 
     #[test]
     fn apply_snapshot_detached_yields_no_branch_name() {
         let mut state = GitContextState::default();
-        state.apply_snapshot(GitContextInfo { branch: GitBranchInfo::Detached });
+        state.apply_snapshot(ctx(GitBranch::Detached));
         assert_eq!(state.branch_name(), None);
         assert_eq!(state.branch, BranchDisplayState::Detached);
     }
@@ -152,16 +158,14 @@ mod tests {
     #[test]
     fn branch_chip_named_returns_chip() {
         let mut state = GitContextState::default();
-        state.apply_snapshot(GitContextInfo {
-            branch: GitBranchInfo::Named("main".to_owned()),
-        });
+        state.apply_snapshot(ctx(GitBranch::Named("main".to_owned())));
         assert_eq!(state.branch_chip(), Some(BranchChip::Named("main")));
     }
 
     #[test]
     fn branch_chip_detached_returns_chip() {
         let mut state = GitContextState::default();
-        state.apply_snapshot(GitContextInfo { branch: GitBranchInfo::Detached });
+        state.apply_snapshot(ctx(GitBranch::Detached));
         assert_eq!(state.branch_chip(), Some(BranchChip::Detached));
         // branch_name still collapses Detached to None for legacy callers.
         assert_eq!(state.branch_name(), None);
@@ -176,7 +180,7 @@ mod tests {
     #[test]
     fn branch_chip_unknown_returns_none() {
         let mut state = GitContextState::default();
-        state.apply_snapshot(GitContextInfo { branch: GitBranchInfo::Unknown });
+        state.apply_snapshot(ctx(GitBranch::Unknown));
         assert_eq!(state.branch_chip(), None);
     }
 }
