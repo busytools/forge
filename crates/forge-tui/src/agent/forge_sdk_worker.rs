@@ -277,14 +277,13 @@ async fn dispatch(
         }
         C::GetStatusSnapshot { session_id } => {
             let client = require_running(state, "GetStatusSnapshot")?;
-            let account = client.account_info().map(translate_account_info).unwrap_or_default();
+            let account = client.account_info().unwrap_or_default();
             let _ = event_tx.send(BridgeEvent::StatusSnapshot { session_id, account });
             Ok(())
         }
         C::GetOauthCredentialsSnapshot { session_id } => {
             let client = require_running(state, "GetOauthCredentialsSnapshot")?;
-            let credentials =
-                client.oauth_credentials().map(translate_oauth_credentials);
+            let credentials = client.oauth_credentials();
             let _ =
                 event_tx.send(BridgeEvent::OauthCredentialsSnapshot { session_id, credentials });
             Ok(())
@@ -318,8 +317,7 @@ async fn dispatch(
             // — `spawn_local` would panic with "spawn_local called
             // from outside of a LocalSet".
             let handle = tokio::spawn(async move {
-                while let Some(snapshot) = watcher.next_snapshot().await {
-                    let context = translate_git_context(snapshot);
+                while let Some(context) = watcher.next_snapshot().await {
                     if event_tx
                         .send(BridgeEvent::GitContextSnapshot {
                             session_id: task_session_id.clone(),
@@ -372,11 +370,7 @@ async fn dispatch(
         C::GetMcpSnapshot { session_id } => {
             let client = require_running(state, "GetMcpSnapshot")?;
             let response = client.mcp_status().await?;
-            let servers = response
-                .mcp_servers
-                .into_iter()
-                .map(translate_mcp_server_status)
-                .collect();
+            let servers = response.mcp_servers;
             let _ = event_tx.send(BridgeEvent::McpSnapshot { session_id, servers, error: None });
             Ok(())
         }
@@ -666,7 +660,7 @@ async fn spawn_or_replace(
     if let Some(account) = client.account_info() {
         let _ = event_tx.send(BridgeEvent::StatusSnapshot {
             session_id: session_id.clone(),
-            account: translate_account_info(account),
+            account,
         });
     }
 
@@ -1212,102 +1206,6 @@ fn default_permission_options() -> Vec<crate::agent::types::PermissionOption> {
 // ----------------------------------------------------------------------------
 // Other translators
 // ----------------------------------------------------------------------------
-
-fn translate_account_info(info: forge_sdk::AccountInfo) -> crate::agent::types::AccountInfo {
-    // forge_sdk::AccountInfo and crate::agent::types::AccountInfo
-    // have the same field names; field-by-field copy keeps them
-    // independent so either side can grow without coupling.
-    crate::agent::types::AccountInfo {
-        email: info.email,
-        organization: info.organization,
-        subscription_type: info.subscription_type,
-        token_source: info.token_source,
-        api_key_source: info.api_key_source,
-        api_provider: info.api_provider,
-    }
-}
-
-fn translate_oauth_credentials(
-    info: forge_sdk::OauthCredentials,
-) -> crate::agent::types::OauthCredentialsInfo {
-    // SystemTime → epoch ms; round down on sub-millisecond
-    // resolution. We use ms (not seconds) so the wire shape
-    // preserves the resolution the credentials file actually
-    // carries (Anthropic's `claudeAiOauth.expiresAt` is ms).
-    let expires_at_ms = info.expires_at.and_then(|t| {
-        t.duration_since(std::time::UNIX_EPOCH).ok().map(|d| {
-            u64::try_from(d.as_millis()).unwrap_or(u64::MAX)
-        })
-    });
-    crate::agent::types::OauthCredentialsInfo {
-        access_token: info.access_token,
-        expires_at_ms,
-    }
-}
-
-fn translate_git_context(snapshot: forge_sdk::GitContext) -> crate::agent::types::GitContextInfo {
-    let branch = match snapshot.branch {
-        forge_sdk::GitBranch::Named(name) => crate::agent::types::GitBranchInfo::Named(name),
-        forge_sdk::GitBranch::Detached => crate::agent::types::GitBranchInfo::Detached,
-        forge_sdk::GitBranch::NoRepo => crate::agent::types::GitBranchInfo::NoRepo,
-        // forge_sdk::GitBranch is #[non_exhaustive] — explicit Unknown
-        // plus the wildcard for any future variants both surface as
-        // GitBranchInfo::Unknown (TUI renders no branch chip).
-        forge_sdk::GitBranch::Unknown | _ => crate::agent::types::GitBranchInfo::Unknown,
-    };
-    crate::agent::types::GitContextInfo { branch }
-}
-
-fn translate_mcp_server_status(
-    sdk: forge_sdk::McpServerStatus,
-) -> crate::agent::types::McpServerStatus {
-    crate::agent::types::McpServerStatus {
-        name: sdk.name,
-        status: translate_mcp_status(sdk.status),
-        server_info: sdk
-            .server_info
-            .map(|info| crate::agent::types::McpServerInfo { name: info.name, version: info.version }),
-        error: sdk.error,
-        // forge-sdk types `config` as `Option<Value>` because the CLI
-        // accepts variants forge-sdk doesn't model (claudeai-proxy).
-        // Round-trip through serde here; on shape mismatch the typed
-        // enum returns None, which the UI renders as "(unknown config)".
-        config: sdk
-            .config
-            .and_then(|v| serde_json::from_value(v).ok()),
-        scope: sdk.scope,
-        tools: sdk
-            .tools
-            .unwrap_or_default()
-            .into_iter()
-            .map(|t| crate::agent::types::McpTool {
-                name: t.name,
-                description: t.description,
-                annotations: t.annotations.map(|a| crate::agent::types::McpToolAnnotations {
-                    read_only: a.read_only,
-                    destructive: a.destructive,
-                    open_world: a.open_world,
-                }),
-            })
-            .collect(),
-        sampling_configured: sdk.sampling_configured,
-        sampling_required: sdk.sampling_required,
-    }
-}
-
-fn translate_mcp_status(
-    sdk: forge_sdk::McpServerConnectionStatus,
-) -> crate::agent::types::McpServerConnectionStatus {
-    use forge_sdk::McpServerConnectionStatus as S;
-    use crate::agent::types::McpServerConnectionStatus as T;
-    match sdk {
-        S::Connected => T::Connected,
-        S::Failed => T::Failed,
-        S::NeedsAuth => T::NeedsAuth,
-        S::Pending => T::Pending,
-        S::Disabled => T::Disabled,
-    }
-}
 
 fn clamp_percentage_to_u8(p: f64) -> u8 {
     if p.is_nan() {

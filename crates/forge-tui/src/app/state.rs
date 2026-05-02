@@ -295,12 +295,12 @@ pub struct App {
     /// True while the SDK reports active compaction.
     pub is_compacting: bool,
     /// Account info from the bridge status snapshot (email, org, subscription).
-    pub account_info: Option<crate::agent::types::AccountInfo>,
+    pub account_info: Option<forge_sdk::AccountInfo>,
     /// OAuth credentials snapshot from the bridge — populated at
     /// session connect, refreshed after `/login` and `/logout` so
     /// callers can ask "is the user authenticated?" without doing
     /// their own filesystem walk to `<config_dir>/.credentials.json`.
-    pub oauth_credentials: Option<crate::agent::types::OauthCredentialsInfo>,
+    pub oauth_credentials: Option<forge_sdk::OauthCredentials>,
 
     /// Indexed terminal tool calls for per-frame terminal snapshot updates.
     /// Avoids O(n*m) scan of all messages/blocks every frame.
@@ -948,7 +948,7 @@ impl App {
     /// cache. Marks `needs_redraw` when the resolved branch changes.
     pub fn apply_git_context_snapshot(
         &mut self,
-        info: crate::agent::types::GitContextInfo,
+        info: forge_sdk::GitContext,
     ) {
         self.needs_redraw |= self.git_context.apply_snapshot(info);
     }

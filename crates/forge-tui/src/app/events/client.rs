@@ -169,7 +169,7 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
             let has_credentials = credentials.is_some();
             let has_expiry = credentials
                 .as_ref()
-                .is_some_and(|info| info.expires_at_ms.is_some());
+                .is_some_and(|info| info.expires_at.is_some());
             app.oauth_credentials = credentials;
             app.needs_redraw = true;
             tracing::info!(
@@ -241,13 +241,13 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
                     app.mcp.servers.iter().find(|server| server.name == server_name)
                     && !matches!(
                         server.status,
-                        crate::agent::types::McpServerConnectionStatus::NeedsAuth
-                            | crate::agent::types::McpServerConnectionStatus::Pending
+                        forge_sdk::McpServerConnectionStatus::NeedsAuth
+                            | forge_sdk::McpServerConnectionStatus::Pending
                     )
                 {
                     if matches!(
                         server.status,
-                        crate::agent::types::McpServerConnectionStatus::Connected
+                        forge_sdk::McpServerConnectionStatus::Connected
                     ) {
                         app.config.status_message =
                             Some(format!("{} authenticated successfully.", server.name));

@@ -411,7 +411,7 @@ fn mcp_needs_auth_count(app: &App) -> usize {
         .servers
         .iter()
         .filter(|server| {
-            matches!(server.status, crate::agent::types::McpServerConnectionStatus::NeedsAuth)
+            matches!(server.status, forge_sdk::McpServerConnectionStatus::NeedsAuth)
         })
         .count()
 }
@@ -444,7 +444,7 @@ fn fast_mode_badge(state: model::FastModeState) -> (&'static str, Color) {
 mod tests {
     use super::*;
     use crate::agent::model;
-    use crate::agent::types::{McpServerConnectionStatus, McpServerStatus};
+    use forge_sdk::{McpServerConnectionStatus, McpServerStatus};
     use crate::app::{
         App, BlockCache, ChatMessage, InlinePermission, MessageBlock, MessageRole,
         TerminalSnapshotMode, TextBlock, ToolCallInfo,
@@ -712,7 +712,7 @@ mod tests {
             error: None,
             config: None,
             scope: None,
-            tools: vec![],
+            tools: Some(vec![]),
             sampling_configured: None,
             sampling_required: None,
         });
@@ -738,7 +738,7 @@ mod tests {
             error: None,
             config: None,
             scope: None,
-            tools: vec![],
+            tools: Some(vec![]),
             sampling_configured: None,
             sampling_required: None,
         });
@@ -770,7 +770,7 @@ mod tests {
             error: None,
             config: None,
             scope: None,
-            tools: vec![],
+            tools: Some(vec![]),
             sampling_configured: None,
             sampling_required: None,
         });
