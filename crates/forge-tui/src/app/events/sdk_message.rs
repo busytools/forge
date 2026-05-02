@@ -17,6 +17,17 @@
 //! See `~/.claude-nf/plans/pick-up-where-we-quirky-grove.md` for the
 //! per-variant cutover order.
 //!
+//! # Temporary clippy allows
+//!
+//! - `needless_pass_by_value`: every per-variant handler takes
+//!   `msg: Message` by value but doesn't consume it during Phase 1.
+//!   Phase 2 destructures it for state mutation; the warning
+//!   resolves naturally as each handler is filled in.
+//! - `missing_panics_doc` / `missing_errors_doc`: handlers don't
+//!   panic and aren't `Result`-returning, but doc-only lints inside
+//!   `forge-tui`'s pedantic config flag the doc comments.
+#![allow(clippy::needless_pass_by_value, clippy::doc_markdown)]
+//!
 //! # Why a parallel path during Phase 1?
 //!
 //! Phase 1 is compile-safe and behaviour-neutral: the bridge keeps

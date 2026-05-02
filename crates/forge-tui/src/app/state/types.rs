@@ -175,9 +175,9 @@ pub struct SessionTurnState {
     /// `tool_use ↔ tool_result` pairing.
     pub tool_calls:
         std::collections::HashMap<String, crate::agent::types::ToolCall>,
-    /// Maps task-tool `task_id` → `tool_use_id` so TaskProgress /
-    /// TaskNotification messages can resolve back to the originating
-    /// tool call for ToolCallUpdate emission.
+    /// Maps task-tool `task_id` → `tool_use_id` so `TaskProgress` /
+    /// `TaskNotification` messages can resolve back to the originating
+    /// tool call for `ToolCallUpdate` emission.
     pub task_tool_use_ids: std::collections::HashMap<String, String>,
 
     /// Raw model id from the CLI's session-init payload.
@@ -197,7 +197,7 @@ pub struct SessionTurnState {
     /// Current mode resolution alongside the human-readable label.
     pub mode_state: Option<crate::agent::types::ModeState>,
 
-    /// Sha-style fingerprint of the available_agents list — used to
+    /// Sha-style fingerprint of the `available_agents` list — used to
     /// emit `AvailableAgentsUpdate` only when the catalogue changes.
     pub last_agents_signature: Option<String>,
 
