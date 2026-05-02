@@ -329,11 +329,7 @@ fn handle_system_status(
     {
         session.mode = Some(mode);
         refresh_supported_modes_for_session(session);
-        push_session_update(
-            out,
-            &session.session_id,
-            SessionUpdate::CurrentModeUpdate { current_mode_id: mode.as_wire().to_owned() },
-        );
+        // CurrentModeUpdate moved to App's events::sdk_message handle_system status arm.
     }
     // SessionStatusUpdate (Compacting/Idle) and fast_mode_state both
     // moved to the App's events::sdk_message::handle_system status arm.

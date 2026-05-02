@@ -218,24 +218,7 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
             }
         }
         model::SessionUpdate::CurrentModeUpdate(update) => {
-            let mode_id = update.current_mode_id.to_string();
-            let mut mode_changed = false;
-            if let Some(ref mut mode) = app.mode {
-                mode_changed = mode.current_mode_id != mode_id;
-                if let Some(info) = mode.available_modes.iter().find(|m| m.id == mode_id) {
-                    mode.current_mode_name.clone_from(&info.name);
-                    mode.current_mode_id = mode_id;
-                } else {
-                    mode.current_mode_name.clone_from(&mode_id);
-                    mode.current_mode_id = mode_id;
-                }
-            }
-            if mode_changed {
-                app.invalidate_layout(InvalidationLevel::Global);
-            }
-            if matches!(app.pending_command_ack, Some(PendingCommandAck::CurrentMode)) {
-                session::clear_pending_command(app);
-            }
+            apply_current_mode_update(app, update);
         }
         model::SessionUpdate::CurrentModelUpdate(update) => {
             let next_resolved_id = update.current_model.resolved_id.clone();
@@ -308,6 +291,27 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
         model::SessionUpdate::CompactionBoundary(boundary) => {
             rate_limit::handle_compaction_boundary_update(app, boundary);
         }
+    }
+}
+
+pub(super) fn apply_current_mode_update(app: &mut App, update: model::CurrentModeUpdate) {
+    let mode_id = update.current_mode_id.to_string();
+    let mut mode_changed = false;
+    if let Some(ref mut mode) = app.mode {
+        mode_changed = mode.current_mode_id != mode_id;
+        if let Some(info) = mode.available_modes.iter().find(|m| m.id == mode_id) {
+            mode.current_mode_name.clone_from(&info.name);
+            mode.current_mode_id = mode_id;
+        } else {
+            mode.current_mode_name.clone_from(&mode_id);
+            mode.current_mode_id = mode_id;
+        }
+    }
+    if mode_changed {
+        app.invalidate_layout(InvalidationLevel::Global);
+    }
+    if matches!(app.pending_command_ack, Some(PendingCommandAck::CurrentMode)) {
+        session::clear_pending_command(app);
     }
 }
 

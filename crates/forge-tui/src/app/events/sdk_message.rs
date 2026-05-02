@@ -122,8 +122,14 @@ fn handle_system(app: &mut App, msg: Message, raw: &Value) {
     match subtype.as_str() {
         "status" => {
             apply_fast_mode_update(app, data);
-            // session status: "compacting" → Compacting, null → Idle.
-            // (Other string values silently ignored, matching upstream.)
+            // permissionMode → CurrentModeUpdate
+            if let Some(mode_str) = data.get("permissionMode").and_then(Value::as_str) {
+                super::apply_current_mode_update(
+                    app,
+                    crate::agent::model::CurrentModeUpdate::new(mode_str),
+                );
+            }
+            // status: "compacting" → Compacting, null → Idle.
             if let Some(status_field) = data.get("status") {
                 if status_field.as_str() == Some("compacting") {
                     super::apply_session_status_update(
