@@ -26,7 +26,7 @@ pub(crate) fn map_rate_limit_update(update: types::RateLimitUpdate) -> model::Ra
     }
 }
 
-pub(super) fn map_api_retry_error(error: types::ApiRetryError) -> model::ApiRetryError {
+pub(crate) fn map_api_retry_error(error: types::ApiRetryError) -> model::ApiRetryError {
     match error {
         types::ApiRetryError::AuthenticationFailed => model::ApiRetryError::AuthenticationFailed,
         types::ApiRetryError::BillingError => model::ApiRetryError::BillingError,

@@ -31,7 +31,7 @@ use super::agents::{emit_available_agents_if_changed, map_available_agents_from_
 use super::commands::{build_mode_state, refresh_supported_modes_for_session};
 use super::session_lifecycle::refresh_current_model;
 use super::state::{BridgeSession, PermissionMode};
-use super::state_parsing::{build_api_retry_update, normalize_settings_parse_errors};
+use super::state_parsing::normalize_settings_parse_errors;
 use super::tool_calls::{
     emit_plan_if_todo_write, emit_tool_call, emit_tool_progress_update, emit_tool_result_update,
     emit_tool_summary_update, finalize_open_tool_calls,
@@ -471,9 +471,8 @@ pub fn handle_sdk_message(
             let Some(msg_record) = msg_record else { return };
             match subtype.as_str() {
                 "api_retry" => {
-                    if let Some(update) = build_api_retry_update(msg_record) {
-                        push_session_update(out, &session.session_id, update);
-                    }
+                    // Phase 2 cutover: handled by App's
+                    // events::sdk_message::handle_system.
                 }
                 "session_state_changed" => {
                     // Phase 2 cutover: handled by App's

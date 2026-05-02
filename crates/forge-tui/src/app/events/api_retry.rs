@@ -2,7 +2,7 @@ use super::notices::upsert_turn_notice;
 use crate::agent::model::ApiRetryError;
 use crate::app::{App, NoticeDedupKey, NoticeStage, SystemSeverity};
 
-pub(super) fn handle_api_retry_update(
+pub(crate) fn handle_api_retry_update(
     app: &mut App,
     attempt: u64,
     max_retries: u64,

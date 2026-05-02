@@ -43,7 +43,8 @@ use serde_json::Value;
 
 use crate::app::App;
 use crate::agent::bridge::state_parsing::{
-    build_rate_limit_update, parse_fast_mode_state, parse_runtime_session_state,
+    build_api_retry_update, build_rate_limit_update, parse_fast_mode_state,
+    parse_runtime_session_state,
 };
 
 /// Top-level entry point. Called from `events::client` after the
@@ -120,23 +121,45 @@ fn handle_system(app: &mut App, msg: Message, raw: &Value) {
     let Message::System { ref subtype, ref data, .. } = msg else { return };
     match subtype.as_str() {
         "status" => {
-            // `status` subtype carries `fast_mode_state` directly on
-            // its data record.
             apply_fast_mode_update(app, data);
         }
         "session_state_changed" => {
-            // Migrated from bridge::message_handlers (line ~482).
-            // Parse the wire-side enum, convert to App-side model,
-            // call the existing event handler that handles the side
-            // effects (status transitions, etc.).
             if let Some(wire_state) = parse_runtime_session_state(data.get("state")) {
                 let model_state = convert_runtime_session_state(wire_state);
                 super::handle_runtime_session_state_update(app, model_state);
             }
         }
+        "api_retry" => {
+            apply_api_retry_update(app, data);
+        }
         _ => {}
     }
     let _ = raw;
+}
+
+/// Apply an api_retry system message to the App. Wraps the bridge's
+/// existing `build_api_retry_update` parser and calls into the
+/// existing api_retry event handler.
+fn apply_api_retry_update(app: &mut App, data: &Value) {
+    let Some(record) = data.as_object() else { return };
+    let Some(crate::agent::types::SessionUpdate::ApiRetryUpdate {
+        attempt,
+        max_retries,
+        retry_delay_ms,
+        error_status,
+        error,
+    }) = build_api_retry_update(record) else {
+        return;
+    };
+    let model_error = crate::app::connect::type_converters::map_api_retry_error(error);
+    super::api_retry::handle_api_retry_update(
+        app,
+        attempt,
+        max_retries,
+        retry_delay_ms,
+        error_status,
+        model_error,
+    );
 }
 
 fn convert_runtime_session_state(
