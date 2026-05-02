@@ -72,10 +72,7 @@ mod tests {
 
     #[test]
     fn clamp_resets_when_empty() {
-        let mut d = DialogState {
-            selected: 5,
-            scroll_offset: 2,
-        };
+        let mut d = DialogState { selected: 5, scroll_offset: 2 };
         d.clamp(0, 8);
         assert_eq!(d.selected, 0);
         assert_eq!(d.scroll_offset, 0);
@@ -83,10 +80,7 @@ mod tests {
 
     #[test]
     fn move_down_wraps_and_updates_scroll() {
-        let mut d = DialogState {
-            selected: 7,
-            scroll_offset: 0,
-        };
+        let mut d = DialogState { selected: 7, scroll_offset: 0 };
         d.move_down(8, 4);
         assert_eq!(d.selected, 0);
         assert_eq!(d.scroll_offset, 0);
@@ -94,10 +88,7 @@ mod tests {
 
     #[test]
     fn visible_range_clamps_scroll_offset() {
-        let d = DialogState {
-            selected: 0,
-            scroll_offset: 10,
-        };
+        let d = DialogState { selected: 0, scroll_offset: 10 };
         assert_eq!(d.visible_range(6, 4), (2, 6));
     }
 }

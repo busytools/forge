@@ -33,12 +33,7 @@ impl FocusContext {
         mention_active: bool,
         permission_active: bool,
     ) -> Self {
-        Self {
-            todo_focus_available,
-            mention_active,
-            permission_active,
-            help_active: false,
-        }
+        Self { todo_focus_available, mention_active, permission_active, help_active: false }
     }
 
     #[must_use]
