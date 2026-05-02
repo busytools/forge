@@ -38,7 +38,7 @@ use tokio::sync::mpsc as tokio_mpsc;
 const WATCH_DEBOUNCE: Duration = Duration::from_millis(75);
 
 /// A point-in-time snapshot of the git introspection state.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct GitContext {
     /// Current branch resolution. `NoRepo` when `cwd` isn't inside a
