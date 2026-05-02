@@ -17,13 +17,6 @@
 //! See `~/.claude-nf/plans/pick-up-where-we-quirky-grove.md` for the
 //! per-variant cutover order.
 //!
-//! # `dead_code` allow
-//!
-//! All handlers below are unused during Phase 1 — Phase 1.3 adds the
-//! `BridgeEvent::SdkMessage` wire variant, Phase 1.4 dispatches it
-//! into [`handle_sdk_message`], at which point the warning resolves.
-#![allow(dead_code)]
-//!
 //! # Why a parallel path during Phase 1?
 //!
 //! Phase 1 is compile-safe and behaviour-neutral: the bridge keeps
@@ -46,7 +39,6 @@ use crate::app::App;
 /// existing `handle_sdk_message` (in `agent::bridge::message_handlers`)
 /// continues to do the real work. Phase 2 fills these in per variant.
 pub(super) fn handle_sdk_message(app: &mut App, msg: Message) {
-    let _ = app; // suppress unused-arg warning until Phase 2 fills handlers in.
     match msg {
         Message::Assistant { .. } => handle_assistant(app, msg),
         Message::User { .. } => handle_user(app, msg),

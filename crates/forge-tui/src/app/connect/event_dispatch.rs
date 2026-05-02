@@ -166,6 +166,12 @@ pub(super) fn handle_bridge_event(
         crate::agent::wire::BridgeEvent::McpSnapshot { session_id, servers, error } => {
             let _ = event_tx.send(ClientEvent::McpSnapshotReceived { session_id, servers, error });
         }
+        crate::agent::wire::BridgeEvent::SdkMessage { session_id, msg } => {
+            // Phase 1.3 dispatch arm: forward raw `forge_sdk::Message`
+            // envelopes to the App-side `handle_sdk_message` via
+            // `ClientEvent::SdkMessageReceived` (added in Phase 1.4).
+            let _ = event_tx.send(ClientEvent::SdkMessageReceived { session_id, msg });
+        }
     }
 }
 

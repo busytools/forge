@@ -138,6 +138,16 @@ pub enum BridgeEvent {
         servers: Vec<forge_sdk::McpServerStatus>,
         error: Option<String>,
     },
+    /// Raw `forge_sdk::Message` envelope flowing in parallel to
+    /// `SessionUpdate` events during the bridge-collapse refactor.
+    /// Phase 1.3 emits these alongside the bridge's existing
+    /// `SessionUpdate`s; Phase 2 progressively migrates per-variant
+    /// dispatch to the App's `handle_sdk_message`; Phase 3 removes
+    /// the bridge unpacker and `SessionUpdate` entirely.
+    SdkMessage {
+        session_id: String,
+        msg: forge_sdk::Message,
+    },
 }
 
 impl BridgeEvent {
@@ -167,6 +177,7 @@ impl BridgeEvent {
             Self::GitContextSnapshot { .. } => "git_context_snapshot",
             Self::ContextUsage { .. } => "context_usage",
             Self::McpSnapshot { .. } => "mcp_snapshot",
+            Self::SdkMessage { .. } => "sdk_message",
         }
     }
 
@@ -191,7 +202,8 @@ impl BridgeEvent {
             | Self::OauthCredentialsSnapshot { session_id, .. }
             | Self::GitContextSnapshot { session_id, .. }
             | Self::ContextUsage { session_id, .. }
-            | Self::McpSnapshot { session_id, .. } => Some(session_id.as_str()),
+            | Self::McpSnapshot { session_id, .. }
+            | Self::SdkMessage { session_id, .. } => Some(session_id.as_str()),
             Self::AuthRequired { .. }
             | Self::ConnectionFailed { .. }
             | Self::Initialized { .. }
@@ -226,7 +238,8 @@ impl BridgeEvent {
             | Self::OauthCredentialsSnapshot { .. }
             | Self::GitContextSnapshot { .. }
             | Self::ContextUsage { .. }
-            | Self::McpSnapshot { .. } => None,
+            | Self::McpSnapshot { .. }
+            | Self::SdkMessage { .. } => None,
         }
     }
 }

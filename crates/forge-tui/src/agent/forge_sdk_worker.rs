@@ -742,16 +742,28 @@ async fn reader_loop(
         match client.next_event().await {
             Ok(Some(msg)) => {
                 let mut buf: Vec<BridgeEvent> = Vec::new();
-                if let Ok(mut session) = bridge_session.lock() {
+                let session_id_for_sdk_msg = if let Ok(mut session) = bridge_session.lock() {
                     crate::agent::bridge::message_handlers::handle_sdk_message(
                         &mut session, &msg, &mut buf,
                     );
+                    session.session_id.clone()
                 } else {
                     tracing::error!(
                         target: crate::logging::targets::BRIDGE_LIFECYCLE,
                         "forge_sdk_worker reader: bridge session mutex poisoned",
                     );
-                }
+                    String::new()
+                };
+                // Phase 1.3 of the bridge-collapse refactor: emit the
+                // raw `forge_sdk::Message` envelope alongside the
+                // bridge's `SessionUpdate` events. The App-side
+                // `handle_sdk_message` is a no-op stub during Phase 1
+                // (Phase 2 fills it in per-variant); the emission is
+                // wire-level scaffolding for that future work.
+                buf.push(BridgeEvent::SdkMessage {
+                    session_id: session_id_for_sdk_msg,
+                    msg: msg.clone(),
+                });
                 // Fall through to the legacy translate_message for the
                 // bits handle_sdk_message hasn't covered yet (e.g.
                 // elicitation_request which already had its own path).

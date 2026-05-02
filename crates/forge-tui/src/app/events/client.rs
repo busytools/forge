@@ -266,6 +266,17 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
                 error_present,
             );
         }
+        ClientEvent::SdkMessageReceived { session_id, msg } => {
+            if app.session_id.as_ref().map(ToString::to_string).as_deref()
+                != Some(session_id.as_str())
+            {
+                // Drop stale-session SDK envelopes silently — the
+                // bridge's own SessionUpdate path handles same drop
+                // independently with its own log.
+                return;
+            }
+            super::sdk_message::handle_sdk_message(app, msg);
+        }
         ClientEvent::UsageRefreshStarted { epoch } => {
             if app.session_scope_epoch != epoch {
                 return;
