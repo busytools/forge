@@ -67,7 +67,9 @@ pub use client::Client;
 pub use error::Error;
 pub use oauth_usage::{OauthExtraUsage, OauthUsage, OauthUsageError, OauthUsageWindow, oauth_usage};
 pub use session::paths::claude_config_dir;
-pub use settings::{SettingsDocuments, settings_documents};
+pub use settings::{
+    SettingsDocuments, SettingsTarget, settings_documents, write_settings_document,
+};
 // Top-level message + content re-exports so consumers can say
 // `use forge_sdk::{AssistantEnvelope, StopReason, RateLimitInfo, ...}`
 // instead of reaching through `forge_sdk::messages::*`. Matches the
