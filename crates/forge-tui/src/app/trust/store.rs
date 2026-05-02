@@ -224,7 +224,7 @@ mod tests {
     fn read_status_accepts_equivalent_backslash_entry() {
         let document = json!({
             "projects": {
-                r"C:\Users\Simon Peter Rothgang\Desktop\claude_rust": {
+                r"C:\Users\user\Desktop\claude_rust": {
                     "hasTrustDialogAccepted": true
                 }
             }
@@ -232,11 +232,11 @@ mod tests {
 
         let lookup = read_status(
             &document,
-            Path::new(r"c:\Users\Simon Peter Rothgang\Desktop\claude_rust\"),
+            Path::new(r"c:\Users\user\Desktop\claude_rust\"),
         );
 
         assert!(lookup.trusted);
-        assert_eq!(lookup.project_key, "C:/Users/Simon Peter Rothgang/Desktop/claude_rust");
+        assert_eq!(lookup.project_key, "C:/Users/user/Desktop/claude_rust");
     }
 
     #[cfg(not(windows))]
@@ -261,17 +261,17 @@ mod tests {
     fn read_status_treats_any_equivalent_true_entry_as_trusted() {
         let document = json!({
             "projects": {
-                "C:/Users/Simon Peter Rothgang/Desktop/claude_rust": {
+                "C:/Users/user/Desktop/claude_rust": {
                     "hasTrustDialogAccepted": false
                 },
-                r"C:\Users\Simon Peter Rothgang\Desktop\claude_rust": {
+                r"C:\Users\user\Desktop\claude_rust": {
                     "hasTrustDialogAccepted": true
                 }
             }
         });
 
         let lookup =
-            read_status(&document, Path::new(r"C:\Users\Simon Peter Rothgang\Desktop\claude_rust"));
+            read_status(&document, Path::new(r"C:\Users\user\Desktop\claude_rust"));
 
         assert!(lookup.trusted);
     }

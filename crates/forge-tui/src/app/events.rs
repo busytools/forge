@@ -700,8 +700,8 @@ mod tests {
     #[test]
     fn shorten_spaces_in_path() {
         let result = tool_calls::shorten_tool_title(
-            "Read C:\\Users\\Simon Peter Rothgang\\Desktop\\project\\src\\main.rs",
-            "C:\\Users\\Simon Peter Rothgang\\Desktop\\project",
+            "Read C:\\Users\\user\\Desktop\\project\\src\\main.rs",
+            "C:\\Users\\user\\Desktop\\project",
         );
         assert_eq!(result, "Read src/main.rs");
     }

@@ -65,7 +65,7 @@ mod tests {
     #[test]
     fn folder_name_extracts_last_component() {
         assert_eq!(folder_name("/home/user/projects/claude_rust"), "claude_rust");
-        assert_eq!(folder_name("C:\\Users\\Simon\\Desktop\\claude_rust"), "claude_rust");
+        assert_eq!(folder_name("C:\\Users\\user\\Desktop\\claude_rust"), "claude_rust");
         assert_eq!(folder_name("claude_rust"), "claude_rust");
     }
 
