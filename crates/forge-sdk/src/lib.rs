@@ -66,7 +66,7 @@ pub mod transport;
 pub use client::Client;
 pub use error::Error;
 pub use oauth_usage::{OauthExtraUsage, OauthUsage, OauthUsageError, OauthUsageWindow, oauth_usage};
-pub use session::paths::claude_config_dir;
+pub use session::paths::{claude_config_dir, project_memory, project_memory_path};
 pub use settings::{
     SettingsDocuments, SettingsTarget, settings_documents, write_settings_document,
 };
