@@ -39,8 +39,10 @@
 //! variant.
 
 use forge_sdk::Message;
+use serde_json::Value;
 
 use crate::app::App;
+use crate::agent::bridge::state_parsing::parse_fast_mode_state;
 
 /// Top-level entry point. Called from `events::client` after the
 /// session-id check on `ClientEvent::SdkMessageReceived`. Dispatches
@@ -50,20 +52,50 @@ use crate::app::App;
 /// existing `handle_sdk_message` (in `agent::bridge::message_handlers`)
 /// continues to do the real work. Phase 2 fills these in per variant.
 pub(super) fn handle_sdk_message(app: &mut App, msg: Message) {
+    // Mirrors the bridge's pattern: serialise the typed Message back
+    // to JSON so per-variant handlers can read fields like
+    // `fast_mode_state`, `terminal_reason`, `error` — which are not
+    // first-class typed accessors on `forge_sdk::Message` but DO
+    // appear in the wire JSON.
+    let raw = serde_json::to_value(&msg).unwrap_or(Value::Null);
     match msg {
-        Message::Assistant { .. } => handle_assistant(app, msg),
-        Message::User { .. } => handle_user(app, msg),
-        Message::System { .. } => handle_system(app, msg),
-        Message::TaskStarted { .. } => handle_task_started(app, msg),
-        Message::TaskProgress { .. } => handle_task_progress(app, msg),
-        Message::TaskNotification { .. } => handle_task_notification(app, msg),
-        Message::RateLimitEvent { .. } => handle_rate_limit_event(app, msg),
-        Message::Result { .. } => handle_result(app, msg),
-        Message::StreamEvent { .. } => handle_stream_event(app, msg),
+        Message::Assistant { .. } => handle_assistant(app, msg, &raw),
+        Message::User { .. } => handle_user(app, msg, &raw),
+        Message::System { .. } => handle_system(app, msg, &raw),
+        Message::TaskStarted { .. } => handle_task_started(app, msg, &raw),
+        Message::TaskProgress { .. } => handle_task_progress(app, msg, &raw),
+        Message::TaskNotification { .. } => handle_task_notification(app, msg, &raw),
+        Message::RateLimitEvent { .. } => handle_rate_limit_event(app, msg, &raw),
+        Message::Result { .. } => handle_result(app, msg, &raw),
+        Message::StreamEvent { .. } => handle_stream_event(app, msg, &raw),
         // forge_sdk::Message is `#[non_exhaustive]` — Error / Unknown
         // and any future variants fall through here.
-        _ => handle_unknown(app, msg),
+        _ => handle_unknown(app, msg, &raw),
     }
+}
+
+/// Apply the optional `fast_mode_state` field from a wire JSON
+/// envelope. Idempotent — same state in re-applies as a no-op.
+///
+/// Converts the wire-side `types::FastModeState` (returned by the
+/// parser) to the App-side `model::FastModeState`. Both enums share
+/// the same variant set; the conversion is a 1:1 match. Phase 3 may
+/// consolidate to a single FastModeState type.
+fn apply_fast_mode_update(app: &mut App, raw: &Value) {
+    use crate::agent::model::FastModeState as Model;
+    use crate::agent::types::FastModeState as Wire;
+    let Some(wire_state) = parse_fast_mode_state(raw.get("fast_mode_state")) else {
+        return;
+    };
+    let model_state = match wire_state {
+        Wire::Off => Model::Off,
+        Wire::Cooldown => Model::Cooldown,
+        Wire::On => Model::On,
+    };
+    if app.fast_mode_state == model_state {
+        return;
+    }
+    app.fast_mode_state = model_state;
 }
 
 // Per-variant handlers — Phase 1 stubs. Each takes ownership of the
@@ -71,52 +103,71 @@ pub(super) fn handle_sdk_message(app: &mut App, msg: Message) {
 // the dispatcher. The `_ = app; _ = msg;` lines suppress unused-arg
 // warnings until Phase 2.
 
-fn handle_assistant(app: &mut App, msg: Message) {
+fn handle_assistant(app: &mut App, msg: Message, raw: &Value) {
+    let _ = msg;
+    apply_fast_mode_update(app, raw);
+}
+
+fn handle_user(app: &mut App, msg: Message, raw: &Value) {
     let _ = app;
+    let _ = msg;
+    let _ = raw;
+}
+
+fn handle_system(app: &mut App, msg: Message, raw: &Value) {
+    // The bridge today calls `emit_fast_mode_update_if_changed` from
+    // `handle_system_status` (the `subtype == "status"` branch). Mirror
+    // by checking whether this is a status subtype — if so, the wire
+    // record carries `fast_mode_state` directly. Other subtypes don't.
+    if let Message::System { ref subtype, .. } = msg
+        && subtype == "status"
+    {
+        // status's data is the inner record; pull it from `raw.data`
+        // since the SDK Message variant carries `data: Value` directly.
+        if let Some(data) = raw.get("data") {
+            apply_fast_mode_update(app, data);
+        }
+    }
     let _ = msg;
 }
 
-fn handle_user(app: &mut App, msg: Message) {
+fn handle_task_started(app: &mut App, msg: Message, raw: &Value) {
     let _ = app;
     let _ = msg;
+    let _ = raw;
 }
 
-fn handle_system(app: &mut App, msg: Message) {
+fn handle_task_progress(app: &mut App, msg: Message, raw: &Value) {
     let _ = app;
     let _ = msg;
+    let _ = raw;
 }
 
-fn handle_task_started(app: &mut App, msg: Message) {
+fn handle_task_notification(app: &mut App, msg: Message, raw: &Value) {
     let _ = app;
     let _ = msg;
+    let _ = raw;
 }
 
-fn handle_task_progress(app: &mut App, msg: Message) {
+fn handle_rate_limit_event(app: &mut App, msg: Message, raw: &Value) {
     let _ = app;
     let _ = msg;
+    let _ = raw;
 }
 
-fn handle_task_notification(app: &mut App, msg: Message) {
-    let _ = app;
+fn handle_result(app: &mut App, msg: Message, raw: &Value) {
     let _ = msg;
+    apply_fast_mode_update(app, raw);
 }
 
-fn handle_rate_limit_event(app: &mut App, msg: Message) {
+fn handle_stream_event(app: &mut App, msg: Message, raw: &Value) {
     let _ = app;
     let _ = msg;
+    let _ = raw;
 }
 
-fn handle_result(app: &mut App, msg: Message) {
+fn handle_unknown(app: &mut App, msg: Message, raw: &Value) {
     let _ = app;
     let _ = msg;
-}
-
-fn handle_stream_event(app: &mut App, msg: Message) {
-    let _ = app;
-    let _ = msg;
-}
-
-fn handle_unknown(app: &mut App, msg: Message) {
-    let _ = app;
-    let _ = msg;
+    let _ = raw;
 }

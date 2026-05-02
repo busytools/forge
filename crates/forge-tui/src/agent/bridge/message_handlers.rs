@@ -33,7 +33,7 @@ use super::session_lifecycle::refresh_current_model;
 use super::state::{BridgeSession, PermissionMode};
 use super::state_parsing::{
     build_api_retry_update, build_rate_limit_update, normalize_settings_parse_errors,
-    parse_fast_mode_state, parse_runtime_session_state,
+    parse_runtime_session_state,
 };
 use super::tool_calls::{
     emit_plan_if_todo_write, emit_tool_call, emit_tool_progress_update, emit_tool_result_update,
@@ -45,22 +45,10 @@ fn push_session_update(out: &mut Vec<BridgeEvent>, session_id: &str, update: Ses
     out.push(BridgeEvent::SessionUpdate { session_id: session_id.to_owned(), update });
 }
 
-fn emit_fast_mode_update_if_changed(
-    session: &mut BridgeSession,
-    next: Option<&Value>,
-    out: &mut Vec<BridgeEvent>,
-) {
-    let Some(state) = parse_fast_mode_state(next) else { return };
-    if session.fast_mode_state == state {
-        return;
-    }
-    session.fast_mode_state = state;
-    push_session_update(
-        out,
-        &session.session_id,
-        SessionUpdate::FastModeUpdate { fast_mode_state: state },
-    );
-}
+// Phase 2: `emit_fast_mode_update_if_changed` removed. The App's
+// `events::sdk_message::handle_sdk_message` now applies the
+// `fast_mode_state` field directly from the raw `forge_sdk::Message`
+// envelope on the `BridgeEvent::SdkMessage` parallel wire.
 
 fn handle_content_block(
     session: &mut BridgeSession,
@@ -173,12 +161,13 @@ fn handle_result_message(
     session: &mut BridgeSession,
     is_error: bool,
     subtype: &str,
-    fast_mode_state: Option<&Value>,
+    _fast_mode_state: Option<&Value>,
     terminal_reason: Option<&Value>,
     errors: Option<&Value>,
     out: &mut Vec<BridgeEvent>,
 ) {
-    emit_fast_mode_update_if_changed(session, fast_mode_state, out);
+    // fast_mode_state is now applied by the App's sdk_message handler
+    // on the parallel BridgeEvent::SdkMessage wire (Phase 2 cutover).
     let terminal_reason_typed = terminal_reason_from_value(terminal_reason);
 
     if !is_error && subtype == "success" {
@@ -274,7 +263,7 @@ fn handle_system_init(
         session.mode = Some(mode);
     }
     refresh_supported_modes_for_session(session);
-    emit_fast_mode_update_if_changed(session, msg_record.get("fast_mode_state"), out);
+    // fast_mode_state moved to the App's sdk_message handler.
 
     // The initial Connected event was already emitted at spawn (the
     // worker sets session.connected = true there). When system/init
@@ -380,7 +369,7 @@ fn handle_system_status(
             SessionUpdate::SessionStatusUpdate { status: crate::agent::types::SessionStatus::Idle },
         );
     }
-    emit_fast_mode_update_if_changed(session, msg_record.get("fast_mode_state"), out);
+    // fast_mode_state moved to the App's sdk_message handler.
 }
 
 fn handle_system_compact_boundary(
