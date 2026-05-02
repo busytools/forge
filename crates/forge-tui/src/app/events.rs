@@ -321,7 +321,7 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
     }
 }
 
-fn handle_runtime_session_state_update(app: &mut App, state: model::RuntimeSessionState) {
+pub(super) fn handle_runtime_session_state_update(app: &mut App, state: model::RuntimeSessionState) {
     app.runtime_session_state = Some(state);
     match state {
         model::RuntimeSessionState::Running => {

@@ -33,7 +33,6 @@ use super::session_lifecycle::refresh_current_model;
 use super::state::{BridgeSession, PermissionMode};
 use super::state_parsing::{
     build_api_retry_update, build_rate_limit_update, normalize_settings_parse_errors,
-    parse_runtime_session_state,
 };
 use super::tool_calls::{
     emit_plan_if_todo_write, emit_tool_call, emit_tool_progress_update, emit_tool_result_update,
@@ -479,13 +478,9 @@ pub fn handle_sdk_message(
                     }
                 }
                 "session_state_changed" => {
-                    if let Some(state) = parse_runtime_session_state(msg_record.get("state")) {
-                        push_session_update(
-                            out,
-                            &session.session_id,
-                            SessionUpdate::RuntimeSessionStateUpdate { state },
-                        );
-                    }
+                    // Phase 2 cutover: handled by App's
+                    // events::sdk_message::handle_system on the
+                    // BridgeEvent::SdkMessage parallel wire.
                 }
                 "init" => {
                     handle_system_init(session, msg_session_id.as_deref(), msg_record, out);

@@ -42,7 +42,7 @@ use forge_sdk::Message;
 use serde_json::Value;
 
 use crate::app::App;
-use crate::agent::bridge::state_parsing::parse_fast_mode_state;
+use crate::agent::bridge::state_parsing::{parse_fast_mode_state, parse_runtime_session_state};
 
 /// Top-level entry point. Called from `events::client` after the
 /// session-id check on `ClientEvent::SdkMessageReceived`. Dispatches
@@ -115,20 +115,38 @@ fn handle_user(app: &mut App, msg: Message, raw: &Value) {
 }
 
 fn handle_system(app: &mut App, msg: Message, raw: &Value) {
-    // The bridge today calls `emit_fast_mode_update_if_changed` from
-    // `handle_system_status` (the `subtype == "status"` branch). Mirror
-    // by checking whether this is a status subtype — if so, the wire
-    // record carries `fast_mode_state` directly. Other subtypes don't.
-    if let Message::System { ref subtype, .. } = msg
-        && subtype == "status"
-    {
-        // status's data is the inner record; pull it from `raw.data`
-        // since the SDK Message variant carries `data: Value` directly.
-        if let Some(data) = raw.get("data") {
+    let Message::System { ref subtype, ref data, .. } = msg else { return };
+    match subtype.as_str() {
+        "status" => {
+            // `status` subtype carries `fast_mode_state` directly on
+            // its data record.
             apply_fast_mode_update(app, data);
         }
+        "session_state_changed" => {
+            // Migrated from bridge::message_handlers (line ~482).
+            // Parse the wire-side enum, convert to App-side model,
+            // call the existing event handler that handles the side
+            // effects (status transitions, etc.).
+            if let Some(wire_state) = parse_runtime_session_state(data.get("state")) {
+                let model_state = convert_runtime_session_state(wire_state);
+                super::handle_runtime_session_state_update(app, model_state);
+            }
+        }
+        _ => {}
     }
-    let _ = msg;
+    let _ = raw;
+}
+
+fn convert_runtime_session_state(
+    wire: crate::agent::types::RuntimeSessionState,
+) -> crate::agent::model::RuntimeSessionState {
+    use crate::agent::model::RuntimeSessionState as Model;
+    use crate::agent::types::RuntimeSessionState as Wire;
+    match wire {
+        Wire::Idle => Model::Idle,
+        Wire::Running => Model::Running,
+        Wire::RequiresAction => Model::RequiresAction,
+    }
 }
 
 fn handle_task_started(app: &mut App, msg: Message, raw: &Value) {
