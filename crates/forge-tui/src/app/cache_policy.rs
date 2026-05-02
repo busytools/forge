@@ -1,6 +1,3 @@
-// Copyright 2025 Simon Peter Rothgang
-// SPDX-License-Identifier: Apache-2.0
-
 pub const DEFAULT_CACHE_SPLIT_SOFT_LIMIT_BYTES: usize = 1536;
 pub const DEFAULT_CACHE_SPLIT_HARD_LIMIT_BYTES: usize = 4096;
 pub const DEFAULT_TOOL_PREVIEW_LIMIT_BYTES: usize = 2048;

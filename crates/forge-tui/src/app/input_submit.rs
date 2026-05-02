@@ -1,6 +1,3 @@
-// Copyright 2025 Simon Peter Rothgang
-// SPDX-License-Identifier: Apache-2.0
-
 use super::{App, AppStatus, CancelOrigin, ChatMessage, MessageBlock, MessageRole, TextBlock};
 use crate::agent::events::ClientEvent;
 use crate::agent::model;

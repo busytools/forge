@@ -1,6 +1,3 @@
-// Copyright 2025 Simon Peter Rothgang
-// SPDX-License-Identifier: Apache-2.0
-
 use super::super::connect::take_connection_slot;
 use super::super::connect::{SessionStartReason, start_new_session};
 use super::super::state::RecentSessionInfo;

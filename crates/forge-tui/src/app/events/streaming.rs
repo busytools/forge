@@ -1,6 +1,3 @@
-// Copyright 2025 Simon Peter Rothgang
-// SPDX-License-Identifier: Apache-2.0
-
 use super::super::{
     App, AppStatus, ChatMessage, MessageBlock, MessageRole, TextBlock, TextBlockSpacing,
     TextSplitDecision, TextSplitKind, default_cache_split_policy, find_text_split,

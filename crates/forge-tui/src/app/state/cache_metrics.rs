@@ -1,6 +1,3 @@
-// Copyright 2025 Simon Peter Rothgang
-// SPDX-License-Identifier: Apache-2.0
-
 //! Cache observability: accumulation, snapshots, and rate-limited structured logging.
 //!
 //! `CacheMetrics` lives on `App` and accumulates cross-cutting counters (enforcement

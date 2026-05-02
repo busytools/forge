@@ -1,6 +1,3 @@
-// Copyright 2025 Simon Peter Rothgang
-// SPDX-License-Identifier: Apache-2.0
-
 /// Describes the intent behind a layout invalidation.
 ///
 /// The viewport now tracks per-message staleness, prefix-sum dirtiness, and

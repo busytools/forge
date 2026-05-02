@@ -1,6 +1,3 @@
-// Copyright 2025 Simon Peter Rothgang
-// SPDX-License-Identifier: Apache-2.0
-
 use serde_json::{Map, Value};
 use std::fs::OpenOptions;
 use std::io::Write;

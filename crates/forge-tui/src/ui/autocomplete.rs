@@ -1,6 +1,3 @@
-// Copyright 2025 Simon Peter Rothgang
-// SPDX-License-Identifier: Apache-2.0
-
 use crate::app::App;
 use crate::app::mention::MAX_VISIBLE;
 use crate::app::{file_index, mention, slash, subagent};

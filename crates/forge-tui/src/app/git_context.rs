@@ -1,6 +1,3 @@
-// Copyright 2025 Simon Peter Rothgang
-// SPDX-License-Identifier: Apache-2.0
-
 //! Thin TUI-side cache for the bridge-pushed git context snapshots.
 //!
 //! Filesystem reads, the `.git/HEAD` walker, the `notify::Watcher`,

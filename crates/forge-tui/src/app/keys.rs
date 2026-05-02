@@ -1,6 +1,3 @@
-// Copyright 2025 Simon Peter Rothgang
-// SPDX-License-Identifier: Apache-2.0
-
 use super::dialog::DialogState;
 use super::paste_burst::CharAction;
 use super::{

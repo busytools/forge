@@ -1,6 +1,3 @@
-// Copyright 2025 Simon Peter Rothgang
-// SPDX-License-Identifier: Apache-2.0
-
 use clap::Parser;
 use forge_tui::Cli;
 use forge_tui::error::AppError;

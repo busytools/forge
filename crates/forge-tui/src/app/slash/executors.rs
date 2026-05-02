@@ -1,6 +1,3 @@
-// Copyright 2025 Simon Peter Rothgang
-// SPDX-License-Identifier: Apache-2.0
-
 //! Slash command executors: dispatching parsed commands to their handler functions.
 
 use super::{

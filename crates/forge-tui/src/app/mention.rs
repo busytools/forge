@@ -1,6 +1,3 @@
-// Copyright 2025 Simon Peter Rothgang
-// SPDX-License-Identifier: Apache-2.0
-
 use super::{App, FocusTarget, dialog::DialogState, file_index};
 
 /// Maximum candidates shown in the dropdown.

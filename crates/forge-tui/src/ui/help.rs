@@ -1,6 +1,3 @@
-// Copyright 2025 Simon Peter Rothgang
-// SPDX-License-Identifier: Apache-2.0
-
 use crate::app::{App, AppStatus, FocusOwner, HelpView};
 use crate::ui::theme;
 use crate::ui::two_column_list::{self, TwoColumnItem};

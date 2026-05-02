@@ -1,6 +1,3 @@
-// Copyright 2025 Simon Peter Rothgang
-// SPDX-License-Identifier: Apache-2.0
-
 //! Error rendering and tool-use error extraction for failed tool calls.
 
 use crate::agent::error_handling::{

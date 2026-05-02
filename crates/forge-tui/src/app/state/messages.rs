@@ -1,6 +1,3 @@
-// Copyright 2025 Simon Peter Rothgang
-// SPDX-License-Identifier: Apache-2.0
-
 use super::block_cache::BlockCache;
 use super::tool_call_info::ToolCallInfo;
 use super::types::MessageUsage;

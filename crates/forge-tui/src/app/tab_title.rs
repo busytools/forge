@@ -1,6 +1,3 @@
-// Copyright 2025 Simon Peter Rothgang
-// SPDX-License-Identifier: Apache-2.0
-
 //! Terminal tab/window title management.
 //!
 //! Uses OSC 2 escape sequences to update the terminal tab title with a simple

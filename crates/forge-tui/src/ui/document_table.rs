@@ -1,6 +1,3 @@
-// Copyright 2025 Simon Peter Rothgang
-// SPDX-License-Identifier: Apache-2.0
-
 use super::markdown;
 use super::wrap::{
     StyledChunk, blank_line, display_width, line_display_width, pad_line_to_width,

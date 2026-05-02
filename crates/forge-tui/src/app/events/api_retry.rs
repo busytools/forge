@@ -1,6 +1,3 @@
-// Copyright 2025 Simon Peter Rothgang
-// SPDX-License-Identifier: Apache-2.0
-
 use super::notices::upsert_turn_notice;
 use crate::agent::model::ApiRetryError;
 use crate::app::{App, NoticeDedupKey, NoticeStage, SystemSeverity};

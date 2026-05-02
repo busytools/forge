@@ -1,6 +1,3 @@
-// Copyright 2025 Simon Peter Rothgang
-// SPDX-License-Identifier: Apache-2.0
-
 use super::App;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};

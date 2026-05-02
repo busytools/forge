@@ -1,6 +1,3 @@
-// Copyright 2025 Simon Peter Rothgang
-// SPDX-License-Identifier: Apache-2.0
-
 use super::super::{
     App, ChatMessage, InvalidationLevel, MessageBlock, MessageRole, NoticeBlock, NoticeDedupKey,
     NoticeStage, SystemSeverity, TurnNoticeLocation, TurnNoticeRef,

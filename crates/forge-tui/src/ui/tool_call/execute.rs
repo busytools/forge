@@ -1,6 +1,3 @@
-// Copyright 2025 Simon Peter Rothgang
-// SPDX-License-Identifier: Apache-2.0
-
 //! Two-layer rendering for Execute/Bash tool calls: content is cached
 //! (width-independent), borders are applied at render time.
 

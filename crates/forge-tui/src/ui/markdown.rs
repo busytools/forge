@@ -1,6 +1,3 @@
-// Copyright 2025 Simon Peter Rothgang
-// SPDX-License-Identifier: Apache-2.0
-
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use std::panic::{self, AssertUnwindSafe};

@@ -1,6 +1,3 @@
-// Copyright 2025 Simon Peter Rothgang
-// SPDX-License-Identifier: Apache-2.0
-
 //! Slash command autocomplete navigation: activate, deactivate, sync,
 //! move selection, and confirm.
 

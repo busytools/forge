@@ -1,6 +1,3 @@
-// Copyright 2025 Simon Peter Rothgang
-// SPDX-License-Identifier: Apache-2.0
-
 //! Explicit high-frequency performance telemetry sidecar.
 //!
 //! This module is intentionally separate from the main structured runtime logs.
