@@ -207,6 +207,7 @@ pub fn create_app(cli: &Cli) -> App {
         is_compacting: false,
         account_info: None,
         oauth_credentials: None,
+        turn_state: super::SessionTurnState::default(),
         terminal_tool_calls: Vec::new(),
         terminal_tool_call_membership: HashSet::new(),
         needs_redraw: true,

@@ -24,8 +24,8 @@ pub use types::{
     AppStatus, CancelOrigin, ExtraUsage, HelpView, HistoryRetentionPolicy, HistoryRetentionStats,
     LoginHint, McpState, MessageUsage, ModeInfo, ModeState, PasteSessionState, PendingCommandAck,
     RecentSessionInfo, RenderCacheBudget, ScrollbarDragState, SelectionKind, SelectionPoint,
-    SelectionState, SessionPickerState, SessionUsageState, TodoItem, TodoStatus, ToolCallScope,
-    UsageSnapshot, UsageSourceKind, UsageSourceMode, UsageState, UsageWindow,
+    SelectionState, SessionPickerState, SessionTurnState, SessionUsageState, TodoItem, TodoStatus,
+    ToolCallScope, UsageSnapshot, UsageSourceKind, UsageSourceMode, UsageState, UsageWindow,
 };
 pub use viewport::{
     ChatViewport, LayoutInvalidation, LayoutInvalidation as InvalidationLevel,
@@ -301,6 +301,14 @@ pub struct App {
     /// callers can ask "is the user authenticated?" without doing
     /// their own filesystem walk to `<config_dir>/.credentials.json`.
     pub oauth_credentials: Option<forge_sdk::OauthCredentials>,
+
+    /// Per-session runtime state being absorbed from the bridge
+    /// unpacker (`agent::bridge::state::BridgeSession`). Currently
+    /// default-initialised and unused; Phase 2 of the bridge-collapse
+    /// refactor migrates per-variant handlers to populate + read
+    /// these fields, after which the bridge module's parallel state
+    /// is removed. See `app/state/types.rs::SessionTurnState`.
+    pub turn_state: SessionTurnState,
 
     /// Indexed terminal tool calls for per-frame terminal snapshot updates.
     /// Avoids O(n*m) scan of all messages/blocks every frame.
@@ -902,6 +910,7 @@ impl App {
             is_compacting: false,
             account_info: None,
             oauth_credentials: None,
+            turn_state: SessionTurnState::default(),
             terminal_tool_calls: Vec::new(),
             terminal_tool_call_membership: HashSet::new(),
             needs_redraw: true,

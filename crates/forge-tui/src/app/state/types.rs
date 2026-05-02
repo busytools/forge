@@ -155,6 +155,70 @@ pub struct McpState {
     pub pending_elicitation: Option<crate::agent::types::ElicitationRequest>,
 }
 
+/// Per-session runtime state previously owned by
+/// `crate::agent::bridge::state::BridgeSession`. Fields are absorbed
+/// into the App as part of the bridge-unpacker collapse: the bridge
+/// module emits `SessionUpdate` events that mutate App state today,
+/// but post-collapse the App's `handle_sdk_message` walks raw
+/// `forge_sdk::Message` envelopes itself, so the per-message
+/// pairing / model-resolution / mode-capability state needs to live
+/// here directly.
+///
+/// Fields default-initialised; not yet read by App handlers during
+/// Phase 1 — the bridge module continues to populate its own
+/// `BridgeSession` and emit `SessionUpdate`s as before. Phase 2
+/// migrates per-variant handlers to read/write these fields; Phase 3
+/// deletes the bridge module entirely.
+#[derive(Debug, Default)]
+pub struct SessionTurnState {
+    /// Live tool-call store keyed by `tool_use_id` for cross-message
+    /// `tool_use ↔ tool_result` pairing.
+    pub tool_calls:
+        std::collections::HashMap<String, crate::agent::types::ToolCall>,
+    /// Maps task-tool `task_id` → `tool_use_id` so TaskProgress /
+    /// TaskNotification messages can resolve back to the originating
+    /// tool call for ToolCallUpdate emission.
+    pub task_tool_use_ids: std::collections::HashMap<String, String>,
+
+    /// Raw model id from the CLI's session-init payload.
+    pub model_id: String,
+    /// Model id explicitly requested via `/model`.
+    pub requested_model_id: Option<String>,
+    /// Resolved model id after runtime fallback from the requested id.
+    pub resolved_runtime_model_id: Option<String>,
+
+    /// Permission modes the runtime currently supports.
+    pub supported_mode_ids: Vec<crate::agent::bridge::state::PermissionMode>,
+    /// Permission modes recognised but currently unavailable.
+    pub runtime_unavailable_mode_ids:
+        Vec<crate::agent::bridge::state::PermissionMode>,
+    /// Whether `bypassPermissions` mode is allowed for this session.
+    pub supports_bypass_permissions_mode: bool,
+    /// Current mode resolution alongside the human-readable label.
+    pub mode_state: Option<crate::agent::types::ModeState>,
+
+    /// Sha-style fingerprint of the available_agents list — used to
+    /// emit `AvailableAgentsUpdate` only when the catalogue changes.
+    pub last_agents_signature: Option<String>,
+
+    /// True once an `AuthRequired` event has been emitted for this
+    /// session; suppresses re-emits on subsequent stream events.
+    pub auth_hint_sent: bool,
+
+    /// Last assistant error subtype seen on the wire — survives
+    /// across messages so a subsequent `Result` can classify the
+    /// turn correctly.
+    pub last_assistant_error: Option<String>,
+
+    /// Per-server cooldown timestamps for MCP status revalidation.
+    pub mcp_status_revalidated_at:
+        std::collections::HashMap<String, std::time::Instant>,
+
+    /// Resume history collected during connect handshake; attached to
+    /// the first Connected event payload.
+    pub resume_updates: Option<Vec<crate::agent::types::SessionUpdate>>,
+}
+
 pub const DEFAULT_RENDER_CACHE_BUDGET_BYTES: usize = 24 * 1024 * 1024;
 pub const DEFAULT_HISTORY_RETENTION_MAX_BYTES: usize = 64 * 1024 * 1024;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
