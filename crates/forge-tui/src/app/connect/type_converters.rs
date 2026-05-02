@@ -12,7 +12,7 @@ pub(super) fn map_rate_limit_status(status: types::RateLimitStatus) -> model::Ra
     }
 }
 
-pub(super) fn map_rate_limit_update(update: types::RateLimitUpdate) -> model::RateLimitUpdate {
+pub(crate) fn map_rate_limit_update(update: types::RateLimitUpdate) -> model::RateLimitUpdate {
     model::RateLimitUpdate {
         status: map_rate_limit_status(update.status),
         resets_at: update.resets_at,

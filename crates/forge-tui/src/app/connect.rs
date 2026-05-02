@@ -8,7 +8,7 @@
 mod bridge_lifecycle;
 mod event_dispatch;
 mod session_start;
-mod type_converters;
+pub(crate) mod type_converters;
 
 use super::config::ConfigState;
 use super::dialog::DialogState;

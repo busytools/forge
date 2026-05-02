@@ -42,7 +42,9 @@ use forge_sdk::Message;
 use serde_json::Value;
 
 use crate::app::App;
-use crate::agent::bridge::state_parsing::{parse_fast_mode_state, parse_runtime_session_state};
+use crate::agent::bridge::state_parsing::{
+    build_rate_limit_update, parse_fast_mode_state, parse_runtime_session_state,
+};
 
 /// Top-level entry point. Called from `events::client` after the
 /// session-id check on `ClientEvent::SdkMessageReceived`. Dispatches
@@ -167,10 +169,37 @@ fn handle_task_notification(app: &mut App, msg: Message, raw: &Value) {
     let _ = raw;
 }
 
-fn handle_rate_limit_event(app: &mut App, msg: Message, raw: &Value) {
-    let _ = app;
-    let _ = msg;
-    let _ = raw;
+fn handle_rate_limit_event(app: &mut App, msg: Message, _raw: &Value) {
+    let Message::RateLimitEvent { rate_limit_info, .. } = msg else { return };
+    let value = serde_json::to_value(&rate_limit_info).unwrap_or(Value::Null);
+    let Some(crate::agent::types::SessionUpdate::RateLimitUpdate {
+        status,
+        resets_at,
+        utilization,
+        rate_limit_type,
+        overage_status,
+        overage_resets_at,
+        overage_disabled_reason,
+        is_using_overage,
+        surpassed_threshold,
+    }) = build_rate_limit_update(Some(&value)) else {
+        return;
+    };
+    // Convert wire-side types::RateLimitUpdate → model::RateLimitUpdate
+    // via the existing converter, then call the App-side handler.
+    let wire = crate::agent::types::RateLimitUpdate {
+        status,
+        resets_at,
+        utilization,
+        rate_limit_type,
+        overage_status,
+        overage_resets_at,
+        overage_disabled_reason,
+        is_using_overage,
+        surpassed_threshold,
+    };
+    let update = crate::app::connect::type_converters::map_rate_limit_update(wire);
+    super::rate_limit::handle_rate_limit_update(app, &update);
 }
 
 fn handle_result(app: &mut App, msg: Message, raw: &Value) {

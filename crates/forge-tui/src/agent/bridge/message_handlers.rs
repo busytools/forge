@@ -31,9 +31,7 @@ use super::agents::{emit_available_agents_if_changed, map_available_agents_from_
 use super::commands::{build_mode_state, refresh_supported_modes_for_session};
 use super::session_lifecycle::refresh_current_model;
 use super::state::{BridgeSession, PermissionMode};
-use super::state_parsing::{
-    build_api_retry_update, build_rate_limit_update, normalize_settings_parse_errors,
-};
+use super::state_parsing::{build_api_retry_update, normalize_settings_parse_errors};
 use super::tool_calls::{
     emit_plan_if_todo_write, emit_tool_call, emit_tool_progress_update, emit_tool_result_update,
     emit_tool_summary_update, finalize_open_tool_calls,
@@ -525,11 +523,10 @@ pub fn handle_sdk_message(
                 }
             }
         }
-        SdkMessage::RateLimitEvent { rate_limit_info, .. } => {
-            let value = serde_json::to_value(rate_limit_info).unwrap_or(Value::Null);
-            if let Some(update) = build_rate_limit_update(Some(&value)) {
-                push_session_update(out, &session.session_id, update);
-            }
+        SdkMessage::RateLimitEvent { .. } => {
+            // Phase 2 cutover: handled by App's
+            // events::sdk_message::handle_rate_limit_event on the
+            // BridgeEvent::SdkMessage parallel wire.
         }
         SdkMessage::TaskStarted { tool_use_id, task_id, .. } => {
             let id = tool_use_id.as_deref().unwrap_or("");
