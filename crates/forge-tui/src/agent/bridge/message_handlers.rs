@@ -31,7 +31,6 @@ use super::agents::{emit_available_agents_if_changed, map_available_agents_from_
 use super::commands::{build_mode_state, refresh_supported_modes_for_session};
 use super::session_lifecycle::refresh_current_model;
 use super::state::{BridgeSession, PermissionMode};
-use super::state_parsing::normalize_settings_parse_errors;
 use super::tool_calls::{
     emit_plan_if_todo_write, emit_tool_call, emit_tool_progress_update, emit_tool_result_update,
     emit_tool_summary_update, finalize_open_tool_calls,
@@ -316,22 +315,8 @@ fn handle_system_init(
         emit_available_agents_if_changed(session, mapped, out);
     }
 
-    let settings_errors = msg_record
-        .get("settings_errors")
-        .or_else(|| msg_record.get("settingsErrors"));
-    if let Some(v) = settings_errors {
-        for err in normalize_settings_parse_errors(v) {
-            push_session_update(
-                out,
-                &session.session_id,
-                SessionUpdate::SettingsParseError {
-                    file: err.file,
-                    path: err.path,
-                    message: err.message,
-                },
-            );
-        }
-    }
+    // settings_errors moved to App's events::sdk_message::apply_settings_parse_errors
+    // on the BridgeEvent::SdkMessage parallel wire (Phase 2 cutover).
 }
 
 fn handle_system_status(

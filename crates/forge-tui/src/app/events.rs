@@ -343,7 +343,7 @@ pub(super) fn handle_runtime_session_state_update(app: &mut App, state: model::R
     }
 }
 
-fn handle_settings_parse_error(app: &mut App, file: Option<&str>, path: &str, message: &str) {
+pub(super) fn handle_settings_parse_error(app: &mut App, file: Option<&str>, path: &str, message: &str) {
     let trimmed = message.trim();
     if trimmed.is_empty() {
         return;

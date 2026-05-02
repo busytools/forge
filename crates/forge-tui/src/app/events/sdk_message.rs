@@ -43,8 +43,8 @@ use serde_json::Value;
 
 use crate::app::App;
 use crate::agent::bridge::state_parsing::{
-    build_api_retry_update, build_rate_limit_update, parse_fast_mode_state,
-    parse_runtime_session_state,
+    build_api_retry_update, build_rate_limit_update, normalize_settings_parse_errors,
+    parse_fast_mode_state, parse_runtime_session_state,
 };
 
 /// Top-level entry point. Called from `events::client` after the
@@ -132,9 +132,28 @@ fn handle_system(app: &mut App, msg: Message, raw: &Value) {
         "api_retry" => {
             apply_api_retry_update(app, data);
         }
+        "init" => {
+            apply_settings_parse_errors(app, data);
+        }
         _ => {}
     }
     let _ = raw;
+}
+
+/// Drain `settings_errors` / `settingsErrors` from a System(init)
+/// data record and call the App's settings-parse-error notice handler
+/// once per error.
+fn apply_settings_parse_errors(app: &mut App, data: &Value) {
+    let Some(record) = data.as_object() else { return };
+    let Some(errors) = record
+        .get("settings_errors")
+        .or_else(|| record.get("settingsErrors"))
+    else {
+        return;
+    };
+    for err in normalize_settings_parse_errors(errors) {
+        super::handle_settings_parse_error(app, err.file.as_deref(), &err.path, &err.message);
+    }
 }
 
 /// Apply an api_retry system message to the App. Wraps the bridge's
