@@ -187,7 +187,8 @@ mod tests {
     use crate::app::ActiveView;
 
     fn app_with_connection()
-    -> (App, tokio::sync::mpsc::UnboundedReceiver<crate::agent::forge_sdk_bridge::ForgeSdkCommand>) {
+    -> (App, tokio::sync::mpsc::UnboundedReceiver<crate::agent::forge_sdk_bridge::ForgeSdkCommand>)
+    {
         let mut app = App::test_default();
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         app.conn = Some(std::rc::Rc::new(crate::agent::forge_sdk_bridge::ForgeSdkBridge::new(tx)));

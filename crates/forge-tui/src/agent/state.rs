@@ -83,6 +83,9 @@ mod tests {
         assert_eq!(PermissionMode::from_wire("accept_edits"), Some(PermissionMode::AcceptEdits));
         assert_eq!(PermissionMode::from_wire("dont_ask"), Some(PermissionMode::DontAsk));
         assert_eq!(PermissionMode::from_wire("deny"), Some(PermissionMode::DontAsk));
-        assert_eq!(PermissionMode::from_wire("bypass_permissions"), Some(PermissionMode::BypassPermissions));
+        assert_eq!(
+            PermissionMode::from_wire("bypass_permissions"),
+            Some(PermissionMode::BypassPermissions)
+        );
     }
 }

@@ -132,11 +132,8 @@ fn normalize_settings_parse_error(value: &Value) -> Option<SettingsParseErrorUpd
         return None;
     }
     let path = r.get("path").and_then(Value::as_str).unwrap_or("").to_owned();
-    let file = r
-        .get("file")
-        .and_then(Value::as_str)
-        .filter(|s| !s.trim().is_empty())
-        .map(str::to_owned);
+    let file =
+        r.get("file").and_then(Value::as_str).filter(|s| !s.trim().is_empty()).map(str::to_owned);
     Some(SettingsParseErrorUpdate { file, path, message: message.to_owned() })
 }
 
@@ -169,7 +166,10 @@ mod tests {
             parse_rate_limit_status(Some(&json!("allowed_warning"))),
             Some(RateLimitStatus::AllowedWarning),
         );
-        assert_eq!(parse_rate_limit_status(Some(&json!("rejected"))), Some(RateLimitStatus::Rejected));
+        assert_eq!(
+            parse_rate_limit_status(Some(&json!("rejected"))),
+            Some(RateLimitStatus::Rejected)
+        );
         assert_eq!(parse_rate_limit_status(Some(&json!("nope"))), None);
     }
 

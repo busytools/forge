@@ -2,10 +2,10 @@
 //! publication, event-loop relay.
 
 use crate::agent::client::AgentBridge;
+use crate::agent::client::{AgentEvent, EventEnvelope};
 use crate::agent::events::ClientEvent;
 use crate::agent::forge_sdk_bridge::{ForgeSdkBridge, ForgeSdkCommand};
 use crate::agent::forge_sdk_worker;
-use crate::agent::client::{AgentEvent, EventEnvelope};
 use crate::error::AppError;
 use std::rc::Rc;
 use tokio::sync::mpsc;
@@ -60,10 +60,7 @@ pub(super) async fn run_connection_task(
         let send_result = if let Some(resume_id) = params.resume_id.clone() {
             agent.resume_session(resume_id, params.session_launch_settings.clone())
         } else {
-            agent.new_session(
-                params.cwd_raw.clone(),
-                params.session_launch_settings.clone(),
-            )
+            agent.new_session(params.cwd_raw.clone(), params.session_launch_settings.clone())
         };
         if let Err(err) = send_result {
             emit_connection_failed(
@@ -109,7 +106,6 @@ async fn forge_sdk_event_loop(
     );
 }
 
-
 pub(super) fn emit_connection_failed(
     event_tx: &mpsc::UnboundedSender<ClientEvent>,
     message: String,
@@ -118,4 +114,3 @@ pub(super) fn emit_connection_failed(
     let _ = event_tx.send(ClientEvent::ConnectionFailed(message));
     let _ = event_tx.send(ClientEvent::FatalError(app_error));
 }
-

@@ -504,12 +504,9 @@ pub(crate) fn is_mcp_action_available(
     // Authenticate is unavailable for `claudeai-proxy` servers — the
     // SDK exposes server.config as `Option<serde_json::Value>` so we
     // discriminate on the JSON `type` tag inline.
-    let is_claudeai_proxy = server
-        .config
-        .as_ref()
-        .and_then(|c| c.get("type"))
-        .and_then(serde_json::Value::as_str)
-        == Some("claudeai-proxy");
+    let is_claudeai_proxy =
+        server.config.as_ref().and_then(|c| c.get("type")).and_then(serde_json::Value::as_str)
+            == Some("claudeai-proxy");
     !is_claudeai_proxy
 }
 

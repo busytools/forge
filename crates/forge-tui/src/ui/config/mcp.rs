@@ -5,15 +5,15 @@ use super::overlay::{
 };
 use super::theme;
 use crate::agent::types::{ElicitationAction, ElicitationMode};
-use forge_sdk::{McpServerConnectionStatus, McpServerStatus};
-use serde_json::Value;
 use crate::app::App;
 use crate::app::config::{available_mcp_actions, is_mcp_action_available};
+use forge_sdk::{McpServerConnectionStatus, McpServerStatus};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{List, ListItem, ListState, Paragraph, Wrap};
+use serde_json::Value;
 
 pub(super) fn render(frame: &mut Frame, area: Rect, app: &App) {
     let content_area = area.inner(Margin { vertical: 1, horizontal: 2 });
@@ -512,15 +512,11 @@ fn config_lines(config: &Value) -> Vec<Line<'static>> {
             let args = config
                 .get("args")
                 .and_then(Value::as_array)
-                .map(|arr| {
-                    arr.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(" ")
-                })
+                .map(|arr| arr.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(" "))
                 .filter(|s| !s.is_empty())
                 .unwrap_or_else(|| "(none)".to_owned());
-            let env_count = config
-                .get("env")
-                .and_then(Value::as_object)
-                .map_or(0, serde_json::Map::len);
+            let env_count =
+                config.get("env").and_then(Value::as_object).map_or(0, serde_json::Map::len);
             vec![
                 detail_kv("Command", command, Color::White),
                 detail_kv("Args", &args, Color::White),
@@ -529,10 +525,8 @@ fn config_lines(config: &Value) -> Vec<Line<'static>> {
         }
         "sse" | "http" => {
             let url = config.get("url").and_then(Value::as_str).unwrap_or("(missing)");
-            let header_count = config
-                .get("headers")
-                .and_then(Value::as_object)
-                .map_or(0, serde_json::Map::len);
+            let header_count =
+                config.get("headers").and_then(Value::as_object).map_or(0, serde_json::Map::len);
             vec![
                 detail_kv("URL", url, Color::White),
                 detail_kv("Headers", &format!("{header_count} configured"), Color::White),

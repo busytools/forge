@@ -54,9 +54,9 @@ pub use state::{
     MessageRenderSignature, MessageRole, MessageUsage, ModeInfo, ModeState, NoticeBlock,
     NoticeDedupKey, NoticeStage, PasteSessionState, PendingCommandAck, RateLimitIncidentKey,
     RecentSessionInfo, ScrollbarGeometry, SelectionKind, SelectionPoint, SelectionState,
-    SessionPickerState, SessionTurnState, SessionUsageState, SystemSeverity, TerminalSnapshotMode, TextBlock,
-    TextBlockSpacing, TodoItem, TodoStatus, ToolCallInfo, ToolCallScope, TurnNoticeLocation,
-    TurnNoticeRef, UsageSnapshot, UsageSourceKind, UsageSourceMode, UsageState,
+    SessionPickerState, SessionTurnState, SessionUsageState, SystemSeverity, TerminalSnapshotMode,
+    TextBlock, TextBlockSpacing, TodoItem, TodoStatus, ToolCallInfo, ToolCallScope,
+    TurnNoticeLocation, TurnNoticeRef, UsageSnapshot, UsageSourceKind, UsageSourceMode, UsageState,
     UsageWindow, WelcomeBlock, compute_scrollbar_geometry, hash_text_block_content,
     hash_welcome_block_content, is_execute_tool_name,
 };
@@ -501,13 +501,14 @@ fn finalize_deferred_submit(app: &mut App) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::model;
     use crate::agent::forge_sdk_bridge::ForgeSdkCommand;
+    use crate::agent::model;
     use crate::app::{MessageBlock, MessageRole};
     use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 
     fn app_with_connection()
-    -> (App, tokio::sync::mpsc::UnboundedReceiver<crate::agent::forge_sdk_bridge::ForgeSdkCommand>) {
+    -> (App, tokio::sync::mpsc::UnboundedReceiver<crate::agent::forge_sdk_bridge::ForgeSdkCommand>)
+    {
         let mut app = App::test_default();
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         app.conn = Some(std::rc::Rc::new(crate::agent::forge_sdk_bridge::ForgeSdkBridge::new(tx)));

@@ -1,6 +1,6 @@
 use super::*;
-use crate::agent::model::AvailableModel;
 use crate::agent::forge_sdk_bridge::ForgeSdkCommand;
+use crate::agent::model::AvailableModel;
 use crate::app::AppStatus;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use serde_json::Value;
@@ -1316,15 +1316,9 @@ fn mcp_tab_refresh_key_requests_snapshot() {
     handle_key(&mut app, KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE));
 
     let envelope = rx.try_recv().expect("runtime reload command");
-    assert_eq!(
-        envelope,
-        ForgeSdkCommand::ReloadPlugins { session_id: "session-1".to_owned() }
-    );
+    assert_eq!(envelope, ForgeSdkCommand::ReloadPlugins { session_id: "session-1".to_owned() });
     let envelope = rx.try_recv().expect("mcp snapshot command");
-    assert_eq!(
-        envelope,
-        ForgeSdkCommand::GetMcpSnapshot { session_id: "session-1".to_owned() }
-    );
+    assert_eq!(envelope, ForgeSdkCommand::GetMcpSnapshot { session_id: "session-1".to_owned() });
     assert!(app.mcp.in_flight);
     assert!(app.mcp.servers.is_empty());
 }
@@ -1340,10 +1334,7 @@ fn request_mcp_snapshot_sends_outside_mcp_tab() {
     super::mcp::request_mcp_snapshot(&mut app);
 
     let envelope = rx.try_recv().expect("mcp snapshot command");
-    assert_eq!(
-        envelope,
-        ForgeSdkCommand::GetMcpSnapshot { session_id: "session-1".to_owned() }
-    );
+    assert_eq!(envelope, ForgeSdkCommand::GetMcpSnapshot { session_id: "session-1".to_owned() });
     assert!(app.mcp.in_flight);
 }
 
@@ -1368,10 +1359,7 @@ fn refresh_mcp_snapshot_clears_existing_servers_before_request() {
     refresh_mcp_snapshot(&mut app);
 
     let envelope = rx.try_recv().expect("mcp snapshot command");
-    assert_eq!(
-        envelope,
-        ForgeSdkCommand::GetMcpSnapshot { session_id: "session-1".to_owned() }
-    );
+    assert_eq!(envelope, ForgeSdkCommand::GetMcpSnapshot { session_id: "session-1".to_owned() });
     assert!(app.mcp.servers.is_empty());
     assert!(app.mcp.in_flight);
 }

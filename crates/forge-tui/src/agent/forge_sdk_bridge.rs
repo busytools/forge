@@ -40,11 +40,9 @@ use async_trait::async_trait;
 use serde_json::Value;
 use tokio::sync::mpsc;
 
-use crate::agent::client::{AgentBridge, PromptResponse};
-use crate::agent::types::{
-    ElicitationAction, McpServerConfig, PermissionOutcome, QuestionOutcome,
-};
 use crate::agent::client::SessionLaunchSettings;
+use crate::agent::client::{AgentBridge, PromptResponse};
+use crate::agent::types::{ElicitationAction, McpServerConfig, PermissionOutcome, QuestionOutcome};
 
 /// Internal command shape pushed onto the worker's queue. Mirrors the
 /// trait surface of [`AgentBridge`] minus the (sync) plumbing — the
@@ -171,19 +169,13 @@ impl ForgeSdkBridge {
     }
 
     fn send(&self, cmd: ForgeSdkCommand) -> anyhow::Result<()> {
-        self.command_tx
-            .send(cmd)
-            .map_err(|_| anyhow::anyhow!("forge-sdk bridge worker has exited"))
+        self.command_tx.send(cmd).map_err(|_| anyhow::anyhow!("forge-sdk bridge worker has exited"))
     }
 }
 
 #[async_trait(?Send)]
 impl AgentBridge for ForgeSdkBridge {
-    fn prompt_text(
-        &self,
-        session_id: String,
-        text: String,
-    ) -> anyhow::Result<PromptResponse> {
+    fn prompt_text(&self, session_id: String, text: String) -> anyhow::Result<PromptResponse> {
         self.prompt_with_images(session_id, text, Vec::new())
     }
 
@@ -252,11 +244,7 @@ impl AgentBridge for ForgeSdkBridge {
         self.send(ForgeSdkCommand::GetOauthCredentialsSnapshot { session_id })
     }
 
-    fn start_git_context_watch(
-        &self,
-        session_id: String,
-        cwd: PathBuf,
-    ) -> anyhow::Result<()> {
+    fn start_git_context_watch(&self, session_id: String, cwd: PathBuf) -> anyhow::Result<()> {
         self.send(ForgeSdkCommand::StartGitContextWatch { session_id, cwd })
     }
 
@@ -291,11 +279,7 @@ impl AgentBridge for ForgeSdkBridge {
         })
     }
 
-    fn reconnect_mcp_server(
-        &self,
-        session_id: String,
-        server_name: String,
-    ) -> anyhow::Result<()> {
+    fn reconnect_mcp_server(&self, session_id: String, server_name: String) -> anyhow::Result<()> {
         self.send(ForgeSdkCommand::ReconnectMcpServer { session_id, server_name })
     }
 
@@ -401,9 +385,7 @@ impl AgentBridge for ForgeSdkBridge {
         forge_sdk::write_settings_document(target, document)
     }
 
-    async fn oauth_usage(
-        &self,
-    ) -> Result<forge_sdk::OauthUsage, forge_sdk::OauthUsageError> {
+    async fn oauth_usage(&self) -> Result<forge_sdk::OauthUsage, forge_sdk::OauthUsageError> {
         forge_sdk::oauth_usage().await
     }
 }
@@ -417,9 +399,7 @@ mod tests {
         let (tx, mut rx) = mpsc::unbounded_channel();
         let bridge = ForgeSdkBridge::new(tx);
 
-        bridge
-            .cancel("session-1".to_owned())
-            .expect("cancel command queued");
+        bridge.cancel("session-1".to_owned()).expect("cancel command queued");
 
         let cmd = rx.try_recv().expect("worker receives command");
         match cmd {
@@ -443,9 +423,7 @@ mod tests {
         let (tx, mut rx) = mpsc::unbounded_channel();
         let bridge = ForgeSdkBridge::new(tx);
 
-        bridge
-            .prompt_text("session-1".to_owned(), "hello".to_owned())
-            .expect("prompt queued");
+        bridge.prompt_text("session-1".to_owned(), "hello".to_owned()).expect("prompt queued");
 
         match rx.try_recv().expect("command") {
             ForgeSdkCommand::Prompt { session_id, chunks } => {

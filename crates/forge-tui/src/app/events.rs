@@ -292,8 +292,7 @@ pub fn apply_current_model_update(app: &mut App, current_model: model::CurrentMo
     let next_display_long = current_model.display_name_long.clone();
     let pending_ack_before = format!("{:?}", app.pending_command_ack);
     app.current_model = Some(current_model);
-    let clearing_pending =
-        matches!(app.pending_command_ack, Some(PendingCommandAck::CurrentModel));
+    let clearing_pending = matches!(app.pending_command_ack, Some(PendingCommandAck::CurrentModel));
     if matches!(app.pending_command_ack, Some(PendingCommandAck::CurrentModel)) {
         session::clear_pending_command(app);
     }
@@ -345,7 +344,10 @@ pub(super) fn apply_session_status_update(app: &mut App, status: model::SessionS
     }
 }
 
-pub(super) fn handle_runtime_session_state_update(app: &mut App, state: model::RuntimeSessionState) {
+pub(super) fn handle_runtime_session_state_update(
+    app: &mut App,
+    state: model::RuntimeSessionState,
+) {
     app.runtime_session_state = Some(state);
     match state {
         model::RuntimeSessionState::Running => {
@@ -367,7 +369,12 @@ pub(super) fn handle_runtime_session_state_update(app: &mut App, state: model::R
     }
 }
 
-pub(super) fn handle_settings_parse_error(app: &mut App, file: Option<&str>, path: &str, message: &str) {
+pub(super) fn handle_settings_parse_error(
+    app: &mut App,
+    file: Option<&str>,
+    path: &str,
+    message: &str,
+) {
     let trimmed = message.trim();
     if trimmed.is_empty() {
         return;
@@ -880,7 +887,8 @@ mod tests {
     }
 
     fn app_with_bridge_connection()
-    -> (App, tokio::sync::mpsc::UnboundedReceiver<crate::agent::forge_sdk_bridge::ForgeSdkCommand>) {
+    -> (App, tokio::sync::mpsc::UnboundedReceiver<crate::agent::forge_sdk_bridge::ForgeSdkCommand>)
+    {
         let mut app = make_test_app();
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         app.conn = Some(Rc::new(crate::agent::forge_sdk_bridge::ForgeSdkBridge::new(tx)));
@@ -1995,8 +2003,8 @@ mod tests {
                     config: None,
                     scope: None,
                     tools: None,
-            sampling_configured: None,
-            sampling_required: None,
+                    sampling_configured: None,
+                    sampling_required: None,
                 }],
                 error: None,
             },

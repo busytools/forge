@@ -170,8 +170,7 @@ pub struct McpState {
 pub struct SessionTurnState {
     /// Live tool-call store keyed by `tool_use_id` for cross-message
     /// `tool_use ↔ tool_result` pairing.
-    pub tool_calls:
-        std::collections::HashMap<String, crate::agent::types::ToolCall>,
+    pub tool_calls: std::collections::HashMap<String, crate::agent::types::ToolCall>,
     /// Maps task-tool `task_id` → `tool_use_id` so `TaskProgress` /
     /// `TaskNotification` messages can resolve back to the originating
     /// tool call for `ToolCallUpdate` emission.
@@ -191,8 +190,7 @@ pub struct SessionTurnState {
     /// Permission modes the runtime currently supports.
     pub supported_mode_ids: Vec<crate::agent::state::PermissionMode>,
     /// Permission modes recognised but currently unavailable.
-    pub runtime_unavailable_mode_ids:
-        Vec<crate::agent::state::PermissionMode>,
+    pub runtime_unavailable_mode_ids: Vec<crate::agent::state::PermissionMode>,
     /// Whether `bypassPermissions` mode is allowed for this session.
     pub supports_bypass_permissions_mode: bool,
     /// Current mode resolution alongside the human-readable label.
@@ -212,8 +210,7 @@ pub struct SessionTurnState {
     pub last_assistant_error: Option<String>,
 
     /// Per-server cooldown timestamps for MCP status revalidation.
-    pub mcp_status_revalidated_at:
-        std::collections::HashMap<String, std::time::Instant>,
+    pub mcp_status_revalidated_at: std::collections::HashMap<String, std::time::Instant>,
 
     /// Resume history collected during connect handshake; attached to
     /// the first Connected event payload.

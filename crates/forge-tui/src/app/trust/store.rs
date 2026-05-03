@@ -230,10 +230,7 @@ mod tests {
             }
         });
 
-        let lookup = read_status(
-            &document,
-            Path::new(r"c:\Users\user\Desktop\claude_rust\"),
-        );
+        let lookup = read_status(&document, Path::new(r"c:\Users\user\Desktop\claude_rust\"));
 
         assert!(lookup.trusted);
         assert_eq!(lookup.project_key, "C:/Users/user/Desktop/claude_rust");
@@ -270,8 +267,7 @@ mod tests {
             }
         });
 
-        let lookup =
-            read_status(&document, Path::new(r"C:\Users\user\Desktop\claude_rust"));
+        let lookup = read_status(&document, Path::new(r"C:\Users\user\Desktop\claude_rust"));
 
         assert!(lookup.trusted);
     }

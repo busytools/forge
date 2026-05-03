@@ -41,11 +41,11 @@
 use forge_sdk::Message;
 use serde_json::Value;
 
-use crate::app::App;
 use crate::agent::state_parsing::{
     build_api_retry_update, build_rate_limit_update, normalize_settings_parse_errors,
     parse_fast_mode_state, parse_runtime_session_state,
 };
+use crate::app::App;
 
 /// Top-level entry point. Called from `events::client` after the
 /// session-id check on `ClientEvent::SdkMessageReceived`. Dispatches
@@ -112,9 +112,7 @@ fn handle_assistant(app: &mut App, msg: Message, raw: &Value) {
     // error capture — `app.turn_state.last_assistant_error` is consulted
     // by `apply_result_finalize` to classify TurnError variants.
     if let Message::Assistant { error: Some(err), .. } = &msg {
-        let err_str = serde_json::to_value(err)
-            .ok()
-            .and_then(|v| v.as_str().map(str::to_owned));
+        let err_str = serde_json::to_value(err).ok().and_then(|v| v.as_str().map(str::to_owned));
         if let Some(s) = err_str
             && !s.is_empty()
         {
@@ -133,10 +131,7 @@ fn handle_assistant(app: &mut App, msg: Message, raw: &Value) {
 fn walk_assistant_content(app: &mut App, raw: &Value) {
     use crate::agent::model;
 
-    let Some(content) = raw
-        .get("message")
-        .and_then(|m| m.get("content"))
-        .and_then(Value::as_array)
+    let Some(content) = raw.get("message").and_then(|m| m.get("content")).and_then(Value::as_array)
     else {
         return;
     };
@@ -177,10 +172,7 @@ fn walk_assistant_content(app: &mut App, raw: &Value) {
                 if tool_use_id.is_empty() {
                     continue;
                 }
-                let name = record
-                    .get("name")
-                    .and_then(Value::as_str)
-                    .unwrap_or("Tool");
+                let name = record.get("name").and_then(Value::as_str).unwrap_or("Tool");
                 let empty_input = Value::Object(serde_json::Map::new());
                 let input = record.get("input").unwrap_or(&empty_input);
                 let parent_id = parent_tool_use_id_from_envelope(raw);
@@ -194,10 +186,7 @@ fn walk_assistant_content(app: &mut App, raw: &Value) {
                 if tool_use_id.is_empty() {
                     continue;
                 }
-                let is_error = record
-                    .get("is_error")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false);
+                let is_error = record.get("is_error").and_then(Value::as_bool).unwrap_or(false);
                 let raw_content = record.get("content");
                 apply_tool_result_block(app, tool_use_id, is_error, raw_content, Some(block));
             }
@@ -216,10 +205,7 @@ fn apply_plan_if_todo_write(app: &mut App, name: &str, input: &Value) {
     if name != "TodoWrite" {
         return;
     }
-    let Some(todos) = input
-        .as_object()
-        .and_then(|r| r.get("todos"))
-        .and_then(Value::as_array)
+    let Some(todos) = input.as_object().and_then(|r| r.get("todos")).and_then(Value::as_array)
     else {
         return;
     };
@@ -231,11 +217,7 @@ fn apply_plan_if_todo_write(app: &mut App, name: &str, input: &Value) {
             if content.is_empty() {
                 return None;
             }
-            let status = r
-                .get("status")
-                .and_then(Value::as_str)
-                .unwrap_or("pending")
-                .to_owned();
+            let status = r.get("status").and_then(Value::as_str).unwrap_or("pending").to_owned();
             let active_form = status.clone();
             Some(types::PlanEntry { content, status, active_form })
         })
@@ -243,8 +225,7 @@ fn apply_plan_if_todo_write(app: &mut App, name: &str, input: &Value) {
     if wire_entries.is_empty() {
         return;
     }
-    let entries: Vec<model::PlanEntry> =
-        wire_entries.into_iter().map(convert_plan_entry).collect();
+    let entries: Vec<model::PlanEntry> = wire_entries.into_iter().map(convert_plan_entry).collect();
     let plan = model::Plan::new(entries);
     crate::app::todos::apply_plan_todos(app, &plan);
 }
@@ -273,10 +254,7 @@ fn handle_user(app: &mut App, msg: Message, raw: &Value) {
 /// tool_result blocks via `apply_tool_result_block`. Mirrors the
 /// bridge's `handle_user_tool_result_blocks`.
 fn walk_user_tool_results(app: &mut App, raw: &Value) {
-    let Some(content) = raw
-        .get("message")
-        .and_then(|m| m.get("content"))
-        .and_then(Value::as_array)
+    let Some(content) = raw.get("message").and_then(|m| m.get("content")).and_then(Value::as_array)
     else {
         return;
     };
@@ -408,14 +386,11 @@ fn apply_tool_use_block(
     let resolved_parent = parent_tool_use_id
         .map(str::to_owned)
         .or_else(|| parent_tool_use_id_from_meta(existing.as_ref().and_then(|e| e.meta.as_ref())));
-    let mut tool_call =
-        create_tool_call(tool_use_id, name, input, resolved_parent.as_deref());
+    let mut tool_call = create_tool_call(tool_use_id, name, input, resolved_parent.as_deref());
     "in_progress".clone_into(&mut tool_call.status);
 
     if existing.is_none() {
-        app.turn_state
-            .tool_calls
-            .insert(tool_use_id.to_owned(), tool_call.clone());
+        app.turn_state.tool_calls.insert(tool_use_id.to_owned(), tool_call.clone());
         let model_tc = convert_tool_call(tool_call);
         super::tool_calls::handle_tool_call(app, model_tc);
         return;
@@ -565,10 +540,8 @@ fn apply_compaction_boundary(app: &mut App, data: &Value) {
     let Some(record) = data.as_object() else { return };
     let Some(meta) = record.get("compact_metadata").and_then(Value::as_object) else { return };
     let trigger = meta.get("trigger").and_then(Value::as_str).unwrap_or("");
-    let Some(pre_tokens) = meta
-        .get("pre_tokens")
-        .or_else(|| meta.get("preTokens"))
-        .and_then(Value::as_u64)
+    let Some(pre_tokens) =
+        meta.get("pre_tokens").or_else(|| meta.get("preTokens")).and_then(Value::as_u64)
     else {
         return;
     };
@@ -579,10 +552,7 @@ fn apply_compaction_boundary(app: &mut App, data: &Value) {
     };
     super::rate_limit::handle_compaction_boundary_update(
         app,
-        crate::agent::model::CompactionBoundary {
-            trigger: model_trigger,
-            pre_tokens,
-        },
+        crate::agent::model::CompactionBoundary { trigger: model_trigger, pre_tokens },
     );
 }
 
@@ -603,7 +573,8 @@ fn apply_available_commands_from_init(app: &mut App, data: &Value) {
     if commands.is_empty() {
         return;
     }
-    let model_update = crate::app::connect::type_converters::map_available_commands_update(commands);
+    let model_update =
+        crate::app::connect::type_converters::map_available_commands_update(commands);
     super::apply_available_commands_update(app, model_update);
 }
 
@@ -652,12 +623,8 @@ fn apply_current_model_from_init(app: &mut App, data: &Value) {
         model_id.clone_into(&mut app.turn_state.model_id);
     }
 
-    let next_wire = resolve_current_model_from_inputs(
-        model_id,
-        requested,
-        resolved_runtime,
-        &available_models,
-    );
+    let next_wire =
+        resolve_current_model_from_inputs(model_id, requested, resolved_runtime, &available_models);
     let next_model = convert_current_model(next_wire);
     if app.current_model.as_ref() == Some(&next_model) {
         return;
@@ -674,9 +641,7 @@ fn apply_current_model_from_init(app: &mut App, data: &Value) {
 /// `supported_mode_ids` (using the App's current_model auto-mode
 /// support + the bypass flag), then builds a `ModeState` and applies.
 fn apply_mode_state_from_init(app: &mut App, data: &Value) {
-    use crate::agent::commands::{
-        build_mode_state_from_supported, supported_mode_ids_filtered,
-    };
+    use crate::agent::commands::{build_mode_state_from_supported, supported_mode_ids_filtered};
     use crate::agent::state::PermissionMode;
     use crate::app::connect::type_converters::convert_mode_state;
 
@@ -685,10 +650,8 @@ fn apply_mode_state_from_init(app: &mut App, data: &Value) {
     let Some(mode) = PermissionMode::from_wire(mode_str) else { return };
     app.turn_state.mode = Some(mode);
 
-    let supports_auto_mode = app
-        .current_model
-        .as_ref()
-        .is_some_and(|m| m.supports_auto_mode == Some(true));
+    let supports_auto_mode =
+        app.current_model.as_ref().is_some_and(|m| m.supports_auto_mode == Some(true));
     let supported = supported_mode_ids_filtered(
         supports_auto_mode,
         app.turn_state.supports_bypass_permissions_mode,
@@ -714,9 +677,9 @@ fn apply_local_command_output(app: &mut App, data: &Value) {
         return;
     }
     super::clear_compaction_state(app, true);
-    let chunk = model::ContentChunk::new(model::ContentBlock::Text(
-        model::TextContent::new(content.to_owned()),
-    ));
+    let chunk = model::ContentChunk::new(model::ContentBlock::Text(model::TextContent::new(
+        content.to_owned(),
+    )));
     super::streaming::handle_agent_message_chunk(app, chunk);
 }
 
@@ -729,28 +692,14 @@ fn apply_elicitation_request(app: &mut App, data: &Value) {
     use crate::agent::types::{ElicitationMode, ElicitationRequest};
     let Some(record) = data.as_object() else { return };
     let Some(request_id) = record.get("request_id").and_then(Value::as_str) else { return };
-    let server_name = record
-        .get("server_name")
-        .and_then(Value::as_str)
-        .unwrap_or("")
-        .to_owned();
-    let message = record
-        .get("message")
-        .and_then(Value::as_str)
-        .unwrap_or("")
-        .to_owned();
+    let server_name = record.get("server_name").and_then(Value::as_str).unwrap_or("").to_owned();
+    let message = record.get("message").and_then(Value::as_str).unwrap_or("").to_owned();
     let mode = match record.get("mode").and_then(Value::as_str) {
         Some("url") => ElicitationMode::Url,
         _ => ElicitationMode::Form,
     };
-    let url = record
-        .get("url")
-        .and_then(Value::as_str)
-        .map(str::to_owned);
-    let elicitation_id = record
-        .get("elicitation_id")
-        .and_then(Value::as_str)
-        .map(str::to_owned);
+    let url = record.get("url").and_then(Value::as_str).map(str::to_owned);
+    let elicitation_id = record.get("elicitation_id").and_then(Value::as_str).map(str::to_owned);
     let requested_schema = record.get("requested_schema").cloned();
     let request = ElicitationRequest {
         request_id: request_id.to_owned(),
@@ -768,25 +717,18 @@ fn apply_elicitation_request(app: &mut App, data: &Value) {
 /// MCP elicitation-completed handler (notice + overlay state).
 fn apply_elicitation_complete(app: &mut App, data: &Value) {
     let Some(record) = data.as_object() else { return };
-    let Some(elicitation_id) = record
-        .get("elicitation_id")
-        .and_then(Value::as_str)
-        .filter(|s| !s.is_empty())
+    let Some(elicitation_id) =
+        record.get("elicitation_id").and_then(Value::as_str).filter(|s| !s.is_empty())
     else {
         return;
     };
-    let server_name = record
-        .get("mcp_server_name")
-        .and_then(Value::as_str)
-        .map(str::to_owned);
+    let server_name = record.get("mcp_server_name").and_then(Value::as_str).map(str::to_owned);
     crate::app::config::handle_mcp_elicitation_completed(app, elicitation_id, server_name);
 }
 
 fn apply_settings_parse_errors(app: &mut App, data: &Value) {
     let Some(record) = data.as_object() else { return };
-    let Some(errors) = record
-        .get("settings_errors")
-        .or_else(|| record.get("settingsErrors"))
+    let Some(errors) = record.get("settings_errors").or_else(|| record.get("settingsErrors"))
     else {
         return;
     };
@@ -806,7 +748,8 @@ fn apply_api_retry_update(app: &mut App, data: &Value) {
         retry_delay_ms,
         error_status,
         error,
-    }) = build_api_retry_update(record) else {
+    }) = build_api_retry_update(record)
+    else {
         return;
     };
     let model_error = crate::app::connect::type_converters::map_api_retry_error(error);
@@ -841,9 +784,7 @@ fn handle_task_started(app: &mut App, msg: Message, raw: &Value) {
     }
     apply_tool_progress_update(app, id, "Task");
     if !task_id.is_empty() {
-        app.turn_state
-            .task_tool_use_ids
-            .insert(task_id.clone(), id.to_owned());
+        app.turn_state.task_tool_use_ids.insert(task_id.clone(), id.to_owned());
     }
 }
 
@@ -875,10 +816,7 @@ fn apply_tool_progress_update(app: &mut App, tool_use_id: &str, name: &str) {
         apply_tool_use_block(app, tool_use_id, name, &Value::Object(serde_json::Map::new()), None);
         return;
     };
-    if matches!(
-        existing.status.as_str(),
-        "in_progress" | "completed" | "failed" | "killed"
-    ) {
+    if matches!(existing.status.as_str(), "in_progress" | "completed" | "failed" | "killed") {
         return;
     }
     apply_tool_call_update(
@@ -923,7 +861,8 @@ fn handle_rate_limit_event(app: &mut App, msg: Message, _raw: &Value) {
         overage_disabled_reason,
         is_using_overage,
         surpassed_threshold,
-    }) = build_rate_limit_update(Some(&value)) else {
+    }) = build_rate_limit_update(Some(&value))
+    else {
         return;
     };
     // Convert wire-side types::RateLimitUpdate → model::RateLimitUpdate
@@ -956,17 +895,13 @@ fn handle_result(app: &mut App, msg: Message, raw: &Value) {
 fn apply_result_finalize(app: &mut App, msg: &Message, raw: &Value) {
     let Message::Result { is_error, subtype, .. } = msg else { return };
     let raw_record = raw.as_object();
-    let terminal_reason = raw_record
-        .and_then(|r| r.get("terminal_reason"))
-        .and_then(|v| serde_json::from_value::<crate::agent::types::TerminalReason>(v.clone()).ok());
+    let terminal_reason = raw_record.and_then(|r| r.get("terminal_reason")).and_then(|v| {
+        serde_json::from_value::<crate::agent::types::TerminalReason>(v.clone()).ok()
+    });
     let errors_array: Vec<String> = raw_record
         .and_then(|r| r.get("errors"))
         .and_then(Value::as_array)
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.as_str().map(str::to_owned))
-                .collect()
-        })
+        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect())
         .unwrap_or_default();
 
     if !is_error && subtype == "success" {
@@ -1000,19 +935,12 @@ fn classify_turn_error_kind(
     errors: &[String],
     assistant_error: Option<&str>,
 ) -> &'static str {
-    let plan_limit_signals = [
-        "error_max_turns",
-        "error_max_budget_usd",
-        "billing_error",
-        "rate_limit",
-    ];
+    let plan_limit_signals =
+        ["error_max_turns", "error_max_budget_usd", "billing_error", "rate_limit"];
     if plan_limit_signals.iter().any(|s| subtype.contains(s)) {
         return "plan_limit";
     }
-    if errors
-        .iter()
-        .any(|e| plan_limit_signals.iter().any(|s| e.contains(s)))
-    {
+    if errors.iter().any(|e| plan_limit_signals.iter().any(|s| e.contains(s))) {
         return "plan_limit";
     }
     if assistant_error == Some("authentication_failed") {

@@ -89,10 +89,7 @@ pub enum ClientEvent {
     },
     /// Git introspection snapshot pushed by the bridge whenever the
     /// repo's branch resolution changes (initial state included).
-    GitContextSnapshotReceived {
-        session_id: String,
-        context: forge_sdk::GitContext,
-    },
+    GitContextSnapshotReceived { session_id: String, context: forge_sdk::GitContext },
     /// Session context window usage received from bridge.
     ContextUsageReceived { session_id: String, percentage: Option<u8> },
     /// MCP server snapshot received from bridge.
@@ -106,10 +103,7 @@ pub enum ClientEvent {
     /// existing `SessionUpdate` flow as scaffolding. App's
     /// `events::sdk_message::handle_sdk_message` is a no-op stub
     /// during Phase 1; Phase 2 fills it in per-variant.
-    SdkMessageReceived {
-        session_id: String,
-        msg: forge_sdk::Message,
-    },
+    SdkMessageReceived { session_id: String, msg: forge_sdk::Message },
     /// Usage refresh task started.
     UsageRefreshStarted { epoch: u64 },
     /// Usage refresh completed successfully.

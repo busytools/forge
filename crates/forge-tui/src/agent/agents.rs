@@ -21,9 +21,11 @@ pub fn map_available_agents_from_names(value: Option<&Value>) -> Vec<AvailableAg
         if name.is_empty() {
             continue;
         }
-        by_name
-            .entry(name.clone())
-            .or_insert_with(|| AvailableAgent { name, description: String::new(), model: None });
+        by_name.entry(name.clone()).or_insert_with(|| AvailableAgent {
+            name,
+            description: String::new(),
+            model: None,
+        });
     }
     by_name.into_values().collect()
 }

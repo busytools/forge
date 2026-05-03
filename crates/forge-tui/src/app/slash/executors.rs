@@ -464,9 +464,8 @@ fn handle_login_submit(app: &mut App, args: &[&str]) -> bool {
                     exit_code = ?status.code(),
                 );
                 if status.success() {
-                    let creds_present = conn
-                        .as_ref()
-                        .is_some_and(|c| c.oauth_credentials().is_some());
+                    let creds_present =
+                        conn.as_ref().is_some_and(|c| c.oauth_credentials().is_some());
                     if !creds_present {
                         let _ = tx.send(ClientEvent::SlashCommandError(
                             "Login exited successfully but no credentials were saved. \
@@ -563,9 +562,8 @@ fn handle_logout_submit(app: &mut App, args: &[&str]) -> bool {
                     exit_code = ?status.code(),
                 );
                 if status.success() {
-                    let creds_still_present = conn
-                        .as_ref()
-                        .is_some_and(|c| c.oauth_credentials().is_some());
+                    let creds_still_present =
+                        conn.as_ref().is_some_and(|c| c.oauth_credentials().is_some());
                     if creds_still_present {
                         let _ = tx.send(ClientEvent::SlashCommandError(
                             "Logout exited successfully but credentials are still present. \
@@ -666,18 +664,14 @@ fn handle_mode_submit(app: &mut App, args: &[&str]) -> bool {
 }
 
 fn apply_optimistic_mode_change(app: &mut App, requested_mode: &str) {
-    use crate::agent::commands::{
-        build_mode_state_from_supported, supported_mode_ids_filtered,
-    };
+    use crate::agent::commands::{build_mode_state_from_supported, supported_mode_ids_filtered};
     use crate::agent::state::PermissionMode;
     use crate::app::connect::type_converters::convert_mode_state;
 
     let Some(parsed) = PermissionMode::from_wire(requested_mode) else { return };
     app.turn_state.mode = Some(parsed);
-    let supports_auto_mode = app
-        .current_model
-        .as_ref()
-        .is_some_and(|m| m.supports_auto_mode == Some(true));
+    let supports_auto_mode =
+        app.current_model.as_ref().is_some_and(|m| m.supports_auto_mode == Some(true));
     let supported = supported_mode_ids_filtered(
         supports_auto_mode,
         app.turn_state.supports_bypass_permissions_mode,
@@ -743,9 +737,7 @@ fn handle_model_submit(app: &mut App, args: &[&str]) -> bool {
 }
 
 fn apply_optimistic_model_change(app: &mut App, model_name: &str) {
-    use crate::agent::commands::{
-        build_mode_state_from_supported, supported_mode_ids_filtered,
-    };
+    use crate::agent::commands::{build_mode_state_from_supported, supported_mode_ids_filtered};
     use crate::agent::session_lifecycle::resolve_current_model_from_inputs;
     use crate::app::connect::type_converters::{convert_current_model, convert_mode_state};
 
@@ -760,10 +752,8 @@ fn apply_optimistic_model_change(app: &mut App, model_name: &str) {
     crate::app::events::apply_current_model_update(app, next_model);
 
     if let Some(mode) = app.turn_state.mode {
-        let supports_auto_mode = app
-            .current_model
-            .as_ref()
-            .is_some_and(|m| m.supports_auto_mode == Some(true));
+        let supports_auto_mode =
+            app.current_model.as_ref().is_some_and(|m| m.supports_auto_mode == Some(true));
         let supported = supported_mode_ids_filtered(
             supports_auto_mode,
             app.turn_state.supports_bypass_permissions_mode,

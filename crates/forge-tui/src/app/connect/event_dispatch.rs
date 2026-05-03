@@ -2,10 +2,10 @@
 //! `ClientEvent` messages, and handles permission request/response forwarding.
 
 use crate::agent::client::AgentBridge;
+use crate::agent::client::EventEnvelope;
 use crate::agent::events::ClientEvent;
 use crate::agent::model;
 use crate::agent::types;
-use crate::agent::client::EventEnvelope;
 use crate::error::AppError;
 use std::rc::Rc;
 use tokio::sync::mpsc;
@@ -129,10 +129,8 @@ pub(super) fn handle_bridge_event(
             let _ = event_tx.send(ClientEvent::StatusSnapshotReceived { session_id, account });
         }
         crate::agent::client::AgentEvent::OauthCredentialsSnapshot { session_id, credentials } => {
-            let _ = event_tx.send(ClientEvent::OauthCredentialsSnapshotReceived {
-                session_id,
-                credentials,
-            });
+            let _ = event_tx
+                .send(ClientEvent::OauthCredentialsSnapshotReceived { session_id, credentials });
         }
         crate::agent::client::AgentEvent::GitContextSnapshot { session_id, context } => {
             let _ = event_tx.send(ClientEvent::GitContextSnapshotReceived { session_id, context });
@@ -222,12 +220,7 @@ fn handle_question_request_event(
     let (request, tool_call_id) = map_question_request(&session_id, request);
     let (response_tx, response_rx) = tokio::sync::oneshot::channel();
     if event_tx.send(ClientEvent::QuestionRequest { request, response_tx }).is_ok() {
-        spawn_question_response_forwarder(
-            Rc::clone(agent),
-            response_rx,
-            session_id,
-            tool_call_id,
-        );
+        spawn_question_response_forwarder(Rc::clone(agent), response_rx, session_id, tool_call_id);
     } else {
         tracing::error!(
             target: crate::logging::targets::APP_PERMISSION,

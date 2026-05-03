@@ -28,19 +28,14 @@
 //!   `/resume`, status snapshot, model switching live in the TUI loop
 //!   and need terminal-driven verification.
 
-#![allow(
-    clippy::panic,
-    clippy::expect_used,
-    clippy::unwrap_used,
-    clippy::manual_assert,
-)]
+#![allow(clippy::panic, clippy::expect_used, clippy::unwrap_used, clippy::manual_assert)]
 
 use std::time::Duration;
 
 use forge_tui::agent::client::AgentBridge;
+use forge_tui::agent::client::{AgentEvent, SessionLaunchSettings};
 use forge_tui::agent::forge_sdk_bridge::ForgeSdkBridge;
 use forge_tui::agent::forge_sdk_worker;
-use forge_tui::agent::client::{AgentEvent, SessionLaunchSettings};
 use std::rc::Rc;
 use tokio::sync::mpsc;
 
@@ -58,10 +53,7 @@ async fn forge_sdk_e2e_round_trip() {
     // Kick off a session.
     agent
         .new_session(
-            std::env::current_dir()
-                .unwrap()
-                .to_string_lossy()
-                .into_owned(),
+            std::env::current_dir().unwrap().to_string_lossy().into_owned(),
             SessionLaunchSettings::default(),
         )
         .expect("new_session queued");
@@ -223,7 +215,10 @@ async fn forge_sdk_e2e_cancel_mid_turn() {
             break;
         };
         match event {
-            AgentEvent::SdkMessage { msg: forge_sdk::Message::Result { is_error, subtype, .. }, .. } => {
+            AgentEvent::SdkMessage {
+                msg: forge_sdk::Message::Result { is_error, subtype, .. },
+                ..
+            } => {
                 if !is_error && subtype == "success" {
                     terminal = Some("complete");
                 } else {
@@ -262,17 +257,11 @@ async fn forge_sdk_e2e_status_and_context_snapshots() {
     // Drive a tiny prompt so the CLI's account info and context-usage
     // numbers are populated. account_info() returns None until at
     // least one stream-json frame mentions it.
-    agent
-        .prompt_text(session_id.clone(), "Reply with OK.".to_owned())
-        .expect("prompt queued");
+    agent.prompt_text(session_id.clone(), "Reply with OK.".to_owned()).expect("prompt queued");
     let _ = await_turn(&mut event_rx, Duration::from_secs(60)).await;
 
-    agent
-        .get_status_snapshot(session_id.clone())
-        .expect("status queued");
-    agent
-        .get_context_usage(session_id.clone())
-        .expect("context queued");
+    agent.get_status_snapshot(session_id.clone()).expect("status queued");
+    agent.get_context_usage(session_id.clone()).expect("context queued");
 
     // Drain until we've seen both, with a generous timeout.
     let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
@@ -318,9 +307,7 @@ async fn forge_sdk_e2e_mcp_snapshot() {
     let session_id = await_connected(&mut event_rx, Duration::from_secs(30)).await;
     eprintln!("e2e mcp: connected to {session_id}");
 
-    agent
-        .get_mcp_snapshot(session_id)
-        .expect("mcp snapshot queued");
+    agent.get_mcp_snapshot(session_id).expect("mcp snapshot queued");
 
     let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
     let mut got = false;
@@ -405,8 +392,7 @@ async fn await_connected(
 ) -> String {
     let deadline = tokio::time::Instant::now() + timeout;
     loop {
-        let remaining = deadline
-            .saturating_duration_since(tokio::time::Instant::now());
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         if remaining.is_zero() {
             panic!("timed out waiting for Connected event");
         }
@@ -440,8 +426,7 @@ async fn await_turn(
     let deadline = tokio::time::Instant::now() + timeout;
     let mut outcome = TurnOutcome { saw_text: false, saw_tool_call: false };
     loop {
-        let remaining = deadline
-            .saturating_duration_since(tokio::time::Instant::now());
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         if remaining.is_zero() {
             panic!("timed out waiting for TurnComplete");
         }
@@ -480,4 +465,3 @@ async fn await_turn(
         }
     }
 }
-

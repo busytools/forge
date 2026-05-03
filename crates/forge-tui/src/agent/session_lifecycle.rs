@@ -20,7 +20,6 @@ use serde_json::Value;
 
 use crate::agent::types::{AvailableModel, CurrentModel, EffortLevel};
 
-
 const OPUS_MODEL_ALIAS: &str = "opus";
 const MAX_MODEL_VERSION_PARTS: usize = 2;
 
@@ -66,8 +65,7 @@ fn normalize_model_key(id: &str) -> NormalizedModelKey {
         (lower.clone(), String::new())
     };
     let trimmed_pre = without_context.trim_end_matches('-');
-    let without_prefix =
-        trimmed_pre.strip_prefix("claude-").unwrap_or(trimmed_pre);
+    let without_prefix = trimmed_pre.strip_prefix("claude-").unwrap_or(trimmed_pre);
     let mut parts = without_prefix.split('-').filter(|p| !p.is_empty());
     let family_part = parts.next().unwrap_or("");
     let family = match family_part {
@@ -116,10 +114,7 @@ fn format_humanized(key: &NormalizedModelKey) -> String {
     let version_lbl = if key.version_parts.is_empty() {
         String::new()
     } else {
-        format!(
-            " {}",
-            key.version_parts.iter().map(u32::to_string).collect::<Vec<_>>().join(".")
-        )
+        format!(" {}", key.version_parts.iter().map(u32::to_string).collect::<Vec<_>>().join("."))
     };
     let context_lbl = match key.context_suffix.as_str() {
         "" => String::new(),
@@ -241,13 +236,9 @@ pub fn resolve_current_model_from_inputs(
     resolved_runtime_model_id: Option<&str>,
     available_models: &[AvailableModel],
 ) -> CurrentModel {
-    let requested_id = requested_model_id
-        .map(str::trim)
-        .filter(|s| !s.is_empty());
-    let resolved_id = resolved_runtime_model_id
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map_or_else(
+    let requested_id = requested_model_id.map(str::trim).filter(|s| !s.is_empty());
+    let resolved_id =
+        resolved_runtime_model_id.map(str::trim).filter(|s| !s.is_empty()).map_or_else(
             || {
                 if model_id.trim().is_empty() {
                     requested_id.unwrap_or(OPUS_MODEL_ALIAS).to_owned()
@@ -284,7 +275,8 @@ pub fn resolve_current_model_from_inputs(
         display_name_long: display_name,
         catalog_id: catalog.map(|m| m.id.clone()),
         supports_effort: catalog.is_some_and(|m| m.supports_effort),
-        supported_effort_levels: catalog.map_or_else(Vec::new, |m| m.supported_effort_levels.clone()),
+        supported_effort_levels: catalog
+            .map_or_else(Vec::new, |m| m.supported_effort_levels.clone()),
         supports_fast_mode: catalog.and_then(|m| m.supports_fast_mode),
         supports_auto_mode: catalog.and_then(|m| m.supports_auto_mode),
         supports_adaptive_thinking: catalog.and_then(|m| m.supports_adaptive_thinking),
@@ -327,14 +319,8 @@ pub fn map_available_models(models: Option<&Value>) -> Vec<AvailableModel> {
             Some(AvailableModel {
                 id,
                 display_name,
-                description: r
-                    .get("description")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned),
-                supports_effort: r
-                    .get("supportsEffort")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false),
+                description: r.get("description").and_then(Value::as_str).map(str::to_owned),
+                supports_effort: r.get("supportsEffort").and_then(Value::as_bool).unwrap_or(false),
                 supported_effort_levels,
                 supports_adaptive_thinking: r
                     .get("supportsAdaptiveThinking")
@@ -399,8 +385,7 @@ mod tests {
         // alias) is treated as authoritative.
         assert!(cm.is_authoritative);
 
-        let cm =
-            resolve_current_model_from_inputs("claude-sonnet-4-6", None, None, &[]);
+        let cm = resolve_current_model_from_inputs("claude-sonnet-4-6", None, None, &[]);
         assert_eq!(cm.resolved_id, "claude-sonnet-4-6");
         assert_eq!(cm.display_name_short, "Sonnet 4.6");
         assert!(cm.is_authoritative);
@@ -418,12 +403,7 @@ mod tests {
             supports_fast_mode: Some(false),
             supports_auto_mode: Some(true),
         }];
-        let cm = resolve_current_model_from_inputs(
-            "claude-sonnet-4-6",
-            None,
-            None,
-            &catalog,
-        );
+        let cm = resolve_current_model_from_inputs("claude-sonnet-4-6", None, None, &catalog);
         assert!(cm.supports_effort);
         assert_eq!(cm.supported_effort_levels.len(), 2);
         assert_eq!(cm.catalog_id.as_deref(), Some("claude-sonnet-4-6"));

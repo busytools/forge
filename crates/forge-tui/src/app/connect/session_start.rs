@@ -187,8 +187,8 @@ pub(crate) fn begin_resume_session(
 #[cfg(test)]
 mod tests {
     use super::{SessionStartReason, session_launch_settings_for_reason};
-    use crate::agent::model::EffortLevel;
     use crate::agent::client::SessionLaunchSettings;
+    use crate::agent::model::EffortLevel;
     use crate::app::App;
     use crate::app::config::{DefaultPermissionMode, store};
     use serde_json::{Map, Value};

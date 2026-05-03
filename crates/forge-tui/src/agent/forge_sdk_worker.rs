@@ -42,12 +42,12 @@ use forge_sdk::{
 };
 use tokio::sync::{mpsc, oneshot};
 
+use crate::agent::client::AgentEvent;
+use crate::agent::forge_sdk_bridge::ForgeSdkCommand;
 use crate::agent::{
     commands as bridge_commands, session_lifecycle, state as bridge_state,
     user_interaction as bridge_user_interaction,
 };
-use crate::agent::forge_sdk_bridge::ForgeSdkCommand;
-use crate::agent::client::AgentEvent;
 
 /// Pending permission responses keyed by `tool_use_id`. The
 /// `can_use_tool` callback parks a oneshot here when the CLI asks;
@@ -147,15 +147,8 @@ async fn dispatch(
                 pending_questions,
                 session_id_slot,
             );
-            spawn_or_replace(
-                state,
-                event_tx,
-                options,
-                session_id_slot,
-                &launch_settings,
-                None,
-            )
-            .await
+            spawn_or_replace(state, event_tx, options, session_id_slot, &launch_settings, None)
+                .await
         }
         C::ResumeSession { session_id, launch_settings } => {
             // Resume by passing the prior session id to the CLI. The
@@ -217,21 +210,14 @@ async fn dispatch(
             deliver_question_response(pending_questions, &tool_call_id, outcome);
             Ok(())
         }
-        C::RespondToElicitation {
-            elicitation_request_id,
-            action,
-            content,
-            ..
-        } => {
+        C::RespondToElicitation { elicitation_request_id, action, content, .. } => {
             let client = require_running(state, "RespondToElicitation")?;
             let action_str = match action {
                 crate::agent::types::ElicitationAction::Accept => "accept",
                 crate::agent::types::ElicitationAction::Decline => "decline",
                 crate::agent::types::ElicitationAction::Cancel => "cancel",
             };
-            client
-                .respond_to_elicitation(&elicitation_request_id, action_str, content)
-                .await?;
+            client.respond_to_elicitation(&elicitation_request_id, action_str, content).await?;
             Ok(())
         }
         C::GetStatusSnapshot { session_id } => {
@@ -243,8 +229,7 @@ async fn dispatch(
         C::GetOauthCredentialsSnapshot { session_id } => {
             let client = require_running(state, "GetOauthCredentialsSnapshot")?;
             let credentials = client.oauth_credentials();
-            let _ =
-                event_tx.send(AgentEvent::OauthCredentialsSnapshot { session_id, credentials });
+            let _ = event_tx.send(AgentEvent::OauthCredentialsSnapshot { session_id, credentials });
             Ok(())
         }
         C::StartGitContextWatch { session_id, cwd } => {
@@ -301,10 +286,8 @@ async fn dispatch(
             let client = require_running(state, "GetContextUsage")?;
             let usage = client.get_context_usage().await?;
             let percentage = clamp_percentage_to_u8(usage.percentage);
-            let _ = event_tx.send(AgentEvent::ContextUsage {
-                session_id,
-                percentage: Some(percentage),
-            });
+            let _ = event_tx
+                .send(AgentEvent::ContextUsage { session_id, percentage: Some(percentage) });
             Ok(())
         }
         C::ReloadPlugins { session_id } => {
@@ -314,8 +297,7 @@ async fn dispatch(
                     // Mirror upstream: emit RuntimeReloadCompleted +
                     // refresh slash-command catalogue if reload_plugins
                     // returned a fresh `commands` array.
-                    let _ = event_tx
-                        .send(AgentEvent::RuntimeReloadCompleted { session_id });
+                    let _ = event_tx.send(AgentEvent::RuntimeReloadCompleted { session_id });
                 }
                 Err(e) => {
                     let _ = event_tx.send(AgentEvent::RuntimeReloadFailed {
@@ -463,9 +445,9 @@ fn require_running<'a>(
 ) -> anyhow::Result<&'a Client> {
     match state {
         WorkerState::Running { client, .. } => Ok(client),
-        WorkerState::Waiting => Err(anyhow::anyhow!(
-            "forge_sdk_worker: received {cmd_label} before NewSession",
-        )),
+        WorkerState::Waiting => {
+            Err(anyhow::anyhow!("forge_sdk_worker: received {cmd_label} before NewSession",))
+        }
     }
 }
 
@@ -509,9 +491,8 @@ async fn spawn_or_replace(
     let server_info = client.get_server_info().cloned();
     let init_data = client.initial_session_data().cloned();
 
-    let available_models = session_lifecycle::map_available_models(
-        server_info.as_ref().and_then(|v| v.get("models")),
-    );
+    let available_models =
+        session_lifecycle::map_available_models(server_info.as_ref().and_then(|v| v.get("models")));
     let init_record = init_data.as_ref().and_then(serde_json::Value::as_object);
 
     // The CLI does NOT emit `system/init` until BOTH the initialize
@@ -520,18 +501,14 @@ async fn spawn_or_replace(
     // None. Fall back to the launch_settings the TUI handed us — the
     // user's settings.json's `permissions.defaultMode` and `model`
     // are the source of truth for the initial Connected envelope.
-    let launch_settings_record = launch_settings
-        .settings
-        .as_ref()
-        .and_then(serde_json::Value::as_object);
+    let launch_settings_record =
+        launch_settings.settings.as_ref().and_then(serde_json::Value::as_object);
     let init_model_id = init_record
         .and_then(|r| r.get("model"))
         .and_then(serde_json::Value::as_str)
         .filter(|s| !s.is_empty())
         .or_else(|| {
-            launch_settings_record
-                .and_then(|r| r.get("model"))
-                .and_then(serde_json::Value::as_str)
+            launch_settings_record.and_then(|r| r.get("model")).and_then(serde_json::Value::as_str)
         })
         .unwrap_or("")
         .to_owned();
@@ -555,9 +532,8 @@ async fn spawn_or_replace(
         .and_then(|r| r.get("supportsBypassPermissionsMode"))
         .and_then(serde_json::Value::as_bool)
         .unwrap_or(false);
-    let init_keys: Vec<String> = init_record
-        .map(|r| r.keys().cloned().collect())
-        .unwrap_or_default();
+    let init_keys: Vec<String> =
+        init_record.map(|r| r.keys().cloned().collect()).unwrap_or_default();
     tracing::info!(
         target: crate::logging::targets::BRIDGE_LIFECYCLE,
         event_name = "forge_sdk_worker_init_data",
@@ -615,19 +591,15 @@ async fn spawn_or_replace(
     // Eagerly emit a status snapshot so the bottom bar fills in
     // account / org / token-source without the TUI having to ask.
     if let Some(account) = client.account_info() {
-        let _ = event_tx.send(AgentEvent::StatusSnapshot {
-            session_id: session_id.clone(),
-            account,
-        });
+        let _ =
+            event_tx.send(AgentEvent::StatusSnapshot { session_id: session_id.clone(), account });
     }
 
     // Emit the recent-sessions list. The session picker (and slash-
     // command autocomplete) wait on this event before becoming
     // interactive — without it `claude-rs resume` hangs at "Loading
     // recent sessions..." forever.
-    let _ = event_tx.send(AgentEvent::SessionsListed {
-        sessions: list_recent_sessions(&cwd),
-    });
+    let _ = event_tx.send(AgentEvent::SessionsListed { sessions: list_recent_sessions(&cwd) });
 
     *state = WorkerState::Running { client, session_id };
     Ok(())
@@ -721,12 +693,9 @@ async fn reader_loop(
                 // `app.turn_state` so the worker can pump SDK
                 // messages straight through to the App without the
                 // BridgeSession round-trip.
-                let session_id_for_sdk_msg = msg_session_id(&msg)
-                    .unwrap_or_else(|| session_id.clone());
-                buf.push(AgentEvent::SdkMessage {
-                    session_id: session_id_for_sdk_msg,
-                    msg,
-                });
+                let session_id_for_sdk_msg =
+                    msg_session_id(&msg).unwrap_or_else(|| session_id.clone());
+                buf.push(AgentEvent::SdkMessage { session_id: session_id_for_sdk_msg, msg });
                 for event in buf {
                     if event_tx.send(event).is_err() {
                         return;
@@ -757,11 +726,8 @@ async fn send_prompt(
     chunks: Vec<crate::agent::types::PromptChunk>,
 ) -> anyhow::Result<()> {
     if chunks.iter().all(|c| c.kind == "text") {
-        let prompt: String = chunks
-            .iter()
-            .filter_map(|c| c.value.as_str())
-            .collect::<Vec<_>>()
-            .join("\n");
+        let prompt: String =
+            chunks.iter().filter_map(|c| c.value.as_str()).collect::<Vec<_>>().join("\n");
         client.send_user_message(&prompt).await?;
     } else {
         // CLI-shaped content blocks: convert each chunk.
@@ -788,7 +754,6 @@ async fn send_prompt(
     Ok(())
 }
 
-
 fn parse_permission_mode(mode: &str) -> anyhow::Result<PermissionMode> {
     match mode {
         "default" | "ask" => Ok(PermissionMode::Ask),
@@ -797,9 +762,7 @@ fn parse_permission_mode(mode: &str) -> anyhow::Result<PermissionMode> {
         "bypassPermissions" | "bypass_permissions" => Ok(PermissionMode::BypassPermissions),
         "auto" => Ok(PermissionMode::Auto),
         "dontAsk" | "dont_ask" | "deny" => Ok(PermissionMode::DenyPermissions),
-        other => Err(anyhow::anyhow!(
-            "forge_sdk_worker: unknown permission mode {other:?}"
-        )),
+        other => Err(anyhow::anyhow!("forge_sdk_worker: unknown permission mode {other:?}")),
     }
 }
 
@@ -852,9 +815,7 @@ fn build_options_with_callback(
     //
     // The JS SDK upstream sets this implicitly when canUseTool is
     // registered; forge-sdk doesn't, so we set it here.
-    let mut b = OptionsBuilder::new()
-        .can_use_tool(callback)
-        .permission_prompt_tool_name("stdio");
+    let mut b = OptionsBuilder::new().can_use_tool(callback).permission_prompt_tool_name("stdio");
     if !cwd.is_empty() {
         b = b.cwd(PathBuf::from(cwd));
     }
@@ -874,8 +835,10 @@ fn build_options_with_callback(
     if let Some(settings_value) = launch_settings.settings.as_ref()
         && let Some(settings_record) = settings_value.as_object()
     {
-        if let Some(perms) = settings_record.get("permissions").and_then(serde_json::Value::as_object)
-            && let Some(default_mode_str) = perms.get("defaultMode").and_then(serde_json::Value::as_str)
+        if let Some(perms) =
+            settings_record.get("permissions").and_then(serde_json::Value::as_object)
+            && let Some(default_mode_str) =
+                perms.get("defaultMode").and_then(serde_json::Value::as_str)
             && let Ok(mode) = parse_permission_mode(default_mode_str)
         {
             b = b.permission_mode(mode);
@@ -1006,16 +969,11 @@ async fn run_ask_user_question(
                     .filter(|opt| selected_option_ids.iter().any(|id| id == &opt.option_id))
                     .cloned()
                     .collect();
-                if selected.is_empty()
-                    || (!prompt.multi_select && selected.len() != 1)
-                {
+                if selected.is_empty() || (!prompt.multi_select && selected.len() != 1) {
                     return PermissionDecision::deny("Question answer was invalid");
                 }
-                let answer = selected
-                    .iter()
-                    .map(|o| o.label.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ");
+                let answer =
+                    selected.iter().map(|o| o.label.as_str()).collect::<Vec<_>>().join(", ");
                 answers.insert(prompt.question.clone(), serde_json::Value::String(answer));
                 if let Some(annotation) =
                     bridge_user_interaction::derive_annotation(&selected, annotation.as_ref())
@@ -1187,18 +1145,15 @@ fn clamp_percentage_to_u8(p: f64) -> u8 {
     n
 }
 
-
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::{
-        PendingQuestions, PendingResponses, deliver_permission_response,
-        deliver_question_response, synth_permission_request, take_pending,
-    };
-    use crate::agent::types::{
-        ElicitationAction, PermissionOutcome, QuestionOutcome,
+        PendingQuestions, PendingResponses, deliver_permission_response, deliver_question_response,
+        synth_permission_request, take_pending,
     };
     use crate::agent::client::AgentEvent;
+    use crate::agent::types::{ElicitationAction, PermissionOutcome, QuestionOutcome};
     use forge_sdk::ToolPermissionContext;
     use serde_json::json;
     use std::collections::HashMap;
@@ -1213,7 +1168,10 @@ mod tests {
         ToolPermissionContext::new(tool_name, input, tool_use_id, None)
     }
 
-    fn park(pending: &PendingResponses, id: &str) -> oneshot::Receiver<forge_sdk::PermissionDecision> {
+    fn park(
+        pending: &PendingResponses,
+        id: &str,
+    ) -> oneshot::Receiver<forge_sdk::PermissionDecision> {
         let (tx, rx) = oneshot::channel();
         pending.lock().unwrap().insert(id.to_owned(), tx);
         rx

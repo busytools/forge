@@ -36,7 +36,9 @@ pub struct AskUserQuestionPrompt {
 /// validity rule).
 #[must_use]
 pub fn parse_ask_user_question_prompts(input: &Value) -> Vec<AskUserQuestionPrompt> {
-    let Some(questions) = input.as_object().and_then(|r| r.get("questions")).and_then(Value::as_array) else {
+    let Some(questions) =
+        input.as_object().and_then(|r| r.get("questions")).and_then(Value::as_array)
+    else {
         return Vec::new();
     };
     let mut prompts: Vec<AskUserQuestionPrompt> = Vec::new();
@@ -47,7 +49,8 @@ pub fn parse_ask_user_question_prompts(input: &Value) -> Vec<AskUserQuestionProm
             continue;
         }
         let header_raw = q.get("header").and_then(Value::as_str).unwrap_or("").trim().to_owned();
-        let header = if header_raw.is_empty() { format!("Q{}", prompts.len() + 1) } else { header_raw };
+        let header =
+            if header_raw.is_empty() { format!("Q{}", prompts.len() + 1) } else { header_raw };
         let multi_select = q
             .get("multiSelect")
             .or_else(|| q.get("multi_select"))
@@ -57,13 +60,10 @@ pub fn parse_ask_user_question_prompts(input: &Value) -> Vec<AskUserQuestionProm
         if let Some(opts) = q.get("options").and_then(Value::as_array) {
             for raw_opt in opts {
                 let Some(opt) = raw_opt.as_object() else { continue };
-                let label = opt.get("label").and_then(Value::as_str).unwrap_or("").trim().to_owned();
-                let description = opt
-                    .get("description")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .trim()
-                    .to_owned();
+                let label =
+                    opt.get("label").and_then(Value::as_str).unwrap_or("").trim().to_owned();
+                let description =
+                    opt.get("description").and_then(Value::as_str).unwrap_or("").trim().to_owned();
                 let preview = opt
                     .get("preview")
                     .and_then(Value::as_str)
@@ -96,7 +96,11 @@ fn ask_user_question_wire_options(prompt: &AskUserQuestionPrompt) -> Vec<TuiQues
         .map(|(i, opt)| TuiQuestionOption {
             option_id: format!("question_{i}"),
             label: opt.label.clone(),
-            description: if opt.description.is_empty() { None } else { Some(opt.description.clone()) },
+            description: if opt.description.is_empty() {
+                None
+            } else {
+                Some(opt.description.clone())
+            },
             preview: opt.preview.clone(),
         })
         .collect()
@@ -146,9 +150,7 @@ pub fn derive_annotation(
     selected: &[TuiQuestionOption],
     incoming: Option<&QuestionAnnotation>,
 ) -> Option<QuestionAnnotation> {
-    let preview_raw = incoming
-        .and_then(|a| a.preview.as_deref())
-        .map_or("", str::trim);
+    let preview_raw = incoming.and_then(|a| a.preview.as_deref()).map_or("", str::trim);
     let preview = if preview_raw.is_empty() {
         let parts: Vec<&str> = selected
             .iter()

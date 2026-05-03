@@ -7,9 +7,7 @@ use std::collections::HashMap;
 
 use serde_json::Value;
 
-use crate::agent::types::{
-    ContentBlock, SessionUpdate, ToolCall, ToolCallUpdate,
-};
+use crate::agent::types::{ContentBlock, SessionUpdate, ToolCall, ToolCallUpdate};
 
 use super::tooling::{
     TOOL_RESULT_TYPES, build_tool_result_fields, create_tool_call, is_tool_use_block_type,
@@ -124,10 +122,11 @@ pub fn map_session_messages_to_updates(messages: &[Value]) -> Vec<SessionUpdate>
                 .and_then(Value::as_str)
                 .filter(|r| matches!(*r, "assistant" | "user"))
                 .unwrap_or(fallback_role);
-            let parent_tool_use_id = entry_parent.or_else(|| {
-                message_record.get("parent_tool_use_id").and_then(Value::as_str)
-            });
-            let Some(content) = message_record.get("content").and_then(Value::as_array) else { continue };
+            let parent_tool_use_id = entry_parent
+                .or_else(|| message_record.get("parent_tool_use_id").and_then(Value::as_str));
+            let Some(content) = message_record.get("content").and_then(Value::as_array) else {
+                continue;
+            };
             for item in content {
                 let Some(block) = item.as_object() else { continue };
                 let block_type = block.get("type").and_then(Value::as_str).unwrap_or("");
@@ -229,5 +228,4 @@ mod tests {
         };
         assert_eq!(text, "[image]");
     }
-
 }

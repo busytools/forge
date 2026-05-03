@@ -44,11 +44,8 @@ pub trait AgentBridge {
 
     fn set_model(&self, session_id: String, model: String) -> anyhow::Result<()>;
 
-    fn generate_session_title(
-        &self,
-        session_id: String,
-        description: String,
-    ) -> anyhow::Result<()>;
+    fn generate_session_title(&self, session_id: String, description: String)
+    -> anyhow::Result<()>;
 
     fn rename_session(&self, session_id: String, title: String) -> anyhow::Result<()>;
 
@@ -70,11 +67,7 @@ pub trait AgentBridge {
         content: Option<serde_json::Value>,
     ) -> anyhow::Result<()>;
 
-    fn reconnect_mcp_server(
-        &self,
-        session_id: String,
-        server_name: String,
-    ) -> anyhow::Result<()>;
+    fn reconnect_mcp_server(&self, session_id: String, server_name: String) -> anyhow::Result<()>;
 
     fn toggle_mcp_server(
         &self,
@@ -136,11 +129,7 @@ pub trait AgentBridge {
     /// snapshots only on actual branch change). Calling again with
     /// the same `session_id` aborts and replaces any existing
     /// watcher for that session.
-    fn start_git_context_watch(
-        &self,
-        session_id: String,
-        cwd: PathBuf,
-    ) -> anyhow::Result<()>;
+    fn start_git_context_watch(&self, session_id: String, cwd: PathBuf) -> anyhow::Result<()>;
 
     /// Stop the git-context watcher for `session_id`. No-op when no
     /// watcher is active. Watchers also stop automatically when the
@@ -190,9 +179,7 @@ pub trait AgentBridge {
     /// # Errors
     ///
     /// See [`forge_sdk::OauthUsageError`].
-    async fn oauth_usage(
-        &self,
-    ) -> Result<forge_sdk::OauthUsage, forge_sdk::OauthUsageError>;
+    async fn oauth_usage(&self) -> Result<forge_sdk::OauthUsage, forge_sdk::OauthUsageError>;
 }
 
 #[derive(Debug, Clone)]

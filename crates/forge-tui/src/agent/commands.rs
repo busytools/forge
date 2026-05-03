@@ -88,9 +88,7 @@ fn mode_info_for_id(mode: PermissionMode) -> ModeInfo {
 /// Maps a supported-mode list into `ModeInfo` records ready for
 /// `ModeState.available_modes`.
 #[must_use]
-fn available_modes_from_supported(
-    supported_mode_ids: &[PermissionMode],
-) -> Vec<ModeInfo> {
+fn available_modes_from_supported(supported_mode_ids: &[PermissionMode]) -> Vec<ModeInfo> {
     supported_mode_ids.iter().copied().map(mode_info_for_id).collect()
 }
 
