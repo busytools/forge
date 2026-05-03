@@ -18,7 +18,32 @@ use crate::agent::types::{
     ToolCallUpdateFields, ToolLocation, ToolOutputMetadata,
 };
 
-use super::cache_policy::{CACHE_SPLIT_POLICY, preview_kilobyte_label};
+// cache_policy split-limits — inlined from `bridge::cache_policy`
+// (deleted) since this is the only caller post-bridge-collapse.
+#[allow(clippy::struct_field_names)]
+#[derive(Debug, Clone, Copy)]
+struct CacheSplitPolicy {
+    soft_limit_bytes: usize,
+    hard_limit_bytes: usize,
+    preview_limit_bytes: usize,
+}
+
+const CACHE_SPLIT_POLICY: CacheSplitPolicy = CacheSplitPolicy {
+    soft_limit_bytes: 1536,
+    hard_limit_bytes: 4096,
+    preview_limit_bytes: 2048,
+};
+
+#[must_use]
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
+fn preview_kilobyte_label(policy: CacheSplitPolicy) -> String {
+    let kb = policy.preview_limit_bytes as f64 / 1024.0;
+    if kb.fract() == 0.0 { format!("{}KB", kb as u64) } else { format!("{kb:.1}KB") }
+}
 
 /// Block types the CLI uses for tool results. Mirrors upstream's
 /// `TOOL_RESULT_TYPES` set in tooling.ts:5.

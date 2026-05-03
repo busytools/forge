@@ -17,7 +17,6 @@
 #![allow(clippy::doc_markdown)]
 
 pub mod agents;
-pub mod cache_policy;
 pub mod commands;
 pub mod history;
 pub mod session_lifecycle;
