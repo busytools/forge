@@ -189,7 +189,7 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
             apply_mode_state_update(app, mode);
         }
         model::SessionUpdate::CurrentModeUpdate(update) => {
-            apply_current_mode_update(app, update);
+            apply_current_mode_update(app, &update);
         }
         model::SessionUpdate::CurrentModelUpdate(update) => {
             apply_current_model_update(app, update.current_model);
@@ -309,7 +309,7 @@ pub fn apply_current_model_update(app: &mut App, current_model: model::CurrentMo
     );
 }
 
-pub fn apply_current_mode_update(app: &mut App, update: model::CurrentModeUpdate) {
+pub fn apply_current_mode_update(app: &mut App, update: &model::CurrentModeUpdate) {
     let mode_id = update.current_mode_id.to_string();
     let mut mode_changed = false;
     if let Some(ref mut mode) = app.mode {
@@ -887,8 +887,7 @@ mod tests {
     }
 
     fn app_with_bridge_connection()
-    -> (App, tokio::sync::mpsc::UnboundedReceiver<crate::agent::test_bridge::ForgeSdkCommand>)
-    {
+    -> (App, tokio::sync::mpsc::UnboundedReceiver<crate::agent::test_bridge::ForgeSdkCommand>) {
         let mut app = make_test_app();
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         app.conn = Some(Rc::new(crate::agent::test_bridge::RecordingBridge::new(tx)));

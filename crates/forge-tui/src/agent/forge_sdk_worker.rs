@@ -71,21 +71,14 @@ pub(crate) async fn spawn_session(
         .and_then(|p| p.into_os_string().into_string().ok())
         .unwrap_or_default();
 
-    emit_connected(
-        bridge.event_tx(),
-        &client,
-        &session_id,
-        &cwd_owned,
-        launch_settings,
-        resume_id,
-    )?;
+    emit_connected(bridge.event_tx(), &client, &session_id, &cwd_owned, launch_settings, resume_id);
 
     bridge.set_client(client);
     Ok(())
 }
 
 /// Build the typed `Connected` envelope from the SDK's cached init data
-/// + the initialize control_response, and emit it onto `event_tx`.
+/// + the initialize `control_response`, and emit it onto `event_tx`.
 fn emit_connected(
     event_tx: &mpsc::UnboundedSender<AgentEvent>,
     client: &Client,
@@ -93,13 +86,12 @@ fn emit_connected(
     cwd: &str,
     launch_settings: &crate::agent::client::SessionLaunchSettings,
     resume_id: Option<&str>,
-) -> anyhow::Result<()> {
+) {
     let server_info = client.get_server_info().cloned();
     let init_data = client.initial_session_data().cloned();
 
-    let available_models = session_lifecycle::map_available_models(
-        server_info.as_ref().and_then(|v| v.get("models")),
-    );
+    let available_models =
+        session_lifecycle::map_available_models(server_info.as_ref().and_then(|v| v.get("models")));
     let init_record = init_data.as_ref().and_then(serde_json::Value::as_object);
 
     // The CLI doesn't emit `system/init` until both the initialize
@@ -174,8 +166,6 @@ fn emit_connected(
     }
 
     let _ = event_tx.send(AgentEvent::SessionsListed { sessions: list_recent_sessions(cwd) });
-
-    Ok(())
 }
 
 fn load_history_updates(
@@ -369,8 +359,7 @@ fn build_options_with_callback(
             b = b.model(model);
             applied_model = Some(model.to_owned());
         }
-        if let Some(effort) =
-            settings_record.get("effortLevel").and_then(serde_json::Value::as_str)
+        if let Some(effort) = settings_record.get("effortLevel").and_then(serde_json::Value::as_str)
             && !effort.trim().is_empty()
         {
             applied_effort = Some(effort.to_owned());

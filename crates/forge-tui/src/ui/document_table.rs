@@ -138,10 +138,7 @@ fn split_markdown_tables(text: &str) -> Vec<MarkdownBlock> {
     let mut parser = Parser::new_ext(text, parser_options()).into_offset_iter().peekable();
     let mut text_start = 0usize;
 
-    loop {
-        let Some((event, range)) = parser.next() else {
-            break;
-        };
+    while let Some((event, range)) = parser.next() {
         if let Event::Start(Tag::Table(alignments)) = event {
             if text_start < range.start {
                 blocks.push(MarkdownBlock::Text(text[text_start..range.start].to_owned()));

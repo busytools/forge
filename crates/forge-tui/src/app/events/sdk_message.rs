@@ -479,7 +479,7 @@ fn handle_system(app: &mut App, msg: Message, raw: &Value) {
             if let Some(mode_str) = data.get("permissionMode").and_then(Value::as_str) {
                 super::apply_current_mode_update(
                     app,
-                    crate::agent::model::CurrentModeUpdate::new(mode_str),
+                    &crate::agent::model::CurrentModeUpdate::new(mode_str),
                 );
             }
             // status: "compacting" → Compacting, null → Idle.
@@ -658,7 +658,7 @@ fn apply_mode_state_from_init(app: &mut App, data: &Value) {
         Some(mode),
         &app.turn_state.runtime_unavailable_mode_ids,
     );
-    app.turn_state.supported_mode_ids = supported.clone();
+    app.turn_state.supported_mode_ids.clone_from(&supported);
 
     let wire_mode_state = build_mode_state_from_supported(mode, &supported);
     let model_mode_state = convert_mode_state(wire_mode_state);

@@ -1296,8 +1296,8 @@ pub(crate) const fn search_enabled(tab: PluginsViewTab) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::test_bridge::ForgeSdkCommand;
     use crate::agent::model;
+    use crate::agent::test_bridge::ForgeSdkCommand;
 
     fn app_with_connection() -> (
         crate::app::App,

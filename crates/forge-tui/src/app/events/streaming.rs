@@ -67,6 +67,7 @@ fn new_text_block(text: String) -> MessageBlock {
 
 fn split_tail_text_block(blocks: &mut Vec<MessageBlock>) -> usize {
     let mut split_count = 0usize;
+    #[allow(clippy::while_let_loop)] // multiple early-break conditions inside
     loop {
         let Some(tail_idx) = blocks.len().checked_sub(1) else {
             break;

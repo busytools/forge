@@ -678,10 +678,10 @@ fn apply_optimistic_mode_change(app: &mut App, requested_mode: &str) {
         Some(parsed),
         &app.turn_state.runtime_unavailable_mode_ids,
     );
-    app.turn_state.supported_mode_ids = supported.clone();
+    app.turn_state.supported_mode_ids.clone_from(&supported);
 
     let current_mode_update = crate::agent::model::CurrentModeUpdate::new(parsed.as_wire());
-    crate::app::events::apply_current_mode_update(app, current_mode_update);
+    crate::app::events::apply_current_mode_update(app, &current_mode_update);
 
     let wire_mode_state = build_mode_state_from_supported(parsed, &supported);
     let model_mode_state = convert_mode_state(wire_mode_state);
@@ -760,7 +760,7 @@ fn apply_optimistic_model_change(app: &mut App, model_name: &str) {
             Some(mode),
             &app.turn_state.runtime_unavailable_mode_ids,
         );
-        app.turn_state.supported_mode_ids = supported.clone();
+        app.turn_state.supported_mode_ids.clone_from(&supported);
         let wire_mode_state = build_mode_state_from_supported(mode, &supported);
         let model_mode_state = convert_mode_state(wire_mode_state);
         crate::app::events::apply_mode_state_update(app, model_mode_state);

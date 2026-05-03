@@ -1,9 +1,9 @@
-//! AskUserQuestion sequential sequencing. Mirrors upstream's
-//! `agent-sdk/src/bridge/user_interaction.ts` (323 LoC) — focused on
+//! `AskUserQuestion` sequential sequencing. Mirrors upstream's
+//! `agent-sdk/src/bridge/user_interaction.ts` (323 `LoC`) — focused on
 //! the multi-question loop + answer-payload assembly.
 //!
 //! The actual loop driver lives in `forge_sdk_worker::run_ask_user_question`
-//! because it needs the worker's `pending` map + event_tx + the
+//! because it needs the worker's `pending` map + `event_tx` + the
 //! oneshot machinery. This module owns the pure parsing helpers.
 
 use serde_json::{Map, Value};

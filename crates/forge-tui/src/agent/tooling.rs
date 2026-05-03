@@ -1,5 +1,5 @@
 //! Tool-call construction + tool-result extraction. 1:1 port of
-//! upstream's `agent-sdk/src/bridge/tooling.ts` (714 LoC).
+//! upstream's `agent-sdk/src/bridge/tooling.ts` (714 `LoC`).
 //!
 //! Three groups of helpers:
 //! 1. Front-of-tool: `create_tool_call`, `tool_title`, `normalize_tool_kind`,
@@ -202,7 +202,7 @@ pub fn create_tool_call(
 
 // ----- text extraction + persisted-output preview -----
 
-/// Mirrors `extractText(value)` — flattens a tool_result content
+/// Mirrors `extractText(value)` — flattens a `tool_result` content
 /// payload into a single `String`. Accepts string, array of
 /// `{ type: "text", text }` blocks, or single `{ text }` object.
 #[must_use]
@@ -697,7 +697,7 @@ fn resolve_tool_name(base: Option<&ToolCall>) -> String {
 // ----- main entry: build_tool_result_fields -----
 
 /// Mirrors `buildToolResultFields(isError, rawContent, base?, rawResult?)`.
-/// The high-level entry that turns an arbitrary tool_result block into
+/// The high-level entry that turns an arbitrary `tool_result` block into
 /// the structured `ToolCallUpdateFields` upstream's TUI consumes.
 #[must_use]
 pub fn build_tool_result_fields(
@@ -800,7 +800,7 @@ pub fn build_tool_result_fields(
     fields
 }
 
-/// Mirrors `unwrapToolUseResult(rawResult)`. Walks the tool_result
+/// Mirrors `unwrapToolUseResult(rawResult)`. Walks the `tool_result`
 /// envelope: if the value is an object, surfaces the inner `content`
 /// / `result` / `text` field and the `is_error` / `error` flag.
 pub struct UnwrappedToolResult {

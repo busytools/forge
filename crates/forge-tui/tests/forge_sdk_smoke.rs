@@ -201,20 +201,18 @@ async fn forge_sdk_e2e_cancel_mid_turn() {
         else {
             break;
         };
-        match event {
-            AgentEvent::SdkMessage {
-                msg: forge_sdk::Message::Result { is_error, subtype, .. },
-                ..
-            } => {
-                if !is_error && subtype == "success" {
-                    terminal = Some("complete");
-                } else {
-                    eprintln!("e2e cancel: Result is_error={is_error} subtype={subtype}");
-                    terminal = Some("error");
-                }
-                break;
+        if let AgentEvent::SdkMessage {
+            msg: forge_sdk::Message::Result { is_error, subtype, .. },
+            ..
+        } = event
+        {
+            if !is_error && subtype == "success" {
+                terminal = Some("complete");
+            } else {
+                eprintln!("e2e cancel: Result is_error={is_error} subtype={subtype}");
+                terminal = Some("error");
             }
-            _ => {}
+            break;
         }
     }
     assert!(terminal.is_some(), "no terminal turn frame after cancel");
@@ -344,7 +342,7 @@ async fn forge_sdk_e2e_resume_session() {
         // Tear phase 1 down so the underlying CLI subprocess exits and
         // its session state lands on disk.
         drop(agent);
-            sid
+        sid
     };
 
     // Phase 2: resume by id on a fresh worker.

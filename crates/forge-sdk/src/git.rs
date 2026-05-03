@@ -123,15 +123,15 @@ impl GitContextWatcher {
     ///
     /// Returns [`GitError::Watcher`] when `notify` fails to install
     /// its OS watcher (e.g. inotify limit reached on Linux).
-    pub fn new(cwd: PathBuf) -> Result<Self, GitError> {
+    pub fn new(cwd: &Path) -> Result<Self, GitError> {
         let (snap_tx, snap_rx) = tokio_mpsc::unbounded_channel();
 
         // Always send the initial snapshot — even when there's no
         // repo, callers want the "branch: NoRepo" state to flow once.
-        let initial = git_context(&cwd);
+        let initial = git_context(cwd);
         let _ = snap_tx.send(initial.clone());
 
-        let repo = ResolvedRepo::discover(&cwd);
+        let repo = ResolvedRepo::discover(cwd);
 
         // Without a repo there's nothing to watch. The initial
         // NoRepo snapshot has been queued; future calls to
@@ -175,7 +175,7 @@ impl GitContextWatcher {
         if let Err(err) = std::thread::Builder::new()
             .name("forge-sdk-git-debounce".to_owned())
             .spawn(move || {
-                run_debounce_loop(repo, notify_rx, snap_tx, initial_branch);
+                run_debounce_loop(&repo, &notify_rx, &snap_tx, initial_branch);
             })
         {
             tracing::error!(
@@ -210,9 +210,9 @@ impl GitContextWatcher {
 ///    `notify::Watcher` is dropped — i.e. `GitContextWatcher` was
 ///    dropped).
 fn run_debounce_loop(
-    repo: ResolvedRepo,
-    notify_rx: mpsc::Receiver<notify::Result<Event>>,
-    snap_tx: tokio_mpsc::UnboundedSender<GitContext>,
+    repo: &ResolvedRepo,
+    notify_rx: &mpsc::Receiver<notify::Result<Event>>,
+    snap_tx: &tokio_mpsc::UnboundedSender<GitContext>,
     mut last_branch: GitBranch,
 ) {
     loop {
@@ -628,7 +628,7 @@ mod tests {
     #[tokio::test(flavor = "current_thread", start_paused = false)]
     async fn watcher_emits_initial_snapshot_for_no_repo() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let mut watcher = GitContextWatcher::new(dir.path().to_path_buf()).expect("new");
+        let mut watcher = GitContextWatcher::new(dir.path()).expect("new");
         let snap = watcher.next_snapshot().await.expect("initial");
         assert_eq!(snap.branch, GitBranch::NoRepo);
     }

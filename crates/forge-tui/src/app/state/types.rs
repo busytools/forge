@@ -155,7 +155,7 @@ pub struct McpState {
     pub pending_elicitation: Option<crate::agent::types::ElicitationRequest>,
 }
 
-/// Per-session runtime state. Owns the in-flight tool_call store,
+/// Per-session runtime state. Owns the in-flight `tool_call` store,
 /// the model-resolution cache, the mode-capability state, the MCP
 /// per-server cooldowns, and the auth/error flags that survive
 /// across messages. The App's `handle_sdk_message` walks raw
@@ -184,7 +184,7 @@ pub struct SessionTurnState {
     pub resolved_runtime_model_id: Option<String>,
 
     /// Active permission mode (typed enum, not the wire string).
-    /// Populated from System(init).permissionMode and the SetMode
+    /// Populated from System(init).permissionMode and the `SetMode`
     /// command path; mirrors what `BridgeSession.mode` used to hold.
     pub mode: Option<crate::agent::state::PermissionMode>,
     /// Permission modes the runtime currently supports.

@@ -3,7 +3,7 @@
 //! permission/question response forwarders.
 //!
 //! Pre-collapse this lived split across `bridge_lifecycle.rs` (worker
-//! setup) and `event_dispatch.rs` (AgentEvent → ClientEvent
+//! setup) and `event_dispatch.rs` (`AgentEvent` → `ClientEvent`
 //! translator). Post-collapse the bridge owns the worker concerns,
 //! and the translation lives here as private helpers.
 
@@ -52,9 +52,18 @@ pub(super) async fn run_connection_task(
 
         let mut connected_once = false;
         let bridge = ForgeSdkBridge::new();
-        let mut event_rx = bridge
-            .take_events()
-            .expect("ForgeSdkBridge::new() always seeds a fresh event receiver");
+        let Some(mut event_rx) = bridge.take_events() else {
+            // `ForgeSdkBridge::new()` seeds a fresh receiver, so this
+            // is only reachable if a future refactor double-taps
+            // `take_events`. Surface as a connection failure rather
+            // than panic.
+            emit_connection_failed(
+                &params.event_tx,
+                "forge-sdk bridge yielded no event receiver".to_owned(),
+                AppError::ConnectionFailed,
+            );
+            return;
+        };
 
         let agent: Rc<dyn AgentBridge> = Rc::new(bridge) as Rc<dyn AgentBridge>;
         *conn_slot_writer.borrow_mut() = Some(ConnectionSlot { conn: Rc::clone(&agent) });

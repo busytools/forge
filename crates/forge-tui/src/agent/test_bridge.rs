@@ -142,9 +142,7 @@ impl RecordingBridge {
     }
 
     fn record(&self, cmd: ForgeSdkCommand) -> anyhow::Result<()> {
-        self.tx
-            .send(cmd)
-            .map_err(|_| anyhow::anyhow!("recording bridge: receiver dropped"))
+        self.tx.send(cmd).map_err(|_| anyhow::anyhow!("recording bridge: receiver dropped"))
     }
 }
 
@@ -179,10 +177,7 @@ impl AgentBridge for RecordingBridge {
                 }),
             });
         }
-        chunks.push(PromptChunk {
-            kind: "text".to_owned(),
-            value: Value::String(text),
-        });
+        chunks.push(PromptChunk { kind: "text".to_owned(), value: Value::String(text) });
         self.record(ForgeSdkCommand::Prompt { session_id, chunks })?;
         Ok(PromptResponse { stop_reason: "end_turn".to_owned() })
     }

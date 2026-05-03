@@ -4,8 +4,8 @@
 //! no NDJSON, no command queue. The bridge holds the spawned
 //! `Arc<Client>` and dispatches each trait method as a direct call
 //! (or a `tokio::spawn`'d async task when the trait method is
-//! fire-and-forget). Synthesized events (Connected, PermissionRequest,
-//! McpSnapshot, …) flow back through an `mpsc::UnboundedSender<AgentEvent>`
+//! fire-and-forget). Synthesized events (Connected, `PermissionRequest`,
+//! `McpSnapshot`, …) flow back through an `mpsc::UnboundedSender<AgentEvent>`
 //! the bridge owns; consumers grab the matching receiver once via
 //! [`AgentBridge::take_events`].
 //!
@@ -60,7 +60,7 @@ pub(crate) struct BridgeInner {
     /// session replace or shutdown.
     client: Mutex<Option<Client>>,
     /// Bridge → App event emission channel. Cloned freely into the
-    /// reader subtask + can_use_tool callback closures.
+    /// reader subtask + `can_use_tool` callback closures.
     event_tx: mpsc::UnboundedSender<AgentEvent>,
     /// Single-take receiver handed out via [`AgentBridge::take_events`].
     events_rx: Mutex<Option<mpsc::UnboundedReceiver<AgentEvent>>>,
@@ -68,11 +68,11 @@ pub(crate) struct BridgeInner {
     pub(crate) pending: PendingResponses,
     /// Question round-trip parking lot.
     pub(crate) pending_questions: PendingQuestions,
-    /// Active git-context watcher tasks, keyed by session_id. Aborted
+    /// Active git-context watcher tasks, keyed by `session_id`. Aborted
     /// on bridge drop or session replace.
     git_watchers: Mutex<HashMap<String, tokio::task::JoinHandle<()>>>,
-    /// Current session id, shared with the can_use_tool callback so
-    /// permission/question events carry the right session_id.
+    /// Current session id, shared with the `can_use_tool` callback so
+    /// permission/question events carry the right `session_id`.
     pub(crate) session_id_slot: Arc<Mutex<String>>,
 }
 
@@ -133,9 +133,7 @@ impl ForgeSdkBridge {
         Fut: std::future::Future<Output = anyhow::Result<()>> + Send + 'static,
     {
         let Some(client) = self.client() else {
-            return Err(anyhow::anyhow!(
-                "forge-sdk bridge: {label} called before active session"
-            ));
+            return Err(anyhow::anyhow!("forge-sdk bridge: {label} called before active session"));
         };
         tokio::spawn(async move {
             if let Err(err) = f(client).await {
@@ -153,7 +151,7 @@ impl ForgeSdkBridge {
     /// Replace any existing git watcher for `session_id` with a new
     /// task that pumps `GitContextWatcher` snapshots into the event
     /// channel.
-    fn install_git_watcher(&self, session_id: String, cwd: PathBuf) {
+    fn install_git_watcher(&self, session_id: String, cwd: &Path) {
         // Abort any prior watcher for this session so notify cleans up
         // its OS-level subscriptions before we replace it.
         if let Ok(mut watchers) = self.inner.git_watchers.lock()
@@ -162,7 +160,7 @@ impl ForgeSdkBridge {
             prev.abort();
         }
 
-        let mut watcher = match forge_sdk::GitContextWatcher::new(cwd.clone()) {
+        let mut watcher = match forge_sdk::GitContextWatcher::new(cwd) {
             Ok(watcher) => watcher,
             Err(err) => {
                 tracing::warn!(
@@ -236,7 +234,8 @@ impl AgentBridge for ForgeSdkBridge {
         text: String,
         images: Vec<crate::app::clipboard_image::ImageAttachment>,
     ) -> anyhow::Result<PromptResponse> {
-        let mut chunks: Vec<crate::agent::types::PromptChunk> = Vec::with_capacity(1 + images.len());
+        let mut chunks: Vec<crate::agent::types::PromptChunk> =
+            Vec::with_capacity(1 + images.len());
         for img in images {
             if let Err(reason) =
                 crate::app::clipboard_image::validate_image(&img.data, &img.mime_type)
@@ -377,9 +376,7 @@ impl AgentBridge for ForgeSdkBridge {
             ElicitationAction::Cancel => "cancel",
         };
         self.dispatch("respond_to_elicitation", move |client| async move {
-            client
-                .respond_to_elicitation(&elicitation_request_id, action_str, content)
-                .await?;
+            client.respond_to_elicitation(&elicitation_request_id, action_str, content).await?;
             Ok(())
         })
     }
@@ -532,8 +529,8 @@ impl AgentBridge for ForgeSdkBridge {
     ) -> anyhow::Result<()> {
         let bridge = self.clone();
         tokio::spawn(async move {
-            if let Err(err) = forge_sdk_worker::spawn_session(&bridge, &cwd, None, &launch_settings)
-                .await
+            if let Err(err) =
+                forge_sdk_worker::spawn_session(&bridge, &cwd, None, &launch_settings).await
             {
                 let _ = bridge.event_tx().send(AgentEvent::ConnectionFailed {
                     message: format!("forge-sdk session spawn failed: {err}"),
@@ -550,13 +547,9 @@ impl AgentBridge for ForgeSdkBridge {
     ) -> anyhow::Result<()> {
         let bridge = self.clone();
         tokio::spawn(async move {
-            if let Err(err) = forge_sdk_worker::spawn_session(
-                &bridge,
-                "",
-                Some(&session_id),
-                &launch_settings,
-            )
-            .await
+            if let Err(err) =
+                forge_sdk_worker::spawn_session(&bridge, "", Some(&session_id), &launch_settings)
+                    .await
             {
                 let _ = bridge.event_tx().send(AgentEvent::ConnectionFailed {
                     message: format!("forge-sdk session resume failed: {err}"),
@@ -591,7 +584,7 @@ impl AgentBridge for ForgeSdkBridge {
     }
 
     fn start_git_context_watch(&self, session_id: String, cwd: PathBuf) -> anyhow::Result<()> {
-        self.install_git_watcher(session_id, cwd);
+        self.install_git_watcher(session_id, &cwd);
         Ok(())
     }
 

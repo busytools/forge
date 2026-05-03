@@ -1,6 +1,6 @@
 use super::*;
-use crate::agent::test_bridge::ForgeSdkCommand;
 use crate::agent::model::AvailableModel;
+use crate::agent::test_bridge::ForgeSdkCommand;
 use crate::app::AppStatus;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use serde_json::Value;
