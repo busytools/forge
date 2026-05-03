@@ -18,21 +18,11 @@ use crate::agent::types::{
     ToolCallUpdateFields, ToolLocation, ToolOutputMetadata,
 };
 
-// cache_policy split-limits — inlined from `bridge::cache_policy`
-// (deleted) since this is the only caller post-bridge-collapse.
-#[allow(clippy::struct_field_names)]
-#[derive(Debug, Clone, Copy)]
-struct CacheSplitPolicy {
-    soft_limit_bytes: usize,
-    hard_limit_bytes: usize,
-    preview_limit_bytes: usize,
-}
-
-const CACHE_SPLIT_POLICY: CacheSplitPolicy = CacheSplitPolicy {
-    soft_limit_bytes: 1536,
-    hard_limit_bytes: 4096,
-    preview_limit_bytes: 2048,
-};
+// Tool-result preview-size cap — inlined from the deleted
+// `bridge::cache_policy` module. Upstream also tracked soft/hard
+// split limits but only the preview limit ever surfaces in
+// user-visible text, so flatten to a const here.
+const CACHE_PREVIEW_LIMIT_BYTES: usize = 2048;
 
 #[must_use]
 #[allow(
@@ -40,8 +30,8 @@ const CACHE_SPLIT_POLICY: CacheSplitPolicy = CacheSplitPolicy {
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss
 )]
-fn preview_kilobyte_label(policy: CacheSplitPolicy) -> String {
-    let kb = policy.preview_limit_bytes as f64 / 1024.0;
+fn preview_kilobyte_label() -> String {
+    let kb = CACHE_PREVIEW_LIMIT_BYTES as f64 / 1024.0;
     if kb.fract() == 0.0 { format!("{}KB", kb as u64) } else { format!("{kb:.1}KB") }
 }
 
@@ -260,7 +250,7 @@ fn persisted_output_inner_text(text: &str) -> Option<&str> {
 
 fn persisted_output_first_line(text: &str) -> Option<String> {
     let inner = persisted_output_inner_text(text)?;
-    let expected_preview = format!("preview (first {}):", preview_kilobyte_label(CACHE_SPLIT_POLICY).to_lowercase());
+    let expected_preview = format!("preview (first {}):", preview_kilobyte_label().to_lowercase());
     for line in inner.split(['\n', '\r']) {
         let cleaned: String = line
             .chars()

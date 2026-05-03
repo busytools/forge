@@ -2,7 +2,6 @@
 //! `ClientEvent` messages, and handles permission request/response forwarding.
 
 use crate::agent::client::AgentBridge;
-use crate::agent::error_handling::parse_turn_error_class;
 use crate::agent::events::ClientEvent;
 use crate::agent::model;
 use crate::agent::types;
