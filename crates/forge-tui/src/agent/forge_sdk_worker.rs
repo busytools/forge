@@ -611,7 +611,8 @@ async fn spawn_or_replace(
         let cm = session_lifecycle::resolve_current_model(&bs);
         bs.current_model = Some(cm.clone());
         bridge_commands::refresh_supported_modes_for_session(&mut bs);
-        let mode = init_permission_mode.map(|m| bridge_commands::build_mode_state(&bs, m));
+        let mode = init_permission_mode
+            .map(|m| bridge_commands::build_mode_state_from_supported(m, &bs.supported_mode_ids));
         (cm, mode)
     };
 

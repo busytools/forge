@@ -1,9 +1,8 @@
-//! Slash command + mode-state helpers. Mirrors upstream's
-//! `agent-sdk/src/bridge/commands.ts`.
-//!
-//! Stage 1 only ports the mode-state builder + supported-modes
-//! computation; the `set_mode` / `set_model` command-side handlers
-//! land in Stage 4 alongside the live emit-after-set follow-ups.
+//! Mode-state helpers — supported-mode list filtering + ModeState
+//! builder. Used by App-side `events::sdk_message` (when
+//! `System(init)` arrives + on `/mode` slash submit) and by the
+//! worker (to mirror `BridgeSession.supported_mode_ids` after
+//! `SetMode`).
 
 use crate::agent::types::{ModeInfo, ModeState};
 
@@ -15,10 +14,6 @@ const BASE_SUPPORTED_MODE_IDS: [PermissionMode; 4] = [
     PermissionMode::Plan,
     PermissionMode::DontAsk,
 ];
-
-fn current_model_supports_auto_mode(session: &BridgeSession) -> bool {
-    session.current_model.as_ref().is_some_and(|m| m.supports_auto_mode == Some(true))
-}
 
 fn unique_mode_ids(modes: Vec<PermissionMode>) -> Vec<PermissionMode> {
     // Mirror upstream's MODE_OPTIONS ordering: default, acceptEdits,
@@ -40,19 +35,10 @@ fn unique_mode_ids(modes: Vec<PermissionMode>) -> Vec<PermissionMode> {
     CANONICAL_ORDER.into_iter().filter(|m| seen.contains(m)).collect()
 }
 
-fn computed_supported_mode_ids(session: &BridgeSession) -> Vec<PermissionMode> {
-    computed_supported_mode_ids_from_inputs(
-        session.current_model.as_ref().is_some_and(|m| m.supports_auto_mode == Some(true)),
-        session.supports_bypass_permissions_mode,
-        session.mode,
-    )
-}
-
-/// Primitive-arg form of `computed_supported_mode_ids` so App-side
-/// callers can compute the supported list without owning a
-/// `BridgeSession`. Mirrors the upstream rules: BASE + Auto (if model
-/// supports it) + BypassPermissions (if session allows) + the current
-/// mode itself (so the active mode never disappears mid-session).
+/// Computes the supported-mode list from primitive inputs.
+/// Mirrors the upstream rules: BASE + Auto (if model supports it) +
+/// BypassPermissions (if session allows) + the current mode itself
+/// (so the active mode never disappears mid-session).
 #[must_use]
 pub fn computed_supported_mode_ids_from_inputs(
     current_model_supports_auto_mode: bool,
@@ -72,9 +58,8 @@ pub fn computed_supported_mode_ids_from_inputs(
     unique_mode_ids(supported)
 }
 
-/// Primitive-arg form of `refresh_supported_modes_for_session`.
-/// Returns the filtered supported list (does not mutate any session
-/// struct). Caller stores the result wherever it lives.
+/// Returns the supported-mode list filtered by the runtime-unavailable
+/// list (but keeping the current mode if it's still set).
 #[must_use]
 pub fn supported_mode_ids_filtered(
     current_model_supports_auto_mode: bool,
@@ -94,8 +79,8 @@ pub fn supported_mode_ids_filtered(
 }
 
 /// Mirrors `refreshSupportedModesForSession(session)`. Recomputes
-/// `session.supported_mode_ids`, filtered by runtime-unavailable list
-/// (but keeping the current mode if it's still set).
+/// `session.supported_mode_ids` in place, filtered by runtime-
+/// unavailable list (but keeping the current mode if it's still set).
 pub fn refresh_supported_modes_for_session(session: &mut BridgeSession) {
     session.supported_mode_ids = supported_mode_ids_filtered(
         session.current_model.as_ref().is_some_and(|m| m.supports_auto_mode == Some(true)),
@@ -113,12 +98,7 @@ fn mode_info_for_id(mode: PermissionMode) -> ModeInfo {
     }
 }
 
-fn available_modes_for_session(session: &BridgeSession) -> Vec<ModeInfo> {
-    available_modes_from_supported(&session.supported_mode_ids)
-}
-
-/// Primitive-arg form of `available_modes_for_session`. Maps a
-/// supported-mode list into `ModeInfo` records ready for
+/// Maps a supported-mode list into `ModeInfo` records ready for
 /// `ModeState.available_modes`.
 #[must_use]
 pub fn available_modes_from_supported(
@@ -127,15 +107,9 @@ pub fn available_modes_from_supported(
     supported_mode_ids.iter().copied().map(mode_info_for_id).collect()
 }
 
-/// Mirrors `buildModeState(session, mode)`. Pure builder used both at
-/// connect time and after `set_permission_mode`.
-#[must_use]
-pub fn build_mode_state(session: &BridgeSession, mode: PermissionMode) -> ModeState {
-    build_mode_state_from_supported(mode, &session.supported_mode_ids)
-}
-
-/// Primitive-arg form of `build_mode_state`. Composes a `ModeState`
-/// from the active mode + the resolved supported-mode list.
+/// Composes a `ModeState` from the active mode + the resolved
+/// supported-mode list. Used by App-side `apply_mode_state_from_init`
+/// + `apply_optimistic_mode_change` + `apply_optimistic_model_change`.
 #[must_use]
 pub fn build_mode_state_from_supported(
     mode: PermissionMode,
@@ -210,10 +184,14 @@ mod tests {
     }
 
     #[test]
-    fn build_mode_state_uses_session_supported_list() {
-        let mut session = fresh();
-        refresh_supported_modes_for_session(&mut session);
-        let state = build_mode_state(&session, PermissionMode::AcceptEdits);
+    fn build_mode_state_from_supported_uses_supported_list() {
+        let supported = vec![
+            PermissionMode::Default,
+            PermissionMode::AcceptEdits,
+            PermissionMode::Plan,
+            PermissionMode::DontAsk,
+        ];
+        let state = build_mode_state_from_supported(PermissionMode::AcceptEdits, &supported);
         assert_eq!(state.current_mode_id, "acceptEdits");
         assert_eq!(state.current_mode_name, "Accept Edits");
         assert_eq!(state.available_modes.len(), 4);
