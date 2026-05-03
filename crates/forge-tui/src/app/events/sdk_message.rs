@@ -109,16 +109,16 @@ fn apply_fast_mode_update(app: &mut App, raw: &Value) {
 fn handle_assistant(app: &mut App, msg: Message, raw: &Value) {
     let _ = msg;
     apply_fast_mode_update(app, raw);
-    walk_assistant_text_and_thinking(app, raw);
+    walk_assistant_content(app, raw);
 }
 
-/// Walk the raw `Message::Assistant` JSON envelope, applying text and
-/// thinking content blocks to App state directly. Mirrors the
-/// `block_type == "text"` and `block_type == "thinking"` branches of
-/// the bridge's `handle_content_block`. The remaining tool_use /
+/// Walk the raw `Message::Assistant` JSON envelope, applying text,
+/// thinking, and TodoWrite-Plan content blocks to App state directly.
+/// Mirrors the corresponding branches of the bridge's
+/// `handle_content_block`. The remaining tool_use (non-TodoWrite) and
 /// tool_result branches still flow through the bridge until the
 /// tool_call lifecycle cut lands.
-fn walk_assistant_text_and_thinking(app: &mut App, raw: &Value) {
+fn walk_assistant_content(app: &mut App, raw: &Value) {
     use crate::agent::model;
 
     let Some(content) = raw
@@ -158,9 +158,62 @@ fn walk_assistant_text_and_thinking(app: &mut App, raw: &Value) {
                 );
                 app.status = crate::app::AppStatus::Thinking;
             }
+            t if t == "tool_use" || t == "server_tool_use" => {
+                // Plan is the only tool_use side-effect cut so far;
+                // the rest of the tool_use lifecycle (ToolCall +
+                // ToolCallUpdate emission) still flows through the
+                // bridge until the tool_call cut lands.
+                let name = record.get("name").and_then(Value::as_str).unwrap_or("");
+                let empty_input = Value::Object(serde_json::Map::new());
+                let input = record.get("input").unwrap_or(&empty_input);
+                apply_plan_if_todo_write(app, name, input);
+            }
             _ => {}
         }
     }
+}
+
+/// Mirrors the bridge's `emit_plan_if_todo_write` against App state.
+/// When the assistant invokes the TodoWrite tool with a `todos` array,
+/// applies the plan via the existing `apply_plan_todos` handler.
+fn apply_plan_if_todo_write(app: &mut App, name: &str, input: &Value) {
+    use crate::agent::{model, types};
+    use crate::app::connect::type_converters::convert_plan_entry;
+
+    if name != "TodoWrite" {
+        return;
+    }
+    let Some(todos) = input
+        .as_object()
+        .and_then(|r| r.get("todos"))
+        .and_then(Value::as_array)
+    else {
+        return;
+    };
+    let wire_entries: Vec<types::PlanEntry> = todos
+        .iter()
+        .filter_map(|todo| {
+            let r = todo.as_object()?;
+            let content = r.get("content").and_then(Value::as_str)?.to_owned();
+            if content.is_empty() {
+                return None;
+            }
+            let status = r
+                .get("status")
+                .and_then(Value::as_str)
+                .unwrap_or("pending")
+                .to_owned();
+            let active_form = status.clone();
+            Some(types::PlanEntry { content, status, active_form })
+        })
+        .collect();
+    if wire_entries.is_empty() {
+        return;
+    }
+    let entries: Vec<model::PlanEntry> =
+        wire_entries.into_iter().map(convert_plan_entry).collect();
+    let plan = model::Plan::new(entries);
+    crate::app::todos::apply_plan_todos(app, &plan);
 }
 
 fn handle_user(app: &mut App, msg: Message, raw: &Value) {

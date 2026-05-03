@@ -68,7 +68,9 @@ fn handle_content_block(
         let name = block_record.get("name").and_then(Value::as_str).unwrap_or("Tool");
         let empty_input = Value::Object(Map::new());
         let input = block_record.get("input").unwrap_or(&empty_input);
-        emit_plan_if_todo_write(session, name, input, out);
+        // Plan emission for TodoWrite moved to App's
+        // events::sdk_message::apply_plan_if_todo_write on the
+        // BridgeEvent::SdkMessage parallel wire (Phase 2 cutover).
         emit_tool_call(session, tool_use_id, name, input, parent_tool_use_id, out);
         return;
     }

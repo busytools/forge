@@ -615,7 +615,7 @@ pub(super) fn convert_tool_status(status: &str) -> model::ToolCallStatus {
     }
 }
 
-pub(super) fn convert_plan_entry(entry: types::PlanEntry) -> model::PlanEntry {
+pub(crate) fn convert_plan_entry(entry: types::PlanEntry) -> model::PlanEntry {
     let status = match entry.status.as_str() {
         "in_progress" => model::PlanEntryStatus::InProgress,
         "completed" => model::PlanEntryStatus::Completed,
