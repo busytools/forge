@@ -61,7 +61,7 @@ pub fn is_tool_use_block_type(block_type: &str) -> bool {
 /// Mirrors `normalizeToolKind`. Maps tool name → kind string consumed
 /// by the TUI's tool-card renderer.
 #[must_use]
-pub fn normalize_tool_kind(name: &str) -> &'static str {
+fn normalize_tool_kind(name: &str) -> &'static str {
     match name {
         "Bash" => "execute",
         "Read" | "ReadMcpResource" => "read",
@@ -81,7 +81,7 @@ pub fn normalize_tool_kind(name: &str) -> &'static str {
 /// title shown on the tool card header (e.g. Bash → command, Glob →
 /// pattern + path, etc.).
 #[must_use]
-pub fn tool_title(name: &str, input: &Value) -> String {
+fn tool_title(name: &str, input: &Value) -> String {
     let record = input.as_object();
     let s = |k: &str| -> &str {
         record.and_then(|r| r.get(k)).and_then(Value::as_str).unwrap_or("")
@@ -214,7 +214,7 @@ pub fn create_tool_call(
 /// payload into a single `String`. Accepts string, array of
 /// `{ type: "text", text }` blocks, or single `{ text }` object.
 #[must_use]
-pub fn extract_text(value: &Value) -> String {
+fn extract_text(value: &Value) -> String {
     if let Some(s) = value.as_str() {
         return s.to_owned();
     }
@@ -295,7 +295,7 @@ fn sanitize_sdk_rejection_text(text: &str) -> String {
 }
 
 #[must_use]
-pub fn normalize_tool_result_text(value: &Value, is_error: bool) -> String {
+fn normalize_tool_result_text(value: &Value, is_error: bool) -> String {
     let text = extract_text(value);
     if text.is_empty() {
         return String::new();
