@@ -161,6 +161,9 @@ fn handle_system(app: &mut App, msg: Message, raw: &Value) {
         "compact_boundary" => {
             apply_compaction_boundary(app, data);
         }
+        "elicitation_complete" => {
+            apply_elicitation_complete(app, data);
+        }
         _ => {}
     }
     let _ = raw;
@@ -234,6 +237,24 @@ fn apply_available_agents_from_init(app: &mut App, data: &Value) {
     app.turn_state.last_agents_signature = Some(signature);
     let model_update = crate::app::connect::type_converters::map_available_agents_update(agents);
     super::apply_available_agents_update(app, model_update);
+}
+
+/// Drain a System(elicitation_complete) record and call the App's
+/// MCP elicitation-completed handler (notice + overlay state).
+fn apply_elicitation_complete(app: &mut App, data: &Value) {
+    let Some(record) = data.as_object() else { return };
+    let Some(elicitation_id) = record
+        .get("elicitation_id")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+    else {
+        return;
+    };
+    let server_name = record
+        .get("mcp_server_name")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    crate::app::config::handle_mcp_elicitation_completed(app, elicitation_id, server_name);
 }
 
 fn apply_settings_parse_errors(app: &mut App, data: &Value) {

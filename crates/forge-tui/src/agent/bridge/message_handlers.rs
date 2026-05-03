@@ -423,18 +423,9 @@ pub fn handle_sdk_message(
                     }
                 }
                 "elicitation_complete" => {
-                    let elicitation_id =
-                        msg_record.get("elicitation_id").and_then(Value::as_str).unwrap_or("");
-                    if !elicitation_id.is_empty() {
-                        out.push(BridgeEvent::ElicitationComplete {
-                            session_id: session.session_id.clone(),
-                            elicitation_id: elicitation_id.to_owned(),
-                            server_name: msg_record
-                                .get("mcp_server_name")
-                                .and_then(Value::as_str)
-                                .map(str::to_owned),
-                        });
-                    }
+                    // Phase 2 cutover: handled by App's
+                    // events::sdk_message::apply_elicitation_complete on
+                    // the BridgeEvent::SdkMessage parallel wire.
                 }
                 _ => {
                     // task_started/progress/notification fall here in
