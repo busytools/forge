@@ -72,12 +72,6 @@ pub async fn run_worker(
     let pending_questions: PendingQuestions = Arc::new(Mutex::new(HashMap::new()));
     let session_id_slot: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
     // The bridge session holds the open-tool-call map, mode list,
-    // last-seen fast mode, etc. Lives across messages + commands.
-    // Wrapped in Arc<Mutex<>> so the spawned reader_loop and the
-    // dispatch loop can both mutate it without rearchitecting the
-    // command/event-channel topology.
-    let bridge_session: Arc<Mutex<bridge_state::BridgeSession>> =
-        Arc::new(Mutex::new(bridge_state::BridgeSession::new(String::new(), String::new())));
     let mut state: WorkerState = WorkerState::Waiting;
     // Per-session git watcher tasks. Keyed by session_id so a cwd
     // change (or session replace) aborts the previous watcher before
@@ -94,7 +88,6 @@ pub async fn run_worker(
             &pending,
             &pending_questions,
             &session_id_slot,
-            &bridge_session,
             &mut git_watchers,
         )
         .await
@@ -140,7 +133,6 @@ async fn dispatch(
     pending: &PendingResponses,
     pending_questions: &PendingQuestions,
     session_id_slot: &Arc<Mutex<String>>,
-    bridge_session: &Arc<Mutex<bridge_state::BridgeSession>>,
     git_watchers: &mut std::collections::HashMap<String, tokio::task::JoinHandle<()>>,
 ) -> anyhow::Result<()> {
     use ForgeSdkCommand as C;
@@ -160,7 +152,6 @@ async fn dispatch(
                 event_tx,
                 options,
                 session_id_slot,
-                bridge_session,
                 &launch_settings,
                 None,
             )
@@ -183,7 +174,6 @@ async fn dispatch(
                 event_tx,
                 options,
                 session_id_slot,
-                bridge_session,
                 &launch_settings,
                 Some(session_id),
             )
@@ -485,7 +475,6 @@ async fn spawn_or_replace(
     event_tx: &mpsc::UnboundedSender<AgentEvent>,
     options: Options,
     session_id_slot: &Arc<Mutex<String>>,
-    bridge_session: &Arc<Mutex<bridge_state::BridgeSession>>,
     launch_settings: &crate::agent::client::SessionLaunchSettings,
     resume_id: Option<String>,
 ) -> anyhow::Result<()> {
@@ -584,27 +573,25 @@ async fn spawn_or_replace(
         available_models_count = available_models.len(),
     );
 
-    // Populate the persistent BridgeSession so the reader_loop's
-    // handle_sdk_message calls see the right starting state (model
-    // catalog, supported modes, fast mode default, …).
-    let (current_model, mode) = {
-        let mut bs = bridge_session.lock().map_err(|_| {
-            anyhow::anyhow!("forge_sdk_worker: bridge session mutex poisoned")
-        })?;
-        bs.session_id.clone_from(&session_id);
-        bs.cwd.clone_from(&cwd);
-        bs.connected = true;
-        bs.model_id = init_model_id;
-        bs.available_models.clone_from(&available_models);
-        bs.mode = init_permission_mode;
-        bs.supports_bypass_permissions_mode = supports_bypass;
-        let cm = session_lifecycle::resolve_current_model(&bs);
-        bs.current_model = Some(cm.clone());
-        bridge_commands::refresh_supported_modes_for_session(&mut bs);
-        let mode = init_permission_mode
-            .map(|m| bridge_commands::build_mode_state_from_supported(m, &bs.supported_mode_ids));
-        (cm, mode)
-    };
+    // Compute the Connected event payload from the CLI init data
+    // directly — no `BridgeSession` round-trip. Uses the primitive
+    // forms of the model resolver + supported-mode-list filter.
+    let current_model = session_lifecycle::resolve_current_model_from_inputs(
+        &init_model_id,
+        None,
+        None,
+        &available_models,
+    );
+    let mode = init_permission_mode.map(|m| {
+        let supports_auto_mode = current_model.supports_auto_mode == Some(true);
+        let supported = bridge_commands::supported_mode_ids_filtered(
+            supports_auto_mode,
+            supports_bypass,
+            Some(m),
+            &[],
+        );
+        bridge_commands::build_mode_state_from_supported(m, &supported)
+    });
 
     // History is loaded from the on-disk JSONL when resuming. The CLI
     // emits new turns as fresh stream-json frames, so we only need to
