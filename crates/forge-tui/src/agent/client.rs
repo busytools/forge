@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
+use tokio::sync::mpsc;
 
 /// Behavioural seam between the TUI and the agent backend.
 ///
@@ -29,6 +30,12 @@ use async_trait::async_trait;
 /// returned by the trait don't need a `Send` bound.
 #[async_trait(?Send)]
 pub trait AgentBridge {
+    /// Take ownership of the outbound `AgentEvent` receiver. Returns
+    /// `Some` exactly once per bridge instance — subsequent calls
+    /// return `None`. The connection task calls this immediately after
+    /// constructing the bridge to wire up its event-relay loop.
+    fn take_events(&self) -> Option<mpsc::UnboundedReceiver<AgentEvent>>;
+
     fn prompt_text(&self, session_id: String, text: String) -> anyhow::Result<PromptResponse>;
 
     fn prompt_with_images(

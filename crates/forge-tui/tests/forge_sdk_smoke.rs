@@ -34,7 +34,7 @@ use std::time::Duration;
 
 use forge_tui::agent::client::AgentBridge;
 use forge_tui::agent::client::{AgentEvent, SessionLaunchSettings};
-use forge_tui::agent::forge_sdk_bridge::ForgeSdkBridge;
+use forge_tui::agent::test_bridge::RecordingBridge;
 use forge_tui::agent::forge_sdk_worker;
 use std::rc::Rc;
 use tokio::sync::mpsc;
@@ -48,7 +48,7 @@ async fn forge_sdk_e2e_round_trip() {
     // Worker runs forge-sdk; lives for the duration of the test.
     let worker = tokio::spawn(forge_sdk_worker::run_worker(cmd_rx, event_tx));
 
-    let agent: Rc<dyn AgentBridge> = Rc::new(ForgeSdkBridge::new(cmd_tx));
+    let agent: Rc<dyn AgentBridge> = Rc::new(RecordingBridge::new(cmd_tx));
 
     // Kick off a session.
     agent
@@ -83,7 +83,7 @@ async fn forge_sdk_e2e_multi_turn() {
     let (event_tx, mut event_rx) = mpsc::unbounded_channel();
 
     let worker = tokio::spawn(forge_sdk_worker::run_worker(cmd_rx, event_tx));
-    let agent: Rc<dyn AgentBridge> = Rc::new(ForgeSdkBridge::new(cmd_tx));
+    let agent: Rc<dyn AgentBridge> = Rc::new(RecordingBridge::new(cmd_tx));
 
     agent
         .new_session(
@@ -128,7 +128,7 @@ async fn forge_sdk_e2e_tool_call_emits_event() {
     let (event_tx, mut event_rx) = mpsc::unbounded_channel();
 
     let worker = tokio::spawn(forge_sdk_worker::run_worker(cmd_rx, event_tx));
-    let agent: Rc<dyn AgentBridge> = Rc::new(ForgeSdkBridge::new(cmd_tx));
+    let agent: Rc<dyn AgentBridge> = Rc::new(RecordingBridge::new(cmd_tx));
 
     agent
         .new_session(
@@ -170,7 +170,7 @@ async fn forge_sdk_e2e_cancel_mid_turn() {
     let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
     let (event_tx, mut event_rx) = mpsc::unbounded_channel();
     let worker = tokio::spawn(forge_sdk_worker::run_worker(cmd_rx, event_tx));
-    let agent: Rc<dyn AgentBridge> = Rc::new(ForgeSdkBridge::new(cmd_tx));
+    let agent: Rc<dyn AgentBridge> = Rc::new(RecordingBridge::new(cmd_tx));
 
     agent
         .new_session(
@@ -243,7 +243,7 @@ async fn forge_sdk_e2e_status_and_context_snapshots() {
     let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
     let (event_tx, mut event_rx) = mpsc::unbounded_channel();
     let worker = tokio::spawn(forge_sdk_worker::run_worker(cmd_rx, event_tx));
-    let agent: Rc<dyn AgentBridge> = Rc::new(ForgeSdkBridge::new(cmd_tx));
+    let agent: Rc<dyn AgentBridge> = Rc::new(RecordingBridge::new(cmd_tx));
 
     agent
         .new_session(
@@ -296,7 +296,7 @@ async fn forge_sdk_e2e_mcp_snapshot() {
     let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
     let (event_tx, mut event_rx) = mpsc::unbounded_channel();
     let worker = tokio::spawn(forge_sdk_worker::run_worker(cmd_rx, event_tx));
-    let agent: Rc<dyn AgentBridge> = Rc::new(ForgeSdkBridge::new(cmd_tx));
+    let agent: Rc<dyn AgentBridge> = Rc::new(RecordingBridge::new(cmd_tx));
 
     agent
         .new_session(
@@ -344,7 +344,7 @@ async fn forge_sdk_e2e_resume_session() {
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
         let (event_tx, mut event_rx) = mpsc::unbounded_channel();
         let worker = tokio::spawn(forge_sdk_worker::run_worker(cmd_rx, event_tx));
-        let agent: Rc<dyn AgentBridge> = Rc::new(ForgeSdkBridge::new(cmd_tx));
+        let agent: Rc<dyn AgentBridge> = Rc::new(RecordingBridge::new(cmd_tx));
 
         agent
             .new_session(
@@ -371,7 +371,7 @@ async fn forge_sdk_e2e_resume_session() {
     let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
     let (event_tx, mut event_rx) = mpsc::unbounded_channel();
     let worker = tokio::spawn(forge_sdk_worker::run_worker(cmd_rx, event_tx));
-    let agent: Rc<dyn AgentBridge> = Rc::new(ForgeSdkBridge::new(cmd_tx));
+    let agent: Rc<dyn AgentBridge> = Rc::new(RecordingBridge::new(cmd_tx));
 
     agent
         .resume_session(session_id, SessionLaunchSettings::default())

@@ -967,7 +967,7 @@ mod tests {
                 let mut app = App::test_default();
                 let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
                 app.conn =
-                    Some(std::rc::Rc::new(crate::agent::forge_sdk_bridge::ForgeSdkBridge::new(tx)));
+                    Some(std::rc::Rc::new(crate::agent::test_bridge::RecordingBridge::new(tx)));
 
                 let consumed = try_handle_submit(&mut app, "/resume abc-123");
                 assert!(consumed);
@@ -991,7 +991,7 @@ mod tests {
                 let mut app = App::test_default();
                 let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
                 app.conn =
-                    Some(std::rc::Rc::new(crate::agent::forge_sdk_bridge::ForgeSdkBridge::new(tx)));
+                    Some(std::rc::Rc::new(crate::agent::test_bridge::RecordingBridge::new(tx)));
                 app.session_id = Some("sess-1".into());
                 app.mode = Some(super::super::ModeState {
                     current_mode_id: "code".to_owned(),
@@ -1025,7 +1025,7 @@ mod tests {
                 let mut app = App::test_default();
                 let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
                 app.conn =
-                    Some(std::rc::Rc::new(crate::agent::forge_sdk_bridge::ForgeSdkBridge::new(tx)));
+                    Some(std::rc::Rc::new(crate::agent::test_bridge::RecordingBridge::new(tx)));
                 app.session_id = Some("sess-1".into());
                 app.current_model = Some(
                     crate::agent::model::CurrentModel::new("old-model", "old-model", "old-model")
@@ -1051,7 +1051,7 @@ mod tests {
                 let mut app = App::test_default();
                 let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
                 app.conn =
-                    Some(std::rc::Rc::new(crate::agent::forge_sdk_bridge::ForgeSdkBridge::new(tx)));
+                    Some(std::rc::Rc::new(crate::agent::test_bridge::RecordingBridge::new(tx)));
 
                 let consumed = try_handle_submit(&mut app, "/new-session");
                 assert!(consumed);
@@ -1086,7 +1086,7 @@ mod tests {
     fn compact_with_active_session_sets_compacting_without_success_pending() {
         let mut app = App::test_default();
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        app.conn = Some(std::rc::Rc::new(crate::agent::forge_sdk_bridge::ForgeSdkBridge::new(tx)));
+        app.conn = Some(std::rc::Rc::new(crate::agent::test_bridge::RecordingBridge::new(tx)));
         app.session_id = Some(model::SessionId::new("session-1"));
 
         let consumed = try_handle_submit(&mut app, "/compact");

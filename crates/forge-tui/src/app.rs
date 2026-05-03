@@ -501,17 +501,17 @@ fn finalize_deferred_submit(app: &mut App) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::forge_sdk_bridge::ForgeSdkCommand;
+    use crate::agent::test_bridge::ForgeSdkCommand;
     use crate::agent::model;
     use crate::app::{MessageBlock, MessageRole};
     use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 
     fn app_with_connection()
-    -> (App, tokio::sync::mpsc::UnboundedReceiver<crate::agent::forge_sdk_bridge::ForgeSdkCommand>)
+    -> (App, tokio::sync::mpsc::UnboundedReceiver<crate::agent::test_bridge::ForgeSdkCommand>)
     {
         let mut app = App::test_default();
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-        app.conn = Some(std::rc::Rc::new(crate::agent::forge_sdk_bridge::ForgeSdkBridge::new(tx)));
+        app.conn = Some(std::rc::Rc::new(crate::agent::test_bridge::RecordingBridge::new(tx)));
         app.session_id = Some(model::SessionId::new("session-1"));
         (app, rx)
     }

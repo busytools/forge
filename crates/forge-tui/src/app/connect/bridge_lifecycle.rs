@@ -4,8 +4,7 @@
 use crate::agent::client::AgentBridge;
 use crate::agent::client::{AgentEvent, EventEnvelope};
 use crate::agent::events::ClientEvent;
-use crate::agent::forge_sdk_bridge::{ForgeSdkBridge, ForgeSdkCommand};
-use crate::agent::forge_sdk_worker;
+use crate::agent::forge_sdk_bridge::ForgeSdkBridge;
 use crate::error::AppError;
 use std::rc::Rc;
 use tokio::sync::mpsc;
@@ -41,17 +40,13 @@ pub(super) async fn run_connection_task(
         );
 
         let mut connected_once = false;
-        let (cmd_tx, cmd_rx) = mpsc::unbounded_channel::<ForgeSdkCommand>();
-        let (event_tx, mut event_rx) = mpsc::unbounded_channel::<AgentEvent>();
+        let bridge = ForgeSdkBridge::new();
+        let mut event_rx = bridge
+            .take_events()
+            .expect("ForgeSdkBridge::new() always seeds a fresh event receiver");
 
-        let agent: Rc<dyn AgentBridge> =
-            Rc::new(ForgeSdkBridge::new(cmd_tx.clone())) as Rc<dyn AgentBridge>;
+        let agent: Rc<dyn AgentBridge> = Rc::new(bridge) as Rc<dyn AgentBridge>;
         *conn_slot_writer.borrow_mut() = Some(ConnectionSlot { conn: Rc::clone(&agent) });
-
-        // Worker owns the forge_sdk::Client and drains commands.
-        // Send-safe future, runs on the multi-threaded runtime alongside
-        // the LocalSet-backed UI tasks.
-        tokio::spawn(forge_sdk_worker::run_worker(cmd_rx, event_tx));
 
         // Issue the initial session command. With Node bridge this
         // happened over NDJSON via send_session_command; now it's a

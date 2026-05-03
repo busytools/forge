@@ -93,7 +93,7 @@ fn is_ctrl(key: KeyEvent, ch: char) -> bool {
 #[cfg(test)]
 mod tests {
     use super::handle_key;
-    use crate::agent::forge_sdk_bridge::{ForgeSdkBridge, ForgeSdkCommand};
+    use crate::agent::test_bridge::{ForgeSdkCommand, RecordingBridge};
     use crate::app::{ActiveView, App, AppStatus, RecentSessionInfo};
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use std::rc::Rc;
@@ -154,7 +154,7 @@ mod tests {
     fn enter_triggers_resume() {
         let mut app = picker_app();
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<ForgeSdkCommand>();
-        app.conn = Some(Rc::new(ForgeSdkBridge::new(tx)));
+        app.conn = Some(Rc::new(RecordingBridge::new(tx)));
 
         handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
@@ -184,7 +184,7 @@ mod tests {
         let mut app = picker_app();
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<ForgeSdkCommand>();
         drop(rx);
-        app.conn = Some(Rc::new(ForgeSdkBridge::new(tx)));
+        app.conn = Some(Rc::new(RecordingBridge::new(tx)));
 
         handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 

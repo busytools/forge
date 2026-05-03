@@ -10,6 +10,7 @@ pub mod model;
 pub mod session_lifecycle;
 pub mod state;
 pub mod state_parsing;
+pub mod test_bridge;
 pub mod tooling;
 pub mod types;
 pub mod user_interaction;
