@@ -3,7 +3,7 @@
 //! `agent-sdk/src/bridge/session_lifecycle.ts`.
 //!
 //! What lives here:
-//! - `normalize_model_key` + `humanize_model_id` + `short_display_name_for_model_id`
+//! - `normalize_model_key` + `humanize_model_id`
 //! - `model_keys_are_compatible` / `same_context_suffix` / `same_family_and_version`
 //!   / `has_variant_sibling_conflict`
 //! - `resolve_catalog_model` / `resolve_current_model`
@@ -130,14 +130,7 @@ fn format_humanized(key: &NormalizedModelKey) -> String {
 }
 
 #[must_use]
-pub fn humanize_model_id(id: &str) -> String {
-    format_humanized(&normalize_model_key(id))
-}
-
-#[must_use]
-pub fn short_display_name_for_model_id(id: &str) -> String {
-    // Upstream's short and long formatters are identical today; keep
-    // both as separate entry points so a future divergence has a home.
+fn humanize_model_id(id: &str) -> String {
     format_humanized(&normalize_model_key(id))
 }
 
