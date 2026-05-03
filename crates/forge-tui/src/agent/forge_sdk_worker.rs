@@ -201,32 +201,22 @@ async fn dispatch(
         C::SetModel { session_id: _, model } => {
             let client = require_running(state, "SetModel")?;
             client.set_model(Some(model.as_str())).await?;
-            // CurrentModelUpdate + ModeStateUpdate emission moved to the
-            // /model executor on the App side (optimistic). Worker still
-            // mirrors the requested_model_id into BridgeSession so the
-            // bridge's internal model resolution stays consistent until
-            // the bridge is fully removed.
-            if let Ok(mut bs) = bridge_session.lock() {
-                bs.requested_model_id = Some(model.clone());
-                let _ = session_lifecycle::refresh_current_model(&mut bs);
-            }
+            // CurrentModelUpdate + ModeStateUpdate emission lives on
+            // the App-side `/model` executor (optimistic). Nothing
+            // post-bridge-collapse reads `BridgeSession.requested_model_id`
+            // anymore, so no mirror write here.
+            let _ = model;
             Ok(())
         }
         C::SetMode { session_id: _, mode } => {
             let client = require_running(state, "SetMode")?;
             let parsed = parse_permission_mode(&mode)?;
             client.set_permission_mode(parsed).await?;
-            // CurrentModeUpdate + ModeStateUpdate emission moved to the
-            // /mode executor on the App side (optimistic). Worker still
-            // mirrors the parsed mode into BridgeSession so the
-            // bridge's internal mode resolution stays consistent until
-            // the bridge is fully removed.
-            if let Ok(mut bs) = bridge_session.lock()
-                && let Some(bridge_mode) = bridge_state::PermissionMode::from_wire(&mode)
-            {
-                bs.mode = Some(bridge_mode);
-                bridge_commands::refresh_supported_modes_for_session(&mut bs);
-            }
+            // CurrentModeUpdate + ModeStateUpdate emission lives on the
+            // App-side `/mode` executor (optimistic). Nothing
+            // post-bridge-collapse reads `BridgeSession.mode` anymore,
+            // so no mirror write here.
+            let _ = mode;
             Ok(())
         }
         C::PermissionResponse { tool_call_id, outcome, .. } => {
