@@ -473,6 +473,9 @@ fn handle_system(app: &mut App, msg: Message, raw: &Value) {
         "elicitation_complete" => {
             apply_elicitation_complete(app, data);
         }
+        "elicitation_request" => {
+            apply_elicitation_request(app, data);
+        }
         "local_command_output" => {
             apply_local_command_output(app, data);
         }
@@ -644,6 +647,50 @@ fn apply_local_command_output(app: &mut App, data: &Value) {
         model::TextContent::new(content.to_owned()),
     ));
     super::streaming::handle_agent_message_chunk(app, chunk);
+}
+
+/// Build an `ElicitationRequest` from System(elicitation_request)
+/// data and dispatch via the App's MCP overlay handler. Mirrors what
+/// `forge_sdk_translate::elicitation_request_to_event` previously did
+/// — but now applies the request directly without going through the
+/// `AgentEvent::ElicitationRequest` wire variant.
+fn apply_elicitation_request(app: &mut App, data: &Value) {
+    use crate::agent::types::{ElicitationMode, ElicitationRequest};
+    let Some(record) = data.as_object() else { return };
+    let Some(request_id) = record.get("request_id").and_then(Value::as_str) else { return };
+    let server_name = record
+        .get("server_name")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_owned();
+    let message = record
+        .get("message")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_owned();
+    let mode = match record.get("mode").and_then(Value::as_str) {
+        Some("url") => ElicitationMode::Url,
+        _ => ElicitationMode::Form,
+    };
+    let url = record
+        .get("url")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let elicitation_id = record
+        .get("elicitation_id")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let requested_schema = record.get("requested_schema").cloned();
+    let request = ElicitationRequest {
+        request_id: request_id.to_owned(),
+        server_name,
+        message,
+        mode,
+        url,
+        elicitation_id,
+        requested_schema,
+    };
+    crate::app::config::present_mcp_elicitation_request(app, request);
 }
 
 /// Drain a System(elicitation_complete) record and call the App's

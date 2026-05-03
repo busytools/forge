@@ -47,7 +47,6 @@ use crate::agent::bridge::{
     user_interaction as bridge_user_interaction,
 };
 use crate::agent::forge_sdk_bridge::ForgeSdkCommand;
-use crate::agent::forge_sdk_translate::translate_message;
 use crate::agent::client::AgentEvent;
 
 /// Pending permission responses keyed by `tool_use_id`. The
@@ -748,13 +747,8 @@ async fn reader_loop(
                     .unwrap_or_else(|| session_id.clone());
                 buf.push(AgentEvent::SdkMessage {
                     session_id: session_id_for_sdk_msg,
-                    msg: msg.clone(),
+                    msg,
                 });
-                // ElicitationRequest still synthesised by the
-                // translate_message shim until that one moves to
-                // the App-side handler.
-                let mut legacy = translate_message(msg);
-                buf.append(&mut legacy);
                 for event in buf {
                     if event_tx.send(event).is_err() {
                         return;
