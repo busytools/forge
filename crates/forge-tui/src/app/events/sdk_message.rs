@@ -473,6 +473,9 @@ fn handle_system(app: &mut App, msg: Message, raw: &Value) {
         "elicitation_complete" => {
             apply_elicitation_complete(app, data);
         }
+        "local_command_output" => {
+            apply_local_command_output(app, data);
+        }
         _ => {}
     }
     let _ = raw;
@@ -623,6 +626,24 @@ fn apply_mode_state_from_init(app: &mut App, data: &Value) {
     let wire_mode_state = build_mode_state_from_supported(mode, &supported);
     let model_mode_state = convert_mode_state(wire_mode_state);
     super::apply_mode_state_update(app, model_mode_state);
+}
+
+/// Mirror the bridge's `handle_system_local_command_output` arm.
+/// When the SDK fires a System(local_command_output), forward the
+/// content as an `AgentMessageChunk` so it appears inline in the
+/// chat transcript.
+fn apply_local_command_output(app: &mut App, data: &Value) {
+    use crate::agent::model;
+    let Some(record) = data.as_object() else { return };
+    let content = record.get("content").and_then(Value::as_str).unwrap_or("");
+    if content.trim().is_empty() {
+        return;
+    }
+    super::clear_compaction_state(app, true);
+    let chunk = model::ContentChunk::new(model::ContentBlock::Text(
+        model::TextContent::new(content.to_owned()),
+    ));
+    super::streaming::handle_agent_message_chunk(app, chunk);
 }
 
 /// Drain a System(elicitation_complete) record and call the App's

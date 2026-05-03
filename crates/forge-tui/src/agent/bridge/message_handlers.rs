@@ -312,16 +312,9 @@ pub fn handle_sdk_message(
                     // CompactionBoundary moved to App handler.
                 }
                 "local_command_output" => {
-                    let content = msg_record.get("content").and_then(Value::as_str).unwrap_or("");
-                    if !content.trim().is_empty() {
-                        push_session_update(
-                            out,
-                            &session.session_id,
-                            SessionUpdate::AgentMessageChunk {
-                                content: ContentBlock::Text { text: content.to_owned() },
-                            },
-                        );
-                    }
+                    // Phase 2 cutover: handled by App's
+                    // events::sdk_message::apply_local_command_output
+                    // on the BridgeEvent::SdkMessage parallel wire.
                 }
                 "elicitation_complete" => {
                     // Phase 2 cutover: handled by App's
