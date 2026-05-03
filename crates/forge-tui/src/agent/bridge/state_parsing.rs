@@ -9,7 +9,25 @@ use crate::agent::types::{
     SettingsParseErrorUpdate,
 };
 
-use super::shared::{number_field, record};
+// JSON walking helpers — inlined from `bridge::shared` (deleted)
+// since this is the only caller after the bridge collapse.
+
+#[must_use]
+fn record(value: &Value) -> Option<&Map<String, Value>> {
+    value.as_object()
+}
+
+#[must_use]
+fn number_field(record: &Map<String, Value>, keys: &[&str]) -> Option<f64> {
+    for key in keys {
+        if let Some(v) = record.get(*key).and_then(Value::as_f64)
+            && v.is_finite()
+        {
+            return Some(v);
+        }
+    }
+    None
+}
 
 #[must_use]
 pub fn parse_fast_mode_state(value: Option<&Value>) -> Option<FastModeState> {

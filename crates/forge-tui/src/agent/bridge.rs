@@ -20,7 +20,6 @@ pub mod agents;
 pub mod commands;
 pub mod history;
 pub mod session_lifecycle;
-pub mod shared;
 pub mod state;
 pub mod state_parsing;
 pub mod tooling;
