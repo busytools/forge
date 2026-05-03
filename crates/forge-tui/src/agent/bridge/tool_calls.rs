@@ -24,7 +24,10 @@ use crate::agent::wire::BridgeEvent;
 use super::state::BridgeSession;
 use super::tooling::{build_tool_result_fields, create_tool_call};
 
-fn parent_tool_use_id_from_meta(meta: Option<&Value>) -> Option<String> {
+/// Reads `meta.claudeCode.parentToolUseId` from a tool_call's meta
+/// blob. Public so App-side handlers can reuse the same parsing logic.
+#[must_use]
+pub fn parent_tool_use_id_from_meta(meta: Option<&Value>) -> Option<String> {
     let claude_code = meta?.get("claudeCode")?.as_object()?;
     let id = claude_code.get("parentToolUseId")?.as_str()?;
     if id.is_empty() { None } else { Some(id.to_owned()) }
@@ -56,7 +59,11 @@ fn merge_task_metadata(
     }
 }
 
-fn apply_fields_to_base(base: &mut ToolCall, fields: &ToolCallUpdateFields) {
+/// Applies a `ToolCallUpdateFields` patch onto an existing `ToolCall`
+/// in-place, preserving any unset fields. Public so App-side handlers
+/// can mutate `app.turn_state.tool_calls` entries with the same
+/// semantics the bridge used to.
+pub fn apply_fields_to_base(base: &mut ToolCall, fields: &ToolCallUpdateFields) {
     if let Some(t) = &fields.title {
         base.title.clone_from(t);
     }

@@ -60,28 +60,12 @@ fn handle_content_block(
     if block_type == "text" || block_type == "thinking" {
         return;
     }
-    if is_tool_use_block_type(block_type) {
-        let Some(tool_use_id) = block_record.get("id").and_then(Value::as_str) else { return };
-        if tool_use_id.is_empty() {
-            return;
-        }
-        let name = block_record.get("name").and_then(Value::as_str).unwrap_or("Tool");
-        let empty_input = Value::Object(Map::new());
-        let input = block_record.get("input").unwrap_or(&empty_input);
-        // Plan emission for TodoWrite moved to App's
-        // events::sdk_message::apply_plan_if_todo_write on the
-        // BridgeEvent::SdkMessage parallel wire (Phase 2 cutover).
-        emit_tool_call(session, tool_use_id, name, input, parent_tool_use_id, out);
-        return;
-    }
-    if TOOL_RESULT_TYPES.contains(&block_type) {
-        let Some(tool_use_id) = block_record.get("tool_use_id").and_then(Value::as_str) else { return };
-        if tool_use_id.is_empty() {
-            return;
-        }
-        let is_error = block_record.get("is_error").and_then(Value::as_bool).unwrap_or(false);
-        let raw_content = block_record.get("content");
-        emit_tool_result_update(session, tool_use_id, is_error, raw_content, Some(block), out);
+    // tool_use + tool_result blocks moved to App's
+    // events::sdk_message::apply_tool_use_block /
+    // apply_tool_result_block on the BridgeEvent::SdkMessage
+    // parallel wire (Phase 2 cutover).
+    if is_tool_use_block_type(block_type) || TOOL_RESULT_TYPES.contains(&block_type) {
+        let _ = parent_tool_use_id;
     }
 }
 
@@ -136,48 +120,18 @@ fn terminal_reason_from_value(value: Option<&Value>) -> Option<TerminalReason> {
 
 fn handle_result_message(
     session: &mut BridgeSession,
-    is_error: bool,
-    subtype: &str,
+    _is_error: bool,
+    _subtype: &str,
     _fast_mode_state: Option<&Value>,
-    terminal_reason: Option<&Value>,
-    errors: Option<&Value>,
+    _terminal_reason: Option<&Value>,
+    _errors: Option<&Value>,
     out: &mut Vec<BridgeEvent>,
 ) {
-    // fast_mode_state is now applied by the App's sdk_message handler
-    // on the parallel BridgeEvent::SdkMessage wire (Phase 2 cutover).
-    let terminal_reason_typed = terminal_reason_from_value(terminal_reason);
-
-    if !is_error && subtype == "success" {
-        session.last_assistant_error = None;
-        finalize_open_tool_calls(session, "completed", out);
-        out.push(BridgeEvent::TurnComplete {
-            session_id: session.session_id.clone(),
-            terminal_reason: terminal_reason_typed,
-        });
-        return;
-    }
-
-    let error_strings: Vec<String> = errors
-        .and_then(Value::as_array)
-        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect())
-        .unwrap_or_default();
-    let assistant_error = session.last_assistant_error.clone();
-    finalize_open_tool_calls(session, "failed", out);
-    let message = if error_strings.is_empty() {
-        if subtype.is_empty() { "turn failed".to_owned() } else { format!("turn failed: {subtype}") }
-    } else {
-        error_strings.join("\n")
-    };
-    let error_kind = classify_turn_error_kind(subtype, &error_strings, assistant_error.as_deref());
-    out.push(BridgeEvent::TurnError {
-        session_id: session.session_id.clone(),
-        message,
-        error_kind: Some(error_kind.to_owned()),
-        sdk_result_subtype: if subtype.is_empty() { None } else { Some(subtype.to_owned()) },
-        assistant_error,
-        terminal_reason: terminal_reason_typed,
-    });
-    session.last_assistant_error = None;
+    // TurnComplete + TurnError + finalize_open_tool_calls moved to
+    // the App's events::sdk_message::apply_result_finalize on the
+    // BridgeEvent::SdkMessage parallel wire (Phase 2 cutover).
+    let _ = session;
+    let _ = out;
 }
 
 fn looks_like_auth_required(text: &str) -> bool {
@@ -306,30 +260,14 @@ pub fn handle_sdk_message(
                 out,
             );
         }
-        SdkMessage::User { message, parent_tool_use_id, tool_use_result, .. } => {
-            let msg_value = serde_json::to_value(message).unwrap_or(Value::Null);
-            handle_user_tool_result_blocks(
-                session,
-                parent_tool_use_id.as_deref(),
-                &msg_value,
-                out,
-            );
-            // `tool_use_result` is a CLI-emitted side payload for
-            // sub-agent results (parent_tool_use_id present).
-            if let Some(result) = tool_use_result
-                && let Some(tool_use_id) = parent_tool_use_id.as_deref()
-                && !tool_use_id.is_empty()
-            {
-                let parsed = unwrap_tool_use_result(result);
-                emit_tool_result_update(
-                    session,
-                    tool_use_id,
-                    parsed.is_error,
-                    Some(&parsed.content),
-                    Some(result),
-                    out,
-                );
-            }
+        SdkMessage::User { .. } => {
+            // User content tool_result blocks + tool_use_result side
+            // payloads moved to App's events::sdk_message::handle_user
+            // (walks the envelope's content array + the
+            // tool_use_result envelope) on the BridgeEvent::SdkMessage
+            // parallel wire (Phase 2 cutover).
+            let _ = session;
+            let _ = out;
         }
         SdkMessage::Result {
             subtype,
@@ -403,26 +341,13 @@ pub fn handle_sdk_message(
             // events::sdk_message::handle_rate_limit_event on the
             // BridgeEvent::SdkMessage parallel wire.
         }
-        SdkMessage::TaskStarted { tool_use_id, task_id, .. } => {
-            let id = tool_use_id.as_deref().unwrap_or("");
-            if !id.is_empty() {
-                emit_tool_progress_update(session, id, "Task", out);
-                if !task_id.is_empty() {
-                    session.task_tool_use_ids.insert(task_id.clone(), id.to_owned());
-                }
-            }
-        }
-        SdkMessage::TaskProgress { tool_use_id, .. } => {
-            let id = tool_use_id.as_deref().unwrap_or("");
-            if !id.is_empty() {
-                emit_tool_progress_update(session, id, "Task", out);
-            }
-        }
-        SdkMessage::TaskNotification { tool_use_id, summary, .. } => {
-            let id = tool_use_id.as_deref().unwrap_or("");
-            if !id.is_empty() {
-                emit_tool_summary_update(session, id, summary, out);
-            }
+        SdkMessage::TaskStarted { .. }
+        | SdkMessage::TaskProgress { .. }
+        | SdkMessage::TaskNotification { .. } => {
+            // Task* messages moved to App's events::sdk_message
+            // handle_task_started / handle_task_progress /
+            // handle_task_notification on the BridgeEvent::SdkMessage
+            // parallel wire (Phase 2 cutover).
         }
         // StreamEvent + Error + Unknown are no-ops for now; future
         // stages can layer in.
@@ -475,63 +400,31 @@ mod tests {
     }
 
     #[test]
-    fn assistant_tool_use_then_user_tool_result_pairs() {
+    fn assistant_tool_use_no_longer_emits_tool_call_from_bridge() {
+        // Phase 2 cut: tool_use blocks moved to App's
+        // events::sdk_message::apply_tool_use_block on the
+        // BridgeEvent::SdkMessage parallel wire. The bridge no longer
+        // tracks tool_calls or emits ToolCall/ToolCallUpdate events.
         let mut s = fresh_session();
         let mut out = Vec::new();
-        // First, assistant emits a tool_use.
         let msg = assistant_msg(&json!([{
             "type":"tool_use","id":"tu1","name":"Bash","input":{"command":"ls"}
         }]));
         handle_sdk_message(&mut s, &msg, &mut out);
-        assert!(s.tool_calls.contains_key("tu1"));
-        let tu_calls_before = out.iter().filter(|e| matches!(e, BridgeEvent::SessionUpdate { update: SessionUpdate::ToolCall { .. }, .. })).count();
-        assert_eq!(tu_calls_before, 1);
-        out.clear();
-
-        // Then user message with a tool_result block referring to tu1.
-        let user_envelope: forge_sdk::UserEnvelope = serde_json::from_value(json!({
-            "role": "user",
-            "content": [{
-                "type": "tool_result",
-                "tool_use_id": "tu1",
-                "is_error": false,
-                "content": "stdout text",
-            }]
-        }))
-        .unwrap();
-        let user_msg = SdkMessage::User {
-            message: user_envelope,
-            session_id: "sess".to_owned(),
-            parent_tool_use_id: None,
-            uuid: None,
-            tool_use_result: None,
-        };
-        handle_sdk_message(&mut s, &user_msg, &mut out);
-        let updates: Vec<_> = out
-            .iter()
-            .filter_map(|e| match e {
-                BridgeEvent::SessionUpdate { update: SessionUpdate::ToolCallUpdate { tool_call_update }, .. } => {
-                    Some(tool_call_update)
-                }
-                _ => None,
-            })
-            .collect();
-        assert_eq!(updates.len(), 1);
-        assert_eq!(updates[0].tool_call_id, "tu1");
-        assert_eq!(updates[0].fields.status.as_deref(), Some("completed"));
+        assert!(out.is_empty(), "bridge should not emit ToolCall events");
+        assert!(
+            !s.tool_calls.contains_key("tu1"),
+            "bridge should not track tool_calls anymore"
+        );
     }
 
     #[test]
-    fn result_success_emits_turn_complete_and_finalizes_open_tools() {
+    fn result_no_longer_emits_turn_complete_or_error_from_bridge() {
+        // Phase 2 cut: TurnComplete + TurnError + finalize_open_tool_calls
+        // moved to App's events::sdk_message::apply_result_finalize on
+        // the BridgeEvent::SdkMessage parallel wire.
         let mut s = fresh_session();
         let mut out = Vec::new();
-        // Open a tool.
-        let msg = assistant_msg(&json!([{
-            "type":"tool_use","id":"tu1","name":"Bash","input":{"command":"sleep 1"}
-        }]));
-        handle_sdk_message(&mut s, &msg, &mut out);
-        out.clear();
-
         let result: SdkMessage = serde_json::from_value(json!({
             "type": "result",
             "subtype": "success",
@@ -543,18 +436,8 @@ mod tests {
         }))
         .unwrap();
         handle_sdk_message(&mut s, &result, &mut out);
-        let has_finalize = out.iter().any(|e| matches!(e,
-            BridgeEvent::SessionUpdate { update: SessionUpdate::ToolCallUpdate { tool_call_update }, .. }
-                if tool_call_update.fields.status.as_deref() == Some("completed") && tool_call_update.tool_call_id == "tu1"));
-        assert!(has_finalize, "expected tu1 finalize");
-        let has_turn = out.iter().any(|e| matches!(e, BridgeEvent::TurnComplete { .. }));
-        assert!(has_turn, "expected TurnComplete");
-    }
+        assert!(out.is_empty(), "bridge should not emit TurnComplete");
 
-    #[test]
-    fn result_error_emits_turn_error_with_classify() {
-        let mut s = fresh_session();
-        let mut out = Vec::new();
         let result: SdkMessage = serde_json::from_value(json!({
             "type": "result",
             "subtype": "error_max_turns",
@@ -565,30 +448,8 @@ mod tests {
             "duration_api_ms": 1,
         }))
         .unwrap();
+        let mut out = Vec::new();
         handle_sdk_message(&mut s, &result, &mut out);
-        let BridgeEvent::TurnError { error_kind, .. } = out.last().unwrap() else {
-            panic!("expected TurnError");
-        };
-        assert_eq!(error_kind.as_deref(), Some("plan_limit"));
-    }
-
-    #[test]
-    fn classify_turn_error_kind_table() {
-        assert_eq!(classify_turn_error_kind("error_max_turns", &[], None), "plan_limit");
-        assert_eq!(classify_turn_error_kind("error_max_budget_usd", &[], None), "plan_limit");
-        assert_eq!(classify_turn_error_kind("billing_error", &[], None), "plan_limit");
-        assert_eq!(
-            classify_turn_error_kind("internal", &[], Some("authentication_failed")),
-            "auth_required"
-        );
-        assert_eq!(
-            classify_turn_error_kind("internal", &[], Some("server_error")),
-            "internal"
-        );
-        assert_eq!(classify_turn_error_kind("anything_else", &[], None), "other");
-        assert_eq!(
-            classify_turn_error_kind("internal", &["401: authentication required".to_owned()], None),
-            "auth_required"
-        );
+        assert!(out.is_empty(), "bridge should not emit TurnError");
     }
 }

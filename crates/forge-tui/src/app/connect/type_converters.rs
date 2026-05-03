@@ -380,7 +380,7 @@ pub(super) fn convert_content_block(content: types::ContentBlock) -> Option<mode
     }
 }
 
-pub(super) fn convert_tool_call(tool_call: types::ToolCall) -> model::ToolCall {
+pub(crate) fn convert_tool_call(tool_call: types::ToolCall) -> model::ToolCall {
     let types::ToolCall {
         tool_call_id,
         title,
@@ -432,7 +432,7 @@ pub(super) fn convert_tool_call(tool_call: types::ToolCall) -> model::ToolCall {
     tc
 }
 
-pub(super) fn convert_tool_call_update(update: types::ToolCallUpdate) -> model::ToolCallUpdate {
+pub(crate) fn convert_tool_call_update(update: types::ToolCallUpdate) -> model::ToolCallUpdate {
     let update_meta = update.fields.meta.clone();
     let mut out = model::ToolCallUpdate::new(
         update.tool_call_id,

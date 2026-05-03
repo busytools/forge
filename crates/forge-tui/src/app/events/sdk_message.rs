@@ -107,8 +107,20 @@ fn apply_fast_mode_update(app: &mut App, raw: &Value) {
 // warnings until Phase 2.
 
 fn handle_assistant(app: &mut App, msg: Message, raw: &Value) {
-    let _ = msg;
     apply_fast_mode_update(app, raw);
+    // Mirror the bridge's `handle_assistant_message` outer-envelope
+    // error capture — `app.turn_state.last_assistant_error` is consulted
+    // by `apply_result_finalize` to classify TurnError variants.
+    if let Message::Assistant { error: Some(err), .. } = &msg {
+        let err_str = serde_json::to_value(err)
+            .ok()
+            .and_then(|v| v.as_str().map(str::to_owned));
+        if let Some(s) = err_str
+            && !s.is_empty()
+        {
+            app.turn_state.last_assistant_error = Some(s);
+        }
+    }
     walk_assistant_content(app, raw);
 }
 
@@ -159,14 +171,35 @@ fn walk_assistant_content(app: &mut App, raw: &Value) {
                 app.status = crate::app::AppStatus::Thinking;
             }
             t if t == "tool_use" || t == "server_tool_use" => {
-                // Plan is the only tool_use side-effect cut so far;
-                // the rest of the tool_use lifecycle (ToolCall +
-                // ToolCallUpdate emission) still flows through the
-                // bridge until the tool_call cut lands.
-                let name = record.get("name").and_then(Value::as_str).unwrap_or("");
+                let Some(tool_use_id) = record.get("id").and_then(Value::as_str) else {
+                    continue;
+                };
+                if tool_use_id.is_empty() {
+                    continue;
+                }
+                let name = record
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or("Tool");
                 let empty_input = Value::Object(serde_json::Map::new());
                 let input = record.get("input").unwrap_or(&empty_input);
+                let parent_id = parent_tool_use_id_from_envelope(raw);
                 apply_plan_if_todo_write(app, name, input);
+                apply_tool_use_block(app, tool_use_id, name, input, parent_id.as_deref());
+            }
+            t if is_bridge_tool_result_block_type(t) => {
+                let Some(tool_use_id) = record.get("tool_use_id").and_then(Value::as_str) else {
+                    continue;
+                };
+                if tool_use_id.is_empty() {
+                    continue;
+                }
+                let is_error = record
+                    .get("is_error")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                let raw_content = record.get("content");
+                apply_tool_result_block(app, tool_use_id, is_error, raw_content, Some(block));
             }
             _ => {}
         }
@@ -217,9 +250,178 @@ fn apply_plan_if_todo_write(app: &mut App, name: &str, input: &Value) {
 }
 
 fn handle_user(app: &mut App, msg: Message, raw: &Value) {
-    let _ = app;
-    let _ = msg;
-    let _ = raw;
+    walk_user_tool_results(app, raw);
+    // Sub-agent tool_use_result envelopes carry parent_tool_use_id at
+    // the message level; mirror what the bridge's User branch does in
+    // handle_sdk_message.
+    if let Message::User { tool_use_result: Some(result), parent_tool_use_id, .. } = &msg
+        && let Some(tool_use_id) = parent_tool_use_id.as_deref()
+        && !tool_use_id.is_empty()
+    {
+        let parsed = crate::agent::bridge::tooling::unwrap_tool_use_result(result);
+        apply_tool_result_block(
+            app,
+            tool_use_id,
+            parsed.is_error,
+            Some(&parsed.content),
+            Some(result),
+        );
+    }
+}
+
+/// Walk a `Message::User` envelope's content array and apply
+/// tool_result blocks via `apply_tool_result_block`. Mirrors the
+/// bridge's `handle_user_tool_result_blocks`.
+fn walk_user_tool_results(app: &mut App, raw: &Value) {
+    let Some(content) = raw
+        .get("message")
+        .and_then(|m| m.get("content"))
+        .and_then(Value::as_array)
+    else {
+        return;
+    };
+    for block in content {
+        let Some(record) = block.as_object() else { continue };
+        let block_type = record.get("type").and_then(Value::as_str).unwrap_or("");
+        if !is_bridge_tool_result_block_type(block_type) {
+            continue;
+        }
+        let Some(tool_use_id) = record.get("tool_use_id").and_then(Value::as_str) else {
+            continue;
+        };
+        if tool_use_id.is_empty() {
+            continue;
+        }
+        let is_error = record.get("is_error").and_then(Value::as_bool).unwrap_or(false);
+        let raw_content = record.get("content");
+        apply_tool_result_block(app, tool_use_id, is_error, raw_content, Some(block));
+    }
+}
+
+/// Wrapper around `bridge::tooling::is_tool_result_block_type` —
+/// re-exported here so the App-side walker doesn't have to import
+/// from the bridge module directly.
+fn is_bridge_tool_result_block_type(block_type: &str) -> bool {
+    crate::agent::bridge::tooling::is_tool_result_block_type(block_type)
+}
+
+/// Read `parent_tool_use_id` from the outer envelope (Assistant or
+/// User Message). Mirrors how the bridge passes
+/// `parent_tool_use_id.as_deref()` into `handle_assistant_message`
+/// at the top level.
+fn parent_tool_use_id_from_envelope(raw: &Value) -> Option<String> {
+    raw.get("parent_tool_use_id")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
+}
+
+/// Mirror of `bridge::tool_calls::emit_tool_call` against App state.
+/// Inserts/updates `app.turn_state.tool_calls` and dispatches the
+/// resulting initial `ToolCall` or `ToolCallUpdate` via the existing
+/// App handlers.
+fn apply_tool_use_block(
+    app: &mut App,
+    tool_use_id: &str,
+    name: &str,
+    input: &Value,
+    parent_tool_use_id: Option<&str>,
+) {
+    use crate::agent::bridge::tool_calls::parent_tool_use_id_from_meta;
+    use crate::agent::bridge::tooling::create_tool_call;
+    use crate::agent::types::ToolCallUpdateFields;
+    use crate::app::connect::type_converters::convert_tool_call;
+
+    let existing = app.turn_state.tool_calls.get(tool_use_id).cloned();
+    let resolved_parent = parent_tool_use_id
+        .map(str::to_owned)
+        .or_else(|| parent_tool_use_id_from_meta(existing.as_ref().and_then(|e| e.meta.as_ref())));
+    let mut tool_call =
+        create_tool_call(tool_use_id, name, input, resolved_parent.as_deref());
+    "in_progress".clone_into(&mut tool_call.status);
+
+    if existing.is_none() {
+        app.turn_state
+            .tool_calls
+            .insert(tool_use_id.to_owned(), tool_call.clone());
+        let model_tc = convert_tool_call(tool_call);
+        super::tool_calls::handle_tool_call(app, model_tc);
+        return;
+    }
+
+    let mut fields = ToolCallUpdateFields {
+        title: Some(tool_call.title.clone()),
+        kind: Some(tool_call.kind.clone()),
+        status: Some("in_progress".to_owned()),
+        raw_input: tool_call.raw_input.clone(),
+        locations: Some(tool_call.locations.clone()),
+        meta: tool_call.meta.clone(),
+        ..Default::default()
+    };
+    if !tool_call.content.is_empty() {
+        fields.content = Some(tool_call.content.clone());
+    }
+    apply_tool_call_update(app, tool_use_id, fields);
+}
+
+/// Mirror of `bridge::tool_calls::emit_tool_result_update` against App
+/// state. Looks up the tool_call in `app.turn_state.tool_calls`,
+/// builds result fields via the bridge's stateless field-builder, and
+/// dispatches a `ToolCallUpdate` via the existing App handler.
+fn apply_tool_result_block(
+    app: &mut App,
+    tool_use_id: &str,
+    is_error: bool,
+    raw_content: Option<&Value>,
+    raw_block: Option<&Value>,
+) {
+    use crate::agent::bridge::tooling::build_tool_result_fields;
+
+    let base = app.turn_state.tool_calls.get(tool_use_id).cloned();
+    let fields = build_tool_result_fields(is_error, raw_content, base.as_ref(), raw_block);
+    apply_tool_call_update(app, tool_use_id, fields);
+}
+
+/// Mirror of `bridge::tool_calls::emit_tool_call_update` against App
+/// state. Mutates `app.turn_state.tool_calls` then dispatches a
+/// `ToolCallUpdate` via the existing App handler.
+fn apply_tool_call_update(
+    app: &mut App,
+    tool_use_id: &str,
+    fields: crate::agent::types::ToolCallUpdateFields,
+) {
+    use crate::agent::bridge::tool_calls::apply_fields_to_base;
+    use crate::agent::types::ToolCallUpdate;
+    use crate::app::connect::type_converters::convert_tool_call_update;
+
+    if let Some(base) = app.turn_state.tool_calls.get_mut(tool_use_id) {
+        apply_fields_to_base(base, &fields);
+    }
+    let wire_update = ToolCallUpdate { tool_call_id: tool_use_id.to_owned(), fields };
+    let model_update = convert_tool_call_update(wire_update);
+    super::tool_updates::handle_tool_call_update_session(app, &model_update);
+}
+
+/// Mirror of `bridge::tool_calls::finalize_open_tool_calls` against
+/// App state. Walks `app.turn_state.tool_calls` and emits a terminal
+/// status update for every still-pending entry.
+fn finalize_open_tool_calls(app: &mut App, status: &str) {
+    use crate::agent::types::ToolCallUpdateFields;
+
+    let pending: Vec<String> = app
+        .turn_state
+        .tool_calls
+        .iter()
+        .filter(|(_, t)| matches!(t.status.as_str(), "pending" | "in_progress"))
+        .map(|(id, _)| id.clone())
+        .collect();
+    for id in pending {
+        apply_tool_call_update(
+            app,
+            &id,
+            ToolCallUpdateFields { status: Some(status.to_owned()), ..Default::default() },
+        );
+    }
 }
 
 fn handle_system(app: &mut App, msg: Message, raw: &Value) {
@@ -492,21 +694,81 @@ fn convert_runtime_session_state(
 }
 
 fn handle_task_started(app: &mut App, msg: Message, raw: &Value) {
-    let _ = app;
-    let _ = msg;
     let _ = raw;
+    let Message::TaskStarted { tool_use_id, task_id, .. } = msg else { return };
+    let id = tool_use_id.as_deref().unwrap_or("");
+    if id.is_empty() {
+        return;
+    }
+    apply_tool_progress_update(app, id, "Task");
+    if !task_id.is_empty() {
+        app.turn_state
+            .task_tool_use_ids
+            .insert(task_id.clone(), id.to_owned());
+    }
 }
 
 fn handle_task_progress(app: &mut App, msg: Message, raw: &Value) {
-    let _ = app;
-    let _ = msg;
     let _ = raw;
+    let Message::TaskProgress { tool_use_id, .. } = msg else { return };
+    let id = tool_use_id.as_deref().unwrap_or("");
+    if !id.is_empty() {
+        apply_tool_progress_update(app, id, "Task");
+    }
 }
 
 fn handle_task_notification(app: &mut App, msg: Message, raw: &Value) {
-    let _ = app;
-    let _ = msg;
     let _ = raw;
+    let Message::TaskNotification { tool_use_id, summary, .. } = msg else { return };
+    let id = tool_use_id.as_deref().unwrap_or("");
+    if !id.is_empty() {
+        apply_tool_summary_update(app, id, &summary);
+    }
+}
+
+/// Mirror of `bridge::tool_calls::emit_tool_progress_update` against
+/// App state.
+fn apply_tool_progress_update(app: &mut App, tool_use_id: &str, name: &str) {
+    use crate::agent::types::ToolCallUpdateFields;
+
+    let existing = app.turn_state.tool_calls.get(tool_use_id).cloned();
+    let Some(existing) = existing else {
+        apply_tool_use_block(app, tool_use_id, name, &Value::Object(serde_json::Map::new()), None);
+        return;
+    };
+    if matches!(
+        existing.status.as_str(),
+        "in_progress" | "completed" | "failed" | "killed"
+    ) {
+        return;
+    }
+    apply_tool_call_update(
+        app,
+        tool_use_id,
+        ToolCallUpdateFields { status: Some("in_progress".to_owned()), ..Default::default() },
+    );
+}
+
+/// Mirror of `bridge::tool_calls::emit_tool_summary_update` against
+/// App state.
+fn apply_tool_summary_update(app: &mut App, tool_use_id: &str, summary: &str) {
+    use crate::agent::types::{ContentBlock, ToolCallContent, ToolCallUpdateFields};
+
+    let Some(base) = app.turn_state.tool_calls.get(tool_use_id).cloned() else { return };
+    let status = if matches!(base.status.as_str(), "failed" | "killed") {
+        base.status
+    } else {
+        "completed".to_owned()
+    };
+    let fields = ToolCallUpdateFields {
+        status: Some(status),
+        raw_output: Some(summary.to_owned()),
+        content: Some(vec![ToolCallContent::Content {
+            content: ContentBlock::Text { text: summary.to_owned() },
+        }]),
+        ..Default::default()
+    };
+    apply_tool_call_update(app, tool_use_id, fields);
 }
 
 fn handle_rate_limit_event(app: &mut App, msg: Message, _raw: &Value) {
@@ -543,8 +805,96 @@ fn handle_rate_limit_event(app: &mut App, msg: Message, _raw: &Value) {
 }
 
 fn handle_result(app: &mut App, msg: Message, raw: &Value) {
-    let _ = msg;
     apply_fast_mode_update(app, raw);
+    apply_result_finalize(app, &msg, raw);
+}
+
+/// Mirror of the bridge's `handle_result_message`. On a successful
+/// Result, finalises any still-open tool_calls (terminal "completed")
+/// and triggers the App's TurnComplete handler. On a failed Result,
+/// finalises with "failed", classifies the error_kind, and triggers
+/// the App's TurnError handler.
+fn apply_result_finalize(app: &mut App, msg: &Message, raw: &Value) {
+    let Message::Result { is_error, subtype, .. } = msg else { return };
+    let raw_record = raw.as_object();
+    let terminal_reason = raw_record
+        .and_then(|r| r.get("terminal_reason"))
+        .and_then(|v| serde_json::from_value::<crate::agent::types::TerminalReason>(v.clone()).ok());
+    let errors_array: Vec<String> = raw_record
+        .and_then(|r| r.get("errors"))
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    if !is_error && subtype == "success" {
+        app.turn_state.last_assistant_error = None;
+        finalize_open_tool_calls(app, "completed");
+        super::turn::handle_turn_complete_event(app, terminal_reason);
+        return;
+    }
+
+    let assistant_error = app.turn_state.last_assistant_error.clone();
+    finalize_open_tool_calls(app, "failed");
+    let message = if errors_array.is_empty() {
+        if subtype.is_empty() {
+            "turn failed".to_owned()
+        } else {
+            format!("turn failed: {subtype}")
+        }
+    } else {
+        errors_array.join("\n")
+    };
+    let error_kind = classify_turn_error_kind(subtype, &errors_array, assistant_error.as_deref());
+    let class = crate::agent::error_handling::parse_turn_error_class(error_kind);
+    super::turn::handle_turn_error_event(app, &message, class, terminal_reason);
+    app.turn_state.last_assistant_error = None;
+}
+
+/// Inline copy of bridge::message_handlers::classify_turn_error_kind
+/// so the App-side path doesn't depend on a bridge-private function.
+fn classify_turn_error_kind(
+    subtype: &str,
+    errors: &[String],
+    assistant_error: Option<&str>,
+) -> &'static str {
+    let plan_limit_signals = [
+        "error_max_turns",
+        "error_max_budget_usd",
+        "billing_error",
+        "rate_limit",
+    ];
+    if plan_limit_signals.iter().any(|s| subtype.contains(s)) {
+        return "plan_limit";
+    }
+    if errors
+        .iter()
+        .any(|e| plan_limit_signals.iter().any(|s| e.contains(s)))
+    {
+        return "plan_limit";
+    }
+    if assistant_error == Some("authentication_failed") {
+        return "auth_required";
+    }
+    if errors.iter().any(|e| looks_like_auth_required(e)) {
+        return "auth_required";
+    }
+    if assistant_error == Some("server_error") {
+        return "internal";
+    }
+    "other"
+}
+
+fn looks_like_auth_required(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    lower.contains("authentication_failed")
+        || lower.contains("not authenticated")
+        || lower.contains("authentication required")
+        || lower.contains("unauthenticated")
+        || (lower.contains("401") && lower.contains("auth"))
 }
 
 fn handle_stream_event(app: &mut App, msg: Message, raw: &Value) {
