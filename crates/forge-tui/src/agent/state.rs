@@ -1,28 +1,23 @@
-//! Per-session bridge translation state. Mirrors upstream's
-//! `SessionState` struct in `agent-sdk/src/bridge/session_lifecycle.ts`.
+//! Per-session bookkeeping state owned by the worker (mirrors
+//! upstream's `SessionState` shape from
+//! `agent-sdk/src/bridge/session_lifecycle.ts`, but slimmed down to
+//! just the fields the worker still consults post bridge collapse:
+//! identity (session_id, cwd, connected), model resolution
+//! (model_id, requested/resolved + available_models cache,
+//! current_model), and mode state (mode + supported list +
+//! supports_bypass + runtime-unavailable list).
 //!
 //! Today the worker is single-session; the wrapping `BridgeSessionStore`
 //! is multi-session-ready so a future tab strip doesn't need a state
 //! rewrite.
 
 use std::collections::HashMap;
-use std::time::Instant;
 
-use crate::agent::types::{
-    AvailableAgent, AvailableCommand, AvailableModel, CurrentModel, FastModeState, ModeState,
-    SessionUpdate, ToolCall,
-};
+use crate::agent::types::{AvailableModel, CurrentModel};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ConnectEventKind {
-    Connected,
-    SessionReplaced,
-}
-
-/// Mirrors upstream's permission-mode enum used internally by the
-/// bridge — distinct from the wire-string `current_mode_id` shipped on
-/// `ModeState`. Used to track which modes are supported / runtime-
-/// unavailable per session.
+/// Mirrors upstream's permission-mode enum — distinct from the
+/// wire-string `current_mode_id` shipped on `ModeState`. Used to track
+/// which modes are supported / runtime-unavailable per session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PermissionMode {
     Default,
@@ -78,7 +73,6 @@ pub struct BridgeSession {
     pub session_id: String,
     pub cwd: String,
     pub connected: bool,
-    pub connect_event: ConnectEventKind,
 
     // Model resolution cache (mirrors `session.model`,
     // `session.requestedModelId`, `session.resolvedRuntimeModelId`,
@@ -94,33 +88,6 @@ pub struct BridgeSession {
     pub supported_mode_ids: Vec<PermissionMode>,
     pub runtime_unavailable_mode_ids: Vec<PermissionMode>,
     pub supports_bypass_permissions_mode: bool,
-    pub mode_state: Option<ModeState>,
-
-    // Last-seen fast mode (for change detection on emit)
-    pub fast_mode_state: FastModeState,
-
-    // Slash commands + agents catalogue (for change-on-emit)
-    pub available_commands: Vec<AvailableCommand>,
-    pub available_agents: Vec<AvailableAgent>,
-    pub last_agents_signature: Option<String>,
-
-    // Tool call store + cross-message wiring
-    pub tool_calls: HashMap<String, ToolCall>,
-    pub task_tool_use_ids: HashMap<String, String>, // task_id -> tool_use_id
-
-    // MCP cooldowns (per server name)
-    pub mcp_status_revalidated_at: HashMap<String, Instant>,
-
-    // Auth — emit AuthRequired at most once per session
-    pub auth_hint_sent: bool,
-
-    // Last assistant error subtype — survives across messages so a
-    // subsequent Result can classify correctly.
-    pub last_assistant_error: Option<String>,
-
-    // Resume history collected during connect handshake to attach to
-    // the first Connected event (None for fresh sessions).
-    pub resume_updates: Option<Vec<SessionUpdate>>,
 }
 
 impl BridgeSession {
@@ -130,7 +97,6 @@ impl BridgeSession {
             session_id,
             cwd,
             connected: false,
-            connect_event: ConnectEventKind::Connected,
             model_id: String::new(),
             requested_model_id: None,
             resolved_runtime_model_id: None,
@@ -140,17 +106,6 @@ impl BridgeSession {
             supported_mode_ids: Vec::new(),
             runtime_unavailable_mode_ids: Vec::new(),
             supports_bypass_permissions_mode: false,
-            mode_state: None,
-            fast_mode_state: FastModeState::Off,
-            available_commands: Vec::new(),
-            available_agents: Vec::new(),
-            last_agents_signature: None,
-            tool_calls: HashMap::new(),
-            task_tool_use_ids: HashMap::new(),
-            mcp_status_revalidated_at: HashMap::new(),
-            auth_hint_sent: false,
-            last_assistant_error: None,
-            resume_updates: None,
         }
     }
 }
