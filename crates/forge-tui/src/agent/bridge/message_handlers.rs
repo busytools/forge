@@ -27,7 +27,7 @@ use serde_json::{Map, Value};
 use crate::agent::types::{ContentBlock, SessionUpdate, TerminalReason};
 use crate::agent::wire::BridgeEvent;
 
-use super::commands::{build_mode_state, refresh_supported_modes_for_session};
+use super::commands::refresh_supported_modes_for_session;
 use super::session_lifecycle::refresh_current_model;
 use super::state::{BridgeSession, PermissionMode};
 use super::tool_calls::{
@@ -264,18 +264,10 @@ fn handle_system_init(
     refresh_supported_modes_for_session(session);
     // fast_mode_state moved to the App's sdk_message handler.
 
-    // ModeStateUpdate after-init follow-up: still bridge-emitted (until
-    // the App-side mode resolution lands).
-    if session.connected
-        && let Some(mode) = session.mode
-    {
-        let mode_state = build_mode_state(session, mode);
-        push_session_update(
-            out,
-            &session.session_id,
-            SessionUpdate::ModeStateUpdate { mode: mode_state },
-        );
-    }
+    // ModeStateUpdate moved to App's
+    // events::sdk_message::apply_mode_state_from_init on the
+    // BridgeEvent::SdkMessage parallel wire (Phase 2 cutover).
+    let _ = out;
 
     // AvailableCommandsUpdate + AvailableAgentsUpdate moved to App's
     // events::sdk_message::handle_system init arm.

@@ -41,30 +41,68 @@ fn unique_mode_ids(modes: Vec<PermissionMode>) -> Vec<PermissionMode> {
 }
 
 fn computed_supported_mode_ids(session: &BridgeSession) -> Vec<PermissionMode> {
+    computed_supported_mode_ids_from_inputs(
+        session.current_model.as_ref().is_some_and(|m| m.supports_auto_mode == Some(true)),
+        session.supports_bypass_permissions_mode,
+        session.mode,
+    )
+}
+
+/// Primitive-arg form of `computed_supported_mode_ids` so App-side
+/// callers can compute the supported list without owning a
+/// `BridgeSession`. Mirrors the upstream rules: BASE + Auto (if model
+/// supports it) + BypassPermissions (if session allows) + the current
+/// mode itself (so the active mode never disappears mid-session).
+#[must_use]
+pub fn computed_supported_mode_ids_from_inputs(
+    current_model_supports_auto_mode: bool,
+    supports_bypass_permissions_mode: bool,
+    current_mode: Option<PermissionMode>,
+) -> Vec<PermissionMode> {
     let mut supported: Vec<PermissionMode> = BASE_SUPPORTED_MODE_IDS.to_vec();
-    if current_model_supports_auto_mode(session) {
+    if current_model_supports_auto_mode {
         supported.push(PermissionMode::Auto);
     }
-    if session.supports_bypass_permissions_mode {
+    if supports_bypass_permissions_mode {
         supported.push(PermissionMode::BypassPermissions);
     }
-    if let Some(mode) = session.mode {
+    if let Some(mode) = current_mode {
         supported.push(mode);
     }
     unique_mode_ids(supported)
+}
+
+/// Primitive-arg form of `refresh_supported_modes_for_session`.
+/// Returns the filtered supported list (does not mutate any session
+/// struct). Caller stores the result wherever it lives.
+#[must_use]
+pub fn supported_mode_ids_filtered(
+    current_model_supports_auto_mode: bool,
+    supports_bypass_permissions_mode: bool,
+    current_mode: Option<PermissionMode>,
+    runtime_unavailable_mode_ids: &[PermissionMode],
+) -> Vec<PermissionMode> {
+    let computed = computed_supported_mode_ids_from_inputs(
+        current_model_supports_auto_mode,
+        supports_bypass_permissions_mode,
+        current_mode,
+    );
+    computed
+        .into_iter()
+        .filter(|m| current_mode == Some(*m) || !runtime_unavailable_mode_ids.contains(m))
+        .collect()
 }
 
 /// Mirrors `refreshSupportedModesForSession(session)`. Recomputes
 /// `session.supported_mode_ids`, filtered by runtime-unavailable list
 /// (but keeping the current mode if it's still set).
 pub fn refresh_supported_modes_for_session(session: &mut BridgeSession) {
-    let computed = computed_supported_mode_ids(session);
-    let current = session.mode;
-    let unavailable = session.runtime_unavailable_mode_ids.clone();
-    session.supported_mode_ids = computed
-        .into_iter()
-        .filter(|m| current == Some(*m) || !unavailable.contains(m))
-        .collect();
+    session.supported_mode_ids = supported_mode_ids_filtered(
+        session.current_model.as_ref().is_some_and(|m| m.supports_auto_mode == Some(true)),
+        session.supports_bypass_permissions_mode,
+        session.mode,
+        &session.runtime_unavailable_mode_ids,
+    );
 }
 
 fn mode_info_for_id(mode: PermissionMode) -> ModeInfo {
@@ -76,17 +114,37 @@ fn mode_info_for_id(mode: PermissionMode) -> ModeInfo {
 }
 
 fn available_modes_for_session(session: &BridgeSession) -> Vec<ModeInfo> {
-    session.supported_mode_ids.iter().copied().map(mode_info_for_id).collect()
+    available_modes_from_supported(&session.supported_mode_ids)
+}
+
+/// Primitive-arg form of `available_modes_for_session`. Maps a
+/// supported-mode list into `ModeInfo` records ready for
+/// `ModeState.available_modes`.
+#[must_use]
+pub fn available_modes_from_supported(
+    supported_mode_ids: &[PermissionMode],
+) -> Vec<ModeInfo> {
+    supported_mode_ids.iter().copied().map(mode_info_for_id).collect()
 }
 
 /// Mirrors `buildModeState(session, mode)`. Pure builder used both at
 /// connect time and after `set_permission_mode`.
 #[must_use]
 pub fn build_mode_state(session: &BridgeSession, mode: PermissionMode) -> ModeState {
+    build_mode_state_from_supported(mode, &session.supported_mode_ids)
+}
+
+/// Primitive-arg form of `build_mode_state`. Composes a `ModeState`
+/// from the active mode + the resolved supported-mode list.
+#[must_use]
+pub fn build_mode_state_from_supported(
+    mode: PermissionMode,
+    supported_mode_ids: &[PermissionMode],
+) -> ModeState {
     ModeState {
         current_mode_id: mode.as_wire().to_owned(),
         current_mode_name: mode.display_name().to_owned(),
-        available_modes: available_modes_for_session(session),
+        available_modes: available_modes_from_supported(supported_mode_ids),
     }
 }
 

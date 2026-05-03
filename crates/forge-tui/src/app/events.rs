@@ -186,15 +186,7 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
             apply_available_agents_update(app, agents);
         }
         model::SessionUpdate::ModeStateUpdate(mode) => {
-            let mode_changed = app.mode.as_ref().map(|current| current.current_mode_id.as_str())
-                != Some(mode.current_mode_id.as_str());
-            app.mode = Some(mode);
-            if mode_changed {
-                app.invalidate_layout(InvalidationLevel::Global);
-            }
-            if matches!(app.pending_command_ack, Some(PendingCommandAck::CurrentMode)) {
-                session::clear_pending_command(app);
-            }
+            apply_mode_state_update(app, mode);
         }
         model::SessionUpdate::CurrentModeUpdate(update) => {
             apply_current_mode_update(app, update);
@@ -279,6 +271,18 @@ pub(super) fn apply_available_agents_update(app: &mut App, agents: model::Availa
     app.available_agents = agents.available_agents;
     if app.subagent.is_some() {
         super::subagent::update_query(app);
+    }
+}
+
+pub(super) fn apply_mode_state_update(app: &mut App, mode: crate::app::ModeState) {
+    let mode_changed = app.mode.as_ref().map(|current| current.current_mode_id.as_str())
+        != Some(mode.current_mode_id.as_str());
+    app.mode = Some(mode);
+    if mode_changed {
+        app.invalidate_layout(InvalidationLevel::Global);
+    }
+    if matches!(app.pending_command_ack, Some(PendingCommandAck::CurrentMode)) {
+        session::clear_pending_command(app);
     }
 }
 

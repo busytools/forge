@@ -624,7 +624,7 @@ pub(super) fn convert_plan_entry(entry: types::PlanEntry) -> model::PlanEntry {
     model::PlanEntry::new(entry.content, model::PlanEntryPriority::Medium, status)
 }
 
-pub(super) fn convert_mode_state(mode: types::ModeState) -> ModeState {
+pub(crate) fn convert_mode_state(mode: types::ModeState) -> ModeState {
     let available_modes: Vec<ModeInfo> =
         mode.available_modes.into_iter().map(|m| ModeInfo { id: m.id, name: m.name }).collect();
     ModeState {

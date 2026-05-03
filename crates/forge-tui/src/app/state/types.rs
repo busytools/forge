@@ -187,6 +187,10 @@ pub struct SessionTurnState {
     /// Resolved model id after runtime fallback from the requested id.
     pub resolved_runtime_model_id: Option<String>,
 
+    /// Active permission mode (typed enum, not the wire string).
+    /// Populated from System(init).permissionMode and the SetMode
+    /// command path; mirrors what `BridgeSession.mode` used to hold.
+    pub mode: Option<crate::agent::bridge::state::PermissionMode>,
     /// Permission modes the runtime currently supports.
     pub supported_mode_ids: Vec<crate::agent::bridge::state::PermissionMode>,
     /// Permission modes recognised but currently unavailable.
