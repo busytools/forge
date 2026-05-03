@@ -101,7 +101,7 @@ fn push_resume_tool_result(
 /// renderer replays on resume.
 ///
 /// `messages` is the flattened JSONL: each entry has `type` (assistant
-/// / user), `parent_tool_use_id` (Option<String>), and an inner
+/// / user), `parent_tool_use_id` (`Option<String>`), and an inner
 /// `message` Value with the Anthropic-API-shaped envelope.
 #[must_use]
 pub fn map_session_messages_to_updates(messages: &[Value]) -> Vec<SessionUpdate> {

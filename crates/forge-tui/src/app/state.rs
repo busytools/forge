@@ -668,7 +668,7 @@ impl App {
 
     /// Enforce history retention and record metrics.
     ///
-    /// Wrapper around [`enforce_history_retention`] that feeds the returned stats
+    /// Wrapper around `enforce_history_retention` that feeds the returned stats
     /// into `CacheMetrics` and emits rate-limited structured tracing. Call this
     /// instead of `enforce_history_retention()` at all non-test call sites.
     pub fn enforce_history_retention_tracked(&mut self) {
