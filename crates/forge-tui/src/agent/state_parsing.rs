@@ -40,7 +40,7 @@ pub fn parse_fast_mode_state(value: Option<&Value>) -> Option<FastModeState> {
 }
 
 #[must_use]
-pub fn parse_rate_limit_status(value: Option<&Value>) -> Option<RateLimitStatus> {
+fn parse_rate_limit_status(value: Option<&Value>) -> Option<RateLimitStatus> {
     match value?.as_str()? {
         "allowed" => Some(RateLimitStatus::Allowed),
         "allowed_warning" => Some(RateLimitStatus::AllowedWarning),
@@ -60,7 +60,7 @@ pub fn parse_runtime_session_state(value: Option<&Value>) -> Option<RuntimeSessi
 }
 
 #[must_use]
-pub fn parse_api_retry_error(value: Option<&Value>) -> ApiRetryError {
+fn parse_api_retry_error(value: Option<&Value>) -> ApiRetryError {
     match value.and_then(Value::as_str) {
         Some("authentication_failed") => ApiRetryError::AuthenticationFailed,
         Some("billing_error") => ApiRetryError::BillingError,
@@ -125,7 +125,7 @@ pub fn build_api_retry_update(message: &Map<String, Value>) -> Option<SessionUpd
 
 /// Mirrors `normalizeSettingsParseError(value)`.
 #[must_use]
-pub fn normalize_settings_parse_error(value: &Value) -> Option<SettingsParseErrorUpdate> {
+fn normalize_settings_parse_error(value: &Value) -> Option<SettingsParseErrorUpdate> {
     let r = record(value)?;
     let message = r.get("message").and_then(Value::as_str)?.trim();
     if message.is_empty() {
