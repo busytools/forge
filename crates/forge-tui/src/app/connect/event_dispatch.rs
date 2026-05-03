@@ -63,6 +63,9 @@ pub(super) fn handle_bridge_event(
             emit_connection_failed(event_tx, message, AppError::ConnectionFailed);
         }
         crate::agent::client::AgentEvent::SessionUpdate { update, .. } => {
+            // Legacy: bridge module helpers may still build these in
+            // tests; production has no producer. Dispatch via the
+            // existing translator so any straggler tests still work.
             if let Some(update) = map_session_update(update) {
                 let _ = event_tx.send(ClientEvent::SessionUpdate(update));
             }
@@ -89,22 +92,6 @@ pub(super) fn handle_bridge_event(
         }
         crate::agent::client::AgentEvent::McpOperationError { error, .. } => {
             let _ = event_tx.send(ClientEvent::McpOperationError { error });
-        }
-        crate::agent::client::AgentEvent::TurnComplete { terminal_reason, .. } => {
-            let _ = event_tx.send(ClientEvent::TurnComplete { terminal_reason });
-        }
-        crate::agent::client::AgentEvent::TurnError {
-            message, error_kind, terminal_reason, ..
-        } => {
-            if let Some(class) = error_kind.as_deref().and_then(parse_turn_error_class) {
-                let _ = event_tx.send(ClientEvent::TurnErrorClassified {
-                    message,
-                    class,
-                    terminal_reason,
-                });
-            } else {
-                let _ = event_tx.send(ClientEvent::TurnError { message, terminal_reason });
-            }
         }
         crate::agent::client::AgentEvent::SlashError { message, .. } => {
             if resume_requested
@@ -147,7 +134,6 @@ pub(super) fn handle_bridge_event(
         crate::agent::client::AgentEvent::SessionsListed { sessions } => {
             let _ = event_tx.send(ClientEvent::SessionsListed { sessions });
         }
-        crate::agent::client::AgentEvent::Initialized { .. } => {}
         crate::agent::client::AgentEvent::StatusSnapshot { session_id, account } => {
             let _ = event_tx.send(ClientEvent::StatusSnapshotReceived { session_id, account });
         }

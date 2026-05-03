@@ -224,13 +224,13 @@ async fn forge_sdk_e2e_cancel_mid_turn() {
             break;
         };
         match event {
-            AgentEvent::TurnComplete { .. } => {
-                terminal = Some("complete");
-                break;
-            }
-            AgentEvent::TurnError { message, .. } => {
-                eprintln!("e2e cancel: TurnError {message}");
-                terminal = Some("error");
+            AgentEvent::SdkMessage { msg: forge_sdk::Message::Result { is_error, subtype, .. }, .. } => {
+                if !is_error && subtype == "success" {
+                    terminal = Some("complete");
+                } else {
+                    eprintln!("e2e cancel: Result is_error={is_error} subtype={subtype}");
+                    terminal = Some("error");
+                }
                 break;
             }
             _ => {}
@@ -453,18 +453,30 @@ async fn await_turn(
             panic!("event channel closed before TurnComplete");
         };
         match event {
-            AgentEvent::SessionUpdate { update, .. } => {
-                match update {
-                    SessionUpdate::AgentMessageChunk { .. } => outcome.saw_text = true,
-                    SessionUpdate::ToolCall { .. } => outcome.saw_tool_call = true,
-                    _ => {}
+            AgentEvent::SdkMessage { msg, .. } => match msg {
+                forge_sdk::Message::Assistant { message, .. } => {
+                    let val = serde_json::to_value(&message).unwrap_or_default();
+                    if let Some(blocks) = val.get("content").and_then(|c| c.as_array()) {
+                        for b in blocks {
+                            let t = b.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                            if t == "text" {
+                                outcome.saw_text = true;
+                            }
+                            if t == "tool_use" || t == "server_tool_use" {
+                                outcome.saw_tool_call = true;
+                            }
+                        }
+                    }
+                    eprintln!("e2e: assistant message");
                 }
-                eprintln!("e2e: SessionUpdate {:?}", brief(&update));
-            }
-            AgentEvent::TurnComplete { .. } => return outcome,
-            AgentEvent::TurnError { message, .. } => {
-                panic!("turn errored: {message}");
-            }
+                forge_sdk::Message::Result { is_error, subtype, .. } => {
+                    if !is_error && subtype == "success" {
+                        return outcome;
+                    }
+                    panic!("turn errored: {subtype}");
+                }
+                _ => {}
+            },
             other => eprintln!("e2e: event: {}", other.event_name()),
         }
     }

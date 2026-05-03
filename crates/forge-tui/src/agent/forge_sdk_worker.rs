@@ -516,8 +516,8 @@ async fn spawn_or_replace(
     // the reader; the worker keeps its own handle for command dispatch.
     let reader_client = client.clone();
     let reader_event_tx = event_tx.clone();
-    let reader_bridge = Arc::clone(bridge_session);
-    tokio::spawn(reader_loop(reader_client, reader_event_tx, reader_bridge));
+    let reader_session_id = session_id.clone();
+    tokio::spawn(reader_loop(reader_client, reader_event_tx, reader_session_id));
 
     let cwd = std::env::current_dir()
         .ok()
@@ -713,40 +713,46 @@ fn list_recent_sessions(cwd: &str) -> Vec<crate::agent::types::SessionListEntry>
         .collect()
 }
 
+/// Extract the session_id from a `forge_sdk::Message` envelope when
+/// present. Each variant declares its own session_id field shape; we
+/// fall through to `Option::None` when the variant doesn't carry one
+/// (e.g. `Result` lacks an explicit session_id field on every CLI
+/// flavour we observe today).
+fn msg_session_id(msg: &forge_sdk::Message) -> Option<String> {
+    use forge_sdk::Message;
+    match msg {
+        Message::Assistant { session_id, .. }
+        | Message::User { session_id, .. }
+        | Message::Result { session_id, .. } => Some(session_id.clone()),
+        Message::System { session_id, .. } => session_id.clone(),
+        _ => None,
+    }
+}
+
 async fn reader_loop(
     client: Client,
     event_tx: mpsc::UnboundedSender<AgentEvent>,
-    bridge_session: Arc<Mutex<bridge_state::BridgeSession>>,
+    session_id: String,
 ) {
     loop {
         match client.next_event().await {
             Ok(Some(msg)) => {
                 let mut buf: Vec<AgentEvent> = Vec::new();
-                let session_id_for_sdk_msg = if let Ok(mut session) = bridge_session.lock() {
-                    crate::agent::bridge::message_handlers::handle_sdk_message(
-                        &mut session, &msg, &mut buf,
-                    );
-                    session.session_id.clone()
-                } else {
-                    tracing::error!(
-                        target: crate::logging::targets::BRIDGE_LIFECYCLE,
-                        "forge_sdk_worker reader: bridge session mutex poisoned",
-                    );
-                    String::new()
-                };
-                // Phase 1.3 of the bridge-collapse refactor: emit the
-                // raw `forge_sdk::Message` envelope alongside the
-                // bridge's `SessionUpdate` events. The App-side
-                // `handle_sdk_message` is a no-op stub during Phase 1
-                // (Phase 2 fills it in per-variant); the emission is
-                // wire-level scaffolding for that future work.
+                // The bridge::message_handlers indirection used to
+                // mutate `BridgeSession` state for in-bridge
+                // bookkeeping; that state is now mirrored in
+                // `app.turn_state` so the worker can pump SDK
+                // messages straight through to the App without the
+                // BridgeSession round-trip.
+                let session_id_for_sdk_msg = msg_session_id(&msg)
+                    .unwrap_or_else(|| session_id.clone());
                 buf.push(AgentEvent::SdkMessage {
                     session_id: session_id_for_sdk_msg,
                     msg: msg.clone(),
                 });
-                // Fall through to the legacy translate_message for the
-                // bits handle_sdk_message hasn't covered yet (e.g.
-                // elicitation_request which already had its own path).
+                // ElicitationRequest still synthesised by the
+                // translate_message shim until that one moves to
+                // the App-side handler.
                 let mut legacy = translate_message(msg);
                 buf.append(&mut legacy);
                 for event in buf {

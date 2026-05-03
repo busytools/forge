@@ -248,6 +248,9 @@ pub enum AgentEvent {
     ConnectionFailed {
         message: String,
     },
+    /// Legacy: still constructed by the dying bridge module's
+    /// helpers (no longer reaches the App). Kept until the bridge
+    /// directory is fully deleted in Phase E.
     SessionUpdate {
         session_id: String,
         update: types::SessionUpdate,
@@ -277,20 +280,6 @@ pub enum AgentEvent {
         session_id: String,
         error: types::McpOperationError,
     },
-    TurnComplete {
-        session_id: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        terminal_reason: Option<types::TerminalReason>,
-    },
-    TurnError {
-        session_id: String,
-        message: String,
-        error_kind: Option<String>,
-        sdk_result_subtype: Option<String>,
-        assistant_error: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        terminal_reason: Option<types::TerminalReason>,
-    },
     SlashError {
         session_id: String,
         message: String,
@@ -310,9 +299,6 @@ pub enum AgentEvent {
         available_models: Vec<types::AvailableModel>,
         mode: Option<types::ModeState>,
         history_updates: Option<Vec<types::SessionUpdate>>,
-    },
-    Initialized {
-        result: types::InitializeResult,
     },
     SessionsListed {
         sessions: Vec<types::SessionListEntry>,
@@ -365,13 +351,10 @@ impl AgentEvent {
             Self::ElicitationComplete { .. } => "elicitation_complete",
             Self::McpAuthRedirect { .. } => "mcp_auth_redirect",
             Self::McpOperationError { .. } => "mcp_operation_error",
-            Self::TurnComplete { .. } => "turn_complete",
-            Self::TurnError { .. } => "turn_error",
             Self::SlashError { .. } => "slash_error",
             Self::RuntimeReloadCompleted { .. } => "runtime_reload_completed",
             Self::RuntimeReloadFailed { .. } => "runtime_reload_failed",
             Self::SessionReplaced { .. } => "session_replaced",
-            Self::Initialized { .. } => "initialized",
             Self::SessionsListed { .. } => "sessions_listed",
             Self::StatusSnapshot { .. } => "status_snapshot",
             Self::OauthCredentialsSnapshot { .. } => "oauth_credentials_snapshot",
@@ -393,8 +376,6 @@ impl AgentEvent {
             | Self::ElicitationComplete { session_id, .. }
             | Self::McpAuthRedirect { session_id, .. }
             | Self::McpOperationError { session_id, .. }
-            | Self::TurnComplete { session_id, .. }
-            | Self::TurnError { session_id, .. }
             | Self::SlashError { session_id, .. }
             | Self::RuntimeReloadCompleted { session_id, .. }
             | Self::RuntimeReloadFailed { session_id, .. }
@@ -407,7 +388,6 @@ impl AgentEvent {
             | Self::SdkMessage { session_id, .. } => Some(session_id.as_str()),
             Self::AuthRequired { .. }
             | Self::ConnectionFailed { .. }
-            | Self::Initialized { .. }
             | Self::SessionsListed { .. } => None,
         }
     }
@@ -427,13 +407,10 @@ impl AgentEvent {
             | Self::ElicitationComplete { .. }
             | Self::McpAuthRedirect { .. }
             | Self::McpOperationError { .. }
-            | Self::TurnComplete { .. }
-            | Self::TurnError { .. }
             | Self::SlashError { .. }
             | Self::RuntimeReloadCompleted { .. }
             | Self::RuntimeReloadFailed { .. }
             | Self::SessionReplaced { .. }
-            | Self::Initialized { .. }
             | Self::SessionsListed { .. }
             | Self::StatusSnapshot { .. }
             | Self::OauthCredentialsSnapshot { .. }
@@ -454,11 +431,9 @@ mod tests {
     fn event_envelope_roundtrip_json() {
         let env = EventEnvelope {
             request_id: None,
-            event: AgentEvent::TurnComplete {
-                session_id: "session-1".to_owned(),
-                terminal_reason: Some(types::TerminalReason::Completed),
-            },
+            event: AgentEvent::SessionsListed { sessions: Vec::new() },
         };
+        let _ = types::TerminalReason::Completed; // keep import alive
         let json = serde_json::to_string(&env).expect("serialize");
         let decoded: EventEnvelope = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(decoded, env);
