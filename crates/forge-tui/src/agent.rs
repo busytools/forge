@@ -1,8 +1,15 @@
-pub mod bridge;
+pub mod agents;
 pub mod client;
+pub mod commands;
 pub mod error_handling;
 pub mod events;
 pub mod forge_sdk_bridge;
 pub mod forge_sdk_worker;
+pub mod history;
 pub mod model;
+pub mod session_lifecycle;
+pub mod state;
+pub mod state_parsing;
+pub mod tooling;
 pub mod types;
+pub mod user_interaction;

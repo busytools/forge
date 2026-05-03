@@ -42,7 +42,7 @@ use forge_sdk::{
 };
 use tokio::sync::{mpsc, oneshot};
 
-use crate::agent::bridge::{
+use crate::agent::{
     commands as bridge_commands, session_lifecycle, state as bridge_state,
     user_interaction as bridge_user_interaction,
 };
@@ -685,7 +685,7 @@ fn load_history_updates(
             })
         })
         .collect();
-    crate::agent::bridge::history::map_session_messages_to_updates(&raw)
+    crate::agent::history::map_session_messages_to_updates(&raw)
 }
 
 /// Scan the on-disk JSONL transcripts for `cwd` and convert them into

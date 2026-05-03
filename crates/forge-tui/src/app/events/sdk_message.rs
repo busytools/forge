@@ -1,7 +1,7 @@
 //! Direct `forge_sdk::Message` consumer for the App.
 //!
 //! Phase 1.2 of the bridge-collapse refactor. Today the
-//! `agent::bridge::message_handlers` module owns SDK-message
+//! `agent::message_handlers` module owns SDK-message
 //! unpacking — it walks `Message::Assistant.content`, pairs
 //! `tool_use` ↔ `tool_result` across messages, and emits
 //! `SessionUpdate` events the App consumes through `events::client`.
@@ -42,7 +42,7 @@ use forge_sdk::Message;
 use serde_json::Value;
 
 use crate::app::App;
-use crate::agent::bridge::state_parsing::{
+use crate::agent::state_parsing::{
     build_api_retry_update, build_rate_limit_update, normalize_settings_parse_errors,
     parse_fast_mode_state, parse_runtime_session_state,
 };
@@ -52,7 +52,7 @@ use crate::agent::bridge::state_parsing::{
 /// to per-variant handlers below.
 ///
 /// During Phase 1 every handler is a no-op — the bridge module's
-/// existing `handle_sdk_message` (in `agent::bridge::message_handlers`)
+/// existing `handle_sdk_message` (in `agent::message_handlers`)
 /// continues to do the real work. Phase 2 fills these in per variant.
 pub(super) fn handle_sdk_message(app: &mut App, msg: Message) {
     // Mirrors the bridge's pattern: serialise the typed Message back
@@ -258,7 +258,7 @@ fn handle_user(app: &mut App, msg: Message, raw: &Value) {
         && let Some(tool_use_id) = parent_tool_use_id.as_deref()
         && !tool_use_id.is_empty()
     {
-        let parsed = crate::agent::bridge::tooling::unwrap_tool_use_result(result);
+        let parsed = crate::agent::tooling::unwrap_tool_use_result(result);
         apply_tool_result_block(
             app,
             tool_use_id,
@@ -302,7 +302,7 @@ fn walk_user_tool_results(app: &mut App, raw: &Value) {
 /// re-exported here so the App-side walker doesn't have to import
 /// from the bridge module directly.
 fn is_bridge_tool_result_block_type(block_type: &str) -> bool {
-    crate::agent::bridge::tooling::is_tool_result_block_type(block_type)
+    crate::agent::tooling::is_tool_result_block_type(block_type)
 }
 
 /// Read `parent_tool_use_id` from the outer envelope (Assistant or
@@ -400,7 +400,7 @@ fn apply_tool_use_block(
     input: &Value,
     parent_tool_use_id: Option<&str>,
 ) {
-    use crate::agent::bridge::tooling::create_tool_call;
+    use crate::agent::tooling::create_tool_call;
     use crate::agent::types::ToolCallUpdateFields;
     use crate::app::connect::type_converters::convert_tool_call;
 
@@ -447,7 +447,7 @@ fn apply_tool_result_block(
     raw_content: Option<&Value>,
     raw_block: Option<&Value>,
 ) {
-    use crate::agent::bridge::tooling::build_tool_result_fields;
+    use crate::agent::tooling::build_tool_result_fields;
 
     let base = app.turn_state.tool_calls.get(tool_use_id).cloned();
     let fields = build_tool_result_fields(is_error, raw_content, base.as_ref(), raw_block);
@@ -618,7 +618,7 @@ fn apply_available_agents_from_init(app: &mut App, data: &Value) {
         return;
     }
     let Some(agents_value) = record.get("agents") else { return };
-    let agents = crate::agent::bridge::agents::map_available_agents_from_names(Some(agents_value));
+    let agents = crate::agent::agents::map_available_agents_from_names(Some(agents_value));
     let signature = serde_json::to_string(&agents).unwrap_or_default();
     app.turn_state.last_agents_signature = Some(signature);
     let model_update = crate::app::connect::type_converters::map_available_agents_update(agents);
@@ -638,7 +638,7 @@ fn apply_available_agents_from_init(app: &mut App, data: &Value) {
 /// are mirrored into `app.turn_state` later, the resolver picks them
 /// up via the optional args.
 fn apply_current_model_from_init(app: &mut App, data: &Value) {
-    use crate::agent::bridge::session_lifecycle::{
+    use crate::agent::session_lifecycle::{
         map_available_models, resolve_current_model_from_inputs,
     };
     use crate::app::connect::type_converters::convert_current_model;
@@ -674,10 +674,10 @@ fn apply_current_model_from_init(app: &mut App, data: &Value) {
 /// `supported_mode_ids` (using the App's current_model auto-mode
 /// support + the bypass flag), then builds a `ModeState` and applies.
 fn apply_mode_state_from_init(app: &mut App, data: &Value) {
-    use crate::agent::bridge::commands::{
+    use crate::agent::commands::{
         build_mode_state_from_supported, supported_mode_ids_filtered,
     };
-    use crate::agent::bridge::state::PermissionMode;
+    use crate::agent::state::PermissionMode;
     use crate::app::connect::type_converters::convert_mode_state;
 
     let Some(record) = data.as_object() else { return };

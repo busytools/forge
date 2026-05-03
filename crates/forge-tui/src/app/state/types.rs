@@ -156,7 +156,7 @@ pub struct McpState {
 }
 
 /// Per-session runtime state previously owned by
-/// `crate::agent::bridge::state::BridgeSession`. Fields are absorbed
+/// `crate::agent::state::BridgeSession`. Fields are absorbed
 /// into the App as part of the bridge-unpacker collapse: the bridge
 /// module emits `SessionUpdate` events that mutate App state today,
 /// but post-collapse the App's `handle_sdk_message` walks raw
@@ -190,12 +190,12 @@ pub struct SessionTurnState {
     /// Active permission mode (typed enum, not the wire string).
     /// Populated from System(init).permissionMode and the SetMode
     /// command path; mirrors what `BridgeSession.mode` used to hold.
-    pub mode: Option<crate::agent::bridge::state::PermissionMode>,
+    pub mode: Option<crate::agent::state::PermissionMode>,
     /// Permission modes the runtime currently supports.
-    pub supported_mode_ids: Vec<crate::agent::bridge::state::PermissionMode>,
+    pub supported_mode_ids: Vec<crate::agent::state::PermissionMode>,
     /// Permission modes recognised but currently unavailable.
     pub runtime_unavailable_mode_ids:
-        Vec<crate::agent::bridge::state::PermissionMode>,
+        Vec<crate::agent::state::PermissionMode>,
     /// Whether `bypassPermissions` mode is allowed for this session.
     pub supports_bypass_permissions_mode: bool,
     /// Current mode resolution alongside the human-readable label.

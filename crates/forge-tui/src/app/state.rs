@@ -303,7 +303,7 @@ pub struct App {
     pub oauth_credentials: Option<forge_sdk::OauthCredentials>,
 
     /// Per-session runtime state being absorbed from the bridge
-    /// unpacker (`agent::bridge::state::BridgeSession`). Currently
+    /// unpacker (`agent::state::BridgeSession`). Currently
     /// default-initialised and unused; Phase 2 of the bridge-collapse
     /// refactor migrates per-variant handlers to populate + read
     /// these fields, after which the bridge module's parallel state
