@@ -112,7 +112,7 @@ pub(super) fn map_available_models(
         .collect()
 }
 
-pub(super) fn convert_current_model(current_model: types::CurrentModel) -> model::CurrentModel {
+pub(crate) fn convert_current_model(current_model: types::CurrentModel) -> model::CurrentModel {
     let mut mapped = model::CurrentModel::new(
         current_model.resolved_id,
         current_model.display_name_short,

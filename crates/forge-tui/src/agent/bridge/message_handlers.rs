@@ -251,7 +251,11 @@ fn handle_system_init(
     if let Some(model) = msg_record.get("model").and_then(Value::as_str) {
         model.clone_into(&mut session.model_id);
     }
-    let current_model_changed = refresh_current_model(session, false, &mut Vec::new());
+    // Internal session.current_model still tracked here so other bridge
+    // readers (commands.rs auto-mode lookup, etc.) see fresh values.
+    // The CurrentModelUpdate emission moved to the App's
+    // events::sdk_message::apply_current_model_from_init.
+    let _ = refresh_current_model(session, false, &mut Vec::new());
     if let Some(mode_str) = msg_record.get("permissionMode").and_then(Value::as_str)
         && let Some(mode) = PermissionMode::from_wire(mode_str)
     {
@@ -260,32 +264,17 @@ fn handle_system_init(
     refresh_supported_modes_for_session(session);
     // fast_mode_state moved to the App's sdk_message handler.
 
-    // The initial Connected event was already emitted at spawn (the
-    // worker sets session.connected = true there). When system/init
-    // lands later — which happens once the user sends their first
-    // message — fire the model/mode follow-ups so the footer chip
-    // refreshes from "Opus [1M]" (resolved off the alias) to
-    // "Claude Opus 4.7" (resolved off the full id the CLI just sent).
-    // Mirrors upstream's `if (session.connected) { emitCurrentModelUpdate(...) }`
-    // branch in bridge.ts's handleSdkMessage.
-    if session.connected {
-        if current_model_changed
-            && let Some(cm) = session.current_model.clone()
-        {
-            push_session_update(
-                out,
-                &session.session_id,
-                SessionUpdate::CurrentModelUpdate { current_model: cm },
-            );
-        }
-        if let Some(mode) = session.mode {
-            let mode_state = build_mode_state(session, mode);
-            push_session_update(
-                out,
-                &session.session_id,
-                SessionUpdate::ModeStateUpdate { mode: mode_state },
-            );
-        }
+    // ModeStateUpdate after-init follow-up: still bridge-emitted (until
+    // the App-side mode resolution lands).
+    if session.connected
+        && let Some(mode) = session.mode
+    {
+        let mode_state = build_mode_state(session, mode);
+        push_session_update(
+            out,
+            &session.session_id,
+            SessionUpdate::ModeStateUpdate { mode: mode_state },
+        );
     }
 
     // AvailableCommandsUpdate + AvailableAgentsUpdate moved to App's

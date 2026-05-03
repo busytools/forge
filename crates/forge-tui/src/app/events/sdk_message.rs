@@ -157,6 +157,7 @@ fn handle_system(app: &mut App, msg: Message, raw: &Value) {
             apply_settings_parse_errors(app, data);
             apply_available_commands_from_init(app, data);
             apply_available_agents_from_init(app, data);
+            apply_current_model_from_init(app, data);
         }
         "compact_boundary" => {
             apply_compaction_boundary(app, data);
@@ -237,6 +238,46 @@ fn apply_available_agents_from_init(app: &mut App, data: &Value) {
     app.turn_state.last_agents_signature = Some(signature);
     let model_update = crate::app::connect::type_converters::map_available_agents_update(agents);
     super::apply_available_agents_update(app, model_update);
+}
+
+/// Resolve `current_model` from System(init) data and apply via the
+/// App-side `apply_current_model_update` helper if it differs from the
+/// existing `app.current_model`. Mirrors the bridge's
+/// `handle_system_init` block that pushed `CurrentModelUpdate` after
+/// `refresh_current_model` reported a change.
+///
+/// Today only `model_id` and the `models` catalogue are available
+/// from System(init). `requested_model_id` and
+/// `resolved_runtime_model_id` come from other paths (the SetModel
+/// command + initialize control_response respectively); when those
+/// are mirrored into `app.turn_state` later, the resolver picks them
+/// up via the optional args.
+fn apply_current_model_from_init(app: &mut App, data: &Value) {
+    use crate::agent::bridge::session_lifecycle::{
+        map_available_models, resolve_current_model_from_inputs,
+    };
+    use crate::app::connect::type_converters::convert_current_model;
+
+    let Some(record) = data.as_object() else { return };
+    let model_id = record.get("model").and_then(Value::as_str).unwrap_or("");
+    let available_models = map_available_models(record.get("models"));
+    let requested = app.turn_state.requested_model_id.as_deref();
+    let resolved_runtime = app.turn_state.resolved_runtime_model_id.as_deref();
+    if !model_id.is_empty() {
+        model_id.clone_into(&mut app.turn_state.model_id);
+    }
+
+    let next_wire = resolve_current_model_from_inputs(
+        model_id,
+        requested,
+        resolved_runtime,
+        &available_models,
+    );
+    let next_model = convert_current_model(next_wire);
+    if app.current_model.as_ref() == Some(&next_model) {
+        return;
+    }
+    super::apply_current_model_update(app, next_model);
 }
 
 /// Drain a System(elicitation_complete) record and call the App's

@@ -200,27 +200,7 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
             apply_current_mode_update(app, update);
         }
         model::SessionUpdate::CurrentModelUpdate(update) => {
-            let next_resolved_id = update.current_model.resolved_id.clone();
-            let next_display_short = update.current_model.display_name_short.clone();
-            let next_display_long = update.current_model.display_name_long.clone();
-            let pending_ack_before = format!("{:?}", app.pending_command_ack);
-            app.current_model = Some(update.current_model);
-            let clearing_pending =
-                matches!(app.pending_command_ack, Some(PendingCommandAck::CurrentModel));
-            if matches!(app.pending_command_ack, Some(PendingCommandAck::CurrentModel)) {
-                session::clear_pending_command(app);
-            }
-            tracing::debug!(
-                target: crate::logging::targets::APP_SESSION,
-                event_name = "current_model_update_applied",
-                message = "current model update applied",
-                outcome = "success",
-                resolved_id = %next_resolved_id,
-                display_name_short = %next_display_short,
-                display_name_long = %next_display_long,
-                clearing_pending = clearing_pending,
-                pending_ack_before = %pending_ack_before,
-            );
+            apply_current_model_update(app, update.current_model);
         }
         model::SessionUpdate::ConfigOptionUpdate(config) => {
             handle_config_option_update(app, config);
@@ -300,6 +280,30 @@ pub(super) fn apply_available_agents_update(app: &mut App, agents: model::Availa
     if app.subagent.is_some() {
         super::subagent::update_query(app);
     }
+}
+
+pub(super) fn apply_current_model_update(app: &mut App, current_model: model::CurrentModel) {
+    let next_resolved_id = current_model.resolved_id.clone();
+    let next_display_short = current_model.display_name_short.clone();
+    let next_display_long = current_model.display_name_long.clone();
+    let pending_ack_before = format!("{:?}", app.pending_command_ack);
+    app.current_model = Some(current_model);
+    let clearing_pending =
+        matches!(app.pending_command_ack, Some(PendingCommandAck::CurrentModel));
+    if matches!(app.pending_command_ack, Some(PendingCommandAck::CurrentModel)) {
+        session::clear_pending_command(app);
+    }
+    tracing::debug!(
+        target: crate::logging::targets::APP_SESSION,
+        event_name = "current_model_update_applied",
+        message = "current model update applied",
+        outcome = "success",
+        resolved_id = %next_resolved_id,
+        display_name_short = %next_display_short,
+        display_name_long = %next_display_long,
+        clearing_pending = clearing_pending,
+        pending_ack_before = %pending_ack_before,
+    );
 }
 
 pub(super) fn apply_current_mode_update(app: &mut App, update: model::CurrentModeUpdate) {
