@@ -155,6 +155,8 @@ fn handle_system(app: &mut App, msg: Message, raw: &Value) {
         }
         "init" => {
             apply_settings_parse_errors(app, data);
+            apply_available_commands_from_init(app, data);
+            apply_available_agents_from_init(app, data);
         }
         "compact_boundary" => {
             apply_compaction_boundary(app, data);
@@ -193,6 +195,45 @@ fn apply_compaction_boundary(app: &mut App, data: &Value) {
             pre_tokens,
         },
     );
+}
+
+/// Build `AvailableCommandsUpdate` from System(init).slash_commands.
+/// Mirrors bridge::message_handlers handle_system_init slash_commands branch.
+fn apply_available_commands_from_init(app: &mut App, data: &Value) {
+    let Some(record) = data.as_object() else { return };
+    let Some(arr) = record.get("slash_commands").and_then(Value::as_array) else { return };
+    let commands: Vec<crate::agent::types::AvailableCommand> = arr
+        .iter()
+        .filter_map(|v| v.as_str())
+        .map(|name| crate::agent::types::AvailableCommand {
+            name: name.to_owned(),
+            description: String::new(),
+            input_hint: None,
+        })
+        .collect();
+    if commands.is_empty() {
+        return;
+    }
+    let model_update = crate::app::connect::type_converters::map_available_commands_update(commands);
+    super::apply_available_commands_update(app, model_update);
+}
+
+/// Build `AvailableAgentsUpdate` from System(init).agents with
+/// last-signature change detection (so identical re-emits are
+/// no-ops). Mirrors bridge::agents::emit_available_agents_if_changed.
+fn apply_available_agents_from_init(app: &mut App, data: &Value) {
+    let Some(record) = data.as_object() else { return };
+    if app.turn_state.last_agents_signature.is_some() {
+        // bridge mirrors `if session.last_agents_signature.is_none()` — only
+        // emit on first init.
+        return;
+    }
+    let Some(agents_value) = record.get("agents") else { return };
+    let agents = crate::agent::bridge::agents::map_available_agents_from_names(Some(agents_value));
+    let signature = serde_json::to_string(&agents).unwrap_or_default();
+    app.turn_state.last_agents_signature = Some(signature);
+    let model_update = crate::app::connect::type_converters::map_available_agents_update(agents);
+    super::apply_available_agents_update(app, model_update);
 }
 
 fn apply_settings_parse_errors(app: &mut App, data: &Value) {

@@ -180,31 +180,10 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
             apply_plan_todos(app, &plan);
         }
         model::SessionUpdate::AvailableCommandsUpdate(cmds) => {
-            tracing::debug!(
-                target: crate::logging::targets::APP_SESSION,
-                event_name = "available_commands_applied",
-                message = "available commands update applied",
-                outcome = "success",
-                command_count = cmds.available_commands.len(),
-            );
-            app.available_commands = cmds.available_commands;
-            crate::app::plugins::clamp_selection(app);
-            if app.slash.is_some() {
-                super::slash::update_query(app);
-            }
+            apply_available_commands_update(app, cmds);
         }
         model::SessionUpdate::AvailableAgentsUpdate(agents) => {
-            tracing::debug!(
-                target: crate::logging::targets::APP_SESSION,
-                event_name = "available_agents_applied",
-                message = "available agents update applied",
-                outcome = "success",
-                agent_count = agents.available_agents.len(),
-            );
-            app.available_agents = agents.available_agents;
-            if app.subagent.is_some() {
-                super::subagent::update_query(app);
-            }
+            apply_available_agents_update(app, agents);
         }
         model::SessionUpdate::ModeStateUpdate(mode) => {
             let mode_changed = app.mode.as_ref().map(|current| current.current_mode_id.as_str())
@@ -291,6 +270,35 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
         model::SessionUpdate::CompactionBoundary(boundary) => {
             rate_limit::handle_compaction_boundary_update(app, boundary);
         }
+    }
+}
+
+pub(super) fn apply_available_commands_update(app: &mut App, cmds: model::AvailableCommandsUpdate) {
+    tracing::debug!(
+        target: crate::logging::targets::APP_SESSION,
+        event_name = "available_commands_applied",
+        message = "available commands update applied",
+        outcome = "success",
+        command_count = cmds.available_commands.len(),
+    );
+    app.available_commands = cmds.available_commands;
+    crate::app::plugins::clamp_selection(app);
+    if app.slash.is_some() {
+        super::slash::update_query(app);
+    }
+}
+
+pub(super) fn apply_available_agents_update(app: &mut App, agents: model::AvailableAgentsUpdate) {
+    tracing::debug!(
+        target: crate::logging::targets::APP_SESSION,
+        event_name = "available_agents_applied",
+        message = "available agents update applied",
+        outcome = "success",
+        agent_count = agents.available_agents.len(),
+    );
+    app.available_agents = agents.available_agents;
+    if app.subagent.is_some() {
+        super::subagent::update_query(app);
     }
 }
 

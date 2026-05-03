@@ -38,7 +38,7 @@ pub(crate) fn map_api_retry_error(error: types::ApiRetryError) -> model::ApiRetr
     }
 }
 
-pub(super) fn map_available_commands_update(
+pub(crate) fn map_available_commands_update(
     commands: Vec<types::AvailableCommand>,
 ) -> model::AvailableCommandsUpdate {
     model::AvailableCommandsUpdate::new(
@@ -57,7 +57,7 @@ pub(super) fn map_available_commands_update(
     )
 }
 
-pub(super) fn map_available_agents_update(
+pub(crate) fn map_available_agents_update(
     agents: Vec<types::AvailableAgent>,
 ) -> model::AvailableAgentsUpdate {
     model::AvailableAgentsUpdate::new(

@@ -27,7 +27,6 @@ use serde_json::{Map, Value};
 use crate::agent::types::{ContentBlock, SessionUpdate, TerminalReason};
 use crate::agent::wire::BridgeEvent;
 
-use super::agents::{emit_available_agents_if_changed, map_available_agents_from_names};
 use super::commands::{build_mode_state, refresh_supported_modes_for_session};
 use super::session_lifecycle::refresh_current_model;
 use super::state::{BridgeSession, PermissionMode};
@@ -289,31 +288,8 @@ fn handle_system_init(
         }
     }
 
-    if let Some(slash_commands) = msg_record.get("slash_commands").and_then(Value::as_array) {
-        let commands: Vec<crate::agent::types::AvailableCommand> = slash_commands
-            .iter()
-            .filter_map(|v| v.as_str())
-            .map(|name| crate::agent::types::AvailableCommand {
-                name: name.to_owned(),
-                description: String::new(),
-                input_hint: None,
-            })
-            .collect();
-        if !commands.is_empty() {
-            push_session_update(
-                out,
-                &session.session_id,
-                SessionUpdate::AvailableCommandsUpdate { commands },
-            );
-        }
-    }
-
-    if session.last_agents_signature.is_none()
-        && let Some(agents) = msg_record.get("agents")
-    {
-        let mapped = map_available_agents_from_names(Some(agents));
-        emit_available_agents_if_changed(session, mapped, out);
-    }
+    // AvailableCommandsUpdate + AvailableAgentsUpdate moved to App's
+    // events::sdk_message::handle_system init arm.
 
     // settings_errors moved to App's events::sdk_message::apply_settings_parse_errors
     // on the BridgeEvent::SdkMessage parallel wire (Phase 2 cutover).
@@ -322,7 +298,7 @@ fn handle_system_init(
 fn handle_system_status(
     session: &mut BridgeSession,
     msg_record: &Map<String, Value>,
-    out: &mut Vec<BridgeEvent>,
+    _out: &mut Vec<BridgeEvent>,
 ) {
     if let Some(mode_str) = msg_record.get("permissionMode").and_then(Value::as_str)
         && let Some(mode) = PermissionMode::from_wire(mode_str)
