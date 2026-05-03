@@ -155,20 +155,17 @@ pub struct McpState {
     pub pending_elicitation: Option<crate::agent::types::ElicitationRequest>,
 }
 
-/// Per-session runtime state previously owned by
-/// `crate::agent::state::BridgeSession`. Fields are absorbed
-/// into the App as part of the bridge-unpacker collapse: the bridge
-/// module emits `SessionUpdate` events that mutate App state today,
-/// but post-collapse the App's `handle_sdk_message` walks raw
-/// `forge_sdk::Message` envelopes itself, so the per-message
-/// pairing / model-resolution / mode-capability state needs to live
-/// here directly.
+/// Per-session runtime state. Owns the in-flight tool_call store,
+/// the model-resolution cache, the mode-capability state, the MCP
+/// per-server cooldowns, and the auth/error flags that survive
+/// across messages. The App's `handle_sdk_message` walks raw
+/// `forge_sdk::Message` envelopes and reads/writes these fields
+/// directly.
 ///
-/// Fields default-initialised; not yet read by App handlers during
-/// Phase 1 — the bridge module continues to populate its own
-/// `BridgeSession` and emit `SessionUpdate`s as before. Phase 2
-/// migrates per-variant handlers to read/write these fields; Phase 3
-/// deletes the bridge module entirely.
+/// This struct is the App-side home for the per-message bookkeeping
+/// that lived in the upstream Node bridge's `SessionState`. Post
+/// bridge collapse the bridge module is gone — these fields are the
+/// authoritative store.
 #[derive(Debug, Default)]
 pub struct SessionTurnState {
     /// Live tool-call store keyed by `tool_use_id` for cross-message
