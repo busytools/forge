@@ -41,7 +41,7 @@ use forge_tui::agent::client::AgentBridge;
 use forge_tui::agent::forge_sdk_bridge::ForgeSdkBridge;
 use forge_tui::agent::forge_sdk_worker;
 use forge_tui::agent::types::SessionUpdate;
-use forge_tui::agent::wire::{AgentEvent, SessionLaunchSettings};
+use forge_tui::agent::client::{AgentEvent, SessionLaunchSettings};
 use std::rc::Rc;
 use tokio::sync::mpsc;
 

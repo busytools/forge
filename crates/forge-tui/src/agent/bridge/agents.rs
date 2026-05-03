@@ -4,7 +4,7 @@
 use serde_json::Value;
 
 use crate::agent::types::{AvailableAgent, SessionUpdate};
-use crate::agent::wire::AgentEvent;
+use crate::agent::client::AgentEvent;
 
 use super::state::BridgeSession;
 

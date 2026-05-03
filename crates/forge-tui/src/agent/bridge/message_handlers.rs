@@ -25,7 +25,7 @@ use forge_sdk::Message as SdkMessage;
 use serde_json::{Map, Value};
 
 use crate::agent::types::{ContentBlock, SessionUpdate, TerminalReason};
-use crate::agent::wire::AgentEvent;
+use crate::agent::client::AgentEvent;
 
 use super::commands::refresh_supported_modes_for_session;
 use super::session_lifecycle::refresh_current_model;
@@ -351,7 +351,7 @@ pub fn handle_sdk_message(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::wire::AgentEvent;
+    use crate::agent::client::AgentEvent;
     use forge_sdk::{AssistantEnvelope, Message as SdkMessage};
     use serde_json::json;
 

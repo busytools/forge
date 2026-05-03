@@ -48,7 +48,7 @@ use crate::agent::bridge::{
 };
 use crate::agent::forge_sdk_bridge::ForgeSdkCommand;
 use crate::agent::forge_sdk_translate::translate_message;
-use crate::agent::wire::AgentEvent;
+use crate::agent::client::AgentEvent;
 
 /// Pending permission responses keyed by `tool_use_id`. The
 /// `can_use_tool` callback parks a oneshot here when the CLI asks;
@@ -497,7 +497,7 @@ async fn spawn_or_replace(
     options: Options,
     session_id_slot: &Arc<Mutex<String>>,
     bridge_session: &Arc<Mutex<bridge_state::BridgeSession>>,
-    launch_settings: &crate::agent::wire::SessionLaunchSettings,
+    launch_settings: &crate::agent::client::SessionLaunchSettings,
     resume_id: Option<String>,
 ) -> anyhow::Result<()> {
     // If we already have a client, drop it first so the existing
@@ -838,7 +838,7 @@ fn parse_permission_mode(mode: &str) -> anyhow::Result<PermissionMode> {
 fn build_options_with_callback(
     cwd: &str,
     resume: Option<&str>,
-    launch_settings: &crate::agent::wire::SessionLaunchSettings,
+    launch_settings: &crate::agent::client::SessionLaunchSettings,
     event_tx: &mpsc::UnboundedSender<AgentEvent>,
     pending: &PendingResponses,
     pending_questions: &PendingQuestions,
@@ -1220,7 +1220,7 @@ mod tests {
     use crate::agent::types::{
         ElicitationAction, PermissionOutcome, QuestionOutcome,
     };
-    use crate::agent::wire::AgentEvent;
+    use crate::agent::client::AgentEvent;
     use forge_sdk::ToolPermissionContext;
     use serde_json::json;
     use std::collections::HashMap;

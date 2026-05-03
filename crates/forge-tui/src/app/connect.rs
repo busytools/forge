@@ -23,7 +23,7 @@ use super::{App, AppStatus, ChatViewport, FocusManager, HelpView, SelectionState
 use crate::agent::client::AgentBridge;
 use crate::agent::events::ClientEvent;
 use crate::agent::model;
-use crate::agent::wire::SessionLaunchSettings;
+use crate::agent::client::SessionLaunchSettings;
 use crate::{Cli, Command};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;

@@ -44,7 +44,7 @@ use crate::agent::client::{AgentBridge, PromptResponse};
 use crate::agent::types::{
     ElicitationAction, McpServerConfig, PermissionOutcome, QuestionOutcome,
 };
-use crate::agent::wire::SessionLaunchSettings;
+use crate::agent::client::SessionLaunchSettings;
 
 /// Internal command shape pushed onto the worker's queue. Mirrors the
 /// trait surface of [`AgentBridge`] minus the (sync) plumbing — the

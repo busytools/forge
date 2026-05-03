@@ -19,7 +19,7 @@ use crate::agent::types::{
     PlanEntry, SessionUpdate, TaskMetadata, ToolCall, ToolCallContent, ToolCallUpdate,
     ToolCallUpdateFields,
 };
-use crate::agent::wire::AgentEvent;
+use crate::agent::client::AgentEvent;
 
 use super::state::BridgeSession;
 use super::tooling::{build_tool_result_fields, create_tool_call};

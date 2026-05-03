@@ -19,7 +19,7 @@
 
 use forge_sdk::Message as SdkMessage;
 
-use crate::agent::wire::AgentEvent;
+use crate::agent::client::AgentEvent;
 
 /// Translate one SDK message into zero or more `AgentEvent`s.
 /// Today only `system/elicitation_request` is handled here; everything

@@ -19,7 +19,7 @@
 use serde_json::Value;
 
 use crate::agent::types::{AvailableModel, CurrentModel, EffortLevel, SessionUpdate};
-use crate::agent::wire::AgentEvent;
+use crate::agent::client::AgentEvent;
 
 use super::state::BridgeSession;
 

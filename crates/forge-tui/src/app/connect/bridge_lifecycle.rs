@@ -5,7 +5,7 @@ use crate::agent::client::AgentBridge;
 use crate::agent::events::ClientEvent;
 use crate::agent::forge_sdk_bridge::{ForgeSdkBridge, ForgeSdkCommand};
 use crate::agent::forge_sdk_worker;
-use crate::agent::wire::{AgentEvent, EventEnvelope};
+use crate::agent::client::{AgentEvent, EventEnvelope};
 use crate::error::AppError;
 use std::rc::Rc;
 use tokio::sync::mpsc;
