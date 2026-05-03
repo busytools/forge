@@ -242,30 +242,36 @@ fn resolve_catalog_model<'a>(
 /// Mirrors `resolveCurrentModel(session)` upstream — pure function on
 /// the session's resolved/runtime/requested model strings + the
 /// `available_models` catalogue.
+///
+/// Primitive-arg form so callers outside the bridge (App's
+/// `events::sdk_message`) can run resolution without owning a
+/// `BridgeSession`. The session-based wrapper below keeps existing
+/// bridge call sites unchanged.
 #[must_use]
-pub fn resolve_current_model(session: &BridgeSession) -> CurrentModel {
-    let requested_id = session
-        .requested_model_id
-        .as_deref()
+pub fn resolve_current_model_from_inputs(
+    model_id: &str,
+    requested_model_id: Option<&str>,
+    resolved_runtime_model_id: Option<&str>,
+    available_models: &[AvailableModel],
+) -> CurrentModel {
+    let requested_id = requested_model_id
         .map(str::trim)
         .filter(|s| !s.is_empty());
-    let resolved_id = session
-        .resolved_runtime_model_id
-        .as_deref()
+    let resolved_id = resolved_runtime_model_id
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map_or_else(
             || {
-                if session.model_id.trim().is_empty() {
+                if model_id.trim().is_empty() {
                     requested_id.unwrap_or(OPUS_MODEL_ALIAS).to_owned()
                 } else {
-                    session.model_id.trim().to_owned()
+                    model_id.trim().to_owned()
                 }
             },
             str::to_owned,
         );
 
-    let catalog = resolve_catalog_model(&session.available_models, &resolved_id, requested_id);
+    let catalog = resolve_catalog_model(available_models, &resolved_id, requested_id);
     let runtime_display_id = if resolved_id.is_empty() {
         requested_id.unwrap_or(OPUS_MODEL_ALIAS)
     } else {
@@ -297,6 +303,19 @@ pub fn resolve_current_model(session: &BridgeSession) -> CurrentModel {
         supports_adaptive_thinking: catalog.and_then(|m| m.supports_adaptive_thinking),
         is_authoritative: current_model_is_authoritative(&resolved_id, requested_id),
     }
+}
+
+/// Session-based wrapper for `resolve_current_model_from_inputs`.
+/// Existing bridge callers go through here; new App-side callers use
+/// the primitive form directly.
+#[must_use]
+pub fn resolve_current_model(session: &BridgeSession) -> CurrentModel {
+    resolve_current_model_from_inputs(
+        &session.model_id,
+        session.requested_model_id.as_deref(),
+        session.resolved_runtime_model_id.as_deref(),
+        &session.available_models,
+    )
 }
 
 fn current_models_equal(left: Option<&CurrentModel>, right: &CurrentModel) -> bool {
