@@ -316,6 +316,79 @@ fn parent_tool_use_id_from_envelope(raw: &Value) -> Option<String> {
         .map(str::to_owned)
 }
 
+/// Reads `meta.claudeCode.parentToolUseId` from a tool_call's meta
+/// blob. Inlined from the deleted `bridge::tool_calls` module.
+fn parent_tool_use_id_from_meta(meta: Option<&Value>) -> Option<String> {
+    let claude_code = meta?.get("claudeCode")?.as_object()?;
+    let id = claude_code.get("parentToolUseId")?.as_str()?;
+    if id.is_empty() { None } else { Some(id.to_owned()) }
+}
+
+/// Applies a `ToolCallUpdateFields` patch onto an existing `ToolCall`
+/// in-place, preserving any unset fields. Inlined from the deleted
+/// `bridge::tool_calls` module.
+fn apply_fields_to_base(
+    base: &mut crate::agent::types::ToolCall,
+    fields: &crate::agent::types::ToolCallUpdateFields,
+) {
+    use crate::agent::types::TaskMetadata;
+    fn merge_task_metadata(
+        current: Option<TaskMetadata>,
+        update: Option<TaskMetadata>,
+    ) -> Option<TaskMetadata> {
+        match (current, update) {
+            (None, None) => None,
+            (Some(c), None) => Some(c),
+            (None, Some(u)) => Some(u),
+            (Some(mut c), Some(u)) => {
+                if u.end_time.is_some() {
+                    c.end_time = u.end_time;
+                }
+                if u.total_paused_ms.is_some() {
+                    c.total_paused_ms = u.total_paused_ms;
+                }
+                if u.error.is_some() {
+                    c.error = u.error;
+                }
+                if u.is_backgrounded.is_some() {
+                    c.is_backgrounded = u.is_backgrounded;
+                }
+                Some(c)
+            }
+        }
+    }
+    if let Some(t) = &fields.title {
+        base.title.clone_from(t);
+    }
+    if let Some(k) = &fields.kind {
+        base.kind.clone_from(k);
+    }
+    if let Some(s) = &fields.status {
+        base.status.clone_from(s);
+    }
+    if let Some(input) = &fields.raw_input {
+        base.raw_input = Some(input.clone());
+    }
+    if let Some(out) = &fields.raw_output {
+        base.raw_output = Some(out.clone());
+    }
+    if let Some(locs) = &fields.locations {
+        base.locations.clone_from(locs);
+    }
+    if let Some(meta) = &fields.output_metadata {
+        base.output_metadata = Some(meta.clone());
+    }
+    if let Some(tm) = fields.task_metadata.clone() {
+        base.task_metadata = merge_task_metadata(base.task_metadata.clone(), Some(tm));
+    }
+    if let Some(meta) = &fields.meta {
+        base.meta = Some(meta.clone());
+    }
+    if let Some(content) = &fields.content {
+        base.content.clone_from(content);
+    }
+}
+
 /// Mirror of `bridge::tool_calls::emit_tool_call` against App state.
 /// Inserts/updates `app.turn_state.tool_calls` and dispatches the
 /// resulting initial `ToolCall` or `ToolCallUpdate` via the existing
@@ -327,7 +400,6 @@ fn apply_tool_use_block(
     input: &Value,
     parent_tool_use_id: Option<&str>,
 ) {
-    use crate::agent::bridge::tool_calls::parent_tool_use_id_from_meta;
     use crate::agent::bridge::tooling::create_tool_call;
     use crate::agent::types::ToolCallUpdateFields;
     use crate::app::connect::type_converters::convert_tool_call;
@@ -390,7 +462,6 @@ fn apply_tool_call_update(
     tool_use_id: &str,
     fields: crate::agent::types::ToolCallUpdateFields,
 ) {
-    use crate::agent::bridge::tool_calls::apply_fields_to_base;
     use crate::agent::types::ToolCallUpdate;
     use crate::app::connect::type_converters::convert_tool_call_update;
 
