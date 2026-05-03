@@ -3,7 +3,7 @@ pub(crate) mod clipboard_image;
 pub(crate) mod config;
 mod connect;
 mod dialog;
-mod events;
+pub(crate) mod events;
 pub(crate) mod file_index;
 mod focus;
 pub(crate) mod git_context;

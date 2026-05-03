@@ -642,7 +642,14 @@ fn handle_mode_submit(app: &mut App, args: &[&str]) -> bool {
         return true;
     }
 
-    set_command_pending(app, "Switching mode...", Some(crate::app::PendingCommandAck::CurrentMode));
+    // Apply CurrentModeUpdate + ModeStateUpdate App-side immediately
+    // so the footer chip refreshes without waiting for the worker
+    // round-trip. Mirrors what the bridge's `SetMode` handler used
+    // to emit after the SDK call succeeded; the worker no longer
+    // fans these events through the event channel (Phase 2 cutover).
+    // Because the apply is synchronous, no `CommandPending` state is
+    // needed — the UI never sees a stale pending phase.
+    apply_optimistic_mode_change(app, requested_mode);
 
     let tx = app.event_tx.clone();
     let requested_mode_owned = requested_mode.to_owned();
@@ -656,6 +663,35 @@ fn handle_mode_submit(app: &mut App, args: &[&str]) -> bool {
         }
     });
     true
+}
+
+fn apply_optimistic_mode_change(app: &mut App, requested_mode: &str) {
+    use crate::agent::bridge::commands::{
+        build_mode_state_from_supported, supported_mode_ids_filtered,
+    };
+    use crate::agent::bridge::state::PermissionMode;
+    use crate::app::connect::type_converters::convert_mode_state;
+
+    let Some(parsed) = PermissionMode::from_wire(requested_mode) else { return };
+    app.turn_state.mode = Some(parsed);
+    let supports_auto_mode = app
+        .current_model
+        .as_ref()
+        .is_some_and(|m| m.supports_auto_mode == Some(true));
+    let supported = supported_mode_ids_filtered(
+        supports_auto_mode,
+        app.turn_state.supports_bypass_permissions_mode,
+        Some(parsed),
+        &app.turn_state.runtime_unavailable_mode_ids,
+    );
+    app.turn_state.supported_mode_ids = supported.clone();
+
+    let current_mode_update = crate::agent::model::CurrentModeUpdate::new(parsed.as_wire());
+    crate::app::events::apply_current_mode_update(app, current_mode_update);
+
+    let wire_mode_state = build_mode_state_from_supported(parsed, &supported);
+    let model_mode_state = convert_mode_state(wire_mode_state);
+    crate::app::events::apply_mode_state_update(app, model_mode_state);
 }
 
 fn handle_model_submit(app: &mut App, args: &[&str]) -> bool {
@@ -684,11 +720,13 @@ fn handle_model_submit(app: &mut App, args: &[&str]) -> bool {
         return true;
     }
 
-    set_command_pending(
-        app,
-        "Switching model...",
-        Some(crate::app::PendingCommandAck::CurrentModel),
-    );
+    // Apply CurrentModelUpdate (and a refreshed ModeStateUpdate
+    // when the active mode is set) App-side immediately. Mirrors
+    // what the bridge's `SetModel` handler emitted after the SDK
+    // call succeeded; the worker no longer fans these events
+    // through the event channel (Phase 2 cutover). The apply is
+    // synchronous so no `CommandPending` state is needed.
+    apply_optimistic_model_change(app, model_name);
 
     let tx = app.event_tx.clone();
     let model_name = model_name.to_owned();
@@ -702,6 +740,41 @@ fn handle_model_submit(app: &mut App, args: &[&str]) -> bool {
         }
     });
     true
+}
+
+fn apply_optimistic_model_change(app: &mut App, model_name: &str) {
+    use crate::agent::bridge::commands::{
+        build_mode_state_from_supported, supported_mode_ids_filtered,
+    };
+    use crate::agent::bridge::session_lifecycle::resolve_current_model_from_inputs;
+    use crate::app::connect::type_converters::{convert_current_model, convert_mode_state};
+
+    app.turn_state.requested_model_id = Some(model_name.to_owned());
+    let next_wire = resolve_current_model_from_inputs(
+        &app.turn_state.model_id,
+        Some(model_name),
+        app.turn_state.resolved_runtime_model_id.as_deref(),
+        &[],
+    );
+    let next_model = convert_current_model(next_wire);
+    crate::app::events::apply_current_model_update(app, next_model);
+
+    if let Some(mode) = app.turn_state.mode {
+        let supports_auto_mode = app
+            .current_model
+            .as_ref()
+            .is_some_and(|m| m.supports_auto_mode == Some(true));
+        let supported = supported_mode_ids_filtered(
+            supports_auto_mode,
+            app.turn_state.supports_bypass_permissions_mode,
+            Some(mode),
+            &app.turn_state.runtime_unavailable_mode_ids,
+        );
+        app.turn_state.supported_mode_ids = supported.clone();
+        let wire_mode_state = build_mode_state_from_supported(mode, &supported);
+        let model_mode_state = convert_mode_state(wire_mode_state);
+        crate::app::events::apply_mode_state_update(app, model_mode_state);
+    }
 }
 
 fn handle_new_session_submit(app: &mut App, args: &[&str]) -> bool {

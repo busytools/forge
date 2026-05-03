@@ -274,7 +274,7 @@ pub(super) fn apply_available_agents_update(app: &mut App, agents: model::Availa
     }
 }
 
-pub(super) fn apply_mode_state_update(app: &mut App, mode: crate::app::ModeState) {
+pub fn apply_mode_state_update(app: &mut App, mode: crate::app::ModeState) {
     let mode_changed = app.mode.as_ref().map(|current| current.current_mode_id.as_str())
         != Some(mode.current_mode_id.as_str());
     app.mode = Some(mode);
@@ -286,7 +286,7 @@ pub(super) fn apply_mode_state_update(app: &mut App, mode: crate::app::ModeState
     }
 }
 
-pub(super) fn apply_current_model_update(app: &mut App, current_model: model::CurrentModel) {
+pub fn apply_current_model_update(app: &mut App, current_model: model::CurrentModel) {
     let next_resolved_id = current_model.resolved_id.clone();
     let next_display_short = current_model.display_name_short.clone();
     let next_display_long = current_model.display_name_long.clone();
@@ -310,7 +310,7 @@ pub(super) fn apply_current_model_update(app: &mut App, current_model: model::Cu
     );
 }
 
-pub(super) fn apply_current_mode_update(app: &mut App, update: model::CurrentModeUpdate) {
+pub fn apply_current_mode_update(app: &mut App, update: model::CurrentModeUpdate) {
     let mode_id = update.current_mode_id.to_string();
     let mut mode_changed = false;
     if let Some(ref mut mode) = app.mode {
