@@ -25,12 +25,12 @@ pub struct EventEnvelope {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub request_id: Option<String>,
     #[serde(flatten)]
-    pub event: BridgeEvent,
+    pub event: AgentEvent,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
-pub enum BridgeEvent {
+pub enum AgentEvent {
     Connected {
         session_id: String,
         cwd: String,
@@ -150,7 +150,7 @@ pub enum BridgeEvent {
     },
 }
 
-impl BridgeEvent {
+impl AgentEvent {
     #[must_use]
     pub fn event_name(&self) -> &'static str {
         match self {
@@ -246,14 +246,14 @@ impl BridgeEvent {
 
 #[cfg(test)]
 mod tests {
-    use super::{BridgeEvent, EventEnvelope, SessionLaunchSettings};
+    use super::{AgentEvent, EventEnvelope, SessionLaunchSettings};
     use crate::agent::types;
 
     #[test]
     fn event_envelope_roundtrip_json() {
         let env = EventEnvelope {
             request_id: None,
-            event: BridgeEvent::TurnComplete {
+            event: AgentEvent::TurnComplete {
                 session_id: "session-1".to_owned(),
                 terminal_reason: Some(types::TerminalReason::Completed),
             },

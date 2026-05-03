@@ -19,7 +19,7 @@ use crate::agent::types::{
     PlanEntry, SessionUpdate, TaskMetadata, ToolCall, ToolCallContent, ToolCallUpdate,
     ToolCallUpdateFields,
 };
-use crate::agent::wire::BridgeEvent;
+use crate::agent::wire::AgentEvent;
 
 use super::state::BridgeSession;
 use super::tooling::{build_tool_result_fields, create_tool_call};
@@ -96,14 +96,14 @@ pub fn apply_fields_to_base(base: &mut ToolCall, fields: &ToolCallUpdateFields) 
     }
 }
 
-fn push_session_update(out: &mut Vec<BridgeEvent>, session_id: &str, update: SessionUpdate) {
-    out.push(BridgeEvent::SessionUpdate { session_id: session_id.to_owned(), update });
+fn push_session_update(out: &mut Vec<AgentEvent>, session_id: &str, update: SessionUpdate) {
+    out.push(AgentEvent::SessionUpdate { session_id: session_id.to_owned(), update });
 }
 
 fn emit_initial_tool_call(
     session: &mut BridgeSession,
     tool_call: ToolCall,
-    out: &mut Vec<BridgeEvent>,
+    out: &mut Vec<AgentEvent>,
 ) {
     session.tool_calls.insert(tool_call.tool_call_id.clone(), tool_call.clone());
     push_session_update(
@@ -118,7 +118,7 @@ pub fn emit_tool_call_update(
     session: &mut BridgeSession,
     tool_use_id: &str,
     fields: ToolCallUpdateFields,
-    out: &mut Vec<BridgeEvent>,
+    out: &mut Vec<AgentEvent>,
 ) {
     if let Some(base) = session.tool_calls.get_mut(tool_use_id) {
         apply_fields_to_base(base, &fields);
@@ -139,7 +139,7 @@ pub fn emit_tool_call(
     name: &str,
     input: &Value,
     parent_tool_use_id: Option<&str>,
-    out: &mut Vec<BridgeEvent>,
+    out: &mut Vec<AgentEvent>,
 ) {
     let existing = session.tool_calls.get(tool_use_id).cloned();
     let resolved_parent = parent_tool_use_id
@@ -175,7 +175,7 @@ pub fn ensure_tool_call_visible(
     name: &str,
     input: &Value,
     parent_tool_use_id: Option<&str>,
-    out: &mut Vec<BridgeEvent>,
+    out: &mut Vec<AgentEvent>,
 ) {
     if let Some(existing) = session.tool_calls.get(tool_use_id).cloned() {
         let existing_parent = parent_tool_use_id_from_meta(existing.meta.as_ref());
@@ -202,7 +202,7 @@ pub fn emit_plan_if_todo_write(
     session: &BridgeSession,
     name: &str,
     input: &Value,
-    out: &mut Vec<BridgeEvent>,
+    out: &mut Vec<AgentEvent>,
 ) {
     if name != "TodoWrite" {
         return;
@@ -235,7 +235,7 @@ pub fn emit_tool_result_update(
     is_error: bool,
     raw_content: Option<&Value>,
     raw_result: Option<&Value>,
-    out: &mut Vec<BridgeEvent>,
+    out: &mut Vec<AgentEvent>,
 ) {
     let base = session.tool_calls.get(tool_use_id).cloned();
     let fields = build_tool_result_fields(is_error, raw_content, base.as_ref(), raw_result);
@@ -248,7 +248,7 @@ pub fn emit_tool_result_update(
 pub fn finalize_open_tool_calls(
     session: &mut BridgeSession,
     status: &str,
-    out: &mut Vec<BridgeEvent>,
+    out: &mut Vec<AgentEvent>,
 ) {
     let pending: Vec<String> = session
         .tool_calls
@@ -271,7 +271,7 @@ pub fn emit_tool_progress_update(
     session: &mut BridgeSession,
     tool_use_id: &str,
     name: &str,
-    out: &mut Vec<BridgeEvent>,
+    out: &mut Vec<AgentEvent>,
 ) {
     let existing = session.tool_calls.get(tool_use_id).cloned();
     let Some(existing) = existing else {
@@ -294,7 +294,7 @@ pub fn emit_tool_summary_update(
     session: &mut BridgeSession,
     tool_use_id: &str,
     summary: &str,
-    out: &mut Vec<BridgeEvent>,
+    out: &mut Vec<AgentEvent>,
 ) {
     let Some(base) = session.tool_calls.get(tool_use_id).cloned() else { return };
     let status = if matches!(base.status.as_str(), "failed" | "killed") {
@@ -319,7 +319,7 @@ pub fn set_tool_call_status(
     tool_use_id: &str,
     status: &str,
     message: Option<&str>,
-    out: &mut Vec<BridgeEvent>,
+    out: &mut Vec<AgentEvent>,
 ) {
     if !session.tool_calls.contains_key(tool_use_id) {
         return;
@@ -478,7 +478,7 @@ mod tests {
         out.clear();
         emit_tool_call(&mut s, "tu1", "Bash", &json!({"command":"pwd"}), None, &mut out);
         assert_eq!(out.len(), 1);
-        let BridgeEvent::SessionUpdate {
+        let AgentEvent::SessionUpdate {
             update: SessionUpdate::ToolCallUpdate { tool_call_update }, ..
         } = &out[0]
         else {
@@ -497,7 +497,7 @@ mod tests {
         let raw_result = json!({"stdout":"file1\nfile2\n","stderr":""});
         emit_tool_result_update(&mut s, "tu1", false, Some(&json!("ignored")), Some(&raw_result), &mut out);
         assert_eq!(out.len(), 1);
-        let BridgeEvent::SessionUpdate {
+        let AgentEvent::SessionUpdate {
             update: SessionUpdate::ToolCallUpdate { tool_call_update }, ..
         } = &out[0]
         else {
@@ -521,7 +521,7 @@ mod tests {
         out.clear();
         finalize_open_tool_calls(&mut s, "failed", &mut out);
         assert_eq!(out.len(), 1);
-        let BridgeEvent::SessionUpdate {
+        let AgentEvent::SessionUpdate {
             update: SessionUpdate::ToolCallUpdate { tool_call_update }, ..
         } = &out[0]
         else {
@@ -542,7 +542,7 @@ mod tests {
         ]});
         emit_plan_if_todo_write(&s, "TodoWrite", &input, &mut out);
         assert_eq!(out.len(), 1);
-        let BridgeEvent::SessionUpdate { update: SessionUpdate::Plan { entries }, .. } = &out[0]
+        let AgentEvent::SessionUpdate { update: SessionUpdate::Plan { entries }, .. } = &out[0]
         else {
             panic!("expected Plan");
         };

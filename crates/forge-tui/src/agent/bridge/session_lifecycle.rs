@@ -19,7 +19,7 @@
 use serde_json::Value;
 
 use crate::agent::types::{AvailableModel, CurrentModel, EffortLevel, SessionUpdate};
-use crate::agent::wire::BridgeEvent;
+use crate::agent::wire::AgentEvent;
 
 use super::state::BridgeSession;
 
@@ -332,7 +332,7 @@ fn current_models_equal(left: Option<&CurrentModel>, right: &CurrentModel) -> bo
 pub fn refresh_current_model(
     session: &mut BridgeSession,
     emit_update: bool,
-    out: &mut Vec<BridgeEvent>,
+    out: &mut Vec<AgentEvent>,
 ) -> bool {
     let next = resolve_current_model(session);
     if current_models_equal(session.current_model.as_ref(), &next) {
@@ -340,7 +340,7 @@ pub fn refresh_current_model(
     }
     session.current_model = Some(next.clone());
     if emit_update && session.connected {
-        out.push(BridgeEvent::SessionUpdate {
+        out.push(AgentEvent::SessionUpdate {
             session_id: session.session_id.clone(),
             update: SessionUpdate::CurrentModelUpdate { current_model: next },
         });

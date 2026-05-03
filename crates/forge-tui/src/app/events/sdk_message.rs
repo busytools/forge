@@ -32,7 +32,7 @@
 //!
 //! Phase 1 is compile-safe and behaviour-neutral: the bridge keeps
 //! emitting `SessionUpdate`s as before, App keeps consuming them,
-//! and `BridgeEvent::SdkMessage` events flow alongside as a no-op
+//! and `AgentEvent::SdkMessage` events flow alongside as a no-op
 //! double-feed. Phase 2 cutovers each variant atomically: the
 //! bridge stops emitting the SessionUpdate variant, this module's
 //! handler starts mutating App state. No double-write window per

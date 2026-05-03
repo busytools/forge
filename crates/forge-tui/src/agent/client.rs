@@ -17,7 +17,7 @@ use crate::agent::wire::SessionLaunchSettings;
 /// - **Fire-and-forget commands** — most session-lifecycle methods
 ///   (`prompt_text`, `cancel`, `set_mode`, …) return
 ///   `anyhow::Result<()>` and emit results back through the existing
-///   [`crate::agent::wire::BridgeEvent`] stream.
+///   [`crate::agent::wire::AgentEvent`] stream.
 /// - **Direct-return accessors** — synchronous reads/writes that
 ///   return their result directly (`config_dir`, `oauth_credentials`,
 ///   `settings_documents`, `write_settings_document`,
@@ -133,7 +133,7 @@ pub trait AgentBridge {
     ) -> anyhow::Result<()>;
 
     /// Start watching `cwd`'s `.git` machinery for branch changes.
-    /// Snapshots flow back via `BridgeEvent::GitContextSnapshot`
+    /// Snapshots flow back via `AgentEvent::GitContextSnapshot`
     /// (initial state queued before the call returns; subsequent
     /// snapshots only on actual branch change). Calling again with
     /// the same `session_id` aborts and replaces any existing

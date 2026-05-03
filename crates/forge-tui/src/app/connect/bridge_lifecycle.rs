@@ -5,7 +5,7 @@ use crate::agent::client::AgentBridge;
 use crate::agent::events::ClientEvent;
 use crate::agent::forge_sdk_bridge::{ForgeSdkBridge, ForgeSdkCommand};
 use crate::agent::forge_sdk_worker;
-use crate::agent::wire::{BridgeEvent, EventEnvelope};
+use crate::agent::wire::{AgentEvent, EventEnvelope};
 use crate::error::AppError;
 use std::rc::Rc;
 use tokio::sync::mpsc;
@@ -42,7 +42,7 @@ pub(super) async fn run_connection_task(
 
         let mut connected_once = false;
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel::<ForgeSdkCommand>();
-        let (event_tx, mut event_rx) = mpsc::unbounded_channel::<BridgeEvent>();
+        let (event_tx, mut event_rx) = mpsc::unbounded_channel::<AgentEvent>();
 
         let agent: Rc<dyn AgentBridge> =
             Rc::new(ForgeSdkBridge::new(cmd_tx.clone())) as Rc<dyn AgentBridge>;
@@ -80,14 +80,14 @@ pub(super) async fn run_connection_task(
     .await;
 }
 
-/// Forge-sdk event relay: drain `BridgeEvent`s emitted by the
+/// Forge-sdk event relay: drain `AgentEvent`s emitted by the
 /// forge-sdk worker and feed them into the existing
 /// `handle_bridge_event` dispatcher. The dispatcher is unaware which
-/// backend produced the event because the wire shape (`BridgeEvent`)
+/// backend produced the event because the wire shape (`AgentEvent`)
 /// is identical to what the Node bridge would have produced.
 async fn forge_sdk_event_loop(
     params: &StartConnectionParams,
-    event_rx: &mut mpsc::UnboundedReceiver<BridgeEvent>,
+    event_rx: &mut mpsc::UnboundedReceiver<AgentEvent>,
     agent: &Rc<dyn AgentBridge>,
     connected_once: &mut bool,
 ) {

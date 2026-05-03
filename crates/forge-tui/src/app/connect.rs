@@ -2,7 +2,7 @@
 //!
 //! Submodules:
 //! - `bridge_lifecycle`: spawning the bridge process, init handshake, event loop
-//! - `event_dispatch`: routing `BridgeEvent` envelopes to `ClientEvent` messages
+//! - `event_dispatch`: routing `AgentEvent` envelopes to `ClientEvent` messages
 //! - `type_converters`: bridge wire types -> app model types
 
 mod bridge_lifecycle;

@@ -2,7 +2,7 @@
 //! `agent-sdk/src/bridge/*.ts` modules. Each submodule mirrors one
 //! upstream file by the same name.
 //!
-//! Goal: produce byte-identical `BridgeEvent` output to upstream's
+//! Goal: produce byte-identical `AgentEvent` output to upstream's
 //! Node bridge so the lifted TUI renders the same on both backends.
 //!
 //! Entry points are called from `forge_sdk_translate.rs` (live SDK

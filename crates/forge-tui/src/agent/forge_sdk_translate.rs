@@ -1,9 +1,9 @@
 //! Thin shim around `bridge::message_handlers::handle_sdk_message`.
 //!
 //! The Node bridge in `agent-sdk/` historically consumed raw SDK
-//! messages and emitted `BridgeEvent`s through stdout. The forge-sdk-
+//! messages and emitted `AgentEvent`s through stdout. The forge-sdk-
 //! backed bridge lives in-process so it skips the NDJSON round-trip,
-//! but the `BridgeEvent` shape on the consumer side stays identical
+//! but the `AgentEvent` shape on the consumer side stays identical
 //! — `app/connect/event_dispatch.rs` is unaware which backend
 //! produced the events.
 //!
@@ -13,19 +13,19 @@
 //! `tool_result` and track per-session state across messages.
 //!
 //! This module retains only the `elicitation_request` system-subtype
-//! handler. Elicitation is a top-level `BridgeEvent`, not a
+//! handler. Elicitation is a top-level `AgentEvent`, not a
 //! `SessionUpdate`, and its lifetime doesn't depend on the bridge
 //! session state, so it stays here for now.
 
 use forge_sdk::Message as SdkMessage;
 
-use crate::agent::wire::BridgeEvent;
+use crate::agent::wire::AgentEvent;
 
-/// Translate one SDK message into zero or more `BridgeEvent`s.
+/// Translate one SDK message into zero or more `AgentEvent`s.
 /// Today only `system/elicitation_request` is handled here; everything
 /// else flows through `bridge::message_handlers::handle_sdk_message`.
 #[must_use]
-pub fn translate_message(msg: SdkMessage) -> Vec<BridgeEvent> {
+pub fn translate_message(msg: SdkMessage) -> Vec<AgentEvent> {
     match msg {
         SdkMessage::System { subtype, session_id, data } if subtype == "elicitation_request" => {
             elicitation_request_to_event(session_id.unwrap_or_default(), &data)
@@ -37,12 +37,12 @@ pub fn translate_message(msg: SdkMessage) -> Vec<BridgeEvent> {
 }
 
 /// Translate a `system/elicitation_request` SDK message into the
-/// upstream `BridgeEvent::ElicitationRequest` shape so the MCP overlay
+/// upstream `AgentEvent::ElicitationRequest` shape so the MCP overlay
 /// in the TUI can prompt the user for the form payload.
 fn elicitation_request_to_event(
     session_id: String,
     data: &serde_json::Value,
-) -> Option<BridgeEvent> {
+) -> Option<AgentEvent> {
     use crate::agent::types::{ElicitationMode, ElicitationRequest};
     let request_id = data.get("request_id").and_then(|v| v.as_str())?.to_owned();
     let server_name = data
@@ -65,7 +65,7 @@ fn elicitation_request_to_event(
         .and_then(|v| v.as_str())
         .map(str::to_owned);
     let requested_schema = data.get("requested_schema").cloned();
-    Some(BridgeEvent::ElicitationRequest {
+    Some(AgentEvent::ElicitationRequest {
         session_id,
         request: ElicitationRequest {
             request_id,
@@ -99,7 +99,7 @@ mod tests {
         };
         let events = translate_message(msg);
         assert_eq!(events.len(), 1);
-        let BridgeEvent::ElicitationRequest { session_id, request } = &events[0] else {
+        let AgentEvent::ElicitationRequest { session_id, request } = &events[0] else {
             panic!("expected ElicitationRequest");
         };
         assert_eq!(session_id, "sess");

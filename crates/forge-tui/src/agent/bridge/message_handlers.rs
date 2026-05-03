@@ -1,6 +1,6 @@
 //! Live SDK-message dispatcher. Mirrors upstream's
 //! `agent-sdk/src/bridge/message_handlers.ts`. The entry point
-//! `handle_sdk_message(&mut BridgeSession, &Message, &mut Vec<BridgeEvent>)`
+//! `handle_sdk_message(&mut BridgeSession, &Message, &mut Vec<AgentEvent>)`
 //! routes each `forge_sdk::Message` variant to the right per-subtype
 //! handler.
 //!
@@ -25,7 +25,7 @@ use forge_sdk::Message as SdkMessage;
 use serde_json::{Map, Value};
 
 use crate::agent::types::{ContentBlock, SessionUpdate, TerminalReason};
-use crate::agent::wire::BridgeEvent;
+use crate::agent::wire::AgentEvent;
 
 use super::commands::refresh_supported_modes_for_session;
 use super::session_lifecycle::refresh_current_model;
@@ -36,33 +36,33 @@ use super::tool_calls::{
 };
 use super::tooling::{TOOL_RESULT_TYPES, is_tool_use_block_type, unwrap_tool_use_result};
 
-fn push_session_update(out: &mut Vec<BridgeEvent>, session_id: &str, update: SessionUpdate) {
-    out.push(BridgeEvent::SessionUpdate { session_id: session_id.to_owned(), update });
+fn push_session_update(out: &mut Vec<AgentEvent>, session_id: &str, update: SessionUpdate) {
+    out.push(AgentEvent::SessionUpdate { session_id: session_id.to_owned(), update });
 }
 
 // Phase 2: `emit_fast_mode_update_if_changed` removed. The App's
 // `events::sdk_message::handle_sdk_message` now applies the
 // `fast_mode_state` field directly from the raw `forge_sdk::Message`
-// envelope on the `BridgeEvent::SdkMessage` parallel wire.
+// envelope on the `AgentEvent::SdkMessage` parallel wire.
 
 fn handle_content_block(
     session: &mut BridgeSession,
     block: &Value,
     parent_tool_use_id: Option<&str>,
-    out: &mut Vec<BridgeEvent>,
+    out: &mut Vec<AgentEvent>,
 ) {
     let Some(block_record) = block.as_object() else { return };
     let block_type = block_record.get("type").and_then(Value::as_str).unwrap_or("");
 
     // text + thinking blocks moved to App's events::sdk_message
-    // walk_assistant_text_and_thinking on the BridgeEvent::SdkMessage
+    // walk_assistant_text_and_thinking on the AgentEvent::SdkMessage
     // parallel wire (Phase 2 cutover).
     if block_type == "text" || block_type == "thinking" {
         return;
     }
     // tool_use + tool_result blocks moved to App's
     // events::sdk_message::apply_tool_use_block /
-    // apply_tool_result_block on the BridgeEvent::SdkMessage
+    // apply_tool_result_block on the AgentEvent::SdkMessage
     // parallel wire (Phase 2 cutover).
     if is_tool_use_block_type(block_type) || TOOL_RESULT_TYPES.contains(&block_type) {
         let _ = parent_tool_use_id;
@@ -74,7 +74,7 @@ fn handle_assistant_message(
     parent_tool_use_id: Option<&str>,
     error: Option<&str>,
     message: &Value,
-    out: &mut Vec<BridgeEvent>,
+    out: &mut Vec<AgentEvent>,
 ) {
     if let Some(err) = error
         && !err.is_empty()
@@ -101,7 +101,7 @@ fn handle_user_tool_result_blocks(
     session: &mut BridgeSession,
     parent_tool_use_id: Option<&str>,
     message: &Value,
-    out: &mut Vec<BridgeEvent>,
+    out: &mut Vec<AgentEvent>,
 ) {
     let Some(message_record) = message.as_object() else { return };
     let Some(content) = message_record.get("content").and_then(Value::as_array) else { return };
@@ -125,11 +125,11 @@ fn handle_result_message(
     _fast_mode_state: Option<&Value>,
     _terminal_reason: Option<&Value>,
     _errors: Option<&Value>,
-    out: &mut Vec<BridgeEvent>,
+    out: &mut Vec<AgentEvent>,
 ) {
     // TurnComplete + TurnError + finalize_open_tool_calls moved to
     // the App's events::sdk_message::apply_result_finalize on the
-    // BridgeEvent::SdkMessage parallel wire (Phase 2 cutover).
+    // AgentEvent::SdkMessage parallel wire (Phase 2 cutover).
     let _ = session;
     let _ = out;
 }
@@ -176,7 +176,7 @@ fn handle_system_init(
     session: &mut BridgeSession,
     incoming_session_id: Option<&str>,
     msg_record: &Map<String, Value>,
-    out: &mut Vec<BridgeEvent>,
+    out: &mut Vec<AgentEvent>,
 ) {
     if let Some(sid) = incoming_session_id
         && !sid.is_empty()
@@ -202,20 +202,20 @@ fn handle_system_init(
 
     // ModeStateUpdate moved to App's
     // events::sdk_message::apply_mode_state_from_init on the
-    // BridgeEvent::SdkMessage parallel wire (Phase 2 cutover).
+    // AgentEvent::SdkMessage parallel wire (Phase 2 cutover).
     let _ = out;
 
     // AvailableCommandsUpdate + AvailableAgentsUpdate moved to App's
     // events::sdk_message::handle_system init arm.
 
     // settings_errors moved to App's events::sdk_message::apply_settings_parse_errors
-    // on the BridgeEvent::SdkMessage parallel wire (Phase 2 cutover).
+    // on the AgentEvent::SdkMessage parallel wire (Phase 2 cutover).
 }
 
 fn handle_system_status(
     session: &mut BridgeSession,
     msg_record: &Map<String, Value>,
-    _out: &mut Vec<BridgeEvent>,
+    _out: &mut Vec<AgentEvent>,
 ) {
     if let Some(mode_str) = msg_record.get("permissionMode").and_then(Value::as_str)
         && let Some(mode) = PermissionMode::from_wire(mode_str)
@@ -230,7 +230,7 @@ fn handle_system_status(
 
 // handle_system_compact_boundary moved to App's
 // events::sdk_message::apply_compaction_boundary on the
-// BridgeEvent::SdkMessage parallel wire.
+// AgentEvent::SdkMessage parallel wire.
 
 /// Top-level dispatcher. Routes one `forge_sdk::Message` to its
 /// per-subtype handler. The bridge session captures continuous state
@@ -240,7 +240,7 @@ fn handle_system_status(
 pub fn handle_sdk_message(
     session: &mut BridgeSession,
     msg: &SdkMessage,
-    out: &mut Vec<BridgeEvent>,
+    out: &mut Vec<AgentEvent>,
 ) {
     match msg {
         SdkMessage::Assistant { message, parent_tool_use_id, error, .. } => {
@@ -264,7 +264,7 @@ pub fn handle_sdk_message(
             // User content tool_result blocks + tool_use_result side
             // payloads moved to App's events::sdk_message::handle_user
             // (walks the envelope's content array + the
-            // tool_use_result envelope) on the BridgeEvent::SdkMessage
+            // tool_use_result envelope) on the AgentEvent::SdkMessage
             // parallel wire (Phase 2 cutover).
             let _ = session;
             let _ = out;
@@ -300,7 +300,7 @@ pub fn handle_sdk_message(
                 "session_state_changed" => {
                     // Phase 2 cutover: handled by App's
                     // events::sdk_message::handle_system on the
-                    // BridgeEvent::SdkMessage parallel wire.
+                    // AgentEvent::SdkMessage parallel wire.
                 }
                 "init" => {
                     handle_system_init(session, msg_session_id.as_deref(), msg_record, out);
@@ -314,12 +314,12 @@ pub fn handle_sdk_message(
                 "local_command_output" => {
                     // Phase 2 cutover: handled by App's
                     // events::sdk_message::apply_local_command_output
-                    // on the BridgeEvent::SdkMessage parallel wire.
+                    // on the AgentEvent::SdkMessage parallel wire.
                 }
                 "elicitation_complete" => {
                     // Phase 2 cutover: handled by App's
                     // events::sdk_message::apply_elicitation_complete on
-                    // the BridgeEvent::SdkMessage parallel wire.
+                    // the AgentEvent::SdkMessage parallel wire.
                 }
                 _ => {
                     // task_started/progress/notification fall here in
@@ -332,14 +332,14 @@ pub fn handle_sdk_message(
         SdkMessage::RateLimitEvent { .. } => {
             // Phase 2 cutover: handled by App's
             // events::sdk_message::handle_rate_limit_event on the
-            // BridgeEvent::SdkMessage parallel wire.
+            // AgentEvent::SdkMessage parallel wire.
         }
         SdkMessage::TaskStarted { .. }
         | SdkMessage::TaskProgress { .. }
         | SdkMessage::TaskNotification { .. } => {
             // Task* messages moved to App's events::sdk_message
             // handle_task_started / handle_task_progress /
-            // handle_task_notification on the BridgeEvent::SdkMessage
+            // handle_task_notification on the AgentEvent::SdkMessage
             // parallel wire (Phase 2 cutover).
         }
         // StreamEvent + Error + Unknown are no-ops for now; future
@@ -351,7 +351,7 @@ pub fn handle_sdk_message(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::wire::BridgeEvent;
+    use crate::agent::wire::AgentEvent;
     use forge_sdk::{AssistantEnvelope, Message as SdkMessage};
     use serde_json::json;
 
@@ -380,7 +380,7 @@ mod tests {
     fn assistant_text_no_longer_emits_chunk_from_bridge() {
         // Phase 2 cut: text + thinking blocks moved to App's
         // events::sdk_message::walk_assistant_text_and_thinking on the
-        // BridgeEvent::SdkMessage parallel wire. The bridge's
+        // AgentEvent::SdkMessage parallel wire. The bridge's
         // handle_content_block now ignores them.
         let mut s = fresh_session();
         let mut out = Vec::new();
@@ -396,7 +396,7 @@ mod tests {
     fn assistant_tool_use_no_longer_emits_tool_call_from_bridge() {
         // Phase 2 cut: tool_use blocks moved to App's
         // events::sdk_message::apply_tool_use_block on the
-        // BridgeEvent::SdkMessage parallel wire. The bridge no longer
+        // AgentEvent::SdkMessage parallel wire. The bridge no longer
         // tracks tool_calls or emits ToolCall/ToolCallUpdate events.
         let mut s = fresh_session();
         let mut out = Vec::new();
@@ -415,7 +415,7 @@ mod tests {
     fn result_no_longer_emits_turn_complete_or_error_from_bridge() {
         // Phase 2 cut: TurnComplete + TurnError + finalize_open_tool_calls
         // moved to App's events::sdk_message::apply_result_finalize on
-        // the BridgeEvent::SdkMessage parallel wire.
+        // the AgentEvent::SdkMessage parallel wire.
         let mut s = fresh_session();
         let mut out = Vec::new();
         let result: SdkMessage = serde_json::from_value(json!({

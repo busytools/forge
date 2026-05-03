@@ -4,7 +4,7 @@
 use serde_json::Value;
 
 use crate::agent::types::{AvailableAgent, SessionUpdate};
-use crate::agent::wire::BridgeEvent;
+use crate::agent::wire::AgentEvent;
 
 use super::state::BridgeSession;
 
@@ -80,7 +80,7 @@ pub fn map_available_agents_from_names(value: Option<&Value>) -> Vec<AvailableAg
 pub fn emit_available_agents_if_changed(
     session: &mut BridgeSession,
     agents: Vec<AvailableAgent>,
-    out: &mut Vec<BridgeEvent>,
+    out: &mut Vec<AgentEvent>,
 ) {
     let signature = serde_json::to_string(&agents).unwrap_or_default();
     if session.last_agents_signature.as_deref() == Some(signature.as_str()) {
@@ -88,7 +88,7 @@ pub fn emit_available_agents_if_changed(
     }
     session.last_agents_signature = Some(signature);
     session.available_agents.clone_from(&agents);
-    out.push(BridgeEvent::SessionUpdate {
+    out.push(AgentEvent::SessionUpdate {
         session_id: session.session_id.clone(),
         update: SessionUpdate::AvailableAgentsUpdate { agents },
     });

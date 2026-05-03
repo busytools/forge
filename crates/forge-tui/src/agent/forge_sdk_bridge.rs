@@ -16,20 +16,20 @@
 //!      |                     |                      | client.method()   |
 //!      |                     |                      |------------------>|
 //!      |                     |                      |                   |
-//!      |   BridgeEvent       |                      | client.next_event |
+//!      |   AgentEvent       |                      | client.next_event |
 //!      |<-- (via event_tx) --+----------------------+<------------------|
 //! ```
 //!
 //! The trait impl is fire-and-forget: each method sends a
 //! [`ForgeSdkCommand`] on an mpsc and returns immediately. The worker
 //! task drains the channel, calls async `forge_sdk::Client` methods,
-//! and emits results back to the TUI via the existing `BridgeEvent`
+//! and emits results back to the TUI via the existing `AgentEvent`
 //! shape so [`crate::app::connect::event_dispatch`] doesn't need to
 //! know which backend is running.
 //!
 //! Status: scaffolding. The trait impl ships in this commit; the
 //! command -> SDK translation worker and the SDK message ->
-//! `BridgeEvent` translator land in follow-up commits.
+//! `AgentEvent` translator land in follow-up commits.
 
 #![allow(dead_code)] // worker + dispatch land in follow-up commits
 

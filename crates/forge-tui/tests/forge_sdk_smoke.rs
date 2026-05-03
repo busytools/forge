@@ -41,7 +41,7 @@ use forge_tui::agent::client::AgentBridge;
 use forge_tui::agent::forge_sdk_bridge::ForgeSdkBridge;
 use forge_tui::agent::forge_sdk_worker;
 use forge_tui::agent::types::SessionUpdate;
-use forge_tui::agent::wire::{BridgeEvent, SessionLaunchSettings};
+use forge_tui::agent::wire::{AgentEvent, SessionLaunchSettings};
 use std::rc::Rc;
 use tokio::sync::mpsc;
 
@@ -224,11 +224,11 @@ async fn forge_sdk_e2e_cancel_mid_turn() {
             break;
         };
         match event {
-            BridgeEvent::TurnComplete { .. } => {
+            AgentEvent::TurnComplete { .. } => {
                 terminal = Some("complete");
                 break;
             }
-            BridgeEvent::TurnError { message, .. } => {
+            AgentEvent::TurnError { message, .. } => {
                 eprintln!("e2e cancel: TurnError {message}");
                 terminal = Some("error");
                 break;
@@ -289,8 +289,8 @@ async fn forge_sdk_e2e_status_and_context_snapshots() {
             break;
         };
         match event {
-            BridgeEvent::StatusSnapshot { .. } => saw_status = true,
-            BridgeEvent::ContextUsage { .. } => saw_context = true,
+            AgentEvent::StatusSnapshot { .. } => saw_status = true,
+            AgentEvent::ContextUsage { .. } => saw_context = true,
             _ => {}
         }
     }
@@ -334,7 +334,7 @@ async fn forge_sdk_e2e_mcp_snapshot() {
         else {
             break;
         };
-        if let BridgeEvent::McpSnapshot { servers, error, .. } = event {
+        if let AgentEvent::McpSnapshot { servers, error, .. } = event {
             // The list may be empty (no MCP servers configured) — we
             // only care that the round-trip works without error.
             assert!(error.is_none(), "MCP snapshot error: {error:?}");
@@ -401,7 +401,7 @@ async fn forge_sdk_e2e_resume_session() {
 }
 
 async fn await_connected(
-    rx: &mut mpsc::UnboundedReceiver<BridgeEvent>,
+    rx: &mut mpsc::UnboundedReceiver<AgentEvent>,
     timeout: Duration,
 ) -> String {
     let deadline = tokio::time::Instant::now() + timeout;
@@ -418,8 +418,8 @@ async fn await_connected(
             panic!("event channel closed before Connected");
         };
         match event {
-            BridgeEvent::Connected { session_id, .. } => return session_id,
-            BridgeEvent::ConnectionFailed { message } => {
+            AgentEvent::Connected { session_id, .. } => return session_id,
+            AgentEvent::ConnectionFailed { message } => {
                 panic!("connection failed during smoke test: {message}");
             }
             other => {
@@ -435,7 +435,7 @@ struct TurnOutcome {
 }
 
 async fn await_turn(
-    rx: &mut mpsc::UnboundedReceiver<BridgeEvent>,
+    rx: &mut mpsc::UnboundedReceiver<AgentEvent>,
     timeout: Duration,
 ) -> TurnOutcome {
     let deadline = tokio::time::Instant::now() + timeout;
@@ -453,7 +453,7 @@ async fn await_turn(
             panic!("event channel closed before TurnComplete");
         };
         match event {
-            BridgeEvent::SessionUpdate { update, .. } => {
+            AgentEvent::SessionUpdate { update, .. } => {
                 match update {
                     SessionUpdate::AgentMessageChunk { .. } => outcome.saw_text = true,
                     SessionUpdate::ToolCall { .. } => outcome.saw_tool_call = true,
@@ -461,8 +461,8 @@ async fn await_turn(
                 }
                 eprintln!("e2e: SessionUpdate {:?}", brief(&update));
             }
-            BridgeEvent::TurnComplete { .. } => return outcome,
-            BridgeEvent::TurnError { message, .. } => {
+            AgentEvent::TurnComplete { .. } => return outcome,
+            AgentEvent::TurnError { message, .. } => {
                 panic!("turn errored: {message}");
             }
             other => eprintln!("e2e: event: {}", other.event_name()),

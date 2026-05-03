@@ -7,7 +7,7 @@
 //! `Client` after the first `NewSession` / `ResumeSession` arrives,
 //! and forwards subsequent commands as direct method calls. A reader
 //! subtask drains `Client::next_event()` and translates every SDK
-//! `Message` into [`BridgeEvent`]s on the existing event channel via
+//! `Message` into [`AgentEvent`]s on the existing event channel via
 //! [`crate::agent::forge_sdk_translate::translate_message`].
 //!
 //! ## State machine (current scope)
@@ -29,7 +29,7 @@
 //! Permission and question prompts arrive through the `can_use_tool`
 //! callback wired at `Client::spawn` time; the worker parks each
 //! request on a shared `pending` map keyed by `tool_use_id`, emits
-//! the matching `BridgeEvent`, and lets the inbound
+//! the matching `AgentEvent`, and lets the inbound
 //! `PermissionResponse` / `QuestionResponse` command drain the
 //! oneshot when the user answers.
 
@@ -48,7 +48,7 @@ use crate::agent::bridge::{
 };
 use crate::agent::forge_sdk_bridge::ForgeSdkCommand;
 use crate::agent::forge_sdk_translate::translate_message;
-use crate::agent::wire::BridgeEvent;
+use crate::agent::wire::AgentEvent;
 
 /// Pending permission responses keyed by `tool_use_id`. The
 /// `can_use_tool` callback parks a oneshot here when the CLI asks;
@@ -67,7 +67,7 @@ type PendingQuestions =
 /// Returns when the channel is closed (TUI shutting down).
 pub async fn run_worker(
     mut command_rx: mpsc::UnboundedReceiver<ForgeSdkCommand>,
-    event_tx: mpsc::UnboundedSender<BridgeEvent>,
+    event_tx: mpsc::UnboundedSender<AgentEvent>,
 ) {
     let pending: PendingResponses = Arc::new(Mutex::new(HashMap::new()));
     let pending_questions: PendingQuestions = Arc::new(Mutex::new(HashMap::new()));
@@ -137,7 +137,7 @@ enum WorkerState {
 async fn dispatch(
     state: &mut WorkerState,
     cmd: ForgeSdkCommand,
-    event_tx: &mpsc::UnboundedSender<BridgeEvent>,
+    event_tx: &mpsc::UnboundedSender<AgentEvent>,
     pending: &PendingResponses,
     pending_questions: &PendingQuestions,
     session_id_slot: &Arc<Mutex<String>>,
@@ -258,14 +258,14 @@ async fn dispatch(
         C::GetStatusSnapshot { session_id } => {
             let client = require_running(state, "GetStatusSnapshot")?;
             let account = client.account_info().unwrap_or_default();
-            let _ = event_tx.send(BridgeEvent::StatusSnapshot { session_id, account });
+            let _ = event_tx.send(AgentEvent::StatusSnapshot { session_id, account });
             Ok(())
         }
         C::GetOauthCredentialsSnapshot { session_id } => {
             let client = require_running(state, "GetOauthCredentialsSnapshot")?;
             let credentials = client.oauth_credentials();
             let _ =
-                event_tx.send(BridgeEvent::OauthCredentialsSnapshot { session_id, credentials });
+                event_tx.send(AgentEvent::OauthCredentialsSnapshot { session_id, credentials });
             Ok(())
         }
         C::StartGitContextWatch { session_id, cwd } => {
@@ -299,7 +299,7 @@ async fn dispatch(
             let handle = tokio::spawn(async move {
                 while let Some(context) = watcher.next_snapshot().await {
                     if event_tx
-                        .send(BridgeEvent::GitContextSnapshot {
+                        .send(AgentEvent::GitContextSnapshot {
                             session_id: task_session_id.clone(),
                             context,
                         })
@@ -322,7 +322,7 @@ async fn dispatch(
             let client = require_running(state, "GetContextUsage")?;
             let usage = client.get_context_usage().await?;
             let percentage = clamp_percentage_to_u8(usage.percentage);
-            let _ = event_tx.send(BridgeEvent::ContextUsage {
+            let _ = event_tx.send(AgentEvent::ContextUsage {
                 session_id,
                 percentage: Some(percentage),
             });
@@ -336,10 +336,10 @@ async fn dispatch(
                     // refresh slash-command catalogue if reload_plugins
                     // returned a fresh `commands` array.
                     let _ = event_tx
-                        .send(BridgeEvent::RuntimeReloadCompleted { session_id });
+                        .send(AgentEvent::RuntimeReloadCompleted { session_id });
                 }
                 Err(e) => {
-                    let _ = event_tx.send(BridgeEvent::RuntimeReloadFailed {
+                    let _ = event_tx.send(AgentEvent::RuntimeReloadFailed {
                         session_id,
                         message: format!("reload_plugins failed: {e}"),
                     });
@@ -351,13 +351,13 @@ async fn dispatch(
             let client = require_running(state, "GetMcpSnapshot")?;
             let response = client.mcp_status().await?;
             let servers = response.mcp_servers;
-            let _ = event_tx.send(BridgeEvent::McpSnapshot { session_id, servers, error: None });
+            let _ = event_tx.send(AgentEvent::McpSnapshot { session_id, servers, error: None });
             Ok(())
         }
         C::ReconnectMcpServer { session_id, server_name } => {
             let client = require_running(state, "ReconnectMcpServer")?;
             if let Err(e) = client.mcp_reconnect(&server_name).await {
-                let _ = event_tx.send(BridgeEvent::McpOperationError {
+                let _ = event_tx.send(AgentEvent::McpOperationError {
                     session_id,
                     error: crate::agent::types::McpOperationError {
                         operation: "reconnect".to_owned(),
@@ -371,7 +371,7 @@ async fn dispatch(
         C::ToggleMcpServer { session_id, server_name, enabled } => {
             let client = require_running(state, "ToggleMcpServer")?;
             if let Err(e) = client.mcp_toggle(&server_name, enabled).await {
-                let _ = event_tx.send(BridgeEvent::McpOperationError {
+                let _ = event_tx.send(AgentEvent::McpOperationError {
                     session_id,
                     error: crate::agent::types::McpOperationError {
                         operation: "toggle".to_owned(),
@@ -385,7 +385,7 @@ async fn dispatch(
         C::SetMcpServers { session_id, servers } => {
             let client = require_running(state, "SetMcpServers")?;
             if let Err(e) = client.mcp_set_servers(serde_json::to_value(servers)?).await {
-                let _ = event_tx.send(BridgeEvent::McpOperationError {
+                let _ = event_tx.send(AgentEvent::McpOperationError {
                     session_id,
                     error: crate::agent::types::McpOperationError {
                         operation: "set_servers".to_owned(),
@@ -411,7 +411,7 @@ async fn dispatch(
                         .and_then(serde_json::Value::as_str)
                         .map(str::to_owned);
                     if let Some(auth_url) = url {
-                        let _ = event_tx.send(BridgeEvent::McpAuthRedirect {
+                        let _ = event_tx.send(AgentEvent::McpAuthRedirect {
                             session_id,
                             redirect: crate::agent::types::McpAuthRedirect {
                                 server_name,
@@ -422,7 +422,7 @@ async fn dispatch(
                     }
                 }
                 Err(e) => {
-                    let _ = event_tx.send(BridgeEvent::McpOperationError {
+                    let _ = event_tx.send(AgentEvent::McpOperationError {
                         session_id,
                         error: crate::agent::types::McpOperationError {
                             operation: "authenticate".to_owned(),
@@ -437,7 +437,7 @@ async fn dispatch(
         C::ClearMcpAuth { session_id, server_name } => {
             let client = require_running(state, "ClearMcpAuth")?;
             if let Err(e) = client.mcp_clear_auth(&server_name).await {
-                let _ = event_tx.send(BridgeEvent::McpOperationError {
+                let _ = event_tx.send(AgentEvent::McpOperationError {
                     session_id,
                     error: crate::agent::types::McpOperationError {
                         operation: "clear_auth".to_owned(),
@@ -451,7 +451,7 @@ async fn dispatch(
         C::SubmitMcpOauthCallbackUrl { session_id, server_name, callback_url } => {
             let client = require_running(state, "SubmitMcpOauthCallbackUrl")?;
             if let Err(e) = client.mcp_oauth_callback_url(&server_name, &callback_url).await {
-                let _ = event_tx.send(BridgeEvent::McpOperationError {
+                let _ = event_tx.send(AgentEvent::McpOperationError {
                     session_id,
                     error: crate::agent::types::McpOperationError {
                         operation: "oauth_callback".to_owned(),
@@ -466,7 +466,7 @@ async fn dispatch(
             let client = require_running(state, "GenerateSessionTitle")?;
             let _ = client.generate_session_title(&description).await?;
             // Title comes back through session.event eventually; we
-            // could also emit a BridgeEvent here to update the tab
+            // could also emit a AgentEvent here to update the tab
             // header immediately.
             Ok(())
         }
@@ -493,7 +493,7 @@ fn require_running<'a>(
 #[allow(clippy::too_many_lines)]
 async fn spawn_or_replace(
     state: &mut WorkerState,
-    event_tx: &mpsc::UnboundedSender<BridgeEvent>,
+    event_tx: &mpsc::UnboundedSender<AgentEvent>,
     options: Options,
     session_id_slot: &Arc<Mutex<String>>,
     bridge_session: &Arc<Mutex<bridge_state::BridgeSession>>,
@@ -626,7 +626,7 @@ async fn spawn_or_replace(
         None
     };
 
-    let _ = event_tx.send(BridgeEvent::Connected {
+    let _ = event_tx.send(AgentEvent::Connected {
         session_id: session_id.clone(),
         cwd: cwd.clone(),
         current_model,
@@ -638,7 +638,7 @@ async fn spawn_or_replace(
     // Eagerly emit a status snapshot so the bottom bar fills in
     // account / org / token-source without the TUI having to ask.
     if let Some(account) = client.account_info() {
-        let _ = event_tx.send(BridgeEvent::StatusSnapshot {
+        let _ = event_tx.send(AgentEvent::StatusSnapshot {
             session_id: session_id.clone(),
             account,
         });
@@ -648,7 +648,7 @@ async fn spawn_or_replace(
     // command autocomplete) wait on this event before becoming
     // interactive — without it `claude-rs resume` hangs at "Loading
     // recent sessions..." forever.
-    let _ = event_tx.send(BridgeEvent::SessionsListed {
+    let _ = event_tx.send(AgentEvent::SessionsListed {
         sessions: list_recent_sessions(&cwd),
     });
 
@@ -715,13 +715,13 @@ fn list_recent_sessions(cwd: &str) -> Vec<crate::agent::types::SessionListEntry>
 
 async fn reader_loop(
     client: Client,
-    event_tx: mpsc::UnboundedSender<BridgeEvent>,
+    event_tx: mpsc::UnboundedSender<AgentEvent>,
     bridge_session: Arc<Mutex<bridge_state::BridgeSession>>,
 ) {
     loop {
         match client.next_event().await {
             Ok(Some(msg)) => {
-                let mut buf: Vec<BridgeEvent> = Vec::new();
+                let mut buf: Vec<AgentEvent> = Vec::new();
                 let session_id_for_sdk_msg = if let Ok(mut session) = bridge_session.lock() {
                     crate::agent::bridge::message_handlers::handle_sdk_message(
                         &mut session, &msg, &mut buf,
@@ -740,7 +740,7 @@ async fn reader_loop(
                 // `handle_sdk_message` is a no-op stub during Phase 1
                 // (Phase 2 fills it in per-variant); the emission is
                 // wire-level scaffolding for that future work.
-                buf.push(BridgeEvent::SdkMessage {
+                buf.push(AgentEvent::SdkMessage {
                     session_id: session_id_for_sdk_msg,
                     msg: msg.clone(),
                 });
@@ -831,7 +831,7 @@ fn parse_permission_mode(mode: &str) -> anyhow::Result<PermissionMode> {
 
 /// Build forge-sdk `Options` with the `can_use_tool` callback wired
 /// up. The callback bridges forge-sdk's permission flow to the TUI's
-/// `BridgeEvent` channel: each request is parked on the shared
+/// `AgentEvent` channel: each request is parked on the shared
 /// `pending` map keyed by `tool_use_id`; the matching
 /// `PermissionResponse` / `QuestionResponse` command on the worker's
 /// inbound channel drains the oneshot to release the callback.
@@ -839,7 +839,7 @@ fn build_options_with_callback(
     cwd: &str,
     resume: Option<&str>,
     launch_settings: &crate::agent::wire::SessionLaunchSettings,
-    event_tx: &mpsc::UnboundedSender<BridgeEvent>,
+    event_tx: &mpsc::UnboundedSender<AgentEvent>,
     pending: &PendingResponses,
     pending_questions: &PendingQuestions,
     session_id_slot: &Arc<Mutex<String>>,
@@ -939,7 +939,7 @@ fn build_options_with_callback(
 async fn run_permission_request(
     ctx: ToolPermissionContext,
     session_id: String,
-    event_tx: &mpsc::UnboundedSender<BridgeEvent>,
+    event_tx: &mpsc::UnboundedSender<AgentEvent>,
     pending: &PendingResponses,
 ) -> PermissionDecision {
     let (tx, rx) = oneshot::channel();
@@ -970,7 +970,7 @@ async fn run_permission_request(
 async fn run_ask_user_question(
     ctx: ToolPermissionContext,
     session_id: String,
-    event_tx: &mpsc::UnboundedSender<BridgeEvent>,
+    event_tx: &mpsc::UnboundedSender<AgentEvent>,
     pending_questions: &PendingQuestions,
 ) -> PermissionDecision {
     use crate::agent::types::QuestionOutcome;
@@ -1008,7 +1008,7 @@ async fn run_ask_user_question(
             map.insert(ctx.tool_use_id.clone(), tx);
         }
         if event_tx
-            .send(BridgeEvent::QuestionRequest {
+            .send(AgentEvent::QuestionRequest {
                 session_id: session_id.clone(),
                 request: request.clone(),
             })
@@ -1142,7 +1142,7 @@ fn take_pending(
     pending.lock().ok()?.remove(tool_call_id)
 }
 
-fn synth_permission_request(session_id: &str, ctx: &ToolPermissionContext) -> BridgeEvent {
+fn synth_permission_request(session_id: &str, ctx: &ToolPermissionContext) -> AgentEvent {
     use crate::agent::types::{PermissionDisplay, PermissionRequest, ToolCall};
     let tool_call = ToolCall {
         tool_call_id: ctx.tool_use_id.clone(),
@@ -1162,7 +1162,7 @@ fn synth_permission_request(session_id: &str, ctx: &ToolPermissionContext) -> Br
         display_name: ctx.display_name.clone(),
         description: ctx.description.clone(),
     };
-    BridgeEvent::PermissionRequest {
+    AgentEvent::PermissionRequest {
         session_id: session_id.to_owned(),
         request: PermissionRequest {
             tool_call,
@@ -1220,7 +1220,7 @@ mod tests {
     use crate::agent::types::{
         ElicitationAction, PermissionOutcome, QuestionOutcome,
     };
-    use crate::agent::wire::BridgeEvent;
+    use crate::agent::wire::AgentEvent;
     use forge_sdk::ToolPermissionContext;
     use serde_json::json;
     use std::collections::HashMap;
@@ -1352,7 +1352,7 @@ mod tests {
             Some("Lists directory entries".to_owned()),
         );
         let event = synth_permission_request("sess_1", &c);
-        let BridgeEvent::PermissionRequest { session_id, request } = event else {
+        let AgentEvent::PermissionRequest { session_id, request } = event else {
             panic!("expected PermissionRequest");
         };
         assert_eq!(session_id, "sess_1");
