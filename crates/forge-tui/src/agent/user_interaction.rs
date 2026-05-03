@@ -88,7 +88,7 @@ pub fn parse_ask_user_question_prompts(input: &Value) -> Vec<AskUserQuestionProm
 /// `option_id` slugs as `question_<index>` so the TUI can map back
 /// to the upstream label list when responding.
 #[must_use]
-pub fn ask_user_question_wire_options(prompt: &AskUserQuestionPrompt) -> Vec<TuiQuestionOption> {
+fn ask_user_question_wire_options(prompt: &AskUserQuestionPrompt) -> Vec<TuiQuestionOption> {
     prompt
         .options
         .iter()
