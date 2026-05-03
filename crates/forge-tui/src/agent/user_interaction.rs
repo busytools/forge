@@ -189,18 +189,6 @@ pub fn build_updated_input(
     Value::Object(merged)
 }
 
-/// Helper for the running transcript shown in the tool card while
-/// each question is being asked. Mirrors `askUserQuestionTranscript`
-/// upstream.
-#[must_use]
-pub fn ask_user_question_transcript(answers: &[(String, String, String)]) -> String {
-    answers
-        .iter()
-        .map(|(header, question, answer)| format!("{header}: {answer}\n  {question}"))
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
