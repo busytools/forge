@@ -54,30 +54,10 @@ fn handle_content_block(
     let Some(block_record) = block.as_object() else { return };
     let block_type = block_record.get("type").and_then(Value::as_str).unwrap_or("");
 
-    if block_type == "text" {
-        let text = block_record.get("text").and_then(Value::as_str).unwrap_or("");
-        if !text.is_empty() {
-            push_session_update(
-                out,
-                &session.session_id,
-                SessionUpdate::AgentMessageChunk {
-                    content: ContentBlock::Text { text: text.to_owned() },
-                },
-            );
-        }
-        return;
-    }
-    if block_type == "thinking" {
-        let text = block_record.get("thinking").and_then(Value::as_str).unwrap_or("");
-        if !text.is_empty() {
-            push_session_update(
-                out,
-                &session.session_id,
-                SessionUpdate::AgentThoughtChunk {
-                    content: ContentBlock::Text { text: text.to_owned() },
-                },
-            );
-        }
+    // text + thinking blocks moved to App's events::sdk_message
+    // walk_assistant_text_and_thinking on the BridgeEvent::SdkMessage
+    // parallel wire (Phase 2 cutover).
+    if block_type == "text" || block_type == "thinking" {
         return;
     }
     if is_tool_use_block_type(block_type) {
@@ -477,18 +457,19 @@ mod tests {
     }
 
     #[test]
-    fn assistant_text_emits_chunk() {
+    fn assistant_text_no_longer_emits_chunk_from_bridge() {
+        // Phase 2 cut: text + thinking blocks moved to App's
+        // events::sdk_message::walk_assistant_text_and_thinking on the
+        // BridgeEvent::SdkMessage parallel wire. The bridge's
+        // handle_content_block now ignores them.
         let mut s = fresh_session();
         let mut out = Vec::new();
         let msg = assistant_msg(&json!([{"type":"text","text":"hi"}]));
         handle_sdk_message(&mut s, &msg, &mut out);
-        // Text blocks fan-through handle_assistant_message → handle_content_block
-        // which emits AgentMessageChunk
-        assert_eq!(out.len(), 1);
-        match &out[0] {
-            BridgeEvent::SessionUpdate { update: SessionUpdate::AgentMessageChunk { .. }, .. } => {}
-            _ => panic!("expected AgentMessageChunk"),
-        }
+        assert!(
+            out.is_empty(),
+            "bridge should no longer emit AgentMessageChunk for text blocks"
+        );
     }
 
     #[test]

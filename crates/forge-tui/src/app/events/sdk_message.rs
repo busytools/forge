@@ -109,6 +109,58 @@ fn apply_fast_mode_update(app: &mut App, raw: &Value) {
 fn handle_assistant(app: &mut App, msg: Message, raw: &Value) {
     let _ = msg;
     apply_fast_mode_update(app, raw);
+    walk_assistant_text_and_thinking(app, raw);
+}
+
+/// Walk the raw `Message::Assistant` JSON envelope, applying text and
+/// thinking content blocks to App state directly. Mirrors the
+/// `block_type == "text"` and `block_type == "thinking"` branches of
+/// the bridge's `handle_content_block`. The remaining tool_use /
+/// tool_result branches still flow through the bridge until the
+/// tool_call lifecycle cut lands.
+fn walk_assistant_text_and_thinking(app: &mut App, raw: &Value) {
+    use crate::agent::model;
+
+    let Some(content) = raw
+        .get("message")
+        .and_then(|m| m.get("content"))
+        .and_then(Value::as_array)
+    else {
+        return;
+    };
+    for block in content {
+        let Some(record) = block.as_object() else { continue };
+        let block_type = record.get("type").and_then(Value::as_str).unwrap_or("");
+        match block_type {
+            "text" => {
+                let text = record.get("text").and_then(Value::as_str).unwrap_or("");
+                if text.is_empty() {
+                    continue;
+                }
+                super::clear_compaction_state(app, true);
+                let chunk = model::ContentChunk::new(model::ContentBlock::Text(
+                    model::TextContent::new(text.to_owned()),
+                ));
+                super::streaming::handle_agent_message_chunk(app, chunk);
+            }
+            "thinking" => {
+                let text = record.get("thinking").and_then(Value::as_str).unwrap_or("");
+                if text.is_empty() {
+                    continue;
+                }
+                let chunk_chars = text.chars().count();
+                tracing::trace!(
+                    target: crate::logging::targets::APP_SESSION,
+                    event_name = "agent_thought_chunk_applied",
+                    message = "agent thought chunk applied",
+                    outcome = "success",
+                    chunk_chars,
+                );
+                app.status = crate::app::AppStatus::Thinking;
+            }
+            _ => {}
+        }
+    }
 }
 
 fn handle_user(app: &mut App, msg: Message, raw: &Value) {
