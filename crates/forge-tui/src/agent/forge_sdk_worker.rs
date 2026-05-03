@@ -208,7 +208,7 @@ async fn dispatch(
             // the bridge is fully removed.
             if let Ok(mut bs) = bridge_session.lock() {
                 bs.requested_model_id = Some(model.clone());
-                let _ = session_lifecycle::refresh_current_model(&mut bs, false, &mut Vec::new());
+                let _ = session_lifecycle::refresh_current_model(&mut bs);
             }
             Ok(())
         }

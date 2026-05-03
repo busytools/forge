@@ -3,10 +3,7 @@
 
 use serde_json::Value;
 
-use crate::agent::types::{AvailableAgent, SessionUpdate};
-use crate::agent::client::AgentEvent;
-
-use super::state::BridgeSession;
+use crate::agent::types::AvailableAgent;
 
 /// Mirrors `mapAvailableAgents(value: unknown)` — accepts the raw
 /// JSON `agents` array from the initialize response or system/init,
@@ -74,26 +71,6 @@ pub fn map_available_agents_from_names(value: Option<&Value>) -> Vec<AvailableAg
     by_name.into_values().collect()
 }
 
-/// Mirrors `emitAvailableAgentsIfChanged(session, agents)` — diffs by
-/// JSON signature and emits a `SessionUpdate::AvailableAgentsUpdate`
-/// only when the list actually changed.
-pub fn emit_available_agents_if_changed(
-    session: &mut BridgeSession,
-    agents: Vec<AvailableAgent>,
-    out: &mut Vec<AgentEvent>,
-) {
-    let signature = serde_json::to_string(&agents).unwrap_or_default();
-    if session.last_agents_signature.as_deref() == Some(signature.as_str()) {
-        return;
-    }
-    session.last_agents_signature = Some(signature);
-    session.available_agents.clone_from(&agents);
-    out.push(AgentEvent::SessionUpdate {
-        session_id: session.session_id.clone(),
-        update: SessionUpdate::AvailableAgentsUpdate { agents },
-    });
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -120,27 +97,5 @@ mod tests {
         let v = json!(["b", "a", "a", " ", "c"]);
         let agents = map_available_agents_from_names(Some(&v));
         assert_eq!(agents.iter().map(|a| a.name.as_str()).collect::<Vec<_>>(), vec!["a", "b", "c"]);
-    }
-
-    #[test]
-    fn emit_agents_only_on_change() {
-        let mut session = BridgeSession::new("s".to_owned(), "/tmp".to_owned());
-        let agents = vec![AvailableAgent { name: "x".to_owned(), description: "d".to_owned(), model: None }];
-
-        let mut out = Vec::new();
-        emit_available_agents_if_changed(&mut session, agents.clone(), &mut out);
-        assert_eq!(out.len(), 1);
-
-        let mut out = Vec::new();
-        emit_available_agents_if_changed(&mut session, agents.clone(), &mut out);
-        assert!(out.is_empty(), "second emit with identical signature should be a no-op");
-
-        let mut out = Vec::new();
-        emit_available_agents_if_changed(
-            &mut session,
-            vec![AvailableAgent { name: "y".to_owned(), description: "d".to_owned(), model: None }],
-            &mut out,
-        );
-        assert_eq!(out.len(), 1);
     }
 }

@@ -62,14 +62,6 @@ pub(super) fn handle_bridge_event(
         crate::agent::client::AgentEvent::ConnectionFailed { message } => {
             emit_connection_failed(event_tx, message, AppError::ConnectionFailed);
         }
-        crate::agent::client::AgentEvent::SessionUpdate { update, .. } => {
-            // Legacy: bridge module helpers may still build these in
-            // tests; production has no producer. Dispatch via the
-            // existing translator so any straggler tests still work.
-            if let Some(update) = map_session_update(update) {
-                let _ = event_tx.send(ClientEvent::SessionUpdate(update));
-            }
-        }
         crate::agent::client::AgentEvent::PermissionRequest { session_id, request } => {
             handle_permission_request_event(event_tx, agent, session_id, request);
         }

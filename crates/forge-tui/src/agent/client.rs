@@ -248,13 +248,6 @@ pub enum AgentEvent {
     ConnectionFailed {
         message: String,
     },
-    /// Legacy: still constructed by the dying bridge module's
-    /// helpers (no longer reaches the App). Kept until the bridge
-    /// directory is fully deleted in Phase E.
-    SessionUpdate {
-        session_id: String,
-        update: types::SessionUpdate,
-    },
     PermissionRequest {
         session_id: String,
         request: types::PermissionRequest,
@@ -344,7 +337,6 @@ impl AgentEvent {
             Self::Connected { .. } => "connected",
             Self::AuthRequired { .. } => "auth_required",
             Self::ConnectionFailed { .. } => "connection_failed",
-            Self::SessionUpdate { .. } => "session_update",
             Self::PermissionRequest { .. } => "permission_request",
             Self::QuestionRequest { .. } => "question_request",
             Self::ElicitationRequest { .. } => "elicitation_request",
@@ -369,7 +361,6 @@ impl AgentEvent {
     pub fn session_id(&self) -> Option<&str> {
         match self {
             Self::Connected { session_id, .. }
-            | Self::SessionUpdate { session_id, .. }
             | Self::PermissionRequest { session_id, .. }
             | Self::QuestionRequest { session_id, .. }
             | Self::ElicitationRequest { session_id, .. }
@@ -402,7 +393,6 @@ impl AgentEvent {
             Self::Connected { .. }
             | Self::AuthRequired { .. }
             | Self::ConnectionFailed { .. }
-            | Self::SessionUpdate { .. }
             | Self::ElicitationRequest { .. }
             | Self::ElicitationComplete { .. }
             | Self::McpAuthRedirect { .. }

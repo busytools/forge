@@ -18,8 +18,7 @@
 
 use serde_json::Value;
 
-use crate::agent::types::{AvailableModel, CurrentModel, EffortLevel, SessionUpdate};
-use crate::agent::client::AgentEvent;
+use crate::agent::types::{AvailableModel, CurrentModel, EffortLevel};
 
 use super::state::BridgeSession;
 
@@ -325,26 +324,19 @@ fn current_models_equal(left: Option<&CurrentModel>, right: &CurrentModel) -> bo
     }
 }
 
-/// Mirrors `refreshCurrentModel(session, emitUpdate)`. Recomputes
-/// `session.current_model`; when changed and `emit_update` is true,
-/// pushes a `CurrentModelUpdate` `SessionUpdate`. Returns whether the
+/// Mirrors `refreshCurrentModel(session)`. Recomputes
+/// `session.current_model` in place; returns whether the resolved
 /// model changed.
-pub fn refresh_current_model(
-    session: &mut BridgeSession,
-    emit_update: bool,
-    out: &mut Vec<AgentEvent>,
-) -> bool {
+///
+/// Phase 2 cut dropped the `emit_update` flag — `CurrentModelUpdate`
+/// now flows through the App-side `events::sdk_message` path on the
+/// SdkMessage parallel wire, not via `AgentEvent::SessionUpdate`.
+pub fn refresh_current_model(session: &mut BridgeSession) -> bool {
     let next = resolve_current_model(session);
     if current_models_equal(session.current_model.as_ref(), &next) {
         return false;
     }
-    session.current_model = Some(next.clone());
-    if emit_update && session.connected {
-        out.push(AgentEvent::SessionUpdate {
-            session_id: session.session_id.clone(),
-            update: SessionUpdate::CurrentModelUpdate { current_model: next },
-        });
-    }
+    session.current_model = Some(next);
     true
 }
 
@@ -464,24 +456,14 @@ mod tests {
     }
 
     #[test]
-    fn refresh_emits_only_on_change_and_when_connected() {
+    fn refresh_returns_true_only_when_resolved_model_changes() {
         let mut session = BridgeSession::new("s".to_owned(), "/tmp".to_owned());
         session.connected = true;
         session.model_id = "claude-sonnet-4-6".to_owned();
-        let mut out = Vec::new();
-        assert!(refresh_current_model(&mut session, true, &mut out));
-        assert_eq!(out.len(), 1);
-
-        // No change -> no emit.
-        let mut out = Vec::new();
-        assert!(!refresh_current_model(&mut session, true, &mut out));
-        assert!(out.is_empty());
-
-        // Change but emit_update=false.
+        assert!(refresh_current_model(&mut session));
+        assert!(!refresh_current_model(&mut session));
         session.model_id = "claude-opus-4-7".to_owned();
-        let mut out = Vec::new();
-        assert!(refresh_current_model(&mut session, false, &mut out));
-        assert!(out.is_empty());
+        assert!(refresh_current_model(&mut session));
     }
 
     #[test]
