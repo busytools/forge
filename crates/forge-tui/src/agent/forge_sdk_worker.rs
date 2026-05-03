@@ -50,9 +50,9 @@ pub(crate) async fn spawn_session(
         resume_id,
         launch_settings,
         bridge.event_tx().clone(),
-        Arc::clone(&bridge.inner_pending()),
-        Arc::clone(&bridge.inner_pending_questions()),
-        bridge.session_id_slot_arc(),
+        Arc::clone(bridge.inner_pending()),
+        Arc::clone(bridge.inner_pending_questions()),
+        Arc::clone(bridge.session_id_slot_arc()),
     );
     let client = Client::spawn(options).await?;
     let session_id = client.session_id();

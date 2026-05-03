@@ -1,12 +1,12 @@
 //! App creation and bridge connection lifecycle.
 //!
 //! Submodules:
-//! - `bridge_lifecycle`: spawning the bridge process, init handshake, event loop
-//! - `event_dispatch`: routing `AgentEvent` envelopes to `ClientEvent` messages
-//! - `type_converters`: bridge wire types -> app model types
+//! - `bridge_lifecycle`: spawning the bridge, init handshake, event-relay loop +
+//!   inline `AgentEvent` → `ClientEvent` translation
+//! - `type_converters`: bridge wire types -> app model types (consumed by
+//!   `bridge_lifecycle` and the App-side SDK message dispatcher)
 
 mod bridge_lifecycle;
-mod event_dispatch;
 mod session_start;
 pub(crate) mod type_converters;
 
