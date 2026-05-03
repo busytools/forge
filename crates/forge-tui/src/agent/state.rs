@@ -1,19 +1,11 @@
-//! Per-session bookkeeping state owned by the worker (mirrors
-//! upstream's `SessionState` shape from
-//! `agent-sdk/src/bridge/session_lifecycle.ts`, but slimmed down to
-//! just the fields the worker still consults post bridge collapse:
-//! identity (session_id, cwd, connected), model resolution
-//! (model_id, requested/resolved + available_models cache,
-//! current_model), and mode state (mode + supported list +
-//! supports_bypass + runtime-unavailable list).
+//! Permission-mode enum used across the agent stack.
 //!
-//! Today the worker is single-session; the wrapping `BridgeSessionStore`
-//! is multi-session-ready so a future tab strip doesn't need a state
-//! rewrite.
-
-use std::collections::HashMap;
-
-use crate::agent::types::{AvailableModel, CurrentModel};
+//! Pre-bridge-collapse this module also held a `BridgeSession`
+//! struct that accumulated per-session bookkeeping for the bridge
+//! translation layer. Post collapse, that state lives in
+//! `app::state::types::SessionTurnState` (App-side) and the worker
+//! (when it needs the Connected event payload, computed locally).
+//! All that's left here is `PermissionMode` itself.
 
 /// Mirrors upstream's permission-mode enum — distinct from the
 /// wire-string `current_mode_id` shipped on `ModeState`. Used to track
@@ -67,85 +59,6 @@ impl PermissionMode {
     }
 }
 
-#[derive(Debug)]
-pub struct BridgeSession {
-    // Identity / connect
-    pub session_id: String,
-    pub cwd: String,
-    pub connected: bool,
-
-    // Model resolution cache (mirrors `session.model`,
-    // `session.requestedModelId`, `session.resolvedRuntimeModelId`,
-    // `session.currentModel`, `session.availableModels` upstream).
-    pub model_id: String,
-    pub requested_model_id: Option<String>,
-    pub resolved_runtime_model_id: Option<String>,
-    pub current_model: Option<CurrentModel>,
-    pub available_models: Vec<AvailableModel>,
-
-    // Mode resolution
-    pub mode: Option<PermissionMode>,
-    pub supported_mode_ids: Vec<PermissionMode>,
-    pub runtime_unavailable_mode_ids: Vec<PermissionMode>,
-    pub supports_bypass_permissions_mode: bool,
-}
-
-impl BridgeSession {
-    #[must_use]
-    pub fn new(session_id: String, cwd: String) -> Self {
-        Self {
-            session_id,
-            cwd,
-            connected: false,
-            model_id: String::new(),
-            requested_model_id: None,
-            resolved_runtime_model_id: None,
-            current_model: None,
-            available_models: Vec::new(),
-            mode: None,
-            supported_mode_ids: Vec::new(),
-            runtime_unavailable_mode_ids: Vec::new(),
-            supports_bypass_permissions_mode: false,
-        }
-    }
-}
-
-#[derive(Debug, Default)]
-pub struct BridgeSessionStore {
-    sessions: HashMap<String, BridgeSession>,
-}
-
-impl BridgeSessionStore {
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn insert(&mut self, session: BridgeSession) {
-        self.sessions.insert(session.session_id.clone(), session);
-    }
-
-    #[must_use]
-    pub fn get_mut(&mut self, session_id: &str) -> Option<&mut BridgeSession> {
-        self.sessions.get_mut(session_id)
-    }
-
-    #[must_use]
-    pub fn get(&self, session_id: &str) -> Option<&BridgeSession> {
-        self.sessions.get(session_id)
-    }
-
-    pub fn remove(&mut self, session_id: &str) -> Option<BridgeSession> {
-        self.sessions.remove(session_id)
-    }
-
-    /// Convenience for the common single-session case.
-    #[must_use]
-    pub fn first_mut(&mut self) -> Option<&mut BridgeSession> {
-        self.sessions.values_mut().next()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -171,16 +84,5 @@ mod tests {
         assert_eq!(PermissionMode::from_wire("dont_ask"), Some(PermissionMode::DontAsk));
         assert_eq!(PermissionMode::from_wire("deny"), Some(PermissionMode::DontAsk));
         assert_eq!(PermissionMode::from_wire("bypass_permissions"), Some(PermissionMode::BypassPermissions));
-    }
-
-    #[test]
-    fn store_insert_get_mut_remove() {
-        let mut store = BridgeSessionStore::new();
-        store.insert(BridgeSession::new("s1".to_owned(), "/tmp".to_owned()));
-        assert!(store.get("s1").is_some());
-        store.get_mut("s1").unwrap().connected = true;
-        assert!(store.get("s1").unwrap().connected);
-        assert!(store.remove("s1").is_some());
-        assert!(store.get("s1").is_none());
     }
 }

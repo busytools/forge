@@ -20,7 +20,6 @@ use serde_json::Value;
 
 use crate::agent::types::{AvailableModel, CurrentModel, EffortLevel};
 
-use super::state::BridgeSession;
 
 const OPUS_MODEL_ALIAS: &str = "opus";
 const MAX_MODEL_VERSION_PARTS: usize = 2;
@@ -238,14 +237,10 @@ fn resolve_catalog_model<'a>(
     None
 }
 
-/// Mirrors `resolveCurrentModel(session)` upstream — pure function on
-/// the session's resolved/runtime/requested model strings + the
-/// `available_models` catalogue.
-///
-/// Primitive-arg form so callers outside the bridge (App's
-/// `events::sdk_message`) can run resolution without owning a
-/// `BridgeSession`. The session-based wrapper below keeps existing
-/// bridge call sites unchanged.
+/// Mirrors upstream's `resolveCurrentModel`. Pure function on the
+/// session's resolved/runtime/requested model strings + the
+/// `available_models` catalogue. Primitive-arg form — callers pass
+/// what they have; no session struct dependency.
 #[must_use]
 pub fn resolve_current_model_from_inputs(
     model_id: &str,
@@ -302,42 +297,6 @@ pub fn resolve_current_model_from_inputs(
         supports_adaptive_thinking: catalog.and_then(|m| m.supports_adaptive_thinking),
         is_authoritative: current_model_is_authoritative(&resolved_id, requested_id),
     }
-}
-
-/// Session-based wrapper for `resolve_current_model_from_inputs`.
-/// Existing bridge callers go through here; new App-side callers use
-/// the primitive form directly.
-#[must_use]
-pub fn resolve_current_model(session: &BridgeSession) -> CurrentModel {
-    resolve_current_model_from_inputs(
-        &session.model_id,
-        session.requested_model_id.as_deref(),
-        session.resolved_runtime_model_id.as_deref(),
-        &session.available_models,
-    )
-}
-
-fn current_models_equal(left: Option<&CurrentModel>, right: &CurrentModel) -> bool {
-    match left {
-        Some(l) => l == right,
-        None => false,
-    }
-}
-
-/// Mirrors `refreshCurrentModel(session)`. Recomputes
-/// `session.current_model` in place; returns whether the resolved
-/// model changed.
-///
-/// Phase 2 cut dropped the `emit_update` flag — `CurrentModelUpdate`
-/// now flows through the App-side `events::sdk_message` path on the
-/// SdkMessage parallel wire, not via `AgentEvent::SessionUpdate`.
-pub fn refresh_current_model(session: &mut BridgeSession) -> bool {
-    let next = resolve_current_model(session);
-    if current_models_equal(session.current_model.as_ref(), &next) {
-        return false;
-    }
-    session.current_model = Some(next);
-    true
 }
 
 /// Mirrors `mapAvailableModels(models)` — initialize-response `models`
@@ -441,36 +400,22 @@ mod tests {
 
     #[test]
     fn resolve_current_model_falls_back_to_opus() {
-        let mut session = BridgeSession::new("s".to_owned(), "/tmp".to_owned());
-        let cm = resolve_current_model(&session);
+        let cm = resolve_current_model_from_inputs("", None, None, &[]);
         assert_eq!(cm.resolved_id, "opus");
         // Matches upstream: non-empty resolved id (even the "opus"
         // alias) is treated as authoritative.
         assert!(cm.is_authoritative);
 
-        session.model_id = "claude-sonnet-4-6".to_owned();
-        let cm = resolve_current_model(&session);
+        let cm =
+            resolve_current_model_from_inputs("claude-sonnet-4-6", None, None, &[]);
         assert_eq!(cm.resolved_id, "claude-sonnet-4-6");
         assert_eq!(cm.display_name_short, "Sonnet 4.6");
         assert!(cm.is_authoritative);
     }
 
     #[test]
-    fn refresh_returns_true_only_when_resolved_model_changes() {
-        let mut session = BridgeSession::new("s".to_owned(), "/tmp".to_owned());
-        session.connected = true;
-        session.model_id = "claude-sonnet-4-6".to_owned();
-        assert!(refresh_current_model(&mut session));
-        assert!(!refresh_current_model(&mut session));
-        session.model_id = "claude-opus-4-7".to_owned();
-        assert!(refresh_current_model(&mut session));
-    }
-
-    #[test]
     fn catalog_match_populates_supports_effort() {
-        let mut session = BridgeSession::new("s".to_owned(), "/tmp".to_owned());
-        session.model_id = "claude-sonnet-4-6".to_owned();
-        session.available_models = vec![AvailableModel {
+        let catalog = vec![AvailableModel {
             id: "claude-sonnet-4-6".to_owned(),
             display_name: "Sonnet 4.6".to_owned(),
             description: None,
@@ -480,7 +425,12 @@ mod tests {
             supports_fast_mode: Some(false),
             supports_auto_mode: Some(true),
         }];
-        let cm = resolve_current_model(&session);
+        let cm = resolve_current_model_from_inputs(
+            "claude-sonnet-4-6",
+            None,
+            None,
+            &catalog,
+        );
         assert!(cm.supports_effort);
         assert_eq!(cm.supported_effort_levels.len(), 2);
         assert_eq!(cm.catalog_id.as_deref(), Some("claude-sonnet-4-6"));
