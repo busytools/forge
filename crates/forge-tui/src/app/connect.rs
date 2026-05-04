@@ -76,7 +76,7 @@ pub fn create_app(cli: &Cli) -> App {
                 message = "failed to resolve perf telemetry sidecar path",
                 outcome = "failure",
                 telemetry_channel = "perf_sidecar",
-                perf_schema = "claude-rs-perf/v1",
+                perf_schema = "forge-perf/v1",
                 perf_append = cli.perf_append,
                 error = %err,
             );
@@ -92,7 +92,7 @@ pub fn create_app(cli: &Cli) -> App {
                 message = "perf telemetry sidecar enabled",
                 outcome = "success",
                 telemetry_channel = "perf_sidecar",
-                perf_schema = "claude-rs-perf/v1",
+                perf_schema = "forge-perf/v1",
                 perf_log = %path.display(),
                 perf_append = cli.perf_append,
             );
@@ -103,7 +103,7 @@ pub fn create_app(cli: &Cli) -> App {
                 message = "failed to enable perf telemetry sidecar",
                 outcome = "failure",
                 telemetry_channel = "perf_sidecar",
-                perf_schema = "claude-rs-perf/v1",
+                perf_schema = "forge-perf/v1",
                 perf_log = %path.display(),
                 perf_append = cli.perf_append,
             );

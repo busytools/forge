@@ -30,11 +30,11 @@ pub mod targets {
     pub const BRIDGE_SDK: &str = "bridge.sdk";
 }
 
-const BRIDGE_LOG_SCHEMA: &str = "claude-rs-log/v1";
+const BRIDGE_LOG_SCHEMA: &str = "forge-log/v1";
 const BRIDGE_LINE_PREVIEW_LIMIT: usize = 240;
 const DEFAULT_LOG_DIR: &str = "forge-tui";
-const DEFAULT_LOG_FILE_NAME: &str = "claude-rs.log";
-const DEFAULT_PERF_FILE_NAME: &str = "claude-rs-perf.log";
+const DEFAULT_LOG_FILE_NAME: &str = "forge.log";
+const DEFAULT_PERF_FILE_NAME: &str = "forge-perf.log";
 const LOG_ROTATION_MAX_BYTES: u64 = 10 * 1024 * 1024;
 const LOG_ROTATION_MAX_FILES: usize = 5;
 static BRIDGE_DIAGNOSTICS_ENABLED: AtomicBool = AtomicBool::new(false);
@@ -523,7 +523,7 @@ mod tests {
 
     #[test]
     fn parses_structured_bridge_diagnostic() {
-        let line = r#"{"schema":"claude-rs-log/v1","timestamp":"2026-04-08T12:00:00Z","level":"warn","target":"bridge.sdk","event_name":"sdk_spawn_failed","message":"spawn failed","session_id":"session-1","fields":{"preview":"node"}}"#;
+        let line = r#"{"schema":"forge-log/v1","timestamp":"2026-04-08T12:00:00Z","level":"warn","target":"bridge.sdk","event_name":"sdk_spawn_failed","message":"spawn failed","session_id":"session-1","fields":{"preview":"node"}}"#;
         let record = BridgeDiagnosticRecord::parse(line).expect("structured bridge log");
 
         assert_eq!(record.target, "bridge.sdk");
@@ -576,7 +576,7 @@ mod tests {
         let resolved = resolve_log_path(&cli).expect("resolve succeeds").expect("path exists");
         assert_eq!(resolved.source.as_str(), "default");
         let path = resolved.path.to_string_lossy().replace('\\', "/");
-        assert!(path.ends_with("forge-tui/logs/claude-rs.log"));
+        assert!(path.ends_with("forge-tui/logs/forge.log"));
     }
 
     #[test]
@@ -634,7 +634,7 @@ mod tests {
 
         let resolved = resolve_perf_path(&cli).expect("resolve succeeds").expect("path exists");
         let path = resolved.to_string_lossy().replace('\\', "/");
-        assert!(path.ends_with("forge-tui/logs/claude-rs-perf.log"));
+        assert!(path.ends_with("forge-tui/logs/forge-perf.log"));
     }
 
     #[test]

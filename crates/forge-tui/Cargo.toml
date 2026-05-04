@@ -1,6 +1,6 @@
 [package]
 name = "forge-tui"
-version = "0.11.3"
+version = "0.12.0"
 edition = "2024"
 rust-version = "1.88.0"
 license.workspace = true
@@ -8,14 +8,14 @@ repository.workspace = true
 description = "Native Rust terminal interface for the claude CLI"
 keywords = ["cli", "tui", "claude", "ai", "terminal"]
 categories = ["command-line-interface"]
-default-run = "claude-rs"
+default-run = "forge"
 
 [lib]
 name = "forge_tui"
 path = "src/lib.rs"
 
 [[bin]]
-name = "claude-rs"
+name = "forge"
 path = "src/main.rs"
 
 [dependencies]
