@@ -414,10 +414,7 @@ fn elicitation_body_lines(
     if matches!(request.mode, ElicitationMode::Form) {
         lines.push(Line::default());
         lines.push(section_heading("Form"));
-        lines.push(detail_value(
-            "Structured MCP forms are not editable yet in claude-rs.",
-            theme::DIM,
-        ));
+        lines.push(detail_value("Structured MCP forms are not editable yet in forge.", theme::DIM));
         if let Some(schema) = request.requested_schema.as_ref() {
             let schema_text =
                 serde_json::to_string_pretty(schema).unwrap_or_else(|_| schema.to_string());

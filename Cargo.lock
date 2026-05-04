@@ -1077,7 +1077,7 @@ dependencies = [
 
 [[package]]
 name = "forge-tui"
-version = "0.11.3"
+version = "0.12.0"
 dependencies = [
  "ansi-to-tui",
  "anyhow",

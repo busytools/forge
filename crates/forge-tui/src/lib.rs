@@ -40,9 +40,9 @@ impl DiagnosticsPreset {
 }
 
 #[derive(Parser, Debug)]
-#[command(name = "claude-rs", about = "Native Rust terminal for Claude Code")]
+#[command(name = "forge", about = "Native Rust terminal for Claude Code")]
 #[command(
-    after_help = "Examples:\n  claude-rs --enable-logs --diagnostics-preset session\n  claude-rs --enable-logs --diagnostics-preset render\n  claude-rs --features perf --enable-logs --enable-perf --diagnostics-preset full"
+    after_help = "Examples:\n  forge --enable-logs --diagnostics-preset session\n  forge --enable-logs --diagnostics-preset render\n  forge --features perf --enable-logs --enable-perf --diagnostics-preset full"
 )]
 #[allow(clippy::struct_excessive_bools)]
 pub struct Cli {
@@ -109,24 +109,24 @@ mod tests {
 
     #[test]
     fn cli_without_subcommand_starts_new_session() {
-        let cli = Cli::try_parse_from(["claude-rs"]).expect("parse");
+        let cli = Cli::try_parse_from(["forge"]).expect("parse");
         assert!(cli.command.is_none());
     }
 
     #[test]
     fn cli_resume_without_id_requests_picker() {
-        let cli = Cli::try_parse_from(["claude-rs", "resume"]).expect("parse");
+        let cli = Cli::try_parse_from(["forge", "resume"]).expect("parse");
         assert_eq!(cli.command, Some(Command::Resume { session_id: None }));
     }
 
     #[test]
     fn cli_resume_with_id_resumes_directly() {
-        let cli = Cli::try_parse_from(["claude-rs", "resume", "abc-123"]).expect("parse");
+        let cli = Cli::try_parse_from(["forge", "resume", "abc-123"]).expect("parse");
         assert_eq!(cli.command, Some(Command::Resume { session_id: Some("abc-123".to_owned()) }));
     }
 
     #[test]
     fn cli_rejects_legacy_resume_flag() {
-        assert!(Cli::try_parse_from(["claude-rs", "--resume", "abc-123"]).is_err());
+        assert!(Cli::try_parse_from(["forge", "--resume", "abc-123"]).is_err());
     }
 }

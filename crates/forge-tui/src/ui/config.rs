@@ -25,7 +25,7 @@ use overlay::{
     render_overlay_separator as shared_render_overlay_separator, render_overlay_shell,
 };
 
-const SETTINGS_LIMITATION_HINT: &str = "Currently, not all settings are supported by claude-rs. This project uses the official Anthropic Claude Agent SDK, which limits claude-rs implementing all Claude Code settings.";
+const SETTINGS_LIMITATION_HINT: &str = "Currently, not all settings are supported by forge. This project uses the official Anthropic Claude Agent SDK, which limits forge implementing all Claude Code settings.";
 const MIN_SETTINGS_PANEL_HEIGHT: u16 = 3;
 
 pub fn render(frame: &mut Frame, app: &mut App) {
@@ -1329,7 +1329,7 @@ mod tests {
 
         let rendered = buffer_text(terminal.backend().buffer());
 
-        assert!(rendered.contains("supported by claude-rs"));
+        assert!(rendered.contains("supported by forge"));
         assert!(rendered.contains("Anthropic Claude Agent SDK"));
     }
 
@@ -1358,7 +1358,7 @@ mod tests {
 
         let rendered = buffer_text(terminal.backend().buffer());
 
-        assert!(rendered.contains("supported by claude-rs"));
+        assert!(rendered.contains("supported by forge"));
         assert!(rendered.contains("Anthropic Claude Agent SDK"));
     }
 
