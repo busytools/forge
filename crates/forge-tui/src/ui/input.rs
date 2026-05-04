@@ -118,7 +118,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
                     Style::default().fg(Color::Yellow),
                 )),
                 Line::from(Span::styled(
-                    "Type /login to authenticate, or run `claude auth login` in another terminal",
+                    "Run `claude auth login` in another terminal to authenticate",
                     Style::default().fg(theme::DIM),
                 )),
             ];

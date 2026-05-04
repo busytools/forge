@@ -17,13 +17,6 @@ use std::rc::Rc;
 
 pub const MAX_VISIBLE: usize = 8;
 const MAX_CANDIDATES: usize = 50;
-const DOCS_TOPICS: [(&str, &str); 5] = [
-    ("mode", "Show current and available session modes"),
-    ("models", "Show advertised models and capabilities"),
-    ("shortcuts", "Show live keyboard shortcuts for the current app state"),
-    ("commands", "Show app and SDK slash commands"),
-    ("agents", "Show advertised subagents"),
-];
 
 // Re-export public API
 pub use executors::try_handle_submit;
@@ -81,10 +74,6 @@ fn parse(text: &str) -> Option<ParsedSlash<'_>> {
     let mut parts = trimmed.split_whitespace();
     let name = parts.next()?;
     Some(ParsedSlash { name, args: parts.collect() })
-}
-
-pub fn is_cancel_command(text: &str) -> bool {
-    parse(text).is_some_and(|parsed| parsed.name == "/cancel")
 }
 
 fn normalize_slash_name(name: &str) -> String {
@@ -187,19 +176,19 @@ mod tests {
     }
 
     #[test]
-    fn login_logout_appear_in_candidates_as_builtins() {
+    fn builtin_commands_appear_in_candidates() {
         let app = App::test_default();
         let names: Vec<String> =
             supported_command_candidates(&app).into_iter().map(|c| c.primary).collect();
-        assert!(names.iter().any(|n| n == "/1m-context"), "missing /1m-context");
-        assert!(names.iter().any(|n| n == "/config"), "missing /config");
-        assert!(names.iter().any(|n| n == "/docs"), "missing /docs");
-        assert!(names.iter().any(|n| n == "/login"), "missing /login");
-        assert!(names.iter().any(|n| n == "/logout"), "missing /logout");
-        assert!(names.iter().any(|n| n == "/mcp"), "missing /mcp");
-        assert!(names.iter().any(|n| n == "/opus-version"), "missing /opus-version");
-        assert!(names.iter().any(|n| n == "/plugins"), "missing /plugins");
-        assert!(names.iter().any(|n| n == "/usage"), "missing /usage");
+        for expected in [
+            "/compact", "/config", "/mcp", "/mode", "/model", "/new", "/plugins", "/resume",
+            "/status", "/usage",
+        ] {
+            assert!(names.iter().any(|n| n == expected), "missing {expected}");
+        }
+        for removed in ["/1m-context", "/cancel", "/docs", "/login", "/logout", "/opus-version"] {
+            assert!(!names.iter().any(|n| n == removed), "{removed} should be removed");
+        }
     }
 
     #[test]
@@ -228,305 +217,6 @@ mod tests {
             panic!("expected text block");
         };
         assert_eq!(block.text, "Usage: /config");
-    }
-
-    #[test]
-    fn one_m_context_disable_persists_folder_local_override_and_hints_new_session() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let mut app = App::test_default();
-        app.settings_home_override = Some(dir.path().to_path_buf());
-        app.cwd_raw = dir.path().to_string_lossy().to_string();
-
-        let consumed = try_handle_submit(&mut app, "/1m-context disable");
-
-        assert!(consumed);
-        let settings_path = dir.path().join(".claude").join("settings.local.json");
-        let raw = std::fs::read_to_string(settings_path).expect("read settings.local.json");
-        assert!(raw.contains("\"CLAUDE_CODE_DISABLE_1M_CONTEXT\": \"1\""));
-        let Some(last) = app.messages.last() else {
-            panic!("expected success message");
-        };
-        let Some(MessageBlock::Text(block)) = last.blocks.first() else {
-            panic!("expected text block");
-        };
-        assert!(block.text.contains("Disabled 1M context"));
-        assert!(block.text.contains("/new-session"));
-    }
-
-    #[test]
-    fn one_m_context_enable_removes_folder_local_override_and_hints_new_session() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let local_settings = dir.path().join(".claude").join("settings.local.json");
-        std::fs::create_dir_all(local_settings.parent().expect("settings parent"))
-            .expect("create dir");
-        std::fs::write(
-            &local_settings,
-            "{\n  \"env\": {\n    \"CLAUDE_CODE_DISABLE_1M_CONTEXT\": \"1\",\n    \"KEEP_ME\": \"yes\"\n  }\n}\n",
-        )
-        .expect("write settings");
-        let mut app = App::test_default();
-        app.settings_home_override = Some(dir.path().to_path_buf());
-        app.cwd_raw = dir.path().to_string_lossy().to_string();
-
-        let consumed = try_handle_submit(&mut app, "/1m-context enable");
-
-        assert!(consumed);
-        let raw = std::fs::read_to_string(local_settings).expect("read settings.local.json");
-        assert!(!raw.contains("CLAUDE_CODE_DISABLE_1M_CONTEXT"));
-        assert!(raw.contains("\"KEEP_ME\": \"yes\""));
-        let Some(last) = app.messages.last() else {
-            panic!("expected success message");
-        };
-        let Some(MessageBlock::Text(block)) = last.blocks.first() else {
-            panic!("expected text block");
-        };
-        assert!(block.text.contains("Enabled 1M context"));
-        assert!(block.text.contains("/new-session"));
-    }
-
-    #[test]
-    fn one_m_context_status_reports_disabled_folder_local_override() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let local_settings = dir.path().join(".claude").join("settings.local.json");
-        std::fs::create_dir_all(local_settings.parent().expect("settings parent"))
-            .expect("create dir");
-        std::fs::write(
-            &local_settings,
-            "{\n  \"env\": {\n    \"CLAUDE_CODE_DISABLE_1M_CONTEXT\": \"1\"\n  }\n}\n",
-        )
-        .expect("write settings");
-        let mut app = App::test_default();
-        app.settings_home_override = Some(dir.path().to_path_buf());
-        app.cwd_raw = dir.path().to_string_lossy().to_string();
-
-        let consumed = try_handle_submit(&mut app, "/1m-context status");
-
-        assert!(consumed);
-        let Some(last) = app.messages.last() else {
-            panic!("expected status message");
-        };
-        let Some(MessageBlock::Text(block)) = last.blocks.first() else {
-            panic!("expected text block");
-        };
-        assert!(block.text.contains("1M context is disabled"));
-        assert!(block.text.contains(".claude/settings.local.json"));
-    }
-
-    #[test]
-    fn opus_version_argument_candidates_are_static() {
-        let app = App::test_default();
-        let candidates = argument_candidates(&app, "/opus-version", 0);
-        assert!(candidates.iter().any(|c| c.insert_value == "4.5"));
-        assert!(candidates.iter().any(|c| {
-            c.insert_value == "4.5"
-                && c.primary == "4.5"
-                && c.secondary.as_deref() == Some("Claude Opus 4.5")
-        }));
-        assert!(candidates.iter().any(|c| c.insert_value == "4.6"));
-        assert!(candidates.iter().any(|c| c.insert_value == "4.7"));
-        assert!(candidates.iter().any(|c| {
-            c.insert_value == "default"
-                && c.primary == "default"
-                && c.secondary.as_deref() == Some("Use Claude default Opus alias")
-        }));
-        assert!(candidates.iter().any(|c| {
-            c.insert_value == "status"
-                && c.primary == "status"
-                && c.secondary.as_deref() == Some("Show current project-local Opus pin")
-        }));
-    }
-
-    #[test]
-    fn opus_version_45_persists_folder_local_override_and_hints_new_session() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let mut app = App::test_default();
-        app.settings_home_override = Some(dir.path().to_path_buf());
-        app.cwd_raw = dir.path().to_string_lossy().to_string();
-
-        let consumed = try_handle_submit(&mut app, "/opus-version 4.5");
-
-        assert!(consumed);
-        let settings_path = dir.path().join(".claude").join("settings.local.json");
-        let raw = std::fs::read_to_string(settings_path).expect("read settings.local.json");
-        assert!(raw.contains("\"ANTHROPIC_DEFAULT_OPUS_MODEL\": \"claude-opus-4-5-20251101\""));
-        let Some(last) = app.messages.last() else {
-            panic!("expected success message");
-        };
-        let Some(MessageBlock::Text(block)) = last.blocks.first() else {
-            panic!("expected text block");
-        };
-        assert!(block.text.contains("Pinned Opus to 4.5"));
-        assert!(block.text.contains("/new-session"));
-    }
-
-    #[test]
-    fn opus_version_46_persists_folder_local_override() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let mut app = App::test_default();
-        app.settings_home_override = Some(dir.path().to_path_buf());
-        app.cwd_raw = dir.path().to_string_lossy().to_string();
-
-        let consumed = try_handle_submit(&mut app, "/opus-version 4.6");
-
-        assert!(consumed);
-        let settings_path = dir.path().join(".claude").join("settings.local.json");
-        let raw = std::fs::read_to_string(settings_path).expect("read settings.local.json");
-        assert!(raw.contains("\"ANTHROPIC_DEFAULT_OPUS_MODEL\": \"claude-opus-4-6\""));
-    }
-
-    #[test]
-    fn opus_version_47_persists_folder_local_override() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let mut app = App::test_default();
-        app.settings_home_override = Some(dir.path().to_path_buf());
-        app.cwd_raw = dir.path().to_string_lossy().to_string();
-
-        let consumed = try_handle_submit(&mut app, "/opus-version 4.7");
-
-        assert!(consumed);
-        let settings_path = dir.path().join(".claude").join("settings.local.json");
-        let raw = std::fs::read_to_string(settings_path).expect("read settings.local.json");
-        assert!(raw.contains("\"ANTHROPIC_DEFAULT_OPUS_MODEL\": \"claude-opus-4-7\""));
-    }
-
-    #[test]
-    fn opus_version_default_removes_folder_local_override_and_preserves_neighbor_keys() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let local_settings = dir.path().join(".claude").join("settings.local.json");
-        std::fs::create_dir_all(local_settings.parent().expect("settings parent"))
-            .expect("create dir");
-        std::fs::write(
-            &local_settings,
-            "{\n  \"env\": {\n    \"ANTHROPIC_DEFAULT_OPUS_MODEL\": \"claude-opus-4-7\",\n    \"KEEP_ME\": \"yes\"\n  }\n}\n",
-        )
-        .expect("write settings");
-        let mut app = App::test_default();
-        app.settings_home_override = Some(dir.path().to_path_buf());
-        app.cwd_raw = dir.path().to_string_lossy().to_string();
-
-        let consumed = try_handle_submit(&mut app, "/opus-version default");
-
-        assert!(consumed);
-        let raw = std::fs::read_to_string(local_settings).expect("read settings.local.json");
-        assert!(!raw.contains("ANTHROPIC_DEFAULT_OPUS_MODEL"));
-        assert!(raw.contains("\"KEEP_ME\": \"yes\""));
-        let Some(last) = app.messages.last() else {
-            panic!("expected success message");
-        };
-        let Some(MessageBlock::Text(block)) = last.blocks.first() else {
-            panic!("expected text block");
-        };
-        assert!(block.text.contains("Cleared the project-local Opus version pin"));
-        assert!(block.text.contains("/new-session"));
-    }
-
-    #[test]
-    fn opus_version_status_reports_known_folder_local_override() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let local_settings = dir.path().join(".claude").join("settings.local.json");
-        std::fs::create_dir_all(local_settings.parent().expect("settings parent"))
-            .expect("create dir");
-        std::fs::write(
-            &local_settings,
-            "{\n  \"env\": {\n    \"ANTHROPIC_DEFAULT_OPUS_MODEL\": \"claude-opus-4-6\"\n  }\n}\n",
-        )
-        .expect("write settings");
-        let mut app = App::test_default();
-        app.settings_home_override = Some(dir.path().to_path_buf());
-        app.cwd_raw = dir.path().to_string_lossy().to_string();
-
-        let consumed = try_handle_submit(&mut app, "/opus-version status");
-
-        assert!(consumed);
-        let Some(last) = app.messages.last() else {
-            panic!("expected status message");
-        };
-        let Some(MessageBlock::Text(block)) = last.blocks.first() else {
-            panic!("expected text block");
-        };
-        assert!(block.text.contains("Opus is pinned to 4.6"));
-        assert!(block.text.contains(".claude/settings.local.json"));
-    }
-
-    #[test]
-    fn opus_version_status_reports_default_when_unset() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let mut app = App::test_default();
-        app.settings_home_override = Some(dir.path().to_path_buf());
-        app.cwd_raw = dir.path().to_string_lossy().to_string();
-
-        let consumed = try_handle_submit(&mut app, "/opus-version status");
-
-        assert!(consumed);
-        let Some(last) = app.messages.last() else {
-            panic!("expected status message");
-        };
-        let Some(MessageBlock::Text(block)) = last.blocks.first() else {
-            panic!("expected text block");
-        };
-        assert!(block.text.contains("Opus is using the default alias resolution"));
-    }
-
-    #[test]
-    fn opus_version_with_missing_arg_returns_usage_message() {
-        let mut app = App::test_default();
-
-        let consumed = try_handle_submit(&mut app, "/opus-version");
-        assert!(consumed);
-        let Some(last) = app.messages.last() else {
-            panic!("expected system usage message");
-        };
-        let Some(MessageBlock::Text(block)) = last.blocks.first() else {
-            panic!("expected text block");
-        };
-        assert_eq!(block.text, "Usage: /opus-version <4.5|4.6|4.7|default|status>");
-    }
-
-    #[test]
-    fn opus_version_with_extra_args_returns_usage_message() {
-        let mut app = App::test_default();
-
-        let consumed = try_handle_submit(&mut app, "/opus-version 4.7 extra");
-        assert!(consumed);
-        let Some(last) = app.messages.last() else {
-            panic!("expected system usage message");
-        };
-        let Some(MessageBlock::Text(block)) = last.blocks.first() else {
-            panic!("expected text block");
-        };
-        assert_eq!(block.text, "Usage: /opus-version <4.5|4.6|4.7|default|status>");
-    }
-
-    #[test]
-    fn opus_version_with_unknown_arg_returns_usage_message() {
-        let mut app = App::test_default();
-
-        let consumed = try_handle_submit(&mut app, "/opus-version 9.9");
-        assert!(consumed);
-        let Some(last) = app.messages.last() else {
-            panic!("expected system usage message");
-        };
-        let Some(MessageBlock::Text(block)) = last.blocks.first() else {
-            panic!("expected text block");
-        };
-        assert_eq!(block.text, "Usage: /opus-version <4.5|4.6|4.7|default|status>");
-    }
-
-    #[test]
-    fn opus_version_requires_trusted_project_for_mutation() {
-        let mut app = App::test_default();
-        app.trust.status = crate::app::trust::TrustStatus::Untrusted;
-
-        let consumed = try_handle_submit(&mut app, "/opus-version 4.7");
-
-        assert!(consumed);
-        let Some(last) = app.messages.last() else {
-            panic!("expected error message");
-        };
-        let Some(MessageBlock::Text(block)) = last.blocks.first() else {
-            panic!("expected text block");
-        };
-        assert!(block.text.contains("Project trust must be accepted"));
     }
 
     #[test]
@@ -582,48 +272,6 @@ mod tests {
         assert!(consumed);
         assert_eq!(app.active_view, super::super::ActiveView::Config);
         assert_eq!(app.config.active_tab, super::super::ConfigTab::Plugins);
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn login_is_handled_as_builtin_and_sets_command_pending() {
-        tokio::task::LocalSet::new()
-            .run_until(async {
-                let mut app = App::test_default();
-                let consumed = try_handle_submit(&mut app, "/login");
-                assert!(consumed, "/login should be handled locally");
-                // Status becomes CommandPending (or stays Ready if claude CLI is not in PATH)
-                assert!(
-                    matches!(app.status, AppStatus::CommandPending | AppStatus::Ready),
-                    "expected CommandPending or Ready, got {:?}",
-                    app.status
-                );
-            })
-            .await;
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn logout_is_handled_as_builtin_and_sets_command_pending() {
-        tokio::task::LocalSet::new()
-            .run_until(async {
-                let mut app = App::test_default();
-                let consumed = try_handle_submit(&mut app, "/logout");
-                assert!(consumed, "/logout should be handled locally");
-                assert!(
-                    matches!(app.status, AppStatus::CommandPending | AppStatus::Ready),
-                    "expected CommandPending or Ready, got {:?}",
-                    app.status
-                );
-            })
-            .await;
-    }
-
-    #[test]
-    fn login_rejects_extra_args() {
-        let mut app = App::test_default();
-        let consumed = try_handle_submit(&mut app, "/login somearg");
-        assert!(consumed);
-        let last = app.messages.last().expect("expected system message");
-        assert!(matches!(last.role, MessageRole::System(_)));
     }
 
     #[test]
@@ -737,104 +385,10 @@ mod tests {
     }
 
     #[test]
-    fn docs_argument_candidates_are_static_topics() {
-        let app = App::test_default();
-        let candidates = argument_candidates(&app, "/docs", 0);
-        assert!(candidates.iter().any(|c| c.insert_value == "mode"));
-        assert!(candidates.iter().any(|c| c.insert_value == "models"));
-        assert!(candidates.iter().any(|c| c.insert_value == "shortcuts"));
-        assert!(candidates.iter().any(|c| c.insert_value == "commands"));
-        assert!(candidates.iter().any(|c| c.insert_value == "agents"));
-    }
-
-    #[test]
-    fn docs_without_args_returns_usage() {
-        let mut app = App::test_default();
-
-        let consumed = try_handle_submit(&mut app, "/docs");
-
-        assert!(consumed);
-        let last = app.messages.last().expect("expected system message");
-        let Some(MessageBlock::Text(block)) = last.blocks.first() else {
-            panic!("expected text block");
-        };
-        assert_eq!(block.text, "Usage: /docs <mode|models|shortcuts|commands|agents>");
-    }
-
-    #[test]
-    fn docs_commands_reuse_help_rows() {
-        let mut app = App::test_default();
-        app.available_commands =
-            vec![crate::agent::model::AvailableCommand::new("/help", "Open help")];
-
-        let consumed = try_handle_submit(&mut app, "/docs commands");
-
-        assert!(consumed);
-        let last = app.messages.last().expect("expected system message");
-        let Some(MessageBlock::Text(block)) = last.blocks.first() else {
-            panic!("expected text block");
-        };
-        assert!(block.text.contains("| Command | Description |"));
-        assert!(block.text.contains("/config"));
-        assert!(block.text.contains("/docs"));
-        assert!(block.text.contains("/help"));
-    }
-
-    #[test]
-    fn docs_shortcuts_use_live_help_state() {
-        let mut app = App::test_default();
-        app.show_todo_panel = true;
-        app.todos.push(crate::app::TodoItem {
-            content: "Task".into(),
-            status: crate::app::TodoStatus::Pending,
-            active_form: String::new(),
-        });
-
-        let consumed = try_handle_submit(&mut app, "/docs shortcuts");
-
-        assert!(consumed);
-        let last = app.messages.last().expect("expected system message");
-        let Some(MessageBlock::Text(block)) = last.blocks.first() else {
-            panic!("expected text block");
-        };
-        assert!(block.text.contains("| Shortcut | Action |"));
-        assert!(block.text.contains("Toggle todo focus"));
-    }
-
-    #[test]
-    fn docs_with_unknown_topic_returns_usage() {
-        let mut app = App::test_default();
-
-        let consumed = try_handle_submit(&mut app, "/docs nope");
-
-        assert!(consumed);
-        let last = app.messages.last().expect("expected system message");
-        let Some(MessageBlock::Text(block)) = last.blocks.first() else {
-            panic!("expected text block");
-        };
-        assert!(block.text.contains("Unknown docs topic: nope"));
-        assert!(block.text.contains("Usage: /docs <mode|models|shortcuts|commands|agents>"));
-    }
-
-    #[test]
-    fn docs_with_extra_args_returns_usage() {
-        let mut app = App::test_default();
-
-        let consumed = try_handle_submit(&mut app, "/docs commands extra");
-
-        assert!(consumed);
-        let last = app.messages.last().expect("expected system message");
-        let Some(MessageBlock::Text(block)) = last.blocks.first() else {
-            panic!("expected text block");
-        };
-        assert_eq!(block.text, "Usage: /docs <mode|models|shortcuts|commands|agents>");
-    }
-
-    #[test]
     fn non_variable_command_argument_mode_is_disabled() {
         let mut app = App::test_default();
-        app.input.set_text("/cancel now");
-        let _ = app.input.set_cursor(0, "/cancel now".chars().count());
+        app.input.set_text("/compact now");
+        let _ = app.input.set_cursor(0, "/compact now".chars().count());
         sync_with_cursor(&mut app);
         assert!(app.slash.is_none());
     }
@@ -881,37 +435,6 @@ mod tests {
         confirm_selection(&mut app);
 
         assert_eq!(app.input.text(), "/resume new-id trailing");
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn login_is_handled_as_builtin_even_when_advertised() {
-        tokio::task::LocalSet::new()
-            .run_until(async {
-                let mut app = App::test_default();
-                app.available_commands = vec![model::AvailableCommand::new("/login", "Login")];
-
-                let consumed = try_handle_submit(&mut app, "/login");
-                assert!(consumed, "/login should be handled locally even when SDK advertises it");
-            })
-            .await;
-    }
-
-    #[test]
-    fn new_session_command_is_rendered_as_user_message() {
-        let mut app = App::test_default();
-
-        let consumed = try_handle_submit(&mut app, "/new-session");
-        assert!(consumed);
-        assert!(app.messages.len() >= 2);
-
-        let Some(first) = app.messages.first() else {
-            panic!("expected first message");
-        };
-        assert!(matches!(first.role, MessageRole::User));
-        let Some(MessageBlock::Text(block)) = first.blocks.first() else {
-            panic!("expected user text block");
-        };
-        assert_eq!(block.text, "/new-session");
     }
 
     #[test]
@@ -1045,7 +568,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn new_session_sets_command_pending() {
+    async fn new_sets_command_pending() {
         tokio::task::LocalSet::new()
             .run_until(async {
                 let mut app = App::test_default();
@@ -1053,7 +576,7 @@ mod tests {
                 app.conn =
                     Some(std::rc::Rc::new(crate::agent::test_bridge::RecordingBridge::new(tx)));
 
-                let consumed = try_handle_submit(&mut app, "/new-session");
+                let consumed = try_handle_submit(&mut app, "/new");
                 assert!(consumed);
                 assert!(
                     matches!(app.status, AppStatus::CommandPending),
@@ -1183,75 +706,6 @@ mod tests {
         confirm_selection(&mut app);
 
         assert_eq!(app.input.text(), "/mode");
-    }
-
-    #[test]
-    fn docs_command_confirm_enters_argument_mode() {
-        let mut app = App::test_default();
-        app.input.set_text("/do");
-        let _ = app.input.set_cursor(0, "/do".chars().count());
-        app.slash = Some(SlashState {
-            trigger_row: 0,
-            trigger_col: 0,
-            query: "do".into(),
-            context: SlashContext::CommandName,
-            candidates: vec![SlashCandidate {
-                insert_value: "/docs".into(),
-                primary: "/docs".into(),
-                secondary: Some("Show in-chat help topics".into()),
-            }],
-            dialog: DialogState::default(),
-        });
-
-        confirm_selection(&mut app);
-
-        assert_eq!(app.input.text(), "/docs ");
-        let slash = app.slash.as_ref().expect("topic autocomplete should activate");
-        match &slash.context {
-            SlashContext::Argument { command, arg_index, .. } => {
-                assert_eq!(command, "/docs");
-                assert_eq!(*arg_index, 0);
-            }
-            SlashContext::CommandName => panic!("expected argument autocomplete"),
-        }
-        assert!(slash.candidates.iter().any(|candidate| candidate.insert_value == "mode"));
-    }
-
-    #[test]
-    fn single_argument_builtin_selection_closes_autocomplete() {
-        for (command, value) in [
-            ("/docs", "commands"),
-            ("/mode", "plan"),
-            ("/model", "sonnet"),
-            ("/opus-version", "4.7"),
-            ("/resume", "session-1"),
-        ] {
-            let mut app = App::test_default();
-            let input = format!("{command} ");
-            app.input.set_text(&input);
-            let _ = app.input.set_cursor(0, input.chars().count());
-            app.slash = Some(SlashState {
-                trigger_row: 0,
-                trigger_col: input.chars().count(),
-                query: String::new(),
-                context: SlashContext::Argument {
-                    command: command.to_owned(),
-                    arg_index: 0,
-                    token_range: (input.chars().count(), input.chars().count()),
-                },
-                candidates: vec![SlashCandidate {
-                    insert_value: value.to_owned(),
-                    primary: value.to_owned(),
-                    secondary: None,
-                }],
-                dialog: DialogState::default(),
-            });
-
-            confirm_selection(&mut app);
-
-            assert_eq!(app.input.text(), format!("{command} {value} "));
-            assert!(app.slash.is_none(), "{command} should close after first argument");
-        }
     }
 
     #[test]

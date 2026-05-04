@@ -2,7 +2,7 @@ use super::super::{App, NoticeDedupKey, NoticeStage, RateLimitIncidentKey, Syste
 use crate::agent::model;
 use std::time::Duration;
 
-const EXTRA_USAGE_REQUIRED_MESSAGE: &str = "Extra usage is required for 1M context. Use /extra-usage to enable it, /model to switch models, or /1m-context disable to turn off 1M context for this folder.";
+const EXTRA_USAGE_REQUIRED_MESSAGE: &str = "Extra usage credit is required to continue. Use /extra-usage to enable it, /model to switch models, or wait for the rate-limit window to reset.";
 
 fn format_rate_limit_type(raw: &str) -> &str {
     match raw {
@@ -247,7 +247,7 @@ mod tests {
 
         assert_eq!(
             format_rate_limit_summary(&update),
-            "Extra usage is required for 1M context. Use /extra-usage to enable it, /model to switch models, or /1m-context disable to turn off 1M context for this folder."
+            "Extra usage credit is required to continue. Use /extra-usage to enable it, /model to switch models, or wait for the rate-limit window to reset."
         );
     }
 
