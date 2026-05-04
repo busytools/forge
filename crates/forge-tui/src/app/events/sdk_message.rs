@@ -972,14 +972,18 @@ fn apply_result_finalize(app: &mut App, msg: &Message, raw: &Value) {
 
     let assistant_error = app.turn_state.last_assistant_error.clone();
     finalize_open_tool_calls(app, "failed");
-    let message = if errors_array.is_empty() {
-        if subtype.is_empty() {
-            "turn failed".to_owned()
-        } else {
-            format!("turn failed: {subtype}")
-        }
-    } else {
+    // Build a clean detail string for the renderer to use after its
+    // canonical "Turn failed: " prefix. Drop the SDK's default
+    // `subtype="success"` (an internal bookkeeping value, not a user
+    // reason). Don't prepend "turn failed:" here — the renderer adds
+    // the prefix once, and doubling it produces "Turn failed: turn
+    // failed: ..." in the chat.
+    let message = if !errors_array.is_empty() {
         errors_array.join("\n")
+    } else if !subtype.is_empty() && subtype != "success" {
+        subtype.to_owned()
+    } else {
+        String::new()
     };
     let error_kind = classify_turn_error_kind(subtype, &errors_array, assistant_error.as_deref());
     let class = crate::agent::error_handling::parse_turn_error_class(error_kind);

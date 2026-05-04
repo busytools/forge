@@ -196,10 +196,17 @@ async fn error_then_new_turn_recovers() {
 // --- Message accumulation ---
 
 #[tokio::test]
-async fn chunks_across_turns_append_to_last_assistant_message() {
+async fn chunks_across_turns_open_a_new_assistant_message() {
+    // Regression: previously, chunks arriving after `TurnComplete`
+    // (no active turn bound, e.g. a Monitor / Task notification
+    // firing on its own) merged into the prior turn's last assistant
+    // message — producing rendered output like
+    // "...gateway-backend/pull/107Monitor closed cleanly." with no
+    // separator. Each unprompted assistant turn must now open its
+    // own ChatMessage so the renderer can space them.
     let mut app = test_app();
 
-    // First turn
+    // First turn.
     let c1 = model::ContentChunk::new(model::ContentBlock::Text(model::TextContent::new("Turn 1")));
     send_client_event(
         &mut app,
@@ -208,21 +215,28 @@ async fn chunks_across_turns_append_to_last_assistant_message() {
     send_client_event(&mut app, ClientEvent::TurnComplete { terminal_reason: None });
     assert_eq!(app.messages.len(), 1);
 
-    // Second turn: chunks append to the last assistant message (no user message between turns)
+    // Second turn (no user message between turns). Should open a
+    // fresh assistant ChatMessage rather than appending to "Turn 1".
     let c2 = model::ContentChunk::new(model::ContentBlock::Text(model::TextContent::new("Turn 2")));
     send_client_event(
         &mut app,
         ClientEvent::SessionUpdate(model::SessionUpdate::AgentMessageChunk(c2)),
     );
 
-    // Still one message - consecutive assistant chunks always merge
-    assert_eq!(app.messages.len(), 1);
-    if let MessageBlock::Text(block) =
-        &app.messages.last().expect("message").blocks.last().expect("block")
-    {
-        assert!(block.text.contains("Turn 1"), "first turn text present");
-        assert!(block.text.contains("Turn 2"), "second turn text appended");
-    }
+    assert_eq!(app.messages.len(), 2, "second turn must NOT merge into the first");
+    let first = app.messages.first().expect("first turn message");
+    let MessageBlock::Text(first_block) = first.blocks.last().expect("first block") else {
+        panic!("expected first turn text block");
+    };
+    assert!(first_block.text.contains("Turn 1"));
+    assert!(!first_block.text.contains("Turn 2"), "Turn 2 must not have been merged in");
+
+    let second = app.messages.last().expect("second turn message");
+    assert!(matches!(second.role, MessageRole::Assistant));
+    let MessageBlock::Text(second_block) = second.blocks.last().expect("second block") else {
+        panic!("expected second turn text block");
+    };
+    assert_eq!(second_block.text, "Turn 2");
 }
 
 #[tokio::test]

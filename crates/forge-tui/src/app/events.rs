@@ -2,7 +2,7 @@ mod api_retry;
 mod client;
 mod mouse;
 mod notices;
-mod rate_limit;
+pub(super) mod rate_limit;
 mod sdk_message;
 mod session;
 mod session_reset;
