@@ -75,5 +75,5 @@ fn maybe_print_resume_hint(app: &forge_tui::app::App, success: bool) {
     let Some(session_id) = app.session_id.as_ref() else {
         return;
     };
-    eprintln!("Resume this session: claude-rs resume {session_id}");
+    eprintln!("Resume this session: forge resume {session_id}");
 }
