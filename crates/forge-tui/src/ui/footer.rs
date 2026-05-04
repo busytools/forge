@@ -73,10 +73,9 @@ fn footer_mcp_auth_hint(app: &App) -> FooterItem {
 }
 
 fn footer_context_usage_hint(app: &App) -> FooterItem {
-    app.session_usage.context_usage_percent.map(|percentage| {
-        let remaining = 100_u8.saturating_sub(percentage);
-        (format!("{remaining}%"), FOOTER_CONTEXT_VALUE)
-    })
+    app.session_usage
+        .context_usage_percent
+        .map(|percentage| (format!("{percentage}%"), FOOTER_CONTEXT_VALUE))
 }
 
 fn footer_secondary_hint(app: &App) -> FooterItem {
@@ -745,11 +744,11 @@ mod tests {
     }
 
     #[test]
-    fn footer_context_usage_hint_shows_percentage_only() {
+    fn footer_context_usage_hint_renders_used_percentage() {
         let mut app = App::test_default();
         app.session_usage.context_usage_percent = Some(62);
 
-        assert_eq!(footer_context_usage_hint(&app), Some(("38%".to_owned(), FOOTER_CONTEXT_VALUE)));
+        assert_eq!(footer_context_usage_hint(&app), Some(("62%".to_owned(), FOOTER_CONTEXT_VALUE)));
     }
 
     #[test]
