@@ -114,7 +114,10 @@ impl OauthUsageError {
     /// different source for the same backend won't help.
     #[must_use]
     pub fn should_fallback(&self) -> bool {
-        matches!(self, Self::NoCredentials | Self::Expired | Self::Unauthorized(_))
+        matches!(
+            self,
+            Self::NoCredentials | Self::Expired | Self::Unauthorized(_)
+        )
     }
 }
 
@@ -160,7 +163,10 @@ pub async fn oauth_usage() -> Result<OauthUsage, OauthUsageError> {
         200 => serde_json::from_slice::<OauthUsage>(&body)
             .map_err(|error| OauthUsageError::Decode(error.to_string())),
         401 | 403 => Err(OauthUsageError::Unauthorized(status)),
-        _ => Err(OauthUsageError::HttpStatus(status, truncated_body_suffix(&body))),
+        _ => Err(OauthUsageError::HttpStatus(
+            status,
+            truncated_body_suffix(&body),
+        )),
     }
 }
 
@@ -168,7 +174,10 @@ fn oauth_headers(access_token: &str) -> Result<HeaderMap, OauthUsageError> {
     let mut headers = HeaderMap::new();
     headers.insert(ACCEPT, HeaderValue::from_static("application/json"));
     headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-    headers.insert("anthropic-beta", HeaderValue::from_static(OAUTH_BETA_HEADER));
+    headers.insert(
+        "anthropic-beta",
+        HeaderValue::from_static(OAUTH_BETA_HEADER),
+    );
     headers.insert(
         USER_AGENT,
         HeaderValue::from_static(concat!("forge-sdk/", env!("CARGO_PKG_VERSION"))),

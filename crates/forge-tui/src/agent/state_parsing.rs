@@ -9,7 +9,25 @@ use crate::agent::types::{
     SettingsParseErrorUpdate,
 };
 
-use super::shared::{number_field, record};
+// JSON walking helpers — inlined from `bridge::shared` (deleted)
+// since this is the only caller after the bridge collapse.
+
+#[must_use]
+fn record(value: &Value) -> Option<&Map<String, Value>> {
+    value.as_object()
+}
+
+#[must_use]
+fn number_field(record: &Map<String, Value>, keys: &[&str]) -> Option<f64> {
+    for key in keys {
+        if let Some(v) = record.get(*key).and_then(Value::as_f64)
+            && v.is_finite()
+        {
+            return Some(v);
+        }
+    }
+    None
+}
 
 #[must_use]
 pub fn parse_fast_mode_state(value: Option<&Value>) -> Option<FastModeState> {
@@ -22,7 +40,7 @@ pub fn parse_fast_mode_state(value: Option<&Value>) -> Option<FastModeState> {
 }
 
 #[must_use]
-pub fn parse_rate_limit_status(value: Option<&Value>) -> Option<RateLimitStatus> {
+fn parse_rate_limit_status(value: Option<&Value>) -> Option<RateLimitStatus> {
     match value?.as_str()? {
         "allowed" => Some(RateLimitStatus::Allowed),
         "allowed_warning" => Some(RateLimitStatus::AllowedWarning),
@@ -42,7 +60,7 @@ pub fn parse_runtime_session_state(value: Option<&Value>) -> Option<RuntimeSessi
 }
 
 #[must_use]
-pub fn parse_api_retry_error(value: Option<&Value>) -> ApiRetryError {
+fn parse_api_retry_error(value: Option<&Value>) -> ApiRetryError {
     match value.and_then(Value::as_str) {
         Some("authentication_failed") => ApiRetryError::AuthenticationFailed,
         Some("billing_error") => ApiRetryError::BillingError,
@@ -107,18 +125,15 @@ pub fn build_api_retry_update(message: &Map<String, Value>) -> Option<SessionUpd
 
 /// Mirrors `normalizeSettingsParseError(value)`.
 #[must_use]
-pub fn normalize_settings_parse_error(value: &Value) -> Option<SettingsParseErrorUpdate> {
+fn normalize_settings_parse_error(value: &Value) -> Option<SettingsParseErrorUpdate> {
     let r = record(value)?;
     let message = r.get("message").and_then(Value::as_str)?.trim();
     if message.is_empty() {
         return None;
     }
     let path = r.get("path").and_then(Value::as_str).unwrap_or("").to_owned();
-    let file = r
-        .get("file")
-        .and_then(Value::as_str)
-        .filter(|s| !s.trim().is_empty())
-        .map(str::to_owned);
+    let file =
+        r.get("file").and_then(Value::as_str).filter(|s| !s.trim().is_empty()).map(str::to_owned);
     Some(SettingsParseErrorUpdate { file, path, message: message.to_owned() })
 }
 
@@ -151,7 +166,10 @@ mod tests {
             parse_rate_limit_status(Some(&json!("allowed_warning"))),
             Some(RateLimitStatus::AllowedWarning),
         );
-        assert_eq!(parse_rate_limit_status(Some(&json!("rejected"))), Some(RateLimitStatus::Rejected));
+        assert_eq!(
+            parse_rate_limit_status(Some(&json!("rejected"))),
+            Some(RateLimitStatus::Rejected)
+        );
         assert_eq!(parse_rate_limit_status(Some(&json!("nope"))), None);
     }
 

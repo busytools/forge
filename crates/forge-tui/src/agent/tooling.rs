@@ -1,5 +1,5 @@
 //! Tool-call construction + tool-result extraction. 1:1 port of
-//! upstream's `agent-sdk/src/bridge/tooling.ts` (714 LoC).
+//! upstream's `agent-sdk/src/bridge/tooling.ts` (714 `LoC`).
 //!
 //! Three groups of helpers:
 //! 1. Front-of-tool: `create_tool_call`, `tool_title`, `normalize_tool_kind`,
@@ -18,7 +18,18 @@ use crate::agent::types::{
     ToolCallUpdateFields, ToolLocation, ToolOutputMetadata,
 };
 
-use super::cache_policy::{CACHE_SPLIT_POLICY, preview_kilobyte_label};
+// Tool-result preview-size cap — inlined from the deleted
+// `bridge::cache_policy` module. Upstream also tracked soft/hard
+// split limits but only the preview limit ever surfaces in
+// user-visible text, so flatten to a const here.
+const CACHE_PREVIEW_LIMIT_BYTES: usize = 2048;
+
+#[must_use]
+#[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn preview_kilobyte_label() -> String {
+    let kb = CACHE_PREVIEW_LIMIT_BYTES as f64 / 1024.0;
+    if kb.fract() == 0.0 { format!("{}KB", kb as u64) } else { format!("{kb:.1}KB") }
+}
 
 /// Block types the CLI uses for tool results. Mirrors upstream's
 /// `TOOL_RESULT_TYPES` set in tooling.ts:5.
@@ -46,7 +57,7 @@ pub fn is_tool_use_block_type(block_type: &str) -> bool {
 /// Mirrors `normalizeToolKind`. Maps tool name → kind string consumed
 /// by the TUI's tool-card renderer.
 #[must_use]
-pub fn normalize_tool_kind(name: &str) -> &'static str {
+fn normalize_tool_kind(name: &str) -> &'static str {
     match name {
         "Bash" => "execute",
         "Read" | "ReadMcpResource" => "read",
@@ -66,11 +77,10 @@ pub fn normalize_tool_kind(name: &str) -> &'static str {
 /// title shown on the tool card header (e.g. Bash → command, Glob →
 /// pattern + path, etc.).
 #[must_use]
-pub fn tool_title(name: &str, input: &Value) -> String {
+fn tool_title(name: &str, input: &Value) -> String {
     let record = input.as_object();
-    let s = |k: &str| -> &str {
-        record.and_then(|r| r.get(k)).and_then(Value::as_str).unwrap_or("")
-    };
+    let s =
+        |k: &str| -> &str { record.and_then(|r| r.get(k)).and_then(Value::as_str).unwrap_or("") };
 
     match name {
         "Bash" => {
@@ -164,10 +174,7 @@ pub fn create_tool_call(
     input: &Value,
     parent_tool_use_id: Option<&str>,
 ) -> ToolCall {
-    let file_path = input
-        .as_object()
-        .and_then(|r| r.get("file_path"))
-        .and_then(Value::as_str);
+    let file_path = input.as_object().and_then(|r| r.get("file_path")).and_then(Value::as_str);
     let locations = file_path
         .map(|p| vec![ToolLocation { path: p.to_owned(), line: None }])
         .unwrap_or_default();
@@ -195,11 +202,11 @@ pub fn create_tool_call(
 
 // ----- text extraction + persisted-output preview -----
 
-/// Mirrors `extractText(value)` — flattens a tool_result content
+/// Mirrors `extractText(value)` — flattens a `tool_result` content
 /// payload into a single `String`. Accepts string, array of
 /// `{ type: "text", text }` blocks, or single `{ text }` object.
 #[must_use]
-pub fn extract_text(value: &Value) -> String {
+fn extract_text(value: &Value) -> String {
     if let Some(s) = value.as_str() {
         return s.to_owned();
     }
@@ -210,7 +217,11 @@ pub fn extract_text(value: &Value) -> String {
                 if let Some(s) = entry.as_str() {
                     return Some(s.to_owned());
                 }
-                entry.as_object().and_then(|r| r.get("text")).and_then(Value::as_str).map(str::to_owned)
+                entry
+                    .as_object()
+                    .and_then(|r| r.get("text"))
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
             })
             .filter(|s| !s.is_empty())
             .collect::<Vec<_>>()
@@ -235,7 +246,7 @@ fn persisted_output_inner_text(text: &str) -> Option<&str> {
 
 fn persisted_output_first_line(text: &str) -> Option<String> {
     let inner = persisted_output_inner_text(text)?;
-    let expected_preview = format!("preview (first {}):", preview_kilobyte_label(CACHE_SPLIT_POLICY).to_lowercase());
+    let expected_preview = format!("preview (first {}):", preview_kilobyte_label().to_lowercase());
     for line in inner.split(['\n', '\r']) {
         let cleaned: String = line
             .chars()
@@ -255,14 +266,10 @@ fn persisted_output_first_line(text: &str) -> Option<String> {
 
 // ----- SDK rejection sanitization -----
 
-const USER_REJECTED_TOOL_USE_EXACT: &str =
-    "The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). STOP what you are doing and wait for the user to tell you how to proceed.";
-const USER_REJECTED_TOOL_USE_PREFIX: &str =
-    "The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). To tell you how to proceed, the user said:";
-const PERMISSION_DENIED_TOOL_USE_EXACT: &str =
-    "Permission for this tool use was denied. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). Try a different approach or report the limitation to complete your task.";
-const PERMISSION_DENIED_TOOL_USE_PREFIX: &str =
-    "Permission for this tool use was denied. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). The user said:";
+const USER_REJECTED_TOOL_USE_EXACT: &str = "The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). STOP what you are doing and wait for the user to tell you how to proceed.";
+const USER_REJECTED_TOOL_USE_PREFIX: &str = "The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). To tell you how to proceed, the user said:";
+const PERMISSION_DENIED_TOOL_USE_EXACT: &str = "Permission for this tool use was denied. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). Try a different approach or report the limitation to complete your task.";
+const PERMISSION_DENIED_TOOL_USE_PREFIX: &str = "Permission for this tool use was denied. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). The user said:";
 
 fn sanitize_sdk_rejection_text(text: &str) -> String {
     let normalized = text.trim();
@@ -280,7 +287,7 @@ fn sanitize_sdk_rejection_text(text: &str) -> String {
 }
 
 #[must_use]
-pub fn normalize_tool_result_text(value: &Value, is_error: bool) -> String {
+fn normalize_tool_result_text(value: &Value, is_error: bool) -> String {
     let text = extract_text(value);
     if text.is_empty() {
         return String::new();
@@ -326,7 +333,10 @@ fn push_nested_records(candidates: &mut Vec<Map<String, Value>>, value: &Value) 
     }
 }
 
-fn result_record_candidates(raw_result: Option<&Value>, raw_content: Option<&Value>) -> Vec<Map<String, Value>> {
+fn result_record_candidates(
+    raw_result: Option<&Value>,
+    raw_content: Option<&Value>,
+) -> Vec<Map<String, Value>> {
     let mut out = Vec::new();
     if let Some(v) = raw_result {
         push_records(&mut out, v);
@@ -355,7 +365,9 @@ fn find_bash_result_record(
 }
 
 fn bash_background_message(record: &Map<String, Value>) -> String {
-    let Some(task_id) = record.get("backgroundTaskId").and_then(Value::as_str) else { return String::new() };
+    let Some(task_id) = record.get("backgroundTaskId").and_then(Value::as_str) else {
+        return String::new();
+    };
     if task_id.is_empty() {
         return String::new();
     }
@@ -390,10 +402,7 @@ fn build_bash_display_output(record: &Map<String, Value>) -> String {
     segments.join("\n")
 }
 
-fn file_unchanged_result_text(
-    raw_result: Option<&Value>,
-    raw_content: Option<&Value>,
-) -> String {
+fn file_unchanged_result_text(raw_result: Option<&Value>, raw_content: Option<&Value>) -> String {
     for candidate in result_record_candidates(raw_result, raw_content) {
         if candidate.get("type").and_then(Value::as_str) != Some("file_unchanged") {
             continue;
@@ -491,9 +500,7 @@ fn write_diff_from_result(raw_content: Option<&Value>) -> Vec<ToolCallContent> {
         if file_path.is_empty() || content.is_empty() || original_raw.is_none() {
             continue;
         }
-        let original = original_raw
-            .and_then(Value::as_str)
-            .map_or_else(String::new, str::to_owned);
+        let original = original_raw.and_then(Value::as_str).map_or_else(String::new, str::to_owned);
         return vec![ToolCallContent::Diff {
             old_path: file_path.to_owned(),
             new_path: file_path.to_owned(),
@@ -667,7 +674,9 @@ fn extract_tool_output_metadata(
             if let Some(b) = candidate.get("verificationNudgeNeeded").and_then(Value::as_bool) {
                 return Some(ToolOutputMetadata {
                     bash: None,
-                    todo_write: Some(TodoWriteOutputMetadata { verification_nudge_needed: Some(b) }),
+                    todo_write: Some(TodoWriteOutputMetadata {
+                        verification_nudge_needed: Some(b),
+                    }),
                 });
             }
         }
@@ -679,14 +688,16 @@ fn extract_tool_output_metadata(
 
 fn resolve_tool_name(base: Option<&ToolCall>) -> String {
     let Some(meta) = base.and_then(|b| b.meta.as_ref()) else { return String::new() };
-    let Some(claude_code) = meta.get("claudeCode").and_then(Value::as_object) else { return String::new() };
+    let Some(claude_code) = meta.get("claudeCode").and_then(Value::as_object) else {
+        return String::new();
+    };
     claude_code.get("toolName").and_then(Value::as_str).unwrap_or("").to_owned()
 }
 
 // ----- main entry: build_tool_result_fields -----
 
 /// Mirrors `buildToolResultFields(isError, rawContent, base?, rawResult?)`.
-/// The high-level entry that turns an arbitrary tool_result block into
+/// The high-level entry that turns an arbitrary `tool_result` block into
 /// the structured `ToolCallUpdateFields` upstream's TUI consumes.
 #[must_use]
 pub fn build_tool_result_fields(
@@ -702,8 +713,11 @@ pub fn build_tool_result_fields(
     };
 
     // Read: file_unchanged shortcut. Early return.
-    let file_unchanged_text =
-        if !is_error && tool_name == "Read" { file_unchanged_result_text(raw_result, raw_content) } else { String::new() };
+    let file_unchanged_text = if !is_error && tool_name == "Read" {
+        file_unchanged_result_text(raw_result, raw_content)
+    } else {
+        String::new()
+    };
     if !file_unchanged_text.is_empty() {
         fields.raw_output = Some(file_unchanged_text.clone());
         fields.content = Some(vec![ToolCallContent::Content {
@@ -721,22 +735,16 @@ pub fn build_tool_result_fields(
     }
 
     // Bash: extract structured output, otherwise normalise the text.
-    let bash_record = if tool_name == "Bash" {
-        find_bash_result_record(raw_result, raw_content)
-    } else {
-        None
-    };
-    let normalized_raw_output = raw_content
-        .map(|v| normalize_tool_result_text(v, is_error))
-        .unwrap_or_default();
+    let bash_record =
+        if tool_name == "Bash" { find_bash_result_record(raw_result, raw_content) } else { None };
+    let normalized_raw_output =
+        raw_content.map(|v| normalize_tool_result_text(v, is_error)).unwrap_or_default();
     let raw_output = if let Some(record) = bash_record.as_ref() {
         build_bash_display_output(record)
     } else if !normalized_raw_output.is_empty() {
         normalized_raw_output
     } else {
-        raw_content
-            .map(|v| serde_json::to_string(v).unwrap_or_default())
-            .unwrap_or_default()
+        raw_content.map(|v| serde_json::to_string(v).unwrap_or_default()).unwrap_or_default()
     };
     if !raw_output.is_empty() {
         fields.raw_output = Some(raw_output.clone());
@@ -768,11 +776,8 @@ pub fn build_tool_result_fields(
             fields.content = Some(structured);
             return fields;
         }
-        if base.is_some_and(|b| {
-            b.content
-                .iter()
-                .any(|c| matches!(c, ToolCallContent::Diff { .. }))
-        }) {
+        if base.is_some_and(|b| b.content.iter().any(|c| matches!(c, ToolCallContent::Diff { .. })))
+        {
             return fields;
         }
     }
@@ -795,7 +800,7 @@ pub fn build_tool_result_fields(
     fields
 }
 
-/// Mirrors `unwrapToolUseResult(rawResult)`. Walks the tool_result
+/// Mirrors `unwrapToolUseResult(rawResult)`. Walks the `tool_result`
 /// envelope: if the value is an object, surfaces the inner `content`
 /// / `result` / `text` field and the `is_error` / `error` flag.
 pub struct UnwrappedToolResult {
@@ -841,7 +846,8 @@ mod tests {
         assert_eq!(read.title, "Read /x");
         assert_eq!(read.kind, "read");
 
-        let glob = create_tool_call("tu3", "Glob", &json!({"pattern": "*.rs", "path": "src"}), None);
+        let glob =
+            create_tool_call("tu3", "Glob", &json!({"pattern": "*.rs", "path": "src"}), None);
         assert_eq!(glob.title, "Glob *.rs in src");
         assert_eq!(glob.kind, "search");
 
@@ -858,7 +864,12 @@ mod tests {
 
     #[test]
     fn edit_initial_content_is_diff() {
-        let r = create_tool_call("tu", "Edit", &json!({"file_path": "/f", "old_string": "a", "new_string": "b"}), None);
+        let r = create_tool_call(
+            "tu",
+            "Edit",
+            &json!({"file_path": "/f", "old_string": "a", "new_string": "b"}),
+            None,
+        );
         assert_eq!(r.content.len(), 1);
         let ToolCallContent::Diff { old, new, .. } = &r.content[0] else { panic!("expected diff") };
         assert_eq!(old, "a");
@@ -867,7 +878,8 @@ mod tests {
 
     #[test]
     fn write_initial_content_is_full_diff() {
-        let r = create_tool_call("tu", "Write", &json!({"file_path": "/f", "content": "hello"}), None);
+        let r =
+            create_tool_call("tu", "Write", &json!({"file_path": "/f", "content": "hello"}), None);
         assert_eq!(r.content.len(), 1);
         let ToolCallContent::Diff { old, new, .. } = &r.content[0] else { panic!() };
         assert_eq!(old, "");
@@ -877,14 +889,19 @@ mod tests {
     #[test]
     fn extract_text_handles_string_array_object() {
         assert_eq!(extract_text(&json!("hi")), "hi");
-        assert_eq!(extract_text(&json!([{"type":"text","text":"a"},{"type":"text","text":"b"}])), "a\nb");
+        assert_eq!(
+            extract_text(&json!([{"type":"text","text":"a"},{"type":"text","text":"b"}])),
+            "a\nb"
+        );
         assert_eq!(extract_text(&json!({"text":"o"})), "o");
         assert_eq!(extract_text(&json!(123)), "");
     }
 
     #[test]
     fn normalize_text_skips_persisted_preview_line() {
-        let v = json!("<persisted-output>\npreview (first 2kb):\n│ hello world\n│ second line\n</persisted-output>");
+        let v = json!(
+            "<persisted-output>\npreview (first 2kb):\n│ hello world\n│ second line\n</persisted-output>"
+        );
         let out = normalize_tool_result_text(&v, false);
         assert_eq!(out, "hello world");
     }
@@ -905,7 +922,8 @@ mod tests {
     #[test]
     fn build_fields_bash_extracts_stdout_stderr() {
         let base = make_base("Bash", &json!({"command":"echo"}));
-        let raw_content = json!([{"type":"text","text":"<persisted-output>\n│ hello\n</persisted-output>"}]);
+        let raw_content =
+            json!([{"type":"text","text":"<persisted-output>\n│ hello\n</persisted-output>"}]);
         let raw_result = json!({"stdout":"hello\n","stderr":"","interrupted":false});
         let f = build_tool_result_fields(false, Some(&raw_content), Some(&base), Some(&raw_result));
         assert_eq!(f.status.as_deref(), Some("completed"));
@@ -923,7 +941,12 @@ mod tests {
     fn build_fields_read_file_unchanged_shortcut() {
         let base = make_base("Read", &json!({"file_path": "/x"}));
         let raw_result = json!([{"type":"file_unchanged","file":{"filePath":"/x"}}]);
-        let f = build_tool_result_fields(false, Some(&json!("ignored")), Some(&base), Some(&raw_result));
+        let f = build_tool_result_fields(
+            false,
+            Some(&json!("ignored")),
+            Some(&base),
+            Some(&raw_result),
+        );
         assert_eq!(f.raw_output.as_deref(), Some("File unchanged: /x"));
     }
 
@@ -932,7 +955,10 @@ mod tests {
         let base = make_base("Write", &json!({"file_path":"/x","content":"new"}));
         let raw_content = json!([{"filePath":"/x","content":"new","originalFile":"old"}]);
         let f = build_tool_result_fields(false, Some(&raw_content), Some(&base), None);
-        assert!(matches!(f.content.as_ref().and_then(|c| c.first()), Some(ToolCallContent::Diff { .. })));
+        assert!(matches!(
+            f.content.as_ref().and_then(|c| c.first()),
+            Some(ToolCallContent::Diff { .. })
+        ));
     }
 
     #[test]
@@ -946,7 +972,8 @@ mod tests {
     #[test]
     fn build_fields_mcp_resource_structured() {
         let base = make_base("ReadMcpResource", &json!({"uri":"file:///x"}));
-        let raw_content = json!({"contents":[{"uri":"file:///x","text":"hi","mimeType":"text/plain"}]});
+        let raw_content =
+            json!({"contents":[{"uri":"file:///x","text":"hi","mimeType":"text/plain"}]});
         let f = build_tool_result_fields(false, Some(&raw_content), Some(&base), None);
         assert!(matches!(
             f.content.as_ref().and_then(|c| c.first()),
@@ -958,7 +985,12 @@ mod tests {
     fn build_fields_bash_output_metadata() {
         let base = make_base("Bash", &json!({"command":"sleep 30 &"}));
         let raw_result = json!({"backgroundTaskId":"bg1","assistantAutoBackgrounded":true});
-        let f = build_tool_result_fields(false, Some(&json!("started")), Some(&base), Some(&raw_result));
+        let f = build_tool_result_fields(
+            false,
+            Some(&json!("started")),
+            Some(&base),
+            Some(&raw_result),
+        );
         let meta = f.output_metadata.expect("meta");
         assert_eq!(meta.bash.unwrap().assistant_auto_backgrounded, Some(true));
     }

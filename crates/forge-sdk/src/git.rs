@@ -123,21 +123,24 @@ impl GitContextWatcher {
     ///
     /// Returns [`GitError::Watcher`] when `notify` fails to install
     /// its OS watcher (e.g. inotify limit reached on Linux).
-    pub fn new(cwd: PathBuf) -> Result<Self, GitError> {
+    pub fn new(cwd: &Path) -> Result<Self, GitError> {
         let (snap_tx, snap_rx) = tokio_mpsc::unbounded_channel();
 
         // Always send the initial snapshot — even when there's no
         // repo, callers want the "branch: NoRepo" state to flow once.
-        let initial = git_context(&cwd);
+        let initial = git_context(cwd);
         let _ = snap_tx.send(initial.clone());
 
-        let repo = ResolvedRepo::discover(&cwd);
+        let repo = ResolvedRepo::discover(cwd);
 
         // Without a repo there's nothing to watch. The initial
         // NoRepo snapshot has been queued; future calls to
         // `next_snapshot()` block until the watcher is dropped.
         let Some(repo) = repo else {
-            return Ok(Self { rx: snap_rx, _watcher: None });
+            return Ok(Self {
+                rx: snap_rx,
+                _watcher: None,
+            });
         };
 
         let (notify_tx, notify_rx) = mpsc::channel::<notify::Result<Event>>();
@@ -172,7 +175,7 @@ impl GitContextWatcher {
         if let Err(err) = std::thread::Builder::new()
             .name("forge-sdk-git-debounce".to_owned())
             .spawn(move || {
-                run_debounce_loop(repo, notify_rx, snap_tx, initial_branch);
+                run_debounce_loop(&repo, &notify_rx, &snap_tx, initial_branch);
             })
         {
             tracing::error!(
@@ -182,7 +185,10 @@ impl GitContextWatcher {
             );
         }
 
-        Ok(Self { rx: snap_rx, _watcher: Some(watcher) })
+        Ok(Self {
+            rx: snap_rx,
+            _watcher: Some(watcher),
+        })
     }
 
     /// Wait for the next snapshot. Returns `None` only when the
@@ -204,9 +210,9 @@ impl GitContextWatcher {
 ///    `notify::Watcher` is dropped — i.e. `GitContextWatcher` was
 ///    dropped).
 fn run_debounce_loop(
-    repo: ResolvedRepo,
-    notify_rx: mpsc::Receiver<notify::Result<Event>>,
-    snap_tx: tokio_mpsc::UnboundedSender<GitContext>,
+    repo: &ResolvedRepo,
+    notify_rx: &mpsc::Receiver<notify::Result<Event>>,
+    snap_tx: &tokio_mpsc::UnboundedSender<GitContext>,
     mut last_branch: GitBranch,
 ) {
     loop {
@@ -304,7 +310,9 @@ impl ResolvedRepo {
                 common_git_dir: normalize_path(&common_git_dir),
                 head_path: normalize_path(&effective_git_dir.join("HEAD")),
                 packed_refs_path: normalize_path(&common_git_dir.join("packed-refs")),
-                commondir_path: commondir_path.exists().then(|| normalize_path(&commondir_path)),
+                commondir_path: commondir_path
+                    .exists()
+                    .then(|| normalize_path(&commondir_path)),
                 heads_dir: normalize_path(&heads_dir),
             });
         }
@@ -364,16 +372,28 @@ impl ResolvedRepo {
 
     fn watch_directories(&self) -> Vec<(PathBuf, RecursiveMode)> {
         let mut watched = BTreeMap::new();
-        insert_watch_path(&mut watched, self.worktree_root.clone(), RecursiveMode::NonRecursive);
+        insert_watch_path(
+            &mut watched,
+            self.worktree_root.clone(),
+            RecursiveMode::NonRecursive,
+        );
         insert_watch_path(
             &mut watched,
             self.effective_git_dir.clone(),
             RecursiveMode::NonRecursive,
         );
-        insert_watch_path(&mut watched, self.common_git_dir.clone(), RecursiveMode::NonRecursive);
+        insert_watch_path(
+            &mut watched,
+            self.common_git_dir.clone(),
+            RecursiveMode::NonRecursive,
+        );
 
         if self.heads_dir.exists() {
-            insert_watch_path(&mut watched, self.heads_dir.clone(), RecursiveMode::Recursive);
+            insert_watch_path(
+                &mut watched,
+                self.heads_dir.clone(),
+                RecursiveMode::Recursive,
+            );
         }
 
         watched.into_iter().collect()
@@ -398,7 +418,9 @@ fn insert_watch_path(
 
 fn parse_gitdir_target(dot_git_path: &Path) -> Option<PathBuf> {
     let content = fs::read_to_string(dot_git_path).ok()?;
-    let raw = content.lines().find_map(|line| line.trim().strip_prefix("gitdir:"))?;
+    let raw = content
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("gitdir:"))?;
     let target = raw.trim();
     (!target.is_empty()).then(|| PathBuf::from(target))
 }
@@ -410,7 +432,11 @@ fn read_optional_target(path: &Path) -> Option<PathBuf> {
 }
 
 fn resolve_relative_path(base: &Path, target: &Path) -> PathBuf {
-    if target.is_absolute() { normalize_path(target) } else { normalize_path(&base.join(target)) }
+    if target.is_absolute() {
+        normalize_path(target)
+    } else {
+        normalize_path(&base.join(target))
+    }
 }
 
 fn normalize_path(path: &Path) -> PathBuf {
@@ -430,7 +456,11 @@ fn normalize_path(path: &Path) -> PathBuf {
         }
     }
 
-    if normalized.as_os_str().is_empty() { PathBuf::from(".") } else { normalized }
+    if normalized.as_os_str().is_empty() {
+        PathBuf::from(".")
+    } else {
+        normalized
+    }
 }
 
 #[cfg(test)]
@@ -452,8 +482,14 @@ mod tests {
     fn create_standard_repo(root: &Path, branch: &str) -> PathBuf {
         let repo = root.join("repo");
         fs::create_dir_all(repo.join("src")).expect("create repo");
-        write_file(&repo.join(".git").join("HEAD"), &format!("ref: refs/heads/{branch}\n"));
-        write_file(&repo.join(".git").join("refs").join("heads").join(branch), "deadbeef\n");
+        write_file(
+            &repo.join(".git").join("HEAD"),
+            &format!("ref: refs/heads/{branch}\n"),
+        );
+        write_file(
+            &repo.join(".git").join("refs").join("heads").join(branch),
+            "deadbeef\n",
+        );
         repo
     }
 
@@ -463,9 +499,15 @@ mod tests {
         let common = root.join("admin").join("common");
         fs::create_dir_all(repo.join("src")).expect("create worktree");
         write_file(&repo.join(".git"), "gitdir: ../admin/worktrees/wt-1\n");
-        write_file(&effective.join("HEAD"), &format!("ref: refs/heads/{branch}\n"));
+        write_file(
+            &effective.join("HEAD"),
+            &format!("ref: refs/heads/{branch}\n"),
+        );
         write_file(&effective.join("commondir"), "../../common\n");
-        write_file(&common.join("refs").join("heads").join(branch), "cafebabe\n");
+        write_file(
+            &common.join("refs").join("heads").join(branch),
+            "cafebabe\n",
+        );
         repo
     }
 
@@ -493,10 +535,17 @@ mod tests {
             resolved.effective_git_dir,
             dir.path().join("admin").join("worktrees").join("wt-1")
         );
-        assert_eq!(resolved.common_git_dir, dir.path().join("admin").join("common"));
+        assert_eq!(
+            resolved.common_git_dir,
+            dir.path().join("admin").join("common")
+        );
         assert_eq!(
             resolved.heads_dir,
-            dir.path().join("admin").join("common").join("refs").join("heads")
+            dir.path()
+                .join("admin")
+                .join("common")
+                .join("refs")
+                .join("heads")
         );
     }
 
@@ -579,7 +628,7 @@ mod tests {
     #[tokio::test(flavor = "current_thread", start_paused = false)]
     async fn watcher_emits_initial_snapshot_for_no_repo() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let mut watcher = GitContextWatcher::new(dir.path().to_path_buf()).expect("new");
+        let mut watcher = GitContextWatcher::new(dir.path()).expect("new");
         let snap = watcher.next_snapshot().await.expect("initial");
         assert_eq!(snap.branch, GitBranch::NoRepo);
     }
@@ -609,7 +658,9 @@ mod tests {
 
     #[test]
     fn git_context_serde_roundtrip() {
-        let context = GitContext { branch: GitBranch::Named("main".to_owned()) };
+        let context = GitContext {
+            branch: GitBranch::Named("main".to_owned()),
+        };
         let json = serde_json::to_string(&context).expect("serialize");
         let parsed: GitContext = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(parsed, context);

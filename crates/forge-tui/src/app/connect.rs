@@ -1,14 +1,14 @@
 //! App creation and bridge connection lifecycle.
 //!
 //! Submodules:
-//! - `bridge_lifecycle`: spawning the bridge process, init handshake, event loop
-//! - `event_dispatch`: routing `BridgeEvent` envelopes to `ClientEvent` messages
-//! - `type_converters`: bridge wire types -> app model types
+//! - `bridge_lifecycle`: spawning the bridge, init handshake, event-relay loop +
+//!   inline `AgentEvent` → `ClientEvent` translation
+//! - `type_converters`: bridge wire types -> app model types (consumed by
+//!   `bridge_lifecycle` and the App-side SDK message dispatcher)
 
 mod bridge_lifecycle;
-mod event_dispatch;
 mod session_start;
-mod type_converters;
+pub(crate) mod type_converters;
 
 use super::config::ConfigState;
 use super::dialog::DialogState;
@@ -21,9 +21,9 @@ use super::trust;
 use super::view::ActiveView;
 use super::{App, AppStatus, ChatViewport, FocusManager, HelpView, SelectionState, TodoItem};
 use crate::agent::client::AgentBridge;
+use crate::agent::client::SessionLaunchSettings;
 use crate::agent::events::ClientEvent;
 use crate::agent::model;
-use crate::agent::wire::SessionLaunchSettings;
 use crate::{Cli, Command};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -207,6 +207,7 @@ pub fn create_app(cli: &Cli) -> App {
         is_compacting: false,
         account_info: None,
         oauth_credentials: None,
+        turn_state: super::SessionTurnState::default(),
         terminal_tool_calls: Vec::new(),
         terminal_tool_call_membership: HashSet::new(),
         needs_redraw: true,

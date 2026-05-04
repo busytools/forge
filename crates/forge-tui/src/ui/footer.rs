@@ -410,9 +410,7 @@ fn mcp_needs_auth_count(app: &App) -> usize {
     app.mcp
         .servers
         .iter()
-        .filter(|server| {
-            matches!(server.status, forge_sdk::McpServerConnectionStatus::NeedsAuth)
-        })
+        .filter(|server| matches!(server.status, forge_sdk::McpServerConnectionStatus::NeedsAuth))
         .count()
 }
 
@@ -444,11 +442,11 @@ fn fast_mode_badge(state: model::FastModeState) -> (&'static str, Color) {
 mod tests {
     use super::*;
     use crate::agent::model;
-    use forge_sdk::{McpServerConnectionStatus, McpServerStatus};
     use crate::app::{
         App, BlockCache, ChatMessage, InlinePermission, MessageBlock, MessageRole,
         TerminalSnapshotMode, TextBlock, ToolCallInfo,
     };
+    use forge_sdk::{McpServerConnectionStatus, McpServerStatus};
     use tokio::sync::oneshot;
 
     #[test]

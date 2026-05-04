@@ -28,41 +28,27 @@
 //!   `/resume`, status snapshot, model switching live in the TUI loop
 //!   and need terminal-driven verification.
 
-#![allow(
-    clippy::panic,
-    clippy::expect_used,
-    clippy::unwrap_used,
-    clippy::manual_assert,
-)]
+#![allow(clippy::panic, clippy::expect_used, clippy::unwrap_used, clippy::manual_assert)]
 
 use std::time::Duration;
 
 use forge_tui::agent::client::AgentBridge;
+use forge_tui::agent::client::{AgentEvent, SessionLaunchSettings};
 use forge_tui::agent::forge_sdk_bridge::ForgeSdkBridge;
-use forge_tui::agent::forge_sdk_worker;
-use forge_tui::agent::types::SessionUpdate;
-use forge_tui::agent::wire::{BridgeEvent, SessionLaunchSettings};
 use std::rc::Rc;
 use tokio::sync::mpsc;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "needs a real `claude` binary on PATH; burns API budget"]
 async fn forge_sdk_e2e_round_trip() {
-    let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
-    let (event_tx, mut event_rx) = mpsc::unbounded_channel();
-
-    // Worker runs forge-sdk; lives for the duration of the test.
-    let worker = tokio::spawn(forge_sdk_worker::run_worker(cmd_rx, event_tx));
-
-    let agent: Rc<dyn AgentBridge> = Rc::new(ForgeSdkBridge::new(cmd_tx));
+    let bridge = ForgeSdkBridge::new();
+    let mut event_rx = bridge.take_events().expect("fresh bridge has events");
+    let agent: Rc<dyn AgentBridge> = Rc::new(bridge);
 
     // Kick off a session.
     agent
         .new_session(
-            std::env::current_dir()
-                .unwrap()
-                .to_string_lossy()
-                .into_owned(),
+            std::env::current_dir().unwrap().to_string_lossy().into_owned(),
             SessionLaunchSettings::default(),
         )
         .expect("new_session queued");
@@ -82,17 +68,14 @@ async fn forge_sdk_e2e_round_trip() {
 
     // Tear down.
     drop(agent);
-    let _ = tokio::time::timeout(Duration::from_secs(5), worker).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "needs a real `claude` binary on PATH; burns API budget"]
 async fn forge_sdk_e2e_multi_turn() {
-    let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
-    let (event_tx, mut event_rx) = mpsc::unbounded_channel();
-
-    let worker = tokio::spawn(forge_sdk_worker::run_worker(cmd_rx, event_tx));
-    let agent: Rc<dyn AgentBridge> = Rc::new(ForgeSdkBridge::new(cmd_tx));
+    let bridge = ForgeSdkBridge::new();
+    let mut event_rx = bridge.take_events().expect("fresh bridge has events");
+    let agent: Rc<dyn AgentBridge> = Rc::new(bridge);
 
     agent
         .new_session(
@@ -127,17 +110,14 @@ async fn forge_sdk_e2e_multi_turn() {
     eprintln!("e2e multi_turn: turn 2 complete (text seen)");
 
     drop(agent);
-    let _ = tokio::time::timeout(Duration::from_secs(5), worker).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "needs a real `claude` binary on PATH; burns API budget"]
 async fn forge_sdk_e2e_tool_call_emits_event() {
-    let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
-    let (event_tx, mut event_rx) = mpsc::unbounded_channel();
-
-    let worker = tokio::spawn(forge_sdk_worker::run_worker(cmd_rx, event_tx));
-    let agent: Rc<dyn AgentBridge> = Rc::new(ForgeSdkBridge::new(cmd_tx));
+    let bridge = ForgeSdkBridge::new();
+    let mut event_rx = bridge.take_events().expect("fresh bridge has events");
+    let agent: Rc<dyn AgentBridge> = Rc::new(bridge);
 
     agent
         .new_session(
@@ -170,16 +150,14 @@ async fn forge_sdk_e2e_tool_call_emits_event() {
     eprintln!("e2e tool_call: tool call observed");
 
     drop(agent);
-    let _ = tokio::time::timeout(Duration::from_secs(5), worker).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "needs a real `claude` binary on PATH; burns API budget"]
 async fn forge_sdk_e2e_cancel_mid_turn() {
-    let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
-    let (event_tx, mut event_rx) = mpsc::unbounded_channel();
-    let worker = tokio::spawn(forge_sdk_worker::run_worker(cmd_rx, event_tx));
-    let agent: Rc<dyn AgentBridge> = Rc::new(ForgeSdkBridge::new(cmd_tx));
+    let bridge = ForgeSdkBridge::new();
+    let mut event_rx = bridge.take_events().expect("fresh bridge has events");
+    let agent: Rc<dyn AgentBridge> = Rc::new(bridge);
 
     agent
         .new_session(
@@ -223,33 +201,32 @@ async fn forge_sdk_e2e_cancel_mid_turn() {
         else {
             break;
         };
-        match event {
-            BridgeEvent::TurnComplete { .. } => {
+        if let AgentEvent::SdkMessage {
+            msg: forge_sdk::Message::Result { is_error, subtype, .. },
+            ..
+        } = event
+        {
+            if !is_error && subtype == "success" {
                 terminal = Some("complete");
-                break;
-            }
-            BridgeEvent::TurnError { message, .. } => {
-                eprintln!("e2e cancel: TurnError {message}");
+            } else {
+                eprintln!("e2e cancel: Result is_error={is_error} subtype={subtype}");
                 terminal = Some("error");
-                break;
             }
-            _ => {}
+            break;
         }
     }
     assert!(terminal.is_some(), "no terminal turn frame after cancel");
     eprintln!("e2e cancel: turn finalized as {terminal:?}");
 
     drop(agent);
-    let _ = tokio::time::timeout(Duration::from_secs(5), worker).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "needs a real `claude` binary on PATH; burns API budget"]
 async fn forge_sdk_e2e_status_and_context_snapshots() {
-    let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
-    let (event_tx, mut event_rx) = mpsc::unbounded_channel();
-    let worker = tokio::spawn(forge_sdk_worker::run_worker(cmd_rx, event_tx));
-    let agent: Rc<dyn AgentBridge> = Rc::new(ForgeSdkBridge::new(cmd_tx));
+    let bridge = ForgeSdkBridge::new();
+    let mut event_rx = bridge.take_events().expect("fresh bridge has events");
+    let agent: Rc<dyn AgentBridge> = Rc::new(bridge);
 
     agent
         .new_session(
@@ -263,17 +240,11 @@ async fn forge_sdk_e2e_status_and_context_snapshots() {
     // Drive a tiny prompt so the CLI's account info and context-usage
     // numbers are populated. account_info() returns None until at
     // least one stream-json frame mentions it.
-    agent
-        .prompt_text(session_id.clone(), "Reply with OK.".to_owned())
-        .expect("prompt queued");
+    agent.prompt_text(session_id.clone(), "Reply with OK.".to_owned()).expect("prompt queued");
     let _ = await_turn(&mut event_rx, Duration::from_secs(60)).await;
 
-    agent
-        .get_status_snapshot(session_id.clone())
-        .expect("status queued");
-    agent
-        .get_context_usage(session_id.clone())
-        .expect("context queued");
+    agent.get_status_snapshot(session_id.clone()).expect("status queued");
+    agent.get_context_usage(session_id.clone()).expect("context queued");
 
     // Drain until we've seen both, with a generous timeout.
     let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
@@ -289,8 +260,8 @@ async fn forge_sdk_e2e_status_and_context_snapshots() {
             break;
         };
         match event {
-            BridgeEvent::StatusSnapshot { .. } => saw_status = true,
-            BridgeEvent::ContextUsage { .. } => saw_context = true,
+            AgentEvent::StatusSnapshot { .. } => saw_status = true,
+            AgentEvent::ContextUsage { .. } => saw_context = true,
             _ => {}
         }
     }
@@ -299,16 +270,14 @@ async fn forge_sdk_e2e_status_and_context_snapshots() {
     eprintln!("e2e status: both snapshots delivered");
 
     drop(agent);
-    let _ = tokio::time::timeout(Duration::from_secs(5), worker).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "needs a real `claude` binary on PATH; burns API budget"]
 async fn forge_sdk_e2e_mcp_snapshot() {
-    let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
-    let (event_tx, mut event_rx) = mpsc::unbounded_channel();
-    let worker = tokio::spawn(forge_sdk_worker::run_worker(cmd_rx, event_tx));
-    let agent: Rc<dyn AgentBridge> = Rc::new(ForgeSdkBridge::new(cmd_tx));
+    let bridge = ForgeSdkBridge::new();
+    let mut event_rx = bridge.take_events().expect("fresh bridge has events");
+    let agent: Rc<dyn AgentBridge> = Rc::new(bridge);
 
     agent
         .new_session(
@@ -319,9 +288,7 @@ async fn forge_sdk_e2e_mcp_snapshot() {
     let session_id = await_connected(&mut event_rx, Duration::from_secs(30)).await;
     eprintln!("e2e mcp: connected to {session_id}");
 
-    agent
-        .get_mcp_snapshot(session_id)
-        .expect("mcp snapshot queued");
+    agent.get_mcp_snapshot(session_id).expect("mcp snapshot queued");
 
     let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
     let mut got = false;
@@ -334,7 +301,7 @@ async fn forge_sdk_e2e_mcp_snapshot() {
         else {
             break;
         };
-        if let BridgeEvent::McpSnapshot { servers, error, .. } = event {
+        if let AgentEvent::McpSnapshot { servers, error, .. } = event {
             // The list may be empty (no MCP servers configured) — we
             // only care that the round-trip works without error.
             assert!(error.is_none(), "MCP snapshot error: {error:?}");
@@ -346,7 +313,6 @@ async fn forge_sdk_e2e_mcp_snapshot() {
     assert!(got, "expected McpSnapshot event");
 
     drop(agent);
-    let _ = tokio::time::timeout(Duration::from_secs(5), worker).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -355,10 +321,9 @@ async fn forge_sdk_e2e_resume_session() {
     // Phase 1: spawn a fresh session, drive one prompt, capture sid.
     #[allow(clippy::similar_names)]
     let session_id = {
-        let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
-        let (event_tx, mut event_rx) = mpsc::unbounded_channel();
-        let worker = tokio::spawn(forge_sdk_worker::run_worker(cmd_rx, event_tx));
-        let agent: Rc<dyn AgentBridge> = Rc::new(ForgeSdkBridge::new(cmd_tx));
+        let bridge = ForgeSdkBridge::new();
+        let mut event_rx = bridge.take_events().expect("fresh bridge has events");
+        let agent: Rc<dyn AgentBridge> = Rc::new(bridge);
 
         agent
             .new_session(
@@ -377,15 +342,13 @@ async fn forge_sdk_e2e_resume_session() {
         // Tear phase 1 down so the underlying CLI subprocess exits and
         // its session state lands on disk.
         drop(agent);
-        let _ = tokio::time::timeout(Duration::from_secs(5), worker).await;
         sid
     };
 
     // Phase 2: resume by id on a fresh worker.
-    let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
-    let (event_tx, mut event_rx) = mpsc::unbounded_channel();
-    let worker = tokio::spawn(forge_sdk_worker::run_worker(cmd_rx, event_tx));
-    let agent: Rc<dyn AgentBridge> = Rc::new(ForgeSdkBridge::new(cmd_tx));
+    let bridge = ForgeSdkBridge::new();
+    let mut event_rx = bridge.take_events().expect("fresh bridge has events");
+    let agent: Rc<dyn AgentBridge> = Rc::new(bridge);
 
     agent
         .resume_session(session_id, SessionLaunchSettings::default())
@@ -397,17 +360,15 @@ async fn forge_sdk_e2e_resume_session() {
     eprintln!("e2e resume: phase 2 connected as {resumed_id}");
 
     drop(agent);
-    let _ = tokio::time::timeout(Duration::from_secs(5), worker).await;
 }
 
 async fn await_connected(
-    rx: &mut mpsc::UnboundedReceiver<BridgeEvent>,
+    rx: &mut mpsc::UnboundedReceiver<AgentEvent>,
     timeout: Duration,
 ) -> String {
     let deadline = tokio::time::Instant::now() + timeout;
     loop {
-        let remaining = deadline
-            .saturating_duration_since(tokio::time::Instant::now());
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         if remaining.is_zero() {
             panic!("timed out waiting for Connected event");
         }
@@ -418,8 +379,8 @@ async fn await_connected(
             panic!("event channel closed before Connected");
         };
         match event {
-            BridgeEvent::Connected { session_id, .. } => return session_id,
-            BridgeEvent::ConnectionFailed { message } => {
+            AgentEvent::Connected { session_id, .. } => return session_id,
+            AgentEvent::ConnectionFailed { message } => {
                 panic!("connection failed during smoke test: {message}");
             }
             other => {
@@ -435,14 +396,13 @@ struct TurnOutcome {
 }
 
 async fn await_turn(
-    rx: &mut mpsc::UnboundedReceiver<BridgeEvent>,
+    rx: &mut mpsc::UnboundedReceiver<AgentEvent>,
     timeout: Duration,
 ) -> TurnOutcome {
     let deadline = tokio::time::Instant::now() + timeout;
     let mut outcome = TurnOutcome { saw_text: false, saw_tool_call: false };
     loop {
-        let remaining = deadline
-            .saturating_duration_since(tokio::time::Instant::now());
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         if remaining.is_zero() {
             panic!("timed out waiting for TurnComplete");
         }
@@ -453,28 +413,31 @@ async fn await_turn(
             panic!("event channel closed before TurnComplete");
         };
         match event {
-            BridgeEvent::SessionUpdate { update, .. } => {
-                match update {
-                    SessionUpdate::AgentMessageChunk { .. } => outcome.saw_text = true,
-                    SessionUpdate::ToolCall { .. } => outcome.saw_tool_call = true,
-                    _ => {}
+            AgentEvent::SdkMessage { msg, .. } => match msg {
+                forge_sdk::Message::Assistant { message, .. } => {
+                    let val = serde_json::to_value(&message).unwrap_or_default();
+                    if let Some(blocks) = val.get("content").and_then(|c| c.as_array()) {
+                        for b in blocks {
+                            let t = b.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                            if t == "text" {
+                                outcome.saw_text = true;
+                            }
+                            if t == "tool_use" || t == "server_tool_use" {
+                                outcome.saw_tool_call = true;
+                            }
+                        }
+                    }
+                    eprintln!("e2e: assistant message");
                 }
-                eprintln!("e2e: SessionUpdate {:?}", brief(&update));
-            }
-            BridgeEvent::TurnComplete { .. } => return outcome,
-            BridgeEvent::TurnError { message, .. } => {
-                panic!("turn errored: {message}");
-            }
+                forge_sdk::Message::Result { is_error, subtype, .. } => {
+                    if !is_error && subtype == "success" {
+                        return outcome;
+                    }
+                    panic!("turn errored: {subtype}");
+                }
+                _ => {}
+            },
             other => eprintln!("e2e: event: {}", other.event_name()),
         }
-    }
-}
-
-fn brief(update: &SessionUpdate) -> &'static str {
-    match update {
-        SessionUpdate::AgentMessageChunk { .. } => "AgentMessageChunk",
-        SessionUpdate::AgentThoughtChunk { .. } => "AgentThoughtChunk",
-        SessionUpdate::ToolCall { .. } => "ToolCall",
-        _ => "(other)",
     }
 }

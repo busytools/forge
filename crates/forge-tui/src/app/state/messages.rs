@@ -343,6 +343,7 @@ impl IncrementalMarkdown {
     }
 
     fn split_tail_chunks(&mut self) {
+        #[allow(clippy::while_let_loop)] // multiple early-break conditions inside
         loop {
             let Some(last_idx) = self.chunks.len().checked_sub(1) else {
                 break;

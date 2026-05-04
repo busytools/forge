@@ -3,7 +3,7 @@ pub(crate) mod clipboard_image;
 pub(crate) mod config;
 mod connect;
 mod dialog;
-mod events;
+pub(crate) mod events;
 pub(crate) mod file_index;
 mod focus;
 pub(crate) mod git_context;
@@ -54,9 +54,9 @@ pub use state::{
     MessageRenderSignature, MessageRole, MessageUsage, ModeInfo, ModeState, NoticeBlock,
     NoticeDedupKey, NoticeStage, PasteSessionState, PendingCommandAck, RateLimitIncidentKey,
     RecentSessionInfo, ScrollbarGeometry, SelectionKind, SelectionPoint, SelectionState,
-    SessionPickerState, SessionUsageState, SystemSeverity, TerminalSnapshotMode, TextBlock,
-    TextBlockSpacing, TodoItem, TodoStatus, ToolCallInfo, ToolCallScope, TurnNoticeLocation,
-    TurnNoticeRef, UsageSnapshot, UsageSourceKind, UsageSourceMode, UsageState,
+    SessionPickerState, SessionTurnState, SessionUsageState, SystemSeverity, TerminalSnapshotMode,
+    TextBlock, TextBlockSpacing, TodoItem, TodoStatus, ToolCallInfo, ToolCallScope,
+    TurnNoticeLocation, TurnNoticeRef, UsageSnapshot, UsageSourceKind, UsageSourceMode, UsageState,
     UsageWindow, WelcomeBlock, compute_scrollbar_geometry, hash_text_block_content,
     hash_welcome_block_content, is_execute_tool_name,
 };
@@ -502,15 +502,15 @@ fn finalize_deferred_submit(app: &mut App) {
 mod tests {
     use super::*;
     use crate::agent::model;
-    use crate::agent::forge_sdk_bridge::ForgeSdkCommand;
+    use crate::agent::test_bridge::ForgeSdkCommand;
     use crate::app::{MessageBlock, MessageRole};
     use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 
     fn app_with_connection()
-    -> (App, tokio::sync::mpsc::UnboundedReceiver<crate::agent::forge_sdk_bridge::ForgeSdkCommand>) {
+    -> (App, tokio::sync::mpsc::UnboundedReceiver<crate::agent::test_bridge::ForgeSdkCommand>) {
         let mut app = App::test_default();
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-        app.conn = Some(std::rc::Rc::new(crate::agent::forge_sdk_bridge::ForgeSdkBridge::new(tx)));
+        app.conn = Some(std::rc::Rc::new(crate::agent::test_bridge::RecordingBridge::new(tx)));
         app.session_id = Some(model::SessionId::new("session-1"));
         (app, rx)
     }

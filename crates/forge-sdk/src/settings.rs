@@ -96,10 +96,7 @@ pub fn settings_documents(cwd: &Path) -> SettingsDocuments {
 /// [`Error::Io`] for any underlying filesystem failure — open,
 /// write, fsync, rename, or `create_dir_all`. JSON serialisation
 /// failures are wrapped as `Io` with a descriptive message.
-pub fn write_settings_document(
-    target: &SettingsTarget,
-    document: &Value,
-) -> Result<(), Error> {
+pub fn write_settings_document(target: &SettingsTarget, document: &Value) -> Result<(), Error> {
     let path = target_path(target);
     write_json_atomic(&path, document)
 }
@@ -107,16 +104,17 @@ pub fn write_settings_document(
 fn target_path(target: &SettingsTarget) -> PathBuf {
     match target {
         SettingsTarget::User => claude_config_dir().join("settings.json"),
-        SettingsTarget::ProjectLocal { cwd } => {
-            cwd.join(".claude").join("settings.local.json")
-        }
+        SettingsTarget::ProjectLocal { cwd } => cwd.join(".claude").join("settings.local.json"),
         SettingsTarget::Preferences => home_dir().join(".claude.json"),
     }
 }
 
 fn write_json_atomic(path: &Path, document: &Value) -> Result<(), Error> {
     let parent = path.parent().ok_or_else(|| {
-        io::Error::new(io::ErrorKind::InvalidInput, "settings path has no parent directory")
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "settings path has no parent directory",
+        )
     })?;
     std::fs::create_dir_all(parent)?;
 
@@ -141,7 +139,9 @@ fn write_json_atomic(path: &Path, document: &Value) -> Result<(), Error> {
 }
 
 fn unique_temp_path(parent: &Path, filename_hint: Option<&str>) -> PathBuf {
-    let stamp = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_nanos());
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
     let filename = filename_hint.unwrap_or("settings.json");
     parent.join(format!(".{filename}.{stamp}.tmp"))
 }
@@ -216,7 +216,10 @@ mod tests {
         assert!(path.ends_with(".claude.json"));
         // The leading dot makes it a hidden file at $HOME, not a
         // file under $HOME/.claude — sanity-check we didn't drift.
-        assert_ne!(path.file_name().and_then(|n| n.to_str()), Some("settings.json"));
+        assert_ne!(
+            path.file_name().and_then(|n| n.to_str()),
+            Some("settings.json")
+        );
     }
 
     #[test]
@@ -250,8 +253,14 @@ mod tests {
         // Overwrite with a different shape
         write_json_atomic(&path, &serde_json::json!({"new": 2})).expect("write2");
         let parsed = read_json_file(&path).expect("read");
-        assert!(parsed.get("old").is_none(), "stale key from old doc must not survive");
-        assert!(parsed.get("stale").is_none(), "stale key from old doc must not survive");
+        assert!(
+            parsed.get("old").is_none(),
+            "stale key from old doc must not survive"
+        );
+        assert!(
+            parsed.get("stale").is_none(),
+            "stale key from old doc must not survive"
+        );
         assert_eq!(parsed.get("new"), Some(&serde_json::json!(2)));
     }
 
@@ -263,7 +272,10 @@ mod tests {
         // produce a non-object on disk.
         write_json_atomic(&path, &serde_json::json!([1, 2, 3])).expect("write");
         let parsed = read_json_file(&path).expect("read");
-        assert!(parsed.is_object(), "non-object input must be normalised to {{}}");
+        assert!(
+            parsed.is_object(),
+            "non-object input must be normalised to {{}}"
+        );
         assert!(parsed.as_object().unwrap().is_empty());
     }
 
@@ -282,11 +294,16 @@ mod tests {
         // because cwd is a function arg — User and Preferences would
         // race on $CLAUDE_CONFIG_DIR / $HOME across parallel tests.
         let dir = tempfile::tempdir().expect("tempdir");
-        let target = SettingsTarget::ProjectLocal { cwd: dir.path().to_path_buf() };
+        let target = SettingsTarget::ProjectLocal {
+            cwd: dir.path().to_path_buf(),
+        };
         let doc = serde_json::json!({"outputStyle": "verbose"});
         write_settings_document(&target, &doc).expect("write");
         let docs = settings_documents(dir.path());
         let project_local = docs.project_local.expect("present");
-        assert_eq!(project_local.get("outputStyle"), Some(&serde_json::json!("verbose")));
+        assert_eq!(
+            project_local.get("outputStyle"),
+            Some(&serde_json::json!("verbose"))
+        );
     }
 }

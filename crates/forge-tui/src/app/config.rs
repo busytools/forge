@@ -1503,18 +1503,13 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
         (KeyCode::Tab, KeyModifiers::NONE) => {
             activate_tab(app, app.config.active_tab.next());
         }
-        (KeyCode::Up, KeyModifiers::NONE) => {
-            if app.config.active_tab == ConfigTab::Settings {
-                app.config.selected_setting_index =
-                    app.config.selected_setting_index.saturating_sub(1);
-            }
+        (KeyCode::Up, KeyModifiers::NONE) if app.config.active_tab == ConfigTab::Settings => {
+            app.config.selected_setting_index = app.config.selected_setting_index.saturating_sub(1);
         }
-        (KeyCode::Down, KeyModifiers::NONE) => {
-            if app.config.active_tab == ConfigTab::Settings {
-                let last_index = setting_specs().len().saturating_sub(1);
-                app.config.selected_setting_index =
-                    (app.config.selected_setting_index + 1).min(last_index);
-            }
+        (KeyCode::Down, KeyModifiers::NONE) if app.config.active_tab == ConfigTab::Settings => {
+            let last_index = setting_specs().len().saturating_sub(1);
+            app.config.selected_setting_index =
+                (app.config.selected_setting_index + 1).min(last_index);
         }
         _ => {}
     }

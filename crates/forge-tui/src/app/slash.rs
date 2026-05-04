@@ -966,7 +966,8 @@ mod tests {
             .run_until(async {
                 let mut app = App::test_default();
                 let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-                app.conn = Some(std::rc::Rc::new(crate::agent::forge_sdk_bridge::ForgeSdkBridge::new(tx)));
+                app.conn =
+                    Some(std::rc::Rc::new(crate::agent::test_bridge::RecordingBridge::new(tx)));
 
                 let consumed = try_handle_submit(&mut app, "/resume abc-123");
                 assert!(consumed);
@@ -980,12 +981,17 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn mode_sets_command_pending_and_mode_update_restores_ready() {
+    async fn mode_apply_synchronously_during_submit() {
+        // Phase 2 cut: /mode applies CurrentModeUpdate + ModeStateUpdate
+        // optimistically App-side; no CommandPending state is needed
+        // because the apply is synchronous and the bridge no longer
+        // fans the post-SDK ack through the event channel.
         tokio::task::LocalSet::new()
             .run_until(async {
                 let mut app = App::test_default();
                 let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-                app.conn = Some(std::rc::Rc::new(crate::agent::forge_sdk_bridge::ForgeSdkBridge::new(tx)));
+                app.conn =
+                    Some(std::rc::Rc::new(crate::agent::test_bridge::RecordingBridge::new(tx)));
                 app.session_id = Some("sess-1".into());
                 app.mode = Some(super::super::ModeState {
                     current_mode_id: "code".to_owned(),
@@ -998,26 +1004,10 @@ mod tests {
 
                 let consumed = try_handle_submit(&mut app, "/mode plan");
                 assert!(consumed);
-                assert!(
-                    matches!(app.status, AppStatus::CommandPending),
-                    "expected CommandPending, got {:?}",
-                    app.status
-                );
-                assert_eq!(app.pending_command_label.as_deref(), Some("Switching mode..."));
-
-                // Simulate mode-update ack arriving from bridge.
-                super::super::events::handle_client_event(
-                    &mut app,
-                    crate::agent::events::ClientEvent::SessionUpdate(
-                        crate::agent::model::SessionUpdate::CurrentModeUpdate(
-                            crate::agent::model::CurrentModeUpdate::new("plan"),
-                        ),
-                    ),
-                );
-                assert!(
-                    matches!(app.status, AppStatus::Ready),
-                    "expected Ready after CurrentModeUpdate ack, got {:?}",
-                    app.status
+                assert_eq!(
+                    app.mode.as_ref().map(|m| m.current_mode_id.as_str()),
+                    Some("plan"),
+                    "expected mode applied synchronously to plan"
                 );
                 assert!(app.pending_command_label.is_none());
             })
@@ -1025,12 +1015,17 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn model_sets_command_pending_and_current_model_ack_updates_model_and_restores_ready() {
+    async fn model_apply_synchronously_during_submit() {
+        // Phase 2 cut: /model applies CurrentModelUpdate optimistically
+        // App-side; no CommandPending state is needed because the
+        // apply is synchronous and the bridge no longer fans the
+        // post-SDK ack through the event channel.
         tokio::task::LocalSet::new()
             .run_until(async {
                 let mut app = App::test_default();
                 let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-                app.conn = Some(std::rc::Rc::new(crate::agent::forge_sdk_bridge::ForgeSdkBridge::new(tx)));
+                app.conn =
+                    Some(std::rc::Rc::new(crate::agent::test_bridge::RecordingBridge::new(tx)));
                 app.session_id = Some("sess-1".into());
                 app.current_model = Some(
                     crate::agent::model::CurrentModel::new("old-model", "old-model", "old-model")
@@ -1039,38 +1034,10 @@ mod tests {
 
                 let consumed = try_handle_submit(&mut app, "/model sonnet");
                 assert!(consumed);
-                assert!(
-                    matches!(app.status, AppStatus::CommandPending),
-                    "expected CommandPending, got {:?}",
-                    app.status
-                );
-                assert_eq!(app.pending_command_label.as_deref(), Some("Switching model..."));
                 assert_eq!(
-                    app.current_model.as_ref().map(|model| model.resolved_id.as_str()),
-                    Some("old-model")
-                );
-
-                super::super::events::handle_client_event(
-                    &mut app,
-                    crate::agent::events::ClientEvent::SessionUpdate(
-                        crate::agent::model::SessionUpdate::CurrentModelUpdate(
-                            crate::agent::model::CurrentModelUpdate::new(
-                                crate::agent::model::CurrentModel::new(
-                                    "sonnet", "sonnet", "sonnet",
-                                )
-                                .authoritative(true),
-                            ),
-                        ),
-                    ),
-                );
-                assert!(
-                    matches!(app.status, AppStatus::Ready),
-                    "expected Ready after current model ack, got {:?}",
-                    app.status
-                );
-                assert_eq!(
-                    app.current_model.as_ref().map(|model| model.resolved_id.as_str()),
-                    Some("sonnet")
+                    app.current_model.as_ref().map(|m| m.resolved_id.as_str()),
+                    Some("sonnet"),
+                    "expected current_model applied synchronously to sonnet"
                 );
                 assert!(app.pending_command_label.is_none());
             })
@@ -1083,7 +1050,8 @@ mod tests {
             .run_until(async {
                 let mut app = App::test_default();
                 let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-                app.conn = Some(std::rc::Rc::new(crate::agent::forge_sdk_bridge::ForgeSdkBridge::new(tx)));
+                app.conn =
+                    Some(std::rc::Rc::new(crate::agent::test_bridge::RecordingBridge::new(tx)));
 
                 let consumed = try_handle_submit(&mut app, "/new-session");
                 assert!(consumed);
@@ -1118,7 +1086,7 @@ mod tests {
     fn compact_with_active_session_sets_compacting_without_success_pending() {
         let mut app = App::test_default();
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        app.conn = Some(std::rc::Rc::new(crate::agent::forge_sdk_bridge::ForgeSdkBridge::new(tx)));
+        app.conn = Some(std::rc::Rc::new(crate::agent::test_bridge::RecordingBridge::new(tx)));
         app.session_id = Some(model::SessionId::new("session-1"));
 
         let consumed = try_handle_submit(&mut app, "/compact");

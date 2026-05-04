@@ -497,3 +497,103 @@ async fn files_accessed_accumulates_across_tool_calls_in_one_turn() {
     send_client_event(&mut app, ClientEvent::TurnComplete { terminal_reason: None });
     assert_eq!(app.files_accessed, 0, "reset on turn complete");
 }
+
+// --- SdkMessageReceived session_id handling ---
+
+/// Regression: an `SdkMessageReceived` envelope arriving while
+/// `app.session_id` holds the empty placeholder (the value the bridge
+/// captures from `Client::session_id()` at spawn time, before
+/// `system/init` lands) used to be dropped silently — leaving the
+/// chat unrendered and the spinner stuck on Thinking forever. The
+/// handler now adopts the wire id onto `app.session_id` and processes
+/// the message.
+#[tokio::test]
+async fn sdk_message_with_empty_app_session_id_adopts_wire_id() {
+    let mut app = test_app();
+    app.session_id = Some(model::SessionId::new(""));
+    app.status = AppStatus::Thinking;
+    // Empty assistant message slot, mimicking what `submit_input`
+    // creates right before the first chunk arrives.
+    app.messages.push(forge_tui::app::ChatMessage::new(MessageRole::Assistant, Vec::new(), None));
+    app.bind_active_turn_assistant_to_tail();
+
+    let wire_msg: forge_sdk::Message = serde_json::from_value(serde_json::json!({
+        "type": "assistant",
+        "session_id": "real-session-abc",
+        "message": {
+            "id": "msg_test_1",
+            "role": "assistant",
+            "model": "test-model",
+            "content": [{ "type": "text", "text": "Hello from the assistant." }],
+            "stop_reason": null,
+            "stop_sequence": null
+        }
+    }))
+    .expect("assistant Message decodes");
+
+    send_client_event(
+        &mut app,
+        ClientEvent::SdkMessageReceived {
+            session_id: "real-session-abc".to_owned(),
+            msg: wire_msg,
+        },
+    );
+
+    assert_eq!(
+        app.session_id.as_ref().map(ToString::to_string).as_deref(),
+        Some("real-session-abc"),
+        "App should have adopted the wire session id",
+    );
+    let assistant = app
+        .messages
+        .iter()
+        .rfind(|m| matches!(m.role, MessageRole::Assistant))
+        .expect("assistant message present");
+    let Some(MessageBlock::Text(block)) = assistant.blocks.first() else {
+        panic!("expected the assistant chunk to render as a text block");
+    };
+    assert!(
+        block.text.contains("Hello from the assistant."),
+        "assistant chunk should have rendered, got {:?}",
+        block.text,
+    );
+}
+
+/// Once `app.session_id` is the real id, an `SdkMessageReceived` from
+/// a *different* session is treated as a stale-Client race envelope
+/// and dropped — neither the session id nor the chat moves.
+#[tokio::test]
+async fn sdk_message_with_mismatched_real_session_id_is_dropped() {
+    let mut app = test_app();
+    app.session_id = Some(model::SessionId::new("real-session-abc"));
+    let initial_message_count = app.messages.len();
+
+    let wire_msg: forge_sdk::Message = serde_json::from_value(serde_json::json!({
+        "type": "assistant",
+        "session_id": "stale-session-xyz",
+        "message": {
+            "id": "msg_test_2",
+            "role": "assistant",
+            "model": "test-model",
+            "content": [{ "type": "text", "text": "from a stale Client" }],
+            "stop_reason": null,
+            "stop_sequence": null
+        }
+    }))
+    .expect("assistant Message decodes");
+
+    send_client_event(
+        &mut app,
+        ClientEvent::SdkMessageReceived {
+            session_id: "stale-session-xyz".to_owned(),
+            msg: wire_msg,
+        },
+    );
+
+    assert_eq!(
+        app.session_id.as_ref().map(ToString::to_string).as_deref(),
+        Some("real-session-abc"),
+        "session id must not change on stale envelope",
+    );
+    assert_eq!(app.messages.len(), initial_message_count, "stale envelope must not append to chat",);
+}
