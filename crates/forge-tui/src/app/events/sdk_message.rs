@@ -910,6 +910,23 @@ fn apply_tool_summary_update(app: &mut App, tool_use_id: &str, summary: &str) {
 fn handle_rate_limit_event(app: &mut App, msg: Message, _raw: &Value) {
     let Message::RateLimitEvent { rate_limit_info, .. } = msg else { return };
     let value = serde_json::to_value(&rate_limit_info).unwrap_or(Value::Null);
+    // Diagnostic breadcrumb: emit the raw wire payload at debug so a
+    // forge launch with `--enable-logs --log-filter forge_tui=debug`
+    // captures every rate-limit event the CLI subprocess delivers.
+    // Used to triage cross-profile rate-limit visibility complaints
+    // (where the user wonders whether a notice that appears on a
+    // fresh launch is a forge cache leak or a fresh account-level
+    // signal from Anthropic).
+    tracing::debug!(
+        target: crate::logging::targets::APP_SESSION,
+        event_name = "rate_limit_event_received",
+        message = "raw RateLimitEvent payload from forge-sdk",
+        outcome = "wire_evidence",
+        config_dir = std::env::var("CLAUDE_CONFIG_DIR")
+            .unwrap_or_else(|_| "(unset, falls back to ~/.claude)".to_owned()),
+        session_id = app.session_id.as_ref().map(ToString::to_string).as_deref().unwrap_or(""),
+        rate_limit_info = %value,
+    );
     let Some(crate::agent::types::SessionUpdate::RateLimitUpdate {
         status,
         resets_at,
