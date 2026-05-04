@@ -3,6 +3,7 @@ mod client;
 mod mouse;
 mod notices;
 mod rate_limit;
+mod sdk_message;
 mod session;
 mod session_reset;
 mod streaming;
@@ -179,85 +180,19 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
             apply_plan_todos(app, &plan);
         }
         model::SessionUpdate::AvailableCommandsUpdate(cmds) => {
-            tracing::debug!(
-                target: crate::logging::targets::APP_SESSION,
-                event_name = "available_commands_applied",
-                message = "available commands update applied",
-                outcome = "success",
-                command_count = cmds.available_commands.len(),
-            );
-            app.available_commands = cmds.available_commands;
-            crate::app::plugins::clamp_selection(app);
-            if app.slash.is_some() {
-                super::slash::update_query(app);
-            }
+            apply_available_commands_update(app, cmds);
         }
         model::SessionUpdate::AvailableAgentsUpdate(agents) => {
-            tracing::debug!(
-                target: crate::logging::targets::APP_SESSION,
-                event_name = "available_agents_applied",
-                message = "available agents update applied",
-                outcome = "success",
-                agent_count = agents.available_agents.len(),
-            );
-            app.available_agents = agents.available_agents;
-            if app.subagent.is_some() {
-                super::subagent::update_query(app);
-            }
+            apply_available_agents_update(app, agents);
         }
         model::SessionUpdate::ModeStateUpdate(mode) => {
-            let mode_changed = app.mode.as_ref().map(|current| current.current_mode_id.as_str())
-                != Some(mode.current_mode_id.as_str());
-            app.mode = Some(mode);
-            if mode_changed {
-                app.invalidate_layout(InvalidationLevel::Global);
-            }
-            if matches!(app.pending_command_ack, Some(PendingCommandAck::CurrentMode)) {
-                session::clear_pending_command(app);
-            }
+            apply_mode_state_update(app, mode);
         }
         model::SessionUpdate::CurrentModeUpdate(update) => {
-            let mode_id = update.current_mode_id.to_string();
-            let mut mode_changed = false;
-            if let Some(ref mut mode) = app.mode {
-                mode_changed = mode.current_mode_id != mode_id;
-                if let Some(info) = mode.available_modes.iter().find(|m| m.id == mode_id) {
-                    mode.current_mode_name.clone_from(&info.name);
-                    mode.current_mode_id = mode_id;
-                } else {
-                    mode.current_mode_name.clone_from(&mode_id);
-                    mode.current_mode_id = mode_id;
-                }
-            }
-            if mode_changed {
-                app.invalidate_layout(InvalidationLevel::Global);
-            }
-            if matches!(app.pending_command_ack, Some(PendingCommandAck::CurrentMode)) {
-                session::clear_pending_command(app);
-            }
+            apply_current_mode_update(app, &update);
         }
         model::SessionUpdate::CurrentModelUpdate(update) => {
-            let next_resolved_id = update.current_model.resolved_id.clone();
-            let next_display_short = update.current_model.display_name_short.clone();
-            let next_display_long = update.current_model.display_name_long.clone();
-            let pending_ack_before = format!("{:?}", app.pending_command_ack);
-            app.current_model = Some(update.current_model);
-            let clearing_pending =
-                matches!(app.pending_command_ack, Some(PendingCommandAck::CurrentModel));
-            if matches!(app.pending_command_ack, Some(PendingCommandAck::CurrentModel)) {
-                session::clear_pending_command(app);
-            }
-            tracing::debug!(
-                target: crate::logging::targets::APP_SESSION,
-                event_name = "current_model_update_applied",
-                message = "current model update applied",
-                outcome = "success",
-                resolved_id = %next_resolved_id,
-                display_name_short = %next_display_short,
-                display_name_long = %next_display_long,
-                clearing_pending = clearing_pending,
-                pending_ack_before = %pending_ack_before,
-            );
+            apply_current_model_update(app, update.current_model);
         }
         model::SessionUpdate::ConfigOptionUpdate(config) => {
             handle_config_option_update(app, config);
@@ -294,17 +229,7 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
             handle_settings_parse_error(app, file.as_deref(), &path, &message);
         }
         model::SessionUpdate::SessionStatusUpdate(status) => {
-            // TODO(runtime-verification): confirm in real SDK sessions that compaction
-            // status updates are emitted consistently; if not, add a fallback indicator.
-            let was_compacting = app.is_compacting;
-            if matches!(status, model::SessionStatus::Compacting) {
-                app.is_compacting = true;
-            } else {
-                clear_compaction_state(app, true);
-            }
-            if was_compacting && matches!(status, model::SessionStatus::Idle) {
-                crate::app::session_runtime::request_context_usage_refresh(app);
-            }
+            apply_session_status_update(app, status);
             tracing::debug!(
                 target: crate::logging::targets::APP_SESSION,
                 event_name = "session_status_applied",
@@ -320,7 +245,109 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
     }
 }
 
-fn handle_runtime_session_state_update(app: &mut App, state: model::RuntimeSessionState) {
+pub(super) fn apply_available_commands_update(app: &mut App, cmds: model::AvailableCommandsUpdate) {
+    tracing::debug!(
+        target: crate::logging::targets::APP_SESSION,
+        event_name = "available_commands_applied",
+        message = "available commands update applied",
+        outcome = "success",
+        command_count = cmds.available_commands.len(),
+    );
+    app.available_commands = cmds.available_commands;
+    crate::app::plugins::clamp_selection(app);
+    if app.slash.is_some() {
+        super::slash::update_query(app);
+    }
+}
+
+pub(super) fn apply_available_agents_update(app: &mut App, agents: model::AvailableAgentsUpdate) {
+    tracing::debug!(
+        target: crate::logging::targets::APP_SESSION,
+        event_name = "available_agents_applied",
+        message = "available agents update applied",
+        outcome = "success",
+        agent_count = agents.available_agents.len(),
+    );
+    app.available_agents = agents.available_agents;
+    if app.subagent.is_some() {
+        super::subagent::update_query(app);
+    }
+}
+
+pub fn apply_mode_state_update(app: &mut App, mode: crate::app::ModeState) {
+    let mode_changed = app.mode.as_ref().map(|current| current.current_mode_id.as_str())
+        != Some(mode.current_mode_id.as_str());
+    app.mode = Some(mode);
+    if mode_changed {
+        app.invalidate_layout(InvalidationLevel::Global);
+    }
+    if matches!(app.pending_command_ack, Some(PendingCommandAck::CurrentMode)) {
+        session::clear_pending_command(app);
+    }
+}
+
+pub fn apply_current_model_update(app: &mut App, current_model: model::CurrentModel) {
+    let next_resolved_id = current_model.resolved_id.clone();
+    let next_display_short = current_model.display_name_short.clone();
+    let next_display_long = current_model.display_name_long.clone();
+    let pending_ack_before = format!("{:?}", app.pending_command_ack);
+    app.current_model = Some(current_model);
+    let clearing_pending = matches!(app.pending_command_ack, Some(PendingCommandAck::CurrentModel));
+    if matches!(app.pending_command_ack, Some(PendingCommandAck::CurrentModel)) {
+        session::clear_pending_command(app);
+    }
+    tracing::debug!(
+        target: crate::logging::targets::APP_SESSION,
+        event_name = "current_model_update_applied",
+        message = "current model update applied",
+        outcome = "success",
+        resolved_id = %next_resolved_id,
+        display_name_short = %next_display_short,
+        display_name_long = %next_display_long,
+        clearing_pending = clearing_pending,
+        pending_ack_before = %pending_ack_before,
+    );
+}
+
+pub fn apply_current_mode_update(app: &mut App, update: &model::CurrentModeUpdate) {
+    let mode_id = update.current_mode_id.to_string();
+    let mut mode_changed = false;
+    if let Some(ref mut mode) = app.mode {
+        mode_changed = mode.current_mode_id != mode_id;
+        if let Some(info) = mode.available_modes.iter().find(|m| m.id == mode_id) {
+            mode.current_mode_name.clone_from(&info.name);
+            mode.current_mode_id = mode_id;
+        } else {
+            mode.current_mode_name.clone_from(&mode_id);
+            mode.current_mode_id = mode_id;
+        }
+    }
+    if mode_changed {
+        app.invalidate_layout(InvalidationLevel::Global);
+    }
+    if matches!(app.pending_command_ack, Some(PendingCommandAck::CurrentMode)) {
+        session::clear_pending_command(app);
+    }
+}
+
+pub(super) fn apply_session_status_update(app: &mut App, status: model::SessionStatus) {
+    // TODO(runtime-verification): confirm in real SDK sessions that compaction
+    // status updates are emitted consistently; if not, add a fallback indicator.
+    let was_compacting = app.is_compacting;
+    if matches!(status, model::SessionStatus::Compacting) {
+        app.is_compacting = true;
+    } else {
+        clear_compaction_state(app, true);
+    }
+    if was_compacting && matches!(status, model::SessionStatus::Idle) {
+        crate::app::session_runtime::request_context_usage_refresh(app);
+    }
+}
+
+pub(super) fn handle_runtime_session_state_update(
+    app: &mut App,
+    state: model::RuntimeSessionState,
+) {
     app.runtime_session_state = Some(state);
     match state {
         model::RuntimeSessionState::Running => {
@@ -342,7 +369,12 @@ fn handle_runtime_session_state_update(app: &mut App, state: model::RuntimeSessi
     }
 }
 
-fn handle_settings_parse_error(app: &mut App, file: Option<&str>, path: &str, message: &str) {
+pub(super) fn handle_settings_parse_error(
+    app: &mut App,
+    file: Option<&str>,
+    path: &str,
+    message: &str,
+) {
     let trimmed = message.trim();
     if trimmed.is_empty() {
         return;
@@ -855,10 +887,10 @@ mod tests {
     }
 
     fn app_with_bridge_connection()
-    -> (App, tokio::sync::mpsc::UnboundedReceiver<crate::agent::forge_sdk_bridge::ForgeSdkCommand>) {
+    -> (App, tokio::sync::mpsc::UnboundedReceiver<crate::agent::test_bridge::ForgeSdkCommand>) {
         let mut app = make_test_app();
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-        app.conn = Some(Rc::new(crate::agent::forge_sdk_bridge::ForgeSdkBridge::new(tx)));
+        app.conn = Some(Rc::new(crate::agent::test_bridge::RecordingBridge::new(tx)));
         (app, rx)
     }
 
@@ -1461,7 +1493,7 @@ mod tests {
         let envelope = rx.try_recv().expect("mcp snapshot command");
         assert_eq!(
             envelope,
-            crate::agent::forge_sdk_bridge::ForgeSdkCommand::GetMcpSnapshot {
+            crate::agent::test_bridge::ForgeSdkCommand::GetMcpSnapshot {
                 session_id: "test-session".to_owned(),
             }
         );
@@ -1839,7 +1871,7 @@ mod tests {
         let envelope = rx.try_recv().expect("mcp snapshot command");
         assert_eq!(
             envelope,
-            crate::agent::forge_sdk_bridge::ForgeSdkCommand::GetMcpSnapshot {
+            crate::agent::test_bridge::ForgeSdkCommand::GetMcpSnapshot {
                 session_id: "replacement".to_owned(),
             }
         );
@@ -1859,14 +1891,14 @@ mod tests {
         let mcp = rx.try_recv().expect("mcp snapshot command");
         assert_eq!(
             mcp,
-            crate::agent::forge_sdk_bridge::ForgeSdkCommand::GetMcpSnapshot {
+            crate::agent::test_bridge::ForgeSdkCommand::GetMcpSnapshot {
                 session_id: "test-session".to_owned(),
             }
         );
         let status = rx.try_recv().expect("status snapshot command");
         assert_eq!(
             status,
-            crate::agent::forge_sdk_bridge::ForgeSdkCommand::GetStatusSnapshot {
+            crate::agent::test_bridge::ForgeSdkCommand::GetStatusSnapshot {
                 session_id: "test-session".to_owned(),
             }
         );
@@ -1970,8 +2002,8 @@ mod tests {
                     config: None,
                     scope: None,
                     tools: None,
-            sampling_configured: None,
-            sampling_required: None,
+                    sampling_configured: None,
+                    sampling_required: None,
                 }],
                 error: None,
             },
@@ -2184,7 +2216,7 @@ mod tests {
         assert!(!app.startup_session_picker_resolved);
 
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        app.conn = Some(Rc::new(crate::agent::forge_sdk_bridge::ForgeSdkBridge::new(tx)));
+        app.conn = Some(Rc::new(crate::agent::test_bridge::RecordingBridge::new(tx)));
         handle_client_event(&mut app, connected_event("claude-updated"));
 
         assert_eq!(app.active_view, ActiveView::SessionPicker);
@@ -2196,7 +2228,7 @@ mod tests {
         let mut app = make_test_app();
         app.startup_session_picker_requested = true;
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        app.conn = Some(Rc::new(crate::agent::forge_sdk_bridge::ForgeSdkBridge::new(tx)));
+        app.conn = Some(Rc::new(crate::agent::test_bridge::RecordingBridge::new(tx)));
 
         handle_client_event(&mut app, connected_event("claude-updated"));
         assert_eq!(app.active_view, ActiveView::Chat);
@@ -4244,7 +4276,7 @@ mod tests {
         let envelope = rx.try_recv().expect("second Esc should send turn cancel");
         assert!(matches!(
             envelope,
-            crate::agent::forge_sdk_bridge::ForgeSdkCommand::Cancel { session_id }
+            crate::agent::test_bridge::ForgeSdkCommand::Cancel { session_id }
                 if session_id == "session-1"
         ));
     }

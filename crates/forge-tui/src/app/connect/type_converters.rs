@@ -1,4 +1,10 @@
-//! Type conversion functions: bridge wire types -> app model types.
+//! Wire-shape conversions from `crate::agent::types::*` (the
+//! serde-derived envelope structs that ride on `AgentEvent` and
+//! historical `SessionUpdate`s) into `crate::agent::model::*` (the
+//! App's runtime model). Consumed by `bridge_lifecycle` (for the
+//! `AgentEvent` translation) plus the App-side `sdk_message` and
+//! slash-command executors that build model values from wire envelopes
+//! captured in tool-call payloads.
 
 use crate::agent::model;
 use crate::agent::types;
@@ -12,7 +18,7 @@ pub(super) fn map_rate_limit_status(status: types::RateLimitStatus) -> model::Ra
     }
 }
 
-pub(super) fn map_rate_limit_update(update: types::RateLimitUpdate) -> model::RateLimitUpdate {
+pub(crate) fn map_rate_limit_update(update: types::RateLimitUpdate) -> model::RateLimitUpdate {
     model::RateLimitUpdate {
         status: map_rate_limit_status(update.status),
         resets_at: update.resets_at,
@@ -26,7 +32,7 @@ pub(super) fn map_rate_limit_update(update: types::RateLimitUpdate) -> model::Ra
     }
 }
 
-pub(super) fn map_api_retry_error(error: types::ApiRetryError) -> model::ApiRetryError {
+pub(crate) fn map_api_retry_error(error: types::ApiRetryError) -> model::ApiRetryError {
     match error {
         types::ApiRetryError::AuthenticationFailed => model::ApiRetryError::AuthenticationFailed,
         types::ApiRetryError::BillingError => model::ApiRetryError::BillingError,
@@ -38,7 +44,7 @@ pub(super) fn map_api_retry_error(error: types::ApiRetryError) -> model::ApiRetr
     }
 }
 
-pub(super) fn map_available_commands_update(
+pub(crate) fn map_available_commands_update(
     commands: Vec<types::AvailableCommand>,
 ) -> model::AvailableCommandsUpdate {
     model::AvailableCommandsUpdate::new(
@@ -57,7 +63,7 @@ pub(super) fn map_available_commands_update(
     )
 }
 
-pub(super) fn map_available_agents_update(
+pub(crate) fn map_available_agents_update(
     agents: Vec<types::AvailableAgent>,
 ) -> model::AvailableAgentsUpdate {
     model::AvailableAgentsUpdate::new(
@@ -112,7 +118,7 @@ pub(super) fn map_available_models(
         .collect()
 }
 
-pub(super) fn convert_current_model(current_model: types::CurrentModel) -> model::CurrentModel {
+pub(crate) fn convert_current_model(current_model: types::CurrentModel) -> model::CurrentModel {
     let mut mapped = model::CurrentModel::new(
         current_model.resolved_id,
         current_model.display_name_short,
@@ -380,7 +386,7 @@ pub(super) fn convert_content_block(content: types::ContentBlock) -> Option<mode
     }
 }
 
-pub(super) fn convert_tool_call(tool_call: types::ToolCall) -> model::ToolCall {
+pub(crate) fn convert_tool_call(tool_call: types::ToolCall) -> model::ToolCall {
     let types::ToolCall {
         tool_call_id,
         title,
@@ -432,7 +438,7 @@ pub(super) fn convert_tool_call(tool_call: types::ToolCall) -> model::ToolCall {
     tc
 }
 
-pub(super) fn convert_tool_call_update(update: types::ToolCallUpdate) -> model::ToolCallUpdate {
+pub(crate) fn convert_tool_call_update(update: types::ToolCallUpdate) -> model::ToolCallUpdate {
     let update_meta = update.fields.meta.clone();
     let mut out = model::ToolCallUpdate::new(
         update.tool_call_id,
@@ -615,7 +621,7 @@ pub(super) fn convert_tool_status(status: &str) -> model::ToolCallStatus {
     }
 }
 
-pub(super) fn convert_plan_entry(entry: types::PlanEntry) -> model::PlanEntry {
+pub(crate) fn convert_plan_entry(entry: types::PlanEntry) -> model::PlanEntry {
     let status = match entry.status.as_str() {
         "in_progress" => model::PlanEntryStatus::InProgress,
         "completed" => model::PlanEntryStatus::Completed,
@@ -624,7 +630,7 @@ pub(super) fn convert_plan_entry(entry: types::PlanEntry) -> model::PlanEntry {
     model::PlanEntry::new(entry.content, model::PlanEntryPriority::Medium, status)
 }
 
-pub(super) fn convert_mode_state(mode: types::ModeState) -> ModeState {
+pub(crate) fn convert_mode_state(mode: types::ModeState) -> ModeState {
     let available_modes: Vec<ModeInfo> =
         mode.available_modes.into_iter().map(|m| ModeInfo { id: m.id, name: m.name }).collect();
     ModeState {

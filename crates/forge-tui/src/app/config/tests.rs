@@ -1,6 +1,6 @@
 use super::*;
 use crate::agent::model::AvailableModel;
-use crate::agent::forge_sdk_bridge::ForgeSdkCommand;
+use crate::agent::test_bridge::ForgeSdkCommand;
 use crate::app::AppStatus;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use serde_json::Value;
@@ -37,10 +37,10 @@ fn select_setting(app: &mut App, setting_id: SettingId) {
 }
 
 fn app_with_status_connection()
--> (App, tokio::sync::mpsc::UnboundedReceiver<crate::agent::forge_sdk_bridge::ForgeSdkCommand>) {
+-> (App, tokio::sync::mpsc::UnboundedReceiver<crate::agent::test_bridge::ForgeSdkCommand>) {
     let mut app = App::test_default();
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-    app.conn = Some(Rc::new(crate::agent::forge_sdk_bridge::ForgeSdkBridge::new(tx)));
+    app.conn = Some(Rc::new(crate::agent::test_bridge::RecordingBridge::new(tx)));
     app.session_id = Some(crate::agent::model::SessionId::new("session-1"));
     app.config.active_tab = ConfigTab::Status;
     app.recent_sessions = vec![crate::app::RecentSessionInfo {
@@ -1298,7 +1298,7 @@ fn mcp_details_overlay_enter_closes_overlay() {
 fn mcp_tab_refresh_key_requests_snapshot() {
     let (_dir, mut app) = open_settings_test_app();
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    app.conn = Some(Rc::new(crate::agent::forge_sdk_bridge::ForgeSdkBridge::new(tx)));
+    app.conn = Some(Rc::new(crate::agent::test_bridge::RecordingBridge::new(tx)));
     app.session_id = Some(crate::agent::model::SessionId::new("session-1"));
     app.config.active_tab = ConfigTab::Mcp;
     app.mcp.servers.push(forge_sdk::McpServerStatus {
@@ -1316,15 +1316,9 @@ fn mcp_tab_refresh_key_requests_snapshot() {
     handle_key(&mut app, KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE));
 
     let envelope = rx.try_recv().expect("runtime reload command");
-    assert_eq!(
-        envelope,
-        ForgeSdkCommand::ReloadPlugins { session_id: "session-1".to_owned() }
-    );
+    assert_eq!(envelope, ForgeSdkCommand::ReloadPlugins { session_id: "session-1".to_owned() });
     let envelope = rx.try_recv().expect("mcp snapshot command");
-    assert_eq!(
-        envelope,
-        ForgeSdkCommand::GetMcpSnapshot { session_id: "session-1".to_owned() }
-    );
+    assert_eq!(envelope, ForgeSdkCommand::GetMcpSnapshot { session_id: "session-1".to_owned() });
     assert!(app.mcp.in_flight);
     assert!(app.mcp.servers.is_empty());
 }
@@ -1333,17 +1327,14 @@ fn mcp_tab_refresh_key_requests_snapshot() {
 fn request_mcp_snapshot_sends_outside_mcp_tab() {
     let (_dir, mut app) = open_settings_test_app();
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    app.conn = Some(Rc::new(crate::agent::forge_sdk_bridge::ForgeSdkBridge::new(tx)));
+    app.conn = Some(Rc::new(crate::agent::test_bridge::RecordingBridge::new(tx)));
     app.session_id = Some(crate::agent::model::SessionId::new("session-1"));
     app.config.active_tab = ConfigTab::Status;
 
     super::mcp::request_mcp_snapshot(&mut app);
 
     let envelope = rx.try_recv().expect("mcp snapshot command");
-    assert_eq!(
-        envelope,
-        ForgeSdkCommand::GetMcpSnapshot { session_id: "session-1".to_owned() }
-    );
+    assert_eq!(envelope, ForgeSdkCommand::GetMcpSnapshot { session_id: "session-1".to_owned() });
     assert!(app.mcp.in_flight);
 }
 
@@ -1351,7 +1342,7 @@ fn request_mcp_snapshot_sends_outside_mcp_tab() {
 fn refresh_mcp_snapshot_clears_existing_servers_before_request() {
     let (_dir, mut app) = open_settings_test_app();
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    app.conn = Some(Rc::new(crate::agent::forge_sdk_bridge::ForgeSdkBridge::new(tx)));
+    app.conn = Some(Rc::new(crate::agent::test_bridge::RecordingBridge::new(tx)));
     app.session_id = Some(crate::agent::model::SessionId::new("session-1"));
     app.mcp.servers.push(forge_sdk::McpServerStatus {
         name: "stale".to_owned(),
@@ -1368,10 +1359,7 @@ fn refresh_mcp_snapshot_clears_existing_servers_before_request() {
     refresh_mcp_snapshot(&mut app);
 
     let envelope = rx.try_recv().expect("mcp snapshot command");
-    assert_eq!(
-        envelope,
-        ForgeSdkCommand::GetMcpSnapshot { session_id: "session-1".to_owned() }
-    );
+    assert_eq!(envelope, ForgeSdkCommand::GetMcpSnapshot { session_id: "session-1".to_owned() });
     assert!(app.mcp.servers.is_empty());
     assert!(app.mcp.in_flight);
 }
@@ -1380,7 +1368,7 @@ fn refresh_mcp_snapshot_clears_existing_servers_before_request() {
 fn refresh_mcp_snapshot_if_needed_skips_outside_mcp_tab() {
     let (_dir, mut app) = open_settings_test_app();
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    app.conn = Some(Rc::new(crate::agent::forge_sdk_bridge::ForgeSdkBridge::new(tx)));
+    app.conn = Some(Rc::new(crate::agent::test_bridge::RecordingBridge::new(tx)));
     app.session_id = Some(crate::agent::model::SessionId::new("session-1"));
     app.config.active_tab = ConfigTab::Status;
 

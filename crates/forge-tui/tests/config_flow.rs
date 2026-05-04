@@ -1,5 +1,5 @@
-use forge_tui::app::{ActiveView, App, handle_terminal_event};
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+use forge_tui::app::{ActiveView, App, handle_terminal_event};
 
 #[test]
 fn config_enter_closes_and_preserves_chat_draft() {

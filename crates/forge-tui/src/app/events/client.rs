@@ -167,9 +167,7 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
                 return;
             }
             let has_credentials = credentials.is_some();
-            let has_expiry = credentials
-                .as_ref()
-                .is_some_and(|info| info.expires_at.is_some());
+            let has_expiry = credentials.as_ref().is_some_and(|info| info.expires_at.is_some());
             app.oauth_credentials = credentials;
             app.needs_redraw = true;
             tracing::info!(
@@ -245,10 +243,7 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
                             | forge_sdk::McpServerConnectionStatus::Pending
                     )
                 {
-                    if matches!(
-                        server.status,
-                        forge_sdk::McpServerConnectionStatus::Connected
-                    ) {
+                    if matches!(server.status, forge_sdk::McpServerConnectionStatus::Connected) {
                         app.config.status_message =
                             Some(format!("{} authenticated successfully.", server.name));
                         app.config.last_error = None;
@@ -265,6 +260,33 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
                 server_count,
                 error_present,
             );
+        }
+        ClientEvent::SdkMessageReceived { session_id, msg } => {
+            // For new sessions the CLI doesn't emit `system/init`
+            // until AFTER the first user message lands (per
+            // `spawn_inner` docs), so `Client::session_id()` is empty
+            // at spawn time and that empty value rides through
+            // `Connected` onto `app.session_id`. The first wire
+            // message that DOES carry a real id (Assistant / User /
+            // Result / System(init)) is the canonical source — adopt
+            // it. For resume the bridge already used the resume_id
+            // for Connected, so adoption is a no-op and the strict
+            // mismatch check covers stale-Client races during session
+            // swap.
+            let Some(current) = app.session_id.as_ref() else {
+                // No session yet — Connected hasn't been processed.
+                // The bridge emits Connected before spawning the
+                // reader, so this should be unreachable; drop
+                // defensively.
+                return;
+            };
+            let current_str = current.to_string();
+            if current_str.is_empty() && !session_id.is_empty() {
+                app.session_id = Some(crate::agent::model::SessionId::new(session_id.clone()));
+            } else if !current_str.is_empty() && current_str != session_id {
+                return;
+            }
+            super::sdk_message::handle_sdk_message(app, msg);
         }
         ClientEvent::UsageRefreshStarted { epoch } => {
             if app.session_scope_epoch != epoch {

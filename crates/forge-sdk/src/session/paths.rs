@@ -129,9 +129,7 @@ fn keychain_service_name(config_dir: &std::path::Path) -> String {
 /// returned password as the same `claudeAiOauth` JSON shape the
 /// on-disk credentials file uses.
 #[cfg(target_os = "macos")]
-fn load_oauth_credentials_from_keychain(
-    config_dir: &std::path::Path,
-) -> Option<OauthCredentials> {
+fn load_oauth_credentials_from_keychain(config_dir: &std::path::Path) -> Option<OauthCredentials> {
     let service = keychain_service_name(config_dir);
     let output = std::process::Command::new("security")
         .args(["find-generic-password", "-s", service.as_str(), "-w"])
@@ -171,7 +169,11 @@ fn parse_timestamp_value(value: &Value) -> Option<SystemTime> {
             .as_i64()
             .or_else(|| number.as_u64().and_then(|raw| i64::try_from(raw).ok()))
             .and_then(system_time_from_epoch),
-        Value::String(raw) => raw.trim().parse::<i64>().ok().and_then(system_time_from_epoch),
+        Value::String(raw) => raw
+            .trim()
+            .parse::<i64>()
+            .ok()
+            .and_then(system_time_from_epoch),
         _ => None,
     }
 }
@@ -242,8 +244,11 @@ mod tests {
     #[test]
     fn returns_none_for_empty_access_token() {
         let mut tmp = tempfile::NamedTempFile::new().expect("tempfile");
-        write!(tmp, r#"{{"claudeAiOauth":{{"accessToken":"","refreshToken":"tok"}}}}"#)
-            .expect("write");
+        write!(
+            tmp,
+            r#"{{"claudeAiOauth":{{"accessToken":"","refreshToken":"tok"}}}}"#
+        )
+        .expect("write");
         assert!(load_oauth_credentials_at(tmp.path()).is_none());
     }
 
@@ -263,10 +268,16 @@ mod tests {
     #[test]
     fn parses_expiry_in_seconds() {
         let mut tmp = tempfile::NamedTempFile::new().expect("tempfile");
-        write!(tmp, r#"{{"claudeAiOauth":{{"accessToken":"token","expiresAt":1}}}}"#)
-            .expect("write");
+        write!(
+            tmp,
+            r#"{{"claudeAiOauth":{{"accessToken":"token","expiresAt":1}}}}"#
+        )
+        .expect("write");
         let credentials = load_oauth_credentials_at(tmp.path()).expect("credentials");
-        assert_eq!(credentials.expires_at, Some(UNIX_EPOCH + Duration::from_secs(1)));
+        assert_eq!(
+            credentials.expires_at,
+            Some(UNIX_EPOCH + Duration::from_secs(1))
+        );
     }
 
     #[test]
@@ -290,10 +301,16 @@ mod tests {
     #[test]
     fn parses_expiry_string_form() {
         let mut tmp = tempfile::NamedTempFile::new().expect("tempfile");
-        write!(tmp, r#"{{"claudeAiOauth":{{"accessToken":"token","expiresAt":"42"}}}}"#)
-            .expect("write");
+        write!(
+            tmp,
+            r#"{{"claudeAiOauth":{{"accessToken":"token","expiresAt":"42"}}}}"#
+        )
+        .expect("write");
         let credentials = load_oauth_credentials_at(tmp.path()).expect("credentials");
-        assert_eq!(credentials.expires_at, Some(UNIX_EPOCH + Duration::from_secs(42)));
+        assert_eq!(
+            credentials.expires_at,
+            Some(UNIX_EPOCH + Duration::from_secs(42))
+        );
     }
 
     #[test]

@@ -14,7 +14,7 @@ workspace = true
 
 [dependencies]
 forge-sdk = { path = "../forge-sdk", version = "=0.1.64" }
-forge-daemon = { path = "../forge-daemon" }
+forge-daemon = { path = "../forge-daemon", version = "=0.1.64" }
 tokio = { workspace = true }
 tokio-tungstenite.workspace = true
 serde.workspace = true

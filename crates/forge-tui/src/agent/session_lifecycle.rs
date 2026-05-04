@@ -3,7 +3,7 @@
 //! `agent-sdk/src/bridge/session_lifecycle.ts`.
 //!
 //! What lives here:
-//! - `normalize_model_key` + `humanize_model_id` + `short_display_name_for_model_id`
+//! - `normalize_model_key` + `humanize_model_id`
 //! - `model_keys_are_compatible` / `same_context_suffix` / `same_family_and_version`
 //!   / `has_variant_sibling_conflict`
 //! - `resolve_catalog_model` / `resolve_current_model`
@@ -18,10 +18,7 @@
 
 use serde_json::Value;
 
-use crate::agent::types::{AvailableModel, CurrentModel, EffortLevel, SessionUpdate};
-use crate::agent::wire::BridgeEvent;
-
-use super::state::BridgeSession;
+use crate::agent::types::{AvailableModel, CurrentModel, EffortLevel};
 
 const OPUS_MODEL_ALIAS: &str = "opus";
 const MAX_MODEL_VERSION_PARTS: usize = 2;
@@ -68,8 +65,7 @@ fn normalize_model_key(id: &str) -> NormalizedModelKey {
         (lower.clone(), String::new())
     };
     let trimmed_pre = without_context.trim_end_matches('-');
-    let without_prefix =
-        trimmed_pre.strip_prefix("claude-").unwrap_or(trimmed_pre);
+    let without_prefix = trimmed_pre.strip_prefix("claude-").unwrap_or(trimmed_pre);
     let mut parts = without_prefix.split('-').filter(|p| !p.is_empty());
     let family_part = parts.next().unwrap_or("");
     let family = match family_part {
@@ -118,10 +114,7 @@ fn format_humanized(key: &NormalizedModelKey) -> String {
     let version_lbl = if key.version_parts.is_empty() {
         String::new()
     } else {
-        format!(
-            " {}",
-            key.version_parts.iter().map(u32::to_string).collect::<Vec<_>>().join(".")
-        )
+        format!(" {}", key.version_parts.iter().map(u32::to_string).collect::<Vec<_>>().join("."))
     };
     let context_lbl = match key.context_suffix.as_str() {
         "" => String::new(),
@@ -132,14 +125,7 @@ fn format_humanized(key: &NormalizedModelKey) -> String {
 }
 
 #[must_use]
-pub fn humanize_model_id(id: &str) -> String {
-    format_humanized(&normalize_model_key(id))
-}
-
-#[must_use]
-pub fn short_display_name_for_model_id(id: &str) -> String {
-    // Upstream's short and long formatters are identical today; keep
-    // both as separate entry points so a future divergence has a home.
+fn humanize_model_id(id: &str) -> String {
     format_humanized(&normalize_model_key(id))
 }
 
@@ -239,33 +225,31 @@ fn resolve_catalog_model<'a>(
     None
 }
 
-/// Mirrors `resolveCurrentModel(session)` upstream — pure function on
-/// the session's resolved/runtime/requested model strings + the
-/// `available_models` catalogue.
+/// Mirrors upstream's `resolveCurrentModel`. Pure function on the
+/// session's resolved/runtime/requested model strings + the
+/// `available_models` catalogue. Primitive-arg form — callers pass
+/// what they have; no session struct dependency.
 #[must_use]
-pub fn resolve_current_model(session: &BridgeSession) -> CurrentModel {
-    let requested_id = session
-        .requested_model_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty());
-    let resolved_id = session
-        .resolved_runtime_model_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map_or_else(
+pub fn resolve_current_model_from_inputs(
+    model_id: &str,
+    requested_model_id: Option<&str>,
+    resolved_runtime_model_id: Option<&str>,
+    available_models: &[AvailableModel],
+) -> CurrentModel {
+    let requested_id = requested_model_id.map(str::trim).filter(|s| !s.is_empty());
+    let resolved_id =
+        resolved_runtime_model_id.map(str::trim).filter(|s| !s.is_empty()).map_or_else(
             || {
-                if session.model_id.trim().is_empty() {
+                if model_id.trim().is_empty() {
                     requested_id.unwrap_or(OPUS_MODEL_ALIAS).to_owned()
                 } else {
-                    session.model_id.trim().to_owned()
+                    model_id.trim().to_owned()
                 }
             },
             str::to_owned,
         );
 
-    let catalog = resolve_catalog_model(&session.available_models, &resolved_id, requested_id);
+    let catalog = resolve_catalog_model(available_models, &resolved_id, requested_id);
     let runtime_display_id = if resolved_id.is_empty() {
         requested_id.unwrap_or(OPUS_MODEL_ALIAS)
     } else {
@@ -291,42 +275,13 @@ pub fn resolve_current_model(session: &BridgeSession) -> CurrentModel {
         display_name_long: display_name,
         catalog_id: catalog.map(|m| m.id.clone()),
         supports_effort: catalog.is_some_and(|m| m.supports_effort),
-        supported_effort_levels: catalog.map_or_else(Vec::new, |m| m.supported_effort_levels.clone()),
+        supported_effort_levels: catalog
+            .map_or_else(Vec::new, |m| m.supported_effort_levels.clone()),
         supports_fast_mode: catalog.and_then(|m| m.supports_fast_mode),
         supports_auto_mode: catalog.and_then(|m| m.supports_auto_mode),
         supports_adaptive_thinking: catalog.and_then(|m| m.supports_adaptive_thinking),
         is_authoritative: current_model_is_authoritative(&resolved_id, requested_id),
     }
-}
-
-fn current_models_equal(left: Option<&CurrentModel>, right: &CurrentModel) -> bool {
-    match left {
-        Some(l) => l == right,
-        None => false,
-    }
-}
-
-/// Mirrors `refreshCurrentModel(session, emitUpdate)`. Recomputes
-/// `session.current_model`; when changed and `emit_update` is true,
-/// pushes a `CurrentModelUpdate` `SessionUpdate`. Returns whether the
-/// model changed.
-pub fn refresh_current_model(
-    session: &mut BridgeSession,
-    emit_update: bool,
-    out: &mut Vec<BridgeEvent>,
-) -> bool {
-    let next = resolve_current_model(session);
-    if current_models_equal(session.current_model.as_ref(), &next) {
-        return false;
-    }
-    session.current_model = Some(next.clone());
-    if emit_update && session.connected {
-        out.push(BridgeEvent::SessionUpdate {
-            session_id: session.session_id.clone(),
-            update: SessionUpdate::CurrentModelUpdate { current_model: next },
-        });
-    }
-    true
 }
 
 /// Mirrors `mapAvailableModels(models)` — initialize-response `models`
@@ -356,6 +311,8 @@ pub fn map_available_models(models: Option<&Value>) -> Vec<AvailableModel> {
                             "low" => Some(EffortLevel::Low),
                             "medium" => Some(EffortLevel::Medium),
                             "high" => Some(EffortLevel::High),
+                            "xhigh" => Some(EffortLevel::Xhigh),
+                            "max" => Some(EffortLevel::Max),
                             _ => None,
                         })
                         .collect()
@@ -364,14 +321,8 @@ pub fn map_available_models(models: Option<&Value>) -> Vec<AvailableModel> {
             Some(AvailableModel {
                 id,
                 display_name,
-                description: r
-                    .get("description")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned),
-                supports_effort: r
-                    .get("supportsEffort")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false),
+                description: r.get("description").and_then(Value::as_str).map(str::to_owned),
+                supports_effort: r.get("supportsEffort").and_then(Value::as_bool).unwrap_or(false),
                 supported_effort_levels,
                 supports_adaptive_thinking: r
                     .get("supportsAdaptiveThinking")
@@ -430,46 +381,21 @@ mod tests {
 
     #[test]
     fn resolve_current_model_falls_back_to_opus() {
-        let mut session = BridgeSession::new("s".to_owned(), "/tmp".to_owned());
-        let cm = resolve_current_model(&session);
+        let cm = resolve_current_model_from_inputs("", None, None, &[]);
         assert_eq!(cm.resolved_id, "opus");
         // Matches upstream: non-empty resolved id (even the "opus"
         // alias) is treated as authoritative.
         assert!(cm.is_authoritative);
 
-        session.model_id = "claude-sonnet-4-6".to_owned();
-        let cm = resolve_current_model(&session);
+        let cm = resolve_current_model_from_inputs("claude-sonnet-4-6", None, None, &[]);
         assert_eq!(cm.resolved_id, "claude-sonnet-4-6");
         assert_eq!(cm.display_name_short, "Sonnet 4.6");
         assert!(cm.is_authoritative);
     }
 
     #[test]
-    fn refresh_emits_only_on_change_and_when_connected() {
-        let mut session = BridgeSession::new("s".to_owned(), "/tmp".to_owned());
-        session.connected = true;
-        session.model_id = "claude-sonnet-4-6".to_owned();
-        let mut out = Vec::new();
-        assert!(refresh_current_model(&mut session, true, &mut out));
-        assert_eq!(out.len(), 1);
-
-        // No change -> no emit.
-        let mut out = Vec::new();
-        assert!(!refresh_current_model(&mut session, true, &mut out));
-        assert!(out.is_empty());
-
-        // Change but emit_update=false.
-        session.model_id = "claude-opus-4-7".to_owned();
-        let mut out = Vec::new();
-        assert!(refresh_current_model(&mut session, false, &mut out));
-        assert!(out.is_empty());
-    }
-
-    #[test]
     fn catalog_match_populates_supports_effort() {
-        let mut session = BridgeSession::new("s".to_owned(), "/tmp".to_owned());
-        session.model_id = "claude-sonnet-4-6".to_owned();
-        session.available_models = vec![AvailableModel {
+        let catalog = vec![AvailableModel {
             id: "claude-sonnet-4-6".to_owned(),
             display_name: "Sonnet 4.6".to_owned(),
             description: None,
@@ -479,7 +405,7 @@ mod tests {
             supports_fast_mode: Some(false),
             supports_auto_mode: Some(true),
         }];
-        let cm = resolve_current_model(&session);
+        let cm = resolve_current_model_from_inputs("claude-sonnet-4-6", None, None, &catalog);
         assert!(cm.supports_effort);
         assert_eq!(cm.supported_effort_levels.len(), 2);
         assert_eq!(cm.catalog_id.as_deref(), Some("claude-sonnet-4-6"));
