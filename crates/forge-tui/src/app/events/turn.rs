@@ -483,7 +483,15 @@ fn push_turn_error_message(
             super::push_system_message_with_severity(app, None, &message);
         }
         TurnErrorClass::Internal | TurnErrorClass::Other => {
-            let message = format!("Turn failed: {error}\n\n{TURN_ERROR_INPUT_LOCK_HINT}");
+            // Empty `error` means the source side had no useful detail
+            // beyond the SDK's bookkeeping subtype — render the bare
+            // "Turn failed." rather than a stranded ":" with nothing
+            // after it.
+            let message = if error.trim().is_empty() {
+                format!("Turn failed.\n\n{TURN_ERROR_INPUT_LOCK_HINT}")
+            } else {
+                format!("Turn failed: {error}\n\n{TURN_ERROR_INPUT_LOCK_HINT}")
+            };
             super::push_system_message_with_severity(app, None, &message);
         }
     }
