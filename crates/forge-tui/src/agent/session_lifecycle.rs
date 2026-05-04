@@ -311,6 +311,8 @@ pub fn map_available_models(models: Option<&Value>) -> Vec<AvailableModel> {
                             "low" => Some(EffortLevel::Low),
                             "medium" => Some(EffortLevel::Medium),
                             "high" => Some(EffortLevel::High),
+                            "xhigh" => Some(EffortLevel::Xhigh),
+                            "max" => Some(EffortLevel::Max),
                             _ => None,
                         })
                         .collect()

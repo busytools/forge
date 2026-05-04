@@ -475,12 +475,34 @@ fn handle_system(app: &mut App, msg: Message, raw: &Value) {
     match subtype.as_str() {
         "status" => {
             apply_fast_mode_update(app, data);
-            // permissionMode → CurrentModeUpdate
+            // permissionMode → CurrentModeUpdate + typed turn_state.mode
+            // mirror + supported_mode_ids recompute. The pre-collapse
+            // bridge's `handle_system_status` did all three; the
+            // App-side `apply_current_mode_update` only touches the
+            // display struct, so we still need to update
+            // `turn_state.mode` and refresh `supported_mode_ids`
+            // ourselves — otherwise the typed mode the `/mode` picker
+            // reads goes stale on server-side mode switches.
             if let Some(mode_str) = data.get("permissionMode").and_then(Value::as_str) {
                 super::apply_current_mode_update(
                     app,
                     &crate::agent::model::CurrentModeUpdate::new(mode_str),
                 );
+                if let Some(parsed) = crate::agent::state::PermissionMode::from_wire(mode_str) {
+                    use crate::agent::commands::supported_mode_ids_filtered;
+                    app.turn_state.mode = Some(parsed);
+                    let supports_auto_mode = app
+                        .current_model
+                        .as_ref()
+                        .is_some_and(|m| m.supports_auto_mode == Some(true));
+                    let supported = supported_mode_ids_filtered(
+                        supports_auto_mode,
+                        app.turn_state.supports_bypass_permissions_mode,
+                        Some(parsed),
+                        &app.turn_state.runtime_unavailable_mode_ids,
+                    );
+                    app.turn_state.supported_mode_ids = supported;
+                }
             }
             // status: "compacting" → Compacting, null → Idle.
             if let Some(status_field) = data.get("status") {
@@ -602,26 +624,54 @@ fn apply_available_agents_from_init(app: &mut App, data: &Value) {
 /// `handle_system_init` block that pushed `CurrentModelUpdate` after
 /// `refresh_current_model` reported a change.
 ///
-/// Today only `model_id` and the `models` catalogue are available
-/// from System(init). `requested_model_id` and
-/// `resolved_runtime_model_id` come from other paths (the SetModel
-/// command + initialize control_response respectively); when those
-/// are mirrored into `app.turn_state` later, the resolver picks them
-/// up via the optional args.
+/// The CLI's `system/init` carries the resolved `model` id but
+/// NOT the `models` catalogue (that lives in the initialize
+/// control_response, which the App already absorbed via Connected).
+/// Reuse `app.available_models` — re-deriving from the init payload's
+/// missing `models` field would return an empty catalogue and reset
+/// `current_model.supports_effort` (and friends) to `false`, dropping
+/// the footer's effort chip and adaptive-thinking flags after the
+/// first turn lands.
 fn apply_current_model_from_init(app: &mut App, data: &Value) {
-    use crate::agent::session_lifecycle::{
-        map_available_models, resolve_current_model_from_inputs,
-    };
+    use crate::agent::session_lifecycle::resolve_current_model_from_inputs;
+    use crate::agent::types as wire;
     use crate::app::connect::type_converters::convert_current_model;
 
     let Some(record) = data.as_object() else { return };
     let model_id = record.get("model").and_then(Value::as_str).unwrap_or("");
-    let available_models = map_available_models(record.get("models"));
     let requested = app.turn_state.requested_model_id.as_deref();
     let resolved_runtime = app.turn_state.resolved_runtime_model_id.as_deref();
     if !model_id.is_empty() {
         model_id.clone_into(&mut app.turn_state.model_id);
     }
+
+    // Round-trip the App's typed `model::AvailableModel` list back
+    // into the wire shape the catalogue resolver expects. Cheap, runs
+    // once on init.
+    let available_models: Vec<wire::AvailableModel> = app
+        .available_models
+        .iter()
+        .map(|m| wire::AvailableModel {
+            id: m.id.clone(),
+            display_name: m.display_name.clone(),
+            description: m.description.clone(),
+            supports_effort: m.supports_effort,
+            supported_effort_levels: m
+                .supported_effort_levels
+                .iter()
+                .map(|level| match level {
+                    crate::agent::model::EffortLevel::Low => wire::EffortLevel::Low,
+                    crate::agent::model::EffortLevel::Medium => wire::EffortLevel::Medium,
+                    crate::agent::model::EffortLevel::High => wire::EffortLevel::High,
+                    crate::agent::model::EffortLevel::Xhigh => wire::EffortLevel::Xhigh,
+                    crate::agent::model::EffortLevel::Max => wire::EffortLevel::Max,
+                })
+                .collect(),
+            supports_adaptive_thinking: m.supports_adaptive_thinking,
+            supports_fast_mode: m.supports_fast_mode,
+            supports_auto_mode: m.supports_auto_mode,
+        })
+        .collect();
 
     let next_wire =
         resolve_current_model_from_inputs(model_id, requested, resolved_runtime, &available_models);
@@ -649,6 +699,15 @@ fn apply_mode_state_from_init(app: &mut App, data: &Value) {
     let Some(mode_str) = record.get("permissionMode").and_then(Value::as_str) else { return };
     let Some(mode) = PermissionMode::from_wire(mode_str) else { return };
     app.turn_state.mode = Some(mode);
+
+    // System(init) is the canonical source for `supportsBypassPermissionsMode`.
+    // Without this write the bypass chip / `/mode` option stays hidden even
+    // when the CLI declares it supported.
+    if let Some(supports_bypass) =
+        record.get("supportsBypassPermissionsMode").and_then(Value::as_bool)
+    {
+        app.turn_state.supports_bypass_permissions_mode = supports_bypass;
+    }
 
     let supports_auto_mode =
         app.current_model.as_ref().is_some_and(|m| m.supports_auto_mode == Some(true));
