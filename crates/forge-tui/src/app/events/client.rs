@@ -262,12 +262,29 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
             );
         }
         ClientEvent::SdkMessageReceived { session_id, msg } => {
-            if app.session_id.as_ref().map(ToString::to_string).as_deref()
-                != Some(session_id.as_str())
-            {
-                // Drop stale-session SDK envelopes silently — the
-                // bridge's own SessionUpdate path handles same drop
-                // independently with its own log.
+            // For new sessions the CLI doesn't emit `system/init`
+            // until AFTER the first user message lands (per
+            // `spawn_inner` docs), so `Client::session_id()` is empty
+            // at spawn time and that empty value rides through
+            // `Connected` onto `app.session_id`. The first wire
+            // message that DOES carry a real id (Assistant / User /
+            // Result / System(init)) is the canonical source — adopt
+            // it. For resume the bridge already used the resume_id
+            // for Connected, so adoption is a no-op and the strict
+            // mismatch check covers stale-Client races during session
+            // swap.
+            let Some(current) = app.session_id.as_ref() else {
+                // No session yet — Connected hasn't been processed.
+                // The bridge emits Connected before spawning the
+                // reader, so this should be unreachable; drop
+                // defensively.
+                return;
+            };
+            let current_str = current.to_string();
+            if current_str.is_empty() && !session_id.is_empty() {
+                app.session_id =
+                    Some(crate::agent::model::SessionId::new(session_id.clone()));
+            } else if !current_str.is_empty() && current_str != session_id {
                 return;
             }
             super::sdk_message::handle_sdk_message(app, msg);

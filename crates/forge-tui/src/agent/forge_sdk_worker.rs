@@ -55,23 +55,37 @@ pub(crate) async fn spawn_session(
         Arc::clone(bridge.session_id_slot_arc()),
     );
     let client = Client::spawn(options).await?;
-    let session_id = client.session_id();
+    // For resume sessions the CLI flag carried the real session id —
+    // prefer that over `Client::session_id()`, which is empty until
+    // `system/init` lands on the wire (per `spawn_inner` docs, after
+    // both the initialize control_response AND a user message). For
+    // new sessions we also fall back to whatever Client captured
+    // during its init loop (typically empty), and the App-side handler
+    // adopts the first non-empty session id seen on the wire.
+    let session_id = match resume_id {
+        Some(id) if !id.is_empty() => id.to_owned(),
+        _ => client.session_id(),
+    };
     if let Ok(mut slot) = bridge.session_id_slot_arc().lock() {
         slot.clone_from(&session_id);
     }
-
-    // Reader subtask — Client is Arc-backed so cloning is cheap.
-    let reader_client = client.clone();
-    let reader_event_tx = bridge.event_tx().clone();
-    let reader_session_id = session_id.clone();
-    tokio::spawn(reader_loop(reader_client, reader_event_tx, reader_session_id));
 
     let cwd_owned = std::env::current_dir()
         .ok()
         .and_then(|p| p.into_os_string().into_string().ok())
         .unwrap_or_default();
 
+    // Emit Connected BEFORE spawning the reader subtask so the App
+    // sees Connected first on its mpsc — otherwise the reader can
+    // race and push an SdkMessage before Connected, leaving
+    // `app.session_id` = None when the SdkMessage arrives.
     emit_connected(bridge.event_tx(), &client, &session_id, &cwd_owned, launch_settings, resume_id);
+
+    // Reader subtask — Client is Arc-backed so cloning is cheap.
+    let reader_client = client.clone();
+    let reader_event_tx = bridge.event_tx().clone();
+    let reader_session_id = session_id.clone();
+    tokio::spawn(reader_loop(reader_client, reader_event_tx, reader_session_id));
 
     bridge.set_client(client);
     Ok(())
