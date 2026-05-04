@@ -27,13 +27,13 @@ impl From<forge_sdk::OauthUsageError> for OauthFetchError {
         use forge_sdk::OauthUsageError;
         match error {
             OauthUsageError::NoCredentials => Self::Unavailable(
-                "No Claude OAuth credentials found. Run /login to authenticate.".to_owned(),
+                "No Claude OAuth credentials found. Run `claude auth login` in a terminal.".to_owned(),
             ),
             OauthUsageError::Expired => Self::Unavailable(
-                "Claude OAuth credentials expired. Run /login to refresh them.".to_owned(),
+                "Claude OAuth credentials expired. Run `claude auth login` in a terminal to refresh them.".to_owned(),
             ),
             OauthUsageError::Unauthorized(_) => Self::Unauthorized(
-                "Claude OAuth usage request was rejected. Run /login to refresh Claude credentials."
+                "Claude OAuth usage request was rejected. Run `claude auth login` in a terminal to refresh credentials."
                     .to_owned(),
             ),
             OauthUsageError::HttpStatus(status, suffix) => {

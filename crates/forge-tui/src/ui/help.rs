@@ -17,13 +17,9 @@ const SUBAGENT_NAME_MAX_WIDTH: usize = 28;
 const SUBAGENT_NAME_MAX_SHARE_NUM: usize = 2;
 const SUBAGENT_NAME_MAX_SHARE_DEN: usize = 5;
 const HELP_PANEL_HEIGHT: u16 = 14;
-const HELP_BUILTIN_SLASH_COMMANDS: [(&str, &str); 9] = [
+const HELP_BUILTIN_SLASH_COMMANDS: [(&str, &str); 5] = [
     ("/config", "Open settings"),
-    ("/docs", "Show in-chat help topics"),
-    ("/login", "Authenticate with Claude"),
-    ("/logout", "Sign out of Claude"),
     ("/mcp", "Open MCP"),
-    ("/opus-version", "Pin the Opus alias version for this folder"),
     ("/plugins", "Open plugins"),
     ("/status", "Show session status"),
     ("/usage", "Open usage"),
@@ -329,20 +325,8 @@ fn pending_command_help_label(app: &App) -> String {
     app.pending_command_label.clone().unwrap_or_else(|| "Processing command...".to_owned())
 }
 
-pub(crate) fn key_help_items(app: &App) -> Vec<(String, String)> {
-    build_key_help_items(app)
-}
-
 pub(crate) fn slash_help_items(app: &App) -> Vec<(String, String)> {
     build_slash_command_items(app, &HELP_BUILTIN_SLASH_COMMANDS)
-}
-
-pub(crate) fn docs_command_items(app: &App) -> Vec<(String, String)> {
-    slash_help_items(app)
-}
-
-pub(crate) fn subagent_help_items(app: &App) -> Vec<(String, String)> {
-    build_subagent_help_items(app)
 }
 
 fn build_slash_help_items(app: &App) -> Vec<(String, String)> {
@@ -600,10 +584,6 @@ mod tests {
         items.iter().any(|(k, _)| k == key)
     }
 
-    fn item_for_key<'a>(items: &'a [(String, String)], key: &str) -> Option<&'a str> {
-        items.iter().find(|(k, _)| k == key).map(|(_, desc)| desc.as_str())
-    }
-
     #[test]
     fn tab_toggle_only_shown_when_todos_available() {
         let mut app = App::test_default();
@@ -656,12 +636,12 @@ mod tests {
     }
 
     #[test]
-    fn slash_tab_shows_local_auth_and_config_commands_without_advertisement() {
+    fn slash_tab_shows_local_config_commands_without_advertisement() {
         let mut app = App::test_default();
         app.help_view = HelpView::SlashCommands;
 
         let items = build_help_items(&app);
-        for command in ["/config", "/docs", "/login", "/logout", "/mcp", "/usage"] {
+        for command in ["/config", "/mcp", "/plugins", "/status", "/usage"] {
             assert!(has_key(&items, command), "missing builtin command: {command}");
         }
         assert!(!has_item(
@@ -669,21 +649,6 @@ mod tests {
             "No slash commands advertised",
             "Not advertised in this session"
         ));
-    }
-
-    #[test]
-    fn slash_tab_shows_login_logout_when_advertised() {
-        let mut app = App::test_default();
-        app.help_view = HelpView::SlashCommands;
-        app.available_commands = vec![
-            crate::agent::model::AvailableCommand::new("/login", "Login"),
-            crate::agent::model::AvailableCommand::new("/logout", "Logout"),
-        ];
-
-        let items = build_help_items(&app);
-        assert!(has_key(&items, "/config"));
-        assert_eq!(item_for_key(&items, "/login"), Some("Login"));
-        assert_eq!(item_for_key(&items, "/logout"), Some("Logout"));
     }
 
     #[test]

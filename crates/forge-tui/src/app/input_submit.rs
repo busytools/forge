@@ -20,15 +20,6 @@ pub(super) fn submit_input(app: &mut App) {
     }
     app.prompt_suggestion = None;
 
-    // `/cancel` is an explicit control action: execute immediately.
-    if slash::is_cancel_command(&text) {
-        app.pending_auto_submit_after_cancel = false;
-        app.input.clear();
-        app.sync_help_open_with_input();
-        dispatch_submission(app, text);
-        return;
-    }
-
     // While a turn is active, keep the current draft text in the input and
     // only request cancellation of the running turn.
     if is_turn_busy(app) {
@@ -280,39 +271,6 @@ mod tests {
             envelope, ForgeSdkCommand::Cancel { session_id } if session_id == "session-1"
         ));
         assert!(rx.try_recv().is_err(), "second submit should not send extra cancel");
-    }
-
-    #[test]
-    fn submit_input_cancel_command_requests_manual_cancel() {
-        let (mut app, mut rx) = app_with_connection();
-        app.status = AppStatus::Running;
-        app.input.set_text("/cancel");
-
-        submit_input(&mut app);
-
-        assert!(app.input.text().is_empty());
-        assert_eq!(app.pending_cancel_origin, Some(CancelOrigin::Manual));
-        let envelope = rx.try_recv().expect("cancel command should be sent");
-        assert!(matches!(
-            envelope,
-            ForgeSdkCommand::Cancel { session_id } if session_id == "session-1"
-        ));
-    }
-
-    #[test]
-    fn local_slash_submit_marks_redraw() {
-        let (mut app, _rx) = app_with_connection();
-        app.input.set_text("/docs commands");
-        app.needs_redraw = false;
-
-        submit_input(&mut app);
-
-        assert!(app.needs_redraw);
-        assert!(app.input.text().is_empty());
-        let Some(last) = app.messages.last() else {
-            panic!("expected docs system message");
-        };
-        assert!(matches!(last.role, MessageRole::System(Some(super::super::SystemSeverity::Info))));
     }
 
     #[test]

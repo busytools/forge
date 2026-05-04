@@ -16,7 +16,8 @@ const PLAN_LIMIT_NEXT_STEPS_HINT: &str = "Next steps:\n\
 1. Wait a few minutes and retry.\n\
 2. Reduce request size or request frequency.\n\
 3. Check quota/billing for your account or switch plans.";
-const AUTH_REQUIRED_NEXT_STEPS_HINT: &str = "Authentication required. Type /login to authenticate, or run `claude auth login` in a terminal.";
+const AUTH_REQUIRED_NEXT_STEPS_HINT: &str =
+    "Authentication required. Run `claude auth login` in a terminal to authenticate.";
 
 #[derive(Clone, Copy)]
 struct TurnExitState {
