@@ -163,6 +163,52 @@ pub(super) fn handle_rate_limit_update(app: &mut App, update: &model::RateLimitU
     }
 }
 
+/// Drop the input lock after a rate-limit-induced Error state once
+/// the wall clock has crossed `last_rate_limit_update.resets_at`.
+/// Called once per main-loop tick. Without this, the App stays
+/// locked until the user kills the binary even after the rate-limit
+/// window has actually passed.
+pub(crate) fn maybe_recover_from_rate_limit_lock(app: &mut App) {
+    use super::super::AppStatus;
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+    if !matches!(app.status, AppStatus::Error) {
+        return;
+    }
+    let Some(update) = app.last_rate_limit_update.as_ref() else {
+        return;
+    };
+    if !matches!(update.status, model::RateLimitStatus::Rejected) {
+        return;
+    }
+    let Some(resets_at) = update.resets_at else {
+        return;
+    };
+    if !resets_at.is_finite() || resets_at <= 0.0 {
+        return;
+    }
+    let reset_target = UNIX_EPOCH + Duration::from_secs_f64(resets_at);
+    if SystemTime::now() < reset_target {
+        return;
+    }
+    // Window has passed — recover.
+    app.last_rate_limit_update = None;
+    app.status = AppStatus::Ready;
+    app.exit_error = None;
+    super::notices::clear_turn_notice_tracking(app);
+    super::push_system_message_with_severity(
+        app,
+        Some(SystemSeverity::Info),
+        "Rate-limit window passed — input re-enabled. You can retry your request.",
+    );
+    app.needs_redraw = true;
+    tracing::info!(
+        target: crate::logging::targets::APP_SESSION,
+        event_name = "rate_limit_lock_auto_recovered",
+        message = "rate-limit reset window passed; input re-enabled",
+        outcome = "success",
+    );
+}
+
 pub(crate) fn handle_compaction_boundary_update(
     app: &mut App,
     boundary: model::CompactionBoundary,

@@ -168,6 +168,13 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
 
         file_index::drain_events(app);
 
+        // If a prior turn ended in Error state because of a rate-limit
+        // rejection, drop the input lock once the rate-limit window
+        // has passed. The CLI doesn't proactively emit RateLimitEvent
+        // updates without a fresh request, so we poll the wall clock
+        // each tick instead of relying on the wire.
+        events::rate_limit::maybe_recover_from_rate_limit_lock(app);
+
         // Tick the burst detector: flush any held/buffered content that
         // has timed out. EmitChar re-inserts a single held character;
         // EmitPaste feeds the accumulated burst into the paste queue.

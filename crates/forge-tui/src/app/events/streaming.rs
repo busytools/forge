@@ -21,16 +21,12 @@ pub(super) fn handle_agent_message_chunk(app: &mut App, chunk: model::ContentChu
         return;
     }
 
-    if let Some(last) = app.messages.last_mut()
-        && matches!(last.role, MessageRole::Assistant)
-    {
-        append_agent_stream_text(&mut last.blocks, &text.text);
-        let last_idx = app.messages.len().saturating_sub(1);
-        app.bind_active_turn_assistant(last_idx);
-        app.sync_after_message_blocks_changed(last_idx);
-        return;
-    }
-
+    // No active turn bound — this chunk belongs to a NEW assistant
+    // turn (e.g. a Monitor / Task notification firing after the
+    // previous turn finalised). Push a fresh assistant message rather
+    // than appending to whatever assistant message happens to be
+    // last, which would glue two unrelated turns together with no
+    // separator (e.g. "...pull/107Monitor closed cleanly.").
     let mut blocks = Vec::new();
     append_agent_stream_text(&mut blocks, &text.text);
     app.push_message_tracked(ChatMessage::new(MessageRole::Assistant, blocks, None));
