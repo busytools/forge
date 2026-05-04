@@ -282,8 +282,7 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
             };
             let current_str = current.to_string();
             if current_str.is_empty() && !session_id.is_empty() {
-                app.session_id =
-                    Some(crate::agent::model::SessionId::new(session_id.clone()));
+                app.session_id = Some(crate::agent::model::SessionId::new(session_id.clone()));
             } else if !current_str.is_empty() && current_str != session_id {
                 return;
             }

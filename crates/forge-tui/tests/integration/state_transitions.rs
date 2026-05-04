@@ -595,9 +595,5 @@ async fn sdk_message_with_mismatched_real_session_id_is_dropped() {
         Some("real-session-abc"),
         "session id must not change on stale envelope",
     );
-    assert_eq!(
-        app.messages.len(),
-        initial_message_count,
-        "stale envelope must not append to chat",
-    );
+    assert_eq!(app.messages.len(), initial_message_count, "stale envelope must not append to chat",);
 }
