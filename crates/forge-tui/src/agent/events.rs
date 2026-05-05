@@ -85,7 +85,7 @@ pub enum ClientEvent {
     /// `None` when no credentials file exists or it's empty/malformed.
     OauthCredentialsSnapshotReceived {
         session_id: String,
-        credentials: Option<forge_sdk::OauthCredentials>,
+        credentials: Option<forge_agent::cloud::oauth_credentials::OauthCredentials>,
     },
     /// Git introspection snapshot pushed by the bridge whenever the
     /// repo's branch resolution changes (initial state included).

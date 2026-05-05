@@ -435,25 +435,6 @@ impl Client {
         })
     }
 
-    /// Read the user's OAuth credentials from
-    /// `<config_dir>/.credentials.json`, where `<config_dir>` is
-    /// `$CLAUDE_CONFIG_DIR` (when set + non-empty) else
-    /// `$HOME/.claude`. On macOS, falls back to the system keychain
-    /// entry if the file is absent. Returns `None` if neither source
-    /// has a parseable, non-empty `claudeAiOauth.accessToken`.
-    ///
-    /// Unlike [`Client::account_info_from_init`] (which deserialises from the
-    /// cached `system/init` payload), credentials are read from disk /
-    /// keychain every call — they live outside the CLI's stream-json
-    /// wire surface, so there is no init frame to cache from. Cheap
-    /// for the file path (one small read) but the keychain shell-out
-    /// is comparatively expensive; consumers that poll frequently
-    /// should cache the result themselves.
-    #[must_use]
-    pub fn oauth_credentials(&self) -> Option<crate::public_types::OauthCredentials> {
-        crate::paths::load_oauth_credentials()
-    }
-
     /// Send a user prompt as a stream-json user turn.
     ///
     /// # Errors

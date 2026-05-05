@@ -69,33 +69,6 @@ pub struct AccountInfo {
     pub api_provider: Option<String>,
 }
 
-/// OAuth bearer credentials the CLI persists at
-/// `<config_dir>/.credentials.json`. Returned by
-/// [`Client::oauth_credentials`](crate::Client::oauth_credentials).
-///
-/// `<config_dir>` resolves to `$CLAUDE_CONFIG_DIR` when set and
-/// non-empty, else `$HOME/.claude`. The file format is
-/// `{ "claudeAiOauth": { "accessToken": "...", "expiresAt": <epoch> } }`
-/// where `expiresAt` is either a numeric epoch (seconds OR
-/// milliseconds) or a numeric string. The struct's
-/// [`std::time::SystemTime`] field handles both shapes during
-/// deserialisation; serialisation emits a `SystemTime` directly,
-/// which is fine for in-memory use but is NOT a stable wire shape —
-/// don't round-trip these through anything but the live in-memory
-/// `Client`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[non_exhaustive]
-pub struct OauthCredentials {
-    /// The bearer token to send as `Authorization: Bearer <token>` to
-    /// `api.anthropic.com`.
-    pub access_token: String,
-    /// Optional absolute expiry. Callers typically check
-    /// `expires_at <= SystemTime::now()` before making outbound
-    /// requests; `None` means the file did not include an expiry
-    /// field.
-    pub expires_at: Option<std::time::SystemTime>,
-}
-
 /// Streaming partial-message event surfaced when
 /// `Options.include_partial_messages` is set. Wire shape:
 /// `StreamEvent`.

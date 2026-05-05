@@ -44,8 +44,10 @@ tracing = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 async-trait = { workspace = true }
+hex = { workspace = true }
 notify = { workspace = true }
 reqwest = { workspace = true }
+sha2 = { workspace = true }
 time = { workspace = true }
 unicode-normalization = { workspace = true }
 uuid = { workspace = true }

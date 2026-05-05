@@ -158,7 +158,7 @@ pub trait AgentBridge {
     /// Read OAuth credentials from `<config_dir>/.credentials.json`
     /// or, on macOS, the matching keychain entry. Returns `None`
     /// when no credentials are present.
-    fn oauth_credentials(&self) -> Option<forge_sdk::OauthCredentials>;
+    fn oauth_credentials(&self) -> Option<crate::cloud::oauth_credentials::OauthCredentials>;
 
     /// Read all three settings documents (user, project-local,
     /// preferences) from disk. Each field is `None` when the
@@ -298,7 +298,7 @@ pub enum AgentEvent {
     },
     OauthCredentialsSnapshot {
         session_id: String,
-        credentials: Option<forge_sdk::OauthCredentials>,
+        credentials: Option<crate::cloud::oauth_credentials::OauthCredentials>,
     },
     GitContextSnapshot {
         session_id: String,

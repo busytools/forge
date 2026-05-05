@@ -2,9 +2,10 @@
 //!
 //! Fetches per-account rate-limit utilisation from
 //! `https://api.anthropic.com/api/oauth/usage` using the OAuth
-//! bearer credentials resolved by [`forge_sdk::oauth_credentials`]
-//! (file or — on macOS — keychain). The `Authorization` header
-//! never escapes this module.
+//! bearer credentials resolved by
+//! [`super::oauth_credentials::load_oauth_credentials`] (file or —
+//! on macOS — keychain). The `Authorization` header never escapes
+//! this module.
 //!
 //! Lifted from forge-sdk in 2026-05-05. Direct hits on
 //! `api.anthropic.com` belong with the agent — forge-sdk's job is
@@ -21,7 +22,7 @@ use std::time::Duration;
 use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue, USER_AGENT};
 use serde::{Deserialize, Serialize};
 
-use forge_sdk::oauth_credentials;
+use super::oauth_credentials::load_oauth_credentials;
 
 const OAUTH_USAGE_URL: &str = "https://api.anthropic.com/api/oauth/usage";
 const OAUTH_BETA_HEADER: &str = "oauth-2025-04-20";
@@ -126,15 +127,16 @@ impl OauthUsageError {
 
 /// Fetch the live OAuth usage payload from the Anthropic API using
 /// the bearer in `<config_dir>/.credentials.json` (or, on macOS, the
-/// matching keychain entry — see [`forge_sdk::oauth_credentials`] for
-/// the resolution order).
+/// matching keychain entry — see
+/// [`super::oauth_credentials::load_oauth_credentials`] for the
+/// resolution order).
 ///
 /// # Errors
 ///
 /// Returns [`OauthUsageError`] when credentials are missing/expired,
 /// the HTTPS request fails, or the response can't be decoded.
 pub async fn oauth_usage() -> Result<OauthUsage, OauthUsageError> {
-    let credentials = oauth_credentials().ok_or(OauthUsageError::NoCredentials)?;
+    let credentials = load_oauth_credentials().ok_or(OauthUsageError::NoCredentials)?;
 
     if credentials
         .expires_at

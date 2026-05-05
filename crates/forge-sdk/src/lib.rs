@@ -96,24 +96,9 @@ pub use permissions::{
 pub use public_types::{
     AccountInfo, ContextUsageCategory, ContextUsageResponse, McpServerConfig,
     McpServerConnectionStatus, McpServerInfo, McpServerStatus, McpStatusResponse,
-    McpToolAnnotations, McpToolInfo, OauthCredentials, SDKSessionInfo, SandboxIgnoreViolations,
-    SandboxNetworkConfig, SandboxSettings, SessionMessage, SessionMessageKind, SettingSource,
-    StreamEvent,
+    McpToolAnnotations, McpToolInfo, SDKSessionInfo, SandboxIgnoreViolations, SandboxNetworkConfig,
+    SandboxSettings, SessionMessage, SessionMessageKind, SettingSource, StreamEvent,
 };
-
-/// Free-function variant of [`Client::oauth_credentials`] for callers
-/// that don't have a live [`Client`] but still need to consult the
-/// user's OAuth state (e.g. a TUI verifying credentials immediately
-/// after `claude auth login` exits, before a session is open).
-///
-/// Reads `<config_dir>/.credentials.json` where `<config_dir>` is
-/// `$CLAUDE_CONFIG_DIR` (when set + non-empty) else `$HOME/.claude`.
-/// Returns `None` if the file is missing, malformed, or
-/// `claudeAiOauth.accessToken` is empty.
-#[must_use]
-pub fn oauth_credentials() -> Option<OauthCredentials> {
-    paths::load_oauth_credentials()
-}
 
 /// Convenient alias for `Result<T, forge_sdk::Error>`.
 pub type Result<T, E = Error> = core::result::Result<T, E>;

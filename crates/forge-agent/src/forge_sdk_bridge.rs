@@ -325,14 +325,17 @@ impl AgentBridge for ForgeSdkBridge {
 
     fn get_oauth_credentials_snapshot(&self, session_id: String) -> anyhow::Result<()> {
         let event_tx = self.inner.event_tx.clone();
-        self.dispatch("get_oauth_credentials_snapshot", move |client| async move {
-            let credentials = client.oauth_credentials();
-            let _ = event_tx.send(AgentEvent::OauthCredentialsSnapshot {
-                session_id,
-                credentials,
-            });
-            Ok(())
-        })
+        self.dispatch(
+            "get_oauth_credentials_snapshot",
+            move |_client| async move {
+                let credentials = crate::cloud::oauth_credentials::load_oauth_credentials();
+                let _ = event_tx.send(AgentEvent::OauthCredentialsSnapshot {
+                    session_id,
+                    credentials,
+                });
+                Ok(())
+            },
+        )
     }
 
     fn get_context_usage(&self, session_id: String) -> anyhow::Result<()> {
@@ -624,8 +627,8 @@ impl AgentBridge for ForgeSdkBridge {
         crate::userdata::memory::project_memory_path(cwd)
     }
 
-    fn oauth_credentials(&self) -> Option<forge_sdk::OauthCredentials> {
-        forge_sdk::oauth_credentials()
+    fn oauth_credentials(&self) -> Option<crate::cloud::oauth_credentials::OauthCredentials> {
+        crate::cloud::oauth_credentials::load_oauth_credentials()
     }
 
     fn settings_documents(&self, cwd: &Path) -> crate::userdata::settings::SettingsDocuments {

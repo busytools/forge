@@ -57,7 +57,7 @@ impl AgentHandle {
 
     /// Direct-accessor passthrough.
     #[must_use]
-    pub fn oauth_credentials(&self) -> Option<forge_sdk::OauthCredentials> {
+    pub fn oauth_credentials(&self) -> Option<crate::cloud::oauth_credentials::OauthCredentials> {
         self.bridge.oauth_credentials()
     }
 

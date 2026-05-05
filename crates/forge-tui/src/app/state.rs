@@ -300,7 +300,7 @@ pub struct App {
     /// session connect, refreshed after `/login` and `/logout` so
     /// callers can ask "is the user authenticated?" without doing
     /// their own filesystem walk to `<config_dir>/.credentials.json`.
-    pub oauth_credentials: Option<forge_sdk::OauthCredentials>,
+    pub oauth_credentials: Option<forge_agent::cloud::oauth_credentials::OauthCredentials>,
 
     /// Per-session runtime state being absorbed from the bridge
     /// unpacker (`agent::state::BridgeSession`). Currently
