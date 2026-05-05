@@ -311,7 +311,10 @@ impl AgentBridge for ForgeSdkBridge {
     fn get_status_snapshot(&self, session_id: String) -> anyhow::Result<()> {
         let event_tx = self.inner.event_tx.clone();
         self.dispatch("get_status_snapshot", move |client| async move {
-            let account = client.account_info().unwrap_or_default();
+            let account = client
+                .account_info_from_init()
+                .or_else(crate::cloud::auth_status::account_info_from_shell)
+                .unwrap_or_default();
             let _ = event_tx.send(AgentEvent::StatusSnapshot {
                 session_id,
                 account,

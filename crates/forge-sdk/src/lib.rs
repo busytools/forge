@@ -46,7 +46,6 @@
 #![forbid(unsafe_code)]
 
 pub mod argv;
-pub(crate) mod auth_status;
 mod client;
 pub mod content;
 pub mod control;

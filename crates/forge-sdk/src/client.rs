@@ -407,31 +407,20 @@ impl Client {
         self.inner.session_id.read().clone()
     }
 
-    /// Typed accessor for the user's account profile. Resolution
-    /// order, cheapest first:
-    ///
-    /// 1. Top-level `apiKeySource` from the cached `system/init`
-    ///    payload (when present and not `"none"`). Carries only the
-    ///    auth source — no email/org/subscription.
-    /// 2. `claude auth status` shell-out — the CLI's only source of
-    ///    truth for the full account profile (email, org name,
-    ///    subscription tier). ~50ms latency on first call.
-    ///
-    /// Returns `None` when neither source has data — typically the
-    /// caller is unauthenticated.
-    #[must_use]
-    pub fn account_info(&self) -> Option<crate::public_types::AccountInfo> {
-        if let Some(info) = self.account_info_from_init() {
-            return Some(info);
-        }
-        crate::auth_status::account_info_from_auth_status()
-    }
-
     /// Read the bare `apiKeySource` field from the cached
-    /// `system/init` payload. Returns `None` when the payload is
-    /// absent (init not yet arrived), the field is missing, or the
-    /// value is empty / `"none"`.
-    fn account_info_from_init(&self) -> Option<crate::public_types::AccountInfo> {
+    /// `system/init` payload, returning a partial [`AccountInfo`]
+    /// (auth source only — no email/org/subscription). Returns
+    /// `None` when the payload is absent (init not yet arrived),
+    /// the field is missing, or the value is empty / `"none"`.
+    ///
+    /// Callers that need the full profile (email, organization,
+    /// subscription tier) shell out to `claude auth status`
+    /// separately — that path is agent-side
+    /// (`forge_agent::cloud::auth_status`), not SDK-side, because it
+    /// spawns a fresh subprocess outside the long-lived stream-json
+    /// session.
+    #[must_use]
+    pub fn account_info_from_init(&self) -> Option<crate::public_types::AccountInfo> {
         let data = self.inner.cached_init_data.as_ref()?;
         let api_key_source = data
             .get("apiKeySource")

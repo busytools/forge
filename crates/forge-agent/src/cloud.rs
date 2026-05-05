@@ -2,6 +2,7 @@
 //! anything that talks to api.anthropic.com directly (NOT through the
 //! claude CLI subprocess).
 
+pub mod auth_status;
 pub mod cli;
 pub mod oauth;
 pub mod service_status;

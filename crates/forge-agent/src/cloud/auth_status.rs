@@ -7,19 +7,23 @@
 //! top level (e.g. `"none"`, `"oauth"`, `"user"`, …) and that's it —
 //! everything else (email, organization, subscription) lives behind
 //! the `claude auth status` subcommand. The JS-side SDK fetches the
-//! same data via its own `query.accountInfo()` RPC; for forge-sdk the
+//! same data via its own `query.accountInfo()` RPC; for forge the
 //! cheapest equivalent is to spawn `claude auth status` and parse its
 //! JSON output. Adds ~50ms latency for the first read.
 //!
-//! This module returns a fully populated [`AccountInfo`] when the
-//! shell-out succeeds, mapping `claude auth status`'s camelCase JSON
-//! into the SDK's `snake_case` struct (with `authMethod` translated
-//! into the matching `api_key_source`/`token_source` values the TUI
-//! expects — see [`AUTH_METHOD_TO_API_KEY_SOURCE`]).
+//! Lifted from forge-sdk in 2026-05-05. Shell-outs to `claude` are
+//! agent-side concerns — the SDK now only owns the long-lived
+//! stream-json subprocess. Mirrors the shape of
+//! `userdata::plugins::cli`, which wraps `claude plugin` in the same
+//! way.
+//!
+//! Returns a fully populated [`AccountInfo`] when the shell-out
+//! succeeds, mapping `claude auth status`'s camelCase JSON into the
+//! `snake_case` struct.
 
 use serde::Deserialize;
 
-use crate::public_types::AccountInfo;
+use forge_sdk::AccountInfo;
 
 /// `claude auth status` JSON response. Captured from claude 2.1.117.
 /// Field shape may evolve; we treat all fields as optional and ignore
@@ -74,7 +78,7 @@ fn map_auth_method_to_api_key_source(auth_method: &str) -> &str {
 /// Synchronous; runs the subprocess inline. ~50ms first call, faster
 /// thereafter (claude warms up its keychain reads in-process).
 #[must_use]
-pub(crate) fn account_info_from_auth_status() -> Option<AccountInfo> {
+pub fn account_info_from_shell() -> Option<AccountInfo> {
     let output = std::process::Command::new("claude")
         .args(["auth", "status"])
         .output()

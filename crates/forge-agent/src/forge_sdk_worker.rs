@@ -189,7 +189,10 @@ fn emit_connected(
         history_updates,
     });
 
-    if let Some(account) = client.account_info() {
+    if let Some(account) = client
+        .account_info_from_init()
+        .or_else(crate::cloud::auth_status::account_info_from_shell)
+    {
         let _ = event_tx.send(AgentEvent::StatusSnapshot {
             session_id: session_id.to_owned(),
             account,
