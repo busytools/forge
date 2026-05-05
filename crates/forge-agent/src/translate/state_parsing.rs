@@ -4,7 +4,7 @@
 
 use serde_json::{Map, Value};
 
-use crate::agent::types::{
+use forge_primitives::{
     ApiRetryError, FastModeState, RateLimitStatus, RuntimeSessionState, SessionUpdate,
     SettingsParseErrorUpdate,
 };
@@ -131,31 +131,55 @@ fn normalize_settings_parse_error(value: &Value) -> Option<SettingsParseErrorUpd
     if message.is_empty() {
         return None;
     }
-    let path = r.get("path").and_then(Value::as_str).unwrap_or("").to_owned();
-    let file =
-        r.get("file").and_then(Value::as_str).filter(|s| !s.trim().is_empty()).map(str::to_owned);
-    Some(SettingsParseErrorUpdate { file, path, message: message.to_owned() })
+    let path = r
+        .get("path")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_owned();
+    let file = r
+        .get("file")
+        .and_then(Value::as_str)
+        .filter(|s| !s.trim().is_empty())
+        .map(str::to_owned);
+    Some(SettingsParseErrorUpdate {
+        file,
+        path,
+        message: message.to_owned(),
+    })
 }
 
 /// Accepts either a single record or an array; returns all valid entries.
 #[must_use]
 pub fn normalize_settings_parse_errors(value: &Value) -> Vec<SettingsParseErrorUpdate> {
     if let Some(arr) = value.as_array() {
-        return arr.iter().filter_map(normalize_settings_parse_error).collect();
+        return arr
+            .iter()
+            .filter_map(normalize_settings_parse_error)
+            .collect();
     }
     normalize_settings_parse_error(value).into_iter().collect()
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use serde_json::json;
 
     #[test]
     fn fast_mode_state_parses_known_values() {
-        assert_eq!(parse_fast_mode_state(Some(&json!("on"))), Some(FastModeState::On));
-        assert_eq!(parse_fast_mode_state(Some(&json!("off"))), Some(FastModeState::Off));
-        assert_eq!(parse_fast_mode_state(Some(&json!("cooldown"))), Some(FastModeState::Cooldown));
+        assert_eq!(
+            parse_fast_mode_state(Some(&json!("on"))),
+            Some(FastModeState::On)
+        );
+        assert_eq!(
+            parse_fast_mode_state(Some(&json!("off"))),
+            Some(FastModeState::Off)
+        );
+        assert_eq!(
+            parse_fast_mode_state(Some(&json!("cooldown"))),
+            Some(FastModeState::Cooldown)
+        );
         assert_eq!(parse_fast_mode_state(Some(&json!("nope"))), None);
         assert_eq!(parse_fast_mode_state(None), None);
     }
@@ -175,7 +199,10 @@ mod tests {
 
     #[test]
     fn api_retry_error_falls_back_to_unknown() {
-        assert!(matches!(parse_api_retry_error(None), ApiRetryError::Unknown));
+        assert!(matches!(
+            parse_api_retry_error(None),
+            ApiRetryError::Unknown
+        ));
         assert!(matches!(
             parse_api_retry_error(Some(&json!("rate_limit"))),
             ApiRetryError::RateLimit
@@ -189,7 +216,13 @@ mod tests {
 
         let v = json!({"status": "allowed", "resetsAt": 100.0, "utilization": 0.5});
         let u = build_rate_limit_update(Some(&v)).expect("update built");
-        if let SessionUpdate::RateLimitUpdate { status, resets_at, utilization, .. } = u {
+        if let SessionUpdate::RateLimitUpdate {
+            status,
+            resets_at,
+            utilization,
+            ..
+        } = u
+        {
             assert_eq!(status, RateLimitStatus::Allowed);
             assert_eq!(resets_at, Some(100.0));
             assert_eq!(utilization, Some(0.5));

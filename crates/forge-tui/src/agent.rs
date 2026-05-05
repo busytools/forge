@@ -4,12 +4,25 @@
 //! lives here. Pure SDK-driver code lives in the sibling
 //! `forge_agent` crate.
 
-pub mod agents;
-pub mod error_handling;
 pub mod events;
 pub mod model;
-pub mod state_parsing;
 pub mod types;
+
+// Translators that lifted to forge-agent::translate. Re-export shims
+// keep `crate::agent::error_handling::*` paths resolving across
+// existing call sites.
+pub mod agents {
+    #[allow(unused_imports)]
+    pub use forge_agent::translate::agents::*;
+}
+pub mod error_handling {
+    #[allow(unused_imports)]
+    pub use forge_agent::translate::error_handling::*;
+}
+pub mod state_parsing {
+    #[allow(unused_imports)]
+    pub use forge_agent::translate::state_parsing::*;
+}
 
 pub mod tooling {
     pub use forge_agent::tooling::*;

@@ -33,6 +33,7 @@ pub mod logging;
 pub mod session_lifecycle;
 pub mod state;
 pub mod tooling;
+pub mod translate;
 pub mod user_interaction;
 pub mod userdata;
 
