@@ -77,7 +77,10 @@ impl AgentHandle {
     }
 
     /// Direct-accessor passthrough.
-    pub async fn oauth_usage(&self) -> Result<forge_sdk::OauthUsage, forge_sdk::OauthUsageError> {
+    pub async fn oauth_usage(
+        &self,
+    ) -> Result<crate::cloud::oauth_usage::OauthUsage, crate::cloud::oauth_usage::OauthUsageError>
+    {
         self.bridge.oauth_usage().await
     }
 

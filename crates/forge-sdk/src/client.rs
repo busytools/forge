@@ -408,10 +408,11 @@ impl Client {
     }
 
     /// Read the bare `apiKeySource` field from the cached
-    /// `system/init` payload, returning a partial [`AccountInfo`]
-    /// (auth source only — no email/org/subscription). Returns
-    /// `None` when the payload is absent (init not yet arrived),
-    /// the field is missing, or the value is empty / `"none"`.
+    /// `system/init` payload, returning a partial
+    /// [`AccountInfo`](crate::AccountInfo) (auth source only — no
+    /// email/org/subscription). Returns `None` when the payload is
+    /// absent (init not yet arrived), the field is missing, or the
+    /// value is empty / `"none"`.
     ///
     /// Callers that need the full profile (email, organization,
     /// subscription tier) shell out to `claude auth status`
@@ -441,7 +442,7 @@ impl Client {
     /// entry if the file is absent. Returns `None` if neither source
     /// has a parseable, non-empty `claudeAiOauth.accessToken`.
     ///
-    /// Unlike [`Client::account_info`] (which deserialises from the
+    /// Unlike [`Client::account_info_from_init`] (which deserialises from the
     /// cached `system/init` payload), credentials are read from disk /
     /// keychain every call — they live outside the CLI's stream-json
     /// wire surface, so there is no init frame to cache from. Cheap
@@ -451,20 +452,6 @@ impl Client {
     #[must_use]
     pub fn oauth_credentials(&self) -> Option<crate::public_types::OauthCredentials> {
         crate::paths::load_oauth_credentials()
-    }
-
-    /// Fetch the live OAuth usage payload from the Anthropic API.
-    /// Resolves the bearer token via [`Client::oauth_credentials`]
-    /// and returns the parsed response — the access token never
-    /// crosses the SDK boundary.
-    ///
-    /// # Errors
-    ///
-    /// See [`OauthUsageError`](crate::OauthUsageError) for the failure
-    /// cases (missing/expired credentials, network failure, non-2xx
-    /// response, decode failure).
-    pub async fn oauth_usage(&self) -> Result<crate::OauthUsage, crate::OauthUsageError> {
-        crate::oauth_usage::oauth_usage().await
     }
 
     /// Send a user prompt as a stream-json user turn.

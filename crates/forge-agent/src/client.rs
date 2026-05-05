@@ -185,8 +185,10 @@ pub trait AgentBridge {
     ///
     /// # Errors
     ///
-    /// See [`forge_sdk::OauthUsageError`].
-    async fn oauth_usage(&self) -> Result<forge_sdk::OauthUsage, forge_sdk::OauthUsageError>;
+    /// See [`crate::cloud::oauth_usage::OauthUsageError`].
+    async fn oauth_usage(
+        &self,
+    ) -> Result<crate::cloud::oauth_usage::OauthUsage, crate::cloud::oauth_usage::OauthUsageError>;
 }
 
 #[derive(Debug, Clone)]

@@ -5,6 +5,7 @@
 pub mod auth_status;
 pub mod cli;
 pub mod oauth;
+pub mod oauth_usage;
 pub mod service_status;
 
 /// Origin of a [`UsageSnapshot`].

@@ -640,8 +640,11 @@ impl AgentBridge for ForgeSdkBridge {
         crate::userdata::settings::write_settings_document(target, document)
     }
 
-    async fn oauth_usage(&self) -> Result<forge_sdk::OauthUsage, forge_sdk::OauthUsageError> {
-        forge_sdk::oauth_usage().await
+    async fn oauth_usage(
+        &self,
+    ) -> Result<crate::cloud::oauth_usage::OauthUsage, crate::cloud::oauth_usage::OauthUsageError>
+    {
+        crate::cloud::oauth_usage::oauth_usage().await
     }
 }
 

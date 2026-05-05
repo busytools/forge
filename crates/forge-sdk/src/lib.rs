@@ -54,7 +54,6 @@ pub mod git;
 pub mod hooks;
 pub mod mcp;
 pub(crate) mod messages;
-pub mod oauth_usage;
 mod options;
 pub mod paths;
 pub(crate) mod permissions;
@@ -66,9 +65,6 @@ pub mod transport;
 pub use client::{Client, ClientEvents};
 pub use error::Error;
 pub use git::{GitBranch, GitContext, GitContextWatcher, GitError, git_context};
-pub use oauth_usage::{
-    OauthExtraUsage, OauthUsage, OauthUsageError, OauthUsageWindow, oauth_usage,
-};
 pub use paths::{claude_config_dir, projects_dir};
 // Top-level message + content re-exports so consumers can say
 // `use forge_sdk::{AssistantEnvelope, StopReason, RateLimitInfo, ...}`

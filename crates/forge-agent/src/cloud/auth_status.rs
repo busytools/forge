@@ -73,7 +73,7 @@ fn map_auth_method_to_api_key_source(auth_method: &str) -> &str {
 /// - `subscriptionType` → `subscription_type`
 /// - `apiProvider` → `api_provider`
 /// - `authMethod` → both `token_source` (raw) **and** `api_key_source`
-///   (translated via [`map_auth_method_to_api_key_source`])
+///   (translated via the private `map_auth_method_to_api_key_source` helper)
 ///
 /// Synchronous; runs the subprocess inline. ~50ms first call, faster
 /// thereafter (claude warms up its keychain reads in-process).

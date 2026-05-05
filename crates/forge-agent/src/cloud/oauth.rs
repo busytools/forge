@@ -22,9 +22,9 @@ impl OauthFetchError {
     }
 }
 
-impl From<forge_sdk::OauthUsageError> for OauthFetchError {
-    fn from(error: forge_sdk::OauthUsageError) -> Self {
-        use forge_sdk::OauthUsageError;
+impl From<super::oauth_usage::OauthUsageError> for OauthFetchError {
+    fn from(error: super::oauth_usage::OauthUsageError) -> Self {
+        use super::oauth_usage::OauthUsageError;
         match error {
             OauthUsageError::NoCredentials => Self::Unavailable(
                 "No Claude OAuth credentials found. Run `claude auth login` in a terminal.".to_owned(),
@@ -45,7 +45,6 @@ impl From<forge_sdk::OauthUsageError> for OauthFetchError {
             OauthUsageError::Decode(message) => {
                 Self::Failed(format!("Failed to decode Claude OAuth usage response: {message}"))
             }
-            other => Self::Failed(format!("Claude OAuth usage failed: {other}")),
         }
     }
 }
@@ -55,7 +54,9 @@ pub async fn fetch_snapshot(conn: &crate::AgentHandle) -> Result<UsageSnapshot, 
     map_usage_payload(payload)
 }
 
-fn map_usage_payload(payload: forge_sdk::OauthUsage) -> Result<UsageSnapshot, OauthFetchError> {
+fn map_usage_payload(
+    payload: super::oauth_usage::OauthUsage,
+) -> Result<UsageSnapshot, OauthFetchError> {
     let five_hour = map_window(payload.five_hour, "5-hour");
     if five_hour.is_none() {
         return Err(OauthFetchError::Failed(
@@ -74,7 +75,7 @@ fn map_usage_payload(payload: forge_sdk::OauthUsage) -> Result<UsageSnapshot, Oa
 }
 
 fn map_window(
-    payload: Option<forge_sdk::OauthUsageWindow>,
+    payload: Option<super::oauth_usage::OauthUsageWindow>,
     label: &'static str,
 ) -> Option<UsageWindow> {
     let payload = payload?;
@@ -87,7 +88,7 @@ fn map_window(
     })
 }
 
-fn map_extra_usage(payload: Option<forge_sdk::OauthExtraUsage>) -> Option<ExtraUsage> {
+fn map_extra_usage(payload: Option<super::oauth_usage::OauthExtraUsage>) -> Option<ExtraUsage> {
     let payload = payload?;
     if payload.is_enabled == Some(false) {
         return None;
@@ -218,7 +219,7 @@ mod tests {
 
     #[test]
     fn maps_sparse_oauth_payload() {
-        let payload: forge_sdk::OauthUsage = serde_json::from_slice(
+        let payload: crate::cloud::oauth_usage::OauthUsage = serde_json::from_slice(
             br#"{
                 "five_hour": { "utilization": 12.5, "resets_at": "2025-12-25T12:00:00.000Z" },
                 "seven_day_sonnet": { "utilization": 5 },
@@ -243,7 +244,7 @@ mod tests {
 
     #[test]
     fn maps_extra_usage_amounts_in_major_units() {
-        let payload: forge_sdk::OauthUsage = serde_json::from_slice(
+        let payload: crate::cloud::oauth_usage::OauthUsage = serde_json::from_slice(
             br#"{
                 "five_hour": { "utilization": 1, "resets_at": "2025-12-25T12:00:00.000Z" },
                 "extra_usage": {
