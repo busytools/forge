@@ -472,17 +472,17 @@ pub(crate) fn open_mcp_server_details(
 
 #[must_use]
 pub(crate) fn available_mcp_actions(
-    server: &forge_sdk::McpServerStatus,
+    server: &forge_primitives::McpServerStatus,
 ) -> Vec<McpServerActionKind> {
     let mut actions = vec![McpServerActionKind::RefreshSnapshot];
-    if matches!(server.status, forge_sdk::McpServerConnectionStatus::Disabled) {
+    if matches!(server.status, forge_primitives::McpServerConnectionStatus::Disabled) {
         actions.push(McpServerActionKind::Enable);
     } else {
         if matches!(
             server.status,
-            forge_sdk::McpServerConnectionStatus::NeedsAuth
-                | forge_sdk::McpServerConnectionStatus::Failed
-                | forge_sdk::McpServerConnectionStatus::Pending
+            forge_primitives::McpServerConnectionStatus::NeedsAuth
+                | forge_primitives::McpServerConnectionStatus::Failed
+                | forge_primitives::McpServerConnectionStatus::Pending
         ) {
             actions.push(McpServerActionKind::Authenticate);
         }
@@ -495,7 +495,7 @@ pub(crate) fn available_mcp_actions(
 
 #[must_use]
 pub(crate) fn is_mcp_action_available(
-    server: &forge_sdk::McpServerStatus,
+    server: &forge_primitives::McpServerStatus,
     action: McpServerActionKind,
 ) -> bool {
     if !matches!(action, McpServerActionKind::Authenticate) {

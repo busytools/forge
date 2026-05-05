@@ -80,7 +80,7 @@ pub enum ClientEvent {
     /// /logout completed via `claude auth logout`.
     LogoutCompleted,
     /// Status snapshot received from bridge (account info).
-    StatusSnapshotReceived { session_id: String, account: forge_sdk::AccountInfo },
+    StatusSnapshotReceived { session_id: String, account: forge_primitives::AccountInfo },
     /// OAuth credentials snapshot received from bridge. `credentials` is
     /// `None` when no credentials file exists or it's empty/malformed.
     OauthCredentialsSnapshotReceived {
@@ -95,15 +95,15 @@ pub enum ClientEvent {
     /// MCP server snapshot received from bridge.
     McpSnapshotReceived {
         session_id: String,
-        servers: Vec<forge_sdk::McpServerStatus>,
+        servers: Vec<forge_primitives::McpServerStatus>,
         error: Option<String>,
     },
-    /// Raw `forge_sdk::Message` envelope received from bridge.
+    /// Raw `forge_primitives::Message` envelope received from bridge.
     /// Phase 1 of the bridge-collapse refactor: emitted alongside the
     /// existing `SessionUpdate` flow as scaffolding. App's
     /// `events::sdk_message::handle_sdk_message` is a no-op stub
     /// during Phase 1; Phase 2 fills it in per-variant.
-    SdkMessageReceived { session_id: String, msg: forge_sdk::Message },
+    SdkMessageReceived { session_id: String, msg: forge_primitives::Message },
     /// Usage refresh task started.
     UsageRefreshStarted { epoch: u64 },
     /// Usage refresh completed successfully.

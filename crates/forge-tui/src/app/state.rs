@@ -295,7 +295,7 @@ pub struct App {
     /// True while the SDK reports active compaction.
     pub is_compacting: bool,
     /// Account info from the bridge status snapshot (email, org, subscription).
-    pub account_info: Option<forge_sdk::AccountInfo>,
+    pub account_info: Option<forge_primitives::AccountInfo>,
     /// OAuth credentials snapshot from the bridge — populated at
     /// session connect, refreshed after `/login` and `/logout` so
     /// callers can ask "is the user authenticated?" without doing

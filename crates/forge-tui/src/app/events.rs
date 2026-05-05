@@ -1473,9 +1473,9 @@ mod tests {
     fn connected_requests_mcp_snapshot_even_outside_mcp_tab() {
         let (mut app, mut rx) = app_with_bridge_connection();
         app.config.active_tab = crate::app::config::ConfigTab::Status;
-        app.mcp.servers.push(forge_sdk::McpServerStatus {
+        app.mcp.servers.push(forge_primitives::McpServerStatus {
             name: "supabase".into(),
-            status: forge_sdk::McpServerConnectionStatus::Connected,
+            status: forge_primitives::McpServerConnectionStatus::Connected,
             server_info: None,
             error: None,
             config: None,
@@ -1627,7 +1627,7 @@ mod tests {
             seven_day_sonnet: None,
             extra_usage: None,
         });
-        app.account_info = Some(forge_sdk::AccountInfo {
+        app.account_info = Some(forge_primitives::AccountInfo {
             email: Some("old@example.com".into()),
             organization: None,
             subscription_type: None,
@@ -1787,9 +1787,9 @@ mod tests {
             active_form: String::new(),
         });
         app.mention = Some(mention::MentionState::new(0, 0, String::new(), Vec::new()));
-        app.mcp.servers.push(forge_sdk::McpServerStatus {
+        app.mcp.servers.push(forge_primitives::McpServerStatus {
             name: "supabase".into(),
-            status: forge_sdk::McpServerConnectionStatus::Connected,
+            status: forge_primitives::McpServerConnectionStatus::Connected,
             server_info: None,
             error: None,
             config: None,
@@ -1841,9 +1841,9 @@ mod tests {
     fn session_replaced_requests_mcp_snapshot_even_outside_mcp_tab() {
         let (mut app, mut rx) = app_with_bridge_connection();
         app.config.active_tab = crate::app::config::ConfigTab::Status;
-        app.mcp.servers.push(forge_sdk::McpServerStatus {
+        app.mcp.servers.push(forge_primitives::McpServerStatus {
             name: "supabase".into(),
-            status: forge_sdk::McpServerConnectionStatus::Connected,
+            status: forge_primitives::McpServerConnectionStatus::Connected,
             server_info: None,
             error: None,
             config: None,
@@ -1928,7 +1928,7 @@ mod tests {
             &mut app,
             ClientEvent::StatusSnapshotReceived {
                 session_id: "old-session".into(),
-                account: forge_sdk::AccountInfo {
+                account: forge_primitives::AccountInfo {
                     email: Some("old@example.com".into()),
                     organization: None,
                     subscription_type: None,
@@ -1957,7 +1957,7 @@ mod tests {
             &mut app,
             ClientEvent::StatusSnapshotReceived {
                 session_id: "session-1".into(),
-                account: forge_sdk::AccountInfo {
+                account: forge_primitives::AccountInfo {
                     email: None,
                     organization: None,
                     subscription_type: Some("Claude Max".into()),
@@ -1978,9 +1978,9 @@ mod tests {
     fn stale_mcp_snapshot_for_old_session_is_ignored() {
         let mut app = make_test_app();
         app.session_id = Some(model::SessionId::new("current-session"));
-        app.mcp.servers.push(forge_sdk::McpServerStatus {
+        app.mcp.servers.push(forge_primitives::McpServerStatus {
             name: "current".into(),
-            status: forge_sdk::McpServerConnectionStatus::Connected,
+            status: forge_primitives::McpServerConnectionStatus::Connected,
             server_info: None,
             error: None,
             config: None,
@@ -1994,9 +1994,9 @@ mod tests {
             &mut app,
             ClientEvent::McpSnapshotReceived {
                 session_id: "old-session".into(),
-                servers: vec![forge_sdk::McpServerStatus {
+                servers: vec![forge_primitives::McpServerStatus {
                     name: "stale".into(),
-                    status: forge_sdk::McpServerConnectionStatus::Connected,
+                    status: forge_primitives::McpServerConnectionStatus::Connected,
                     server_info: None,
                     error: None,
                     config: None,

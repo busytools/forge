@@ -1,4 +1,4 @@
-//! Direct `forge_sdk::Message` consumer for the App.
+//! Direct `forge_primitives::Message` consumer for the App.
 //!
 //! Phase 1.2 of the bridge-collapse refactor. Today the
 //! `agent::message_handlers` module owns SDK-message
@@ -8,7 +8,7 @@
 //!
 //! This module introduces the App-side replacement: a top-level
 //! [`handle_sdk_message`] dispatcher that the bridge worker (after
-//! Phase 1.3) feeds raw `forge_sdk::Message` envelopes to. Per-variant
+//! Phase 1.3) feeds raw `forge_primitives::Message` envelopes to. Per-variant
 //! handlers below are no-op stubs in Phase 1; Phase 2 progressively
 //! moves the unpacking + state-mutation logic out of the bridge into
 //! these stubs, one variant per commit, until the bridge module is
@@ -38,7 +38,7 @@
 //! handler starts mutating App state. No double-write window per
 //! variant.
 
-use forge_sdk::Message;
+use forge_primitives::Message;
 use serde_json::Value;
 
 use crate::agent::state_parsing::{
@@ -58,7 +58,7 @@ pub(super) fn handle_sdk_message(app: &mut App, msg: Message) {
     // Mirrors the bridge's pattern: serialise the typed Message back
     // to JSON so per-variant handlers can read fields like
     // `fast_mode_state`, `terminal_reason`, `error` — which are not
-    // first-class typed accessors on `forge_sdk::Message` but DO
+    // first-class typed accessors on `forge_primitives::Message` but DO
     // appear in the wire JSON.
     let raw = serde_json::to_value(&msg).unwrap_or(Value::Null);
     match msg {
@@ -71,7 +71,7 @@ pub(super) fn handle_sdk_message(app: &mut App, msg: Message) {
         Message::RateLimitEvent { .. } => handle_rate_limit_event(app, msg, &raw),
         Message::Result { .. } => handle_result(app, msg, &raw),
         Message::StreamEvent { .. } => handle_stream_event(app, msg, &raw),
-        // forge_sdk::Message is `#[non_exhaustive]` — Error / Unknown
+        // forge_primitives::Message is `#[non_exhaustive]` — Error / Unknown
         // and any future variants fall through here.
         _ => handle_unknown(app, msg, &raw),
     }

@@ -23,7 +23,7 @@
 
 use serde::Deserialize;
 
-use forge_sdk::AccountInfo;
+use forge_primitives::AccountInfo;
 
 /// `claude auth status` JSON response. Captured from claude 2.1.117.
 /// Field shape may evolve; we treat all fields as optional and ignore

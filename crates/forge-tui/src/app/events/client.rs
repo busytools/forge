@@ -239,11 +239,14 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
                     app.mcp.servers.iter().find(|server| server.name == server_name)
                     && !matches!(
                         server.status,
-                        forge_sdk::McpServerConnectionStatus::NeedsAuth
-                            | forge_sdk::McpServerConnectionStatus::Pending
+                        forge_primitives::McpServerConnectionStatus::NeedsAuth
+                            | forge_primitives::McpServerConnectionStatus::Pending
                     )
                 {
-                    if matches!(server.status, forge_sdk::McpServerConnectionStatus::Connected) {
+                    if matches!(
+                        server.status,
+                        forge_primitives::McpServerConnectionStatus::Connected
+                    ) {
                         app.config.status_message =
                             Some(format!("{} authenticated successfully.", server.name));
                         app.config.last_error = None;

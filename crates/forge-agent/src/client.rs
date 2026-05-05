@@ -294,7 +294,7 @@ pub enum AgentEvent {
     },
     StatusSnapshot {
         session_id: String,
-        account: forge_sdk::AccountInfo,
+        account: forge_primitives::AccountInfo,
     },
     OauthCredentialsSnapshot {
         session_id: String,
@@ -311,10 +311,10 @@ pub enum AgentEvent {
     McpSnapshot {
         session_id: String,
         #[serde(default)]
-        servers: Vec<forge_sdk::McpServerStatus>,
+        servers: Vec<forge_primitives::McpServerStatus>,
         error: Option<String>,
     },
-    /// Raw `forge_sdk::Message` envelope flowing in parallel to
+    /// Raw `forge_primitives::Message` envelope flowing in parallel to
     /// `SessionUpdate` events during the bridge-collapse refactor.
     /// Phase 1.3 emits these alongside the bridge's existing
     /// `SessionUpdate`s; Phase 2 progressively migrates per-variant
@@ -322,7 +322,7 @@ pub enum AgentEvent {
     /// the bridge unpacker and `SessionUpdate` entirely.
     SdkMessage {
         session_id: String,
-        msg: forge_sdk::Message,
+        msg: forge_primitives::Message,
     },
 }
 

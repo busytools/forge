@@ -1254,9 +1254,9 @@ fn mcp_enter_opens_details_overlay_instead_of_closing_config() {
     let (_dir, mut app) = open_settings_test_app();
     app.config.active_tab = ConfigTab::Mcp;
     app.session_id = Some(crate::agent::model::SessionId::new("session-1"));
-    app.mcp.servers = vec![forge_sdk::McpServerStatus {
+    app.mcp.servers = vec![forge_primitives::McpServerStatus {
         name: "filesystem".to_owned(),
-        status: forge_sdk::McpServerConnectionStatus::Connected,
+        status: forge_primitives::McpServerConnectionStatus::Connected,
         server_info: None,
         error: None,
         config: Some(serde_json::json!({
@@ -1302,9 +1302,9 @@ fn mcp_tab_refresh_key_requests_snapshot() {
     app.conn = Some(std::rc::Rc::new(handle));
     app.session_id = Some(crate::agent::model::SessionId::new("session-1"));
     app.config.active_tab = ConfigTab::Mcp;
-    app.mcp.servers.push(forge_sdk::McpServerStatus {
+    app.mcp.servers.push(forge_primitives::McpServerStatus {
         name: "stale".to_owned(),
-        status: forge_sdk::McpServerConnectionStatus::NeedsAuth,
+        status: forge_primitives::McpServerConnectionStatus::NeedsAuth,
         server_info: None,
         error: None,
         config: None,
@@ -1360,9 +1360,9 @@ fn refresh_mcp_snapshot_clears_existing_servers_before_request() {
     let (handle, mut rx) = forge_agent::Agent::testing_stub();
     app.conn = Some(std::rc::Rc::new(handle));
     app.session_id = Some(crate::agent::model::SessionId::new("session-1"));
-    app.mcp.servers.push(forge_sdk::McpServerStatus {
+    app.mcp.servers.push(forge_primitives::McpServerStatus {
         name: "stale".to_owned(),
-        status: forge_sdk::McpServerConnectionStatus::Connected,
+        status: forge_primitives::McpServerConnectionStatus::Connected,
         server_info: None,
         error: None,
         config: None,
@@ -1401,9 +1401,9 @@ fn refresh_mcp_snapshot_if_needed_skips_outside_mcp_tab() {
 
 #[test]
 fn claudeai_proxy_server_shows_disabled_authenticate_action() {
-    let server = forge_sdk::McpServerStatus {
+    let server = forge_primitives::McpServerStatus {
         name: "claude.ai Google Calendar".to_owned(),
-        status: forge_sdk::McpServerConnectionStatus::NeedsAuth,
+        status: forge_primitives::McpServerConnectionStatus::NeedsAuth,
         server_info: None,
         error: Some(
             "MCP server requires authentication but no OAuth token is configured.".to_owned(),

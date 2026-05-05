@@ -791,7 +791,7 @@ mod tests {
             McpServerStatus {
                 name: "filesystem".to_owned(),
                 status: McpServerConnectionStatus::Connected,
-                server_info: Some(forge_sdk::McpServerInfo {
+                server_info: Some(forge_primitives::McpServerInfo {
                     name: "Filesystem".to_owned(),
                     version: "1.2.3".to_owned(),
                 }),
@@ -803,10 +803,10 @@ mod tests {
                     "env": {},
                 })),
                 scope: Some("project".to_owned()),
-                tools: Some(vec![forge_sdk::McpToolInfo {
+                tools: Some(vec![forge_primitives::McpToolInfo {
                     name: "read_file".to_owned(),
                     description: Some("Read a file".to_owned()),
-                    annotations: Some(forge_sdk::McpToolAnnotations {
+                    annotations: Some(forge_primitives::McpToolAnnotations {
                         read_only: Some(true),
                         destructive: Some(false),
                         open_world: Some(false),

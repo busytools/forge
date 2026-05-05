@@ -111,7 +111,7 @@ pub struct SessionUsageState {
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct McpState {
-    pub servers: Vec<forge_sdk::McpServerStatus>,
+    pub servers: Vec<forge_primitives::McpServerStatus>,
     pub in_flight: bool,
     pub last_error: Option<String>,
     pub pending_elicitation: Option<forge_primitives::ElicitationRequest>,
@@ -121,7 +121,7 @@ pub struct McpState {
 /// the model-resolution cache, the mode-capability state, the MCP
 /// per-server cooldowns, and the auth/error flags that survive
 /// across messages. The App's `handle_sdk_message` walks raw
-/// `forge_sdk::Message` envelopes and reads/writes these fields
+/// `forge_primitives::Message` envelopes and reads/writes these fields
 /// directly.
 ///
 /// This struct is the App-side home for the per-message bookkeeping

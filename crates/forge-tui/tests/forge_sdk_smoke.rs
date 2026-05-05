@@ -201,7 +201,7 @@ async fn forge_sdk_e2e_cancel_mid_turn() {
             break;
         };
         if let AgentEvent::SdkMessage {
-            msg: forge_sdk::Message::Result { is_error, subtype, .. },
+            msg: forge_primitives::Message::Result { is_error, subtype, .. },
             ..
         } = event
         {
@@ -413,7 +413,7 @@ async fn await_turn(
         };
         match event {
             AgentEvent::SdkMessage { msg, .. } => match msg {
-                forge_sdk::Message::Assistant { message, .. } => {
+                forge_primitives::Message::Assistant { message, .. } => {
                     let val = serde_json::to_value(&message).unwrap_or_default();
                     if let Some(blocks) = val.get("content").and_then(|c| c.as_array()) {
                         for b in blocks {
@@ -428,7 +428,7 @@ async fn await_turn(
                     }
                     eprintln!("e2e: assistant message");
                 }
-                forge_sdk::Message::Result { is_error, subtype, .. } => {
+                forge_primitives::Message::Result { is_error, subtype, .. } => {
                     if !is_error && subtype == "success" {
                         return outcome;
                     }

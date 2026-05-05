@@ -215,8 +215,8 @@ fn load_history_updates(prev_session_id: &str, cwd: &str) -> Vec<forge_primitive
         .into_iter()
         .map(|m| {
             let kind = match m.kind {
-                forge_sdk::SessionMessageKind::User => "user",
-                forge_sdk::SessionMessageKind::Assistant => "assistant",
+                forge_primitives::SessionMessageKind::User => "user",
+                forge_primitives::SessionMessageKind::Assistant => "assistant",
             };
             serde_json::json!({
                 "type": kind,
@@ -251,8 +251,8 @@ fn list_recent_sessions(cwd: &str) -> Vec<forge_primitives::SessionListEntry> {
         .collect()
 }
 
-fn msg_session_id(msg: &forge_sdk::Message) -> Option<String> {
-    use forge_sdk::Message;
+fn msg_session_id(msg: &forge_primitives::Message) -> Option<String> {
+    use forge_primitives::Message;
     match msg {
         Message::Assistant { session_id, .. }
         | Message::User { session_id, .. }
