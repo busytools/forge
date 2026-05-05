@@ -18,7 +18,7 @@ async fn wire_capture_mcp_set_servers() {
         .permission_mode(PermissionMode::AcceptEdits)
         .build();
 
-    run_live_scenario("mcp_set_servers", opts, |client| async move {
+    run_live_scenario("mcp_set_servers", opts, |client, events| async move {
         // Empty map: no servers. The CLI will accept it and clear any
         // active server set. Keeps the scenario reproducible without
         // depending on installed MCP backends.
@@ -30,7 +30,7 @@ async fn wire_capture_mcp_set_servers() {
         client
             .send_user_message("Respond with only the word DONE.")
             .await?;
-        Ok(client)
+        Ok((client, events))
     })
     .await
     .expect("scenario run");

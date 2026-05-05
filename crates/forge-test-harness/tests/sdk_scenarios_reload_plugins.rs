@@ -17,7 +17,7 @@ async fn wire_capture_reload_plugins() {
         .permission_mode(PermissionMode::AcceptEdits)
         .build();
 
-    run_live_scenario("reload_plugins", opts, |client| async move {
+    run_live_scenario("reload_plugins", opts, |client, events| async move {
         // Issue reload_plugins BEFORE a user message — the CLI's
         // control_response arrives quickly and keeps the trace focused
         // on the control round trip.
@@ -29,7 +29,7 @@ async fn wire_capture_reload_plugins() {
         client
             .send_user_message("Respond with only the word DONE.")
             .await?;
-        Ok(client)
+        Ok((client, events))
     })
     .await
     .expect("scenario run");

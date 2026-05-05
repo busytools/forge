@@ -19,7 +19,7 @@ async fn wire_capture_generate_session_title() {
         .permission_mode(PermissionMode::AcceptEdits)
         .build();
 
-    run_live_scenario("generate_session_title", opts, |client| async move {
+    run_live_scenario("generate_session_title", opts, |client, events| async move {
         // Drive a trivial conversation first so the CLI has context to
         // summarise. The title generator typically uses the first user
         // turn as input.
@@ -33,7 +33,7 @@ async fn wire_capture_generate_session_title() {
             .generate_session_title("test description for title generation")
             .await?;
         eprintln!("generate_session_title captured: {title:?}");
-        Ok(client)
+        Ok((client, events))
     })
     .await
     .expect("scenario run");

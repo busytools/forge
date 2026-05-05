@@ -44,7 +44,7 @@ async fn wire_capture_permission_deny() {
         })
         .build();
 
-    run_live_scenario("permission_deny", opts, |client| async move {
+    run_live_scenario("permission_deny", opts, |client, events| async move {
         // Pick a tool NOT auto-approved by the developer's
         // `settings.json → permissions.allow` list. `Write` and `Edit`
         // typically require permission in Ask mode. Bash is usually
@@ -58,7 +58,7 @@ async fn wire_capture_permission_deny() {
                  HELLO. Then confirm whether the Write succeeded.",
             )
             .await?;
-        Ok(client)
+        Ok((client, events))
     })
     .await
     .expect("scenario run");

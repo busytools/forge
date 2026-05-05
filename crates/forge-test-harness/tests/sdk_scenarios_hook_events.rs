@@ -32,11 +32,11 @@ async fn wire_capture_user_prompt_submit_hook() {
         .hooks(hooks)
         .build();
 
-    run_live_scenario("user_prompt_submit_hook", opts, |client| async move {
+    run_live_scenario("user_prompt_submit_hook", opts, |client, events| async move {
         client
             .send_user_message("Reply with only the word PING.")
             .await?;
-        Ok(client)
+        Ok((client, events))
     })
     .await
     .expect("scenario run");
@@ -61,13 +61,13 @@ async fn wire_capture_post_tool_use_hook() {
         .hooks(hooks)
         .build();
 
-    run_live_scenario("post_tool_use_hook", opts, |client| async move {
+    run_live_scenario("post_tool_use_hook", opts, |client, events| async move {
         client
             .send_user_message(
                 "Run `echo forge-post-hook` with Bash, then reply with exactly what it printed.",
             )
             .await?;
-        Ok(client)
+        Ok((client, events))
     })
     .await
     .expect("scenario run");
@@ -86,11 +86,11 @@ async fn wire_capture_stop_hook() {
         .hooks(hooks)
         .build();
 
-    run_live_scenario("stop_hook", opts, |client| async move {
+    run_live_scenario("stop_hook", opts, |client, events| async move {
         client
             .send_user_message("Reply with only the word STOP.")
             .await?;
-        Ok(client)
+        Ok((client, events))
     })
     .await
     .expect("scenario run");
@@ -112,7 +112,7 @@ async fn wire_capture_subagent_stop_hook() {
         .hooks(hooks)
         .build();
 
-    run_live_scenario("subagent_stop_hook", opts, |client| async move {
+    run_live_scenario("subagent_stop_hook", opts, |client, events| async move {
         client
             .send_user_message(
                 "Use the Task tool with subagent_type=\"general-purpose\" to \
@@ -120,7 +120,7 @@ async fn wire_capture_subagent_stop_hook() {
                  the output back.",
             )
             .await?;
-        Ok(client)
+        Ok((client, events))
     })
     .await
     .expect("scenario run");
@@ -148,14 +148,14 @@ async fn wire_capture_post_tool_use_failure_hook() {
         .hooks(hooks)
         .build();
 
-    run_live_scenario("post_tool_use_failure_hook", opts, |client| async move {
+    run_live_scenario("post_tool_use_failure_hook", opts, |client, events| async move {
         client
             .send_user_message(
                 "Run `exit 1` with the Bash tool (it will fail), then \
                      just report back that the command failed.",
             )
             .await?;
-        Ok(client)
+        Ok((client, events))
     })
     .await
     .expect("scenario run");
@@ -181,11 +181,11 @@ async fn wire_capture_notification_hook() {
         .hooks(hooks)
         .build();
 
-    run_live_scenario("notification_hook", opts, |client| async move {
+    run_live_scenario("notification_hook", opts, |client, events| async move {
         client
             .send_user_message("Reply with only the word OK.")
             .await?;
-        Ok(client)
+        Ok((client, events))
     })
     .await
     .expect("scenario run");
@@ -209,7 +209,7 @@ async fn wire_capture_subagent_start_hook() {
         .hooks(hooks)
         .build();
 
-    run_live_scenario("subagent_start_hook", opts, |client| async move {
+    run_live_scenario("subagent_start_hook", opts, |client, events| async move {
         client
             .send_user_message(
                 "Use the Task tool with subagent_type=\"general-purpose\" to \
@@ -217,7 +217,7 @@ async fn wire_capture_subagent_start_hook() {
                  the output back.",
             )
             .await?;
-        Ok(client)
+        Ok((client, events))
     })
     .await
     .expect("scenario run");
@@ -247,14 +247,14 @@ async fn wire_capture_permission_request_hook() {
         .hooks(hooks)
         .build();
 
-    run_live_scenario("permission_request_hook", opts, |client| async move {
+    run_live_scenario("permission_request_hook", opts, |client, events| async move {
         client
             .send_user_message(
                 "Use the Write tool to create /tmp/forge-perm-hook.txt \
                  containing PING.",
             )
             .await?;
-        Ok(client)
+        Ok((client, events))
     })
     .await
     .expect("scenario run");

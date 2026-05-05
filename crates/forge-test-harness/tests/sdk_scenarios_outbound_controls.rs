@@ -17,12 +17,12 @@ async fn wire_capture_set_model() {
         .permission_mode(PermissionMode::AcceptEdits)
         .build();
 
-    run_live_scenario("set_model", opts, |client| async move {
+    run_live_scenario("set_model", opts, |client, events| async move {
         client.set_model(Some("claude-sonnet-4-6")).await?;
         client
             .send_user_message("Reply with only the word OK.")
             .await?;
-        Ok(client)
+        Ok((client, events))
     })
     .await
     .expect("scenario run");
@@ -39,19 +39,19 @@ async fn wire_capture_mcp_reconnect() {
         .permission_mode(PermissionMode::AcceptEdits)
         .build();
 
-    run_live_scenario("mcp_reconnect", opts, |client| async move {
+    run_live_scenario("mcp_reconnect", opts, |client, events| async move {
         let status = client.mcp_status().await?;
         let Some(server) = status.mcp_servers.first() else {
             eprintln!("mcp_reconnect: no MCP servers in profile; still capturing init + skip");
             client.send_user_message("Reply with only OK.").await?;
-            return Ok(client);
+            return Ok((client, events));
         };
         let name = server.name.clone();
         if let Err(e) = client.mcp_reconnect(&name).await {
             eprintln!("mcp_reconnect({name}): {e} — continuing");
         }
         client.send_user_message("Reply with only OK.").await?;
-        Ok(client)
+        Ok((client, events))
     })
     .await
     .expect("scenario run");
@@ -65,12 +65,12 @@ async fn wire_capture_mcp_toggle() {
         .permission_mode(PermissionMode::AcceptEdits)
         .build();
 
-    run_live_scenario("mcp_toggle", opts, |client| async move {
+    run_live_scenario("mcp_toggle", opts, |client, events| async move {
         let status = client.mcp_status().await?;
         let Some(server) = status.mcp_servers.first() else {
             eprintln!("mcp_toggle: no MCP servers in profile; still capturing init + skip");
             client.send_user_message("Reply with only OK.").await?;
-            return Ok(client);
+            return Ok((client, events));
         };
         let name = server.name.clone();
         // Toggle off then back on — exercises both payloads.
@@ -81,7 +81,7 @@ async fn wire_capture_mcp_toggle() {
             eprintln!("mcp_toggle({name}, true): {e}");
         }
         client.send_user_message("Reply with only OK.").await?;
-        Ok(client)
+        Ok((client, events))
     })
     .await
     .expect("scenario run");
@@ -103,7 +103,7 @@ async fn wire_capture_rewind_files() {
         .extra_arg("replay-user-messages", None)
         .build();
 
-    run_live_scenario("rewind_files", opts, |client| async move {
+    run_live_scenario("rewind_files", opts, |client, mut events| async move {
         client
             .send_user_message("Reply with only the word OK.")
             .await?;
@@ -111,12 +111,13 @@ async fn wire_capture_rewind_files() {
         // Drain until Result, capturing the first user_message uuid.
         let mut rewind_id: Option<String> = None;
         loop {
-            match client.next_event().await? {
-                Some(forge_sdk::Message::User { uuid: Some(id), .. }) if rewind_id.is_none() => {
+            match events.recv().await {
+                Some(Ok(forge_sdk::Message::User { uuid: Some(id), .. })) if rewind_id.is_none() => {
                     rewind_id = Some(id);
                 }
-                Some(forge_sdk::Message::Result { .. }) | None => break,
-                Some(_) => {}
+                Some(Ok(forge_sdk::Message::Result { .. })) | None => break,
+                Some(Ok(_)) => {}
+                Some(Err(e)) => return Err(e),
             }
         }
         if let Some(id) = rewind_id {
@@ -126,7 +127,7 @@ async fn wire_capture_rewind_files() {
         } else {
             eprintln!("rewind_files: no user_message_id captured; outbound control skipped");
         }
-        Ok(client)
+        Ok((client, events))
     })
     .await
     .expect("scenario run");
@@ -141,7 +142,7 @@ async fn wire_capture_stop_task() {
         .allowed_tools(vec!["Task".to_string(), "Bash".to_string()])
         .build();
 
-    run_live_scenario("stop_task", opts, |client| async move {
+    run_live_scenario("stop_task", opts, |client, mut events| async move {
         client
             .send_user_message(
                 "Use the Task tool with subagent_type=\"general-purpose\" \
@@ -152,13 +153,14 @@ async fn wire_capture_stop_task() {
         // Drain until we see a task_started, grab its id, stop it.
         let mut task_id: Option<String> = None;
         while task_id.is_none() {
-            match client.next_event().await? {
-                Some(forge_sdk::Message::TaskStarted { task_id: id, .. }) => {
+            match events.recv().await {
+                Some(Ok(forge_sdk::Message::TaskStarted { task_id: id, .. })) => {
                     task_id = Some(id);
                     break;
                 }
-                Some(forge_sdk::Message::Result { .. }) | None => break,
-                Some(_) => {}
+                Some(Ok(forge_sdk::Message::Result { .. })) | None => break,
+                Some(Ok(_)) => {}
+                Some(Err(e)) => return Err(e),
             }
         }
         if let Some(id) = task_id {
@@ -169,7 +171,7 @@ async fn wire_capture_stop_task() {
         } else {
             eprintln!("stop_task: no task_started seen; outbound control skipped");
         }
-        Ok(client)
+        Ok((client, events))
     })
     .await
     .expect("scenario run");
@@ -183,7 +185,7 @@ async fn wire_capture_interrupt() {
         .permission_mode(PermissionMode::AcceptEdits)
         .build();
 
-    run_live_scenario("interrupt", opts, |client| async move {
+    run_live_scenario("interrupt", opts, |client, events| async move {
         client
             .send_user_message("Count from 1 to 500 slowly, one number per line. Take your time.")
             .await?;
@@ -195,7 +197,7 @@ async fn wire_capture_interrupt() {
         if let Err(e) = client.interrupt().await {
             eprintln!("interrupt: {e}");
         }
-        Ok(client)
+        Ok((client, events))
     })
     .await
     .expect("scenario run");

@@ -18,7 +18,7 @@ async fn wire_capture_mcp_clear_auth() {
         .permission_mode(PermissionMode::AcceptEdits)
         .build();
 
-    run_live_scenario("mcp_clear_auth", opts, |client| async move {
+    run_live_scenario("mcp_clear_auth", opts, |client, events| async move {
         // Use a clearly non-existent server name so the trace is
         // deterministic and free of real OAuth tokens.
         let _ = client
@@ -29,7 +29,7 @@ async fn wire_capture_mcp_clear_auth() {
         client
             .send_user_message("Respond with only the word DONE.")
             .await?;
-        Ok(client)
+        Ok((client, events))
     })
     .await
     .expect("scenario run");

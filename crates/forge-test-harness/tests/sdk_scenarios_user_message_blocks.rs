@@ -24,7 +24,7 @@ async fn wire_capture_user_message_blocks() {
         .permission_mode(PermissionMode::AcceptEdits)
         .build();
 
-    run_live_scenario("user_message_blocks", opts, |client| async move {
+    run_live_scenario("user_message_blocks", opts, |client, events| async move {
         let content = vec![
             serde_json::json!({
                 "type": "text",
@@ -41,7 +41,7 @@ async fn wire_capture_user_message_blocks() {
         ];
         client.send_user_message_with_content(&content).await?;
         eprintln!("user_message_blocks captured");
-        Ok(client)
+        Ok((client, events))
     })
     .await
     .expect("scenario run");

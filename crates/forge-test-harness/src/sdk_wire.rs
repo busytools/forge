@@ -244,8 +244,8 @@ pub async fn run_live_scenario<F, Fut>(
     drive: F,
 ) -> Result<Option<ScenarioCapture>, Error>
 where
-    F: FnOnce(forge_sdk::Client) -> Fut,
-    Fut: std::future::Future<Output = Result<forge_sdk::Client, Error>>,
+    F: FnOnce(forge_sdk::Client, forge_sdk::ClientEvents) -> Fut,
+    Fut: std::future::Future<Output = Result<(forge_sdk::Client, forge_sdk::ClientEvents), Error>>,
 {
     if std::env::var("FORGE_WIRE_CAPTURE").is_err() {
         eprintln!("FORGE_WIRE_CAPTURE not set; skipping scenario {scenario}");
@@ -284,7 +284,7 @@ where
         path
     };
 
-    let client = forge_sdk::Client::spawn(options).await.inspect_err(|_e| {
+    let (client, events) = forge_sdk::Client::spawn(options).await.inspect_err(|_e| {
         let log = log_arc.lock();
         let path = dump(&log, &format!("{scenario}-spawn-failed"));
         eprintln!(
@@ -296,8 +296,8 @@ where
     })?;
 
     // Hand off to the scenario driver — on failure dump a partial trace.
-    let client = match drive(client).await {
-        Ok(c) => c,
+    let (client, mut events) = match drive(client, events).await {
+        Ok(pair) => pair,
         Err(e) => {
             let log = log_arc.lock();
             let path = dump(&log, &format!("{scenario}-drive-failed"));
@@ -328,8 +328,8 @@ where
     let mut saw_result = false;
     let mut summary: Option<(u64, Option<f64>, u64)> = None;
     loop {
-        match tokio::time::timeout(read_timeout, client.next_event()).await {
-            Ok(Ok(Some(msg))) => {
+        match tokio::time::timeout(read_timeout, events.recv()).await {
+            Ok(Some(Ok(msg))) => {
                 if let forge_sdk::Message::Result {
                     num_turns,
                     total_cost_usd,
@@ -342,8 +342,8 @@ where
                     break;
                 }
             }
-            Ok(Ok(None)) => break,
-            Ok(Err(e)) => {
+            Ok(None) => break,
+            Ok(Some(Err(e))) => {
                 let log = log_arc.lock();
                 let path = dump(&log, &format!("{scenario}-drain-failed"));
                 eprintln!(
@@ -390,12 +390,12 @@ where
     // log them loudly so they surface in the captured trace's
     // diagnostics instead of being promoted into a baseline.
     let trailing_timeout = std::time::Duration::from_secs(5);
-    while let Ok(evt) = tokio::time::timeout(trailing_timeout, client.next_event()).await {
+    while let Ok(evt) = tokio::time::timeout(trailing_timeout, events.recv()).await {
         match evt {
-            Ok(Some(_)) => {}
-            Ok(None) => break,
-            Err(Error::Io(io)) if io.kind() == std::io::ErrorKind::BrokenPipe => break,
-            Err(e) => {
+            Some(Ok(_)) => {}
+            None => break,
+            Some(Err(Error::Io(io))) if io.kind() == std::io::ErrorKind::BrokenPipe => break,
+            Some(Err(e)) => {
                 eprintln!(
                     "{scenario}: trailing-drain saw non-BrokenPipe error: {e}. \
                      Continuing to dump partial trace."
