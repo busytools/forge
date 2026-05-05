@@ -60,7 +60,7 @@ pub(super) fn handle_connected_client_event(
 
 pub(super) fn handle_sessions_listed_event(
     app: &mut App,
-    sessions: Vec<crate::agent::types::SessionListEntry>,
+    sessions: Vec<forge_primitives::SessionListEntry>,
 ) {
     let session_count = sessions.len();
     let pending_title_change = app.config.pending_session_title_change.take();

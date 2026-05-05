@@ -6,7 +6,6 @@
 
 pub mod events;
 pub mod model;
-pub mod types;
 
 // Translators that lifted to forge-agent::translate. Re-export shims
 // keep `crate::agent::error_handling::*` paths resolving across

@@ -10,8 +10,8 @@
 use crate::agent::client::AgentEvent;
 use crate::agent::events::ClientEvent;
 use crate::agent::model;
-use crate::agent::types;
 use crate::error::AppError;
+use forge_primitives as types;
 use std::rc::Rc;
 use tokio::sync::mpsc;
 use tracing::{Instrument as _, info_span};

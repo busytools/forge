@@ -114,7 +114,7 @@ pub struct McpState {
     pub servers: Vec<forge_sdk::McpServerStatus>,
     pub in_flight: bool,
     pub last_error: Option<String>,
-    pub pending_elicitation: Option<crate::agent::types::ElicitationRequest>,
+    pub pending_elicitation: Option<forge_primitives::ElicitationRequest>,
 }
 
 /// Per-session runtime state. Owns the in-flight `tool_call` store,
@@ -132,7 +132,7 @@ pub struct McpState {
 pub struct SessionTurnState {
     /// Live tool-call store keyed by `tool_use_id` for cross-message
     /// `tool_use ↔ tool_result` pairing.
-    pub tool_calls: std::collections::HashMap<String, crate::agent::types::ToolCall>,
+    pub tool_calls: std::collections::HashMap<String, forge_primitives::ToolCall>,
     /// Maps task-tool `task_id` → `tool_use_id` so `TaskProgress` /
     /// `TaskNotification` messages can resolve back to the originating
     /// tool call for `ToolCallUpdate` emission.
@@ -156,7 +156,7 @@ pub struct SessionTurnState {
     /// Whether `bypassPermissions` mode is allowed for this session.
     pub supports_bypass_permissions_mode: bool,
     /// Current mode resolution alongside the human-readable label.
-    pub mode_state: Option<crate::agent::types::ModeState>,
+    pub mode_state: Option<forge_primitives::ModeState>,
 
     /// Sha-style fingerprint of the `available_agents` list — used to
     /// emit `AvailableAgentsUpdate` only when the catalogue changes.
@@ -176,7 +176,7 @@ pub struct SessionTurnState {
 
     /// Resume history collected during connect handshake; attached to
     /// the first Connected event payload.
-    pub resume_updates: Option<Vec<crate::agent::types::SessionUpdate>>,
+    pub resume_updates: Option<Vec<forge_primitives::SessionUpdate>>,
 }
 
 pub const DEFAULT_RENDER_CACHE_BUDGET_BYTES: usize = 24 * 1024 * 1024;

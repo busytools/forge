@@ -24,24 +24,24 @@ pub enum ClientEvent {
         response_tx: tokio::sync::oneshot::Sender<model::RequestQuestionResponse>,
     },
     /// MCP elicitation request that needs auth or other MCP input.
-    McpElicitationRequest { request: crate::agent::types::ElicitationRequest },
+    McpElicitationRequest { request: forge_primitives::ElicitationRequest },
     /// MCP elicitation completed in the SDK.
     McpElicitationCompleted { elicitation_id: String, server_name: Option<String> },
     /// MCP auth redirect returned directly by the SDK auth call.
-    McpAuthRedirect { redirect: crate::agent::types::McpAuthRedirect },
+    McpAuthRedirect { redirect: forge_primitives::McpAuthRedirect },
     /// MCP operation failed and should be surfaced in the MCP config UI.
-    McpOperationError { error: crate::agent::types::McpOperationError },
+    McpOperationError { error: forge_primitives::McpOperationError },
     /// A prompt turn completed successfully.
-    TurnComplete { terminal_reason: Option<crate::agent::types::TerminalReason> },
+    TurnComplete { terminal_reason: Option<forge_primitives::TerminalReason> },
     /// `cancel` notification was accepted by the bridge.
     TurnCancelled,
     /// A prompt turn failed with an error.
-    TurnError { message: String, terminal_reason: Option<crate::agent::types::TerminalReason> },
+    TurnError { message: String, terminal_reason: Option<forge_primitives::TerminalReason> },
     /// A prompt turn failed with bridge-provided classification metadata.
     TurnErrorClassified {
         message: String,
         class: TurnErrorClass,
-        terminal_reason: Option<crate::agent::types::TerminalReason>,
+        terminal_reason: Option<forge_primitives::TerminalReason>,
     },
     /// Background connection completed successfully.
     Connected {
@@ -72,7 +72,7 @@ pub enum ClientEvent {
         history_updates: Vec<model::SessionUpdate>,
     },
     /// Recent sessions discovered via SDK session listing.
-    SessionsListed { sessions: Vec<crate::agent::types::SessionListEntry> },
+    SessionsListed { sessions: Vec<forge_primitives::SessionListEntry> },
     /// Startup Claude Code status check detected degraded/outage conditions.
     ServiceStatus { severity: ServiceStatusSeverity, message: String },
     /// /login completed via `claude auth login` -- credentials stored, ready to start a session.

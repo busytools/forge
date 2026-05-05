@@ -4,9 +4,9 @@ use super::overlay::{
     render_overlay_shell,
 };
 use super::theme;
-use crate::agent::types::{ElicitationAction, ElicitationMode};
 use crate::app::App;
 use crate::app::config::{available_mcp_actions, is_mcp_action_available};
+use forge_primitives::{ElicitationAction, ElicitationMode};
 use forge_sdk::{McpServerConnectionStatus, McpServerStatus};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
@@ -703,9 +703,7 @@ fn status_counts(app: &App) -> StatusCounts {
     })
 }
 
-fn elicitation_actions(
-    request: &crate::agent::types::ElicitationRequest,
-) -> Vec<ElicitationAction> {
+fn elicitation_actions(request: &forge_primitives::ElicitationRequest) -> Vec<ElicitationAction> {
     match request.mode {
         ElicitationMode::Url => {
             vec![ElicitationAction::Accept, ElicitationAction::Decline, ElicitationAction::Cancel]

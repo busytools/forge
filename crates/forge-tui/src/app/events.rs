@@ -894,8 +894,8 @@ mod tests {
         (app, rx)
     }
 
-    fn listed_session(id: &str, title: &str) -> crate::agent::types::SessionListEntry {
-        crate::agent::types::SessionListEntry {
+    fn listed_session(id: &str, title: &str) -> forge_primitives::SessionListEntry {
+        forge_primitives::SessionListEntry {
             session_id: id.to_owned(),
             summary: title.to_owned(),
             last_modified_ms: 1,
@@ -2093,7 +2093,7 @@ mod tests {
         handle_client_event(
             &mut app,
             ClientEvent::SessionsListed {
-                sessions: vec![crate::agent::types::SessionListEntry {
+                sessions: vec![forge_primitives::SessionListEntry {
                     session_id: "session-1".to_owned(),
                     summary: "Renamed session".to_owned(),
                     last_modified_ms: 1,
@@ -2148,7 +2148,7 @@ mod tests {
         handle_client_event(
             &mut app,
             ClientEvent::McpOperationError {
-                error: crate::agent::types::McpOperationError {
+                error: forge_primitives::McpOperationError {
                     server_name: Some("claude.ai Google Calendar".into()),
                     operation: "authenticate".into(),
                     message: "Server type \"claudeai-proxy\" does not support OAuth authentication"
@@ -2181,7 +2181,7 @@ mod tests {
         handle_client_event(
             &mut app,
             ClientEvent::SessionsListed {
-                sessions: vec![crate::agent::types::SessionListEntry {
+                sessions: vec![forge_primitives::SessionListEntry {
                     session_id: "session-1".to_owned(),
                     summary: "Generated session".to_owned(),
                     last_modified_ms: 1,

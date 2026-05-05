@@ -315,7 +315,7 @@ mod tests {
     use super::type_converters::map_session_update;
     use crate::Cli;
     use crate::agent::model;
-    use crate::agent::types;
+    use forge_primitives as types;
 
     #[test]
     fn map_session_update_preserves_config_option_update() {

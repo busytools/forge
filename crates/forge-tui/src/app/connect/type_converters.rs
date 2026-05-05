@@ -1,4 +1,4 @@
-//! Wire-shape conversions from `crate::agent::types::*` (the
+//! Wire-shape conversions from `forge_primitives::*` (the
 //! serde-derived envelope structs that ride on `AgentEvent` and
 //! historical `SessionUpdate`s) into `crate::agent::model::*` (the
 //! App's runtime model). Consumed by `bridge_lifecycle` (for the
@@ -7,8 +7,8 @@
 //! captured in tool-call payloads.
 
 use crate::agent::model;
-use crate::agent::types;
 use crate::app::{ModeInfo, ModeState};
+use forge_primitives as types;
 
 pub(super) fn map_rate_limit_status(status: types::RateLimitStatus) -> model::RateLimitStatus {
     match status {
@@ -646,7 +646,8 @@ mod tests {
         convert_tool_call, convert_tool_call_update_fields, map_available_models,
         map_permission_request, map_question_request, map_session_update,
     };
-    use crate::agent::{model, types};
+    use crate::agent::model;
+    use forge_primitives as types;
 
     #[test]
     fn map_available_models_preserves_optional_fast_and_auto_metadata() {
