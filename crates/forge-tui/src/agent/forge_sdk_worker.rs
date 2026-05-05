@@ -54,7 +54,7 @@ pub(crate) async fn spawn_session(
         Arc::clone(bridge.inner_pending_questions()),
         Arc::clone(bridge.session_id_slot_arc()),
     );
-    let client = Client::spawn(options).await?;
+    let (client, events) = Client::spawn(options).await?;
     // For resume sessions the CLI flag carried the real session id —
     // prefer that over `Client::session_id()`, which is empty until
     // `system/init` lands on the wire (per `spawn_inner` docs, after
@@ -81,11 +81,11 @@ pub(crate) async fn spawn_session(
     // `app.session_id` = None when the SdkMessage arrives.
     emit_connected(bridge.event_tx(), &client, &session_id, &cwd_owned, launch_settings, resume_id);
 
-    // Reader subtask — Client is Arc-backed so cloning is cheap.
-    let reader_client = client.clone();
+    // Reader subtask — owns the events receiver. Client is the writer-side
+    // handle (Arc-backed, Clone) and stays on the bridge.
     let reader_event_tx = bridge.event_tx().clone();
     let reader_session_id = session_id.clone();
-    tokio::spawn(reader_loop(reader_client, reader_event_tx, reader_session_id));
+    tokio::spawn(reader_loop(events, reader_event_tx, reader_session_id));
 
     bridge.set_client(client);
     Ok(())
@@ -236,13 +236,13 @@ fn msg_session_id(msg: &forge_sdk::Message) -> Option<String> {
 }
 
 async fn reader_loop(
-    client: Client,
+    mut events: forge_sdk::ClientEvents,
     event_tx: mpsc::UnboundedSender<AgentEvent>,
     session_id: String,
 ) {
-    loop {
-        match client.next_event().await {
-            Ok(Some(msg)) => {
+    while let Some(item) = events.recv().await {
+        match item {
+            Ok(msg) => {
                 let session_id_for_sdk_msg =
                     msg_session_id(&msg).unwrap_or_else(|| session_id.clone());
                 if event_tx
@@ -252,23 +252,20 @@ async fn reader_loop(
                     return;
                 }
             }
-            Ok(None) => {
-                tracing::info!(
-                    target: crate::logging::targets::BRIDGE_LIFECYCLE,
-                    "forge_sdk reader: client closed",
-                );
-                return;
-            }
             Err(err) => {
                 tracing::error!(
                     target: crate::logging::targets::BRIDGE_LIFECYCLE,
                     error = %err,
-                    "forge_sdk reader: next_event failed",
+                    "forge_sdk reader: events stream errored",
                 );
                 return;
             }
         }
     }
+    tracing::info!(
+        target: crate::logging::targets::BRIDGE_LIFECYCLE,
+        "forge_sdk reader: events stream closed",
+    );
 }
 
 pub(crate) async fn send_prompt(
