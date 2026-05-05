@@ -22,6 +22,7 @@ path = "src/main.rs"
 # Workspace-shared deps. Versions + features come from the workspace
 # unless overridden here.
 forge-sdk = { path = "../forge-sdk", version = "=0.1.64" }
+forge-primitives = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 clap = { workspace = true }

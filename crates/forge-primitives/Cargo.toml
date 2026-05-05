@@ -9,8 +9,21 @@ rust-version.workspace = true
 description = "Shared types used across forge crates: channel envelope (Command, Event), IDs, decisions, enums, renderable views. No logic, no I/O, no async."
 publish = false
 
-[lints]
-workspace = true
+[lints.rust]
+unsafe_code = "forbid"
+# Field-level docs would be noise on these wire types — names are
+# self-describing, file-level docs cover the module.
+missing_docs = "allow"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+exit = "deny"
+todo = "deny"
+unimplemented = "deny"
+module_name_repetitions = "allow"
 
 [dependencies]
 serde = { workspace = true, features = ["derive"] }

@@ -1058,6 +1058,7 @@ dependencies = [
  "clap",
  "crossterm",
  "dirs",
+ "forge-primitives",
  "forge-sdk",
  "futures",
  "ignore",
