@@ -27,7 +27,7 @@ pub enum DecodedLine {
     /// (initialize, interrupt, `set_permission_mode`, …). These arrive on
     /// stdout and are normally consumed synchronously by the client's
     /// outbound-control wait loop — the read-dispatch loop in
-    /// [`Client::next_event`](crate::Client::next_event) never sees them.
+    /// the events stream returned by [`Client::spawn`](crate::Client::spawn) never sees them.
     /// Represented here so downstream tools (the wire-conformance replay
     /// harness, debug captures) can recognise and categorise the frame
     /// instead of mis-flagging it as `Unknown`.
@@ -80,7 +80,7 @@ pub fn decode_line(line: &str, line_number: u64) -> Result<Message, Error> {
 /// doesn't recognise lands in [`DecodedLine::Unknown`] rather than
 /// erroring — callers (notably the wire-conformance harness) can
 /// detect these by matching the variant. The read loop in
-/// [`Client::next_event`](crate::Client::next_event) logs a
+/// the events stream returned by [`Client::spawn`](crate::Client::spawn) logs a
 /// `tracing::warn!` on Unknown and continues reading.
 ///
 /// # Errors

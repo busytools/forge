@@ -214,7 +214,7 @@ pub enum Message {
     /// CLI's read loop fails. the CLI emits this at
     /// as a last-gasp signal before teardown — emitted by the
     /// CLI's read loop. forge-sdk surfaces it via
-    /// [`Client::next_event`](crate::Client::next_event) so callers
+    /// the events stream returned by [`Client::spawn`](crate::Client::spawn) so callers
     /// see the failure on the iterator rather than via a side
     /// channel.
     Error {
@@ -224,7 +224,7 @@ pub enum Message {
 
     /// Forward-compat fallback: a frame whose top-level `type` value
     /// forge-sdk doesn't recognise. Surfaced through
-    /// [`Client::next_event`](crate::Client::next_event) when the codec
+    /// the events stream returned by [`Client::spawn`](crate::Client::spawn) when the codec
     /// produces a [`DecodedLine::Unknown`](crate::transport::codec::DecodedLine).
     /// Library consumers can match this variant to detect upstream CLI
     /// drift programmatically (telemetry, structured alerts) instead of
@@ -249,7 +249,7 @@ pub enum Message {
 impl Message {
     /// Extract the `session_id` a message is tagged with, when present.
     ///
-    /// Used by [`Client::next_event`](crate::Client::next_event) to bind
+    /// Used by the events stream returned by [`Client::spawn`](crate::Client::spawn) to bind
     /// the client's `session_id` field on the first frame that carries
     /// one — the CLI in stream-json interactive mode only emits
     /// `system/init` (the canonical session-id source) AFTER both an
