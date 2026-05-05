@@ -32,9 +32,10 @@
 //! use forge_sdk::{Client, OptionsBuilder};
 //!
 //! let options = OptionsBuilder::new().build();
-//! let client = Client::spawn(options).await?;
+//! let (client, mut events) = Client::spawn(options).await?;
 //! client.send_user_message("hello").await?;
-//! while let Some(event) = client.next_event().await? {
+//! while let Some(item) = events.recv().await {
+//!     let event = item?;
 //!     println!("{event:?}");
 //! }
 //! client.disconnect().await?;
@@ -64,7 +65,7 @@ pub mod settings;
 pub mod subagents;
 pub mod transport;
 
-pub use client::Client;
+pub use client::{Client, ClientEvents};
 pub use error::Error;
 pub use git::{GitBranch, GitContext, GitContextWatcher, GitError, git_context};
 pub use oauth_usage::{
@@ -143,15 +144,22 @@ pub type Result<T, E = Error> = core::result::Result<T, E>;
 /// # Errors
 ///
 /// Any [`Error`] variant — see [`Client::spawn`],
-/// [`Client::send_user_message`], [`Client::next_event`],
-/// [`Client::disconnect`].
+/// [`Client::send_user_message`], [`Client::disconnect`].
 pub async fn query(
     prompt: impl AsRef<str>,
     options: Option<Options>,
 ) -> Result<Vec<messages::Message>> {
-    let client = Client::spawn(options.unwrap_or_default()).await?;
+    let (client, mut events) = Client::spawn(options.unwrap_or_default()).await?;
     client.send_user_message(prompt.as_ref()).await?;
-    let messages = client.receive_response().await?;
+    let mut messages = Vec::new();
+    while let Some(item) = events.recv().await {
+        let msg = item?;
+        let is_result = matches!(msg, messages::Message::Result { .. });
+        messages.push(msg);
+        if is_result {
+            break;
+        }
+    }
     client.disconnect().await?;
     Ok(messages)
 }
@@ -168,7 +176,7 @@ pub async fn query(
 /// whole turn to finish.
 ///
 /// Errors land as the final `Result::Err` item before the stream
-/// closes — same error surface as [`Client::next_event`] and
+/// closes — same error surface as the events receiver and
 /// [`Client::disconnect`].
 pub fn query_stream(
     prompt: impl Into<String>,
@@ -177,8 +185,8 @@ pub fn query_stream(
     let prompt = prompt.into();
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Result<messages::Message>>();
     tokio::spawn(async move {
-        let client = match Client::spawn(options.unwrap_or_default()).await {
-            Ok(c) => c,
+        let (client, mut events) = match Client::spawn(options.unwrap_or_default()).await {
+            Ok(pair) => pair,
             Err(e) => {
                 let _ = tx.send(Err(e));
                 return;
@@ -196,9 +204,9 @@ pub fn query_stream(
             }
             return;
         }
-        loop {
-            match client.next_event().await {
-                Ok(Some(msg)) => {
+        while let Some(item) = events.recv().await {
+            match item {
+                Ok(msg) => {
                     let is_result = matches!(msg, messages::Message::Result { .. });
                     if tx.send(Ok(msg)).is_err() {
                         // Consumer dropped the stream — stop driving.
@@ -208,7 +216,6 @@ pub fn query_stream(
                         break;
                     }
                 }
-                Ok(None) => break,
                 Err(e) => {
                     let _ = tx.send(Err(e));
                     break;

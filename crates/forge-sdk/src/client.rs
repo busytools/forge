@@ -3,13 +3,14 @@
 //! `Client` is a cheap-clone handle (`Arc`-backed) over a background
 //! reader task that owns the `claude` subprocess. All methods take
 //! `&self`, so the same `Client` can be passed by reference into
-//! multiple tasks (the daemon's session actor uses this for
-//! `tokio::select!` between a command channel and `next_event`).
+//! multiple tasks. The events stream is returned alongside the Client
+//! at spawn time as a [`ClientEvents`] receiver — single-consumer,
+//! independent of the writer-side handle.
 //!
 //! Internally:
 //! - The reader task pulls lines from the subprocess, decodes them,
-//!   pushes regular [`Message`]s onto an mpsc that backs
-//!   [`Client::next_event`], dispatches inbound `control_request`s on
+//!   pushes regular [`Message`]s onto an mpsc that backs the returned
+//!   [`ClientEvents`], dispatches inbound `control_request`s on
 //!   detached tasks, and routes outbound `control_response`s to
 //!   per-request oneshots so [`Client::send_control`] callers can
 //!   `await` their typed reply.
@@ -26,7 +27,7 @@ pub(crate) use control_dispatch::ControlDispatchHandle;
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
-use tokio::sync::{Mutex, oneshot};
+use tokio::sync::{Mutex, mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tracing::debug;
 
@@ -40,14 +41,20 @@ use crate::options::Options;
 use crate::transport::codec::{DecodedLine, decode_dispatch};
 use crate::transport::process::Subprocess;
 
+/// Stream of regular [`Message`]s produced by the reader task.
+/// Returned alongside [`Client`] from [`Client::spawn`]. Single-consumer;
+/// the writer-side [`Client`] is `Clone` and can move freely between
+/// tasks while one task owns the receiver.
+pub type ClientEvents = mpsc::UnboundedReceiver<Result<Message, Error>>;
+
 /// An active `claude` binary subprocess.
 ///
 /// Construct via [`spawn`](Self::spawn). The init handshake
 /// (`initialize` `control_request` + drained response) runs inside
 /// `spawn`; the `system/init` frame is consumed and its session id
-/// cached on [`session_id()`](Self::session_id). Callers of
-/// [`next_event`](Self::next_event) see the clean conversational
-/// stream starting with hook/assistant/user frames.
+/// cached on [`session_id()`](Self::session_id). The returned
+/// [`ClientEvents`] receiver yields the clean conversational stream
+/// starting with hook/assistant/user frames.
 ///
 /// `Client` is `Clone`. All clones share the same underlying
 /// subprocess, reader task, and pending-control map. Cloning is
@@ -77,9 +84,6 @@ struct ClientInner {
     /// In-flight outbound `control_request`s waiting on responses.
     /// The reader task routes incoming `control_response`s here.
     pending_controls: PendingControls,
-    /// Stream of regular [`Message`]s produced by the reader task.
-    /// Single-consumer (callers serialise on the inner mutex).
-    events_rx: Mutex<tokio::sync::mpsc::UnboundedReceiver<Result<Message, Error>>>,
     /// Reader task handle. Awaited on [`Client::disconnect`].
     reader_task: Mutex<Option<JoinHandle<()>>>,
     /// Shutdown signal for the reader task. `take()`'d on the first
@@ -115,7 +119,7 @@ impl Client {
     ///
     /// Any [`Error`] variant; see field docs.
     #[allow(clippy::too_many_lines)]
-    pub async fn spawn(options: Options) -> Result<Self, Error> {
+    pub async fn spawn(options: Options) -> Result<(Self, ClientEvents), Error> {
         let mut sub = Subprocess::spawn(&options).await?;
         let writer = sub.clone_writer();
         let session_id = new_shared_session_id();
@@ -369,12 +373,11 @@ impl Client {
             cached_init_data,
             session_id,
             pending_controls,
-            events_rx: Mutex::new(events_rx),
             reader_task: Mutex::new(Some(reader_task)),
             shutdown_tx: Mutex::new(Some(shutdown_tx)),
         });
 
-        Ok(Self { inner })
+        Ok((Self { inner }, events_rx))
     }
 
     /// Cached response from the `initialize` `control_request` — holds
@@ -564,53 +567,11 @@ impl Client {
         self.inner.writer.write_line(&line).await
     }
 
-    /// Read the next stream-json **regular** message from the subprocess.
-    ///
-    /// Control requests are dispatched transparently inside the reader
-    /// task (using a cloned writer; cancel-safe). Returns `Ok(None)` at
-    /// end-of-stream (subprocess exited).
-    ///
-    /// # Errors
-    ///
-    /// - [`Error::JsonDecode`] / [`Error::MessageParse`] per line.
-    /// - [`Error::Io`] on pipe read/write failure.
-    pub async fn next_event(&self) -> Result<Option<Message>, Error> {
-        let mut rx = self.inner.events_rx.lock().await;
-        match rx.recv().await {
-            Some(Ok(msg)) => Ok(Some(msg)),
-            Some(Err(e)) => Err(e),
-            None => Ok(None),
-        }
-    }
-
-    /// Drain messages until and including a [`Message::Result`]. The
-    /// result frame IS included in the returned vector. Convenience
-    /// over [`next_event`](Self::next_event) for one-shot
-    /// request/response workflows.
-    ///
-    /// Returns whatever was received before the subprocess closed if no
-    /// `Result` frame ever arrives.
-    ///
-    /// # Errors
-    ///
-    /// Any error [`next_event`](Self::next_event) surfaces.
-    pub async fn receive_response(&self) -> Result<Vec<Message>, Error> {
-        let mut msgs = Vec::new();
-        while let Some(msg) = self.next_event().await? {
-            let is_result = matches!(msg, Message::Result { .. });
-            msgs.push(msg);
-            if is_result {
-                break;
-            }
-        }
-        Ok(msgs)
-    }
-
     /// Close the stdin side of the transport while keeping the client
     /// alive for reading. Signals the CLI that no more user messages
     /// are coming; the CLI drains in-flight turns, emits any final
-    /// frames, and closes stdout. `next_event` returns `Ok(None)` on
-    /// EOF afterwards.
+    /// frames, and closes stdout. The events receiver returns `None`
+    /// on EOF afterwards.
     ///
     /// # Errors
     ///
