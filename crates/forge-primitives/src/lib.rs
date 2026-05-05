@@ -41,9 +41,7 @@
 //! - [`elicitation`] — MCP elicitation request/response (form / URL).
 //! - [`mcp_view`] — MCP UI events (`McpAuthRedirect`,
 //!   `McpOperationError`).
-//! - [`session_meta`] — `InitializeResult`, `SessionListEntry`,
-//!   `SessionInit`, `PromptChunk`, `McpSetServersResult`,
-//!   `AuthMethod`, `AgentCapabilities`.
+//! - [`session_meta`] — `SessionListEntry`, `PromptChunk`.
 //!
 //! Add a type here when 2+ forge crates need it. Never reach for
 //! cross-crate `pub use` chains as a substitute.
@@ -112,10 +110,7 @@ pub use runtime::{
     CurrentModel, EffortLevel, FastModeState, ModeInfo, ModeState, RateLimitUpdate,
     RuntimeSessionState, SessionStatus, SettingsParseErrorUpdate, TerminalReason,
 };
-pub use session_meta::{
-    AgentCapabilities, AuthMethod, InitializeResult, McpSetServersResult, PromptChunk, SessionInit,
-    SessionListEntry,
-};
+pub use session_meta::{PromptChunk, SessionListEntry};
 pub use session_update::{
     BashOutputMetadata, ChunkContent, PlanEntry, SessionUpdate, TaskMetadata,
     TodoWriteOutputMetadata, ToolCall, ToolCallContent, ToolCallUpdate, ToolCallUpdateFields,

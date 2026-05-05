@@ -28,15 +28,6 @@ impl ToolOutput {
         }
     }
 
-    /// Build a text error output.
-    #[must_use]
-    pub fn error(s: impl Into<String>) -> Self {
-        Self {
-            blocks: vec![ToolOutputBlock::Text { text: s.into() }],
-            is_error: true,
-        }
-    }
-
     /// Serialise to the JSON shape MCP expects.
     pub(crate) fn to_mcp_content(&self) -> Vec<Value> {
         self.blocks
