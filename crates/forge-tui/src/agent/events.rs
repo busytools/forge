@@ -24,24 +24,24 @@ pub enum ClientEvent {
         response_tx: tokio::sync::oneshot::Sender<model::RequestQuestionResponse>,
     },
     /// MCP elicitation request that needs auth or other MCP input.
-    McpElicitationRequest { request: crate::agent::types::ElicitationRequest },
+    McpElicitationRequest { request: forge_primitives::ElicitationRequest },
     /// MCP elicitation completed in the SDK.
     McpElicitationCompleted { elicitation_id: String, server_name: Option<String> },
     /// MCP auth redirect returned directly by the SDK auth call.
-    McpAuthRedirect { redirect: crate::agent::types::McpAuthRedirect },
+    McpAuthRedirect { redirect: forge_primitives::McpAuthRedirect },
     /// MCP operation failed and should be surfaced in the MCP config UI.
-    McpOperationError { error: crate::agent::types::McpOperationError },
+    McpOperationError { error: forge_primitives::McpOperationError },
     /// A prompt turn completed successfully.
-    TurnComplete { terminal_reason: Option<crate::agent::types::TerminalReason> },
+    TurnComplete { terminal_reason: Option<forge_primitives::TerminalReason> },
     /// `cancel` notification was accepted by the bridge.
     TurnCancelled,
     /// A prompt turn failed with an error.
-    TurnError { message: String, terminal_reason: Option<crate::agent::types::TerminalReason> },
+    TurnError { message: String, terminal_reason: Option<forge_primitives::TerminalReason> },
     /// A prompt turn failed with bridge-provided classification metadata.
     TurnErrorClassified {
         message: String,
         class: TurnErrorClass,
-        terminal_reason: Option<crate::agent::types::TerminalReason>,
+        terminal_reason: Option<forge_primitives::TerminalReason>,
     },
     /// Background connection completed successfully.
     Connected {
@@ -72,38 +72,38 @@ pub enum ClientEvent {
         history_updates: Vec<model::SessionUpdate>,
     },
     /// Recent sessions discovered via SDK session listing.
-    SessionsListed { sessions: Vec<crate::agent::types::SessionListEntry> },
+    SessionsListed { sessions: Vec<forge_primitives::SessionListEntry> },
     /// Startup Claude Code status check detected degraded/outage conditions.
     ServiceStatus { severity: ServiceStatusSeverity, message: String },
     /// /login completed via `claude auth login` -- credentials stored, ready to start a session.
-    AuthCompleted { conn: Rc<dyn crate::agent::client::AgentBridge> },
+    AuthCompleted { conn: Rc<forge_agent::AgentHandle> },
     /// /logout completed via `claude auth logout`.
     LogoutCompleted,
     /// Status snapshot received from bridge (account info).
-    StatusSnapshotReceived { session_id: String, account: forge_sdk::AccountInfo },
+    StatusSnapshotReceived { session_id: String, account: forge_primitives::AccountInfo },
     /// OAuth credentials snapshot received from bridge. `credentials` is
     /// `None` when no credentials file exists or it's empty/malformed.
     OauthCredentialsSnapshotReceived {
         session_id: String,
-        credentials: Option<forge_sdk::OauthCredentials>,
+        credentials: Option<forge_agent::cloud::oauth_credentials::OauthCredentials>,
     },
     /// Git introspection snapshot pushed by the bridge whenever the
     /// repo's branch resolution changes (initial state included).
-    GitContextSnapshotReceived { session_id: String, context: forge_sdk::GitContext },
+    GitContextSnapshotReceived { session_id: String, context: forge_agent::env::git::GitContext },
     /// Session context window usage received from bridge.
     ContextUsageReceived { session_id: String, percentage: Option<u8> },
     /// MCP server snapshot received from bridge.
     McpSnapshotReceived {
         session_id: String,
-        servers: Vec<forge_sdk::McpServerStatus>,
+        servers: Vec<forge_primitives::McpServerStatus>,
         error: Option<String>,
     },
-    /// Raw `forge_sdk::Message` envelope received from bridge.
+    /// Raw `forge_primitives::Message` envelope received from bridge.
     /// Phase 1 of the bridge-collapse refactor: emitted alongside the
     /// existing `SessionUpdate` flow as scaffolding. App's
     /// `events::sdk_message::handle_sdk_message` is a no-op stub
     /// during Phase 1; Phase 2 fills it in per-variant.
-    SdkMessageReceived { session_id: String, msg: forge_sdk::Message },
+    SdkMessageReceived { session_id: String, msg: forge_primitives::Message },
     /// Usage refresh task started.
     UsageRefreshStarted { epoch: u64 },
     /// Usage refresh completed successfully.

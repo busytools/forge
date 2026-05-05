@@ -1,4 +1,4 @@
-//! Direct `forge_sdk::Message` consumer for the App.
+//! Direct `forge_primitives::Message` consumer for the App.
 //!
 //! Phase 1.2 of the bridge-collapse refactor. Today the
 //! `agent::message_handlers` module owns SDK-message
@@ -8,7 +8,7 @@
 //!
 //! This module introduces the App-side replacement: a top-level
 //! [`handle_sdk_message`] dispatcher that the bridge worker (after
-//! Phase 1.3) feeds raw `forge_sdk::Message` envelopes to. Per-variant
+//! Phase 1.3) feeds raw `forge_primitives::Message` envelopes to. Per-variant
 //! handlers below are no-op stubs in Phase 1; Phase 2 progressively
 //! moves the unpacking + state-mutation logic out of the bridge into
 //! these stubs, one variant per commit, until the bridge module is
@@ -38,7 +38,7 @@
 //! handler starts mutating App state. No double-write window per
 //! variant.
 
-use forge_sdk::Message;
+use forge_primitives::Message;
 use serde_json::Value;
 
 use crate::agent::state_parsing::{
@@ -58,7 +58,7 @@ pub(super) fn handle_sdk_message(app: &mut App, msg: Message) {
     // Mirrors the bridge's pattern: serialise the typed Message back
     // to JSON so per-variant handlers can read fields like
     // `fast_mode_state`, `terminal_reason`, `error` — which are not
-    // first-class typed accessors on `forge_sdk::Message` but DO
+    // first-class typed accessors on `forge_primitives::Message` but DO
     // appear in the wire JSON.
     let raw = serde_json::to_value(&msg).unwrap_or(Value::Null);
     match msg {
@@ -71,7 +71,7 @@ pub(super) fn handle_sdk_message(app: &mut App, msg: Message) {
         Message::RateLimitEvent { .. } => handle_rate_limit_event(app, msg, &raw),
         Message::Result { .. } => handle_result(app, msg, &raw),
         Message::StreamEvent { .. } => handle_stream_event(app, msg, &raw),
-        // forge_sdk::Message is `#[non_exhaustive]` — Error / Unknown
+        // forge_primitives::Message is `#[non_exhaustive]` — Error / Unknown
         // and any future variants fall through here.
         _ => handle_unknown(app, msg, &raw),
     }
@@ -86,7 +86,7 @@ pub(super) fn handle_sdk_message(app: &mut App, msg: Message) {
 /// consolidate to a single FastModeState type.
 fn apply_fast_mode_update(app: &mut App, raw: &Value) {
     use crate::agent::model::FastModeState as Model;
-    use crate::agent::types::FastModeState as Wire;
+    use forge_primitives::FastModeState as Wire;
     let Some(wire_state) = parse_fast_mode_state(raw.get("fast_mode_state")) else {
         return;
     };
@@ -199,8 +199,9 @@ fn walk_assistant_content(app: &mut App, raw: &Value) {
 /// When the assistant invokes the TodoWrite tool with a `todos` array,
 /// applies the plan via the existing `apply_plan_todos` handler.
 fn apply_plan_if_todo_write(app: &mut App, name: &str, input: &Value) {
-    use crate::agent::{model, types};
+    use crate::agent::model;
     use crate::app::connect::type_converters::convert_plan_entry;
+    use forge_primitives as types;
 
     if name != "TodoWrite" {
         return;
@@ -306,10 +307,10 @@ fn parent_tool_use_id_from_meta(meta: Option<&Value>) -> Option<String> {
 /// in-place, preserving any unset fields. Inlined from the deleted
 /// `bridge::tool_calls` module.
 fn apply_fields_to_base(
-    base: &mut crate::agent::types::ToolCall,
-    fields: &crate::agent::types::ToolCallUpdateFields,
+    base: &mut forge_primitives::ToolCall,
+    fields: &forge_primitives::ToolCallUpdateFields,
 ) {
-    use crate::agent::types::TaskMetadata;
+    use forge_primitives::TaskMetadata;
     fn merge_task_metadata(
         current: Option<TaskMetadata>,
         update: Option<TaskMetadata>,
@@ -379,8 +380,8 @@ fn apply_tool_use_block(
     parent_tool_use_id: Option<&str>,
 ) {
     use crate::agent::tooling::create_tool_call;
-    use crate::agent::types::ToolCallUpdateFields;
     use crate::app::connect::type_converters::convert_tool_call;
+    use forge_primitives::ToolCallUpdateFields;
 
     let existing = app.turn_state.tool_calls.get(tool_use_id).cloned();
     let resolved_parent = parent_tool_use_id
@@ -435,10 +436,10 @@ fn apply_tool_result_block(
 fn apply_tool_call_update(
     app: &mut App,
     tool_use_id: &str,
-    fields: crate::agent::types::ToolCallUpdateFields,
+    fields: forge_primitives::ToolCallUpdateFields,
 ) {
-    use crate::agent::types::ToolCallUpdate;
     use crate::app::connect::type_converters::convert_tool_call_update;
+    use forge_primitives::ToolCallUpdate;
 
     if let Some(base) = app.turn_state.tool_calls.get_mut(tool_use_id) {
         apply_fields_to_base(base, &fields);
@@ -452,7 +453,7 @@ fn apply_tool_call_update(
 /// App state. Walks `app.turn_state.tool_calls` and emits a terminal
 /// status update for every still-pending entry.
 fn finalize_open_tool_calls(app: &mut App, status: &str) {
-    use crate::agent::types::ToolCallUpdateFields;
+    use forge_primitives::ToolCallUpdateFields;
 
     let pending: Vec<String> = app
         .turn_state
@@ -583,10 +584,10 @@ fn apply_compaction_boundary(app: &mut App, data: &Value) {
 fn apply_available_commands_from_init(app: &mut App, data: &Value) {
     let Some(record) = data.as_object() else { return };
     let Some(arr) = record.get("slash_commands").and_then(Value::as_array) else { return };
-    let commands: Vec<crate::agent::types::AvailableCommand> = arr
+    let commands: Vec<forge_primitives::AvailableCommand> = arr
         .iter()
         .filter_map(|v| v.as_str())
-        .map(|name| crate::agent::types::AvailableCommand {
+        .map(|name| forge_primitives::AvailableCommand {
             name: name.to_owned(),
             description: String::new(),
             input_hint: None,
@@ -634,8 +635,8 @@ fn apply_available_agents_from_init(app: &mut App, data: &Value) {
 /// first turn lands.
 fn apply_current_model_from_init(app: &mut App, data: &Value) {
     use crate::agent::session_lifecycle::resolve_current_model_from_inputs;
-    use crate::agent::types as wire;
     use crate::app::connect::type_converters::convert_current_model;
+    use forge_primitives as wire;
 
     let Some(record) = data.as_object() else { return };
     let model_id = record.get("model").and_then(Value::as_str).unwrap_or("");
@@ -748,7 +749,7 @@ fn apply_local_command_output(app: &mut App, data: &Value) {
 /// — but now applies the request directly without going through the
 /// `AgentEvent::ElicitationRequest` wire variant.
 fn apply_elicitation_request(app: &mut App, data: &Value) {
-    use crate::agent::types::{ElicitationMode, ElicitationRequest};
+    use forge_primitives::{ElicitationMode, ElicitationRequest};
     let Some(record) = data.as_object() else { return };
     let Some(request_id) = record.get("request_id").and_then(Value::as_str) else { return };
     let server_name = record.get("server_name").and_then(Value::as_str).unwrap_or("").to_owned();
@@ -801,7 +802,7 @@ fn apply_settings_parse_errors(app: &mut App, data: &Value) {
 /// existing api_retry event handler.
 fn apply_api_retry_update(app: &mut App, data: &Value) {
     let Some(record) = data.as_object() else { return };
-    let Some(crate::agent::types::SessionUpdate::ApiRetryUpdate {
+    let Some(forge_primitives::SessionUpdate::ApiRetryUpdate {
         attempt,
         max_retries,
         retry_delay_ms,
@@ -823,10 +824,10 @@ fn apply_api_retry_update(app: &mut App, data: &Value) {
 }
 
 fn convert_runtime_session_state(
-    wire: crate::agent::types::RuntimeSessionState,
+    wire: forge_primitives::RuntimeSessionState,
 ) -> crate::agent::model::RuntimeSessionState {
     use crate::agent::model::RuntimeSessionState as Model;
-    use crate::agent::types::RuntimeSessionState as Wire;
+    use forge_primitives::RuntimeSessionState as Wire;
     match wire {
         Wire::Idle => Model::Idle,
         Wire::Running => Model::Running,
@@ -868,7 +869,7 @@ fn handle_task_notification(app: &mut App, msg: Message, raw: &Value) {
 /// Mirror of `bridge::tool_calls::emit_tool_progress_update` against
 /// App state.
 fn apply_tool_progress_update(app: &mut App, tool_use_id: &str, name: &str) {
-    use crate::agent::types::ToolCallUpdateFields;
+    use forge_primitives::ToolCallUpdateFields;
 
     let existing = app.turn_state.tool_calls.get(tool_use_id).cloned();
     let Some(existing) = existing else {
@@ -888,7 +889,7 @@ fn apply_tool_progress_update(app: &mut App, tool_use_id: &str, name: &str) {
 /// Mirror of `bridge::tool_calls::emit_tool_summary_update` against
 /// App state.
 fn apply_tool_summary_update(app: &mut App, tool_use_id: &str, summary: &str) {
-    use crate::agent::types::{ContentBlock, ToolCallContent, ToolCallUpdateFields};
+    use forge_primitives::{ToolCallContent, ToolCallUpdateFields};
 
     let Some(base) = app.turn_state.tool_calls.get(tool_use_id).cloned() else { return };
     let status = if matches!(base.status.as_str(), "failed" | "killed") {
@@ -900,7 +901,7 @@ fn apply_tool_summary_update(app: &mut App, tool_use_id: &str, summary: &str) {
         status: Some(status),
         raw_output: Some(summary.to_owned()),
         content: Some(vec![ToolCallContent::Content {
-            content: ContentBlock::Text { text: summary.to_owned() },
+            content: forge_primitives::ChunkContent::Text { text: summary.to_owned() },
         }]),
         ..Default::default()
     };
@@ -927,7 +928,7 @@ fn handle_rate_limit_event(app: &mut App, msg: Message, _raw: &Value) {
         session_id = app.session_id.as_ref().map(ToString::to_string).as_deref().unwrap_or(""),
         rate_limit_info = %value,
     );
-    let Some(crate::agent::types::SessionUpdate::RateLimitUpdate {
+    let Some(forge_primitives::SessionUpdate::RateLimitUpdate {
         status,
         resets_at,
         utilization,
@@ -943,7 +944,7 @@ fn handle_rate_limit_event(app: &mut App, msg: Message, _raw: &Value) {
     };
     // Convert wire-side types::RateLimitUpdate → model::RateLimitUpdate
     // via the existing converter, then call the App-side handler.
-    let wire = crate::agent::types::RateLimitUpdate {
+    let wire = forge_primitives::RateLimitUpdate {
         status,
         resets_at,
         utilization,
@@ -971,9 +972,9 @@ fn handle_result(app: &mut App, msg: Message, raw: &Value) {
 fn apply_result_finalize(app: &mut App, msg: &Message, raw: &Value) {
     let Message::Result { is_error, subtype, .. } = msg else { return };
     let raw_record = raw.as_object();
-    let terminal_reason = raw_record.and_then(|r| r.get("terminal_reason")).and_then(|v| {
-        serde_json::from_value::<crate::agent::types::TerminalReason>(v.clone()).ok()
-    });
+    let terminal_reason = raw_record
+        .and_then(|r| r.get("terminal_reason"))
+        .and_then(|v| serde_json::from_value::<forge_primitives::TerminalReason>(v.clone()).ok());
     let errors_array: Vec<String> = raw_record
         .and_then(|r| r.get("errors"))
         .and_then(Value::as_array)

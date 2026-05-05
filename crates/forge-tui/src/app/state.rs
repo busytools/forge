@@ -143,7 +143,7 @@ pub struct App {
     pub exit_error: Option<crate::error::AppError>,
     pub session_id: Option<model::SessionId>,
     /// Agent connection handle. `None` while connecting (before bridge is ready).
-    pub conn: Option<Rc<dyn crate::agent::client::AgentBridge>>,
+    pub conn: Option<Rc<forge_agent::AgentHandle>>,
     /// Monotonic session authority epoch used to ignore stale async view data.
     pub session_scope_epoch: u64,
     pub current_model: Option<model::CurrentModel>,
@@ -295,12 +295,12 @@ pub struct App {
     /// True while the SDK reports active compaction.
     pub is_compacting: bool,
     /// Account info from the bridge status snapshot (email, org, subscription).
-    pub account_info: Option<forge_sdk::AccountInfo>,
+    pub account_info: Option<forge_primitives::AccountInfo>,
     /// OAuth credentials snapshot from the bridge — populated at
     /// session connect, refreshed after `/login` and `/logout` so
     /// callers can ask "is the user authenticated?" without doing
     /// their own filesystem walk to `<config_dir>/.credentials.json`.
-    pub oauth_credentials: Option<forge_sdk::OauthCredentials>,
+    pub oauth_credentials: Option<forge_agent::cloud::oauth_credentials::OauthCredentials>,
 
     /// Per-session runtime state being absorbed from the bridge
     /// unpacker (`agent::state::BridgeSession`). Currently
@@ -815,7 +815,7 @@ impl App {
     #[must_use]
     #[allow(clippy::too_many_lines)]
     pub fn test_default() -> Self {
-        let (tx, rx) = mpsc::unbounded_channel();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         let (file_index_tx, file_index_rx) = std_mpsc::channel();
         Self {
             active_view: ActiveView::Chat,
@@ -955,7 +955,7 @@ impl App {
 
     /// Apply a bridge-pushed git context snapshot to the local
     /// cache. Marks `needs_redraw` when the resolved branch changes.
-    pub fn apply_git_context_snapshot(&mut self, info: forge_sdk::GitContext) {
+    pub fn apply_git_context_snapshot(&mut self, info: forge_agent::env::git::GitContext) {
         self.needs_redraw |= self.git_context.apply_snapshot(info);
     }
 

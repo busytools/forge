@@ -47,14 +47,14 @@ async fn wire_capture_control_cancel() {
         .hooks(hooks)
         .build();
 
-    run_live_scenario("control_cancel", opts, |client| async move {
+    run_live_scenario("control_cancel", opts, |client, events| async move {
         client
             .send_user_message(
                 "Run `echo forge-cancel-scenario` with the Bash tool and \
                  then reply with exactly what the command printed.",
             )
             .await?;
-        Ok(client)
+        Ok((client, events))
     })
     .await
     .expect("scenario run");

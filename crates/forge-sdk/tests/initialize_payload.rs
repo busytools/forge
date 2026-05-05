@@ -30,7 +30,7 @@ async fn capture_init(apply: impl FnOnce(OptionsBuilder) -> OptionsBuilder) -> V
     );
     builder = apply(builder);
     let opts = builder.build();
-    let client = Client::spawn(opts).await.expect("spawn");
+    let (client, _events) = Client::spawn(opts).await.expect("spawn");
     client.disconnect().await.expect("disconnect");
     let body = fs::read_to_string(&dump).expect("init captured");
     let value: Value = serde_json::from_str(&body).expect("decode");

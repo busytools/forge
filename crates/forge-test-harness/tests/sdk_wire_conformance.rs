@@ -95,8 +95,8 @@ async fn wire_capture_trivial_prompt() {
         path
     };
 
-    let client = match Client::spawn(opts).await {
-        Ok(c) => c,
+    let (client, mut events) = match Client::spawn(opts).await {
+        Ok(pair) => pair,
         Err(e) => {
             let path = dump_trace("trivial-spawn-failed");
             panic!(
@@ -119,9 +119,9 @@ async fn wire_capture_trivial_prompt() {
 
     let mut saw_result = false;
     let mut summary: Option<(u64, Option<f64>, u64)> = None;
-    loop {
-        match client.next_event().await {
-            Ok(Some(msg)) => {
+    while let Some(item) = events.recv().await {
+        match item {
+            Ok(msg) => {
                 if let Message::Result {
                     num_turns,
                     total_cost_usd,
@@ -134,11 +134,10 @@ async fn wire_capture_trivial_prompt() {
                     break;
                 }
             }
-            Ok(None) => break,
             Err(e) => {
                 let path = dump_trace("trivial-drain-failed");
                 panic!(
-                    "next_event failed mid-drain — trace at {}: {e}",
+                    "events stream errored mid-drain — trace at {}: {e}",
                     path.display()
                 );
             }

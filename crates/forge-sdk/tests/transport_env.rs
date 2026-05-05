@@ -49,7 +49,7 @@ async fn spawn_and_capture_env(
     builder = builder.env("FORGE_TEST_ENV_DUMP", dump.to_string_lossy().into_owned());
     builder = opts_cb(builder);
     let opts = builder.build();
-    let client = Client::spawn(opts).await.expect("spawn");
+    let (client, _events) = Client::spawn(opts).await.expect("spawn");
     client.disconnect().await.expect("disconnect");
     parse_env(&dump)
 }

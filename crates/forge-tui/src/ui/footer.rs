@@ -409,7 +409,9 @@ fn mcp_needs_auth_count(app: &App) -> usize {
     app.mcp
         .servers
         .iter()
-        .filter(|server| matches!(server.status, forge_sdk::McpServerConnectionStatus::NeedsAuth))
+        .filter(|server| {
+            matches!(server.status, forge_primitives::McpServerConnectionStatus::NeedsAuth)
+        })
         .count()
 }
 
@@ -445,7 +447,7 @@ mod tests {
         App, BlockCache, ChatMessage, InlinePermission, MessageBlock, MessageRole,
         TerminalSnapshotMode, TextBlock, ToolCallInfo,
     };
-    use forge_sdk::{McpServerConnectionStatus, McpServerStatus};
+    use forge_primitives::{McpServerConnectionStatus, McpServerStatus};
     use tokio::sync::oneshot;
 
     #[test]

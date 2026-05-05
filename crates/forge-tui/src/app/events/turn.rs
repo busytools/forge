@@ -279,7 +279,7 @@ fn finish_ready_turn_exit(app: &mut App, exit: TurnExitState, tool_status: model
 
 pub(super) fn handle_turn_complete_event(
     app: &mut App,
-    terminal_reason: Option<crate::agent::types::TerminalReason>,
+    terminal_reason: Option<forge_primitives::TerminalReason>,
 ) {
     let exit = begin_turn_exit(app, true);
     let turn_was_active = exit.turn_was_active;
@@ -314,7 +314,7 @@ pub(super) fn handle_turn_error_event(
     app: &mut App,
     msg: &str,
     classified: Option<TurnErrorClass>,
-    terminal_reason: Option<crate::agent::types::TerminalReason>,
+    terminal_reason: Option<forge_primitives::TerminalReason>,
 ) {
     let exit = begin_turn_exit(app, true);
 
@@ -326,7 +326,7 @@ pub(super) fn handle_turn_error_event(
             message = "turn error suppressed after cancellation request",
             outcome = "cancelled",
             error_preview = %summary,
-            terminal_reason = terminal_reason.map_or("", crate::agent::types::TerminalReason::as_stored),
+            terminal_reason = terminal_reason.map_or("", forge_primitives::TerminalReason::as_stored),
         );
         app.pending_submit = None;
         finish_ready_turn_exit(app, exit, model::ToolCallStatus::Failed);
@@ -346,7 +346,7 @@ pub(super) fn handle_turn_error_event(
         outcome = "failure",
         error_class = ?error_class,
         error_preview = %summary,
-        terminal_reason = terminal_reason.map_or("", crate::agent::types::TerminalReason::as_stored),
+        terminal_reason = terminal_reason.map_or("", forge_primitives::TerminalReason::as_stored),
     );
     match error_class {
         TurnErrorClass::PlanLimit => {

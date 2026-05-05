@@ -20,7 +20,7 @@ async fn wire_capture_subagent() {
         .allowed_tools(vec!["Task".to_string(), "Bash".to_string()])
         .build();
 
-    run_live_scenario("subagent", opts, |client| async move {
+    run_live_scenario("subagent", opts, |client, events| async move {
         client
             .send_user_message(
                 "Use the Task tool with subagent_type=\"general-purpose\" \
@@ -29,7 +29,7 @@ async fn wire_capture_subagent() {
                  replies, return its output as your final answer.",
             )
             .await?;
-        Ok(client)
+        Ok((client, events))
     })
     .await
     .expect("scenario run");

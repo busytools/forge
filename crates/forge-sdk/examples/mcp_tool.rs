@@ -42,10 +42,11 @@ async fn main() -> Result<()> {
         .mcp_server("local", server)
         .build();
 
-    let client = Client::spawn(opts).await?;
+    let (client, mut events) = Client::spawn(opts).await?;
     client.send_user_message(&prompt).await?;
 
-    while let Some(event) = client.next_event().await? {
+    while let Some(item) = events.recv().await {
+        let event = item?;
         match &event {
             Message::Assistant { message, .. } => {
                 for block in &message.content {

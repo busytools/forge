@@ -40,7 +40,7 @@ pub struct LoadedSettingsDocuments {
 pub fn load(
     home_override: Option<&Path>,
     project_root_override: Option<&Path>,
-    bridge: Option<&dyn crate::agent::client::AgentBridge>,
+    bridge: Option<&forge_agent::AgentHandle>,
 ) -> Result<LoadedSettingsDocuments, String> {
     let paths = resolve_paths(home_override, project_root_override, bridge)?;
 
@@ -344,7 +344,7 @@ pub fn set_preferred_notification_channel(document: &mut Value, channel: Preferr
 fn resolve_paths(
     home_override: Option<&Path>,
     project_root_override: Option<&Path>,
-    bridge: Option<&dyn crate::agent::client::AgentBridge>,
+    bridge: Option<&forge_agent::AgentHandle>,
 ) -> Result<SettingsPaths, String> {
     let home = if let Some(path) = home_override {
         path.to_path_buf()
@@ -376,15 +376,19 @@ fn resolve_paths(
     })
 }
 
-/// Map the TUI's `SettingFile` enum onto forge-sdk's
+/// Map the TUI's `SettingFile` enum onto forge-agent's
 /// `SettingsTarget`. Used by `persist_setting_change` to delegate
-/// writes to the SDK while keeping `SettingFile` as the TUI-domain
-/// type that callers reason about.
-pub fn settings_target_for(file: super::SettingFile, cwd: PathBuf) -> forge_sdk::SettingsTarget {
+/// writes through the agent while keeping `SettingFile` as the
+/// TUI-domain type that callers reason about.
+pub fn settings_target_for(
+    file: super::SettingFile,
+    cwd: PathBuf,
+) -> forge_agent::userdata::settings::SettingsTarget {
+    use forge_agent::userdata::settings::SettingsTarget;
     match file {
-        super::SettingFile::Settings => forge_sdk::SettingsTarget::User,
-        super::SettingFile::LocalSettings => forge_sdk::SettingsTarget::ProjectLocal { cwd },
-        super::SettingFile::Preferences => forge_sdk::SettingsTarget::Preferences,
+        super::SettingFile::Settings => SettingsTarget::User,
+        super::SettingFile::LocalSettings => SettingsTarget::ProjectLocal { cwd },
+        super::SettingFile::Preferences => SettingsTarget::Preferences,
     }
 }
 

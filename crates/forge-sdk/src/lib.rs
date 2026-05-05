@@ -4,8 +4,9 @@
 //! `claude` CLI. Spawns the binary as a subprocess and speaks
 //! stream-json over stdio. Wire compatibility with the CLI is the only
 //! hard external invariant; API shape is whatever serves
-//! [`forge-daemon`](https://github.com/busytools/forge/tree/main/crates/forge-daemon)
-//! and [`forge-tui`](https://github.com/busytools/forge/tree/main/crates/forge-tui)
+//! [`forge-agent`](https://github.com/busytools/forge/tree/main/crates/forge-agent)
+//! (and through it,
+//! [`forge-tui`](https://github.com/busytools/forge/tree/main/crates/forge-tui))
 //! best.
 //!
 //! ## Design
@@ -32,9 +33,10 @@
 //! use forge_sdk::{Client, OptionsBuilder};
 //!
 //! let options = OptionsBuilder::new().build();
-//! let client = Client::spawn(options).await?;
+//! let (client, mut events) = Client::spawn(options).await?;
 //! client.send_user_message("hello").await?;
-//! while let Some(event) = client.next_event().await? {
+//! while let Some(item) = events.recv().await {
+//!     let event = item?;
 //!     println!("{event:?}");
 //! }
 //! client.disconnect().await?;
@@ -45,42 +47,35 @@
 #![forbid(unsafe_code)]
 
 pub mod argv;
-pub(crate) mod auth_status;
 mod client;
-pub mod content;
 pub mod control;
 mod error;
-pub mod git;
 pub mod hooks;
 pub mod mcp;
-pub(crate) mod messages;
-pub mod oauth_usage;
 mod options;
+pub mod paths;
 pub(crate) mod permissions;
-pub(crate) mod public_types;
 pub(crate) mod request_id;
-pub mod session;
-pub mod settings;
 pub mod subagents;
 pub mod transport;
 
-pub use client::Client;
-pub use error::Error;
-pub use git::{GitBranch, GitContext, GitContextWatcher, GitError, git_context};
-pub use oauth_usage::{
-    OauthExtraUsage, OauthUsage, OauthUsageError, OauthUsageWindow, oauth_usage,
-};
-pub use session::paths::{claude_config_dir, project_memory, project_memory_path};
-pub use settings::{
-    SettingsDocuments, SettingsTarget, settings_documents, write_settings_document,
-};
-// Top-level message + content re-exports so consumers can say
-// `use forge_sdk::{AssistantEnvelope, StopReason, RateLimitInfo, ...}`
-// instead of reaching through `forge_sdk::messages::*`. Matches the
-// the flat `__init__.py` surface.
 #[doc(hidden)]
 pub use crate::mcp::macros::__private;
-pub use content::ContentBlock;
+pub use client::{Client, ClientEvents};
+pub use error::Error;
+pub use paths::{claude_config_dir, projects_dir};
+// Wire-shape types live in forge-primitives now. Re-exported here so
+// pre-restructure imports (`use forge_sdk::Message`, `use forge_sdk::AccountInfo`,
+// …) keep resolving. New code should reach for `forge_primitives::*` directly —
+// primitives is the base crate, forge-sdk depends on it.
+pub use forge_primitives::{
+    AccountInfo, AssistantEnvelope, AssistantMessageError, ContentBlock, ContextUsageCategory,
+    ContextUsageResponse, McpServerConfig, McpServerConnectionStatus, McpServerInfo,
+    McpServerStatus, McpStatusResponse, McpToolAnnotations, McpToolInfo, Message, RateLimitInfo,
+    RateLimitStatus, RateLimitType, SDKSessionInfo, SandboxIgnoreViolations, SandboxNetworkConfig,
+    SandboxSettings, SessionMessage, SessionMessageKind, SettingSource, StopReason, StreamEvent,
+    TaskNotificationStatus, TaskUsage, Usage, UserEnvelope,
+};
 pub use hooks::{
     BaseHookInput, HookCallback, HookContext, HookDecision, HookKind, HookSpecificOutput, Hooks,
     HooksBuilder, NotificationHookSpecificOutput, NotificationInput,
@@ -91,10 +86,6 @@ pub use hooks::{
     SubagentStartHookSpecificOutput, SubagentStartInput, SubagentStopInput,
     UserPromptSubmitHookSpecificOutput, UserPromptSubmitInput,
 };
-pub use messages::{
-    AssistantEnvelope, AssistantMessageError, Message, RateLimitInfo, RateLimitStatus,
-    RateLimitType, StopReason, TaskNotificationStatus, TaskUsage, Usage, UserEnvelope,
-};
 pub use options::{
     Options, OptionsBuilder, PermissionMode, SdkPluginConfig, SystemPromptKind, ThinkingConfig,
     ToolsPreset,
@@ -103,33 +94,12 @@ pub use permissions::{
     CanUseToolCallback, PermissionBehavior, PermissionDecision, PermissionRuleValue,
     PermissionUpdate, PermissionUpdateDestination, ToolPermissionContext,
 };
-pub use public_types::{
-    AccountInfo, ContextUsageCategory, ContextUsageResponse, McpServerConfig,
-    McpServerConnectionStatus, McpServerInfo, McpServerStatus, McpStatusResponse,
-    McpToolAnnotations, McpToolInfo, OauthCredentials, SDKSessionInfo, SandboxIgnoreViolations,
-    SandboxNetworkConfig, SandboxSettings, SessionMessage, SessionMessageKind, SettingSource,
-    StreamEvent,
-};
-
-/// Free-function variant of [`Client::oauth_credentials`] for callers
-/// that don't have a live [`Client`] but still need to consult the
-/// user's OAuth state (e.g. a TUI verifying credentials immediately
-/// after `claude auth login` exits, before a session is open).
-///
-/// Reads `<config_dir>/.credentials.json` where `<config_dir>` is
-/// `$CLAUDE_CONFIG_DIR` (when set + non-empty) else `$HOME/.claude`.
-/// Returns `None` if the file is missing, malformed, or
-/// `claudeAiOauth.accessToken` is empty.
-#[must_use]
-pub fn oauth_credentials() -> Option<OauthCredentials> {
-    session::paths::load_oauth_credentials()
-}
 
 /// Convenient alias for `Result<T, forge_sdk::Error>`.
 pub type Result<T, E = Error> = core::result::Result<T, E>;
 
 /// One-shot helper that spawns a client, sends a single prompt, drains
-/// every message up to and including the terminal [`messages::Message::Result`]
+/// every message up to and including the terminal [`Message::Result`]
 /// frame, and disconnects. SDK's top-level `query()`
 /// helper (`query.py:11-40`).
 ///
@@ -143,15 +113,19 @@ pub type Result<T, E = Error> = core::result::Result<T, E>;
 /// # Errors
 ///
 /// Any [`Error`] variant — see [`Client::spawn`],
-/// [`Client::send_user_message`], [`Client::next_event`],
-/// [`Client::disconnect`].
-pub async fn query(
-    prompt: impl AsRef<str>,
-    options: Option<Options>,
-) -> Result<Vec<messages::Message>> {
-    let client = Client::spawn(options.unwrap_or_default()).await?;
+/// [`Client::send_user_message`], [`Client::disconnect`].
+pub async fn query(prompt: impl AsRef<str>, options: Option<Options>) -> Result<Vec<Message>> {
+    let (client, mut events) = Client::spawn(options.unwrap_or_default()).await?;
     client.send_user_message(prompt.as_ref()).await?;
-    let messages = client.receive_response().await?;
+    let mut messages = Vec::new();
+    while let Some(item) = events.recv().await {
+        let msg = item?;
+        let is_result = matches!(msg, Message::Result { .. });
+        messages.push(msg);
+        if is_result {
+            break;
+        }
+    }
     client.disconnect().await?;
     Ok(messages)
 }
@@ -168,17 +142,17 @@ pub async fn query(
 /// whole turn to finish.
 ///
 /// Errors land as the final `Result::Err` item before the stream
-/// closes — same error surface as [`Client::next_event`] and
+/// closes — same error surface as the events receiver and
 /// [`Client::disconnect`].
 pub fn query_stream(
     prompt: impl Into<String>,
     options: Option<Options>,
-) -> impl tokio_stream::Stream<Item = Result<messages::Message>> + Send + 'static {
+) -> impl tokio_stream::Stream<Item = Result<Message>> + Send + 'static {
     let prompt = prompt.into();
-    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Result<messages::Message>>();
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Result<Message>>();
     tokio::spawn(async move {
-        let client = match Client::spawn(options.unwrap_or_default()).await {
-            Ok(c) => c,
+        let (client, mut events) = match Client::spawn(options.unwrap_or_default()).await {
+            Ok(pair) => pair,
             Err(e) => {
                 let _ = tx.send(Err(e));
                 return;
@@ -196,10 +170,10 @@ pub fn query_stream(
             }
             return;
         }
-        loop {
-            match client.next_event().await {
-                Ok(Some(msg)) => {
-                    let is_result = matches!(msg, messages::Message::Result { .. });
+        while let Some(item) = events.recv().await {
+            match item {
+                Ok(msg) => {
+                    let is_result = matches!(msg, Message::Result { .. });
                     if tx.send(Ok(msg)).is_err() {
                         // Consumer dropped the stream — stop driving.
                         break;
@@ -208,7 +182,6 @@ pub fn query_stream(
                         break;
                     }
                 }
-                Ok(None) => break,
                 Err(e) => {
                     let _ = tx.send(Err(e));
                     break;

@@ -1,19 +1,40 @@
 # forge — project guide
 
 A Rust workspace for personal-use agentic tooling around Anthropic's
-`claude` CLI. Four components:
+`claude` CLI. Five components, layered acyclically:
 
-- **`forge-sdk`** — wraps the `claude` binary. Exposes a
-  structured-message API to library consumers (today, just `forge-daemon`).
-- **`forge-daemon`** — wraps `forge-sdk` as a single Client per
-  session. Multiplexes multiple WebSocket clients onto each session
-  via JSON-RPC. Runs as a launchd daemon on each Mac.
-- **`forge-tui`** — terminal client. Talks to `forge-daemon` over WS.
-  Optional / experimental; the daemon's wire surface is the contract,
-  not this client.
-- **`forge-test-harness`** — wire-conformance harness. Two scopes:
-  `sdk_wire` (forge-sdk ↔ claude CLI) and `daemon_wire` (daemon ↔
-  client). Replay-based offline tests + opt-in live capture.
+```
+forge-primitives ──── leaf (pure data, no logic)
+forge-sdk        ──→ primitives
+forge-agent      ──→ primitives + sdk
+forge-tui        ──→ primitives + agent
+```
+
+- **`forge-primitives`** — workspace-shared wire-shape types. Message
+  envelopes, content blocks, hook/permission/option/subagent data,
+  render-side views, channel commands, IDs. No logic, no I/O, no
+  async. Every type that crosses any forge-* crate boundary lives
+  here.
+- **`forge-sdk`** — wraps the `claude` CLI subprocess. Owns the
+  stream-json codec, transport, control dispatch, in-process MCP
+  host, callback registries (Hooks/HooksBuilder + CanUseToolCallback)
+  and Options/OptionsBuilder. Single responsibility: speak
+  stream-json with the long-lived subprocess and dispatch its
+  callbacks.
+- **`forge-agent`** — drives one `forge-sdk` Client behind a
+  channel-based `Agent`/`AgentHandle` API. Owns userdata (settings,
+  trust, sessions catalog, memory, plugins), cloud (oauth/usage/
+  account/service-status), and env (git context). The brain between
+  SDK and TUI.
+- **`forge-tui`** — native terminal interface. Consumes `AgentEvent`s,
+  emits `Command`s. No direct dep on `forge-sdk` — primitives + agent
+  cover everything the UI needs.
+- **`forge-test-harness`** — wire-conformance harness. `sdk_wire` scope
+  (forge-sdk ↔ claude CLI). Replay-based offline tests + opt-in live
+  capture.
+
+Multiple sessions = multiple `forge` processes (one per tmux/zellij
+pane). No daemon, no shared state.
 
 ## Project scope
 
@@ -35,15 +56,15 @@ permits.
 Concretely:
 
 - **Drop the public-API parity contract.** forge-sdk's API shape is
-  whatever serves `forge-daemon` and `forge-tui` best. We don't
-  carry single-task constraints from Python's async-generator
+  whatever serves `forge-agent` (and through it, `forge-tui`) best.
+  We don't carry single-task constraints from Python's async-generator
   pattern. We don't preserve method names that are awkward in Rust.
   We don't ship public types just because Python has them.
 - **Lean into Rust.** Concurrent reads + writes + dispatch on the
   same Client (the actor pattern) is first-class, not an escape
   hatch. Channels-based public APIs are preferred over mutex-locked
   &mut self call sites. Internal mpsc-bridging is part of the SDK,
-  not a daemon-side workaround.
+  not an agent-side workaround.
 - **The `claude` CLI is still source of truth.** We spawn it as a
   subprocess and speak stream-json with it. We don't re-implement
   the agentic loop or hit the Anthropic API directly. That part of
@@ -159,16 +180,15 @@ behaviour we care about.
 - `crates/forge-test-harness/` holds the harness. Replay mode runs
   on every `cargo nextest run` — offline, no API cost.
 - Live capture: `FORGE_WIRE_CAPTURE=1 cargo nextest run -p
-  forge-test-harness --no-capture --run-ignored only sdk_<test>`
-  for SDK scenarios; `FORGE_DAEMON_WIRE_CAPTURE=1 ... daemon_<test>`
-  for daemon scenarios.
+  forge-test-harness --no-capture --run-ignored only sdk_<test>`.
 - Baselines live under
-  `crates/forge-test-harness/baselines/sdk/<PINNED_CLI_VERSION>/`
-  and `crates/forge-test-harness/baselines/daemon/<DAEMON_VERSION>/`.
-- Adding a scenario: write a `tests/sdk_scenarios_<name>.rs` (or
-  `daemon_scenarios_<name>.rs`), run with the env var, `cp` the
-  capture into the appropriate baselines dir, commit test +
-  baseline together.
+  `crates/forge-test-harness/baselines/sdk/<PINNED_CLI_VERSION>/`.
+- Adding a scenario: write a `tests/sdk_scenarios_<name>.rs`, run
+  with the env var, `cp` the capture into the appropriate baselines
+  dir, commit test + baseline together.
+
+The `daemon_wire` scope was deleted in 2026-05-05 along with the
+forge-daemon crate.
 
 ## Team context (for team-lead agents)
 

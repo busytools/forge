@@ -7,13 +7,11 @@
 //! translator). Post-collapse the bridge owns the worker concerns,
 //! and the translation lives here as private helpers.
 
-use crate::agent::client::AgentBridge;
 use crate::agent::client::AgentEvent;
 use crate::agent::events::ClientEvent;
-use crate::agent::forge_sdk_bridge::ForgeSdkBridge;
 use crate::agent::model;
-use crate::agent::types;
 use crate::error::AppError;
+use forge_primitives as types;
 use std::rc::Rc;
 use tokio::sync::mpsc;
 use tracing::{Instrument as _, info_span};
@@ -51,21 +49,20 @@ pub(super) async fn run_connection_task(
         );
 
         let mut connected_once = false;
-        let bridge = ForgeSdkBridge::new();
-        let Some(mut event_rx) = bridge.take_events() else {
-            // `ForgeSdkBridge::new()` seeds a fresh receiver, so this
-            // is only reachable if a future refactor double-taps
-            // `take_events`. Surface as a connection failure rather
-            // than panic.
+        let agent_handle = forge_agent::Agent::spawn();
+        let Some(mut event_rx) = agent_handle.take_events() else {
+            // `Agent::spawn()` seeds a fresh receiver, so this is only
+            // reachable if a future refactor double-taps `take_events`.
+            // Surface as a connection failure rather than panic.
             emit_connection_failed(
                 &params.event_tx,
-                "forge-sdk bridge yielded no event receiver".to_owned(),
+                "forge-agent yielded no event receiver".to_owned(),
                 AppError::ConnectionFailed,
             );
             return;
         };
 
-        let agent: Rc<dyn AgentBridge> = Rc::new(bridge) as Rc<dyn AgentBridge>;
+        let agent: Rc<forge_agent::AgentHandle> = Rc::new(agent_handle);
         *conn_slot_writer.borrow_mut() = Some(ConnectionSlot { conn: Rc::clone(&agent) });
 
         let send_result = if let Some(resume_id) = params.resume_id.clone() {
@@ -95,7 +92,7 @@ pub(super) async fn run_connection_task(
 async fn forge_sdk_event_loop(
     params: &StartConnectionParams,
     event_rx: &mut mpsc::UnboundedReceiver<AgentEvent>,
-    agent: &Rc<dyn AgentBridge>,
+    agent: &Rc<forge_agent::AgentHandle>,
     connected_once: &mut bool,
 ) {
     while let Some(event) = event_rx.recv().await {
@@ -112,7 +109,7 @@ async fn forge_sdk_event_loop(
 #[allow(clippy::too_many_lines)]
 fn handle_agent_event(
     event_tx: &mpsc::UnboundedSender<ClientEvent>,
-    agent: &Rc<dyn AgentBridge>,
+    agent: &Rc<forge_agent::AgentHandle>,
     connected_once: &mut bool,
     resume_requested: bool,
     event: AgentEvent,
@@ -280,7 +277,7 @@ fn handle_connected_event(
 
 fn handle_permission_request_event(
     event_tx: &mpsc::UnboundedSender<ClientEvent>,
-    agent: &Rc<dyn AgentBridge>,
+    agent: &Rc<forge_agent::AgentHandle>,
     session_id: String,
     request: types::PermissionRequest,
 ) {
@@ -307,7 +304,7 @@ fn handle_permission_request_event(
 
 fn handle_question_request_event(
     event_tx: &mpsc::UnboundedSender<ClientEvent>,
-    agent: &Rc<dyn AgentBridge>,
+    agent: &Rc<forge_agent::AgentHandle>,
     session_id: String,
     request: types::QuestionRequest,
 ) {
@@ -328,7 +325,7 @@ fn handle_question_request_event(
 }
 
 fn spawn_permission_response_forwarder(
-    agent: Rc<dyn AgentBridge>,
+    agent: Rc<forge_agent::AgentHandle>,
     response_rx: tokio::sync::oneshot::Receiver<model::RequestPermissionResponse>,
     session_id: String,
     tool_call_id: String,
@@ -386,7 +383,7 @@ fn spawn_permission_response_forwarder(
 }
 
 fn spawn_question_response_forwarder(
-    agent: Rc<dyn AgentBridge>,
+    agent: Rc<forge_agent::AgentHandle>,
     response_rx: tokio::sync::oneshot::Receiver<model::RequestQuestionResponse>,
     session_id: String,
     tool_call_id: String,

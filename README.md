@@ -12,12 +12,25 @@ project guide.
 
 ## Crates
 
+The workspace is layered, with strictly acyclic dependencies:
+
+```
+forge-primitives ──── leaf (pure data, no logic)
+forge-sdk        ──→ primitives
+forge-agent      ──→ primitives + sdk
+forge-tui        ──→ primitives + agent
+```
+
 | Crate | Description |
 |---|---|
-| [`forge-sdk`](crates/forge-sdk) | Wraps the `claude` CLI as a structured-message API. |
-| [`forge-daemon`](crates/forge-daemon) | Multiplexes WS clients onto SDK sessions over JSON-RPC. Runs as launchd. |
-| [`forge-tui`](crates/forge-tui) | Optional terminal client over WS. |
-| [`forge-test-harness`](crates/forge-test-harness) | Wire-conformance harness (SDK ↔ CLI, daemon ↔ client). |
+| [`forge-primitives`](crates/forge-primitives) | Workspace-shared wire-shape types — message envelopes, content blocks, hook/permission/option/subagent data, channel commands, IDs, render-side views. Pure data, no I/O. |
+| [`forge-sdk`](crates/forge-sdk) | Wraps the `claude` CLI subprocess. Owns the stream-json codec, transport, control dispatch, in-process MCP host, and the callback registries (Hooks/HooksBuilder, CanUseToolCallback). |
+| [`forge-agent`](crates/forge-agent) | Drives one `forge-sdk` Client behind a channel-based `Agent`/`AgentHandle` API. Owns userdata (settings, trust, sessions catalog, memory, plugins), cloud (oauth, usage, account, service status), and env (git context). |
+| [`forge-tui`](crates/forge-tui) | Native terminal interface. Consumes `AgentEvent`s, emits `Command`s. No direct dep on `forge-sdk`. |
+| [`forge-test-harness`](crates/forge-test-harness) | Wire-conformance harness for `forge-sdk` ↔ `claude` CLI. Replay-based offline tests + opt-in live capture. |
+
+Multiple sessions = multiple `forge` processes (one per tmux/zellij pane).
+No daemon, no shared state.
 
 ## Development
 

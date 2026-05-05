@@ -20,14 +20,14 @@ async fn wire_capture_stream_event() {
         .include_partial_messages(true)
         .build();
 
-    run_live_scenario("stream_event", opts, |client| async move {
+    run_live_scenario("stream_event", opts, |client, events| async move {
         client
             .send_user_message(
                 "Count from 1 to 20 slowly, one number per line, \
                  with a word of description for each number.",
             )
             .await?;
-        Ok(client)
+        Ok((client, events))
     })
     .await
     .expect("scenario run");

@@ -1,12 +1,13 @@
 //! Thin TUI-side cache for the bridge-pushed git context snapshots.
 //!
 //! Filesystem reads, the `.git/HEAD` walker, the `notify::Watcher`,
-//! and the 75ms debounce all live in `forge_sdk::git`. The TUI starts
-//! a watcher per session via `AgentBridge::start_git_context_watch`
-//! and consumes `AgentEvent::GitContextSnapshot` events; this module
-//! is the App-side cache those events feed.
+//! and the 75ms debounce all live in `forge_agent::env::git`. The
+//! TUI starts a watcher per session via
+//! `AgentBridge::start_git_context_watch` and consumes
+//! `AgentEvent::GitContextSnapshot` events; this module is the
+//! App-side cache those events feed.
 
-use forge_sdk::{GitBranch, GitContext};
+use forge_agent::env::git::{GitBranch, GitContext};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) enum BranchDisplayState {
@@ -52,7 +53,7 @@ impl From<GitBranch> for BranchDisplayState {
             GitBranch::Named(name) => Self::Named(name),
             GitBranch::Detached => Self::Detached,
             GitBranch::NoRepo => Self::NoRepo,
-            // `forge_sdk::GitBranch` is `#[non_exhaustive]`; explicit
+            // `forge_agent::env::git::GitBranch` is `#[non_exhaustive]`; explicit
             // `Unknown` plus the wildcard for any future variants both
             // surface as `Unknown` (TUI hides the chip).
             GitBranch::Unknown | _ => Self::Unknown,
@@ -105,10 +106,10 @@ impl GitContextState {
 #[cfg(test)]
 mod tests {
     use super::{BranchChip, BranchDisplayState, GitContextState};
-    use forge_sdk::{GitBranch, GitContext};
+    use forge_agent::env::git::{GitBranch, GitContext};
 
     fn ctx(branch: GitBranch) -> GitContext {
-        // forge_sdk::GitContext is #[non_exhaustive] but
+        // forge_agent::env::git::GitContext is #[non_exhaustive] but
         // GitContext::default() yields `branch: GitBranch::NoRepo`;
         // overwrite the field for test setup.
         let mut c = GitContext::default();

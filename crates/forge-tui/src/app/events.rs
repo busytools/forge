@@ -482,7 +482,7 @@ mod tests {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
     use pretty_assertions::assert_eq;
     use ratatui::layout::Rect;
-    use std::rc::Rc;
+
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
     use tokio::sync::oneshot;
@@ -887,15 +887,15 @@ mod tests {
     }
 
     fn app_with_bridge_connection()
-    -> (App, tokio::sync::mpsc::UnboundedReceiver<crate::agent::test_bridge::ForgeSdkCommand>) {
+    -> (App, tokio::sync::mpsc::UnboundedReceiver<forge_primitives::Command>) {
         let mut app = make_test_app();
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-        app.conn = Some(Rc::new(crate::agent::test_bridge::RecordingBridge::new(tx)));
+        let (handle, rx) = forge_agent::Agent::testing_stub();
+        app.conn = Some(std::rc::Rc::new(handle));
         (app, rx)
     }
 
-    fn listed_session(id: &str, title: &str) -> crate::agent::types::SessionListEntry {
-        crate::agent::types::SessionListEntry {
+    fn listed_session(id: &str, title: &str) -> forge_primitives::SessionListEntry {
+        forge_primitives::SessionListEntry {
             session_id: id.to_owned(),
             summary: title.to_owned(),
             last_modified_ms: 1,
@@ -1473,9 +1473,9 @@ mod tests {
     fn connected_requests_mcp_snapshot_even_outside_mcp_tab() {
         let (mut app, mut rx) = app_with_bridge_connection();
         app.config.active_tab = crate::app::config::ConfigTab::Status;
-        app.mcp.servers.push(forge_sdk::McpServerStatus {
+        app.mcp.servers.push(forge_primitives::McpServerStatus {
             name: "supabase".into(),
-            status: forge_sdk::McpServerConnectionStatus::Connected,
+            status: forge_primitives::McpServerConnectionStatus::Connected,
             server_info: None,
             error: None,
             config: None,
@@ -1493,8 +1493,8 @@ mod tests {
         let envelope = rx.try_recv().expect("mcp snapshot command");
         assert_eq!(
             envelope,
-            crate::agent::test_bridge::ForgeSdkCommand::GetMcpSnapshot {
-                session_id: "test-session".to_owned(),
+            forge_primitives::Command::GetMcpSnapshot {
+                session_id: forge_primitives::SessionId::new("test-session".to_owned()),
             }
         );
         assert!(app.mcp.in_flight);
@@ -1627,7 +1627,7 @@ mod tests {
             seven_day_sonnet: None,
             extra_usage: None,
         });
-        app.account_info = Some(forge_sdk::AccountInfo {
+        app.account_info = Some(forge_primitives::AccountInfo {
             email: Some("old@example.com".into()),
             organization: None,
             subscription_type: None,
@@ -1787,9 +1787,9 @@ mod tests {
             active_form: String::new(),
         });
         app.mention = Some(mention::MentionState::new(0, 0, String::new(), Vec::new()));
-        app.mcp.servers.push(forge_sdk::McpServerStatus {
+        app.mcp.servers.push(forge_primitives::McpServerStatus {
             name: "supabase".into(),
-            status: forge_sdk::McpServerConnectionStatus::Connected,
+            status: forge_primitives::McpServerConnectionStatus::Connected,
             server_info: None,
             error: None,
             config: None,
@@ -1841,9 +1841,9 @@ mod tests {
     fn session_replaced_requests_mcp_snapshot_even_outside_mcp_tab() {
         let (mut app, mut rx) = app_with_bridge_connection();
         app.config.active_tab = crate::app::config::ConfigTab::Status;
-        app.mcp.servers.push(forge_sdk::McpServerStatus {
+        app.mcp.servers.push(forge_primitives::McpServerStatus {
             name: "supabase".into(),
-            status: forge_sdk::McpServerConnectionStatus::Connected,
+            status: forge_primitives::McpServerConnectionStatus::Connected,
             server_info: None,
             error: None,
             config: None,
@@ -1871,8 +1871,8 @@ mod tests {
         let envelope = rx.try_recv().expect("mcp snapshot command");
         assert_eq!(
             envelope,
-            crate::agent::test_bridge::ForgeSdkCommand::GetMcpSnapshot {
-                session_id: "replacement".to_owned(),
+            forge_primitives::Command::GetMcpSnapshot {
+                session_id: forge_primitives::SessionId::new("replacement".to_owned()),
             }
         );
         assert!(app.mcp.in_flight);
@@ -1891,15 +1891,15 @@ mod tests {
         let mcp = rx.try_recv().expect("mcp snapshot command");
         assert_eq!(
             mcp,
-            crate::agent::test_bridge::ForgeSdkCommand::GetMcpSnapshot {
-                session_id: "test-session".to_owned(),
+            forge_primitives::Command::GetMcpSnapshot {
+                session_id: forge_primitives::SessionId::new("test-session".to_owned()),
             }
         );
         let status = rx.try_recv().expect("status snapshot command");
         assert_eq!(
             status,
-            crate::agent::test_bridge::ForgeSdkCommand::GetStatusSnapshot {
-                session_id: "test-session".to_owned(),
+            forge_primitives::Command::GetStatusSnapshot {
+                session_id: forge_primitives::SessionId::new("test-session".to_owned()),
             }
         );
     }
@@ -1928,7 +1928,7 @@ mod tests {
             &mut app,
             ClientEvent::StatusSnapshotReceived {
                 session_id: "old-session".into(),
-                account: forge_sdk::AccountInfo {
+                account: forge_primitives::AccountInfo {
                     email: Some("old@example.com".into()),
                     organization: None,
                     subscription_type: None,
@@ -1957,7 +1957,7 @@ mod tests {
             &mut app,
             ClientEvent::StatusSnapshotReceived {
                 session_id: "session-1".into(),
-                account: forge_sdk::AccountInfo {
+                account: forge_primitives::AccountInfo {
                     email: None,
                     organization: None,
                     subscription_type: Some("Claude Max".into()),
@@ -1978,9 +1978,9 @@ mod tests {
     fn stale_mcp_snapshot_for_old_session_is_ignored() {
         let mut app = make_test_app();
         app.session_id = Some(model::SessionId::new("current-session"));
-        app.mcp.servers.push(forge_sdk::McpServerStatus {
+        app.mcp.servers.push(forge_primitives::McpServerStatus {
             name: "current".into(),
-            status: forge_sdk::McpServerConnectionStatus::Connected,
+            status: forge_primitives::McpServerConnectionStatus::Connected,
             server_info: None,
             error: None,
             config: None,
@@ -1994,9 +1994,9 @@ mod tests {
             &mut app,
             ClientEvent::McpSnapshotReceived {
                 session_id: "old-session".into(),
-                servers: vec![forge_sdk::McpServerStatus {
+                servers: vec![forge_primitives::McpServerStatus {
                     name: "stale".into(),
-                    status: forge_sdk::McpServerConnectionStatus::Connected,
+                    status: forge_primitives::McpServerConnectionStatus::Connected,
                     server_info: None,
                     error: None,
                     config: None,
@@ -2093,7 +2093,7 @@ mod tests {
         handle_client_event(
             &mut app,
             ClientEvent::SessionsListed {
-                sessions: vec![crate::agent::types::SessionListEntry {
+                sessions: vec![forge_primitives::SessionListEntry {
                     session_id: "session-1".to_owned(),
                     summary: "Renamed session".to_owned(),
                     last_modified_ms: 1,
@@ -2148,7 +2148,7 @@ mod tests {
         handle_client_event(
             &mut app,
             ClientEvent::McpOperationError {
-                error: crate::agent::types::McpOperationError {
+                error: forge_primitives::McpOperationError {
                     server_name: Some("claude.ai Google Calendar".into()),
                     operation: "authenticate".into(),
                     message: "Server type \"claudeai-proxy\" does not support OAuth authentication"
@@ -2181,7 +2181,7 @@ mod tests {
         handle_client_event(
             &mut app,
             ClientEvent::SessionsListed {
-                sessions: vec![crate::agent::types::SessionListEntry {
+                sessions: vec![forge_primitives::SessionListEntry {
                     session_id: "session-1".to_owned(),
                     summary: "Generated session".to_owned(),
                     last_modified_ms: 1,
@@ -2215,8 +2215,8 @@ mod tests {
         assert!(app.startup_recent_sessions_loaded);
         assert!(!app.startup_session_picker_resolved);
 
-        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        app.conn = Some(Rc::new(crate::agent::test_bridge::RecordingBridge::new(tx)));
+        let (handle, _rx) = forge_agent::Agent::testing_stub();
+        app.conn = Some(std::rc::Rc::new(handle));
         handle_client_event(&mut app, connected_event("claude-updated"));
 
         assert_eq!(app.active_view, ActiveView::SessionPicker);
@@ -2227,8 +2227,8 @@ mod tests {
     fn startup_picker_empty_list_stays_in_chat_with_info_message() {
         let mut app = make_test_app();
         app.startup_session_picker_requested = true;
-        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        app.conn = Some(Rc::new(crate::agent::test_bridge::RecordingBridge::new(tx)));
+        let (handle, _rx) = forge_agent::Agent::testing_stub();
+        app.conn = Some(std::rc::Rc::new(handle));
 
         handle_client_event(&mut app, connected_event("claude-updated"));
         assert_eq!(app.active_view, ActiveView::Chat);
@@ -4276,7 +4276,7 @@ mod tests {
         let envelope = rx.try_recv().expect("second Esc should send turn cancel");
         assert!(matches!(
             envelope,
-            crate::agent::test_bridge::ForgeSdkCommand::Cancel { session_id }
+            forge_primitives::Command::Cancel { session_id }
                 if session_id == "session-1"
         ));
     }

@@ -17,19 +17,26 @@ async fn wire_capture_multi_turn() {
         .permission_mode(PermissionMode::AcceptEdits)
         .build();
 
-    run_live_scenario("multi_turn", opts, |client| async move {
+    run_live_scenario("multi_turn", opts, |client, mut events| async move {
         // Turn 1 — drain the Result in-scenario so the harness's
         // main drain picks up turn 2's Result instead.
         client
             .send_user_message("Reply with the single word: PINE")
             .await?;
-        client.receive_response().await?;
+        // Drain until Result.
+        loop {
+            match events.recv().await {
+                Some(Ok(forge_sdk::Message::Result { .. })) | None => break,
+                Some(Ok(_)) => {}
+                Some(Err(e)) => return Err(e),
+            }
+        }
 
         // Turn 2 — harness drains this until Result.
         client
             .send_user_message("Now repeat the word you just said, in lowercase.")
             .await?;
-        Ok(client)
+        Ok((client, events))
     })
     .await
     .expect("scenario run");

@@ -3,13 +3,14 @@
 //! `Client` is a cheap-clone handle (`Arc`-backed) over a background
 //! reader task that owns the `claude` subprocess. All methods take
 //! `&self`, so the same `Client` can be passed by reference into
-//! multiple tasks (the daemon's session actor uses this for
-//! `tokio::select!` between a command channel and `next_event`).
+//! multiple tasks. The events stream is returned alongside the Client
+//! at spawn time as a [`ClientEvents`] receiver — single-consumer,
+//! independent of the writer-side handle.
 //!
 //! Internally:
 //! - The reader task pulls lines from the subprocess, decodes them,
-//!   pushes regular [`Message`]s onto an mpsc that backs
-//!   [`Client::next_event`], dispatches inbound `control_request`s on
+//!   pushes regular [`Message`]s onto an mpsc that backs the returned
+//!   [`ClientEvents`], dispatches inbound `control_request`s on
 //!   detached tasks, and routes outbound `control_response`s to
 //!   per-request oneshots so [`Client::send_control`] callers can
 //!   `await` their typed reply.
@@ -26,7 +27,7 @@ pub(crate) use control_dispatch::ControlDispatchHandle;
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
-use tokio::sync::{Mutex, oneshot};
+use tokio::sync::{Mutex, mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tracing::debug;
 
@@ -35,19 +36,25 @@ use crate::client::runtime::{
     PendingControls, SharedSessionId, new_shared_session_id, spawn_reader_task,
 };
 use crate::mcp::orchestration::McpHosts;
-use crate::messages::Message;
 use crate::options::Options;
 use crate::transport::codec::{DecodedLine, decode_dispatch};
 use crate::transport::process::Subprocess;
+use forge_primitives::Message;
+
+/// Stream of regular [`Message`]s produced by the reader task.
+/// Returned alongside [`Client`] from [`Client::spawn`]. Single-consumer;
+/// the writer-side [`Client`] is `Clone` and can move freely between
+/// tasks while one task owns the receiver.
+pub type ClientEvents = mpsc::UnboundedReceiver<Result<Message, Error>>;
 
 /// An active `claude` binary subprocess.
 ///
 /// Construct via [`spawn`](Self::spawn). The init handshake
 /// (`initialize` `control_request` + drained response) runs inside
 /// `spawn`; the `system/init` frame is consumed and its session id
-/// cached on [`session_id()`](Self::session_id). Callers of
-/// [`next_event`](Self::next_event) see the clean conversational
-/// stream starting with hook/assistant/user frames.
+/// cached on [`session_id()`](Self::session_id). The returned
+/// [`ClientEvents`] receiver yields the clean conversational stream
+/// starting with hook/assistant/user frames.
 ///
 /// `Client` is `Clone`. All clones share the same underlying
 /// subprocess, reader task, and pending-control map. Cloning is
@@ -67,7 +74,7 @@ struct ClientInner {
     /// Captured `system/init` payload (`model`, `tools`, `mcp_servers`,
     /// `slash_commands`, …). The CLI emits this once after init and the
     /// SDK strips it from the user-visible `Message` stream; cache it
-    /// here so `forge-daemon` can answer footer / slash queries without
+    /// here so `forge-agent` can answer footer / slash queries without
     /// re-running the handshake.
     cached_init_data: Option<serde_json::Value>,
     /// Captured session id. The reader task updates it as messages
@@ -77,9 +84,6 @@ struct ClientInner {
     /// In-flight outbound `control_request`s waiting on responses.
     /// The reader task routes incoming `control_response`s here.
     pending_controls: PendingControls,
-    /// Stream of regular [`Message`]s produced by the reader task.
-    /// Single-consumer (callers serialise on the inner mutex).
-    events_rx: Mutex<tokio::sync::mpsc::UnboundedReceiver<Result<Message, Error>>>,
     /// Reader task handle. Awaited on [`Client::disconnect`].
     reader_task: Mutex<Option<JoinHandle<()>>>,
     /// Shutdown signal for the reader task. `take()`'d on the first
@@ -115,7 +119,7 @@ impl Client {
     ///
     /// Any [`Error`] variant; see field docs.
     #[allow(clippy::too_many_lines)]
-    pub async fn spawn(options: Options) -> Result<Self, Error> {
+    pub async fn spawn(options: Options) -> Result<(Self, ClientEvents), Error> {
         let mut sub = Subprocess::spawn(&options).await?;
         let writer = sub.clone_writer();
         let session_id = new_shared_session_id();
@@ -315,7 +319,7 @@ impl Client {
                         // Drop `system/init` from the pre-init buffer —
                         // the CLI consumes it inside `query._fetch_init`
                         // and never surfaces it to callers; we mirror.
-                        // Cache its `data` so `forge-daemon` can read
+                        // Cache its `data` so `forge-agent` can read
                         // model / mcp / slash-command info off it.
                         if let Message::System {
                             ref subtype,
@@ -369,12 +373,11 @@ impl Client {
             cached_init_data,
             session_id,
             pending_controls,
-            events_rx: Mutex::new(events_rx),
             reader_task: Mutex::new(Some(reader_task)),
             shutdown_tx: Mutex::new(Some(shutdown_tx)),
         });
 
-        Ok(Self { inner })
+        Ok((Self { inner }, events_rx))
     }
 
     /// Cached response from the `initialize` `control_request` — holds
@@ -390,8 +393,8 @@ impl Client {
     /// frame, carrying `model`, `tools`, `mcp_servers`, `slash_commands`,
     /// `agents`, `skills`, etc. Stripped from the user-visible `Message`
     /// stream during init; cached here for callers that need the
-    /// initial session context (e.g. forge-daemon's `session.current_model`
-    /// + `slash.list` RPCs).
+    /// initial session context (e.g. forge-agent's status snapshot +
+    /// slash autocomplete).
     #[must_use]
     pub fn initial_session_data(&self) -> Option<&serde_json::Value> {
         self.inner.cached_init_data.as_ref()
@@ -404,130 +407,32 @@ impl Client {
         self.inner.session_id.read().clone()
     }
 
-    /// Typed accessor for the user's account profile. Resolution
-    /// order, cheapest first:
-    ///
-    /// 1. Top-level `apiKeySource` from the cached `system/init`
-    ///    payload (when present and not `"none"`). Carries only the
-    ///    auth source — no email/org/subscription.
-    /// 2. `claude auth status` shell-out — the CLI's only source of
-    ///    truth for the full account profile (email, org name,
-    ///    subscription tier). ~50ms latency on first call.
-    ///
-    /// Returns `None` when neither source has data — typically the
-    /// caller is unauthenticated.
-    #[must_use]
-    pub fn account_info(&self) -> Option<crate::public_types::AccountInfo> {
-        if let Some(info) = self.account_info_from_init() {
-            return Some(info);
-        }
-        crate::auth_status::account_info_from_auth_status()
-    }
-
     /// Read the bare `apiKeySource` field from the cached
-    /// `system/init` payload. Returns `None` when the payload is
+    /// `system/init` payload, returning a partial
+    /// [`AccountInfo`](crate::AccountInfo) (auth source only — no
+    /// email/org/subscription). Returns `None` when the payload is
     /// absent (init not yet arrived), the field is missing, or the
     /// value is empty / `"none"`.
-    fn account_info_from_init(&self) -> Option<crate::public_types::AccountInfo> {
+    ///
+    /// Callers that need the full profile (email, organization,
+    /// subscription tier) shell out to `claude auth status`
+    /// separately — that path is agent-side
+    /// (`forge_agent::cloud::auth_status`), not SDK-side, because it
+    /// spawns a fresh subprocess outside the long-lived stream-json
+    /// session.
+    #[must_use]
+    pub fn account_info_from_init(&self) -> Option<forge_primitives::AccountInfo> {
         let data = self.inner.cached_init_data.as_ref()?;
         let api_key_source = data
             .get("apiKeySource")
             .and_then(serde_json::Value::as_str)
             .map(str::to_owned)
             .filter(|s| !s.is_empty() && s != "none")?;
-        Some(crate::public_types::AccountInfo {
+        Some(forge_primitives::AccountInfo {
             api_key_source: Some(api_key_source.clone()),
             token_source: Some(api_key_source),
-            ..crate::public_types::AccountInfo::default()
+            ..forge_primitives::AccountInfo::default()
         })
-    }
-
-    /// Read the user's OAuth credentials from
-    /// `<config_dir>/.credentials.json`, where `<config_dir>` is
-    /// `$CLAUDE_CONFIG_DIR` (when set + non-empty) else
-    /// `$HOME/.claude`. On macOS, falls back to the system keychain
-    /// entry if the file is absent. Returns `None` if neither source
-    /// has a parseable, non-empty `claudeAiOauth.accessToken`.
-    ///
-    /// Unlike [`Client::account_info`] (which deserialises from the
-    /// cached `system/init` payload), credentials are read from disk /
-    /// keychain every call — they live outside the CLI's stream-json
-    /// wire surface, so there is no init frame to cache from. Cheap
-    /// for the file path (one small read) but the keychain shell-out
-    /// is comparatively expensive; consumers that poll frequently
-    /// should cache the result themselves.
-    #[must_use]
-    pub fn oauth_credentials(&self) -> Option<crate::public_types::OauthCredentials> {
-        crate::session::paths::load_oauth_credentials()
-    }
-
-    /// Fetch the live OAuth usage payload from the Anthropic API.
-    /// Resolves the bearer token via [`Client::oauth_credentials`]
-    /// and returns the parsed response — the access token never
-    /// crosses the SDK boundary.
-    ///
-    /// # Errors
-    ///
-    /// See [`OauthUsageError`](crate::OauthUsageError) for the failure
-    /// cases (missing/expired credentials, network failure, non-2xx
-    /// response, decode failure).
-    pub async fn oauth_usage(&self) -> Result<crate::OauthUsage, crate::OauthUsageError> {
-        crate::oauth_usage::oauth_usage().await
-    }
-
-    /// Read the three Claude Code settings documents (user,
-    /// project-local, preferences) from disk. Returns raw
-    /// `serde_json::Value` documents — consumers own the merge /
-    /// precedence semantics.
-    ///
-    /// `cwd` is the project root used to locate
-    /// `<cwd>/.claude/settings.local.json`.
-    ///
-    /// See [`crate::settings`] for the resolution rules and
-    /// `$CLAUDE_CONFIG_DIR` handling.
-    #[must_use]
-    pub fn settings_documents(&self, cwd: &std::path::Path) -> crate::SettingsDocuments {
-        crate::settings::settings_documents(cwd)
-    }
-
-    /// Write `document` atomically to the settings file
-    /// [`SettingsTarget`](crate::SettingsTarget) resolves to. Mirrors
-    /// the read-side resolution — `User` honours
-    /// `$CLAUDE_CONFIG_DIR`, `ProjectLocal { cwd }` is project-
-    /// relative, `Preferences` is `$HOME`-pinned.
-    ///
-    /// # Errors
-    ///
-    /// [`Error`] when the underlying filesystem operation fails — see
-    /// [`crate::settings::write_settings_document`] for the full
-    /// failure-mode list.
-    pub fn write_settings_document(
-        &self,
-        target: &crate::SettingsTarget,
-        document: &serde_json::Value,
-    ) -> Result<(), crate::Error> {
-        crate::settings::write_settings_document(target, document)
-    }
-
-    /// Resolve the path to the project's auto-memory file:
-    /// `<config_dir>/projects/<project_key>/memory/MEMORY.md`. Always
-    /// returns a path; the caller decides whether the file exists.
-    ///
-    /// `cwd` is the project root. The on-disk project key comes from
-    /// [`session::scan::project_key_for_directory`](crate::session::scan::project_key_for_directory)
-    /// — same sanitisation the `claude` CLI uses, so the resolved
-    /// path matches the directory layout claude itself maintains.
-    #[must_use]
-    pub fn project_memory_path(&self, cwd: &std::path::Path) -> std::path::PathBuf {
-        crate::session::paths::project_memory_path(cwd)
-    }
-
-    /// Read the contents of the project's auto-memory file. Returns
-    /// `None` when the file is missing or unreadable. Path resolution
-    /// matches [`Client::project_memory_path`].
-    #[must_use]
-    pub fn project_memory(&self, cwd: &std::path::Path) -> Option<String> {
-        crate::session::paths::project_memory(cwd)
     }
 
     /// Send a user prompt as a stream-json user turn.
@@ -564,53 +469,11 @@ impl Client {
         self.inner.writer.write_line(&line).await
     }
 
-    /// Read the next stream-json **regular** message from the subprocess.
-    ///
-    /// Control requests are dispatched transparently inside the reader
-    /// task (using a cloned writer; cancel-safe). Returns `Ok(None)` at
-    /// end-of-stream (subprocess exited).
-    ///
-    /// # Errors
-    ///
-    /// - [`Error::JsonDecode`] / [`Error::MessageParse`] per line.
-    /// - [`Error::Io`] on pipe read/write failure.
-    pub async fn next_event(&self) -> Result<Option<Message>, Error> {
-        let mut rx = self.inner.events_rx.lock().await;
-        match rx.recv().await {
-            Some(Ok(msg)) => Ok(Some(msg)),
-            Some(Err(e)) => Err(e),
-            None => Ok(None),
-        }
-    }
-
-    /// Drain messages until and including a [`Message::Result`]. The
-    /// result frame IS included in the returned vector. Convenience
-    /// over [`next_event`](Self::next_event) for one-shot
-    /// request/response workflows.
-    ///
-    /// Returns whatever was received before the subprocess closed if no
-    /// `Result` frame ever arrives.
-    ///
-    /// # Errors
-    ///
-    /// Any error [`next_event`](Self::next_event) surfaces.
-    pub async fn receive_response(&self) -> Result<Vec<Message>, Error> {
-        let mut msgs = Vec::new();
-        while let Some(msg) = self.next_event().await? {
-            let is_result = matches!(msg, Message::Result { .. });
-            msgs.push(msg);
-            if is_result {
-                break;
-            }
-        }
-        Ok(msgs)
-    }
-
     /// Close the stdin side of the transport while keeping the client
     /// alive for reading. Signals the CLI that no more user messages
     /// are coming; the CLI drains in-flight turns, emits any final
-    /// frames, and closes stdout. `next_event` returns `Ok(None)` on
-    /// EOF afterwards.
+    /// frames, and closes stdout. The events receiver returns `None`
+    /// on EOF afterwards.
     ///
     /// # Errors
     ///
