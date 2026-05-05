@@ -15,11 +15,7 @@ workspace = true
 [dependencies]
 forge-sdk = { path = "../forge-sdk", version = "=0.1.64" }
 tokio = { workspace = true }
-serde.workspace = true
 serde_json.workspace = true
 async-trait.workspace = true
 regex.workspace = true
 parking_lot.workspace = true
-
-[dev-dependencies]
-tempfile.workspace = true
