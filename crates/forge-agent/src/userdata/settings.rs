@@ -154,7 +154,7 @@ fn write_json_atomic(path: &Path, document: &Value) -> Result<(), Error> {
                 |n| n.to_string_lossy().into_owned(),
             );
             tracing::debug!(
-                target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                target: crate::logging::targets::SETTINGS,
                 error = %cleanup_err,
                 temp_basename,
                 "best-effort temp cleanup failed; original error follows",

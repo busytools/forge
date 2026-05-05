@@ -124,15 +124,20 @@ async fn handle_line(
             let dispatch = dispatch.clone();
             tokio::spawn(async move {
                 if let Err(e) = dispatch.dispatch(req).await {
-                    tracing::warn!(error = %e, "control_dispatch failed");
+                    tracing::warn!(
+                        target: crate::logging::targets::SDK_READER,
+                        error = %e,
+                        "control_dispatch failed",
+                    );
                 }
             });
             true
         }
         Ok(DecodedLine::ControlCancel { request_id }) => {
             tracing::debug!(
+                target: crate::logging::targets::SDK_READER,
                 %request_id,
-                "control_cancel_request received; nothing to cancel"
+                "control_cancel_request received; nothing to cancel",
             );
             true
         }
@@ -179,18 +184,20 @@ async fn handle_line(
                 let _ = tx.send(outcome);
             } else {
                 tracing::warn!(
+                    target: crate::logging::targets::SDK_READER,
                     %request_id,
-                    "unexpected control_response — dropping"
+                    "unexpected control_response — dropping",
                 );
             }
             true
         }
         Ok(DecodedLine::Unknown { type_str, raw }) => {
             tracing::warn!(
+                target: crate::logging::targets::SDK_READER,
                 type = %type_str,
                 raw = %raw,
                 line = line_number,
-                "unknown top-level stream-json type — surfacing as Message::Unknown"
+                "unknown top-level stream-json type — surfacing as Message::Unknown",
             );
             events_tx
                 .send(Ok(Message::Unknown { type_str, raw }))
@@ -213,7 +220,11 @@ async fn handle_line(
 
 async fn close_subprocess(subprocess: &mut Subprocess) {
     if let Err(e) = subprocess.close().await {
-        tracing::debug!(error = %e, "reader task: subprocess close error");
+        tracing::debug!(
+            target: crate::logging::targets::SDK_READER,
+            error = %e,
+            "reader task: subprocess close error",
+        );
     }
 }
 

@@ -129,9 +129,9 @@ impl ForgeSdkBridge {
     /// event for a user-visible MCP failure — silent-drop on
     /// teardown race would lose the only path to surface).
     /// On send failure we destructure the unsent event back out of
-    /// the `SendError` so the warn log carries the `server_name`
-    /// and underlying error text — the most actionable triage
-    /// signals.
+    /// the `SendError` so the warn log carries `session_id`,
+    /// `server_name`, and the underlying error text — the most
+    /// actionable triage signals.
     fn emit_mcp_error_or_log(
         event_tx: &mpsc::UnboundedSender<AgentEvent>,
         session_id: String,
@@ -148,25 +148,20 @@ impl ForgeSdkBridge {
             },
         };
         if let Err(send_err) = event_tx.send(event) {
-            if let AgentEvent::McpOperationError { error, .. } = send_err.0 {
-                tracing::warn!(
-                    target: crate::logging::targets::BRIDGE_LIFECYCLE,
-                    operation,
-                    server_name = ?error.server_name,
-                    error_msg = %error.message,
-                    "event channel closed; McpOperationError dropped",
-                );
-            } else {
-                // Unreachable — we just constructed McpOperationError
-                // above, so the send-error variant must match. Log a
-                // bare breadcrumb defensively in case a future refactor
-                // routes a different variant through this helper.
-                tracing::warn!(
-                    target: crate::logging::targets::BRIDGE_LIFECYCLE,
-                    operation,
-                    "event channel closed; McpOperationError dropped (variant mismatch in helper)",
-                );
-            }
+            // Unreachable in practice — we just constructed
+            // McpOperationError on the line above and the SendError
+            // wraps the unsent event verbatim.
+            let AgentEvent::McpOperationError { session_id, error } = send_err.0 else {
+                unreachable!("McpOperationError just constructed above")
+            };
+            tracing::warn!(
+                target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                session_id = %session_id,
+                operation,
+                server_name = ?error.server_name,
+                error_msg = %error.message,
+                "event channel closed; McpOperationError dropped",
+            );
         }
     }
 
@@ -283,15 +278,17 @@ impl ForgeSdkBridge {
 
     pub(crate) fn prompt_with_images(
         &self,
-        session_id: String,
+        _session_id: String,
         text: String,
         images: Vec<forge_primitives::ImageAttachment>,
     ) -> anyhow::Result<PromptResponse> {
-        if !self.check_session_id(&session_id, "prompt_with_images") {
-            return Ok(PromptResponse {
-                stop_reason: String::new(),
-            });
-        }
+        // No `check_session_id` here — the TUI commits to
+        // `AppStatus::Thinking` BEFORE this call, and a silent
+        // stale-session drop (returning Ok with no event) would
+        // leave the user's spinner running forever with no
+        // recovery path. If the prompt does land in the wrong
+        // session, normal SDK error surfaces (TurnError, etc.)
+        // tear down Thinking via the existing wire path.
         let mut chunks: Vec<forge_primitives::PromptChunk> = Vec::with_capacity(1 + images.len());
         for img in images {
             if let Err(reason) = forge_primitives::validate_image(&img.data, &img.mime_type) {
@@ -375,12 +372,12 @@ impl ForgeSdkBridge {
 
     pub(crate) fn generate_session_title(
         &self,
-        session_id: String,
+        _session_id: String,
         description: String,
     ) -> anyhow::Result<()> {
-        if !self.check_session_id(&session_id, "generate_session_title") {
-            return Ok(());
-        }
+        // No `check_session_id` here — title generation is a
+        // best-effort cosmetic update; even mis-routed it can't
+        // wedge user-visible state.
         self.dispatch("generate_session_title", move |client| async move {
             let _ = client.generate_session_title(&description).await?;
             Ok(())
@@ -479,14 +476,15 @@ impl ForgeSdkBridge {
 
     pub(crate) fn respond_to_elicitation(
         &self,
-        session_id: String,
+        _session_id: String,
         elicitation_request_id: String,
         action: ElicitationAction,
         content: Option<Value>,
     ) -> anyhow::Result<()> {
-        if !self.check_session_id(&session_id, "respond_to_elicitation") {
-            return Ok(());
-        }
+        // No `check_session_id` — same shape as `prompt_with_images`:
+        // an elicitation has its own request_id seam, and a silent
+        // stale-session drop would leave the agent waiting forever
+        // for a response that no longer comes.
         let action_str = match action {
             ElicitationAction::Accept => "accept",
             ElicitationAction::Decline => "decline",

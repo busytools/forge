@@ -60,47 +60,56 @@ pub fn parse_runtime_session_state(value: Option<&Value>) -> Option<RuntimeSessi
 }
 
 /// Cast `f64` numeric field to `u64`, dropping (with a debug log)
-/// any value out of u64 range — i.e., negatives. Returns `None`
-/// when the field is missing or out-of-range.
+/// any value out of u64 range. Returns `None` when the field is
+/// missing or out-of-range.
+///
+/// `f64 as i64` saturates positively to `i64::MAX` for any finite
+/// f64 above ~9.22e18, then `u64::try_from` happily accepts. Without
+/// the explicit upper-bound check below, a buggy CLI sending
+/// e.g. `retry_delay_ms = 1e30` would silently surface as
+/// `i64::MAX`-sized milliseconds. Guard against that via a `<=`
+/// comparison against `u64::MAX as f64` BEFORE the cast.
 #[must_use]
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss
+)]
 fn parse_clamped_u64(message: &Map<String, Value>, keys: &[&str]) -> Option<u64> {
     let v = number_field(message, keys)?;
-    match u64::try_from(v as i64) {
-        Ok(n) => Some(n),
-        Err(e) => {
-            tracing::debug!(
-                target: crate::logging::targets::BRIDGE_LIFECYCLE,
-                raw = v,
-                keys = ?keys,
-                error = %e,
-                "dropping numeric field — out of u64 range",
-            );
-            None
-        }
+    if v < 0.0 || v > u64::MAX as f64 {
+        tracing::debug!(
+            target: crate::logging::targets::BRIDGE_LIFECYCLE,
+            raw = v,
+            keys = ?keys,
+            "dropping numeric field — value outside u64 range",
+        );
+        return None;
     }
+    Some(v as u64)
 }
 
 /// Optional sibling of [`parse_clamped_u64`] for u16-sized fields
-/// (status codes). Field-absent is silent (`None`); parse failure
-/// (out-of-u16-range value) logs at debug and returns `None`.
+/// (status codes). Field-absent is silent (`None`); out-of-range
+/// value logs at debug and returns `None`.
 #[must_use]
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss
+)]
 fn parse_clamped_u16_optional(message: &Map<String, Value>, keys: &[&str]) -> Option<u16> {
     let v = number_field(message, keys)?;
-    match u16::try_from(v as i64) {
-        Ok(n) => Some(n),
-        Err(e) => {
-            tracing::debug!(
-                target: crate::logging::targets::BRIDGE_LIFECYCLE,
-                raw = v,
-                keys = ?keys,
-                error = %e,
-                "dropping status field — out of u16 range",
-            );
-            None
-        }
+    if v < 0.0 || v > f64::from(u16::MAX) {
+        tracing::debug!(
+            target: crate::logging::targets::BRIDGE_LIFECYCLE,
+            raw = v,
+            keys = ?keys,
+            "dropping status field — value outside u16 range",
+        );
+        return None;
     }
+    Some(v as u16)
 }
 
 #[must_use]
@@ -151,15 +160,12 @@ pub fn build_rate_limit_update(rate_limit_info: Option<&Value>) -> Option<Sessio
 /// `ApiRetryUpdate` `SessionUpdate` when all three required numeric
 /// fields parse correctly.
 ///
-/// Negative numeric values are dropped (rather than saturating to 0
-/// via `as u64`) so a buggy CLI sending a negative `attempt` /
-/// `max_retries` / `retry_delay_ms` doesn't surface as
-/// "API retry 0/0 after error, retrying in 0ms" without a
-/// breadcrumb. The drop is logged at debug. Note: `f64::is_finite()`
-/// upstream filters NaN/inf; very large positive f64 (above
-/// `i64::MAX`) saturates positively in `as i64` and ends up
-/// surfacing as `i64::MAX`-sized values — finite `2^63 .. 2^64`
-/// range is the only window that's neither dropped nor logged.
+/// Out-of-range values (negative or above `u64::MAX as f64` for
+/// the count fields, above `u16::MAX as f64` for the status field)
+/// are dropped via `parse_clamped_u64` / `parse_clamped_u16_optional`
+/// rather than allowed to saturate silently. `f64::is_finite()`
+/// upstream filters NaN/inf, so the helpers only see finite values
+/// to guard.
 #[must_use]
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 pub fn build_api_retry_update(message: &Map<String, Value>) -> Option<SessionUpdate> {
@@ -319,6 +325,65 @@ mod tests {
         } else {
             panic!("expected ApiRetryUpdate");
         }
+    }
+
+    #[test]
+    fn api_retry_update_drops_out_of_range_status_and_huge_counts() {
+        // u16 status above max — drop to None.
+        let map: Map<String, Value> = serde_json::from_value(json!({
+            "attempt": 1.0,
+            "max_retries": 5.0,
+            "retry_delay_ms": 1000.0,
+            "error_status": 70_000.0,
+        }))
+        .unwrap();
+        let u = build_api_retry_update(&map).expect("update built");
+        if let SessionUpdate::ApiRetryUpdate(forge_primitives::ApiRetryUpdate {
+            error_status,
+            ..
+        }) = u
+        {
+            assert_eq!(error_status, None);
+        } else {
+            panic!("expected ApiRetryUpdate");
+        }
+
+        // Negative status — drop to None.
+        let map: Map<String, Value> = serde_json::from_value(json!({
+            "attempt": 1.0,
+            "max_retries": 5.0,
+            "retry_delay_ms": 1000.0,
+            "error_status": -1.0,
+        }))
+        .unwrap();
+        let u = build_api_retry_update(&map).expect("update built");
+        if let SessionUpdate::ApiRetryUpdate(forge_primitives::ApiRetryUpdate {
+            error_status,
+            ..
+        }) = u
+        {
+            assert_eq!(error_status, None);
+        } else {
+            panic!("expected ApiRetryUpdate");
+        }
+
+        // u64 count above max — required field, whole update drops.
+        let map: Map<String, Value> = serde_json::from_value(json!({
+            "attempt": 1e30,
+            "max_retries": 5.0,
+            "retry_delay_ms": 1000.0,
+        }))
+        .unwrap();
+        assert!(build_api_retry_update(&map).is_none());
+
+        // Negative required count — whole update drops.
+        let map: Map<String, Value> = serde_json::from_value(json!({
+            "attempt": -1.0,
+            "max_retries": 5.0,
+            "retry_delay_ms": 1000.0,
+        }))
+        .unwrap();
+        assert!(build_api_retry_update(&map).is_none());
     }
 
     #[test]

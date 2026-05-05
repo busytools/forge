@@ -80,10 +80,9 @@ pub fn looks_like_auth_required_error_lower(lower: &str) -> bool {
     ]
     .iter()
     .any(|needle| lower.contains(needle));
-    // Pre-#60 the dispatcher's local `looks_like_auth_required`
-    // additionally matched the `("401" && "auth")` conjunction; the
-    // sites consolidated onto this fn rely on that. Preserve the
-    // behaviour explicitly.
+    // The 401+auth conjunction catches HTTP-shape errors that don't
+    // include any of the literal substrings above (e.g. "request
+    // returned 401 from auth gateway").
     any || (lower.contains("401") && lower.contains("auth"))
 }
 
@@ -236,20 +235,24 @@ mod tests {
         );
     }
 
-    /// Locks in the consolidated needle list — the #60 simplifier sweep
-    /// initially dropped the `authentication_failed` (underscore form),
-    /// `unauthenticated`, `authentication required`, and `(401 && auth)`
-    /// checks. Round-1 review fix re-added them. Without these
-    /// assertions a future dedup pass could regress silently.
+    /// Locks in the full needle list. A future dedup pass that
+    /// drops any of these substrings would silently regress
+    /// auth-required classification — assert the matrix end-to-end.
     #[test]
     fn auth_required_covers_all_consolidated_needles() {
         for s in [
             // Underscore form (typical CLI emit).
             "authentication_failed: token expired",
+            // Space form of the same needle.
+            "authentication failed mid-request",
             // Bare "unauthenticated" form.
             "the request is unauthenticated",
             // Substring "authentication required".
             "tool authentication required to continue",
+            // Bare "auth required" form (shorter than "authentication required").
+            "auth required for this endpoint",
+            // "not authenticated" sentence form.
+            "client is not authenticated yet",
             // Conjunctive 401 + auth check (HTTP-shape error).
             "got 401 from /auth endpoint",
             // Pre-existing needles (regression-protection).
