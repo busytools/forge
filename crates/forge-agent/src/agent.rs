@@ -43,7 +43,7 @@ impl AgentHandle {
         self.agent_events.lock().take()
     }
 
-    /// Direct-accessor passthrough — see [`crate::client::AgentBridge::config_dir`].
+    /// Direct-accessor passthrough — delegates to `ForgeSdkBridge::config_dir`.
     #[must_use]
     pub fn config_dir(&self) -> PathBuf {
         self.bridge.config_dir()
@@ -102,10 +102,17 @@ impl AgentHandle {
         cwd: String,
         launch_settings: crate::client::SessionLaunchSettings,
     ) -> anyhow::Result<()> {
+        // Propagate serialise failure instead of silently launching
+        // with `Value::Null` (which the dispatcher then deserialises
+        // to default settings, losing the user's configured model /
+        // permission_mode / effort with no breadcrumb). The struct
+        // is `Default`able so a real serialise miss is unlikely;
+        // making it explicit catches forward-compat breakage early.
+        let launch_settings = serde_json::to_value(launch_settings)
+            .map_err(|e| anyhow::anyhow!("failed to encode launch settings: {e}"))?;
         self.send(Command::NewSession {
             cwd,
-            launch_settings: serde_json::to_value(launch_settings)
-                .unwrap_or(serde_json::Value::Null),
+            launch_settings,
         })
     }
 
@@ -114,10 +121,11 @@ impl AgentHandle {
         session_id: String,
         launch_settings: crate::client::SessionLaunchSettings,
     ) -> anyhow::Result<()> {
+        let launch_settings = serde_json::to_value(launch_settings)
+            .map_err(|e| anyhow::anyhow!("failed to encode launch settings: {e}"))?;
         self.send(Command::ResumeSession {
             session_id: session_id.into(),
-            launch_settings: serde_json::to_value(launch_settings)
-                .unwrap_or(serde_json::Value::Null),
+            launch_settings,
         })
     }
 

@@ -443,7 +443,11 @@ impl ForgeSdkBridge {
         })
     }
 
-    pub(crate) fn reconnect_mcp_server(&self, session_id: String, server_name: String) -> anyhow::Result<()> {
+    pub(crate) fn reconnect_mcp_server(
+        &self,
+        session_id: String,
+        server_name: String,
+    ) -> anyhow::Result<()> {
         let event_tx = self.inner.event_tx.clone();
         self.dispatch("reconnect_mcp_server", move |client| async move {
             if let Err(e) = client.mcp_reconnect(&server_name).await {
@@ -545,7 +549,11 @@ impl ForgeSdkBridge {
         })
     }
 
-    pub(crate) fn clear_mcp_auth(&self, session_id: String, server_name: String) -> anyhow::Result<()> {
+    pub(crate) fn clear_mcp_auth(
+        &self,
+        session_id: String,
+        server_name: String,
+    ) -> anyhow::Result<()> {
         let event_tx = self.inner.event_tx.clone();
         self.dispatch("clear_mcp_auth", move |client| async move {
             if let Err(e) = client.mcp_clear_auth(&server_name).await {
@@ -648,7 +656,11 @@ impl ForgeSdkBridge {
         Ok(())
     }
 
-    pub(crate) fn start_git_context_watch(&self, session_id: String, cwd: PathBuf) -> anyhow::Result<()> {
+    pub(crate) fn start_git_context_watch(
+        &self,
+        session_id: String,
+        cwd: PathBuf,
+    ) -> anyhow::Result<()> {
         self.install_git_watcher(session_id, &cwd);
         Ok(())
     }
@@ -668,11 +680,16 @@ impl ForgeSdkBridge {
         crate::userdata::memory::project_memory_path(cwd)
     }
 
-    pub(crate) fn oauth_credentials(&self) -> Option<crate::cloud::oauth_credentials::OauthCredentials> {
+    pub(crate) fn oauth_credentials(
+        &self,
+    ) -> Option<crate::cloud::oauth_credentials::OauthCredentials> {
         crate::cloud::oauth_credentials::load_oauth_credentials()
     }
 
-    pub(crate) fn settings_documents(&self, cwd: &Path) -> crate::userdata::settings::SettingsDocuments {
+    pub(crate) fn settings_documents(
+        &self,
+        cwd: &Path,
+    ) -> crate::userdata::settings::SettingsDocuments {
         crate::userdata::settings::settings_documents(cwd)
     }
 

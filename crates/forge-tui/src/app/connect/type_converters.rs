@@ -207,9 +207,9 @@ pub(super) fn map_session_update(update: types::SessionUpdate) -> Option<model::
                 types::FastModeState::On => model::FastModeState::On,
             }))
         }
-        types::SessionUpdate::RateLimitUpdate(update) => Some(
-            model::SessionUpdate::RateLimitUpdate(map_rate_limit_update(update)),
-        ),
+        types::SessionUpdate::RateLimitUpdate(update) => {
+            Some(model::SessionUpdate::RateLimitUpdate(map_rate_limit_update(update)))
+        }
         types::SessionUpdate::ApiRetryUpdate(types::ApiRetryUpdate {
             attempt,
             max_retries,

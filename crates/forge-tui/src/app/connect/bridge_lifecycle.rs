@@ -245,11 +245,8 @@ fn handle_connected_event(
     history_updates: Option<Vec<types::SessionUpdate>>,
 ) {
     let mode = mode.map(convert_mode_state);
-    let history_updates = history_updates
-        .unwrap_or_default()
-        .into_iter()
-        .filter_map(map_session_update)
-        .collect();
+    let history_updates =
+        history_updates.unwrap_or_default().into_iter().filter_map(map_session_update).collect();
     if *connected_once {
         let _ = event_tx.send(ClientEvent::SessionReplaced {
             session_id: model::SessionId::new(session_id),

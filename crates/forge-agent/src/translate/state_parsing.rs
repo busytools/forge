@@ -80,25 +80,27 @@ pub fn build_rate_limit_update(rate_limit_info: Option<&Value>) -> Option<Sessio
     let info = rate_limit_info.and_then(record)?;
     let status = parse_rate_limit_status(info.get("status"))?;
 
-    Some(SessionUpdate::RateLimitUpdate(forge_primitives::RateLimitUpdate {
-        status,
-        resets_at: number_field(info, &["resetsAt"]),
-        utilization: number_field(info, &["utilization"]),
-        rate_limit_type: info
-            .get("rateLimitType")
-            .and_then(Value::as_str)
-            .filter(|s| !s.is_empty())
-            .map(str::to_owned),
-        overage_status: parse_rate_limit_status(info.get("overageStatus")),
-        overage_resets_at: number_field(info, &["overageResetsAt"]),
-        overage_disabled_reason: info
-            .get("overageDisabledReason")
-            .and_then(Value::as_str)
-            .filter(|s| !s.is_empty())
-            .map(str::to_owned),
-        is_using_overage: info.get("isUsingOverage").and_then(Value::as_bool),
-        surpassed_threshold: number_field(info, &["surpassedThreshold"]),
-    }))
+    Some(SessionUpdate::RateLimitUpdate(
+        forge_primitives::RateLimitUpdate {
+            status,
+            resets_at: number_field(info, &["resetsAt"]),
+            utilization: number_field(info, &["utilization"]),
+            rate_limit_type: info
+                .get("rateLimitType")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned),
+            overage_status: parse_rate_limit_status(info.get("overageStatus")),
+            overage_resets_at: number_field(info, &["overageResetsAt"]),
+            overage_disabled_reason: info
+                .get("overageDisabledReason")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned),
+            is_using_overage: info.get("isUsingOverage").and_then(Value::as_bool),
+            surpassed_threshold: number_field(info, &["surpassedThreshold"]),
+        },
+    ))
 }
 
 /// Mirrors upstream's `buildApiRetryUpdate(message)`. Returns the
@@ -122,13 +124,15 @@ pub fn build_api_retry_update(message: &Map<String, Value>) -> Option<SessionUpd
         .and_then(|n| u16::try_from(n as i64).ok());
     let error = parse_api_retry_error(message.get("error"));
 
-    Some(SessionUpdate::ApiRetryUpdate(forge_primitives::ApiRetryUpdate {
-        attempt,
-        max_retries,
-        retry_delay_ms,
-        error_status,
-        error,
-    }))
+    Some(SessionUpdate::ApiRetryUpdate(
+        forge_primitives::ApiRetryUpdate {
+            attempt,
+            max_retries,
+            retry_delay_ms,
+            error_status,
+            error,
+        },
+    ))
 }
 
 /// Mirrors `normalizeSettingsParseError(value)`.
