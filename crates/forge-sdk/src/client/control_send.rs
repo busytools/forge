@@ -239,7 +239,7 @@ impl Client {
     /// Ask the CLI to reload session plugins (slash commands, agents,
     /// MCP servers). Wire shape: `{"subtype": "reload_plugins"}`. The
     /// CLI replies with the refreshed plugin inventory; returns the
-    /// raw JSON for forge-daemon to forward.
+    /// raw JSON for the agent layer to forward.
     ///
     /// # Errors
     ///

@@ -74,7 +74,7 @@ struct ClientInner {
     /// Captured `system/init` payload (`model`, `tools`, `mcp_servers`,
     /// `slash_commands`, …). The CLI emits this once after init and the
     /// SDK strips it from the user-visible `Message` stream; cache it
-    /// here so `forge-daemon` can answer footer / slash queries without
+    /// here so `forge-agent` can answer footer / slash queries without
     /// re-running the handshake.
     cached_init_data: Option<serde_json::Value>,
     /// Captured session id. The reader task updates it as messages
@@ -319,7 +319,7 @@ impl Client {
                         // Drop `system/init` from the pre-init buffer —
                         // the CLI consumes it inside `query._fetch_init`
                         // and never surfaces it to callers; we mirror.
-                        // Cache its `data` so `forge-daemon` can read
+                        // Cache its `data` so `forge-agent` can read
                         // model / mcp / slash-command info off it.
                         if let Message::System {
                             ref subtype,
@@ -393,8 +393,8 @@ impl Client {
     /// frame, carrying `model`, `tools`, `mcp_servers`, `slash_commands`,
     /// `agents`, `skills`, etc. Stripped from the user-visible `Message`
     /// stream during init; cached here for callers that need the
-    /// initial session context (e.g. forge-daemon's `session.current_model`
-    /// + `slash.list` RPCs).
+    /// initial session context (e.g. forge-agent's status snapshot +
+    /// slash autocomplete).
     #[must_use]
     pub fn initial_session_data(&self) -> Option<&serde_json::Value> {
         self.inner.cached_init_data.as_ref()
