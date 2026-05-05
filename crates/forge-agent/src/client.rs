@@ -9,7 +9,7 @@ use tokio::sync::mpsc;
 /// alternative backends (forge-sdk in-process, future remote daemons,
 /// stub implementations for tests) plug in without changing call sites
 /// across `app/*`. The current production implementation is
-/// [`crate::forge_sdk_bridge::ForgeSdkBridge`].
+/// `crate::forge_sdk_bridge::ForgeSdkBridge` (private).
 ///
 /// Two method shapes coexist on this trait:
 ///

@@ -1,12 +1,12 @@
-//! Session-launcher + reader-pump helpers for [`super::forge_sdk_bridge`].
+//! Session-launcher + reader-pump helpers for the bridge layer.
 //!
 //! Plays the role of the upstream Node `bridge.ts`'s spawn dance and
 //! reader subtask: build `forge_sdk::Options` from the TUI's launch
 //! settings (with the `can_use_tool` callback wired in), spawn the
-//! `Client`, emit a synthetic `Connected` event, and pump
-//! `Client::next_event()` into [`AgentEvent::SdkMessage`]. The bridge
-//! owns the resulting `Client`; this module exposes the helpers it
-//! calls.
+//! `Client`, emit a synthetic `Connected` event, and pump the events
+//! stream from `forge_sdk::Client::spawn` into `AgentEvent::SdkMessage`.
+//! The bridge owns the resulting `Client`; this module exposes the
+//! helpers it calls.
 
 use std::path::PathBuf;
 use std::sync::Arc;

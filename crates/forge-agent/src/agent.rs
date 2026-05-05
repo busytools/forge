@@ -345,28 +345,27 @@ impl Agent {
     /// ForgeSdkBridge that's never actually driven (no `new_session`
     /// call). Returns the handle plus a `Receiver<Command>` that
     /// drains every command the test exercises.
+    ///
+    /// Safe to call outside a Tokio runtime — no tasks are spawned.
+    /// The bridge's events stream is dropped on the floor; tests that
+    /// don't drive sessions never see events anyway.
     #[must_use]
     pub fn testing_stub() -> (AgentHandle, mpsc::UnboundedReceiver<Command>) {
         let bridge = ForgeSdkBridge::new();
-        let agent_event_rx = bridge
-            .take_events()
-            .unwrap_or_else(|| mpsc::unbounded_channel().1);
+        // Drop the bridge's events receiver immediately — tests don't
+        // run a real session so nothing is producing.
+        let _ = bridge.take_events();
 
-        // Test-only: dispatcher task NOT spawned, so commands
-        // accumulate in `commands_rx` for the test to inspect.
         let (commands_tx, commands_rx) = mpsc::unbounded_channel::<Command>();
-        let (_passthrough_tx, passthrough_rx) =
-            mpsc::unbounded_channel::<crate::client::AgentEvent>();
-        // Drain the bridge's events into the void so the channel
-        // doesn't fill up if a test happens to hit a path that emits.
-        tokio::spawn(async move {
-            let mut rx = agent_event_rx;
-            while rx.recv().await.is_some() {}
-        });
+        // Hand a fresh empty channel as the agent_events receiver so
+        // the AgentHandle shape matches production. Nothing will ever
+        // push to it; `take_events()` returns the dead receiver and
+        // `recv()` parks forever.
+        let (_dead_tx, dead_rx) = mpsc::unbounded_channel::<crate::client::AgentEvent>();
 
         let handle = AgentHandle {
             commands: commands_tx,
-            agent_events: Mutex::new(Some(passthrough_rx)),
+            agent_events: Mutex::new(Some(dead_rx)),
             bridge: Arc::new(bridge),
         };
         (handle, commands_rx)

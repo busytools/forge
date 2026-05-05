@@ -695,7 +695,7 @@ mod tests {
         let envelope = rx.try_recv().expect("prompt command should be sent");
         assert!(matches!(
             envelope,
-            forge_primitives::Command::Prompt { session_id, .. } if session_id == "session-1"
+            forge_primitives::Command::PromptWithImages { session_id, .. } if session_id == "session-1"
         ));
     }
 
@@ -724,7 +724,7 @@ mod tests {
         let envelope = rx.try_recv().expect("prompt command should be sent");
         assert!(matches!(
             envelope,
-            forge_primitives::Command::Prompt { session_id, .. } if session_id == "session-1"
+            forge_primitives::Command::PromptWithImages { session_id, .. } if session_id == "session-1"
         ));
     }
 
@@ -758,7 +758,7 @@ mod tests {
         let envelope = rx.try_recv().expect("prompt command should be sent");
         assert!(matches!(
             envelope,
-            forge_primitives::Command::Prompt { session_id, .. } if session_id == "session-1"
+            forge_primitives::Command::PromptWithImages { session_id, .. } if session_id == "session-1"
         ));
     }
 

@@ -297,7 +297,7 @@ mod tests {
         let prompt = rx.try_recv().expect("prompt command should be sent");
         assert!(matches!(
             prompt,
-            forge_primitives::Command::Prompt { session_id, .. } if session_id == "session-1"
+            forge_primitives::Command::PromptWithImages { session_id, .. } if session_id == "session-1"
         ));
     }
 

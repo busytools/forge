@@ -488,13 +488,8 @@ mod tests {
         tokio::task::LocalSet::new()
             .run_until(async {
                 let mut app = App::test_default();
-                let (tx, mut rx) =
-                    tokio::sync::mpsc::unbounded_channel::<forge_primitives::Command>();
-                app.conn = Some(std::rc::Rc::new({
-                    let _ = tx;
-                    let (h, _) = forge_agent::Agent::testing_stub();
-                    h
-                }));
+                let (handle, mut rx) = forge_agent::Agent::testing_stub();
+                app.conn = Some(std::rc::Rc::new(handle));
 
                 let consumed = try_handle_submit(&mut app, "/resume abc-123");
                 assert!(consumed);
