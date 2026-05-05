@@ -390,10 +390,20 @@ impl ForgeSdkBridge {
                     let _ = event_tx.send(AgentEvent::RuntimeReloadCompleted { session_id });
                 }
                 Err(e) => {
-                    let _ = event_tx.send(AgentEvent::RuntimeReloadFailed {
-                        session_id,
-                        message: format!("reload_plugins failed: {e}"),
-                    });
+                    let msg = format!("reload_plugins failed: {e}");
+                    if event_tx
+                        .send(AgentEvent::RuntimeReloadFailed {
+                            session_id,
+                            message: msg.clone(),
+                        })
+                        .is_err()
+                    {
+                        tracing::warn!(
+                            target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                            error = %msg,
+                            "event channel closed; RuntimeReloadFailed dropped",
+                        );
+                    }
                 }
             }
             Ok(())

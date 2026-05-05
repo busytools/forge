@@ -86,7 +86,14 @@ pub(crate) fn spawn_reader_task(
                         }
                         Ok(None) => break,
                         Err(e) => {
-                            let _ = events_tx.send(Err(e));
+                            let err_text = e.to_string();
+                            if events_tx.send(Err(e)).is_err() {
+                                tracing::warn!(
+                                    target: "forge_sdk::reader",
+                                    error = %err_text,
+                                    "events channel closed; transport error dropped",
+                                );
+                            }
                             break;
                         }
                     }
@@ -190,7 +197,15 @@ async fn handle_line(
                 .is_ok()
         }
         Err(e) => {
-            let _ = events_tx.send(Err(e));
+            let err_text = e.to_string();
+            if events_tx.send(Err(e)).is_err() {
+                tracing::warn!(
+                    target: "forge_sdk::reader",
+                    error = %err_text,
+                    line_number,
+                    "events channel closed; decode error dropped",
+                );
+            }
             false
         }
     }

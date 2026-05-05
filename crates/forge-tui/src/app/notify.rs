@@ -121,7 +121,14 @@ fn send_desktop_notification(event: NotifyEvent) {
         NotifyEvent::TurnComplete => ("Claude Code", "Turn complete"),
     };
     std::thread::spawn(move || {
-        let _ = notify_rust::Notification::new().summary(summary).body(body).show();
+        if let Err(e) = notify_rust::Notification::new().summary(summary).body(body).show() {
+            tracing::debug!(
+                target: "forge_tui::notify",
+                error = %e,
+                summary,
+                "desktop notification failed (D-Bus / Notification Center / config?)",
+            );
+        }
     });
 }
 
