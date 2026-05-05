@@ -461,7 +461,7 @@ impl Client {
     /// should cache the result themselves.
     #[must_use]
     pub fn oauth_credentials(&self) -> Option<crate::public_types::OauthCredentials> {
-        crate::session::paths::load_oauth_credentials()
+        crate::paths::load_oauth_credentials()
     }
 
     /// Fetch the live OAuth usage payload from the Anthropic API.
@@ -477,7 +477,6 @@ impl Client {
     pub async fn oauth_usage(&self) -> Result<crate::OauthUsage, crate::OauthUsageError> {
         crate::oauth_usage::oauth_usage().await
     }
-
 
     /// Send a user prompt as a stream-json user turn.
     ///

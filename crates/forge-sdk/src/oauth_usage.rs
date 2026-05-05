@@ -1,10 +1,10 @@
 //! Anthropic OAuth usage API client.
 //!
 //! Fetches per-account rate-limit utilisation from
-//! `https://api.anthropic.com/api/oauth/usage` using the OAuth bearer
-//! that [`session::paths::load_oauth_credentials`](crate::session)
-//! resolves (file or — on macOS — keychain). The `Authorization` header
-//! never crosses the SDK boundary, so callers don't need to handle the
+//! `https://api.anthropic.com/api/oauth/usage` using the OAuth
+//! bearer credentials resolved by [`crate::oauth_credentials`] (file
+//! or — on macOS — keychain). The `Authorization` header never
+//! crosses the SDK boundary, so callers don't need to handle the
 //! token themselves.
 //!
 //! The response shape mirrors the live API as of 2026-04, exposed as
@@ -18,7 +18,7 @@ use std::time::Duration;
 use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue, USER_AGENT};
 use serde::{Deserialize, Serialize};
 
-use crate::session::paths::load_oauth_credentials;
+use crate::paths::load_oauth_credentials;
 
 const OAUTH_USAGE_URL: &str = "https://api.anthropic.com/api/oauth/usage";
 const OAUTH_BETA_HEADER: &str = "oauth-2025-04-20";
@@ -123,8 +123,8 @@ impl OauthUsageError {
 
 /// Fetch the live OAuth usage payload from the Anthropic API using
 /// the bearer in `<config_dir>/.credentials.json` (or, on macOS, the
-/// matching keychain entry — see [`session::paths`](crate::session)
-/// for the resolution order).
+/// matching keychain entry — see [`crate::oauth_credentials`] for
+/// the resolution order).
 ///
 /// # Errors
 ///

@@ -291,8 +291,9 @@ fn find_session_file(session_id: &str, directory: Option<&str>) -> Option<PathBu
             Ok(p) => p.to_string_lossy().into_owned(),
             Err(_) => dir.to_string(),
         };
-        let project_dir =
-            projects_dir().join(crate::userdata::catalog::scan::sanitize_path_public(&canonical));
+        let project_dir = projects_dir().join(
+            crate::userdata::catalog::scan::sanitize_path_public(&canonical),
+        );
         let candidate = project_dir.join(&file_name);
         return candidate.is_file().then_some(candidate);
     }

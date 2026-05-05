@@ -57,10 +57,10 @@ pub mod mcp;
 pub(crate) mod messages;
 pub mod oauth_usage;
 mod options;
+pub mod paths;
 pub(crate) mod permissions;
 pub(crate) mod public_types;
 pub(crate) mod request_id;
-pub mod session;
 pub mod subagents;
 pub mod transport;
 
@@ -70,7 +70,7 @@ pub use git::{GitBranch, GitContext, GitContextWatcher, GitError, git_context};
 pub use oauth_usage::{
     OauthExtraUsage, OauthUsage, OauthUsageError, OauthUsageWindow, oauth_usage,
 };
-pub use session::paths::{claude_config_dir, projects_dir};
+pub use paths::{claude_config_dir, projects_dir};
 // Top-level message + content re-exports so consumers can say
 // `use forge_sdk::{AssistantEnvelope, StopReason, RateLimitInfo, ...}`
 // instead of reaching through `forge_sdk::messages::*`. Matches the
@@ -119,7 +119,7 @@ pub use public_types::{
 /// `claudeAiOauth.accessToken` is empty.
 #[must_use]
 pub fn oauth_credentials() -> Option<OauthCredentials> {
-    session::paths::load_oauth_credentials()
+    paths::load_oauth_credentials()
 }
 
 /// Convenient alias for `Result<T, forge_sdk::Error>`.

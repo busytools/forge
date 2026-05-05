@@ -13,7 +13,7 @@
 //! yet, but the module is **deliberately self-contained**:
 //!
 //! - No coupling to forge-sdk internals (`crate::Client`, `crate::Error`,
-//!   `crate::session::*`, `crate::messages`). Allowed deps are `std`,
+//!   `crate::paths`, `crate::messages`). Allowed deps are `std`,
 //!   `tokio`, `notify`, `serde`, `tracing`, `thiserror`.
 //! - Local error type ([`GitError`]) — does NOT reuse
 //!   [`forge_sdk::Error`](crate::Error), which carries CLI-subprocess
