@@ -163,19 +163,19 @@ pub trait AgentBridge {
     /// Read all three settings documents (user, project-local,
     /// preferences) from disk. Each field is `None` when the
     /// underlying file is missing or unreadable.
-    fn settings_documents(&self, cwd: &Path) -> forge_sdk::SettingsDocuments;
+    fn settings_documents(&self, cwd: &Path) -> crate::userdata::settings::SettingsDocuments;
 
     /// Atomically write a settings document to the path
-    /// [`forge_sdk::SettingsTarget`] resolves to.
+    /// [`crate::userdata::settings::SettingsTarget`] resolves to.
     ///
     /// # Errors
     ///
     /// Returns [`forge_sdk::Error`] when the underlying write fails
-    /// — see [`forge_sdk::write_settings_document`] for the failure
-    /// modes.
+    /// — see [`crate::userdata::settings::write_settings_document`]
+    /// for the failure modes.
     fn write_settings_document(
         &self,
-        target: &forge_sdk::SettingsTarget,
+        target: &crate::userdata::settings::SettingsTarget,
         document: &serde_json::Value,
     ) -> Result<(), forge_sdk::Error>;
 

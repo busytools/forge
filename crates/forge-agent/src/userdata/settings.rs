@@ -9,8 +9,7 @@
 //!
 //! - **User settings** at `<config_dir>/settings.json`. `<config_dir>`
 //!   is `$CLAUDE_CONFIG_DIR` (when set + non-empty) else
-//!   `$HOME/.claude` — see [`session::paths`](crate::session) for the
-//!   shared resolver.
+//!   `$HOME/.claude` — resolved via `forge_sdk::claude_config_dir`.
 //! - **Project-local settings** at
 //!   `<cwd>/.claude/settings.local.json`. Tied to the project's
 //!   working directory; `$CLAUDE_CONFIG_DIR` does not affect this
@@ -28,8 +27,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{Map, Value};
 
-use crate::error::Error;
-use crate::session::paths::claude_config_dir;
+use forge_sdk::{Error, claude_config_dir};
 
 /// Three raw settings documents, each `None` when the underlying
 /// file is absent or unreadable. Malformed JSON also yields `None` —

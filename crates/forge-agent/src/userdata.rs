@@ -5,4 +5,5 @@
 pub mod catalog;
 pub mod memory;
 pub mod plugins;
+pub mod settings;
 pub mod trust;

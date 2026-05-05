@@ -478,39 +478,6 @@ impl Client {
         crate::oauth_usage::oauth_usage().await
     }
 
-    /// Read the three Claude Code settings documents (user,
-    /// project-local, preferences) from disk. Returns raw
-    /// `serde_json::Value` documents — consumers own the merge /
-    /// precedence semantics.
-    ///
-    /// `cwd` is the project root used to locate
-    /// `<cwd>/.claude/settings.local.json`.
-    ///
-    /// See [`crate::settings`] for the resolution rules and
-    /// `$CLAUDE_CONFIG_DIR` handling.
-    #[must_use]
-    pub fn settings_documents(&self, cwd: &std::path::Path) -> crate::SettingsDocuments {
-        crate::settings::settings_documents(cwd)
-    }
-
-    /// Write `document` atomically to the settings file
-    /// [`SettingsTarget`](crate::SettingsTarget) resolves to. Mirrors
-    /// the read-side resolution — `User` honours
-    /// `$CLAUDE_CONFIG_DIR`, `ProjectLocal { cwd }` is project-
-    /// relative, `Preferences` is `$HOME`-pinned.
-    ///
-    /// # Errors
-    ///
-    /// [`Error`] when the underlying filesystem operation fails — see
-    /// [`crate::settings::write_settings_document`] for the full
-    /// failure-mode list.
-    pub fn write_settings_document(
-        &self,
-        target: &crate::SettingsTarget,
-        document: &serde_json::Value,
-    ) -> Result<(), crate::Error> {
-        crate::settings::write_settings_document(target, document)
-    }
 
     /// Send a user prompt as a stream-json user turn.
     ///

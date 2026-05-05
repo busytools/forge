@@ -63,14 +63,14 @@ impl AgentHandle {
 
     /// Direct-accessor passthrough.
     #[must_use]
-    pub fn settings_documents(&self, cwd: &Path) -> forge_sdk::SettingsDocuments {
+    pub fn settings_documents(&self, cwd: &Path) -> crate::userdata::settings::SettingsDocuments {
         self.bridge.settings_documents(cwd)
     }
 
     /// Direct-accessor passthrough.
     pub fn write_settings_document(
         &self,
-        target: &forge_sdk::SettingsTarget,
+        target: &crate::userdata::settings::SettingsTarget,
         document: &serde_json::Value,
     ) -> Result<(), forge_sdk::Error> {
         self.bridge.write_settings_document(target, document)

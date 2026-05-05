@@ -625,16 +625,16 @@ impl AgentBridge for ForgeSdkBridge {
         forge_sdk::oauth_credentials()
     }
 
-    fn settings_documents(&self, cwd: &Path) -> forge_sdk::SettingsDocuments {
-        forge_sdk::settings_documents(cwd)
+    fn settings_documents(&self, cwd: &Path) -> crate::userdata::settings::SettingsDocuments {
+        crate::userdata::settings::settings_documents(cwd)
     }
 
     fn write_settings_document(
         &self,
-        target: &forge_sdk::SettingsTarget,
+        target: &crate::userdata::settings::SettingsTarget,
         document: &Value,
     ) -> Result<(), forge_sdk::Error> {
-        forge_sdk::write_settings_document(target, document)
+        crate::userdata::settings::write_settings_document(target, document)
     }
 
     async fn oauth_usage(&self) -> Result<forge_sdk::OauthUsage, forge_sdk::OauthUsageError> {
