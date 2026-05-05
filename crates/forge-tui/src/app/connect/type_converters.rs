@@ -207,36 +207,16 @@ pub(super) fn map_session_update(update: types::SessionUpdate) -> Option<model::
                 types::FastModeState::On => model::FastModeState::On,
             }))
         }
-        types::SessionUpdate::RateLimitUpdate {
-            status,
-            resets_at,
-            utilization,
-            rate_limit_type,
-            overage_status,
-            overage_resets_at,
-            overage_disabled_reason,
-            is_using_overage,
-            surpassed_threshold,
-        } => Some(model::SessionUpdate::RateLimitUpdate(map_rate_limit_update(
-            types::RateLimitUpdate {
-                status,
-                resets_at,
-                utilization,
-                rate_limit_type,
-                overage_status,
-                overage_resets_at,
-                overage_disabled_reason,
-                is_using_overage,
-                surpassed_threshold,
-            },
-        ))),
-        types::SessionUpdate::ApiRetryUpdate {
+        types::SessionUpdate::RateLimitUpdate(update) => Some(
+            model::SessionUpdate::RateLimitUpdate(map_rate_limit_update(update)),
+        ),
+        types::SessionUpdate::ApiRetryUpdate(types::ApiRetryUpdate {
             attempt,
             max_retries,
             retry_delay_ms,
             error_status,
             error,
-        } => Some(model::SessionUpdate::ApiRetryUpdate {
+        }) => Some(model::SessionUpdate::ApiRetryUpdate {
             attempt,
             max_retries,
             retry_delay_ms,
@@ -255,9 +235,11 @@ pub(super) fn map_session_update(update: types::SessionUpdate) -> Option<model::
                 }
             }))
         }
-        types::SessionUpdate::SettingsParseError { file, path, message } => {
-            Some(model::SessionUpdate::SettingsParseError { file, path, message })
-        }
+        types::SessionUpdate::SettingsParseError(types::SettingsParseErrorUpdate {
+            file,
+            path,
+            message,
+        }) => Some(model::SessionUpdate::SettingsParseError { file, path, message }),
         types::SessionUpdate::SessionStatusUpdate { status } => {
             Some(model::SessionUpdate::SessionStatusUpdate(match status {
                 types::SessionStatus::Compacting => model::SessionStatus::Compacting,
@@ -703,13 +685,13 @@ mod tests {
     #[test]
     fn map_lifecycle_updates_preserves_new_sdk_state() {
         assert_eq!(
-            map_session_update(types::SessionUpdate::ApiRetryUpdate {
+            map_session_update(types::SessionUpdate::ApiRetryUpdate(types::ApiRetryUpdate {
                 attempt: 2,
                 max_retries: 4,
                 retry_delay_ms: 1500,
                 error_status: Some(529),
                 error: types::ApiRetryError::ServerError,
-            }),
+            })),
             Some(model::SessionUpdate::ApiRetryUpdate {
                 attempt: 2,
                 max_retries: 4,

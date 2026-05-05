@@ -106,9 +106,9 @@ pub use question::{
     QuestionAnnotation, QuestionOption, QuestionOutcome, QuestionPrompt, QuestionRequest,
 };
 pub use runtime::{
-    ApiRetryError, AvailableAgent, AvailableCommand, AvailableModel, CompactionTrigger,
-    CurrentModel, EffortLevel, FastModeState, ModeInfo, ModeState, RateLimitUpdate,
-    RuntimeSessionState, SessionStatus, SettingsParseErrorUpdate, TerminalReason,
+    ApiRetryError, ApiRetryUpdate, AvailableAgent, AvailableCommand, AvailableModel,
+    CompactionTrigger, CurrentModel, EffortLevel, FastModeState, ModeInfo, ModeState,
+    RateLimitUpdate, RuntimeSessionState, SessionStatus, SettingsParseErrorUpdate, TerminalReason,
 };
 pub use session_meta::{PromptChunk, SessionListEntry};
 pub use session_update::{
