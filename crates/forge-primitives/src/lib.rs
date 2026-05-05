@@ -1,21 +1,19 @@
 //! `forge-primitives` — types-only crate shared across forge crates.
 //!
-//! No logic, no I/O, no async. Holds the channel envelope (`Command`,
-//! `Event`) plus every supporting shape: IDs, mode/model state,
-//! permission/question requests, MCP config, session updates,
-//! rate-limit views, etc.
+//! No logic, no I/O, no async. Holds:
+//! - `Command` (UI → agent channel envelope)
+//! - IDs (`SessionId`, `ToolUseId`, `MessageId`)
+//! - Wire-shape types: mode/model state, permission/question requests,
+//!   MCP config, session updates, rate-limit views, image attachments.
 //!
-//! Originally lifted out of `forge-tui::agent::types` during the
-//! 2026-05-05 restructure (phase 2). New types added here when 2+
-//! forge crates need them — never reach for cross-crate `pub use`.
+//! Add a type here when 2+ forge crates need it. Never reach for
+//! cross-crate `pub use` chains as a substitute.
 
 pub mod command;
-pub mod event;
 pub mod ids;
 pub mod image;
 
 pub use command::Command;
-pub use event::Event;
 pub use ids::{MessageId, SessionId, ToolUseId};
 pub use image::{
     ImageAttachment, SUPPORTED_IMAGE_MIME_TYPES, is_supported_image_type, is_valid_base64,

@@ -1,24 +1,19 @@
-//! Channel-based [`Agent`] handle — the public API forge-tui will
-//! migrate to in phase 5.
+//! Channel-based [`Agent`] handle — the public consumer surface.
 //!
 //! `Agent::spawn` constructs a [`ForgeSdkBridge`] under the hood and
-//! starts two background tasks:
+//! spawns one background task: the **command dispatcher**, which
+//! drains `mpsc::UnboundedReceiver<Command>` and calls the matching
+//! `AgentBridge` method on the bridge. The bridge's `AgentEvent`
+//! receiver is handed back to consumers via `take_events()`.
 //!
-//! 1. **Event translator** — drains the bridge's `AgentEvent` receiver
-//!    and forwards each event onto `events_tx` as a
-//!    [`forge_primitives::Event`].
-//! 2. **Command dispatcher** — drains an `mpsc::UnboundedReceiver<Command>`
-//!    and calls the matching `AgentBridge` method on the bridge.
-//!
-//! Direct-return accessors (config_dir, oauth_credentials, settings_documents,
-//! etc.) live on [`AgentHandle`] as direct method passthroughs; phase 6
-//! will move them off the bridge into userdata Commands and remove this
-//! escape hatch.
+//! Direct-return accessors (config_dir, oauth_credentials,
+//! settings_documents, etc.) live on [`AgentHandle`] as method
+//! passthroughs to the bridge.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use forge_primitives::{Command, Event};
+use forge_primitives::Command;
 use tokio::sync::mpsc;
 
 use crate::client::AgentBridge;
@@ -28,38 +23,24 @@ use crate::forge_sdk_bridge::ForgeSdkBridge;
 /// passthrough to the bridge's direct-return accessors.
 pub struct AgentHandle {
     /// UI → agent commands. Used internally by the inherent
-    /// command-shorthand methods (`prompt_text`, `cancel`, etc.).
-    /// Public so phase 6 callers can `send(Command::...)` directly
-    /// when richer flows are needed.
+    /// command-shorthand methods (`prompt_text`, `cancel`, etc.). Public
+    /// so callers can `send(Command::...)` directly when richer flows
+    /// are needed.
     pub commands: mpsc::UnboundedSender<Command>,
-    /// Translated `forge_primitives::Event` receiver. Currently
-    /// unused at runtime (phase 6 wires it); held here so the
-    /// translator task has somewhere to push.
-    #[allow(dead_code)]
-    events: Mutex<Option<mpsc::UnboundedReceiver<Event>>>,
-    /// Backward-compat receiver: hands callers the bridge's raw
-    /// `AgentEvent` stream so existing translators (forge-tui's
-    /// `bridge_lifecycle::AgentEvent → ClientEvent`) keep working.
-    /// Phase 6 deletes this when call sites move to the Event stream.
+    /// Bridge's raw `AgentEvent` receiver. Single-take via
+    /// [`AgentHandle::take_events`] — forge-tui's translator consumes
+    /// this and converts to its `ClientEvent` shape.
     agent_events: Mutex<Option<mpsc::UnboundedReceiver<crate::client::AgentEvent>>>,
-    /// Bridge handle used for direct-return accessors only.
-    /// Phase 6 will eliminate this when accessors migrate.
+    /// Bridge handle used for direct-return accessors (config_dir,
+    /// settings_documents, oauth_*) plus internal command dispatch.
     bridge: Arc<ForgeSdkBridge>,
 }
 
 impl AgentHandle {
-    /// Take ownership of the bridge's raw `AgentEvent` receiver.
-    /// Returns `Some` exactly once. forge-tui's existing translator
-    /// consumes this; phase 6 swaps to the translated Event stream.
+    /// Take ownership of the bridge's `AgentEvent` receiver. Returns
+    /// `Some` exactly once.
     pub fn take_events(&self) -> Option<mpsc::UnboundedReceiver<crate::client::AgentEvent>> {
         self.agent_events.lock().ok().and_then(|mut g| g.take())
-    }
-
-    /// Take ownership of the translated [`Event`] receiver — phase 6 API.
-    /// Currently unused at runtime; reserved for the channel migration.
-    #[allow(dead_code)]
-    pub fn take_event_stream(&self) -> Option<mpsc::UnboundedReceiver<Event>> {
-        self.events.lock().ok().and_then(|mut g| g.take())
     }
 
     /// Direct-accessor passthrough — see [`crate::client::AgentBridge::config_dir`].
@@ -363,8 +344,7 @@ impl Agent {
     /// Construct a test stub: `AgentHandle` backed by a fresh
     /// ForgeSdkBridge that's never actually driven (no `new_session`
     /// call). Returns the handle plus a `Receiver<Command>` that
-    /// drains every command the test exercises — replaces
-    /// `RecordingBridge` from the bridge-collapse era.
+    /// drains every command the test exercises.
     #[must_use]
     pub fn testing_stub() -> (AgentHandle, mpsc::UnboundedReceiver<Command>) {
         let bridge = ForgeSdkBridge::new();
@@ -372,13 +352,9 @@ impl Agent {
             .take_events()
             .unwrap_or_else(|| mpsc::unbounded_channel().1);
 
-        // Two command channels: one the AgentHandle pushes onto, one
-        // the test drains. The dispatcher task is NOT spawned, so
-        // commands accumulate in the receiver instead of being
-        // forwarded to the (uninitialised) bridge — exactly what
-        // tests want.
+        // Test-only: dispatcher task NOT spawned, so commands
+        // accumulate in `commands_rx` for the test to inspect.
         let (commands_tx, commands_rx) = mpsc::unbounded_channel::<Command>();
-        let (_events_tx, events_rx) = mpsc::unbounded_channel::<Event>();
         let (_passthrough_tx, passthrough_rx) =
             mpsc::unbounded_channel::<crate::client::AgentEvent>();
         // Drain the bridge's events into the void so the channel
@@ -390,7 +366,6 @@ impl Agent {
 
         let handle = AgentHandle {
             commands: commands_tx,
-            events: Mutex::new(Some(events_rx)),
             agent_events: Mutex::new(Some(passthrough_rx)),
             bridge: Arc::new(bridge),
         };
@@ -407,16 +382,6 @@ impl Agent {
             .unwrap_or_else(|| mpsc::unbounded_channel().1);
 
         let (commands_tx, commands_rx) = mpsc::unbounded_channel::<Command>();
-        let (events_tx, events_rx) = mpsc::unbounded_channel::<Event>();
-
-        // Tee the bridge's AgentEvent stream: one branch goes to the
-        // forward-looking Event translator (events_tx); the other
-        // gets handed to call sites via take_events() so existing
-        // forge-tui translators work unchanged in phase 5.
-        let (passthrough_tx, passthrough_rx) =
-            mpsc::unbounded_channel::<crate::client::AgentEvent>();
-        let translator_tx = events_tx.clone();
-        tokio::spawn(tee_events(agent_event_rx, passthrough_tx, translator_tx));
 
         // Command dispatcher task.
         let dispatch_bridge = Arc::new(bridge);
@@ -424,27 +389,8 @@ impl Agent {
 
         AgentHandle {
             commands: commands_tx,
-            events: Mutex::new(Some(events_rx)),
-            agent_events: Mutex::new(Some(passthrough_rx)),
+            agent_events: Mutex::new(Some(agent_event_rx)),
             bridge: dispatch_bridge,
-        }
-    }
-}
-
-/// Forward each `AgentEvent` to both the passthrough receiver
-/// (consumed by forge-tui's existing translator) and the Event
-/// translator (consumed by phase-6 call sites). One arrives, both
-/// see it.
-async fn tee_events(
-    mut agent_event_rx: mpsc::UnboundedReceiver<crate::client::AgentEvent>,
-    passthrough_tx: mpsc::UnboundedSender<crate::client::AgentEvent>,
-    translator_tx: mpsc::UnboundedSender<Event>,
-) {
-    while let Some(event) = agent_event_rx.recv().await {
-        let cloned = event.clone();
-        let _ = passthrough_tx.send(event);
-        if let Some(translated) = translate(cloned) {
-            let _ = translator_tx.send(translated);
         }
     }
 }
@@ -462,160 +408,6 @@ async fn dispatch_commands(
             );
         }
     }
-}
-
-/// Convert an `AgentEvent` (forge-agent's internal shape) into a
-/// `forge_primitives::Event`. Some AgentEvent payload fields are
-/// forge-sdk types; we serde-encode them to `Value` so the wire-shape
-/// `Event` doesn't reach into forge-sdk.
-fn into_value<T: serde::Serialize>(v: T) -> serde_json::Value {
-    serde_json::to_value(v).unwrap_or(serde_json::Value::Null)
-}
-
-fn translate(event: crate::client::AgentEvent) -> Option<Event> {
-    use crate::client::AgentEvent as A;
-    use forge_primitives::SessionId;
-
-    Some(match event {
-        A::Connected {
-            session_id,
-            cwd,
-            current_model,
-            available_models,
-            mode,
-            history_updates,
-        } => Event::Connected {
-            session_id: SessionId::new(session_id),
-            cwd,
-            current_model: into_value(current_model),
-            available_models: available_models.into_iter().map(into_value).collect(),
-            mode: mode.map(into_value),
-            history_updates: history_updates.map(into_value),
-        },
-        A::AuthRequired {
-            method_name,
-            method_description,
-        } => Event::AuthRequired {
-            method_name,
-            method_description,
-        },
-        A::ConnectionFailed { message } => Event::ConnectionFailed { message },
-        A::SessionReplaced {
-            session_id,
-            cwd,
-            current_model,
-            available_models,
-            mode,
-            history_updates,
-        } => Event::SessionReplaced {
-            session_id: SessionId::new(session_id),
-            cwd,
-            current_model: into_value(current_model),
-            available_models: available_models.into_iter().map(into_value).collect(),
-            mode: mode.map(into_value),
-            history_updates: history_updates.map(into_value),
-        },
-        A::SessionsListed { sessions } => Event::SessionsListed { sessions },
-        A::SdkMessage { session_id, msg } => Event::SdkMessage {
-            session_id: SessionId::new(session_id),
-            msg: into_value(msg),
-        },
-        A::PermissionRequest {
-            session_id,
-            request,
-        } => Event::PermissionRequest {
-            session_id: SessionId::new(session_id),
-            request: into_value(request),
-        },
-        A::QuestionRequest {
-            session_id,
-            request,
-        } => Event::QuestionRequest {
-            session_id: SessionId::new(session_id),
-            request: into_value(request),
-        },
-        A::ElicitationRequest {
-            session_id,
-            request,
-        } => Event::ElicitationRequest {
-            session_id: SessionId::new(session_id),
-            request: into_value(request),
-        },
-        A::ElicitationComplete {
-            session_id,
-            elicitation_id,
-            server_name,
-        } => Event::ElicitationComplete {
-            session_id: SessionId::new(session_id),
-            elicitation_id,
-            server_name,
-        },
-        A::McpAuthRedirect {
-            session_id,
-            redirect,
-        } => Event::McpAuthRedirect {
-            session_id: SessionId::new(session_id),
-            redirect: into_value(redirect),
-        },
-        A::McpOperationError { session_id, error } => Event::McpOperationError {
-            session_id: SessionId::new(session_id),
-            error: into_value(error),
-        },
-        A::McpSnapshot {
-            session_id,
-            servers,
-            error,
-        } => Event::McpSnapshot {
-            session_id: SessionId::new(session_id),
-            servers: into_value(servers),
-            error,
-        },
-        A::SlashError {
-            session_id,
-            message,
-        } => Event::SlashError {
-            session_id: SessionId::new(session_id),
-            message,
-        },
-        A::RuntimeReloadCompleted { session_id } => Event::RuntimeReloadCompleted {
-            session_id: SessionId::new(session_id),
-        },
-        A::RuntimeReloadFailed {
-            session_id,
-            message,
-        } => Event::RuntimeReloadFailed {
-            session_id: SessionId::new(session_id),
-            message,
-        },
-        A::StatusSnapshot {
-            session_id,
-            account,
-        } => Event::StatusSnapshot {
-            session_id: SessionId::new(session_id),
-            account: into_value(account),
-        },
-        A::OauthCredentialsSnapshot {
-            session_id,
-            credentials,
-        } => Event::OauthCredentialsSnapshot {
-            session_id: SessionId::new(session_id),
-            credentials: into_value(credentials),
-        },
-        A::GitContextSnapshot {
-            session_id,
-            context,
-        } => Event::GitContextSnapshot {
-            session_id: SessionId::new(session_id),
-            context: into_value(context),
-        },
-        A::ContextUsage {
-            session_id,
-            percentage,
-        } => Event::ContextUsage {
-            session_id: SessionId::new(session_id),
-            percentage,
-        },
-    })
 }
 
 /// Dispatch one `Command` to the matching `AgentBridge` method.
