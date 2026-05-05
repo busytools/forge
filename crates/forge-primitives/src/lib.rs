@@ -157,8 +157,14 @@ pub enum CompactionTrigger {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ContentBlock {
-    Text { text: String },
-    Image { mime_type: Option<String>, uri: Option<String>, data: Option<String> },
+    Text {
+        text: String,
+    },
+    Image {
+        mime_type: Option<String>,
+        uri: Option<String>,
+        data: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -398,7 +404,10 @@ pub enum PermissionOutcome {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "outcome", rename_all = "snake_case")]
 pub enum QuestionOutcome {
-    Answered { selected_option_ids: Vec<String>, annotation: Option<QuestionAnnotation> },
+    Answered {
+        selected_option_ids: Vec<String>,
+        annotation: Option<QuestionAnnotation>,
+    },
     Cancelled,
 }
 
@@ -585,7 +594,10 @@ mod tests {
 
         assert!(matches!(
             update,
-            SessionUpdate::ApiRetryUpdate { error: ApiRetryError::Unknown, .. }
+            SessionUpdate::ApiRetryUpdate {
+                error: ApiRetryError::Unknown,
+                ..
+            }
         ));
     }
 }

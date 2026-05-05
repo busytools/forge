@@ -112,7 +112,9 @@ async fn wire_capture_rewind_files() {
         let mut rewind_id: Option<String> = None;
         loop {
             match events.recv().await {
-                Some(Ok(forge_sdk::Message::User { uuid: Some(id), .. })) if rewind_id.is_none() => {
+                Some(Ok(forge_sdk::Message::User { uuid: Some(id), .. }))
+                    if rewind_id.is_none() =>
+                {
                     rewind_id = Some(id);
                 }
                 Some(Ok(forge_sdk::Message::Result { .. })) | None => break,

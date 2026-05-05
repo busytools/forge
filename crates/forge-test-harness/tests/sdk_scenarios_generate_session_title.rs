@@ -19,22 +19,26 @@ async fn wire_capture_generate_session_title() {
         .permission_mode(PermissionMode::AcceptEdits)
         .build();
 
-    run_live_scenario("generate_session_title", opts, |client, events| async move {
-        // Drive a trivial conversation first so the CLI has context to
-        // summarise. The title generator typically uses the first user
-        // turn as input.
-        client
-            .send_user_message("Respond with only the word DONE.")
-            .await?;
-        // The harness drains until a Result frame; we issue
-        // generate_session_title after the conversation completes so
-        // the control round trip lands at the tail of the trace.
-        let title = client
-            .generate_session_title("test description for title generation")
-            .await?;
-        eprintln!("generate_session_title captured: {title:?}");
-        Ok((client, events))
-    })
+    run_live_scenario(
+        "generate_session_title",
+        opts,
+        |client, events| async move {
+            // Drive a trivial conversation first so the CLI has context to
+            // summarise. The title generator typically uses the first user
+            // turn as input.
+            client
+                .send_user_message("Respond with only the word DONE.")
+                .await?;
+            // The harness drains until a Result frame; we issue
+            // generate_session_title after the conversation completes so
+            // the control round trip lands at the tail of the trace.
+            let title = client
+                .generate_session_title("test description for title generation")
+                .await?;
+            eprintln!("generate_session_title captured: {title:?}");
+            Ok((client, events))
+        },
+    )
     .await
     .expect("scenario run");
 }
