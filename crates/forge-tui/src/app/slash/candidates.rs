@@ -99,9 +99,15 @@ pub(super) fn detect_slash_at_cursor(
     cursor_col: usize,
 ) -> Option<SlashDetection> {
     let line = lines.get(cursor_row)?;
-    let first_non_ws = line.find(|c: char| !c.is_whitespace())?;
+    // Find the first non-whitespace position as a CHAR index, not a
+    // byte offset. `str::find` returns a byte offset which only
+    // matches `chars[i]` semantics for ASCII; lines starting with
+    // non-ASCII whitespace (NBSP `\u{00A0}`, ideographic `\u{3000}`,
+    // etc.) used to silently fail to activate slash autocomplete
+    // because `chars.get(byte_offset)` returned the wrong element.
     let chars: Vec<char> = line.chars().collect();
-    if chars.get(first_non_ws).copied() != Some('/') {
+    let first_non_ws = chars.iter().position(|c| !c.is_whitespace())?;
+    if chars[first_non_ws] != '/' {
         return None;
     }
 

@@ -270,14 +270,20 @@ impl ForgeSdkBridge {
         })
     }
 
-    pub(crate) fn cancel(&self, _session_id: String) -> anyhow::Result<()> {
+    pub(crate) fn cancel(&self, session_id: String) -> anyhow::Result<()> {
+        if !self.check_session_id(&session_id, "cancel") {
+            return Ok(());
+        }
         self.dispatch("cancel", |client| async move {
             client.interrupt().await?;
             Ok(())
         })
     }
 
-    pub(crate) fn set_mode(&self, _session_id: String, mode: String) -> anyhow::Result<()> {
+    pub(crate) fn set_mode(&self, session_id: String, mode: String) -> anyhow::Result<()> {
+        if !self.check_session_id(&session_id, "set_mode") {
+            return Ok(());
+        }
         let parsed = forge_sdk_worker::parse_permission_mode(&mode)?;
         self.dispatch("set_mode", move |client| async move {
             client.set_permission_mode(parsed).await?;
@@ -285,11 +291,35 @@ impl ForgeSdkBridge {
         })
     }
 
-    pub(crate) fn set_model(&self, _session_id: String, model: String) -> anyhow::Result<()> {
+    pub(crate) fn set_model(&self, session_id: String, model: String) -> anyhow::Result<()> {
+        if !self.check_session_id(&session_id, "set_model") {
+            return Ok(());
+        }
         self.dispatch("set_model", move |client| async move {
             client.set_model(Some(model.as_str())).await?;
             Ok(())
         })
+    }
+
+    /// Verify the requested `session_id` matches the bridge's current
+    /// session before dispatching a user-action method. In a session-swap
+    /// race a `cancel`/`set_mode`/`set_model` for session A could
+    /// otherwise hit session B's `Client`. Returns false on mismatch
+    /// (caller drops with no-op + tracing breadcrumb).
+    fn check_session_id(&self, session_id: &str, label: &'static str) -> bool {
+        let current = self.inner.session_id_slot.lock().clone();
+        if current.is_empty() || current == session_id {
+            return true;
+        }
+        tracing::debug!(
+            target: crate::logging::targets::BRIDGE_LIFECYCLE,
+            event_name = "stale_session_dispatch",
+            label,
+            current_session_id = %current,
+            requested_session_id = %session_id,
+            "dropping dispatch for stale session id"
+        );
+        false
     }
 
     pub(crate) fn generate_session_title(

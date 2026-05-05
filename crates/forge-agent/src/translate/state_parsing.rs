@@ -104,12 +104,20 @@ pub fn build_rate_limit_update(rate_limit_info: Option<&Value>) -> Option<Sessio
 /// Mirrors upstream's `buildApiRetryUpdate(message)`. Returns the
 /// `ApiRetryUpdate` `SessionUpdate` when all three required numeric
 /// fields parse correctly.
+///
+/// Numeric fields are clamped to `>= 0` before the `as u64` cast —
+/// `f64 as u64` saturates negatives to 0, so a buggy CLI sending a
+/// negative value would surface as "API retry 0/0 after error,
+/// retrying in 0ms" without any breadcrumb. Drop the message
+/// instead via `try_from` on the i64 round-trip.
 #[must_use]
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 pub fn build_api_retry_update(message: &Map<String, Value>) -> Option<SessionUpdate> {
-    let attempt = number_field(message, &["attempt"])? as u64;
-    let max_retries = number_field(message, &["max_retries", "maxRetries"])? as u64;
-    let retry_delay_ms = number_field(message, &["retry_delay_ms", "retryDelayMs"])? as u64;
+    let attempt = u64::try_from(number_field(message, &["attempt"])? as i64).ok()?;
+    let max_retries =
+        u64::try_from(number_field(message, &["max_retries", "maxRetries"])? as i64).ok()?;
+    let retry_delay_ms =
+        u64::try_from(number_field(message, &["retry_delay_ms", "retryDelayMs"])? as i64).ok()?;
     let error_status = number_field(message, &["error_status", "errorStatus"])
         .and_then(|n| u16::try_from(n as i64).ok());
     let error = parse_api_retry_error(message.get("error"));
