@@ -126,14 +126,12 @@ fn handle_agent_event(
             handle_connected_event(
                 event_tx,
                 connected_once,
-                ConnectedEventData {
-                    session_id,
-                    cwd,
-                    current_model,
-                    available_models,
-                    mode,
-                    history_updates,
-                },
+                session_id,
+                cwd,
+                current_model,
+                available_models,
+                mode,
+                history_updates,
             );
         }
         AgentEvent::AuthRequired { method_name, method_description } => {
@@ -232,43 +230,42 @@ fn handle_agent_event(
     }
 }
 
-struct ConnectedEventData {
+// `ConnectedEventData` removed in 2026-05-05 — the struct existed
+// only to thread one match arm's bindings into one helper. Direct
+// args match the `SessionReplaced` sibling arm's shape.
+#[allow(clippy::too_many_arguments)]
+fn handle_connected_event(
+    event_tx: &mpsc::UnboundedSender<ClientEvent>,
+    connected_once: &mut bool,
     session_id: String,
     cwd: String,
     current_model: types::CurrentModel,
     available_models: Vec<types::AvailableModel>,
     mode: Option<types::ModeState>,
     history_updates: Option<Vec<types::SessionUpdate>>,
-}
-
-fn handle_connected_event(
-    event_tx: &mpsc::UnboundedSender<ClientEvent>,
-    connected_once: &mut bool,
-    event: ConnectedEventData,
 ) {
-    let mode = event.mode.map(convert_mode_state);
-    let history_updates = event
-        .history_updates
+    let mode = mode.map(convert_mode_state);
+    let history_updates = history_updates
         .unwrap_or_default()
         .into_iter()
         .filter_map(map_session_update)
         .collect();
     if *connected_once {
         let _ = event_tx.send(ClientEvent::SessionReplaced {
-            session_id: model::SessionId::new(event.session_id),
-            cwd: event.cwd,
-            current_model: convert_current_model(event.current_model),
-            available_models: map_available_models(event.available_models),
+            session_id: model::SessionId::new(session_id),
+            cwd,
+            current_model: convert_current_model(current_model),
+            available_models: map_available_models(available_models),
             mode,
             history_updates,
         });
     } else {
         *connected_once = true;
         let _ = event_tx.send(ClientEvent::Connected {
-            session_id: model::SessionId::new(event.session_id),
-            cwd: event.cwd,
-            current_model: convert_current_model(event.current_model),
-            available_models: map_available_models(event.available_models),
+            session_id: model::SessionId::new(session_id),
+            cwd,
+            current_model: convert_current_model(current_model),
+            available_models: map_available_models(available_models),
             mode,
             history_updates,
         });
