@@ -3,7 +3,7 @@
 //! `System(init)` arrives + on `/mode` slash submit) and by the
 //! worker (to assemble the Connected event payload at spawn time).
 
-use crate::agent::types::{ModeInfo, ModeState};
+use forge_primitives::{ModeInfo, ModeState};
 
 use super::state::PermissionMode;
 
@@ -31,7 +31,10 @@ fn unique_mode_ids(modes: Vec<PermissionMode>) -> Vec<PermissionMode> {
     for m in modes {
         seen.insert(m);
     }
-    CANONICAL_ORDER.into_iter().filter(|m| seen.contains(m)).collect()
+    CANONICAL_ORDER
+        .into_iter()
+        .filter(|m| seen.contains(m))
+        .collect()
 }
 
 /// Computes the supported-mode list from primitive inputs.
@@ -89,7 +92,11 @@ fn mode_info_for_id(mode: PermissionMode) -> ModeInfo {
 /// `ModeState.available_modes`.
 #[must_use]
 fn available_modes_from_supported(supported_mode_ids: &[PermissionMode]) -> Vec<ModeInfo> {
-    supported_mode_ids.iter().copied().map(mode_info_for_id).collect()
+    supported_mode_ids
+        .iter()
+        .copied()
+        .map(mode_info_for_id)
+        .collect()
 }
 
 /// Composes a `ModeState` from the active mode + the resolved
@@ -107,6 +114,7 @@ pub fn build_mode_state_from_supported(
     }
 }
 
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #[cfg(test)]
 mod tests {
     use super::*;

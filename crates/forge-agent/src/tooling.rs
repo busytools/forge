@@ -13,7 +13,7 @@
 
 use serde_json::{Map, Value, json};
 
-use crate::agent::types::{
+use forge_primitives::{
     BashOutputMetadata, ContentBlock, TodoWriteOutputMetadata, ToolCall, ToolCallContent,
     ToolCallUpdateFields, ToolLocation, ToolOutputMetadata,
 };
@@ -25,10 +25,18 @@ use crate::agent::types::{
 const CACHE_PREVIEW_LIMIT_BYTES: usize = 2048;
 
 #[must_use]
-#[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
 fn preview_kilobyte_label() -> String {
     let kb = CACHE_PREVIEW_LIMIT_BYTES as f64 / 1024.0;
-    if kb.fract() == 0.0 { format!("{}KB", kb as u64) } else { format!("{kb:.1}KB") }
+    if kb.fract() == 0.0 {
+        format!("{}KB", kb as u64)
+    } else {
+        format!("{kb:.1}KB")
+    }
 }
 
 /// Block types the CLI uses for tool results. Mirrors upstream's
@@ -79,13 +87,21 @@ fn normalize_tool_kind(name: &str) -> &'static str {
 #[must_use]
 fn tool_title(name: &str, input: &Value) -> String {
     let record = input.as_object();
-    let s =
-        |k: &str| -> &str { record.and_then(|r| r.get(k)).and_then(Value::as_str).unwrap_or("") };
+    let s = |k: &str| -> &str {
+        record
+            .and_then(|r| r.get(k))
+            .and_then(Value::as_str)
+            .unwrap_or("")
+    };
 
     match name {
         "Bash" => {
             let command = s("command");
-            if command.is_empty() { "Terminal".to_owned() } else { command.to_owned() }
+            if command.is_empty() {
+                "Terminal".to_owned()
+            } else {
+                command.to_owned()
+            }
         }
         "Glob" => {
             let pattern = s("pattern");
@@ -99,15 +115,27 @@ fn tool_title(name: &str, input: &Value) -> String {
         }
         "WebFetch" => {
             let url = s("url");
-            if url.is_empty() { name.to_owned() } else { format!("WebFetch {url}") }
+            if url.is_empty() {
+                name.to_owned()
+            } else {
+                format!("WebFetch {url}")
+            }
         }
         "WebSearch" => {
             let query = s("query");
-            if query.is_empty() { name.to_owned() } else { format!("WebSearch {query}") }
+            if query.is_empty() {
+                name.to_owned()
+            } else {
+                format!("WebSearch {query}")
+            }
         }
         "Read" | "Write" | "Edit" => {
             let file_path = s("file_path");
-            if file_path.is_empty() { name.to_owned() } else { format!("{name} {file_path}") }
+            if file_path.is_empty() {
+                name.to_owned()
+            } else {
+                format!("{name} {file_path}")
+            }
         }
         "ReadMcpResource" => {
             let uri = s("uri");
@@ -127,7 +155,9 @@ fn tool_title(name: &str, input: &Value) -> String {
 /// other tools.
 #[must_use]
 fn edit_diff_content(name: &str, input: &Value) -> Vec<ToolCallContent> {
-    let Some(record) = input.as_object() else { return Vec::new() };
+    let Some(record) = input.as_object() else {
+        return Vec::new();
+    };
     let s = |k: &str| record.get(k).and_then(Value::as_str).unwrap_or("");
     let file_path = s("file_path");
     if file_path.is_empty() {
@@ -174,9 +204,17 @@ pub fn create_tool_call(
     input: &Value,
     parent_tool_use_id: Option<&str>,
 ) -> ToolCall {
-    let file_path = input.as_object().and_then(|r| r.get("file_path")).and_then(Value::as_str);
+    let file_path = input
+        .as_object()
+        .and_then(|r| r.get("file_path"))
+        .and_then(Value::as_str);
     let locations = file_path
-        .map(|p| vec![ToolLocation { path: p.to_owned(), line: None }])
+        .map(|p| {
+            vec![ToolLocation {
+                path: p.to_owned(),
+                line: None,
+            }]
+        })
         .unwrap_or_default();
     let meta = json!({
         "claudeCode": {
@@ -227,7 +265,11 @@ fn extract_text(value: &Value) -> String {
             .collect::<Vec<_>>()
             .join("\n");
     }
-    if let Some(s) = value.as_object().and_then(|r| r.get("text")).and_then(Value::as_str) {
+    if let Some(s) = value
+        .as_object()
+        .and_then(|r| r.get("text"))
+        .and_then(Value::as_str)
+    {
         return s.to_owned();
     }
     String::new()
@@ -246,7 +288,10 @@ fn persisted_output_inner_text(text: &str) -> Option<&str> {
 
 fn persisted_output_first_line(text: &str) -> Option<String> {
     let inner = persisted_output_inner_text(text)?;
-    let expected_preview = format!("preview (first {}):", preview_kilobyte_label().to_lowercase());
+    let expected_preview = format!(
+        "preview (first {}):",
+        preview_kilobyte_label().to_lowercase()
+    );
     for line in inner.split(['\n', '\r']) {
         let cleaned: String = line
             .chars()
@@ -293,7 +338,11 @@ fn normalize_tool_result_text(value: &Value, is_error: bool) -> String {
         return String::new();
     }
     let normalized = persisted_output_first_line(&text).unwrap_or(text);
-    if is_error { sanitize_sdk_rejection_text(&normalized) } else { normalized }
+    if is_error {
+        sanitize_sdk_rejection_text(&normalized)
+    } else {
+        normalized
+    }
 }
 
 // ----- Result-record candidate walking -----
@@ -321,7 +370,9 @@ fn push_nested_records(candidates: &mut Vec<Map<String, Value>>, value: &Value) 
         }
         return;
     }
-    let Some(record) = value.as_object() else { return };
+    let Some(record) = value.as_object() else {
+        return;
+    };
     if let Some(v) = record.get("result") {
         push_records(candidates, v);
     }
@@ -355,13 +406,15 @@ fn find_bash_result_record(
     raw_result: Option<&Value>,
     raw_content: Option<&Value>,
 ) -> Option<Map<String, Value>> {
-    result_record_candidates(raw_result, raw_content).into_iter().find(|c| {
-        c.contains_key("stdout")
-            || c.contains_key("stderr")
-            || c.contains_key("backgroundTaskId")
-            || c.contains_key("backgroundedByUser")
-            || c.contains_key("assistantAutoBackgrounded")
-    })
+    result_record_candidates(raw_result, raw_content)
+        .into_iter()
+        .find(|c| {
+            c.contains_key("stdout")
+                || c.contains_key("stderr")
+                || c.contains_key("backgroundTaskId")
+                || c.contains_key("backgroundedByUser")
+                || c.contains_key("assistantAutoBackgrounded")
+        })
 }
 
 fn bash_background_message(record: &Map<String, Value>) -> String {
@@ -371,7 +424,11 @@ fn bash_background_message(record: &Map<String, Value>) -> String {
     if task_id.is_empty() {
         return String::new();
     }
-    if record.get("assistantAutoBackgrounded").and_then(Value::as_bool) == Some(true) {
+    if record
+        .get("assistantAutoBackgrounded")
+        .and_then(Value::as_bool)
+        == Some(true)
+    {
         return format!("Command was auto-backgrounded by assistant mode with ID: {task_id}.");
     }
     if record.get("backgroundedByUser").and_then(Value::as_bool) == Some(true) {
@@ -435,8 +492,13 @@ fn agent_title_from_agent_output(
 }
 
 fn write_diff_from_input(raw_input: Option<&Value>) -> Vec<ToolCallContent> {
-    let Some(record) = raw_input.and_then(Value::as_object) else { return Vec::new() };
-    let file_path = record.get("file_path").and_then(Value::as_str).unwrap_or("");
+    let Some(record) = raw_input.and_then(Value::as_object) else {
+        return Vec::new();
+    };
+    let file_path = record
+        .get("file_path")
+        .and_then(Value::as_str)
+        .unwrap_or("");
     let content = record.get("content").and_then(Value::as_str).unwrap_or("");
     if file_path.is_empty() || content.is_empty() {
         return Vec::new();
@@ -451,8 +513,13 @@ fn write_diff_from_input(raw_input: Option<&Value>) -> Vec<ToolCallContent> {
 }
 
 fn edit_diff_from_input(raw_input: Option<&Value>) -> Vec<ToolCallContent> {
-    let Some(record) = raw_input.and_then(Value::as_object) else { return Vec::new() };
-    let file_path = record.get("file_path").and_then(Value::as_str).unwrap_or("");
+    let Some(record) = raw_input.and_then(Value::as_object) else {
+        return Vec::new();
+    };
+    let file_path = record
+        .get("file_path")
+        .and_then(Value::as_str)
+        .unwrap_or("");
     let old_text = record
         .get("old_string")
         .or_else(|| record.get("oldString"))
@@ -481,14 +548,18 @@ fn write_diff_from_result(raw_content: Option<&Value>) -> Vec<ToolCallContent> {
         None => Vec::new(),
     };
     for candidate in candidates {
-        let Some(record) = candidate.as_object() else { continue };
+        let Some(record) = candidate.as_object() else {
+            continue;
+        };
         let file_path = record
             .get("filePath")
             .or_else(|| record.get("file_path"))
             .and_then(Value::as_str)
             .unwrap_or("");
         let content = record.get("content").and_then(Value::as_str).unwrap_or("");
-        let original_raw = record.get("originalFile").or_else(|| record.get("original_file"));
+        let original_raw = record
+            .get("originalFile")
+            .or_else(|| record.get("original_file"));
         let git_diff = record.get("gitDiff").and_then(Value::as_object);
         let repository = git_diff
             .and_then(|g| g.get("repository"))
@@ -500,7 +571,9 @@ fn write_diff_from_result(raw_content: Option<&Value>) -> Vec<ToolCallContent> {
         if file_path.is_empty() || content.is_empty() || original_raw.is_none() {
             continue;
         }
-        let original = original_raw.and_then(Value::as_str).map_or_else(String::new, str::to_owned);
+        let original = original_raw
+            .and_then(Value::as_str)
+            .map_or_else(String::new, str::to_owned);
         return vec![ToolCallContent::Diff {
             old_path: file_path.to_owned(),
             new_path: file_path.to_owned(),
@@ -519,7 +592,10 @@ fn edit_diff_from_result(
     let Some(input_record) = raw_input.and_then(Value::as_object) else {
         return edit_diff_from_input(raw_input);
     };
-    let file_path = input_record.get("file_path").and_then(Value::as_str).unwrap_or("");
+    let file_path = input_record
+        .get("file_path")
+        .and_then(Value::as_str)
+        .unwrap_or("");
     let old_text = input_record
         .get("old_string")
         .or_else(|| input_record.get("oldString"))
@@ -565,7 +641,11 @@ fn edit_diff_from_result(
 
 fn parse_json_candidate(value: Option<&Value>) -> Option<Value> {
     let text = value.map_or_else(String::new, |v| {
-        if let Some(s) = v.as_str() { s.to_owned() } else { extract_text(v) }
+        if let Some(s) = v.as_str() {
+            s.to_owned()
+        } else {
+            extract_text(v)
+        }
     });
     let trimmed = text.trim();
     if !(trimmed.starts_with('{') || trimmed.starts_with('[')) {
@@ -575,7 +655,9 @@ fn parse_json_candidate(value: Option<&Value>) -> Option<Value> {
 }
 
 fn push_structured_record_candidates(candidates: &mut Vec<Map<String, Value>>, value: &Value) {
-    let Some(record) = value.as_object() else { return };
+    let Some(record) = value.as_object() else {
+        return;
+    };
     candidates.push(record.clone());
     for key in ["result", "data", "content"] {
         if let Some(nested) = record.get(key).and_then(Value::as_object) {
@@ -603,14 +685,20 @@ fn mcp_resource_content_from_result(
     }
 
     for candidate in candidates {
-        let Some(contents) = candidate.get("contents").and_then(Value::as_array) else { continue };
+        let Some(contents) = candidate.get("contents").and_then(Value::as_array) else {
+            continue;
+        };
         if contents.is_empty() {
             continue;
         }
         let mut mapped: Vec<ToolCallContent> = Vec::new();
         for entry in contents {
-            let Some(record) = entry.as_object() else { continue };
-            let Some(uri) = record.get("uri").and_then(Value::as_str) else { continue };
+            let Some(record) = entry.as_object() else {
+                continue;
+            };
+            let Some(uri) = record.get("uri").and_then(Value::as_str) else {
+                continue;
+            };
             if uri.is_empty() {
                 continue;
             }
@@ -659,9 +747,14 @@ fn extract_tool_output_metadata(
 
     if tool_name == "Bash" {
         for candidate in &candidates {
-            if let Some(b) = candidate.get("assistantAutoBackgrounded").and_then(Value::as_bool) {
+            if let Some(b) = candidate
+                .get("assistantAutoBackgrounded")
+                .and_then(Value::as_bool)
+            {
                 return Some(ToolOutputMetadata {
-                    bash: Some(BashOutputMetadata { assistant_auto_backgrounded: Some(b) }),
+                    bash: Some(BashOutputMetadata {
+                        assistant_auto_backgrounded: Some(b),
+                    }),
                     todo_write: None,
                 });
             }
@@ -671,7 +764,10 @@ fn extract_tool_output_metadata(
 
     if tool_name == "TodoWrite" {
         for candidate in &candidates {
-            if let Some(b) = candidate.get("verificationNudgeNeeded").and_then(Value::as_bool) {
+            if let Some(b) = candidate
+                .get("verificationNudgeNeeded")
+                .and_then(Value::as_bool)
+            {
                 return Some(ToolOutputMetadata {
                     bash: None,
                     todo_write: Some(TodoWriteOutputMetadata {
@@ -687,11 +783,17 @@ fn extract_tool_output_metadata(
 }
 
 fn resolve_tool_name(base: Option<&ToolCall>) -> String {
-    let Some(meta) = base.and_then(|b| b.meta.as_ref()) else { return String::new() };
+    let Some(meta) = base.and_then(|b| b.meta.as_ref()) else {
+        return String::new();
+    };
     let Some(claude_code) = meta.get("claudeCode").and_then(Value::as_object) else {
         return String::new();
     };
-    claude_code.get("toolName").and_then(Value::as_str).unwrap_or("").to_owned()
+    claude_code
+        .get("toolName")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_owned()
 }
 
 // ----- main entry: build_tool_result_fields -----
@@ -708,7 +810,11 @@ pub fn build_tool_result_fields(
 ) -> ToolCallUpdateFields {
     let tool_name = resolve_tool_name(base);
     let mut fields = ToolCallUpdateFields {
-        status: Some(if is_error { "failed".to_owned() } else { "completed".to_owned() }),
+        status: Some(if is_error {
+            "failed".to_owned()
+        } else {
+            "completed".to_owned()
+        }),
         ..Default::default()
     };
 
@@ -721,7 +827,9 @@ pub fn build_tool_result_fields(
     if !file_unchanged_text.is_empty() {
         fields.raw_output = Some(file_unchanged_text.clone());
         fields.content = Some(vec![ToolCallContent::Content {
-            content: ContentBlock::Text { text: file_unchanged_text },
+            content: ContentBlock::Text {
+                text: file_unchanged_text,
+            },
         }]);
         return fields;
     }
@@ -735,16 +843,22 @@ pub fn build_tool_result_fields(
     }
 
     // Bash: extract structured output, otherwise normalise the text.
-    let bash_record =
-        if tool_name == "Bash" { find_bash_result_record(raw_result, raw_content) } else { None };
-    let normalized_raw_output =
-        raw_content.map(|v| normalize_tool_result_text(v, is_error)).unwrap_or_default();
+    let bash_record = if tool_name == "Bash" {
+        find_bash_result_record(raw_result, raw_content)
+    } else {
+        None
+    };
+    let normalized_raw_output = raw_content
+        .map(|v| normalize_tool_result_text(v, is_error))
+        .unwrap_or_default();
     let raw_output = if let Some(record) = bash_record.as_ref() {
         build_bash_display_output(record)
     } else if !normalized_raw_output.is_empty() {
         normalized_raw_output
     } else {
-        raw_content.map(|v| serde_json::to_string(v).unwrap_or_default()).unwrap_or_default()
+        raw_content
+            .map(|v| serde_json::to_string(v).unwrap_or_default())
+            .unwrap_or_default()
     };
     if !raw_output.is_empty() {
         fields.raw_output = Some(raw_output.clone());
@@ -776,8 +890,11 @@ pub fn build_tool_result_fields(
             fields.content = Some(structured);
             return fields;
         }
-        if base.is_some_and(|b| b.content.iter().any(|c| matches!(c, ToolCallContent::Diff { .. })))
-        {
+        if base.is_some_and(|b| {
+            b.content
+                .iter()
+                .any(|c| matches!(c, ToolCallContent::Diff { .. }))
+        }) {
             return fields;
         }
     }
@@ -811,22 +928,44 @@ pub struct UnwrappedToolResult {
 #[must_use]
 pub fn unwrap_tool_use_result(raw_result: &Value) -> UnwrappedToolResult {
     let Some(record) = raw_result.as_object() else {
-        return UnwrappedToolResult { is_error: false, content: raw_result.clone() };
+        return UnwrappedToolResult {
+            is_error: false,
+            content: raw_result.clone(),
+        };
     };
-    let is_error = record.get("is_error").and_then(Value::as_bool).unwrap_or(false)
-        || record.get("error").and_then(Value::as_bool).unwrap_or(false);
+    let is_error = record
+        .get("is_error")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+        || record
+            .get("error")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
     if let Some(c) = record.get("content") {
-        return UnwrappedToolResult { is_error, content: c.clone() };
+        return UnwrappedToolResult {
+            is_error,
+            content: c.clone(),
+        };
     }
     if let Some(c) = record.get("result") {
-        return UnwrappedToolResult { is_error, content: c.clone() };
+        return UnwrappedToolResult {
+            is_error,
+            content: c.clone(),
+        };
     }
     if let Some(c) = record.get("text") {
-        return UnwrappedToolResult { is_error, content: c.clone() };
+        return UnwrappedToolResult {
+            is_error,
+            content: c.clone(),
+        };
     }
-    UnwrappedToolResult { is_error, content: raw_result.clone() }
+    UnwrappedToolResult {
+        is_error,
+        content: raw_result.clone(),
+    }
 }
 
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -846,8 +985,12 @@ mod tests {
         assert_eq!(read.title, "Read /x");
         assert_eq!(read.kind, "read");
 
-        let glob =
-            create_tool_call("tu3", "Glob", &json!({"pattern": "*.rs", "path": "src"}), None);
+        let glob = create_tool_call(
+            "tu3",
+            "Glob",
+            &json!({"pattern": "*.rs", "path": "src"}),
+            None,
+        );
         assert_eq!(glob.title, "Glob *.rs in src");
         assert_eq!(glob.kind, "search");
 
@@ -871,17 +1014,25 @@ mod tests {
             None,
         );
         assert_eq!(r.content.len(), 1);
-        let ToolCallContent::Diff { old, new, .. } = &r.content[0] else { panic!("expected diff") };
+        let ToolCallContent::Diff { old, new, .. } = &r.content[0] else {
+            panic!("expected diff")
+        };
         assert_eq!(old, "a");
         assert_eq!(new, "b");
     }
 
     #[test]
     fn write_initial_content_is_full_diff() {
-        let r =
-            create_tool_call("tu", "Write", &json!({"file_path": "/f", "content": "hello"}), None);
+        let r = create_tool_call(
+            "tu",
+            "Write",
+            &json!({"file_path": "/f", "content": "hello"}),
+            None,
+        );
         assert_eq!(r.content.len(), 1);
-        let ToolCallContent::Diff { old, new, .. } = &r.content[0] else { panic!() };
+        let ToolCallContent::Diff { old, new, .. } = &r.content[0] else {
+            panic!()
+        };
         assert_eq!(old, "");
         assert_eq!(new, "hello");
     }
@@ -929,8 +1080,9 @@ mod tests {
         assert_eq!(f.status.as_deref(), Some("completed"));
         assert_eq!(f.raw_output.as_deref(), Some("hello\n"));
         // generic content fallback wraps the bash output as text.
-        let Some(ToolCallContent::Content { content: ContentBlock::Text { text } }) =
-            f.content.as_ref().and_then(|c| c.first())
+        let Some(ToolCallContent::Content {
+            content: ContentBlock::Text { text },
+        }) = f.content.as_ref().and_then(|c| c.first())
         else {
             panic!("expected text content");
         };

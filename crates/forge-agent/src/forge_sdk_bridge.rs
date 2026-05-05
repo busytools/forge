@@ -28,9 +28,9 @@ use forge_sdk::Client;
 use serde_json::Value;
 use tokio::sync::{mpsc, oneshot};
 
-use crate::agent::client::{AgentBridge, AgentEvent, PromptResponse, SessionLaunchSettings};
-use crate::agent::forge_sdk_worker;
-use crate::agent::types::{ElicitationAction, McpServerConfig, PermissionOutcome, QuestionOutcome};
+use crate::client::{AgentBridge, AgentEvent, PromptResponse, SessionLaunchSettings};
+use crate::forge_sdk_worker;
+use forge_primitives::{ElicitationAction, McpServerConfig, PermissionOutcome, QuestionOutcome};
 
 /// Pending permission responses keyed by `tool_use_id`. The
 /// `can_use_tool` callback parks a oneshot here when the CLI asks;
@@ -133,7 +133,9 @@ impl ForgeSdkBridge {
         Fut: std::future::Future<Output = anyhow::Result<()>> + Send + 'static,
     {
         let Some(client) = self.client() else {
-            return Err(anyhow::anyhow!("forge-sdk bridge: {label} called before active session"));
+            return Err(anyhow::anyhow!(
+                "forge-sdk bridge: {label} called before active session"
+            ));
         };
         tokio::spawn(async move {
             if let Err(err) = f(client).await {
@@ -221,7 +223,11 @@ impl Drop for BridgeInner {
 #[async_trait(?Send)]
 impl AgentBridge for ForgeSdkBridge {
     fn take_events(&self) -> Option<mpsc::UnboundedReceiver<AgentEvent>> {
-        self.inner.events_rx.lock().ok().and_then(|mut slot| slot.take())
+        self.inner
+            .events_rx
+            .lock()
+            .ok()
+            .and_then(|mut slot| slot.take())
     }
 
     fn prompt_text(&self, session_id: String, text: String) -> anyhow::Result<PromptResponse> {
@@ -232,21 +238,18 @@ impl AgentBridge for ForgeSdkBridge {
         &self,
         _session_id: String,
         text: String,
-        images: Vec<crate::app::clipboard_image::ImageAttachment>,
+        images: Vec<forge_primitives::ImageAttachment>,
     ) -> anyhow::Result<PromptResponse> {
-        let mut chunks: Vec<crate::agent::types::PromptChunk> =
-            Vec::with_capacity(1 + images.len());
+        let mut chunks: Vec<forge_primitives::PromptChunk> = Vec::with_capacity(1 + images.len());
         for img in images {
-            if let Err(reason) =
-                crate::app::clipboard_image::validate_image(&img.data, &img.mime_type)
-            {
+            if let Err(reason) = forge_primitives::validate_image(&img.data, &img.mime_type) {
                 tracing::warn!(
                     target: crate::logging::targets::APP_INPUT,
                     "forge-sdk bridge: skipping invalid image: {reason}"
                 );
                 continue;
             }
-            chunks.push(crate::agent::types::PromptChunk {
+            chunks.push(forge_primitives::PromptChunk {
                 kind: "image".to_owned(),
                 value: serde_json::json!({
                     "data": img.data,
@@ -254,14 +257,16 @@ impl AgentBridge for ForgeSdkBridge {
                 }),
             });
         }
-        chunks.push(crate::agent::types::PromptChunk {
+        chunks.push(forge_primitives::PromptChunk {
             kind: "text".to_owned(),
             value: Value::String(text),
         });
         self.dispatch("prompt", move |client| async move {
             forge_sdk_worker::send_prompt(&client, chunks).await
         })?;
-        Ok(PromptResponse { stop_reason: "end_turn".to_owned() })
+        Ok(PromptResponse {
+            stop_reason: "end_turn".to_owned(),
+        })
     }
 
     fn cancel(&self, _session_id: String) -> anyhow::Result<()> {
@@ -307,7 +312,10 @@ impl AgentBridge for ForgeSdkBridge {
         let event_tx = self.inner.event_tx.clone();
         self.dispatch("get_status_snapshot", move |client| async move {
             let account = client.account_info().unwrap_or_default();
-            let _ = event_tx.send(AgentEvent::StatusSnapshot { session_id, account });
+            let _ = event_tx.send(AgentEvent::StatusSnapshot {
+                session_id,
+                account,
+            });
             Ok(())
         })
     }
@@ -316,7 +324,10 @@ impl AgentBridge for ForgeSdkBridge {
         let event_tx = self.inner.event_tx.clone();
         self.dispatch("get_oauth_credentials_snapshot", move |client| async move {
             let credentials = client.oauth_credentials();
-            let _ = event_tx.send(AgentEvent::OauthCredentialsSnapshot { session_id, credentials });
+            let _ = event_tx.send(AgentEvent::OauthCredentialsSnapshot {
+                session_id,
+                credentials,
+            });
             Ok(())
         })
     }
@@ -326,8 +337,10 @@ impl AgentBridge for ForgeSdkBridge {
         self.dispatch("get_context_usage", move |client| async move {
             let usage = client.get_context_usage().await?;
             let percentage = forge_sdk_worker::clamp_percentage_to_u8(usage.percentage);
-            let _ = event_tx
-                .send(AgentEvent::ContextUsage { session_id, percentage: Some(percentage) });
+            let _ = event_tx.send(AgentEvent::ContextUsage {
+                session_id,
+                percentage: Some(percentage),
+            });
             Ok(())
         })
     }
@@ -376,7 +389,9 @@ impl AgentBridge for ForgeSdkBridge {
             ElicitationAction::Cancel => "cancel",
         };
         self.dispatch("respond_to_elicitation", move |client| async move {
-            client.respond_to_elicitation(&elicitation_request_id, action_str, content).await?;
+            client
+                .respond_to_elicitation(&elicitation_request_id, action_str, content)
+                .await?;
             Ok(())
         })
     }
@@ -387,7 +402,7 @@ impl AgentBridge for ForgeSdkBridge {
             if let Err(e) = client.mcp_reconnect(&server_name).await {
                 let _ = event_tx.send(AgentEvent::McpOperationError {
                     session_id,
-                    error: crate::agent::types::McpOperationError {
+                    error: forge_primitives::McpOperationError {
                         operation: "reconnect".to_owned(),
                         server_name: Some(server_name),
                         message: format!("{e}"),
@@ -409,7 +424,7 @@ impl AgentBridge for ForgeSdkBridge {
             if let Err(e) = client.mcp_toggle(&server_name, enabled).await {
                 let _ = event_tx.send(AgentEvent::McpOperationError {
                     session_id,
-                    error: crate::agent::types::McpOperationError {
+                    error: forge_primitives::McpOperationError {
                         operation: "toggle".to_owned(),
                         server_name: Some(server_name),
                         message: format!("{e}"),
@@ -431,7 +446,7 @@ impl AgentBridge for ForgeSdkBridge {
             if let Err(e) = client.mcp_set_servers(payload).await {
                 let _ = event_tx.send(AgentEvent::McpOperationError {
                     session_id,
-                    error: crate::agent::types::McpOperationError {
+                    error: forge_primitives::McpOperationError {
                         operation: "set_servers".to_owned(),
                         server_name: None,
                         message: format!("{e}"),
@@ -460,7 +475,7 @@ impl AgentBridge for ForgeSdkBridge {
                     if let Some(auth_url) = url {
                         let _ = event_tx.send(AgentEvent::McpAuthRedirect {
                             session_id,
-                            redirect: crate::agent::types::McpAuthRedirect {
+                            redirect: forge_primitives::McpAuthRedirect {
                                 server_name,
                                 auth_url,
                                 requires_user_action: true,
@@ -471,7 +486,7 @@ impl AgentBridge for ForgeSdkBridge {
                 Err(e) => {
                     let _ = event_tx.send(AgentEvent::McpOperationError {
                         session_id,
-                        error: crate::agent::types::McpOperationError {
+                        error: forge_primitives::McpOperationError {
                             operation: "authenticate".to_owned(),
                             server_name: Some(server_name),
                             message: format!("{e}"),
@@ -489,7 +504,7 @@ impl AgentBridge for ForgeSdkBridge {
             if let Err(e) = client.mcp_clear_auth(&server_name).await {
                 let _ = event_tx.send(AgentEvent::McpOperationError {
                     session_id,
-                    error: crate::agent::types::McpOperationError {
+                    error: forge_primitives::McpOperationError {
                         operation: "clear_auth".to_owned(),
                         server_name: Some(server_name),
                         message: format!("{e}"),
@@ -508,10 +523,13 @@ impl AgentBridge for ForgeSdkBridge {
     ) -> anyhow::Result<()> {
         let event_tx = self.inner.event_tx.clone();
         self.dispatch("submit_mcp_oauth_callback_url", move |client| async move {
-            if let Err(e) = client.mcp_oauth_callback_url(&server_name, &callback_url).await {
+            if let Err(e) = client
+                .mcp_oauth_callback_url(&server_name, &callback_url)
+                .await
+            {
                 let _ = event_tx.send(AgentEvent::McpOperationError {
                     session_id,
-                    error: crate::agent::types::McpOperationError {
+                    error: forge_primitives::McpOperationError {
                         operation: "oauth_callback".to_owned(),
                         server_name: Some(server_name),
                         message: format!("{e}"),

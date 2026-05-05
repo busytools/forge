@@ -59,6 +59,7 @@ impl PermissionMode {
     }
 }
 
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -79,10 +80,22 @@ mod tests {
 
     #[test]
     fn permission_mode_aliases() {
-        assert_eq!(PermissionMode::from_wire("ask"), Some(PermissionMode::Default));
-        assert_eq!(PermissionMode::from_wire("accept_edits"), Some(PermissionMode::AcceptEdits));
-        assert_eq!(PermissionMode::from_wire("dont_ask"), Some(PermissionMode::DontAsk));
-        assert_eq!(PermissionMode::from_wire("deny"), Some(PermissionMode::DontAsk));
+        assert_eq!(
+            PermissionMode::from_wire("ask"),
+            Some(PermissionMode::Default)
+        );
+        assert_eq!(
+            PermissionMode::from_wire("accept_edits"),
+            Some(PermissionMode::AcceptEdits)
+        );
+        assert_eq!(
+            PermissionMode::from_wire("dont_ask"),
+            Some(PermissionMode::DontAsk)
+        );
+        assert_eq!(
+            PermissionMode::from_wire("deny"),
+            Some(PermissionMode::DontAsk)
+        );
         assert_eq!(
             PermissionMode::from_wire("bypass_permissions"),
             Some(PermissionMode::BypassPermissions)

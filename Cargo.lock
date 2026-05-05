@@ -1080,6 +1080,7 @@ dependencies = [
  "clap",
  "crossterm",
  "dirs",
+ "forge-agent",
  "forge-primitives",
  "forge-sdk",
  "futures",

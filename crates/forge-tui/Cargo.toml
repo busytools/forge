@@ -23,6 +23,7 @@ path = "src/main.rs"
 # unless overridden here.
 forge-sdk = { path = "../forge-sdk", version = "=0.1.64" }
 forge-primitives = { workspace = true }
+forge-agent = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 clap = { workspace = true }

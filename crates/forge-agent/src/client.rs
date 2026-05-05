@@ -9,14 +9,14 @@ use tokio::sync::mpsc;
 /// alternative backends (forge-sdk in-process, future remote daemons,
 /// stub implementations for tests) plug in without changing call sites
 /// across `app/*`. The current production implementation is
-/// [`crate::agent::forge_sdk_bridge::ForgeSdkBridge`].
+/// [`crate::forge_sdk_bridge::ForgeSdkBridge`].
 ///
 /// Two method shapes coexist on this trait:
 ///
 /// - **Fire-and-forget commands** — most session-lifecycle methods
 ///   (`prompt_text`, `cancel`, `set_mode`, …) return
 ///   `anyhow::Result<()>` and emit results back through the existing
-///   [`crate::agent::client::AgentEvent`] stream.
+///   [`crate::client::AgentEvent`] stream.
 /// - **Direct-return accessors** — synchronous reads/writes that
 ///   return their result directly (`config_dir`, `oauth_credentials`,
 ///   `settings_documents`, `write_settings_document`,
@@ -42,7 +42,7 @@ pub trait AgentBridge {
         &self,
         session_id: String,
         text: String,
-        images: Vec<crate::app::clipboard_image::ImageAttachment>,
+        images: Vec<forge_primitives::ImageAttachment>,
     ) -> anyhow::Result<PromptResponse>;
 
     fn cancel(&self, session_id: String) -> anyhow::Result<()>;
@@ -70,7 +70,7 @@ pub trait AgentBridge {
         &self,
         session_id: String,
         elicitation_request_id: String,
-        action: crate::agent::types::ElicitationAction,
+        action: forge_primitives::ElicitationAction,
         content: Option<serde_json::Value>,
     ) -> anyhow::Result<()>;
 
@@ -86,7 +86,7 @@ pub trait AgentBridge {
     fn set_mcp_servers(
         &self,
         session_id: String,
-        servers: std::collections::BTreeMap<String, crate::agent::types::McpServerConfig>,
+        servers: std::collections::BTreeMap<String, forge_primitives::McpServerConfig>,
     ) -> anyhow::Result<()>;
 
     fn authenticate_mcp_server(
@@ -120,14 +120,14 @@ pub trait AgentBridge {
         &self,
         session_id: String,
         tool_call_id: String,
-        outcome: crate::agent::types::PermissionOutcome,
+        outcome: forge_primitives::PermissionOutcome,
     ) -> anyhow::Result<()>;
 
     fn question_response(
         &self,
         session_id: String,
         tool_call_id: String,
-        outcome: crate::agent::types::QuestionOutcome,
+        outcome: forge_primitives::QuestionOutcome,
     ) -> anyhow::Result<()>;
 
     /// Start watching `cwd`'s `.git` machinery for branch changes.
@@ -193,7 +193,7 @@ pub trait AgentBridge {
 pub struct PromptResponse {
     pub stop_reason: String,
 }
-use crate::agent::types;
+use forge_primitives as types;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -406,16 +406,19 @@ impl AgentEvent {
     }
 }
 
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #[cfg(test)]
 mod tests {
     use super::{AgentEvent, EventEnvelope, SessionLaunchSettings};
-    use crate::agent::types;
+    use forge_primitives as types;
 
     #[test]
     fn event_envelope_roundtrip_json() {
         let env = EventEnvelope {
             request_id: None,
-            event: AgentEvent::SessionsListed { sessions: Vec::new() },
+            event: AgentEvent::SessionsListed {
+                sessions: Vec::new(),
+            },
         };
         let _ = types::TerminalReason::Completed; // keep import alive
         let json = serde_json::to_string(&env).expect("serialize");

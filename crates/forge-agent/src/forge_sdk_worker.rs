@@ -16,9 +16,9 @@ use forge_sdk::{
 };
 use tokio::sync::{mpsc, oneshot};
 
-use crate::agent::client::AgentEvent;
-use crate::agent::forge_sdk_bridge::{ForgeSdkBridge, PendingQuestions, PendingResponses};
-use crate::agent::{
+use crate::client::AgentEvent;
+use crate::forge_sdk_bridge::{ForgeSdkBridge, PendingQuestions, PendingResponses};
+use crate::{
     commands as bridge_commands, session_lifecycle, state as bridge_state,
     user_interaction as bridge_user_interaction,
 };
@@ -37,7 +37,7 @@ pub(crate) async fn spawn_session(
     bridge: &ForgeSdkBridge,
     cwd: &str,
     resume_id: Option<&str>,
-    launch_settings: &crate::agent::client::SessionLaunchSettings,
+    launch_settings: &crate::client::SessionLaunchSettings,
 ) -> anyhow::Result<()> {
     // If we already have a client, drop it so the existing subprocess
     // shuts down cleanly before the replacement spawns.
@@ -79,7 +79,14 @@ pub(crate) async fn spawn_session(
     // sees Connected first on its mpsc — otherwise the reader can
     // race and push an SdkMessage before Connected, leaving
     // `app.session_id` = None when the SdkMessage arrives.
-    emit_connected(bridge.event_tx(), &client, &session_id, &cwd_owned, launch_settings, resume_id);
+    emit_connected(
+        bridge.event_tx(),
+        &client,
+        &session_id,
+        &cwd_owned,
+        launch_settings,
+        resume_id,
+    );
 
     // Reader subtask — owns the events receiver. Client is the writer-side
     // handle (Arc-backed, Clone) and stays on the bridge.
@@ -98,7 +105,7 @@ fn emit_connected(
     client: &Client,
     session_id: &str,
     cwd: &str,
-    launch_settings: &crate::agent::client::SessionLaunchSettings,
+    launch_settings: &crate::client::SessionLaunchSettings,
     resume_id: Option<&str>,
 ) {
     let server_info = client.get_server_info().cloned();
@@ -111,14 +118,18 @@ fn emit_connected(
     // The CLI doesn't emit `system/init` until both the initialize
     // control_response AND a user message have landed. Fall back to
     // launch_settings (settings.json) for the initial Connected.
-    let launch_settings_record =
-        launch_settings.settings.as_ref().and_then(serde_json::Value::as_object);
+    let launch_settings_record = launch_settings
+        .settings
+        .as_ref()
+        .and_then(serde_json::Value::as_object);
     let init_model_id = init_record
         .and_then(|r| r.get("model"))
         .and_then(serde_json::Value::as_str)
         .filter(|s| !s.is_empty())
         .or_else(|| {
-            launch_settings_record.and_then(|r| r.get("model")).and_then(serde_json::Value::as_str)
+            launch_settings_record
+                .and_then(|r| r.get("model"))
+                .and_then(serde_json::Value::as_str)
         })
         .unwrap_or("")
         .to_owned();
@@ -162,7 +173,11 @@ fn emit_connected(
 
     let history_updates = resume_id.and_then(|prev_session_id| {
         let updates = load_history_updates(prev_session_id, cwd);
-        if updates.is_empty() { None } else { Some(updates) }
+        if updates.is_empty() {
+            None
+        } else {
+            Some(updates)
+        }
     });
 
     let _ = event_tx.send(AgentEvent::Connected {
@@ -175,18 +190,23 @@ fn emit_connected(
     });
 
     if let Some(account) = client.account_info() {
-        let _ = event_tx
-            .send(AgentEvent::StatusSnapshot { session_id: session_id.to_owned(), account });
+        let _ = event_tx.send(AgentEvent::StatusSnapshot {
+            session_id: session_id.to_owned(),
+            account,
+        });
     }
 
-    let _ = event_tx.send(AgentEvent::SessionsListed { sessions: list_recent_sessions(cwd) });
+    let _ = event_tx.send(AgentEvent::SessionsListed {
+        sessions: list_recent_sessions(cwd),
+    });
 }
 
-fn load_history_updates(
-    prev_session_id: &str,
-    cwd: &str,
-) -> Vec<crate::agent::types::SessionUpdate> {
-    let dir = if cwd.is_empty() { None } else { Some(cwd.to_owned()) };
+fn load_history_updates(prev_session_id: &str, cwd: &str) -> Vec<forge_primitives::SessionUpdate> {
+    let dir = if cwd.is_empty() {
+        None
+    } else {
+        Some(cwd.to_owned())
+    };
     let messages = forge_sdk::session::scan::get_session_messages(prev_session_id, dir);
     let raw: Vec<serde_json::Value> = messages
         .into_iter()
@@ -202,13 +222,17 @@ fn load_history_updates(
             })
         })
         .collect();
-    crate::agent::history::map_session_messages_to_updates(&raw)
+    crate::history::map_session_messages_to_updates(&raw)
 }
 
-fn list_recent_sessions(cwd: &str) -> Vec<crate::agent::types::SessionListEntry> {
-    use crate::agent::types::SessionListEntry;
+fn list_recent_sessions(cwd: &str) -> Vec<forge_primitives::SessionListEntry> {
+    use forge_primitives::SessionListEntry;
     const MAX_RECENT: usize = 50;
-    let dir = if cwd.is_empty() { None } else { Some(cwd.to_owned()) };
+    let dir = if cwd.is_empty() {
+        None
+    } else {
+        Some(cwd.to_owned())
+    };
     forge_sdk::session::scan::list_sessions(dir, Some(MAX_RECENT), 0)
         .into_iter()
         .map(|info| SessionListEntry {
@@ -246,7 +270,10 @@ async fn reader_loop(
                 let session_id_for_sdk_msg =
                     msg_session_id(&msg).unwrap_or_else(|| session_id.clone());
                 if event_tx
-                    .send(AgentEvent::SdkMessage { session_id: session_id_for_sdk_msg, msg })
+                    .send(AgentEvent::SdkMessage {
+                        session_id: session_id_for_sdk_msg,
+                        msg,
+                    })
                     .is_err()
                 {
                     return;
@@ -270,11 +297,14 @@ async fn reader_loop(
 
 pub(crate) async fn send_prompt(
     client: &Client,
-    chunks: Vec<crate::agent::types::PromptChunk>,
+    chunks: Vec<forge_primitives::PromptChunk>,
 ) -> anyhow::Result<()> {
     if chunks.iter().all(|c| c.kind == "text") {
-        let prompt: String =
-            chunks.iter().filter_map(|c| c.value.as_str()).collect::<Vec<_>>().join("\n");
+        let prompt: String = chunks
+            .iter()
+            .filter_map(|c| c.value.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
         client.send_user_message(&prompt).await?;
     } else {
         let content: Vec<serde_json::Value> = chunks
@@ -308,7 +338,9 @@ pub(crate) fn parse_permission_mode(mode: &str) -> anyhow::Result<PermissionMode
         "bypassPermissions" | "bypass_permissions" => Ok(PermissionMode::BypassPermissions),
         "auto" => Ok(PermissionMode::Auto),
         "dontAsk" | "dont_ask" | "deny" => Ok(PermissionMode::DenyPermissions),
-        other => Err(anyhow::anyhow!("forge_sdk: unknown permission mode {other:?}")),
+        other => Err(anyhow::anyhow!(
+            "forge_sdk: unknown permission mode {other:?}"
+        )),
     }
 }
 
@@ -320,7 +352,7 @@ pub(crate) fn parse_permission_mode(mode: &str) -> anyhow::Result<PermissionMode
 fn build_options_with_callback(
     cwd: &str,
     resume: Option<&str>,
-    launch_settings: &crate::agent::client::SessionLaunchSettings,
+    launch_settings: &crate::client::SessionLaunchSettings,
     event_tx: mpsc::UnboundedSender<AgentEvent>,
     pending: PendingResponses,
     pending_questions: PendingQuestions,
@@ -330,7 +362,10 @@ fn build_options_with_callback(
         let event_tx = event_tx.clone();
         let pending = Arc::clone(&pending);
         let pending_questions = Arc::clone(&pending_questions);
-        let session_id = session_id_slot.lock().map(|s| s.clone()).unwrap_or_default();
+        let session_id = session_id_slot
+            .lock()
+            .map(|s| s.clone())
+            .unwrap_or_default();
         async move {
             if ctx.tool_name == bridge_user_interaction::ASK_USER_QUESTION_TOOL_NAME {
                 run_ask_user_question(ctx, session_id, &event_tx, &pending_questions).await
@@ -340,7 +375,9 @@ fn build_options_with_callback(
         }
     };
 
-    let mut b = OptionsBuilder::new().can_use_tool(callback).permission_prompt_tool_name("stdio");
+    let mut b = OptionsBuilder::new()
+        .can_use_tool(callback)
+        .permission_prompt_tool_name("stdio");
     if !cwd.is_empty() {
         b = b.cwd(PathBuf::from(cwd));
     }
@@ -355,8 +392,9 @@ fn build_options_with_callback(
     if let Some(settings_value) = launch_settings.settings.as_ref()
         && let Some(settings_record) = settings_value.as_object()
     {
-        if let Some(perms) =
-            settings_record.get("permissions").and_then(serde_json::Value::as_object)
+        if let Some(perms) = settings_record
+            .get("permissions")
+            .and_then(serde_json::Value::as_object)
             && let Some(default_mode_str) =
                 perms.get("defaultMode").and_then(serde_json::Value::as_str)
             && let Ok(mode) = parse_permission_mode(default_mode_str)
@@ -364,13 +402,17 @@ fn build_options_with_callback(
             b = b.permission_mode(mode);
             applied_mode = Some(mode.as_cli_arg());
         }
-        if let Some(model) = settings_record.get("model").and_then(serde_json::Value::as_str)
+        if let Some(model) = settings_record
+            .get("model")
+            .and_then(serde_json::Value::as_str)
             && !model.trim().is_empty()
         {
             b = b.model(model);
             applied_model = Some(model.to_owned());
         }
-        if let Some(effort) = settings_record.get("effortLevel").and_then(serde_json::Value::as_str)
+        if let Some(effort) = settings_record
+            .get("effortLevel")
+            .and_then(serde_json::Value::as_str)
             && !effort.trim().is_empty()
         {
             applied_effort = Some(effort.to_owned());
@@ -418,7 +460,7 @@ async fn run_ask_user_question(
     event_tx: &mpsc::UnboundedSender<AgentEvent>,
     pending_questions: &PendingQuestions,
 ) -> PermissionDecision {
-    use crate::agent::types::QuestionOutcome;
+    use forge_primitives::QuestionOutcome;
 
     let prompts = bridge_user_interaction::parse_ask_user_question_prompts(&ctx.tool_input);
     if prompts.is_empty() {
@@ -454,8 +496,11 @@ async fn run_ask_user_question(
             return PermissionDecision::deny("response channel closed");
         };
         match outcome {
-            QuestionOutcome::Answered { selected_option_ids, annotation } => {
-                let selected: Vec<crate::agent::types::QuestionOption> = request
+            QuestionOutcome::Answered {
+                selected_option_ids,
+                annotation,
+            } => {
+                let selected: Vec<forge_primitives::QuestionOption> = request
                     .prompt
                     .options
                     .iter()
@@ -465,8 +510,11 @@ async fn run_ask_user_question(
                 if selected.is_empty() || (!prompt.multi_select && selected.len() != 1) {
                     return PermissionDecision::deny("Question answer was invalid");
                 }
-                let answer =
-                    selected.iter().map(|o| o.label.as_str()).collect::<Vec<_>>().join(", ");
+                let answer = selected
+                    .iter()
+                    .map(|o| o.label.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ");
                 answers.insert(prompt.question.clone(), serde_json::Value::String(answer));
                 if let Some(annotation) =
                     bridge_user_interaction::derive_annotation(&selected, annotation.as_ref())
@@ -486,8 +534,8 @@ async fn run_ask_user_question(
     PermissionDecision::allow_with_input(updated_input)
 }
 
-fn synth_question_base_tool_call(ctx: &ToolPermissionContext) -> crate::agent::types::ToolCall {
-    use crate::agent::types::ToolCall;
+fn synth_question_base_tool_call(ctx: &ToolPermissionContext) -> forge_primitives::ToolCall {
+    use forge_primitives::ToolCall;
     ToolCall {
         tool_call_id: ctx.tool_use_id.clone(),
         title: bridge_user_interaction::ASK_USER_QUESTION_TOOL_NAME.to_owned(),
@@ -506,7 +554,7 @@ fn synth_question_base_tool_call(ctx: &ToolPermissionContext) -> crate::agent::t
 pub(crate) fn deliver_permission_response(
     pending: &PendingResponses,
     tool_call_id: &str,
-    outcome: crate::agent::types::PermissionOutcome,
+    outcome: forge_primitives::PermissionOutcome,
 ) {
     let Some(tx) = take_pending(pending, tool_call_id) else {
         tracing::warn!(
@@ -517,14 +565,14 @@ pub(crate) fn deliver_permission_response(
         return;
     };
     let decision = match outcome {
-        crate::agent::types::PermissionOutcome::Selected { option_id } => {
+        forge_primitives::PermissionOutcome::Selected { option_id } => {
             if option_id.eq_ignore_ascii_case("deny") || option_id.eq_ignore_ascii_case("reject") {
                 PermissionDecision::deny(format!("user denied: {option_id}"))
             } else {
                 PermissionDecision::allow()
             }
         }
-        crate::agent::types::PermissionOutcome::Cancelled => {
+        forge_primitives::PermissionOutcome::Cancelled => {
             PermissionDecision::deny("user cancelled")
         }
     };
@@ -534,7 +582,7 @@ pub(crate) fn deliver_permission_response(
 pub(crate) fn deliver_question_response(
     pending: &PendingQuestions,
     tool_call_id: &str,
-    outcome: crate::agent::types::QuestionOutcome,
+    outcome: forge_primitives::QuestionOutcome,
 ) {
     let Some(tx) = pending.lock().ok().and_then(|mut m| m.remove(tool_call_id)) else {
         tracing::warn!(
@@ -555,7 +603,7 @@ fn take_pending(
 }
 
 fn synth_permission_request(session_id: &str, ctx: &ToolPermissionContext) -> AgentEvent {
-    use crate::agent::types::{PermissionDisplay, PermissionRequest, ToolCall};
+    use forge_primitives::{PermissionDisplay, PermissionRequest, ToolCall};
     let tool_call = ToolCall {
         tool_call_id: ctx.tool_use_id.clone(),
         title: ctx.tool_name.clone(),
@@ -584,21 +632,21 @@ fn synth_permission_request(session_id: &str, ctx: &ToolPermissionContext) -> Ag
     }
 }
 
-fn default_permission_options() -> Vec<crate::agent::types::PermissionOption> {
+fn default_permission_options() -> Vec<forge_primitives::PermissionOption> {
     vec![
-        crate::agent::types::PermissionOption {
+        forge_primitives::PermissionOption {
             option_id: "allow_once".to_owned(),
             name: "Allow once".to_owned(),
             description: None,
             kind: "allow_once".to_owned(),
         },
-        crate::agent::types::PermissionOption {
+        forge_primitives::PermissionOption {
             option_id: "allow_always".to_owned(),
             name: "Allow always".to_owned(),
             description: None,
             kind: "allow_always".to_owned(),
         },
-        crate::agent::types::PermissionOption {
+        forge_primitives::PermissionOption {
             option_id: "deny".to_owned(),
             name: "Deny".to_owned(),
             description: None,
@@ -624,8 +672,8 @@ mod tests {
         PendingQuestions, PendingResponses, deliver_permission_response, deliver_question_response,
         synth_permission_request, take_pending,
     };
-    use crate::agent::client::AgentEvent;
-    use crate::agent::types::{ElicitationAction, PermissionOutcome, QuestionOutcome};
+    use crate::client::AgentEvent;
+    use forge_primitives::{ElicitationAction, PermissionOutcome, QuestionOutcome};
     use forge_sdk::ToolPermissionContext;
     use serde_json::json;
     use std::collections::HashMap;
@@ -656,7 +704,9 @@ mod tests {
         deliver_permission_response(
             &pending,
             "tu_1",
-            PermissionOutcome::Selected { option_id: "allow_once".to_owned() },
+            PermissionOutcome::Selected {
+                option_id: "allow_once".to_owned(),
+            },
         );
         let decision = rx.blocking_recv().expect("oneshot resolved");
         assert!(decision.is_allow());
@@ -669,7 +719,9 @@ mod tests {
         deliver_permission_response(
             &pending,
             "tu_2",
-            PermissionOutcome::Selected { option_id: "deny".to_owned() },
+            PermissionOutcome::Selected {
+                option_id: "deny".to_owned(),
+            },
         );
         let decision = rx.blocking_recv().expect("oneshot resolved");
         assert!(!decision.is_allow());
@@ -690,7 +742,9 @@ mod tests {
         deliver_permission_response(
             &pending,
             "missing",
-            PermissionOutcome::Selected { option_id: "allow_once".to_owned() },
+            PermissionOutcome::Selected {
+                option_id: "allow_once".to_owned(),
+            },
         );
         assert!(pending.lock().unwrap().is_empty());
     }
@@ -702,7 +756,7 @@ mod tests {
     fn park_question(
         pending: &PendingQuestions,
         id: &str,
-    ) -> oneshot::Receiver<crate::agent::types::QuestionOutcome> {
+    ) -> oneshot::Receiver<forge_primitives::QuestionOutcome> {
         let (tx, rx) = oneshot::channel();
         pending.lock().unwrap().insert(id.to_owned(), tx);
         rx
@@ -722,7 +776,10 @@ mod tests {
         );
         let outcome = rx.blocking_recv().expect("oneshot resolved");
         match outcome {
-            QuestionOutcome::Answered { selected_option_ids, .. } => {
+            QuestionOutcome::Answered {
+                selected_option_ids,
+                ..
+            } => {
                 assert_eq!(selected_option_ids, vec!["question_0", "question_1"]);
             }
             QuestionOutcome::Cancelled => panic!("expected answered outcome"),
@@ -755,19 +812,29 @@ mod tests {
             Some("Lists directory entries".to_owned()),
         );
         let event = synth_permission_request("sess_1", &c);
-        let AgentEvent::PermissionRequest { session_id, request } = event else {
+        let AgentEvent::PermissionRequest {
+            session_id,
+            request,
+        } = event
+        else {
             panic!("expected PermissionRequest");
         };
         assert_eq!(session_id, "sess_1");
         assert_eq!(request.tool_call.tool_call_id, "tu_p1");
         assert_eq!(request.tool_call.title, "Bash");
-        assert_eq!(request.tool_call.raw_input, Some(json!({ "command": "ls" })));
+        assert_eq!(
+            request.tool_call.raw_input,
+            Some(json!({ "command": "ls" }))
+        );
         assert_eq!(request.options.len(), 3);
         assert!(request.options.iter().any(|o| o.option_id == "deny"));
         let display = request.display.expect("display populated");
         assert_eq!(display.title.as_deref(), Some("Run shell command"));
         assert_eq!(display.display_name.as_deref(), Some("Bash"));
-        assert_eq!(display.description.as_deref(), Some("Lists directory entries"));
+        assert_eq!(
+            display.description.as_deref(),
+            Some("Lists directory entries")
+        );
     }
 
     #[test]

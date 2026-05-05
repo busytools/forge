@@ -7,7 +7,11 @@
 //! keeps the `arboard`/`image`-flavoured encoding helpers that only
 //! the UI cares about.
 
-pub use forge_primitives::image::{ImageAttachment, is_supported_image_type, validate_image};
+#[allow(unused_imports)]
+pub use forge_primitives::image::{
+    ImageAttachment, SUPPORTED_IMAGE_MIME_TYPES, is_supported_image_type, is_valid_base64,
+    validate_image,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClipboardImageError {
