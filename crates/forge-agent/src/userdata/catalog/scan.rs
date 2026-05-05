@@ -21,9 +21,9 @@ use std::path::{Path, PathBuf};
 use serde_json::Value;
 use unicode_normalization::UnicodeNormalization;
 
-use crate::public_types::{SDKSessionInfo, SessionMessage, SessionMessageKind};
-use crate::session::mutations::is_valid_uuid;
-use crate::session::paths::projects_dir;
+use forge_sdk::{SDKSessionInfo, SessionMessage, SessionMessageKind, projects_dir};
+
+use crate::userdata::catalog::mutations::is_valid_uuid;
 
 const MAX_SANITIZED_LENGTH: usize = 200;
 

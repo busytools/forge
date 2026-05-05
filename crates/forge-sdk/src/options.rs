@@ -132,9 +132,9 @@ pub struct Options {
     /// and checks the reported major version is at least the first
     /// component.
     pub minimum_cli_version: Option<String>,
-    /// Override the directory used by `session::scan::*` to resolve
-    /// project keys. When `None`, forge-sdk defaults to
-    /// `$CLAUDE_CONFIG_DIR/projects` or `~/.claude/projects`.
+    /// Override the directory used to resolve project keys. When
+    /// `None`, forge-sdk defaults to `$CLAUDE_CONFIG_DIR/projects`
+    /// or `~/.claude/projects`.
     pub projects_dir: Option<PathBuf>,
     /// Subagent definitions forwarded via the `initialize`
     /// `control_request`'s `agents` field. Key is the subagent name
@@ -168,7 +168,7 @@ pub struct Options {
     pub include_partial_messages: bool,
     /// Spawn-time fork — duplicate `resume`'s session on the first turn.
     /// `--fork-session` (distinct from the offline JSONL-level
-    /// [`fork_session`](crate::session::mutations::fork_session) helper;
+    /// `fork_session` helper in `forge_agent::userdata::catalog::mutations`;
     /// has no runtime `fork_session` `control_request`).
     pub fork_session: bool,
     /// Extra directories surfaced to the CLI via repeated `--add-dir`.
@@ -695,9 +695,9 @@ impl OptionsBuilder {
         self
     }
 
-    /// Override the projects directory used by `session::scan::*` helpers
-    /// to resolve project keys. When unset, defaults to
-    /// `$CLAUDE_CONFIG_DIR/projects` or `~/.claude/projects`.
+    /// Override the projects directory used to resolve project keys.
+    /// When unset, defaults to `$CLAUDE_CONFIG_DIR/projects` or
+    /// `~/.claude/projects`.
     #[must_use]
     pub fn projects_dir(mut self, path: impl Into<PathBuf>) -> Self {
         self.inner.projects_dir = Some(path.into());

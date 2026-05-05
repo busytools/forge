@@ -1,6 +1,6 @@
 //! Channel-based [`Agent`] handle — the public consumer surface.
 //!
-//! `Agent::spawn` constructs a [`ForgeSdkBridge`] under the hood and
+//! `Agent::spawn` constructs a `ForgeSdkBridge` under the hood and
 //! spawns one background task: the **command dispatcher**, which
 //! drains `mpsc::UnboundedReceiver<Command>` and calls the matching
 //! `AgentBridge` method on the bridge. The bridge's `AgentEvent`
@@ -337,7 +337,7 @@ impl AgentHandle {
     }
 }
 
-/// Agent factory — wraps [`ForgeSdkBridge`] behind a channel API.
+/// Agent factory — wraps a private `ForgeSdkBridge` behind a channel API.
 pub struct Agent;
 
 impl Agent {

@@ -16,8 +16,7 @@ use std::path::{Path, PathBuf};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-use crate::error::Error;
-use crate::session::paths::projects_dir;
+use forge_sdk::{Error, projects_dir};
 
 /// Outcome of a [`fork_session`] call.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -293,7 +292,7 @@ fn find_session_file(session_id: &str, directory: Option<&str>) -> Option<PathBu
             Err(_) => dir.to_string(),
         };
         let project_dir =
-            projects_dir().join(crate::session::scan::sanitize_path_public(&canonical));
+            projects_dir().join(crate::userdata::catalog::scan::sanitize_path_public(&canonical));
         let candidate = project_dir.join(&file_name);
         return candidate.is_file().then_some(candidate);
     }

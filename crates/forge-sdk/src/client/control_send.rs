@@ -13,9 +13,8 @@
 //!
 //! Session forking lives elsewhere: the spawn-time
 //! [`Options::fork_session`](crate::Options) flag (surfaced via
-//! `--fork-session`) and the offline
-//! [`fork_session`](crate::session::mutations::fork_session) free
-//! function.
+//! `--fork-session`) and the offline `fork_session` free function in
+//! `forge_agent::userdata::catalog::mutations`.
 
 use crate::Error;
 use crate::client::Client;

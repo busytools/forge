@@ -207,7 +207,7 @@ fn load_history_updates(prev_session_id: &str, cwd: &str) -> Vec<forge_primitive
     } else {
         Some(cwd.to_owned())
     };
-    let messages = forge_sdk::session::scan::get_session_messages(prev_session_id, dir);
+    let messages = crate::userdata::catalog::scan::get_session_messages(prev_session_id, dir);
     let raw: Vec<serde_json::Value> = messages
         .into_iter()
         .map(|m| {
@@ -233,7 +233,7 @@ fn list_recent_sessions(cwd: &str) -> Vec<forge_primitives::SessionListEntry> {
     } else {
         Some(cwd.to_owned())
     };
-    forge_sdk::session::scan::list_sessions(dir, Some(MAX_RECENT), 0)
+    crate::userdata::catalog::scan::list_sessions(dir, Some(MAX_RECENT), 0)
         .into_iter()
         .map(|info| SessionListEntry {
             session_id: info.session_id,

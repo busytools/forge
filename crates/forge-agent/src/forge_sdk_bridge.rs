@@ -304,7 +304,7 @@ impl AgentBridge for ForgeSdkBridge {
 
     fn rename_session(&self, session_id: String, title: String) -> anyhow::Result<()> {
         // Offline disk mutation — no Client required.
-        forge_sdk::session::mutations::rename_session(&session_id, &title, None)?;
+        crate::userdata::catalog::mutations::rename_session(&session_id, &title, None)?;
         Ok(())
     }
 

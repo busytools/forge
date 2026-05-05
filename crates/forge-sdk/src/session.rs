@@ -1,22 +1,8 @@
-//! Session state — filesystem-backed scanners + mutations over the
-//! `claude` binary's on-disk JSONL transcripts.
+//! `$CLAUDE_CONFIG_DIR`-aware path resolution for the on-disk artefacts
+//! the `claude` binary persists.
 //!
-//! Each submodule has a single responsibility:
-//!
-//! - [`scan`] — offline filesystem scanners (`list_sessions`,
-//!   `get_session_info`, `get_session_messages`, `list_subagents`,
-//!   `get_subagent_messages`) with a head+tail lite-read so 100 MiB
-//!   transcripts cost two 64 KiB reads rather than a full scan.
-//! - [`mutations`] — in-place mutations (`rename_session`,
-//!   `tag_session`, `delete_session`, `fork_session`) operating on
-//!   local JSONL transcripts.
-//! - [`paths`] — `$CLAUDE_CONFIG_DIR`-aware path resolution shared
-//!   across the other submodules and `client` accessors.
-//!
-//! See `docs/cuts/transcript-mirror.md` for the 2026-04-23 removal of
-//! the `SessionStore` trait + `transcript_mirror` pipeline and the
-//! bring-back recipe.
+//! Filesystem-backed scanners + mutations over JSONL transcripts moved
+//! to `forge_agent::userdata::catalog` in 2026-05-05; only path
+//! resolution + OAuth credential reading stay here.
 
-pub mod mutations;
 pub mod paths;
-pub mod scan;

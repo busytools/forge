@@ -6,8 +6,9 @@
 //! filesystem reads are agent-side concerns — the SDK no longer
 //! exposes them on `Client`. Path resolution still uses
 //! `forge_sdk::claude_config_dir` and the project-key sanitiser
-//! `forge_sdk::session::scan::project_key_for_directory` so the
-//! key matches what the `claude` CLI writes.
+//! from `forge_agent::userdata::catalog::scan` (which itself
+//! lifted from forge-sdk in the same round) so the key matches
+//! what the `claude` CLI writes.
 
 use std::path::{Path, PathBuf};
 
@@ -18,9 +19,9 @@ use std::path::{Path, PathBuf};
 /// file exists.
 #[must_use]
 pub fn project_memory_path(cwd: &Path) -> PathBuf {
-    let key = forge_sdk::session::scan::project_key_for_directory(Some(&cwd.to_string_lossy()));
-    forge_sdk::claude_config_dir()
-        .join("projects")
+    let key =
+        crate::userdata::catalog::scan::project_key_for_directory(Some(&cwd.to_string_lossy()));
+    forge_sdk::projects_dir()
         .join(key)
         .join("memory")
         .join("MEMORY.md")

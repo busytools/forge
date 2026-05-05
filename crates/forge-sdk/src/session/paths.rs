@@ -16,8 +16,8 @@ use crate::public_types::OauthCredentials;
 
 /// Resolve the Claude config directory. Honours `$CLAUDE_CONFIG_DIR`
 /// (ignoring empty-string values), else falls back to
-/// `$HOME/.claude`. Shared across `sessions`, `session_mutations`,
-/// `client`, and any accessor that needs a typed view of an on-disk
+/// `$HOME/.claude`. Shared across `client`, the agent-side session
+/// catalog, and any accessor that needs a typed view of an on-disk
 /// CLI artefact.
 #[must_use]
 pub fn claude_config_dir() -> PathBuf {
@@ -42,9 +42,11 @@ fn claude_config_dir_from(custom: Option<&str>, home: Option<&str>) -> PathBuf {
 
 /// Resolve the Claude projects directory. Honours `$CLAUDE_CONFIG_DIR`
 /// (ignoring empty-string values), else falls back to
-/// `$HOME/.claude/projects`. Shared across `sessions`,
-/// `session_mutations`, and `client`.
-pub(crate) fn projects_dir() -> PathBuf {
+/// `$HOME/.claude/projects`. Public so the agent's session-catalog
+/// readers (lifted out of forge-sdk in 2026-05-05) can resolve the
+/// same on-disk layout.
+#[must_use]
+pub fn projects_dir() -> PathBuf {
     claude_config_dir().join("projects")
 }
 

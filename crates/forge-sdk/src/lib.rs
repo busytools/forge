@@ -71,7 +71,7 @@ pub use git::{GitBranch, GitContext, GitContextWatcher, GitError, git_context};
 pub use oauth_usage::{
     OauthExtraUsage, OauthUsage, OauthUsageError, OauthUsageWindow, oauth_usage,
 };
-pub use session::paths::claude_config_dir;
+pub use session::paths::{claude_config_dir, projects_dir};
 pub use settings::{
     SettingsDocuments, SettingsTarget, settings_documents, write_settings_document,
 };
