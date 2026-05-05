@@ -24,7 +24,7 @@
 pub mod agent;
 pub mod client;
 pub mod commands;
-pub mod forge_sdk_bridge;
+pub(crate) mod forge_sdk_bridge;
 pub mod forge_sdk_worker;
 pub mod history;
 pub mod logging;
@@ -34,6 +34,10 @@ pub mod tooling;
 pub mod user_interaction;
 
 pub use agent::{Agent, AgentHandle};
-pub use client::{AgentBridge, AgentEvent, PromptResponse, SessionLaunchSettings};
-pub use forge_sdk_bridge::ForgeSdkBridge;
+// `AgentBridge` trait + `ForgeSdkBridge` impl stay alive INTERNALLY
+// (used by Agent's dispatcher + tee_events tasks) but are no longer
+// the recommended consumer surface. Phase 7 hid them; phase 8 (future
+// userdata work) may delete them entirely once the channel API
+// covers everything.
+pub use client::{AgentEvent, PromptResponse, SessionLaunchSettings};
 pub use state::PermissionMode;
