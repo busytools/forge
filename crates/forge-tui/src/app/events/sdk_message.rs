@@ -70,10 +70,11 @@ pub(super) fn handle_sdk_message(app: &mut App, msg: Message) {
         Message::TaskNotification { .. } => handle_task_notification(app, msg, &raw),
         Message::RateLimitEvent { .. } => handle_rate_limit_event(app, msg, &raw),
         Message::Result { .. } => handle_result(app, msg, &raw),
-        Message::StreamEvent { .. } => handle_stream_event(app, msg, &raw),
-        // forge_primitives::Message is `#[non_exhaustive]` — Error / Unknown
-        // and any future variants fall through here.
-        _ => handle_unknown(app, msg, &raw),
+        // `Message::StreamEvent` and `_` (Error / Unknown / future
+        // variants on the `#[non_exhaustive]` enum) — no-op today.
+        // Re-add a handler if a downstream consumer needs to react
+        // to partial-message frames.
+        Message::StreamEvent { .. } | _ => {}
     }
 }
 
@@ -179,7 +180,7 @@ fn walk_assistant_content(app: &mut App, raw: &Value) {
                 apply_plan_if_todo_write(app, name, input);
                 apply_tool_use_block(app, tool_use_id, name, input, parent_id.as_deref());
             }
-            t if is_bridge_tool_result_block_type(t) => {
+            t if crate::agent::tooling::is_tool_result_block_type(t) => {
                 let Some(tool_use_id) = record.get("tool_use_id").and_then(Value::as_str) else {
                     continue;
                 };
@@ -262,7 +263,7 @@ fn walk_user_tool_results(app: &mut App, raw: &Value) {
     for block in content {
         let Some(record) = block.as_object() else { continue };
         let block_type = record.get("type").and_then(Value::as_str).unwrap_or("");
-        if !is_bridge_tool_result_block_type(block_type) {
+        if !crate::agent::tooling::is_tool_result_block_type(block_type) {
             continue;
         }
         let Some(tool_use_id) = record.get("tool_use_id").and_then(Value::as_str) else {
@@ -275,13 +276,6 @@ fn walk_user_tool_results(app: &mut App, raw: &Value) {
         let raw_content = record.get("content");
         apply_tool_result_block(app, tool_use_id, is_error, raw_content, Some(block));
     }
-}
-
-/// Wrapper around `bridge::tooling::is_tool_result_block_type` —
-/// re-exported here so the App-side walker doesn't have to import
-/// from the bridge module directly.
-fn is_bridge_tool_result_block_type(block_type: &str) -> bool {
-    crate::agent::tooling::is_tool_result_block_type(block_type)
 }
 
 /// Read `parent_tool_use_id` from the outer envelope (Assistant or
@@ -1003,9 +997,8 @@ fn apply_result_finalize(app: &mut App, msg: &Message, raw: &Value) {
     } else {
         String::new()
     };
-    let error_kind = classify_turn_error_kind(subtype, &errors_array, assistant_error.as_deref());
-    let class = crate::agent::error_handling::parse_turn_error_class(error_kind);
-    super::turn::handle_turn_error_event(app, &message, class, terminal_reason);
+    let class = classify_turn_error_kind(subtype, &errors_array, assistant_error.as_deref());
+    super::turn::handle_turn_error_event(app, &message, Some(class), terminal_reason);
     app.turn_state.last_assistant_error = None;
 }
 
@@ -1015,44 +1008,35 @@ fn classify_turn_error_kind(
     subtype: &str,
     errors: &[String],
     assistant_error: Option<&str>,
-) -> &'static str {
+) -> crate::agent::error_handling::TurnErrorClass {
+    use crate::agent::error_handling::TurnErrorClass;
     let plan_limit_signals =
         ["error_max_turns", "error_max_budget_usd", "billing_error", "rate_limit"];
     if plan_limit_signals.iter().any(|s| subtype.contains(s)) {
-        return "plan_limit";
+        return TurnErrorClass::PlanLimit;
     }
     if errors.iter().any(|e| plan_limit_signals.iter().any(|s| e.contains(s))) {
-        return "plan_limit";
+        return TurnErrorClass::PlanLimit;
     }
     if assistant_error == Some("authentication_failed") {
-        return "auth_required";
+        return TurnErrorClass::AuthRequired;
     }
-    if errors.iter().any(|e| looks_like_auth_required(e)) {
-        return "auth_required";
+    if errors.iter().any(|e| {
+        crate::agent::error_handling::looks_like_auth_required_error_lower(&e.to_ascii_lowercase())
+    }) {
+        return TurnErrorClass::AuthRequired;
     }
     if assistant_error == Some("server_error") {
-        return "internal";
+        return TurnErrorClass::Internal;
     }
-    "other"
+    TurnErrorClass::Other
 }
 
-fn looks_like_auth_required(text: &str) -> bool {
-    let lower = text.to_ascii_lowercase();
-    lower.contains("authentication_failed")
-        || lower.contains("not authenticated")
-        || lower.contains("authentication required")
-        || lower.contains("unauthenticated")
-        || (lower.contains("401") && lower.contains("auth"))
-}
+// `looks_like_auth_required` removed in 2026-05-05 — duplicated
+// `looks_like_auth_required_error_lower` in
+// crate::agent::error_handling. The dispatcher now uses the
+// shared version.
 
-fn handle_stream_event(app: &mut App, msg: Message, raw: &Value) {
-    let _ = app;
-    let _ = msg;
-    let _ = raw;
-}
-
-fn handle_unknown(app: &mut App, msg: Message, raw: &Value) {
-    let _ = app;
-    let _ = msg;
-    let _ = raw;
-}
+// `handle_stream_event` and `handle_unknown` removed in 2026-05-05 —
+// both were empty no-op stubs. The dispatcher now matches
+// `Message::StreamEvent { .. } | _ => {}` directly.
