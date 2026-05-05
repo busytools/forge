@@ -32,10 +32,6 @@ pub mod state {
     #[allow(unused_imports)]
     pub use forge_agent::state::*;
 }
-pub mod history {
-    #[allow(unused_imports)]
-    pub use forge_agent::history::*;
-}
 pub mod commands {
     #[allow(unused_imports)]
     pub use forge_agent::commands::*;
@@ -43,12 +39,4 @@ pub mod commands {
 pub mod session_lifecycle {
     #[allow(unused_imports)]
     pub use forge_agent::session_lifecycle::*;
-}
-pub mod user_interaction {
-    #[allow(unused_imports)]
-    pub use forge_agent::user_interaction::*;
-}
-pub mod forge_sdk_worker {
-    #[allow(unused_imports)]
-    pub use forge_agent::forge_sdk_worker::*;
 }

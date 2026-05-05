@@ -451,9 +451,16 @@ fn dispatch(cmd: Command, bridge: &ForgeSdkBridge) -> anyhow::Result<()> {
         C::RenameSession { session_id, title } => {
             bridge.rename_session(session_id.into_string(), title)
         }
-        C::RewindFiles { .. } => {
-            // Bridge doesn't expose rewind_files directly through trait;
-            // phase 5 may surface it. Skip for now.
+        C::RewindFiles {
+            session_id,
+            user_message_id,
+        } => {
+            tracing::warn!(
+                target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                session_id = %session_id,
+                user_message_id = %user_message_id,
+                "Command::RewindFiles dispatched but bridge surface not yet wired; dropping",
+            );
             Ok(())
         }
         C::GetStatusSnapshot { session_id } => bridge.get_status_snapshot(session_id.into_string()),

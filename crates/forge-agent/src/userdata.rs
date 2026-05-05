@@ -2,4 +2,5 @@
 //! memory, plugins, slash commands, MCP config — anything the agent
 //! reads or writes outside live SDK sessions.
 
+pub mod plugins;
 pub mod trust;

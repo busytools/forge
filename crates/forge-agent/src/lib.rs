@@ -1,25 +1,26 @@
-//! `forge-agent` — drives one [`forge_sdk::Client`] and exposes the
-//! `AgentBridge` trait + `ForgeSdkBridge` impl to UI consumers.
+//! `forge-agent` — drives one [`forge_sdk::Client`] and exposes a
+//! channel-based [`Agent`] / [`AgentHandle`] surface to UI consumers.
 //!
-//! Created during the 2026-05-05 restructure (phase 3). Lifted from
-//! `forge-tui::agent::*` so the SDK-driver code lives next to forge-sdk
-//! rather than inside the UI crate. The eventual goal (next phase) is
-//! to drop `AgentBridge` entirely in favour of a channel-based API
-//! (`Command`/`Event` over mpsc); for now the trait stays so the lift
-//! is reviewable on its own.
+//! Public API: [`Agent::spawn`] returns an [`AgentHandle`] holding
+//! `Sender<Command>`, a `take_events()` for the bridge's `AgentEvent`
+//! stream, and direct-accessor passthroughs (config_dir,
+//! settings_documents, oauth_*).
+//!
+//! `AgentBridge` trait + `ForgeSdkBridge` impl are `pub(crate)`
+//! implementation details — Agent's dispatcher task is the only
+//! caller.
 //!
 //! # Module layout
 //!
-//! - [`client`] — `AgentBridge` trait + `AgentEvent` + supporting types.
-//! - [`forge_sdk_bridge`] — single in-process `AgentBridge` impl wrapping
-//!   `forge_sdk::Client`.
-//! - [`forge_sdk_worker`] — spawn dance + reader subtask helpers.
-//! - [`session_lifecycle`] — model resolution, mode wiring, one-shot
-//!   helpers used by the worker.
-//! - [`commands`] — typed command builders for the bridge.
-//! - [`user_interaction`] — `can_use_tool` callback runtime + AskUserQuestion driver.
-//! - [`history`] — session-message history → SessionUpdate translation.
-//! - [`state`] — `PermissionMode` enum.
+//! - [`agent`] — `Agent::spawn` + `AgentHandle` (the public API).
+//! - [`client`] — `AgentBridge` trait + `AgentEvent` enum + supporting types.
+//! - [`cloud`] — network-side state: oauth + cli usage fetchers.
+//! - [`userdata`] — disk-side state: trust file (more incoming).
+//! - [`commands`] / [`session_lifecycle`] — bridge helpers reused by
+//!   forge-tui via re-exports.
+//! - [`forge_sdk_worker`] / [`history`] / [`tooling`] / [`user_interaction`] /
+//!   [`state`] — internal implementation modules consumed by `agent`'s
+//!   dispatcher and translator paths.
 
 pub mod agent;
 pub mod client;
