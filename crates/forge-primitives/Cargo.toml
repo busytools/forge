@@ -24,6 +24,8 @@ exit = "deny"
 todo = "deny"
 unimplemented = "deny"
 module_name_repetitions = "allow"
+doc_markdown = "allow"
+missing_errors_doc = "allow"
 
 [dependencies]
 serde = { workspace = true, features = ["derive"] }

@@ -21,6 +21,7 @@
 //! - [`history`] — session-message history → SessionUpdate translation.
 //! - [`state`] — `PermissionMode` enum.
 
+pub mod agent;
 pub mod client;
 pub mod commands;
 pub mod forge_sdk_bridge;
@@ -32,6 +33,7 @@ pub mod state;
 pub mod tooling;
 pub mod user_interaction;
 
+pub use agent::{Agent, AgentHandle};
 pub use client::{AgentBridge, AgentEvent, PromptResponse, SessionLaunchSettings};
 pub use forge_sdk_bridge::ForgeSdkBridge;
 pub use state::PermissionMode;

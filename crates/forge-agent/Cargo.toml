@@ -29,6 +29,10 @@ missing_errors_doc = "allow"
 missing_panics_doc = "allow"
 must_use_candidate = "allow"
 doc_markdown = "allow"
+# Translator + dispatcher fns each match every variant of large enums;
+# splitting helps no one. Same for the `Option<...>` return on translate().
+too_many_lines = "allow"
+unnecessary_wraps = "allow"
 
 [dependencies]
 forge-primitives = { workspace = true }
