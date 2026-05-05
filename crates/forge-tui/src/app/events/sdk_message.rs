@@ -587,7 +587,6 @@ fn apply_compaction_boundary(app: &mut App, data: &Value) {
 }
 
 /// Build `AvailableCommandsUpdate` from System(init).slash_commands.
-/// Mirrors bridge::message_handlers handle_system_init slash_commands branch.
 fn apply_available_commands_from_init(app: &mut App, data: &Value) {
     let Some(record) = data.as_object() else { return };
     let Some(arr) = record.get("slash_commands").and_then(Value::as_array) else { return };
@@ -995,8 +994,9 @@ fn apply_result_finalize(app: &mut App, msg: &Message, raw: &Value) {
     app.turn_state.last_assistant_error = None;
 }
 
-/// Inline copy of bridge::message_handlers::classify_turn_error_kind
-/// so the App-side path doesn't depend on a bridge-private function.
+/// App-side classifier for `TurnError` payloads — picks one of the
+/// `TurnErrorClass` variants based on subtype + error strings, used to
+/// drive UI rendering for the failure case.
 fn classify_turn_error_kind(
     subtype: &str,
     errors: &[String],

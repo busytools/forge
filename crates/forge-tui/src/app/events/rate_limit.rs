@@ -244,13 +244,12 @@ mod tests {
     #[test]
     fn format_resets_at_returns_now_for_negative_nan_infinite_epoch() {
         // `Duration::from_secs_f64` panics on these — the guard
-        // turns them into a stable "now at HH:MM UTC" instead of
-        // crashing the TUI.
-        assert!(format_resets_at(-1.0).starts_with("now"));
-        assert!(format_resets_at(-1e9).starts_with("now"));
-        assert!(format_resets_at(f64::NAN).starts_with("now"));
-        assert!(format_resets_at(f64::INFINITY).starts_with("now"));
-        assert!(format_resets_at(f64::NEG_INFINITY).starts_with("now"));
+        // returns the literal "now" instead of crashing the TUI.
+        assert_eq!(format_resets_at(-1.0), "now");
+        assert_eq!(format_resets_at(-1e9), "now");
+        assert_eq!(format_resets_at(f64::NAN), "now");
+        assert_eq!(format_resets_at(f64::INFINITY), "now");
+        assert_eq!(format_resets_at(f64::NEG_INFINITY), "now");
     }
 
     #[test]

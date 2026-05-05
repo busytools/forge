@@ -71,8 +71,8 @@ pub(super) fn debug_failed_tool_render(tc: &ToolCallInfo) {
 }
 
 // `preview_for_log`, the renaming wrappers, and `extract_xml_tag_value`
-// were duplicates of helpers in `crate::agent::error_handling`. The
-// originals are now `pub` in that module; consume directly.
+// originals live in `crate::agent::error_handling` (re-exported `pub`
+// from there). Consume directly via the imports above.
 
 pub(super) fn failed_execute_first_line(output: &str) -> Option<String> {
     if let Some(msg) = extract_tool_use_error_message(output) {

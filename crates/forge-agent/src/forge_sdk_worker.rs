@@ -40,9 +40,17 @@ pub(crate) async fn spawn_session(
     launch_settings: &crate::client::SessionLaunchSettings,
 ) -> anyhow::Result<()> {
     // If we already have a client, drop it so the existing subprocess
-    // shuts down cleanly before the replacement spawns.
-    if let Some(prev) = bridge.clear_client() {
-        let _ = prev.disconnect().await;
+    // shuts down cleanly before the replacement spawns. Disconnect
+    // failures are best-effort — log a breadcrumb so a stuck zombie
+    // subprocess is observable in postmortems.
+    if let Some(prev) = bridge.clear_client()
+        && let Err(err) = prev.disconnect().await
+    {
+        tracing::debug!(
+            target: crate::logging::targets::BRIDGE_LIFECYCLE,
+            error = %err,
+            "previous client disconnect failed during session swap",
+        );
     }
 
     let options = build_options_with_callback(

@@ -278,7 +278,7 @@ impl ForgeSdkBridge {
 
     pub(crate) fn prompt_with_images(
         &self,
-        _session_id: String,
+        session_id: String,
         text: String,
         images: Vec<forge_primitives::ImageAttachment>,
     ) -> anyhow::Result<PromptResponse> {
@@ -288,7 +288,9 @@ impl ForgeSdkBridge {
         // leave the user's spinner running forever with no
         // recovery path. If the prompt does land in the wrong
         // session, normal SDK error surfaces (TurnError, etc.)
-        // tear down Thinking via the existing wire path.
+        // tear down Thinking via the existing wire path. We still
+        // log a breadcrumb on mismatch so the bypass is observable.
+        self.trace_session_id_bypass(&session_id, "prompt_with_images");
         let mut chunks: Vec<forge_primitives::PromptChunk> = Vec::with_capacity(1 + images.len());
         for img in images {
             if let Err(reason) = forge_primitives::validate_image(&img.data, &img.mime_type) {
@@ -354,6 +356,10 @@ impl ForgeSdkBridge {
     /// race a `cancel`/`set_mode`/`set_model` for session A could
     /// otherwise hit session B's `Client`. Returns false on mismatch
     /// (caller drops with no-op + tracing breadcrumb).
+    ///
+    /// Other user-action methods (`prompt_with_images`,
+    /// `generate_session_title`, `respond_to_elicitation`) intentionally
+    /// opt out — see the inline rationale at each call site.
     fn check_session_id(&self, session_id: &str, label: &'static str) -> bool {
         let current = self.inner.session_id_slot.lock().clone();
         if current.is_empty() || current == session_id {
@@ -370,14 +376,36 @@ impl ForgeSdkBridge {
         false
     }
 
+    /// Sibling of [`check_session_id`] for methods that intentionally
+    /// pass through on mismatch (no silent drop). Logs a breadcrumb at
+    /// `trace` so postmortems can correlate "my prompt vanished" with
+    /// a session-swap race, without raising the noise floor under
+    /// normal operation.
+    fn trace_session_id_bypass(&self, session_id: &str, label: &'static str) {
+        let current = self.inner.session_id_slot.lock().clone();
+        if current.is_empty() || current == session_id {
+            return;
+        }
+        tracing::trace!(
+            target: crate::logging::targets::BRIDGE_LIFECYCLE,
+            event_name = "stale_session_bypass",
+            label,
+            current_session_id = %current,
+            requested_session_id = %session_id,
+            "passing through dispatch despite stale session id (intentional bypass)",
+        );
+    }
+
     pub(crate) fn generate_session_title(
         &self,
-        _session_id: String,
+        session_id: String,
         description: String,
     ) -> anyhow::Result<()> {
         // No `check_session_id` here — title generation is a
         // best-effort cosmetic update; even mis-routed it can't
-        // wedge user-visible state.
+        // wedge user-visible state. Trace breadcrumb keeps the
+        // bypass observable.
+        self.trace_session_id_bypass(&session_id, "generate_session_title");
         self.dispatch("generate_session_title", move |client| async move {
             let _ = client.generate_session_title(&description).await?;
             Ok(())
@@ -476,7 +504,7 @@ impl ForgeSdkBridge {
 
     pub(crate) fn respond_to_elicitation(
         &self,
-        _session_id: String,
+        session_id: String,
         elicitation_request_id: String,
         action: ElicitationAction,
         content: Option<Value>,
@@ -485,6 +513,7 @@ impl ForgeSdkBridge {
         // an elicitation has its own request_id seam, and a silent
         // stale-session drop would leave the agent waiting forever
         // for a response that no longer comes.
+        self.trace_session_id_bypass(&session_id, "respond_to_elicitation");
         let action_str = match action {
             ElicitationAction::Accept => "accept",
             ElicitationAction::Decline => "decline",

@@ -122,10 +122,9 @@ fn write_json_atomic(path: &Path, document: &Value) -> Result<(), Error> {
     };
 
     let temp_path = unique_temp_path(parent, path.file_name().and_then(|n| n.to_str()));
-    // Wrap the write+rename so a mid-flight failure removes the temp
-    // file before propagating. Without this guard, repeated rename
-    // failures (cross-filesystem move, permission error mid-write)
-    // would accumulate `.settings.json.{nanos}.tmp` files on disk.
+    // On any open/serialize/sync/rename failure, remove the temp file
+    // before propagating the error so transient failures don't leak
+    // `.settings.json.{nanos}.tmp` files into the config dir.
     let result = (|| -> io::Result<()> {
         let mut temp = OpenOptions::new()
             .write(true)

@@ -59,16 +59,14 @@ pub fn parse_runtime_session_state(value: Option<&Value>) -> Option<RuntimeSessi
     }
 }
 
-/// Cast `f64` numeric field to `u64`, dropping (with a debug log)
-/// any value out of u64 range. Returns `None` when the field is
-/// missing or out-of-range.
+/// Reads a numeric field as `u64`, returning `None` when the field
+/// is missing or its value is outside `[0, u64::MAX]`. Out-of-range
+/// drops emit a debug breadcrumb so a misbehaving CLI is observable.
 ///
-/// `f64 as i64` saturates positively to `i64::MAX` for any finite
-/// f64 above ~9.22e18, then `u64::try_from` happily accepts. Without
-/// the explicit upper-bound check below, a buggy CLI sending
-/// e.g. `retry_delay_ms = 1e30` would silently surface as
-/// `i64::MAX`-sized milliseconds. Guard against that via a `<=`
-/// comparison against `u64::MAX as f64` BEFORE the cast.
+/// `as u64` saturates rather than fails on out-of-range floats, so
+/// the explicit guard runs BEFORE the cast. The `>=` upper bound
+/// rejects `u64::MAX as f64` itself (which equals `2^64`, one past
+/// the largest representable u64) along with everything above.
 #[must_use]
 #[allow(
     clippy::cast_possible_truncation,
@@ -77,7 +75,7 @@ pub fn parse_runtime_session_state(value: Option<&Value>) -> Option<RuntimeSessi
 )]
 fn parse_clamped_u64(message: &Map<String, Value>, keys: &[&str]) -> Option<u64> {
     let v = number_field(message, keys)?;
-    if v < 0.0 || v > u64::MAX as f64 {
+    if v < 0.0 || v >= u64::MAX as f64 {
         tracing::debug!(
             target: crate::logging::targets::BRIDGE_LIFECYCLE,
             raw = v,
@@ -101,6 +99,8 @@ fn parse_clamped_u64(message: &Map<String, Value>, keys: &[&str]) -> Option<u64>
 fn parse_clamped_u16_optional(message: &Map<String, Value>, keys: &[&str]) -> Option<u16> {
     let v = number_field(message, keys)?;
     if v < 0.0 || v > f64::from(u16::MAX) {
+        // u16::MAX as f64 is exactly representable, so `>` (rather
+        // than `>=` like the u64 sibling) suffices here.
         tracing::debug!(
             target: crate::logging::targets::BRIDGE_LIFECYCLE,
             raw = v,
