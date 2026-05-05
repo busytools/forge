@@ -23,6 +23,7 @@
 
 pub mod agent;
 pub mod client;
+pub mod cloud;
 pub mod commands;
 pub(crate) mod forge_sdk_bridge;
 pub mod forge_sdk_worker;
@@ -32,6 +33,7 @@ pub mod session_lifecycle;
 pub mod state;
 pub mod tooling;
 pub mod user_interaction;
+pub mod userdata;
 
 pub use agent::{Agent, AgentHandle};
 // `AgentBridge` trait + `ForgeSdkBridge` impl stay alive INTERNALLY

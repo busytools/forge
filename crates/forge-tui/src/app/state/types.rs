@@ -86,48 +86,10 @@ pub enum UsageSourceMode {
     Cli,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum UsageSourceKind {
-    Oauth,
-    Cli,
-}
-
-impl UsageSourceKind {
-    #[must_use]
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::Oauth => "oauth",
-            Self::Cli => "cli",
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct UsageWindow {
-    pub label: &'static str,
-    pub utilization: f64,
-    pub resets_at: Option<std::time::SystemTime>,
-    pub reset_description: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct ExtraUsage {
-    pub monthly_limit: Option<f64>,
-    pub used_credits: Option<f64>,
-    pub utilization: Option<f64>,
-    pub currency: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct UsageSnapshot {
-    pub source: UsageSourceKind,
-    pub fetched_at: std::time::SystemTime,
-    pub five_hour: Option<UsageWindow>,
-    pub seven_day: Option<UsageWindow>,
-    pub seven_day_opus: Option<UsageWindow>,
-    pub seven_day_sonnet: Option<UsageWindow>,
-    pub extra_usage: Option<ExtraUsage>,
-}
+// Wire-shape usage types lifted to forge-agent::cloud (2026-05-05
+// restructure). Re-exported here so existing import paths
+// (`crate::app::UsageSnapshot`, etc.) keep resolving.
+pub use forge_agent::cloud::{ExtraUsage, UsageSnapshot, UsageSourceKind, UsageWindow};
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct UsageState {

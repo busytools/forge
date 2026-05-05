@@ -1,19 +1,19 @@
-use crate::app::{ExtraUsage, UsageSnapshot, UsageSourceKind, UsageWindow};
+use crate::cloud::{ExtraUsage, UsageSnapshot, UsageSourceKind, UsageWindow};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 #[derive(Debug)]
-pub(super) enum OauthFetchError {
+pub enum OauthFetchError {
     Unavailable(String),
     Unauthorized(String),
     Failed(String),
 }
 
 impl OauthFetchError {
-    pub(super) fn should_fallback_to_cli(&self) -> bool {
+    pub fn should_fallback_to_cli(&self) -> bool {
         matches!(self, Self::Unavailable(_) | Self::Unauthorized(_))
     }
 
-    pub(super) fn into_message(self) -> String {
+    pub fn into_message(self) -> String {
         match self {
             Self::Unavailable(message) | Self::Unauthorized(message) | Self::Failed(message) => {
                 message
@@ -50,9 +50,7 @@ impl From<forge_sdk::OauthUsageError> for OauthFetchError {
     }
 }
 
-pub(super) async fn fetch_snapshot(
-    conn: &forge_agent::AgentHandle,
-) -> Result<UsageSnapshot, OauthFetchError> {
+pub async fn fetch_snapshot(conn: &crate::AgentHandle) -> Result<UsageSnapshot, OauthFetchError> {
     let payload = conn.oauth_usage().await?;
     map_usage_payload(payload)
 }
@@ -108,8 +106,12 @@ fn parse_timestamp_value(value: &serde_json::Value) -> Option<SystemTime> {
             .as_i64()
             .or_else(|| number.as_u64().and_then(|raw| i64::try_from(raw).ok()))
             .and_then(system_time_from_epoch),
-        serde_json::Value::String(raw) => parse_iso8601_timestamp(raw)
-            .or_else(|| raw.trim().parse::<i64>().ok().and_then(system_time_from_epoch)),
+        serde_json::Value::String(raw) => parse_iso8601_timestamp(raw).or_else(|| {
+            raw.trim()
+                .parse::<i64>()
+                .ok()
+                .and_then(system_time_from_epoch)
+        }),
         _ => None,
     }
 }
@@ -129,7 +131,9 @@ fn system_time_from_epoch(raw: i64) -> Option<SystemTime> {
 
 fn parse_iso8601_timestamp(raw: &str) -> Option<SystemTime> {
     let trimmed = raw.trim();
-    let (date_part, time_part) = trimmed.split_once('T').or_else(|| trimmed.split_once(' '))?;
+    let (date_part, time_part) = trimmed
+        .split_once('T')
+        .or_else(|| trimmed.split_once(' '))?;
 
     let mut date_iter = date_part.split('-');
     let year = date_iter.next()?.parse::<i32>().ok()?;
@@ -141,8 +145,9 @@ fn parse_iso8601_timestamp(raw: &str) -> Option<SystemTime> {
     let hour = time_iter.next()?.parse::<u32>().ok()?;
     let minute = time_iter.next()?.parse::<u32>().ok()?;
     let second_and_fraction = time_iter.next().unwrap_or("0");
-    let (second_raw, fraction_raw) =
-        second_and_fraction.split_once('.').unwrap_or((second_and_fraction, ""));
+    let (second_raw, fraction_raw) = second_and_fraction
+        .split_once('.')
+        .unwrap_or((second_and_fraction, ""));
     let second = second_raw.parse::<u32>().ok()?;
 
     let mut nanos = 0u32;
@@ -207,6 +212,7 @@ fn days_from_civil(year: i32, month: u32, day: u32) -> Option<i64> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
 
@@ -221,8 +227,17 @@ mod tests {
         )
         .expect("decode");
         let snapshot = map_usage_payload(payload).expect("snapshot");
-        assert_eq!(snapshot.five_hour.as_ref().map(|window| window.utilization), Some(12.5));
-        assert_eq!(snapshot.seven_day_sonnet.as_ref().map(|window| window.utilization), Some(5.0));
+        assert_eq!(
+            snapshot.five_hour.as_ref().map(|window| window.utilization),
+            Some(12.5)
+        );
+        assert_eq!(
+            snapshot
+                .seven_day_sonnet
+                .as_ref()
+                .map(|window| window.utilization),
+            Some(5.0)
+        );
         assert!(snapshot.seven_day.is_none());
     }
 

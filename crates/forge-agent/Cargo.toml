@@ -50,5 +50,7 @@ notify = { workspace = true }
 ignore = { workspace = true }
 reqwest = { workspace = true }
 
+which = "8.0.2"
+
 [dev-dependencies]
 tempfile = { workspace = true }

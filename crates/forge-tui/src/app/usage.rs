@@ -1,5 +1,4 @@
-mod cli;
-mod oauth;
+use forge_agent::cloud::{cli, oauth};
 
 use crate::agent::events::ClientEvent;
 use crate::app::{App, UsageSnapshot, UsageSourceKind, UsageSourceMode, UsageWindow};

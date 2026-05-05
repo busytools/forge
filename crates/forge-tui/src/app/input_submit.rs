@@ -335,12 +335,8 @@ mod tests {
     #[test]
     fn dispatch_prompt_turn_without_session_id_leaves_state_unchanged() {
         let mut app = App::test_default();
-        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<forge_primitives::Command>();
-        app.conn = Some(std::rc::Rc::new({
-            let _ = tx;
-            let (h, _) = forge_agent::Agent::testing_stub();
-            h
-        }));
+        let (handle, _rx) = forge_agent::Agent::testing_stub();
+        app.conn = Some(std::rc::Rc::new(handle));
         app.status = AppStatus::Ready;
 
         dispatch_prompt_turn(&mut app, "hello".into());

@@ -1298,12 +1298,8 @@ fn mcp_details_overlay_enter_closes_overlay() {
 #[test]
 fn mcp_tab_refresh_key_requests_snapshot() {
     let (_dir, mut app) = open_settings_test_app();
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<forge_primitives::Command>();
-    app.conn = Some(std::rc::Rc::new({
-        let _ = tx;
-        let (h, _) = forge_agent::Agent::testing_stub();
-        h
-    }));
+    let (handle, mut rx) = forge_agent::Agent::testing_stub();
+    app.conn = Some(std::rc::Rc::new(handle));
     app.session_id = Some(crate::agent::model::SessionId::new("session-1"));
     app.config.active_tab = ConfigTab::Mcp;
     app.mcp.servers.push(forge_sdk::McpServerStatus {
@@ -1341,12 +1337,8 @@ fn mcp_tab_refresh_key_requests_snapshot() {
 #[test]
 fn request_mcp_snapshot_sends_outside_mcp_tab() {
     let (_dir, mut app) = open_settings_test_app();
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<forge_primitives::Command>();
-    app.conn = Some(std::rc::Rc::new({
-        let _ = tx;
-        let (h, _) = forge_agent::Agent::testing_stub();
-        h
-    }));
+    let (handle, mut rx) = forge_agent::Agent::testing_stub();
+    app.conn = Some(std::rc::Rc::new(handle));
     app.session_id = Some(crate::agent::model::SessionId::new("session-1"));
     app.config.active_tab = ConfigTab::Status;
 
@@ -1365,12 +1357,8 @@ fn request_mcp_snapshot_sends_outside_mcp_tab() {
 #[test]
 fn refresh_mcp_snapshot_clears_existing_servers_before_request() {
     let (_dir, mut app) = open_settings_test_app();
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<forge_primitives::Command>();
-    app.conn = Some(std::rc::Rc::new({
-        let _ = tx;
-        let (h, _) = forge_agent::Agent::testing_stub();
-        h
-    }));
+    let (handle, mut rx) = forge_agent::Agent::testing_stub();
+    app.conn = Some(std::rc::Rc::new(handle));
     app.session_id = Some(crate::agent::model::SessionId::new("session-1"));
     app.mcp.servers.push(forge_sdk::McpServerStatus {
         name: "stale".to_owned(),
@@ -1400,12 +1388,8 @@ fn refresh_mcp_snapshot_clears_existing_servers_before_request() {
 #[test]
 fn refresh_mcp_snapshot_if_needed_skips_outside_mcp_tab() {
     let (_dir, mut app) = open_settings_test_app();
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<forge_primitives::Command>();
-    app.conn = Some(std::rc::Rc::new({
-        let _ = tx;
-        let (h, _) = forge_agent::Agent::testing_stub();
-        h
-    }));
+    let (handle, mut rx) = forge_agent::Agent::testing_stub();
+    app.conn = Some(std::rc::Rc::new(handle));
     app.session_id = Some(crate::agent::model::SessionId::new("session-1"));
     app.config.active_tab = ConfigTab::Status;
 

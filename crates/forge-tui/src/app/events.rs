@@ -2215,12 +2215,8 @@ mod tests {
         assert!(app.startup_recent_sessions_loaded);
         assert!(!app.startup_session_picker_resolved);
 
-        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<forge_primitives::Command>();
-        app.conn = Some(std::rc::Rc::new({
-            let _ = tx;
-            let (h, _) = forge_agent::Agent::testing_stub();
-            h
-        }));
+        let (handle, _rx) = forge_agent::Agent::testing_stub();
+        app.conn = Some(std::rc::Rc::new(handle));
         handle_client_event(&mut app, connected_event("claude-updated"));
 
         assert_eq!(app.active_view, ActiveView::SessionPicker);
@@ -2231,12 +2227,8 @@ mod tests {
     fn startup_picker_empty_list_stays_in_chat_with_info_message() {
         let mut app = make_test_app();
         app.startup_session_picker_requested = true;
-        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<forge_primitives::Command>();
-        app.conn = Some(std::rc::Rc::new({
-            let _ = tx;
-            let (h, _) = forge_agent::Agent::testing_stub();
-            h
-        }));
+        let (handle, _rx) = forge_agent::Agent::testing_stub();
+        app.conn = Some(std::rc::Rc::new(handle));
 
         handle_client_event(&mut app, connected_event("claude-updated"));
         assert_eq!(app.active_view, ActiveView::Chat);

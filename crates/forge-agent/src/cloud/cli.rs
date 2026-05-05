@@ -6,13 +6,13 @@
 // ~/.claude-nf/projects/-Users-vedhavyas-Projects-forge/memory/
 // handoff_2026_05_01_phase2_step1_credentials_lifted.md.
 
-use crate::app::{UsageSnapshot, UsageSourceKind, UsageWindow};
+use crate::cloud::{UsageSnapshot, UsageSourceKind, UsageWindow};
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime};
 
 const CLI_USAGE_TIMEOUT: Duration = Duration::from_secs(15);
 
-pub(super) async fn fetch_snapshot(cwd_raw: String) -> Result<UsageSnapshot, String> {
+pub async fn fetch_snapshot(cwd_raw: String) -> Result<UsageSnapshot, String> {
     let claude_path = resolve_claude_path()?;
     let output = tokio::time::timeout(
         CLI_USAGE_TIMEOUT,
@@ -31,11 +31,15 @@ pub(super) async fn fetch_snapshot(cwd_raw: String) -> Result<UsageSnapshot, Str
     }
 
     if !output.status.success() {
-        let exit_code =
-            output.status.code().map_or_else(|| "unknown".to_owned(), |code| code.to_string());
+        let exit_code = output
+            .status
+            .code()
+            .map_or_else(|| "unknown".to_owned(), |code| code.to_string());
         let detail = combined.trim();
         if detail.is_empty() {
-            return Err(format!("`claude /usage` failed with exit code {exit_code}."));
+            return Err(format!(
+                "`claude /usage` failed with exit code {exit_code}."
+            ));
         }
         return Err(format!(
             "`claude /usage` failed with exit code {exit_code}: {}",
@@ -96,22 +100,38 @@ fn parse_usage_output(text: &str) -> Result<UsageSnapshot, String> {
 
 fn extract_window(text: &str, labels: &[&str], window_label: &'static str) -> Option<UsageWindow> {
     let lines = text.lines().collect::<Vec<_>>();
-    let normalized_labels =
-        labels.iter().map(|label| normalized_for_label_search(label)).collect::<Vec<_>>();
+    let normalized_labels = labels
+        .iter()
+        .map(|label| normalized_for_label_search(label))
+        .collect::<Vec<_>>();
 
     for (index, line) in lines.iter().enumerate() {
         let normalized_line = normalized_for_label_search(line);
-        if !normalized_labels.iter().any(|label| normalized_line.contains(label)) {
+        if !normalized_labels
+            .iter()
+            .any(|label| normalized_line.contains(label))
+        {
             continue;
         }
 
-        let window = lines.iter().skip(index).take(12).copied().collect::<Vec<_>>();
-        let utilization = window.iter().find_map(|candidate| percent_used_from_line(candidate))?;
+        let window = lines
+            .iter()
+            .skip(index)
+            .take(12)
+            .copied()
+            .collect::<Vec<_>>();
+        let utilization = window
+            .iter()
+            .find_map(|candidate| percent_used_from_line(candidate))?;
         let reset_description = window.iter().find_map(|candidate| {
             let normalized = normalized_for_label_search(candidate);
             if normalized.contains("resets") {
                 let trimmed = candidate.trim();
-                if trimmed.is_empty() { None } else { Some(trimmed.to_owned()) }
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(trimmed.to_owned())
+                }
             } else {
                 None
             }
@@ -141,7 +161,10 @@ fn percent_used_from_line(line: &str) -> Option<f64> {
 
     let normalized = if used_keywords.iter().any(|keyword| lower.contains(keyword)) {
         number
-    } else if remaining_keywords.iter().any(|keyword| lower.contains(keyword)) {
+    } else if remaining_keywords
+        .iter()
+        .any(|keyword| lower.contains(keyword))
+    {
         100.0 - number
     } else {
         return None;
@@ -175,7 +198,9 @@ fn is_likely_status_context_line(line: &str) -> bool {
         return false;
     }
     let lower = line.to_ascii_lowercase();
-    ["opus", "sonnet", "haiku"].iter().any(|token| lower.contains(token))
+    ["opus", "sonnet", "haiku"]
+        .iter()
+        .any(|token| lower.contains(token))
 }
 
 fn extract_usage_error(text: &str) -> Option<String> {
@@ -201,7 +226,10 @@ fn trim_to_latest_usage_panel(text: &str) -> Option<&str> {
 }
 
 fn normalized_for_label_search(text: &str) -> String {
-    text.chars().filter(char::is_ascii_alphanumeric).flat_map(char::to_lowercase).collect()
+    text.chars()
+        .filter(char::is_ascii_alphanumeric)
+        .flat_map(char::to_lowercase)
+        .collect()
 }
 
 fn strip_ansi(text: &str) -> String {
@@ -257,6 +285,7 @@ fn strip_ansi(text: &str) -> String {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
 
@@ -278,9 +307,21 @@ mod tests {
         ";
 
         let snapshot = parse_usage_output(sample).expect("snapshot");
-        assert_eq!(snapshot.five_hour.as_ref().map(|window| window.utilization), Some(15.0));
-        assert_eq!(snapshot.seven_day.as_ref().map(|window| window.utilization), Some(3.0));
-        assert_eq!(snapshot.seven_day_sonnet.as_ref().map(|window| window.utilization), Some(1.0));
+        assert_eq!(
+            snapshot.five_hour.as_ref().map(|window| window.utilization),
+            Some(15.0)
+        );
+        assert_eq!(
+            snapshot.seven_day.as_ref().map(|window| window.utilization),
+            Some(3.0)
+        );
+        assert_eq!(
+            snapshot
+                .seven_day_sonnet
+                .as_ref()
+                .map(|window| window.utilization),
+            Some(1.0)
+        );
     }
 
     #[test]
@@ -295,8 +336,14 @@ mod tests {
         ";
 
         let snapshot = parse_usage_output(sample).expect("snapshot");
-        assert_eq!(snapshot.five_hour.as_ref().map(|window| window.utilization), Some(10.0));
-        assert_eq!(snapshot.seven_day.as_ref().map(|window| window.utilization), Some(20.0));
+        assert_eq!(
+            snapshot.five_hour.as_ref().map(|window| window.utilization),
+            Some(10.0)
+        );
+        assert_eq!(
+            snapshot.seven_day.as_ref().map(|window| window.utilization),
+            Some(20.0)
+        );
     }
 
     #[test]
