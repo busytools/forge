@@ -11,13 +11,26 @@
 
 pub mod command;
 pub mod content;
+pub mod hooks;
 pub mod ids;
 pub mod image;
 pub mod messages;
+pub mod options;
+pub mod permissions;
 pub mod public_types;
+pub mod subagents;
 
 pub use command::Command;
 pub use content::ContentBlock;
+pub use hooks::{
+    BaseHookInput, HookContext, HookKind, HookSpecificOutput, NotificationHookSpecificOutput,
+    NotificationInput, PermissionRequestHookSpecificOutput, PermissionRequestInput,
+    PostToolUseFailureHookSpecificOutput, PostToolUseFailureInput, PostToolUseHookSpecificOutput,
+    PostToolUseInput, PreCompactInput, PreToolUseHookSpecificOutput, PreToolUseInput,
+    PreToolUsePermissionDecision, SessionStartHookSpecificOutput, StopInput, SubagentContext,
+    SubagentStartHookSpecificOutput, SubagentStartInput, SubagentStopInput,
+    UserPromptSubmitHookSpecificOutput, UserPromptSubmitInput,
+};
 pub use ids::{MessageId, SessionId, ToolUseId};
 pub use image::{
     ImageAttachment, SUPPORTED_IMAGE_MIME_TYPES, is_supported_image_type, is_valid_base64,
@@ -27,12 +40,18 @@ pub use messages::{
     AssistantEnvelope, AssistantMessageError, Message, RateLimitInfo, RateLimitStatus,
     RateLimitType, StopReason, TaskNotificationStatus, TaskUsage, Usage, UserEnvelope,
 };
+pub use options::{PermissionMode, SdkPluginConfig, SystemPromptKind, ThinkingConfig, ToolsPreset};
+pub use permissions::{
+    PermissionBehavior, PermissionDecision, PermissionRuleValue, PermissionUpdate,
+    PermissionUpdateDestination, ToolPermissionContext,
+};
 pub use public_types::{
     AccountInfo, ContextUsageCategory, ContextUsageResponse, McpServerConfig,
     McpServerConnectionStatus, McpServerInfo, McpServerStatus, McpStatusResponse,
     McpToolAnnotations, McpToolInfo, SDKSessionInfo, SandboxIgnoreViolations, SandboxNetworkConfig,
     SandboxSettings, SessionMessage, SessionMessageKind, SettingSource, StreamEvent,
 };
+pub use subagents::{EffortPreset, SubagentDefinition, SubagentMcpServerRef, SubagentMemory};
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;

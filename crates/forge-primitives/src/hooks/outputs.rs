@@ -238,7 +238,7 @@ pub enum HookSpecificOutput {
     PermissionRequest(PermissionRequestHookSpecificOutput),
 }
 
-/// Encode a `replace_input` [`crate::hooks::HookDecision`] into a
+/// Encode a `replace_input` `forge_sdk::HookDecision` into a
 /// `hookSpecificOutput` wrapper for the given hook kind.
 ///
 /// Returns `None` when the hook kind has no wire field for an input
@@ -247,7 +247,7 @@ pub enum HookSpecificOutput {
 /// (e.g. a non-string payload for `UserPromptSubmit`, whose wire struct
 /// only carries `additionalContext: str`). Emits a `tracing::warn!` in
 /// every drop path so misuse is visible rather than silent.
-pub(crate) fn encode_updated_input_wrapper(kind: HookKind, updated: &Value) -> Option<Value> {
+pub fn encode_updated_input_wrapper(kind: HookKind, updated: &Value) -> Option<Value> {
     match kind {
         HookKind::PreToolUse => {
             let typed = PreToolUseHookSpecificOutput {

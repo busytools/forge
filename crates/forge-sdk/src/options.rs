@@ -8,66 +8,23 @@ use std::sync::Arc;
 use crate::hooks::Hooks;
 use std::collections::HashMap;
 
-use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::mcp::McpServer;
 use crate::permissions::CanUseToolCallback;
-use crate::subagents::{EffortLevel, SubagentDefinition};
+// Pure-data option enums (PermissionMode, SystemPromptKind, ToolsPreset,
+// ThinkingConfig, SdkPluginConfig) live in forge-primitives now.
+use forge_primitives::subagents::EffortLevel;
+pub use forge_primitives::{
+    PermissionMode, SdkPluginConfig, SubagentDefinition, SystemPromptKind, ThinkingConfig,
+    ToolsPreset,
+};
 
 /// Per-line callback used by [`Options::tee_inbound`] and
 /// [`Options::tee_outbound`] to capture the wire bytes the SDK
 /// exchanges with the `claude` subprocess. The callback receives
 /// lines without a trailing newline.
 pub type WireTee = Arc<dyn Fn(&str) + Send + Sync>;
-
-/// Which permission flow the `claude` binary should use for tool invocations.
-///
-/// SDK's `permission_mode` values (all six).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub enum PermissionMode {
-    /// Ask for permission on every tool use — the CLI's default behaviour
-    /// and forge-sdk's default variant. In SDK mode this routes the
-    /// question to the `can_use_tool` callback (or the configured
-    /// `permission_prompt_tool_name`). Wire value: `"default"`.
-    #[serde(rename = "default")]
-    Ask,
-    /// Auto-allow edits / writes; prompt on destructive ops.
-    #[serde(rename = "acceptEdits")]
-    AcceptEdits,
-    /// Read-only mode; block tools that would mutate the workspace.
-    #[serde(rename = "plan")]
-    Plan,
-    /// Auto-allow all tools (use with care). Symmetric inverse of
-    /// [`DenyPermissions`](Self::DenyPermissions).
-    #[serde(rename = "bypassPermissions")]
-    BypassPermissions,
-    /// Let the binary decide based on tool + context heuristics
-    /// (the CLI v0.1.57+).
-    #[serde(rename = "auto")]
-    Auto,
-    /// Silently deny any tool invocation that would otherwise require
-    /// approval. Symmetric inverse of
-    /// [`BypassPermissions`](Self::BypassPermissions). Wire value:
-    /// `"dontAsk"` (preserved for CLI compatibility).
-    #[serde(rename = "dontAsk")]
-    DenyPermissions,
-}
-
-impl PermissionMode {
-    /// The string the `claude` binary expects via `--permission-mode`.
-    #[must_use]
-    pub fn as_cli_arg(self) -> &'static str {
-        match self {
-            Self::Ask => "default",
-            Self::AcceptEdits => "acceptEdits",
-            Self::Plan => "plan",
-            Self::BypassPermissions => "bypassPermissions",
-            Self::Auto => "auto",
-            Self::DenyPermissions => "dontAsk",
-        }
-    }
-}
 
 /// Configuration for one `Client` invocation.
 ///
@@ -382,79 +339,6 @@ impl Options {
             crate::Error::message_parse(format!("could not serialise merged settings: {e}"))
         })
     }
-}
-
-/// System-prompt configuration. Wraps the CLI's discriminated union of
-/// `str | SystemPromptPreset | SystemPromptFile`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SystemPromptKind {
-    /// Plain string override — `--system-prompt <text>`.
-    Inline(String),
-    /// Preset (currently only `claude_code`) with optional append + the
-    /// `exclude_dynamic_sections` signal that rides along inside the
-    /// `initialize` `control_request` instead of argv.
-    Preset {
-        /// Optional append text that lands on argv as
-        /// `--append-system-prompt <text>`.
-        append: Option<String>,
-        /// When `Some`, sent in the `initialize` body as
-        /// `excludeDynamicSections`. `None` omits the field, matching
-        /// the CLI's conditional.
-        exclude_dynamic_sections: Option<bool>,
-    },
-    /// File-backed prompt — `--system-prompt-file <path>`.
-    File(std::path::PathBuf),
-}
-
-impl SystemPromptKind {
-    /// Convenience constructor for the `claude_code` preset with an
-    /// append string. Wire shape:
-    /// `{"type": "preset", "preset": "claude_code", "append": ...}`.
-    #[must_use]
-    pub fn preset_append(append: impl Into<String>) -> Self {
-        Self::Preset {
-            append: Some(append.into()),
-            exclude_dynamic_sections: None,
-        }
-    }
-}
-
-/// Tool-base selector. the CLI's `ToolsPreset` is a dict `{"type":"default"}`;
-/// forge-sdk normalises to an enum.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ToolsPreset {
-    /// `claude_code` preset — emits `--tools default`.
-    Default,
-    /// Explicit list — emits `--tools <csv>`.
-    List(Vec<String>),
-}
-
-/// Extended-thinking configuration. Wraps the CLI's union of
-/// `Adaptive`, `Enabled`, `Disabled`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ThinkingConfig {
-    /// CLI picks per-turn — `--thinking adaptive`.
-    Adaptive,
-    /// Thinking on with a per-turn token cap —
-    /// `--max-thinking-tokens <n>`.
-    Enabled {
-        /// Per-turn budget.
-        budget_tokens: u64,
-    },
-    /// Thinking off — `--thinking disabled`.
-    Disabled,
-}
-
-/// Plugin config. Wraps the CLI's `SdkPluginConfig`
-/// (`{"type": "local", "path": str}`,).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "lowercase")]
-pub enum SdkPluginConfig {
-    /// Local filesystem plugin — emits `--plugin-dir <path>`.
-    Local {
-        /// Plugin directory path.
-        path: std::path::PathBuf,
-    },
 }
 
 impl std::fmt::Debug for Options {

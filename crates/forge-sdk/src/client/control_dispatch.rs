@@ -24,12 +24,12 @@ use crate::control::{
     ControlResponseType,
 };
 use crate::hooks::callback::ErasedHookCallback;
-use crate::hooks::outputs::encode_updated_input_wrapper;
 use crate::hooks::{HookContext, HookDecision, HookKind};
 use crate::mcp::orchestration::McpHosts;
 use crate::mcp::protocol::JsonRpcRequest;
 use crate::permissions::{CanUseToolCallback, PermissionDecision, ToolPermissionContext};
 use crate::transport::AsyncWriter;
+use forge_primitives::hooks::outputs::encode_updated_input_wrapper;
 
 // =============================================================================
 // Detached dispatch — closes audit 2026-04-26 G1 hazard.

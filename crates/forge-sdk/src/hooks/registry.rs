@@ -4,9 +4,9 @@
 use std::marker::PhantomData;
 use std::sync::Arc;
 
-use super::HookKind;
 use super::callback::{ErasedCallback, ErasedHookCallback, HookCallback};
-use super::inputs::{
+use forge_primitives::hooks::HookKind;
+use forge_primitives::hooks::inputs::{
     NotificationInput, PermissionRequestInput, PostToolUseFailureInput, PostToolUseInput,
     PreCompactInput, PreToolUseInput, StopInput, SubagentStartInput, SubagentStopInput,
     UserPromptSubmitInput,
