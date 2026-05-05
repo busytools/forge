@@ -59,8 +59,21 @@ pub(super) fn handle_sdk_message(app: &mut App, msg: Message) {
     // to JSON so per-variant handlers can read fields like
     // `fast_mode_state`, `terminal_reason`, `error` — which are not
     // first-class typed accessors on `forge_primitives::Message` but DO
-    // appear in the wire JSON.
-    let raw = serde_json::to_value(&msg).unwrap_or(Value::Null);
+    // appear in the wire JSON. On serialise failure (rare; would
+    // indicate envelope corruption) every per-variant handler that
+    // consults `raw` silently sees "missing fields" — log so the
+    // failure is observable.
+    let raw = match serde_json::to_value(&msg) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::error!(
+                target: crate::logging::targets::APP_SESSION,
+                error = %e,
+                "could not serialise SDK message to JSON for raw-field read; downstream parsing will use Null",
+            );
+            Value::Null
+        }
+    };
     match msg {
         Message::Assistant { .. } => handle_assistant(app, msg, &raw),
         Message::User { .. } => handle_user(app, msg, &raw),

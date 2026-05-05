@@ -651,7 +651,16 @@ fn parse_json_candidate(value: Option<&Value>) -> Option<Value> {
     if !(trimmed.starts_with('{') || trimmed.starts_with('[')) {
         return None;
     }
-    serde_json::from_str(trimmed).ok()
+    serde_json::from_str(trimmed)
+        .inspect_err(|e| {
+            tracing::debug!(
+                target: "forge_agent::tooling",
+                error = %e,
+                raw_prefix = %trimmed.chars().take(120).collect::<String>(),
+                "tool output looked like JSON but failed to parse; falling back to plain-text rendering",
+            );
+        })
+        .ok()
 }
 
 fn push_structured_record_candidates(candidates: &mut Vec<Map<String, Value>>, value: &Value) {

@@ -68,10 +68,24 @@ pub(crate) async fn spawn_session(
     };
     bridge.session_id_slot_arc().lock().clone_from(&session_id);
 
-    let cwd_owned = std::env::current_dir()
-        .ok()
-        .and_then(|p| p.into_os_string().into_string().ok())
-        .unwrap_or_default();
+    let cwd_owned = match std::env::current_dir() {
+        Ok(p) => p.into_os_string().into_string().unwrap_or_else(|os| {
+            tracing::warn!(
+                target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                cwd_lossy = %os.to_string_lossy(),
+                "cwd is not valid UTF-8; falling back to global session scope",
+            );
+            String::new()
+        }),
+        Err(e) => {
+            tracing::warn!(
+                target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                error = %e,
+                "current_dir unavailable; falling back to global session scope",
+            );
+            String::new()
+        }
+    };
 
     // Install the client into the bridge BEFORE emitting Connected.
     // The TUI's Connected handler immediately fires command-channel

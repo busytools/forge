@@ -412,9 +412,27 @@ struct LiteSessionFile {
 /// bytes from the head and the same from the tail. For files smaller
 /// than the buffer, `tail == head` (single read). Returns `None` on
 /// any I/O error or for empty files.
+///
+/// Each `.ok()?` early return logs at debug level naming the step
+/// that failed — without these, the session picker silently drops
+/// sessions whose files have permission errors / are mid-truncation
+/// / have a bad fd, which presents to the user as missing sessions
+/// with no triage signal.
 fn read_session_lite(path: &Path) -> Option<LiteSessionFile> {
-    let mut file = fs::File::open(path).ok()?;
-    let meta = file.metadata().ok()?;
+    let mut file = match fs::File::open(path) {
+        Ok(f) => f,
+        Err(e) => {
+            tracing::debug!(target: "forge_agent::scan", path = %path.display(), error = %e, step = "open", "lite-read failed");
+            return None;
+        }
+    };
+    let meta = match file.metadata() {
+        Ok(m) => m,
+        Err(e) => {
+            tracing::debug!(target: "forge_agent::scan", path = %path.display(), error = %e, step = "metadata", "lite-read failed");
+            return None;
+        }
+    };
     let size = meta.len();
     if size == 0 {
         return None;
@@ -427,7 +445,13 @@ fn read_session_lite(path: &Path) -> Option<LiteSessionFile> {
 
     let head_len = usize::try_from(LITE_READ_BUF_SIZE.min(size)).unwrap_or(usize::MAX);
     let mut head_bytes = vec![0u8; head_len];
-    let read = file.read(&mut head_bytes).ok()?;
+    let read = match file.read(&mut head_bytes) {
+        Ok(n) => n,
+        Err(e) => {
+            tracing::debug!(target: "forge_agent::scan", path = %path.display(), error = %e, step = "read_head", "lite-read failed");
+            return None;
+        }
+    };
     head_bytes.truncate(read);
     if head_bytes.is_empty() {
         return None;
@@ -438,9 +462,18 @@ fn read_session_lite(path: &Path) -> Option<LiteSessionFile> {
         head.clone()
     } else {
         let tail_offset = size - LITE_READ_BUF_SIZE;
-        file.seek(SeekFrom::Start(tail_offset)).ok()?;
+        if let Err(e) = file.seek(SeekFrom::Start(tail_offset)) {
+            tracing::debug!(target: "forge_agent::scan", path = %path.display(), error = %e, step = "seek_tail", "lite-read failed");
+            return None;
+        }
         let mut tail_bytes = vec![0u8; usize::try_from(LITE_READ_BUF_SIZE).unwrap_or(usize::MAX)];
-        let read = file.read(&mut tail_bytes).ok()?;
+        let read = match file.read(&mut tail_bytes) {
+            Ok(n) => n,
+            Err(e) => {
+                tracing::debug!(target: "forge_agent::scan", path = %path.display(), error = %e, step = "read_tail", "lite-read failed");
+                return None;
+            }
+        };
         tail_bytes.truncate(read);
         String::from_utf8_lossy(&tail_bytes).into_owned()
     };
