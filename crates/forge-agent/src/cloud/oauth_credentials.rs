@@ -207,9 +207,26 @@ fn parse_oauth_credentials(json: &Value) -> Option<OauthCredentials> {
         return None;
     };
     let Some(access_token) = access_token_value.as_str() else {
+        // Log the variant name only — `Display` on `serde_json::Value`
+        // would emit the entire JSON content, which could leak
+        // sensitive data if a future schema put a non-string token
+        // here.
+        let kind = if access_token_value.is_number() {
+            "number"
+        } else if access_token_value.is_array() {
+            "array"
+        } else if access_token_value.is_object() {
+            "object"
+        } else if access_token_value.is_boolean() {
+            "boolean"
+        } else if access_token_value.is_null() {
+            "null"
+        } else {
+            "unknown"
+        };
         tracing::debug!(
             target: crate::logging::targets::OAUTH_CREDENTIALS,
-            kind = %access_token_value,
+            kind,
             "credentials.claudeAiOauth.accessToken is not a string",
         );
         return None;

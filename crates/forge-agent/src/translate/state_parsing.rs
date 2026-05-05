@@ -59,6 +59,50 @@ pub fn parse_runtime_session_state(value: Option<&Value>) -> Option<RuntimeSessi
     }
 }
 
+/// Cast `f64` numeric field to `u64`, dropping (with a debug log)
+/// any value out of u64 range — i.e., negatives. Returns `None`
+/// when the field is missing or out-of-range.
+#[must_use]
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn parse_clamped_u64(message: &Map<String, Value>, keys: &[&str]) -> Option<u64> {
+    let v = number_field(message, keys)?;
+    match u64::try_from(v as i64) {
+        Ok(n) => Some(n),
+        Err(e) => {
+            tracing::debug!(
+                target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                raw = v,
+                keys = ?keys,
+                error = %e,
+                "dropping numeric field — out of u64 range",
+            );
+            None
+        }
+    }
+}
+
+/// Optional sibling of [`parse_clamped_u64`] for u16-sized fields
+/// (status codes). Field-absent is silent (`None`); parse failure
+/// (out-of-u16-range value) logs at debug and returns `None`.
+#[must_use]
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn parse_clamped_u16_optional(message: &Map<String, Value>, keys: &[&str]) -> Option<u16> {
+    let v = number_field(message, keys)?;
+    match u16::try_from(v as i64) {
+        Ok(n) => Some(n),
+        Err(e) => {
+            tracing::debug!(
+                target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                raw = v,
+                keys = ?keys,
+                error = %e,
+                "dropping status field — out of u16 range",
+            );
+            None
+        }
+    }
+}
+
 #[must_use]
 fn parse_api_retry_error(value: Option<&Value>) -> ApiRetryError {
     match value.and_then(Value::as_str) {
@@ -107,37 +151,22 @@ pub fn build_rate_limit_update(rate_limit_info: Option<&Value>) -> Option<Sessio
 /// `ApiRetryUpdate` `SessionUpdate` when all three required numeric
 /// fields parse correctly.
 ///
-/// Numeric fields are clamped to `>= 0` before the `as u64` cast —
-/// `f64 as u64` saturates negatives to 0, so a buggy CLI sending a
-/// negative value would surface as "API retry 0/0 after error,
-/// retrying in 0ms" without any breadcrumb. Drop the message
-/// instead via `try_from` on the i64 round-trip; log the drop so
-/// the wire-corruption case is observable rather than just a
-/// missing UI update.
+/// Negative numeric values are dropped (rather than saturating to 0
+/// via `as u64`) so a buggy CLI sending a negative `attempt` /
+/// `max_retries` / `retry_delay_ms` doesn't surface as
+/// "API retry 0/0 after error, retrying in 0ms" without a
+/// breadcrumb. The drop is logged at debug. Note: `f64::is_finite()`
+/// upstream filters NaN/inf; very large positive f64 (above
+/// `i64::MAX`) saturates positively in `as i64` and ends up
+/// surfacing as `i64::MAX`-sized values — finite `2^63 .. 2^64`
+/// range is the only window that's neither dropped nor logged.
 #[must_use]
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 pub fn build_api_retry_update(message: &Map<String, Value>) -> Option<SessionUpdate> {
-    fn parse_clamped_u64(message: &Map<String, Value>, keys: &[&str]) -> Option<u64> {
-        let v = number_field(message, keys)?;
-        match u64::try_from(v as i64) {
-            Ok(n) => Some(n),
-            Err(e) => {
-                tracing::debug!(
-                    target: crate::logging::targets::BRIDGE_LIFECYCLE,
-                    raw = v,
-                    keys = ?keys,
-                    error = %e,
-                    "api_retry_update: dropping message — numeric field out of u64 range",
-                );
-                None
-            }
-        }
-    }
     let attempt = parse_clamped_u64(message, &["attempt"])?;
     let max_retries = parse_clamped_u64(message, &["max_retries", "maxRetries"])?;
     let retry_delay_ms = parse_clamped_u64(message, &["retry_delay_ms", "retryDelayMs"])?;
-    let error_status = number_field(message, &["error_status", "errorStatus"])
-        .and_then(|n| u16::try_from(n as i64).ok());
+    let error_status = parse_clamped_u16_optional(message, &["error_status", "errorStatus"]);
     let error = parse_api_retry_error(message.get("error"));
 
     Some(SessionUpdate::ApiRetryUpdate(

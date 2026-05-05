@@ -89,7 +89,7 @@ pub(crate) fn spawn_reader_task(
                             let err_text = e.to_string();
                             if events_tx.send(Err(e)).is_err() {
                                 tracing::warn!(
-                                    target: "forge_sdk::reader",
+                                    target: crate::logging::targets::SDK_READER,
                                     error = %err_text,
                                     "events channel closed; transport error dropped",
                                 );
@@ -200,7 +200,7 @@ async fn handle_line(
             let err_text = e.to_string();
             if events_tx.send(Err(e)).is_err() {
                 tracing::warn!(
-                    target: "forge_sdk::reader",
+                    target: crate::logging::targets::SDK_READER,
                     error = %err_text,
                     line_number,
                     "events channel closed; decode error dropped",
