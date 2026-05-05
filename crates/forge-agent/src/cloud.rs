@@ -4,6 +4,7 @@
 
 pub mod cli;
 pub mod oauth;
+pub mod service_status;
 
 /// Origin of a [`UsageSnapshot`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

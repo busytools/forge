@@ -1006,6 +1006,7 @@ dependencies = [
  "async-trait",
  "forge-primitives",
  "forge-sdk",
+ "reqwest",
  "serde",
  "serde_json",
  "tempfile",
