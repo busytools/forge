@@ -88,6 +88,10 @@ pub fn detect_mention_at_cursor(
     let line = lines.get(cursor_row)?;
     let chars: Vec<char> = line.chars().collect();
 
+    // Defensive clamp — tui_textarea normally keeps cursor_col within
+    // chars.len(), but the slice below would panic if a future change
+    // allowed cursor_col > chars.len() to reach this function.
+    let cursor_col = cursor_col.min(chars.len());
     let mut i = cursor_col;
     while i > 0 {
         i -= 1;

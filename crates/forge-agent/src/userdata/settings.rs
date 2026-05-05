@@ -122,18 +122,30 @@ fn write_json_atomic(path: &Path, document: &Value) -> Result<(), Error> {
     };
 
     let temp_path = unique_temp_path(parent, path.file_name().and_then(|n| n.to_str()));
-    let mut temp = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&temp_path)?;
-    serde_json::to_writer_pretty(&mut temp, &normalized)
-        .map_err(|err| io::Error::other(format!("serialize settings: {err}")))?;
-    temp.write_all(b"\n")?;
-    temp.flush()?;
-    temp.sync_all()?;
-    drop(temp);
-    std::fs::rename(&temp_path, path)?;
-    Ok(())
+    // Wrap the write+rename so a mid-flight failure removes the temp
+    // file before propagating. Without this guard, repeated rename
+    // failures (cross-filesystem move, permission error mid-write)
+    // would accumulate `.settings.json.{nanos}.tmp` files on disk.
+    let result = (|| -> io::Result<()> {
+        let mut temp = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp_path)?;
+        serde_json::to_writer_pretty(&mut temp, &normalized)
+            .map_err(|err| io::Error::other(format!("serialize settings: {err}")))?;
+        temp.write_all(b"\n")?;
+        temp.flush()?;
+        temp.sync_all()?;
+        drop(temp);
+        std::fs::rename(&temp_path, path)?;
+        Ok(())
+    })();
+    if result.is_err() {
+        // Best-effort cleanup; ignore the cleanup error so the
+        // original failure surfaces.
+        let _ = std::fs::remove_file(&temp_path);
+    }
+    Ok(result?)
 }
 
 fn unique_temp_path(parent: &Path, filename_hint: Option<&str>) -> PathBuf {
