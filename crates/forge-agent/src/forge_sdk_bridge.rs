@@ -354,8 +354,9 @@ impl ForgeSdkBridge {
     /// Verify the requested `session_id` matches the bridge's current
     /// session before dispatching a user-action method. In a session-swap
     /// race a `cancel`/`set_mode`/`set_model` for session A could
-    /// otherwise hit session B's `Client`. Returns false on mismatch
-    /// (caller drops with no-op + tracing breadcrumb).
+    /// otherwise hit session B's `Client`. Emits a debug breadcrumb
+    /// here on mismatch and returns false; the caller is expected to
+    /// drop the dispatch with a no-op `Ok(())`.
     ///
     /// Other user-action methods (`prompt_with_images`,
     /// `generate_session_title`, `respond_to_elicitation`) intentionally
@@ -613,6 +614,17 @@ impl ForgeSdkBridge {
                                 requires_user_action: true,
                             },
                         });
+                    } else {
+                        // Without a redirect URL the TUI's authenticating
+                        // overlay would hang forever — surface as an
+                        // operation error so the user sees the failure.
+                        Self::emit_mcp_error_or_log(
+                            &event_tx,
+                            session_id,
+                            "authenticate",
+                            Some(server_name),
+                            "MCP authentication response had no redirect URL".to_owned(),
+                        );
                     }
                 }
                 Err(e) => {

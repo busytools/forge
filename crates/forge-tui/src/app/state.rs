@@ -302,12 +302,9 @@ pub struct App {
     /// their own filesystem walk to `<config_dir>/.credentials.json`.
     pub oauth_credentials: Option<forge_agent::cloud::oauth_credentials::OauthCredentials>,
 
-    /// Per-session runtime state being absorbed from the bridge
-    /// unpacker (`agent::state::BridgeSession`). Currently
-    /// default-initialised and unused; Phase 2 of the bridge-collapse
-    /// refactor migrates per-variant handlers to populate + read
-    /// these fields, after which the bridge module's parallel state
-    /// is removed. See `app/state/types.rs::SessionTurnState`.
+    /// Per-session runtime state. The per-variant SDK message
+    /// handlers (`events::sdk_message::*`) populate + read these
+    /// fields. See `app/state/types.rs::SessionTurnState`.
     pub turn_state: SessionTurnState,
 
     /// Indexed terminal tool calls for per-frame terminal snapshot updates.
