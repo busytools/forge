@@ -11,9 +11,10 @@
 //! passthroughs to the bridge.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use forge_primitives::Command;
+use parking_lot::Mutex;
 use tokio::sync::mpsc;
 
 use crate::client::AgentBridge;
@@ -40,7 +41,7 @@ impl AgentHandle {
     /// Take ownership of the bridge's `AgentEvent` receiver. Returns
     /// `Some` exactly once.
     pub fn take_events(&self) -> Option<mpsc::UnboundedReceiver<crate::client::AgentEvent>> {
-        self.agent_events.lock().ok().and_then(|mut g| g.take())
+        self.agent_events.lock().take()
     }
 
     /// Direct-accessor passthrough — see [`crate::client::AgentBridge::config_dir`].

@@ -21,10 +21,11 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use forge_sdk::Client;
+use parking_lot::Mutex;
 use serde_json::Value;
 use tokio::sync::{mpsc, oneshot};
 
@@ -113,17 +114,15 @@ impl ForgeSdkBridge {
     }
 
     fn client(&self) -> Option<Client> {
-        self.inner.client.lock().ok().and_then(|c| c.clone())
+        self.inner.client.lock().clone()
     }
 
     pub(crate) fn set_client(&self, client: Client) {
-        if let Ok(mut slot) = self.inner.client.lock() {
-            *slot = Some(client);
-        }
+        *self.inner.client.lock() = Some(client);
     }
 
     pub(crate) fn clear_client(&self) -> Option<Client> {
-        self.inner.client.lock().ok().and_then(|mut c| c.take())
+        self.inner.client.lock().take()
     }
 
     /// Spawn a fire-and-forget client call. Logs and drops on failure.
@@ -156,9 +155,7 @@ impl ForgeSdkBridge {
     fn install_git_watcher(&self, session_id: String, cwd: &Path) {
         // Abort any prior watcher for this session so notify cleans up
         // its OS-level subscriptions before we replace it.
-        if let Ok(mut watchers) = self.inner.git_watchers.lock()
-            && let Some(prev) = watchers.remove(&session_id)
-        {
+        if let Some(prev) = self.inner.git_watchers.lock().remove(&session_id) {
             prev.abort();
         }
 
@@ -190,15 +187,11 @@ impl ForgeSdkBridge {
                 }
             }
         });
-        if let Ok(mut watchers) = self.inner.git_watchers.lock() {
-            watchers.insert(session_id, handle);
-        }
+        self.inner.git_watchers.lock().insert(session_id, handle);
     }
 
     fn stop_git_watcher(&self, session_id: &str) {
-        if let Ok(mut watchers) = self.inner.git_watchers.lock()
-            && let Some(handle) = watchers.remove(session_id)
-        {
+        if let Some(handle) = self.inner.git_watchers.lock().remove(session_id) {
             handle.abort();
         }
     }
@@ -212,10 +205,8 @@ impl Default for ForgeSdkBridge {
 
 impl Drop for BridgeInner {
     fn drop(&mut self) {
-        if let Ok(mut watchers) = self.git_watchers.lock() {
-            for (_, handle) in watchers.drain() {
-                handle.abort();
-            }
+        for (_, handle) in self.git_watchers.lock().drain() {
+            handle.abort();
         }
     }
 }
@@ -223,11 +214,7 @@ impl Drop for BridgeInner {
 #[async_trait(?Send)]
 impl AgentBridge for ForgeSdkBridge {
     fn take_events(&self) -> Option<mpsc::UnboundedReceiver<AgentEvent>> {
-        self.inner
-            .events_rx
-            .lock()
-            .ok()
-            .and_then(|mut slot| slot.take())
+        self.inner.events_rx.lock().take()
     }
 
     fn prompt_text(&self, session_id: String, text: String) -> anyhow::Result<PromptResponse> {
