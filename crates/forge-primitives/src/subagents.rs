@@ -58,104 +58,12 @@ pub struct SubagentDefinition {
     pub permission_mode: Option<PermissionMode>,
 }
 
-impl SubagentDefinition {
-    /// Construct the minimum-viable definition (description + prompt only).
-    #[must_use]
-    pub fn new(description: impl Into<String>, prompt: impl Into<String>) -> Self {
-        Self {
-            description: description.into(),
-            prompt: prompt.into(),
-            tools: None,
-            disallowed_tools: None,
-            model: None,
-            skills: None,
-            memory: None,
-            mcp_servers: None,
-            initial_prompt: None,
-            max_turns: None,
-            background: None,
-            effort: None,
-            permission_mode: None,
-        }
-    }
-
-    /// Attach a tool allowlist.
-    #[must_use]
-    pub fn with_tools(mut self, tools: Vec<String>) -> Self {
-        self.tools = Some(tools);
-        self
-    }
-
-    /// Attach a tool denylist.
-    #[must_use]
-    pub fn with_disallowed_tools(mut self, tools: Vec<String>) -> Self {
-        self.disallowed_tools = Some(tools);
-        self
-    }
-
-    /// Pin to a specific model (or alias).
-    #[must_use]
-    pub fn with_model(mut self, model: impl Into<String>) -> Self {
-        self.model = Some(model.into());
-        self
-    }
-
-    /// Attach a skill list.
-    #[must_use]
-    pub fn with_skills(mut self, skills: Vec<String>) -> Self {
-        self.skills = Some(skills);
-        self
-    }
-
-    /// Select which `CLAUDE.md` scope to surface.
-    #[must_use]
-    pub fn with_memory(mut self, memory: SubagentMemory) -> Self {
-        self.memory = Some(memory);
-        self
-    }
-
-    /// Attach the MCP servers this subagent should see.
-    #[must_use]
-    pub fn with_mcp_servers(mut self, servers: Vec<SubagentMcpServerRef>) -> Self {
-        self.mcp_servers = Some(servers);
-        self
-    }
-
-    /// Set a seed turn.
-    #[must_use]
-    pub fn with_initial_prompt(mut self, prompt: impl Into<String>) -> Self {
-        self.initial_prompt = Some(prompt.into());
-        self
-    }
-
-    /// Cap the turns this subagent may take.
-    #[must_use]
-    pub fn with_max_turns(mut self, n: u64) -> Self {
-        self.max_turns = Some(n);
-        self
-    }
-
-    /// Toggle background mode.
-    #[must_use]
-    pub fn with_background(mut self, background: bool) -> Self {
-        self.background = Some(background);
-        self
-    }
-
-    /// Set the reasoning-effort hint.
-    #[must_use]
-    pub fn with_effort(mut self, effort: EffortLevel) -> Self {
-        self.effort = Some(effort);
-        self
-    }
-
-    /// Override permission-mode for this subagent only.
-    #[must_use]
-    pub fn with_permission_mode(mut self, mode: PermissionMode) -> Self {
-        self.permission_mode = Some(mode);
-        self
-    }
-}
+// `SubagentDefinition::new` and the `with_*` builder family were
+// removed in 2026-05-05 — `Options::subagents` is wire-serialized
+// but never populated in production (forge-tui doesn't yet expose
+// subagent registration as a runtime feature). Re-add these
+// constructors when that landing happens. The struct itself stays
+// for the wire shape.
 
 /// `CLAUDE.md` scope surfaced to a subagent. Wire shape:
 /// `Literal["user", "project", "local"]`.
