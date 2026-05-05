@@ -75,15 +75,6 @@ pub(crate) async fn spawn_session(
         .and_then(|p| p.into_os_string().into_string().ok())
         .unwrap_or_default();
 
-    // Install the client into the bridge BEFORE emitting Connected.
-    // The TUI's Connected handler immediately fires command-channel
-    // requests (status snapshot, oauth credentials, context usage, mcp
-    // snapshot) which the dispatcher routes through `bridge.dispatch`.
-    // Dispatch reads `bridge.client()` — which must already be Some,
-    // otherwise the dispatch returns an error and the request is
-    // dropped (chip stays empty / snapshot never lands).
-    bridge.set_client(client.clone());
-
     // Emit Connected BEFORE spawning the reader subtask so the App
     // sees Connected first on its mpsc — otherwise the reader can
     // race and push an SdkMessage before Connected, leaving
@@ -102,6 +93,8 @@ pub(crate) async fn spawn_session(
     let reader_event_tx = bridge.event_tx().clone();
     let reader_session_id = session_id.clone();
     tokio::spawn(reader_loop(events, reader_event_tx, reader_session_id));
+
+    bridge.set_client(client);
     Ok(())
 }
 
