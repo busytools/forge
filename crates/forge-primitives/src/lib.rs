@@ -9,6 +9,13 @@
 //! 2026-05-05 restructure (phase 2). New types added here when 2+
 //! forge crates need them — never reach for cross-crate `pub use`.
 
+pub mod image;
+
+pub use image::{
+    ImageAttachment, SUPPORTED_IMAGE_MIME_TYPES, is_supported_image_type, is_valid_base64,
+    validate_image,
+};
+
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 

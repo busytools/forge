@@ -48,6 +48,7 @@ tui-markdown = "=0.3.7"
 tui-textarea = { package = "tui-textarea-2", version = "0.10" }
 unicode-segmentation = "1.12"
 unicode-width = "0.2"
+base64 = "0.22"
 
 # Workspace-internal crates
 forge-primitives = { path = "crates/forge-primitives", version = "=0.1.64" }

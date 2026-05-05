@@ -1,18 +1,13 @@
 //! Clipboard image reading: extracts image data from the system clipboard
 //! and converts it to a base64-encoded PNG for sending to the agent.
+//!
+//! The wire-shape `ImageAttachment` and validation helpers live in
+//! `forge_primitives::image` (so forge-agent and any future consumer
+//! can construct them without reaching into the UI crate); this module
+//! keeps the `arboard`/`image`-flavoured encoding helpers that only
+//! the UI cares about.
 
-/// MIME types supported by the Anthropic Vision API.
-/// NOTE: Keep in sync with `SUPPORTED_IMAGE_MIME_TYPES` in
-/// `agent-sdk/src/bridge/message_handlers.ts`.
-pub const SUPPORTED_IMAGE_MIME_TYPES: &[&str] =
-    &["image/png", "image/jpeg", "image/gif", "image/webp"];
-
-/// A pending image attachment: base64-encoded data and its MIME type.
-#[derive(Debug, Clone)]
-pub struct ImageAttachment {
-    pub data: String,
-    pub mime_type: String,
-}
+pub use forge_primitives::image::{ImageAttachment, is_supported_image_type, validate_image};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClipboardImageError {
@@ -37,47 +32,6 @@ impl ClipboardImageError {
             }
         }
     }
-}
-
-/// Returns `true` if `mime_type` is a supported image MIME type.
-pub fn is_supported_image_type(mime_type: &str) -> bool {
-    SUPPORTED_IMAGE_MIME_TYPES.contains(&mime_type)
-}
-
-/// Returns `true` if `data` is non-empty, correctly padded, and decodes as
-/// valid standard base64.
-///
-/// NOTE: This is intentionally strict (requires padding) to match the
-/// `isValidBase64` check in `agent-sdk/src/bridge/message_handlers.ts`.
-pub fn is_valid_base64(data: &str) -> bool {
-    use base64::Engine as _;
-
-    if data.is_empty() {
-        return false;
-    }
-    // Quick structural check matching the TS regex: length must be a multiple
-    // of 4, only valid charset, padding only at end (max 2 '=' chars).
-    let clean = data.trim();
-    if !clean.len().is_multiple_of(4) {
-        return false;
-    }
-    // Verify it actually decodes with the strict (padded) engine.
-    base64::engine::general_purpose::STANDARD.decode(clean).is_ok()
-}
-
-/// Validate an image attachment before sending to the API.
-/// Returns `Ok(())` or an error description.
-pub fn validate_image(data: &str, mime_type: &str) -> Result<(), String> {
-    if !is_supported_image_type(mime_type) {
-        return Err(format!(
-            "unsupported image type \"{mime_type}\"; expected one of: {}",
-            SUPPORTED_IMAGE_MIME_TYPES.join(", ")
-        ));
-    }
-    if !is_valid_base64(data) {
-        return Err("image data is not valid base64".to_owned());
-    }
-    Ok(())
 }
 
 /// Find `[Image #N]` badge spans in a line.

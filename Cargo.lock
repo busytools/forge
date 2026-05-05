@@ -1023,6 +1023,7 @@ dependencies = [
 name = "forge-primitives"
 version = "0.1.64"
 dependencies = [
+ "base64",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
