@@ -17,7 +17,6 @@ use forge_primitives::Command;
 use parking_lot::Mutex;
 use tokio::sync::mpsc;
 
-use crate::client::AgentBridge;
 use crate::forge_sdk_bridge::ForgeSdkBridge;
 
 /// Handle returned by [`Agent::spawn`]. Owns the channels + a thin
