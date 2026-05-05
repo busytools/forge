@@ -23,13 +23,12 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use forge_sdk::Client;
 use parking_lot::Mutex;
 use serde_json::Value;
 use tokio::sync::{mpsc, oneshot};
 
-use crate::client::{AgentBridge, AgentEvent, PromptResponse, SessionLaunchSettings};
+use crate::client::{AgentEvent, PromptResponse, SessionLaunchSettings};
 use crate::forge_sdk_worker;
 use forge_primitives::{ElicitationAction, McpServerConfig, PermissionOutcome, QuestionOutcome};
 
@@ -211,17 +210,32 @@ impl Drop for BridgeInner {
     }
 }
 
-#[async_trait(?Send)]
-impl AgentBridge for ForgeSdkBridge {
-    fn take_events(&self) -> Option<mpsc::UnboundedReceiver<AgentEvent>> {
+// Methods previously in `impl AgentBridge for ForgeSdkBridge` are
+// now inherent — see commit message for #53. All retain `pub(crate)`
+// visibility (callers are forge-agent's own dispatch + AgentHandle
+// wrappers, all same-crate).
+//
+// The `unused_self` and `needless_pass_by_value` lints fire on
+// passthrough accessors that delegate to `forge_sdk::*` free fns
+// — these were trait methods so the receiver/by-value shape was
+// dictated by the trait. Keep the same method shape to preserve
+// the AgentHandle-callable ergonomics; the receiver is the
+// stable seam even if some methods don't logically use `self`.
+#[allow(clippy::unused_self, clippy::needless_pass_by_value)]
+impl ForgeSdkBridge {
+    pub(crate) fn take_events(&self) -> Option<mpsc::UnboundedReceiver<AgentEvent>> {
         self.inner.events_rx.lock().take()
     }
 
-    fn prompt_text(&self, session_id: String, text: String) -> anyhow::Result<PromptResponse> {
+    pub(crate) fn prompt_text(
+        &self,
+        session_id: String,
+        text: String,
+    ) -> anyhow::Result<PromptResponse> {
         self.prompt_with_images(session_id, text, Vec::new())
     }
 
-    fn prompt_with_images(
+    pub(crate) fn prompt_with_images(
         &self,
         _session_id: String,
         text: String,
@@ -256,14 +270,14 @@ impl AgentBridge for ForgeSdkBridge {
         })
     }
 
-    fn cancel(&self, _session_id: String) -> anyhow::Result<()> {
+    pub(crate) fn cancel(&self, _session_id: String) -> anyhow::Result<()> {
         self.dispatch("cancel", |client| async move {
             client.interrupt().await?;
             Ok(())
         })
     }
 
-    fn set_mode(&self, _session_id: String, mode: String) -> anyhow::Result<()> {
+    pub(crate) fn set_mode(&self, _session_id: String, mode: String) -> anyhow::Result<()> {
         let parsed = forge_sdk_worker::parse_permission_mode(&mode)?;
         self.dispatch("set_mode", move |client| async move {
             client.set_permission_mode(parsed).await?;
@@ -271,14 +285,14 @@ impl AgentBridge for ForgeSdkBridge {
         })
     }
 
-    fn set_model(&self, _session_id: String, model: String) -> anyhow::Result<()> {
+    pub(crate) fn set_model(&self, _session_id: String, model: String) -> anyhow::Result<()> {
         self.dispatch("set_model", move |client| async move {
             client.set_model(Some(model.as_str())).await?;
             Ok(())
         })
     }
 
-    fn generate_session_title(
+    pub(crate) fn generate_session_title(
         &self,
         _session_id: String,
         description: String,
@@ -289,13 +303,13 @@ impl AgentBridge for ForgeSdkBridge {
         })
     }
 
-    fn rename_session(&self, session_id: String, title: String) -> anyhow::Result<()> {
+    pub(crate) fn rename_session(&self, session_id: String, title: String) -> anyhow::Result<()> {
         // Offline disk mutation — no Client required.
         crate::userdata::catalog::mutations::rename_session(&session_id, &title, None)?;
         Ok(())
     }
 
-    fn get_status_snapshot(&self, session_id: String) -> anyhow::Result<()> {
+    pub(crate) fn get_status_snapshot(&self, session_id: String) -> anyhow::Result<()> {
         let event_tx = self.inner.event_tx.clone();
         self.dispatch("get_status_snapshot", move |client| async move {
             let account = client
@@ -310,7 +324,7 @@ impl AgentBridge for ForgeSdkBridge {
         })
     }
 
-    fn get_oauth_credentials_snapshot(&self, session_id: String) -> anyhow::Result<()> {
+    pub(crate) fn get_oauth_credentials_snapshot(&self, session_id: String) -> anyhow::Result<()> {
         let event_tx = self.inner.event_tx.clone();
         self.dispatch(
             "get_oauth_credentials_snapshot",
@@ -325,7 +339,7 @@ impl AgentBridge for ForgeSdkBridge {
         )
     }
 
-    fn get_context_usage(&self, session_id: String) -> anyhow::Result<()> {
+    pub(crate) fn get_context_usage(&self, session_id: String) -> anyhow::Result<()> {
         let event_tx = self.inner.event_tx.clone();
         self.dispatch("get_context_usage", move |client| async move {
             let usage = client.get_context_usage().await?;
@@ -338,7 +352,7 @@ impl AgentBridge for ForgeSdkBridge {
         })
     }
 
-    fn reload_plugins(&self, session_id: String) -> anyhow::Result<()> {
+    pub(crate) fn reload_plugins(&self, session_id: String) -> anyhow::Result<()> {
         let event_tx = self.inner.event_tx.clone();
         self.dispatch("reload_plugins", move |client| async move {
             match client.reload_plugins().await {
@@ -356,7 +370,7 @@ impl AgentBridge for ForgeSdkBridge {
         })
     }
 
-    fn get_mcp_snapshot(&self, session_id: String) -> anyhow::Result<()> {
+    pub(crate) fn get_mcp_snapshot(&self, session_id: String) -> anyhow::Result<()> {
         let event_tx = self.inner.event_tx.clone();
         self.dispatch("get_mcp_snapshot", move |client| async move {
             let response = client.mcp_status().await?;
@@ -369,7 +383,7 @@ impl AgentBridge for ForgeSdkBridge {
         })
     }
 
-    fn respond_to_elicitation(
+    pub(crate) fn respond_to_elicitation(
         &self,
         _session_id: String,
         elicitation_request_id: String,
@@ -389,7 +403,7 @@ impl AgentBridge for ForgeSdkBridge {
         })
     }
 
-    fn reconnect_mcp_server(&self, session_id: String, server_name: String) -> anyhow::Result<()> {
+    pub(crate) fn reconnect_mcp_server(&self, session_id: String, server_name: String) -> anyhow::Result<()> {
         let event_tx = self.inner.event_tx.clone();
         self.dispatch("reconnect_mcp_server", move |client| async move {
             if let Err(e) = client.mcp_reconnect(&server_name).await {
@@ -406,7 +420,7 @@ impl AgentBridge for ForgeSdkBridge {
         })
     }
 
-    fn toggle_mcp_server(
+    pub(crate) fn toggle_mcp_server(
         &self,
         session_id: String,
         server_name: String,
@@ -428,7 +442,7 @@ impl AgentBridge for ForgeSdkBridge {
         })
     }
 
-    fn set_mcp_servers(
+    pub(crate) fn set_mcp_servers(
         &self,
         session_id: String,
         servers: std::collections::BTreeMap<String, McpServerConfig>,
@@ -450,7 +464,7 @@ impl AgentBridge for ForgeSdkBridge {
         })
     }
 
-    fn authenticate_mcp_server(
+    pub(crate) fn authenticate_mcp_server(
         &self,
         session_id: String,
         server_name: String,
@@ -491,7 +505,7 @@ impl AgentBridge for ForgeSdkBridge {
         })
     }
 
-    fn clear_mcp_auth(&self, session_id: String, server_name: String) -> anyhow::Result<()> {
+    pub(crate) fn clear_mcp_auth(&self, session_id: String, server_name: String) -> anyhow::Result<()> {
         let event_tx = self.inner.event_tx.clone();
         self.dispatch("clear_mcp_auth", move |client| async move {
             if let Err(e) = client.mcp_clear_auth(&server_name).await {
@@ -508,7 +522,7 @@ impl AgentBridge for ForgeSdkBridge {
         })
     }
 
-    fn submit_mcp_oauth_callback_url(
+    pub(crate) fn submit_mcp_oauth_callback_url(
         &self,
         session_id: String,
         server_name: String,
@@ -533,7 +547,7 @@ impl AgentBridge for ForgeSdkBridge {
         })
     }
 
-    fn new_session(
+    pub(crate) fn new_session(
         &self,
         cwd: String,
         launch_settings: SessionLaunchSettings,
@@ -551,7 +565,7 @@ impl AgentBridge for ForgeSdkBridge {
         Ok(())
     }
 
-    fn resume_session(
+    pub(crate) fn resume_session(
         &self,
         session_id: String,
         launch_settings: SessionLaunchSettings,
@@ -570,7 +584,7 @@ impl AgentBridge for ForgeSdkBridge {
         Ok(())
     }
 
-    fn permission_response(
+    pub(crate) fn permission_response(
         &self,
         _session_id: String,
         tool_call_id: String,
@@ -580,7 +594,7 @@ impl AgentBridge for ForgeSdkBridge {
         Ok(())
     }
 
-    fn question_response(
+    pub(crate) fn question_response(
         &self,
         _session_id: String,
         tool_call_id: String,
@@ -594,35 +608,35 @@ impl AgentBridge for ForgeSdkBridge {
         Ok(())
     }
 
-    fn start_git_context_watch(&self, session_id: String, cwd: PathBuf) -> anyhow::Result<()> {
+    pub(crate) fn start_git_context_watch(&self, session_id: String, cwd: PathBuf) -> anyhow::Result<()> {
         self.install_git_watcher(session_id, &cwd);
         Ok(())
     }
 
-    fn stop_git_context_watch(&self, session_id: String) -> anyhow::Result<()> {
+    pub(crate) fn stop_git_context_watch(&self, session_id: String) -> anyhow::Result<()> {
         self.stop_git_watcher(&session_id);
         Ok(())
     }
 
     // ---- Direct-return accessors (delegate to forge_sdk::*) ----
 
-    fn config_dir(&self) -> PathBuf {
+    pub(crate) fn config_dir(&self) -> PathBuf {
         forge_sdk::claude_config_dir()
     }
 
-    fn project_memory_path(&self, cwd: &Path) -> PathBuf {
+    pub(crate) fn project_memory_path(&self, cwd: &Path) -> PathBuf {
         crate::userdata::memory::project_memory_path(cwd)
     }
 
-    fn oauth_credentials(&self) -> Option<crate::cloud::oauth_credentials::OauthCredentials> {
+    pub(crate) fn oauth_credentials(&self) -> Option<crate::cloud::oauth_credentials::OauthCredentials> {
         crate::cloud::oauth_credentials::load_oauth_credentials()
     }
 
-    fn settings_documents(&self, cwd: &Path) -> crate::userdata::settings::SettingsDocuments {
+    pub(crate) fn settings_documents(&self, cwd: &Path) -> crate::userdata::settings::SettingsDocuments {
         crate::userdata::settings::settings_documents(cwd)
     }
 
-    fn write_settings_document(
+    pub(crate) fn write_settings_document(
         &self,
         target: &crate::userdata::settings::SettingsTarget,
         document: &Value,
@@ -630,7 +644,7 @@ impl AgentBridge for ForgeSdkBridge {
         crate::userdata::settings::write_settings_document(target, document)
     }
 
-    async fn oauth_usage(
+    pub(crate) async fn oauth_usage(
         &self,
     ) -> Result<crate::cloud::oauth_usage::OauthUsage, crate::cloud::oauth_usage::OauthUsageError>
     {
