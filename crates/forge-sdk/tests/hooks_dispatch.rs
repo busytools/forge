@@ -28,15 +28,15 @@ async fn pre_tool_use_replaces_input() {
         .hooks(hooks)
         .build();
 
-    let client = Client::spawn(opts).await.expect("spawn");
+    let (client, mut events) = Client::spawn(opts).await.expect("spawn");
     client.send_user_message("run bash").await.expect("send");
 
-    let msg = client.next_event().await.expect("next").expect("assistant");
+    let msg = events.recv().await.expect("recv").expect("assistant");
     match msg {
         Message::Assistant { message, .. } => {
             assert!(
                 message.content.iter().any(
-                    |b| matches!(b, forge_sdk::content::ContentBlock::Text { text } if text.contains("echo replaced"))
+                    |b| matches!(b, forge_sdk::ContentBlock::Text { text } if text.contains("echo replaced"))
                 ),
                 "expected replaced command in reply, got: {:?}",
                 message.content
@@ -44,7 +44,7 @@ async fn pre_tool_use_replaces_input() {
         }
         other => panic!("unexpected: {other:?}"),
     }
-    let _ = client.next_event().await;
+    let _ = events.recv().await;
     client.disconnect().await.expect("disconnect");
 }
 
@@ -64,15 +64,15 @@ async fn pre_tool_use_deny_propagates() {
         .hooks(hooks)
         .build();
 
-    let client = Client::spawn(opts).await.expect("spawn");
+    let (client, mut events) = Client::spawn(opts).await.expect("spawn");
     client.send_user_message("run bash").await.expect("send");
 
-    let msg = client.next_event().await.expect("next").expect("assistant");
+    let msg = events.recv().await.expect("recv").expect("assistant");
     match msg {
         Message::Assistant { message, .. } => {
             assert!(
                 message.content.iter().any(
-                    |b| matches!(b, forge_sdk::content::ContentBlock::Text { text } if text.contains("hook denied"))
+                    |b| matches!(b, forge_sdk::ContentBlock::Text { text } if text.contains("hook denied"))
                 ),
                 "expected deny text, got: {:?}",
                 message.content
@@ -80,6 +80,6 @@ async fn pre_tool_use_deny_propagates() {
         }
         other => panic!("unexpected: {other:?}"),
     }
-    let _ = client.next_event().await;
+    let _ = events.recv().await;
     client.disconnect().await.expect("disconnect");
 }

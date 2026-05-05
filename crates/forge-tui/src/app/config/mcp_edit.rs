@@ -190,7 +190,7 @@ fn cancel_mcp_elicitation_overlay(app: &mut App) {
     send_mcp_elicitation_response(
         app,
         &request_id,
-        crate::agent::types::ElicitationAction::Cancel,
+        forge_primitives::ElicitationAction::Cancel,
         None,
     );
     app.config.overlay = None;
@@ -287,17 +287,17 @@ fn execute_mcp_elicitation_overlay_action(app: &mut App) {
 }
 
 fn mcp_elicitation_actions(
-    request: &crate::agent::types::ElicitationRequest,
-) -> Vec<crate::agent::types::ElicitationAction> {
+    request: &forge_primitives::ElicitationRequest,
+) -> Vec<forge_primitives::ElicitationAction> {
     match request.mode {
-        crate::agent::types::ElicitationMode::Url => vec![
-            crate::agent::types::ElicitationAction::Accept,
-            crate::agent::types::ElicitationAction::Decline,
-            crate::agent::types::ElicitationAction::Cancel,
+        forge_primitives::ElicitationMode::Url => vec![
+            forge_primitives::ElicitationAction::Accept,
+            forge_primitives::ElicitationAction::Decline,
+            forge_primitives::ElicitationAction::Cancel,
         ],
-        crate::agent::types::ElicitationMode::Form => vec![
-            crate::agent::types::ElicitationAction::Decline,
-            crate::agent::types::ElicitationAction::Cancel,
+        forge_primitives::ElicitationMode::Form => vec![
+            forge_primitives::ElicitationAction::Decline,
+            forge_primitives::ElicitationAction::Cancel,
         ],
     }
 }

@@ -4,10 +4,10 @@ use super::overlay::{
     render_overlay_shell,
 };
 use super::theme;
-use crate::agent::types::{ElicitationAction, ElicitationMode};
 use crate::app::App;
 use crate::app::config::{available_mcp_actions, is_mcp_action_available};
-use forge_sdk::{McpServerConnectionStatus, McpServerStatus};
+use forge_primitives::{ElicitationAction, ElicitationMode};
+use forge_primitives::{McpServerConnectionStatus, McpServerStatus};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -703,9 +703,7 @@ fn status_counts(app: &App) -> StatusCounts {
     })
 }
 
-fn elicitation_actions(
-    request: &crate::agent::types::ElicitationRequest,
-) -> Vec<ElicitationAction> {
+fn elicitation_actions(request: &forge_primitives::ElicitationRequest) -> Vec<ElicitationAction> {
     match request.mode {
         ElicitationMode::Url => {
             vec![ElicitationAction::Accept, ElicitationAction::Decline, ElicitationAction::Cancel]
@@ -793,7 +791,7 @@ mod tests {
             McpServerStatus {
                 name: "filesystem".to_owned(),
                 status: McpServerConnectionStatus::Connected,
-                server_info: Some(forge_sdk::McpServerInfo {
+                server_info: Some(forge_primitives::McpServerInfo {
                     name: "Filesystem".to_owned(),
                     version: "1.2.3".to_owned(),
                 }),
@@ -805,10 +803,10 @@ mod tests {
                     "env": {},
                 })),
                 scope: Some("project".to_owned()),
-                tools: Some(vec![forge_sdk::McpToolInfo {
+                tools: Some(vec![forge_primitives::McpToolInfo {
                     name: "read_file".to_owned(),
                     description: Some("Read a file".to_owned()),
-                    annotations: Some(forge_sdk::McpToolAnnotations {
+                    annotations: Some(forge_primitives::McpToolAnnotations {
                         read_only: Some(true),
                         destructive: Some(false),
                         open_world: Some(false),

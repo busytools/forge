@@ -93,10 +93,9 @@ fn is_ctrl(key: KeyEvent, ch: char) -> bool {
 #[cfg(test)]
 mod tests {
     use super::handle_key;
-    use crate::agent::test_bridge::{ForgeSdkCommand, RecordingBridge};
+
     use crate::app::{ActiveView, App, AppStatus, RecentSessionInfo};
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-    use std::rc::Rc;
 
     fn picker_app() -> App {
         let mut app = App::test_default();
@@ -153,8 +152,8 @@ mod tests {
     #[test]
     fn enter_triggers_resume() {
         let mut app = picker_app();
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<ForgeSdkCommand>();
-        app.conn = Some(Rc::new(RecordingBridge::new(tx)));
+        let (handle, mut rx) = forge_agent::Agent::testing_stub();
+        app.conn = Some(std::rc::Rc::new(handle));
 
         handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
@@ -164,7 +163,7 @@ mod tests {
         let cmd = rx.try_recv().expect("resume command");
         assert!(matches!(
             cmd,
-            ForgeSdkCommand::ResumeSession { session_id, .. }
+            forge_primitives::Command::ResumeSession { session_id, .. }
                 if session_id == "session-1"
         ));
     }
@@ -182,9 +181,13 @@ mod tests {
     #[test]
     fn failed_resume_restores_ready_state_and_surfaces_error() {
         let mut app = picker_app();
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<ForgeSdkCommand>();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<forge_primitives::Command>();
         drop(rx);
-        app.conn = Some(Rc::new(RecordingBridge::new(tx)));
+        app.conn = Some(std::rc::Rc::new({
+            let _ = tx;
+            let (h, _) = forge_agent::Agent::testing_stub();
+            h
+        }));
 
         handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 

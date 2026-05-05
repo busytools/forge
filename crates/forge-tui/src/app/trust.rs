@@ -1,4 +1,4 @@
-pub(crate) mod store;
+pub(crate) use forge_agent::userdata::trust as store;
 
 use super::App;
 use super::view::{self, ActiveView};

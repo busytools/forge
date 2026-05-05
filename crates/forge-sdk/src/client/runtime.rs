@@ -27,9 +27,9 @@ use tokio::task::JoinHandle;
 
 use crate::Error;
 use crate::client::ControlDispatchHandle;
-use crate::messages::Message;
 use crate::transport::codec::{DecodedLine, decode_dispatch};
 use crate::transport::process::Subprocess;
+use forge_primitives::Message;
 
 /// Outcome of one outbound `control_request` — either the success
 /// payload (the inner `response` JSON) or a typed error.

@@ -1,12 +1,10 @@
 use super::*;
 use crate::agent::model::AvailableModel;
-use crate::agent::test_bridge::ForgeSdkCommand;
 use crate::app::AppStatus;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use serde_json::Value;
 use std::path::Path;
 use std::path::PathBuf;
-use std::rc::Rc;
 use tempfile::TempDir;
 
 fn open_settings_app_in_dir(dir: &TempDir) -> App {
@@ -37,10 +35,10 @@ fn select_setting(app: &mut App, setting_id: SettingId) {
 }
 
 fn app_with_status_connection()
--> (App, tokio::sync::mpsc::UnboundedReceiver<crate::agent::test_bridge::ForgeSdkCommand>) {
+-> (App, tokio::sync::mpsc::UnboundedReceiver<forge_primitives::Command>) {
     let mut app = App::test_default();
-    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-    app.conn = Some(Rc::new(crate::agent::test_bridge::RecordingBridge::new(tx)));
+    let (handle, rx) = forge_agent::Agent::testing_stub();
+    app.conn = Some(std::rc::Rc::new(handle));
     app.session_id = Some(crate::agent::model::SessionId::new("session-1"));
     app.config.active_tab = ConfigTab::Status;
     app.recent_sessions = vec![crate::app::RecentSessionInfo {
@@ -620,8 +618,8 @@ fn status_tab_rename_confirm_sends_bridge_command() {
     let envelope = rx.try_recv().expect("rename command");
     assert_eq!(
         envelope,
-        ForgeSdkCommand::RenameSession {
-            session_id: "session-1".to_owned(),
+        forge_primitives::Command::RenameSession {
+            session_id: forge_primitives::SessionId::new("session-1".to_owned()),
             title: "Renamed session".to_owned(),
         }
     );
@@ -654,7 +652,10 @@ fn status_tab_rename_empty_confirm_clears_custom_title() {
     let envelope = rx.try_recv().expect("rename command");
     assert_eq!(
         envelope,
-        ForgeSdkCommand::RenameSession { session_id: "session-1".to_owned(), title: String::new() }
+        forge_primitives::Command::RenameSession {
+            session_id: forge_primitives::SessionId::new("session-1".to_owned()),
+            title: String::new()
+        }
     );
     assert_eq!(app.config.status_message.as_deref(), Some("Clearing session name..."));
     assert!(matches!(
@@ -689,8 +690,8 @@ fn status_tab_g_generates_session_title_from_current_title_fallback() {
     let envelope = rx.try_recv().expect("generate command");
     assert_eq!(
         envelope,
-        ForgeSdkCommand::GenerateSessionTitle {
-            session_id: "session-1".to_owned(),
+        forge_primitives::Command::GenerateSessionTitle {
+            session_id: forge_primitives::SessionId::new("session-1".to_owned()),
             description: "Current custom title".to_owned(),
         }
     );
@@ -1253,9 +1254,9 @@ fn mcp_enter_opens_details_overlay_instead_of_closing_config() {
     let (_dir, mut app) = open_settings_test_app();
     app.config.active_tab = ConfigTab::Mcp;
     app.session_id = Some(crate::agent::model::SessionId::new("session-1"));
-    app.mcp.servers = vec![forge_sdk::McpServerStatus {
+    app.mcp.servers = vec![forge_primitives::McpServerStatus {
         name: "filesystem".to_owned(),
-        status: forge_sdk::McpServerConnectionStatus::Connected,
+        status: forge_primitives::McpServerConnectionStatus::Connected,
         server_info: None,
         error: None,
         config: Some(serde_json::json!({
@@ -1297,13 +1298,13 @@ fn mcp_details_overlay_enter_closes_overlay() {
 #[test]
 fn mcp_tab_refresh_key_requests_snapshot() {
     let (_dir, mut app) = open_settings_test_app();
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    app.conn = Some(Rc::new(crate::agent::test_bridge::RecordingBridge::new(tx)));
+    let (handle, mut rx) = forge_agent::Agent::testing_stub();
+    app.conn = Some(std::rc::Rc::new(handle));
     app.session_id = Some(crate::agent::model::SessionId::new("session-1"));
     app.config.active_tab = ConfigTab::Mcp;
-    app.mcp.servers.push(forge_sdk::McpServerStatus {
+    app.mcp.servers.push(forge_primitives::McpServerStatus {
         name: "stale".to_owned(),
-        status: forge_sdk::McpServerConnectionStatus::NeedsAuth,
+        status: forge_primitives::McpServerConnectionStatus::NeedsAuth,
         server_info: None,
         error: None,
         config: None,
@@ -1316,9 +1317,19 @@ fn mcp_tab_refresh_key_requests_snapshot() {
     handle_key(&mut app, KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE));
 
     let envelope = rx.try_recv().expect("runtime reload command");
-    assert_eq!(envelope, ForgeSdkCommand::ReloadPlugins { session_id: "session-1".to_owned() });
+    assert_eq!(
+        envelope,
+        forge_primitives::Command::ReloadPlugins {
+            session_id: forge_primitives::SessionId::new("session-1".to_owned())
+        }
+    );
     let envelope = rx.try_recv().expect("mcp snapshot command");
-    assert_eq!(envelope, ForgeSdkCommand::GetMcpSnapshot { session_id: "session-1".to_owned() });
+    assert_eq!(
+        envelope,
+        forge_primitives::Command::GetMcpSnapshot {
+            session_id: forge_primitives::SessionId::new("session-1".to_owned())
+        }
+    );
     assert!(app.mcp.in_flight);
     assert!(app.mcp.servers.is_empty());
 }
@@ -1326,27 +1337,32 @@ fn mcp_tab_refresh_key_requests_snapshot() {
 #[test]
 fn request_mcp_snapshot_sends_outside_mcp_tab() {
     let (_dir, mut app) = open_settings_test_app();
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    app.conn = Some(Rc::new(crate::agent::test_bridge::RecordingBridge::new(tx)));
+    let (handle, mut rx) = forge_agent::Agent::testing_stub();
+    app.conn = Some(std::rc::Rc::new(handle));
     app.session_id = Some(crate::agent::model::SessionId::new("session-1"));
     app.config.active_tab = ConfigTab::Status;
 
     super::mcp::request_mcp_snapshot(&mut app);
 
     let envelope = rx.try_recv().expect("mcp snapshot command");
-    assert_eq!(envelope, ForgeSdkCommand::GetMcpSnapshot { session_id: "session-1".to_owned() });
+    assert_eq!(
+        envelope,
+        forge_primitives::Command::GetMcpSnapshot {
+            session_id: forge_primitives::SessionId::new("session-1".to_owned())
+        }
+    );
     assert!(app.mcp.in_flight);
 }
 
 #[test]
 fn refresh_mcp_snapshot_clears_existing_servers_before_request() {
     let (_dir, mut app) = open_settings_test_app();
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    app.conn = Some(Rc::new(crate::agent::test_bridge::RecordingBridge::new(tx)));
+    let (handle, mut rx) = forge_agent::Agent::testing_stub();
+    app.conn = Some(std::rc::Rc::new(handle));
     app.session_id = Some(crate::agent::model::SessionId::new("session-1"));
-    app.mcp.servers.push(forge_sdk::McpServerStatus {
+    app.mcp.servers.push(forge_primitives::McpServerStatus {
         name: "stale".to_owned(),
-        status: forge_sdk::McpServerConnectionStatus::Connected,
+        status: forge_primitives::McpServerConnectionStatus::Connected,
         server_info: None,
         error: None,
         config: None,
@@ -1359,7 +1375,12 @@ fn refresh_mcp_snapshot_clears_existing_servers_before_request() {
     refresh_mcp_snapshot(&mut app);
 
     let envelope = rx.try_recv().expect("mcp snapshot command");
-    assert_eq!(envelope, ForgeSdkCommand::GetMcpSnapshot { session_id: "session-1".to_owned() });
+    assert_eq!(
+        envelope,
+        forge_primitives::Command::GetMcpSnapshot {
+            session_id: forge_primitives::SessionId::new("session-1".to_owned())
+        }
+    );
     assert!(app.mcp.servers.is_empty());
     assert!(app.mcp.in_flight);
 }
@@ -1367,8 +1388,8 @@ fn refresh_mcp_snapshot_clears_existing_servers_before_request() {
 #[test]
 fn refresh_mcp_snapshot_if_needed_skips_outside_mcp_tab() {
     let (_dir, mut app) = open_settings_test_app();
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    app.conn = Some(Rc::new(crate::agent::test_bridge::RecordingBridge::new(tx)));
+    let (handle, mut rx) = forge_agent::Agent::testing_stub();
+    app.conn = Some(std::rc::Rc::new(handle));
     app.session_id = Some(crate::agent::model::SessionId::new("session-1"));
     app.config.active_tab = ConfigTab::Status;
 
@@ -1380,9 +1401,9 @@ fn refresh_mcp_snapshot_if_needed_skips_outside_mcp_tab() {
 
 #[test]
 fn claudeai_proxy_server_shows_disabled_authenticate_action() {
-    let server = forge_sdk::McpServerStatus {
+    let server = forge_primitives::McpServerStatus {
         name: "claude.ai Google Calendar".to_owned(),
-        status: forge_sdk::McpServerConnectionStatus::NeedsAuth,
+        status: forge_primitives::McpServerConnectionStatus::NeedsAuth,
         server_info: None,
         error: Some(
             "MCP server requires authentication but no OAuth token is configured.".to_owned(),

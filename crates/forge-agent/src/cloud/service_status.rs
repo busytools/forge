@@ -1,0 +1,259 @@
+//! Anthropic statuspage poller. Pulls the public summary endpoint and
+//! classifies whether Claude Code or the underlying Claude API is in a
+//! degraded state.
+//!
+//! Lifted from forge-tui::app::service_status_check (2026-05-05) so the
+//! HTTP/JSON work lives next to the other network-side fetchers in
+//! forge-agent::cloud.
+
+use serde::Deserialize;
+use std::time::Duration;
+
+const SERVICE_STATUS_TIMEOUT: Duration = Duration::from_secs(4);
+const STATUSPAGE_SUMMARY_URL: &str = "https://status.claude.com/api/v2/summary.json";
+
+/// Component names we care about. "Claude Code" is the primary
+/// component; "Claude API" is included because Claude Code depends on it.
+const RELEVANT_COMPONENTS: &[&str] = &["Claude Code", "Claude API (api.anthropic.com)"];
+
+/// Severity of a detected service-status issue. Mirrored on the UI
+/// side as `ClientEvent::ServiceStatus { severity, .. }`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ServiceSeverity {
+    Warning,
+    Error,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServiceIssue {
+    pub severity: ServiceSeverity,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct SummaryResponse {
+    components: Vec<Component>,
+    incidents: Vec<Incident>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct Component {
+    name: String,
+    status: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct Incident {
+    name: String,
+    components: Vec<IncidentComponent>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct IncidentComponent {
+    name: String,
+}
+
+/// Fetch + classify the public statuspage summary. Returns `None` if
+/// every relevant component is operational, or if the request fails.
+pub async fn fetch_service_status() -> Option<ServiceIssue> {
+    let client = reqwest::Client::builder()
+        .timeout(SERVICE_STATUS_TIMEOUT)
+        .build()
+        .ok()?;
+    let response = client.get(STATUSPAGE_SUMMARY_URL).send().await.ok()?;
+    if !response.status().is_success() {
+        tracing::warn!(
+            event_name = "service_check_failed",
+            message = "service status request failed",
+            outcome = "failure",
+            status = %response.status(),
+            url = STATUSPAGE_SUMMARY_URL,
+        );
+        return None;
+    }
+    let payload = response.json::<SummaryResponse>().await.ok()?;
+    classify_summary(&payload)
+}
+
+fn is_relevant_component(name: &str) -> bool {
+    RELEVANT_COMPONENTS.contains(&name)
+}
+
+fn classify_component_status(status: &str) -> Option<ServiceSeverity> {
+    match status {
+        "operational" | "under_maintenance" => None,
+        "major_outage" => Some(ServiceSeverity::Error),
+        // degraded_performance, partial_outage, or unknown
+        _ => Some(ServiceSeverity::Warning),
+    }
+}
+
+fn classify_summary(summary: &SummaryResponse) -> Option<ServiceIssue> {
+    let worst_severity = summary
+        .components
+        .iter()
+        .filter(|c| is_relevant_component(&c.name))
+        .filter_map(|c| classify_component_status(&c.status))
+        .max_by_key(|s| match s {
+            ServiceSeverity::Warning => 0,
+            ServiceSeverity::Error => 1,
+        });
+
+    let severity = worst_severity?;
+
+    let relevant_incident = summary.incidents.iter().find(|incident| {
+        incident
+            .components
+            .iter()
+            .any(|c| is_relevant_component(&c.name))
+    });
+
+    let message = if let Some(incident) = relevant_incident {
+        format!("Claude Code status: {}.", incident.name.trim())
+    } else {
+        "Claude Code status indicates a service disruption.".to_owned()
+    };
+
+    Some(ServiceIssue { severity, message })
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod tests {
+    use super::*;
+
+    fn component(name: &str, status: &str) -> Component {
+        Component {
+            name: name.to_owned(),
+            status: status.to_owned(),
+        }
+    }
+
+    fn incident(name: &str, component_names: &[&str]) -> Incident {
+        Incident {
+            name: name.to_owned(),
+            components: component_names
+                .iter()
+                .map(|n| IncidentComponent {
+                    name: (*n).to_owned(),
+                })
+                .collect(),
+        }
+    }
+
+    fn summary(components: Vec<Component>, incidents: Vec<Incident>) -> SummaryResponse {
+        SummaryResponse {
+            components,
+            incidents,
+        }
+    }
+
+    #[test]
+    fn all_operational_is_healthy() {
+        let s = summary(
+            vec![
+                component("Claude Code", "operational"),
+                component("claude.ai", "operational"),
+            ],
+            vec![],
+        );
+        assert!(classify_summary(&s).is_none());
+    }
+
+    #[test]
+    fn only_unrelated_component_degraded_is_healthy() {
+        let s = summary(
+            vec![
+                component("Claude Code", "operational"),
+                component("claude.ai", "degraded_performance"),
+                component("Claude for Government", "major_outage"),
+            ],
+            vec![],
+        );
+        assert!(classify_summary(&s).is_none());
+    }
+
+    #[test]
+    fn claude_code_degraded_is_warning() {
+        let s = summary(
+            vec![component("Claude Code", "degraded_performance")],
+            vec![],
+        );
+        let issue = classify_summary(&s).expect("expected issue");
+        assert_eq!(issue.severity, ServiceSeverity::Warning);
+    }
+
+    #[test]
+    fn claude_code_major_outage_is_error() {
+        let s = summary(vec![component("Claude Code", "major_outage")], vec![]);
+        let issue = classify_summary(&s).expect("expected issue");
+        assert_eq!(issue.severity, ServiceSeverity::Error);
+    }
+
+    #[test]
+    fn claude_api_degraded_triggers_warning() {
+        let s = summary(
+            vec![
+                component("Claude Code", "operational"),
+                component("Claude API (api.anthropic.com)", "partial_outage"),
+            ],
+            vec![],
+        );
+        let issue = classify_summary(&s).expect("expected issue");
+        assert_eq!(issue.severity, ServiceSeverity::Warning);
+    }
+
+    #[test]
+    fn worst_severity_wins() {
+        let s = summary(
+            vec![
+                component("Claude Code", "degraded_performance"),
+                component("Claude API (api.anthropic.com)", "major_outage"),
+            ],
+            vec![],
+        );
+        let issue = classify_summary(&s).expect("expected issue");
+        assert_eq!(issue.severity, ServiceSeverity::Error);
+    }
+
+    #[test]
+    fn uses_incident_name_in_message() {
+        let s = summary(
+            vec![component("Claude Code", "degraded_performance")],
+            vec![incident(
+                "Elevated errors on Claude Opus 4",
+                &["Claude Code", "claude.ai"],
+            )],
+        );
+        let issue = classify_summary(&s).expect("expected issue");
+        assert_eq!(
+            issue.message,
+            "Claude Code status: Elevated errors on Claude Opus 4."
+        );
+    }
+
+    #[test]
+    fn fallback_message_without_relevant_incident() {
+        let s = summary(
+            vec![component("Claude Code", "partial_outage")],
+            vec![incident("API issue", &["claude.ai"])],
+        );
+        let issue = classify_summary(&s).expect("expected issue");
+        assert_eq!(
+            issue.message,
+            "Claude Code status indicates a service disruption."
+        );
+    }
+
+    #[test]
+    fn ignores_irrelevant_incident() {
+        let s = summary(
+            vec![
+                component("Claude Code", "operational"),
+                component("claude.ai", "degraded_performance"),
+            ],
+            vec![incident("claude.ai degraded", &["claude.ai"])],
+        );
+        assert!(classify_summary(&s).is_none());
+    }
+}

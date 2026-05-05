@@ -156,14 +156,14 @@ mod tests {
         request_runtime_reload, request_status_snapshot_refresh,
     };
     use crate::agent::model;
-    use crate::agent::test_bridge::ForgeSdkCommand;
+
     use crate::app::App;
 
     fn app_with_connection()
-    -> (App, tokio::sync::mpsc::UnboundedReceiver<crate::agent::test_bridge::ForgeSdkCommand>) {
+    -> (App, tokio::sync::mpsc::UnboundedReceiver<forge_primitives::Command>) {
         let mut app = App::test_default();
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-        app.conn = Some(std::rc::Rc::new(crate::agent::test_bridge::RecordingBridge::new(tx)));
+        let (handle, rx) = forge_agent::Agent::testing_stub();
+        app.conn = Some(std::rc::Rc::new(handle));
         app.session_id = Some(model::SessionId::new("session-1"));
         (app, rx)
     }
@@ -177,7 +177,7 @@ mod tests {
         let envelope = rx.try_recv().expect("reload command");
         assert!(matches!(
             envelope,
-            ForgeSdkCommand::ReloadPlugins { session_id } if session_id == "session-1"
+            forge_primitives::Command::ReloadPlugins { session_id } if session_id == "session-1"
         ));
     }
 
@@ -203,7 +203,7 @@ mod tests {
         let envelope = rx.try_recv().expect("context usage command");
         assert!(matches!(
             envelope,
-            ForgeSdkCommand::GetContextUsage { session_id } if session_id == "session-1"
+            forge_primitives::Command::GetContextUsage { session_id } if session_id == "session-1"
         ));
         assert!(rx.try_recv().is_err(), "coalesced refresh should not send twice");
     }
@@ -223,7 +223,7 @@ mod tests {
         let envelope = rx.try_recv().expect("replayed context usage command");
         assert!(matches!(
             envelope,
-            ForgeSdkCommand::GetContextUsage { session_id } if session_id == "session-1"
+            forge_primitives::Command::GetContextUsage { session_id } if session_id == "session-1"
         ));
     }
 
@@ -236,7 +236,7 @@ mod tests {
         let envelope = rx.try_recv().expect("status snapshot command");
         assert!(matches!(
             envelope,
-            ForgeSdkCommand::GetStatusSnapshot { session_id } if session_id == "session-1"
+            forge_primitives::Command::GetStatusSnapshot { session_id } if session_id == "session-1"
         ));
     }
 }

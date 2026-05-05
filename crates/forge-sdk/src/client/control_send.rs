@@ -13,9 +13,8 @@
 //!
 //! Session forking lives elsewhere: the spawn-time
 //! [`Options::fork_session`](crate::Options) flag (surfaced via
-//! `--fork-session`) and the offline
-//! [`fork_session`](crate::session::mutations::fork_session) free
-//! function.
+//! `--fork-session`) and the offline `fork_session` free function in
+//! `forge_agent::userdata::catalog::mutations`.
 
 use crate::Error;
 use crate::client::Client;
@@ -159,8 +158,8 @@ impl Client {
     ///
     /// See the outbound control error cases, plus [`Error::MessageParse`]
     /// when the CLI payload doesn't match
-    /// [`McpStatusResponse`](crate::public_types::McpStatusResponse).
-    pub async fn mcp_status(&self) -> Result<crate::public_types::McpStatusResponse, Error> {
+    /// [`McpStatusResponse`](forge_primitives::McpStatusResponse).
+    pub async fn mcp_status(&self) -> Result<forge_primitives::McpStatusResponse, Error> {
         let raw = self
             .send_control("mcp_status", serde_json::json!({}))
             .await?;
@@ -169,7 +168,7 @@ impl Client {
 
     /// Query MCP server status, returning the raw JSON payload. Use this
     /// escape hatch when the CLI returns fields not yet modelled by
-    /// [`McpStatusResponse`](crate::public_types::McpStatusResponse).
+    /// [`McpStatusResponse`](forge_primitives::McpStatusResponse).
     ///
     /// # Errors
     ///
@@ -185,10 +184,8 @@ impl Client {
     ///
     /// See the outbound control error cases, plus [`Error::MessageParse`]
     /// when the CLI payload doesn't match
-    /// [`ContextUsageResponse`](crate::public_types::ContextUsageResponse).
-    pub async fn get_context_usage(
-        &self,
-    ) -> Result<crate::public_types::ContextUsageResponse, Error> {
+    /// [`ContextUsageResponse`](forge_primitives::ContextUsageResponse).
+    pub async fn get_context_usage(&self) -> Result<forge_primitives::ContextUsageResponse, Error> {
         let raw = self
             .send_control("get_context_usage", serde_json::json!({}))
             .await?;
@@ -198,7 +195,7 @@ impl Client {
 
     /// Query current context usage, returning the raw JSON payload.
     /// Use this when the CLI returns fields not yet modelled by
-    /// [`ContextUsageResponse`](crate::public_types::ContextUsageResponse).
+    /// [`ContextUsageResponse`](forge_primitives::ContextUsageResponse).
     ///
     /// # Errors
     ///
@@ -242,7 +239,7 @@ impl Client {
     /// Ask the CLI to reload session plugins (slash commands, agents,
     /// MCP servers). Wire shape: `{"subtype": "reload_plugins"}`. The
     /// CLI replies with the refreshed plugin inventory; returns the
-    /// raw JSON for forge-daemon to forward.
+    /// raw JSON for the agent layer to forward.
     ///
     /// # Errors
     ///

@@ -4,7 +4,7 @@ use std::marker::PhantomData;
 
 use serde_json::Value;
 
-use super::HookContext;
+use forge_primitives::HookContext;
 
 /// A hook decision.
 ///

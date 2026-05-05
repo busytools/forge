@@ -18,7 +18,7 @@ async fn wire_capture_set_permission_mode() {
         .permission_mode(PermissionMode::AcceptEdits)
         .build();
 
-    run_live_scenario("set_permission_mode", opts, |client| async move {
+    run_live_scenario("set_permission_mode", opts, |client, events| async move {
         // Swap permission mode mid-session. `BypassPermissions` is
         // rejected unless the session launched with
         // `--dangerously-skip-permissions`, so flip to `Plan` instead
@@ -28,7 +28,7 @@ async fn wire_capture_set_permission_mode() {
         client
             .send_user_message("Respond with only the word DONE.")
             .await?;
-        Ok(client)
+        Ok((client, events))
     })
     .await
     .expect("scenario run");

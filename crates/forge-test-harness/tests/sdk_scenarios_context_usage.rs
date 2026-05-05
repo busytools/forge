@@ -18,14 +18,21 @@ async fn wire_capture_context_usage() {
         .permission_mode(PermissionMode::AcceptEdits)
         .build();
 
-    run_live_scenario("context_usage", opts, |client| async move {
+    run_live_scenario("context_usage", opts, |client, mut events| async move {
         client
             .send_user_message("Reply with exactly the word OK.")
             .await?;
 
         // Drain until the first Result so the context-usage query runs
         // against a session that actually has usage to report.
-        client.receive_response().await?;
+        // Drain until Result.
+        loop {
+            match events.recv().await {
+                Some(Ok(forge_sdk::Message::Result { .. })) | None => break,
+                Some(Ok(_)) => {}
+                Some(Err(e)) => return Err(e),
+            }
+        }
 
         let usage = client.get_context_usage().await?;
         eprintln!(
@@ -38,7 +45,7 @@ async fn wire_capture_context_usage() {
         // client back to the harness which will close stdin and drain
         // to EOF. Without this the harness would hang waiting for
         // another Result that never arrives.
-        Ok(client)
+        Ok((client, events))
     })
     .await
     .expect("scenario run");

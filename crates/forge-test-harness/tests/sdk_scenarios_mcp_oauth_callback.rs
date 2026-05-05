@@ -19,7 +19,7 @@ async fn wire_capture_mcp_oauth_callback() {
         .permission_mode(PermissionMode::AcceptEdits)
         .build();
 
-    run_live_scenario("mcp_oauth_callback", opts, |client| async move {
+    run_live_scenario("mcp_oauth_callback", opts, |client, events| async move {
         // Fabricated server + callback URL: locks the error-path wire
         // shape; avoids committing real OAuth state to the baseline.
         let _ = client
@@ -33,7 +33,7 @@ async fn wire_capture_mcp_oauth_callback() {
         client
             .send_user_message("Respond with only the word DONE.")
             .await?;
-        Ok(client)
+        Ok((client, events))
     })
     .await
     .expect("scenario run");

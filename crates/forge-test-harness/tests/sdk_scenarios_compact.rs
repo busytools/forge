@@ -27,17 +27,24 @@ async fn wire_capture_compact() {
         .hooks(hooks)
         .build();
 
-    run_live_scenario("compact", opts, |client| async move {
+    run_live_scenario("compact", opts, |client, mut events| async move {
         // First, a real turn so there's something to compact.
         client
             .send_user_message("Reply with only the word ALPHA.")
             .await?;
-        client.receive_response().await?;
+        // Drain until Result.
+        loop {
+            match events.recv().await {
+                Some(Ok(forge_sdk::Message::Result { .. })) | None => break,
+                Some(Ok(_)) => {}
+                Some(Err(e)) => return Err(e),
+            }
+        }
 
         // Issue `/compact` — the CLI treats slash commands as normal
         // stream-json user messages whose content starts with `/`.
         client.send_user_message("/compact").await?;
-        Ok(client)
+        Ok((client, events))
     })
     .await
     .expect("scenario run");

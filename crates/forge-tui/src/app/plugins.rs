@@ -1,4 +1,4 @@
-mod cli;
+use forge_agent::userdata::plugins::cli;
 
 use crate::agent::events::ClientEvent;
 use crate::app::App;
@@ -8,7 +8,6 @@ use crate::app::config::{
     PluginInstallActionKind, PluginInstallOverlayState,
 };
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use serde_json::Value;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -53,58 +52,13 @@ impl PluginsViewTab {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PluginCapability {
-    Skill,
-    Mcp,
-}
-
-impl PluginCapability {
-    #[must_use]
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::Skill => "SKILL",
-            Self::Mcp => "MCP",
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct InstalledPluginEntry {
-    pub id: String,
-    pub version: Option<String>,
-    pub scope: String,
-    pub enabled: bool,
-    pub installed_at: Option<String>,
-    pub last_updated: Option<String>,
-    pub project_path: Option<String>,
-    pub capability: PluginCapability,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MarketplaceEntry {
-    pub plugin_id: String,
-    pub name: String,
-    pub description: Option<String>,
-    pub marketplace_name: Option<String>,
-    pub version: Option<String>,
-    pub install_count: Option<u64>,
-    pub source: Option<Value>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MarketplaceSourceEntry {
-    pub name: String,
-    pub source: Option<String>,
-    pub repo: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PluginsInventorySnapshot {
-    pub installed: Vec<InstalledPluginEntry>,
-    pub marketplace: Vec<MarketplaceEntry>,
-    pub marketplaces: Vec<MarketplaceSourceEntry>,
-}
+// Plugin registry types lifted to forge-agent::userdata::plugins
+// (2026-05-05). Re-exported here so existing forge-tui imports keep
+// resolving.
+pub use forge_agent::userdata::plugins::{
+    InstalledPluginEntry, MarketplaceEntry, MarketplaceSourceEntry, PluginCapability,
+    PluginsInventorySnapshot,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct PluginsState {
@@ -1297,15 +1251,12 @@ pub(crate) const fn search_enabled(tab: PluginsViewTab) -> bool {
 mod tests {
     use super::*;
     use crate::agent::model;
-    use crate::agent::test_bridge::ForgeSdkCommand;
 
-    fn app_with_connection() -> (
-        crate::app::App,
-        tokio::sync::mpsc::UnboundedReceiver<crate::agent::test_bridge::ForgeSdkCommand>,
-    ) {
+    fn app_with_connection()
+    -> (crate::app::App, tokio::sync::mpsc::UnboundedReceiver<forge_primitives::Command>) {
         let mut app = crate::app::App::test_default();
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-        app.conn = Some(std::rc::Rc::new(crate::agent::test_bridge::RecordingBridge::new(tx)));
+        let (handle, rx) = forge_agent::Agent::testing_stub();
+        app.conn = Some(std::rc::Rc::new(handle));
         app.session_id = Some(model::SessionId::new("session-1"));
         (app, rx)
     }
@@ -1495,7 +1446,7 @@ mod tests {
         let envelope = rx.try_recv().expect("reload command");
         assert!(matches!(
             envelope,
-            ForgeSdkCommand::ReloadPlugins { session_id } if session_id == "session-1"
+            forge_primitives::Command::ReloadPlugins { session_id } if session_id == "session-1"
         ));
         assert!(!app.plugins.runtime_reload_after_refresh);
         assert_eq!(app.config.status_message.as_deref(), Some("Reloading session plugins..."));
@@ -1521,7 +1472,7 @@ mod tests {
         let envelope = rx.try_recv().expect("reload command");
         assert!(matches!(
             envelope,
-            ForgeSdkCommand::ReloadPlugins { session_id } if session_id == "session-1"
+            forge_primitives::Command::ReloadPlugins { session_id } if session_id == "session-1"
         ));
         assert_eq!(
             app.plugins.pending_runtime_reload_success_message.as_deref(),

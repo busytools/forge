@@ -42,7 +42,7 @@ pub struct McpCallbackUrlOverlayState {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct McpElicitationOverlayState {
-    pub request: crate::agent::types::ElicitationRequest,
+    pub request: forge_primitives::ElicitationRequest,
     pub selected_index: usize,
     pub browser_opened: bool,
     pub browser_open_error: Option<String>,
@@ -50,7 +50,7 @@ pub struct McpElicitationOverlayState {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct McpAuthRedirectOverlayState {
-    pub redirect: crate::agent::types::McpAuthRedirect,
+    pub redirect: forge_primitives::McpAuthRedirect,
     pub selected_index: usize,
     pub browser_opened: bool,
     pub browser_open_error: Option<String>,
@@ -384,7 +384,7 @@ pub(crate) fn submit_mcp_oauth_callback_url(
 pub(crate) fn send_mcp_elicitation_response(
     app: &mut App,
     request_id: &str,
-    action: crate::agent::types::ElicitationAction,
+    action: forge_primitives::ElicitationAction,
     content: Option<serde_json::Value>,
 ) {
     let Some(conn) = app.conn.as_ref() else {
@@ -472,17 +472,17 @@ pub(crate) fn open_mcp_server_details(
 
 #[must_use]
 pub(crate) fn available_mcp_actions(
-    server: &forge_sdk::McpServerStatus,
+    server: &forge_primitives::McpServerStatus,
 ) -> Vec<McpServerActionKind> {
     let mut actions = vec![McpServerActionKind::RefreshSnapshot];
-    if matches!(server.status, forge_sdk::McpServerConnectionStatus::Disabled) {
+    if matches!(server.status, forge_primitives::McpServerConnectionStatus::Disabled) {
         actions.push(McpServerActionKind::Enable);
     } else {
         if matches!(
             server.status,
-            forge_sdk::McpServerConnectionStatus::NeedsAuth
-                | forge_sdk::McpServerConnectionStatus::Failed
-                | forge_sdk::McpServerConnectionStatus::Pending
+            forge_primitives::McpServerConnectionStatus::NeedsAuth
+                | forge_primitives::McpServerConnectionStatus::Failed
+                | forge_primitives::McpServerConnectionStatus::Pending
         ) {
             actions.push(McpServerActionKind::Authenticate);
         }
@@ -495,7 +495,7 @@ pub(crate) fn available_mcp_actions(
 
 #[must_use]
 pub(crate) fn is_mcp_action_available(
-    server: &forge_sdk::McpServerStatus,
+    server: &forge_primitives::McpServerStatus,
     action: McpServerActionKind,
 ) -> bool {
     if !matches!(action, McpServerActionKind::Authenticate) {
@@ -512,7 +512,7 @@ pub(crate) fn is_mcp_action_available(
 
 pub(crate) fn present_mcp_elicitation_request(
     app: &mut App,
-    request: crate::agent::types::ElicitationRequest,
+    request: forge_primitives::ElicitationRequest,
 ) {
     let request_id_for_log = request.request_id.clone();
     let server_name_for_log = request.server_name.clone();
@@ -524,7 +524,7 @@ pub(crate) fn present_mcp_elicitation_request(
     app.config.active_tab = ConfigTab::Mcp;
     refresh_mcp_snapshot(app);
     let (browser_opened, browser_open_error) =
-        if matches!(request.mode, crate::agent::types::ElicitationMode::Url) {
+        if matches!(request.mode, forge_primitives::ElicitationMode::Url) {
             request.url.as_deref().map_or(
                 (false, Some("SDK did not provide an auth URL".to_owned())),
                 |url| match open_url_in_browser(url) {
@@ -558,7 +558,7 @@ pub(crate) fn present_mcp_elicitation_request(
 
 pub(crate) fn present_mcp_auth_redirect(
     app: &mut App,
-    redirect: crate::agent::types::McpAuthRedirect,
+    redirect: forge_primitives::McpAuthRedirect,
 ) {
     let server_name_for_log = redirect.server_name.clone();
     view::set_active_view(app, ActiveView::Config);
@@ -614,7 +614,7 @@ pub(crate) fn handle_mcp_elicitation_completed(
 
 pub(crate) fn handle_mcp_operation_error(
     app: &mut App,
-    error: &crate::agent::types::McpOperationError,
+    error: &forge_primitives::McpOperationError,
 ) {
     app.mcp.in_flight = false;
     let formatted = format_mcp_operation_error(error);
@@ -632,7 +632,7 @@ pub(crate) fn handle_mcp_operation_error(
     );
 }
 
-fn format_mcp_operation_error(error: &crate::agent::types::McpOperationError) -> String {
+fn format_mcp_operation_error(error: &forge_primitives::McpOperationError) -> String {
     let action = match error.operation.as_str() {
         "authenticate" => "authenticate",
         "clear-auth" => "clear auth for",

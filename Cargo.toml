@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/forge-sdk", "crates/forge-daemon", "crates/forge-tui", "crates/forge-test-harness"]
+members = ["crates/forge-sdk", "crates/forge-primitives", "crates/forge-agent", "crates/forge-tui", "crates/forge-test-harness"]
 
 [workspace.package]
 version = "0.1.64"
@@ -29,7 +29,6 @@ tokio-stream = "0.1"
 regex = "1"
 parking_lot = "0.12"
 futures-util = "0.3"
-tokio-tungstenite = "0.24"
 clap = { version = "4", features = ["derive"] }
 tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
@@ -49,6 +48,11 @@ tui-markdown = "=0.3.7"
 tui-textarea = { package = "tui-textarea-2", version = "0.10" }
 unicode-segmentation = "1.12"
 unicode-width = "0.2"
+base64 = "0.22"
+
+# Workspace-internal crates
+forge-primitives = { path = "crates/forge-primitives", version = "=0.1.64" }
+forge-agent = { path = "crates/forge-agent", version = "=0.1.64" }
 
 # Dev-only
 proptest = "1"

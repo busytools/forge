@@ -19,7 +19,7 @@ async fn wire_capture_mcp_authenticate() {
         .permission_mode(PermissionMode::AcceptEdits)
         .build();
 
-    run_live_scenario("mcp_authenticate", opts, |client| async move {
+    run_live_scenario("mcp_authenticate", opts, |client, events| async move {
         // Non-existent server: locks the error-path wire shape; avoids
         // committing real OAuth URLs / tokens to the baseline.
         let _ = client
@@ -30,7 +30,7 @@ async fn wire_capture_mcp_authenticate() {
         client
             .send_user_message("Respond with only the word DONE.")
             .await?;
-        Ok(client)
+        Ok((client, events))
     })
     .await
     .expect("scenario run");

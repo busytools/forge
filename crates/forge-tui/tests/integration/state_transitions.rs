@@ -531,7 +531,7 @@ async fn sdk_message_with_empty_app_session_id_adopts_wire_id() {
     app.messages.push(forge_tui::app::ChatMessage::new(MessageRole::Assistant, Vec::new(), None));
     app.bind_active_turn_assistant_to_tail();
 
-    let wire_msg: forge_sdk::Message = serde_json::from_value(serde_json::json!({
+    let wire_msg: forge_primitives::Message = serde_json::from_value(serde_json::json!({
         "type": "assistant",
         "session_id": "real-session-abc",
         "message": {
@@ -582,7 +582,7 @@ async fn sdk_message_with_mismatched_real_session_id_is_dropped() {
     app.session_id = Some(model::SessionId::new("real-session-abc"));
     let initial_message_count = app.messages.len();
 
-    let wire_msg: forge_sdk::Message = serde_json::from_value(serde_json::json!({
+    let wire_msg: forge_primitives::Message = serde_json::from_value(serde_json::json!({
         "type": "assistant",
         "session_id": "stale-session-xyz",
         "message": {

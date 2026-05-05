@@ -86,48 +86,10 @@ pub enum UsageSourceMode {
     Cli,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum UsageSourceKind {
-    Oauth,
-    Cli,
-}
-
-impl UsageSourceKind {
-    #[must_use]
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::Oauth => "oauth",
-            Self::Cli => "cli",
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct UsageWindow {
-    pub label: &'static str,
-    pub utilization: f64,
-    pub resets_at: Option<std::time::SystemTime>,
-    pub reset_description: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct ExtraUsage {
-    pub monthly_limit: Option<f64>,
-    pub used_credits: Option<f64>,
-    pub utilization: Option<f64>,
-    pub currency: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct UsageSnapshot {
-    pub source: UsageSourceKind,
-    pub fetched_at: std::time::SystemTime,
-    pub five_hour: Option<UsageWindow>,
-    pub seven_day: Option<UsageWindow>,
-    pub seven_day_opus: Option<UsageWindow>,
-    pub seven_day_sonnet: Option<UsageWindow>,
-    pub extra_usage: Option<ExtraUsage>,
-}
+// Wire-shape usage types lifted to forge-agent::cloud (2026-05-05
+// restructure). Re-exported here so existing import paths
+// (`crate::app::UsageSnapshot`, etc.) keep resolving.
+pub use forge_agent::cloud::{ExtraUsage, UsageSnapshot, UsageSourceKind, UsageWindow};
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct UsageState {
@@ -149,17 +111,17 @@ pub struct SessionUsageState {
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct McpState {
-    pub servers: Vec<forge_sdk::McpServerStatus>,
+    pub servers: Vec<forge_primitives::McpServerStatus>,
     pub in_flight: bool,
     pub last_error: Option<String>,
-    pub pending_elicitation: Option<crate::agent::types::ElicitationRequest>,
+    pub pending_elicitation: Option<forge_primitives::ElicitationRequest>,
 }
 
 /// Per-session runtime state. Owns the in-flight `tool_call` store,
 /// the model-resolution cache, the mode-capability state, the MCP
 /// per-server cooldowns, and the auth/error flags that survive
 /// across messages. The App's `handle_sdk_message` walks raw
-/// `forge_sdk::Message` envelopes and reads/writes these fields
+/// `forge_primitives::Message` envelopes and reads/writes these fields
 /// directly.
 ///
 /// This struct is the App-side home for the per-message bookkeeping
@@ -170,7 +132,7 @@ pub struct McpState {
 pub struct SessionTurnState {
     /// Live tool-call store keyed by `tool_use_id` for cross-message
     /// `tool_use ↔ tool_result` pairing.
-    pub tool_calls: std::collections::HashMap<String, crate::agent::types::ToolCall>,
+    pub tool_calls: std::collections::HashMap<String, forge_primitives::ToolCall>,
     /// Maps task-tool `task_id` → `tool_use_id` so `TaskProgress` /
     /// `TaskNotification` messages can resolve back to the originating
     /// tool call for `ToolCallUpdate` emission.
@@ -194,7 +156,7 @@ pub struct SessionTurnState {
     /// Whether `bypassPermissions` mode is allowed for this session.
     pub supports_bypass_permissions_mode: bool,
     /// Current mode resolution alongside the human-readable label.
-    pub mode_state: Option<crate::agent::types::ModeState>,
+    pub mode_state: Option<forge_primitives::ModeState>,
 
     /// Sha-style fingerprint of the `available_agents` list — used to
     /// emit `AvailableAgentsUpdate` only when the catalogue changes.
@@ -214,7 +176,7 @@ pub struct SessionTurnState {
 
     /// Resume history collected during connect handshake; attached to
     /// the first Connected event payload.
-    pub resume_updates: Option<Vec<crate::agent::types::SessionUpdate>>,
+    pub resume_updates: Option<Vec<forge_primitives::SessionUpdate>>,
 }
 
 pub const DEFAULT_RENDER_CACHE_BUDGET_BYTES: usize = 24 * 1024 * 1024;

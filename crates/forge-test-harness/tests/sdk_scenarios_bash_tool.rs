@@ -21,14 +21,14 @@ async fn wire_capture_bash_tool() {
         .allowed_tools(vec!["Bash".to_string()])
         .build();
 
-    run_live_scenario("bash_tool", opts, |client| async move {
+    run_live_scenario("bash_tool", opts, |client, events| async move {
         client
             .send_user_message(
                 "Run `echo forge-bash-scenario-ok` using the Bash tool \
                  and then reply with exactly what the command printed.",
             )
             .await?;
-        Ok(client)
+        Ok((client, events))
     })
     .await
     .expect("scenario run");

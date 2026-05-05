@@ -1,6 +1,6 @@
 [package]
 name = "forge-tui"
-version = "0.12.2"
+version = "0.13.0"
 edition = "2024"
 rust-version = "1.88.0"
 license.workspace = true
@@ -21,7 +21,8 @@ path = "src/main.rs"
 [dependencies]
 # Workspace-shared deps. Versions + features come from the workspace
 # unless overridden here.
-forge-sdk = { path = "../forge-sdk", version = "=0.1.64" }
+forge-primitives = { workspace = true }
+forge-agent = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 clap = { workspace = true }
