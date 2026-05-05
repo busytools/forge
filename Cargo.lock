@@ -1083,7 +1083,6 @@ dependencies = [
  "dirs",
  "forge-agent",
  "forge-primitives",
- "forge-sdk",
  "futures",
  "ignore",
  "image",

@@ -447,7 +447,7 @@ mod tests {
         App, BlockCache, ChatMessage, InlinePermission, MessageBlock, MessageRole,
         TerminalSnapshotMode, TextBlock, ToolCallInfo,
     };
-    use forge_sdk::{McpServerConnectionStatus, McpServerStatus};
+    use forge_primitives::{McpServerConnectionStatus, McpServerStatus};
     use tokio::sync::oneshot;
 
     #[test]

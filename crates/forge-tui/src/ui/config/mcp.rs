@@ -7,7 +7,7 @@ use super::theme;
 use crate::app::App;
 use crate::app::config::{available_mcp_actions, is_mcp_action_available};
 use forge_primitives::{ElicitationAction, ElicitationMode};
-use forge_sdk::{McpServerConnectionStatus, McpServerStatus};
+use forge_primitives::{McpServerConnectionStatus, McpServerStatus};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
 use ratatui::style::{Color, Modifier, Style};
