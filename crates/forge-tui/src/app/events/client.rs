@@ -1,6 +1,29 @@
 use super::{App, session, turn};
 use crate::agent::events::ClientEvent;
 
+/// Early-return from the enclosing function when `incoming` doesn't
+/// match the App's current session id. Logs a stale-session drop
+/// breadcrumb under the given `target` / `event_name` / `message`
+/// before returning. Used by every per-session-id event handler in
+/// this file to keep the guard from sprawling 7+ times.
+macro_rules! drop_if_stale_session {
+    ($app:expr, $session_id:expr, $target:expr, $event_name:expr, $message:expr) => {
+        if $app.session_id.as_ref().map(ToString::to_string).as_deref()
+            != Some($session_id.as_str())
+        {
+            tracing::debug!(
+                target: $target,
+                event_name = $event_name,
+                message = $message,
+                outcome = "dropped",
+                session_id = %$session_id,
+                reason = "stale_session",
+            );
+            return;
+        }
+    };
+}
+
 #[allow(clippy::too_many_lines)]
 pub fn handle_client_event(app: &mut App, event: ClientEvent) {
     app.needs_redraw = true;
@@ -116,19 +139,13 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
             session::handle_logout_completed_event(app);
         }
         ClientEvent::StatusSnapshotReceived { session_id, account } => {
-            if app.session_id.as_ref().map(ToString::to_string).as_deref()
-                != Some(session_id.as_str())
-            {
-                tracing::debug!(
-                    target: crate::logging::targets::APP_AUTH,
-                    event_name = "status_snapshot_dropped",
-                    message = "status snapshot dropped for a stale session",
-                    outcome = "dropped",
-                    session_id = %session_id,
-                    reason = "stale_session",
-                );
-                return;
-            }
+            drop_if_stale_session!(
+                app,
+                session_id,
+                crate::logging::targets::APP_AUTH,
+                "status_snapshot_dropped",
+                "status snapshot dropped for a stale session"
+            );
             let has_email = account.email.as_deref().is_some_and(|email| !email.trim().is_empty());
             let has_organization = account.organization.is_some();
             let subscription_type = account.subscription_type.clone();
@@ -153,19 +170,13 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
             );
         }
         ClientEvent::OauthCredentialsSnapshotReceived { session_id, credentials } => {
-            if app.session_id.as_ref().map(ToString::to_string).as_deref()
-                != Some(session_id.as_str())
-            {
-                tracing::debug!(
-                    target: crate::logging::targets::APP_AUTH,
-                    event_name = "oauth_credentials_snapshot_dropped",
-                    message = "oauth credentials snapshot dropped for a stale session",
-                    outcome = "dropped",
-                    session_id = %session_id,
-                    reason = "stale_session",
-                );
-                return;
-            }
+            drop_if_stale_session!(
+                app,
+                session_id,
+                crate::logging::targets::APP_AUTH,
+                "oauth_credentials_snapshot_dropped",
+                "oauth credentials snapshot dropped for a stale session"
+            );
             let has_credentials = credentials.is_some();
             let has_expiry = credentials.as_ref().is_some_and(|info| info.expires_at.is_some());
             app.oauth_credentials = credentials;
@@ -181,51 +192,33 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
             );
         }
         ClientEvent::GitContextSnapshotReceived { session_id, context } => {
-            if app.session_id.as_ref().map(ToString::to_string).as_deref()
-                != Some(session_id.as_str())
-            {
-                tracing::debug!(
-                    target: crate::logging::targets::APP_SESSION,
-                    event_name = "git_context_snapshot_dropped",
-                    message = "git context snapshot dropped for a stale session",
-                    outcome = "dropped",
-                    session_id = %session_id,
-                    reason = "stale_session",
-                );
-                return;
-            }
+            drop_if_stale_session!(
+                app,
+                session_id,
+                crate::logging::targets::APP_SESSION,
+                "git_context_snapshot_dropped",
+                "git context snapshot dropped for a stale session"
+            );
             app.apply_git_context_snapshot(context);
         }
         ClientEvent::ContextUsageReceived { session_id, percentage } => {
-            if app.session_id.as_ref().map(ToString::to_string).as_deref()
-                != Some(session_id.as_str())
-            {
-                tracing::debug!(
-                    target: crate::logging::targets::APP_SESSION,
-                    event_name = "context_usage_dropped",
-                    message = "context usage dropped for a stale session",
-                    outcome = "dropped",
-                    session_id = %session_id,
-                    reason = "stale_session",
-                );
-                return;
-            }
+            drop_if_stale_session!(
+                app,
+                session_id,
+                crate::logging::targets::APP_SESSION,
+                "context_usage_dropped",
+                "context usage dropped for a stale session"
+            );
             crate::app::session_runtime::apply_context_usage_snapshot(app, percentage);
         }
         ClientEvent::McpSnapshotReceived { session_id, servers, error } => {
-            if app.session_id.as_ref().map(ToString::to_string).as_deref()
-                != Some(session_id.as_str())
-            {
-                tracing::debug!(
-                    target: crate::logging::targets::APP_CONFIG,
-                    event_name = "mcp_snapshot_dropped",
-                    message = "MCP snapshot dropped for a stale session",
-                    outcome = "dropped",
-                    session_id = %session_id,
-                    reason = "stale_session",
-                );
-                return;
-            }
+            drop_if_stale_session!(
+                app,
+                session_id,
+                crate::logging::targets::APP_CONFIG,
+                "mcp_snapshot_dropped",
+                "MCP snapshot dropped for a stale session"
+            );
             let server_count = servers.len();
             let error_present = error.is_some();
             app.mcp.servers = servers;
