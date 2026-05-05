@@ -50,7 +50,6 @@ mod client;
 pub mod content;
 pub mod control;
 mod error;
-pub mod git;
 pub mod hooks;
 pub mod mcp;
 pub(crate) mod messages;
@@ -64,7 +63,6 @@ pub mod transport;
 
 pub use client::{Client, ClientEvents};
 pub use error::Error;
-pub use git::{GitBranch, GitContext, GitContextWatcher, GitError, git_context};
 pub use paths::{claude_config_dir, projects_dir};
 // Top-level message + content re-exports so consumers can say
 // `use forge_sdk::{AssistantEnvelope, StopReason, RateLimitInfo, ...}`

@@ -955,7 +955,7 @@ impl App {
 
     /// Apply a bridge-pushed git context snapshot to the local
     /// cache. Marks `needs_redraw` when the resolved branch changes.
-    pub fn apply_git_context_snapshot(&mut self, info: forge_sdk::GitContext) {
+    pub fn apply_git_context_snapshot(&mut self, info: forge_agent::env::git::GitContext) {
         self.needs_redraw |= self.git_context.apply_snapshot(info);
     }
 

@@ -302,7 +302,7 @@ pub enum AgentEvent {
     },
     GitContextSnapshot {
         session_id: String,
-        context: forge_sdk::GitContext,
+        context: crate::env::git::GitContext,
     },
     ContextUsage {
         session_id: String,

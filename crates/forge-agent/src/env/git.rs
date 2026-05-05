@@ -5,24 +5,16 @@
 //! the underlying `.git` ref machinery changes (with a 75ms debounce
 //! so a single `git checkout` doesn't fire dozens of events).
 //!
-//! # Portability
+//! Lifted from forge-sdk in 2026-05-05. The module's own
+//! pre-restructure header read: *"This module is conceptually daemon
+//! work, not SDK work — forge-sdk's main responsibility is wrapping
+//! the `claude` CLI subprocess."* It now lives where it belongs —
+//! agent-side, alongside the rest of the project's live-environment
+//! state (`forge_agent::env::*`).
 //!
-//! This module is conceptually daemon work, not SDK work — forge-sdk's
-//! main responsibility is wrapping the `claude` CLI subprocess. We
-//! park the watcher here today because no `forge-daemon` crate exists
-//! yet, but the module is **deliberately self-contained**:
-//!
-//! - No coupling to forge-sdk internals (`crate::Client`, `crate::Error`,
-//!   `crate::paths`, `crate::messages`). Allowed deps are `std`,
-//!   `tokio`, `notify`, `serde`, `tracing`, `thiserror`.
-//! - Local error type ([`GitError`]) — does NOT reuse
-//!   [`forge_sdk::Error`](crate::Error), which carries CLI-subprocess
-//!   variants that don't belong here.
-//! - All test fixtures live inside this module.
-//!
-//! Net effect: a future `mv crates/forge-sdk/src/git.rs
-//! crates/forge-daemon/src/git.rs` plus moving `notify` to the
-//! daemon's Cargo.toml is all the lift that's needed.
+//! Self-contained: depends only on `std`, `tokio`, `notify`, `serde`,
+//! `tracing`, `thiserror`. No coupling to forge-sdk internals; local
+//! error type ([`GitError`]) does not reuse `forge_sdk::Error`.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -152,7 +144,7 @@ impl GitContextWatcher {
         for (path, mode) in repo.watch_directories() {
             if let Err(err) = watcher.watch(&path, mode) {
                 tracing::warn!(
-                    target: "forge_sdk::git",
+                    target: "forge_agent::env::git",
                     path = %path.display(),
                     error = %err,
                     "failed to watch git metadata path",
@@ -173,13 +165,13 @@ impl GitContextWatcher {
         // initial snapshot has already been queued via `snap_tx`.
         let initial_branch = initial.branch.clone();
         if let Err(err) = std::thread::Builder::new()
-            .name("forge-sdk-git-debounce".to_owned())
+            .name("forge-agent-git-debounce".to_owned())
             .spawn(move || {
                 run_debounce_loop(&repo, &notify_rx, &snap_tx, initial_branch);
             })
         {
             tracing::error!(
-                target: "forge_sdk::git",
+                target: "forge_agent::env::git",
                 error = %err,
                 "failed to spawn git debounce thread; live updates disabled for this watcher",
             );
@@ -224,7 +216,7 @@ fn run_debounce_loop(
             Ok(event) => event.need_rescan() || repo.is_relevant_event(&event),
             Err(err) => {
                 tracing::debug!(
-                    target: "forge_sdk::git",
+                    target: "forge_agent::env::git",
                     error = %err,
                     "git watcher reported an error; treating as a refresh trigger",
                 );

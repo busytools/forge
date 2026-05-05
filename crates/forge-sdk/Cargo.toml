@@ -23,11 +23,8 @@ tracing = { workspace = true }
 async-trait = { workspace = true }
 getrandom = { workspace = true }
 hex = { workspace = true }
-notify = { workspace = true }
-reqwest = { workspace = true }
 sha2 = { workspace = true }
 uuid = { workspace = true }
-time = { workspace = true }
 unicode-normalization = { workspace = true }
 tokio-stream = { workspace = true }
 parking_lot = { workspace = true }

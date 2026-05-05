@@ -89,7 +89,7 @@ pub enum ClientEvent {
     },
     /// Git introspection snapshot pushed by the bridge whenever the
     /// repo's branch resolution changes (initial state included).
-    GitContextSnapshotReceived { session_id: String, context: forge_sdk::GitContext },
+    GitContextSnapshotReceived { session_id: String, context: forge_agent::env::git::GitContext },
     /// Session context window usage received from bridge.
     ContextUsageReceived { session_id: String, percentage: Option<u8> },
     /// MCP server snapshot received from bridge.

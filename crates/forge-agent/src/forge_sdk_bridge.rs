@@ -162,7 +162,7 @@ impl ForgeSdkBridge {
             prev.abort();
         }
 
-        let mut watcher = match forge_sdk::GitContextWatcher::new(cwd) {
+        let mut watcher = match crate::env::git::GitContextWatcher::new(cwd) {
             Ok(watcher) => watcher,
             Err(err) => {
                 tracing::warn!(
