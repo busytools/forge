@@ -809,13 +809,13 @@ fn apply_settings_parse_errors(app: &mut App, data: &Value) {
 /// existing api_retry event handler.
 fn apply_api_retry_update(app: &mut App, data: &Value) {
     let Some(record) = data.as_object() else { return };
-    let Some(forge_primitives::SessionUpdate::ApiRetryUpdate {
+    let Some(forge_primitives::SessionUpdate::ApiRetryUpdate(forge_primitives::ApiRetryUpdate {
         attempt,
         max_retries,
         retry_delay_ms,
         error_status,
         error,
-    }) = build_api_retry_update(record)
+    })) = build_api_retry_update(record)
     else {
         return;
     };
@@ -935,33 +935,13 @@ fn handle_rate_limit_event(app: &mut App, msg: Message, _raw: &Value) {
         session_id = app.session_id.as_ref().map(ToString::to_string).as_deref().unwrap_or(""),
         rate_limit_info = %value,
     );
-    let Some(forge_primitives::SessionUpdate::RateLimitUpdate {
-        status,
-        resets_at,
-        utilization,
-        rate_limit_type,
-        overage_status,
-        overage_resets_at,
-        overage_disabled_reason,
-        is_using_overage,
-        surpassed_threshold,
-    }) = build_rate_limit_update(Some(&value))
+    let Some(forge_primitives::SessionUpdate::RateLimitUpdate(wire)) =
+        build_rate_limit_update(Some(&value))
     else {
         return;
     };
     // Convert wire-side types::RateLimitUpdate → model::RateLimitUpdate
     // via the existing converter, then call the App-side handler.
-    let wire = forge_primitives::RateLimitUpdate {
-        status,
-        resets_at,
-        utilization,
-        rate_limit_type,
-        overage_status,
-        overage_resets_at,
-        overage_disabled_reason,
-        is_using_overage,
-        surpassed_threshold,
-    };
     let update = crate::app::connect::type_converters::map_rate_limit_update(wire);
     super::rate_limit::handle_rate_limit_update(app, &update);
 }

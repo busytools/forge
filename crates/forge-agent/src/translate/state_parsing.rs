@@ -80,7 +80,7 @@ pub fn build_rate_limit_update(rate_limit_info: Option<&Value>) -> Option<Sessio
     let info = rate_limit_info.and_then(record)?;
     let status = parse_rate_limit_status(info.get("status"))?;
 
-    Some(SessionUpdate::RateLimitUpdate {
+    Some(SessionUpdate::RateLimitUpdate(forge_primitives::RateLimitUpdate {
         status,
         resets_at: number_field(info, &["resetsAt"]),
         utilization: number_field(info, &["utilization"]),
@@ -98,7 +98,7 @@ pub fn build_rate_limit_update(rate_limit_info: Option<&Value>) -> Option<Sessio
             .map(str::to_owned),
         is_using_overage: info.get("isUsingOverage").and_then(Value::as_bool),
         surpassed_threshold: number_field(info, &["surpassedThreshold"]),
-    })
+    }))
 }
 
 /// Mirrors upstream's `buildApiRetryUpdate(message)`. Returns the
@@ -122,13 +122,13 @@ pub fn build_api_retry_update(message: &Map<String, Value>) -> Option<SessionUpd
         .and_then(|n| u16::try_from(n as i64).ok());
     let error = parse_api_retry_error(message.get("error"));
 
-    Some(SessionUpdate::ApiRetryUpdate {
+    Some(SessionUpdate::ApiRetryUpdate(forge_primitives::ApiRetryUpdate {
         attempt,
         max_retries,
         retry_delay_ms,
         error_status,
         error,
-    })
+    }))
 }
 
 /// Mirrors `normalizeSettingsParseError(value)`.
@@ -224,12 +224,12 @@ mod tests {
 
         let v = json!({"status": "allowed", "resetsAt": 100.0, "utilization": 0.5});
         let u = build_rate_limit_update(Some(&v)).expect("update built");
-        if let SessionUpdate::RateLimitUpdate {
+        if let SessionUpdate::RateLimitUpdate(forge_primitives::RateLimitUpdate {
             status,
             resets_at,
             utilization,
             ..
-        } = u
+        }) = u
         {
             assert_eq!(status, RateLimitStatus::Allowed);
             assert_eq!(resets_at, Some(100.0));
@@ -254,13 +254,13 @@ mod tests {
         }))
         .unwrap();
         let u = build_api_retry_update(&map).expect("update built");
-        if let SessionUpdate::ApiRetryUpdate {
+        if let SessionUpdate::ApiRetryUpdate(forge_primitives::ApiRetryUpdate {
             attempt,
             max_retries,
             retry_delay_ms,
             error_status,
             error,
-        } = u
+        }) = u
         {
             assert_eq!(attempt, 1);
             assert_eq!(max_retries, 5);
