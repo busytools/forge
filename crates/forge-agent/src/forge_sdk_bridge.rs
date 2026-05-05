@@ -128,6 +128,10 @@ impl ForgeSdkBridge {
     /// `BRIDGE_LIFECYCLE` warn if the channel is closed (terminal
     /// event for a user-visible MCP failure — silent-drop on
     /// teardown race would lose the only path to surface).
+    /// On send failure we destructure the unsent event back out of
+    /// the `SendError` so the warn log carries the `server_name`
+    /// and underlying error text — the most actionable triage
+    /// signals.
     fn emit_mcp_error_or_log(
         event_tx: &mpsc::UnboundedSender<AgentEvent>,
         session_id: String,
@@ -143,12 +147,26 @@ impl ForgeSdkBridge {
                 message: error_msg,
             },
         };
-        if event_tx.send(event).is_err() {
-            tracing::warn!(
-                target: crate::logging::targets::BRIDGE_LIFECYCLE,
-                operation,
-                "event channel closed; McpOperationError dropped",
-            );
+        if let Err(send_err) = event_tx.send(event) {
+            if let AgentEvent::McpOperationError { error, .. } = send_err.0 {
+                tracing::warn!(
+                    target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                    operation,
+                    server_name = ?error.server_name,
+                    error_msg = %error.message,
+                    "event channel closed; McpOperationError dropped",
+                );
+            } else {
+                // Unreachable — we just constructed McpOperationError
+                // above, so the send-error variant must match. Log a
+                // bare breadcrumb defensively in case a future refactor
+                // routes a different variant through this helper.
+                tracing::warn!(
+                    target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                    operation,
+                    "event channel closed; McpOperationError dropped (variant mismatch in helper)",
+                );
+            }
         }
     }
 
@@ -265,10 +283,15 @@ impl ForgeSdkBridge {
 
     pub(crate) fn prompt_with_images(
         &self,
-        _session_id: String,
+        session_id: String,
         text: String,
         images: Vec<forge_primitives::ImageAttachment>,
     ) -> anyhow::Result<PromptResponse> {
+        if !self.check_session_id(&session_id, "prompt_with_images") {
+            return Ok(PromptResponse {
+                stop_reason: String::new(),
+            });
+        }
         let mut chunks: Vec<forge_primitives::PromptChunk> = Vec::with_capacity(1 + images.len());
         for img in images {
             if let Err(reason) = forge_primitives::validate_image(&img.data, &img.mime_type) {
@@ -352,9 +375,12 @@ impl ForgeSdkBridge {
 
     pub(crate) fn generate_session_title(
         &self,
-        _session_id: String,
+        session_id: String,
         description: String,
     ) -> anyhow::Result<()> {
+        if !self.check_session_id(&session_id, "generate_session_title") {
+            return Ok(());
+        }
         self.dispatch("generate_session_title", move |client| async move {
             let _ = client.generate_session_title(&description).await?;
             Ok(())
@@ -453,11 +479,14 @@ impl ForgeSdkBridge {
 
     pub(crate) fn respond_to_elicitation(
         &self,
-        _session_id: String,
+        session_id: String,
         elicitation_request_id: String,
         action: ElicitationAction,
         content: Option<Value>,
     ) -> anyhow::Result<()> {
+        if !self.check_session_id(&session_id, "respond_to_elicitation") {
+            return Ok(());
+        }
         let action_str = match action {
             ElicitationAction::Accept => "accept",
             ElicitationAction::Decline => "decline",
@@ -675,6 +704,13 @@ impl ForgeSdkBridge {
         });
         Ok(())
     }
+
+    // The two response handlers below are intentionally exempt from
+    // `check_session_id` — staleness is detected via the pending map
+    // (an unknown `tool_call_id` already logs warn in
+    // `deliver_*_response`). A late response arriving after a session
+    // swap should still be honoured if its tool_call_id is in the
+    // shared pending map.
 
     pub(crate) fn permission_response(
         &self,

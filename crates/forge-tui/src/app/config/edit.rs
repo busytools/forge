@@ -279,9 +279,10 @@ where
     let mut next_document = app.config.document_for(spec.file).clone();
     edit(&mut next_document);
 
-    // Production path delegates to the AgentBridge so the same atomic
-    // write + `$CLAUDE_CONFIG_DIR`-respecting path resolution that
-    // settings reads use is shared with writes. Test fixtures with
+    // Production path delegates to the AgentHandle (forge-agent
+    // bridge) so the same atomic write + `$CLAUDE_CONFIG_DIR`-respecting
+    // path resolution that settings reads use is shared with writes.
+    // Test fixtures with
     // home_override (and the disconnected case where app.conn is
     // None) keep the direct fs save — env vars are process-global
     // and would race across nextest's parallel runs.

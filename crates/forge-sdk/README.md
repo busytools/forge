@@ -37,8 +37,7 @@ trust, sessions catalog, project memory) live in
 
 Core types and functions exposed from the crate root:
 
-- **Entry points** — `Client::spawn(options) -> (Client, ClientEvents)`,
-  `query()`, `query_stream()`.
+- **Entry point** — `Client::spawn(options) -> (Client, ClientEvents)`.
 - **Transport extension** — `pub trait Transport` for injecting
   custom I/O (e.g. wire-recording in `forge-test-harness`).
   `Subprocess` is the shipped in-process implementation.
@@ -73,23 +72,6 @@ async fn main() -> anyhow::Result<()> {
         println!("{msg:?}");
     }
     client.disconnect().await?;
-    Ok(())
-}
-```
-
-## Streaming variant
-
-```rust,ignore
-use forge_sdk::{query_stream, OptionsBuilder};
-use tokio_stream::StreamExt;
-
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    let stream = query_stream("What is 2+2?", Some(OptionsBuilder::new().build()));
-    tokio::pin!(stream);
-    while let Some(item) = stream.next().await {
-        println!("{:?}", item?);
-    }
     Ok(())
 }
 ```

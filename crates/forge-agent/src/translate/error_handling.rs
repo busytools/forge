@@ -236,6 +236,36 @@ mod tests {
         );
     }
 
+    /// Locks in the consolidated needle list — the #60 simplifier sweep
+    /// initially dropped the `authentication_failed` (underscore form),
+    /// `unauthenticated`, `authentication required`, and `(401 && auth)`
+    /// checks. Round-1 review fix re-added them. Without these
+    /// assertions a future dedup pass could regress silently.
+    #[test]
+    fn auth_required_covers_all_consolidated_needles() {
+        for s in [
+            // Underscore form (typical CLI emit).
+            "authentication_failed: token expired",
+            // Bare "unauthenticated" form.
+            "the request is unauthenticated",
+            // Substring "authentication required".
+            "tool authentication required to continue",
+            // Conjunctive 401 + auth check (HTTP-shape error).
+            "got 401 from /auth endpoint",
+            // Pre-existing needles (regression-protection).
+            "/login to continue",
+            "please log in",
+            "login required",
+            "unauthorized",
+        ] {
+            assert_eq!(
+                classify_turn_error(s),
+                TurnErrorClass::AuthRequired,
+                "expected AuthRequired for {s:?}"
+            );
+        }
+    }
+
     #[test]
     fn classifies_internal_errors() {
         assert_eq!(

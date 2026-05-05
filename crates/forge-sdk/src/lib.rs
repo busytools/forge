@@ -51,6 +51,7 @@ mod client;
 pub mod control;
 mod error;
 pub mod hooks;
+pub(crate) mod logging;
 pub mod mcp;
 mod options;
 pub mod paths;

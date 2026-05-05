@@ -146,10 +146,17 @@ fn write_json_atomic(path: &Path, document: &Value) -> Result<(), Error> {
         // but propagate the ORIGINAL error rather than the cleanup
         // failure.
         if let Err(cleanup_err) = std::fs::remove_file(&temp_path) {
+            // Log only the basename of the temp path so the breadcrumb
+            // doesn't expose the user's full config-dir path if the log
+            // is shared in a bug report.
+            let temp_basename = temp_path.file_name().map_or_else(
+                || "<no-basename>".to_owned(),
+                |n| n.to_string_lossy().into_owned(),
+            );
             tracing::debug!(
                 target: crate::logging::targets::BRIDGE_LIFECYCLE,
                 error = %cleanup_err,
-                temp_path = %temp_path.display(),
+                temp_basename,
                 "best-effort temp cleanup failed; original error follows",
             );
         }
