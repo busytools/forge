@@ -528,7 +528,7 @@ fn collect_candidates(
         });
     if !completed {
         tracing::debug!(
-            target: "forge_tui::file_index",
+            target: crate::logging::targets::APP_PERF,
             walk_root = %walk_root.display(),
             partial_count = candidates.len(),
             "file index walk cancelled; returning partial candidate set",

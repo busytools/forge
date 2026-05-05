@@ -15,9 +15,9 @@ use crate::ids::{MessageId, SessionId, ToolUseId};
 use crate::image::ImageAttachment;
 use crate::{ElicitationAction, McpServerConfig, PermissionOutcome, QuestionOutcome};
 
-/// UI → agent channel envelope. Each variant maps to one
-/// `AgentBridge` method during the restructure; phase 5 swaps the
-/// trait calls for `Sender<Command>::send(...)`.
+/// UI → agent channel envelope. Each variant maps to one inherent
+/// method on `forge_agent::ForgeSdkBridge` (the AgentBridge trait
+/// was collapsed into inherent impls in 2026-05-05).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum Command {

@@ -92,19 +92,23 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
             session::handle_slash_command_error_event(app, &msg);
         }
         ClientEvent::RuntimeReloadCompleted { session_id } => {
-            if app.session_id.as_ref().map(ToString::to_string).as_deref()
-                != Some(session_id.as_str())
-            {
-                return;
-            }
+            drop_if_stale_session!(
+                app,
+                session_id,
+                crate::logging::targets::APP_CONFIG,
+                "runtime_reload_completed_dropped",
+                "runtime reload completion dropped for a stale session"
+            );
             crate::app::plugins::apply_runtime_reload_success(app);
         }
         ClientEvent::RuntimeReloadFailed { session_id, message } => {
-            if app.session_id.as_ref().map(ToString::to_string).as_deref()
-                != Some(session_id.as_str())
-            {
-                return;
-            }
+            drop_if_stale_session!(
+                app,
+                session_id,
+                crate::logging::targets::APP_CONFIG,
+                "runtime_reload_failed_dropped",
+                "runtime reload failure dropped for a stale session"
+            );
             crate::app::plugins::apply_runtime_reload_failure(app, &message);
         }
         ClientEvent::SessionReplaced {

@@ -1003,7 +1003,6 @@ name = "forge-agent"
 version = "0.1.64"
 dependencies = [
  "anyhow",
- "async-trait",
  "forge-primitives",
  "forge-sdk",
  "hex",

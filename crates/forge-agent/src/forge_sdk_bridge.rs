@@ -1,13 +1,13 @@
-//! `AgentBridge` impl backed by `forge-sdk` running in-process.
+//! `ForgeSdkBridge` — in-process driver around a [`forge_sdk::Client`].
 //!
 //! Drives a [`forge_sdk::Client`] directly — no Node.js subprocess,
 //! no NDJSON, no command queue. The bridge holds the spawned
-//! `Arc<Client>` and dispatches each trait method as a direct call
-//! (or a `tokio::spawn`'d async task when the trait method is
+//! `Arc<Client>` and dispatches each method as a direct call
+//! (or a `tokio::spawn`'d async task when the method is
 //! fire-and-forget). Synthesized events (Connected, `PermissionRequest`,
 //! `McpSnapshot`, …) flow back through an `mpsc::UnboundedSender<AgentEvent>`
 //! the bridge owns; consumers grab the matching receiver once via
-//! [`AgentBridge::take_events`].
+//! [`ForgeSdkBridge::take_events`].
 //!
 //! ```text
 //!     TUI                     ForgeSdkBridge                  forge_sdk::Client
@@ -45,7 +45,7 @@ pub(crate) type PendingResponses =
 /// the matching `question_response`.
 pub(crate) type PendingQuestions = Arc<Mutex<HashMap<String, oneshot::Sender<QuestionOutcome>>>>;
 
-/// Forge-SDK-backed implementation of [`AgentBridge`].
+/// In-process bridge wrapping a single [`forge_sdk::Client`].
 ///
 /// Single instance per connection. The bridge owns the spawned
 /// `forge_sdk::Client`, the `can_use_tool` parking lots, the per-cwd
@@ -62,7 +62,7 @@ pub(crate) struct BridgeInner {
     /// Bridge → App event emission channel. Cloned freely into the
     /// reader subtask + `can_use_tool` callback closures.
     event_tx: mpsc::UnboundedSender<AgentEvent>,
-    /// Single-take receiver handed out via [`AgentBridge::take_events`].
+    /// Single-take receiver handed out via [`ForgeSdkBridge::take_events`].
     events_rx: Mutex<Option<mpsc::UnboundedReceiver<AgentEvent>>>,
     /// Permission round-trip parking lot.
     pub(crate) pending: PendingResponses,
@@ -79,9 +79,9 @@ pub(crate) struct BridgeInner {
 impl ForgeSdkBridge {
     /// Construct a fresh bridge. The internal event channel is created
     /// here; consumers grab the receiver once via
-    /// [`AgentBridge::take_events`].
+    /// [`ForgeSdkBridge::take_events`].
     #[must_use]
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let (event_tx, events_rx) = mpsc::unbounded_channel();
         Self {
             inner: Arc::new(BridgeInner {
@@ -122,6 +122,34 @@ impl ForgeSdkBridge {
 
     pub(crate) fn clear_client(&self) -> Option<Client> {
         self.inner.client.lock().take()
+    }
+
+    /// Send an `AgentEvent::McpOperationError` to the App; log a
+    /// `BRIDGE_LIFECYCLE` warn if the channel is closed (terminal
+    /// event for a user-visible MCP failure — silent-drop on
+    /// teardown race would lose the only path to surface).
+    fn emit_mcp_error_or_log(
+        event_tx: &mpsc::UnboundedSender<AgentEvent>,
+        session_id: String,
+        operation: &'static str,
+        server_name: Option<String>,
+        error_msg: String,
+    ) {
+        let event = AgentEvent::McpOperationError {
+            session_id,
+            error: forge_primitives::McpOperationError {
+                operation: operation.to_owned(),
+                server_name,
+                message: error_msg,
+            },
+        };
+        if event_tx.send(event).is_err() {
+            tracing::warn!(
+                target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                operation,
+                "event channel closed; McpOperationError dropped",
+            );
+        }
     }
 
     /// Spawn a fire-and-forget client call. Logs and drops on failure.
@@ -451,14 +479,13 @@ impl ForgeSdkBridge {
         let event_tx = self.inner.event_tx.clone();
         self.dispatch("reconnect_mcp_server", move |client| async move {
             if let Err(e) = client.mcp_reconnect(&server_name).await {
-                let _ = event_tx.send(AgentEvent::McpOperationError {
+                Self::emit_mcp_error_or_log(
+                    &event_tx,
                     session_id,
-                    error: forge_primitives::McpOperationError {
-                        operation: "reconnect".to_owned(),
-                        server_name: Some(server_name),
-                        message: format!("{e}"),
-                    },
-                });
+                    "reconnect",
+                    Some(server_name),
+                    format!("{e}"),
+                );
             }
             Ok(())
         })
@@ -473,14 +500,13 @@ impl ForgeSdkBridge {
         let event_tx = self.inner.event_tx.clone();
         self.dispatch("toggle_mcp_server", move |client| async move {
             if let Err(e) = client.mcp_toggle(&server_name, enabled).await {
-                let _ = event_tx.send(AgentEvent::McpOperationError {
+                Self::emit_mcp_error_or_log(
+                    &event_tx,
                     session_id,
-                    error: forge_primitives::McpOperationError {
-                        operation: "toggle".to_owned(),
-                        server_name: Some(server_name),
-                        message: format!("{e}"),
-                    },
-                });
+                    "toggle",
+                    Some(server_name),
+                    format!("{e}"),
+                );
             }
             Ok(())
         })
@@ -495,14 +521,13 @@ impl ForgeSdkBridge {
         let payload = serde_json::to_value(servers)?;
         self.dispatch("set_mcp_servers", move |client| async move {
             if let Err(e) = client.mcp_set_servers(payload).await {
-                let _ = event_tx.send(AgentEvent::McpOperationError {
+                Self::emit_mcp_error_or_log(
+                    &event_tx,
                     session_id,
-                    error: forge_primitives::McpOperationError {
-                        operation: "set_servers".to_owned(),
-                        server_name: None,
-                        message: format!("{e}"),
-                    },
-                });
+                    "set_servers",
+                    None,
+                    format!("{e}"),
+                );
             }
             Ok(())
         })
@@ -535,14 +560,13 @@ impl ForgeSdkBridge {
                     }
                 }
                 Err(e) => {
-                    let _ = event_tx.send(AgentEvent::McpOperationError {
+                    Self::emit_mcp_error_or_log(
+                        &event_tx,
                         session_id,
-                        error: forge_primitives::McpOperationError {
-                            operation: "authenticate".to_owned(),
-                            server_name: Some(server_name),
-                            message: format!("{e}"),
-                        },
-                    });
+                        "authenticate",
+                        Some(server_name),
+                        format!("{e}"),
+                    );
                 }
             }
             Ok(())
@@ -557,14 +581,13 @@ impl ForgeSdkBridge {
         let event_tx = self.inner.event_tx.clone();
         self.dispatch("clear_mcp_auth", move |client| async move {
             if let Err(e) = client.mcp_clear_auth(&server_name).await {
-                let _ = event_tx.send(AgentEvent::McpOperationError {
+                Self::emit_mcp_error_or_log(
+                    &event_tx,
                     session_id,
-                    error: forge_primitives::McpOperationError {
-                        operation: "clear_auth".to_owned(),
-                        server_name: Some(server_name),
-                        message: format!("{e}"),
-                    },
-                });
+                    "clear_auth",
+                    Some(server_name),
+                    format!("{e}"),
+                );
             }
             Ok(())
         })
@@ -582,14 +605,13 @@ impl ForgeSdkBridge {
                 .mcp_oauth_callback_url(&server_name, &callback_url)
                 .await
             {
-                let _ = event_tx.send(AgentEvent::McpOperationError {
+                Self::emit_mcp_error_or_log(
+                    &event_tx,
                     session_id,
-                    error: forge_primitives::McpOperationError {
-                        operation: "oauth_callback".to_owned(),
-                        server_name: Some(server_name),
-                        message: format!("{e}"),
-                    },
-                });
+                    "oauth_callback",
+                    Some(server_name),
+                    format!("{e}"),
+                );
             }
             Ok(())
         })
@@ -605,9 +627,20 @@ impl ForgeSdkBridge {
             if let Err(err) =
                 forge_sdk_worker::spawn_session(&bridge, &cwd, None, &launch_settings).await
             {
-                let _ = bridge.event_tx().send(AgentEvent::ConnectionFailed {
-                    message: format!("forge-sdk session spawn failed: {err}"),
-                });
+                let msg = format!("forge-sdk session spawn failed: {err}");
+                if bridge
+                    .event_tx()
+                    .send(AgentEvent::ConnectionFailed {
+                        message: msg.clone(),
+                    })
+                    .is_err()
+                {
+                    tracing::warn!(
+                        target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                        error = %msg,
+                        "event channel closed; ConnectionFailed dropped",
+                    );
+                }
             }
         });
         Ok(())
@@ -624,9 +657,20 @@ impl ForgeSdkBridge {
                 forge_sdk_worker::spawn_session(&bridge, "", Some(&session_id), &launch_settings)
                     .await
             {
-                let _ = bridge.event_tx().send(AgentEvent::ConnectionFailed {
-                    message: format!("forge-sdk session resume failed: {err}"),
-                });
+                let msg = format!("forge-sdk session resume failed: {err}");
+                if bridge
+                    .event_tx()
+                    .send(AgentEvent::ConnectionFailed {
+                        message: msg.clone(),
+                    })
+                    .is_err()
+                {
+                    tracing::warn!(
+                        target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                        error = %msg,
+                        "event channel closed; ConnectionFailed dropped",
+                    );
+                }
             }
         });
         Ok(())

@@ -3,7 +3,7 @@
 //! `Agent::spawn` constructs a `ForgeSdkBridge` under the hood and
 //! spawns one background task: the **command dispatcher**, which
 //! drains `mpsc::UnboundedReceiver<Command>` and calls the matching
-//! `AgentBridge` method on the bridge. The bridge's `AgentEvent`
+//! inherent method on the bridge. The bridge's `AgentEvent`
 //! receiver is handed back to consumers via `take_events()`.
 //!
 //! Direct-return accessors (config_dir, oauth_credentials,
@@ -420,7 +420,7 @@ async fn dispatch_commands(
     }
 }
 
-/// Dispatch one `Command` to the matching `AgentBridge` method.
+/// Dispatch one `Command` to the matching `ForgeSdkBridge` method.
 fn dispatch(cmd: Command, bridge: &ForgeSdkBridge) -> anyhow::Result<()> {
     use forge_primitives::Command as C;
 
@@ -429,16 +429,34 @@ fn dispatch(cmd: Command, bridge: &ForgeSdkBridge) -> anyhow::Result<()> {
             cwd,
             launch_settings,
         } => {
-            let launch = serde_json::from_value(launch_settings)
-                .unwrap_or_else(|_| crate::client::SessionLaunchSettings::default());
+            // Symmetric to the encode-side `?`-propagation in
+            // `AgentHandle::new_session`. Round-trip is safe in practice
+            // (encode succeeded -> decode never fails for a Default-able
+            // struct), but a forward-compat break in
+            // SessionLaunchSettings would silently strip user config
+            // here without this log.
+            let launch = serde_json::from_value(launch_settings).unwrap_or_else(|e| {
+                tracing::error!(
+                    target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                    error = %e,
+                    "failed to decode launch_settings on dispatcher receive; falling back to default",
+                );
+                crate::client::SessionLaunchSettings::default()
+            });
             bridge.new_session(cwd, launch)
         }
         C::ResumeSession {
             session_id,
             launch_settings,
         } => {
-            let launch = serde_json::from_value(launch_settings)
-                .unwrap_or_else(|_| crate::client::SessionLaunchSettings::default());
+            let launch = serde_json::from_value(launch_settings).unwrap_or_else(|e| {
+                tracing::error!(
+                    target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                    error = %e,
+                    "failed to decode launch_settings on dispatcher receive; falling back to default",
+                );
+                crate::client::SessionLaunchSettings::default()
+            });
             bridge.resume_session(session_id.into_string(), launch)
         }
         C::Prompt { session_id, text } => bridge

@@ -115,7 +115,7 @@ fn load_oauth_credentials_from_keychain(config_dir: &Path) -> Option<OauthCreden
         Ok(o) => o,
         Err(e) => {
             tracing::debug!(
-                target: "forge_agent::oauth_credentials",
+                target: crate::logging::targets::OAUTH_CREDENTIALS,
                 error = %e,
                 service = %service,
                 "keychain shell-out failed (security CLI missing?)",
@@ -125,9 +125,11 @@ fn load_oauth_credentials_from_keychain(config_dir: &Path) -> Option<OauthCreden
     };
     if !output.status.success() {
         // Common: keychain entry doesn't exist for this service. Not
-        // a bug; logged at trace to avoid noise on fresh installs.
-        tracing::trace!(
-            target: "forge_agent::oauth_credentials",
+        // a bug, but logged at debug (not trace) so a fresh-install
+        // user filing "credentials lookup failed" can see the
+        // breadcrumb without flipping env-filter to trace.
+        tracing::debug!(
+            target: crate::logging::targets::OAUTH_CREDENTIALS,
             exit = ?output.status.code(),
             service = %service,
             "keychain entry missing (typical on first login)",
@@ -138,7 +140,7 @@ fn load_oauth_credentials_from_keychain(config_dir: &Path) -> Option<OauthCreden
         Ok(s) => s,
         Err(e) => {
             tracing::debug!(
-                target: "forge_agent::oauth_credentials",
+                target: crate::logging::targets::OAUTH_CREDENTIALS,
                 error = %e,
                 "keychain payload was not valid UTF-8",
             );
@@ -150,7 +152,7 @@ fn load_oauth_credentials_from_keychain(config_dir: &Path) -> Option<OauthCreden
         Ok(j) => j,
         Err(e) => {
             tracing::debug!(
-                target: "forge_agent::oauth_credentials",
+                target: crate::logging::targets::OAUTH_CREDENTIALS,
                 error = %e,
                 "keychain payload was not valid JSON (corrupt entry?)",
             );
@@ -166,7 +168,7 @@ fn load_oauth_credentials_at(path: &Path) -> Option<OauthCredentials> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
         Err(e) => {
             tracing::debug!(
-                target: "forge_agent::oauth_credentials",
+                target: crate::logging::targets::OAUTH_CREDENTIALS,
                 error = %e,
                 path = %path.display(),
                 "credentials file present but read failed (permissions? lock?)",
@@ -178,7 +180,7 @@ fn load_oauth_credentials_at(path: &Path) -> Option<OauthCredentials> {
         Ok(j) => j,
         Err(e) => {
             tracing::debug!(
-                target: "forge_agent::oauth_credentials",
+                target: crate::logging::targets::OAUTH_CREDENTIALS,
                 error = %e,
                 path = %path.display(),
                 "credentials file present but JSON parse failed (corrupt? partial write?)",
@@ -190,9 +192,34 @@ fn load_oauth_credentials_at(path: &Path) -> Option<OauthCredentials> {
 }
 
 fn parse_oauth_credentials(json: &Value) -> Option<OauthCredentials> {
-    let oauth = json.get("claudeAiOauth")?;
-    let access_token = oauth.get("accessToken")?.as_str()?.trim();
+    let Some(oauth) = json.get("claudeAiOauth") else {
+        tracing::debug!(
+            target: crate::logging::targets::OAUTH_CREDENTIALS,
+            "credentials JSON has no `claudeAiOauth` key (schema mismatch / wrong shape)",
+        );
+        return None;
+    };
+    let Some(access_token_value) = oauth.get("accessToken") else {
+        tracing::debug!(
+            target: crate::logging::targets::OAUTH_CREDENTIALS,
+            "credentials.claudeAiOauth has no `accessToken` field",
+        );
+        return None;
+    };
+    let Some(access_token) = access_token_value.as_str() else {
+        tracing::debug!(
+            target: crate::logging::targets::OAUTH_CREDENTIALS,
+            kind = %access_token_value,
+            "credentials.claudeAiOauth.accessToken is not a string",
+        );
+        return None;
+    };
+    let access_token = access_token.trim();
     if access_token.is_empty() {
+        tracing::debug!(
+            target: crate::logging::targets::OAUTH_CREDENTIALS,
+            "credentials.claudeAiOauth.accessToken is empty after trim",
+        );
         return None;
     }
 

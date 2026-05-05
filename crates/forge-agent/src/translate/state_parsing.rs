@@ -111,15 +111,31 @@ pub fn build_rate_limit_update(rate_limit_info: Option<&Value>) -> Option<Sessio
 /// `f64 as u64` saturates negatives to 0, so a buggy CLI sending a
 /// negative value would surface as "API retry 0/0 after error,
 /// retrying in 0ms" without any breadcrumb. Drop the message
-/// instead via `try_from` on the i64 round-trip.
+/// instead via `try_from` on the i64 round-trip; log the drop so
+/// the wire-corruption case is observable rather than just a
+/// missing UI update.
 #[must_use]
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 pub fn build_api_retry_update(message: &Map<String, Value>) -> Option<SessionUpdate> {
-    let attempt = u64::try_from(number_field(message, &["attempt"])? as i64).ok()?;
-    let max_retries =
-        u64::try_from(number_field(message, &["max_retries", "maxRetries"])? as i64).ok()?;
-    let retry_delay_ms =
-        u64::try_from(number_field(message, &["retry_delay_ms", "retryDelayMs"])? as i64).ok()?;
+    fn parse_clamped_u64(message: &Map<String, Value>, keys: &[&str]) -> Option<u64> {
+        let v = number_field(message, keys)?;
+        match u64::try_from(v as i64) {
+            Ok(n) => Some(n),
+            Err(e) => {
+                tracing::debug!(
+                    target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                    raw = v,
+                    keys = ?keys,
+                    error = %e,
+                    "api_retry_update: dropping message — numeric field out of u64 range",
+                );
+                None
+            }
+        }
+    }
+    let attempt = parse_clamped_u64(message, &["attempt"])?;
+    let max_retries = parse_clamped_u64(message, &["max_retries", "maxRetries"])?;
+    let retry_delay_ms = parse_clamped_u64(message, &["retry_delay_ms", "retryDelayMs"])?;
     let error_status = number_field(message, &["error_status", "errorStatus"])
         .and_then(|n| u16::try_from(n as i64).ok());
     let error = parse_api_retry_error(message.get("error"));

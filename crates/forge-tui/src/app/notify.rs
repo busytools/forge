@@ -123,7 +123,7 @@ fn send_desktop_notification(event: NotifyEvent) {
     std::thread::spawn(move || {
         if let Err(e) = notify_rust::Notification::new().summary(summary).body(body).show() {
             tracing::debug!(
-                target: "forge_tui::notify",
+                target: crate::logging::targets::APP_LIFECYCLE,
                 error = %e,
                 summary,
                 "desktop notification failed (D-Bus / Notification Center / config?)",
