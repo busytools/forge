@@ -1,0 +1,43 @@
+[package]
+name = "forge-agent"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "Drives a forge-sdk Client; runs callback runtime; manages session lifecycle. The brain between forge-sdk and forge-tui."
+publish = false
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+exit = "deny"
+todo = "deny"
+unimplemented = "deny"
+module_name_repetitions = "allow"
+
+[dependencies]
+forge-primitives = { workspace = true }
+forge-sdk = { path = "../forge-sdk", version = "=0.1.64" }
+tokio = { workspace = true, features = ["full"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+parking_lot = { workspace = true }
+tracing = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+async-trait = { workspace = true }
+uuid = { workspace = true }
+notify = { workspace = true }
+ignore = { workspace = true }
+reqwest = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
