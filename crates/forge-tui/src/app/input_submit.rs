@@ -174,14 +174,14 @@ fn dispatch_prompt_turn(app: &mut App, text: String) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::test_bridge::ForgeSdkCommand;
+
     use crate::app::ActiveView;
 
     fn app_with_connection()
-    -> (App, tokio::sync::mpsc::UnboundedReceiver<crate::agent::test_bridge::ForgeSdkCommand>) {
+    -> (App, tokio::sync::mpsc::UnboundedReceiver<forge_primitives::Command>) {
         let mut app = App::test_default();
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-        app.conn = Some(std::rc::Rc::new(crate::agent::test_bridge::RecordingBridge::new(tx)));
+        let (handle, rx) = forge_agent::Agent::testing_stub();
+        app.conn = Some(std::rc::Rc::new(handle));
         app.session_id = Some(model::SessionId::new("session-1"));
         (app, rx)
     }
@@ -202,7 +202,7 @@ mod tests {
         let envelope = rx.try_recv().expect("cancel command should be sent");
         assert!(matches!(
             envelope,
-            ForgeSdkCommand::Cancel { session_id } if session_id == "session-1"
+            forge_primitives::Command::Cancel { session_id } if session_id == "session-1"
         ));
     }
 
@@ -221,7 +221,7 @@ mod tests {
         let envelope = rx.try_recv().expect("single cancel command should be sent");
         assert!(matches!(
             envelope,
-            ForgeSdkCommand::Cancel { session_id } if session_id == "session-1"
+            forge_primitives::Command::Cancel { session_id } if session_id == "session-1"
         ));
         assert!(rx.try_recv().is_err(), "manual promotion should not send second cancel");
     }
@@ -237,7 +237,7 @@ mod tests {
         assert!(app.pending_auto_submit_after_cancel);
         let cancel = rx.try_recv().expect("cancel command should be sent");
         assert!(matches!(
-            cancel, ForgeSdkCommand::Cancel { session_id } if session_id == "session-1"
+            cancel, forge_primitives::Command::Cancel { session_id } if session_id == "session-1"
         ));
 
         request_cancel(&mut app, CancelOrigin::Manual).expect("manual cancel request");
@@ -268,7 +268,7 @@ mod tests {
         assert!(app.pending_auto_submit_after_cancel);
         let envelope = rx.try_recv().expect("first cancel command should be sent");
         assert!(matches!(
-            envelope, ForgeSdkCommand::Cancel { session_id } if session_id == "session-1"
+            envelope, forge_primitives::Command::Cancel { session_id } if session_id == "session-1"
         ));
         assert!(rx.try_recv().is_err(), "second submit should not send extra cancel");
     }
@@ -283,7 +283,7 @@ mod tests {
         assert!(app.pending_auto_submit_after_cancel);
         let cancel = rx.try_recv().expect("cancel command should be sent");
         assert!(matches!(
-            cancel, ForgeSdkCommand::Cancel { session_id } if session_id == "session-1"
+            cancel, forge_primitives::Command::Cancel { session_id } if session_id == "session-1"
         ));
 
         app.status = AppStatus::Ready;
@@ -297,7 +297,7 @@ mod tests {
         let prompt = rx.try_recv().expect("prompt command should be sent");
         assert!(matches!(
             prompt,
-            ForgeSdkCommand::Prompt { session_id, .. } if session_id == "session-1"
+            forge_primitives::Command::Prompt { session_id, .. } if session_id == "session-1"
         ));
     }
 
@@ -318,7 +318,7 @@ mod tests {
         assert!(app.pending_auto_submit_after_cancel);
         let cancel = rx.try_recv().expect("cancel command should be sent");
         assert!(matches!(
-            cancel, ForgeSdkCommand::Cancel { session_id } if session_id == "session-1"
+            cancel, forge_primitives::Command::Cancel { session_id } if session_id == "session-1"
         ));
 
         app.status = AppStatus::Ready;
@@ -335,8 +335,12 @@ mod tests {
     #[test]
     fn dispatch_prompt_turn_without_session_id_leaves_state_unchanged() {
         let mut app = App::test_default();
-        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        app.conn = Some(std::rc::Rc::new(crate::agent::test_bridge::RecordingBridge::new(tx)));
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<forge_primitives::Command>();
+        app.conn = Some(std::rc::Rc::new({
+            let _ = tx;
+            let (h, _) = forge_agent::Agent::testing_stub();
+            h
+        }));
         app.status = AppStatus::Ready;
 
         dispatch_prompt_turn(&mut app, "hello".into());

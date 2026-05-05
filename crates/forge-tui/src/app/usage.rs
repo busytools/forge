@@ -141,7 +141,7 @@ fn format_remaining_until(target: SystemTime) -> String {
 async fn refresh_snapshot(
     source_mode: UsageSourceMode,
     cwd_raw: String,
-    conn: Option<&dyn crate::agent::client::AgentBridge>,
+    conn: Option<&forge_agent::AgentHandle>,
 ) -> Result<UsageSnapshot, UsageRefreshFailure> {
     match source_mode {
         UsageSourceMode::Oauth => fetch_oauth_via_bridge(conn).await,
@@ -153,7 +153,7 @@ async fn refresh_snapshot(
 }
 
 async fn fetch_oauth_via_bridge(
-    conn: Option<&dyn crate::agent::client::AgentBridge>,
+    conn: Option<&forge_agent::AgentHandle>,
 ) -> Result<UsageSnapshot, UsageRefreshFailure> {
     let Some(conn) = conn else {
         return Err(UsageRefreshFailure {
@@ -169,7 +169,7 @@ async fn fetch_oauth_via_bridge(
 
 async fn refresh_snapshot_auto(
     cwd_raw: String,
-    conn: Option<&dyn crate::agent::client::AgentBridge>,
+    conn: Option<&forge_agent::AgentHandle>,
 ) -> Result<UsageSnapshot, UsageRefreshFailure> {
     let oauth_result = match conn {
         Some(conn) => oauth::fetch_snapshot(conn).await,

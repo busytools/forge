@@ -40,7 +40,7 @@ pub struct LoadedSettingsDocuments {
 pub fn load(
     home_override: Option<&Path>,
     project_root_override: Option<&Path>,
-    bridge: Option<&dyn crate::agent::client::AgentBridge>,
+    bridge: Option<&forge_agent::AgentHandle>,
 ) -> Result<LoadedSettingsDocuments, String> {
     let paths = resolve_paths(home_override, project_root_override, bridge)?;
 
@@ -344,7 +344,7 @@ pub fn set_preferred_notification_channel(document: &mut Value, channel: Preferr
 fn resolve_paths(
     home_override: Option<&Path>,
     project_root_override: Option<&Path>,
-    bridge: Option<&dyn crate::agent::client::AgentBridge>,
+    bridge: Option<&forge_agent::AgentHandle>,
 ) -> Result<SettingsPaths, String> {
     let home = if let Some(path) = home_override {
         path.to_path_buf()

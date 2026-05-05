@@ -51,7 +51,7 @@ impl From<forge_sdk::OauthUsageError> for OauthFetchError {
 }
 
 pub(super) async fn fetch_snapshot(
-    conn: &dyn crate::agent::client::AgentBridge,
+    conn: &forge_agent::AgentHandle,
 ) -> Result<UsageSnapshot, OauthFetchError> {
     let payload = conn.oauth_usage().await?;
     map_usage_payload(payload)

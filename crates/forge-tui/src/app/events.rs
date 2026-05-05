@@ -482,7 +482,7 @@ mod tests {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
     use pretty_assertions::assert_eq;
     use ratatui::layout::Rect;
-    use std::rc::Rc;
+
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
     use tokio::sync::oneshot;
@@ -887,10 +887,10 @@ mod tests {
     }
 
     fn app_with_bridge_connection()
-    -> (App, tokio::sync::mpsc::UnboundedReceiver<crate::agent::test_bridge::ForgeSdkCommand>) {
+    -> (App, tokio::sync::mpsc::UnboundedReceiver<forge_primitives::Command>) {
         let mut app = make_test_app();
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-        app.conn = Some(Rc::new(crate::agent::test_bridge::RecordingBridge::new(tx)));
+        let (handle, rx) = forge_agent::Agent::testing_stub();
+        app.conn = Some(std::rc::Rc::new(handle));
         (app, rx)
     }
 
@@ -1493,8 +1493,8 @@ mod tests {
         let envelope = rx.try_recv().expect("mcp snapshot command");
         assert_eq!(
             envelope,
-            crate::agent::test_bridge::ForgeSdkCommand::GetMcpSnapshot {
-                session_id: "test-session".to_owned(),
+            forge_primitives::Command::GetMcpSnapshot {
+                session_id: forge_primitives::SessionId::new("test-session".to_owned()),
             }
         );
         assert!(app.mcp.in_flight);
@@ -1871,8 +1871,8 @@ mod tests {
         let envelope = rx.try_recv().expect("mcp snapshot command");
         assert_eq!(
             envelope,
-            crate::agent::test_bridge::ForgeSdkCommand::GetMcpSnapshot {
-                session_id: "replacement".to_owned(),
+            forge_primitives::Command::GetMcpSnapshot {
+                session_id: forge_primitives::SessionId::new("replacement".to_owned()),
             }
         );
         assert!(app.mcp.in_flight);
@@ -1891,15 +1891,15 @@ mod tests {
         let mcp = rx.try_recv().expect("mcp snapshot command");
         assert_eq!(
             mcp,
-            crate::agent::test_bridge::ForgeSdkCommand::GetMcpSnapshot {
-                session_id: "test-session".to_owned(),
+            forge_primitives::Command::GetMcpSnapshot {
+                session_id: forge_primitives::SessionId::new("test-session".to_owned()),
             }
         );
         let status = rx.try_recv().expect("status snapshot command");
         assert_eq!(
             status,
-            crate::agent::test_bridge::ForgeSdkCommand::GetStatusSnapshot {
-                session_id: "test-session".to_owned(),
+            forge_primitives::Command::GetStatusSnapshot {
+                session_id: forge_primitives::SessionId::new("test-session".to_owned()),
             }
         );
     }
@@ -2215,8 +2215,12 @@ mod tests {
         assert!(app.startup_recent_sessions_loaded);
         assert!(!app.startup_session_picker_resolved);
 
-        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        app.conn = Some(Rc::new(crate::agent::test_bridge::RecordingBridge::new(tx)));
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<forge_primitives::Command>();
+        app.conn = Some(std::rc::Rc::new({
+            let _ = tx;
+            let (h, _) = forge_agent::Agent::testing_stub();
+            h
+        }));
         handle_client_event(&mut app, connected_event("claude-updated"));
 
         assert_eq!(app.active_view, ActiveView::SessionPicker);
@@ -2227,8 +2231,12 @@ mod tests {
     fn startup_picker_empty_list_stays_in_chat_with_info_message() {
         let mut app = make_test_app();
         app.startup_session_picker_requested = true;
-        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        app.conn = Some(Rc::new(crate::agent::test_bridge::RecordingBridge::new(tx)));
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<forge_primitives::Command>();
+        app.conn = Some(std::rc::Rc::new({
+            let _ = tx;
+            let (h, _) = forge_agent::Agent::testing_stub();
+            h
+        }));
 
         handle_client_event(&mut app, connected_event("claude-updated"));
         assert_eq!(app.active_view, ActiveView::Chat);
@@ -4276,7 +4284,7 @@ mod tests {
         let envelope = rx.try_recv().expect("second Esc should send turn cancel");
         assert!(matches!(
             envelope,
-            crate::agent::test_bridge::ForgeSdkCommand::Cancel { session_id }
+            forge_primitives::Command::Cancel { session_id }
                 if session_id == "session-1"
         ));
     }

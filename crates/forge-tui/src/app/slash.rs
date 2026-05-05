@@ -105,7 +105,7 @@ fn push_user_message(app: &mut App, text: impl Into<String>) {
 fn require_connection(
     app: &mut App,
     not_connected_msg: &'static str,
-) -> Option<Rc<dyn crate::agent::client::AgentBridge>> {
+) -> Option<Rc<forge_agent::AgentHandle>> {
     let Some(conn) = app.conn.as_ref() else {
         push_system_message(app, not_connected_msg);
         return None;
@@ -117,7 +117,7 @@ fn require_active_session(
     app: &mut App,
     not_connected_msg: &'static str,
     no_session_msg: &'static str,
-) -> Option<(Rc<dyn crate::agent::client::AgentBridge>, model::SessionId)> {
+) -> Option<(Rc<forge_agent::AgentHandle>, model::SessionId)> {
     let conn = require_connection(app, not_connected_msg)?;
     let Some(session_id) = app.session_id.clone() else {
         push_system_message(app, no_session_msg);
@@ -488,9 +488,13 @@ mod tests {
         tokio::task::LocalSet::new()
             .run_until(async {
                 let mut app = App::test_default();
-                let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-                app.conn =
-                    Some(std::rc::Rc::new(crate::agent::test_bridge::RecordingBridge::new(tx)));
+                let (tx, mut rx) =
+                    tokio::sync::mpsc::unbounded_channel::<forge_primitives::Command>();
+                app.conn = Some(std::rc::Rc::new({
+                    let _ = tx;
+                    let (h, _) = forge_agent::Agent::testing_stub();
+                    h
+                }));
 
                 let consumed = try_handle_submit(&mut app, "/resume abc-123");
                 assert!(consumed);
@@ -512,9 +516,12 @@ mod tests {
         tokio::task::LocalSet::new()
             .run_until(async {
                 let mut app = App::test_default();
-                let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-                app.conn =
-                    Some(std::rc::Rc::new(crate::agent::test_bridge::RecordingBridge::new(tx)));
+                let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<forge_primitives::Command>();
+                app.conn = Some(std::rc::Rc::new({
+                    let _ = tx;
+                    let (h, _) = forge_agent::Agent::testing_stub();
+                    h
+                }));
                 app.session_id = Some("sess-1".into());
                 app.mode = Some(super::super::ModeState {
                     current_mode_id: "code".to_owned(),
@@ -546,9 +553,12 @@ mod tests {
         tokio::task::LocalSet::new()
             .run_until(async {
                 let mut app = App::test_default();
-                let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-                app.conn =
-                    Some(std::rc::Rc::new(crate::agent::test_bridge::RecordingBridge::new(tx)));
+                let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<forge_primitives::Command>();
+                app.conn = Some(std::rc::Rc::new({
+                    let _ = tx;
+                    let (h, _) = forge_agent::Agent::testing_stub();
+                    h
+                }));
                 app.session_id = Some("sess-1".into());
                 app.current_model = Some(
                     crate::agent::model::CurrentModel::new("old-model", "old-model", "old-model")
@@ -572,9 +582,12 @@ mod tests {
         tokio::task::LocalSet::new()
             .run_until(async {
                 let mut app = App::test_default();
-                let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-                app.conn =
-                    Some(std::rc::Rc::new(crate::agent::test_bridge::RecordingBridge::new(tx)));
+                let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<forge_primitives::Command>();
+                app.conn = Some(std::rc::Rc::new({
+                    let _ = tx;
+                    let (h, _) = forge_agent::Agent::testing_stub();
+                    h
+                }));
 
                 let consumed = try_handle_submit(&mut app, "/new");
                 assert!(consumed);
@@ -608,8 +621,12 @@ mod tests {
     #[test]
     fn compact_with_active_session_sets_compacting_without_success_pending() {
         let mut app = App::test_default();
-        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        app.conn = Some(std::rc::Rc::new(crate::agent::test_bridge::RecordingBridge::new(tx)));
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<forge_primitives::Command>();
+        app.conn = Some(std::rc::Rc::new({
+            let _ = tx;
+            let (h, _) = forge_agent::Agent::testing_stub();
+            h
+        }));
         app.session_id = Some(model::SessionId::new("session-1"));
 
         let consumed = try_handle_submit(&mut app, "/compact");

@@ -20,7 +20,6 @@ use super::state::{
 use super::trust;
 use super::view::ActiveView;
 use super::{App, AppStatus, ChatViewport, FocusManager, HelpView, SelectionState, TodoItem};
-use crate::agent::client::AgentBridge;
 use crate::agent::client::SessionLaunchSettings;
 use crate::agent::events::ClientEvent;
 use crate::agent::model;
@@ -296,9 +295,9 @@ pub fn start_connection(app: &mut App) {
     });
 }
 
-/// Shared slot for passing `Rc<dyn AgentBridge>` from the background task to the event loop.
+/// Shared slot for passing `Rc<forge_agent::AgentHandle>` from the background task to the event loop.
 pub struct ConnectionSlot {
-    pub conn: Rc<dyn AgentBridge>,
+    pub conn: Rc<forge_agent::AgentHandle>,
 }
 
 thread_local! {

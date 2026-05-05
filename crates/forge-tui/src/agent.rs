@@ -9,7 +9,6 @@ pub mod error_handling;
 pub mod events;
 pub mod model;
 pub mod state_parsing;
-pub mod test_bridge;
 pub mod types;
 
 pub mod tooling {

@@ -1297,15 +1297,12 @@ pub(crate) const fn search_enabled(tab: PluginsViewTab) -> bool {
 mod tests {
     use super::*;
     use crate::agent::model;
-    use crate::agent::test_bridge::ForgeSdkCommand;
 
-    fn app_with_connection() -> (
-        crate::app::App,
-        tokio::sync::mpsc::UnboundedReceiver<crate::agent::test_bridge::ForgeSdkCommand>,
-    ) {
+    fn app_with_connection()
+    -> (crate::app::App, tokio::sync::mpsc::UnboundedReceiver<forge_primitives::Command>) {
         let mut app = crate::app::App::test_default();
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-        app.conn = Some(std::rc::Rc::new(crate::agent::test_bridge::RecordingBridge::new(tx)));
+        let (handle, rx) = forge_agent::Agent::testing_stub();
+        app.conn = Some(std::rc::Rc::new(handle));
         app.session_id = Some(model::SessionId::new("session-1"));
         (app, rx)
     }
@@ -1495,7 +1492,7 @@ mod tests {
         let envelope = rx.try_recv().expect("reload command");
         assert!(matches!(
             envelope,
-            ForgeSdkCommand::ReloadPlugins { session_id } if session_id == "session-1"
+            forge_primitives::Command::ReloadPlugins { session_id } if session_id == "session-1"
         ));
         assert!(!app.plugins.runtime_reload_after_refresh);
         assert_eq!(app.config.status_message.as_deref(), Some("Reloading session plugins..."));
@@ -1521,7 +1518,7 @@ mod tests {
         let envelope = rx.try_recv().expect("reload command");
         assert!(matches!(
             envelope,
-            ForgeSdkCommand::ReloadPlugins { session_id } if session_id == "session-1"
+            forge_primitives::Command::ReloadPlugins { session_id } if session_id == "session-1"
         ));
         assert_eq!(
             app.plugins.pending_runtime_reload_success_message.as_deref(),

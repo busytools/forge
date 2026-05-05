@@ -58,3 +58,30 @@ macro_rules! id_impls {
 id_impls!(SessionId);
 id_impls!(ToolUseId);
 id_impls!(MessageId);
+
+// Convenience comparisons so call sites can write `id == "literal"`
+// without unwrapping the newtype. Saves churn during the phase 6
+// migration; can be removed if it stops earning its keep.
+macro_rules! id_str_eq {
+    ($name:ident) => {
+        impl PartialEq<str> for $name {
+            fn eq(&self, other: &str) -> bool {
+                self.0 == other
+            }
+        }
+        impl PartialEq<&str> for $name {
+            fn eq(&self, other: &&str) -> bool {
+                self.0 == *other
+            }
+        }
+        impl PartialEq<String> for $name {
+            fn eq(&self, other: &String) -> bool {
+                &self.0 == other
+            }
+        }
+    };
+}
+
+id_str_eq!(SessionId);
+id_str_eq!(ToolUseId);
+id_str_eq!(MessageId);

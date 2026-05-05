@@ -509,15 +509,15 @@ fn finalize_deferred_submit(app: &mut App) {
 mod tests {
     use super::*;
     use crate::agent::model;
-    use crate::agent::test_bridge::ForgeSdkCommand;
+
     use crate::app::{MessageBlock, MessageRole};
     use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 
     fn app_with_connection()
-    -> (App, tokio::sync::mpsc::UnboundedReceiver<crate::agent::test_bridge::ForgeSdkCommand>) {
+    -> (App, tokio::sync::mpsc::UnboundedReceiver<forge_primitives::Command>) {
         let mut app = App::test_default();
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-        app.conn = Some(std::rc::Rc::new(crate::agent::test_bridge::RecordingBridge::new(tx)));
+        let (handle, rx) = forge_agent::Agent::testing_stub();
+        app.conn = Some(std::rc::Rc::new(handle));
         app.session_id = Some(model::SessionId::new("session-1"));
         (app, rx)
     }
@@ -695,7 +695,7 @@ mod tests {
         let envelope = rx.try_recv().expect("prompt command should be sent");
         assert!(matches!(
             envelope,
-            ForgeSdkCommand::Prompt { session_id, .. } if session_id == "session-1"
+            forge_primitives::Command::Prompt { session_id, .. } if session_id == "session-1"
         ));
     }
 
@@ -724,7 +724,7 @@ mod tests {
         let envelope = rx.try_recv().expect("prompt command should be sent");
         assert!(matches!(
             envelope,
-            ForgeSdkCommand::Prompt { session_id, .. } if session_id == "session-1"
+            forge_primitives::Command::Prompt { session_id, .. } if session_id == "session-1"
         ));
     }
 
@@ -758,7 +758,7 @@ mod tests {
         let envelope = rx.try_recv().expect("prompt command should be sent");
         assert!(matches!(
             envelope,
-            ForgeSdkCommand::Prompt { session_id, .. } if session_id == "session-1"
+            forge_primitives::Command::Prompt { session_id, .. } if session_id == "session-1"
         ));
     }
 
