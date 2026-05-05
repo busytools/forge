@@ -21,6 +21,16 @@ fn format_rate_limit_type(raw: &str) -> &str {
 fn format_resets_at(epoch_secs: f64) -> String {
     use std::time::{Duration, UNIX_EPOCH};
 
+    // `Duration::from_secs_f64` panics on negative, NaN, or infinite —
+    // sibling fns in this file (`reset_bucket_from_epoch_secs`,
+    // `maybe_recover_from_rate_limit_lock`) guard the same shape;
+    // wire `RateLimitInfo.resetsAt` only filters `is_finite()`,
+    // so a negative finite `resetsAt` (clock skew, CLI bug,
+    // integer underflow) would crash the TUI process.
+    if !epoch_secs.is_finite() || epoch_secs < 0.0 {
+        return "now".to_owned();
+    }
+
     let now = std::time::SystemTime::now();
 
     let countdown = match (UNIX_EPOCH + Duration::from_secs_f64(epoch_secs)).duration_since(now) {
@@ -228,8 +238,20 @@ pub(crate) fn handle_compaction_boundary_update(
 
 #[cfg(test)]
 mod tests {
-    use super::format_rate_limit_summary;
+    use super::{format_rate_limit_summary, format_resets_at};
     use crate::agent::model::{RateLimitStatus, RateLimitUpdate};
+
+    #[test]
+    fn format_resets_at_returns_now_for_negative_nan_infinite_epoch() {
+        // `Duration::from_secs_f64` panics on these — the guard
+        // turns them into a stable "now at HH:MM UTC" instead of
+        // crashing the TUI.
+        assert!(format_resets_at(-1.0).starts_with("now"));
+        assert!(format_resets_at(-1e9).starts_with("now"));
+        assert!(format_resets_at(f64::NAN).starts_with("now"));
+        assert!(format_resets_at(f64::INFINITY).starts_with("now"));
+        assert!(format_resets_at(f64::NEG_INFINITY).starts_with("now"));
+    }
 
     #[test]
     fn org_level_disabled_without_primary_context_uses_extra_usage_message() {
