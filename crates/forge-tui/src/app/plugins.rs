@@ -8,7 +8,6 @@ use crate::app::config::{
     PluginInstallActionKind, PluginInstallOverlayState,
 };
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use serde_json::Value;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 

@@ -223,6 +223,7 @@ fn run_command(claude_path: &Path, cwd_raw: &str, args: &[String]) -> Result<(),
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
 
