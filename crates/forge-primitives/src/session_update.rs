@@ -6,8 +6,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::runtime::{
-    AvailableAgent, AvailableCommand, CompactionTrigger, CurrentModel,
-    FastModeState, ModeState, RuntimeSessionState, SessionStatus,
+    AvailableAgent, AvailableCommand, CompactionTrigger, CurrentModel, FastModeState, ModeState,
+    RuntimeSessionState, SessionStatus,
 };
 
 /// Render-side chunk payload for streaming session updates

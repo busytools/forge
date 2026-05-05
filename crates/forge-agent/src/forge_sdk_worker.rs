@@ -690,8 +690,8 @@ mod tests {
     use crate::client::AgentEvent;
     use forge_primitives::{ElicitationAction, PermissionOutcome, QuestionOutcome};
     use forge_sdk::ToolPermissionContext;
-    use serde_json::json;
     use parking_lot::Mutex;
+    use serde_json::json;
     use std::collections::HashMap;
     use std::sync::Arc;
     use tokio::sync::oneshot;

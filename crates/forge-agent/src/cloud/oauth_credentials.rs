@@ -108,22 +108,84 @@ fn keychain_service_name(config_dir: &Path) -> String {
 #[cfg(target_os = "macos")]
 fn load_oauth_credentials_from_keychain(config_dir: &Path) -> Option<OauthCredentials> {
     let service = keychain_service_name(config_dir);
-    let output = std::process::Command::new("security")
+    let output = match std::process::Command::new("security")
         .args(["find-generic-password", "-s", service.as_str(), "-w"])
         .output()
-        .ok()?;
+    {
+        Ok(o) => o,
+        Err(e) => {
+            tracing::debug!(
+                target: "forge_agent::oauth_credentials",
+                error = %e,
+                service = %service,
+                "keychain shell-out failed (security CLI missing?)",
+            );
+            return None;
+        }
+    };
     if !output.status.success() {
+        // Common: keychain entry doesn't exist for this service. Not
+        // a bug; logged at trace to avoid noise on fresh installs.
+        tracing::trace!(
+            target: "forge_agent::oauth_credentials",
+            exit = ?output.status.code(),
+            service = %service,
+            "keychain entry missing (typical on first login)",
+        );
         return None;
     }
-    let password = String::from_utf8(output.stdout).ok()?;
+    let password = match String::from_utf8(output.stdout) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::debug!(
+                target: "forge_agent::oauth_credentials",
+                error = %e,
+                "keychain payload was not valid UTF-8",
+            );
+            return None;
+        }
+    };
     let trimmed = password.trim_end_matches(['\r', '\n']);
-    let json = serde_json::from_str::<Value>(trimmed).ok()?;
+    let json = match serde_json::from_str::<Value>(trimmed) {
+        Ok(j) => j,
+        Err(e) => {
+            tracing::debug!(
+                target: "forge_agent::oauth_credentials",
+                error = %e,
+                "keychain payload was not valid JSON (corrupt entry?)",
+            );
+            return None;
+        }
+    };
     parse_oauth_credentials(&json)
 }
 
 fn load_oauth_credentials_at(path: &Path) -> Option<OauthCredentials> {
-    let contents = std::fs::read_to_string(path).ok()?;
-    let json = serde_json::from_str::<Value>(&contents).ok()?;
+    let contents = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(e) => {
+            tracing::debug!(
+                target: "forge_agent::oauth_credentials",
+                error = %e,
+                path = %path.display(),
+                "credentials file present but read failed (permissions? lock?)",
+            );
+            return None;
+        }
+    };
+    let json = match serde_json::from_str::<Value>(&contents) {
+        Ok(j) => j,
+        Err(e) => {
+            tracing::debug!(
+                target: "forge_agent::oauth_credentials",
+                error = %e,
+                path = %path.display(),
+                "credentials file present but JSON parse failed (corrupt? partial write?)",
+            );
+            return None;
+        }
+    };
     parse_oauth_credentials(&json)
 }
 

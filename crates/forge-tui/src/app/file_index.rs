@@ -521,10 +521,11 @@ fn collect_candidates(
     cancel: Option<&Arc<AtomicBool>>,
 ) -> Vec<FileCandidate> {
     let mut candidates = Vec::new();
-    let completed = for_each_candidate(root, walk_root, respect_gitignore, cancel, &mut |candidate| {
-        candidates.push(candidate);
-        true
-    });
+    let completed =
+        for_each_candidate(root, walk_root, respect_gitignore, cancel, &mut |candidate| {
+            candidates.push(candidate);
+            true
+        });
     if !completed {
         tracing::debug!(
             target: "forge_tui::file_index",
