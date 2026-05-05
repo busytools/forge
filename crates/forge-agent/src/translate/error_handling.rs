@@ -66,17 +66,25 @@ fn looks_like_plan_limit_error_lower(lower: &str) -> bool {
 }
 
 pub fn looks_like_auth_required_error_lower(lower: &str) -> bool {
-    [
+    let any = [
         "/login",
         "auth required",
         "authentication failed",
+        "authentication_failed",
+        "authentication required",
         "please log in",
         "login required",
         "not authenticated",
+        "unauthenticated",
         "unauthorized",
     ]
     .iter()
-    .any(|needle| lower.contains(needle))
+    .any(|needle| lower.contains(needle));
+    // Pre-#60 the dispatcher's local `looks_like_auth_required`
+    // additionally matched the `("401" && "auth")` conjunction; the
+    // sites consolidated onto this fn rely on that. Preserve the
+    // behaviour explicitly.
+    any || (lower.contains("401") && lower.contains("auth"))
 }
 
 fn looks_like_internal_error_lower(lower: &str) -> bool {

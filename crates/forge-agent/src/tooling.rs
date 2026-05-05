@@ -654,7 +654,7 @@ fn parse_json_candidate(value: Option<&Value>) -> Option<Value> {
     serde_json::from_str(trimmed)
         .inspect_err(|e| {
             tracing::debug!(
-                target: "forge_agent::tooling",
+                target: crate::logging::targets::TOOLING,
                 error = %e,
                 raw_prefix = %trimmed.chars().take(120).collect::<String>(),
                 "tool output looked like JSON but failed to parse; falling back to plain-text rendering",

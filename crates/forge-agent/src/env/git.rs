@@ -144,7 +144,7 @@ impl GitContextWatcher {
         for (path, mode) in repo.watch_directories() {
             if let Err(err) = watcher.watch(&path, mode) {
                 tracing::warn!(
-                    target: "forge_agent::env::git",
+                    target: crate::logging::targets::ENV_GIT,
                     path = %path.display(),
                     error = %err,
                     "failed to watch git metadata path",
@@ -171,7 +171,7 @@ impl GitContextWatcher {
             })
         {
             tracing::error!(
-                target: "forge_agent::env::git",
+                target: crate::logging::targets::ENV_GIT,
                 error = %err,
                 "failed to spawn git debounce thread; live updates disabled for this watcher",
             );
@@ -216,7 +216,7 @@ fn run_debounce_loop(
             Ok(event) => event.need_rescan() || repo.is_relevant_event(&event),
             Err(err) => {
                 tracing::debug!(
-                    target: "forge_agent::env::git",
+                    target: crate::logging::targets::ENV_GIT,
                     error = %err,
                     "git watcher reported an error; treating as a refresh trigger",
                 );

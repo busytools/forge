@@ -422,14 +422,14 @@ fn read_session_lite(path: &Path) -> Option<LiteSessionFile> {
     let mut file = match fs::File::open(path) {
         Ok(f) => f,
         Err(e) => {
-            tracing::debug!(target: "forge_agent::scan", path = %path.display(), error = %e, step = "open", "lite-read failed");
+            tracing::debug!(target: crate::logging::targets::CATALOG_SCAN, path = %path.display(), error = %e, step = "open", "lite-read failed");
             return None;
         }
     };
     let meta = match file.metadata() {
         Ok(m) => m,
         Err(e) => {
-            tracing::debug!(target: "forge_agent::scan", path = %path.display(), error = %e, step = "metadata", "lite-read failed");
+            tracing::debug!(target: crate::logging::targets::CATALOG_SCAN, path = %path.display(), error = %e, step = "metadata", "lite-read failed");
             return None;
         }
     };
@@ -448,7 +448,7 @@ fn read_session_lite(path: &Path) -> Option<LiteSessionFile> {
     let read = match file.read(&mut head_bytes) {
         Ok(n) => n,
         Err(e) => {
-            tracing::debug!(target: "forge_agent::scan", path = %path.display(), error = %e, step = "read_head", "lite-read failed");
+            tracing::debug!(target: crate::logging::targets::CATALOG_SCAN, path = %path.display(), error = %e, step = "read_head", "lite-read failed");
             return None;
         }
     };
@@ -463,14 +463,14 @@ fn read_session_lite(path: &Path) -> Option<LiteSessionFile> {
     } else {
         let tail_offset = size - LITE_READ_BUF_SIZE;
         if let Err(e) = file.seek(SeekFrom::Start(tail_offset)) {
-            tracing::debug!(target: "forge_agent::scan", path = %path.display(), error = %e, step = "seek_tail", "lite-read failed");
+            tracing::debug!(target: crate::logging::targets::CATALOG_SCAN, path = %path.display(), error = %e, step = "seek_tail", "lite-read failed");
             return None;
         }
         let mut tail_bytes = vec![0u8; usize::try_from(LITE_READ_BUF_SIZE).unwrap_or(usize::MAX)];
         let read = match file.read(&mut tail_bytes) {
             Ok(n) => n,
             Err(e) => {
-                tracing::debug!(target: "forge_agent::scan", path = %path.display(), error = %e, step = "read_tail", "lite-read failed");
+                tracing::debug!(target: crate::logging::targets::CATALOG_SCAN, path = %path.display(), error = %e, step = "read_tail", "lite-read failed");
                 return None;
             }
         };

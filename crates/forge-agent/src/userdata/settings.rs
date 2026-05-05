@@ -141,9 +141,18 @@ fn write_json_atomic(path: &Path, document: &Value) -> Result<(), Error> {
         Ok(())
     })();
     if result.is_err() {
-        // Best-effort cleanup; ignore the cleanup error so the
-        // original failure surfaces.
-        let _ = std::fs::remove_file(&temp_path);
+        // Best-effort cleanup; log a debug breadcrumb if the cleanup
+        // itself fails (would mean accumulation continues silently),
+        // but propagate the ORIGINAL error rather than the cleanup
+        // failure.
+        if let Err(cleanup_err) = std::fs::remove_file(&temp_path) {
+            tracing::debug!(
+                target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                error = %cleanup_err,
+                temp_path = %temp_path.display(),
+                "best-effort temp cleanup failed; original error follows",
+            );
+        }
     }
     Ok(result?)
 }

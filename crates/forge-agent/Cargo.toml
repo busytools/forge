@@ -43,7 +43,6 @@ serde_json = { workspace = true }
 tracing = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
-async-trait = { workspace = true }
 hex = { workspace = true }
 notify = { workspace = true }
 parking_lot = { workspace = true }

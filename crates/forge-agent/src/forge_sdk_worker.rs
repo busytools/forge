@@ -591,7 +591,13 @@ pub(crate) fn deliver_permission_response(
             PermissionDecision::deny("user cancelled")
         }
     };
-    let _ = tx.send(decision);
+    if tx.send(decision).is_err() {
+        tracing::debug!(
+            target: crate::logging::targets::APP_PERMISSION,
+            tool_call_id,
+            "PermissionResponse oneshot receiver dropped before delivery",
+        );
+    }
 }
 
 pub(crate) fn deliver_question_response(
@@ -607,7 +613,13 @@ pub(crate) fn deliver_question_response(
         );
         return;
     };
-    let _ = tx.send(outcome);
+    if tx.send(outcome).is_err() {
+        tracing::debug!(
+            target: crate::logging::targets::APP_PERMISSION,
+            tool_call_id,
+            "QuestionResponse oneshot receiver dropped before delivery",
+        );
+    }
 }
 
 fn take_pending(
