@@ -1,8 +1,26 @@
-//! Agent-side modules that remain inside forge-tui after the
-//! 2026-05-05 restructure. Anything that's UI-tied (uses
-//! `crate::app::*`, `crate::error::AppError`, ratatui types, etc.)
-//! lives here. Pure SDK-driver code lives in the sibling
-//! `forge_agent` crate.
+//! TUI-side boundary to the `forge-agent` crate.
+//!
+//! Two distinct things share the name "agent" in this codebase:
+//!
+//! 1. The **`forge-agent` crate** — drives the SDK Client, runs
+//!    callbacks, owns userdata/cloud/env. Lives in `crates/forge-agent`.
+//! 2. **This module** (`forge_tui::agent`) — the TUI-side mapping
+//!    onto the agent crate's surface. Holds:
+//!    - [`events`] — `ClientEvent` enum: the UI's translated view of
+//!      `forge_agent::AgentEvent` (with extra UI-side variants like
+//!      `AuthCompleted`, `FatalError`).
+//!    - [`model`] — UI-typed model describing agent state for the
+//!      view layer to render.
+//!    - Re-export shims (`agents`, `error_handling`, `state_parsing`,
+//!      `tooling`, `client`, `state`, `commands`, `session_lifecycle`)
+//!      that keep pre-restructure import paths
+//!      (`crate::agent::error_handling::*` etc.) resolving without a
+//!      mass rewrite — each shim points at the matching
+//!      `forge_agent::*` module.
+//!
+//! Anything that's UI-tied (uses `crate::app::*`, `crate::error::AppError`,
+//! ratatui types, etc.) lives in `events` / `model`. Everything else
+//! is a passthrough to the agent crate.
 
 pub mod events;
 pub mod model;
