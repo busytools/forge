@@ -1,0 +1,18 @@
+[package]
+name = "forge-primitives"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "Shared types used across forge crates: channel envelope (Command, Event), IDs, decisions, enums, renderable views. No logic, no I/O, no async."
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+thiserror = { workspace = true }

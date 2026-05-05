@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/forge-sdk", "crates/forge-tui", "crates/forge-test-harness"]
+members = ["crates/forge-sdk", "crates/forge-primitives", "crates/forge-tui", "crates/forge-test-harness"]
 
 [workspace.package]
 version = "0.1.64"
@@ -48,6 +48,9 @@ tui-markdown = "=0.3.7"
 tui-textarea = { package = "tui-textarea-2", version = "0.10" }
 unicode-segmentation = "1.12"
 unicode-width = "0.2"
+
+# Workspace-internal crates
+forge-primitives = { path = "crates/forge-primitives", version = "=0.1.64" }
 
 # Dev-only
 proptest = "1"
