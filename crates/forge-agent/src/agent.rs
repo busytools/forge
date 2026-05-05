@@ -27,19 +27,38 @@ use crate::forge_sdk_bridge::ForgeSdkBridge;
 /// Handle returned by [`Agent::spawn`]. Owns the channels + a thin
 /// passthrough to the bridge's direct-return accessors.
 pub struct AgentHandle {
-    /// UI → agent commands.
+    /// UI → agent commands. Used internally by the inherent
+    /// command-shorthand methods (`prompt_text`, `cancel`, etc.).
+    /// Public so phase 6 callers can `send(Command::...)` directly
+    /// when richer flows are needed.
     pub commands: mpsc::UnboundedSender<Command>,
-    /// agent → UI events. Single-consumer; take via
-    /// [`AgentHandle::take_events`] exactly once.
+    /// Translated `forge_primitives::Event` receiver. Currently
+    /// unused at runtime (phase 6 wires it); held here so the
+    /// translator task has somewhere to push.
+    #[allow(dead_code)]
     events: Mutex<Option<mpsc::UnboundedReceiver<Event>>>,
+    /// Backward-compat receiver: hands callers the bridge's raw
+    /// `AgentEvent` stream so existing translators (forge-tui's
+    /// `bridge_lifecycle::AgentEvent → ClientEvent`) keep working.
+    /// Phase 6 deletes this when call sites move to the Event stream.
+    agent_events: Mutex<Option<mpsc::UnboundedReceiver<crate::client::AgentEvent>>>,
     /// Bridge handle used for direct-return accessors only.
     /// Phase 6 will eliminate this when accessors migrate.
     bridge: Arc<ForgeSdkBridge>,
 }
 
 impl AgentHandle {
-    /// Take ownership of the events receiver. Returns `Some` exactly once.
-    pub fn take_events(&self) -> Option<mpsc::UnboundedReceiver<Event>> {
+    /// Take ownership of the bridge's raw `AgentEvent` receiver.
+    /// Returns `Some` exactly once. forge-tui's existing translator
+    /// consumes this; phase 6 swaps to the translated Event stream.
+    pub fn take_events(&self) -> Option<mpsc::UnboundedReceiver<crate::client::AgentEvent>> {
+        self.agent_events.lock().ok().and_then(|mut g| g.take())
+    }
+
+    /// Take ownership of the translated [`Event`] receiver — phase 6 API.
+    /// Currently unused at runtime; reserved for the channel migration.
+    #[allow(dead_code)]
+    pub fn take_event_stream(&self) -> Option<mpsc::UnboundedReceiver<Event>> {
         self.events.lock().ok().and_then(|mut g| g.take())
     }
 
@@ -80,12 +99,304 @@ impl AgentHandle {
     pub async fn oauth_usage(&self) -> Result<forge_sdk::OauthUsage, forge_sdk::OauthUsageError> {
         self.bridge.oauth_usage().await
     }
+
+    // ---- Fire-and-forget Command shorthands ----
+    //
+    // Each method builds the matching `Command` variant and pushes it
+    // onto `commands`. Returns `Err` only if the dispatcher task has
+    // shut down (channel closed). Errors from the underlying
+    // forge_sdk::Client surface asynchronously via the events stream.
+
+    fn send(&self, cmd: Command) -> anyhow::Result<()> {
+        self.commands
+            .send(cmd)
+            .map_err(|_| anyhow::anyhow!("agent dispatcher shut down"))
+    }
+
+    pub fn new_session(
+        &self,
+        cwd: String,
+        launch_settings: crate::client::SessionLaunchSettings,
+    ) -> anyhow::Result<()> {
+        self.send(Command::NewSession {
+            cwd,
+            launch_settings: serde_json::to_value(launch_settings)
+                .unwrap_or(serde_json::Value::Null),
+        })
+    }
+
+    pub fn resume_session(
+        &self,
+        session_id: String,
+        launch_settings: crate::client::SessionLaunchSettings,
+    ) -> anyhow::Result<()> {
+        self.send(Command::ResumeSession {
+            session_id: session_id.into(),
+            launch_settings: serde_json::to_value(launch_settings)
+                .unwrap_or(serde_json::Value::Null),
+        })
+    }
+
+    pub fn prompt_text(
+        &self,
+        session_id: String,
+        text: String,
+    ) -> anyhow::Result<crate::client::PromptResponse> {
+        self.send(Command::Prompt {
+            session_id: session_id.into(),
+            text,
+        })?;
+        Ok(crate::client::PromptResponse {
+            stop_reason: "in_progress".to_owned(),
+        })
+    }
+
+    pub fn prompt_with_images(
+        &self,
+        session_id: String,
+        text: String,
+        images: Vec<forge_primitives::ImageAttachment>,
+    ) -> anyhow::Result<crate::client::PromptResponse> {
+        self.send(Command::PromptWithImages {
+            session_id: session_id.into(),
+            text,
+            images,
+        })?;
+        Ok(crate::client::PromptResponse {
+            stop_reason: "in_progress".to_owned(),
+        })
+    }
+
+    pub fn cancel(&self, session_id: String) -> anyhow::Result<()> {
+        self.send(Command::Cancel {
+            session_id: session_id.into(),
+        })
+    }
+
+    pub fn set_mode(&self, session_id: String, mode: String) -> anyhow::Result<()> {
+        self.send(Command::SetMode {
+            session_id: session_id.into(),
+            mode,
+        })
+    }
+
+    pub fn set_model(&self, session_id: String, model: String) -> anyhow::Result<()> {
+        self.send(Command::SetModel {
+            session_id: session_id.into(),
+            model,
+        })
+    }
+
+    pub fn generate_session_title(
+        &self,
+        session_id: String,
+        description: String,
+    ) -> anyhow::Result<()> {
+        self.send(Command::GenerateSessionTitle {
+            session_id: session_id.into(),
+            description,
+        })
+    }
+
+    pub fn rename_session(&self, session_id: String, title: String) -> anyhow::Result<()> {
+        self.send(Command::RenameSession {
+            session_id: session_id.into(),
+            title,
+        })
+    }
+
+    pub fn get_status_snapshot(&self, session_id: String) -> anyhow::Result<()> {
+        self.send(Command::GetStatusSnapshot {
+            session_id: session_id.into(),
+        })
+    }
+
+    pub fn get_oauth_credentials_snapshot(&self, session_id: String) -> anyhow::Result<()> {
+        self.send(Command::GetOauthCredentialsSnapshot {
+            session_id: session_id.into(),
+        })
+    }
+
+    pub fn get_context_usage(&self, session_id: String) -> anyhow::Result<()> {
+        self.send(Command::GetContextUsage {
+            session_id: session_id.into(),
+        })
+    }
+
+    pub fn reload_plugins(&self, session_id: String) -> anyhow::Result<()> {
+        self.send(Command::ReloadPlugins {
+            session_id: session_id.into(),
+        })
+    }
+
+    pub fn get_mcp_snapshot(&self, session_id: String) -> anyhow::Result<()> {
+        self.send(Command::GetMcpSnapshot {
+            session_id: session_id.into(),
+        })
+    }
+
+    pub fn respond_to_elicitation(
+        &self,
+        session_id: String,
+        elicitation_request_id: String,
+        action: forge_primitives::ElicitationAction,
+        content: Option<serde_json::Value>,
+    ) -> anyhow::Result<()> {
+        self.send(Command::RespondToElicitation {
+            session_id: session_id.into(),
+            elicitation_request_id,
+            action,
+            content,
+        })
+    }
+
+    pub fn reconnect_mcp_server(
+        &self,
+        session_id: String,
+        server_name: String,
+    ) -> anyhow::Result<()> {
+        self.send(Command::ReconnectMcpServer {
+            session_id: session_id.into(),
+            server_name,
+        })
+    }
+
+    pub fn toggle_mcp_server(
+        &self,
+        session_id: String,
+        server_name: String,
+        enabled: bool,
+    ) -> anyhow::Result<()> {
+        self.send(Command::ToggleMcpServer {
+            session_id: session_id.into(),
+            server_name,
+            enabled,
+        })
+    }
+
+    pub fn set_mcp_servers(
+        &self,
+        session_id: String,
+        servers: std::collections::BTreeMap<String, forge_primitives::McpServerConfig>,
+    ) -> anyhow::Result<()> {
+        self.send(Command::SetMcpServers {
+            session_id: session_id.into(),
+            servers,
+        })
+    }
+
+    pub fn authenticate_mcp_server(
+        &self,
+        session_id: String,
+        server_name: String,
+    ) -> anyhow::Result<()> {
+        self.send(Command::AuthenticateMcpServer {
+            session_id: session_id.into(),
+            server_name,
+        })
+    }
+
+    pub fn clear_mcp_auth(&self, session_id: String, server_name: String) -> anyhow::Result<()> {
+        self.send(Command::ClearMcpAuth {
+            session_id: session_id.into(),
+            server_name,
+        })
+    }
+
+    pub fn submit_mcp_oauth_callback_url(
+        &self,
+        session_id: String,
+        server_name: String,
+        callback_url: String,
+    ) -> anyhow::Result<()> {
+        self.send(Command::SubmitMcpOauthCallbackUrl {
+            session_id: session_id.into(),
+            server_name,
+            callback_url,
+        })
+    }
+
+    pub fn permission_response(
+        &self,
+        session_id: String,
+        tool_call_id: String,
+        outcome: forge_primitives::PermissionOutcome,
+    ) -> anyhow::Result<()> {
+        self.send(Command::PermissionResponse {
+            session_id: session_id.into(),
+            tool_call_id: tool_call_id.into(),
+            outcome,
+        })
+    }
+
+    pub fn question_response(
+        &self,
+        session_id: String,
+        tool_call_id: String,
+        outcome: forge_primitives::QuestionOutcome,
+    ) -> anyhow::Result<()> {
+        self.send(Command::QuestionResponse {
+            session_id: session_id.into(),
+            tool_call_id: tool_call_id.into(),
+            outcome,
+        })
+    }
+
+    pub fn start_git_context_watch(&self, session_id: String, cwd: PathBuf) -> anyhow::Result<()> {
+        self.send(Command::StartGitContextWatch {
+            session_id: session_id.into(),
+            cwd,
+        })
+    }
+
+    pub fn stop_git_context_watch(&self, session_id: String) -> anyhow::Result<()> {
+        self.send(Command::StopGitContextWatch {
+            session_id: session_id.into(),
+        })
+    }
 }
 
 /// Agent factory — wraps [`ForgeSdkBridge`] behind a channel API.
 pub struct Agent;
 
 impl Agent {
+    /// Construct a test stub: `AgentHandle` backed by a fresh
+    /// ForgeSdkBridge that's never actually driven (no `new_session`
+    /// call). Returns the handle plus a `Receiver<Command>` that
+    /// drains every command the test exercises — replaces
+    /// `RecordingBridge` from the bridge-collapse era.
+    #[must_use]
+    pub fn testing_stub() -> (AgentHandle, mpsc::UnboundedReceiver<Command>) {
+        let bridge = ForgeSdkBridge::new();
+        let agent_event_rx = bridge
+            .take_events()
+            .unwrap_or_else(|| mpsc::unbounded_channel().1);
+
+        // Two command channels: one the AgentHandle pushes onto, one
+        // the test drains. The dispatcher task is NOT spawned, so
+        // commands accumulate in the receiver instead of being
+        // forwarded to the (uninitialised) bridge — exactly what
+        // tests want.
+        let (commands_tx, commands_rx) = mpsc::unbounded_channel::<Command>();
+        let (_events_tx, events_rx) = mpsc::unbounded_channel::<Event>();
+        let (_passthrough_tx, passthrough_rx) =
+            mpsc::unbounded_channel::<crate::client::AgentEvent>();
+        // Drain the bridge's events into the void so the channel
+        // doesn't fill up if a test happens to hit a path that emits.
+        tokio::spawn(async move {
+            let mut rx = agent_event_rx;
+            while rx.recv().await.is_some() {}
+        });
+
+        let handle = AgentHandle {
+            commands: commands_tx,
+            events: Mutex::new(Some(events_rx)),
+            agent_events: Mutex::new(Some(passthrough_rx)),
+            bridge: Arc::new(bridge),
+        };
+        (handle, commands_rx)
+    }
+
     /// Spawn a new agent runtime. Returns a handle holding the
     /// command sender + events receiver + direct-accessor passthroughs.
     #[must_use]
@@ -98,9 +409,14 @@ impl Agent {
         let (commands_tx, commands_rx) = mpsc::unbounded_channel::<Command>();
         let (events_tx, events_rx) = mpsc::unbounded_channel::<Event>();
 
-        // Event translator task.
+        // Tee the bridge's AgentEvent stream: one branch goes to the
+        // forward-looking Event translator (events_tx); the other
+        // gets handed to call sites via take_events() so existing
+        // forge-tui translators work unchanged in phase 5.
+        let (passthrough_tx, passthrough_rx) =
+            mpsc::unbounded_channel::<crate::client::AgentEvent>();
         let translator_tx = events_tx.clone();
-        tokio::spawn(translate_events(agent_event_rx, translator_tx));
+        tokio::spawn(tee_events(agent_event_rx, passthrough_tx, translator_tx));
 
         // Command dispatcher task.
         let dispatch_bridge = Arc::new(bridge);
@@ -109,25 +425,26 @@ impl Agent {
         AgentHandle {
             commands: commands_tx,
             events: Mutex::new(Some(events_rx)),
+            agent_events: Mutex::new(Some(passthrough_rx)),
             bridge: dispatch_bridge,
         }
     }
 }
 
-async fn translate_events(
+/// Forward each `AgentEvent` to both the passthrough receiver
+/// (consumed by forge-tui's existing translator) and the Event
+/// translator (consumed by phase-6 call sites). One arrives, both
+/// see it.
+async fn tee_events(
     mut agent_event_rx: mpsc::UnboundedReceiver<crate::client::AgentEvent>,
-    events_tx: mpsc::UnboundedSender<Event>,
+    passthrough_tx: mpsc::UnboundedSender<crate::client::AgentEvent>,
+    translator_tx: mpsc::UnboundedSender<Event>,
 ) {
-    while let Some(agent_event) = agent_event_rx.recv().await {
-        let Some(event) = translate(agent_event) else {
-            continue;
-        };
-        if events_tx.send(event).is_err() {
-            tracing::debug!(
-                target: crate::logging::targets::BRIDGE_LIFECYCLE,
-                "agent translator: events_rx dropped",
-            );
-            return;
+    while let Some(event) = agent_event_rx.recv().await {
+        let cloned = event.clone();
+        let _ = passthrough_tx.send(event);
+        if let Some(translated) = translate(cloned) {
+            let _ = translator_tx.send(translated);
         }
     }
 }
@@ -322,7 +639,7 @@ fn dispatch(cmd: Command, bridge: &ForgeSdkBridge) -> anyhow::Result<()> {
                 .unwrap_or_else(|_| crate::client::SessionLaunchSettings::default());
             bridge.resume_session(session_id.into_string(), launch)
         }
-        C::PromptText { session_id, text } => bridge
+        C::Prompt { session_id, text } => bridge
             .prompt_text(session_id.into_string(), text)
             .map(|_| ()),
         C::PromptWithImages {
@@ -353,7 +670,7 @@ fn dispatch(cmd: Command, bridge: &ForgeSdkBridge) -> anyhow::Result<()> {
         }
         C::GetContextUsage { session_id } => bridge.get_context_usage(session_id.into_string()),
         C::GetMcpSnapshot { session_id } => bridge.get_mcp_snapshot(session_id.into_string()),
-        C::AnswerPermission {
+        C::PermissionResponse {
             session_id,
             tool_call_id,
             outcome,
@@ -362,7 +679,7 @@ fn dispatch(cmd: Command, bridge: &ForgeSdkBridge) -> anyhow::Result<()> {
             tool_call_id.into_string(),
             outcome,
         ),
-        C::AnswerQuestion {
+        C::QuestionResponse {
             session_id,
             tool_call_id,
             outcome,
@@ -371,7 +688,7 @@ fn dispatch(cmd: Command, bridge: &ForgeSdkBridge) -> anyhow::Result<()> {
             tool_call_id.into_string(),
             outcome,
         ),
-        C::AnswerElicitation {
+        C::RespondToElicitation {
             session_id,
             elicitation_request_id,
             action,

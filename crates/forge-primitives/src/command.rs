@@ -32,7 +32,7 @@ pub enum Command {
     },
 
     // --- Conversation ---
-    PromptText {
+    Prompt {
         session_id: SessionId,
         text: String,
     },
@@ -82,17 +82,17 @@ pub enum Command {
     },
 
     // --- Callback responses ---
-    AnswerPermission {
+    PermissionResponse {
         session_id: SessionId,
         tool_call_id: ToolUseId,
         outcome: PermissionOutcome,
     },
-    AnswerQuestion {
+    QuestionResponse {
         session_id: SessionId,
         tool_call_id: ToolUseId,
         outcome: QuestionOutcome,
     },
-    AnswerElicitation {
+    RespondToElicitation {
         session_id: SessionId,
         elicitation_request_id: String,
         action: ElicitationAction,
