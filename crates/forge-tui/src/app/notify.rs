@@ -109,7 +109,7 @@ fn ring_bell() {
 ///
 /// Runs on `std::thread::spawn` rather than tokio because `notify-rust`'s
 /// `show()` may block on a D-Bus round-trip (Linux) or COM call (Windows).
-/// Errors are silently discarded -- the bell is the reliable fallback.
+/// Failures are logged at debug; the terminal bell is the reliable fallback.
 fn send_desktop_notification(event: NotifyEvent) {
     let (summary, body) = match event {
         NotifyEvent::PermissionRequired => {

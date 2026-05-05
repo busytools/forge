@@ -121,13 +121,8 @@ pub struct McpState {
 /// the model-resolution cache, the mode-capability state, the MCP
 /// per-server cooldowns, and the auth/error flags that survive
 /// across messages. The App's `handle_sdk_message` walks raw
-/// `forge_primitives::Message` envelopes and reads/writes these fields
-/// directly.
-///
-/// This struct is the App-side home for the per-message bookkeeping
-/// that lived in the upstream Node bridge's `SessionState`. Post
-/// bridge collapse the bridge module is gone — these fields are the
-/// authoritative store.
+/// `forge_primitives::Message` envelopes and reads/writes these
+/// fields directly — they are the authoritative per-session store.
 #[derive(Debug, Default)]
 pub struct SessionTurnState {
     /// Live tool-call store keyed by `tool_use_id` for cross-message

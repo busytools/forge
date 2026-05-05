@@ -60,8 +60,9 @@ pub fn parse_runtime_session_state(value: Option<&Value>) -> Option<RuntimeSessi
 }
 
 /// Reads a numeric field as `u64`, returning `None` when the field
-/// is missing or its value is outside `[0, u64::MAX]`. Out-of-range
-/// drops emit a debug breadcrumb so a misbehaving CLI is observable.
+/// is missing or its value is outside `[0, u64::MAX)` (note the open
+/// upper bound — see the body comment). Out-of-range drops emit a
+/// debug breadcrumb so a misbehaving CLI is observable.
 ///
 /// `as u64` saturates rather than fails on out-of-range floats, so
 /// the explicit guard runs BEFORE the cast. The `>=` upper bound
@@ -379,6 +380,19 @@ mod tests {
         // Negative required count — whole update drops.
         let map: Map<String, Value> = serde_json::from_value(json!({
             "attempt": -1.0,
+            "max_retries": 5.0,
+            "retry_delay_ms": 1000.0,
+        }))
+        .unwrap();
+        assert!(build_api_retry_update(&map).is_none());
+
+        // Boundary case: `u64::MAX as f64` rounds to exactly 2^64
+        // (one past representable). The `>=` upper-bound rejects it;
+        // a `>` would let it through and silent-saturate to u64::MAX.
+        #[allow(clippy::cast_precision_loss)]
+        let boundary = u64::MAX as f64;
+        let map: Map<String, Value> = serde_json::from_value(json!({
+            "attempt": boundary,
             "max_retries": 5.0,
             "retry_delay_ms": 1000.0,
         }))
