@@ -25,7 +25,7 @@ async fn real_claude_minimal_turn() {
     let opts = OptionsBuilder::new()
         .permission_mode(forge_sdk::PermissionMode::BypassPermissions)
         .build();
-    let client = Client::spawn(opts).await.expect("spawn real claude");
+    let (client, mut events) = Client::spawn(opts).await.expect("spawn real claude");
     assert!(
         !client.session_id().is_empty(),
         "session id should be captured"
@@ -39,14 +39,13 @@ async fn real_claude_minimal_turn() {
     // Drain until we see a Result message.
     let mut saw_assistant = false;
     loop {
-        let Some(msg) =
-            tokio::time::timeout(std::time::Duration::from_secs(60), client.next_event())
-                .await
-                .expect("timeout waiting for event")
-                .expect("read event")
-        else {
+        let item = tokio::time::timeout(std::time::Duration::from_secs(60), events.recv())
+            .await
+            .expect("timeout waiting for event");
+        let Some(msg) = item else {
             panic!("stream ended before Result");
         };
+        let msg = msg.expect("read event");
         match msg {
             Message::Assistant { .. } => saw_assistant = true,
             Message::Result { .. } => break,

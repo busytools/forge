@@ -27,11 +27,11 @@ async fn allow_path_completes_turn() {
             }
         })
         .build();
-    let client = Client::spawn(opts).await.expect("spawn");
+    let (client, mut events) = Client::spawn(opts).await.expect("spawn");
     client.send_user_message("edit please").await.expect("send");
 
     // First visible event: the assistant turn AFTER the control round-trip.
-    let msg = client.next_event().await.expect("next").expect("assistant");
+    let msg = events.recv().await.expect("recv").expect("assistant");
     match msg {
         Message::Assistant { message, .. } => {
             assert!(
@@ -45,7 +45,7 @@ async fn allow_path_completes_turn() {
         other => panic!("expected Assistant, got: {other:?}"),
     }
 
-    let msg = client.next_event().await.expect("next").expect("result");
+    let msg = events.recv().await.expect("recv").expect("result");
     assert!(matches!(msg, Message::Result { .. }));
 
     client.disconnect().await.expect("disconnect");
@@ -64,10 +64,10 @@ async fn deny_path_completes_turn_with_denial_text() {
             PermissionDecision::deny(format!("cannot touch {}", ctx.tool_input["file_path"]))
         })
         .build();
-    let client = Client::spawn(opts).await.expect("spawn");
+    let (client, mut events) = Client::spawn(opts).await.expect("spawn");
     client.send_user_message("edit please").await.expect("send");
 
-    let msg = client.next_event().await.expect("next").expect("assistant");
+    let msg = events.recv().await.expect("recv").expect("assistant");
     match msg {
         Message::Assistant { message, .. } => {
             assert!(
@@ -80,7 +80,7 @@ async fn deny_path_completes_turn_with_denial_text() {
         }
         other => panic!("expected Assistant, got: {other:?}"),
     }
-    let _ = client.next_event().await.expect("next");
+    let _ = events.recv().await.expect("recv");
     client.disconnect().await.expect("disconnect");
 }
 
@@ -92,10 +92,10 @@ async fn allow_with_updated_input_propagates() {
             PermissionDecision::allow_with_input(json!({"file_path": "/tmp/redirected.txt"}))
         })
         .build();
-    let client = Client::spawn(opts).await.expect("spawn");
+    let (client, mut events) = Client::spawn(opts).await.expect("spawn");
     client.send_user_message("edit please").await.expect("send");
 
-    let msg = client.next_event().await.expect("next").expect("assistant");
+    let msg = events.recv().await.expect("recv").expect("assistant");
     match msg {
         Message::Assistant { message, .. } => {
             assert!(
@@ -108,6 +108,6 @@ async fn allow_with_updated_input_propagates() {
         }
         other => panic!("expected Assistant, got: {other:?}"),
     }
-    let _ = client.next_event().await.expect("next");
+    let _ = events.recv().await.expect("recv");
     client.disconnect().await.expect("disconnect");
 }

@@ -15,7 +15,10 @@ async fn spawn_client() -> Client {
     let opts = OptionsBuilder::new()
         .binary(fixture("mock_claude_control.sh"))
         .build();
-    Client::spawn(opts).await.expect("spawn")
+    // This test exercises the writer-side control-request round-trips
+    // and never reads events; drop the events receiver immediately.
+    let (client, _events) = Client::spawn(opts).await.expect("spawn");
+    client
 }
 
 #[tokio::test]

@@ -62,7 +62,7 @@ async fn real_claude_calls_in_process_tool() {
         .mcp_server("probe", server)
         .build();
 
-    let client = Client::spawn(opts).await.expect("spawn");
+    let (client, mut events) = Client::spawn(opts).await.expect("spawn");
     client
         .send_user_message(
             "Call the mcp__probe__greet tool with name='world' and reply with exactly what it returns.",
@@ -73,14 +73,13 @@ async fn real_claude_calls_in_process_tool() {
     let mut saw_tool_use = false;
     let mut saw_greeting = false;
     loop {
-        let Some(msg) =
-            tokio::time::timeout(std::time::Duration::from_secs(90), client.next_event())
-                .await
-                .expect("timeout")
-                .expect("read")
-        else {
+        let item = tokio::time::timeout(std::time::Duration::from_secs(90), events.recv())
+            .await
+            .expect("timeout");
+        let Some(msg) = item else {
             panic!("stream ended early");
         };
+        let msg = msg.expect("read");
         match msg {
             Message::Assistant { message, .. } => {
                 for block in message.content {

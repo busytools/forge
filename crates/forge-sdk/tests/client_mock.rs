@@ -12,7 +12,7 @@ fn mock_binary_path() -> String {
 #[tokio::test]
 async fn spawn_captures_session_id() {
     let opts = OptionsBuilder::new().binary(mock_binary_path()).build();
-    let client = Client::spawn(opts).await.expect("spawn");
+    let (client, _events) = Client::spawn(opts).await.expect("spawn");
     assert_eq!(client.session_id(), "mock-session-001");
     client.disconnect().await.expect("disconnect");
 }
@@ -20,10 +20,10 @@ async fn spawn_captures_session_id() {
 #[tokio::test]
 async fn send_and_receive_full_turn() {
     let opts = OptionsBuilder::new().binary(mock_binary_path()).build();
-    let client = Client::spawn(opts).await.expect("spawn");
+    let (client, mut events) = Client::spawn(opts).await.expect("spawn");
     client.send_user_message("hi").await.expect("send");
 
-    let msg = client.next_event().await.expect("next").expect("assistant");
+    let msg = events.recv().await.expect("recv").expect("assistant");
     match msg {
         Message::Assistant { message, .. } => {
             assert_eq!(message.content.len(), 1);
@@ -31,7 +31,7 @@ async fn send_and_receive_full_turn() {
         other => panic!("expected Assistant, got: {other:?}"),
     }
 
-    let msg = client.next_event().await.expect("next").expect("result");
+    let msg = events.recv().await.expect("recv").expect("result");
     assert!(matches!(msg, Message::Result { .. }));
 
     client.disconnect().await.expect("disconnect");
@@ -40,11 +40,11 @@ async fn send_and_receive_full_turn() {
 #[tokio::test]
 async fn disconnect_after_send_does_not_hang() {
     let opts = OptionsBuilder::new().binary(mock_binary_path()).build();
-    let client = Client::spawn(opts).await.expect("spawn");
+    let (client, mut events) = Client::spawn(opts).await.expect("spawn");
     client.send_user_message("hi").await.expect("send");
     // Drain.
-    let _ = client.next_event().await;
-    let _ = client.next_event().await;
+    let _ = events.recv().await;
+    let _ = events.recv().await;
 
     // Must complete within a reasonable window — regression guard for the
     // anyio-style cancel-scope spin bug Python architect hit.
