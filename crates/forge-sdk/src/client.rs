@@ -512,27 +512,6 @@ impl Client {
         crate::settings::write_settings_document(target, document)
     }
 
-    /// Resolve the path to the project's auto-memory file:
-    /// `<config_dir>/projects/<project_key>/memory/MEMORY.md`. Always
-    /// returns a path; the caller decides whether the file exists.
-    ///
-    /// `cwd` is the project root. The on-disk project key comes from
-    /// [`session::scan::project_key_for_directory`](crate::session::scan::project_key_for_directory)
-    /// — same sanitisation the `claude` CLI uses, so the resolved
-    /// path matches the directory layout claude itself maintains.
-    #[must_use]
-    pub fn project_memory_path(&self, cwd: &std::path::Path) -> std::path::PathBuf {
-        crate::session::paths::project_memory_path(cwd)
-    }
-
-    /// Read the contents of the project's auto-memory file. Returns
-    /// `None` when the file is missing or unreadable. Path resolution
-    /// matches [`Client::project_memory_path`].
-    #[must_use]
-    pub fn project_memory(&self, cwd: &std::path::Path) -> Option<String> {
-        crate::session::paths::project_memory(cwd)
-    }
-
     /// Send a user prompt as a stream-json user turn.
     ///
     /// # Errors

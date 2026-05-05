@@ -618,7 +618,7 @@ impl AgentBridge for ForgeSdkBridge {
     }
 
     fn project_memory_path(&self, cwd: &Path) -> PathBuf {
-        forge_sdk::project_memory_path(cwd)
+        crate::userdata::memory::project_memory_path(cwd)
     }
 
     fn oauth_credentials(&self) -> Option<forge_sdk::OauthCredentials> {

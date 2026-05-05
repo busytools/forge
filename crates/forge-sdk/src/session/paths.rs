@@ -54,28 +54,6 @@ fn credentials_path() -> PathBuf {
     claude_config_dir().join(".credentials.json")
 }
 
-/// Resolve the path to a project's auto-memory file:
-/// `<config_dir>/projects/<project_key>/memory/MEMORY.md`.
-///
-/// `project_key` comes from
-/// [`session::scan::project_key_for_directory`](crate::session::scan::project_key_for_directory)
-/// — the same JS-style sanitised + canonicalised key the `claude`
-/// CLI uses for its on-disk projects layout. Always returns a
-/// resolved path; the caller decides whether the file exists.
-#[must_use]
-pub fn project_memory_path(cwd: &std::path::Path) -> PathBuf {
-    let key = crate::session::scan::project_key_for_directory(Some(&cwd.to_string_lossy()));
-    projects_dir().join(key).join("memory").join("MEMORY.md")
-}
-
-/// Read the contents of the project's auto-memory file, if present.
-/// Returns `None` when the file is missing or unreadable. Path is
-/// resolved via [`project_memory_path`].
-#[must_use]
-pub fn project_memory(cwd: &std::path::Path) -> Option<String> {
-    std::fs::read_to_string(project_memory_path(cwd)).ok()
-}
-
 /// Read + parse the user's OAuth credentials.
 ///
 /// Resolution order matches the `claude` CLI's behaviour as of
@@ -336,51 +314,6 @@ mod tests {
             keychain_service_name(std::path::Path::new("/Users/vedhavyas/.claude")),
             "Claude Code-credentials-e531d3a4"
         );
-    }
-
-    // ---- project_memory_path / project_memory ----
-
-    #[test]
-    fn project_memory_path_uses_project_key_layout() {
-        // Just sanity-check the layout shape — the env-derived
-        // <config_dir> prefix isn't pinned because that's racy across
-        // parallel tests.
-        let path = project_memory_path(std::path::Path::new("/tmp/some/proj"));
-        let suffix: PathBuf = ["projects", "-tmp-some-proj", "memory", "MEMORY.md"]
-            .iter()
-            .collect();
-        assert!(
-            path.ends_with(&suffix),
-            "expected path to end with {suffix:?}, got {path:?}"
-        );
-    }
-
-    #[test]
-    fn project_memory_path_drops_no_leading_dash() {
-        // The CLI's project-key layout keeps the leading dash from
-        // absolute paths starting with `/`. Earlier TUI code stripped
-        // it, which produced a different directory than the CLI uses
-        // and thus never found the memory file. Pin the behaviour.
-        let path = project_memory_path(std::path::Path::new("/Users/me/proj"));
-        let path_str = path.to_string_lossy();
-        assert!(
-            path_str.contains("/projects/-Users-me-proj/memory/"),
-            "expected `-Users-me-proj` (leading dash kept), got {path_str}"
-        );
-    }
-
-    #[test]
-    fn project_memory_returns_none_when_missing() {
-        // Use a tempdir that we know has no MEMORY.md anywhere under it.
-        let dir = tempfile::tempdir().expect("tempdir");
-        // We can't easily steer claude_config_dir to the tempdir
-        // without env-mutation, so instead just confirm the internal
-        // contract: missing file -> None.
-        let nonexistent = dir.path().join("does/not/exist/MEMORY.md");
-        assert!(std::fs::read_to_string(&nonexistent).is_err());
-        // project_memory uses fs::read_to_string under the hood, so
-        // missing file always yields None regardless of how the path
-        // resolved.
     }
 
     #[test]
