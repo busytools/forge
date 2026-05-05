@@ -430,11 +430,13 @@ fn dispatch(cmd: Command, bridge: &ForgeSdkBridge) -> anyhow::Result<()> {
             launch_settings,
         } => {
             // Symmetric to the encode-side `?`-propagation in
-            // `AgentHandle::new_session`. Round-trip is safe in practice
-            // (encode succeeded -> decode never fails for a Default-able
-            // struct), but a forward-compat break in
-            // SessionLaunchSettings would silently strip user config
-            // here without this log.
+            // `AgentHandle::new_session`. Round-trip is safe in
+            // practice when `Serialize`/`Deserialize` are mutually
+            // consistent (the standard derive pair), but a
+            // forward-compat break in SessionLaunchSettings — e.g.
+            // adding `#[serde(deny_unknown_fields)]` or splitting a
+            // field — would silently strip user config here without
+            // this log.
             let launch = serde_json::from_value(launch_settings).unwrap_or_else(|e| {
                 tracing::error!(
                     target: crate::logging::targets::BRIDGE_LIFECYCLE,

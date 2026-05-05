@@ -13,4 +13,5 @@ pub mod targets {
     pub const CATALOG_SCAN: &str = "agent.catalog_scan";
     pub const TOOLING: &str = "agent.tooling";
     pub const ENV_GIT: &str = "agent.env_git";
+    pub const SETTINGS: &str = "agent.settings";
 }
