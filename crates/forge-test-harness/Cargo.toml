@@ -6,7 +6,7 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 rust-version.workspace = true
-description = "Wire-conformance harness for forge: sdk_wire (forge-sdk ↔ claude CLI) + daemon_wire (forge-daemon ↔ client). Replay-based CI plus opt-in live capture."
+description = "Wire-conformance harness for forge-sdk against the claude CLI. Replay-based CI plus opt-in live capture."
 publish = false
 
 [lints]
@@ -14,15 +14,12 @@ workspace = true
 
 [dependencies]
 forge-sdk = { path = "../forge-sdk", version = "=0.1.64" }
-forge-daemon = { path = "../forge-daemon", version = "=0.1.64" }
 tokio = { workspace = true }
-tokio-tungstenite.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 async-trait.workspace = true
 regex.workspace = true
 parking_lot.workspace = true
-futures-util.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

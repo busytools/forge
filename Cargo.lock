@@ -1063,16 +1063,13 @@ name = "forge-test-harness"
 version = "0.1.64"
 dependencies = [
  "async-trait",
- "forge-daemon",
  "forge-sdk",
- "futures-util",
  "parking_lot",
  "regex",
  "serde",
  "serde_json",
  "tempfile",
  "tokio",
- "tokio-tungstenite",
 ]
 
 [[package]]

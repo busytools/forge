@@ -1,3 +1,0 @@
-{"dir":"out","line":"{\"jsonrpc\":\"2.0\",\"method\":\"client.identify\",\"params\":{\"connection_id\":\"conn_34b70a3b-5ebd-4773-9d26-0ff87acb9d12\",\"server_version\":\"0.1.64\",\"server_build\":\"dev\"}}"}
-{"dir":"in","line":"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"daemon.status\",\"params\":{}}"}
-{"dir":"out","line":"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"uptime_seconds\":0,\"active_sessions\":0,\"connected_clients\":1,\"last_error\":null,\"version\":\"0.1.64\",\"build\":\"dev\",\"wg_ip_bound\":null}}"}
