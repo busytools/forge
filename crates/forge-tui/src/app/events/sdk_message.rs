@@ -889,7 +889,7 @@ fn apply_tool_progress_update(app: &mut App, tool_use_id: &str, name: &str) {
 /// Mirror of `bridge::tool_calls::emit_tool_summary_update` against
 /// App state.
 fn apply_tool_summary_update(app: &mut App, tool_use_id: &str, summary: &str) {
-    use forge_primitives::{ContentBlock, ToolCallContent, ToolCallUpdateFields};
+    use forge_primitives::{ToolCallContent, ToolCallUpdateFields};
 
     let Some(base) = app.turn_state.tool_calls.get(tool_use_id).cloned() else { return };
     let status = if matches!(base.status.as_str(), "failed" | "killed") {
@@ -901,7 +901,7 @@ fn apply_tool_summary_update(app: &mut App, tool_use_id: &str, summary: &str) {
         status: Some(status),
         raw_output: Some(summary.to_owned()),
         content: Some(vec![ToolCallContent::Content {
-            content: ContentBlock::Text { text: summary.to_owned() },
+            content: forge_primitives::ChunkContent::Text { text: summary.to_owned() },
         }]),
         ..Default::default()
     };

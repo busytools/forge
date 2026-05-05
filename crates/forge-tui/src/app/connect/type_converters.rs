@@ -365,12 +365,12 @@ pub(super) fn map_question_request(
     )
 }
 
-pub(super) fn convert_content_block(content: types::ContentBlock) -> Option<model::ContentBlock> {
+pub(super) fn convert_content_block(content: types::ChunkContent) -> Option<model::ContentBlock> {
     match content {
-        types::ContentBlock::Text { text } => {
+        types::ChunkContent::Text { text } => {
             Some(model::ContentBlock::Text(model::TextContent::new(text)))
         }
-        types::ContentBlock::Image { mime_type, uri: _, data } => {
+        types::ChunkContent::Image { mime_type, uri: _, data } => {
             let mime = mime_type.unwrap_or_else(|| "image/png".to_owned());
             let image_data = data.unwrap_or_default();
             if !crate::app::clipboard_image::is_supported_image_type(&mime) {

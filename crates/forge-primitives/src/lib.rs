@@ -10,14 +10,28 @@
 //! cross-crate `pub use` chains as a substitute.
 
 pub mod command;
+pub mod content;
 pub mod ids;
 pub mod image;
+pub mod messages;
+pub mod public_types;
 
 pub use command::Command;
+pub use content::ContentBlock;
 pub use ids::{MessageId, SessionId, ToolUseId};
 pub use image::{
     ImageAttachment, SUPPORTED_IMAGE_MIME_TYPES, is_supported_image_type, is_valid_base64,
     validate_image,
+};
+pub use messages::{
+    AssistantEnvelope, AssistantMessageError, Message, RateLimitInfo, RateLimitStatus,
+    RateLimitType, StopReason, TaskNotificationStatus, TaskUsage, Usage, UserEnvelope,
+};
+pub use public_types::{
+    AccountInfo, ContextUsageCategory, ContextUsageResponse, McpServerConfig,
+    McpServerConnectionStatus, McpServerInfo, McpServerStatus, McpStatusResponse,
+    McpToolAnnotations, McpToolInfo, SDKSessionInfo, SandboxIgnoreViolations, SandboxNetworkConfig,
+    SandboxSettings, SessionMessage, SessionMessageKind, SettingSource, StreamEvent,
 };
 
 use serde::{Deserialize, Serialize};
@@ -104,14 +118,6 @@ pub enum FastModeState {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum RateLimitStatus {
-    Allowed,
-    AllowedWarning,
-    Rejected,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
 pub enum ApiRetryError {
     AuthenticationFailed,
     BillingError,
@@ -165,9 +171,14 @@ pub enum CompactionTrigger {
     Auto,
 }
 
+/// Render-side chunk payload for streaming session updates
+/// (`SessionUpdate::AgentMessageChunk` etc.). Distinct from the
+/// wire-side `ContentBlock` (which carries `ToolUse`, `ToolResult`,
+/// `Thinking`, server-tool variants, …) lifted from forge-sdk into
+/// `crate::content::ContentBlock`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
-pub enum ContentBlock {
+pub enum ChunkContent {
     Text {
         text: String,
     },
@@ -248,7 +259,7 @@ pub struct TaskMetadata {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ToolCallContent {
     Content {
-        content: ContentBlock,
+        content: ChunkContent,
     },
     Diff {
         old_path: String,
@@ -276,13 +287,13 @@ pub struct PlanEntry {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum SessionUpdate {
     AgentMessageChunk {
-        content: ContentBlock,
+        content: ChunkContent,
     },
     UserMessageChunk {
-        content: ContentBlock,
+        content: ChunkContent,
     },
     AgentThoughtChunk {
-        content: ContentBlock,
+        content: ChunkContent,
     },
     ToolCall {
         tool_call: ToolCall,
@@ -552,28 +563,6 @@ pub struct SessionInit {
 pub struct PromptChunk {
     pub kind: String,
     pub value: serde_json::Value,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum McpServerConfig {
-    Stdio {
-        command: String,
-        #[serde(default)]
-        args: Vec<String>,
-        #[serde(default)]
-        env: BTreeMap<String, String>,
-    },
-    Sse {
-        url: String,
-        #[serde(default)]
-        headers: BTreeMap<String, String>,
-    },
-    Http {
-        url: String,
-        #[serde(default)]
-        headers: BTreeMap<String, String>,
-    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]

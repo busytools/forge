@@ -36,7 +36,7 @@ async fn allow_path_completes_turn() {
         Message::Assistant { message, .. } => {
             assert!(
                 message.content.iter().any(
-                    |b| matches!(b, forge_sdk::content::ContentBlock::Text { text } if text.contains("edited"))
+                    |b| matches!(b, forge_sdk::ContentBlock::Text { text } if text.contains("edited"))
                 ),
                 "expected 'edited' text, got: {:?}",
                 message.content
@@ -72,7 +72,7 @@ async fn deny_path_completes_turn_with_denial_text() {
         Message::Assistant { message, .. } => {
             assert!(
                 message.content.iter().any(
-                    |b| matches!(b, forge_sdk::content::ContentBlock::Text { text } if text.contains("denied"))
+                    |b| matches!(b, forge_sdk::ContentBlock::Text { text } if text.contains("denied"))
                 ),
                 "expected 'denied' text when callback denies, got: {:?}",
                 message.content
@@ -100,7 +100,7 @@ async fn allow_with_updated_input_propagates() {
         Message::Assistant { message, .. } => {
             assert!(
                 message.content.iter().any(
-                    |b| matches!(b, forge_sdk::content::ContentBlock::Text { text } if text.contains("redirected"))
+                    |b| matches!(b, forge_sdk::ContentBlock::Text { text } if text.contains("redirected"))
                 ),
                 "expected redirected path in reply, got: {:?}",
                 message.content

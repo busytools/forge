@@ -14,7 +14,7 @@
 use serde_json::{Map, Value, json};
 
 use forge_primitives::{
-    BashOutputMetadata, ContentBlock, TodoWriteOutputMetadata, ToolCall, ToolCallContent,
+    BashOutputMetadata, ChunkContent, TodoWriteOutputMetadata, ToolCall, ToolCallContent,
     ToolCallUpdateFields, ToolLocation, ToolOutputMetadata,
 };
 
@@ -827,7 +827,7 @@ pub fn build_tool_result_fields(
     if !file_unchanged_text.is_empty() {
         fields.raw_output = Some(file_unchanged_text.clone());
         fields.content = Some(vec![ToolCallContent::Content {
-            content: ContentBlock::Text {
+            content: ChunkContent::Text {
                 text: file_unchanged_text,
             },
         }]);
@@ -911,7 +911,7 @@ pub fn build_tool_result_fields(
     // Generic fallback: wrap raw_output as content.
     if !raw_output.is_empty() {
         fields.content = Some(vec![ToolCallContent::Content {
-            content: ContentBlock::Text { text: raw_output },
+            content: ChunkContent::Text { text: raw_output },
         }]);
     }
     fields
@@ -1081,7 +1081,7 @@ mod tests {
         assert_eq!(f.raw_output.as_deref(), Some("hello\n"));
         // generic content fallback wraps the bash output as text.
         let Some(ToolCallContent::Content {
-            content: ContentBlock::Text { text },
+            content: ChunkContent::Text { text },
         }) = f.content.as_ref().and_then(|c| c.first())
         else {
             panic!("expected text content");

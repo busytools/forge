@@ -36,10 +36,10 @@ use crate::client::runtime::{
     PendingControls, SharedSessionId, new_shared_session_id, spawn_reader_task,
 };
 use crate::mcp::orchestration::McpHosts;
-use crate::messages::Message;
 use crate::options::Options;
 use crate::transport::codec::{DecodedLine, decode_dispatch};
 use crate::transport::process::Subprocess;
+use forge_primitives::Message;
 
 /// Stream of regular [`Message`]s produced by the reader task.
 /// Returned alongside [`Client`] from [`Client::spawn`]. Single-consumer;
@@ -421,17 +421,17 @@ impl Client {
     /// spawns a fresh subprocess outside the long-lived stream-json
     /// session.
     #[must_use]
-    pub fn account_info_from_init(&self) -> Option<crate::public_types::AccountInfo> {
+    pub fn account_info_from_init(&self) -> Option<forge_primitives::AccountInfo> {
         let data = self.inner.cached_init_data.as_ref()?;
         let api_key_source = data
             .get("apiKeySource")
             .and_then(serde_json::Value::as_str)
             .map(str::to_owned)
             .filter(|s| !s.is_empty() && s != "none")?;
-        Some(crate::public_types::AccountInfo {
+        Some(forge_primitives::AccountInfo {
             api_key_source: Some(api_key_source.clone()),
             token_source: Some(api_key_source),
-            ..crate::public_types::AccountInfo::default()
+            ..forge_primitives::AccountInfo::default()
         })
     }
 

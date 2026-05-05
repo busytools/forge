@@ -47,30 +47,34 @@
 
 pub mod argv;
 mod client;
-pub mod content;
 pub mod control;
 mod error;
 pub mod hooks;
 pub mod mcp;
-pub(crate) mod messages;
 mod options;
 pub mod paths;
 pub(crate) mod permissions;
-pub(crate) mod public_types;
 pub(crate) mod request_id;
 pub mod subagents;
 pub mod transport;
 
+#[doc(hidden)]
+pub use crate::mcp::macros::__private;
 pub use client::{Client, ClientEvents};
 pub use error::Error;
 pub use paths::{claude_config_dir, projects_dir};
-// Top-level message + content re-exports so consumers can say
-// `use forge_sdk::{AssistantEnvelope, StopReason, RateLimitInfo, ...}`
-// instead of reaching through `forge_sdk::messages::*`. Matches the
-// the flat `__init__.py` surface.
-#[doc(hidden)]
-pub use crate::mcp::macros::__private;
-pub use content::ContentBlock;
+// Wire-shape types live in forge-primitives now. Re-exported here so
+// pre-restructure imports (`use forge_sdk::Message`, `use forge_sdk::AccountInfo`,
+// …) keep resolving. New code should reach for `forge_primitives::*` directly —
+// primitives is the base crate, forge-sdk depends on it.
+pub use forge_primitives::{
+    AccountInfo, AssistantEnvelope, AssistantMessageError, ContentBlock, ContextUsageCategory,
+    ContextUsageResponse, McpServerConfig, McpServerConnectionStatus, McpServerInfo,
+    McpServerStatus, McpStatusResponse, McpToolAnnotations, McpToolInfo, Message, RateLimitInfo,
+    RateLimitStatus, RateLimitType, SDKSessionInfo, SandboxIgnoreViolations, SandboxNetworkConfig,
+    SandboxSettings, SessionMessage, SessionMessageKind, SettingSource, StopReason, StreamEvent,
+    TaskNotificationStatus, TaskUsage, Usage, UserEnvelope,
+};
 pub use hooks::{
     BaseHookInput, HookCallback, HookContext, HookDecision, HookKind, HookSpecificOutput, Hooks,
     HooksBuilder, NotificationHookSpecificOutput, NotificationInput,
@@ -81,10 +85,6 @@ pub use hooks::{
     SubagentStartHookSpecificOutput, SubagentStartInput, SubagentStopInput,
     UserPromptSubmitHookSpecificOutput, UserPromptSubmitInput,
 };
-pub use messages::{
-    AssistantEnvelope, AssistantMessageError, Message, RateLimitInfo, RateLimitStatus,
-    RateLimitType, StopReason, TaskNotificationStatus, TaskUsage, Usage, UserEnvelope,
-};
 pub use options::{
     Options, OptionsBuilder, PermissionMode, SdkPluginConfig, SystemPromptKind, ThinkingConfig,
     ToolsPreset,
@@ -93,18 +93,12 @@ pub use permissions::{
     CanUseToolCallback, PermissionBehavior, PermissionDecision, PermissionRuleValue,
     PermissionUpdate, PermissionUpdateDestination, ToolPermissionContext,
 };
-pub use public_types::{
-    AccountInfo, ContextUsageCategory, ContextUsageResponse, McpServerConfig,
-    McpServerConnectionStatus, McpServerInfo, McpServerStatus, McpStatusResponse,
-    McpToolAnnotations, McpToolInfo, SDKSessionInfo, SandboxIgnoreViolations, SandboxNetworkConfig,
-    SandboxSettings, SessionMessage, SessionMessageKind, SettingSource, StreamEvent,
-};
 
 /// Convenient alias for `Result<T, forge_sdk::Error>`.
 pub type Result<T, E = Error> = core::result::Result<T, E>;
 
 /// One-shot helper that spawns a client, sends a single prompt, drains
-/// every message up to and including the terminal [`messages::Message::Result`]
+/// every message up to and including the terminal [`Message::Result`]
 /// frame, and disconnects. SDK's top-level `query()`
 /// helper (`query.py:11-40`).
 ///
@@ -119,16 +113,13 @@ pub type Result<T, E = Error> = core::result::Result<T, E>;
 ///
 /// Any [`Error`] variant — see [`Client::spawn`],
 /// [`Client::send_user_message`], [`Client::disconnect`].
-pub async fn query(
-    prompt: impl AsRef<str>,
-    options: Option<Options>,
-) -> Result<Vec<messages::Message>> {
+pub async fn query(prompt: impl AsRef<str>, options: Option<Options>) -> Result<Vec<Message>> {
     let (client, mut events) = Client::spawn(options.unwrap_or_default()).await?;
     client.send_user_message(prompt.as_ref()).await?;
     let mut messages = Vec::new();
     while let Some(item) = events.recv().await {
         let msg = item?;
-        let is_result = matches!(msg, messages::Message::Result { .. });
+        let is_result = matches!(msg, Message::Result { .. });
         messages.push(msg);
         if is_result {
             break;
@@ -155,9 +146,9 @@ pub async fn query(
 pub fn query_stream(
     prompt: impl Into<String>,
     options: Option<Options>,
-) -> impl tokio_stream::Stream<Item = Result<messages::Message>> + Send + 'static {
+) -> impl tokio_stream::Stream<Item = Result<Message>> + Send + 'static {
     let prompt = prompt.into();
-    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Result<messages::Message>>();
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Result<Message>>();
     tokio::spawn(async move {
         let (client, mut events) = match Client::spawn(options.unwrap_or_default()).await {
             Ok(pair) => pair,
@@ -181,7 +172,7 @@ pub fn query_stream(
         while let Some(item) = events.recv().await {
             match item {
                 Ok(msg) => {
-                    let is_result = matches!(msg, messages::Message::Result { .. });
+                    let is_result = matches!(msg, Message::Result { .. });
                     if tx.send(Ok(msg)).is_err() {
                         // Consumer dropped the stream — stop driving.
                         break;

@@ -84,12 +84,12 @@ async fn real_claude_calls_in_process_tool() {
             Message::Assistant { message, .. } => {
                 for block in message.content {
                     match block {
-                        forge_sdk::content::ContentBlock::ToolUse { name, .. } => {
+                        forge_sdk::ContentBlock::ToolUse { name, .. } => {
                             if name == "mcp__probe__greet" {
                                 saw_tool_use = true;
                             }
                         }
-                        forge_sdk::content::ContentBlock::Text { text } => {
+                        forge_sdk::ContentBlock::Text { text } => {
                             if text.contains("Hello, world!") {
                                 saw_greeting = true;
                             }

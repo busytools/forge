@@ -102,7 +102,7 @@ impl ControlDispatchHandle {
     /// Capture a session id from an incoming Message. No-op once a
     /// non-empty id has been bound. Called by the reader task on every
     /// message.
-    pub(crate) fn capture_session_id_from(&self, msg: &crate::messages::Message) {
+    pub(crate) fn capture_session_id_from(&self, msg: &forge_primitives::Message) {
         if let Some(id) = msg.session_id()
             && !id.is_empty()
         {

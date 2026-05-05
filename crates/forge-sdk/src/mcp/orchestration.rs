@@ -12,7 +12,7 @@ use std::collections::HashMap;
 
 use crate::mcp::McpServer;
 use crate::mcp::protocol::{JsonRpcRequest, JsonRpcResponse};
-use crate::public_types::McpServerConfig;
+use forge_primitives::McpServerConfig;
 
 /// Registry of MCP servers (both in-process SDK and external stdio /
 /// SSE / HTTP). Keyed by the name under which the caller registered

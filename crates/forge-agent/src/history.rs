@@ -7,7 +7,7 @@ use std::collections::HashMap;
 
 use serde_json::Value;
 
-use forge_primitives::{ContentBlock, SessionUpdate, ToolCall, ToolCallUpdate};
+use forge_primitives::{ChunkContent, SessionUpdate, ToolCall, ToolCallUpdate};
 
 use super::tooling::{
     TOOL_RESULT_TYPES, build_tool_result_fields, create_tool_call, is_tool_use_block_type,
@@ -31,7 +31,7 @@ fn push_resume_text_chunk(updates: &mut Vec<SessionUpdate>, role: &str, text: &s
     if text.trim().is_empty() {
         return;
     }
-    let block = ContentBlock::Text {
+    let block = ChunkContent::Text {
         text: text.to_owned(),
     };
     updates.push(if role == "assistant" {
@@ -269,7 +269,7 @@ mod tests {
         let updates = map_session_messages_to_updates(&messages);
         assert_eq!(updates.len(), 1);
         let SessionUpdate::UserMessageChunk {
-            content: ContentBlock::Text { text },
+            content: ChunkContent::Text { text },
         } = &updates[0]
         else {
             panic!()

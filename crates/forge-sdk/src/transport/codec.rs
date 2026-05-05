@@ -4,7 +4,7 @@ use serde_json::{Value, json};
 
 use crate::Error;
 use crate::control::ControlRequest;
-use crate::messages::Message;
+use forge_primitives::Message;
 
 /// A single stream-json line from the subprocess — either a regular message
 /// or a control request.

@@ -158,8 +158,8 @@ impl Client {
     ///
     /// See the outbound control error cases, plus [`Error::MessageParse`]
     /// when the CLI payload doesn't match
-    /// [`McpStatusResponse`](crate::public_types::McpStatusResponse).
-    pub async fn mcp_status(&self) -> Result<crate::public_types::McpStatusResponse, Error> {
+    /// [`McpStatusResponse`](forge_primitives::McpStatusResponse).
+    pub async fn mcp_status(&self) -> Result<forge_primitives::McpStatusResponse, Error> {
         let raw = self
             .send_control("mcp_status", serde_json::json!({}))
             .await?;
@@ -168,7 +168,7 @@ impl Client {
 
     /// Query MCP server status, returning the raw JSON payload. Use this
     /// escape hatch when the CLI returns fields not yet modelled by
-    /// [`McpStatusResponse`](crate::public_types::McpStatusResponse).
+    /// [`McpStatusResponse`](forge_primitives::McpStatusResponse).
     ///
     /// # Errors
     ///
@@ -184,10 +184,8 @@ impl Client {
     ///
     /// See the outbound control error cases, plus [`Error::MessageParse`]
     /// when the CLI payload doesn't match
-    /// [`ContextUsageResponse`](crate::public_types::ContextUsageResponse).
-    pub async fn get_context_usage(
-        &self,
-    ) -> Result<crate::public_types::ContextUsageResponse, Error> {
+    /// [`ContextUsageResponse`](forge_primitives::ContextUsageResponse).
+    pub async fn get_context_usage(&self) -> Result<forge_primitives::ContextUsageResponse, Error> {
         let raw = self
             .send_control("get_context_usage", serde_json::json!({}))
             .await?;
@@ -197,7 +195,7 @@ impl Client {
 
     /// Query current context usage, returning the raw JSON payload.
     /// Use this when the CLI returns fields not yet modelled by
-    /// [`ContextUsageResponse`](crate::public_types::ContextUsageResponse).
+    /// [`ContextUsageResponse`](forge_primitives::ContextUsageResponse).
     ///
     /// # Errors
     ///

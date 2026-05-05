@@ -36,7 +36,7 @@ async fn pre_tool_use_replaces_input() {
         Message::Assistant { message, .. } => {
             assert!(
                 message.content.iter().any(
-                    |b| matches!(b, forge_sdk::content::ContentBlock::Text { text } if text.contains("echo replaced"))
+                    |b| matches!(b, forge_sdk::ContentBlock::Text { text } if text.contains("echo replaced"))
                 ),
                 "expected replaced command in reply, got: {:?}",
                 message.content
@@ -72,7 +72,7 @@ async fn pre_tool_use_deny_propagates() {
         Message::Assistant { message, .. } => {
             assert!(
                 message.content.iter().any(
-                    |b| matches!(b, forge_sdk::content::ContentBlock::Text { text } if text.contains("hook denied"))
+                    |b| matches!(b, forge_sdk::ContentBlock::Text { text } if text.contains("hook denied"))
                 ),
                 "expected deny text, got: {:?}",
                 message.content

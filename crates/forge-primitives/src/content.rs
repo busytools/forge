@@ -5,7 +5,7 @@
 //! block types land in [`ContentBlock::Unknown`] so the decoder is
 //! forward-compatible with new Anthropic API blocks (`document`,
 //! future types) without an SDK bump — mirrors the top-level
-//! [`DecodedLine::Unknown`](crate::transport::codec::DecodedLine)
+//! the SDK's `DecodedLine::Unknown`
 //! fallback.
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -117,7 +117,7 @@ pub enum ContentBlock {
     /// doesn't model explicitly. Callers can branch on `type_str` +
     /// inspect `raw` — the decoder never errors on an unrecognised
     /// block. Mirrors the top-level
-    /// [`DecodedLine::Unknown`](crate::transport::codec::DecodedLine)
+    /// the SDK's `DecodedLine::Unknown`
     /// fallback pattern.
     Unknown {
         /// The unrecognised `type` field value.

@@ -10,7 +10,7 @@ use serde_json::Value;
 /// `Literal["user", "project", "local"]`.
 ///
 /// Combinations are expressed by passing multiple variants — see
-/// [`OptionsBuilder::setting_sources`](crate::OptionsBuilder::setting_sources).
+/// `forge_sdk::OptionsBuilder::setting_sources`.
 /// The CLI resolves the actual on-disk paths from whichever
 /// `CLAUDE_CONFIG_DIR` is active (env var wins, else `$HOME/.claude`);
 /// the paths below describe the layout, not hardcoded locations.
@@ -316,8 +316,8 @@ pub struct ContextUsageResponse {
 /// External MCP server wire-config (non-SDK variants). Wire shape:
 /// `McpStdioServerConfig / McpSSEServerConfig / McpHttpServerConfig`
 ///. The in-process SDK variant lives on the
-/// `McpServer` handle directly — use [`OptionsBuilder::mcp_server`](
-/// crate::OptionsBuilder::mcp_server) for that.
+/// `McpServer` handle directly — use `forge_sdk::OptionsBuilder::mcp_server`
+/// for that.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum McpServerConfig {

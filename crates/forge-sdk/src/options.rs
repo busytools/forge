@@ -100,8 +100,7 @@ pub struct Options {
     /// variants of the CLI's `ClaudeAgentOptions.mcp_servers`
     ///. Registered alongside in-process servers in
     /// the `--mcp-config` JSON.
-    pub external_mcp_servers:
-        std::collections::HashMap<String, crate::public_types::McpServerConfig>,
+    pub external_mcp_servers: std::collections::HashMap<String, forge_primitives::McpServerConfig>,
     /// Registered hooks. Empty by default.
     pub hooks: Hooks,
     /// Tool names the model is allowed to invoke. Passed to the CLI as
@@ -230,7 +229,7 @@ pub struct Options {
     /// Sandbox configuration — merged into
     /// [`settings`](Self::settings) JSON when emitted via
     /// `--settings`.
-    pub sandbox: Option<crate::public_types::SandboxSettings>,
+    pub sandbox: Option<forge_primitives::SandboxSettings>,
 }
 
 impl Default for Options {
@@ -621,7 +620,7 @@ impl OptionsBuilder {
     pub fn external_mcp_server(
         mut self,
         name: impl Into<String>,
-        config: crate::public_types::McpServerConfig,
+        config: forge_primitives::McpServerConfig,
     ) -> Self {
         self.inner.external_mcp_servers.insert(name.into(), config);
         self
@@ -951,7 +950,7 @@ impl OptionsBuilder {
     /// Attach sandbox settings. Merged into `--settings` JSON if
     /// `settings` is also set.
     #[must_use]
-    pub fn sandbox(mut self, sandbox: crate::public_types::SandboxSettings) -> Self {
+    pub fn sandbox(mut self, sandbox: forge_primitives::SandboxSettings) -> Self {
         self.inner.sandbox = Some(sandbox);
         self
     }
