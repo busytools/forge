@@ -145,20 +145,18 @@ async fn handle_line(
             let resp_subtype =
                 value.pointer("/response/subtype").and_then(serde_json::Value::as_str);
             let outcome = if resp_subtype == Some("success") {
-                Ok(value
-                    .pointer("/response/response")
-                    .cloned()
-                    .unwrap_or(serde_json::Value::Null))
+                Ok(value.pointer("/response/response").cloned().unwrap_or(serde_json::Value::Null))
             } else {
-                let err = value.pointer("/response/error").and_then(serde_json::Value::as_str)
+                let err = value
+                    .pointer("/response/error")
+                    .and_then(serde_json::Value::as_str)
                     .map_or_else(
                         || {
                             format!(
                                 "no `error` string field; full response: {}",
-                                value.pointer("/response").map_or_else(
-                                    || "<missing>".to_string(),
-                                    ToString::to_string,
-                                )
+                                value
+                                    .pointer("/response")
+                                    .map_or_else(|| "<missing>".to_string(), ToString::to_string,)
                             )
                         },
                         ToString::to_string,

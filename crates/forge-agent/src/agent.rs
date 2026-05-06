@@ -121,11 +121,7 @@ impl AgentHandle {
         self.send(Command::ResumeSession { session_id: session_id.into(), launch_settings })
     }
 
-    pub fn prompt_text(
-        &self,
-        session_id: String,
-        text: String,
-    ) -> anyhow::Result<()> {
+    pub fn prompt_text(&self, session_id: String, text: String) -> anyhow::Result<()> {
         self.send(Command::Prompt { session_id: session_id.into(), text })
     }
 
