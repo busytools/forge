@@ -1,11 +1,7 @@
 //! Connection task: spin up a [`ForgeSdkBridge`], wire its event
 //! receiver into the App's [`ClientEvent`] channel, and own the
-//! permission/question response forwarders.
-//!
-//! Pre-collapse this lived split across `bridge_lifecycle.rs` (worker
-//! setup) and `event_dispatch.rs` (`AgentEvent` → `ClientEvent`
-//! translator). Post-collapse the bridge owns the worker concerns,
-//! and the translation lives here as private helpers.
+//! permission/question response forwarders. The `AgentEvent` →
+//! `ClientEvent` translation lives here as private helpers.
 
 use crate::agent::client::AgentEvent;
 use crate::agent::events::ClientEvent;

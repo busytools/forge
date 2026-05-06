@@ -60,8 +60,7 @@ id_impls!(ToolUseId);
 id_impls!(MessageId);
 
 // Convenience comparisons so call sites can write `id == "literal"`
-// without unwrapping the newtype. Saves churn during the phase 6
-// migration; can be removed if it stops earning its keep.
+// without unwrapping the newtype.
 macro_rules! id_str_eq {
     ($name:ident) => {
         impl PartialEq<str> for $name {
