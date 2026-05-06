@@ -31,10 +31,7 @@ fn unique_mode_ids(modes: Vec<PermissionMode>) -> Vec<PermissionMode> {
     for m in modes {
         seen.insert(m);
     }
-    CANONICAL_ORDER
-        .into_iter()
-        .filter(|m| seen.contains(m))
-        .collect()
+    CANONICAL_ORDER.into_iter().filter(|m| seen.contains(m)).collect()
 }
 
 /// Computes the supported-mode list from primitive inputs.
@@ -92,11 +89,7 @@ fn mode_info_for_id(mode: PermissionMode) -> ModeInfo {
 /// `ModeState.available_modes`.
 #[must_use]
 fn available_modes_from_supported(supported_mode_ids: &[PermissionMode]) -> Vec<ModeInfo> {
-    supported_mode_ids
-        .iter()
-        .copied()
-        .map(mode_info_for_id)
-        .collect()
+    supported_mode_ids.iter().copied().map(mode_info_for_id).collect()
 }
 
 /// Composes a `ModeState` from the active mode + the resolved

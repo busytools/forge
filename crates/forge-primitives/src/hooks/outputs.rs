@@ -66,32 +66,16 @@ pub struct PreToolUseHookSpecificOutput {
     #[serde(rename = "hookEventName", default)]
     pub event_name: PreToolUseTag,
     /// Optional permission decision.
-    #[serde(
-        default,
-        rename = "permissionDecision",
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(default, rename = "permissionDecision", skip_serializing_if = "Option::is_none")]
     pub permission_decision: Option<PreToolUsePermissionDecision>,
     /// Human-readable reason attached to the permission decision.
-    #[serde(
-        default,
-        rename = "permissionDecisionReason",
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(default, rename = "permissionDecisionReason", skip_serializing_if = "Option::is_none")]
     pub permission_decision_reason: Option<String>,
     /// Substitute input the tool should run with instead of the proposed one.
-    #[serde(
-        default,
-        rename = "updatedInput",
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(default, rename = "updatedInput", skip_serializing_if = "Option::is_none")]
     pub updated_input: Option<Value>,
     /// Out-of-band context to inject into the session.
-    #[serde(
-        default,
-        rename = "additionalContext",
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(default, rename = "additionalContext", skip_serializing_if = "Option::is_none")]
     pub additional_context: Option<String>,
 }
 
@@ -102,18 +86,10 @@ pub struct PostToolUseHookSpecificOutput {
     #[serde(rename = "hookEventName", default)]
     pub event_name: PostToolUseTag,
     /// Out-of-band context to inject.
-    #[serde(
-        default,
-        rename = "additionalContext",
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(default, rename = "additionalContext", skip_serializing_if = "Option::is_none")]
     pub additional_context: Option<String>,
     /// Replacement MCP-tool output (for in-process MCP servers).
-    #[serde(
-        default,
-        rename = "updatedMCPToolOutput",
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(default, rename = "updatedMCPToolOutput", skip_serializing_if = "Option::is_none")]
     pub updated_mcp_tool_output: Option<Value>,
 }
 
@@ -124,11 +100,7 @@ pub struct PostToolUseFailureHookSpecificOutput {
     #[serde(rename = "hookEventName", default)]
     pub event_name: PostToolUseFailureTag,
     /// Out-of-band context to inject.
-    #[serde(
-        default,
-        rename = "additionalContext",
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(default, rename = "additionalContext", skip_serializing_if = "Option::is_none")]
     pub additional_context: Option<String>,
 }
 
@@ -139,11 +111,7 @@ pub struct UserPromptSubmitHookSpecificOutput {
     #[serde(rename = "hookEventName", default)]
     pub event_name: UserPromptSubmitTag,
     /// Out-of-band context to inject alongside the submitted prompt.
-    #[serde(
-        default,
-        rename = "additionalContext",
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(default, rename = "additionalContext", skip_serializing_if = "Option::is_none")]
     pub additional_context: Option<String>,
 }
 
@@ -154,11 +122,7 @@ pub struct SessionStartHookSpecificOutput {
     #[serde(rename = "hookEventName", default)]
     pub event_name: SessionStartTag,
     /// Out-of-band context to inject at session start.
-    #[serde(
-        default,
-        rename = "additionalContext",
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(default, rename = "additionalContext", skip_serializing_if = "Option::is_none")]
     pub additional_context: Option<String>,
 }
 
@@ -169,11 +133,7 @@ pub struct NotificationHookSpecificOutput {
     #[serde(rename = "hookEventName", default)]
     pub event_name: NotificationTag,
     /// Out-of-band context to inject when reacting to a notification.
-    #[serde(
-        default,
-        rename = "additionalContext",
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(default, rename = "additionalContext", skip_serializing_if = "Option::is_none")]
     pub additional_context: Option<String>,
 }
 
@@ -184,11 +144,7 @@ pub struct SubagentStartHookSpecificOutput {
     #[serde(rename = "hookEventName", default)]
     pub event_name: SubagentStartTag,
     /// Out-of-band context to inject when a sub-agent starts.
-    #[serde(
-        default,
-        rename = "additionalContext",
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(default, rename = "additionalContext", skip_serializing_if = "Option::is_none")]
     pub additional_context: Option<String>,
 }
 
@@ -336,10 +292,7 @@ mod tests_hooks_specific_output {
         assert_eq!(v["permissionDecision"], "allow");
         assert_eq!(v["permissionDecisionReason"], "matched allowlist");
         assert_eq!(v["updatedInput"], json!({"command": "echo safe"}));
-        assert!(
-            v.get("additionalContext").is_none(),
-            "None-valued fields must not serialise"
-        );
+        assert!(v.get("additionalContext").is_none(), "None-valued fields must not serialise");
     }
 
     #[test]
@@ -373,10 +326,8 @@ mod tests_hooks_specific_output {
 
     #[test]
     fn post_tool_use_failure_hook_specific_output_minimal() {
-        let out = PostToolUseFailureHookSpecificOutput {
-            additional_context: None,
-            ..Default::default()
-        };
+        let out =
+            PostToolUseFailureHookSpecificOutput { additional_context: None, ..Default::default() };
         let v = serde_json::to_value(&out).expect("serialise");
         assert_eq!(
             v,
@@ -398,10 +349,7 @@ mod tests_hooks_specific_output {
 
     #[test]
     fn session_start_hook_specific_output_discriminator_only() {
-        let out = SessionStartHookSpecificOutput {
-            additional_context: None,
-            ..Default::default()
-        };
+        let out = SessionStartHookSpecificOutput { additional_context: None, ..Default::default() };
         let v = serde_json::to_value(&out).expect("serialise");
         assert_eq!(v, json!({"hookEventName": "SessionStart"}));
     }

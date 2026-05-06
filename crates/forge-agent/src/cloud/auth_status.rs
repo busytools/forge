@@ -79,10 +79,7 @@ fn map_auth_method_to_api_key_source(auth_method: &str) -> &str {
 /// thereafter (claude warms up its keychain reads in-process).
 #[must_use]
 pub fn account_info_from_shell() -> Option<AccountInfo> {
-    let output = std::process::Command::new("claude")
-        .args(["auth", "status"])
-        .output()
-        .ok()?;
+    let output = std::process::Command::new("claude").args(["auth", "status"]).output().ok()?;
     if !output.status.success() {
         return None;
     }
@@ -94,10 +91,8 @@ fn parse_auth_status(stdout: &[u8]) -> Option<AccountInfo> {
     if !parsed.logged_in {
         return None;
     }
-    let api_key_source = parsed
-        .auth_method
-        .as_deref()
-        .map(|m| map_auth_method_to_api_key_source(m).to_owned());
+    let api_key_source =
+        parsed.auth_method.as_deref().map(|m| map_auth_method_to_api_key_source(m).to_owned());
     Some(AccountInfo {
         email: parsed.email,
         organization: parsed.org_name,

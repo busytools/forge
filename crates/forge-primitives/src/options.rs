@@ -82,10 +82,7 @@ impl SystemPromptKind {
     /// `{"type": "preset", "preset": "claude_code", "append": ...}`.
     #[must_use]
     pub fn preset_append(append: impl Into<String>) -> Self {
-        Self::Preset {
-            append: Some(append.into()),
-            exclude_dynamic_sections: None,
-        }
+        Self::Preset { append: Some(append.into()), exclude_dynamic_sections: None }
     }
 }
 

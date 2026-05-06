@@ -9,34 +9,12 @@ rust-version.workspace = true
 description = "Drives a forge-sdk Client; runs callback runtime; manages session lifecycle. The brain between forge-sdk and forge-tui."
 publish = false
 
-[lints.rust]
-unsafe_code = "forbid"
-# Field-level docs would be noise on lifted types; module-level docs cover.
-missing_docs = "allow"
-
-[lints.clippy]
-pedantic = { level = "warn", priority = -1 }
-unwrap_used = "deny"
-expect_used = "deny"
-panic = "deny"
-exit = "deny"
-todo = "deny"
-unimplemented = "deny"
-module_name_repetitions = "allow"
-# Lifted from forge-tui where these were already allowed; bridge code
-# is internal to forge so doc rigor is lower priority than wire correctness.
-missing_errors_doc = "allow"
-missing_panics_doc = "allow"
-must_use_candidate = "allow"
-doc_markdown = "allow"
-# Translator + dispatcher fns each match every variant of large enums;
-# splitting helps no one. Same for the `Option<...>` return on translate().
-too_many_lines = "allow"
-unnecessary_wraps = "allow"
+[lints]
+workspace = true
 
 [dependencies]
 forge-primitives = { workspace = true }
-forge-sdk = { path = "../forge-sdk", version = "=0.1.64" }
+forge-sdk = { path = "../forge-sdk", version = "=0.14.0" }
 tokio = { workspace = true, features = ["full"] }
 serde = { workspace = true }
 serde_json = { workspace = true }

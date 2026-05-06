@@ -23,13 +23,11 @@ pub fn map_available_agents_from_names(value: Option<&Value>) -> Vec<AvailableAg
         if name.is_empty() {
             continue;
         }
-        by_name
-            .entry(name.clone())
-            .or_insert_with(|| AvailableAgent {
-                name,
-                description: String::new(),
-                model: None,
-            });
+        by_name.entry(name.clone()).or_insert_with(|| AvailableAgent {
+            name,
+            description: String::new(),
+            model: None,
+        });
     }
     by_name.into_values().collect()
 }
@@ -44,9 +42,6 @@ mod tests {
     fn map_agents_from_names_dedupes_and_sorts() {
         let v = json!(["b", "a", "a", " ", "c"]);
         let agents = map_available_agents_from_names(Some(&v));
-        assert_eq!(
-            agents.iter().map(|a| a.name.as_str()).collect::<Vec<_>>(),
-            vec!["a", "b", "c"]
-        );
+        assert_eq!(agents.iter().map(|a| a.name.as_str()).collect::<Vec<_>>(), vec!["a", "b", "c"]);
     }
 }

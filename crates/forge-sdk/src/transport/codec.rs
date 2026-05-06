@@ -65,10 +65,8 @@ pub enum DecodedLine {
 /// - [`Error::MessageParse`] when the JSON parses but doesn't match any
 ///   known message shape.
 pub fn decode_line(line: &str, line_number: u64) -> Result<Message, Error> {
-    let value: Value = serde_json::from_str(line).map_err(|source| Error::JsonDecode {
-        line: line_number,
-        source,
-    })?;
+    let value: Value = serde_json::from_str(line)
+        .map_err(|source| Error::JsonDecode { line: line_number, source })?;
     serde_json::from_value(value)
         .map_err(|e| Error::message_parse(format!("line {line_number}: {e}")))
 }
@@ -89,10 +87,8 @@ pub fn decode_line(line: &str, line_number: u64) -> Result<Message, Error> {
 /// - [`Error::MessageParse`] when the `type` field is missing entirely
 ///   or the inner shape of a recognised type is invalid.
 pub fn decode_dispatch(line: &str, line_number: u64) -> Result<DecodedLine, Error> {
-    let value: Value = serde_json::from_str(line).map_err(|source| Error::JsonDecode {
-        line: line_number,
-        source,
-    })?;
+    let value: Value = serde_json::from_str(line)
+        .map_err(|source| Error::JsonDecode { line: line_number, source })?;
     let ty = value
         .get("type")
         .and_then(|v| v.as_str())
@@ -123,14 +119,10 @@ pub fn decode_dispatch(line: &str, line_number: u64) -> Result<DecodedLine, Erro
             // it under `unknown_types` rather than as a "valid"
             // ControlResponse. The runtime path (`send_control` /
             // `next_event`) treats unknowns as warn-and-skip.
-            match value
-                .pointer("/response/request_id")
-                .and_then(Value::as_str)
-            {
-                Some(rid) => Ok(DecodedLine::ControlResponse {
-                    request_id: rid.to_string(),
-                    raw: value,
-                }),
+            match value.pointer("/response/request_id").and_then(Value::as_str) {
+                Some(rid) => {
+                    Ok(DecodedLine::ControlResponse { request_id: rid.to_string(), raw: value })
+                }
                 None => Ok(DecodedLine::Unknown {
                     type_str: "control_response (missing /response/request_id)".to_string(),
                     raw: value,
@@ -143,10 +135,7 @@ pub fn decode_dispatch(line: &str, line_number: u64) -> Result<DecodedLine, Erro
                 .map_err(|e| Error::message_parse(format!("line {line_number}: {e}")))?;
             Ok(DecodedLine::Message(msg))
         }
-        other => Ok(DecodedLine::Unknown {
-            type_str: other.to_string(),
-            raw: value,
-        }),
+        other => Ok(DecodedLine::Unknown { type_str: other.to_string(), raw: value }),
     }
 }
 

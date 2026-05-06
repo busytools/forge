@@ -19,10 +19,8 @@ const TINY_PNG_BASE64: &str =
 #[tokio::test]
 #[ignore = "burns real Anthropic API tokens; opt-in via FORGE_WIRE_CAPTURE=1"]
 async fn wire_capture_user_message_blocks() {
-    let opts = OptionsBuilder::new()
-        .max_turns(1)
-        .permission_mode(PermissionMode::AcceptEdits)
-        .build();
+    let opts =
+        OptionsBuilder::new().max_turns(1).permission_mode(PermissionMode::AcceptEdits).build();
 
     run_live_scenario("user_message_blocks", opts, |client, events| async move {
         let content = vec![

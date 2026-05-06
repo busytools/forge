@@ -51,14 +51,12 @@ const CLOSE_WAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5
 /// on any other spawn/wait failure; [`Error::Process`] when the version
 /// probe exits non-zero.
 pub fn query_cli_version(binary: &str) -> Result<String, Error> {
-    let output = std::process::Command::new(binary)
-        .arg("--version")
-        .output()
-        .map_err(|e| match e.kind() {
-            std::io::ErrorKind::NotFound => Error::CliNotFound {
-                binary: binary.to_string(),
-            },
-            _ => Error::Io(e),
+    let output =
+        std::process::Command::new(binary).arg("--version").output().map_err(|e| {
+            match e.kind() {
+                std::io::ErrorKind::NotFound => Error::CliNotFound { binary: binary.to_string() },
+                _ => Error::Io(e),
+            }
         })?;
     if !output.status.success() {
         return Err(Error::Process {
@@ -84,19 +82,14 @@ pub fn check_cli_version(reported: &str, min_version: &str) -> Result<(), Error>
         .ok_or_else(|| Error::Connection {
             reason: format!("could not parse claude version from: {reported}"),
         })?;
-    let major: u32 = token
-        .split('.')
-        .next()
-        .and_then(|s| s.parse().ok())
-        .ok_or_else(|| Error::Connection {
-            reason: format!("could not parse major version from: {token}"),
-        })?;
-    let min_major: u32 = min_version
-        .split('.')
-        .next()
-        .and_then(|s| s.parse().ok())
-        .ok_or_else(|| Error::Connection {
-            reason: format!("could not parse minimum major from: {min_version}"),
+    let major: u32 = token.split('.').next().and_then(|s| s.parse().ok()).ok_or_else(|| {
+        Error::Connection { reason: format!("could not parse major version from: {token}") }
+    })?;
+    let min_major: u32 =
+        min_version.split('.').next().and_then(|s| s.parse().ok()).ok_or_else(|| {
+            Error::Connection {
+                reason: format!("could not parse minimum major from: {min_version}"),
+            }
         })?;
     if major < min_major {
         return Err(Error::Connection {
@@ -230,28 +223,27 @@ impl Subprocess {
             }
         }
 
-        cmd.stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+        cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
         cmd.kill_on_drop(true);
 
         debug!(?cmd, "spawning claude subprocess");
         let mut child = cmd.spawn().map_err(|e| match e.kind() {
-            std::io::ErrorKind::NotFound => Error::CliNotFound {
-                binary: options.binary.clone(),
-            },
+            std::io::ErrorKind::NotFound => Error::CliNotFound { binary: options.binary.clone() },
             _ => Error::Io(e),
         })?;
 
-        let stdin = child.stdin.take().ok_or_else(|| Error::Connection {
-            reason: "stdin pipe missing".into(),
-        })?;
-        let stdout = child.stdout.take().ok_or_else(|| Error::Connection {
-            reason: "stdout pipe missing".into(),
-        })?;
-        let stderr = child.stderr.take().ok_or_else(|| Error::Connection {
-            reason: "stderr pipe missing".into(),
-        })?;
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| Error::Connection { reason: "stdin pipe missing".into() })?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| Error::Connection { reason: "stdout pipe missing".into() })?;
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| Error::Connection { reason: "stderr pipe missing".into() })?;
 
         let stderr_callback = options.stderr.clone();
         let stderr_task = tokio::spawn(drain_stderr(stderr, stderr_callback));
@@ -298,14 +290,12 @@ impl Subprocess {
     /// [`end_input`](Self::end_input) or [`close`](Self::close).
     pub async fn write_line(&mut self, line: &str) -> Result<(), Error> {
         let (ack_tx, ack_rx) = oneshot::channel();
-        self.writer_tx
-            .send(WriterCmd::Write(line.to_owned(), ack_tx))
-            .map_err(|_| {
-                Error::Io(std::io::Error::new(
-                    std::io::ErrorKind::BrokenPipe,
-                    "Subprocess writer task gone",
-                ))
-            })?;
+        self.writer_tx.send(WriterCmd::Write(line.to_owned(), ack_tx)).map_err(|_| {
+            Error::Io(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "Subprocess writer task gone",
+            ))
+        })?;
         ack_rx.await.map_err(|_| {
             Error::Io(std::io::Error::new(
                 std::io::ErrorKind::BrokenPipe,
@@ -343,9 +333,7 @@ impl Subprocess {
     /// loop.
     #[must_use]
     pub(crate) fn clone_writer(&self) -> Arc<dyn AsyncWriter> {
-        Arc::new(SharedWriter {
-            writer_tx: self.writer_tx.clone(),
-        })
+        Arc::new(SharedWriter { writer_tx: self.writer_tx.clone() })
     }
 
     /// Graceful shutdown: close stdin, wait for the subprocess to
@@ -380,10 +368,9 @@ impl Subprocess {
         let child_result = if let Some(mut child) = self.child.take() {
             match tokio::time::timeout(CLOSE_WAIT_TIMEOUT, child.wait()).await {
                 Ok(Ok(status)) if status.success() => Ok(()),
-                Ok(Ok(status)) => Err(Error::Process {
-                    exit_code: status.code(),
-                    stderr: String::new(),
-                }),
+                Ok(Ok(status)) => {
+                    Err(Error::Process { exit_code: status.code(), stderr: String::new() })
+                }
                 Ok(Err(e)) => Err(Error::Io(e)),
                 Err(_elapsed) => {
                     warn!("Subprocess::close timed out waiting for child; sending SIGKILL");
@@ -428,14 +415,9 @@ struct SharedWriter {
 impl AsyncWriter for SharedWriter {
     async fn write_line(&self, line: &str) -> Result<(), Error> {
         let (ack_tx, ack_rx) = oneshot::channel();
-        self.writer_tx
-            .send(WriterCmd::Write(line.to_owned(), ack_tx))
-            .map_err(|_| {
-                Error::Io(std::io::Error::new(
-                    std::io::ErrorKind::BrokenPipe,
-                    "SharedWriter task gone",
-                ))
-            })?;
+        self.writer_tx.send(WriterCmd::Write(line.to_owned(), ack_tx)).map_err(|_| {
+            Error::Io(std::io::Error::new(std::io::ErrorKind::BrokenPipe, "SharedWriter task gone"))
+        })?;
         ack_rx.await.map_err(|_| {
             Error::Io(std::io::Error::new(
                 std::io::ErrorKind::BrokenPipe,
@@ -576,9 +558,7 @@ mod tests {
     fn spawn_sleep_subprocess(secs: u64) -> Subprocess {
         let mut cmd = Command::new("/bin/sleep");
         cmd.arg(secs.to_string());
-        cmd.stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+        cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
         cmd.kill_on_drop(true);
         let mut child = cmd.spawn().expect("spawn /bin/sleep");
         let stdin = child.stdin.take().expect("stdin");
@@ -612,10 +592,7 @@ mod tests {
         let result = sub.close().await;
         let elapsed = start.elapsed();
 
-        assert!(
-            elapsed <= Duration::from_secs(6),
-            "close() took {elapsed:?}, expected <= 6s"
-        );
+        assert!(elapsed <= Duration::from_secs(6), "close() took {elapsed:?}, expected <= 6s");
         match result {
             Err(Error::Process { stderr, .. }) => {
                 assert!(

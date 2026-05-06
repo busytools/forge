@@ -37,9 +37,7 @@ pub fn is_valid_base64(data: &str) -> bool {
     if !clean.len().is_multiple_of(4) {
         return false;
     }
-    base64::engine::general_purpose::STANDARD
-        .decode(clean)
-        .is_ok()
+    base64::engine::general_purpose::STANDARD.decode(clean).is_ok()
 }
 
 /// Validate an image attachment before sending to the API.

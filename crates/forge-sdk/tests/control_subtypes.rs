@@ -12,9 +12,7 @@ fn fixture(name: &str) -> String {
 }
 
 async fn spawn_client() -> Client {
-    let opts = OptionsBuilder::new()
-        .binary(fixture("mock_claude_control.sh"))
-        .build();
+    let opts = OptionsBuilder::new().binary(fixture("mock_claude_control.sh")).build();
     // This test exercises the writer-side control-request round-trips
     // and never reads events; drop the events receiver immediately.
     let (client, _events) = Client::spawn(opts).await.expect("spawn");
@@ -31,40 +29,28 @@ async fn interrupt_round_trip() {
 #[tokio::test]
 async fn set_permission_mode_round_trip() {
     let client = spawn_client().await;
-    client
-        .set_permission_mode(PermissionMode::AcceptEdits)
-        .await
-        .expect("set_permission_mode");
+    client.set_permission_mode(PermissionMode::AcceptEdits).await.expect("set_permission_mode");
     client.disconnect().await.expect("disconnect");
 }
 
 #[tokio::test]
 async fn rewind_files_round_trip() {
     let client = spawn_client().await;
-    client
-        .rewind_files("msg_user_01")
-        .await
-        .expect("rewind_files");
+    client.rewind_files("msg_user_01").await.expect("rewind_files");
     client.disconnect().await.expect("disconnect");
 }
 
 #[tokio::test]
 async fn mcp_reconnect_round_trip() {
     let client = spawn_client().await;
-    client
-        .mcp_reconnect("my-server")
-        .await
-        .expect("mcp_reconnect");
+    client.mcp_reconnect("my-server").await.expect("mcp_reconnect");
     client.disconnect().await.expect("disconnect");
 }
 
 #[tokio::test]
 async fn mcp_toggle_round_trip() {
     let client = spawn_client().await;
-    client
-        .mcp_toggle("my-server", false)
-        .await
-        .expect("mcp_toggle");
+    client.mcp_toggle("my-server", false).await.expect("mcp_toggle");
     client.disconnect().await.expect("disconnect");
 }
 
@@ -79,21 +65,14 @@ async fn stop_task_round_trip() {
 async fn mcp_status_raw_returns_canned_payload() {
     let client = spawn_client().await;
     let resp = client.mcp_status_raw().await.expect("mcp_status");
-    assert_eq!(
-        resp,
-        serde_json::json!({"servers": []}),
-        "mcp_status payload mismatch"
-    );
+    assert_eq!(resp, serde_json::json!({"servers": []}), "mcp_status payload mismatch");
     client.disconnect().await.expect("disconnect");
 }
 
 #[tokio::test]
 async fn get_context_usage_raw_returns_canned_payload() {
     let client = spawn_client().await;
-    let resp = client
-        .get_context_usage_raw()
-        .await
-        .expect("get_context_usage");
+    let resp = client.get_context_usage_raw().await.expect("get_context_usage");
     assert_eq!(
         resp,
         serde_json::json!({"used": 0, "budget": 200_000}),
@@ -105,10 +84,7 @@ async fn get_context_usage_raw_returns_canned_payload() {
 #[tokio::test]
 async fn set_model_round_trip_with_model() {
     let client = spawn_client().await;
-    client
-        .set_model(Some("claude-sonnet-4-6"))
-        .await
-        .expect("set_model");
+    client.set_model(Some("claude-sonnet-4-6")).await.expect("set_model");
     client.disconnect().await.expect("disconnect");
 }
 

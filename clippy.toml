@@ -1,5 +1,26 @@
+# Workspace-wide clippy configuration.
+
+# Personal-use binary workspace — public-API breakage is irrelevant.
+avoid-breaking-exported-api = false
+
+# Toolchain pin (matches workspace.package.rust-version).
+msrv = "1.88.0"
+
+# Library code should use Result, not catch_unwind.
 disallowed-methods = [
     { path = "std::panic::catch_unwind", reason = "library code should use Result, not catch_unwind" },
 ]
-avoid-breaking-exported-api = true
-msrv = "1.88.0"
+
+# Tests can use these freely; production code is gated via [workspace.lints].
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+allow-print-in-tests = true
+allow-dbg-in-tests = true
+allow-indexing-slicing-in-tests = true
+
+# CLI tools deal with deep path nesting (e.g., ~/.config/claude_rust/...).
+absolute-paths-max-segments = 3
+
+# Short identifiers common in CLI arg parsing, loops, and channel names.
+allowed-idents-below-min-chars = ["i", "j", "k", "x", "y", "z", "n", "s", "c", "op", "tx", "rx", "id", "ip", "os", "ex"]

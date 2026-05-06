@@ -108,14 +108,7 @@ pub(crate) async fn spawn_session(
     // sees Connected first on its mpsc — otherwise the reader can
     // race and push an SdkMessage before Connected, leaving
     // `app.session_id` = None when the SdkMessage arrives.
-    emit_connected(
-        bridge.event_tx(),
-        &client,
-        &session_id,
-        &cwd_owned,
-        launch_settings,
-        resume_id,
-    );
+    emit_connected(bridge.event_tx(), &client, &session_id, &cwd_owned, launch_settings, resume_id);
 
     // Reader subtask — owns the events receiver. Client is the writer-side
     // handle (Arc-backed, Clone) and stays on the bridge.
@@ -145,18 +138,14 @@ fn emit_connected(
     // The CLI doesn't emit `system/init` until both the initialize
     // control_response AND a user message have landed. Fall back to
     // launch_settings (settings.json) for the initial Connected.
-    let launch_settings_record = launch_settings
-        .settings
-        .as_ref()
-        .and_then(serde_json::Value::as_object);
+    let launch_settings_record =
+        launch_settings.settings.as_ref().and_then(serde_json::Value::as_object);
     let init_model_id = init_record
         .and_then(|r| r.get("model"))
         .and_then(serde_json::Value::as_str)
         .filter(|s| !s.is_empty())
         .or_else(|| {
-            launch_settings_record
-                .and_then(|r| r.get("model"))
-                .and_then(serde_json::Value::as_str)
+            launch_settings_record.and_then(|r| r.get("model")).and_then(serde_json::Value::as_str)
         })
         .unwrap_or("")
         .to_owned();
@@ -200,11 +189,7 @@ fn emit_connected(
 
     let history_updates = resume_id.and_then(|prev_session_id| {
         let updates = load_history_updates(prev_session_id, cwd);
-        if updates.is_empty() {
-            None
-        } else {
-            Some(updates)
-        }
+        if updates.is_empty() { None } else { Some(updates) }
     });
 
     let _ = event_tx.send(AgentEvent::Connected {
@@ -216,27 +201,18 @@ fn emit_connected(
         history_updates,
     });
 
-    if let Some(account) = client
-        .account_info_from_init()
-        .or_else(crate::cloud::auth_status::account_info_from_shell)
+    if let Some(account) =
+        client.account_info_from_init().or_else(crate::cloud::auth_status::account_info_from_shell)
     {
-        let _ = event_tx.send(AgentEvent::StatusSnapshot {
-            session_id: session_id.to_owned(),
-            account,
-        });
+        let _ = event_tx
+            .send(AgentEvent::StatusSnapshot { session_id: session_id.to_owned(), account });
     }
 
-    let _ = event_tx.send(AgentEvent::SessionsListed {
-        sessions: list_recent_sessions(cwd),
-    });
+    let _ = event_tx.send(AgentEvent::SessionsListed { sessions: list_recent_sessions(cwd) });
 }
 
 fn load_history_updates(prev_session_id: &str, cwd: &str) -> Vec<forge_primitives::SessionUpdate> {
-    let dir = if cwd.is_empty() {
-        None
-    } else {
-        Some(cwd.to_owned())
-    };
+    let dir = if cwd.is_empty() { None } else { Some(cwd.to_owned()) };
     let messages = crate::userdata::catalog::scan::get_session_messages(prev_session_id, dir);
     let raw: Vec<serde_json::Value> = messages
         .into_iter()
@@ -258,11 +234,7 @@ fn load_history_updates(prev_session_id: &str, cwd: &str) -> Vec<forge_primitive
 fn list_recent_sessions(cwd: &str) -> Vec<forge_primitives::SessionListEntry> {
     use forge_primitives::SessionListEntry;
     const MAX_RECENT: usize = 50;
-    let dir = if cwd.is_empty() {
-        None
-    } else {
-        Some(cwd.to_owned())
-    };
+    let dir = if cwd.is_empty() { None } else { Some(cwd.to_owned()) };
     crate::userdata::catalog::scan::list_sessions(dir, Some(MAX_RECENT), 0)
         .into_iter()
         .map(|info| SessionListEntry {
@@ -300,10 +272,7 @@ async fn reader_loop(
                 let session_id_for_sdk_msg =
                     msg_session_id(&msg).unwrap_or_else(|| session_id.clone());
                 if event_tx
-                    .send(AgentEvent::SdkMessage {
-                        session_id: session_id_for_sdk_msg,
-                        msg,
-                    })
+                    .send(AgentEvent::SdkMessage { session_id: session_id_for_sdk_msg, msg })
                     .is_err()
                 {
                     return;
@@ -330,11 +299,8 @@ pub(crate) async fn send_prompt(
     chunks: Vec<forge_primitives::PromptChunk>,
 ) -> anyhow::Result<()> {
     if chunks.iter().all(|c| c.kind == "text") {
-        let prompt: String = chunks
-            .iter()
-            .filter_map(|c| c.value.as_str())
-            .collect::<Vec<_>>()
-            .join("\n");
+        let prompt: String =
+            chunks.iter().filter_map(|c| c.value.as_str()).collect::<Vec<_>>().join("\n");
         client.send_user_message(&prompt).await?;
     } else {
         let content: Vec<serde_json::Value> = chunks
@@ -368,9 +334,7 @@ pub(crate) fn parse_permission_mode(mode: &str) -> anyhow::Result<PermissionMode
         "bypassPermissions" | "bypass_permissions" => Ok(PermissionMode::BypassPermissions),
         "auto" => Ok(PermissionMode::Auto),
         "dontAsk" | "dont_ask" | "deny" => Ok(PermissionMode::DenyPermissions),
-        other => Err(anyhow::anyhow!(
-            "forge_sdk: unknown permission mode {other:?}"
-        )),
+        other => Err(anyhow::anyhow!("forge_sdk: unknown permission mode {other:?}")),
     }
 }
 
@@ -402,9 +366,7 @@ fn build_options_with_callback(
         }
     };
 
-    let mut b = OptionsBuilder::new()
-        .can_use_tool(callback)
-        .permission_prompt_tool_name("stdio");
+    let mut b = OptionsBuilder::new().can_use_tool(callback).permission_prompt_tool_name("stdio");
     if !cwd.is_empty() {
         b = b.cwd(PathBuf::from(cwd));
     }
@@ -419,9 +381,8 @@ fn build_options_with_callback(
     if let Some(settings_value) = launch_settings.settings.as_ref()
         && let Some(settings_record) = settings_value.as_object()
     {
-        if let Some(perms) = settings_record
-            .get("permissions")
-            .and_then(serde_json::Value::as_object)
+        if let Some(perms) =
+            settings_record.get("permissions").and_then(serde_json::Value::as_object)
             && let Some(default_mode_str) =
                 perms.get("defaultMode").and_then(serde_json::Value::as_str)
             && let Ok(mode) = parse_permission_mode(default_mode_str)
@@ -429,17 +390,13 @@ fn build_options_with_callback(
             b = b.permission_mode(mode);
             applied_mode = Some(mode.as_cli_arg());
         }
-        if let Some(model) = settings_record
-            .get("model")
-            .and_then(serde_json::Value::as_str)
+        if let Some(model) = settings_record.get("model").and_then(serde_json::Value::as_str)
             && !model.trim().is_empty()
         {
             b = b.model(model);
             applied_model = Some(model.to_owned());
         }
-        if let Some(effort) = settings_record
-            .get("effortLevel")
-            .and_then(serde_json::Value::as_str)
+        if let Some(effort) = settings_record.get("effortLevel").and_then(serde_json::Value::as_str)
             && !effort.trim().is_empty()
         {
             applied_effort = Some(effort.to_owned());
@@ -519,10 +476,7 @@ async fn run_ask_user_question(
             return PermissionDecision::deny("response channel closed");
         };
         match outcome {
-            QuestionOutcome::Answered {
-                selected_option_ids,
-                annotation,
-            } => {
+            QuestionOutcome::Answered { selected_option_ids, annotation } => {
                 let selected: Vec<forge_primitives::QuestionOption> = request
                     .prompt
                     .options
@@ -533,11 +487,8 @@ async fn run_ask_user_question(
                 if selected.is_empty() || (!prompt.multi_select && selected.len() != 1) {
                     return PermissionDecision::deny("Question answer was invalid");
                 }
-                let answer = selected
-                    .iter()
-                    .map(|o| o.label.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ");
+                let answer =
+                    selected.iter().map(|o| o.label.as_str()).collect::<Vec<_>>().join(", ");
                 answers.insert(prompt.question.clone(), serde_json::Value::String(answer));
                 if let Some(annotation) =
                     bridge_user_interaction::derive_annotation(&selected, annotation.as_ref())
@@ -740,9 +691,7 @@ mod tests {
         deliver_permission_response(
             &pending,
             "tu_1",
-            PermissionOutcome::Selected {
-                option_id: "allow_once".to_owned(),
-            },
+            PermissionOutcome::Selected { option_id: "allow_once".to_owned() },
         );
         let decision = rx.blocking_recv().expect("oneshot resolved");
         assert!(decision.is_allow());
@@ -755,9 +704,7 @@ mod tests {
         deliver_permission_response(
             &pending,
             "tu_2",
-            PermissionOutcome::Selected {
-                option_id: "deny".to_owned(),
-            },
+            PermissionOutcome::Selected { option_id: "deny".to_owned() },
         );
         let decision = rx.blocking_recv().expect("oneshot resolved");
         assert!(!decision.is_allow());
@@ -778,9 +725,7 @@ mod tests {
         deliver_permission_response(
             &pending,
             "missing",
-            PermissionOutcome::Selected {
-                option_id: "allow_once".to_owned(),
-            },
+            PermissionOutcome::Selected { option_id: "allow_once".to_owned() },
         );
         assert!(pending.lock().is_empty());
     }
@@ -812,10 +757,7 @@ mod tests {
         );
         let outcome = rx.blocking_recv().expect("oneshot resolved");
         match outcome {
-            QuestionOutcome::Answered {
-                selected_option_ids,
-                ..
-            } => {
+            QuestionOutcome::Answered { selected_option_ids, .. } => {
                 assert_eq!(selected_option_ids, vec!["question_0", "question_1"]);
             }
             QuestionOutcome::Cancelled => panic!("expected answered outcome"),
@@ -848,29 +790,19 @@ mod tests {
             Some("Lists directory entries".to_owned()),
         );
         let event = synth_permission_request("sess_1", &c);
-        let AgentEvent::PermissionRequest {
-            session_id,
-            request,
-        } = event
-        else {
+        let AgentEvent::PermissionRequest { session_id, request } = event else {
             panic!("expected PermissionRequest");
         };
         assert_eq!(session_id, "sess_1");
         assert_eq!(request.tool_call.tool_call_id, "tu_p1");
         assert_eq!(request.tool_call.title, "Bash");
-        assert_eq!(
-            request.tool_call.raw_input,
-            Some(json!({ "command": "ls" }))
-        );
+        assert_eq!(request.tool_call.raw_input, Some(json!({ "command": "ls" })));
         assert_eq!(request.options.len(), 3);
         assert!(request.options.iter().any(|o| o.option_id == "deny"));
         let display = request.display.expect("display populated");
         assert_eq!(display.title.as_deref(), Some("Run shell command"));
         assert_eq!(display.display_name.as_deref(), Some("Bash"));
-        assert_eq!(
-            display.description.as_deref(),
-            Some("Lists directory entries")
-        );
+        assert_eq!(display.description.as_deref(), Some("Lists directory entries"));
     }
 
     #[test]

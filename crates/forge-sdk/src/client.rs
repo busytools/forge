@@ -97,11 +97,7 @@ impl std::fmt::Debug for Client {
             .field("session_id", &"<shared>")
             .field(
                 "initialization_result",
-                &self
-                    .inner
-                    .initialization_result
-                    .as_ref()
-                    .map(|_| "<cached>"),
+                &self.inner.initialization_result.as_ref().map(|_| "<cached>"),
             )
             .finish_non_exhaustive()
     }
@@ -123,10 +119,8 @@ impl Client {
         let mut sub = Subprocess::spawn(&options).await?;
         let writer = sub.clone_writer();
         let session_id = new_shared_session_id();
-        let mcp_hosts = McpHosts::new(
-            options.mcp_servers.clone(),
-            options.external_mcp_servers.clone(),
-        );
+        let mcp_hosts =
+            McpHosts::new(options.mcp_servers.clone(), options.external_mcp_servers.clone());
         let hook_registry = options.hooks.mint_registry();
         let hook_payload = hook_registry.to_initialize_payload();
         let hook_callbacks = hook_registry.by_id;
@@ -153,17 +147,9 @@ impl Client {
                     .map_err(|e| Error::encode("subagents map", e))?,
             )
         };
-        let skills_payload: Vec<String> = options
-            .skills
-            .iter()
-            .filter(|s| s.as_str() != "all")
-            .cloned()
-            .collect();
-        let skills_payload = if skills_payload.is_empty() {
-            None
-        } else {
-            Some(skills_payload)
-        };
+        let skills_payload: Vec<String> =
+            options.skills.iter().filter(|s| s.as_str() != "all").cloned().collect();
+        let skills_payload = if skills_payload.is_empty() { None } else { Some(skills_payload) };
         let exclude_dynamic_sections = match &options.system_prompt {
             Some(crate::options::SystemPromptKind::Preset {
                 exclude_dynamic_sections: Some(v),
@@ -171,28 +157,19 @@ impl Client {
             }) => Some(*v),
             _ => options.exclude_dynamic_sections,
         };
-        let hooks_field = if hook_payload
-            .as_object()
-            .is_some_and(serde_json::Map::is_empty)
-        {
+        let hooks_field = if hook_payload.as_object().is_some_and(serde_json::Map::is_empty) {
             serde_json::Value::Null
         } else {
             hook_payload
         };
         let mut init_body = serde_json::Map::new();
-        init_body.insert(
-            "subtype".into(),
-            serde_json::Value::String("initialize".into()),
-        );
+        init_body.insert("subtype".into(), serde_json::Value::String("initialize".into()));
         init_body.insert("hooks".into(), hooks_field);
         if let Some(a) = agents_payload {
             init_body.insert("agents".into(), a);
         }
         if let Some(flag) = exclude_dynamic_sections {
-            init_body.insert(
-                "excludeDynamicSections".into(),
-                serde_json::Value::Bool(flag),
-            );
+            init_body.insert("excludeDynamicSections".into(), serde_json::Value::Bool(flag));
         }
         if let Some(list) = skills_payload {
             init_body.insert(
@@ -227,20 +204,13 @@ impl Client {
             let line = sub.read_line().await?.ok_or_else(|| Error::Connection {
                 reason: "transport closed stdout before initialize control_response".into(),
             })?;
-            let value: serde_json::Value =
-                serde_json::from_str(&line).map_err(|source| Error::JsonDecode {
-                    line: line_number,
-                    source,
-                })?;
-            let ty = value
-                .get("type")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("");
+            let value: serde_json::Value = serde_json::from_str(&line)
+                .map_err(|source| Error::JsonDecode { line: line_number, source })?;
+            let ty = value.get("type").and_then(serde_json::Value::as_str).unwrap_or("");
             match ty {
                 "control_response" => {
-                    let resp_request_id = value
-                        .pointer("/response/request_id")
-                        .and_then(serde_json::Value::as_str);
+                    let resp_request_id =
+                        value.pointer("/response/request_id").and_then(serde_json::Value::as_str);
                     if resp_request_id != Some(&init_request_id) {
                         return Err(Error::message_parse(format!(
                             "init: control_response request_id mismatch \
@@ -249,9 +219,8 @@ impl Client {
                             line.trim_end()
                         )));
                     }
-                    let resp_subtype = value
-                        .pointer("/response/subtype")
-                        .and_then(serde_json::Value::as_str);
+                    let resp_subtype =
+                        value.pointer("/response/subtype").and_then(serde_json::Value::as_str);
                     if resp_subtype == Some("success") {
                         let body = value
                             .pointer("/response/response")
@@ -277,9 +246,7 @@ impl Client {
                             },
                             ToString::to_string,
                         );
-                    return Err(Error::message_parse(format!(
-                        "initialize failed: {err_msg}"
-                    )));
+                    return Err(Error::message_parse(format!("initialize failed: {err_msg}")));
                 }
                 "control_request" => {
                     // Interleaved CLI → SDK request during init —
@@ -321,11 +288,7 @@ impl Client {
                         // and never surfaces it to callers; we mirror.
                         // Cache its `data` so `forge-agent` can read
                         // model / mcp / slash-command info off it.
-                        if let Message::System {
-                            ref subtype,
-                            ref data,
-                            ..
-                        } = msg
+                        if let Message::System { ref subtype, ref data, .. } = msg
                             && subtype == "init"
                         {
                             cached_init_data = Some(data.clone());
@@ -510,10 +473,7 @@ impl Client {
     ) -> Result<serde_json::Value, Error> {
         let request_id = crate::request_id::next();
         let mut request_body = serde_json::Map::new();
-        request_body.insert(
-            "subtype".into(),
-            serde_json::Value::String(subtype.to_string()),
-        );
+        request_body.insert("subtype".into(), serde_json::Value::String(subtype.to_string()));
         if let serde_json::Value::Object(extra_map) = extra {
             for (k, v) in extra_map {
                 request_body.insert(k, v);

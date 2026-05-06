@@ -137,10 +137,7 @@ impl Serialize for ContentBlock {
             ContentBlock::Text { text } => {
                 serde_json::json!({"type": "text", "text": text})
             }
-            ContentBlock::Thinking {
-                thinking,
-                signature,
-            } => {
+            ContentBlock::Thinking { thinking, signature } => {
                 serde_json::json!({
                     "type": "thinking",
                     "thinking": thinking,
@@ -155,11 +152,7 @@ impl Serialize for ContentBlock {
                     "input": input,
                 })
             }
-            ContentBlock::ToolResult {
-                tool_use_id,
-                content,
-                is_error,
-            } => {
+            ContentBlock::ToolResult { tool_use_id, content, is_error } => {
                 serde_json::json!({
                     "type": "tool_result",
                     "tool_use_id": tool_use_id,
@@ -175,10 +168,7 @@ impl Serialize for ContentBlock {
                     "input": input,
                 })
             }
-            ContentBlock::ServerToolResult {
-                tool_use_id,
-                content,
-            } => {
+            ContentBlock::ServerToolResult { tool_use_id, content } => {
                 serde_json::json!({
                     "type": "advisor_tool_result",
                     "tool_use_id": tool_use_id,
@@ -210,18 +200,10 @@ impl<'de> Deserialize<'de> for ContentBlock {
         // (forward-compat drift) so debug logs + `Unknown` payloads carry
         // the right signal. ControlRequestKind::Deserialize`'s
         // sentinel handling in `src/control.rs`.
-        let ty = raw
-            .get("type")
-            .and_then(Value::as_str)
-            .unwrap_or("<missing>")
-            .to_string();
+        let ty = raw.get("type").and_then(Value::as_str).unwrap_or("<missing>").to_string();
         match ty.as_str() {
             "text" => Ok(ContentBlock::Text {
-                text: raw
-                    .get("text")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_string(),
+                text: raw.get("text").and_then(Value::as_str).unwrap_or_default().to_string(),
             }),
             "thinking" => Ok(ContentBlock::Thinking {
                 thinking: raw
@@ -236,16 +218,8 @@ impl<'de> Deserialize<'de> for ContentBlock {
                     .to_string(),
             }),
             "tool_use" => Ok(ContentBlock::ToolUse {
-                id: raw
-                    .get("id")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_string(),
-                name: raw
-                    .get("name")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_string(),
+                id: raw.get("id").and_then(Value::as_str).unwrap_or_default().to_string(),
+                name: raw.get("name").and_then(Value::as_str).unwrap_or_default().to_string(),
                 input: raw.get("input").cloned().unwrap_or(Value::Null),
             }),
             "tool_result" => Ok(ContentBlock::ToolResult {
@@ -255,22 +229,11 @@ impl<'de> Deserialize<'de> for ContentBlock {
                     .unwrap_or_default()
                     .to_string(),
                 content: raw.get("content").cloned().unwrap_or(Value::Null),
-                is_error: raw
-                    .get("is_error")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false),
+                is_error: raw.get("is_error").and_then(Value::as_bool).unwrap_or(false),
             }),
             "server_tool_use" => Ok(ContentBlock::ServerToolUse {
-                id: raw
-                    .get("id")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_string(),
-                name: raw
-                    .get("name")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_string(),
+                id: raw.get("id").and_then(Value::as_str).unwrap_or_default().to_string(),
+                name: raw.get("name").and_then(Value::as_str).unwrap_or_default().to_string(),
                 input: raw.get("input").cloned().unwrap_or(Value::Null),
             }),
             "advisor_tool_result" => Ok(ContentBlock::ServerToolResult {
@@ -300,10 +263,7 @@ impl<'de> Deserialize<'de> for ContentBlock {
                     ContentBlock::Image { source }
                 })
             }
-            other => Ok(ContentBlock::Unknown {
-                type_str: other.to_string(),
-                raw,
-            }),
+            other => Ok(ContentBlock::Unknown { type_str: other.to_string(), raw }),
         }
     }
 }
@@ -321,9 +281,7 @@ mod tests_content_roundtrip {
     fn text_block_roundtrip() {
         let raw = json!({"type": "text", "text": "hello world"});
         let block: ContentBlock = serde_json::from_value(raw.clone()).expect("parse");
-        matches!(block, ContentBlock::Text { .. })
-            .then_some(())
-            .expect("text variant");
+        matches!(block, ContentBlock::Text { .. }).then_some(()).expect("text variant");
         let re = serde_json::to_value(&block).expect("serialize");
         assert_eq!(raw, re);
     }
@@ -333,9 +291,7 @@ mod tests_content_roundtrip {
         let raw =
             json!({"type": "thinking", "thinking": "let me think...", "signature": "sig-abc"});
         let block: ContentBlock = serde_json::from_value(raw.clone()).expect("parse");
-        matches!(block, ContentBlock::Thinking { .. })
-            .then_some(())
-            .expect("thinking variant");
+        matches!(block, ContentBlock::Thinking { .. }).then_some(()).expect("thinking variant");
         let re = serde_json::to_value(&block).expect("serialize");
         assert_eq!(raw, re);
     }
@@ -349,9 +305,7 @@ mod tests_content_roundtrip {
             "input": {"file_path": "/tmp/foo.rs", "old_string": "a", "new_string": "b"},
         });
         let block: ContentBlock = serde_json::from_value(raw.clone()).expect("parse");
-        matches!(block, ContentBlock::ToolUse { .. })
-            .then_some(())
-            .expect("tool_use variant");
+        matches!(block, ContentBlock::ToolUse { .. }).then_some(()).expect("tool_use variant");
         let re = serde_json::to_value(&block).expect("serialize");
         assert_eq!(raw, re);
     }
@@ -380,11 +334,7 @@ mod tests_content_roundtrip {
         // probe uncovered this when a `document` block crashed the parser.
         let raw = json!({"type": "unknown_kind", "data": "..."});
         let block: ContentBlock = serde_json::from_value(raw.clone()).expect("parse");
-        let ContentBlock::Unknown {
-            type_str,
-            raw: echoed,
-        } = block
-        else {
+        let ContentBlock::Unknown { type_str, raw: echoed } = block else {
             panic!("expected Unknown variant");
         };
         assert_eq!(type_str, "unknown_kind");

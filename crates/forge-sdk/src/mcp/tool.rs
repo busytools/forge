@@ -22,10 +22,7 @@ impl ToolOutput {
     /// Build a text-only successful output.
     #[must_use]
     pub fn text(s: impl Into<String>) -> Self {
-        Self {
-            blocks: vec![ToolOutputBlock::Text { text: s.into() }],
-            is_error: false,
-        }
+        Self { blocks: vec![ToolOutputBlock::Text { text: s.into() }], is_error: false }
     }
 
     /// Serialise to the JSON shape MCP expects.

@@ -72,10 +72,7 @@ fn all_baselines_decode_cleanly() {
     }
 
     if !failures.is_empty() {
-        eprintln!(
-            "\n{} scenario(s) failed decode-completeness:",
-            failures.len()
-        );
+        eprintln!("\n{} scenario(s) failed decode-completeness:", failures.len());
         for (scen, rpt) in &failures {
             eprintln!("--- {scen} ---\n{rpt}\n");
         }
