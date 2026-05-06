@@ -5,6 +5,7 @@
 //! cargo run -p forge-sdk --example mcp_tool -- "Double 21 using mcp__local__double"
 //! ```
 
+// Examples are illustrative; aborting on misuse is the right exit behaviour.
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
 use anyhow::Result;

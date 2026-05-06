@@ -6,6 +6,7 @@
 //! cargo run -p forge-sdk --example echo -- "What is 2 + 2?"
 //! ```
 
+// Examples are illustrative; aborting on misuse is the right exit behaviour.
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
 use anyhow::Result;

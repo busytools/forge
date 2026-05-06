@@ -646,9 +646,9 @@ pub(crate) fn clamp_percentage_to_u8(p: f64) -> u8 {
     if p.is_nan() {
         return 0;
     }
-    // `p` is clamped to [0.0, 100.0] then rounded — fits in u8 by
-    // construction. `as u8` lints fire because the compiler can't
-    // prove the bound; the `clamp(0, 100)` above does.
+    // The inline `clamp(0.0, 100.0).round()` guarantees the value
+    // fits in u8; clippy can't see through the clamp so the `as u8`
+    // truncation/sign lints fire spuriously.
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let n = p.clamp(0.0, 100.0).round() as u8;
     n

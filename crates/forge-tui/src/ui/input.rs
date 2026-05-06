@@ -1,6 +1,6 @@
-// ratatui geometry: terminal dims are u16, layout math goes through f64
-// for smooth-scroll. Casts are inherent here and bounded by terminal size.
-#![allow(clippy::cast_possible_truncation, clippy::cast_precision_loss, clippy::cast_sign_loss)]
+// ratatui Rect coords are u16; row/col positions are usize-bounded by
+// terminal size and truncated to u16 here. The cast is inherent.
+#![allow(clippy::cast_possible_truncation)]
 
 use crate::app::input::parse_paste_placeholder_ranges;
 use crate::app::mention;
