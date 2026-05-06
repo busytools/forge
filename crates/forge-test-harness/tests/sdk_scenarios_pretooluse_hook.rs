@@ -6,6 +6,9 @@
 //! trip on the wire.
 
 
+
+#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+
 use forge_sdk::{
     HookContext, HookDecision, HooksBuilder, OptionsBuilder, PermissionMode, PreToolUseInput,
 };

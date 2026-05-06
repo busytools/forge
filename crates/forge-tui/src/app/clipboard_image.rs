@@ -6,6 +6,11 @@
 //! can construct them without reaching into the UI crate); this module
 //! keeps the `arboard`/`image`-flavoured encoding helpers that only
 //! the UI cares about.
+// Named-item `pub use` re-export — items not consumed by forge-tui's
+// own code are still part of forge-tui's public surface for
+// downstream consumers (legacy import-path compatibility), so
+// `unused_imports` would fire on them without this allow.
+#[allow(unused_imports)]
 pub use forge_primitives::image::{
     ImageAttachment, SUPPORTED_IMAGE_MIME_TYPES, is_supported_image_type, is_valid_base64,
     validate_image,

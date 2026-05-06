@@ -16,6 +16,9 @@
 //!    the capture target.
 
 
+
+#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+
 use std::time::Duration;
 
 use forge_sdk::{

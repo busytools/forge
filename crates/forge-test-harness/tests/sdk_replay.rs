@@ -10,6 +10,9 @@
 //!   decoder regresses, this test fails loudly.
 
 
+
+#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+
 use forge_test_harness::sdk_wire::{
     PINNED_CLI_VERSION, baseline_dir, decode_all_inbound, load_baseline,
 };

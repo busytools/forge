@@ -25,6 +25,9 @@
 //! prompt). Skipped silently when the env var is unset.
 
 
+
+#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use forge_sdk::{Client, Message, OptionsBuilder};

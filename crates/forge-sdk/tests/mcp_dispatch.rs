@@ -1,5 +1,7 @@
 //! Unit-test `McpServer::dispatch` — pure request/response, no transport.
 
+
+
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,

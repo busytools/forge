@@ -14,6 +14,9 @@
 //! `baselines/<PINNED_CLI_VERSION>/`.
 
 
+
+#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+
 use std::process::ExitCode;
 
 use forge_test_harness::sdk_wire::session_redact::redact_session_path;

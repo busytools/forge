@@ -7,6 +7,9 @@
 //! regression guard per hook surface.
 
 
+
+#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+
 use forge_sdk::{
     HookContext, HookDecision, HooksBuilder, NotificationInput, OptionsBuilder, PermissionMode,
     PermissionRequestInput, PostToolUseFailureInput, PostToolUseInput, StopInput,

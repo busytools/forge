@@ -270,6 +270,7 @@ impl<'de> Deserialize<'de> for ContentBlock {
 
 #[cfg(test)]
 mod tests_content_roundtrip {
+    #[allow(unused_imports)]
     use super::*;
 
     use crate::content::ContentBlock;

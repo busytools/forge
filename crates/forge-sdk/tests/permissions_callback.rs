@@ -1,6 +1,9 @@
 //! End-to-end tests of the `can_use_tool` callback flow.
 
 
+
+#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 

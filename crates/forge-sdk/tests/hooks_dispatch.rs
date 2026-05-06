@@ -1,6 +1,9 @@
 //! Integration: mock emits a `PreToolUse` hook request, callback replaces input.
 
 
+
+#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+
 use forge_sdk::Message;
 use forge_sdk::{Client, HookContext, HookDecision, HooksBuilder, OptionsBuilder, PreToolUseInput};
 use serde_json::json;

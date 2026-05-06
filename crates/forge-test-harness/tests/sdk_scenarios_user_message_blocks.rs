@@ -7,6 +7,9 @@
 //! (an inline 1×1 transparent PNG) and the assistant's response.
 
 
+
+#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+
 use forge_sdk::{OptionsBuilder, PermissionMode};
 use forge_test_harness::sdk_wire::run_live_scenario;
 
