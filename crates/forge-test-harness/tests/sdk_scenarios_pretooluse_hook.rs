@@ -5,7 +5,6 @@
 //! `control_request` → SDK handler → outbound `control_response` round
 //! trip on the wire.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use forge_sdk::{
     HookContext, HookDecision, HooksBuilder, OptionsBuilder, PermissionMode, PreToolUseInput,

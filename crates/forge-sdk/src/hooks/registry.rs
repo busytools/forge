@@ -365,7 +365,6 @@ impl HooksBuilder {
 
 #[cfg(test)]
 mod tests_hooks_registration {
-    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
     #[allow(unused_imports)]
     use super::*;
 

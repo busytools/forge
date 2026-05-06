@@ -6,7 +6,6 @@
 //! snapshot. This is the simplest non-initialize `control_request` we can
 //! probe cheaply.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use forge_sdk::{OptionsBuilder, PermissionMode};
 use forge_test_harness::sdk_wire::run_live_scenario;

@@ -427,7 +427,6 @@ fn normalize_path(path: &Path) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
     use super::{GitBranch, GitContext, GitContextWatcher, ResolvedRepo, git_context};
     use notify::{Event, EventKind};

@@ -198,7 +198,6 @@ pub fn normalize_settings_parse_errors(value: &Value) -> Vec<SettingsParseErrorU
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use serde_json::json;

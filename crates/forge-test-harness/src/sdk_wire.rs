@@ -26,7 +26,6 @@
 //! the `cli-version` dir rotates when we bump the pinned CLI version
 //! through the upgrade ritual.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 pub mod session_redact;
 

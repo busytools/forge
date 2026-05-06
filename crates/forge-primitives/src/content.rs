@@ -270,7 +270,6 @@ impl<'de> Deserialize<'de> for ContentBlock {
 
 #[cfg(test)]
 mod tests_content_roundtrip {
-    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
     #[allow(unused_imports)]
     use super::*;
 

@@ -1,6 +1,5 @@
 //! Integration test for `transport::process::Subprocess` against the mock binary.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use forge_sdk::Options;
 use forge_sdk::transport::process::Subprocess;

@@ -13,7 +13,6 @@
 //! `all_baselines_decode_cleanly` when placed under
 //! `baselines/<PINNED_CLI_VERSION>/`.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::process::ExitCode;
 

@@ -195,7 +195,6 @@ fn extract_json_string_field(input: &str, field: &str) -> Option<String> {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::{
         TurnErrorClass, classify_turn_error, looks_like_internal_error, summarize_internal_error,

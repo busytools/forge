@@ -1,6 +1,5 @@
 //! End-to-end test of `Client` against `mock_claude.sh`.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use forge_sdk::Message;
 use forge_sdk::{Client, OptionsBuilder};

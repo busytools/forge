@@ -1,6 +1,5 @@
 //! Roundtrip tests for the top-level stream-json message shapes.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use forge_sdk::{Message, StopReason};
 use serde_json::json;

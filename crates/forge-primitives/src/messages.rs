@@ -892,7 +892,6 @@ impl From<Message> for MessageRepr {
 
 #[cfg(test)]
 mod tests_result_message_fields {
-    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
     #[allow(unused_imports)]
     use super::*;
 
@@ -1032,7 +1031,6 @@ mod tests_result_message_fields {
 
 #[cfg(test)]
 mod tests_message_extras {
-    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
     #[allow(unused_imports)]
     use super::*;
 

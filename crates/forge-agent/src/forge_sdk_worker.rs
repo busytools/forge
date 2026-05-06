@@ -652,7 +652,6 @@ pub(crate) fn clamp_percentage_to_u8(p: f64) -> u8 {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::{
         PendingQuestions, PendingResponses, deliver_permission_response, deliver_question_response,

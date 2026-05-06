@@ -7,11 +7,9 @@
 //! the messages.rs file in primitives because primitives has no
 //! transport module.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 #[cfg(test)]
 mod tests_rate_limit_frames {
-    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
     use forge_sdk::transport::codec::{DecodedLine, decode_dispatch, decode_line};
     use forge_sdk::{Message, RateLimitInfo, RateLimitStatus, RateLimitType};
@@ -92,7 +90,6 @@ mod tests_rate_limit_frames {
 
 #[cfg(test)]
 mod tests_task_lifecycle_frames {
-    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
     use forge_sdk::transport::codec::{DecodedLine, decode_dispatch, decode_line};
     use forge_sdk::{Message, TaskNotificationStatus, TaskUsage};
@@ -291,7 +288,6 @@ mod tests_task_lifecycle_frames {
 
 #[cfg(test)]
 mod tests_stream_event_and_error_frames {
-    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
     use forge_sdk::Message;
     use forge_sdk::transport::codec::{DecodedLine, decode_dispatch, decode_line};
