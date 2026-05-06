@@ -125,9 +125,8 @@ impl AgentHandle {
         &self,
         session_id: String,
         text: String,
-    ) -> anyhow::Result<crate::client::PromptResponse> {
-        self.send(Command::Prompt { session_id: session_id.into(), text })?;
-        Ok(crate::client::PromptResponse { stop_reason: "in_progress".to_owned() })
+    ) -> anyhow::Result<()> {
+        self.send(Command::Prompt { session_id: session_id.into(), text })
     }
 
     pub fn prompt_with_images(
@@ -135,9 +134,8 @@ impl AgentHandle {
         session_id: String,
         text: String,
         images: Vec<forge_primitives::ImageAttachment>,
-    ) -> anyhow::Result<crate::client::PromptResponse> {
-        self.send(Command::PromptWithImages { session_id: session_id.into(), text, images })?;
-        Ok(crate::client::PromptResponse { stop_reason: "in_progress".to_owned() })
+    ) -> anyhow::Result<()> {
+        self.send(Command::PromptWithImages { session_id: session_id.into(), text, images })
     }
 
     pub fn cancel(&self, session_id: String) -> anyhow::Result<()> {
