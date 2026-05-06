@@ -4,9 +4,7 @@
 //! raw `forge_primitives::Message` envelopes from the bridge worker
 //! and routes them to per-variant handlers below. Each handler walks
 //! the typed message + a JSON copy (for fields not exposed as typed
-//! accessors), mutates App state, and returns. The bridge module
-//! that previously owned this work was removed in the 2026-05-05
-//! restructure.
+//! accessors) and mutates App state directly.
 //!
 //! # Clippy allows
 //!
@@ -271,7 +269,7 @@ fn parent_tool_use_id_from_envelope(raw: &Value) -> Option<String> {
 }
 
 /// Reads `meta.claudeCode.parentToolUseId` from a tool_call's meta
-/// blob. Inlined from the deleted `bridge::tool_calls` module.
+/// blob.
 fn parent_tool_use_id_from_meta(meta: Option<&Value>) -> Option<String> {
     let claude_code = meta?.get("claudeCode")?.as_object()?;
     let id = claude_code.get("parentToolUseId")?.as_str()?;
@@ -279,8 +277,7 @@ fn parent_tool_use_id_from_meta(meta: Option<&Value>) -> Option<String> {
 }
 
 /// Applies a `ToolCallUpdateFields` patch onto an existing `ToolCall`
-/// in-place, preserving any unset fields. Inlined from the deleted
-/// `bridge::tool_calls` module.
+/// in-place, preserving any unset fields.
 fn apply_fields_to_base(
     base: &mut forge_primitives::ToolCall,
     fields: &forge_primitives::ToolCallUpdateFields,

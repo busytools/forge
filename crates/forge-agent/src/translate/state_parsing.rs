@@ -9,8 +9,7 @@ use forge_primitives::{
     SettingsParseErrorUpdate,
 };
 
-// JSON walking helpers — inlined from `bridge::shared` (deleted)
-// since this is the only caller after the bridge collapse.
+// JSON walking helpers.
 
 #[must_use]
 fn record(value: &Value) -> Option<&Map<String, Value>> {
