@@ -6,8 +6,6 @@
 //! require an installed OAuth-capable MCP backend and human
 //! redirection — out of scope for an automated reproducible scenario.
 
-
-
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
 use forge_sdk::{OptionsBuilder, PermissionMode};

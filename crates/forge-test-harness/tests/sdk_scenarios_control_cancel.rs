@@ -15,8 +15,6 @@
 //!    which the CLI may discard — that's fine, the cancel frame is
 //!    the capture target.
 
-
-
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
 use std::time::Duration;

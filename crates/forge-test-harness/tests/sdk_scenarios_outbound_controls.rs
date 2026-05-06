@@ -4,8 +4,6 @@
 //! `control_request` + inbound `control_response` round trip the replay
 //! harness can exercise.
 
-
-
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
 use forge_sdk::{OptionsBuilder, PermissionMode};

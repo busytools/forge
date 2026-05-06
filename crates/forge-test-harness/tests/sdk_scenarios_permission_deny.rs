@@ -7,8 +7,6 @@
 //! SDK handler replies with `deny`, and the CLI reports denial in the
 //! turn.
 
-
-
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
 use forge_sdk::{OptionsBuilder, PermissionDecision, PermissionMode, ToolPermissionContext};

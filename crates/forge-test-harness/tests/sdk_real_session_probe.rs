@@ -28,8 +28,6 @@
 //! baseline from a specific session, run the `redact-session` example
 //! instead.
 
-
-
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
 use std::path::{Path, PathBuf};

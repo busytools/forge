@@ -4,8 +4,6 @@
 //! sets one option and asserts the resulting argv vector contains the
 //! expected flag/value pairs in the same order Python emits them.
 
-
-
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,

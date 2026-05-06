@@ -28,9 +28,7 @@ pub fn compute_height(app: &App) -> u16 {
         return 1;
     }
     // Open: capped at MAX_VISIBLE
-    {
-        app.todos.len().min(MAX_VISIBLE) as u16
-    }
+    { app.todos.len().min(MAX_VISIBLE) as u16 }
 }
 
 /// Render the todo panel into the given area.

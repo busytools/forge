@@ -5,7 +5,6 @@
 //! cargo run -p forge-sdk --example hooks_logging -- "List /tmp"
 //! ```
 
-
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
 use anyhow::Result;

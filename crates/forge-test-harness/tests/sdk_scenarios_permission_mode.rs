@@ -5,8 +5,6 @@
 //! `control_request` + inbound `control_response` round trip for a
 //! non-trivial subtype.
 
-
-
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
 use forge_sdk::{OptionsBuilder, PermissionMode};

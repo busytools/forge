@@ -5,8 +5,6 @@
 //! request/response wire shape is what we want to lock down, not the
 //! contents.
 
-
-
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
 use forge_sdk::{OptionsBuilder, PermissionMode};
