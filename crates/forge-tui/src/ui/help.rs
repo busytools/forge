@@ -1,3 +1,7 @@
+// ratatui geometry: terminal dims are u16, layout math goes through f64
+// for smooth-scroll. Casts are inherent here and bounded by terminal size.
+#![allow(clippy::cast_possible_truncation, clippy::cast_precision_loss, clippy::cast_sign_loss)]
+
 use crate::app::{App, AppStatus, FocusOwner, HelpView};
 use crate::ui::theme;
 use crate::ui::two_column_list::{self, TwoColumnItem};
@@ -34,7 +38,6 @@ pub fn help_item_count(app: &App) -> usize {
     build_help_items(app).len()
 }
 
-#[allow(clippy::cast_possible_truncation)]
 pub fn compute_height(app: &App, _area_width: u16) -> u16 {
     if !is_active(app) {
         return 0;
@@ -56,7 +59,6 @@ pub(crate) fn sync_geometry_state(app: &mut App, panel_width: u16) {
     app.help_visible_count = visible_count;
 }
 
-#[allow(clippy::cast_possible_truncation)]
 pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     if area.height == 0 || area.width == 0 || !is_active(app) {
         return;
@@ -75,7 +77,6 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     }
 }
 
-#[allow(clippy::cast_possible_truncation)]
 fn render_keys_help(frame: &mut Frame, area: Rect, app: &App, items: &[(String, String)]) {
     let rows = items.len().div_ceil(2).min(MAX_ROWS);
     let max_items = rows * 2;
@@ -118,7 +119,6 @@ fn render_keys_help(frame: &mut Frame, area: Rect, app: &App, items: &[(String, 
     frame.render_widget(Paragraph::new(Text::from(lines)).block(block), area);
 }
 
-#[allow(clippy::cast_possible_truncation)]
 fn render_two_column_help(
     frame: &mut Frame,
     area: Rect,

@@ -23,7 +23,6 @@ pub enum ChunkContent {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[allow(clippy::struct_field_names)]
 pub struct ToolCall {
     pub tool_call_id: String,
     pub title: String,
@@ -142,7 +141,6 @@ pub enum SessionUpdate {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::SessionUpdate;
     use crate::{ApiRetryError, ApiRetryUpdate};

@@ -253,7 +253,6 @@ impl From<String> for ToolCallContent {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[allow(clippy::struct_field_names)]
 pub struct ToolCall {
     pub tool_call_id: String,
     pub title: String,
@@ -416,7 +415,6 @@ impl ToolCallUpdateFields {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[allow(clippy::struct_field_names)]
 pub struct ToolCallUpdate {
     pub tool_call_id: String,
     pub fields: ToolCallUpdateFields,

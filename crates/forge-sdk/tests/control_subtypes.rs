@@ -3,7 +3,7 @@
 //! fixture, invokes the corresponding method, and asserts the round-trip
 //! either returned `Ok(())` or the expected decoded payload.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
 use forge_sdk::{Client, OptionsBuilder, PermissionMode};
 

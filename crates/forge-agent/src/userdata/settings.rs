@@ -173,7 +173,6 @@ fn read_json_file(path: &Path) -> Option<Value> {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
     use super::*;
 

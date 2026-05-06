@@ -17,7 +17,6 @@ use crate::options::{
 ///
 /// [`Error::MessageParse`] when `options.sandbox` fails to serialise
 /// (refuses to spawn un-sandboxed when the caller asked for sandboxing).
-#[allow(clippy::too_many_lines)]
 pub fn build_args(options: &Options) -> Result<Vec<String>, Error> {
     let mut args: Vec<String> = Vec::new();
 

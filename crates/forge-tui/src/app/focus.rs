@@ -18,6 +18,7 @@ pub enum FocusOwner {
 }
 
 #[derive(Debug, Clone, Copy)]
+// Focus context — each bool is an independent overlay flag (popup open, modal active, prompt-builder showing); packing into a bitmask hurts readability.
 #[allow(clippy::struct_excessive_bools)]
 pub struct FocusContext {
     pub todo_focus_available: bool,

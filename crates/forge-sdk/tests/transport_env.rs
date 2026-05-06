@@ -16,7 +16,7 @@
 //!
 //! The mock fixture dumps its env to a file; we parse and assert.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
 use std::collections::HashMap;
 use std::fs;

@@ -5,7 +5,7 @@
 //! the locked behaviour — actual cleared-credential traces would
 //! include user-specific tokens which we don't want in the baseline.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
 use forge_sdk::{OptionsBuilder, PermissionMode};
 use forge_test_harness::sdk_wire::run_live_scenario;

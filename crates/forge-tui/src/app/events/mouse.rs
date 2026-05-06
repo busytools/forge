@@ -1,3 +1,7 @@
+// ratatui geometry: terminal dims are u16, layout math goes through f64
+// for smooth-scroll. Casts are inherent here and bounded by terminal size.
+#![allow(clippy::cast_possible_truncation, clippy::cast_precision_loss, clippy::cast_sign_loss)]
+
 use super::super::selection::clear_selection;
 use super::super::state::ScrollbarDragState;
 use super::super::{App, ScrollbarGeometry, SelectionKind, SelectionPoint};
@@ -141,7 +145,6 @@ fn scrollbar_metrics(app: &App) -> Option<ScrollbarMetrics> {
     Some(ScrollbarMetrics { viewport_height, target })
 }
 
-#[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss, clippy::cast_sign_loss)]
 fn current_thumb_geometry(app: &App, metrics: ScrollbarMetrics) -> ScrollbarGeometry {
     let mut thumb_size = app.viewport.scrollbar_thumb_size.round() as usize;
     if thumb_size == 0 {
@@ -158,7 +161,6 @@ fn current_thumb_geometry(app: &App, metrics: ScrollbarMetrics) -> ScrollbarGeom
     }
 }
 
-#[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss, clippy::cast_sign_loss)]
 fn set_scroll_from_thumb_top(
     app: &mut App,
     thumb_top: usize,

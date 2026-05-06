@@ -102,7 +102,6 @@ async fn forge_sdk_event_loop(
     );
 }
 
-#[allow(clippy::too_many_lines)]
 fn handle_agent_event(
     event_tx: &mpsc::UnboundedSender<ClientEvent>,
     agent: &Rc<forge_agent::AgentHandle>,
@@ -226,6 +225,7 @@ fn handle_agent_event(
     }
 }
 
+// Connected-event handler — destructured fields from the `AgentEvent::Connected` variant. Packing into a struct just to forward to the App is busywork.
 #[allow(clippy::too_many_arguments)]
 fn handle_connected_event(
     event_tx: &mpsc::UnboundedSender<ClientEvent>,

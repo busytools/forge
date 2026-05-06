@@ -1,6 +1,6 @@
 //! Unit tests for the stream-json line codec.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
 use forge_sdk::Message;
 use forge_sdk::transport::codec::{decode_line, encode_user_prompt};

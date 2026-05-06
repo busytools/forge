@@ -52,6 +52,7 @@ pub struct MessageRenderCacheKey {
     pub render_signature: MessageRenderSignature,
 }
 
+// Each bool is an independent message-render flag (continuation, last-of-turn, has-tool-call, etc.) consulted by separate render branches.
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MessageRenderSignature {

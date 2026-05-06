@@ -2,7 +2,6 @@ pub const DEFAULT_CACHE_SPLIT_SOFT_LIMIT_BYTES: usize = 1536;
 pub const DEFAULT_CACHE_SPLIT_HARD_LIMIT_BYTES: usize = 4096;
 pub const DEFAULT_TOOL_PREVIEW_LIMIT_BYTES: usize = 2048;
 
-#[allow(clippy::struct_field_names)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CacheSplitPolicy {
     pub soft_limit_bytes: usize,

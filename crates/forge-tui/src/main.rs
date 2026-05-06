@@ -3,6 +3,8 @@ use forge_tui::Cli;
 use forge_tui::error::AppError;
 use tracing::info_span;
 
+// Binary entry — `process::exit` is the only way to set a non-zero
+// exit code without unwinding, which matters for clean tty restoration.
 #[allow(clippy::exit)]
 fn main() {
     if let Err(err) = run() {

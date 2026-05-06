@@ -37,7 +37,6 @@ fn claude_meta(
     meta
 }
 
-#[allow(clippy::expect_used)]
 fn tool_call_block<'a>(app: &'a App, id: &str) -> &'a ToolCallInfo {
     let (message_index, block_index) = app.tool_call_index[id];
     app.messages

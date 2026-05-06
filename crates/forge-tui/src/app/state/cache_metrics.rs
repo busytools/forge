@@ -8,6 +8,10 @@
 //! All structured tracing uses `target: "cache"` so it can be enabled via
 //! `--log-filter "cache=debug"` without affecting other log targets.
 
+// Cache-metrics math goes through f64 for utilisation percentages and
+// budget ratios. Casts are inherent and bounded.
+#![allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+
 use super::types::{
     CacheBudgetEnforceStats, HistoryRetentionPolicy, HistoryRetentionStats, RenderCacheBudget,
 };
@@ -215,7 +219,8 @@ pub struct CacheMetricsSnapshot {
 /// Only called on log cadence (not every frame), so the cost of collecting
 /// fields is negligible.
 #[must_use]
-#[allow(clippy::too_many_arguments, clippy::cast_precision_loss)]
+// Snapshot builder bundles 6 cache-related state slices for a frame-time observability dump. Wrapping into a struct just to call once per frame is overhead.
+#[allow(clippy::too_many_arguments)]
 pub fn build_snapshot(
     budget: &RenderCacheBudget,
     retention_stats: &HistoryRetentionStats,

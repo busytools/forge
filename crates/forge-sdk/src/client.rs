@@ -114,7 +114,6 @@ impl Client {
     /// # Errors
     ///
     /// Any [`Error`] variant; see field docs.
-    #[allow(clippy::too_many_lines)]
     pub async fn spawn(options: Options) -> Result<(Self, ClientEvents), Error> {
         let mut sub = Subprocess::spawn(&options).await?;
         let writer = sub.clone_writer();

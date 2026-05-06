@@ -28,7 +28,7 @@
 //! baseline from a specific session, run the `redact-session` example
 //! instead.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
 use std::path::{Path, PathBuf};
 
@@ -78,7 +78,6 @@ fn jsonl_files_under(root: &Path) -> Vec<PathBuf> {
 }
 
 #[test]
-#[allow(clippy::too_many_lines)]
 fn real_session_decode_probe() {
     let Ok(root_str) = std::env::var("FORGE_REAL_SESSIONS") else {
         eprintln!(

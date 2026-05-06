@@ -547,7 +547,6 @@ async fn drain_stderr(stderr: ChildStderr, callback: Option<Arc<dyn Fn(String) +
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
     use super::*;
     use std::time::Duration;

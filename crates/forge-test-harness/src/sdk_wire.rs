@@ -26,8 +26,6 @@
 //! the `cli-version` dir rotates when we bump the pinned CLI version
 //! through the upgrade ritual.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-
 pub mod session_redact;
 
 use std::sync::Arc;
@@ -219,7 +217,6 @@ impl DecodeReport {
 /// - Transport panics are propagated.
 /// - Trace file I/O failure.
 /// - Decode-completeness regression in the captured inbound frames.
-#[allow(clippy::too_many_lines)]
 pub async fn run_live_scenario<F, Fut>(
     scenario: &str,
     options: forge_sdk::Options,

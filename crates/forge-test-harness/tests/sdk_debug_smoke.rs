@@ -3,7 +3,7 @@
 //! every line as it arrives (even if the test later hangs) so we can
 //! tell exactly where the stall happens.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
 use std::io::Write as _;
 use std::time::{Duration, Instant};
