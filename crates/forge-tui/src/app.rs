@@ -1,7 +1,3 @@
-// ratatui geometry: terminal dims are u16, layout math goes through f64
-// for smooth-scroll. Casts are inherent here and bounded by terminal size.
-#![allow(clippy::cast_possible_truncation, clippy::cast_precision_loss, clippy::cast_sign_loss)]
-
 mod cache_policy;
 pub(crate) mod clipboard_image;
 pub(crate) mod config;
@@ -229,7 +225,10 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
         if !is_animating && app.needs_redraw {
             tab_title::update_tab_title(&app.status, app.spinner_frame, &app.cwd);
         }
-        // Smooth scroll still settling
+        // Smooth scroll still settling — viewport row index (usize)
+        // converts to f32 for sub-pixel scroll comparison; loss is bounded
+        // by terminal height so precision is irrelevant here.
+        #[allow(clippy::cast_precision_loss)]
         let scroll_delta = (app.viewport.scroll_target as f32 - app.viewport.scroll_pos).abs();
         if scroll_delta >= 0.01 {
             app.needs_redraw = true;
