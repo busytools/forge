@@ -1,7 +1,3 @@
-#[derive(Debug, Clone)]
-pub struct PromptResponse {
-    pub stop_reason: String,
-}
 use forge_primitives as types;
 use serde::{Deserialize, Serialize};
 

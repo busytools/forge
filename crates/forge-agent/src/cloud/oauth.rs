@@ -1,5 +1,7 @@
+use std::time::SystemTime;
+
+use crate::cloud::time::parse_timestamp_value;
 use crate::cloud::{ExtraUsage, UsageSnapshot, UsageSourceKind, UsageWindow};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 #[derive(Debug)]
 pub enum OauthFetchError {
@@ -101,110 +103,6 @@ fn map_extra_usage(payload: Option<super::oauth_usage::OauthExtraUsage>) -> Opti
     })
 }
 
-fn parse_timestamp_value(value: &serde_json::Value) -> Option<SystemTime> {
-    match value {
-        serde_json::Value::Number(number) => number
-            .as_i64()
-            .or_else(|| number.as_u64().and_then(|raw| i64::try_from(raw).ok()))
-            .and_then(system_time_from_epoch),
-        serde_json::Value::String(raw) => parse_iso8601_timestamp(raw)
-            .or_else(|| raw.trim().parse::<i64>().ok().and_then(system_time_from_epoch)),
-        _ => None,
-    }
-}
-
-fn system_time_from_epoch(raw: i64) -> Option<SystemTime> {
-    if raw < 0 {
-        return None;
-    }
-
-    let raw = u64::try_from(raw).ok()?;
-    if raw >= 1_000_000_000_000 {
-        Some(UNIX_EPOCH + Duration::from_millis(raw))
-    } else {
-        Some(UNIX_EPOCH + Duration::from_secs(raw))
-    }
-}
-
-fn parse_iso8601_timestamp(raw: &str) -> Option<SystemTime> {
-    let trimmed = raw.trim();
-    let (date_part, time_part) = trimmed.split_once('T').or_else(|| trimmed.split_once(' '))?;
-
-    let mut date_iter = date_part.split('-');
-    let year = date_iter.next()?.parse::<i32>().ok()?;
-    let month = date_iter.next()?.parse::<u32>().ok()?;
-    let day = date_iter.next()?.parse::<u32>().ok()?;
-
-    let (time_only, offset_seconds) = split_time_and_offset(time_part)?;
-    let mut time_iter = time_only.split(':');
-    let hour = time_iter.next()?.parse::<u32>().ok()?;
-    let minute = time_iter.next()?.parse::<u32>().ok()?;
-    let second_and_fraction = time_iter.next().unwrap_or("0");
-    let (second_raw, fraction_raw) =
-        second_and_fraction.split_once('.').unwrap_or((second_and_fraction, ""));
-    let second = second_raw.parse::<u32>().ok()?;
-
-    let mut nanos = 0u32;
-    let mut factor = 100_000_000u32;
-    for ch in fraction_raw.chars().take(9) {
-        let digit = ch.to_digit(10)?;
-        nanos = nanos.saturating_add(digit.saturating_mul(factor));
-        if factor == 0 {
-            break;
-        }
-        factor /= 10;
-    }
-
-    let days = days_from_civil(year, month, day)?;
-    let day_seconds =
-        i64::from(hour) * 60 * 60 + i64::from(minute) * 60 + i64::from(second) - offset_seconds;
-    let unix_seconds = days.checked_mul(86_400)?.checked_add(day_seconds)?;
-    if unix_seconds < 0 {
-        return None;
-    }
-
-    Some(
-        UNIX_EPOCH
-            + Duration::from_secs(u64::try_from(unix_seconds).ok()?)
-            + Duration::from_nanos(u64::from(nanos)),
-    )
-}
-
-fn split_time_and_offset(raw: &str) -> Option<(&str, i64)> {
-    if let Some(time_only) = raw.strip_suffix('Z') {
-        return Some((time_only, 0));
-    }
-
-    let sign_index = raw
-        .char_indices()
-        .skip(1)
-        .find(|(_, ch)| *ch == '+' || *ch == '-')
-        .map(|(index, _)| index)?;
-    let (time_only, offset_raw) = raw.split_at(sign_index);
-    let sign = if offset_raw.starts_with('-') { -1 } else { 1 };
-    let offset_raw = &offset_raw[1..];
-    let mut parts = offset_raw.split(':');
-    let hours = parts.next()?.parse::<i64>().ok()?;
-    let minutes = parts.next().unwrap_or("0").parse::<i64>().ok()?;
-    Some((time_only, sign * (hours * 60 * 60 + minutes * 60)))
-}
-
-fn days_from_civil(year: i32, month: u32, day: u32) -> Option<i64> {
-    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
-        return None;
-    }
-
-    let mut year = i64::from(year);
-    let month = i64::from(month);
-    let day = i64::from(day);
-    year -= i64::from(month <= 2);
-    let era = if year >= 0 { year } else { year - 399 } / 400;
-    let yoe = year - era * 400;
-    let day_of_year = (153 * (month + if month > 2 { -3 } else { 9 }) + 2) / 5 + day - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + day_of_year;
-    Some(era * 146_097 + doe - 719_468)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -250,12 +148,15 @@ mod tests {
 
     #[test]
     fn parses_iso8601_timestamp() {
+        use crate::cloud::time::parse_iso8601_timestamp;
+        use std::time::UNIX_EPOCH;
         let parsed = parse_iso8601_timestamp("2025-12-25T12:00:00.000Z").expect("timestamp");
         assert!(parsed > UNIX_EPOCH);
     }
 
     #[test]
     fn parses_numeric_millisecond_timestamp() {
+        use std::time::UNIX_EPOCH;
         let parsed =
             parse_timestamp_value(&serde_json::json!(1_735_128_000_000_i64)).expect("timestamp");
         assert!(parsed > UNIX_EPOCH);

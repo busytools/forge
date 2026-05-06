@@ -121,13 +121,8 @@ impl AgentHandle {
         self.send(Command::ResumeSession { session_id: session_id.into(), launch_settings })
     }
 
-    pub fn prompt_text(
-        &self,
-        session_id: String,
-        text: String,
-    ) -> anyhow::Result<crate::client::PromptResponse> {
-        self.send(Command::Prompt { session_id: session_id.into(), text })?;
-        Ok(crate::client::PromptResponse { stop_reason: "in_progress".to_owned() })
+    pub fn prompt_text(&self, session_id: String, text: String) -> anyhow::Result<()> {
+        self.send(Command::Prompt { session_id: session_id.into(), text })
     }
 
     pub fn prompt_with_images(
@@ -135,9 +130,8 @@ impl AgentHandle {
         session_id: String,
         text: String,
         images: Vec<forge_primitives::ImageAttachment>,
-    ) -> anyhow::Result<crate::client::PromptResponse> {
-        self.send(Command::PromptWithImages { session_id: session_id.into(), text, images })?;
-        Ok(crate::client::PromptResponse { stop_reason: "in_progress".to_owned() })
+    ) -> anyhow::Result<()> {
+        self.send(Command::PromptWithImages { session_id: session_id.into(), text, images })
     }
 
     pub fn cancel(&self, session_id: String) -> anyhow::Result<()> {
@@ -389,11 +383,9 @@ fn dispatch(cmd: Command, bridge: &ForgeSdkBridge) -> anyhow::Result<()> {
             });
             bridge.resume_session(session_id.into_string(), launch)
         }
-        C::Prompt { session_id, text } => {
-            bridge.prompt_text(session_id.into_string(), text).map(|_| ())
-        }
+        C::Prompt { session_id, text } => bridge.prompt_text(session_id.into_string(), text),
         C::PromptWithImages { session_id, text, images } => {
-            bridge.prompt_with_images(session_id.into_string(), text, images).map(|_| ())
+            bridge.prompt_with_images(session_id.into_string(), text, images)
         }
         C::Cancel { session_id } => bridge.cancel(session_id.into_string()),
         C::SetMode { session_id, mode } => bridge.set_mode(session_id.into_string(), mode),

@@ -152,7 +152,7 @@ fn dispatch_prompt_turn(app: &mut App, text: String) {
     // The text already contains [Image #N] badges from the textarea,
     // so the model can correlate user references with image attachments.
     match conn.prompt_with_images(sid.to_string(), text, images) {
-        Ok(resp) => {
+        Ok(()) => {
             crate::app::session_runtime::request_context_usage_refresh(app);
             tracing::info!(
                 target: crate::logging::targets::APP_INPUT,
@@ -161,7 +161,6 @@ fn dispatch_prompt_turn(app: &mut App, text: String) {
                 outcome = "success",
                 session_id = %session_id,
                 input_chars,
-                stop_reason = ?resp.stop_reason,
             );
         }
         Err(e) => {

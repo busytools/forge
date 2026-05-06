@@ -28,7 +28,7 @@ use parking_lot::Mutex;
 use serde_json::Value;
 use tokio::sync::{mpsc, oneshot};
 
-use crate::client::{AgentEvent, PromptResponse, SessionLaunchSettings};
+use crate::client::{AgentEvent, SessionLaunchSettings};
 use crate::forge_sdk_worker;
 use forge_primitives::{ElicitationAction, McpServerConfig, PermissionOutcome, QuestionOutcome};
 
@@ -260,11 +260,7 @@ impl ForgeSdkBridge {
         self.inner.events_rx.lock().take()
     }
 
-    pub(crate) fn prompt_text(
-        &self,
-        session_id: String,
-        text: String,
-    ) -> anyhow::Result<PromptResponse> {
+    pub(crate) fn prompt_text(&self, session_id: String, text: String) -> anyhow::Result<()> {
         self.prompt_with_images(session_id, text, Vec::new())
     }
 
@@ -273,7 +269,7 @@ impl ForgeSdkBridge {
         session_id: String,
         text: String,
         images: Vec<forge_primitives::ImageAttachment>,
-    ) -> anyhow::Result<PromptResponse> {
+    ) -> anyhow::Result<()> {
         // No `check_session_id` here — the TUI commits to
         // `AppStatus::Thinking` BEFORE this call, and a silent
         // stale-session drop (returning Ok with no event) would
@@ -306,8 +302,7 @@ impl ForgeSdkBridge {
         });
         self.dispatch("prompt", move |client| async move {
             forge_sdk_worker::send_prompt(&client, chunks).await
-        })?;
-        Ok(PromptResponse { stop_reason: "end_turn".to_owned() })
+        })
     }
 
     pub(crate) fn cancel(&self, session_id: String) -> anyhow::Result<()> {

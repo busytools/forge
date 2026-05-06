@@ -28,34 +28,28 @@ fn number_field(record: &Map<String, Value>, keys: &[&str]) -> Option<f64> {
     None
 }
 
+/// Deserialize a wire-string enum variant from an optional JSON
+/// value. Returns `None` for missing field, wrong JSON type, or
+/// unrecognised variant — the three failure modes share a single
+/// drop path. Each enum carries `#[serde(rename_all = "snake_case")]`
+/// so this is just the typed wrapper.
+fn parse_enum<T: serde::de::DeserializeOwned>(value: Option<&Value>) -> Option<T> {
+    serde_json::from_value(value?.clone()).ok()
+}
+
 #[must_use]
 pub fn parse_fast_mode_state(value: Option<&Value>) -> Option<FastModeState> {
-    match value?.as_str()? {
-        "off" => Some(FastModeState::Off),
-        "cooldown" => Some(FastModeState::Cooldown),
-        "on" => Some(FastModeState::On),
-        _ => None,
-    }
+    parse_enum(value)
 }
 
 #[must_use]
 fn parse_rate_limit_status(value: Option<&Value>) -> Option<RateLimitStatus> {
-    match value?.as_str()? {
-        "allowed" => Some(RateLimitStatus::Allowed),
-        "allowed_warning" => Some(RateLimitStatus::AllowedWarning),
-        "rejected" => Some(RateLimitStatus::Rejected),
-        _ => None,
-    }
+    parse_enum(value)
 }
 
 #[must_use]
 pub fn parse_runtime_session_state(value: Option<&Value>) -> Option<RuntimeSessionState> {
-    match value?.as_str()? {
-        "idle" => Some(RuntimeSessionState::Idle),
-        "running" => Some(RuntimeSessionState::Running),
-        "requires_action" => Some(RuntimeSessionState::RequiresAction),
-        _ => None,
-    }
+    parse_enum(value)
 }
 
 /// Reads a numeric field as `u64`, returning `None` when the field
