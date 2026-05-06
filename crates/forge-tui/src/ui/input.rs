@@ -1,3 +1,7 @@
+// ratatui geometry: terminal dims are u16, layout math goes through f64
+// for smooth-scroll. Casts are inherent here and bounded by terminal size.
+#![allow(clippy::cast_possible_truncation, clippy::cast_precision_loss, clippy::cast_sign_loss)]
+
 use crate::app::input::parse_paste_placeholder_ranges;
 use crate::app::mention;
 use crate::app::subagent;
@@ -100,7 +104,6 @@ pub(crate) fn compute_render_geometry(area: Rect, hint_lines: u16) -> InputRende
     InputRenderGeometry { hint_pad, padded, prompt, text }
 }
 
-#[allow(clippy::cast_possible_truncation)]
 pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     let hint_lines = hint_line_count(app);
     let geometry = compute_render_geometry(area, hint_lines);
@@ -326,7 +329,6 @@ struct SelectionOverlay {
 }
 
 impl Widget for SelectionOverlay {
-    #[allow(clippy::cast_possible_truncation)]
     fn render(self, area: Rect, buf: &mut Buffer) {
         let (start, end) =
             crate::app::normalize_selection(self.selection.start, self.selection.end);

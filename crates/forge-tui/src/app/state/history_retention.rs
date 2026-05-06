@@ -1,3 +1,7 @@
+// ratatui geometry: terminal dims are u16, layout math goes through f64
+// for smooth-scroll. Casts are inherent here and bounded by terminal size.
+#![allow(clippy::cast_possible_truncation, clippy::cast_precision_loss, clippy::cast_sign_loss)]
+
 use crate::agent::model;
 use std::cmp::Ordering;
 use std::collections::HashSet;
@@ -501,7 +505,6 @@ impl super::App {
         Self::remap_anchor_for_insert(preserved_anchor, insert_idx)
     }
 
-    #[allow(clippy::cast_precision_loss)]
     pub fn enforce_history_retention(&mut self) -> HistoryRetentionStats {
         self.ensure_history_retention_accounting();
         let mut stats = HistoryRetentionStats::default();
