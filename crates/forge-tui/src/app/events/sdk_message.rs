@@ -276,70 +276,6 @@ fn parent_tool_use_id_from_meta(meta: Option<&Value>) -> Option<String> {
     if id.is_empty() { None } else { Some(id.to_owned()) }
 }
 
-/// Applies a `ToolCallUpdateFields` patch onto an existing `ToolCall`
-/// in-place, preserving any unset fields.
-fn apply_fields_to_base(
-    base: &mut forge_primitives::ToolCall,
-    fields: &forge_primitives::ToolCallUpdateFields,
-) {
-    use forge_primitives::TaskMetadata;
-    fn merge_task_metadata(
-        current: Option<TaskMetadata>,
-        update: Option<TaskMetadata>,
-    ) -> Option<TaskMetadata> {
-        match (current, update) {
-            (None, None) => None,
-            (Some(c), None) => Some(c),
-            (None, Some(u)) => Some(u),
-            (Some(mut c), Some(u)) => {
-                if u.end_time.is_some() {
-                    c.end_time = u.end_time;
-                }
-                if u.total_paused_ms.is_some() {
-                    c.total_paused_ms = u.total_paused_ms;
-                }
-                if u.error.is_some() {
-                    c.error = u.error;
-                }
-                if u.is_backgrounded.is_some() {
-                    c.is_backgrounded = u.is_backgrounded;
-                }
-                Some(c)
-            }
-        }
-    }
-    if let Some(t) = &fields.title {
-        base.title.clone_from(t);
-    }
-    if let Some(k) = &fields.kind {
-        base.kind.clone_from(k);
-    }
-    if let Some(s) = &fields.status {
-        base.status.clone_from(s);
-    }
-    if let Some(input) = &fields.raw_input {
-        base.raw_input = Some(input.clone());
-    }
-    if let Some(out) = &fields.raw_output {
-        base.raw_output = Some(out.clone());
-    }
-    if let Some(locs) = &fields.locations {
-        base.locations.clone_from(locs);
-    }
-    if let Some(meta) = &fields.output_metadata {
-        base.output_metadata = Some(meta.clone());
-    }
-    if let Some(tm) = fields.task_metadata.clone() {
-        base.task_metadata = merge_task_metadata(base.task_metadata.clone(), Some(tm));
-    }
-    if let Some(meta) = &fields.meta {
-        base.meta = Some(meta.clone());
-    }
-    if let Some(content) = &fields.content {
-        base.content.clone_from(content);
-    }
-}
-
 /// Insert or update an entry in `app.turn_state.tool_calls` for a
 /// `tool_use` content block, and dispatch the resulting initial
 /// `ToolCall` or `ToolCallUpdate` via the existing App handlers.
@@ -413,7 +349,7 @@ fn apply_tool_call_update(
     use forge_primitives::ToolCallUpdate;
 
     if let Some(base) = app.turn_state.tool_calls.get_mut(tool_use_id) {
-        apply_fields_to_base(base, &fields);
+        base.merge(fields.clone());
     }
     let wire_update = ToolCallUpdate { tool_call_id: tool_use_id.to_owned(), fields };
     let model_update = convert_tool_call_update(wire_update);
