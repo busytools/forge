@@ -1,5 +1,6 @@
-// ratatui geometry: terminal dims are u16, layout math goes through f64
-// for smooth-scroll. Casts are inherent here and bounded by terminal size.
+// ratatui geometry: terminal dims are u16, scroll math goes through f32
+// for smooth-scroll. Casts (usize↔f32, f32→u16/usize) are inherent and bounded by
+// terminal size.
 #![allow(clippy::cast_possible_truncation, clippy::cast_precision_loss, clippy::cast_sign_loss)]
 
 /// Describes the intent behind a layout invalidation.
