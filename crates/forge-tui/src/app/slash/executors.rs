@@ -144,11 +144,8 @@ fn handle_mode_submit(app: &mut App, args: &[&str]) -> bool {
 
     // Apply CurrentModeUpdate + ModeStateUpdate App-side immediately
     // so the footer chip refreshes without waiting for the worker
-    // round-trip. Mirrors what the bridge's `SetMode` handler used
-    // to emit after the SDK call succeeded; the worker no longer
-    // fans these events through the event channel (Phase 2 cutover).
-    // Because the apply is synchronous, no `CommandPending` state is
-    // needed — the UI never sees a stale pending phase.
+    // round-trip. The apply is synchronous, so no `CommandPending`
+    // state is needed — the UI never sees a stale pending phase.
     apply_optimistic_mode_change(app, requested_mode);
 
     let tx = app.event_tx.clone();
@@ -217,11 +214,8 @@ fn handle_model_submit(app: &mut App, args: &[&str]) -> bool {
     }
 
     // Apply CurrentModelUpdate (and a refreshed ModeStateUpdate
-    // when the active mode is set) App-side immediately. Mirrors
-    // what the bridge's `SetModel` handler emitted after the SDK
-    // call succeeded; the worker no longer fans these events
-    // through the event channel (Phase 2 cutover). The apply is
-    // synchronous so no `CommandPending` state is needed.
+    // when the active mode is set) App-side immediately. The apply
+    // is synchronous so no `CommandPending` state is needed.
     apply_optimistic_model_change(app, model_name);
 
     let tx = app.event_tx.clone();

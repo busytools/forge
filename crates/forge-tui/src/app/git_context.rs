@@ -1,11 +1,10 @@
-//! Thin TUI-side cache for the bridge-pushed git context snapshots.
+//! TUI-side cache for git context snapshots emitted by the agent.
 //!
 //! Filesystem reads, the `.git/HEAD` walker, the `notify::Watcher`,
 //! and the 75ms debounce all live in `forge_agent::env::git`. The
-//! TUI starts a watcher per session through the bridge's
-//! `start_git_context_watch` method and consumes
-//! `AgentEvent::GitContextSnapshot` events; this module is the
-//! App-side cache those events feed.
+//! TUI starts a watcher per session via `AgentHandle::start_git_context_watch`
+//! and consumes `AgentEvent::GitContextSnapshot` events; this module
+//! is the App-side cache those events feed.
 
 use forge_agent::env::git::{GitBranch, GitContext};
 

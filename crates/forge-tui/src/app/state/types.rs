@@ -142,7 +142,7 @@ pub struct SessionTurnState {
 
     /// Active permission mode (typed enum, not the wire string).
     /// Populated from System(init).permissionMode and the `SetMode`
-    /// command path; mirrors what `BridgeSession.mode` used to hold.
+    /// command path.
     pub mode: Option<crate::agent::state::PermissionMode>,
     /// Permission modes the runtime currently supports.
     pub supported_mode_ids: Vec<crate::agent::state::PermissionMode>,
