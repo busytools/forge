@@ -1,6 +1,7 @@
-// ratatui geometry: terminal dims are u16, layout math goes through f64
-// for smooth-scroll. Casts are inherent here and bounded by terminal size.
-#![allow(clippy::cast_possible_truncation, clippy::cast_precision_loss, clippy::cast_sign_loss)]
+// ratatui works in u16 (terminal dimensions). Layout math here
+// truncates `usize` lengths to `u16` once they're bounded by
+// terminal size; the cast is inherent.
+#![allow(clippy::cast_possible_truncation)]
 
 use crate::app::{App, FocusOwner, TodoStatus};
 use crate::ui::theme;

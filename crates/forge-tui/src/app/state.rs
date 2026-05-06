@@ -1,7 +1,3 @@
-// ratatui geometry: terminal dims are u16, layout math goes through f64
-// for smooth-scroll. Casts are inherent here and bounded by terminal size.
-#![allow(clippy::cast_possible_truncation, clippy::cast_precision_loss, clippy::cast_sign_loss)]
-
 pub mod block_cache;
 pub mod cache_metrics;
 mod history_retention;
