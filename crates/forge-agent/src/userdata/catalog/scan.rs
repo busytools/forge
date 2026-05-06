@@ -83,10 +83,7 @@ pub fn list_subagents(session_id: &str, directory: Option<String>) -> Vec<String
     let Some(subagents_dir) = resolve_subagents_dir(session_id, directory.as_deref()) else {
         return Vec::new();
     };
-    collect_agent_files(&subagents_dir)
-        .into_iter()
-        .map(|(agent_id, _)| agent_id)
-        .collect()
+    collect_agent_files(&subagents_dir).into_iter().map(|(agent_id, _)| agent_id).collect()
 }
 
 /// Read a subagent's transcript in chronological order.
@@ -115,9 +112,8 @@ pub fn get_subagent_messages(
     };
     // Walk the tree — the file may live directly under subagents/ or
     // in a nested subdirectory (e.g. `workflows/<run_id>/`).
-    let Some((_, path)) = collect_agent_files(&subagents_dir)
-        .into_iter()
-        .find(|(found, _)| found == agent_id)
+    let Some((_, path)) =
+        collect_agent_files(&subagents_dir).into_iter().find(|(found, _)| found == agent_id)
     else {
         return Vec::new();
     };
@@ -166,11 +162,7 @@ fn apply_limit_offset(
     offset: usize,
 ) -> Vec<SessionMessage> {
     let end = limit.map_or(messages.len(), |l| offset.saturating_add(l));
-    messages
-        .into_iter()
-        .skip(offset)
-        .take(end.saturating_sub(offset))
-        .collect()
+    messages.into_iter().skip(offset).take(end.saturating_sub(offset)).collect()
 }
 
 fn resolve_subagents_dir(session_id: &str, directory: Option<&str>) -> Option<PathBuf> {
@@ -218,22 +210,11 @@ fn parse_session_messages<R: std::io::Read>(reader: R) -> Vec<SessionMessage> {
             Some("assistant") => SessionMessageKind::Assistant,
             _ => continue,
         };
-        if value
-            .get("parent_tool_use_id")
-            .is_some_and(|v| !v.is_null())
-        {
+        if value.get("parent_tool_use_id").is_some_and(|v| !v.is_null()) {
             continue;
         }
-        let uuid = value
-            .get("uuid")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string();
-        let sess = value
-            .get("session_id")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string();
+        let uuid = value.get("uuid").and_then(Value::as_str).unwrap_or_default().to_string();
+        let sess = value.get("session_id").and_then(Value::as_str).unwrap_or_default().to_string();
         let message = value.get("message").cloned().unwrap_or(Value::Null);
         out.push(SessionMessage {
             kind,
@@ -251,10 +232,8 @@ fn parse_session_messages<R: std::io::Read>(reader: R) -> Vec<SessionMessage> {
 /// truncated with a base-36 hash suffix (matching JS's
 /// `String.prototype.hashCode` trick).
 fn sanitize_path(name: &str) -> String {
-    let sanitized: String = name
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
-        .collect();
+    let sanitized: String =
+        name.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
     if sanitized.len() <= MAX_SANITIZED_LENGTH {
         return sanitized;
     }
@@ -338,11 +317,7 @@ pub fn list_sessions(
 
     entries.sort_by_key(|e| std::cmp::Reverse(e.last_modified));
     let end = limit.map_or(entries.len(), |l| offset.saturating_add(l));
-    entries
-        .into_iter()
-        .skip(offset)
-        .take(end.saturating_sub(offset))
-        .collect()
+    entries.into_iter().skip(offset).take(end.saturating_sub(offset)).collect()
 }
 
 /// Read metadata for one session. When `directory` is `None`, every
@@ -381,9 +356,7 @@ pub fn get_session_messages(session_id: &str, directory: Option<String>) -> Vec<
         Some(project_dir_for(&dir).join(&file_name))
     } else {
         fs::read_dir(projects_dir()).ok().and_then(|iter| {
-            iter.flatten()
-                .map(|e| e.path().join(&file_name))
-                .find(|p| p.is_file())
+            iter.flatten().map(|e| e.path().join(&file_name)).find(|p| p.is_file())
         })
     };
     let Some(path) = candidate else {
@@ -478,12 +451,7 @@ fn read_session_lite(path: &Path) -> Option<LiteSessionFile> {
         String::from_utf8_lossy(&tail_bytes).into_owned()
     };
 
-    Some(LiteSessionFile {
-        mtime,
-        size,
-        head,
-        tail,
-    })
+    Some(LiteSessionFile { mtime, size, head, tail })
 }
 
 /// Find the first byte offset where `needle` begins in `haystack`.
@@ -656,12 +624,8 @@ pub(crate) fn extract_command_name(s: &str) -> Option<String> {
 
 /// Fixed-prefix counterpart to the CLI's `_SKIP_FIRST_PROMPT_PATTERN`.
 pub(crate) fn should_skip_first_prompt(s: &str) -> bool {
-    const PREFIXES: [&str; 4] = [
-        "<local-command-stdout>",
-        "<session-start-hook>",
-        "<tick>",
-        "<goal>",
-    ];
+    const PREFIXES: [&str; 4] =
+        ["<local-command-stdout>", "<session-start-hook>", "<tick>", "<goal>"];
     if PREFIXES.iter().any(|p| s.starts_with(p)) {
         return true;
     }
@@ -669,10 +633,9 @@ pub(crate) fn should_skip_first_prompt(s: &str) -> bool {
         return true;
     }
     let trimmed = s.trim();
-    for (open, close) in [
-        ("<ide_opened_file>", "</ide_opened_file>"),
-        ("<ide_selection>", "</ide_selection>"),
-    ] {
+    for (open, close) in
+        [("<ide_opened_file>", "</ide_opened_file>"), ("<ide_selection>", "</ide_selection>")]
+    {
         if trimmed.starts_with(open) && trimmed.ends_with(close) {
             return true;
         }
@@ -779,10 +742,7 @@ mod tests {
     fn long_path_gets_hash_suffix() {
         let long = "a".repeat(300);
         let got = sanitize_path(&long);
-        assert_eq!(
-            got.len(),
-            MAX_SANITIZED_LENGTH + 1 + simple_hash(&long).len()
-        );
+        assert_eq!(got.len(), MAX_SANITIZED_LENGTH + 1 + simple_hash(&long).len());
     }
 
     #[test]
@@ -806,19 +766,13 @@ mod tests {
     #[test]
     fn extract_json_string_field_finds_compact_form() {
         let t = r#"noise {"type":"user","message":{"content":"hi"}} noise"#;
-        assert_eq!(
-            extract_json_string_field(t, "content"),
-            Some("hi".to_string())
-        );
+        assert_eq!(extract_json_string_field(t, "content"), Some("hi".to_string()));
     }
 
     #[test]
     fn extract_json_string_field_finds_spaced_form() {
         let t = r#"{"gitBranch": "main"}"#;
-        assert_eq!(
-            extract_json_string_field(t, "gitBranch"),
-            Some("main".to_string())
-        );
+        assert_eq!(extract_json_string_field(t, "gitBranch"), Some("main".to_string()));
     }
 
     #[test]
@@ -833,50 +787,33 @@ mod tests {
     #[test]
     fn extract_last_json_string_field_picks_last() {
         let t = r#"{"tag":"old"} {"tag":"new"}"#;
-        assert_eq!(
-            extract_last_json_string_field(t, "tag"),
-            Some("new".to_string())
-        );
+        assert_eq!(extract_last_json_string_field(t, "tag"), Some("new".to_string()));
     }
 
     #[test]
     fn first_prompt_skips_local_command_stdout() {
         let head = r#"{"type":"user","message":{"content":"<local-command-stdout>out</local-command-stdout>"}}
 {"type":"user","message":{"content":"actual prompt"}}"#;
-        assert_eq!(
-            extract_first_prompt_from_head(head),
-            Some("actual prompt".to_string())
-        );
+        assert_eq!(extract_first_prompt_from_head(head), Some("actual prompt".to_string()));
     }
 
     #[test]
     fn first_prompt_falls_back_to_command_name() {
         let head = r#"{"type":"user","message":{"content":"<command-name>foo</command-name>"}}"#;
-        assert_eq!(
-            extract_first_prompt_from_head(head),
-            Some("foo".to_string())
-        );
+        assert_eq!(extract_first_prompt_from_head(head), Some("foo".to_string()));
     }
 
     #[test]
     fn first_prompt_skips_tool_result_line() {
         let head = r#"{"type":"user","message":{"content":[{"type":"tool_result","content":"x"}]}}
 {"type":"user","message":{"content":"real prompt"}}"#;
-        assert_eq!(
-            extract_first_prompt_from_head(head),
-            Some("real prompt".to_string())
-        );
+        assert_eq!(extract_first_prompt_from_head(head), Some("real prompt".to_string()));
     }
 
     #[test]
     fn parse_session_info_skips_sidechain() {
         let head = "{\"isSidechain\":true,\"type\":\"user\"}\n".to_string();
-        let lite = LiteSessionFile {
-            mtime: 0,
-            size: 1,
-            head: head.clone(),
-            tail: head,
-        };
+        let lite = LiteSessionFile { mtime: 0, size: 1, head: head.clone(), tail: head };
         assert!(parse_session_info_from_lite("abc", &lite, None).is_none());
     }
 
@@ -974,14 +911,8 @@ mod tests {
         let collected = collect_agent_files(base);
         let ids: Vec<&str> = collected.iter().map(|(id, _)| id.as_str()).collect();
         assert!(ids.contains(&"aaa"), "agent-aaa.jsonl must be collected");
-        assert!(
-            !ids.contains(&"bbb"),
-            "agent-bbb.txt must be ignored (wrong extension)"
-        );
-        assert!(
-            !ids.contains(&"random"),
-            "random.jsonl must be ignored (missing `agent-` prefix)"
-        );
+        assert!(!ids.contains(&"bbb"), "agent-bbb.txt must be ignored (wrong extension)");
+        assert!(!ids.contains(&"random"), "random.jsonl must be ignored (missing `agent-` prefix)");
     }
 
     #[test]
@@ -990,13 +921,7 @@ mod tests {
         //. Walk must find them.
         let tmp = tempfile::tempdir().unwrap();
         let base = tmp.path();
-        write_tmp_file(
-            &base
-                .join("workflows")
-                .join("run1")
-                .join("agent-nested.jsonl"),
-            "{}\n",
-        );
+        write_tmp_file(&base.join("workflows").join("run1").join("agent-nested.jsonl"), "{}\n");
         let collected = collect_agent_files(base);
         assert_eq!(collected.len(), 1);
         assert_eq!(collected[0].0, "nested");

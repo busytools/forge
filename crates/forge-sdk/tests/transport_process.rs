@@ -9,11 +9,7 @@ fn mock_binary_path() -> String {
     // Use the raw mock that doesn't expect an initialize handshake —
     // transport_process tests exercise Subprocess directly, below
     // Client's initialize round-trip.
-    concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/tests/fixtures/mock_claude_raw.sh"
-    )
-    .into()
+    concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/mock_claude_raw.sh").into()
 }
 
 #[tokio::test]
@@ -22,15 +18,8 @@ async fn spawn_reads_init_line() {
     opts.binary = mock_binary_path();
 
     let mut sub = Subprocess::spawn(&opts).await.expect("spawn");
-    let line = sub
-        .read_line()
-        .await
-        .expect("read")
-        .expect("init line present");
-    assert!(
-        line.contains("\"type\":\"system\""),
-        "expected init system line, got: {line}"
-    );
+    let line = sub.read_line().await.expect("read").expect("init line present");
+    assert!(line.contains("\"type\":\"system\""), "expected init system line, got: {line}");
     sub.close().await.expect("close");
 }
 

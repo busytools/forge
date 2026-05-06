@@ -49,11 +49,7 @@ async fn allow_path_completes_turn() {
     assert!(matches!(msg, Message::Result { .. }));
 
     client.disconnect().await.expect("disconnect");
-    assert_eq!(
-        call_count.load(Ordering::SeqCst),
-        1,
-        "callback should have fired exactly once"
-    );
+    assert_eq!(call_count.load(Ordering::SeqCst), 1, "callback should have fired exactly once");
 }
 
 #[tokio::test]

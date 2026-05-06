@@ -70,10 +70,7 @@ mod tests {
     fn allow_decision_with_updated_input() {
         let d = PermissionDecision::allow_with_input(json!({"file_path": "/tmp/safe.txt"}));
         assert!(d.is_allow());
-        assert_eq!(
-            d.updated_input().unwrap(),
-            &json!({"file_path": "/tmp/safe.txt"})
-        );
+        assert_eq!(d.updated_input().unwrap(), &json!({"file_path": "/tmp/safe.txt"}));
     }
 
     #[test]
@@ -100,14 +97,8 @@ mod tests {
     fn add_rules_serialises_with_camel_case_wire_keys() {
         let update = PermissionUpdate::AddRules {
             rules: vec![
-                PermissionRuleValue {
-                    tool_name: "Edit".into(),
-                    rule_content: Some("*.py".into()),
-                },
-                PermissionRuleValue {
-                    tool_name: "Bash".into(),
-                    rule_content: None,
-                },
+                PermissionRuleValue { tool_name: "Edit".into(), rule_content: Some("*.py".into()) },
+                PermissionRuleValue { tool_name: "Bash".into(), rule_content: None },
             ],
             behavior: PermissionBehavior::Allow,
             destination: Some(PermissionUpdateDestination::ProjectSettings),
@@ -219,10 +210,7 @@ mod tests {
     fn permission_update_destination_values_match_wire() {
         for (d, wire) in [
             (PermissionUpdateDestination::UserSettings, "userSettings"),
-            (
-                PermissionUpdateDestination::ProjectSettings,
-                "projectSettings",
-            ),
+            (PermissionUpdateDestination::ProjectSettings, "projectSettings"),
             (PermissionUpdateDestination::LocalSettings, "localSettings"),
             (PermissionUpdateDestination::Session, "session"),
         ] {
@@ -246,10 +234,7 @@ mod tests {
     #[test]
     fn with_updated_permissions_attaches_updates() {
         let updates = vec![
-            PermissionUpdate::SetMode {
-                mode: PermissionMode::Plan,
-                destination: None,
-            },
+            PermissionUpdate::SetMode { mode: PermissionMode::Plan, destination: None },
             PermissionUpdate::AddDirectories {
                 directories: vec!["/workspace".into()],
                 destination: None,
@@ -258,19 +243,13 @@ mod tests {
         let d = PermissionDecision::allow().with_updated_permissions(updates.clone());
         let got = d.updated_permissions();
         assert_eq!(got.len(), 2);
-        assert_eq!(
-            serde_json::to_value(got).unwrap(),
-            serde_json::to_value(&updates).unwrap()
-        );
+        assert_eq!(serde_json::to_value(got).unwrap(), serde_json::to_value(&updates).unwrap());
     }
 
     #[test]
     fn with_updated_permissions_is_noop_on_deny() {
         let d = PermissionDecision::deny("nope").with_updated_permissions(vec![
-            PermissionUpdate::SetMode {
-                mode: PermissionMode::Ask,
-                destination: None,
-            },
+            PermissionUpdate::SetMode { mode: PermissionMode::Ask, destination: None },
         ]);
         // Still a deny; permissions are not readable.
         assert!(d.updated_permissions().is_empty());

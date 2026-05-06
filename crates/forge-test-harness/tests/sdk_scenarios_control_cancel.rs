@@ -29,15 +29,12 @@ use forge_test_harness::sdk_wire::run_live_scenario;
 async fn wire_capture_control_cancel() {
     let hooks = HooksBuilder::new()
         .default_timeout_secs(1)
-        .pre_tool_use(
-            "Bash",
-            |_input: PreToolUseInput, _ctx: HookContext| async move {
-                // Sleep past the 1s CLI timeout so the CLI emits a
-                // control_cancel_request for this hook_callback.
-                tokio::time::sleep(Duration::from_secs(3)).await;
-                HookDecision::passthrough()
-            },
-        )
+        .pre_tool_use("Bash", |_input: PreToolUseInput, _ctx: HookContext| async move {
+            // Sleep past the 1s CLI timeout so the CLI emits a
+            // control_cancel_request for this hook_callback.
+            tokio::time::sleep(Duration::from_secs(3)).await;
+            HookDecision::passthrough()
+        })
         .build();
 
     let opts = OptionsBuilder::new()

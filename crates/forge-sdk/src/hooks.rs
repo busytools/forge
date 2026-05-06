@@ -85,10 +85,7 @@ mod tests_hooks_types {
         assert_eq!(input.base.transcript_path, "/t");
         assert_eq!(input.base.cwd, "/c");
         assert_eq!(input.subagent.agent_id.as_deref(), Some("agent-1"));
-        assert_eq!(
-            input.subagent.agent_type.as_deref(),
-            Some("general-purpose")
-        );
+        assert_eq!(input.subagent.agent_type.as_deref(), Some("general-purpose"));
         assert_eq!(input.tool_name, "Bash");
         assert_eq!(input.tool_use_id, "toolu_1");
     }
@@ -277,10 +274,7 @@ mod tests_hooks_types {
 
     #[test]
     fn subagent_context_round_trips() {
-        let ctx = SubagentContext {
-            agent_id: Some("a".into()),
-            agent_type: Some("t".into()),
-        };
+        let ctx = SubagentContext { agent_id: Some("a".into()), agent_type: Some("t".into()) };
         let v = serde_json::to_value(&ctx).expect("serialise");
         assert_eq!(v, json!({"agent_id": "a", "agent_type": "t"}));
         // None fields must not be emitted so flatten stays minimal.
@@ -407,9 +401,8 @@ mod tests_hooks_types {
 
     #[test]
     fn hook_decision_control_fields_survive_passthrough() {
-        let d = HookDecision::passthrough()
-            .with_continue(true)
-            .with_system_message("observation only");
+        let d =
+            HookDecision::passthrough().with_continue(true).with_system_message("observation only");
         assert!(d.is_allow());
         assert_eq!(d.continue_execution(), Some(true));
         assert_eq!(d.system_message(), Some("observation only"));

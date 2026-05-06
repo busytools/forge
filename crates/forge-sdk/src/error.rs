@@ -98,10 +98,7 @@ impl Error {
     /// `data: None`.
     #[must_use]
     pub fn message_parse(reason: impl Into<String>) -> Self {
-        Self::MessageParse {
-            reason: reason.into(),
-            data: None,
-        }
+        Self::MessageParse { reason: reason.into(), data: None }
     }
 
     /// Construct an [`Error::Encode`] for a local JSON encode
@@ -110,10 +107,7 @@ impl Error {
     /// failures on incoming CLI bytes.
     #[must_use]
     pub fn encode(context: impl Into<String>, source: serde_json::Error) -> Self {
-        Self::Encode {
-            context: context.into(),
-            source,
-        }
+        Self::Encode { context: context.into(), source }
     }
 }
 
@@ -125,14 +119,9 @@ mod tests {
 
     #[test]
     fn cli_not_found_display() {
-        let err = Error::CliNotFound {
-            binary: "claude".into(),
-        };
+        let err = Error::CliNotFound { binary: "claude".into() };
         let rendered = format!("{err}");
-        assert!(
-            rendered.contains("claude"),
-            "expected binary in message, got: {rendered}"
-        );
+        assert!(rendered.contains("claude"), "expected binary in message, got: {rendered}");
         assert!(
             rendered.to_lowercase().contains("not found"),
             "expected 'not found' in message, got: {rendered}"
@@ -141,28 +130,16 @@ mod tests {
 
     #[test]
     fn process_error_display_includes_exit_code() {
-        let err = Error::Process {
-            exit_code: Some(17),
-            stderr: "permission denied".into(),
-        };
+        let err = Error::Process { exit_code: Some(17), stderr: "permission denied".into() };
         let rendered = format!("{err}");
-        assert!(
-            rendered.contains("17"),
-            "expected exit code 17, got: {rendered}"
-        );
-        assert!(
-            rendered.contains("permission denied"),
-            "expected stderr, got: {rendered}"
-        );
+        assert!(rendered.contains("17"), "expected exit code 17, got: {rendered}");
+        assert!(rendered.contains("permission denied"), "expected stderr, got: {rendered}");
     }
 
     #[test]
     fn json_decode_error_display_includes_line_number() {
         let raw_err = serde_json::from_str::<serde_json::Value>("not json").unwrap_err();
-        let err = Error::JsonDecode {
-            line: 42,
-            source: raw_err,
-        };
+        let err = Error::JsonDecode { line: 42, source: raw_err };
         let rendered = format!("{err}");
         assert!(rendered.contains("42"), "expected line 42, got: {rendered}");
     }

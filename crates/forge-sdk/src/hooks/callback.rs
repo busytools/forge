@@ -57,26 +57,20 @@ impl HookDecision {
     /// Allow the action unchanged.
     #[must_use]
     pub fn allow() -> Self {
-        Self::with_inner(HookDecisionKind::Allow {
-            updated_input: None,
-        })
+        Self::with_inner(HookDecisionKind::Allow { updated_input: None })
     }
 
     /// Allow but substitute a new input payload (`PreToolUse` /
     /// `UserPromptSubmit`).
     #[must_use]
     pub fn replace_input(new_input: Value) -> Self {
-        Self::with_inner(HookDecisionKind::Allow {
-            updated_input: Some(new_input),
-        })
+        Self::with_inner(HookDecisionKind::Allow { updated_input: Some(new_input) })
     }
 
     /// Deny the action with a reason string.
     #[must_use]
     pub fn deny(reason: impl Into<String>) -> Self {
-        Self::with_inner(HookDecisionKind::Deny {
-            reason: reason.into(),
-        })
+        Self::with_inner(HookDecisionKind::Deny { reason: reason.into() })
     }
 
     /// Observational only — continue unchanged (typical `PostToolUse` /

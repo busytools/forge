@@ -52,10 +52,7 @@ impl McpServer {
             "initialize" => Ok(JsonRpcResult::Initialize {
                 protocol_version: "2024-11-05".into(),
                 capabilities: serde_json::json!({"tools": {"listChanged": false}}),
-                server_info: ServerInfo {
-                    name: self.name.clone(),
-                    version: self.version.clone(),
-                },
+                server_info: ServerInfo { name: self.name.clone(), version: self.version.clone() },
             }),
             "notifications/initialized" => {
                 return None;
@@ -98,14 +95,11 @@ impl McpServer {
             message: "tools/call requires params".into(),
             data: None,
         })?;
-        let name = params
-            .get("name")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| McpError {
-                code: -32602,
-                message: "tools/call params.name missing".into(),
-                data: None,
-            })?;
+        let name = params.get("name").and_then(|v| v.as_str()).ok_or_else(|| McpError {
+            code: -32602,
+            message: "tools/call params.name missing".into(),
+            data: None,
+        })?;
         let tool = self.tools.get(name).ok_or_else(|| McpError {
             code: -32602,
             message: format!("unknown tool: {name}"),
@@ -141,11 +135,7 @@ impl McpServerBuilder {
     /// Start a new builder.
     #[must_use]
     pub fn new(name: impl Into<String>, version: impl Into<String>) -> Self {
-        Self {
-            name: name.into(),
-            version: version.into(),
-            tools: HashMap::new(),
-        }
+        Self { name: name.into(), version: version.into(), tools: HashMap::new() }
     }
 
     /// Register a tool.
@@ -159,10 +149,6 @@ impl McpServerBuilder {
     /// Finalise into a runnable server.
     #[must_use]
     pub fn build(self) -> McpServer {
-        McpServer {
-            name: self.name,
-            version: self.version,
-            tools: self.tools,
-        }
+        McpServer { name: self.name, version: self.version, tools: self.tools }
     }
 }

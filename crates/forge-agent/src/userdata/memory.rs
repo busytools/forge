@@ -21,10 +21,7 @@ use std::path::{Path, PathBuf};
 pub fn project_memory_path(cwd: &Path) -> PathBuf {
     let key =
         crate::userdata::catalog::scan::project_key_for_directory(Some(&cwd.to_string_lossy()));
-    forge_sdk::projects_dir()
-        .join(key)
-        .join("memory")
-        .join("MEMORY.md")
+    forge_sdk::projects_dir().join(key).join("memory").join("MEMORY.md")
 }
 
 #[cfg(test)]
@@ -39,13 +36,9 @@ mod tests {
         // <config_dir> prefix isn't pinned because that's racy across
         // parallel tests.
         let path = project_memory_path(Path::new("/tmp/some/proj"));
-        let suffix: PathBuf = ["projects", "-tmp-some-proj", "memory", "MEMORY.md"]
-            .iter()
-            .collect();
-        assert!(
-            path.ends_with(&suffix),
-            "expected path to end with {suffix:?}, got {path:?}"
-        );
+        let suffix: PathBuf =
+            ["projects", "-tmp-some-proj", "memory", "MEMORY.md"].iter().collect();
+        assert!(path.ends_with(&suffix), "expected path to end with {suffix:?}, got {path:?}");
     }
 
     #[test]

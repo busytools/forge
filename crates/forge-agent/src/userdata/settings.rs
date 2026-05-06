@@ -109,10 +109,7 @@ fn target_path(target: &SettingsTarget) -> PathBuf {
 
 fn write_json_atomic(path: &Path, document: &Value) -> Result<(), Error> {
     let parent = path.parent().ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "settings path has no parent directory",
-        )
+        io::Error::new(io::ErrorKind::InvalidInput, "settings path has no parent directory")
     })?;
     std::fs::create_dir_all(parent)?;
 
@@ -126,10 +123,7 @@ fn write_json_atomic(path: &Path, document: &Value) -> Result<(), Error> {
     // before propagating the error so transient failures don't leak
     // `.settings.json.{nanos}.tmp` files into the config dir.
     let result = (|| -> io::Result<()> {
-        let mut temp = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temp_path)?;
+        let mut temp = OpenOptions::new().write(true).create_new(true).open(&temp_path)?;
         serde_json::to_writer_pretty(&mut temp, &normalized)
             .map_err(|err| io::Error::other(format!("serialize settings: {err}")))?;
         temp.write_all(b"\n")?;
@@ -148,10 +142,9 @@ fn write_json_atomic(path: &Path, document: &Value) -> Result<(), Error> {
             // Log only the basename of the temp path so the breadcrumb
             // doesn't expose the user's full config-dir path if the log
             // is shared in a bug report.
-            let temp_basename = temp_path.file_name().map_or_else(
-                || "<no-basename>".to_owned(),
-                |n| n.to_string_lossy().into_owned(),
-            );
+            let temp_basename = temp_path
+                .file_name()
+                .map_or_else(|| "<no-basename>".to_owned(), |n| n.to_string_lossy().into_owned());
             tracing::debug!(
                 target: crate::logging::targets::SETTINGS,
                 error = %cleanup_err,
@@ -164,9 +157,7 @@ fn write_json_atomic(path: &Path, document: &Value) -> Result<(), Error> {
 }
 
 fn unique_temp_path(parent: &Path, filename_hint: Option<&str>) -> PathBuf {
-    let stamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_nanos());
+    let stamp = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_nanos());
     let filename = filename_hint.unwrap_or("settings.json");
     parent.join(format!(".{filename}.{stamp}.tmp"))
 }
@@ -241,10 +232,7 @@ mod tests {
         assert!(path.ends_with(".claude.json"));
         // The leading dot makes it a hidden file at $HOME, not a
         // file under $HOME/.claude — sanity-check we didn't drift.
-        assert_ne!(
-            path.file_name().and_then(|n| n.to_str()),
-            Some("settings.json")
-        );
+        assert_ne!(path.file_name().and_then(|n| n.to_str()), Some("settings.json"));
     }
 
     #[test]
@@ -278,14 +266,8 @@ mod tests {
         // Overwrite with a different shape
         write_json_atomic(&path, &serde_json::json!({"new": 2})).expect("write2");
         let parsed = read_json_file(&path).expect("read");
-        assert!(
-            parsed.get("old").is_none(),
-            "stale key from old doc must not survive"
-        );
-        assert!(
-            parsed.get("stale").is_none(),
-            "stale key from old doc must not survive"
-        );
+        assert!(parsed.get("old").is_none(), "stale key from old doc must not survive");
+        assert!(parsed.get("stale").is_none(), "stale key from old doc must not survive");
         assert_eq!(parsed.get("new"), Some(&serde_json::json!(2)));
     }
 
@@ -297,10 +279,7 @@ mod tests {
         // produce a non-object on disk.
         write_json_atomic(&path, &serde_json::json!([1, 2, 3])).expect("write");
         let parsed = read_json_file(&path).expect("read");
-        assert!(
-            parsed.is_object(),
-            "non-object input must be normalised to {{}}"
-        );
+        assert!(parsed.is_object(), "non-object input must be normalised to {{}}");
         assert!(parsed.as_object().unwrap().is_empty());
     }
 
@@ -319,16 +298,11 @@ mod tests {
         // because cwd is a function arg — User and Preferences would
         // race on $CLAUDE_CONFIG_DIR / $HOME across parallel tests.
         let dir = tempfile::tempdir().expect("tempdir");
-        let target = SettingsTarget::ProjectLocal {
-            cwd: dir.path().to_path_buf(),
-        };
+        let target = SettingsTarget::ProjectLocal { cwd: dir.path().to_path_buf() };
         let doc = serde_json::json!({"outputStyle": "verbose"});
         write_settings_document(&target, &doc).expect("write");
         let docs = settings_documents(dir.path());
         let project_local = docs.project_local.expect("present");
-        assert_eq!(
-            project_local.get("outputStyle"),
-            Some(&serde_json::json!("verbose"))
-        );
+        assert_eq!(project_local.get("outputStyle"), Some(&serde_json::json!("verbose")));
     }
 }

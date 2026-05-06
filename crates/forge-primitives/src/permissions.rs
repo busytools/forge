@@ -119,25 +119,15 @@ pub struct PermissionDecision {
 
 #[derive(Debug, Clone)]
 enum DecisionKind {
-    Allow {
-        updated_input: Option<Value>,
-        updated_permissions: Vec<PermissionUpdate>,
-    },
-    Deny {
-        reason: String,
-    },
+    Allow { updated_input: Option<Value>, updated_permissions: Vec<PermissionUpdate> },
+    Deny { reason: String },
 }
 
 impl PermissionDecision {
     /// Approve the tool call as-is.
     #[must_use]
     pub fn allow() -> Self {
-        Self {
-            inner: DecisionKind::Allow {
-                updated_input: None,
-                updated_permissions: Vec::new(),
-            },
-        }
+        Self { inner: DecisionKind::Allow { updated_input: None, updated_permissions: Vec::new() } }
     }
 
     /// Approve the tool call with a modified input payload. The `claude`
@@ -156,11 +146,7 @@ impl PermissionDecision {
     /// Deny the tool call. `reason` is forwarded to the model as feedback.
     #[must_use]
     pub fn deny(reason: impl Into<String>) -> Self {
-        Self {
-            inner: DecisionKind::Deny {
-                reason: reason.into(),
-            },
-        }
+        Self { inner: DecisionKind::Deny { reason: reason.into() } }
     }
 
     /// Attach a list of [`PermissionUpdate`]s to an allow decision. These
@@ -170,11 +156,7 @@ impl PermissionDecision {
     /// channel.
     #[must_use]
     pub fn with_updated_permissions(mut self, updates: Vec<PermissionUpdate>) -> Self {
-        if let DecisionKind::Allow {
-            updated_permissions,
-            ..
-        } = &mut self.inner
-        {
+        if let DecisionKind::Allow { updated_permissions, .. } = &mut self.inner {
             *updated_permissions = updates;
         }
         self
@@ -200,10 +182,7 @@ impl PermissionDecision {
     #[must_use]
     pub fn updated_permissions(&self) -> &[PermissionUpdate] {
         match &self.inner {
-            DecisionKind::Allow {
-                updated_permissions,
-                ..
-            } => updated_permissions,
+            DecisionKind::Allow { updated_permissions, .. } => updated_permissions,
             DecisionKind::Deny { .. } => &[],
         }
     }

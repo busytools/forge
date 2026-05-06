@@ -29,9 +29,7 @@ async fn wire_capture_compact() {
 
     run_live_scenario("compact", opts, |client, mut events| async move {
         // First, a real turn so there's something to compact.
-        client
-            .send_user_message("Reply with only the word ALPHA.")
-            .await?;
+        client.send_user_message("Reply with only the word ALPHA.").await?;
         // Drain until Result.
         loop {
             match events.recv().await {

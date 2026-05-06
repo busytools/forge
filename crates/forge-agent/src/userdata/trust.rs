@@ -19,18 +19,14 @@ pub fn read_status(document: &Value, project_root: &Path) -> TrustLookup {
         })
     });
 
-    TrustLookup {
-        project_key,
-        trusted,
-    }
+    TrustLookup { project_key, trusted }
 }
 
 pub fn set_trusted(document: &mut Value, project_root: &Path) -> String {
     let project_key = normalize_project_key(project_root);
     let root = ensure_object_mut(document);
-    let projects = root
-        .entry(PROJECTS_FIELD.to_owned())
-        .or_insert_with(|| Value::Object(Map::new()));
+    let projects =
+        root.entry(PROJECTS_FIELD.to_owned()).or_insert_with(|| Value::Object(Map::new()));
     if !projects.is_object() {
         *projects = Value::Object(Map::new());
     }
@@ -46,9 +42,8 @@ pub fn set_trusted(document: &mut Value, project_root: &Path) -> String {
         .collect::<Vec<_>>();
 
     if matching_keys.is_empty() {
-        let entry = projects
-            .entry(project_key.clone())
-            .or_insert_with(|| Value::Object(Map::new()));
+        let entry =
+            projects.entry(project_key.clone()).or_insert_with(|| Value::Object(Map::new()));
         if !entry.is_object() {
             *entry = Value::Object(Map::new());
         }
@@ -62,9 +57,7 @@ pub fn set_trusted(document: &mut Value, project_root: &Path) -> String {
     }
 
     for key in matching_keys {
-        let entry = projects
-            .entry(key)
-            .or_insert_with(|| Value::Object(Map::new()));
+        let entry = projects.entry(key).or_insert_with(|| Value::Object(Map::new()));
         if !entry.is_object() {
             *entry = Value::Object(Map::new());
         }
@@ -144,11 +137,7 @@ fn normalize_project_key_string(raw: &str) -> String {
         result.push_str(segment);
     }
 
-    if result.is_empty() {
-        normalized
-    } else {
-        trim_trailing_separators(result)
-    }
+    if result.is_empty() { normalized } else { trim_trailing_separators(result) }
 }
 
 fn split_root_prefix(normalized: &str) -> (String, Vec<&str>, &str) {
@@ -202,11 +191,7 @@ fn trim_trailing_separators(mut normalized: String) -> String {
 }
 
 fn same_os_path_key(left: &str, right: &str) -> bool {
-    if cfg!(windows) {
-        left.eq_ignore_ascii_case(right)
-    } else {
-        left == right
-    }
+    if cfg!(windows) { left.eq_ignore_ascii_case(right) } else { left == right }
 }
 
 fn canonical_project_key(project_root: &Path) -> Option<String> {
@@ -309,11 +294,8 @@ mod tests {
 
     #[test]
     fn set_trusted_preserves_unknown_project_fields() {
-        let project_path = if cfg!(windows) {
-            "C:/work/project"
-        } else {
-            "/home/user/work/project"
-        };
+        let project_path =
+            if cfg!(windows) { "C:/work/project" } else { "/home/user/work/project" };
 
         let mut document = serde_json::json!({
             "projects": {},
@@ -373,9 +355,8 @@ mod tests {
         let project_root = dir.path().join("TrustCaseProject");
         std::fs::create_dir_all(&project_root).expect("create project");
 
-        let stored_key = normalize_project_key(&project_root)
-            .replace('/', "\\")
-            .to_ascii_lowercase();
+        let stored_key =
+            normalize_project_key(&project_root).replace('/', "\\").to_ascii_lowercase();
         let document = json!({
             "projects": {
                 stored_key: {

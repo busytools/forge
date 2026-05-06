@@ -17,10 +17,7 @@ fn decode_invalid_json_returns_json_decode_error() {
     let line = "not json";
     let err = decode_line(line, 7).expect_err("should fail");
     let rendered = format!("{err}");
-    assert!(
-        rendered.contains("line 7"),
-        "expected line number in error: {rendered}"
-    );
+    assert!(rendered.contains("line 7"), "expected line number in error: {rendered}");
 }
 
 #[test]
@@ -33,10 +30,7 @@ fn decode_unknown_type_returns_message_parse_error() {
 #[test]
 fn encode_user_prompt_is_single_line_with_newline() {
     let out = encode_user_prompt("hello", "sess_01").expect("encode");
-    assert!(
-        out.ends_with('\n'),
-        "must terminate with newline for stream-json"
-    );
+    assert!(out.ends_with('\n'), "must terminate with newline for stream-json");
     assert_eq!(out.matches('\n').count(), 1, "must be exactly one line");
     let v: serde_json::Value = serde_json::from_str(out.trim_end_matches('\n')).unwrap();
     assert_eq!(v["type"], "user");
@@ -97,10 +91,7 @@ fn dispatch_rejects_control_cancel_missing_request_id() {
 
     let line = r#"{"type":"control_cancel_request"}"#;
     let err = decode_dispatch(line, 1).expect_err("should fail without request_id");
-    assert!(
-        format!("{err}").contains("request_id"),
-        "error should mention the missing field"
-    );
+    assert!(format!("{err}").contains("request_id"), "error should mention the missing field");
 }
 
 #[test]

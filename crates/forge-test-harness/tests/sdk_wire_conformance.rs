@@ -32,10 +32,7 @@ use forge_sdk::{Client, Message, OptionsBuilder};
 use forge_test_harness::sdk_wire::{TraceLog, attach_recording, decode_all_inbound};
 
 fn timestamp_tag() -> String {
-    let secs = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
+    let secs = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
     format!("{secs}")
 }
 
@@ -99,22 +96,13 @@ async fn wire_capture_trivial_prompt() {
         Ok(pair) => pair,
         Err(e) => {
             let path = dump_trace("trivial-spawn-failed");
-            panic!(
-                "Client::spawn failed — trace written to {}: {e}",
-                path.display()
-            );
+            panic!("Client::spawn failed — trace written to {}: {e}", path.display());
         }
     };
 
-    if let Err(e) = client
-        .send_user_message("Respond with just the word OK.")
-        .await
-    {
+    if let Err(e) = client.send_user_message("Respond with just the word OK.").await {
         let path = dump_trace("trivial-send-failed");
-        panic!(
-            "send_user_message failed — trace written to {}: {e}",
-            path.display()
-        );
+        panic!("send_user_message failed — trace written to {}: {e}", path.display());
     }
 
     let mut saw_result = false;
@@ -122,13 +110,7 @@ async fn wire_capture_trivial_prompt() {
     while let Some(item) = events.recv().await {
         match item {
             Ok(msg) => {
-                if let Message::Result {
-                    num_turns,
-                    total_cost_usd,
-                    duration_ms,
-                    ..
-                } = &msg
-                {
+                if let Message::Result { num_turns, total_cost_usd, duration_ms, .. } = &msg {
                     saw_result = true;
                     summary = Some((*num_turns, *total_cost_usd, *duration_ms));
                     break;
@@ -136,10 +118,7 @@ async fn wire_capture_trivial_prompt() {
             }
             Err(e) => {
                 let path = dump_trace("trivial-drain-failed");
-                panic!(
-                    "events stream errored mid-drain — trace at {}: {e}",
-                    path.display()
-                );
+                panic!("events stream errored mid-drain — trace at {}: {e}", path.display());
             }
         }
     }

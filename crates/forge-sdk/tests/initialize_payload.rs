@@ -24,20 +24,14 @@ async fn capture_init(apply: impl FnOnce(OptionsBuilder) -> OptionsBuilder) -> V
     let dir = tempfile::tempdir().expect("tempdir");
     let dump = dir.path().join("init.json");
     let mut builder = OptionsBuilder::new().binary(fixture("mock_claude_capture_init.sh"));
-    builder = builder.env(
-        "FORGE_TEST_INIT_CAPTURE",
-        dump.to_string_lossy().into_owned(),
-    );
+    builder = builder.env("FORGE_TEST_INIT_CAPTURE", dump.to_string_lossy().into_owned());
     builder = apply(builder);
     let opts = builder.build();
     let (client, _events) = Client::spawn(opts).await.expect("spawn");
     client.disconnect().await.expect("disconnect");
     let body = fs::read_to_string(&dump).expect("init captured");
     let value: Value = serde_json::from_str(&body).expect("decode");
-    value
-        .get("request")
-        .cloned()
-        .expect("request field present")
+    value.get("request").cloned().expect("request field present")
 }
 
 #[tokio::test]
@@ -73,11 +67,10 @@ async fn exclude_dynamic_sections_via_preset_wins() {
     let req = capture_init(|b| {
         // Top-level is false, preset flips to true — preset wins per
         // Python types.py:43-66 (preset is the canonical path).
-        b.exclude_dynamic_sections(false)
-            .system_prompt(SystemPromptKind::Preset {
-                append: None,
-                exclude_dynamic_sections: Some(true),
-            })
+        b.exclude_dynamic_sections(false).system_prompt(SystemPromptKind::Preset {
+            append: None,
+            exclude_dynamic_sections: Some(true),
+        })
     })
     .await;
     assert_eq!(req["excludeDynamicSections"], true);
@@ -88,10 +81,7 @@ async fn skills_all_marker_omits_field() {
     // 'all' sentinel maps to --allowedTools only per Python; initialize
     // payload must NOT contain the skills list.
     let req = capture_init(|b| b.skills(["all"])).await;
-    assert!(
-        req.get("skills").is_none(),
-        "'all' sentinel must stay out of initialize.skills"
-    );
+    assert!(req.get("skills").is_none(), "'all' sentinel must stay out of initialize.skills");
 }
 
 #[tokio::test]
@@ -113,10 +103,7 @@ fn initialize_body_field_order_matches_python_insertion_order() {
     // default `BTreeMap` would sort alphabetically (`hooks` first),
     // breaking the byte-identical-wire-compatibility invariant.
     let mut init_body = serde_json::Map::new();
-    init_body.insert(
-        "subtype".into(),
-        serde_json::Value::String("initialize".into()),
-    );
+    init_body.insert("subtype".into(), serde_json::Value::String("initialize".into()));
     init_body.insert("hooks".into(), serde_json::Value::Null);
     let serialized = serde_json::to_string(&init_body).expect("serialize");
     let subtype_idx = serialized.find("\"subtype\"").expect("subtype present");

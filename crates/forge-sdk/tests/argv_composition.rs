@@ -35,10 +35,7 @@ fn find_flag<'a>(argv: &'a [String], flag: &str) -> Option<Option<&'a str>> {
 fn baseline_argv_matches_python() {
     let argv = argv_of(OptionsBuilder::new());
     // Python always leads with these three; forge-sdk likewise.
-    assert_eq!(
-        &argv[0..3],
-        &["--output-format", "stream-json", "--verbose"]
-    );
+    assert_eq!(&argv[0..3], &["--output-format", "stream-json", "--verbose"]);
     // Python emits `--system-prompt ""` when no system_prompt is set
     // (subprocess_cli.py:209-210). forge-sdk matches.
     assert_eq!(find_flag(&argv, "--system-prompt"), Some(Some("")));
@@ -78,10 +75,7 @@ fn max_turns_and_budget_emitted_as_strings() {
 #[test]
 fn disallowed_tools_joined_with_commas() {
     let argv = argv_of(OptionsBuilder::new().disallowed_tools(vec!["Bash".into(), "Edit".into()]));
-    assert_eq!(
-        find_flag(&argv, "--disallowedTools"),
-        Some(Some("Bash,Edit"))
-    );
+    assert_eq!(find_flag(&argv, "--disallowedTools"), Some(Some("Bash,Edit")));
 }
 
 #[test]
@@ -91,23 +85,13 @@ fn fallback_model_and_betas_emitted() {
             .fallback_model("claude-sonnet-4-6")
             .betas(vec!["context-1m-2025-08-07".into()]),
     );
-    assert_eq!(
-        find_flag(&argv, "--fallback-model"),
-        Some(Some("claude-sonnet-4-6"))
-    );
-    assert_eq!(
-        find_flag(&argv, "--betas"),
-        Some(Some("context-1m-2025-08-07"))
-    );
+    assert_eq!(find_flag(&argv, "--fallback-model"), Some(Some("claude-sonnet-4-6")));
+    assert_eq!(find_flag(&argv, "--betas"), Some(Some("context-1m-2025-08-07")));
 }
 
 #[test]
 fn include_partial_messages_and_fork_session_are_bare_flags() {
-    let argv = argv_of(
-        OptionsBuilder::new()
-            .include_partial_messages(true)
-            .fork_session(true),
-    );
+    let argv = argv_of(OptionsBuilder::new().include_partial_messages(true).fork_session(true));
     assert!(argv.iter().any(|a| a == "--include-partial-messages"));
     assert!(argv.iter().any(|a| a == "--fork-session"));
 }
@@ -127,12 +111,8 @@ fn add_dirs_emit_repeated_flag_per_path() {
 #[test]
 fn plugins_emit_plugin_dir_per_entry() {
     let argv = argv_of(OptionsBuilder::new().plugins(vec![
-        SdkPluginConfig::Local {
-            path: "/plugins/a".into(),
-        },
-        SdkPluginConfig::Local {
-            path: "/plugins/b".into(),
-        },
+        SdkPluginConfig::Local { path: "/plugins/a".into() },
+        SdkPluginConfig::Local { path: "/plugins/b".into() },
     ]));
     let mut occurrences = Vec::new();
     for (i, a) in argv.iter().enumerate() {
@@ -166,20 +146,14 @@ fn extra_args_handles_bare_and_valued() {
 fn system_prompt_inline_emits_plain_value() {
     let argv =
         argv_of(OptionsBuilder::new().system_prompt(SystemPromptKind::Inline("be helpful".into())));
-    assert_eq!(
-        find_flag(&argv, "--system-prompt"),
-        Some(Some("be helpful"))
-    );
+    assert_eq!(find_flag(&argv, "--system-prompt"), Some(Some("be helpful")));
 }
 
 #[test]
 fn system_prompt_file_uses_dedicated_flag() {
     let argv =
         argv_of(OptionsBuilder::new().system_prompt(SystemPromptKind::File("/tmp/sp.txt".into())));
-    assert_eq!(
-        find_flag(&argv, "--system-prompt-file"),
-        Some(Some("/tmp/sp.txt"))
-    );
+    assert_eq!(find_flag(&argv, "--system-prompt-file"), Some(Some("/tmp/sp.txt")));
     assert!(find_flag(&argv, "--system-prompt").is_none());
 }
 
@@ -188,10 +162,7 @@ fn system_prompt_preset_append_uses_dedicated_flag() {
     let argv = argv_of(
         OptionsBuilder::new().system_prompt(SystemPromptKind::preset_append("extra instructions")),
     );
-    assert_eq!(
-        find_flag(&argv, "--append-system-prompt"),
-        Some(Some("extra instructions"))
-    );
+    assert_eq!(find_flag(&argv, "--append-system-prompt"), Some(Some("extra instructions")));
 }
 
 #[test]
@@ -215,13 +186,9 @@ fn thinking_adaptive_emits_adaptive() {
 
 #[test]
 fn thinking_enabled_emits_max_thinking_tokens() {
-    let argv = argv_of(OptionsBuilder::new().thinking(ThinkingConfig::Enabled {
-        budget_tokens: 8000,
-    }));
-    assert_eq!(
-        find_flag(&argv, "--max-thinking-tokens"),
-        Some(Some("8000"))
-    );
+    let argv =
+        argv_of(OptionsBuilder::new().thinking(ThinkingConfig::Enabled { budget_tokens: 8000 }));
+    assert_eq!(find_flag(&argv, "--max-thinking-tokens"), Some(Some("8000")));
     assert!(find_flag(&argv, "--thinking").is_none());
 }
 
@@ -234,10 +201,7 @@ fn thinking_disabled_emits_disabled() {
 #[test]
 fn max_thinking_tokens_fallback_when_no_thinking_config() {
     let argv = argv_of(OptionsBuilder::new().max_thinking_tokens(4096));
-    assert_eq!(
-        find_flag(&argv, "--max-thinking-tokens"),
-        Some(Some("4096"))
-    );
+    assert_eq!(find_flag(&argv, "--max-thinking-tokens"), Some(Some("4096")));
 }
 
 #[test]
@@ -277,19 +241,13 @@ fn permission_mode_default_is_suppressed() {
 #[test]
 fn settings_path_passes_through_when_no_sandbox() {
     let argv = argv_of(OptionsBuilder::new().settings("/tmp/settings.json"));
-    assert_eq!(
-        find_flag(&argv, "--settings"),
-        Some(Some("/tmp/settings.json"))
-    );
+    assert_eq!(find_flag(&argv, "--settings"), Some(Some("/tmp/settings.json")));
 }
 
 #[test]
 fn settings_inline_json_passes_through_when_no_sandbox() {
     let argv = argv_of(OptionsBuilder::new().settings(r#"{"theme":"dark"}"#));
-    assert_eq!(
-        find_flag(&argv, "--settings"),
-        Some(Some(r#"{"theme":"dark"}"#))
-    );
+    assert_eq!(find_flag(&argv, "--settings"), Some(Some(r#"{"theme":"dark"}"#)));
 }
 
 #[test]
@@ -320,50 +278,32 @@ fn sandbox_all_fields_wire_as_python_camel_case() {
     assert_eq!(wire["autoAllowBashIfSandboxed"], true);
     assert_eq!(wire["excludedCommands"], json!(["git", "docker"]));
     assert_eq!(wire["allowUnsandboxedCommands"], false);
-    assert_eq!(
-        wire["network"]["allowUnixSockets"],
-        json!(["/var/run/docker.sock"])
-    );
+    assert_eq!(wire["network"]["allowUnixSockets"], json!(["/var/run/docker.sock"]));
     assert_eq!(wire["network"]["allowAllUnixSockets"], false);
     assert_eq!(wire["network"]["allowLocalBinding"], true);
     assert_eq!(wire["network"]["httpProxyPort"], 3128);
     assert_eq!(wire["network"]["socksProxyPort"], 1080);
     assert_eq!(wire["ignoreViolations"]["file"], json!(["/tmp"]));
-    assert_eq!(
-        wire["ignoreViolations"]["network"],
-        json!(["metrics.example"])
-    );
+    assert_eq!(wire["ignoreViolations"]["network"], json!(["metrics.example"]));
     assert_eq!(wire["enableWeakerNestedSandbox"], false);
 }
 
 #[test]
 fn sandbox_alone_merges_into_settings_json() {
-    let sandbox = forge_sdk::SandboxSettings {
-        enabled: Some(true),
-        ..forge_sdk::SandboxSettings::default()
-    };
+    let sandbox =
+        forge_sdk::SandboxSettings { enabled: Some(true), ..forge_sdk::SandboxSettings::default() };
     let argv = argv_of(OptionsBuilder::new().sandbox(sandbox));
-    let value = find_flag(&argv, "--settings")
-        .expect("flag present")
-        .expect("value present");
+    let value = find_flag(&argv, "--settings").expect("flag present").expect("value present");
     let parsed: serde_json::Value = serde_json::from_str(value).expect("json");
     assert_eq!(parsed["sandbox"]["enabled"], true);
 }
 
 #[test]
 fn settings_inline_json_merges_with_sandbox() {
-    let sandbox = forge_sdk::SandboxSettings {
-        enabled: Some(true),
-        ..forge_sdk::SandboxSettings::default()
-    };
-    let argv = argv_of(
-        OptionsBuilder::new()
-            .settings(r#"{"theme":"dark"}"#)
-            .sandbox(sandbox),
-    );
-    let value = find_flag(&argv, "--settings")
-        .expect("flag present")
-        .expect("value present");
+    let sandbox =
+        forge_sdk::SandboxSettings { enabled: Some(true), ..forge_sdk::SandboxSettings::default() };
+    let argv = argv_of(OptionsBuilder::new().settings(r#"{"theme":"dark"}"#).sandbox(sandbox));
+    let value = find_flag(&argv, "--settings").expect("flag present").expect("value present");
     let parsed: serde_json::Value = serde_json::from_str(value).expect("json");
     assert_eq!(parsed["theme"], "dark");
     assert_eq!(parsed["sandbox"]["enabled"], true);
@@ -388,8 +328,5 @@ fn permission_mode_non_default_emitted() {
     let mut options = OptionsBuilder::new().build();
     options.permission_mode = PermissionMode::AcceptEdits;
     let argv = build_args(&options).expect("build_args");
-    assert_eq!(
-        find_flag(&argv, "--permission-mode"),
-        Some(Some("acceptEdits"))
-    );
+    assert_eq!(find_flag(&argv, "--permission-mode"), Some(Some("acceptEdits")));
 }

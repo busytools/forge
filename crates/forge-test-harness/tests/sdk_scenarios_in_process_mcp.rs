@@ -44,9 +44,7 @@ impl Tool for GreetTool {
 #[tokio::test]
 #[ignore = "burns real Anthropic API tokens; opt-in via FORGE_WIRE_CAPTURE=1"]
 async fn wire_capture_in_process_mcp() {
-    let server = McpServerBuilder::new("probe", "0.0.1")
-        .tool(GreetTool)
-        .build();
+    let server = McpServerBuilder::new("probe", "0.0.1").tool(GreetTool).build();
 
     let opts = OptionsBuilder::new()
         .max_turns(3)

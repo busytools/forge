@@ -39,9 +39,6 @@ pub struct QuestionAnnotation {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "outcome", rename_all = "snake_case")]
 pub enum QuestionOutcome {
-    Answered {
-        selected_option_ids: Vec<String>,
-        annotation: Option<QuestionAnnotation>,
-    },
+    Answered { selected_option_ids: Vec<String>, annotation: Option<QuestionAnnotation> },
     Cancelled,
 }
