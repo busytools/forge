@@ -141,39 +141,29 @@ async fn handle_line(
             );
             true
         }
-        Ok(DecodedLine::ControlResponse { request_id, .. }) => {
-            // Re-decode to extract success/error payload — the
-            // DecodedLine variant only carries request_id, not the
-            // body, so peek at the raw line again.
-            let outcome = match serde_json::from_str::<serde_json::Value>(line) {
-                Ok(value) => {
-                    let resp_subtype =
-                        value.pointer("/response/subtype").and_then(serde_json::Value::as_str);
-                    if resp_subtype == Some("success") {
-                        Ok(value
-                            .pointer("/response/response")
-                            .cloned()
-                            .unwrap_or(serde_json::Value::Null))
-                    } else {
-                        let err = value
-                            .pointer("/response/error")
-                            .and_then(serde_json::Value::as_str)
-                            .map_or_else(
-                                || {
-                                    format!(
-                                        "no `error` string field; full response: {}",
-                                        value.pointer("/response").map_or_else(
-                                            || "<missing>".to_string(),
-                                            ToString::to_string,
-                                        )
-                                    )
-                                },
-                                ToString::to_string,
-                            );
-                        Err(Error::message_parse(format!("control failed: {err}")))
-                    }
-                }
-                Err(source) => Err(Error::JsonDecode { line: line_number, source }),
+        Ok(DecodedLine::ControlResponse { request_id, raw: value }) => {
+            let resp_subtype =
+                value.pointer("/response/subtype").and_then(serde_json::Value::as_str);
+            let outcome = if resp_subtype == Some("success") {
+                Ok(value
+                    .pointer("/response/response")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null))
+            } else {
+                let err = value.pointer("/response/error").and_then(serde_json::Value::as_str)
+                    .map_or_else(
+                        || {
+                            format!(
+                                "no `error` string field; full response: {}",
+                                value.pointer("/response").map_or_else(
+                                    || "<missing>".to_string(),
+                                    ToString::to_string,
+                                )
+                            )
+                        },
+                        ToString::to_string,
+                    );
+                Err(Error::message_parse(format!("control failed: {err}")))
             };
             let mut pending = pending_controls.lock().await;
             if let Some(tx) = pending.remove(&request_id) {
