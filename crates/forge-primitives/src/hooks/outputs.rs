@@ -266,6 +266,7 @@ pub fn encode_updated_input_wrapper(kind: HookKind, updated: &Value) -> Option<V
 
 #[cfg(test)]
 mod tests_hooks_specific_output {
+    // Test-mod `use super::*;` brings the parent's full surface in; not every test consumes every item.
     #[allow(unused_imports)]
     use super::*;
 

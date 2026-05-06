@@ -240,6 +240,7 @@ fn sync_active_turn_height_state(
     app.last_active_turn_height_state = next;
 }
 
+// Render fn — args are state + dimensions + scroll geometry. Bundling into a struct duplicates fields (App already holds them) without simplifying the call site.
 #[allow(clippy::too_many_arguments)]
 fn measure_message_height_at(
     app: &mut App,
@@ -352,6 +353,7 @@ fn sync_chat_layout(app: &mut App, area: Rect, base_spinner: SpinnerState) -> us
     content_height
 }
 
+// Render fn — args are state + dimensions + scroll geometry. Bundling into a struct duplicates fields (App already holds them) without simplifying the call site.
 #[allow(clippy::too_many_arguments)]
 fn build_scrolled_render_data(
     app: &mut App,
@@ -411,6 +413,7 @@ fn build_scrolled_render_data(
 }
 
 /// Long content: smooth scroll + viewport culling.
+// Render fn — args are state + dimensions + scroll geometry. Bundling into a struct duplicates fields (App already holds them) without simplifying the call site.
 #[allow(clippy::too_many_arguments)]
 fn render_scrolled(
     frame: &mut Frame,
@@ -603,6 +606,7 @@ fn render_scrollbar_overlay(
 }
 /// Render only the visible message range into out (viewport culling).
 /// Returns the local scroll offset to pass to `Paragraph::scroll()`.
+// Render fn — args are state + dimensions + scroll geometry. Bundling into a struct duplicates fields (App already holds them) without simplifying the call site.
 #[allow(clippy::too_many_arguments)]
 fn render_culled_messages(
     app: &mut App,
