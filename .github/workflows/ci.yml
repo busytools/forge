@@ -5,6 +5,10 @@ on:
   push:
     branches: [main]
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -D warnings
@@ -12,7 +16,7 @@ env:
 jobs:
   fmt:
     name: cargo fmt --check
-    runs-on: ubuntu-latest
+    runs-on: self-hosted-linux
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
@@ -23,11 +27,7 @@ jobs:
 
   clippy:
     name: cargo clippy
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
+    runs-on: self-hosted-linux
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
@@ -35,27 +35,29 @@ jobs:
           toolchain: nightly-2026-04-15
           components: clippy
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: cargo-${{ runner.os }}
+          key: clippy
       - run: cargo clippy --all-targets --workspace -- -D warnings
 
   test:
     name: cargo nextest
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
+    runs-on: self-hosted-linux
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: nightly-2026-04-15
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: cargo-${{ runner.os }}
+          key: test
       - uses: taiki-e/install-action@nextest
       - run: cargo nextest run --workspace --all-features
 
   docs:
     name: cargo doc
-    runs-on: ubuntu-latest
+    runs-on: self-hosted-linux
     env:
       RUSTDOCFLAGS: -D warnings
     steps:
@@ -64,17 +66,23 @@ jobs:
         with:
           toolchain: nightly-2026-04-15
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: cargo-${{ runner.os }}
+          key: docs
       - run: cargo doc --workspace --no-deps --all-features
 
   deny:
     name: cargo deny
-    runs-on: ubuntu-latest
+    runs-on: self-hosted-linux
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: nightly-2026-04-15
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: cargo-${{ runner.os }}
+          key: deny
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-deny
