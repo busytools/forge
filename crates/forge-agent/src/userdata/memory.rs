@@ -27,20 +27,6 @@ pub fn project_memory_path(cwd: &Path) -> PathBuf {
         .join("MEMORY.md")
 }
 
-/// Read the contents of the project's auto-memory file, if present.
-/// Returns `None` when the file is missing or unreadable.
-#[must_use]
-pub fn read_project_memory(cwd: &Path) -> Option<String> {
-    std::fs::read_to_string(project_memory_path(cwd)).ok()
-}
-
-/// Read the project's `CLAUDE.md` (per-repo instructions for Claude),
-/// if present. Returns `None` when the file is missing or unreadable.
-#[must_use]
-pub fn read_claude_md(cwd: &Path) -> Option<String> {
-    std::fs::read_to_string(cwd.join("CLAUDE.md")).ok()
-}
-
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
@@ -74,28 +60,5 @@ mod tests {
             path_str.contains("/projects/-Users-me-proj/memory/"),
             "expected `-Users-me-proj` (leading dash kept), got {path_str}"
         );
-    }
-
-    #[test]
-    fn read_project_memory_returns_none_when_missing() {
-        // Confirm the internal contract: missing file -> None. We
-        // can't easily steer claude_config_dir to a tempdir without
-        // env-mutation, so test the read primitive directly.
-        let dir = tempfile::tempdir().expect("tempdir");
-        let nonexistent = dir.path().join("does/not/exist/MEMORY.md");
-        assert!(std::fs::read_to_string(&nonexistent).is_err());
-    }
-
-    #[test]
-    fn read_claude_md_returns_none_when_missing() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        assert!(read_claude_md(dir.path()).is_none());
-    }
-
-    #[test]
-    fn read_claude_md_reads_file_when_present() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        std::fs::write(dir.path().join("CLAUDE.md"), "hello\n").expect("write");
-        assert_eq!(read_claude_md(dir.path()).as_deref(), Some("hello\n"));
     }
 }

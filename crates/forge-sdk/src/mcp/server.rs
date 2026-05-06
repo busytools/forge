@@ -34,18 +34,6 @@ impl std::fmt::Debug for McpServer {
 }
 
 impl McpServer {
-    /// Server name.
-    #[must_use]
-    pub fn name(&self) -> &str {
-        &self.name
-    }
-
-    /// Registered tool names. Iteration order is not guaranteed.
-    #[must_use]
-    pub fn tool_names(&self) -> Vec<&str> {
-        self.tools.keys().map(String::as_str).collect()
-    }
-
     /// Dispatch one JSON-RPC request to the appropriate handler.
     ///
     /// Returns `None` for JSON-RPC notifications (no `id`) — notifications

@@ -521,10 +521,19 @@ fn collect_candidates(
     cancel: Option<&Arc<AtomicBool>>,
 ) -> Vec<FileCandidate> {
     let mut candidates = Vec::new();
-    let _ = for_each_candidate(root, walk_root, respect_gitignore, cancel, &mut |candidate| {
-        candidates.push(candidate);
-        true
-    });
+    let completed =
+        for_each_candidate(root, walk_root, respect_gitignore, cancel, &mut |candidate| {
+            candidates.push(candidate);
+            true
+        });
+    if !completed {
+        tracing::debug!(
+            target: crate::logging::targets::APP_PERF,
+            walk_root = %walk_root.display(),
+            partial_count = candidates.len(),
+            "file index walk cancelled; returning partial candidate set",
+        );
+    }
     candidates
 }
 

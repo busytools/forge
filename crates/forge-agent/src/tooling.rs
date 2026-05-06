@@ -18,10 +18,8 @@ use forge_primitives::{
     ToolCallUpdateFields, ToolLocation, ToolOutputMetadata,
 };
 
-// Tool-result preview-size cap — inlined from the deleted
-// `bridge::cache_policy` module. Upstream also tracked soft/hard
-// split limits but only the preview limit ever surfaces in
-// user-visible text, so flatten to a const here.
+// Tool-result preview-size cap. Only the preview limit surfaces in
+// user-visible text, so a flat const suffices.
 const CACHE_PREVIEW_LIMIT_BYTES: usize = 2048;
 
 #[must_use]
@@ -651,7 +649,16 @@ fn parse_json_candidate(value: Option<&Value>) -> Option<Value> {
     if !(trimmed.starts_with('{') || trimmed.starts_with('[')) {
         return None;
     }
-    serde_json::from_str(trimmed).ok()
+    serde_json::from_str(trimmed)
+        .inspect_err(|e| {
+            tracing::debug!(
+                target: crate::logging::targets::TOOLING,
+                error = %e,
+                raw_prefix = %trimmed.chars().take(120).collect::<String>(),
+                "tool output looked like JSON but failed to parse; falling back to plain-text rendering",
+            );
+        })
+        .ok()
 }
 
 fn push_structured_record_candidates(candidates: &mut Vec<Map<String, Value>>, value: &Value) {

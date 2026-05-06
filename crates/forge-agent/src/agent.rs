@@ -3,7 +3,7 @@
 //! `Agent::spawn` constructs a `ForgeSdkBridge` under the hood and
 //! spawns one background task: the **command dispatcher**, which
 //! drains `mpsc::UnboundedReceiver<Command>` and calls the matching
-//! `AgentBridge` method on the bridge. The bridge's `AgentEvent`
+//! inherent method on the bridge. The bridge's `AgentEvent`
 //! receiver is handed back to consumers via `take_events()`.
 //!
 //! Direct-return accessors (config_dir, oauth_credentials,
@@ -11,12 +11,12 @@
 //! passthroughs to the bridge.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use forge_primitives::Command;
+use parking_lot::Mutex;
 use tokio::sync::mpsc;
 
-use crate::client::AgentBridge;
 use crate::forge_sdk_bridge::ForgeSdkBridge;
 
 /// Handle returned by [`Agent::spawn`]. Owns the channels + a thin
@@ -40,10 +40,10 @@ impl AgentHandle {
     /// Take ownership of the bridge's `AgentEvent` receiver. Returns
     /// `Some` exactly once.
     pub fn take_events(&self) -> Option<mpsc::UnboundedReceiver<crate::client::AgentEvent>> {
-        self.agent_events.lock().ok().and_then(|mut g| g.take())
+        self.agent_events.lock().take()
     }
 
-    /// Direct-accessor passthrough — see [`crate::client::AgentBridge::config_dir`].
+    /// Direct-accessor passthrough — delegates to `ForgeSdkBridge::config_dir`.
     #[must_use]
     pub fn config_dir(&self) -> PathBuf {
         self.bridge.config_dir()
@@ -102,10 +102,17 @@ impl AgentHandle {
         cwd: String,
         launch_settings: crate::client::SessionLaunchSettings,
     ) -> anyhow::Result<()> {
+        // Propagate serialise failure instead of silently launching
+        // with `Value::Null` (which the dispatcher then deserialises
+        // to default settings, losing the user's configured model /
+        // permission_mode / effort with no breadcrumb). The struct
+        // is `Default`able so a real serialise miss is unlikely;
+        // making it explicit catches forward-compat breakage early.
+        let launch_settings = serde_json::to_value(launch_settings)
+            .map_err(|e| anyhow::anyhow!("failed to encode launch settings: {e}"))?;
         self.send(Command::NewSession {
             cwd,
-            launch_settings: serde_json::to_value(launch_settings)
-                .unwrap_or(serde_json::Value::Null),
+            launch_settings,
         })
     }
 
@@ -114,10 +121,11 @@ impl AgentHandle {
         session_id: String,
         launch_settings: crate::client::SessionLaunchSettings,
     ) -> anyhow::Result<()> {
+        let launch_settings = serde_json::to_value(launch_settings)
+            .map_err(|e| anyhow::anyhow!("failed to encode launch settings: {e}"))?;
         self.send(Command::ResumeSession {
             session_id: session_id.into(),
-            launch_settings: serde_json::to_value(launch_settings)
-                .unwrap_or(serde_json::Value::Null),
+            launch_settings,
         })
     }
 
@@ -412,7 +420,7 @@ async fn dispatch_commands(
     }
 }
 
-/// Dispatch one `Command` to the matching `AgentBridge` method.
+/// Dispatch one `Command` to the matching `ForgeSdkBridge` method.
 fn dispatch(cmd: Command, bridge: &ForgeSdkBridge) -> anyhow::Result<()> {
     use forge_primitives::Command as C;
 
@@ -421,16 +429,36 @@ fn dispatch(cmd: Command, bridge: &ForgeSdkBridge) -> anyhow::Result<()> {
             cwd,
             launch_settings,
         } => {
-            let launch = serde_json::from_value(launch_settings)
-                .unwrap_or_else(|_| crate::client::SessionLaunchSettings::default());
+            // Symmetric to the encode-side `?`-propagation in
+            // `AgentHandle::new_session`. Round-trip is safe in
+            // practice when `Serialize`/`Deserialize` are mutually
+            // consistent (the standard derive pair), but a
+            // forward-compat break in SessionLaunchSettings — e.g.
+            // adding `#[serde(deny_unknown_fields)]` or splitting a
+            // field — would silently strip user config here without
+            // this log.
+            let launch = serde_json::from_value(launch_settings).unwrap_or_else(|e| {
+                tracing::error!(
+                    target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                    error = %e,
+                    "failed to decode launch_settings on dispatcher receive; falling back to default",
+                );
+                crate::client::SessionLaunchSettings::default()
+            });
             bridge.new_session(cwd, launch)
         }
         C::ResumeSession {
             session_id,
             launch_settings,
         } => {
-            let launch = serde_json::from_value(launch_settings)
-                .unwrap_or_else(|_| crate::client::SessionLaunchSettings::default());
+            let launch = serde_json::from_value(launch_settings).unwrap_or_else(|e| {
+                tracing::error!(
+                    target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                    error = %e,
+                    "failed to decode launch_settings on dispatcher receive; falling back to default",
+                );
+                crate::client::SessionLaunchSettings::default()
+            });
             bridge.resume_session(session_id.into_string(), launch)
         }
         C::Prompt { session_id, text } => bridge
@@ -538,8 +566,8 @@ fn dispatch(cmd: Command, bridge: &ForgeSdkBridge) -> anyhow::Result<()> {
             bridge.stop_git_context_watch(session_id.into_string())
         }
         // `Command` is `#[non_exhaustive]`; a wildcard arm is required
-        // by the compiler. Future variants log + drop until phase 5
-        // updates the dispatcher.
+        // by the compiler. Future variants are logged and dropped
+        // until the dispatcher learns to handle them.
         _ => {
             tracing::warn!(
                 target: crate::logging::targets::BRIDGE_LIFECYCLE,

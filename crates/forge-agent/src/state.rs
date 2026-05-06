@@ -1,11 +1,4 @@
 //! Permission-mode enum used across the agent stack.
-//!
-//! Pre-bridge-collapse this module also held a `BridgeSession`
-//! struct that accumulated per-session bookkeeping for the bridge
-//! translation layer. Post collapse, that state lives in
-//! `app::state::types::SessionTurnState` (App-side) and the worker
-//! (when it needs the Connected event payload, computed locally).
-//! All that's left here is `PermissionMode` itself.
 
 /// Mirrors upstream's permission-mode enum — distinct from the
 /// wire-string `current_mode_id` shipped on `ModeState`. Used to track

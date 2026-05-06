@@ -37,8 +37,7 @@ trust, sessions catalog, project memory) live in
 
 Core types and functions exposed from the crate root:
 
-- **Entry points** — `Client::spawn(options) -> (Client, ClientEvents)`,
-  `query()`, `query_stream()`.
+- **Entry point** — `Client::spawn(options) -> (Client, ClientEvents)`.
 - **Transport extension** — `pub trait Transport` for injecting
   custom I/O (e.g. wire-recording in `forge-test-harness`).
   `Subprocess` is the shipped in-process implementation.
@@ -52,8 +51,10 @@ Core types and functions exposed from the crate root:
   context types live in `forge_primitives::permissions`.
 - **MCP hosting** — `mcp::{McpServer, McpServerBuilder, Tool,
   ToolInput, ToolOutput}` + `tool!` declarative macro.
-- **Subagents** — `SubagentDefinition`, `SubagentMap`. (Builder
-  setters live in `forge_primitives::subagents`.)
+- **Subagents** — `SubagentDefinition`, `SubagentMap` (populated
+  by setting struct fields directly; the `::new` + `with_*` builder
+  family was removed pending re-add when subagent registration
+  becomes a runtime feature).
 - **Path resolution** — `claude_config_dir()`, `projects_dir()`.
 - **Errors** — `Error` enum (variants mirror Python's
   `CLIConnectionError` / `CLINotFoundError` / `ProcessError` /
@@ -73,23 +74,6 @@ async fn main() -> anyhow::Result<()> {
         println!("{msg:?}");
     }
     client.disconnect().await?;
-    Ok(())
-}
-```
-
-## Streaming variant
-
-```rust,ignore
-use forge_sdk::{query_stream, OptionsBuilder};
-use tokio_stream::StreamExt;
-
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    let stream = query_stream("What is 2+2?", Some(OptionsBuilder::new().build()));
-    tokio::pin!(stream);
-    while let Some(item) = stream.next().await {
-        println!("{:?}", item?);
-    }
     Ok(())
 }
 ```

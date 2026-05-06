@@ -28,7 +28,6 @@ unicode-normalization = "0.1"
 tokio-stream = "0.1"
 regex = "1"
 parking_lot = "0.12"
-futures-util = "0.3"
 clap = { version = "4", features = ["derive"] }
 tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }

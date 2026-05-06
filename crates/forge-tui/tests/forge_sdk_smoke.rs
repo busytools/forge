@@ -1,5 +1,5 @@
 //! End-to-end smoke tests: drive a real `claude` session through the
-//! forge-sdk-backed `AgentBridge` worker.
+//! forge-sdk-backed `ForgeSdkBridge` worker.
 //!
 //! Marked `#[ignore]` because they need a real `claude` binary on PATH
 //! and burn a small amount of API budget per run. Run manually with:

@@ -1,8 +1,8 @@
 //! Error rendering and tool-use error extraction for failed tool calls.
 
-use crate::agent::error_handling::{
-    looks_like_internal_error as shared_looks_like_internal_error,
-    summarize_internal_error as shared_summarize_internal_error,
+use crate::agent::error_handling::{extract_xml_tag_value, truncate_for_log};
+pub(super) use crate::agent::error_handling::{
+    looks_like_internal_error, summarize_internal_error,
 };
 use crate::agent::model;
 use crate::app::ToolCallInfo;
@@ -54,7 +54,7 @@ pub(super) fn debug_failed_tool_render(tc: &ToolCallInfo) {
     let terminal_preview = tc
         .terminal_output
         .as_deref()
-        .map_or_else(|| "<no terminal output>".to_owned(), preview_for_log);
+        .map_or_else(|| "<no terminal output>".to_owned(), truncate_for_log);
 
     tracing::debug!(
         target: crate::logging::targets::APP_TOOL,
@@ -70,18 +70,9 @@ pub(super) fn debug_failed_tool_render(tc: &ToolCallInfo) {
     );
 }
 
-fn preview_for_log(input: &str) -> String {
-    const LIMIT: usize = 240;
-    let mut out = String::new();
-    for (i, ch) in input.chars().enumerate() {
-        if i >= LIMIT {
-            out.push_str("...");
-            break;
-        }
-        out.push(ch);
-    }
-    out.replace('\n', "\\n")
-}
+// `preview_for_log`, the renaming wrappers, and `extract_xml_tag_value`
+// originals live in `crate::agent::error_handling` (re-exported `pub`
+// from there). Consume directly via the imports above.
 
 pub(super) fn failed_execute_first_line(output: &str) -> Option<String> {
     if let Some(msg) = extract_tool_use_error_message(output) {
@@ -90,27 +81,9 @@ pub(super) fn failed_execute_first_line(output: &str) -> Option<String> {
     output.lines().find(|line| !line.trim().is_empty()).map(str::trim).map(str::to_owned)
 }
 
-pub(super) fn looks_like_internal_error(input: &str) -> bool {
-    shared_looks_like_internal_error(input)
-}
-
 pub(super) fn extract_tool_use_error_message(input: &str) -> Option<String> {
     extract_xml_tag_value(input, "tool_use_error")
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(str::to_owned)
-}
-
-pub(super) fn summarize_internal_error(input: &str) -> String {
-    shared_summarize_internal_error(input)
-}
-
-fn extract_xml_tag_value<'a>(input: &'a str, tag: &str) -> Option<&'a str> {
-    let lower = input.to_ascii_lowercase();
-    let open = format!("<{tag}>");
-    let close = format!("</{tag}>");
-    let start = lower.find(&open)? + open.len();
-    let end = start + lower[start..].find(&close)?;
-    let value = input[start..end].trim();
-    (!value.is_empty()).then_some(value)
 }
