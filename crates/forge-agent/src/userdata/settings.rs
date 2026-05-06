@@ -108,6 +108,17 @@ fn target_path(target: &SettingsTarget) -> PathBuf {
 }
 
 fn write_json_atomic(path: &Path, document: &Value) -> Result<(), Error> {
+    // If `path` is a symlink (e.g. `~/.claude-subspace/settings.json`
+    // pointing at the canonical `~/.claude/settings.json` for shared
+    // behaviour across Claude Code profiles), follow the symlink and
+    // write to its target. `std::fs::rename(temp, symlink_path)`
+    // replaces the symlink itself with the temp file's content; that
+    // silently clobbers the user's profile setup. Resolve to the
+    // target before rename so the symlink stays intact and the
+    // canonical file gets the new content.
+    let resolved = resolve_symlink(path)?;
+    let path = resolved.as_path();
+
     let parent = path.parent().ok_or_else(|| {
         io::Error::new(io::ErrorKind::InvalidInput, "settings path has no parent directory")
     })?;
@@ -156,6 +167,27 @@ fn write_json_atomic(path: &Path, document: &Value) -> Result<(), Error> {
     Ok(result?)
 }
 
+/// Follow a symlink one level. Returns the symlink's target path
+/// (resolved against the symlink's parent for relative targets) when
+/// `path` is a symlink; otherwise returns `path` unchanged. Errors
+/// propagate from `read_link` only when the symlink is broken
+/// mid-walk; non-symlink paths return without an error.
+fn resolve_symlink(path: &Path) -> io::Result<PathBuf> {
+    match std::fs::symlink_metadata(path) {
+        Ok(md) if md.file_type().is_symlink() => {
+            let link = std::fs::read_link(path)?;
+            Ok(if link.is_absolute() {
+                link
+            } else {
+                path.parent().map_or(link.clone(), |p| p.join(&link))
+            })
+        }
+        // Path is a regular file, doesn't exist yet, or some other
+        // non-symlink kind — write directly to it.
+        _ => Ok(path.to_path_buf()),
+    }
+}
+
 fn unique_temp_path(parent: &Path, filename_hint: Option<&str>) -> PathBuf {
     let stamp = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_nanos());
     let filename = filename_hint.unwrap_or("settings.json");
@@ -196,6 +228,41 @@ mod tests {
         let value = read_json_file(tmp.path()).expect("parsed");
         assert_eq!(value.get("editorMode"), Some(&serde_json::json!("vim")));
         assert_eq!(value.get("userID"), Some(&serde_json::json!("abc")));
+    }
+
+    /// Regression: a symlink at the write target must be preserved.
+    /// `std::fs::rename(temp, symlink_path)` replaces the symlink
+    /// itself, clobbering profile setups (e.g.
+    /// `~/.claude-subspace/settings.json -> ~/.claude/settings.json`).
+    /// `write_json_atomic` resolves symlinks before rename so the
+    /// link stays intact.
+    #[test]
+    fn symlink_at_write_target_is_preserved() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let canonical_dir = dir.path().join("canonical");
+        let profile_dir = dir.path().join("profile");
+        std::fs::create_dir_all(&canonical_dir).expect("mkdir canonical");
+        std::fs::create_dir_all(&profile_dir).expect("mkdir profile");
+
+        let canonical = canonical_dir.join("settings.json");
+        let profile = profile_dir.join("settings.json");
+        // Seed canonical with a stub so the symlink target exists.
+        std::fs::write(&canonical, b"{}\n").expect("seed canonical");
+        std::os::unix::fs::symlink(&canonical, &profile).expect("symlink");
+
+        // Write through the symlink path.
+        let new_doc = serde_json::json!({"effortLevel": "max"});
+        write_json_atomic(&profile, &new_doc).expect("write");
+
+        // 1. Profile path is still a symlink.
+        let md = std::fs::symlink_metadata(&profile).expect("symlink_metadata");
+        assert!(md.file_type().is_symlink(), "profile path got clobbered into a real file");
+
+        // 2. Canonical (the symlink target) carries the new content.
+        let written: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&canonical).expect("read canonical"))
+                .expect("parse");
+        assert_eq!(written.get("effortLevel"), Some(&serde_json::json!("max")));
     }
 
     #[test]
