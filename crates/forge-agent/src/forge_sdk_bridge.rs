@@ -251,17 +251,11 @@ impl Drop for BridgeInner {
     }
 }
 
-// Methods previously in `impl AgentBridge for ForgeSdkBridge` are
-// now inherent — see commit message for #53. All retain `pub(crate)`
-// visibility (callers are forge-agent's own dispatch + AgentHandle
-// wrappers, all same-crate).
-//
-// The `unused_self` and `needless_pass_by_value` lints fire on
-// passthrough accessors that delegate to `forge_sdk::*` free fns
-// — these were trait methods so the receiver/by-value shape was
-// dictated by the trait. Keep the same method shape to preserve
-// the AgentHandle-callable ergonomics; the receiver is the
-// stable seam even if some methods don't logically use `self`.
+// `unused_self` / `needless_pass_by_value` are allowed at the impl
+// level: passthrough accessors that delegate to `forge_sdk::*` free
+// functions don't logically use `self`, but every method here
+// preserves the `&self`-receiver shape so AgentHandle wrappers can
+// call them through a single stable seam.
 #[allow(clippy::unused_self, clippy::needless_pass_by_value)]
 impl ForgeSdkBridge {
     pub(crate) fn take_events(&self) -> Option<mpsc::UnboundedReceiver<AgentEvent>> {

@@ -98,8 +98,3 @@ pub use permissions::{
 
 /// Convenient alias for `Result<T, forge_sdk::Error>`.
 pub type Result<T, E = Error> = core::result::Result<T, E>;
-
-// `query` and `query_stream` top-level helpers were removed in
-// 2026-05-05 — no in-tree consumer ever called them; forge-tui
-// drives the SDK via `Client::spawn` directly. Re-add if a future
-// downstream Rust consumer needs the convenience shape.

@@ -18,10 +18,8 @@ use forge_primitives::{
     ToolCallUpdateFields, ToolLocation, ToolOutputMetadata,
 };
 
-// Tool-result preview-size cap — inlined from the deleted
-// `bridge::cache_policy` module. Upstream also tracked soft/hard
-// split limits but only the preview limit ever surfaces in
-// user-visible text, so flatten to a const here.
+// Tool-result preview-size cap. Only the preview limit surfaces in
+// user-visible text, so a flat const suffices.
 const CACHE_PREVIEW_LIMIT_BYTES: usize = 2048;
 
 #[must_use]

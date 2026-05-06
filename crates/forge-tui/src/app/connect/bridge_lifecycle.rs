@@ -226,9 +226,6 @@ fn handle_agent_event(
     }
 }
 
-// `ConnectedEventData` removed in 2026-05-05 — the struct existed
-// only to thread one match arm's bindings into one helper. Direct
-// args match the `SessionReplaced` sibling arm's shape.
 #[allow(clippy::too_many_arguments)]
 fn handle_connected_event(
     event_tx: &mpsc::UnboundedSender<ClientEvent>,

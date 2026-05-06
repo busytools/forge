@@ -1,10 +1,7 @@
 // TODO: lift this fallback through forge-sdk — when OAuth /usage
 // fails (network, expired creds, etc.) the TUI currently spawns
 // `claude` directly to fetch usage from the CLI. Same shape as the
-// OAuth HTTPS lift we already shipped for usage/oauth.rs; deferred
-// 2026-05-02 pending design. See
-// ~/.claude-nf/projects/-Users-vedhavyas-Projects-forge/memory/
-// handoff_2026_05_01_phase2_step1_credentials_lifted.md.
+// OAuth HTTPS lift already shipped for usage/oauth.rs.
 
 use crate::cloud::{UsageSnapshot, UsageSourceKind, UsageWindow};
 use std::path::PathBuf;

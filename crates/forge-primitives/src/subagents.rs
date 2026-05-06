@@ -58,12 +58,9 @@ pub struct SubagentDefinition {
     pub permission_mode: Option<PermissionMode>,
 }
 
-// `SubagentDefinition::new` and the `with_*` builder family were
-// removed in 2026-05-05 — `Options::subagents` is wire-serialized
-// but never populated in production (forge-tui doesn't yet expose
-// subagent registration as a runtime feature). Re-add these
-// constructors when that landing happens. The struct itself stays
-// for the wire shape.
+// Populate `SubagentDefinition` fields directly. A builder family
+// (`::new` / `with_*`) can be added when subagent registration
+// becomes a runtime feature with real callers.
 
 /// `CLAUDE.md` scope surfaced to a subagent. Wire shape:
 /// `Literal["user", "project", "local"]`.
