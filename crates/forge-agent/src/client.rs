@@ -1,12 +1,3 @@
-// `AgentBridge` trait removed in 2026-05-05 — it had a single
-// implementer (`crate::forge_sdk_bridge::ForgeSdkBridge`), the
-// dispatcher always called methods through `&ForgeSdkBridge`
-// (never `&dyn AgentBridge`), the trait was `pub(crate)` so no
-// external impl was structurally possible, and the test-stub path
-// constructs a real `ForgeSdkBridge`. ~200 lines of dead
-// abstraction. The methods are now inherent on `ForgeSdkBridge`
-// with `pub(crate)` visibility.
-
 #[derive(Debug, Clone)]
 pub struct PromptResponse {
     pub stop_reason: String,
@@ -32,11 +23,6 @@ impl SessionLaunchSettings {
             && self.agent_progress_summaries.is_none()
     }
 }
-
-// `EventEnvelope` removed in 2026-05-05 — only used by its own
-// roundtrip test (`agent_event_round_trips_through_envelope`),
-// which itself was the only caller. Re-add when an actual
-// remote-RPC envelope shape is needed.
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]

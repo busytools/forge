@@ -27,11 +27,6 @@ pub fn project_memory_path(cwd: &Path) -> PathBuf {
         .join("MEMORY.md")
 }
 
-// `read_project_memory` and `read_claude_md` removed in 2026-05-05 —
-// no in-tree consumer ever read the file contents (forge-tui only uses
-// `project_memory_path` for a path-link in /status). Re-add when a
-// CLAUDE.md preview pane or memory-file reader actually needs them.
-
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {

@@ -6,12 +6,6 @@ pub enum TurnErrorClass {
     Other,
 }
 
-// `parse_turn_error_class` removed in 2026-05-05 — it was the
-// inverse of a `&'static str` round-trip from the dispatcher's
-// classifier, and no other caller used it. The dispatcher now
-// returns `TurnErrorClass` directly (see
-// `crates/forge-tui/src/app/events/sdk_message.rs::classify_turn_error_kind`).
-
 pub fn classify_turn_error(input: &str) -> TurnErrorClass {
     let lower = input.to_ascii_lowercase();
     if looks_like_plan_limit_error_lower(&lower) {

@@ -2,9 +2,7 @@
 //!
 //! One variant per fire-and-forget action the UI can ask the agent
 //! to perform. Direct-return accessors (config_dir, settings_documents,
-//! etc.) are NOT in `Command`; they stay on a separate sync surface
-//! during the restructure (later phases will collapse those into
-//! userdata Commands too).
+//! etc.) live on a separate sync surface, not in `Command`.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -16,8 +14,7 @@ use crate::image::ImageAttachment;
 use crate::{ElicitationAction, McpServerConfig, PermissionOutcome, QuestionOutcome};
 
 /// UI → agent channel envelope. Each variant maps to one inherent
-/// method on `forge_agent::ForgeSdkBridge` (the AgentBridge trait
-/// was collapsed into inherent impls in 2026-05-05).
+/// method on `forge_agent::ForgeSdkBridge`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum Command {

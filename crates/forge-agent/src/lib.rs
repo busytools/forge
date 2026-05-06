@@ -7,10 +7,7 @@
 //! settings_documents, oauth_*).
 //!
 //! `ForgeSdkBridge` is a `pub(crate)` implementation detail — Agent's
-//! dispatcher task is the only caller. (The `AgentBridge` trait it
-//! used to implement was collapsed into inherent methods in
-//! 2026-05-05; the trait had a single implementer and was always
-//! dispatched against the concrete type anyway.)
+//! dispatcher task is the only caller.
 //!
 //! # Module layout
 //!

@@ -980,12 +980,3 @@ fn classify_turn_error_kind(
     }
     TurnErrorClass::Other
 }
-
-// `looks_like_auth_required` removed in 2026-05-05 — duplicated
-// `looks_like_auth_required_error_lower` in
-// crate::agent::error_handling. The dispatcher now uses the
-// shared version.
-
-// `handle_stream_event` and `handle_unknown` removed in 2026-05-05 —
-// both were empty no-op stubs. The dispatcher now matches
-// `Message::StreamEvent { .. } | _ => {}` directly.

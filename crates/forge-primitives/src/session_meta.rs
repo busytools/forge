@@ -1,8 +1,5 @@
 //! Session-level metadata — session-list entries + prompt-chunk
-//! envelope. (Earlier ACP-protocol-parity types — `AuthMethod`,
-//! `AgentCapabilities`, `InitializeResult`, `SessionInit`,
-//! `McpSetServersResult` — were removed in 2026-05-05; the
-//! restructure dropped the parity contract and they had no callers.)
+//! envelope.
 
 use serde::{Deserialize, Serialize};
 
