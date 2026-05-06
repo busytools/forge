@@ -162,7 +162,6 @@ fn classify_summary(summary: &SummaryResponse) -> Option<ServiceIssue> {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
 

@@ -1,3 +1,7 @@
+// ratatui geometry: terminal dims are u16, layout math goes through f64
+// for smooth-scroll. Casts are inherent here and bounded by terminal size.
+#![allow(clippy::cast_possible_truncation, clippy::cast_precision_loss, clippy::cast_sign_loss)]
+
 use crate::app::cache_metrics;
 use crate::app::{
     App, AppStatus, MessageBlock, MessageRole, ScrollbarGeometry, SelectionKind, SelectionState,
@@ -236,6 +240,7 @@ fn sync_active_turn_height_state(
     app.last_active_turn_height_state = next;
 }
 
+// Render fn — args are state + dimensions + scroll geometry. Bundling into a struct duplicates fields (App already holds them) without simplifying the call site.
 #[allow(clippy::too_many_arguments)]
 fn measure_message_height_at(
     app: &mut App,
@@ -348,13 +353,8 @@ fn sync_chat_layout(app: &mut App, area: Rect, base_spinner: SpinnerState) -> us
     content_height
 }
 
-#[allow(
-    clippy::cast_possible_truncation,
-    clippy::too_many_arguments,
-    clippy::too_many_lines,
-    clippy::cast_precision_loss,
-    clippy::cast_sign_loss
-)]
+// Render fn — args are state + dimensions + scroll geometry. Bundling into a struct duplicates fields (App already holds them) without simplifying the call site.
+#[allow(clippy::too_many_arguments)]
 fn build_scrolled_render_data(
     app: &mut App,
     base: SpinnerState,
@@ -413,13 +413,8 @@ fn build_scrolled_render_data(
 }
 
 /// Long content: smooth scroll + viewport culling.
-#[allow(
-    clippy::cast_possible_truncation,
-    clippy::too_many_arguments,
-    clippy::too_many_lines,
-    clippy::cast_precision_loss,
-    clippy::cast_sign_loss
-)]
+// Render fn — args are state + dimensions + scroll geometry. Bundling into a struct duplicates fields (App already holds them) without simplifying the call site.
+#[allow(clippy::too_many_arguments)]
 fn render_scrolled(
     frame: &mut Frame,
     area: Rect,
@@ -501,7 +496,6 @@ fn paragraph_scroll_offset(scroll_offset: usize) -> u16 {
     })
 }
 
-#[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss, clippy::cast_sign_loss)]
 fn clamp_scroll_to_content(
     viewport: &mut crate::app::ChatViewport,
     max_scroll: usize,
@@ -539,7 +533,6 @@ fn ease_value(current: &mut f32, target: f32, factor: f32) {
     }
 }
 
-#[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 fn smooth_scrollbar_geometry(
     viewport: &mut crate::app::ChatViewport,
     target: ScrollbarGeometry,
@@ -569,7 +562,6 @@ fn smooth_scrollbar_geometry(
         max_scroll: target.max_scroll,
     }
 }
-#[allow(clippy::cast_possible_truncation)]
 fn render_scrollbar_overlay(
     frame: &mut Frame,
     viewport: &mut crate::app::ChatViewport,
@@ -614,7 +606,8 @@ fn render_scrollbar_overlay(
 }
 /// Render only the visible message range into out (viewport culling).
 /// Returns the local scroll offset to pass to `Paragraph::scroll()`.
-#[allow(clippy::cast_possible_truncation, clippy::too_many_arguments)]
+// Render fn — args are state + dimensions + scroll geometry. Bundling into a struct duplicates fields (App already holds them) without simplifying the call site.
+#[allow(clippy::too_many_arguments)]
 fn render_culled_messages(
     app: &mut App,
     base: SpinnerState,
@@ -706,7 +699,6 @@ fn render_culled_messages(
     }
 }
 
-#[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss, clippy::cast_sign_loss)]
 pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     let _t = app.perf.as_ref().map(|p| p.start("chat::render"));
     crate::perf::mark_with("chat::message_count", "msgs", app.messages.len());
@@ -744,7 +736,6 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     enforce_and_emit_cache_metrics(app);
 }
 
-#[allow(clippy::cast_precision_loss)]
 fn emit_render_summary(
     app: &mut App,
     width: u16,
@@ -814,7 +805,6 @@ fn remember_render_trace_state(
     true
 }
 
-#[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 fn enforce_and_emit_cache_metrics(app: &mut App) {
     let budget_stats = app.enforce_render_cache_budget();
     crate::perf::mark_with("cache::bytes_before", "bytes", budget_stats.total_before_bytes);
@@ -865,7 +855,6 @@ fn enforce_and_emit_cache_metrics(app: &mut App) {
         cache_metrics::emit_render_metrics(&snap);
 
         crate::perf::mark_with("cache::entry_count", "count", entry_count);
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         crate::perf::mark_with(
             "cache::utilization_pct_x10",
             "pct",
@@ -897,7 +886,6 @@ struct SelectionOverlay {
 }
 
 impl Widget for SelectionOverlay {
-    #[allow(clippy::cast_possible_truncation)]
     fn render(self, area: Rect, buf: &mut Buffer) {
         let (start, end) =
             crate::app::normalize_selection(self.selection.start, self.selection.end);
@@ -921,7 +909,6 @@ impl Widget for SelectionOverlay {
     }
 }
 
-#[allow(clippy::cast_possible_truncation)]
 fn render_lines_from_paragraph(
     paragraph: &Paragraph,
     area: Rect,
@@ -1230,7 +1217,6 @@ mod tests {
         assert_eq!(app.viewport.total_message_height(), 2);
     }
 
-    #[allow(clippy::cast_precision_loss)]
     #[test]
     fn resize_remeasure_updates_visible_window_before_far_messages() {
         let mut app = App::test_default();
@@ -1261,7 +1247,6 @@ mod tests {
         assert!(!app.viewport.message_height_is_current(31));
     }
 
-    #[allow(clippy::cast_precision_loss)]
     #[test]
     fn resize_remeasure_converges_over_multiple_frames() {
         let mut app = App::test_default();
@@ -1294,7 +1279,6 @@ mod tests {
         assert!(app.viewport.message_height_is_current(39));
     }
 
-    #[allow(clippy::cast_precision_loss)]
     #[test]
     fn resize_remeasure_does_not_repeat_dirty_suffix_after_measuring_it() {
         let mut app = App::test_default();

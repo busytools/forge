@@ -127,7 +127,6 @@ pub fn delete_session(session_id: &str, directory: Option<&str>) -> Result<(), E
 /// - [`Error::MessageParse`] when either UUID is invalid.
 /// - [`Error::Io`] when the source file can't be found, is empty, or
 ///   the write fails.
-#[allow(clippy::too_many_lines)]
 pub fn fork_session(
     session_id: &str,
     directory: Option<&str>,
@@ -411,7 +410,6 @@ fn derive_fork_title(source: &Path) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
     use super::*;
 

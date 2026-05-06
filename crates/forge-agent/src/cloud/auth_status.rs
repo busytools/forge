@@ -105,7 +105,6 @@ fn parse_auth_status(stdout: &[u8]) -> Option<AccountInfo> {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
     use super::*;
 

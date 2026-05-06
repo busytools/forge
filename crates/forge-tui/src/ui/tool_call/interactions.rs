@@ -242,7 +242,6 @@ fn render_plan_approval_lines(tc: &ToolCallInfo, perm: &InlinePermission) -> Vec
     lines
 }
 
-#[allow(clippy::too_many_lines)]
 pub(super) fn render_question_lines(question: &InlineQuestion) -> Vec<Line<'static>> {
     let progress = match question.total_questions {
         total if total > 0 => format!(" ({}/{total})", question.question_index + 1),

@@ -6,7 +6,7 @@
 //! to lock the error-path wire shape — real captures would embed
 //! real tokens which we don't want in baselines.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
 use forge_sdk::{OptionsBuilder, PermissionMode};
 use forge_test_harness::sdk_wire::run_live_scenario;

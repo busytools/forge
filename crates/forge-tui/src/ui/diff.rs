@@ -239,6 +239,7 @@ fn split_leading_whitespace(text: &str) -> (&str, &str) {
 }
 
 /// Check if a tool call title references a markdown file.
+// Markdown extensions are case-sensitive on case-sensitive filesystems; `eq_ignore_ascii_case` would mis-match `README.MD` on macOS APFS-default-CS.
 #[allow(clippy::case_sensitive_file_extension_comparisons)]
 pub fn is_markdown_file(title: &str) -> bool {
     let lower = title.to_lowercase();

@@ -24,7 +24,6 @@ macro_rules! drop_if_stale_session {
     };
 }
 
-#[allow(clippy::too_many_lines)]
 pub fn handle_client_event(app: &mut App, event: ClientEvent) {
     app.needs_redraw = true;
     match event {

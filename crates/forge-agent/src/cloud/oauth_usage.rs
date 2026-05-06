@@ -198,7 +198,6 @@ fn truncated_body_suffix(body: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
     use super::*;
 

@@ -44,6 +44,7 @@ impl DiagnosticsPreset {
 #[command(
     after_help = "Examples:\n  forge --enable-logs --diagnostics-preset session\n  forge --enable-logs --diagnostics-preset render\n  forge --features perf --enable-logs --enable-perf --diagnostics-preset full"
 )]
+// Each bool maps 1:1 to a CLI flag — clap-derive needs them as struct fields.
 #[allow(clippy::struct_excessive_bools)]
 pub struct Cli {
     #[command(subcommand)]

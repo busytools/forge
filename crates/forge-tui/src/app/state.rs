@@ -1,3 +1,7 @@
+// ratatui geometry: terminal dims are u16, layout math goes through f64
+// for smooth-scroll. Casts are inherent here and bounded by terminal size.
+#![allow(clippy::cast_possible_truncation, clippy::cast_precision_loss, clippy::cast_sign_loss)]
+
 pub mod block_cache;
 pub mod cache_metrics;
 mod history_retention;
@@ -117,6 +121,7 @@ pub struct ChatRenderTraceState {
     pub selection_snapshot_active: bool,
 }
 
+// `App` is the god struct — bools are independent UI flags (autoscroll, paste-detected, dirty-rerender). Bundling defeats clarity at call sites.
 #[allow(clippy::struct_excessive_bools)]
 pub struct App {
     pub active_view: ActiveView,
@@ -810,7 +815,6 @@ impl App {
     /// All fields get sensible defaults; the `mpsc` channel is wired up internally.
     #[doc(hidden)]
     #[must_use]
-    #[allow(clippy::too_many_lines)]
     pub fn test_default() -> Self {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         let (file_index_tx, file_index_rx) = std_mpsc::channel();
@@ -2080,7 +2084,6 @@ mod tests {
         assert_eq!(marker_count, 1);
     }
 
-    #[allow(clippy::cast_precision_loss)]
     #[test]
     fn enforce_history_retention_preserves_manual_scroll_anchor_across_drop_and_marker_insert() {
         let mut app = make_test_app();
@@ -2684,7 +2687,6 @@ mod tests {
         assert!(!vp.resize_remeasure_active());
     }
 
-    #[allow(clippy::cast_precision_loss)]
     #[test]
     fn viewport_restore_resize_anchor_keeps_same_message_visible() {
         let mut vp = ChatViewport::new();
@@ -2718,7 +2720,6 @@ mod tests {
         assert_eq!(vp.find_first_visible(vp.scroll_offset), 1);
     }
 
-    #[allow(clippy::cast_precision_loss)]
     #[test]
     fn viewport_preserves_resize_anchor_when_followup_remeasure_replaces_plan() {
         let mut vp = ChatViewport::new();
@@ -2747,7 +2748,6 @@ mod tests {
         assert_eq!(vp.scroll_anchor_to_restore(), Some(resize_anchor));
     }
 
-    #[allow(clippy::cast_precision_loss)]
     #[test]
     fn viewport_message_change_preserves_manual_anchor() {
         let mut vp = ChatViewport::new();
@@ -2780,7 +2780,6 @@ mod tests {
         assert_eq!(vp.find_first_visible(vp.scroll_offset), 1);
     }
 
-    #[allow(clippy::cast_precision_loss)]
     #[test]
     fn viewport_delays_anchor_restore_until_prefix_above_is_exact() {
         let mut vp = ChatViewport::new();
@@ -2841,7 +2840,6 @@ mod tests {
         assert_eq!(vp.next_resize_remeasure_index(6), Some(4));
     }
 
-    #[allow(clippy::cast_precision_loss)]
     #[test]
     fn viewport_global_remeasure_preserves_anchor_while_prefix_above_converges() {
         let mut vp = ChatViewport::new();

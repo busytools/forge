@@ -75,6 +75,7 @@ fn canonicalize_path(path: &str) -> String {
 /// session has no subagents directory, or no `agent-*.jsonl` files are
 /// present.
 #[must_use]
+// Owned `Option<String>` mirrors upstream's wire shape; converting to `Option<&str>` here would diverge from the public API consumed by forge-agent's catalog surface.
 #[allow(clippy::needless_pass_by_value)]
 pub fn list_subagents(session_id: &str, directory: Option<String>) -> Vec<String> {
     if !is_valid_uuid(session_id) {
@@ -96,6 +97,7 @@ pub fn list_subagents(session_id: &str, directory: Option<String>) -> Vec<String
 /// `agent_id` is empty, the transcript can't be found, or the file
 /// contains no user/assistant entries.
 #[must_use]
+// Owned `Option<String>` mirrors upstream's wire shape; converting to `Option<&str>` here would diverge from the public API consumed by forge-agent's catalog surface.
 #[allow(clippy::needless_pass_by_value)]
 pub fn get_subagent_messages(
     session_id: &str,
@@ -280,6 +282,7 @@ fn project_dir_for(project_path: &str) -> PathBuf {
 ///
 /// Never — filesystem errors fall through and produce an empty Vec.
 #[must_use]
+// Owned `Option<String>` mirrors upstream's wire shape; converting to `Option<&str>` here would diverge from the public API consumed by forge-agent's catalog surface.
 #[allow(clippy::needless_pass_by_value)]
 pub fn list_sessions(
     directory: Option<String>,
@@ -323,6 +326,7 @@ pub fn list_sessions(
 /// Read metadata for one session. When `directory` is `None`, every
 /// project directory is searched for a matching `<session_id>.jsonl`.
 #[must_use]
+// Owned `Option<String>` mirrors upstream's wire shape; converting to `Option<&str>` here would diverge from the public API consumed by forge-agent's catalog surface.
 #[allow(clippy::needless_pass_by_value)]
 pub fn get_session_info(session_id: &str, directory: Option<String>) -> Option<SDKSessionInfo> {
     if !is_valid_uuid(session_id) {
@@ -346,6 +350,7 @@ pub fn get_session_info(session_id: &str, directory: Option<String>) -> Option<S
 /// Read the full transcript for one session. Returns an empty Vec when
 /// the session file can't be found or parsed.
 #[must_use]
+// Owned `Option<String>` mirrors upstream's wire shape; converting to `Option<&str>` here would diverge from the public API consumed by forge-agent's catalog surface.
 #[allow(clippy::needless_pass_by_value)]
 pub fn get_session_messages(session_id: &str, directory: Option<String>) -> Vec<SessionMessage> {
     if !is_valid_uuid(session_id) {
@@ -539,7 +544,6 @@ fn unescape_json_string(raw: &str) -> String {
 /// messages (with command-name fallback), and the fixed-prefix skip
 /// patterns the CLI's `_SKIP_FIRST_PROMPT_PATTERN` matches. Truncates to
 /// 200 chars with an ellipsis.
-#[allow(clippy::too_many_lines)]
 fn extract_first_prompt_from_head(head: &str) -> Option<String> {
     let mut command_fallback: Option<String> = None;
     for line in head.split('\n') {
@@ -714,7 +718,6 @@ pub(crate) fn parse_rfc3339_ms(ts: &str) -> Result<u64, time::error::Parse> {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
     use super::*;
 

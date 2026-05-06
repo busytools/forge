@@ -24,7 +24,7 @@
 //! Opt-in because this burns real API tokens (small — a trivial
 //! prompt). Skipped silently when the env var is unset.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
 use std::time::{SystemTime, UNIX_EPOCH};
 

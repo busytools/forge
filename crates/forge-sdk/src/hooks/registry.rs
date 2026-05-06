@@ -365,7 +365,7 @@ impl HooksBuilder {
 
 #[cfg(test)]
 mod tests_hooks_registration {
-    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+    // Test-mod `use super::*;` brings the parent's full surface in; not every test consumes every item.
     #[allow(unused_imports)]
     use super::*;
 

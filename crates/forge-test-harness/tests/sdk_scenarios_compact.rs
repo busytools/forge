@@ -5,7 +5,7 @@
 //! successful, the CLI emits a `compact_boundary` user-message chunk
 //! and may call registered `PreCompact` hooks first.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
 use forge_sdk::{
     HookContext, HookDecision, HooksBuilder, OptionsBuilder, PermissionMode, PreCompactInput,

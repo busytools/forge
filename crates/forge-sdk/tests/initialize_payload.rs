@@ -9,7 +9,7 @@
 //! A spawn-time fixture captures the initialize frame to a tempfile;
 //! tests parse it and assert field presence.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
 use std::fs;
 

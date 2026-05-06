@@ -151,7 +151,6 @@ pub(crate) fn convert_current_model(current_model: types::CurrentModel) -> model
     mapped
 }
 
-#[allow(clippy::too_many_lines)]
 pub(super) fn map_session_update(update: types::SessionUpdate) -> Option<model::SessionUpdate> {
     match update {
         types::SessionUpdate::UserMessageChunk { content } => {

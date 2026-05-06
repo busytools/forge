@@ -71,7 +71,6 @@ pub struct SessionPickerState {
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
-#[allow(clippy::struct_field_names)]
 pub struct MessageUsage {
     pub input_tokens: Option<u64>,
     pub cache_read_tokens: Option<u64>,

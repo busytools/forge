@@ -251,15 +251,9 @@ fn run_debounce_loop(
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ResolvedRepo {
     worktree_root: PathBuf,
-    #[allow(dead_code)]
-    dot_git_path: PathBuf,
     effective_git_dir: PathBuf,
     common_git_dir: PathBuf,
     head_path: PathBuf,
-    #[allow(dead_code)]
-    packed_refs_path: PathBuf,
-    #[allow(dead_code)]
-    commondir_path: Option<PathBuf>,
     heads_dir: PathBuf,
 }
 
@@ -291,12 +285,9 @@ impl ResolvedRepo {
 
             return Some(Self {
                 worktree_root,
-                dot_git_path: normalize_path(&dot_git_path),
                 effective_git_dir: normalize_path(&effective_git_dir),
                 common_git_dir: normalize_path(&common_git_dir),
                 head_path: normalize_path(&effective_git_dir.join("HEAD")),
-                packed_refs_path: normalize_path(&common_git_dir.join("packed-refs")),
-                commondir_path: commondir_path.exists().then(|| normalize_path(&commondir_path)),
                 heads_dir: normalize_path(&heads_dir),
             });
         }
@@ -427,7 +418,6 @@ fn normalize_path(path: &Path) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
     use super::{GitBranch, GitContext, GitContextWatcher, ResolvedRepo, git_context};
     use notify::{Event, EventKind};

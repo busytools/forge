@@ -58,7 +58,6 @@ struct StartConnectionParams {
 pub(crate) use session_start::{SessionStartReason, begin_resume_session, start_new_session};
 
 /// Create the `App` struct in `Connecting` state and load shared settings state.
-#[allow(clippy::too_many_lines)]
 pub fn create_app(cli: &Cli) -> App {
     let cwd = resolve_startup_cwd(cli);
 

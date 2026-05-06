@@ -270,7 +270,7 @@ impl<'de> Deserialize<'de> for ContentBlock {
 
 #[cfg(test)]
 mod tests_content_roundtrip {
-    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+    // Test-mod `use super::*;` brings the parent's full surface in; not every test consumes every item.
     #[allow(unused_imports)]
     use super::*;
 

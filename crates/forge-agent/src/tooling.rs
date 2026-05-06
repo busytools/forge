@@ -23,10 +23,17 @@ use forge_primitives::{
 const CACHE_PREVIEW_LIMIT_BYTES: usize = 2048;
 
 #[must_use]
-#[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 fn preview_kilobyte_label() -> String {
-    let kb = CACHE_PREVIEW_LIMIT_BYTES as f64 / 1024.0;
-    if kb.fract() == 0.0 { format!("{}KB", kb as u64) } else { format!("{kb:.1}KB") }
+    let whole_kb = CACHE_PREVIEW_LIMIT_BYTES / 1024;
+    let remainder = CACHE_PREVIEW_LIMIT_BYTES % 1024;
+    if remainder == 0 {
+        format!("{whole_kb}KB")
+    } else {
+        // Render as e.g. 1.5KB without going through f64. Only one
+        // decimal place — match the previous Display behaviour.
+        let tenths = (remainder * 10) / 1024;
+        format!("{whole_kb}.{tenths}KB")
+    }
 }
 
 /// Block types the CLI uses for tool results. Mirrors upstream's
@@ -854,7 +861,6 @@ pub fn unwrap_tool_use_result(raw_result: &Value) -> UnwrappedToolResult {
     UnwrappedToolResult { is_error, content: raw_result.clone() }
 }
 
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -143,7 +143,6 @@ fn handle_session_update_event(app: &mut App, update: model::SessionUpdate) {
     }
 }
 
-#[allow(clippy::too_many_lines)]
 fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
     match update {
         model::SessionUpdate::AgentMessageChunk(chunk) => {

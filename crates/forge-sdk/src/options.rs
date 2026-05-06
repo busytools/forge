@@ -818,7 +818,7 @@ impl OptionsBuilder {
 
 #[cfg(test)]
 mod tests_skills_option {
-    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+    // Test-mod `use super::*;` brings the parent's full surface in; not every test consumes every item.
     #[allow(unused_imports)]
     use super::*;
 
@@ -869,7 +869,7 @@ mod tests_skills_option {
 
 #[cfg(test)]
 mod tests_options_build {
-    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+    // Test-mod `use super::*;` brings the parent's full surface in; not every test consumes every item.
     #[allow(unused_imports)]
     use super::*;
 

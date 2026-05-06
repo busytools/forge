@@ -6,7 +6,7 @@
 //! name-specific payload shapes and give the replay harness a
 //! regression guard per hook surface.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
 use forge_sdk::{
     HookContext, HookDecision, HooksBuilder, NotificationInput, OptionsBuilder, PermissionMode,

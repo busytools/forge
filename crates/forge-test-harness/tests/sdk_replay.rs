@@ -9,7 +9,7 @@
 //!   line still decodes cleanly via forge-sdk's decoder. If forge-sdk's
 //!   decoder regresses, this test fails loudly.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
 use forge_test_harness::sdk_wire::{
     PINNED_CLI_VERSION, baseline_dir, decode_all_inbound, load_baseline,

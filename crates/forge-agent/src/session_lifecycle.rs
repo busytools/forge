@@ -338,7 +338,6 @@ pub fn map_available_models(models: Option<&Value>) -> Vec<AvailableModel> {
         .collect()
 }
 
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #[cfg(test)]
 mod tests {
     use super::*;

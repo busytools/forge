@@ -1,3 +1,7 @@
+// ratatui geometry: terminal dims are u16, layout math goes through f64
+// for smooth-scroll. Casts are inherent here and bounded by terminal size.
+#![allow(clippy::cast_possible_truncation, clippy::cast_precision_loss, clippy::cast_sign_loss)]
+
 use crate::app::{App, FocusOwner, TodoStatus};
 use crate::ui::theme;
 use ratatui::Frame;
@@ -24,10 +28,7 @@ pub fn compute_height(app: &App) -> u16 {
         return 1;
     }
     // Open: capped at MAX_VISIBLE
-    #[allow(clippy::cast_possible_truncation)]
-    {
-        app.todos.len().min(MAX_VISIBLE) as u16
-    }
+    app.todos.len().min(MAX_VISIBLE) as u16
 }
 
 /// Render the todo panel into the given area.

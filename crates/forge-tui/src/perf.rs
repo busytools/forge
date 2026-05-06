@@ -113,6 +113,10 @@ mod enabled {
         });
     }
 
+    // `start` / `start_with` / `mark` / `mark_with` take `&self` to match
+    // call-site ergonomics with the enabled-vs-disabled feature impls,
+    // even though the enabled path delegates to thread-local state and
+    // doesn't read fields off self directly.
     #[allow(clippy::unused_self)]
     impl PerfLogger {
         /// Open (or create) the log file. Returns `None` on I/O error.
@@ -195,6 +199,8 @@ mod enabled {
         pub(crate) extra: Option<(&'static str, usize)>,
     }
 
+    // `stop` consumes self but the actual logging happens via `Drop`.
+    // The receiver is part of the API contract (call site `timer.stop()`).
     #[allow(clippy::unused_self)]
     impl Timer {
         /// Manually stop and log. Useful when you need to end timing before scope exit.
@@ -218,6 +224,9 @@ mod disabled {
     pub struct PerfLogger;
     pub struct Timer;
 
+    // Stub impl for the `!perf` feature path — methods are no-ops.
+    // The receiver shape matches the `feature = "perf"` impl so call
+    // sites compile under both feature flags without an `if` ladder.
     #[allow(clippy::unused_self)]
     impl PerfLogger {
         #[inline]
@@ -248,6 +257,9 @@ mod disabled {
         }
     }
 
+    // Stub impl for the `!perf` feature path — methods are no-ops.
+    // The receiver shape matches the `feature = "perf"` impl so call
+    // sites compile under both feature flags without an `if` ladder.
     #[allow(clippy::unused_self)]
     impl Timer {
         #[inline]
