@@ -98,11 +98,9 @@ pub enum ClientEvent {
         servers: Vec<forge_primitives::McpServerStatus>,
         error: Option<String>,
     },
-    /// Raw `forge_primitives::Message` envelope received from bridge.
-    /// Phase 1 of the bridge-collapse refactor: emitted alongside the
-    /// existing `SessionUpdate` flow as scaffolding. App's
-    /// `events::sdk_message::handle_sdk_message` is a no-op stub
-    /// during Phase 1; Phase 2 fills it in per-variant.
+    /// Raw `forge_primitives::Message` envelope received from the
+    /// bridge worker. The App's `events::sdk_message::handle_sdk_message`
+    /// dispatches per-variant handlers that mutate App state directly.
     SdkMessageReceived { session_id: String, msg: forge_primitives::Message },
     /// Usage refresh task started.
     UsageRefreshStarted { epoch: u64 },

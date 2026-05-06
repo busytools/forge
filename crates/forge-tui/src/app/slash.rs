@@ -504,10 +504,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn mode_apply_synchronously_during_submit() {
-        // Phase 2 cut: /mode applies CurrentModeUpdate + ModeStateUpdate
-        // optimistically App-side; no CommandPending state is needed
-        // because the apply is synchronous and the bridge no longer
-        // fans the post-SDK ack through the event channel.
+        // /mode applies CurrentModeUpdate + ModeStateUpdate optimistically
+        // App-side. The apply is synchronous, so no CommandPending
+        // state is needed.
         tokio::task::LocalSet::new()
             .run_until(async {
                 let mut app = App::test_default();
@@ -537,10 +536,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn model_apply_synchronously_during_submit() {
-        // Phase 2 cut: /model applies CurrentModelUpdate optimistically
-        // App-side; no CommandPending state is needed because the
-        // apply is synchronous and the bridge no longer fans the
-        // post-SDK ack through the event channel.
+        // /model applies CurrentModelUpdate optimistically App-side.
+        // The apply is synchronous, so no CommandPending state is
+        // needed.
         tokio::task::LocalSet::new()
             .run_until(async {
                 let mut app = App::test_default();

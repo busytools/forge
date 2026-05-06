@@ -122,18 +122,45 @@ fn write_json_atomic(path: &Path, document: &Value) -> Result<(), Error> {
     };
 
     let temp_path = unique_temp_path(parent, path.file_name().and_then(|n| n.to_str()));
-    let mut temp = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&temp_path)?;
-    serde_json::to_writer_pretty(&mut temp, &normalized)
-        .map_err(|err| io::Error::other(format!("serialize settings: {err}")))?;
-    temp.write_all(b"\n")?;
-    temp.flush()?;
-    temp.sync_all()?;
-    drop(temp);
-    std::fs::rename(&temp_path, path)?;
-    Ok(())
+    // On any open/serialize/sync/rename failure, remove the temp file
+    // before propagating the error so transient failures don't leak
+    // `.settings.json.{nanos}.tmp` files into the config dir.
+    let result = (|| -> io::Result<()> {
+        let mut temp = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp_path)?;
+        serde_json::to_writer_pretty(&mut temp, &normalized)
+            .map_err(|err| io::Error::other(format!("serialize settings: {err}")))?;
+        temp.write_all(b"\n")?;
+        temp.flush()?;
+        temp.sync_all()?;
+        drop(temp);
+        std::fs::rename(&temp_path, path)?;
+        Ok(())
+    })();
+    if result.is_err() {
+        // Best-effort cleanup; log a debug breadcrumb if the cleanup
+        // itself fails (would mean accumulation continues silently),
+        // but propagate the ORIGINAL error rather than the cleanup
+        // failure.
+        if let Err(cleanup_err) = std::fs::remove_file(&temp_path) {
+            // Log only the basename of the temp path so the breadcrumb
+            // doesn't expose the user's full config-dir path if the log
+            // is shared in a bug report.
+            let temp_basename = temp_path.file_name().map_or_else(
+                || "<no-basename>".to_owned(),
+                |n| n.to_string_lossy().into_owned(),
+            );
+            tracing::debug!(
+                target: crate::logging::targets::SETTINGS,
+                error = %cleanup_err,
+                temp_basename,
+                "best-effort temp cleanup failed; original error follows",
+            );
+        }
+    }
+    Ok(result?)
 }
 
 fn unique_temp_path(parent: &Path, filename_hint: Option<&str>) -> PathBuf {

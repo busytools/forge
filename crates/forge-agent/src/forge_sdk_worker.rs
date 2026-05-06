@@ -40,9 +40,17 @@ pub(crate) async fn spawn_session(
     launch_settings: &crate::client::SessionLaunchSettings,
 ) -> anyhow::Result<()> {
     // If we already have a client, drop it so the existing subprocess
-    // shuts down cleanly before the replacement spawns.
-    if let Some(prev) = bridge.clear_client() {
-        let _ = prev.disconnect().await;
+    // shuts down cleanly before the replacement spawns. Disconnect
+    // failures are best-effort — log a breadcrumb so a stuck zombie
+    // subprocess is observable in postmortems.
+    if let Some(prev) = bridge.clear_client()
+        && let Err(err) = prev.disconnect().await
+    {
+        tracing::debug!(
+            target: crate::logging::targets::BRIDGE_LIFECYCLE,
+            error = %err,
+            "previous client disconnect failed during session swap",
+        );
     }
 
     let options = build_options_with_callback(
@@ -66,14 +74,26 @@ pub(crate) async fn spawn_session(
         Some(id) if !id.is_empty() => id.to_owned(),
         _ => client.session_id(),
     };
-    if let Ok(mut slot) = bridge.session_id_slot_arc().lock() {
-        slot.clone_from(&session_id);
-    }
+    bridge.session_id_slot_arc().lock().clone_from(&session_id);
 
-    let cwd_owned = std::env::current_dir()
-        .ok()
-        .and_then(|p| p.into_os_string().into_string().ok())
-        .unwrap_or_default();
+    let cwd_owned = match std::env::current_dir() {
+        Ok(p) => p.into_os_string().into_string().unwrap_or_else(|os| {
+            tracing::warn!(
+                target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                cwd_lossy = %os.to_string_lossy(),
+                "cwd is not valid UTF-8; falling back to global session scope",
+            );
+            String::new()
+        }),
+        Err(e) => {
+            tracing::warn!(
+                target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                error = %e,
+                "current_dir unavailable; falling back to global session scope",
+            );
+            String::new()
+        }
+    };
 
     // Install the client into the bridge BEFORE emitting Connected.
     // The TUI's Connected handler immediately fires command-channel
@@ -366,16 +386,13 @@ fn build_options_with_callback(
     event_tx: mpsc::UnboundedSender<AgentEvent>,
     pending: PendingResponses,
     pending_questions: PendingQuestions,
-    session_id_slot: Arc<std::sync::Mutex<String>>,
+    session_id_slot: Arc<parking_lot::Mutex<String>>,
 ) -> Options {
     let callback = move |ctx: ToolPermissionContext| {
         let event_tx = event_tx.clone();
         let pending = Arc::clone(&pending);
         let pending_questions = Arc::clone(&pending_questions);
-        let session_id = session_id_slot
-            .lock()
-            .map(|s| s.clone())
-            .unwrap_or_default();
+        let session_id = session_id_slot.lock().clone();
         async move {
             if ctx.tool_name == bridge_user_interaction::ASK_USER_QUESTION_TOOL_NAME {
                 run_ask_user_question(ctx, session_id, &event_tx, &pending_questions).await
@@ -451,9 +468,7 @@ async fn run_permission_request(
     pending: &PendingResponses,
 ) -> PermissionDecision {
     let (tx, rx) = oneshot::channel();
-    if let Ok(mut map) = pending.lock() {
-        map.insert(ctx.tool_use_id.clone(), tx);
-    }
+    pending.lock().insert(ctx.tool_use_id.clone(), tx);
     let event = synth_permission_request(&session_id, &ctx);
     if event_tx.send(event).is_err() {
         return PermissionDecision::deny("event channel closed");
@@ -490,9 +505,7 @@ async fn run_ask_user_question(
             total,
         );
         let (tx, rx) = oneshot::channel();
-        if let Ok(mut map) = pending_questions.lock() {
-            map.insert(ctx.tool_use_id.clone(), tx);
-        }
+        pending_questions.lock().insert(ctx.tool_use_id.clone(), tx);
         if event_tx
             .send(AgentEvent::QuestionRequest {
                 session_id: session_id.clone(),
@@ -586,7 +599,13 @@ pub(crate) fn deliver_permission_response(
             PermissionDecision::deny("user cancelled")
         }
     };
-    let _ = tx.send(decision);
+    if tx.send(decision).is_err() {
+        tracing::debug!(
+            target: crate::logging::targets::APP_PERMISSION,
+            tool_call_id,
+            "PermissionResponse oneshot receiver dropped before delivery",
+        );
+    }
 }
 
 pub(crate) fn deliver_question_response(
@@ -594,7 +613,7 @@ pub(crate) fn deliver_question_response(
     tool_call_id: &str,
     outcome: forge_primitives::QuestionOutcome,
 ) {
-    let Some(tx) = pending.lock().ok().and_then(|mut m| m.remove(tool_call_id)) else {
+    let Some(tx) = pending.lock().remove(tool_call_id) else {
         tracing::warn!(
             target: crate::logging::targets::APP_PERMISSION,
             tool_call_id,
@@ -602,14 +621,20 @@ pub(crate) fn deliver_question_response(
         );
         return;
     };
-    let _ = tx.send(outcome);
+    if tx.send(outcome).is_err() {
+        tracing::debug!(
+            target: crate::logging::targets::APP_PERMISSION,
+            tool_call_id,
+            "QuestionResponse oneshot receiver dropped before delivery",
+        );
+    }
 }
 
 fn take_pending(
     pending: &PendingResponses,
     tool_call_id: &str,
 ) -> Option<oneshot::Sender<PermissionDecision>> {
-    pending.lock().ok()?.remove(tool_call_id)
+    pending.lock().remove(tool_call_id)
 }
 
 fn synth_permission_request(session_id: &str, ctx: &ToolPermissionContext) -> AgentEvent {
@@ -685,9 +710,10 @@ mod tests {
     use crate::client::AgentEvent;
     use forge_primitives::{ElicitationAction, PermissionOutcome, QuestionOutcome};
     use forge_sdk::ToolPermissionContext;
+    use parking_lot::Mutex;
     use serde_json::json;
     use std::collections::HashMap;
-    use std::sync::{Arc, Mutex};
+    use std::sync::Arc;
     use tokio::sync::oneshot;
 
     fn fresh_pending() -> PendingResponses {
@@ -703,7 +729,7 @@ mod tests {
         id: &str,
     ) -> oneshot::Receiver<forge_sdk::PermissionDecision> {
         let (tx, rx) = oneshot::channel();
-        pending.lock().unwrap().insert(id.to_owned(), tx);
+        pending.lock().insert(id.to_owned(), tx);
         rx
     }
 
@@ -756,7 +782,7 @@ mod tests {
                 option_id: "allow_once".to_owned(),
             },
         );
-        assert!(pending.lock().unwrap().is_empty());
+        assert!(pending.lock().is_empty());
     }
 
     fn fresh_pending_questions() -> PendingQuestions {
@@ -768,7 +794,7 @@ mod tests {
         id: &str,
     ) -> oneshot::Receiver<forge_primitives::QuestionOutcome> {
         let (tx, rx) = oneshot::channel();
-        pending.lock().unwrap().insert(id.to_owned(), tx);
+        pending.lock().insert(id.to_owned(), tx);
         rx
     }
 
@@ -809,7 +835,7 @@ mod tests {
     fn question_response_unknown_id_is_silent_no_op() {
         let pending = fresh_pending_questions();
         deliver_question_response(&pending, "missing", QuestionOutcome::Cancelled);
-        assert!(pending.lock().unwrap().is_empty());
+        assert!(pending.lock().is_empty());
     }
 
     #[test]

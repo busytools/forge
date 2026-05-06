@@ -104,17 +104,6 @@ impl Error {
         }
     }
 
-    /// Construct a [`Error::MessageParse`] that carries the offending
-    /// payload alongside the reason — mirrors the CLI's
-    /// `MessageParseError(msg, data)`.
-    #[must_use]
-    pub fn message_parse_with_data(reason: impl Into<String>, data: serde_json::Value) -> Self {
-        Self::MessageParse {
-            reason: reason.into(),
-            data: Some(data),
-        }
-    }
-
     /// Construct an [`Error::Encode`] for a local JSON encode
     /// failure. Use this for `serde_json::to_string`/`to_value`
     /// failures on data the SDK constructed, NOT for parse

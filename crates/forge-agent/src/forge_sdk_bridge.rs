@@ -1,13 +1,13 @@
-//! `AgentBridge` impl backed by `forge-sdk` running in-process.
+//! `ForgeSdkBridge` — in-process driver around a [`forge_sdk::Client`].
 //!
 //! Drives a [`forge_sdk::Client`] directly — no Node.js subprocess,
 //! no NDJSON, no command queue. The bridge holds the spawned
-//! `Arc<Client>` and dispatches each trait method as a direct call
-//! (or a `tokio::spawn`'d async task when the trait method is
+//! `Arc<Client>` and dispatches each method as a direct call
+//! (or a `tokio::spawn`'d async task when the method is
 //! fire-and-forget). Synthesized events (Connected, `PermissionRequest`,
 //! `McpSnapshot`, …) flow back through an `mpsc::UnboundedSender<AgentEvent>`
 //! the bridge owns; consumers grab the matching receiver once via
-//! [`AgentBridge::take_events`].
+//! [`ForgeSdkBridge::take_events`].
 //!
 //! ```text
 //!     TUI                     ForgeSdkBridge                  forge_sdk::Client
@@ -21,14 +21,14 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
-use async_trait::async_trait;
 use forge_sdk::Client;
+use parking_lot::Mutex;
 use serde_json::Value;
 use tokio::sync::{mpsc, oneshot};
 
-use crate::client::{AgentBridge, AgentEvent, PromptResponse, SessionLaunchSettings};
+use crate::client::{AgentEvent, PromptResponse, SessionLaunchSettings};
 use crate::forge_sdk_worker;
 use forge_primitives::{ElicitationAction, McpServerConfig, PermissionOutcome, QuestionOutcome};
 
@@ -45,7 +45,7 @@ pub(crate) type PendingResponses =
 /// the matching `question_response`.
 pub(crate) type PendingQuestions = Arc<Mutex<HashMap<String, oneshot::Sender<QuestionOutcome>>>>;
 
-/// Forge-SDK-backed implementation of [`AgentBridge`].
+/// In-process bridge wrapping a single [`forge_sdk::Client`].
 ///
 /// Single instance per connection. The bridge owns the spawned
 /// `forge_sdk::Client`, the `can_use_tool` parking lots, the per-cwd
@@ -62,7 +62,7 @@ pub(crate) struct BridgeInner {
     /// Bridge → App event emission channel. Cloned freely into the
     /// reader subtask + `can_use_tool` callback closures.
     event_tx: mpsc::UnboundedSender<AgentEvent>,
-    /// Single-take receiver handed out via [`AgentBridge::take_events`].
+    /// Single-take receiver handed out via [`ForgeSdkBridge::take_events`].
     events_rx: Mutex<Option<mpsc::UnboundedReceiver<AgentEvent>>>,
     /// Permission round-trip parking lot.
     pub(crate) pending: PendingResponses,
@@ -79,9 +79,9 @@ pub(crate) struct BridgeInner {
 impl ForgeSdkBridge {
     /// Construct a fresh bridge. The internal event channel is created
     /// here; consumers grab the receiver once via
-    /// [`AgentBridge::take_events`].
+    /// [`ForgeSdkBridge::take_events`].
     #[must_use]
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let (event_tx, events_rx) = mpsc::unbounded_channel();
         Self {
             inner: Arc::new(BridgeInner {
@@ -113,17 +113,56 @@ impl ForgeSdkBridge {
     }
 
     fn client(&self) -> Option<Client> {
-        self.inner.client.lock().ok().and_then(|c| c.clone())
+        self.inner.client.lock().clone()
     }
 
     pub(crate) fn set_client(&self, client: Client) {
-        if let Ok(mut slot) = self.inner.client.lock() {
-            *slot = Some(client);
-        }
+        *self.inner.client.lock() = Some(client);
     }
 
     pub(crate) fn clear_client(&self) -> Option<Client> {
-        self.inner.client.lock().ok().and_then(|mut c| c.take())
+        self.inner.client.lock().take()
+    }
+
+    /// Send an `AgentEvent::McpOperationError` to the App; log a
+    /// `BRIDGE_LIFECYCLE` warn if the channel is closed (terminal
+    /// event for a user-visible MCP failure — silent-drop on
+    /// teardown race would lose the only path to surface).
+    /// On send failure we destructure the unsent event back out of
+    /// the `SendError` so the warn log carries `session_id`,
+    /// `server_name`, and the underlying error text — the most
+    /// actionable triage signals.
+    fn emit_mcp_error_or_log(
+        event_tx: &mpsc::UnboundedSender<AgentEvent>,
+        session_id: String,
+        operation: &'static str,
+        server_name: Option<String>,
+        error_msg: String,
+    ) {
+        let event = AgentEvent::McpOperationError {
+            session_id,
+            error: forge_primitives::McpOperationError {
+                operation: operation.to_owned(),
+                server_name,
+                message: error_msg,
+            },
+        };
+        if let Err(send_err) = event_tx.send(event) {
+            // Unreachable in practice — we just constructed
+            // McpOperationError on the line above and the SendError
+            // wraps the unsent event verbatim.
+            let AgentEvent::McpOperationError { session_id, error } = send_err.0 else {
+                unreachable!("McpOperationError just constructed above")
+            };
+            tracing::warn!(
+                target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                session_id = %session_id,
+                operation,
+                server_name = ?error.server_name,
+                error_msg = %error.message,
+                "event channel closed; McpOperationError dropped",
+            );
+        }
     }
 
     /// Spawn a fire-and-forget client call. Logs and drops on failure.
@@ -156,9 +195,7 @@ impl ForgeSdkBridge {
     fn install_git_watcher(&self, session_id: String, cwd: &Path) {
         // Abort any prior watcher for this session so notify cleans up
         // its OS-level subscriptions before we replace it.
-        if let Ok(mut watchers) = self.inner.git_watchers.lock()
-            && let Some(prev) = watchers.remove(&session_id)
-        {
+        if let Some(prev) = self.inner.git_watchers.lock().remove(&session_id) {
             prev.abort();
         }
 
@@ -190,15 +227,11 @@ impl ForgeSdkBridge {
                 }
             }
         });
-        if let Ok(mut watchers) = self.inner.git_watchers.lock() {
-            watchers.insert(session_id, handle);
-        }
+        self.inner.git_watchers.lock().insert(session_id, handle);
     }
 
     fn stop_git_watcher(&self, session_id: &str) {
-        if let Ok(mut watchers) = self.inner.git_watchers.lock()
-            && let Some(handle) = watchers.remove(session_id)
-        {
+        if let Some(handle) = self.inner.git_watchers.lock().remove(session_id) {
             handle.abort();
         }
     }
@@ -212,34 +245,46 @@ impl Default for ForgeSdkBridge {
 
 impl Drop for BridgeInner {
     fn drop(&mut self) {
-        if let Ok(mut watchers) = self.git_watchers.lock() {
-            for (_, handle) in watchers.drain() {
-                handle.abort();
-            }
+        for (_, handle) in self.git_watchers.lock().drain() {
+            handle.abort();
         }
     }
 }
 
-#[async_trait(?Send)]
-impl AgentBridge for ForgeSdkBridge {
-    fn take_events(&self) -> Option<mpsc::UnboundedReceiver<AgentEvent>> {
-        self.inner
-            .events_rx
-            .lock()
-            .ok()
-            .and_then(|mut slot| slot.take())
+// `unused_self` / `needless_pass_by_value` are allowed at the impl
+// level: passthrough accessors that delegate to `forge_sdk::*` free
+// functions don't logically use `self`, but every method here
+// preserves the `&self`-receiver shape so AgentHandle wrappers can
+// call them through a single stable seam.
+#[allow(clippy::unused_self, clippy::needless_pass_by_value)]
+impl ForgeSdkBridge {
+    pub(crate) fn take_events(&self) -> Option<mpsc::UnboundedReceiver<AgentEvent>> {
+        self.inner.events_rx.lock().take()
     }
 
-    fn prompt_text(&self, session_id: String, text: String) -> anyhow::Result<PromptResponse> {
+    pub(crate) fn prompt_text(
+        &self,
+        session_id: String,
+        text: String,
+    ) -> anyhow::Result<PromptResponse> {
         self.prompt_with_images(session_id, text, Vec::new())
     }
 
-    fn prompt_with_images(
+    pub(crate) fn prompt_with_images(
         &self,
-        _session_id: String,
+        session_id: String,
         text: String,
         images: Vec<forge_primitives::ImageAttachment>,
     ) -> anyhow::Result<PromptResponse> {
+        // No `check_session_id` here — the TUI commits to
+        // `AppStatus::Thinking` BEFORE this call, and a silent
+        // stale-session drop (returning Ok with no event) would
+        // leave the user's spinner running forever with no
+        // recovery path. If the prompt does land in the wrong
+        // session, normal SDK error surfaces (TurnError, etc.)
+        // tear down Thinking via the existing wire path. We still
+        // log a breadcrumb on mismatch so the bypass is observable.
+        self.trace_session_id_bypass(&session_id, "prompt_with_images");
         let mut chunks: Vec<forge_primitives::PromptChunk> = Vec::with_capacity(1 + images.len());
         for img in images {
             if let Err(reason) = forge_primitives::validate_image(&img.data, &img.mime_type) {
@@ -269,14 +314,20 @@ impl AgentBridge for ForgeSdkBridge {
         })
     }
 
-    fn cancel(&self, _session_id: String) -> anyhow::Result<()> {
+    pub(crate) fn cancel(&self, session_id: String) -> anyhow::Result<()> {
+        if !self.check_session_id(&session_id, "cancel") {
+            return Ok(());
+        }
         self.dispatch("cancel", |client| async move {
             client.interrupt().await?;
             Ok(())
         })
     }
 
-    fn set_mode(&self, _session_id: String, mode: String) -> anyhow::Result<()> {
+    pub(crate) fn set_mode(&self, session_id: String, mode: String) -> anyhow::Result<()> {
+        if !self.check_session_id(&session_id, "set_mode") {
+            return Ok(());
+        }
         let parsed = forge_sdk_worker::parse_permission_mode(&mode)?;
         self.dispatch("set_mode", move |client| async move {
             client.set_permission_mode(parsed).await?;
@@ -284,31 +335,85 @@ impl AgentBridge for ForgeSdkBridge {
         })
     }
 
-    fn set_model(&self, _session_id: String, model: String) -> anyhow::Result<()> {
+    pub(crate) fn set_model(&self, session_id: String, model: String) -> anyhow::Result<()> {
+        if !self.check_session_id(&session_id, "set_model") {
+            return Ok(());
+        }
         self.dispatch("set_model", move |client| async move {
             client.set_model(Some(model.as_str())).await?;
             Ok(())
         })
     }
 
-    fn generate_session_title(
+    /// Verify the requested `session_id` matches the bridge's current
+    /// session before dispatching a user-action method. In a session-swap
+    /// race a `cancel`/`set_mode`/`set_model` for session A could
+    /// otherwise hit session B's `Client`. Emits a debug breadcrumb
+    /// here on mismatch and returns false; the caller is expected to
+    /// drop the dispatch with a no-op `Ok(())`.
+    ///
+    /// Other user-action methods (`prompt_with_images`,
+    /// `generate_session_title`, `respond_to_elicitation`) intentionally
+    /// opt out — see the inline rationale at each call site.
+    fn check_session_id(&self, session_id: &str, label: &'static str) -> bool {
+        let current = self.inner.session_id_slot.lock().clone();
+        if current.is_empty() || current == session_id {
+            return true;
+        }
+        tracing::debug!(
+            target: crate::logging::targets::BRIDGE_LIFECYCLE,
+            event_name = "stale_session_dispatch",
+            label,
+            current_session_id = %current,
+            requested_session_id = %session_id,
+            "dropping dispatch for stale session id"
+        );
+        false
+    }
+
+    /// Sibling of [`check_session_id`] for methods that intentionally
+    /// pass through on mismatch (no silent drop). Logs a breadcrumb at
+    /// `trace` so postmortems can correlate "my prompt vanished" with
+    /// a session-swap race, without raising the noise floor under
+    /// normal operation.
+    fn trace_session_id_bypass(&self, session_id: &str, label: &'static str) {
+        let current = self.inner.session_id_slot.lock().clone();
+        if current.is_empty() || current == session_id {
+            return;
+        }
+        tracing::trace!(
+            target: crate::logging::targets::BRIDGE_LIFECYCLE,
+            event_name = "stale_session_bypass",
+            label,
+            current_session_id = %current,
+            requested_session_id = %session_id,
+            "passing through dispatch despite stale session id (intentional bypass)",
+        );
+    }
+
+    pub(crate) fn generate_session_title(
         &self,
-        _session_id: String,
+        session_id: String,
         description: String,
     ) -> anyhow::Result<()> {
+        // No `check_session_id` here — title generation is a
+        // best-effort cosmetic update; even mis-routed it can't
+        // wedge user-visible state. Trace breadcrumb keeps the
+        // bypass observable.
+        self.trace_session_id_bypass(&session_id, "generate_session_title");
         self.dispatch("generate_session_title", move |client| async move {
             let _ = client.generate_session_title(&description).await?;
             Ok(())
         })
     }
 
-    fn rename_session(&self, session_id: String, title: String) -> anyhow::Result<()> {
+    pub(crate) fn rename_session(&self, session_id: String, title: String) -> anyhow::Result<()> {
         // Offline disk mutation — no Client required.
         crate::userdata::catalog::mutations::rename_session(&session_id, &title, None)?;
         Ok(())
     }
 
-    fn get_status_snapshot(&self, session_id: String) -> anyhow::Result<()> {
+    pub(crate) fn get_status_snapshot(&self, session_id: String) -> anyhow::Result<()> {
         let event_tx = self.inner.event_tx.clone();
         self.dispatch("get_status_snapshot", move |client| async move {
             let account = client
@@ -323,7 +428,7 @@ impl AgentBridge for ForgeSdkBridge {
         })
     }
 
-    fn get_oauth_credentials_snapshot(&self, session_id: String) -> anyhow::Result<()> {
+    pub(crate) fn get_oauth_credentials_snapshot(&self, session_id: String) -> anyhow::Result<()> {
         let event_tx = self.inner.event_tx.clone();
         self.dispatch(
             "get_oauth_credentials_snapshot",
@@ -338,7 +443,7 @@ impl AgentBridge for ForgeSdkBridge {
         )
     }
 
-    fn get_context_usage(&self, session_id: String) -> anyhow::Result<()> {
+    pub(crate) fn get_context_usage(&self, session_id: String) -> anyhow::Result<()> {
         let event_tx = self.inner.event_tx.clone();
         self.dispatch("get_context_usage", move |client| async move {
             let usage = client.get_context_usage().await?;
@@ -351,7 +456,7 @@ impl AgentBridge for ForgeSdkBridge {
         })
     }
 
-    fn reload_plugins(&self, session_id: String) -> anyhow::Result<()> {
+    pub(crate) fn reload_plugins(&self, session_id: String) -> anyhow::Result<()> {
         let event_tx = self.inner.event_tx.clone();
         self.dispatch("reload_plugins", move |client| async move {
             match client.reload_plugins().await {
@@ -359,17 +464,27 @@ impl AgentBridge for ForgeSdkBridge {
                     let _ = event_tx.send(AgentEvent::RuntimeReloadCompleted { session_id });
                 }
                 Err(e) => {
-                    let _ = event_tx.send(AgentEvent::RuntimeReloadFailed {
-                        session_id,
-                        message: format!("reload_plugins failed: {e}"),
-                    });
+                    let msg = format!("reload_plugins failed: {e}");
+                    if event_tx
+                        .send(AgentEvent::RuntimeReloadFailed {
+                            session_id,
+                            message: msg.clone(),
+                        })
+                        .is_err()
+                    {
+                        tracing::warn!(
+                            target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                            error = %msg,
+                            "event channel closed; RuntimeReloadFailed dropped",
+                        );
+                    }
                 }
             }
             Ok(())
         })
     }
 
-    fn get_mcp_snapshot(&self, session_id: String) -> anyhow::Result<()> {
+    pub(crate) fn get_mcp_snapshot(&self, session_id: String) -> anyhow::Result<()> {
         let event_tx = self.inner.event_tx.clone();
         self.dispatch("get_mcp_snapshot", move |client| async move {
             let response = client.mcp_status().await?;
@@ -382,13 +497,18 @@ impl AgentBridge for ForgeSdkBridge {
         })
     }
 
-    fn respond_to_elicitation(
+    pub(crate) fn respond_to_elicitation(
         &self,
-        _session_id: String,
+        session_id: String,
         elicitation_request_id: String,
         action: ElicitationAction,
         content: Option<Value>,
     ) -> anyhow::Result<()> {
+        // No `check_session_id` — same shape as `prompt_with_images`:
+        // an elicitation has its own request_id seam, and a silent
+        // stale-session drop would leave the agent waiting forever
+        // for a response that no longer comes.
+        self.trace_session_id_bypass(&session_id, "respond_to_elicitation");
         let action_str = match action {
             ElicitationAction::Accept => "accept",
             ElicitationAction::Decline => "decline",
@@ -402,24 +522,27 @@ impl AgentBridge for ForgeSdkBridge {
         })
     }
 
-    fn reconnect_mcp_server(&self, session_id: String, server_name: String) -> anyhow::Result<()> {
+    pub(crate) fn reconnect_mcp_server(
+        &self,
+        session_id: String,
+        server_name: String,
+    ) -> anyhow::Result<()> {
         let event_tx = self.inner.event_tx.clone();
         self.dispatch("reconnect_mcp_server", move |client| async move {
             if let Err(e) = client.mcp_reconnect(&server_name).await {
-                let _ = event_tx.send(AgentEvent::McpOperationError {
+                Self::emit_mcp_error_or_log(
+                    &event_tx,
                     session_id,
-                    error: forge_primitives::McpOperationError {
-                        operation: "reconnect".to_owned(),
-                        server_name: Some(server_name),
-                        message: format!("{e}"),
-                    },
-                });
+                    "reconnect",
+                    Some(server_name),
+                    format!("{e}"),
+                );
             }
             Ok(())
         })
     }
 
-    fn toggle_mcp_server(
+    pub(crate) fn toggle_mcp_server(
         &self,
         session_id: String,
         server_name: String,
@@ -428,20 +551,19 @@ impl AgentBridge for ForgeSdkBridge {
         let event_tx = self.inner.event_tx.clone();
         self.dispatch("toggle_mcp_server", move |client| async move {
             if let Err(e) = client.mcp_toggle(&server_name, enabled).await {
-                let _ = event_tx.send(AgentEvent::McpOperationError {
+                Self::emit_mcp_error_or_log(
+                    &event_tx,
                     session_id,
-                    error: forge_primitives::McpOperationError {
-                        operation: "toggle".to_owned(),
-                        server_name: Some(server_name),
-                        message: format!("{e}"),
-                    },
-                });
+                    "toggle",
+                    Some(server_name),
+                    format!("{e}"),
+                );
             }
             Ok(())
         })
     }
 
-    fn set_mcp_servers(
+    pub(crate) fn set_mcp_servers(
         &self,
         session_id: String,
         servers: std::collections::BTreeMap<String, McpServerConfig>,
@@ -450,20 +572,19 @@ impl AgentBridge for ForgeSdkBridge {
         let payload = serde_json::to_value(servers)?;
         self.dispatch("set_mcp_servers", move |client| async move {
             if let Err(e) = client.mcp_set_servers(payload).await {
-                let _ = event_tx.send(AgentEvent::McpOperationError {
+                Self::emit_mcp_error_or_log(
+                    &event_tx,
                     session_id,
-                    error: forge_primitives::McpOperationError {
-                        operation: "set_servers".to_owned(),
-                        server_name: None,
-                        message: format!("{e}"),
-                    },
-                });
+                    "set_servers",
+                    None,
+                    format!("{e}"),
+                );
             }
             Ok(())
         })
     }
 
-    fn authenticate_mcp_server(
+    pub(crate) fn authenticate_mcp_server(
         &self,
         session_id: String,
         server_name: String,
@@ -487,41 +608,54 @@ impl AgentBridge for ForgeSdkBridge {
                                 requires_user_action: true,
                             },
                         });
+                    } else {
+                        // Without a redirect URL the TUI's authenticating
+                        // overlay would hang forever — surface as an
+                        // operation error so the user sees the failure.
+                        Self::emit_mcp_error_or_log(
+                            &event_tx,
+                            session_id,
+                            "authenticate",
+                            Some(server_name),
+                            "MCP authentication response had no redirect URL".to_owned(),
+                        );
                     }
                 }
                 Err(e) => {
-                    let _ = event_tx.send(AgentEvent::McpOperationError {
+                    Self::emit_mcp_error_or_log(
+                        &event_tx,
                         session_id,
-                        error: forge_primitives::McpOperationError {
-                            operation: "authenticate".to_owned(),
-                            server_name: Some(server_name),
-                            message: format!("{e}"),
-                        },
-                    });
+                        "authenticate",
+                        Some(server_name),
+                        format!("{e}"),
+                    );
                 }
             }
             Ok(())
         })
     }
 
-    fn clear_mcp_auth(&self, session_id: String, server_name: String) -> anyhow::Result<()> {
+    pub(crate) fn clear_mcp_auth(
+        &self,
+        session_id: String,
+        server_name: String,
+    ) -> anyhow::Result<()> {
         let event_tx = self.inner.event_tx.clone();
         self.dispatch("clear_mcp_auth", move |client| async move {
             if let Err(e) = client.mcp_clear_auth(&server_name).await {
-                let _ = event_tx.send(AgentEvent::McpOperationError {
+                Self::emit_mcp_error_or_log(
+                    &event_tx,
                     session_id,
-                    error: forge_primitives::McpOperationError {
-                        operation: "clear_auth".to_owned(),
-                        server_name: Some(server_name),
-                        message: format!("{e}"),
-                    },
-                });
+                    "clear_auth",
+                    Some(server_name),
+                    format!("{e}"),
+                );
             }
             Ok(())
         })
     }
 
-    fn submit_mcp_oauth_callback_url(
+    pub(crate) fn submit_mcp_oauth_callback_url(
         &self,
         session_id: String,
         server_name: String,
@@ -533,20 +667,19 @@ impl AgentBridge for ForgeSdkBridge {
                 .mcp_oauth_callback_url(&server_name, &callback_url)
                 .await
             {
-                let _ = event_tx.send(AgentEvent::McpOperationError {
+                Self::emit_mcp_error_or_log(
+                    &event_tx,
                     session_id,
-                    error: forge_primitives::McpOperationError {
-                        operation: "oauth_callback".to_owned(),
-                        server_name: Some(server_name),
-                        message: format!("{e}"),
-                    },
-                });
+                    "oauth_callback",
+                    Some(server_name),
+                    format!("{e}"),
+                );
             }
             Ok(())
         })
     }
 
-    fn new_session(
+    pub(crate) fn new_session(
         &self,
         cwd: String,
         launch_settings: SessionLaunchSettings,
@@ -556,15 +689,26 @@ impl AgentBridge for ForgeSdkBridge {
             if let Err(err) =
                 forge_sdk_worker::spawn_session(&bridge, &cwd, None, &launch_settings).await
             {
-                let _ = bridge.event_tx().send(AgentEvent::ConnectionFailed {
-                    message: format!("forge-sdk session spawn failed: {err}"),
-                });
+                let msg = format!("forge-sdk session spawn failed: {err}");
+                if bridge
+                    .event_tx()
+                    .send(AgentEvent::ConnectionFailed {
+                        message: msg.clone(),
+                    })
+                    .is_err()
+                {
+                    tracing::warn!(
+                        target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                        error = %msg,
+                        "event channel closed; ConnectionFailed dropped",
+                    );
+                }
             }
         });
         Ok(())
     }
 
-    fn resume_session(
+    pub(crate) fn resume_session(
         &self,
         session_id: String,
         launch_settings: SessionLaunchSettings,
@@ -575,15 +719,33 @@ impl AgentBridge for ForgeSdkBridge {
                 forge_sdk_worker::spawn_session(&bridge, "", Some(&session_id), &launch_settings)
                     .await
             {
-                let _ = bridge.event_tx().send(AgentEvent::ConnectionFailed {
-                    message: format!("forge-sdk session resume failed: {err}"),
-                });
+                let msg = format!("forge-sdk session resume failed: {err}");
+                if bridge
+                    .event_tx()
+                    .send(AgentEvent::ConnectionFailed {
+                        message: msg.clone(),
+                    })
+                    .is_err()
+                {
+                    tracing::warn!(
+                        target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                        error = %msg,
+                        "event channel closed; ConnectionFailed dropped",
+                    );
+                }
             }
         });
         Ok(())
     }
 
-    fn permission_response(
+    // The two response handlers below are intentionally exempt from
+    // `check_session_id` — staleness is detected via the pending map
+    // (an unknown `tool_call_id` already logs warn in
+    // `deliver_*_response`). A late response arriving after a session
+    // swap should still be honoured if its tool_call_id is in the
+    // shared pending map.
+
+    pub(crate) fn permission_response(
         &self,
         _session_id: String,
         tool_call_id: String,
@@ -593,7 +755,7 @@ impl AgentBridge for ForgeSdkBridge {
         Ok(())
     }
 
-    fn question_response(
+    pub(crate) fn question_response(
         &self,
         _session_id: String,
         tool_call_id: String,
@@ -607,35 +769,44 @@ impl AgentBridge for ForgeSdkBridge {
         Ok(())
     }
 
-    fn start_git_context_watch(&self, session_id: String, cwd: PathBuf) -> anyhow::Result<()> {
+    pub(crate) fn start_git_context_watch(
+        &self,
+        session_id: String,
+        cwd: PathBuf,
+    ) -> anyhow::Result<()> {
         self.install_git_watcher(session_id, &cwd);
         Ok(())
     }
 
-    fn stop_git_context_watch(&self, session_id: String) -> anyhow::Result<()> {
+    pub(crate) fn stop_git_context_watch(&self, session_id: String) -> anyhow::Result<()> {
         self.stop_git_watcher(&session_id);
         Ok(())
     }
 
     // ---- Direct-return accessors (delegate to forge_sdk::*) ----
 
-    fn config_dir(&self) -> PathBuf {
+    pub(crate) fn config_dir(&self) -> PathBuf {
         forge_sdk::claude_config_dir()
     }
 
-    fn project_memory_path(&self, cwd: &Path) -> PathBuf {
+    pub(crate) fn project_memory_path(&self, cwd: &Path) -> PathBuf {
         crate::userdata::memory::project_memory_path(cwd)
     }
 
-    fn oauth_credentials(&self) -> Option<crate::cloud::oauth_credentials::OauthCredentials> {
+    pub(crate) fn oauth_credentials(
+        &self,
+    ) -> Option<crate::cloud::oauth_credentials::OauthCredentials> {
         crate::cloud::oauth_credentials::load_oauth_credentials()
     }
 
-    fn settings_documents(&self, cwd: &Path) -> crate::userdata::settings::SettingsDocuments {
+    pub(crate) fn settings_documents(
+        &self,
+        cwd: &Path,
+    ) -> crate::userdata::settings::SettingsDocuments {
         crate::userdata::settings::settings_documents(cwd)
     }
 
-    fn write_settings_document(
+    pub(crate) fn write_settings_document(
         &self,
         target: &crate::userdata::settings::SettingsTarget,
         document: &Value,
@@ -643,7 +814,7 @@ impl AgentBridge for ForgeSdkBridge {
         crate::userdata::settings::write_settings_document(target, document)
     }
 
-    async fn oauth_usage(
+    pub(crate) async fn oauth_usage(
         &self,
     ) -> Result<crate::cloud::oauth_usage::OauthUsage, crate::cloud::oauth_usage::OauthUsageError>
     {

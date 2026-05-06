@@ -109,7 +109,7 @@ fn ring_bell() {
 ///
 /// Runs on `std::thread::spawn` rather than tokio because `notify-rust`'s
 /// `show()` may block on a D-Bus round-trip (Linux) or COM call (Windows).
-/// Errors are silently discarded -- the bell is the reliable fallback.
+/// Failures are logged at debug; the terminal bell is the reliable fallback.
 fn send_desktop_notification(event: NotifyEvent) {
     let (summary, body) = match event {
         NotifyEvent::PermissionRequired => {
@@ -121,7 +121,14 @@ fn send_desktop_notification(event: NotifyEvent) {
         NotifyEvent::TurnComplete => ("Claude Code", "Turn complete"),
     };
     std::thread::spawn(move || {
-        let _ = notify_rust::Notification::new().summary(summary).body(body).show();
+        if let Err(e) = notify_rust::Notification::new().summary(summary).body(body).show() {
+            tracing::debug!(
+                target: crate::logging::targets::APP_LIFECYCLE,
+                error = %e,
+                summary,
+                "desktop notification failed (D-Bus / Notification Center / config?)",
+            );
+        }
     });
 }
 

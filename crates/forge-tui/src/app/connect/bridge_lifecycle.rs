@@ -1,11 +1,7 @@
 //! Connection task: spin up a [`ForgeSdkBridge`], wire its event
 //! receiver into the App's [`ClientEvent`] channel, and own the
-//! permission/question response forwarders.
-//!
-//! Pre-collapse this lived split across `bridge_lifecycle.rs` (worker
-//! setup) and `event_dispatch.rs` (`AgentEvent` → `ClientEvent`
-//! translator). Post-collapse the bridge owns the worker concerns,
-//! and the translation lives here as private helpers.
+//! permission/question response forwarders. The `AgentEvent` →
+//! `ClientEvent` translation lives here as private helpers.
 
 use crate::agent::client::AgentEvent;
 use crate::agent::events::ClientEvent;
@@ -126,14 +122,12 @@ fn handle_agent_event(
             handle_connected_event(
                 event_tx,
                 connected_once,
-                ConnectedEventData {
-                    session_id,
-                    cwd,
-                    current_model,
-                    available_models,
-                    mode,
-                    history_updates,
-                },
+                session_id,
+                cwd,
+                current_model,
+                available_models,
+                mode,
+                history_updates,
             );
         }
         AgentEvent::AuthRequired { method_name, method_description } => {
@@ -232,43 +226,36 @@ fn handle_agent_event(
     }
 }
 
-struct ConnectedEventData {
+#[allow(clippy::too_many_arguments)]
+fn handle_connected_event(
+    event_tx: &mpsc::UnboundedSender<ClientEvent>,
+    connected_once: &mut bool,
     session_id: String,
     cwd: String,
     current_model: types::CurrentModel,
     available_models: Vec<types::AvailableModel>,
     mode: Option<types::ModeState>,
     history_updates: Option<Vec<types::SessionUpdate>>,
-}
-
-fn handle_connected_event(
-    event_tx: &mpsc::UnboundedSender<ClientEvent>,
-    connected_once: &mut bool,
-    event: ConnectedEventData,
 ) {
-    let mode = event.mode.map(convert_mode_state);
-    let history_updates = event
-        .history_updates
-        .unwrap_or_default()
-        .into_iter()
-        .filter_map(map_session_update)
-        .collect();
+    let mode = mode.map(convert_mode_state);
+    let history_updates =
+        history_updates.unwrap_or_default().into_iter().filter_map(map_session_update).collect();
     if *connected_once {
         let _ = event_tx.send(ClientEvent::SessionReplaced {
-            session_id: model::SessionId::new(event.session_id),
-            cwd: event.cwd,
-            current_model: convert_current_model(event.current_model),
-            available_models: map_available_models(event.available_models),
+            session_id: model::SessionId::new(session_id),
+            cwd,
+            current_model: convert_current_model(current_model),
+            available_models: map_available_models(available_models),
             mode,
             history_updates,
         });
     } else {
         *connected_once = true;
         let _ = event_tx.send(ClientEvent::Connected {
-            session_id: model::SessionId::new(event.session_id),
-            cwd: event.cwd,
-            current_model: convert_current_model(event.current_model),
-            available_models: map_available_models(event.available_models),
+            session_id: model::SessionId::new(session_id),
+            cwd,
+            current_model: convert_current_model(current_model),
+            available_models: map_available_models(available_models),
             mode,
             history_updates,
         });

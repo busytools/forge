@@ -44,8 +44,9 @@ pub fn load(
 ) -> Result<LoadedSettingsDocuments, String> {
     let paths = resolve_paths(home_override, project_root_override, bridge)?;
 
-    // Production path delegates to the AgentBridge so the same
-    // `$CLAUDE_CONFIG_DIR`-respecting reader is used everywhere. Test
+    // Production path delegates to the AgentHandle (forge-agent
+    // bridge) so the same `$CLAUDE_CONFIG_DIR`-respecting reader is
+    // used everywhere. Test
     // fixtures pass home_override / project_root_override (and `None`
     // for `bridge`) and bypass the bridge — env vars are
     // process-global and would race across parallel test runs.
@@ -359,11 +360,10 @@ fn resolve_paths(
     };
 
     // User settings live under <config_dir>, which honours
-    // $CLAUDE_CONFIG_DIR — delegate to AgentBridge so the env var is
-    // resolved in exactly one place (and a remote-daemon bridge can
-    // surface its own `<config_dir>`). The home_override case (used
-    // by tests) and the no-bridge case (early init / disconnected)
-    // both bypass the bridge.
+    // $CLAUDE_CONFIG_DIR — delegate to the AgentHandle so the env
+    // var is resolved in exactly one place. The home_override case
+    // (used by tests) and the no-bridge case (early init /
+    // disconnected) both bypass the bridge.
     let settings = match (home_override, bridge) {
         (None, Some(bridge)) => bridge.config_dir().join(SETTINGS_FILENAME),
         (Some(_), _) | (None, None) => home.join(CLAUDE_DIR).join(SETTINGS_FILENAME),

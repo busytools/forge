@@ -5,10 +5,9 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::messages::RateLimitStatus;
 use crate::runtime::{
-    ApiRetryError, AvailableAgent, AvailableCommand, CompactionTrigger, CurrentModel,
-    FastModeState, ModeState, RuntimeSessionState, SessionStatus,
+    AvailableAgent, AvailableCommand, CompactionTrigger, CurrentModel, FastModeState, ModeState,
+    RuntimeSessionState, SessionStatus,
 };
 
 /// Render-side chunk payload for streaming session updates
@@ -166,35 +165,15 @@ pub enum SessionUpdate {
     FastModeUpdate {
         fast_mode_state: FastModeState,
     },
-    RateLimitUpdate {
-        status: RateLimitStatus,
-        resets_at: Option<f64>,
-        utilization: Option<f64>,
-        rate_limit_type: Option<String>,
-        overage_status: Option<RateLimitStatus>,
-        overage_resets_at: Option<f64>,
-        overage_disabled_reason: Option<String>,
-        is_using_overage: Option<bool>,
-        surpassed_threshold: Option<f64>,
-    },
-    ApiRetryUpdate {
-        attempt: u64,
-        max_retries: u64,
-        retry_delay_ms: u64,
-        error_status: Option<u16>,
-        error: ApiRetryError,
-    },
+    RateLimitUpdate(crate::runtime::RateLimitUpdate),
+    ApiRetryUpdate(crate::runtime::ApiRetryUpdate),
     PromptSuggestionUpdate {
         suggestion: String,
     },
     RuntimeSessionStateUpdate {
         state: RuntimeSessionState,
     },
-    SettingsParseError {
-        file: Option<String>,
-        path: String,
-        message: String,
-    },
+    SettingsParseError(crate::runtime::SettingsParseErrorUpdate),
     SessionStatusUpdate {
         status: SessionStatus,
     },
@@ -207,7 +186,8 @@ pub enum SessionUpdate {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
-    use super::{ApiRetryError, SessionUpdate};
+    use super::SessionUpdate;
+    use crate::{ApiRetryError, ApiRetryUpdate};
 
     #[test]
     fn api_retry_update_deserializes_unknown_error_defensively() {
@@ -223,10 +203,10 @@ mod tests {
 
         assert!(matches!(
             update,
-            SessionUpdate::ApiRetryUpdate {
+            SessionUpdate::ApiRetryUpdate(ApiRetryUpdate {
                 error: ApiRetryError::Unknown,
                 ..
-            }
+            })
         ));
     }
 }

@@ -6,16 +6,6 @@ pub enum TurnErrorClass {
     Other,
 }
 
-pub fn parse_turn_error_class(tag: &str) -> Option<TurnErrorClass> {
-    match tag {
-        "plan_limit" => Some(TurnErrorClass::PlanLimit),
-        "auth_required" => Some(TurnErrorClass::AuthRequired),
-        "internal" => Some(TurnErrorClass::Internal),
-        "other" => Some(TurnErrorClass::Other),
-        _ => None,
-    }
-}
-
 pub fn classify_turn_error(input: &str) -> TurnErrorClass {
     let lower = input.to_ascii_lowercase();
     if looks_like_plan_limit_error_lower(&lower) {
@@ -69,18 +59,25 @@ fn looks_like_plan_limit_error_lower(lower: &str) -> bool {
     .any(|needle| lower.contains(needle))
 }
 
-fn looks_like_auth_required_error_lower(lower: &str) -> bool {
-    [
+pub fn looks_like_auth_required_error_lower(lower: &str) -> bool {
+    let any = [
         "/login",
         "auth required",
         "authentication failed",
+        "authentication_failed",
+        "authentication required",
         "please log in",
         "login required",
         "not authenticated",
+        "unauthenticated",
         "unauthorized",
     ]
     .iter()
-    .any(|needle| lower.contains(needle))
+    .any(|needle| lower.contains(needle));
+    // The 401+auth conjunction catches HTTP-shape errors that don't
+    // include any of the literal substrings above (e.g. "request
+    // returned 401 from auth gateway").
+    any || (lower.contains("401") && lower.contains("auth"))
 }
 
 fn looks_like_internal_error_lower(lower: &str) -> bool {
@@ -147,7 +144,7 @@ fn summarize_permission_schema_error(input: &str) -> Option<String> {
     Some(format!("Tool permission request failed: {detail}"))
 }
 
-fn truncate_for_log(input: &str) -> String {
+pub fn truncate_for_log(input: &str) -> String {
     const LIMIT: usize = 240;
     let mut out = String::new();
     for (i, ch) in input.chars().enumerate() {
@@ -160,7 +157,7 @@ fn truncate_for_log(input: &str) -> String {
     out.replace('\n', "\\n")
 }
 
-fn extract_xml_tag_value<'a>(input: &'a str, tag: &str) -> Option<&'a str> {
+pub fn extract_xml_tag_value<'a>(input: &'a str, tag: &str) -> Option<&'a str> {
     let lower = input.to_ascii_lowercase();
     let open = format!("<{tag}>");
     let close = format!("</{tag}>");
@@ -209,8 +206,7 @@ fn extract_json_string_field(input: &str, field: &str) -> Option<String> {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::{
-        TurnErrorClass, classify_turn_error, looks_like_internal_error, parse_turn_error_class,
-        summarize_internal_error,
+        TurnErrorClass, classify_turn_error, looks_like_internal_error, summarize_internal_error,
     };
 
     #[test]
@@ -233,6 +229,40 @@ mod tests {
         );
     }
 
+    /// Locks in the full needle list. A future dedup pass that
+    /// drops any of these substrings would silently regress
+    /// auth-required classification — assert the matrix end-to-end.
+    #[test]
+    fn auth_required_covers_all_consolidated_needles() {
+        for s in [
+            // Underscore form (typical CLI emit).
+            "authentication_failed: token expired",
+            // Space form of the same needle.
+            "authentication failed mid-request",
+            // Bare "unauthenticated" form.
+            "the request is unauthenticated",
+            // Substring "authentication required".
+            "tool authentication required to continue",
+            // Bare "auth required" form (shorter than "authentication required").
+            "auth required for this endpoint",
+            // "not authenticated" sentence form.
+            "client is not authenticated yet",
+            // Conjunctive 401 + auth check (HTTP-shape error).
+            "got 401 from /auth endpoint",
+            // Pre-existing needles (regression-protection).
+            "/login to continue",
+            "please log in",
+            "login required",
+            "unauthorized",
+        ] {
+            assert_eq!(
+                classify_turn_error(s),
+                TurnErrorClass::AuthRequired,
+                "expected AuthRequired for {s:?}"
+            );
+        }
+    }
+
     #[test]
     fn classifies_internal_errors() {
         assert_eq!(
@@ -252,24 +282,6 @@ mod tests {
             classify_turn_error("turn failed: timeout"),
             TurnErrorClass::Other
         );
-    }
-
-    #[test]
-    fn parses_bridge_turn_error_kind_tags() {
-        assert_eq!(
-            parse_turn_error_class("plan_limit"),
-            Some(TurnErrorClass::PlanLimit)
-        );
-        assert_eq!(
-            parse_turn_error_class("auth_required"),
-            Some(TurnErrorClass::AuthRequired)
-        );
-        assert_eq!(
-            parse_turn_error_class("internal"),
-            Some(TurnErrorClass::Internal)
-        );
-        assert_eq!(parse_turn_error_class("other"), Some(TurnErrorClass::Other));
-        assert_eq!(parse_turn_error_class("unexpected"), None);
     }
 
     #[test]

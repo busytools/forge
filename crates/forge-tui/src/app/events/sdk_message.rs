@@ -1,42 +1,18 @@
 //! Direct `forge_primitives::Message` consumer for the App.
 //!
-//! Phase 1.2 of the bridge-collapse refactor. Today the
-//! `agent::message_handlers` module owns SDK-message
-//! unpacking — it walks `Message::Assistant.content`, pairs
-//! `tool_use` ↔ `tool_result` across messages, and emits
-//! `SessionUpdate` events the App consumes through `events::client`.
+//! [`handle_sdk_message`] is the App-side dispatcher that receives
+//! raw `forge_primitives::Message` envelopes from the bridge worker
+//! and routes them to per-variant handlers below. Each handler walks
+//! the typed message + a JSON copy (for fields not exposed as typed
+//! accessors) and mutates App state directly.
 //!
-//! This module introduces the App-side replacement: a top-level
-//! [`handle_sdk_message`] dispatcher that the bridge worker (after
-//! Phase 1.3) feeds raw `forge_primitives::Message` envelopes to. Per-variant
-//! handlers below are no-op stubs in Phase 1; Phase 2 progressively
-//! moves the unpacking + state-mutation logic out of the bridge into
-//! these stubs, one variant per commit, until the bridge module is
-//! dead code (Phase 3).
+//! # Clippy allows
 //!
-//! See `~/.claude-nf/plans/pick-up-where-we-quirky-grove.md` for the
-//! per-variant cutover order.
-//!
-//! # Temporary clippy allows
-//!
-//! - `needless_pass_by_value`: every per-variant handler takes
-//!   `msg: Message` by value but doesn't consume it during Phase 1.
-//!   Phase 2 destructures it for state mutation; the warning
-//!   resolves naturally as each handler is filled in.
-//! - `missing_panics_doc` / `missing_errors_doc`: handlers don't
-//!   panic and aren't `Result`-returning, but doc-only lints inside
-//!   `forge-tui`'s pedantic config flag the doc comments.
+//! - `needless_pass_by_value`: handlers take `msg: Message` by value
+//!   so they can destructure ownership-tracked fields without copying.
+//! - `doc_markdown`: keeps prose like `forge_primitives::Message` in
+//!   doc comments without backticks tripping the lint.
 #![allow(clippy::needless_pass_by_value, clippy::doc_markdown)]
-//!
-//! # Why a parallel path during Phase 1?
-//!
-//! Phase 1 is compile-safe and behaviour-neutral: the bridge keeps
-//! emitting `SessionUpdate`s as before, App keeps consuming them,
-//! and `AgentEvent::SdkMessage` events flow alongside as a no-op
-//! double-feed. Phase 2 cutovers each variant atomically: the
-//! bridge stops emitting the SessionUpdate variant, this module's
-//! handler starts mutating App state. No double-write window per
-//! variant.
 
 use forge_primitives::Message;
 use serde_json::Value;
@@ -50,17 +26,26 @@ use crate::app::App;
 /// Top-level entry point. Called from `events::client` after the
 /// session-id check on `ClientEvent::SdkMessageReceived`. Dispatches
 /// to per-variant handlers below.
-///
-/// During Phase 1 every handler is a no-op — the bridge module's
-/// existing `handle_sdk_message` (in `agent::message_handlers`)
-/// continues to do the real work. Phase 2 fills these in per variant.
 pub(super) fn handle_sdk_message(app: &mut App, msg: Message) {
-    // Mirrors the bridge's pattern: serialise the typed Message back
-    // to JSON so per-variant handlers can read fields like
-    // `fast_mode_state`, `terminal_reason`, `error` — which are not
-    // first-class typed accessors on `forge_primitives::Message` but DO
-    // appear in the wire JSON.
-    let raw = serde_json::to_value(&msg).unwrap_or(Value::Null);
+    // Serialise the typed Message back to JSON so per-variant
+    // handlers can read fields like `fast_mode_state`,
+    // `terminal_reason`, `error` — which are not first-class typed
+    // accessors on `forge_primitives::Message` but DO appear in the
+    // wire JSON. On serialise failure (rare; would indicate envelope
+    // corruption) every per-variant handler that consults `raw`
+    // silently sees "missing fields" — log so the failure is
+    // observable.
+    let raw = match serde_json::to_value(&msg) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::error!(
+                target: crate::logging::targets::APP_SESSION,
+                error = %e,
+                "could not serialise SDK message to JSON for raw-field read; downstream parsing will use Null",
+            );
+            Value::Null
+        }
+    };
     match msg {
         Message::Assistant { .. } => handle_assistant(app, msg, &raw),
         Message::User { .. } => handle_user(app, msg, &raw),
@@ -70,20 +55,20 @@ pub(super) fn handle_sdk_message(app: &mut App, msg: Message) {
         Message::TaskNotification { .. } => handle_task_notification(app, msg, &raw),
         Message::RateLimitEvent { .. } => handle_rate_limit_event(app, msg, &raw),
         Message::Result { .. } => handle_result(app, msg, &raw),
-        Message::StreamEvent { .. } => handle_stream_event(app, msg, &raw),
-        // forge_primitives::Message is `#[non_exhaustive]` — Error / Unknown
-        // and any future variants fall through here.
-        _ => handle_unknown(app, msg, &raw),
+        // `Message::StreamEvent` and `_` (Error / Unknown / future
+        // variants on the `#[non_exhaustive]` enum) — no-op today.
+        // Re-add a handler if a downstream consumer needs to react
+        // to partial-message frames.
+        Message::StreamEvent { .. } | _ => {}
     }
 }
 
 /// Apply the optional `fast_mode_state` field from a wire JSON
 /// envelope. Idempotent — same state in re-applies as a no-op.
 ///
-/// Converts the wire-side `types::FastModeState` (returned by the
-/// parser) to the App-side `model::FastModeState`. Both enums share
-/// the same variant set; the conversion is a 1:1 match. Phase 3 may
-/// consolidate to a single FastModeState type.
+/// Converts the wire-side `forge_primitives::FastModeState` to the
+/// App-side `model::FastModeState`. Both enums share the same
+/// variant set; the conversion is a 1:1 match.
 fn apply_fast_mode_update(app: &mut App, raw: &Value) {
     use crate::agent::model::FastModeState as Model;
     use forge_primitives::FastModeState as Wire;
@@ -101,16 +86,16 @@ fn apply_fast_mode_update(app: &mut App, raw: &Value) {
     app.fast_mode_state = model_state;
 }
 
-// Per-variant handlers — Phase 1 stubs. Each takes ownership of the
-// full `Message` so Phase 2 can destructure freely without revisiting
-// the dispatcher. The `_ = app; _ = msg;` lines suppress unused-arg
-// warnings until Phase 2.
+// Per-variant handlers. Each takes ownership of the full `Message`
+// so it can destructure ownership-tracked fields freely, plus a
+// shared JSON view of the same envelope for fields not exposed as
+// typed accessors.
 
 fn handle_assistant(app: &mut App, msg: Message, raw: &Value) {
     apply_fast_mode_update(app, raw);
-    // Mirror the bridge's `handle_assistant_message` outer-envelope
-    // error capture — `app.turn_state.last_assistant_error` is consulted
-    // by `apply_result_finalize` to classify TurnError variants.
+    // Outer-envelope error capture — `app.turn_state.last_assistant_error`
+    // is consulted by `apply_result_finalize` to classify TurnError
+    // variants.
     if let Message::Assistant { error: Some(err), .. } = &msg {
         let err_str = serde_json::to_value(err).ok().and_then(|v| v.as_str().map(str::to_owned));
         if let Some(s) = err_str
@@ -124,10 +109,8 @@ fn handle_assistant(app: &mut App, msg: Message, raw: &Value) {
 
 /// Walk the raw `Message::Assistant` JSON envelope, applying text,
 /// thinking, and TodoWrite-Plan content blocks to App state directly.
-/// Mirrors the corresponding branches of the bridge's
-/// `handle_content_block`. The remaining tool_use (non-TodoWrite) and
-/// tool_result branches still flow through the bridge until the
-/// tool_call lifecycle cut lands.
+/// Tool_use (non-TodoWrite) and tool_result content blocks are
+/// handled separately on the tool_call lifecycle path.
 fn walk_assistant_content(app: &mut App, raw: &Value) {
     use crate::agent::model;
 
@@ -179,7 +162,7 @@ fn walk_assistant_content(app: &mut App, raw: &Value) {
                 apply_plan_if_todo_write(app, name, input);
                 apply_tool_use_block(app, tool_use_id, name, input, parent_id.as_deref());
             }
-            t if is_bridge_tool_result_block_type(t) => {
+            t if crate::agent::tooling::is_tool_result_block_type(t) => {
                 let Some(tool_use_id) = record.get("tool_use_id").and_then(Value::as_str) else {
                     continue;
                 };
@@ -195,9 +178,8 @@ fn walk_assistant_content(app: &mut App, raw: &Value) {
     }
 }
 
-/// Mirrors the bridge's `emit_plan_if_todo_write` against App state.
-/// When the assistant invokes the TodoWrite tool with a `todos` array,
-/// applies the plan via the existing `apply_plan_todos` handler.
+/// When the assistant invokes the TodoWrite tool with a `todos`
+/// array, apply the plan via the existing `apply_plan_todos` handler.
 fn apply_plan_if_todo_write(app: &mut App, name: &str, input: &Value) {
     use crate::agent::model;
     use crate::app::connect::type_converters::convert_plan_entry;
@@ -234,8 +216,8 @@ fn apply_plan_if_todo_write(app: &mut App, name: &str, input: &Value) {
 fn handle_user(app: &mut App, msg: Message, raw: &Value) {
     walk_user_tool_results(app, raw);
     // Sub-agent tool_use_result envelopes carry parent_tool_use_id at
-    // the message level; mirror what the bridge's User branch does in
-    // handle_sdk_message.
+    // the message level — wire the implicit parent linkage so the
+    // tool_call lifecycle picks up sub-agent results correctly.
     if let Message::User { tool_use_result: Some(result), parent_tool_use_id, .. } = &msg
         && let Some(tool_use_id) = parent_tool_use_id.as_deref()
         && !tool_use_id.is_empty()
@@ -252,8 +234,7 @@ fn handle_user(app: &mut App, msg: Message, raw: &Value) {
 }
 
 /// Walk a `Message::User` envelope's content array and apply
-/// tool_result blocks via `apply_tool_result_block`. Mirrors the
-/// bridge's `handle_user_tool_result_blocks`.
+/// tool_result blocks via `apply_tool_result_block`.
 fn walk_user_tool_results(app: &mut App, raw: &Value) {
     let Some(content) = raw.get("message").and_then(|m| m.get("content")).and_then(Value::as_array)
     else {
@@ -262,7 +243,7 @@ fn walk_user_tool_results(app: &mut App, raw: &Value) {
     for block in content {
         let Some(record) = block.as_object() else { continue };
         let block_type = record.get("type").and_then(Value::as_str).unwrap_or("");
-        if !is_bridge_tool_result_block_type(block_type) {
+        if !crate::agent::tooling::is_tool_result_block_type(block_type) {
             continue;
         }
         let Some(tool_use_id) = record.get("tool_use_id").and_then(Value::as_str) else {
@@ -277,17 +258,9 @@ fn walk_user_tool_results(app: &mut App, raw: &Value) {
     }
 }
 
-/// Wrapper around `bridge::tooling::is_tool_result_block_type` —
-/// re-exported here so the App-side walker doesn't have to import
-/// from the bridge module directly.
-fn is_bridge_tool_result_block_type(block_type: &str) -> bool {
-    crate::agent::tooling::is_tool_result_block_type(block_type)
-}
-
 /// Read `parent_tool_use_id` from the outer envelope (Assistant or
-/// User Message). Mirrors how the bridge passes
-/// `parent_tool_use_id.as_deref()` into `handle_assistant_message`
-/// at the top level.
+/// User Message). Used to route subagent tool calls back to their
+/// parent in the tool-call lifecycle.
 fn parent_tool_use_id_from_envelope(raw: &Value) -> Option<String> {
     raw.get("parent_tool_use_id")
         .and_then(Value::as_str)
@@ -296,7 +269,7 @@ fn parent_tool_use_id_from_envelope(raw: &Value) -> Option<String> {
 }
 
 /// Reads `meta.claudeCode.parentToolUseId` from a tool_call's meta
-/// blob. Inlined from the deleted `bridge::tool_calls` module.
+/// blob.
 fn parent_tool_use_id_from_meta(meta: Option<&Value>) -> Option<String> {
     let claude_code = meta?.get("claudeCode")?.as_object()?;
     let id = claude_code.get("parentToolUseId")?.as_str()?;
@@ -304,8 +277,7 @@ fn parent_tool_use_id_from_meta(meta: Option<&Value>) -> Option<String> {
 }
 
 /// Applies a `ToolCallUpdateFields` patch onto an existing `ToolCall`
-/// in-place, preserving any unset fields. Inlined from the deleted
-/// `bridge::tool_calls` module.
+/// in-place, preserving any unset fields.
 fn apply_fields_to_base(
     base: &mut forge_primitives::ToolCall,
     fields: &forge_primitives::ToolCallUpdateFields,
@@ -368,10 +340,9 @@ fn apply_fields_to_base(
     }
 }
 
-/// Mirror of `bridge::tool_calls::emit_tool_call` against App state.
-/// Inserts/updates `app.turn_state.tool_calls` and dispatches the
-/// resulting initial `ToolCall` or `ToolCallUpdate` via the existing
-/// App handlers.
+/// Insert or update an entry in `app.turn_state.tool_calls` for a
+/// `tool_use` content block, and dispatch the resulting initial
+/// `ToolCall` or `ToolCallUpdate` via the existing App handlers.
 fn apply_tool_use_block(
     app: &mut App,
     tool_use_id: &str,
@@ -412,10 +383,10 @@ fn apply_tool_use_block(
     apply_tool_call_update(app, tool_use_id, fields);
 }
 
-/// Mirror of `bridge::tool_calls::emit_tool_result_update` against App
-/// state. Looks up the tool_call in `app.turn_state.tool_calls`,
-/// builds result fields via the bridge's stateless field-builder, and
-/// dispatches a `ToolCallUpdate` via the existing App handler.
+/// Apply a tool_result content block to App state. Looks up the
+/// tool_call in `app.turn_state.tool_calls`, builds result fields
+/// via `agent::tooling::build_tool_result_fields`, and dispatches a
+/// `ToolCallUpdate` through the existing App handler.
 fn apply_tool_result_block(
     app: &mut App,
     tool_use_id: &str,
@@ -430,9 +401,9 @@ fn apply_tool_result_block(
     apply_tool_call_update(app, tool_use_id, fields);
 }
 
-/// Mirror of `bridge::tool_calls::emit_tool_call_update` against App
-/// state. Mutates `app.turn_state.tool_calls` then dispatches a
-/// `ToolCallUpdate` via the existing App handler.
+/// Mutate `app.turn_state.tool_calls` with the supplied update
+/// fields, then dispatch a `ToolCallUpdate` via the existing App
+/// handler.
 fn apply_tool_call_update(
     app: &mut App,
     tool_use_id: &str,
@@ -449,9 +420,9 @@ fn apply_tool_call_update(
     super::tool_updates::handle_tool_call_update_session(app, &model_update);
 }
 
-/// Mirror of `bridge::tool_calls::finalize_open_tool_calls` against
-/// App state. Walks `app.turn_state.tool_calls` and emits a terminal
-/// status update for every still-pending entry.
+/// Walk `app.turn_state.tool_calls` and emit a terminal status
+/// update for every still-pending entry. Called from
+/// `apply_result_finalize` when a turn ends.
 fn finalize_open_tool_calls(app: &mut App, status: &str) {
     use forge_primitives::ToolCallUpdateFields;
 
@@ -477,13 +448,12 @@ fn handle_system(app: &mut App, msg: Message, raw: &Value) {
         "status" => {
             apply_fast_mode_update(app, data);
             // permissionMode → CurrentModeUpdate + typed turn_state.mode
-            // mirror + supported_mode_ids recompute. The pre-collapse
-            // bridge's `handle_system_status` did all three; the
-            // App-side `apply_current_mode_update` only touches the
-            // display struct, so we still need to update
-            // `turn_state.mode` and refresh `supported_mode_ids`
-            // ourselves — otherwise the typed mode the `/mode` picker
-            // reads goes stale on server-side mode switches.
+            // mirror + supported_mode_ids recompute. The App-side
+            // `apply_current_mode_update` only touches the display
+            // struct, so we still need to update `turn_state.mode`
+            // and refresh `supported_mode_ids` ourselves — otherwise
+            // the typed mode the `/mode` picker reads goes stale on
+            // server-side mode switches.
             if let Some(mode_str) = data.get("permissionMode").and_then(Value::as_str) {
                 super::apply_current_mode_update(
                     app,
@@ -580,7 +550,6 @@ fn apply_compaction_boundary(app: &mut App, data: &Value) {
 }
 
 /// Build `AvailableCommandsUpdate` from System(init).slash_commands.
-/// Mirrors bridge::message_handlers handle_system_init slash_commands branch.
 fn apply_available_commands_from_init(app: &mut App, data: &Value) {
     let Some(record) = data.as_object() else { return };
     let Some(arr) = record.get("slash_commands").and_then(Value::as_array) else { return };
@@ -602,13 +571,12 @@ fn apply_available_commands_from_init(app: &mut App, data: &Value) {
 }
 
 /// Build `AvailableAgentsUpdate` from System(init).agents with
-/// last-signature change detection (so identical re-emits are
-/// no-ops). Mirrors bridge::agents::emit_available_agents_if_changed.
+/// last-signature change detection (so identical re-emits are no-ops).
 fn apply_available_agents_from_init(app: &mut App, data: &Value) {
     let Some(record) = data.as_object() else { return };
     if app.turn_state.last_agents_signature.is_some() {
-        // bridge mirrors `if session.last_agents_signature.is_none()` — only
-        // emit on first init.
+        // Only emit on first init — subsequent inits with the same
+        // agent set are silent no-ops.
         return;
     }
     let Some(agents_value) = record.get("agents") else { return };
@@ -620,10 +588,8 @@ fn apply_available_agents_from_init(app: &mut App, data: &Value) {
 }
 
 /// Resolve `current_model` from System(init) data and apply via the
-/// App-side `apply_current_model_update` helper if it differs from the
-/// existing `app.current_model`. Mirrors the bridge's
-/// `handle_system_init` block that pushed `CurrentModelUpdate` after
-/// `refresh_current_model` reported a change.
+/// App-side `apply_current_model_update` helper if it differs from
+/// the existing `app.current_model`.
 ///
 /// The CLI's `system/init` carries the resolved `model` id but
 /// NOT the `models` catalogue (that lives in the initialize
@@ -684,8 +650,7 @@ fn apply_current_model_from_init(app: &mut App, data: &Value) {
 }
 
 /// Resolve `mode_state` from System(init) data and apply via the
-/// existing App-side ModeStateUpdate dispatch arm. Mirrors the
-/// bridge's `handle_system_init` ModeStateUpdate emission.
+/// existing App-side ModeStateUpdate dispatch arm.
 ///
 /// Reads `permissionMode` from data, parses to a typed
 /// `PermissionMode`, mirrors into `app.turn_state.mode`, recomputes
@@ -725,7 +690,6 @@ fn apply_mode_state_from_init(app: &mut App, data: &Value) {
     super::apply_mode_state_update(app, model_mode_state);
 }
 
-/// Mirror the bridge's `handle_system_local_command_output` arm.
 /// When the SDK fires a System(local_command_output), forward the
 /// content as an `AgentMessageChunk` so it appears inline in the
 /// chat transcript.
@@ -744,10 +708,7 @@ fn apply_local_command_output(app: &mut App, data: &Value) {
 }
 
 /// Build an `ElicitationRequest` from System(elicitation_request)
-/// data and dispatch via the App's MCP overlay handler. Mirrors what
-/// `forge_sdk_translate::elicitation_request_to_event` previously did
-/// — but now applies the request directly without going through the
-/// `AgentEvent::ElicitationRequest` wire variant.
+/// data and dispatch via the App's MCP overlay handler.
 fn apply_elicitation_request(app: &mut App, data: &Value) {
     use forge_primitives::{ElicitationMode, ElicitationRequest};
     let Some(record) = data.as_object() else { return };
@@ -797,18 +758,18 @@ fn apply_settings_parse_errors(app: &mut App, data: &Value) {
     }
 }
 
-/// Apply an api_retry system message to the App. Wraps the bridge's
-/// existing `build_api_retry_update` parser and calls into the
-/// existing api_retry event handler.
+/// Apply an api_retry system message to the App. Parses via
+/// `build_api_retry_update` and calls into the existing api_retry
+/// event handler.
 fn apply_api_retry_update(app: &mut App, data: &Value) {
     let Some(record) = data.as_object() else { return };
-    let Some(forge_primitives::SessionUpdate::ApiRetryUpdate {
+    let Some(forge_primitives::SessionUpdate::ApiRetryUpdate(forge_primitives::ApiRetryUpdate {
         attempt,
         max_retries,
         retry_delay_ms,
         error_status,
         error,
-    }) = build_api_retry_update(record)
+    })) = build_api_retry_update(record)
     else {
         return;
     };
@@ -866,8 +827,9 @@ fn handle_task_notification(app: &mut App, msg: Message, raw: &Value) {
     }
 }
 
-/// Mirror of `bridge::tool_calls::emit_tool_progress_update` against
-/// App state.
+/// Apply a `TaskProgress` notification to App state — bumps the
+/// `tool_use_id`'s status to `in_progress` if it isn't already in a
+/// terminal/active state.
 fn apply_tool_progress_update(app: &mut App, tool_use_id: &str, name: &str) {
     use forge_primitives::ToolCallUpdateFields;
 
@@ -886,8 +848,9 @@ fn apply_tool_progress_update(app: &mut App, tool_use_id: &str, name: &str) {
     );
 }
 
-/// Mirror of `bridge::tool_calls::emit_tool_summary_update` against
-/// App state.
+/// Apply a `TaskNotification` summary to App state — finalises the
+/// matching `tool_use_id` with `completed` status (preserving any
+/// existing terminal `failed`/`killed` status) and updates content.
 fn apply_tool_summary_update(app: &mut App, tool_use_id: &str, summary: &str) {
     use forge_primitives::{ToolCallContent, ToolCallUpdateFields};
 
@@ -928,33 +891,13 @@ fn handle_rate_limit_event(app: &mut App, msg: Message, _raw: &Value) {
         session_id = app.session_id.as_ref().map(ToString::to_string).as_deref().unwrap_or(""),
         rate_limit_info = %value,
     );
-    let Some(forge_primitives::SessionUpdate::RateLimitUpdate {
-        status,
-        resets_at,
-        utilization,
-        rate_limit_type,
-        overage_status,
-        overage_resets_at,
-        overage_disabled_reason,
-        is_using_overage,
-        surpassed_threshold,
-    }) = build_rate_limit_update(Some(&value))
+    let Some(forge_primitives::SessionUpdate::RateLimitUpdate(wire)) =
+        build_rate_limit_update(Some(&value))
     else {
         return;
     };
     // Convert wire-side types::RateLimitUpdate → model::RateLimitUpdate
     // via the existing converter, then call the App-side handler.
-    let wire = forge_primitives::RateLimitUpdate {
-        status,
-        resets_at,
-        utilization,
-        rate_limit_type,
-        overage_status,
-        overage_resets_at,
-        overage_disabled_reason,
-        is_using_overage,
-        surpassed_threshold,
-    };
     let update = crate::app::connect::type_converters::map_rate_limit_update(wire);
     super::rate_limit::handle_rate_limit_update(app, &update);
 }
@@ -964,11 +907,10 @@ fn handle_result(app: &mut App, msg: Message, raw: &Value) {
     apply_result_finalize(app, &msg, raw);
 }
 
-/// Mirror of the bridge's `handle_result_message`. On a successful
-/// Result, finalises any still-open tool_calls (terminal "completed")
-/// and triggers the App's TurnComplete handler. On a failed Result,
-/// finalises with "failed", classifies the error_kind, and triggers
-/// the App's TurnError handler.
+/// On a successful Result, finalise any still-open tool_calls
+/// (terminal "completed") and trigger the App's TurnComplete handler.
+/// On a failed Result, finalise with "failed", classify the
+/// error_kind, and trigger the App's TurnError handler.
 fn apply_result_finalize(app: &mut App, msg: &Message, raw: &Value) {
     let Message::Result { is_error, subtype, .. } = msg else { return };
     let raw_record = raw.as_object();
@@ -1003,56 +945,38 @@ fn apply_result_finalize(app: &mut App, msg: &Message, raw: &Value) {
     } else {
         String::new()
     };
-    let error_kind = classify_turn_error_kind(subtype, &errors_array, assistant_error.as_deref());
-    let class = crate::agent::error_handling::parse_turn_error_class(error_kind);
-    super::turn::handle_turn_error_event(app, &message, class, terminal_reason);
+    let class = classify_turn_error_kind(subtype, &errors_array, assistant_error.as_deref());
+    super::turn::handle_turn_error_event(app, &message, Some(class), terminal_reason);
     app.turn_state.last_assistant_error = None;
 }
 
-/// Inline copy of bridge::message_handlers::classify_turn_error_kind
-/// so the App-side path doesn't depend on a bridge-private function.
+/// App-side classifier for `TurnError` payloads — picks one of the
+/// `TurnErrorClass` variants based on subtype + error strings, used to
+/// drive UI rendering for the failure case.
 fn classify_turn_error_kind(
     subtype: &str,
     errors: &[String],
     assistant_error: Option<&str>,
-) -> &'static str {
+) -> crate::agent::error_handling::TurnErrorClass {
+    use crate::agent::error_handling::TurnErrorClass;
     let plan_limit_signals =
         ["error_max_turns", "error_max_budget_usd", "billing_error", "rate_limit"];
     if plan_limit_signals.iter().any(|s| subtype.contains(s)) {
-        return "plan_limit";
+        return TurnErrorClass::PlanLimit;
     }
     if errors.iter().any(|e| plan_limit_signals.iter().any(|s| e.contains(s))) {
-        return "plan_limit";
+        return TurnErrorClass::PlanLimit;
     }
     if assistant_error == Some("authentication_failed") {
-        return "auth_required";
+        return TurnErrorClass::AuthRequired;
     }
-    if errors.iter().any(|e| looks_like_auth_required(e)) {
-        return "auth_required";
+    if errors.iter().any(|e| {
+        crate::agent::error_handling::looks_like_auth_required_error_lower(&e.to_ascii_lowercase())
+    }) {
+        return TurnErrorClass::AuthRequired;
     }
     if assistant_error == Some("server_error") {
-        return "internal";
+        return TurnErrorClass::Internal;
     }
-    "other"
-}
-
-fn looks_like_auth_required(text: &str) -> bool {
-    let lower = text.to_ascii_lowercase();
-    lower.contains("authentication_failed")
-        || lower.contains("not authenticated")
-        || lower.contains("authentication required")
-        || lower.contains("unauthenticated")
-        || (lower.contains("401") && lower.contains("auth"))
-}
-
-fn handle_stream_event(app: &mut App, msg: Message, raw: &Value) {
-    let _ = app;
-    let _ = msg;
-    let _ = raw;
-}
-
-fn handle_unknown(app: &mut App, msg: Message, raw: &Value) {
-    let _ = app;
-    let _ = msg;
-    let _ = raw;
+    TurnErrorClass::Other
 }

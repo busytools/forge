@@ -55,23 +55,72 @@ struct IncidentComponent {
 
 /// Fetch + classify the public statuspage summary. Returns `None` if
 /// every relevant component is operational, or if the request fails.
+///
+/// Each error branch logs so "couldn't reach statuspage" stops being
+/// indistinguishable from "everything is operational" in postmortems.
+/// Levels: routine network/HTTP failures (offline, captive portal,
+/// 5xx, transient 429) at `info` to keep noise down on the default
+/// filter; deserialise failures at `warn` since they signal a contract
+/// violation worth surfacing immediately. (Full Result restructuring
+/// would cascade through the UI's banner code; the structured logs
+/// give the same triage signal at lower cost.)
 pub async fn fetch_service_status() -> Option<ServiceIssue> {
-    let client = reqwest::Client::builder()
+    let client = match reqwest::Client::builder()
         .timeout(SERVICE_STATUS_TIMEOUT)
         .build()
-        .ok()?;
-    let response = client.get(STATUSPAGE_SUMMARY_URL).send().await.ok()?;
+    {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::info!(
+                target: crate::logging::targets::SERVICE_STATUS,
+                event_name = "service_check_failed",
+                message = "service status http client build failed",
+                outcome = "failure",
+                error = %e,
+                url = STATUSPAGE_SUMMARY_URL,
+            );
+            return None;
+        }
+    };
+    let response = match client.get(STATUSPAGE_SUMMARY_URL).send().await {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::info!(
+                target: crate::logging::targets::SERVICE_STATUS,
+                event_name = "service_check_failed",
+                message = "service status request failed",
+                outcome = "failure",
+                error = %e,
+                url = STATUSPAGE_SUMMARY_URL,
+            );
+            return None;
+        }
+    };
     if !response.status().is_success() {
-        tracing::warn!(
+        tracing::info!(
+            target: crate::logging::targets::SERVICE_STATUS,
             event_name = "service_check_failed",
-            message = "service status request failed",
+            message = "service status request returned non-success",
             outcome = "failure",
             status = %response.status(),
             url = STATUSPAGE_SUMMARY_URL,
         );
         return None;
     }
-    let payload = response.json::<SummaryResponse>().await.ok()?;
+    let payload = match response.json::<SummaryResponse>().await {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!(
+                target: crate::logging::targets::SERVICE_STATUS,
+                event_name = "service_check_failed",
+                message = "service status payload deserialise failed (contract violation)",
+                outcome = "failure",
+                error = %e,
+                url = STATUSPAGE_SUMMARY_URL,
+            );
+            return None;
+        }
+    };
     classify_summary(&payload)
 }
 

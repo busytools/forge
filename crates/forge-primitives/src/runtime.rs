@@ -127,6 +127,15 @@ pub struct RateLimitUpdate {
     pub surpassed_threshold: Option<f64>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ApiRetryUpdate {
+    pub attempt: u64,
+    pub max_retries: u64,
+    pub retry_delay_ms: u64,
+    pub error_status: Option<u16>,
+    pub error: ApiRetryError,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionStatus {
