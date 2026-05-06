@@ -108,7 +108,8 @@ pub(crate) async fn spawn_session(
     // sees Connected first on its mpsc — otherwise the reader can
     // race and push an SdkMessage before Connected, leaving
     // `app.session_id` = None when the SdkMessage arrives.
-    emit_connected(bridge.event_tx(), &client, &session_id, &cwd_owned, launch_settings, resume_id);
+    emit_connected(bridge.event_tx(), &client, &session_id, &cwd_owned, launch_settings, resume_id)
+        .await;
 
     // Reader subtask — owns the events receiver. Client is the writer-side
     // handle (Arc-backed, Clone) and stays on the bridge.
@@ -120,7 +121,7 @@ pub(crate) async fn spawn_session(
 
 /// Build the typed `Connected` envelope from the SDK's cached init data
 /// + the initialize `control_response`, and emit it onto `event_tx`.
-fn emit_connected(
+async fn emit_connected(
     event_tx: &mpsc::UnboundedSender<AgentEvent>,
     client: &Client,
     session_id: &str,
@@ -208,7 +209,7 @@ fn emit_connected(
             .send(AgentEvent::StatusSnapshot { session_id: session_id.to_owned(), account });
     }
 
-    let _ = event_tx.send(AgentEvent::SessionsListed { sessions: list_recent_sessions(cwd) });
+    let _ = event_tx.send(AgentEvent::SessionsListed { sessions: list_recent_sessions(cwd).await });
 }
 
 fn load_history_updates(prev_session_id: &str, cwd: &str) -> Vec<forge_primitives::SessionUpdate> {
@@ -231,11 +232,12 @@ fn load_history_updates(prev_session_id: &str, cwd: &str) -> Vec<forge_primitive
     crate::history::map_session_messages_to_updates(&raw)
 }
 
-fn list_recent_sessions(cwd: &str) -> Vec<forge_primitives::SessionListEntry> {
+async fn list_recent_sessions(cwd: &str) -> Vec<forge_primitives::SessionListEntry> {
     use forge_primitives::SessionListEntry;
     const MAX_RECENT: usize = 50;
     let dir = if cwd.is_empty() { None } else { Some(cwd.to_owned()) };
     crate::userdata::catalog::scan::list_sessions(dir, Some(MAX_RECENT), 0)
+        .await
         .into_iter()
         .map(|info| SessionListEntry {
             session_id: info.session_id,

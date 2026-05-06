@@ -274,9 +274,19 @@ fn project_dir_for(project_path: &str) -> PathBuf {
     projects_dir().join(sanitize_path(&canonicalize_path(project_path)))
 }
 
+/// Bounded-concurrency cap for [`list_sessions`] per-file lite reads.
+///
+/// Each transcript costs an open, a head read, a tail seek, and a tail
+/// read, plus UTF-8 validation. On a project-rich install (~50 projects,
+/// ~10 sessions each) the serial walk dominates connect time; capping
+/// at 16 keeps fd pressure low while still saturating an SSD.
+const LIST_SESSIONS_MAX_CONCURRENT: usize = 16;
+
 /// List sessions. When `directory` is `Some`, scans that project dir;
-/// when `None`, scans every project directory. Results are sorted by
-/// `last_modified` descending and pagination applies at the end.
+/// when `None`, scans every project directory. Per-file lite reads
+/// run on the tokio blocking pool with bounded concurrency (capped
+/// at 16 concurrent reads); results are sorted by `last_modified`
+/// descending and pagination applies at the end.
 ///
 /// # Panics
 ///
@@ -284,7 +294,7 @@ fn project_dir_for(project_path: &str) -> PathBuf {
 #[must_use]
 // Owned `String` matches the call-site shape (config_dir / cwd args from std::env). Switching to `&str` would force every caller to materialise a temporary.
 #[allow(clippy::needless_pass_by_value)]
-pub fn list_sessions(
+pub async fn list_sessions(
     directory: Option<String>,
     limit: Option<usize>,
     offset: usize,
@@ -302,19 +312,42 @@ pub fn list_sessions(
             .unwrap_or_default()
     };
 
-    let mut entries: Vec<SDKSessionInfo> = Vec::new();
+    // Cheap directory walks first — collect every candidate path
+    // synchronously. The expensive part is the per-file lite read,
+    // which we hand off to spawn_blocking below.
+    let mut candidates: Vec<PathBuf> = Vec::new();
     for project_dir in search_dirs {
         let Ok(iter) = fs::read_dir(&project_dir) else {
             continue;
         };
         for entry in iter.flatten() {
             let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
-                continue;
+            if path.extension().and_then(|e| e.to_str()) == Some("jsonl") {
+                candidates.push(path);
             }
-            if let Some(info) = read_session_info(&path) {
-                entries.push(info);
+        }
+    }
+
+    let mut entries: Vec<SDKSessionInfo> = Vec::with_capacity(candidates.len());
+    let mut paths = candidates.into_iter();
+    let mut set: tokio::task::JoinSet<Option<SDKSessionInfo>> = tokio::task::JoinSet::new();
+    for path in paths.by_ref().take(LIST_SESSIONS_MAX_CONCURRENT) {
+        set.spawn_blocking(move || read_session_info(&path));
+    }
+    while let Some(res) = set.join_next().await {
+        match res {
+            Ok(Some(info)) => entries.push(info),
+            Ok(None) => {}
+            Err(err) => {
+                tracing::debug!(
+                    target: "forge_agent::catalog::scan",
+                    error = %err,
+                    "list_sessions: per-file read task failed",
+                );
             }
+        }
+        if let Some(path) = paths.next() {
+            set.spawn_blocking(move || read_session_info(&path));
         }
     }
 
