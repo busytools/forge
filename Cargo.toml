@@ -6,7 +6,7 @@ members = ["crates/forge-sdk", "crates/forge-primitives", "crates/forge-agent", 
 version = "0.1.64"
 edition = "2024"
 license = "MIT"
-repository = "https://github.com/vedhavyas/forge"
+repository = "https://github.com/busytools/forge"
 authors = ["Vedhavyas Singareddi <ved@subspace.network>"]
 rust-version = "1.88"
 

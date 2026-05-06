@@ -4,9 +4,9 @@
 //! `claude` CLI. Spawns the binary as a subprocess and speaks
 //! stream-json over stdio. Wire compatibility with the CLI is the only
 //! hard external invariant; API shape is whatever serves
-//! [`forge-agent`](https://github.com/vedhavyas/forge/tree/main/crates/forge-agent)
+//! [`forge-agent`](https://github.com/busytools/forge/tree/main/crates/forge-agent)
 //! (and through it,
-//! [`forge-tui`](https://github.com/vedhavyas/forge/tree/main/crates/forge-tui))
+//! [`forge-tui`](https://github.com/busytools/forge/tree/main/crates/forge-tui))
 //! best.
 //!
 //! ## Design
