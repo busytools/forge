@@ -27,7 +27,6 @@ pub use registry::{Hooks, HooksBuilder};
 
 #[cfg(test)]
 mod tests_hooks_types {
-    #[allow(unused_imports)]
     use super::*;
 
     use crate::{

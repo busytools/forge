@@ -892,7 +892,6 @@ impl From<Message> for MessageRepr {
 
 #[cfg(test)]
 mod tests_result_message_fields {
-    #[allow(unused_imports)]
     use super::*;
 
     use crate::Message;
@@ -1031,7 +1030,6 @@ mod tests_result_message_fields {
 
 #[cfg(test)]
 mod tests_message_extras {
-    #[allow(unused_imports)]
     use super::*;
 
     use crate::{AssistantMessageError, Message};

@@ -818,7 +818,6 @@ impl OptionsBuilder {
 
 #[cfg(test)]
 mod tests_skills_option {
-    #[allow(unused_imports)]
     use super::*;
 
     use crate::OptionsBuilder;
@@ -868,7 +867,6 @@ mod tests_skills_option {
 
 #[cfg(test)]
 mod tests_options_build {
-    #[allow(unused_imports)]
     use super::*;
 
     use std::path::PathBuf;

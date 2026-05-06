@@ -29,15 +29,12 @@ pub mod model;
 // keep `crate::agent::error_handling::*` paths resolving across
 // existing call sites.
 pub mod agents {
-    #[allow(unused_imports)]
     pub use forge_agent::translate::agents::*;
 }
 pub mod error_handling {
-    #[allow(unused_imports)]
     pub use forge_agent::translate::error_handling::*;
 }
 pub mod state_parsing {
-    #[allow(unused_imports)]
     pub use forge_agent::translate::state_parsing::*;
 }
 
@@ -53,20 +50,16 @@ pub use forge_agent::{AgentEvent, PermissionMode, PromptResponse, SessionLaunchS
 pub mod client {
     //! Re-export shim — `crate::agent::client::*` paths resolve
     //! into `forge_agent::client::*`.
-    #[allow(unused_imports)]
     pub use forge_agent::client::*;
 }
 pub mod state {
     //! Re-export shim — `crate::agent::state::*` paths resolve
     //! into `forge_agent::state::*`.
-    #[allow(unused_imports)]
     pub use forge_agent::state::*;
 }
 pub mod commands {
-    #[allow(unused_imports)]
     pub use forge_agent::commands::*;
 }
 pub mod session_lifecycle {
-    #[allow(unused_imports)]
     pub use forge_agent::session_lifecycle::*;
 }
