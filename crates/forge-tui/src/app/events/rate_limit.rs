@@ -69,9 +69,35 @@ fn is_org_level_disabled_extra_usage_case(update: &model::RateLimitUpdate) -> bo
         && update.overage_disabled_reason.as_deref() == Some("org_level_disabled")
 }
 
+/// True when the wire reports the user has crossed an overage
+/// threshold but Anthropic is not yet billing overage. In this state
+/// the warning chip's loud "Approaching rate limit, you've used 102%"
+/// over-states things — the user is at the threshold, not actually
+/// burning overage credit. Detected by `surpassed_threshold > 0`
+/// (Anthropic's signal that some threshold was crossed) plus
+/// `is_using_overage == Some(false)` (no actual overage consumption).
+fn is_near_threshold_without_overage(update: &model::RateLimitUpdate) -> bool {
+    matches!(update.status, model::RateLimitStatus::AllowedWarning)
+        && update.is_using_overage == Some(false)
+        && update.surpassed_threshold.is_some_and(|t| t > 0.0)
+}
+
 pub(super) fn format_rate_limit_summary(update: &model::RateLimitUpdate) -> String {
     if is_org_level_disabled_extra_usage_case(update) {
         return EXTRA_USAGE_REQUIRED_MESSAGE.to_owned();
+    }
+
+    if is_near_threshold_without_overage(update) {
+        // Drop the percentage and the "you can continue using overage"
+        // tail — the user isn't actually consuming overage credit, so
+        // the loud wording isn't warranted. Keep the reset time, which
+        // is the only actionable bit.
+        let mut message = "Near rate-limit threshold.".to_owned();
+        if let Some(resets_at) = update.resets_at {
+            use std::fmt::Write;
+            let _ = write!(message, " Resets in {}.", format_resets_at(resets_at));
+        }
+        return message;
     }
 
     let is_rejected = matches!(update.status, model::RateLimitStatus::Rejected);
@@ -293,5 +319,55 @@ mod tests {
         assert!(summary.contains("Rate limit reached"));
         assert!(summary.contains("5-hour rate limit"));
         assert!(!summary.contains("Extra usage is required for 1M context"));
+    }
+
+    #[test]
+    fn near_threshold_without_overage_uses_softer_wording() {
+        // Wire shape from issue #34: AllowedWarning, surpassedThreshold > 0,
+        // isUsingOverage = false. User is past the threshold but not
+        // actually consuming overage — the loud "you've used 102%"
+        // wording over-states things.
+        let update = RateLimitUpdate {
+            status: RateLimitStatus::AllowedWarning,
+            resets_at: Some(1_741_280_000.0),
+            utilization: Some(1.02),
+            rate_limit_type: Some("overage".to_owned()),
+            overage_status: None,
+            overage_resets_at: None,
+            overage_disabled_reason: None,
+            is_using_overage: Some(false),
+            surpassed_threshold: Some(1.0),
+        };
+
+        let summary = format_rate_limit_summary(&update);
+        assert!(summary.starts_with("Near rate-limit threshold"));
+        assert!(summary.contains("Resets in"));
+        // No percentage — that's the whole point of softening.
+        assert!(!summary.contains('%'));
+        // No "you can continue" overage hint — user isn't consuming
+        // overage, so the hint is misleading.
+        assert!(!summary.contains("overage allowance"));
+    }
+
+    #[test]
+    fn near_threshold_when_overage_in_use_keeps_loud_wording() {
+        // Same surpassed_threshold but actually using overage — keep
+        // the loud "Approaching rate limit, X%" message because the
+        // user genuinely wants to know.
+        let update = RateLimitUpdate {
+            status: RateLimitStatus::AllowedWarning,
+            resets_at: Some(1_741_280_000.0),
+            utilization: Some(1.05),
+            rate_limit_type: Some("overage".to_owned()),
+            overage_status: None,
+            overage_resets_at: None,
+            overage_disabled_reason: None,
+            is_using_overage: Some(true),
+            surpassed_threshold: Some(1.0),
+        };
+
+        let summary = format_rate_limit_summary(&update);
+        assert!(summary.contains("Approaching rate limit"));
+        assert!(summary.contains("105%") || summary.contains("100%"));
     }
 }
