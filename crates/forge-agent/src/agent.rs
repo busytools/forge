@@ -383,11 +383,9 @@ fn dispatch(cmd: Command, bridge: &ForgeSdkBridge) -> anyhow::Result<()> {
             });
             bridge.resume_session(session_id.into_string(), launch)
         }
-        C::Prompt { session_id, text } => {
-            bridge.prompt_text(session_id.into_string(), text).map(|_| ())
-        }
+        C::Prompt { session_id, text } => bridge.prompt_text(session_id.into_string(), text),
         C::PromptWithImages { session_id, text, images } => {
-            bridge.prompt_with_images(session_id.into_string(), text, images).map(|_| ())
+            bridge.prompt_with_images(session_id.into_string(), text, images)
         }
         C::Cancel { session_id } => bridge.cancel(session_id.into_string()),
         C::SetMode { session_id, mode } => bridge.set_mode(session_id.into_string(), mode),
