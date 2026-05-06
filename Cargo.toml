@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/forge-sdk", "crates/forge-primitives", "crates/forge-agent", "crates/forge-tui", "crates/forge-test-harness"]
 
 [workspace.package]
-version = "0.1.64"
+version = "0.14.0"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/busytools/forge"
@@ -50,8 +50,8 @@ unicode-width = "0.2"
 base64 = "0.22"
 
 # Workspace-internal crates
-forge-primitives = { path = "crates/forge-primitives", version = "=0.1.64" }
-forge-agent = { path = "crates/forge-agent", version = "=0.1.64" }
+forge-primitives = { path = "crates/forge-primitives", version = "=0.14.0" }
+forge-agent = { path = "crates/forge-agent", version = "=0.14.0" }
 
 # Dev-only
 proptest = "1"
@@ -61,17 +61,38 @@ tempfile = "3"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
-missing_docs = "warn"
+dead_code = "deny"
+unused_imports = "deny"
+unused_must_use = "deny"
+unused_variables = "deny"
+# Personal-use scope — no docs.rs publishing target, no public API contract.
+missing_docs = "allow"
+# `unused_crate_dependencies` fires false positives at the build-target
+# level (integration tests + examples don't import every workspace dep
+# the lib does). Adopt per-lib.rs / per-main.rs via `#![deny(...)]` if
+# needed; out of scope for the workspace-wide lint table.
 
 [workspace.lints.clippy]
-pedantic = { level = "warn", priority = -1 }
+all = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
 unwrap_used = "deny"
 expect_used = "deny"
 panic = "deny"
 exit = "deny"
 todo = "deny"
 unimplemented = "deny"
-module_name_repetitions = "allow"   # Rust-idiomatic pattern; not actually repetition
+# Pedantic exemptions: not load-bearing for personal-use scope.
+module_name_repetitions = "allow"   # Rust-idiomatic; not actually repetition.
+must_use_candidate = "allow"        # Most fns don't need the marker.
+missing_errors_doc = "allow"        # thiserror covers public-error docs.
+missing_panics_doc = "allow"        # `panic` is denied above; noise is minimal.
+doc_markdown = "allow"              # Bare crate paths in prose are fine.
+too_many_lines = "allow"            # Translators + dispatchers naturally large.
+unnecessary_wraps = "allow"         # Symmetry across translate-fn returns.
+struct_field_names = "allow"        # Wire-shape structs share prefixes by API contract.
+# CLI surface (forge-tui binary) legitimately prints to stdout/stderr.
+print_stdout = "allow"
+print_stderr = "allow"
 
 [profile.dev]
 opt-level = 0
