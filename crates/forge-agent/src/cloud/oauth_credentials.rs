@@ -252,6 +252,7 @@ fn parse_oauth_credentials(json: &Value) -> Option<OauthCredentials> {
 mod tests {
     use super::*;
     use std::io::Write;
+    use std::time::{Duration, UNIX_EPOCH};
 
     #[test]
     fn returns_none_for_nonexistent_file() {

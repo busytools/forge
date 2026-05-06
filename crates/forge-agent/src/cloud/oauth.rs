@@ -148,12 +148,15 @@ mod tests {
 
     #[test]
     fn parses_iso8601_timestamp() {
+        use crate::cloud::time::parse_iso8601_timestamp;
+        use std::time::UNIX_EPOCH;
         let parsed = parse_iso8601_timestamp("2025-12-25T12:00:00.000Z").expect("timestamp");
         assert!(parsed > UNIX_EPOCH);
     }
 
     #[test]
     fn parses_numeric_millisecond_timestamp() {
+        use std::time::UNIX_EPOCH;
         let parsed =
             parse_timestamp_value(&serde_json::json!(1_735_128_000_000_i64)).expect("timestamp");
         assert!(parsed > UNIX_EPOCH);

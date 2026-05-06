@@ -41,7 +41,7 @@ pub(super) fn system_time_from_epoch(raw: i64) -> Option<SystemTime> {
 /// Hand-rolled ISO-8601 / RFC-3339 datetime parser. Subset:
 /// `YYYY-MM-DD[T| ]HH:MM[:SS[.fffffffff]][Z|+HH:MM|-HH:MM]`. Returns
 /// `None` on any field-level parse failure.
-fn parse_iso8601_timestamp(raw: &str) -> Option<SystemTime> {
+pub(super) fn parse_iso8601_timestamp(raw: &str) -> Option<SystemTime> {
     let trimmed = raw.trim();
     let (date_part, time_part) = trimmed.split_once('T').or_else(|| trimmed.split_once(' '))?;
 
