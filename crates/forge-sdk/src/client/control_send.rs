@@ -27,8 +27,7 @@ impl Client {
     ///
     /// See the outbound control error cases.
     pub async fn interrupt(&self) -> Result<(), Error> {
-        self.send_control("interrupt", serde_json::json!({}))
-            .await?;
+        self.send_control("interrupt", serde_json::json!({})).await?;
         Ok(())
     }
 
@@ -41,11 +40,8 @@ impl Client {
         &self,
         mode: crate::options::PermissionMode,
     ) -> Result<(), Error> {
-        self.send_control(
-            "set_permission_mode",
-            serde_json::json!({"mode": mode.as_cli_arg()}),
-        )
-        .await?;
+        self.send_control("set_permission_mode", serde_json::json!({"mode": mode.as_cli_arg()}))
+            .await?;
         Ok(())
     }
 
@@ -57,8 +53,7 @@ impl Client {
     ///
     /// See the outbound control error cases.
     pub async fn set_model(&self, model: Option<&str>) -> Result<(), Error> {
-        self.send_control("set_model", serde_json::json!({"model": model}))
-            .await?;
+        self.send_control("set_model", serde_json::json!({"model": model})).await?;
         Ok(())
     }
 
@@ -69,11 +64,8 @@ impl Client {
     ///
     /// See the outbound control error cases.
     pub async fn rewind_files(&self, user_message_id: &str) -> Result<(), Error> {
-        self.send_control(
-            "rewind_files",
-            serde_json::json!({"user_message_id": user_message_id}),
-        )
-        .await?;
+        self.send_control("rewind_files", serde_json::json!({"user_message_id": user_message_id}))
+            .await?;
         Ok(())
     }
 
@@ -85,11 +77,7 @@ impl Client {
     ///
     /// See the outbound control error cases.
     pub async fn mcp_reconnect(&self, server_name: &str) -> Result<(), Error> {
-        self.send_control(
-            "mcp_reconnect",
-            serde_json::json!({"serverName": server_name}),
-        )
-        .await?;
+        self.send_control("mcp_reconnect", serde_json::json!({"serverName": server_name})).await?;
         Ok(())
     }
 
@@ -115,8 +103,7 @@ impl Client {
     ///
     /// See the outbound control error cases.
     pub async fn stop_task(&self, task_id: &str) -> Result<(), Error> {
-        self.send_control("stop_task", serde_json::json!({"task_id": task_id}))
-            .await?;
+        self.send_control("stop_task", serde_json::json!({"task_id": task_id})).await?;
         Ok(())
     }
 
@@ -136,19 +123,12 @@ impl Client {
         content: Option<serde_json::Value>,
     ) -> Result<(), Error> {
         let mut body = serde_json::Map::new();
-        body.insert(
-            "request_id".to_owned(),
-            serde_json::Value::String(request_id.to_owned()),
-        );
-        body.insert(
-            "action".to_owned(),
-            serde_json::Value::String(action.to_owned()),
-        );
+        body.insert("request_id".to_owned(), serde_json::Value::String(request_id.to_owned()));
+        body.insert("action".to_owned(), serde_json::Value::String(action.to_owned()));
         if let Some(c) = content {
             body.insert("content".to_owned(), c);
         }
-        self.send_control("elicitation_response", serde_json::Value::Object(body))
-            .await?;
+        self.send_control("elicitation_response", serde_json::Value::Object(body)).await?;
         Ok(())
     }
 
@@ -160,9 +140,7 @@ impl Client {
     /// when the CLI payload doesn't match
     /// [`McpStatusResponse`](forge_primitives::McpStatusResponse).
     pub async fn mcp_status(&self) -> Result<forge_primitives::McpStatusResponse, Error> {
-        let raw = self
-            .send_control("mcp_status", serde_json::json!({}))
-            .await?;
+        let raw = self.send_control("mcp_status", serde_json::json!({})).await?;
         serde_json::from_value(raw).map_err(|e| Error::message_parse(format!("mcp_status: {e}")))
     }
 
@@ -186,9 +164,7 @@ impl Client {
     /// when the CLI payload doesn't match
     /// [`ContextUsageResponse`](forge_primitives::ContextUsageResponse).
     pub async fn get_context_usage(&self) -> Result<forge_primitives::ContextUsageResponse, Error> {
-        let raw = self
-            .send_control("get_context_usage", serde_json::json!({}))
-            .await?;
+        let raw = self.send_control("get_context_usage", serde_json::json!({})).await?;
         serde_json::from_value(raw)
             .map_err(|e| Error::message_parse(format!("get_context_usage: {e}")))
     }
@@ -201,8 +177,7 @@ impl Client {
     ///
     /// See the outbound control error cases.
     pub async fn get_context_usage_raw(&self) -> Result<serde_json::Value, Error> {
-        self.send_control("get_context_usage", serde_json::json!({}))
-            .await
+        self.send_control("get_context_usage", serde_json::json!({})).await
     }
 
     /// Ask the CLI to generate a short session title from `description`.
@@ -223,13 +198,11 @@ impl Client {
             .await?;
         match raw {
             serde_json::Value::String(s) => Ok(s),
-            serde_json::Value::Object(map) => map
-                .get("title")
-                .and_then(|v| v.as_str())
-                .map(str::to_owned)
-                .ok_or_else(|| {
+            serde_json::Value::Object(map) => {
+                map.get("title").and_then(|v| v.as_str()).map(str::to_owned).ok_or_else(|| {
                     Error::message_parse("generate_session_title: response missing 'title'")
-                }),
+                })
+            }
             other => Err(Error::message_parse(format!(
                 "generate_session_title: unexpected response shape {other}"
             ))),
@@ -245,8 +218,7 @@ impl Client {
     ///
     /// See the outbound control error cases.
     pub async fn reload_plugins(&self) -> Result<serde_json::Value, Error> {
-        self.send_control("reload_plugins", serde_json::json!({}))
-            .await
+        self.send_control("reload_plugins", serde_json::json!({})).await
     }
 
     /// Replace the active MCP server set. Wire shape:
@@ -256,8 +228,7 @@ impl Client {
     ///
     /// See the outbound control error cases.
     pub async fn mcp_set_servers(&self, servers: serde_json::Value) -> Result<(), Error> {
-        self.send_control("mcp_set_servers", serde_json::json!({"servers": servers}))
-            .await?;
+        self.send_control("mcp_set_servers", serde_json::json!({"servers": servers})).await?;
         Ok(())
     }
 
@@ -270,11 +241,7 @@ impl Client {
     ///
     /// See the outbound control error cases.
     pub async fn mcp_authenticate(&self, server_name: &str) -> Result<serde_json::Value, Error> {
-        self.send_control(
-            "mcp_authenticate",
-            serde_json::json!({"server_name": server_name}),
-        )
-        .await
+        self.send_control("mcp_authenticate", serde_json::json!({"server_name": server_name})).await
     }
 
     /// Clear stored OAuth credentials for an MCP server. Wire shape:
@@ -284,11 +251,8 @@ impl Client {
     ///
     /// See the outbound control error cases.
     pub async fn mcp_clear_auth(&self, server_name: &str) -> Result<(), Error> {
-        self.send_control(
-            "mcp_clear_auth",
-            serde_json::json!({"server_name": server_name}),
-        )
-        .await?;
+        self.send_control("mcp_clear_auth", serde_json::json!({"server_name": server_name}))
+            .await?;
         Ok(())
     }
 

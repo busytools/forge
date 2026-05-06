@@ -43,15 +43,9 @@ fn req(id: i64, method: &str, params: serde_json::Value) -> JsonRpcRequest {
 
 #[tokio::test]
 async fn dispatch_initialize() {
-    let server = McpServerBuilder::new("probe", "0.0.1")
-        .tool(EchoTool)
-        .build();
+    let server = McpServerBuilder::new("probe", "0.0.1").tool(EchoTool).build();
     let resp = server
-        .dispatch(&req(
-            1,
-            "initialize",
-            json!({"protocolVersion": "2024-11-05"}),
-        ))
+        .dispatch(&req(1, "initialize", json!({"protocolVersion": "2024-11-05"})))
         .await
         .expect("initialize produces a response");
     let raw = serde_json::to_value(&resp).unwrap();
@@ -61,9 +55,7 @@ async fn dispatch_initialize() {
 
 #[tokio::test]
 async fn dispatch_tools_list() {
-    let server = McpServerBuilder::new("probe", "0.0.1")
-        .tool(EchoTool)
-        .build();
+    let server = McpServerBuilder::new("probe", "0.0.1").tool(EchoTool).build();
     let resp = server
         .dispatch(&req(2, "tools/list", serde_json::Value::Null))
         .await
@@ -75,15 +67,9 @@ async fn dispatch_tools_list() {
 
 #[tokio::test]
 async fn dispatch_tools_call() {
-    let server = McpServerBuilder::new("probe", "0.0.1")
-        .tool(EchoTool)
-        .build();
+    let server = McpServerBuilder::new("probe", "0.0.1").tool(EchoTool).build();
     let resp = server
-        .dispatch(&req(
-            3,
-            "tools/call",
-            json!({"name": "echo", "arguments": {"text": "hi"}}),
-        ))
+        .dispatch(&req(3, "tools/call", json!({"name": "echo", "arguments": {"text": "hi"}})))
         .await
         .expect("tools/call produces a response");
     let raw = serde_json::to_value(&resp).unwrap();
@@ -93,9 +79,7 @@ async fn dispatch_tools_call() {
 
 #[tokio::test]
 async fn dispatch_notifications_return_none() {
-    let server = McpServerBuilder::new("probe", "0.0.1")
-        .tool(EchoTool)
-        .build();
+    let server = McpServerBuilder::new("probe", "0.0.1").tool(EchoTool).build();
     let notif: JsonRpcRequest = serde_json::from_value(json!({
         "jsonrpc": "2.0",
         "method": "notifications/initialized",
@@ -106,9 +90,7 @@ async fn dispatch_notifications_return_none() {
 
 #[tokio::test]
 async fn dispatch_unknown_method_returns_error() {
-    let server = McpServerBuilder::new("probe", "0.0.1")
-        .tool(EchoTool)
-        .build();
+    let server = McpServerBuilder::new("probe", "0.0.1").tool(EchoTool).build();
     let resp = server
         .dispatch(&req(4, "does/not/exist", serde_json::Value::Null))
         .await

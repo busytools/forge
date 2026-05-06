@@ -68,11 +68,7 @@ pub fn parse_runtime_session_state(value: Option<&Value>) -> Option<RuntimeSessi
 /// rejects `u64::MAX as f64` itself (which equals `2^64`, one past
 /// the largest representable u64) along with everything above.
 #[must_use]
-#[allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    clippy::cast_precision_loss
-)]
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_precision_loss)]
 fn parse_clamped_u64(message: &Map<String, Value>, keys: &[&str]) -> Option<u64> {
     let v = number_field(message, keys)?;
     if v < 0.0 || v >= u64::MAX as f64 {
@@ -91,11 +87,7 @@ fn parse_clamped_u64(message: &Map<String, Value>, keys: &[&str]) -> Option<u64>
 /// (status codes). Field-absent is silent (`None`); out-of-range
 /// value logs at debug and returns `None`.
 #[must_use]
-#[allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    clippy::cast_precision_loss
-)]
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_precision_loss)]
 fn parse_clamped_u16_optional(message: &Map<String, Value>, keys: &[&str]) -> Option<u16> {
     let v = number_field(message, keys)?;
     if v < 0.0 || v > f64::from(u16::MAX) {
@@ -133,27 +125,25 @@ pub fn build_rate_limit_update(rate_limit_info: Option<&Value>) -> Option<Sessio
     let info = rate_limit_info.and_then(record)?;
     let status = parse_rate_limit_status(info.get("status"))?;
 
-    Some(SessionUpdate::RateLimitUpdate(
-        forge_primitives::RateLimitUpdate {
-            status,
-            resets_at: number_field(info, &["resetsAt"]),
-            utilization: number_field(info, &["utilization"]),
-            rate_limit_type: info
-                .get("rateLimitType")
-                .and_then(Value::as_str)
-                .filter(|s| !s.is_empty())
-                .map(str::to_owned),
-            overage_status: parse_rate_limit_status(info.get("overageStatus")),
-            overage_resets_at: number_field(info, &["overageResetsAt"]),
-            overage_disabled_reason: info
-                .get("overageDisabledReason")
-                .and_then(Value::as_str)
-                .filter(|s| !s.is_empty())
-                .map(str::to_owned),
-            is_using_overage: info.get("isUsingOverage").and_then(Value::as_bool),
-            surpassed_threshold: number_field(info, &["surpassedThreshold"]),
-        },
-    ))
+    Some(SessionUpdate::RateLimitUpdate(forge_primitives::RateLimitUpdate {
+        status,
+        resets_at: number_field(info, &["resetsAt"]),
+        utilization: number_field(info, &["utilization"]),
+        rate_limit_type: info
+            .get("rateLimitType")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned),
+        overage_status: parse_rate_limit_status(info.get("overageStatus")),
+        overage_resets_at: number_field(info, &["overageResetsAt"]),
+        overage_disabled_reason: info
+            .get("overageDisabledReason")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned),
+        is_using_overage: info.get("isUsingOverage").and_then(Value::as_bool),
+        surpassed_threshold: number_field(info, &["surpassedThreshold"]),
+    }))
 }
 
 /// Mirrors upstream's `buildApiRetryUpdate(message)`. Returns the
@@ -175,15 +165,13 @@ pub fn build_api_retry_update(message: &Map<String, Value>) -> Option<SessionUpd
     let error_status = parse_clamped_u16_optional(message, &["error_status", "errorStatus"]);
     let error = parse_api_retry_error(message.get("error"));
 
-    Some(SessionUpdate::ApiRetryUpdate(
-        forge_primitives::ApiRetryUpdate {
-            attempt,
-            max_retries,
-            retry_delay_ms,
-            error_status,
-            error,
-        },
-    ))
+    Some(SessionUpdate::ApiRetryUpdate(forge_primitives::ApiRetryUpdate {
+        attempt,
+        max_retries,
+        retry_delay_ms,
+        error_status,
+        error,
+    }))
 }
 
 /// Mirrors `normalizeSettingsParseError(value)`.
@@ -194,31 +182,17 @@ fn normalize_settings_parse_error(value: &Value) -> Option<SettingsParseErrorUpd
     if message.is_empty() {
         return None;
     }
-    let path = r
-        .get("path")
-        .and_then(Value::as_str)
-        .unwrap_or("")
-        .to_owned();
-    let file = r
-        .get("file")
-        .and_then(Value::as_str)
-        .filter(|s| !s.trim().is_empty())
-        .map(str::to_owned);
-    Some(SettingsParseErrorUpdate {
-        file,
-        path,
-        message: message.to_owned(),
-    })
+    let path = r.get("path").and_then(Value::as_str).unwrap_or("").to_owned();
+    let file =
+        r.get("file").and_then(Value::as_str).filter(|s| !s.trim().is_empty()).map(str::to_owned);
+    Some(SettingsParseErrorUpdate { file, path, message: message.to_owned() })
 }
 
 /// Accepts either a single record or an array; returns all valid entries.
 #[must_use]
 pub fn normalize_settings_parse_errors(value: &Value) -> Vec<SettingsParseErrorUpdate> {
     if let Some(arr) = value.as_array() {
-        return arr
-            .iter()
-            .filter_map(normalize_settings_parse_error)
-            .collect();
+        return arr.iter().filter_map(normalize_settings_parse_error).collect();
     }
     normalize_settings_parse_error(value).into_iter().collect()
 }
@@ -231,18 +205,9 @@ mod tests {
 
     #[test]
     fn fast_mode_state_parses_known_values() {
-        assert_eq!(
-            parse_fast_mode_state(Some(&json!("on"))),
-            Some(FastModeState::On)
-        );
-        assert_eq!(
-            parse_fast_mode_state(Some(&json!("off"))),
-            Some(FastModeState::Off)
-        );
-        assert_eq!(
-            parse_fast_mode_state(Some(&json!("cooldown"))),
-            Some(FastModeState::Cooldown)
-        );
+        assert_eq!(parse_fast_mode_state(Some(&json!("on"))), Some(FastModeState::On));
+        assert_eq!(parse_fast_mode_state(Some(&json!("off"))), Some(FastModeState::Off));
+        assert_eq!(parse_fast_mode_state(Some(&json!("cooldown"))), Some(FastModeState::Cooldown));
         assert_eq!(parse_fast_mode_state(Some(&json!("nope"))), None);
         assert_eq!(parse_fast_mode_state(None), None);
     }
@@ -262,10 +227,7 @@ mod tests {
 
     #[test]
     fn api_retry_error_falls_back_to_unknown() {
-        assert!(matches!(
-            parse_api_retry_error(None),
-            ApiRetryError::Unknown
-        ));
+        assert!(matches!(parse_api_retry_error(None), ApiRetryError::Unknown));
         assert!(matches!(
             parse_api_retry_error(Some(&json!("rate_limit"))),
             ApiRetryError::RateLimit

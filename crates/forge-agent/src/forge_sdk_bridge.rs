@@ -172,9 +172,7 @@ impl ForgeSdkBridge {
         Fut: std::future::Future<Output = anyhow::Result<()>> + Send + 'static,
     {
         let Some(client) = self.client() else {
-            return Err(anyhow::anyhow!(
-                "forge-sdk bridge: {label} called before active session"
-            ));
+            return Err(anyhow::anyhow!("forge-sdk bridge: {label} called before active session"));
         };
         tokio::spawn(async move {
             if let Err(err) = f(client).await {
@@ -309,9 +307,7 @@ impl ForgeSdkBridge {
         self.dispatch("prompt", move |client| async move {
             forge_sdk_worker::send_prompt(&client, chunks).await
         })?;
-        Ok(PromptResponse {
-            stop_reason: "end_turn".to_owned(),
-        })
+        Ok(PromptResponse { stop_reason: "end_turn".to_owned() })
     }
 
     pub(crate) fn cancel(&self, session_id: String) -> anyhow::Result<()> {
@@ -420,27 +416,18 @@ impl ForgeSdkBridge {
                 .account_info_from_init()
                 .or_else(crate::cloud::auth_status::account_info_from_shell)
                 .unwrap_or_default();
-            let _ = event_tx.send(AgentEvent::StatusSnapshot {
-                session_id,
-                account,
-            });
+            let _ = event_tx.send(AgentEvent::StatusSnapshot { session_id, account });
             Ok(())
         })
     }
 
     pub(crate) fn get_oauth_credentials_snapshot(&self, session_id: String) -> anyhow::Result<()> {
         let event_tx = self.inner.event_tx.clone();
-        self.dispatch(
-            "get_oauth_credentials_snapshot",
-            move |_client| async move {
-                let credentials = crate::cloud::oauth_credentials::load_oauth_credentials();
-                let _ = event_tx.send(AgentEvent::OauthCredentialsSnapshot {
-                    session_id,
-                    credentials,
-                });
-                Ok(())
-            },
-        )
+        self.dispatch("get_oauth_credentials_snapshot", move |_client| async move {
+            let credentials = crate::cloud::oauth_credentials::load_oauth_credentials();
+            let _ = event_tx.send(AgentEvent::OauthCredentialsSnapshot { session_id, credentials });
+            Ok(())
+        })
     }
 
     pub(crate) fn get_context_usage(&self, session_id: String) -> anyhow::Result<()> {
@@ -448,10 +435,8 @@ impl ForgeSdkBridge {
         self.dispatch("get_context_usage", move |client| async move {
             let usage = client.get_context_usage().await?;
             let percentage = forge_sdk_worker::clamp_percentage_to_u8(usage.percentage);
-            let _ = event_tx.send(AgentEvent::ContextUsage {
-                session_id,
-                percentage: Some(percentage),
-            });
+            let _ = event_tx
+                .send(AgentEvent::ContextUsage { session_id, percentage: Some(percentage) });
             Ok(())
         })
     }
@@ -466,10 +451,7 @@ impl ForgeSdkBridge {
                 Err(e) => {
                     let msg = format!("reload_plugins failed: {e}");
                     if event_tx
-                        .send(AgentEvent::RuntimeReloadFailed {
-                            session_id,
-                            message: msg.clone(),
-                        })
+                        .send(AgentEvent::RuntimeReloadFailed { session_id, message: msg.clone() })
                         .is_err()
                     {
                         tracing::warn!(
@@ -515,9 +497,7 @@ impl ForgeSdkBridge {
             ElicitationAction::Cancel => "cancel",
         };
         self.dispatch("respond_to_elicitation", move |client| async move {
-            client
-                .respond_to_elicitation(&elicitation_request_id, action_str, content)
-                .await?;
+            client.respond_to_elicitation(&elicitation_request_id, action_str, content).await?;
             Ok(())
         })
     }
@@ -663,10 +643,7 @@ impl ForgeSdkBridge {
     ) -> anyhow::Result<()> {
         let event_tx = self.inner.event_tx.clone();
         self.dispatch("submit_mcp_oauth_callback_url", move |client| async move {
-            if let Err(e) = client
-                .mcp_oauth_callback_url(&server_name, &callback_url)
-                .await
-            {
+            if let Err(e) = client.mcp_oauth_callback_url(&server_name, &callback_url).await {
                 Self::emit_mcp_error_or_log(
                     &event_tx,
                     session_id,
@@ -692,9 +669,7 @@ impl ForgeSdkBridge {
                 let msg = format!("forge-sdk session spawn failed: {err}");
                 if bridge
                     .event_tx()
-                    .send(AgentEvent::ConnectionFailed {
-                        message: msg.clone(),
-                    })
+                    .send(AgentEvent::ConnectionFailed { message: msg.clone() })
                     .is_err()
                 {
                     tracing::warn!(
@@ -722,9 +697,7 @@ impl ForgeSdkBridge {
                 let msg = format!("forge-sdk session resume failed: {err}");
                 if bridge
                     .event_tx()
-                    .send(AgentEvent::ConnectionFailed {
-                        message: msg.clone(),
-                    })
+                    .send(AgentEvent::ConnectionFailed { message: msg.clone() })
                     .is_err()
                 {
                     tracing::warn!(

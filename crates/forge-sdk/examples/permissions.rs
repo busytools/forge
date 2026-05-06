@@ -20,9 +20,8 @@ fn is_read_only(tool_name: &str) -> bool {
 async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
 
-    let prompt = std::env::args()
-        .nth(1)
-        .unwrap_or_else(|| "Read /tmp/README.md and summarise".to_string());
+    let prompt =
+        std::env::args().nth(1).unwrap_or_else(|| "Read /tmp/README.md and summarise".to_string());
 
     let opts = OptionsBuilder::new()
         .permission_mode(PermissionMode::Ask)

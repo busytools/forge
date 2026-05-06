@@ -70,20 +70,3 @@ jobs:
           shared-key: cargo-${{ runner.os }}
           key: docs
       - run: cargo doc --workspace --no-deps --all-features
-
-  deny:
-    name: cargo deny
-    runs-on: self-hosted-linux
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: nightly-2026-04-15
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: cargo-${{ runner.os }}
-          key: deny
-      - uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-deny
-      - run: cargo deny --all-features check

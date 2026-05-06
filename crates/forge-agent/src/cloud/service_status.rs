@@ -65,10 +65,7 @@ struct IncidentComponent {
 /// would cascade through the UI's banner code; the structured logs
 /// give the same triage signal at lower cost.)
 pub async fn fetch_service_status() -> Option<ServiceIssue> {
-    let client = match reqwest::Client::builder()
-        .timeout(SERVICE_STATUS_TIMEOUT)
-        .build()
-    {
+    let client = match reqwest::Client::builder().timeout(SERVICE_STATUS_TIMEOUT).build() {
         Ok(c) => c,
         Err(e) => {
             tracing::info!(
@@ -150,12 +147,10 @@ fn classify_summary(summary: &SummaryResponse) -> Option<ServiceIssue> {
 
     let severity = worst_severity?;
 
-    let relevant_incident = summary.incidents.iter().find(|incident| {
-        incident
-            .components
-            .iter()
-            .any(|c| is_relevant_component(&c.name))
-    });
+    let relevant_incident = summary
+        .incidents
+        .iter()
+        .find(|incident| incident.components.iter().any(|c| is_relevant_component(&c.name)));
 
     let message = if let Some(incident) = relevant_incident {
         format!("Claude Code status: {}.", incident.name.trim())
@@ -172,10 +167,7 @@ mod tests {
     use super::*;
 
     fn component(name: &str, status: &str) -> Component {
-        Component {
-            name: name.to_owned(),
-            status: status.to_owned(),
-        }
+        Component { name: name.to_owned(), status: status.to_owned() }
     }
 
     fn incident(name: &str, component_names: &[&str]) -> Incident {
@@ -183,27 +175,19 @@ mod tests {
             name: name.to_owned(),
             components: component_names
                 .iter()
-                .map(|n| IncidentComponent {
-                    name: (*n).to_owned(),
-                })
+                .map(|n| IncidentComponent { name: (*n).to_owned() })
                 .collect(),
         }
     }
 
     fn summary(components: Vec<Component>, incidents: Vec<Incident>) -> SummaryResponse {
-        SummaryResponse {
-            components,
-            incidents,
-        }
+        SummaryResponse { components, incidents }
     }
 
     #[test]
     fn all_operational_is_healthy() {
         let s = summary(
-            vec![
-                component("Claude Code", "operational"),
-                component("claude.ai", "operational"),
-            ],
+            vec![component("Claude Code", "operational"), component("claude.ai", "operational")],
             vec![],
         );
         assert!(classify_summary(&s).is_none());
@@ -224,10 +208,7 @@ mod tests {
 
     #[test]
     fn claude_code_degraded_is_warning() {
-        let s = summary(
-            vec![component("Claude Code", "degraded_performance")],
-            vec![],
-        );
+        let s = summary(vec![component("Claude Code", "degraded_performance")], vec![]);
         let issue = classify_summary(&s).expect("expected issue");
         assert_eq!(issue.severity, ServiceSeverity::Warning);
     }
@@ -269,16 +250,10 @@ mod tests {
     fn uses_incident_name_in_message() {
         let s = summary(
             vec![component("Claude Code", "degraded_performance")],
-            vec![incident(
-                "Elevated errors on Claude Opus 4",
-                &["Claude Code", "claude.ai"],
-            )],
+            vec![incident("Elevated errors on Claude Opus 4", &["Claude Code", "claude.ai"])],
         );
         let issue = classify_summary(&s).expect("expected issue");
-        assert_eq!(
-            issue.message,
-            "Claude Code status: Elevated errors on Claude Opus 4."
-        );
+        assert_eq!(issue.message, "Claude Code status: Elevated errors on Claude Opus 4.");
     }
 
     #[test]
@@ -288,10 +263,7 @@ mod tests {
             vec![incident("API issue", &["claude.ai"])],
         );
         let issue = classify_summary(&s).expect("expected issue");
-        assert_eq!(
-            issue.message,
-            "Claude Code status indicates a service disruption."
-        );
+        assert_eq!(issue.message, "Claude Code status indicates a service disruption.");
     }
 
     #[test]

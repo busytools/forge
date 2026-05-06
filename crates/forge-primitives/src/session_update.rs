@@ -18,14 +18,8 @@ use crate::runtime::{
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ChunkContent {
-    Text {
-        text: String,
-    },
-    Image {
-        mime_type: Option<String>,
-        uri: Option<String>,
-        data: Option<String>,
-    },
+    Text { text: String },
+    Image { mime_type: Option<String>, uri: Option<String>, data: Option<String> },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -125,62 +119,26 @@ pub struct PlanEntry {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum SessionUpdate {
-    AgentMessageChunk {
-        content: ChunkContent,
-    },
-    UserMessageChunk {
-        content: ChunkContent,
-    },
-    AgentThoughtChunk {
-        content: ChunkContent,
-    },
-    ToolCall {
-        tool_call: ToolCall,
-    },
-    ToolCallUpdate {
-        tool_call_update: ToolCallUpdate,
-    },
-    Plan {
-        entries: Vec<PlanEntry>,
-    },
-    AvailableCommandsUpdate {
-        commands: Vec<AvailableCommand>,
-    },
-    AvailableAgentsUpdate {
-        agents: Vec<AvailableAgent>,
-    },
-    ModeStateUpdate {
-        mode: ModeState,
-    },
-    CurrentModeUpdate {
-        current_mode_id: String,
-    },
-    CurrentModelUpdate {
-        current_model: CurrentModel,
-    },
-    ConfigOptionUpdate {
-        option_id: String,
-        value: Value,
-    },
-    FastModeUpdate {
-        fast_mode_state: FastModeState,
-    },
+    AgentMessageChunk { content: ChunkContent },
+    UserMessageChunk { content: ChunkContent },
+    AgentThoughtChunk { content: ChunkContent },
+    ToolCall { tool_call: ToolCall },
+    ToolCallUpdate { tool_call_update: ToolCallUpdate },
+    Plan { entries: Vec<PlanEntry> },
+    AvailableCommandsUpdate { commands: Vec<AvailableCommand> },
+    AvailableAgentsUpdate { agents: Vec<AvailableAgent> },
+    ModeStateUpdate { mode: ModeState },
+    CurrentModeUpdate { current_mode_id: String },
+    CurrentModelUpdate { current_model: CurrentModel },
+    ConfigOptionUpdate { option_id: String, value: Value },
+    FastModeUpdate { fast_mode_state: FastModeState },
     RateLimitUpdate(crate::runtime::RateLimitUpdate),
     ApiRetryUpdate(crate::runtime::ApiRetryUpdate),
-    PromptSuggestionUpdate {
-        suggestion: String,
-    },
-    RuntimeSessionStateUpdate {
-        state: RuntimeSessionState,
-    },
+    PromptSuggestionUpdate { suggestion: String },
+    RuntimeSessionStateUpdate { state: RuntimeSessionState },
     SettingsParseError(crate::runtime::SettingsParseErrorUpdate),
-    SessionStatusUpdate {
-        status: SessionStatus,
-    },
-    CompactionBoundary {
-        trigger: CompactionTrigger,
-        pre_tokens: u64,
-    },
+    SessionStatusUpdate { status: SessionStatus },
+    CompactionBoundary { trigger: CompactionTrigger, pre_tokens: u64 },
 }
 
 #[cfg(test)]
@@ -203,10 +161,7 @@ mod tests {
 
         assert!(matches!(
             update,
-            SessionUpdate::ApiRetryUpdate(ApiRetryUpdate {
-                error: ApiRetryError::Unknown,
-                ..
-            })
+            SessionUpdate::ApiRetryUpdate(ApiRetryUpdate { error: ApiRetryError::Unknown, .. })
         ));
     }
 }

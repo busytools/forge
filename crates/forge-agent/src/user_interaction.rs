@@ -36,36 +36,21 @@ pub struct AskUserQuestionPrompt {
 /// validity rule).
 #[must_use]
 pub fn parse_ask_user_question_prompts(input: &Value) -> Vec<AskUserQuestionPrompt> {
-    let Some(questions) = input
-        .as_object()
-        .and_then(|r| r.get("questions"))
-        .and_then(Value::as_array)
+    let Some(questions) =
+        input.as_object().and_then(|r| r.get("questions")).and_then(Value::as_array)
     else {
         return Vec::new();
     };
     let mut prompts: Vec<AskUserQuestionPrompt> = Vec::new();
     for raw in questions {
         let Some(q) = raw.as_object() else { continue };
-        let question = q
-            .get("question")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .trim()
-            .to_owned();
+        let question = q.get("question").and_then(Value::as_str).unwrap_or("").trim().to_owned();
         if question.is_empty() {
             continue;
         }
-        let header_raw = q
-            .get("header")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .trim()
-            .to_owned();
-        let header = if header_raw.is_empty() {
-            format!("Q{}", prompts.len() + 1)
-        } else {
-            header_raw
-        };
+        let header_raw = q.get("header").and_then(Value::as_str).unwrap_or("").trim().to_owned();
+        let header =
+            if header_raw.is_empty() { format!("Q{}", prompts.len() + 1) } else { header_raw };
         let multi_select = q
             .get("multiSelect")
             .or_else(|| q.get("multi_select"))
@@ -77,18 +62,10 @@ pub fn parse_ask_user_question_prompts(input: &Value) -> Vec<AskUserQuestionProm
                 let Some(opt) = raw_opt.as_object() else {
                     continue;
                 };
-                let label = opt
-                    .get("label")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .trim()
-                    .to_owned();
-                let description = opt
-                    .get("description")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .trim()
-                    .to_owned();
+                let label =
+                    opt.get("label").and_then(Value::as_str).unwrap_or("").trim().to_owned();
+                let description =
+                    opt.get("description").and_then(Value::as_str).unwrap_or("").trim().to_owned();
                 let preview = opt
                     .get("preview")
                     .and_then(Value::as_str)
@@ -98,22 +75,13 @@ pub fn parse_ask_user_question_prompts(input: &Value) -> Vec<AskUserQuestionProm
                 if label.is_empty() {
                     continue;
                 }
-                options.push(AskUserQuestionOption {
-                    label,
-                    description,
-                    preview,
-                });
+                options.push(AskUserQuestionOption { label, description, preview });
             }
         }
         if options.len() < 2 {
             continue;
         }
-        prompts.push(AskUserQuestionPrompt {
-            question,
-            header,
-            multi_select,
-            options,
-        });
+        prompts.push(AskUserQuestionPrompt { question, header, multi_select, options });
     }
     prompts
 }
@@ -184,24 +152,13 @@ pub fn derive_annotation(
     selected: &[TuiQuestionOption],
     incoming: Option<&QuestionAnnotation>,
 ) -> Option<QuestionAnnotation> {
-    let preview_raw = incoming
-        .and_then(|a| a.preview.as_deref())
-        .map_or("", str::trim);
+    let preview_raw = incoming.and_then(|a| a.preview.as_deref()).map_or("", str::trim);
     let preview = if preview_raw.is_empty() {
         let parts: Vec<&str> = selected
             .iter()
-            .filter_map(|o| {
-                o.preview
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|s| !s.is_empty())
-            })
+            .filter_map(|o| o.preview.as_deref().map(str::trim).filter(|s| !s.is_empty()))
             .collect();
-        if parts.is_empty() {
-            String::new()
-        } else {
-            parts.join("\n\n")
-        }
+        if parts.is_empty() { String::new() } else { parts.join("\n\n") }
     } else {
         preview_raw.to_owned()
     };
@@ -214,11 +171,7 @@ pub fn derive_annotation(
         return None;
     }
     Some(QuestionAnnotation {
-        preview: if preview.is_empty() {
-            None
-        } else {
-            Some(preview)
-        },
+        preview: if preview.is_empty() { None } else { Some(preview) },
         notes,
     })
 }

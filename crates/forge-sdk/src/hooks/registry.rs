@@ -39,10 +39,7 @@ impl std::fmt::Debug for Hooks {
         f.debug_struct("Hooks")
             .field("pre_tool_use_count", &self.pre_tool_use.len())
             .field("post_tool_use_count", &self.post_tool_use.len())
-            .field(
-                "post_tool_use_failure_count",
-                &self.post_tool_use_failure.len(),
-            )
+            .field("post_tool_use_failure_count", &self.post_tool_use_failure.len())
             .field("user_prompt_submit_count", &self.user_prompt_submit.len())
             .field("stop_count", &self.stop.len())
             .field("subagent_stop_count", &self.subagent_stop.len())
@@ -72,11 +69,7 @@ impl Hooks {
             |kind: HookKind, matcher: Option<String>, cb: Arc<dyn ErasedHookCallback>| {
                 let id = format!("hook_{counter}");
                 counter += 1;
-                registry.metadata.push(HookRegistryEntry {
-                    id: id.clone(),
-                    kind,
-                    matcher,
-                });
+                registry.metadata.push(HookRegistryEntry { id: id.clone(), kind, matcher });
                 registry.by_id.insert(id, cb);
             };
 
@@ -87,11 +80,7 @@ impl Hooks {
             mint(HookKind::PostToolUse, Some(matcher.clone()), cb.clone());
         }
         for (matcher, cb) in &self.post_tool_use_failure {
-            mint(
-                HookKind::PostToolUseFailure,
-                Some(matcher.clone()),
-                cb.clone(),
-            );
+            mint(HookKind::PostToolUseFailure, Some(matcher.clone()), cb.clone());
         }
         for cb in &self.user_prompt_submit {
             mint(HookKind::UserPromptSubmit, None, cb.clone());
@@ -112,11 +101,7 @@ impl Hooks {
             mint(HookKind::Notification, None, cb.clone());
         }
         for (matcher, cb) in &self.permission_request {
-            mint(
-                HookKind::PermissionRequest,
-                Some(matcher.clone()),
-                cb.clone(),
-            );
+            mint(HookKind::PermissionRequest, Some(matcher.clone()), cb.clone());
         }
 
         registry
@@ -202,9 +187,7 @@ pub struct HooksBuilder {
 
 impl std::fmt::Debug for HooksBuilder {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("HooksBuilder")
-            .field("inner", &self.inner)
-            .finish()
+        f.debug_struct("HooksBuilder").field("inner", &self.inner).finish()
     }
 }
 
@@ -267,12 +250,10 @@ impl HooksBuilder {
     where
         C: HookCallback<UserPromptSubmitInput> + 'static,
     {
-        self.inner
-            .user_prompt_submit
-            .push(Arc::new(ErasedCallback::<UserPromptSubmitInput, C> {
-                inner: callback,
-                _marker: PhantomData,
-            }));
+        self.inner.user_prompt_submit.push(Arc::new(ErasedCallback::<UserPromptSubmitInput, C> {
+            inner: callback,
+            _marker: PhantomData,
+        }));
         self
     }
 
@@ -282,12 +263,10 @@ impl HooksBuilder {
     where
         C: HookCallback<StopInput> + 'static,
     {
-        self.inner
-            .stop
-            .push(Arc::new(ErasedCallback::<StopInput, C> {
-                inner: callback,
-                _marker: PhantomData,
-            }));
+        self.inner.stop.push(Arc::new(ErasedCallback::<StopInput, C> {
+            inner: callback,
+            _marker: PhantomData,
+        }));
         self
     }
 
@@ -297,12 +276,10 @@ impl HooksBuilder {
     where
         C: HookCallback<SubagentStopInput> + 'static,
     {
-        self.inner
-            .subagent_stop
-            .push(Arc::new(ErasedCallback::<SubagentStopInput, C> {
-                inner: callback,
-                _marker: PhantomData,
-            }));
+        self.inner.subagent_stop.push(Arc::new(ErasedCallback::<SubagentStopInput, C> {
+            inner: callback,
+            _marker: PhantomData,
+        }));
         self
     }
 
@@ -312,12 +289,10 @@ impl HooksBuilder {
     where
         C: HookCallback<PreCompactInput> + 'static,
     {
-        self.inner
-            .pre_compact
-            .push(Arc::new(ErasedCallback::<PreCompactInput, C> {
-                inner: callback,
-                _marker: PhantomData,
-            }));
+        self.inner.pre_compact.push(Arc::new(ErasedCallback::<PreCompactInput, C> {
+            inner: callback,
+            _marker: PhantomData,
+        }));
         self
     }
 
@@ -344,12 +319,10 @@ impl HooksBuilder {
     where
         C: HookCallback<NotificationInput> + 'static,
     {
-        self.inner
-            .notification
-            .push(Arc::new(ErasedCallback::<NotificationInput, C> {
-                inner: callback,
-                _marker: PhantomData,
-            }));
+        self.inner.notification.push(Arc::new(ErasedCallback::<NotificationInput, C> {
+            inner: callback,
+            _marker: PhantomData,
+        }));
         self
     }
 
@@ -359,12 +332,10 @@ impl HooksBuilder {
     where
         C: HookCallback<SubagentStartInput> + 'static,
     {
-        self.inner
-            .subagent_start
-            .push(Arc::new(ErasedCallback::<SubagentStartInput, C> {
-                inner: callback,
-                _marker: PhantomData,
-            }));
+        self.inner.subagent_start.push(Arc::new(ErasedCallback::<SubagentStartInput, C> {
+            inner: callback,
+            _marker: PhantomData,
+        }));
         self
     }
 
@@ -406,16 +377,12 @@ mod tests_hooks_registration {
     #[test]
     fn hooks_attach_to_options() {
         let hooks = HooksBuilder::new()
-            .pre_tool_use(
-                "*",
-                |_input: PreToolUseInput, _ctx: HookContext| async move { HookDecision::allow() },
-            )
-            .pre_tool_use(
-                "Bash",
-                |_input: PreToolUseInput, _ctx: HookContext| async move {
-                    HookDecision::deny("no bash")
-                },
-            )
+            .pre_tool_use("*", |_input: PreToolUseInput, _ctx: HookContext| async move {
+                HookDecision::allow()
+            })
+            .pre_tool_use("Bash", |_input: PreToolUseInput, _ctx: HookContext| async move {
+                HookDecision::deny("no bash")
+            })
             .build();
 
         let opts = OptionsBuilder::new().hooks(hooks).build();
@@ -431,9 +398,7 @@ mod tests_hooks_registration {
         // Confirm the builder exposes a registration method for every HookKind
         // variant the CLI emits, and that each ends up in the initialize payload.
         let hooks = HooksBuilder::new()
-            .pre_tool_use("Bash", |_i: PreToolUseInput, _c| async move {
-                HookDecision::allow()
-            })
+            .pre_tool_use("Bash", |_i: PreToolUseInput, _c| async move { HookDecision::allow() })
             .post_tool_use("Bash", |_i: crate::PostToolUseInput, _c| async move {
                 HookDecision::passthrough()
             })
@@ -480,9 +445,7 @@ mod tests_hooks_registration {
         // The initialize control_request's hooks payload groups by event name.
         // Every registered kind should appear as a key.
         let hooks = HooksBuilder::new()
-            .pre_tool_use("Bash", |_i: PreToolUseInput, _c| async move {
-                HookDecision::allow()
-            })
+            .pre_tool_use("Bash", |_i: PreToolUseInput, _c| async move { HookDecision::allow() })
             .post_tool_use_failure("*", |_i: PostToolUseFailureInput, _c| async move {
                 HookDecision::passthrough()
             })

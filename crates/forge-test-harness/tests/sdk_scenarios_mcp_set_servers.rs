@@ -13,10 +13,8 @@ use forge_test_harness::sdk_wire::run_live_scenario;
 #[tokio::test]
 #[ignore = "burns real Anthropic API tokens; opt-in via FORGE_WIRE_CAPTURE=1"]
 async fn wire_capture_mcp_set_servers() {
-    let opts = OptionsBuilder::new()
-        .max_turns(1)
-        .permission_mode(PermissionMode::AcceptEdits)
-        .build();
+    let opts =
+        OptionsBuilder::new().max_turns(1).permission_mode(PermissionMode::AcceptEdits).build();
 
     run_live_scenario("mcp_set_servers", opts, |client, events| async move {
         // Empty map: no servers. The CLI will accept it and clear any
@@ -27,9 +25,7 @@ async fn wire_capture_mcp_set_servers() {
 
         // Trail with a trivial turn so the trace ends with a Result
         // frame.
-        client
-            .send_user_message("Respond with only the word DONE.")
-            .await?;
+        client.send_user_message("Respond with only the word DONE.").await?;
         Ok((client, events))
     })
     .await

@@ -37,23 +37,13 @@ impl JsonRpcResponse {
     /// Build a successful response.
     #[must_use]
     pub fn success(id: Value, result: JsonRpcResult) -> Self {
-        Self {
-            jsonrpc: "2.0".into(),
-            id,
-            result: Some(result),
-            error: None,
-        }
+        Self { jsonrpc: "2.0".into(), id, result: Some(result), error: None }
     }
 
     /// Build an error response.
     #[must_use]
     pub fn error(id: Value, error: McpError) -> Self {
-        Self {
-            jsonrpc: "2.0".into(),
-            id,
-            result: None,
-            error: Some(error),
-        }
+        Self { jsonrpc: "2.0".into(), id, result: None, error: Some(error) }
     }
 }
 
@@ -82,11 +72,7 @@ pub enum JsonRpcResult {
         /// The content blocks the tool produced.
         content: Vec<Value>,
         /// Whether the call was an error.
-        #[serde(
-            default,
-            rename = "isError",
-            skip_serializing_if = "std::ops::Not::not"
-        )]
+        #[serde(default, rename = "isError", skip_serializing_if = "std::ops::Not::not")]
         is_error: bool,
     },
 }
@@ -171,11 +157,7 @@ mod tests_mcp_protocol {
     fn error_response_shape() {
         let resp = JsonRpcResponse::error(
             json!(2),
-            McpError {
-                code: -32601,
-                message: "Method not found".into(),
-                data: None,
-            },
+            McpError { code: -32601, message: "Method not found".into(), data: None },
         );
         let raw = serde_json::to_value(&resp).expect("ser");
         assert_eq!(raw["error"]["code"], -32601);
@@ -190,10 +172,7 @@ mod tests_mcp_protocol {
             JsonRpcResult::Initialize {
                 protocol_version: "2024-11-05".into(),
                 capabilities: json!({"tools": {}}),
-                server_info: ServerInfo {
-                    name: "probe".into(),
-                    version: "0.0.1".into(),
-                },
+                server_info: ServerInfo { name: "probe".into(), version: "0.0.1".into() },
             },
         );
         let raw = serde_json::to_value(&resp).expect("ser");

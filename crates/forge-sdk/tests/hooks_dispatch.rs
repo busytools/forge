@@ -13,20 +13,14 @@ fn fixture(name: &str) -> String {
 #[tokio::test]
 async fn pre_tool_use_replaces_input() {
     let hooks = HooksBuilder::new()
-        .pre_tool_use(
-            "Bash",
-            |_input: PreToolUseInput, _ctx: HookContext| async move {
-                HookDecision::replace_input(json!({
-                    "tool_input": {"command": "echo replaced"}
-                }))
-            },
-        )
+        .pre_tool_use("Bash", |_input: PreToolUseInput, _ctx: HookContext| async move {
+            HookDecision::replace_input(json!({
+                "tool_input": {"command": "echo replaced"}
+            }))
+        })
         .build();
 
-    let opts = OptionsBuilder::new()
-        .binary(fixture("mock_claude_hooks.sh"))
-        .hooks(hooks)
-        .build();
+    let opts = OptionsBuilder::new().binary(fixture("mock_claude_hooks.sh")).hooks(hooks).build();
 
     let (client, mut events) = Client::spawn(opts).await.expect("spawn");
     client.send_user_message("run bash").await.expect("send");
@@ -51,18 +45,12 @@ async fn pre_tool_use_replaces_input() {
 #[tokio::test]
 async fn pre_tool_use_deny_propagates() {
     let hooks = HooksBuilder::new()
-        .pre_tool_use(
-            "Bash",
-            |_input: PreToolUseInput, _ctx: HookContext| async move {
-                HookDecision::deny("no bash today")
-            },
-        )
+        .pre_tool_use("Bash", |_input: PreToolUseInput, _ctx: HookContext| async move {
+            HookDecision::deny("no bash today")
+        })
         .build();
 
-    let opts = OptionsBuilder::new()
-        .binary(fixture("mock_claude_hooks.sh"))
-        .hooks(hooks)
-        .build();
+    let opts = OptionsBuilder::new().binary(fixture("mock_claude_hooks.sh")).hooks(hooks).build();
 
     let (client, mut events) = Client::spawn(opts).await.expect("spawn");
     client.send_user_message("run bash").await.expect("send");

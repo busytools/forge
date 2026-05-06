@@ -118,10 +118,7 @@ impl OauthUsageError {
     /// different source for the same backend won't help.
     #[must_use]
     pub fn should_fallback(&self) -> bool {
-        matches!(
-            self,
-            Self::NoCredentials | Self::Expired | Self::Unauthorized(_)
-        )
+        matches!(self, Self::NoCredentials | Self::Expired | Self::Unauthorized(_))
     }
 }
 
@@ -138,10 +135,7 @@ impl OauthUsageError {
 pub async fn oauth_usage() -> Result<OauthUsage, OauthUsageError> {
     let credentials = load_oauth_credentials().ok_or(OauthUsageError::NoCredentials)?;
 
-    if credentials
-        .expires_at
-        .is_some_and(|expires_at| expires_at <= std::time::SystemTime::now())
-    {
+    if credentials.expires_at.is_some_and(|expires_at| expires_at <= std::time::SystemTime::now()) {
         return Err(OauthUsageError::Expired);
     }
 
@@ -168,10 +162,7 @@ pub async fn oauth_usage() -> Result<OauthUsage, OauthUsageError> {
         200 => serde_json::from_slice::<OauthUsage>(&body)
             .map_err(|error| OauthUsageError::Decode(error.to_string())),
         401 | 403 => Err(OauthUsageError::Unauthorized(status)),
-        _ => Err(OauthUsageError::HttpStatus(
-            status,
-            truncated_body_suffix(&body),
-        )),
+        _ => Err(OauthUsageError::HttpStatus(status, truncated_body_suffix(&body))),
     }
 }
 
@@ -179,10 +170,7 @@ fn oauth_headers(access_token: &str) -> Result<HeaderMap, OauthUsageError> {
     let mut headers = HeaderMap::new();
     headers.insert(ACCEPT, HeaderValue::from_static("application/json"));
     headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-    headers.insert(
-        "anthropic-beta",
-        HeaderValue::from_static(OAUTH_BETA_HEADER),
-    );
+    headers.insert("anthropic-beta", HeaderValue::from_static(OAUTH_BETA_HEADER));
     headers.insert(
         USER_AGENT,
         HeaderValue::from_static(concat!("forge-sdk/", env!("CARGO_PKG_VERSION"))),
@@ -224,14 +212,8 @@ mod tests {
             }"#,
         )
         .expect("decode");
-        assert_eq!(
-            usage.five_hour.as_ref().and_then(|w| w.utilization),
-            Some(12.5)
-        );
-        assert_eq!(
-            usage.seven_day_sonnet.as_ref().and_then(|w| w.utilization),
-            Some(5.0)
-        );
+        assert_eq!(usage.five_hour.as_ref().and_then(|w| w.utilization), Some(12.5));
+        assert_eq!(usage.seven_day_sonnet.as_ref().and_then(|w| w.utilization), Some(5.0));
         assert!(usage.seven_day.is_none());
     }
 

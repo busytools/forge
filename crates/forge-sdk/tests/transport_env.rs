@@ -62,9 +62,8 @@ async fn spawn_sets_entrypoint_and_version_envs() {
         Some("sdk-rs"),
         "CLAUDE_CODE_ENTRYPOINT must be stamped to identify forge-sdk (Rust) to the CLI — upstream Python SDK stamps sdk-py here"
     );
-    let version = env
-        .get("CLAUDE_AGENT_SDK_VERSION")
-        .expect("CLAUDE_AGENT_SDK_VERSION must be stamped");
+    let version =
+        env.get("CLAUDE_AGENT_SDK_VERSION").expect("CLAUDE_AGENT_SDK_VERSION must be stamped");
     assert_eq!(version, env!("CARGO_PKG_VERSION"));
 }
 
@@ -72,8 +71,7 @@ async fn spawn_sets_entrypoint_and_version_envs() {
 async fn spawn_sets_file_checkpointing_env_when_enabled() {
     let on = spawn_and_capture_env(|b| b.enable_file_checkpointing(true)).await;
     assert_eq!(
-        on.get("CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING")
-            .map(String::as_str),
+        on.get("CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING").map(String::as_str),
         Some("true"),
         "enable_file_checkpointing must surface as env var (NOT a CLI flag)"
     );

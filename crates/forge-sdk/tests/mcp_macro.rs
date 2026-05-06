@@ -30,11 +30,7 @@ tool! {
 async fn macro_generated_tool_works() {
     let t = DoubleTool;
     assert_eq!(t.name(), "double");
-    let out = t
-        .call(ToolInput {
-            value: json!({"n": 7}),
-        })
-        .await;
+    let out = t.call(ToolInput { value: json!({"n": 7}) }).await;
     assert!(!out.is_error);
     match &out.blocks[0] {
         ToolOutputBlock::Text { text } => assert_eq!(text, "14"),

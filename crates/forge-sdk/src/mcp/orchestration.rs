@@ -50,12 +50,7 @@ impl McpHosts {
         let mut servers: serde_json::Map<String, serde_json::Value> = self
             .servers
             .keys()
-            .map(|name| {
-                (
-                    name.clone(),
-                    serde_json::json!({"type": "sdk", "name": name}),
-                )
-            })
+            .map(|name| (name.clone(), serde_json::json!({"type": "sdk", "name": name})))
             .collect();
         for (name, cfg) in &self.external {
             match serde_json::to_value(cfg) {

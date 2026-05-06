@@ -64,21 +64,13 @@ impl TraceLog {
     /// Slice of inbound lines (CLI → SDK).
     #[must_use]
     pub fn inbound(&self) -> Vec<&str> {
-        self.entries
-            .iter()
-            .filter(|(d, _)| *d == "in")
-            .map(|(_, l)| l.as_str())
-            .collect()
+        self.entries.iter().filter(|(d, _)| *d == "in").map(|(_, l)| l.as_str()).collect()
     }
 
     /// Slice of outbound lines (SDK → CLI).
     #[must_use]
     pub fn outbound(&self) -> Vec<&str> {
-        self.entries
-            .iter()
-            .filter(|(d, _)| *d == "out")
-            .map(|(_, l)| l.as_str())
-            .collect()
+        self.entries.iter().filter(|(d, _)| *d == "out").map(|(_, l)| l.as_str()).collect()
     }
 }
 
@@ -148,26 +140,16 @@ pub fn load_baseline(scenario: &str) -> TraceLog {
             continue;
         }
         let obj: serde_json::Value = serde_json::from_str(line).unwrap_or_else(|e| {
-            panic!(
-                "{}:{}: malformed baseline entry: {e}",
-                path.display(),
-                i + 1
-            )
+            panic!("{}:{}: malformed baseline entry: {e}", path.display(), i + 1)
         });
         let dir_str = obj.get("dir").and_then(|v| v.as_str()).unwrap_or("");
-        let line_val = obj
-            .get("line")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
+        let line_val = obj.get("line").and_then(|v| v.as_str()).unwrap_or("").to_string();
         let dir_static: &'static str = match dir_str {
             "in" => "in",
             "out" => "out",
-            other => panic!(
-                "{}:{}: bad dir '{other}' (expected 'in' or 'out')",
-                path.display(),
-                i + 1
-            ),
+            other => {
+                panic!("{}:{}: bad dir '{other}' (expected 'in' or 'out')", path.display(), i + 1)
+            }
         };
         log.entries.push((dir_static, line_val));
     }
@@ -331,10 +313,7 @@ where
         match tokio::time::timeout(read_timeout, events.recv()).await {
             Ok(Some(Ok(msg))) => {
                 if let forge_sdk::Message::Result {
-                    num_turns,
-                    total_cost_usd,
-                    duration_ms,
-                    ..
+                    num_turns, total_cost_usd, duration_ms, ..
                 } = &msg
                 {
                     saw_result = true;

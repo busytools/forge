@@ -69,9 +69,7 @@ pub fn tag_session(
         Some(raw) => {
             let stripped = raw.trim();
             if stripped.is_empty() {
-                return Err(Error::message_parse(
-                    "tag must be non-empty (use None to clear)",
-                ));
+                return Err(Error::message_parse("tag must be non-empty (use None to clear)"));
             }
             stripped.to_string()
         }
@@ -191,9 +189,7 @@ pub fn fork_session(
         match serde_json::from_str::<Value>(line) {
             Ok(value) => {
                 if let Some(old) = value.get("uuid").and_then(Value::as_str) {
-                    uuid_remap
-                        .entry(old.to_string())
-                        .or_insert_with(|| Uuid::new_v4().to_string());
+                    uuid_remap.entry(old.to_string()).or_insert_with(|| Uuid::new_v4().to_string());
                 }
             }
             Err(e) => {
@@ -263,9 +259,7 @@ pub fn fork_session(
     let mut body = out_lines.join("\n");
     body.push('\n');
     fs::write(&fork_path, body)?;
-    Ok(ForkSessionResult {
-        session_id: new_session_id,
-    })
+    Ok(ForkSessionResult { session_id: new_session_id })
 }
 
 /// True if `s` is a canonical 8-4-4-4-12 hyphenated UUID. The length
@@ -291,17 +285,14 @@ fn find_session_file(session_id: &str, directory: Option<&str>) -> Option<PathBu
             Ok(p) => p.to_string_lossy().into_owned(),
             Err(_) => dir.to_string(),
         };
-        let project_dir = projects_dir().join(
-            crate::userdata::catalog::scan::sanitize_path_public(&canonical),
-        );
+        let project_dir =
+            projects_dir().join(crate::userdata::catalog::scan::sanitize_path_public(&canonical));
         let candidate = project_dir.join(&file_name);
         return candidate.is_file().then_some(candidate);
     }
-    fs::read_dir(projects_dir()).ok().and_then(|iter| {
-        iter.flatten()
-            .map(|e| e.path().join(&file_name))
-            .find(|p| p.is_file())
-    })
+    fs::read_dir(projects_dir())
+        .ok()
+        .and_then(|iter| iter.flatten().map(|e| e.path().join(&file_name)).find(|p| p.is_file()))
 }
 
 fn append_to_session(
@@ -341,11 +332,7 @@ pub(crate) fn remap_entry_fields(
         return false;
     };
     let mut boundary_hit = false;
-    if let Some(old) = obj
-        .get("uuid")
-        .and_then(Value::as_str)
-        .map(ToOwned::to_owned)
-    {
+    if let Some(old) = obj.get("uuid").and_then(Value::as_str).map(ToOwned::to_owned) {
         if let Some(mapped) = uuid_remap.get(&old) {
             obj.insert("uuid".into(), Value::String(mapped.clone()));
         }
@@ -354,10 +341,7 @@ pub(crate) fn remap_entry_fields(
         }
     }
     for parent_key in ["parentUuid", "parent_uuid"] {
-        if let Some(parent) = obj
-            .get(parent_key)
-            .and_then(Value::as_str)
-            .map(ToOwned::to_owned)
+        if let Some(parent) = obj.get(parent_key).and_then(Value::as_str).map(ToOwned::to_owned)
             && let Some(mapped) = uuid_remap.get(&parent)
         {
             obj.insert(parent_key.into(), Value::String(mapped.clone()));
@@ -416,10 +400,8 @@ fn derive_fork_title(source: &Path) -> Option<String> {
         if first_prompt.is_none()
             && value.get("type").and_then(Value::as_str) == Some("user")
             && value.get("parent_tool_use_id").is_none_or(Value::is_null)
-            && let Some(content) = value
-                .get("message")
-                .and_then(|m| m.get("content"))
-                .and_then(Value::as_str)
+            && let Some(content) =
+                value.get("message").and_then(|m| m.get("content")).and_then(Value::as_str)
         {
             first_prompt = Some(content.to_string());
         }

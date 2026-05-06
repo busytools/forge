@@ -52,11 +52,8 @@ fn unknown_content_blocks(msg: &Message) -> Vec<(String, String)> {
     if let Some(blocks) = blocks {
         for block in blocks {
             if let ContentBlock::Unknown { type_str, raw } = block {
-                let preview = serde_json::to_string(raw)
-                    .unwrap_or_default()
-                    .chars()
-                    .take(200)
-                    .collect();
+                let preview =
+                    serde_json::to_string(raw).unwrap_or_default().chars().take(200).collect();
                 out.push((type_str.clone(), preview));
             }
         }
@@ -91,18 +88,10 @@ fn real_session_decode_probe() {
         return;
     };
     let root = PathBuf::from(&root_str);
-    assert!(
-        root.exists(),
-        "FORGE_REAL_SESSIONS points at a missing path: {}",
-        root.display()
-    );
+    assert!(root.exists(), "FORGE_REAL_SESSIONS points at a missing path: {}", root.display());
 
     let files = jsonl_files_under(&root);
-    eprintln!(
-        "probing {} session files under {}",
-        files.len(),
-        root.display()
-    );
+    eprintln!("probing {} session files under {}", files.len(), root.display());
 
     let mut files_seen = 0_usize;
     let mut files_transform_failed = 0_usize;
@@ -166,20 +155,12 @@ fn real_session_decode_probe() {
         for (path, line, err) in decode_errors.iter().take(10) {
             eprintln!("{}:{}: {err}", path.display(), line);
         }
-        panic!(
-            "{} decode errors in real-session probe",
-            decode_errors.len()
-        );
+        panic!("{} decode errors in real-session probe", decode_errors.len());
     }
     if !unknown_types.is_empty() {
         eprintln!("\n--- unknown TOP-LEVEL types seen (first 10) ---");
         for (path, line, ty) in unknown_types.iter().take(10) {
-            eprintln!(
-                "  session={} line={} unknown type=\"{}\"",
-                path.display(),
-                line,
-                ty
-            );
+            eprintln!("  session={} line={} unknown type=\"{}\"", path.display(), line, ty);
         }
         eprintln!(
             "note: unknown top-level types are tolerated via DecodedLine::Unknown; \
