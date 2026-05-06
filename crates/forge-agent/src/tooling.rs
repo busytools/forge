@@ -854,7 +854,6 @@ pub fn unwrap_tool_use_result(raw_result: &Value) -> UnwrappedToolResult {
     UnwrappedToolResult { is_error, content: raw_result.clone() }
 }
 
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #[cfg(test)]
 mod tests {
     use super::*;

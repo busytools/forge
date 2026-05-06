@@ -713,7 +713,6 @@ pub(crate) fn parse_rfc3339_ms(ts: &str) -> Result<u64, time::error::Parse> {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
     use super::*;
 

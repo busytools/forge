@@ -27,7 +27,6 @@ pub use registry::{Hooks, HooksBuilder};
 
 #[cfg(test)]
 mod tests_hooks_types {
-    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
     #[allow(unused_imports)]
     use super::*;
 
