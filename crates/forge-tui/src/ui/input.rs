@@ -100,7 +100,7 @@ pub(crate) fn compute_render_geometry(area: Rect, hint_lines: u16) -> InputRende
     InputRenderGeometry { hint_pad, padded, prompt, text }
 }
 
-#[allow(clippy::cast_possible_truncation, clippy::too_many_lines)]
+#[allow(clippy::cast_possible_truncation)]
 pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     let hint_lines = hint_line_count(app);
     let geometry = compute_render_geometry(area, hint_lines);

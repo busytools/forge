@@ -219,7 +219,6 @@ impl DecodeReport {
 /// - Transport panics are propagated.
 /// - Trace file I/O failure.
 /// - Decode-completeness regression in the captured inbound frames.
-#[allow(clippy::too_many_lines)]
 pub async fn run_live_scenario<F, Fut>(
     scenario: &str,
     options: forge_sdk::Options,

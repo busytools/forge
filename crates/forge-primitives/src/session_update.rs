@@ -23,7 +23,6 @@ pub enum ChunkContent {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[allow(clippy::struct_field_names)]
 pub struct ToolCall {
     pub tool_call_id: String,
     pub title: String,

@@ -12,7 +12,7 @@
 //!   so they can destructure ownership-tracked fields without copying.
 //! - `doc_markdown`: keeps prose like `forge_primitives::Message` in
 //!   doc comments without backticks tripping the lint.
-#![allow(clippy::needless_pass_by_value, clippy::doc_markdown)]
+#![allow(clippy::needless_pass_by_value)]
 
 use forge_primitives::Message;
 use serde_json::Value;

@@ -111,7 +111,7 @@ pub(crate) fn resume_terminal() {
 // TUI event loop
 // ---------------------------------------------------------------------------
 
-#[allow(clippy::too_many_lines, clippy::cast_precision_loss)]
+#[allow(clippy::cast_precision_loss)]
 pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
     let mut terminal = ratatui::init();
     let mut os_shutdown = Box::pin(wait_for_shutdown_signal());

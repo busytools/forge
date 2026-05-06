@@ -810,7 +810,6 @@ impl App {
     /// All fields get sensible defaults; the `mpsc` channel is wired up internally.
     #[doc(hidden)]
     #[must_use]
-    #[allow(clippy::too_many_lines)]
     pub fn test_default() -> Self {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         let (file_index_tx, file_index_rx) = std_mpsc::channel();
