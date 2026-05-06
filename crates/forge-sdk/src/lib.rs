@@ -43,7 +43,7 @@
 //! # Ok(()) }
 //! ```
 
-#![doc(html_root_url = "https://docs.rs/forge-sdk/0.14.0")]
+#![doc(html_root_url = "https://docs.rs/forge-sdk/0.14.1")]
 #![forbid(unsafe_code)]
 
 pub mod argv;
