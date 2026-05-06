@@ -52,47 +52,21 @@ pub struct MessageRenderCacheKey {
     pub render_signature: MessageRenderSignature,
 }
 
-// Each bool is an independent message-render flag (continuation, last-of-turn, has-tool-call, etc.) consulted by separate render branches.
-#[allow(clippy::struct_excessive_bools)]
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MessageRenderSignature {
-    pub role: MessageRole,
-    pub show_empty_thinking: bool,
-    pub show_thinking: bool,
-    pub show_compacting: bool,
-    pub assistant_frame: Option<usize>,
-    pub blocks: Vec<MessageBlockRenderSignature>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum MessageBlockRenderSignature {
-    Text {
-        text_hash: u64,
-        trailing_spacing: TextBlockSpacing,
-    },
-    Notice {
-        severity: SystemSeverity,
-        text_hash: u64,
-        trailing_spacing: TextBlockSpacing,
-    },
-    ToolCall {
-        render_epoch: u64,
-        layout_epoch: u64,
-        hidden: bool,
-        status: crate::agent::model::ToolCallStatus,
-        sdk_tool_name: String,
-        current_mode_id: Option<String>,
-        pending_permission: bool,
-        pending_question: bool,
-        frame: Option<usize>,
-    },
-    Welcome {
-        content_hash: u64,
-    },
-    ImageAttachment {
-        count: usize,
-    },
-}
+/// Compact cache-key proxy for a [`ChatMessage`] + render context.
+///
+/// All inputs that affect the rendered output are folded into a single
+/// `u64` hash: message role, spinner-state flags, the assistant frame
+/// (when frame-dependent), and per-block contributions (text hashes,
+/// tool-call epochs / status / permission flags, welcome-block hash,
+/// image-attachment count). The render cache compares signatures by
+/// `==`, which on a `u64` is one machine-word compare.
+///
+/// Hash collisions are theoretically possible (we trust 64-bit
+/// `DefaultHasher`); a collision would manifest as a stale render
+/// surviving past an input change. Acceptable for a render cache —
+/// the next genuine state change invalidates everything anyway.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct MessageRenderSignature(pub u64);
 
 #[derive(Default)]
 pub struct MessageRenderCache {
@@ -528,7 +502,7 @@ impl ImageAttachmentBlock {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum MessageRole {
     User,
     Assistant,
@@ -536,7 +510,7 @@ pub enum MessageRole {
     Welcome,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SystemSeverity {
     Info,
     Warning,
