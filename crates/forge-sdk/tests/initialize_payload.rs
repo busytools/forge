@@ -10,6 +10,9 @@
 //! tests parse it and assert field presence.
 
 
+
+#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+
 use std::fs;
 
 use forge_sdk::{Client, OptionsBuilder};

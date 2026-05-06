@@ -114,6 +114,7 @@ pub struct ToolDescription {
 
 #[cfg(test)]
 mod tests_mcp_protocol {
+    #[allow(unused_imports)]
     use super::*;
 
     use crate::mcp::McpError;

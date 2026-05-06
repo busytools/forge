@@ -7,6 +7,9 @@
 //! and what the SDK is expected to send back.
 
 
+
+#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+
 use forge_sdk::{OptionsBuilder, PermissionDecision, PermissionMode, ToolPermissionContext};
 use forge_test_harness::sdk_wire::run_live_scenario;
 

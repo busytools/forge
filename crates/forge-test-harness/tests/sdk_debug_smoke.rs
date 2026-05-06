@@ -4,6 +4,9 @@
 //! tell exactly where the stall happens.
 
 
+
+#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+
 use std::io::Write as _;
 use std::time::{Duration, Instant};
 

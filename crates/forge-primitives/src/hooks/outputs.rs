@@ -266,6 +266,7 @@ pub fn encode_updated_input_wrapper(kind: HookKind, updated: &Value) -> Option<V
 
 #[cfg(test)]
 mod tests_hooks_specific_output {
+    #[allow(unused_imports)]
     use super::*;
 
     use crate::{

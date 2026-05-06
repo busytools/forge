@@ -28,7 +28,9 @@
 //!   `/resume`, status snapshot, model switching live in the TUI loop
 //!   and need terminal-driven verification.
 
-#![allow(clippy::panic, clippy::expect_used, clippy::unwrap_used, clippy::manual_assert)]
+
+
+#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic, clippy::manual_assert)]
 
 use std::time::Duration;
 
@@ -318,7 +320,6 @@ async fn forge_sdk_e2e_mcp_snapshot() {
 #[ignore = "needs a real `claude` binary on PATH; burns API budget"]
 async fn forge_sdk_e2e_resume_session() {
     // Phase 1: spawn a fresh session, drive one prompt, capture sid.
-    #[allow(clippy::similar_names)]
     let session_id = {
         let agent_handle = Agent::spawn();
         let mut event_rx = agent_handle.take_events().expect("fresh handle has events");

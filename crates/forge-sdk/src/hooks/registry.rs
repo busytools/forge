@@ -365,6 +365,7 @@ impl HooksBuilder {
 
 #[cfg(test)]
 mod tests_hooks_registration {
+    #[allow(unused_imports)]
     use super::*;
 
     use crate::{HookContext, HookDecision, HooksBuilder, OptionsBuilder, PreToolUseInput};

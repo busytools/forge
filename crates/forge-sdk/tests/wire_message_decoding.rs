@@ -8,6 +8,9 @@
 //! transport module.
 
 
+
+#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+
 #[cfg(test)]
 mod tests_rate_limit_frames {
 

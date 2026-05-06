@@ -29,6 +29,9 @@
 //! instead.
 
 
+
+#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+
 use std::path::{Path, PathBuf};
 
 use forge_sdk::ContentBlock;

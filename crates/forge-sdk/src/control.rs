@@ -376,6 +376,7 @@ impl ControlRequest {
 
 #[cfg(test)]
 mod tests_control_types {
+    #[allow(unused_imports)]
     use super::*;
 
     use crate::control::{
