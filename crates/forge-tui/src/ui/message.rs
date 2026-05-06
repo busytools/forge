@@ -1,8 +1,7 @@
 use crate::app::{
     BlockCache, CachedMessageSegment, ChatMessage, IncrementalMarkdown, MarkdownRenderKey,
-    MessageBlock, MessageBlockRenderSignature, MessageRenderCache, MessageRenderCacheKey,
-    MessageRenderSignature, MessageRole, SystemSeverity, TextBlock, WelcomeBlock,
-    hash_text_block_content, hash_welcome_block_content,
+    MessageBlock, MessageRenderCache, MessageRenderCacheKey, MessageRenderSignature, MessageRole,
+    SystemSeverity, TextBlock, WelcomeBlock, hash_text_block_content, hash_welcome_block_content,
 };
 use crate::ui::theme;
 use crate::ui::tool_call;
@@ -809,57 +808,77 @@ fn build_message_render_signature(
     spinner: &SpinnerState,
     tool_render_context: tool_call::ToolCallRenderContext<'_>,
 ) -> MessageRenderSignature {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut hasher = DefaultHasher::new();
+    msg.role.hash(&mut hasher);
+    spinner.show_empty_thinking.hash(&mut hasher);
+    spinner.show_thinking.hash(&mut hasher);
+    spinner.show_compacting.hash(&mut hasher);
     let assistant_frame = if message_has_frame_dependent_assistant_lines(msg, spinner) {
         Some(spinner.frame)
     } else {
         None
     };
-    let blocks = msg
-        .blocks
-        .iter()
-        .map(|block| build_message_block_render_signature(block, spinner, tool_render_context))
-        .collect();
-    MessageRenderSignature {
-        role: msg.role.clone(),
-        show_empty_thinking: spinner.show_empty_thinking,
-        show_thinking: spinner.show_thinking,
-        show_compacting: spinner.show_compacting,
-        assistant_frame,
-        blocks,
+    assistant_frame.hash(&mut hasher);
+    for block in &msg.blocks {
+        hash_message_block_into(&mut hasher, block, spinner, tool_render_context);
     }
+    MessageRenderSignature(hasher.finish())
 }
 
-fn build_message_block_render_signature(
+/// Discriminant tags used while folding `MessageBlock` variants into
+/// the message-level signature hash. Stable values matter: changing
+/// any tag invalidates every previously-cached render, but order
+/// independence between variants is what stops a Text-with-N bytes
+/// from ever colliding with a Notice with the same N bytes.
+mod block_tag {
+    pub const TEXT: u8 = 0;
+    pub const NOTICE: u8 = 1;
+    pub const TOOL_CALL: u8 = 2;
+    pub const WELCOME: u8 = 3;
+    pub const IMAGE_ATTACHMENT: u8 = 4;
+}
+
+fn hash_message_block_into<H: std::hash::Hasher>(
+    hasher: &mut H,
     block: &MessageBlock,
     spinner: &SpinnerState,
     tool_render_context: tool_call::ToolCallRenderContext<'_>,
-) -> MessageBlockRenderSignature {
+) {
+    use std::hash::Hash;
     match block {
-        MessageBlock::Text(block) => MessageBlockRenderSignature::Text {
-            text_hash: hash_text_block_content(&block.text, block.trailing_spacing),
-            trailing_spacing: block.trailing_spacing,
-        },
-        MessageBlock::Notice(block) => MessageBlockRenderSignature::Notice {
-            severity: block.severity,
-            text_hash: hash_text_block_content(&block.text.text, block.text.trailing_spacing),
-            trailing_spacing: block.text.trailing_spacing,
-        },
-        MessageBlock::ToolCall(tc) => MessageBlockRenderSignature::ToolCall {
-            render_epoch: tc.render_epoch,
-            layout_epoch: tc.layout_epoch,
-            hidden: tc.hidden,
-            status: tc.status,
-            sdk_tool_name: tc.sdk_tool_name.clone(),
-            current_mode_id: tool_render_context.current_mode_id.map(str::to_owned),
-            pending_permission: tc.pending_permission.is_some(),
-            pending_question: tc.pending_question.is_some(),
-            frame: tool_call_needs_spinner_frame(tc).then_some(spinner.frame),
-        },
+        MessageBlock::Text(block) => {
+            block_tag::TEXT.hash(hasher);
+            hash_text_block_content(&block.text, block.trailing_spacing).hash(hasher);
+            block.trailing_spacing.hash(hasher);
+        }
+        MessageBlock::Notice(block) => {
+            block_tag::NOTICE.hash(hasher);
+            block.severity.hash(hasher);
+            hash_text_block_content(&block.text.text, block.text.trailing_spacing).hash(hasher);
+            block.text.trailing_spacing.hash(hasher);
+        }
+        MessageBlock::ToolCall(tc) => {
+            block_tag::TOOL_CALL.hash(hasher);
+            tc.render_epoch.hash(hasher);
+            tc.layout_epoch.hash(hasher);
+            tc.hidden.hash(hasher);
+            tc.status.hash(hasher);
+            tc.sdk_tool_name.hash(hasher);
+            tool_render_context.current_mode_id.hash(hasher);
+            tc.pending_permission.is_some().hash(hasher);
+            tc.pending_question.is_some().hash(hasher);
+            let frame = tool_call_needs_spinner_frame(tc).then_some(spinner.frame);
+            frame.hash(hasher);
+        }
         MessageBlock::Welcome(block) => {
-            MessageBlockRenderSignature::Welcome { content_hash: hash_welcome_block_content(block) }
+            block_tag::WELCOME.hash(hasher);
+            hash_welcome_block_content(block).hash(hasher);
         }
         MessageBlock::ImageAttachment(block) => {
-            MessageBlockRenderSignature::ImageAttachment { count: block.count }
+            block_tag::IMAGE_ATTACHMENT.hash(hasher);
+            block.count.hash(hasher);
         }
     }
 }

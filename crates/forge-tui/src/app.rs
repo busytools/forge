@@ -50,15 +50,14 @@ pub use state::{
     App, AppStatus, BlockCache, CacheMetrics, CachedMessageSegment, CancelOrigin, ChatMessage,
     ChatRenderTraceState, ChatViewport, ExtraUsage, HelpView, IncrementalMarkdown,
     InlinePermission, InlineQuestion, InvalidationLevel, LayoutInvalidation, LoginHint, McpState,
-    MessageBlock, MessageBlockRenderSignature, MessageRenderCache, MessageRenderCacheKey,
-    MessageRenderSignature, MessageRole, MessageUsage, ModeInfo, ModeState, NoticeBlock,
-    NoticeDedupKey, NoticeStage, PasteSessionState, PendingCommandAck, RateLimitIncidentKey,
-    RecentSessionInfo, ScrollbarGeometry, SelectionKind, SelectionPoint, SelectionState,
-    SessionPickerState, SessionTurnState, SessionUsageState, SystemSeverity, TerminalSnapshotMode,
-    TextBlock, TextBlockSpacing, TodoItem, TodoStatus, ToolCallInfo, ToolCallScope,
-    TurnNoticeLocation, TurnNoticeRef, UsageSnapshot, UsageSourceKind, UsageSourceMode, UsageState,
-    UsageWindow, WelcomeBlock, compute_scrollbar_geometry, hash_text_block_content,
-    hash_welcome_block_content, is_execute_tool_name,
+    MessageBlock, MessageRenderCache, MessageRenderCacheKey, MessageRenderSignature, MessageRole,
+    MessageUsage, ModeInfo, ModeState, NoticeBlock, NoticeDedupKey, NoticeStage, PasteSessionState,
+    PendingCommandAck, RateLimitIncidentKey, RecentSessionInfo, ScrollbarGeometry, SelectionKind,
+    SelectionPoint, SelectionState, SessionPickerState, SessionTurnState, SessionUsageState,
+    SystemSeverity, TerminalSnapshotMode, TextBlock, TextBlockSpacing, TodoItem, TodoStatus,
+    ToolCallInfo, ToolCallScope, TurnNoticeLocation, TurnNoticeRef, UsageSnapshot, UsageSourceKind,
+    UsageSourceMode, UsageState, UsageWindow, WelcomeBlock, compute_scrollbar_geometry,
+    hash_text_block_content, hash_welcome_block_content, is_execute_tool_name,
 };
 pub use trust::TrustSelection;
 pub use view::ActiveView;
