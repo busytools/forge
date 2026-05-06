@@ -30,7 +30,6 @@
 //! The redactor is deterministic: a given input line produces the same
 //! output line, so fixtures regenerate cleanly under version control.
 
-#![allow(clippy::too_many_lines)]
 
 use std::collections::HashMap;
 use std::sync::OnceLock;

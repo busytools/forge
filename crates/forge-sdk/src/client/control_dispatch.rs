@@ -113,7 +113,6 @@ impl ControlDispatchHandle {
     /// Same shape as `Client::handle_control`: encode/serialise
     /// failures from [`Error::message_parse`] / [`Error::encode`],
     /// and write failures from the underlying writer.
-    #[allow(clippy::too_many_lines)]
     pub(crate) async fn dispatch(&self, req: ControlRequest) -> Result<(), Error> {
         let original_input = req.original_tool_input().cloned();
 

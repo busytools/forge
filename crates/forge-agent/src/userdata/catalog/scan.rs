@@ -539,7 +539,6 @@ fn unescape_json_string(raw: &str) -> String {
 /// messages (with command-name fallback), and the fixed-prefix skip
 /// patterns the CLI's `_SKIP_FIRST_PROMPT_PATTERN` matches. Truncates to
 /// 200 chars with an ellipsis.
-#[allow(clippy::too_many_lines)]
 fn extract_first_prompt_from_head(head: &str) -> Option<String> {
     let mut command_fallback: Option<String> = None;
     for line in head.split('\n') {

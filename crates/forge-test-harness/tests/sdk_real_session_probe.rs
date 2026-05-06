@@ -78,7 +78,6 @@ fn jsonl_files_under(root: &Path) -> Vec<PathBuf> {
 }
 
 #[test]
-#[allow(clippy::too_many_lines)]
 fn real_session_decode_probe() {
     let Ok(root_str) = std::env::var("FORGE_REAL_SESSIONS") else {
         eprintln!(

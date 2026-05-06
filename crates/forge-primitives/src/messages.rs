@@ -628,7 +628,6 @@ struct GenericSystemRepr {
 }
 
 impl From<MessageRepr> for Message {
-    #[allow(clippy::too_many_lines)]
     fn from(repr: MessageRepr) -> Self {
         match repr {
             MessageRepr::Assistant { message, session_id, parent_tool_use_id, error, uuid } => {
@@ -760,7 +759,6 @@ impl From<MessageRepr> for Message {
 }
 
 impl From<Message> for MessageRepr {
-    #[allow(clippy::too_many_lines)]
     fn from(msg: Message) -> Self {
         match msg {
             Message::Assistant { message, session_id, parent_tool_use_id, error, uuid } => {
