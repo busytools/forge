@@ -249,6 +249,10 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
             if app.perf.is_some() {
                 app.mark_frame_presented(Instant::now());
             }
+            // `Timer` is `Drop`-implementing under `feature = "perf"` and a
+            // unit struct otherwise. Explicit `drop()` enforces the desired
+            // lifetime in both feature paths; clippy can't see the cfg
+            // branch where Drop matters.
             #[allow(clippy::drop_non_drop)]
             {
                 let timer = app.perf.as_ref().map(|p| p.start("frame_total"));

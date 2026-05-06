@@ -581,6 +581,7 @@ enum SystemRepr {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "subtype", rename_all = "snake_case")]
+// Wire-shape enum — variants share the `System` prefix because that's the CLI's wire-tag scheme.
 #[allow(clippy::enum_variant_names)]
 enum TypedSystemRepr {
     TaskStarted {
@@ -892,6 +893,7 @@ impl From<Message> for MessageRepr {
 
 #[cfg(test)]
 mod tests_result_message_fields {
+    // Test-mod `use super::*;` brings the parent's full surface in; not every test consumes every item.
     #[allow(unused_imports)]
     use super::*;
 
@@ -1031,6 +1033,7 @@ mod tests_result_message_fields {
 
 #[cfg(test)]
 mod tests_message_extras {
+    // Test-mod `use super::*;` brings the parent's full surface in; not every test consumes every item.
     #[allow(unused_imports)]
     use super::*;
 

@@ -365,6 +365,7 @@ impl HooksBuilder {
 
 #[cfg(test)]
 mod tests_hooks_registration {
+    // Test-mod `use super::*;` brings the parent's full surface in; not every test consumes every item.
     #[allow(unused_imports)]
     use super::*;
 

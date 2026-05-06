@@ -342,6 +342,7 @@ pub(crate) fn parse_permission_mode(mode: &str) -> anyhow::Result<PermissionMode
 // Permission / question round-trip
 // ----------------------------------------------------------------------------
 
+// Options-builder bridge — args mirror `forge_sdk::OptionsBuilder` setters 1:1. Wrapping doesn't simplify — caller would just unpack again.
 #[allow(clippy::too_many_arguments)]
 fn build_options_with_callback(
     cwd: &str,

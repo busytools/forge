@@ -121,6 +121,7 @@ pub struct ChatRenderTraceState {
     pub selection_snapshot_active: bool,
 }
 
+// `App` is the god struct — bools are independent UI flags (autoscroll, paste-detected, dirty-rerender). Bundling defeats clarity at call sites.
 #[allow(clippy::struct_excessive_bools)]
 pub struct App {
     pub active_view: ActiveView,

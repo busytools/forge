@@ -27,6 +27,7 @@ pub use registry::{Hooks, HooksBuilder};
 
 #[cfg(test)]
 mod tests_hooks_types {
+    // Test-mod `use super::*;` brings the parent's full surface in; not every test consumes every item.
     #[allow(unused_imports)]
     use super::*;
 

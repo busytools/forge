@@ -270,6 +270,7 @@ impl<'de> Deserialize<'de> for ContentBlock {
 
 #[cfg(test)]
 mod tests_content_roundtrip {
+    // Test-mod `use super::*;` brings the parent's full surface in; not every test consumes every item.
     #[allow(unused_imports)]
     use super::*;
 

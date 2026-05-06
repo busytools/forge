@@ -376,6 +376,7 @@ impl ControlRequest {
 
 #[cfg(test)]
 mod tests_control_types {
+    // Test-mod `use super::*;` brings the parent's full surface in; not every test consumes every item.
     #[allow(unused_imports)]
     use super::*;
 
