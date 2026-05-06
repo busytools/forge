@@ -5,8 +5,6 @@
 //! `control_request` → SDK handler → outbound `control_response` round
 //! trip on the wire.
 
-
-
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
 use forge_sdk::{

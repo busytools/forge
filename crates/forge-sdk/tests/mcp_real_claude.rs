@@ -3,8 +3,6 @@
 //! Requires `claude` on PATH. Gated with `#[ignore]`; run with
 //! `cargo nextest run --run-ignored all --test mcp_real_claude`.
 
-
-
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,

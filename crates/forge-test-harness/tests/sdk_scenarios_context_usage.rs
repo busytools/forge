@@ -5,8 +5,6 @@
 //! for validating that forge-sdk's token/budget query path decodes its
 //! `control_response` body cleanly against the real CLI.
 
-
-
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
 use forge_sdk::{OptionsBuilder, PermissionMode};

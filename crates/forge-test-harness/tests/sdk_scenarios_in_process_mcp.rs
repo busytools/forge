@@ -10,8 +10,6 @@
 //! tool isn't in the CLI's default allow list and we don't want the
 //! permission callback in the path (that's its own scenario).
 
-
-
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
 use async_trait::async_trait;

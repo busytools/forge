@@ -28,8 +28,6 @@
 //!   `/resume`, status snapshot, model switching live in the TUI loop
 //!   and need terminal-driven verification.
 
-
-
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic, clippy::manual_assert)]
 
 use std::time::Duration;

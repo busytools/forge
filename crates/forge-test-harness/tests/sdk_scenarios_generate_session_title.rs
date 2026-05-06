@@ -6,8 +6,6 @@
 //! Captures the request shape (`{subtype: "generate_session_title",
 //! description: ..., persist: true}`) and the CLI's response.
 
-
-
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
 use forge_sdk::{OptionsBuilder, PermissionMode};

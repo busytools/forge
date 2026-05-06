@@ -6,8 +6,6 @@
 //! so we can observe the full handshake — request shape from the CLI,
 //! and what the SDK is expected to send back.
 
-
-
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
 use forge_sdk::{OptionsBuilder, PermissionDecision, PermissionMode, ToolPermissionContext};

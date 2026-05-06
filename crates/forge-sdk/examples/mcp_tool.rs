@@ -5,7 +5,6 @@
 //! cargo run -p forge-sdk --example mcp_tool -- "Double 21 using mcp__local__double"
 //! ```
 
-
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
 use anyhow::Result;

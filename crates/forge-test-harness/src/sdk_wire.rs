@@ -26,7 +26,6 @@
 //! the `cli-version` dir rotates when we bump the pinned CLI version
 //! through the upgrade ritual.
 
-
 pub mod session_redact;
 
 use std::sync::Arc;

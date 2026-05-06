@@ -6,7 +6,6 @@
 //! cargo run -p forge-sdk --example permissions -- "Read /tmp/README.md"
 //! ```
 
-
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
 use anyhow::Result;

@@ -7,8 +7,6 @@
 //! the messages.rs file in primitives because primitives has no
 //! transport module.
 
-
-
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
 #[cfg(test)]

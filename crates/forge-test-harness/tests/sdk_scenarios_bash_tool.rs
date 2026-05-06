@@ -5,8 +5,6 @@
 //! user turn — the scenarios covered here verify forge-sdk's decoder
 //! handles those frame shapes cleanly.
 
-
-
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
 use forge_sdk::{OptionsBuilder, PermissionMode};

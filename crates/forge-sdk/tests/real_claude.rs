@@ -2,8 +2,6 @@
 //!
 //! Skipped unless `claude` is on PATH.
 
-
-
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
 use forge_sdk::Message;
