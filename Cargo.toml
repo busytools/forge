@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/forge-sdk", "crates/forge-primitives", "crates/forge-agent", "crates/forge-tui", "crates/forge-test-harness"]
 
 [workspace.package]
-version = "0.14.1"
+version = "0.14.2"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/busytools/forge"
@@ -50,8 +50,8 @@ unicode-width = "0.2"
 base64 = "0.22"
 
 # Workspace-internal crates
-forge-primitives = { path = "crates/forge-primitives", version = "=0.14.1" }
-forge-agent = { path = "crates/forge-agent", version = "=0.14.1" }
+forge-primitives = { path = "crates/forge-primitives", version = "=0.14.2" }
+forge-agent = { path = "crates/forge-agent", version = "=0.14.2" }
 
 # Dev-only
 proptest = "1"
