@@ -1,3 +1,7 @@
+// ratatui geometry: terminal dims are u16, layout math goes through f64
+// for smooth-scroll. Casts are inherent here and bounded by terminal size.
+#![allow(clippy::cast_possible_truncation, clippy::cast_precision_loss, clippy::cast_sign_loss)]
+
 /// Describes the intent behind a layout invalidation.
 ///
 /// The viewport now tracks per-message staleness, prefix-sum dirtiness, and
@@ -55,7 +59,6 @@ impl ScrollbarGeometry {
 }
 
 #[must_use]
-#[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 pub fn compute_scrollbar_geometry(
     content_height: usize,
     viewport_height: usize,
@@ -660,7 +663,6 @@ impl ChatViewport {
     }
 
     /// Restore the absolute scroll position from a preserved message-local anchor.
-    #[allow(clippy::cast_precision_loss)]
     pub fn restore_scroll_anchor(&mut self, anchor_index: usize, anchor_offset: usize) {
         if self.auto_scroll || self.message_heights.is_empty() {
             return;
@@ -847,7 +849,6 @@ impl ChatViewport {
     // --- Scroll ---
 
     /// Scroll up by `lines`. Disables auto-scroll.
-    #[allow(clippy::cast_precision_loss)]
     pub fn scroll_up(&mut self, lines: usize) {
         self.scroll_target = self.scroll_target.saturating_sub(lines);
         self.auto_scroll = false;
@@ -856,7 +857,6 @@ impl ChatViewport {
     }
 
     /// Scroll down by `lines`. Auto-scroll re-engagement handled by render.
-    #[allow(clippy::cast_precision_loss)]
     pub fn scroll_down(&mut self, lines: usize) {
         self.scroll_target = self.scroll_target.saturating_add(lines);
         self.scroll_pos = self.scroll_target as f32;

@@ -1,3 +1,7 @@
+// ratatui geometry: terminal dims are u16, layout math goes through f64
+// for smooth-scroll. Casts are inherent here and bounded by terminal size.
+#![allow(clippy::cast_possible_truncation, clippy::cast_precision_loss, clippy::cast_sign_loss)]
+
 use super::super::{App, NoticeDedupKey, NoticeStage, RateLimitIncidentKey, SystemSeverity};
 use crate::agent::model;
 use std::time::Duration;
@@ -47,7 +51,6 @@ fn format_resets_at(epoch_secs: f64) -> String {
         Err(_) => "now".to_owned(),
     };
 
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let epoch_u64 = epoch_secs.max(0.0) as u64;
     let h = (epoch_u64 % 86400) / 3600;
     let m = (epoch_u64 % 3600) / 60;

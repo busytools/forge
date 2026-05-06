@@ -1,3 +1,7 @@
+// ratatui geometry: terminal dims are u16, layout math goes through f64
+// for smooth-scroll. Casts are inherent here and bounded by terminal size.
+#![allow(clippy::cast_possible_truncation, clippy::cast_precision_loss, clippy::cast_sign_loss)]
+
 mod cache_policy;
 pub(crate) mod clipboard_image;
 pub(crate) mod config;
@@ -111,7 +115,6 @@ pub(crate) fn resume_terminal() {
 // TUI event loop
 // ---------------------------------------------------------------------------
 
-#[allow(clippy::cast_precision_loss)]
 pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
     let mut terminal = ratatui::init();
     let mut os_shutdown = Box::pin(wait_for_shutdown_signal());

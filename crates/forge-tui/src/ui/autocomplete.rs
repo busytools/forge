@@ -1,3 +1,7 @@
+// ratatui geometry: terminal dims are u16, layout math goes through f64
+// for smooth-scroll. Casts are inherent here and bounded by terminal size.
+#![allow(clippy::cast_possible_truncation, clippy::cast_precision_loss, clippy::cast_sign_loss)]
+
 use crate::app::App;
 use crate::app::mention::MAX_VISIBLE;
 use crate::app::{file_index, mention, slash, subagent};
@@ -36,7 +40,6 @@ pub fn is_active(app: &App) -> bool {
         || app.subagent.as_ref().is_some_and(|s| !s.candidates.is_empty())
 }
 
-#[allow(clippy::cast_possible_truncation)]
 pub fn compute_height(app: &App) -> u16 {
     let count = if let Some(m) = &app.mention {
         m.candidates.len().max(1)
@@ -57,7 +60,6 @@ pub fn compute_height(app: &App) -> u16 {
 }
 
 /// Render the autocomplete dropdown as a floating overlay above the input area.
-#[allow(clippy::cast_possible_truncation)]
 pub fn render(frame: &mut Frame, input_area: Rect, app: &App) {
     let Some(dropdown) = active_dropdown(app) else {
         return;
@@ -386,7 +388,6 @@ fn choose_dropdown_x(
     (x, width)
 }
 
-#[allow(clippy::cast_possible_truncation)]
 fn wrapped_visual_pos(
     lines: &[String],
     target_row: usize,

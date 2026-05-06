@@ -157,7 +157,6 @@ pub fn build_rate_limit_update(rate_limit_info: Option<&Value>) -> Option<Sessio
 /// upstream filters NaN/inf, so the helpers only see finite values
 /// to guard.
 #[must_use]
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 pub fn build_api_retry_update(message: &Map<String, Value>) -> Option<SessionUpdate> {
     let attempt = parse_clamped_u64(message, &["attempt"])?;
     let max_retries = parse_clamped_u64(message, &["max_retries", "maxRetries"])?;
