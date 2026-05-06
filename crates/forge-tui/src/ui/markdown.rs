@@ -1,3 +1,10 @@
+// `catch_unwind` is allow-listed here: `tui_markdown::from_str` can
+// panic on malformed input, and the TUI legitimately needs to fall
+// back to plain text rather than crash the user's session. The
+// workspace `clippy.toml` disallows `catch_unwind` in library code;
+// this binary-crate UI fallback is the documented exception.
+#![allow(clippy::disallowed_methods)]
+
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use std::panic::{self, AssertUnwindSafe};
