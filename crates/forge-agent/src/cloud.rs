@@ -8,6 +8,7 @@ pub mod oauth;
 pub mod oauth_credentials;
 pub mod oauth_usage;
 pub mod service_status;
+mod time;
 
 /// Origin of a [`UsageSnapshot`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

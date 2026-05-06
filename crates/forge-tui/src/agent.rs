@@ -45,7 +45,7 @@ pub mod tooling {
 // Re-export the bits forge-tui actually consumes from forge-agent so
 // existing import paths (`crate::agent::AgentEvent`, etc.) keep
 // resolving without crawling through every importer.
-pub use forge_agent::{AgentEvent, PermissionMode, PromptResponse, SessionLaunchSettings};
+pub use forge_agent::{AgentEvent, PermissionMode, SessionLaunchSettings};
 
 pub mod client {
     //! Re-export shim — `crate::agent::client::*` paths resolve
