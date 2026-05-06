@@ -68,15 +68,9 @@ impl std::fmt::Debug for ControlDispatchHandle {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ControlDispatchHandle")
             .field("writer", &self.writer)
-            .field(
-                "can_use_tool",
-                &self.can_use_tool.as_ref().map(|_| "<callback>"),
-            )
+            .field("can_use_tool", &self.can_use_tool.as_ref().map(|_| "<callback>"))
             .field("mcp_hosts", &self.mcp_hosts)
-            .field(
-                "hook_callbacks",
-                &format!("<{} hooks>", self.hook_callbacks.len()),
-            )
+            .field("hook_callbacks", &format!("<{} hooks>", self.hook_callbacks.len()))
             .field("session_id", &"<shared>")
             .finish()
     }
@@ -90,13 +84,7 @@ impl ControlDispatchHandle {
         hook_callbacks: HashMap<String, Arc<dyn ErasedHookCallback>>,
         session_id: crate::client::runtime::SharedSessionId,
     ) -> Self {
-        Self {
-            writer,
-            can_use_tool,
-            mcp_hosts,
-            hook_callbacks,
-            session_id,
-        }
+        Self { writer, can_use_tool, mcp_hosts, hook_callbacks, session_id }
     }
 
     /// Capture a session id from an incoming Message. No-op once a
@@ -139,23 +127,12 @@ impl ControlDispatchHandle {
             return self.write_unsupported(&req).await;
         }
 
-        if let ControlRequestKind::McpMessage {
-            server_name,
-            message,
-        } = &req.request
-        {
+        if let ControlRequestKind::McpMessage { server_name, message } = &req.request {
             return self.handle_mcp(&req, server_name, message).await;
         }
 
-        if let ControlRequestKind::HookCallback {
-            callback_id,
-            input,
-            tool_use_id,
-        } = &req.request
-        {
-            return self
-                .handle_hook(&req, callback_id, input, tool_use_id.as_deref())
-                .await;
+        if let ControlRequestKind::HookCallback { callback_id, input, tool_use_id } = &req.request {
+            return self.handle_hook(&req, callback_id, input, tool_use_id.as_deref()).await;
         }
 
         let decision = match (&self.can_use_tool, &req.request) {
@@ -372,10 +349,7 @@ impl ControlDispatchHandle {
                 map.insert("stopReason".into(), serde_json::Value::String(stop.into()));
             }
             if let Some(msg) = decision.system_message() {
-                map.insert(
-                    "systemMessage".into(),
-                    serde_json::Value::String(msg.into()),
-                );
+                map.insert("systemMessage".into(), serde_json::Value::String(msg.into()));
             }
         }
 

@@ -19,11 +19,9 @@ use forge_test_harness::sdk_wire::run_live_scenario;
 #[ignore = "burns real Anthropic API tokens; opt-in via FORGE_WIRE_CAPTURE=1"]
 async fn wire_capture_user_prompt_submit_hook() {
     let hooks = HooksBuilder::new()
-        .user_prompt_submit(
-            |_input: UserPromptSubmitInput, _ctx: HookContext| async move {
-                HookDecision::passthrough()
-            },
-        )
+        .user_prompt_submit(|_input: UserPromptSubmitInput, _ctx: HookContext| async move {
+            HookDecision::passthrough()
+        })
         .build();
 
     let opts = OptionsBuilder::new()
@@ -32,16 +30,10 @@ async fn wire_capture_user_prompt_submit_hook() {
         .hooks(hooks)
         .build();
 
-    run_live_scenario(
-        "user_prompt_submit_hook",
-        opts,
-        |client, events| async move {
-            client
-                .send_user_message("Reply with only the word PING.")
-                .await?;
-            Ok((client, events))
-        },
-    )
+    run_live_scenario("user_prompt_submit_hook", opts, |client, events| async move {
+        client.send_user_message("Reply with only the word PING.").await?;
+        Ok((client, events))
+    })
     .await
     .expect("scenario run");
 }
@@ -50,12 +42,9 @@ async fn wire_capture_user_prompt_submit_hook() {
 #[ignore = "burns real Anthropic API tokens; opt-in via FORGE_WIRE_CAPTURE=1"]
 async fn wire_capture_post_tool_use_hook() {
     let hooks = HooksBuilder::new()
-        .post_tool_use(
-            "Bash",
-            |_input: PostToolUseInput, _ctx: HookContext| async move {
-                HookDecision::passthrough()
-            },
-        )
+        .post_tool_use("Bash", |_input: PostToolUseInput, _ctx: HookContext| async move {
+            HookDecision::passthrough()
+        })
         .build();
 
     let opts = OptionsBuilder::new()
@@ -91,9 +80,7 @@ async fn wire_capture_stop_hook() {
         .build();
 
     run_live_scenario("stop_hook", opts, |client, events| async move {
-        client
-            .send_user_message("Reply with only the word STOP.")
-            .await?;
+        client.send_user_message("Reply with only the word STOP.").await?;
         Ok((client, events))
     })
     .await
@@ -152,19 +139,15 @@ async fn wire_capture_post_tool_use_failure_hook() {
         .hooks(hooks)
         .build();
 
-    run_live_scenario(
-        "post_tool_use_failure_hook",
-        opts,
-        |client, events| async move {
-            client
-                .send_user_message(
-                    "Run `exit 1` with the Bash tool (it will fail), then \
+    run_live_scenario("post_tool_use_failure_hook", opts, |client, events| async move {
+        client
+            .send_user_message(
+                "Run `exit 1` with the Bash tool (it will fail), then \
                      just report back that the command failed.",
-                )
-                .await?;
-            Ok((client, events))
-        },
-    )
+            )
+            .await?;
+        Ok((client, events))
+    })
     .await
     .expect("scenario run");
 }
@@ -190,9 +173,7 @@ async fn wire_capture_notification_hook() {
         .build();
 
     run_live_scenario("notification_hook", opts, |client, events| async move {
-        client
-            .send_user_message("Reply with only the word OK.")
-            .await?;
+        client.send_user_message("Reply with only the word OK.").await?;
         Ok((client, events))
     })
     .await
@@ -255,19 +236,15 @@ async fn wire_capture_permission_request_hook() {
         .hooks(hooks)
         .build();
 
-    run_live_scenario(
-        "permission_request_hook",
-        opts,
-        |client, events| async move {
-            client
-                .send_user_message(
-                    "Use the Write tool to create /tmp/forge-perm-hook.txt \
+    run_live_scenario("permission_request_hook", opts, |client, events| async move {
+        client
+            .send_user_message(
+                "Use the Write tool to create /tmp/forge-perm-hook.txt \
                  containing PING.",
-                )
-                .await?;
-            Ok((client, events))
-        },
-    )
+            )
+            .await?;
+        Ok((client, events))
+    })
     .await
     .expect("scenario run");
 }

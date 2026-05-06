@@ -44,18 +44,12 @@ impl Tool for GreetTool {
 #[tokio::test]
 #[ignore = "requires `claude` on PATH"]
 async fn real_claude_calls_in_process_tool() {
-    if std::process::Command::new("claude")
-        .arg("--version")
-        .output()
-        .is_err()
-    {
+    if std::process::Command::new("claude").arg("--version").output().is_err() {
         eprintln!("skipping: `claude` not on PATH");
         return;
     }
 
-    let server = McpServerBuilder::new("probe", "0.0.1")
-        .tool(GreetTool)
-        .build();
+    let server = McpServerBuilder::new("probe", "0.0.1").tool(GreetTool).build();
 
     let opts = OptionsBuilder::new()
         .permission_mode(PermissionMode::BypassPermissions)

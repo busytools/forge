@@ -18,9 +18,7 @@ async fn main() -> Result<()> {
         .nth(1)
         .unwrap_or_else(|| "Reply with the word 'hello' and nothing else.".to_string());
 
-    let opts = OptionsBuilder::new()
-        .permission_mode(PermissionMode::BypassPermissions)
-        .build();
+    let opts = OptionsBuilder::new().permission_mode(PermissionMode::BypassPermissions).build();
     let (client, mut events) = Client::spawn(opts).await?;
     println!("session: {}", client.session_id());
 
@@ -34,11 +32,7 @@ async fn main() -> Result<()> {
                     println!("{block:?}");
                 }
             }
-            Message::Result {
-                total_cost_usd,
-                duration_ms,
-                ..
-            } => {
+            Message::Result { total_cost_usd, duration_ms, .. } => {
                 let cost = total_cost_usd.unwrap_or(0.0);
                 println!("result: ${cost:.4} in {duration_ms}ms");
                 break;

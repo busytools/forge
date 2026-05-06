@@ -147,9 +147,8 @@ async fn handle_line(
             // body, so peek at the raw line again.
             let outcome = match serde_json::from_str::<serde_json::Value>(line) {
                 Ok(value) => {
-                    let resp_subtype = value
-                        .pointer("/response/subtype")
-                        .and_then(serde_json::Value::as_str);
+                    let resp_subtype =
+                        value.pointer("/response/subtype").and_then(serde_json::Value::as_str);
                     if resp_subtype == Some("success") {
                         Ok(value
                             .pointer("/response/response")
@@ -174,10 +173,7 @@ async fn handle_line(
                         Err(Error::message_parse(format!("control failed: {err}")))
                     }
                 }
-                Err(source) => Err(Error::JsonDecode {
-                    line: line_number,
-                    source,
-                }),
+                Err(source) => Err(Error::JsonDecode { line: line_number, source }),
             };
             let mut pending = pending_controls.lock().await;
             if let Some(tx) = pending.remove(&request_id) {
@@ -199,9 +195,7 @@ async fn handle_line(
                 line = line_number,
                 "unknown top-level stream-json type — surfacing as Message::Unknown",
             );
-            events_tx
-                .send(Ok(Message::Unknown { type_str, raw }))
-                .is_ok()
+            events_tx.send(Ok(Message::Unknown { type_str, raw })).is_ok()
         }
         Err(e) => {
             let err_text = e.to_string();

@@ -30,11 +30,7 @@ fn assistant_message_roundtrip() {
     });
     let msg: Message = serde_json::from_value(raw.clone()).expect("parse");
     match &msg {
-        Message::Assistant {
-            message,
-            session_id,
-            ..
-        } => {
+        Message::Assistant { message, session_id, .. } => {
             assert_eq!(session_id, "sess_01");
             assert_eq!(message.model, "claude-opus-4-5");
             assert_eq!(message.stop_reason, Some(StopReason::EndTurn));
@@ -61,11 +57,7 @@ fn system_init_message_roundtrip() {
     });
     let msg: Message = serde_json::from_value(raw.clone()).expect("parse");
     match &msg {
-        Message::System {
-            subtype,
-            session_id,
-            data,
-        } => {
+        Message::System { subtype, session_id, data } => {
             assert_eq!(subtype, "init");
             assert_eq!(session_id.as_deref(), Some("sess_02"));
             assert!(data.get("tools").is_some());
@@ -108,10 +100,7 @@ fn unknown_message_serializes_raw_verbatim() {
         "session_id": "sess_unknown",
         "payload": {"key": "value", "n": 42},
     });
-    let msg = Message::Unknown {
-        type_str: "future_thing".to_string(),
-        raw: raw.clone(),
-    };
+    let msg = Message::Unknown { type_str: "future_thing".to_string(), raw: raw.clone() };
     let re = serde_json::to_value(&msg).expect("serialize");
     assert_eq!(
         raw, re,

@@ -13,15 +13,11 @@ use forge_test_harness::sdk_wire::run_live_scenario;
 #[tokio::test]
 #[ignore = "burns real Anthropic API tokens; opt-in via FORGE_WIRE_CAPTURE=1"]
 async fn wire_capture_context_usage() {
-    let opts = OptionsBuilder::new()
-        .max_turns(1)
-        .permission_mode(PermissionMode::AcceptEdits)
-        .build();
+    let opts =
+        OptionsBuilder::new().max_turns(1).permission_mode(PermissionMode::AcceptEdits).build();
 
     run_live_scenario("context_usage", opts, |client, mut events| async move {
-        client
-            .send_user_message("Reply with exactly the word OK.")
-            .await?;
+        client.send_user_message("Reply with exactly the word OK.").await?;
 
         // Drain until the first Result so the context-usage query runs
         // against a session that actually has usage to report.

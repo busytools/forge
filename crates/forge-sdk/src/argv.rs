@@ -159,10 +159,7 @@ pub fn build_args(options: &Options) -> Result<Vec<String>, Error> {
     // the CLI uses inline JSON (not a temp file) with {"type": "sdk"}
     // entries to signal in-process hosting; external servers carry their
     // own stdio / SSE / HTTP config verbatim.
-    let hosts = McpHosts::new(
-        options.mcp_servers.clone(),
-        options.external_mcp_servers.clone(),
-    );
+    let hosts = McpHosts::new(options.mcp_servers.clone(), options.external_mcp_servers.clone());
     if !hosts.is_empty() {
         args.push("--mcp-config".into());
         args.push(hosts.config_argv());
@@ -181,11 +178,7 @@ pub fn build_args(options: &Options) -> Result<Vec<String>, Error> {
     // --setting-sources: explicit override wins; otherwise default to
     // user,project when skills is set (per the CLI behaviour).
     let setting_sources: Option<Vec<String>> = options.setting_sources.clone().or_else(|| {
-        if options.skills.is_empty() {
-            None
-        } else {
-            Some(vec!["user".into(), "project".into()])
-        }
+        if options.skills.is_empty() { None } else { Some(vec!["user".into(), "project".into()]) }
     });
     if let Some(sources) = setting_sources {
         args.push(format!("--setting-sources={}", sources.join(",")));

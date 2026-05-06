@@ -140,11 +140,7 @@ fn refresh_inventory_blocking(
         .collect::<Vec<_>>();
     marketplace_entries.sort_by_cached_key(|entry| {
         (
-            entry
-                .marketplace_name
-                .as_deref()
-                .unwrap_or_default()
-                .to_ascii_lowercase(),
+            entry.marketplace_name.as_deref().unwrap_or_default().to_ascii_lowercase(),
             entry.name.to_ascii_lowercase(),
         )
     });
@@ -178,10 +174,8 @@ where
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
-        let exit_code = output
-            .status
-            .code()
-            .map_or_else(|| "unknown".to_owned(), |code| code.to_string());
+        let exit_code =
+            output.status.code().map_or_else(|| "unknown".to_owned(), |code| code.to_string());
         let detail = if stderr.is_empty() {
             format!("exit code {exit_code}")
         } else {
@@ -190,12 +184,8 @@ where
         return Err(format!("`claude {}` failed: {detail}", args.join(" ")));
     }
 
-    serde_json::from_slice(&output.stdout).map_err(|error| {
-        format!(
-            "Failed to parse JSON from `claude {}`: {error}",
-            args.join(" ")
-        )
-    })
+    serde_json::from_slice(&output.stdout)
+        .map_err(|error| format!("Failed to parse JSON from `claude {}`: {error}", args.join(" ")))
 }
 
 fn run_command(claude_path: &Path, cwd_raw: &str, args: &[String]) -> Result<(), String> {
@@ -210,10 +200,8 @@ fn run_command(claude_path: &Path, cwd_raw: &str, args: &[String]) -> Result<(),
     }
 
     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
-    let exit_code = output
-        .status
-        .code()
-        .map_or_else(|| "unknown".to_owned(), |code| code.to_string());
+    let exit_code =
+        output.status.code().map_or_else(|| "unknown".to_owned(), |code| code.to_string());
     let detail = if stderr.is_empty() {
         format!("exit code {exit_code}")
     } else {
@@ -327,9 +315,6 @@ mod tests {
             Some("claude-plugins-official")
         );
         assert_eq!(parsed_available.available[0].install_count, Some(42));
-        assert_eq!(
-            parsed_sources[0].repo.as_deref(),
-            Some("anthropics/claude-plugins-official")
-        );
+        assert_eq!(parsed_sources[0].repo.as_deref(), Some("anthropics/claude-plugins-official"));
     }
 }

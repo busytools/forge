@@ -119,11 +119,7 @@ impl RedactState {
         if let Some(existing) = self.ids.get(input) {
             return existing.clone();
         }
-        let n = self
-            .ids
-            .values()
-            .filter(|v| v.starts_with(&format!("{prefix}_")))
-            .count();
+        let n = self.ids.values().filter(|v| v.starts_with(&format!("{prefix}_"))).count();
         let out = format!("{prefix}_{n}");
         self.ids.insert(input.to_string(), out.clone());
         out
@@ -154,9 +150,7 @@ pub fn transform_persistence_line(
         return Ok(None);
     }
 
-    let obj = v
-        .as_object_mut()
-        .ok_or_else(|| "top-level not an object".to_string())?;
+    let obj = v.as_object_mut().ok_or_else(|| "top-level not an object".to_string())?;
 
     // Rename sessionId → session_id.
     if let Some(sid) = obj.remove("sessionId")
@@ -242,19 +236,12 @@ fn redact_content_block(block: &mut Value, state: &mut RedactState) {
     let Some(obj) = block.as_object_mut() else {
         return;
     };
-    let ty = obj
-        .get("type")
-        .and_then(Value::as_str)
-        .unwrap_or("")
-        .to_string();
+    let ty = obj.get("type").and_then(Value::as_str).unwrap_or("").to_string();
     match ty.as_str() {
         "text" => {
             if let Some(Value::String(t)) = obj.get("text") {
                 let bytes = t.len();
-                obj.insert(
-                    "text".into(),
-                    Value::String(format!("<redacted-text {bytes}b>")),
-                );
+                obj.insert("text".into(), Value::String(format!("<redacted-text {bytes}b>")));
             }
         }
         "thinking" => {
@@ -267,10 +254,7 @@ fn redact_content_block(block: &mut Value, state: &mut RedactState) {
             }
             // `signature` is a signed opaque token — redact fully.
             if obj.contains_key("signature") {
-                obj.insert(
-                    "signature".into(),
-                    Value::String("<redacted-signature>".into()),
-                );
+                obj.insert("signature".into(), Value::String("<redacted-signature>".into()));
             }
         }
         "tool_use" => {
@@ -283,15 +267,8 @@ fn redact_content_block(block: &mut Value, state: &mut RedactState) {
             }
         }
         "tool_result" => {
-            if let Some(id) = obj
-                .get("tool_use_id")
-                .and_then(Value::as_str)
-                .map(str::to_string)
-            {
-                obj.insert(
-                    "tool_use_id".into(),
-                    Value::String(state.opaque("tool_use", &id)),
-                );
+            if let Some(id) = obj.get("tool_use_id").and_then(Value::as_str).map(str::to_string) {
+                obj.insert("tool_use_id".into(), Value::String(state.opaque("tool_use", &id)));
             }
             if let Some(Value::String(c)) = obj.get("content") {
                 let bytes = c.len();
@@ -433,19 +410,12 @@ mod tests {
         scrub_paths_recursive(&mut v);
         // Outer key rewritten.
         let outer = v.as_object().unwrap();
-        let inner = outer
-            .get("<redacted-home>/disk")
-            .unwrap()
-            .as_object()
-            .unwrap();
+        let inner = outer.get("<redacted-home>/disk").unwrap().as_object().unwrap();
         // Inner key rewritten too.
         assert!(inner.contains_key("inner_key_<redacted-home>/foo"));
         assert!(inner.contains_key("ok"));
         // Inner string value rewritten.
-        assert_eq!(
-            inner["inner_key_<redacted-home>/foo"],
-            json!("<redacted-home>/y/z")
-        );
+        assert_eq!(inner["inner_key_<redacted-home>/foo"], json!("<redacted-home>/y/z"));
     }
 
     #[test]

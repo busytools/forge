@@ -156,21 +156,14 @@ impl Serialize for ControlRequestKind {
                 }
                 map.end()
             }
-            Self::McpMessage {
-                server_name,
-                message,
-            } => {
+            Self::McpMessage { server_name, message } => {
                 let mut map = serializer.serialize_map(Some(3))?;
                 map.serialize_entry("subtype", "mcp_message")?;
                 map.serialize_entry("server_name", server_name)?;
                 map.serialize_entry("message", message)?;
                 map.end()
             }
-            Self::HookCallback {
-                callback_id,
-                input,
-                tool_use_id,
-            } => {
+            Self::HookCallback { callback_id, input, tool_use_id } => {
                 let mut field_count = 3;
                 if tool_use_id.is_some() {
                     field_count += 1;
@@ -196,11 +189,7 @@ impl<'de> Deserialize<'de> for ControlRequestKind {
         // (wire corruption / CLI bug) from "unrecognised" (forward-compat
         // drift) so debug logs + `Unknown` payloads carry the right
         // signal for the dispatcher.
-        let subtype = raw
-            .get("subtype")
-            .and_then(Value::as_str)
-            .unwrap_or("<missing>")
-            .to_string();
+        let subtype = raw.get("subtype").and_then(Value::as_str).unwrap_or("<missing>").to_string();
         match subtype.as_str() {
             "can_use_tool" => {
                 let tool_name = raw
@@ -213,32 +202,21 @@ impl<'de> Deserialize<'de> for ControlRequestKind {
                     .get("permission_suggestions")
                     .and_then(|v| v.as_array().cloned())
                     .unwrap_or_default();
-                let blocked_path = raw
-                    .get("blocked_path")
-                    .and_then(Value::as_str)
-                    .map(str::to_string);
+                let blocked_path =
+                    raw.get("blocked_path").and_then(Value::as_str).map(str::to_string);
                 let tool_use_id = raw
                     .get("tool_use_id")
                     .and_then(Value::as_str)
                     .ok_or_else(|| serde::de::Error::missing_field("tool_use_id"))?
                     .to_string();
-                let agent_id = raw
-                    .get("agent_id")
-                    .and_then(Value::as_str)
-                    .map(str::to_string);
-                let decision_reason = raw
-                    .get("decision_reason")
-                    .and_then(Value::as_str)
-                    .map(str::to_string);
+                let agent_id = raw.get("agent_id").and_then(Value::as_str).map(str::to_string);
+                let decision_reason =
+                    raw.get("decision_reason").and_then(Value::as_str).map(str::to_string);
                 let title = raw.get("title").and_then(Value::as_str).map(str::to_string);
-                let display_name = raw
-                    .get("display_name")
-                    .and_then(Value::as_str)
-                    .map(str::to_string);
-                let description = raw
-                    .get("description")
-                    .and_then(Value::as_str)
-                    .map(str::to_string);
+                let display_name =
+                    raw.get("display_name").and_then(Value::as_str).map(str::to_string);
+                let description =
+                    raw.get("description").and_then(Value::as_str).map(str::to_string);
                 Ok(Self::CanUseTool {
                     tool_name,
                     input,
@@ -259,10 +237,7 @@ impl<'de> Deserialize<'de> for ControlRequestKind {
                     .ok_or_else(|| serde::de::Error::missing_field("server_name"))?
                     .to_string();
                 let message = raw.get("message").cloned().unwrap_or(Value::Null);
-                Ok(Self::McpMessage {
-                    server_name,
-                    message,
-                })
+                Ok(Self::McpMessage { server_name, message })
             }
             "hook_callback" => {
                 let callback_id = raw
@@ -271,15 +246,9 @@ impl<'de> Deserialize<'de> for ControlRequestKind {
                     .ok_or_else(|| serde::de::Error::missing_field("callback_id"))?
                     .to_string();
                 let input = raw.get("input").cloned().unwrap_or(Value::Null);
-                let tool_use_id = raw
-                    .get("tool_use_id")
-                    .and_then(Value::as_str)
-                    .map(str::to_string);
-                Ok(Self::HookCallback {
-                    callback_id,
-                    input,
-                    tool_use_id,
-                })
+                let tool_use_id =
+                    raw.get("tool_use_id").and_then(Value::as_str).map(str::to_string);
+                Ok(Self::HookCallback { callback_id, input, tool_use_id })
             }
             // Forward-compat catch-all. NOTE: when adding a new known
             // `ControlRequestKind` variant, add a matching arm above —
@@ -288,10 +257,7 @@ impl<'de> Deserialize<'de> for ControlRequestKind {
             // anything inside this hand-rolled `Deserialize`. A new
             // variant without an arm here will silently land in
             // `Unknown` instead of being recognised.
-            other => Ok(Self::Unknown {
-                subtype: other.to_string(),
-                raw,
-            }),
+            other => Ok(Self::Unknown { subtype: other.to_string(), raw }),
         }
     }
 }
@@ -357,11 +323,7 @@ pub enum AllowBehavior {
         updated_input: Value,
         /// Optional permission-policy updates (advanced). Serialised as
         /// `updatedPermissions`. Typically `None` in v0.1 usage.
-        #[serde(
-            default,
-            rename = "updatedPermissions",
-            skip_serializing_if = "Option::is_none"
-        )]
+        #[serde(default, rename = "updatedPermissions", skip_serializing_if = "Option::is_none")]
         updated_permissions: Option<Value>,
     },
     /// Deny the call with a user-visible message, optionally signalling
@@ -442,12 +404,7 @@ mod tests_control_types {
         let req: ControlRequest = serde_json::from_value(raw).expect("parse");
         assert_eq!(req.request_id, "req_1_a1b2c3d4");
         match req.request {
-            ControlRequestKind::CanUseTool {
-                tool_name,
-                input,
-                tool_use_id,
-                ..
-            } => {
+            ControlRequestKind::CanUseTool { tool_name, input, tool_use_id, .. } => {
                 assert_eq!(tool_name, "Edit");
                 assert_eq!(input["file_path"], "/tmp/x");
                 assert_eq!(tool_use_id, "toolu_01abc");
@@ -466,18 +423,12 @@ mod tests_control_types {
         assert_eq!(raw["behavior"], "allow");
         // CRITICAL: wire is camelCase `updatedInput`, not snake_case.
         assert_eq!(raw["updatedInput"]["file_path"], "/tmp/x");
-        assert!(
-            raw.get("updated_input").is_none(),
-            "must NOT serialise snake_case"
-        );
+        assert!(raw.get("updated_input").is_none(), "must NOT serialise snake_case");
     }
 
     #[test]
     fn serialize_deny_response_with_interrupt_true() {
-        let deny = AllowBehavior::Deny {
-            message: "not allowed".into(),
-            interrupt: true,
-        };
+        let deny = AllowBehavior::Deny { message: "not allowed".into(), interrupt: true };
         let raw = serde_json::to_value(&deny).expect("ser");
         assert_eq!(raw["behavior"], "deny");
         assert_eq!(raw["message"], "not allowed");
@@ -486,16 +437,10 @@ mod tests_control_types {
 
     #[test]
     fn deny_with_interrupt_false_omits_field() {
-        let deny = AllowBehavior::Deny {
-            message: "nope".into(),
-            interrupt: false,
-        };
+        let deny = AllowBehavior::Deny { message: "nope".into(), interrupt: false };
         let raw = serde_json::to_value(&deny).expect("ser");
         assert_eq!(raw["behavior"], "deny");
-        assert!(
-            raw.get("interrupt").is_none(),
-            "interrupt must be absent when false"
-        );
+        assert!(raw.get("interrupt").is_none(), "interrupt must be absent when false");
     }
 
     #[test]
@@ -516,10 +461,7 @@ mod tests_control_types {
         assert_eq!(raw["response"]["subtype"], "success");
         assert_eq!(raw["response"]["request_id"], "req_1_a1b2c3d4");
         assert_eq!(raw["response"]["response"]["behavior"], "allow");
-        assert_eq!(
-            raw["response"]["response"]["updatedInput"]["file_path"],
-            "/tmp/x"
-        );
+        assert_eq!(raw["response"]["response"]["updatedInput"]["file_path"], "/tmp/x");
     }
 
     #[test]

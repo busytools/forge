@@ -60,10 +60,7 @@ fn normalize_model_key(id: &str) -> NormalizedModelKey {
     let (without_context, context_suffix) = if let Some(open) = lower.rfind('[')
         && lower.ends_with(']')
     {
-        (
-            lower[..open].to_owned(),
-            lower[open + 1..lower.len() - 1].to_owned(),
-        )
+        (lower[..open].to_owned(), lower[open + 1..lower.len() - 1].to_owned())
     } else {
         (lower.clone(), String::new())
     };
@@ -100,13 +97,7 @@ fn normalize_model_key(id: &str) -> NormalizedModelKey {
         }
     }
 
-    NormalizedModelKey {
-        original,
-        family,
-        version_parts,
-        variant_parts,
-        context_suffix,
-    }
+    NormalizedModelKey { original, family, version_parts, variant_parts, context_suffix }
 }
 
 fn family_label(family: ModelFamily) -> Option<&'static str> {
@@ -125,14 +116,7 @@ fn format_humanized(key: &NormalizedModelKey) -> String {
     let version_lbl = if key.version_parts.is_empty() {
         String::new()
     } else {
-        format!(
-            " {}",
-            key.version_parts
-                .iter()
-                .map(u32::to_string)
-                .collect::<Vec<_>>()
-                .join(".")
-        )
+        format!(" {}", key.version_parts.iter().map(u32::to_string).collect::<Vec<_>>().join("."))
     };
     let context_lbl = match key.context_suffix.as_str() {
         "" => String::new(),
@@ -255,10 +239,8 @@ pub fn resolve_current_model_from_inputs(
     available_models: &[AvailableModel],
 ) -> CurrentModel {
     let requested_id = requested_model_id.map(str::trim).filter(|s| !s.is_empty());
-    let resolved_id = resolved_runtime_model_id
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map_or_else(
+    let resolved_id =
+        resolved_runtime_model_id.map(str::trim).filter(|s| !s.is_empty()).map_or_else(
             || {
                 if model_id.trim().is_empty() {
                     requested_id.unwrap_or(OPUS_MODEL_ALIAS).to_owned()
@@ -319,11 +301,7 @@ pub fn map_available_models(models: Option<&Value>) -> Vec<AvailableModel> {
             if id.is_empty() {
                 return None;
             }
-            let display_name = r
-                .get("displayName")
-                .and_then(Value::as_str)?
-                .trim()
-                .to_owned();
+            let display_name = r.get("displayName").and_then(Value::as_str)?.trim().to_owned();
             if display_name.is_empty() {
                 return None;
             }
@@ -347,14 +325,8 @@ pub fn map_available_models(models: Option<&Value>) -> Vec<AvailableModel> {
             Some(AvailableModel {
                 id,
                 display_name,
-                description: r
-                    .get("description")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned),
-                supports_effort: r
-                    .get("supportsEffort")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false),
+                description: r.get("description").and_then(Value::as_str).map(str::to_owned),
+                supports_effort: r.get("supportsEffort").and_then(Value::as_bool).unwrap_or(false),
                 supported_effort_levels,
                 supports_adaptive_thinking: r
                     .get("supportsAdaptiveThinking")
@@ -380,14 +352,8 @@ mod tests {
 
     #[test]
     fn humanize_with_context_suffix() {
-        assert_eq!(
-            humanize_model_id("claude-sonnet-4-6[1m]"),
-            "Sonnet 4.6 [1M]"
-        );
-        assert_eq!(
-            humanize_model_id("claude-sonnet-4-6[8k]"),
-            "Sonnet 4.6 [8k]"
-        );
+        assert_eq!(humanize_model_id("claude-sonnet-4-6[1m]"), "Sonnet 4.6 [1M]");
+        assert_eq!(humanize_model_id("claude-sonnet-4-6[8k]"), "Sonnet 4.6 [8k]");
     }
 
     #[test]
@@ -399,10 +365,7 @@ mod tests {
     #[test]
     fn humanize_strips_release_build_tokens() {
         // build tokens are dropped from version_parts after MAX=2
-        assert_eq!(
-            humanize_model_id("claude-sonnet-4-6-20260101"),
-            "Sonnet 4.6"
-        );
+        assert_eq!(humanize_model_id("claude-sonnet-4-6-20260101"), "Sonnet 4.6");
     }
 
     #[test]

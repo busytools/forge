@@ -33,9 +33,7 @@ async fn main() -> Result<()> {
         "Call mcp__local__double with n=21 and reply with the result.".to_string()
     });
 
-    let server = McpServerBuilder::new("local", "0.0.1")
-        .tool(DoubleTool)
-        .build();
+    let server = McpServerBuilder::new("local", "0.0.1").tool(DoubleTool).build();
 
     let opts = OptionsBuilder::new()
         .permission_mode(PermissionMode::BypassPermissions)

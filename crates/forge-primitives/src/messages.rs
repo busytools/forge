@@ -341,9 +341,9 @@ where
     match value {
         Value::String(s) => Ok(vec![ContentBlock::Text { text: s }]),
         Value::Array(_) => serde_json::from_value(value).map_err(D::Error::custom),
-        other => Err(D::Error::custom(format!(
-            "user message content must be str or list, got: {other}"
-        ))),
+        other => {
+            Err(D::Error::custom(format!("user message content must be str or list, got: {other}")))
+        }
     }
 }
 
@@ -404,35 +404,19 @@ pub struct RateLimitInfo {
     #[serde(default, rename = "resetsAt", skip_serializing_if = "Option::is_none")]
     pub resets_at: Option<i64>,
     /// Which rate-limit window applies.
-    #[serde(
-        default,
-        rename = "rateLimitType",
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(default, rename = "rateLimitType", skip_serializing_if = "Option::is_none")]
     pub rate_limit_type: Option<RateLimitType>,
     /// Fraction of the rate limit consumed (0.0 – 1.0).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub utilization: Option<f64>,
     /// Status of overage / pay-as-you-go usage, if applicable.
-    #[serde(
-        default,
-        rename = "overageStatus",
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(default, rename = "overageStatus", skip_serializing_if = "Option::is_none")]
     pub overage_status: Option<RateLimitStatus>,
     /// Unix timestamp (seconds) when overage window resets.
-    #[serde(
-        default,
-        rename = "overageResetsAt",
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(default, rename = "overageResetsAt", skip_serializing_if = "Option::is_none")]
     pub overage_resets_at: Option<i64>,
     /// Why overage is unavailable when rejected.
-    #[serde(
-        default,
-        rename = "overageDisabledReason",
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(default, rename = "overageDisabledReason", skip_serializing_if = "Option::is_none")]
     pub overage_disabled_reason: Option<String>,
     /// Echo of the raw CLI payload so callers can introspect fields
     /// forge-sdk doesn't yet type. serde's `flatten` makes this the
@@ -567,11 +551,7 @@ enum MessageRepr {
         result: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         structured_output: Option<Value>,
-        #[serde(
-            default,
-            rename = "modelUsage",
-            skip_serializing_if = "Option::is_none"
-        )]
+        #[serde(default, rename = "modelUsage", skip_serializing_if = "Option::is_none")]
         model_usage: Option<Value>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         permission_denials: Option<Vec<Value>>,
@@ -651,32 +631,16 @@ impl From<MessageRepr> for Message {
     #[allow(clippy::too_many_lines)]
     fn from(repr: MessageRepr) -> Self {
         match repr {
-            MessageRepr::Assistant {
-                message,
-                session_id,
-                parent_tool_use_id,
-                error,
-                uuid,
-            } => Message::Assistant {
-                message,
-                session_id,
-                parent_tool_use_id,
-                error,
-                uuid,
-            },
+            MessageRepr::Assistant { message, session_id, parent_tool_use_id, error, uuid } => {
+                Message::Assistant { message, session_id, parent_tool_use_id, error, uuid }
+            }
             MessageRepr::User {
                 message,
                 session_id,
                 parent_tool_use_id,
                 uuid,
                 tool_use_result,
-            } => Message::User {
-                message,
-                session_id,
-                parent_tool_use_id,
-                uuid,
-                tool_use_result,
-            },
+            } => Message::User { message, session_id, parent_tool_use_id, uuid, tool_use_result },
             MessageRepr::System(SystemRepr::Typed(TypedSystemRepr::TaskStarted {
                 task_id,
                 description,
@@ -749,21 +713,11 @@ impl From<MessageRepr> for Message {
                         map.insert("session_id".into(), Value::String(sid.clone()));
                     }
                 }
-                Message::System {
-                    subtype,
-                    session_id,
-                    data: full_data,
-                }
+                Message::System { subtype, session_id, data: full_data }
             }
-            MessageRepr::RateLimitEvent {
-                rate_limit_info,
-                uuid,
-                session_id,
-            } => Message::RateLimitEvent {
-                rate_limit_info,
-                uuid,
-                session_id,
-            },
+            MessageRepr::RateLimitEvent { rate_limit_info, uuid, session_id } => {
+                Message::RateLimitEvent { rate_limit_info, uuid, session_id }
+            }
             MessageRepr::Result {
                 subtype,
                 session_id,
@@ -797,17 +751,9 @@ impl From<MessageRepr> for Message {
                 errors,
                 uuid,
             },
-            MessageRepr::StreamEvent {
-                uuid,
-                session_id,
-                event,
-                parent_tool_use_id,
-            } => Message::StreamEvent {
-                uuid,
-                session_id,
-                event,
-                parent_tool_use_id,
-            },
+            MessageRepr::StreamEvent { uuid, session_id, event, parent_tool_use_id } => {
+                Message::StreamEvent { uuid, session_id, event, parent_tool_use_id }
+            }
             MessageRepr::Error { error } => Message::Error { error },
         }
     }
@@ -817,37 +763,13 @@ impl From<Message> for MessageRepr {
     #[allow(clippy::too_many_lines)]
     fn from(msg: Message) -> Self {
         match msg {
-            Message::Assistant {
-                message,
-                session_id,
-                parent_tool_use_id,
-                error,
-                uuid,
-            } => MessageRepr::Assistant {
-                message,
-                session_id,
-                parent_tool_use_id,
-                error,
-                uuid,
-            },
-            Message::User {
-                message,
-                session_id,
-                parent_tool_use_id,
-                uuid,
-                tool_use_result,
-            } => MessageRepr::User {
-                message,
-                session_id,
-                parent_tool_use_id,
-                uuid,
-                tool_use_result,
-            },
-            Message::System {
-                subtype,
-                session_id,
-                data,
-            } => {
+            Message::Assistant { message, session_id, parent_tool_use_id, error, uuid } => {
+                MessageRepr::Assistant { message, session_id, parent_tool_use_id, error, uuid }
+            }
+            Message::User { message, session_id, parent_tool_use_id, uuid, tool_use_result } => {
+                MessageRepr::User { message, session_id, parent_tool_use_id, uuid, tool_use_result }
+            }
+            Message::System { subtype, session_id, data } => {
                 // `data` now carries the full shape (including `type`,
                 // `subtype`, `session_id`). On the way back out, strip
                 // those keys from the flatten payload so the outer
@@ -916,15 +838,9 @@ impl From<Message> for MessageRepr {
                 tool_use_id,
                 usage,
             })),
-            Message::RateLimitEvent {
-                rate_limit_info,
-                uuid,
-                session_id,
-            } => MessageRepr::RateLimitEvent {
-                rate_limit_info,
-                uuid,
-                session_id,
-            },
+            Message::RateLimitEvent { rate_limit_info, uuid, session_id } => {
+                MessageRepr::RateLimitEvent { rate_limit_info, uuid, session_id }
+            }
             Message::Result {
                 subtype,
                 session_id,
@@ -958,17 +874,9 @@ impl From<Message> for MessageRepr {
                 errors,
                 uuid,
             },
-            Message::StreamEvent {
-                uuid,
-                session_id,
-                event,
-                parent_tool_use_id,
-            } => MessageRepr::StreamEvent {
-                uuid,
-                session_id,
-                event,
-                parent_tool_use_id,
-            },
+            Message::StreamEvent { uuid, session_id, event, parent_tool_use_id } => {
+                MessageRepr::StreamEvent { uuid, session_id, event, parent_tool_use_id }
+            }
             Message::Error { error } => MessageRepr::Error { error },
             // Defensive sentinel — `Serialize` for `Message` special-cases
             // `Unknown` to emit `raw` verbatim, so this branch is dead code
@@ -1089,19 +997,13 @@ mod tests_result_message_fields {
         assert_eq!(result.as_deref(), Some("hello world"));
         assert_eq!(structured_output, Some(json!({ "answer": 42 })));
         assert!(model_usage.is_some(), "modelUsage should decode");
-        assert_eq!(
-            model_usage.as_ref().unwrap()["claude-sonnet-4-6"]["input_tokens"],
-            60
-        );
+        assert_eq!(model_usage.as_ref().unwrap()["claude-sonnet-4-6"]["input_tokens"], 60);
         assert_eq!(
             permission_denials.as_deref().map(<[_]>::len),
             Some(1),
             "permission_denials should surface"
         );
-        assert_eq!(
-            errors.as_deref(),
-            Some(vec!["warning: slow".to_string()]).as_deref()
-        );
+        assert_eq!(errors.as_deref(), Some(vec!["warning: slow".to_string()]).as_deref());
         assert_eq!(uuid.as_deref(), Some("res-1"));
     }
 
@@ -1126,10 +1028,7 @@ mod tests_result_message_fields {
             re["modelUsage"]["claude-sonnet-4-6"]["input_tokens"], 1,
             "must preserve camelCase on the way out"
         );
-        assert!(
-            re.get("model_usage").is_none(),
-            "snake_case key must NOT leak"
-        );
+        assert!(re.get("model_usage").is_none(), "snake_case key must NOT leak");
     }
 }
 
@@ -1146,10 +1045,7 @@ mod tests_message_extras {
     fn assistant_error_enum_wire_names() {
         // Each variant must serialize to its wire literal.
         for (variant, wire) in [
-            (
-                AssistantMessageError::AuthenticationFailed,
-                "authentication_failed",
-            ),
+            (AssistantMessageError::AuthenticationFailed, "authentication_failed"),
             (AssistantMessageError::BillingError, "billing_error"),
             (AssistantMessageError::RateLimit, "rate_limit"),
             (AssistantMessageError::InvalidRequest, "invalid_request"),
@@ -1234,11 +1130,7 @@ mod tests_message_extras {
         });
         let msg: Message = serde_json::from_value(raw).expect("parse");
         match msg {
-            Message::User {
-                uuid,
-                tool_use_result,
-                ..
-            } => {
+            Message::User { uuid, tool_use_result, .. } => {
                 assert_eq!(uuid.as_deref(), Some("user-uuid-1"));
                 assert_eq!(tool_use_result, Some(json!({"stdout": "ok"})));
             }

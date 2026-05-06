@@ -8,10 +8,7 @@ use forge_sdk::Message;
 use forge_sdk::{Client, OptionsBuilder};
 
 fn have_claude() -> bool {
-    std::process::Command::new("claude")
-        .arg("--version")
-        .output()
-        .is_ok()
+    std::process::Command::new("claude").arg("--version").output().is_ok()
 }
 
 #[tokio::test]
@@ -22,14 +19,10 @@ async fn real_claude_minimal_turn() {
         return;
     }
 
-    let opts = OptionsBuilder::new()
-        .permission_mode(forge_sdk::PermissionMode::BypassPermissions)
-        .build();
+    let opts =
+        OptionsBuilder::new().permission_mode(forge_sdk::PermissionMode::BypassPermissions).build();
     let (client, mut events) = Client::spawn(opts).await.expect("spawn real claude");
-    assert!(
-        !client.session_id().is_empty(),
-        "session id should be captured"
-    );
+    assert!(!client.session_id().is_empty(), "session id should be captured");
 
     client
         .send_user_message("Reply with exactly the word 'pong' and nothing else.")
@@ -52,10 +45,7 @@ async fn real_claude_minimal_turn() {
             _ => {}
         }
     }
-    assert!(
-        saw_assistant,
-        "expected at least one Assistant before Result"
-    );
+    assert!(saw_assistant, "expected at least one Assistant before Result");
 
     client.disconnect().await.expect("disconnect");
 }

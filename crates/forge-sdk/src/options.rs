@@ -349,14 +349,8 @@ impl std::fmt::Debug for Options {
             .field("resume", &self.resume)
             .field("model", &self.model)
             .field("permission_mode", &self.permission_mode)
-            .field(
-                "can_use_tool",
-                &self.can_use_tool.as_ref().map(|_| "<callback>"),
-            )
-            .field(
-                "mcp_servers",
-                &format!("<{} servers>", self.mcp_servers.len()),
-            )
+            .field("can_use_tool", &self.can_use_tool.as_ref().map(|_| "<callback>"))
+            .field("mcp_servers", &format!("<{} servers>", self.mcp_servers.len()))
             .field(
                 "external_mcp_servers",
                 &format!("<{} external>", self.external_mcp_servers.len()),
@@ -366,16 +360,10 @@ impl std::fmt::Debug for Options {
             .field("skills", &self.skills)
             .field("setting_sources", &self.setting_sources)
             .field("exclude_dynamic_sections", &self.exclude_dynamic_sections)
-            .field(
-                "permission_prompt_tool_name",
-                &self.permission_prompt_tool_name,
-            )
+            .field("permission_prompt_tool_name", &self.permission_prompt_tool_name)
             .field("minimum_cli_version", &self.minimum_cli_version)
             .field("projects_dir", &self.projects_dir)
-            .field(
-                "subagents",
-                &format!("<{} subagents>", self.subagents.len()),
-            )
+            .field("subagents", &format!("<{} subagents>", self.subagents.len()))
             .field("system_prompt", &self.system_prompt)
             .field("tools", &self.tools)
             .field("disallowed_tools", &self.disallowed_tools)
@@ -399,14 +387,8 @@ impl std::fmt::Debug for Options {
             .field("output_format", &self.output_format)
             .field("max_buffer_size", &self.max_buffer_size)
             .field("stderr", &self.stderr.as_ref().map(|_| "<callback>"))
-            .field(
-                "tee_inbound",
-                &self.tee_inbound.as_ref().map(|_| "<callback>"),
-            )
-            .field(
-                "tee_outbound",
-                &self.tee_outbound.as_ref().map(|_| "<callback>"),
-            )
+            .field("tee_inbound", &self.tee_inbound.as_ref().map(|_| "<callback>"))
+            .field("tee_outbound", &self.tee_outbound.as_ref().map(|_| "<callback>"))
             .field("enable_file_checkpointing", &self.enable_file_checkpointing)
             .field("settings", &self.settings)
             .field("sandbox", &self.sandbox)
@@ -422,9 +404,7 @@ pub struct OptionsBuilder {
 
 impl std::fmt::Debug for OptionsBuilder {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("OptionsBuilder")
-            .field("inner", &self.inner)
-            .finish()
+        f.debug_struct("OptionsBuilder").field("inner", &self.inner).finish()
     }
 }
 
@@ -688,9 +668,7 @@ impl OptionsBuilder {
     /// Register a local plugin directory.
     #[must_use]
     pub fn plugin_dir(mut self, path: impl Into<std::path::PathBuf>) -> Self {
-        self.inner
-            .plugins
-            .push(SdkPluginConfig::Local { path: path.into() });
+        self.inner.plugins.push(SdkPluginConfig::Local { path: path.into() });
         self
     }
 
@@ -865,26 +843,20 @@ mod tests_skills_option {
 
     #[test]
     fn skills_with_concrete_names() {
-        let opts = OptionsBuilder::new()
-            .skills(["create-story", "another-skill"])
-            .build();
+        let opts = OptionsBuilder::new().skills(["create-story", "another-skill"]).build();
         assert_eq!(opts.skills.len(), 2);
     }
 
     #[test]
     fn explicit_setting_sources_override_default() {
-        let opts = OptionsBuilder::new()
-            .skills(["create-story"])
-            .setting_sources(["local"])
-            .build();
+        let opts =
+            OptionsBuilder::new().skills(["create-story"]).setting_sources(["local"]).build();
         assert_eq!(opts.setting_sources, Some(vec!["local".to_string()]));
     }
 
     #[test]
     fn allowed_tools_round_trip() {
-        let opts = OptionsBuilder::new()
-            .allowed_tools(["Read", "Grep"])
-            .build();
+        let opts = OptionsBuilder::new().allowed_tools(["Read", "Grep"]).build();
         assert_eq!(opts.allowed_tools, vec!["Read".to_string(), "Grep".into()]);
     }
 
@@ -917,10 +889,7 @@ mod tests_options_build {
 
     #[test]
     fn builder_sets_model_and_cwd() {
-        let opts = OptionsBuilder::new()
-            .model("claude-opus-4-5")
-            .cwd("/tmp/project")
-            .build();
+        let opts = OptionsBuilder::new().model("claude-opus-4-5").cwd("/tmp/project").build();
         assert_eq!(opts.model.as_deref(), Some("claude-opus-4-5"));
         assert_eq!(opts.cwd, Some(PathBuf::from("/tmp/project")));
     }
@@ -933,17 +902,13 @@ mod tests_options_build {
 
     #[test]
     fn builder_sets_permission_mode() {
-        let opts = OptionsBuilder::new()
-            .permission_mode(PermissionMode::AcceptEdits)
-            .build();
+        let opts = OptionsBuilder::new().permission_mode(PermissionMode::AcceptEdits).build();
         assert_eq!(opts.permission_mode, PermissionMode::AcceptEdits);
     }
 
     #[test]
     fn builder_sets_custom_binary() {
-        let opts = OptionsBuilder::new()
-            .binary("/usr/local/bin/claude")
-            .build();
+        let opts = OptionsBuilder::new().binary("/usr/local/bin/claude").build();
         assert_eq!(opts.binary, "/usr/local/bin/claude");
     }
 

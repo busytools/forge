@@ -12,16 +12,12 @@ use forge_test_harness::sdk_wire::run_live_scenario;
 #[tokio::test]
 #[ignore = "burns real Anthropic API tokens; opt-in via FORGE_WIRE_CAPTURE=1"]
 async fn wire_capture_set_model() {
-    let opts = OptionsBuilder::new()
-        .max_turns(1)
-        .permission_mode(PermissionMode::AcceptEdits)
-        .build();
+    let opts =
+        OptionsBuilder::new().max_turns(1).permission_mode(PermissionMode::AcceptEdits).build();
 
     run_live_scenario("set_model", opts, |client, events| async move {
         client.set_model(Some("claude-sonnet-4-6")).await?;
-        client
-            .send_user_message("Reply with only the word OK.")
-            .await?;
+        client.send_user_message("Reply with only the word OK.").await?;
         Ok((client, events))
     })
     .await
@@ -34,10 +30,8 @@ async fn wire_capture_mcp_reconnect() {
     // Need at least one MCP server in the init set — use whatever the
     // user's profile reports from `mcp_status`. If none, the scenario
     // skips inside drive.
-    let opts = OptionsBuilder::new()
-        .max_turns(1)
-        .permission_mode(PermissionMode::AcceptEdits)
-        .build();
+    let opts =
+        OptionsBuilder::new().max_turns(1).permission_mode(PermissionMode::AcceptEdits).build();
 
     run_live_scenario("mcp_reconnect", opts, |client, events| async move {
         let status = client.mcp_status().await?;
@@ -60,10 +54,8 @@ async fn wire_capture_mcp_reconnect() {
 #[tokio::test]
 #[ignore = "burns real Anthropic API tokens; opt-in via FORGE_WIRE_CAPTURE=1"]
 async fn wire_capture_mcp_toggle() {
-    let opts = OptionsBuilder::new()
-        .max_turns(1)
-        .permission_mode(PermissionMode::AcceptEdits)
-        .build();
+    let opts =
+        OptionsBuilder::new().max_turns(1).permission_mode(PermissionMode::AcceptEdits).build();
 
     run_live_scenario("mcp_toggle", opts, |client, events| async move {
         let status = client.mcp_status().await?;
@@ -104,9 +96,7 @@ async fn wire_capture_rewind_files() {
         .build();
 
     run_live_scenario("rewind_files", opts, |client, mut events| async move {
-        client
-            .send_user_message("Reply with only the word OK.")
-            .await?;
+        client.send_user_message("Reply with only the word OK.").await?;
 
         // Drain until Result, capturing the first user_message uuid.
         let mut rewind_id: Option<String> = None;
@@ -182,10 +172,8 @@ async fn wire_capture_stop_task() {
 #[tokio::test]
 #[ignore = "burns real Anthropic API tokens; opt-in via FORGE_WIRE_CAPTURE=1"]
 async fn wire_capture_interrupt() {
-    let opts = OptionsBuilder::new()
-        .max_turns(1)
-        .permission_mode(PermissionMode::AcceptEdits)
-        .build();
+    let opts =
+        OptionsBuilder::new().max_turns(1).permission_mode(PermissionMode::AcceptEdits).build();
 
     run_live_scenario("interrupt", opts, |client, events| async move {
         client

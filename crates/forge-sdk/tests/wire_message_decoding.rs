@@ -22,11 +22,7 @@ mod tests_rate_limit_frames {
         let line = r#"{"type":"rate_limit_event","rate_limit_info":{"status":"allowed"},"uuid":"evt-1","session_id":"sess"}"#;
         let msg = decode_line(line, 1).expect("decode");
         match msg {
-            Message::RateLimitEvent {
-                rate_limit_info,
-                uuid,
-                session_id,
-            } => {
+            Message::RateLimitEvent { rate_limit_info, uuid, session_id } => {
                 assert_eq!(rate_limit_info.status, RateLimitStatus::Allowed);
                 assert_eq!(uuid, "evt-1");
                 assert_eq!(session_id, "sess");
@@ -45,20 +41,12 @@ mod tests_rate_limit_frames {
         let line = r#"{"type":"rate_limit_event","rate_limit_info":{"status":"allowed_warning","resetsAt":1745000000,"rateLimitType":"five_hour","utilization":0.82,"overageStatus":"allowed","overageResetsAt":1745100000,"overageDisabledReason":null},"uuid":"evt-7","session_id":"sess"}"#;
         let msg = decode_line(line, 1).expect("decode");
         match msg {
-            Message::RateLimitEvent {
-                rate_limit_info, ..
-            } => {
+            Message::RateLimitEvent { rate_limit_info, .. } => {
                 assert_eq!(rate_limit_info.status, RateLimitStatus::AllowedWarning);
                 assert_eq!(rate_limit_info.resets_at, Some(1_745_000_000));
-                assert_eq!(
-                    rate_limit_info.rate_limit_type,
-                    Some(RateLimitType::FiveHour)
-                );
+                assert_eq!(rate_limit_info.rate_limit_type, Some(RateLimitType::FiveHour));
                 assert_eq!(rate_limit_info.utilization, Some(0.82));
-                assert_eq!(
-                    rate_limit_info.overage_status,
-                    Some(RateLimitStatus::Allowed)
-                );
+                assert_eq!(rate_limit_info.overage_status, Some(RateLimitStatus::Allowed));
                 assert_eq!(rate_limit_info.overage_resets_at, Some(1_745_100_000));
                 assert!(rate_limit_info.overage_disabled_reason.is_none());
             }
@@ -139,11 +127,7 @@ mod tests_task_lifecycle_frames {
         let line = r#"{"type":"system","subtype":"task_started","task_id":"t-1","description":"do it","uuid":"u-1","session_id":"sess","tool_use_id":"toolu_abc","task_type":"general-purpose"}"#;
         let msg = decode_line(line, 1).expect("decode");
         match msg {
-            Message::TaskStarted {
-                tool_use_id,
-                task_type,
-                ..
-            } => {
+            Message::TaskStarted { tool_use_id, task_type, .. } => {
                 assert_eq!(tool_use_id.as_deref(), Some("toolu_abc"));
                 assert_eq!(task_type.as_deref(), Some("general-purpose"));
             }
@@ -237,11 +221,7 @@ mod tests_task_lifecycle_frames {
 
     #[test]
     fn task_usage_roundtrip() {
-        let u = TaskUsage {
-            total_tokens: 10,
-            tool_uses: 2,
-            duration_ms: 500,
-        };
+        let u = TaskUsage { total_tokens: 10, tool_uses: 2, duration_ms: 500 };
         let v = serde_json::to_value(u).expect("ser");
         let back: TaskUsage = serde_json::from_value(v).expect("de");
         assert_eq!(u, back);
@@ -285,11 +265,7 @@ mod tests_task_lifecycle_frames {
             r#"{"type":"system","subtype":"init","session_id":"sess","model":"claude-opus-4-5"}"#;
         let msg = decode_line(line, 1).expect("decode");
         match msg {
-            Message::System {
-                subtype,
-                session_id,
-                ..
-            } => {
+            Message::System { subtype, session_id, .. } => {
                 assert_eq!(subtype, "init");
                 assert_eq!(session_id.as_deref(), Some("sess"));
             }
@@ -326,12 +302,7 @@ mod tests_stream_event_and_error_frames {
         let line = r#"{"type":"stream_event","uuid":"evt-1","session_id":"sess-1","event":{"type":"message_start"}}"#;
         let msg = decode_line(line, 1).expect("decode");
         match msg {
-            Message::StreamEvent {
-                uuid,
-                session_id,
-                event,
-                parent_tool_use_id,
-            } => {
+            Message::StreamEvent { uuid, session_id, event, parent_tool_use_id } => {
                 assert_eq!(uuid, "evt-1");
                 assert_eq!(session_id, "sess-1");
                 assert_eq!(event, json!({"type": "message_start"}));
@@ -348,11 +319,7 @@ mod tests_stream_event_and_error_frames {
         let line = r#"{"type":"stream_event","uuid":"evt-2","session_id":"sess-2","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hello"}},"parent_tool_use_id":"toolu_parent"}"#;
         let msg = decode_line(line, 1).expect("decode");
         match msg {
-            Message::StreamEvent {
-                parent_tool_use_id,
-                event,
-                ..
-            } => {
+            Message::StreamEvent { parent_tool_use_id, event, .. } => {
                 assert_eq!(parent_tool_use_id.as_deref(), Some("toolu_parent"));
                 assert_eq!(event["type"], "content_block_delta");
             }
@@ -411,9 +378,7 @@ mod tests_stream_event_and_error_frames {
 
     #[test]
     fn error_frame_roundtrips_through_serde() {
-        let original = Message::Error {
-            error: "pipe broken".into(),
-        };
+        let original = Message::Error { error: "pipe broken".into() };
         let wire = serde_json::to_string(&original).expect("serialize");
         let decoded: Message = serde_json::from_str(&wire).expect("decode");
         assert_eq!(decoded, original);

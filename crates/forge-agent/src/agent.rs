@@ -92,9 +92,7 @@ impl AgentHandle {
     // forge_sdk::Client surface asynchronously via the events stream.
 
     fn send(&self, cmd: Command) -> anyhow::Result<()> {
-        self.commands
-            .send(cmd)
-            .map_err(|_| anyhow::anyhow!("agent dispatcher shut down"))
+        self.commands.send(cmd).map_err(|_| anyhow::anyhow!("agent dispatcher shut down"))
     }
 
     pub fn new_session(
@@ -110,10 +108,7 @@ impl AgentHandle {
         // making it explicit catches forward-compat breakage early.
         let launch_settings = serde_json::to_value(launch_settings)
             .map_err(|e| anyhow::anyhow!("failed to encode launch settings: {e}"))?;
-        self.send(Command::NewSession {
-            cwd,
-            launch_settings,
-        })
+        self.send(Command::NewSession { cwd, launch_settings })
     }
 
     pub fn resume_session(
@@ -123,10 +118,7 @@ impl AgentHandle {
     ) -> anyhow::Result<()> {
         let launch_settings = serde_json::to_value(launch_settings)
             .map_err(|e| anyhow::anyhow!("failed to encode launch settings: {e}"))?;
-        self.send(Command::ResumeSession {
-            session_id: session_id.into(),
-            launch_settings,
-        })
+        self.send(Command::ResumeSession { session_id: session_id.into(), launch_settings })
     }
 
     pub fn prompt_text(
@@ -134,13 +126,8 @@ impl AgentHandle {
         session_id: String,
         text: String,
     ) -> anyhow::Result<crate::client::PromptResponse> {
-        self.send(Command::Prompt {
-            session_id: session_id.into(),
-            text,
-        })?;
-        Ok(crate::client::PromptResponse {
-            stop_reason: "in_progress".to_owned(),
-        })
+        self.send(Command::Prompt { session_id: session_id.into(), text })?;
+        Ok(crate::client::PromptResponse { stop_reason: "in_progress".to_owned() })
     }
 
     pub fn prompt_with_images(
@@ -149,34 +136,20 @@ impl AgentHandle {
         text: String,
         images: Vec<forge_primitives::ImageAttachment>,
     ) -> anyhow::Result<crate::client::PromptResponse> {
-        self.send(Command::PromptWithImages {
-            session_id: session_id.into(),
-            text,
-            images,
-        })?;
-        Ok(crate::client::PromptResponse {
-            stop_reason: "in_progress".to_owned(),
-        })
+        self.send(Command::PromptWithImages { session_id: session_id.into(), text, images })?;
+        Ok(crate::client::PromptResponse { stop_reason: "in_progress".to_owned() })
     }
 
     pub fn cancel(&self, session_id: String) -> anyhow::Result<()> {
-        self.send(Command::Cancel {
-            session_id: session_id.into(),
-        })
+        self.send(Command::Cancel { session_id: session_id.into() })
     }
 
     pub fn set_mode(&self, session_id: String, mode: String) -> anyhow::Result<()> {
-        self.send(Command::SetMode {
-            session_id: session_id.into(),
-            mode,
-        })
+        self.send(Command::SetMode { session_id: session_id.into(), mode })
     }
 
     pub fn set_model(&self, session_id: String, model: String) -> anyhow::Result<()> {
-        self.send(Command::SetModel {
-            session_id: session_id.into(),
-            model,
-        })
+        self.send(Command::SetModel { session_id: session_id.into(), model })
     }
 
     pub fn generate_session_title(
@@ -184,47 +157,31 @@ impl AgentHandle {
         session_id: String,
         description: String,
     ) -> anyhow::Result<()> {
-        self.send(Command::GenerateSessionTitle {
-            session_id: session_id.into(),
-            description,
-        })
+        self.send(Command::GenerateSessionTitle { session_id: session_id.into(), description })
     }
 
     pub fn rename_session(&self, session_id: String, title: String) -> anyhow::Result<()> {
-        self.send(Command::RenameSession {
-            session_id: session_id.into(),
-            title,
-        })
+        self.send(Command::RenameSession { session_id: session_id.into(), title })
     }
 
     pub fn get_status_snapshot(&self, session_id: String) -> anyhow::Result<()> {
-        self.send(Command::GetStatusSnapshot {
-            session_id: session_id.into(),
-        })
+        self.send(Command::GetStatusSnapshot { session_id: session_id.into() })
     }
 
     pub fn get_oauth_credentials_snapshot(&self, session_id: String) -> anyhow::Result<()> {
-        self.send(Command::GetOauthCredentialsSnapshot {
-            session_id: session_id.into(),
-        })
+        self.send(Command::GetOauthCredentialsSnapshot { session_id: session_id.into() })
     }
 
     pub fn get_context_usage(&self, session_id: String) -> anyhow::Result<()> {
-        self.send(Command::GetContextUsage {
-            session_id: session_id.into(),
-        })
+        self.send(Command::GetContextUsage { session_id: session_id.into() })
     }
 
     pub fn reload_plugins(&self, session_id: String) -> anyhow::Result<()> {
-        self.send(Command::ReloadPlugins {
-            session_id: session_id.into(),
-        })
+        self.send(Command::ReloadPlugins { session_id: session_id.into() })
     }
 
     pub fn get_mcp_snapshot(&self, session_id: String) -> anyhow::Result<()> {
-        self.send(Command::GetMcpSnapshot {
-            session_id: session_id.into(),
-        })
+        self.send(Command::GetMcpSnapshot { session_id: session_id.into() })
     }
 
     pub fn respond_to_elicitation(
@@ -247,10 +204,7 @@ impl AgentHandle {
         session_id: String,
         server_name: String,
     ) -> anyhow::Result<()> {
-        self.send(Command::ReconnectMcpServer {
-            session_id: session_id.into(),
-            server_name,
-        })
+        self.send(Command::ReconnectMcpServer { session_id: session_id.into(), server_name })
     }
 
     pub fn toggle_mcp_server(
@@ -259,11 +213,7 @@ impl AgentHandle {
         server_name: String,
         enabled: bool,
     ) -> anyhow::Result<()> {
-        self.send(Command::ToggleMcpServer {
-            session_id: session_id.into(),
-            server_name,
-            enabled,
-        })
+        self.send(Command::ToggleMcpServer { session_id: session_id.into(), server_name, enabled })
     }
 
     pub fn set_mcp_servers(
@@ -271,10 +221,7 @@ impl AgentHandle {
         session_id: String,
         servers: std::collections::BTreeMap<String, forge_primitives::McpServerConfig>,
     ) -> anyhow::Result<()> {
-        self.send(Command::SetMcpServers {
-            session_id: session_id.into(),
-            servers,
-        })
+        self.send(Command::SetMcpServers { session_id: session_id.into(), servers })
     }
 
     pub fn authenticate_mcp_server(
@@ -282,17 +229,11 @@ impl AgentHandle {
         session_id: String,
         server_name: String,
     ) -> anyhow::Result<()> {
-        self.send(Command::AuthenticateMcpServer {
-            session_id: session_id.into(),
-            server_name,
-        })
+        self.send(Command::AuthenticateMcpServer { session_id: session_id.into(), server_name })
     }
 
     pub fn clear_mcp_auth(&self, session_id: String, server_name: String) -> anyhow::Result<()> {
-        self.send(Command::ClearMcpAuth {
-            session_id: session_id.into(),
-            server_name,
-        })
+        self.send(Command::ClearMcpAuth { session_id: session_id.into(), server_name })
     }
 
     pub fn submit_mcp_oauth_callback_url(
@@ -335,16 +276,11 @@ impl AgentHandle {
     }
 
     pub fn start_git_context_watch(&self, session_id: String, cwd: PathBuf) -> anyhow::Result<()> {
-        self.send(Command::StartGitContextWatch {
-            session_id: session_id.into(),
-            cwd,
-        })
+        self.send(Command::StartGitContextWatch { session_id: session_id.into(), cwd })
     }
 
     pub fn stop_git_context_watch(&self, session_id: String) -> anyhow::Result<()> {
-        self.send(Command::StopGitContextWatch {
-            session_id: session_id.into(),
-        })
+        self.send(Command::StopGitContextWatch { session_id: session_id.into() })
     }
 }
 
@@ -387,9 +323,7 @@ impl Agent {
     #[must_use]
     pub fn spawn() -> AgentHandle {
         let bridge = ForgeSdkBridge::new();
-        let agent_event_rx = bridge
-            .take_events()
-            .unwrap_or_else(|| mpsc::unbounded_channel().1);
+        let agent_event_rx = bridge.take_events().unwrap_or_else(|| mpsc::unbounded_channel().1);
 
         let (commands_tx, commands_rx) = mpsc::unbounded_channel::<Command>();
 
@@ -425,10 +359,7 @@ fn dispatch(cmd: Command, bridge: &ForgeSdkBridge) -> anyhow::Result<()> {
     use forge_primitives::Command as C;
 
     match cmd {
-        C::NewSession {
-            cwd,
-            launch_settings,
-        } => {
+        C::NewSession { cwd, launch_settings } => {
             // Symmetric to the encode-side `?`-propagation in
             // `AgentHandle::new_session`. Round-trip is safe in
             // practice when `Serialize`/`Deserialize` are mutually
@@ -447,10 +378,7 @@ fn dispatch(cmd: Command, bridge: &ForgeSdkBridge) -> anyhow::Result<()> {
             });
             bridge.new_session(cwd, launch)
         }
-        C::ResumeSession {
-            session_id,
-            launch_settings,
-        } => {
+        C::ResumeSession { session_id, launch_settings } => {
             let launch = serde_json::from_value(launch_settings).unwrap_or_else(|e| {
                 tracing::error!(
                     target: crate::logging::targets::BRIDGE_LIFECYCLE,
@@ -461,30 +389,22 @@ fn dispatch(cmd: Command, bridge: &ForgeSdkBridge) -> anyhow::Result<()> {
             });
             bridge.resume_session(session_id.into_string(), launch)
         }
-        C::Prompt { session_id, text } => bridge
-            .prompt_text(session_id.into_string(), text)
-            .map(|_| ()),
-        C::PromptWithImages {
-            session_id,
-            text,
-            images,
-        } => bridge
-            .prompt_with_images(session_id.into_string(), text, images)
-            .map(|_| ()),
+        C::Prompt { session_id, text } => {
+            bridge.prompt_text(session_id.into_string(), text).map(|_| ())
+        }
+        C::PromptWithImages { session_id, text, images } => {
+            bridge.prompt_with_images(session_id.into_string(), text, images).map(|_| ())
+        }
         C::Cancel { session_id } => bridge.cancel(session_id.into_string()),
         C::SetMode { session_id, mode } => bridge.set_mode(session_id.into_string(), mode),
         C::SetModel { session_id, model } => bridge.set_model(session_id.into_string(), model),
-        C::GenerateSessionTitle {
-            session_id,
-            description,
-        } => bridge.generate_session_title(session_id.into_string(), description),
+        C::GenerateSessionTitle { session_id, description } => {
+            bridge.generate_session_title(session_id.into_string(), description)
+        }
         C::RenameSession { session_id, title } => {
             bridge.rename_session(session_id.into_string(), title)
         }
-        C::RewindFiles {
-            session_id,
-            user_message_id,
-        } => {
+        C::RewindFiles { session_id, user_message_id } => {
             tracing::warn!(
                 target: crate::logging::targets::BRIDGE_LIFECYCLE,
                 session_id = %session_id,
@@ -499,65 +419,38 @@ fn dispatch(cmd: Command, bridge: &ForgeSdkBridge) -> anyhow::Result<()> {
         }
         C::GetContextUsage { session_id } => bridge.get_context_usage(session_id.into_string()),
         C::GetMcpSnapshot { session_id } => bridge.get_mcp_snapshot(session_id.into_string()),
-        C::PermissionResponse {
-            session_id,
-            tool_call_id,
-            outcome,
-        } => bridge.permission_response(
+        C::PermissionResponse { session_id, tool_call_id, outcome } => bridge.permission_response(
             session_id.into_string(),
             tool_call_id.into_string(),
             outcome,
         ),
-        C::QuestionResponse {
-            session_id,
-            tool_call_id,
-            outcome,
-        } => bridge.question_response(
-            session_id.into_string(),
-            tool_call_id.into_string(),
-            outcome,
-        ),
-        C::RespondToElicitation {
-            session_id,
-            elicitation_request_id,
-            action,
-            content,
-        } => bridge.respond_to_elicitation(
-            session_id.into_string(),
-            elicitation_request_id,
-            action,
-            content,
-        ),
-        C::ReconnectMcpServer {
-            session_id,
-            server_name,
-        } => bridge.reconnect_mcp_server(session_id.into_string(), server_name),
-        C::ToggleMcpServer {
-            session_id,
-            server_name,
-            enabled,
-        } => bridge.toggle_mcp_server(session_id.into_string(), server_name, enabled),
-        C::SetMcpServers {
-            session_id,
-            servers,
-        } => bridge.set_mcp_servers(session_id.into_string(), servers),
-        C::AuthenticateMcpServer {
-            session_id,
-            server_name,
-        } => bridge.authenticate_mcp_server(session_id.into_string(), server_name),
-        C::ClearMcpAuth {
-            session_id,
-            server_name,
-        } => bridge.clear_mcp_auth(session_id.into_string(), server_name),
-        C::SubmitMcpOauthCallbackUrl {
-            session_id,
-            server_name,
-            callback_url,
-        } => bridge.submit_mcp_oauth_callback_url(
-            session_id.into_string(),
-            server_name,
-            callback_url,
-        ),
+        C::QuestionResponse { session_id, tool_call_id, outcome } => {
+            bridge.question_response(session_id.into_string(), tool_call_id.into_string(), outcome)
+        }
+        C::RespondToElicitation { session_id, elicitation_request_id, action, content } => bridge
+            .respond_to_elicitation(
+                session_id.into_string(),
+                elicitation_request_id,
+                action,
+                content,
+            ),
+        C::ReconnectMcpServer { session_id, server_name } => {
+            bridge.reconnect_mcp_server(session_id.into_string(), server_name)
+        }
+        C::ToggleMcpServer { session_id, server_name, enabled } => {
+            bridge.toggle_mcp_server(session_id.into_string(), server_name, enabled)
+        }
+        C::SetMcpServers { session_id, servers } => {
+            bridge.set_mcp_servers(session_id.into_string(), servers)
+        }
+        C::AuthenticateMcpServer { session_id, server_name } => {
+            bridge.authenticate_mcp_server(session_id.into_string(), server_name)
+        }
+        C::ClearMcpAuth { session_id, server_name } => {
+            bridge.clear_mcp_auth(session_id.into_string(), server_name)
+        }
+        C::SubmitMcpOauthCallbackUrl { session_id, server_name, callback_url } => bridge
+            .submit_mcp_oauth_callback_url(session_id.into_string(), server_name, callback_url),
         C::ReloadPlugins { session_id } => bridge.reload_plugins(session_id.into_string()),
         C::StartGitContextWatch { session_id, cwd } => {
             bridge.start_git_context_watch(session_id.into_string(), cwd)
