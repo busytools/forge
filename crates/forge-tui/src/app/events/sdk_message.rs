@@ -261,9 +261,8 @@ fn walk_user_tool_results(app: &mut App, raw: &Value) {
 }
 
 /// Read `parent_tool_use_id` from the outer envelope (Assistant or
-/// User Message). Mirrors how the bridge passes
-/// `parent_tool_use_id.as_deref()` into `handle_assistant_message`
-/// at the top level.
+/// User Message). Used to route subagent tool calls back to their
+/// parent in the tool-call lifecycle.
 fn parent_tool_use_id_from_envelope(raw: &Value) -> Option<String> {
     raw.get("parent_tool_use_id")
         .and_then(Value::as_str)
@@ -344,10 +343,9 @@ fn apply_fields_to_base(
     }
 }
 
-/// Mirror of `bridge::tool_calls::emit_tool_call` against App state.
-/// Inserts/updates `app.turn_state.tool_calls` and dispatches the
-/// resulting initial `ToolCall` or `ToolCallUpdate` via the existing
-/// App handlers.
+/// Insert or update an entry in `app.turn_state.tool_calls` for a
+/// `tool_use` content block, and dispatch the resulting initial
+/// `ToolCall` or `ToolCallUpdate` via the existing App handlers.
 fn apply_tool_use_block(
     app: &mut App,
     tool_use_id: &str,
@@ -406,9 +404,9 @@ fn apply_tool_result_block(
     apply_tool_call_update(app, tool_use_id, fields);
 }
 
-/// Mirror of `bridge::tool_calls::emit_tool_call_update` against App
-/// state. Mutates `app.turn_state.tool_calls` then dispatches a
-/// `ToolCallUpdate` via the existing App handler.
+/// Mutate `app.turn_state.tool_calls` with the supplied update
+/// fields, then dispatch a `ToolCallUpdate` via the existing App
+/// handler.
 fn apply_tool_call_update(
     app: &mut App,
     tool_use_id: &str,
@@ -425,9 +423,9 @@ fn apply_tool_call_update(
     super::tool_updates::handle_tool_call_update_session(app, &model_update);
 }
 
-/// Mirror of `bridge::tool_calls::finalize_open_tool_calls` against
-/// App state. Walks `app.turn_state.tool_calls` and emits a terminal
-/// status update for every still-pending entry.
+/// Walk `app.turn_state.tool_calls` and emit a terminal status
+/// update for every still-pending entry. Called from
+/// `apply_result_finalize` when a turn ends.
 fn finalize_open_tool_calls(app: &mut App, status: &str) {
     use forge_primitives::ToolCallUpdateFields;
 
@@ -713,10 +711,7 @@ fn apply_local_command_output(app: &mut App, data: &Value) {
 }
 
 /// Build an `ElicitationRequest` from System(elicitation_request)
-/// data and dispatch via the App's MCP overlay handler. Mirrors what
-/// `forge_sdk_translate::elicitation_request_to_event` previously did
-/// — but now applies the request directly without going through the
-/// `AgentEvent::ElicitationRequest` wire variant.
+/// data and dispatch via the App's MCP overlay handler.
 fn apply_elicitation_request(app: &mut App, data: &Value) {
     use forge_primitives::{ElicitationMode, ElicitationRequest};
     let Some(record) = data.as_object() else { return };
@@ -835,8 +830,9 @@ fn handle_task_notification(app: &mut App, msg: Message, raw: &Value) {
     }
 }
 
-/// Mirror of `bridge::tool_calls::emit_tool_progress_update` against
-/// App state.
+/// Apply a `TaskProgress` notification to App state — bumps the
+/// `tool_use_id`'s status to `in_progress` if it isn't already in a
+/// terminal/active state.
 fn apply_tool_progress_update(app: &mut App, tool_use_id: &str, name: &str) {
     use forge_primitives::ToolCallUpdateFields;
 
@@ -855,8 +851,9 @@ fn apply_tool_progress_update(app: &mut App, tool_use_id: &str, name: &str) {
     );
 }
 
-/// Mirror of `bridge::tool_calls::emit_tool_summary_update` against
-/// App state.
+/// Apply a `TaskNotification` summary to App state — finalises the
+/// matching `tool_use_id` with `completed` status (preserving any
+/// existing terminal `failed`/`killed` status) and updates content.
 fn apply_tool_summary_update(app: &mut App, tool_use_id: &str, summary: &str) {
     use forge_primitives::{ToolCallContent, ToolCallUpdateFields};
 

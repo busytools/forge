@@ -127,12 +127,9 @@ pub enum AgentEvent {
         servers: Vec<forge_primitives::McpServerStatus>,
         error: Option<String>,
     },
-    /// Raw `forge_primitives::Message` envelope flowing in parallel to
-    /// `SessionUpdate` events during the bridge-collapse refactor.
-    /// Phase 1.3 emits these alongside the bridge's existing
-    /// `SessionUpdate`s; Phase 2 progressively migrates per-variant
-    /// dispatch to the App's `handle_sdk_message`; Phase 3 removes
-    /// the bridge unpacker and `SessionUpdate` entirely.
+    /// Raw `forge_primitives::Message` envelope from the underlying
+    /// SDK Client, forwarded to the consumer (e.g. forge-tui's App)
+    /// for per-variant dispatch and state mutation.
     SdkMessage {
         session_id: String,
         msg: forge_primitives::Message,
