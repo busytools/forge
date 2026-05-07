@@ -10,6 +10,7 @@ use pretty_assertions::assert_eq;
 use tokio::sync::oneshot;
 
 use crate::helpers::{send_client_event, test_app};
+use crate::message_helpers::{assistant_message, send_msg, text_block, tool_use_block};
 
 /// Helper: create a tool call, send it, then send a permission request for it.
 /// Returns the oneshot receiver so the test can verify the response.
@@ -19,9 +20,14 @@ fn setup_permission(
     options: Vec<model::PermissionOption>,
 ) -> oneshot::Receiver<model::RequestPermissionResponse> {
     // First create the tool call so it exists in the index
-    let id = tool_id.to_owned();
-    let tc = model::ToolCall::new(id, "Write file").status(model::ToolCallStatus::InProgress);
-    send_client_event(app, ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc)));
+    send_msg(
+        app,
+        assistant_message(vec![tool_use_block(
+            tool_id,
+            "Write",
+            serde_json::json!({"file_path": "file"}),
+        )]),
+    );
 
     let (response_tx, response_rx) = oneshot::channel();
     let tool_call_update =
@@ -154,12 +160,7 @@ async fn scroll_target_preserved_across_text_chunks() {
     app.viewport.scroll_target = 42;
     app.viewport.auto_scroll = false;
 
-    let chunk =
-        model::ContentChunk::new(model::ContentBlock::Text(model::TextContent::new("Some text")));
-    send_client_event(
-        &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::AgentMessageChunk(chunk)),
-    );
+    send_msg(&mut app, assistant_message(vec![text_block("Some text")]));
 
     // Text chunks should NOT reset scroll when auto_scroll is off
     assert_eq!(app.viewport.scroll_target, 42, "scroll_target should be preserved");
@@ -172,9 +173,14 @@ async fn tool_call_does_not_change_scroll_when_auto_scroll_off() {
     app.viewport.scroll_target = 10;
     app.viewport.auto_scroll = false;
 
-    let tc =
-        model::ToolCall::new("tc-scroll", "Read file").status(model::ToolCallStatus::InProgress);
-    send_client_event(&mut app, ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc)));
+    send_msg(
+        &mut app,
+        assistant_message(vec![tool_use_block(
+            "tc-scroll",
+            "Read",
+            serde_json::json!({"file_path": "file"}),
+        )]),
+    );
 
     assert_eq!(app.viewport.scroll_target, 10, "tool calls shouldn't touch scroll_target");
     assert!(!app.viewport.auto_scroll);
@@ -202,12 +208,7 @@ async fn turn_complete_resets_transient_state() {
 async fn turn_complete_does_not_clear_messages() {
     let mut app = test_app();
 
-    let chunk =
-        model::ContentChunk::new(model::ContentBlock::Text(model::TextContent::new("hello")));
-    send_client_event(
-        &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::AgentMessageChunk(chunk)),
-    );
+    send_msg(&mut app, assistant_message(vec![text_block("hello")]));
     assert_eq!(app.messages.len(), 1);
 
     send_client_event(&mut app, ClientEvent::TurnComplete { terminal_reason: None });
@@ -219,9 +220,14 @@ async fn turn_complete_does_not_clear_messages() {
 async fn turn_complete_does_not_clear_tool_call_index() {
     let mut app = test_app();
 
-    let tc =
-        model::ToolCall::new("tc-persist", "Read file").status(model::ToolCallStatus::InProgress);
-    send_client_event(&mut app, ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc)));
+    send_msg(
+        &mut app,
+        assistant_message(vec![tool_use_block(
+            "tc-persist",
+            "Read",
+            serde_json::json!({"file_path": "file"}),
+        )]),
+    );
     assert!(app.tool_call_index.contains_key("tc-persist"));
 
     send_client_event(&mut app, ClientEvent::TurnComplete { terminal_reason: None });

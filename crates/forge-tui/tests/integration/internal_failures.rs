@@ -5,14 +5,16 @@
 // Internal-failure integration tests.
 // Validate client event processing + final UI render output for failed tool calls.
 
-use forge_tui::agent::events::ClientEvent;
 use forge_tui::agent::model;
 use forge_tui::app::MessageBlock;
 use pretty_assertions::assert_eq;
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 
-use crate::helpers::{send_client_event, test_app};
+use crate::helpers::test_app;
+use crate::message_helpers::{
+    assistant_message, send_msg, tool_result_error_block, tool_use_block, user_message,
+};
 
 #[tokio::test]
 async fn failed_tool_call_with_xml_internal_error_renders_internal_banner_and_summary() {
@@ -21,23 +23,18 @@ async fn failed_tool_call_with_xml_internal_error_renders_internal_banner_and_su
     let xml_payload =
         "<error><code>-32603</code><message>Adapter process crashed</message></error>";
 
-    send_client_event(
+    send_msg(
         &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(
-            model::ToolCall::new(tool_id, "Read file")
-                .kind(model::ToolKind::Read)
-                .status(model::ToolCallStatus::InProgress),
-        )),
+        assistant_message(vec![tool_use_block(
+            tool_id,
+            "Read",
+            serde_json::json!({"file_path": "src/lib.rs"}),
+        )]),
     );
 
-    let fields = model::ToolCallUpdateFields::new()
-        .status(model::ToolCallStatus::Failed)
-        .content(vec![model::ToolCallContent::from(xml_payload)]);
-    send_client_event(
+    send_msg(
         &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::ToolCallUpdate(
-            model::ToolCallUpdate::new(tool_id, fields),
-        )),
+        user_message(vec![tool_result_error_block(tool_id, serde_json::json!(xml_payload))]),
     );
 
     assert_eq!(tool_call_text_payload(&app, tool_id).as_deref(), Some(xml_payload));
@@ -54,23 +51,18 @@ async fn failed_tool_call_with_jsonrpc_internal_error_renders_extracted_message(
     let json_payload =
         r#"{"jsonrpc":"2.0","error":{"code":-32603,"message":"internal rpc fault"}}"#;
 
-    send_client_event(
+    send_msg(
         &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(
-            model::ToolCall::new(tool_id, "Read file")
-                .kind(model::ToolKind::Read)
-                .status(model::ToolCallStatus::InProgress),
-        )),
+        assistant_message(vec![tool_use_block(
+            tool_id,
+            "Read",
+            serde_json::json!({"file_path": "src/lib.rs"}),
+        )]),
     );
 
-    let fields = model::ToolCallUpdateFields::new()
-        .status(model::ToolCallStatus::Failed)
-        .content(vec![model::ToolCallContent::from(json_payload)]);
-    send_client_event(
+    send_msg(
         &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::ToolCallUpdate(
-            model::ToolCallUpdate::new(tool_id, fields),
-        )),
+        user_message(vec![tool_result_error_block(tool_id, serde_json::json!(json_payload))]),
     );
 
     let frame = render_frame_to_string(&mut app, 120, 36);
@@ -84,23 +76,18 @@ async fn failed_tool_call_with_plain_command_error_keeps_normal_rendering() {
     let tool_id = "tc-plain-failure";
     let plain_payload = "bash: definitely_not_a_command: command not found";
 
-    send_client_event(
+    send_msg(
         &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(
-            model::ToolCall::new(tool_id, "Read file")
-                .kind(model::ToolKind::Read)
-                .status(model::ToolCallStatus::InProgress),
-        )),
+        assistant_message(vec![tool_use_block(
+            tool_id,
+            "Read",
+            serde_json::json!({"file_path": "src/lib.rs"}),
+        )]),
     );
 
-    let fields = model::ToolCallUpdateFields::new()
-        .status(model::ToolCallStatus::Failed)
-        .content(vec![model::ToolCallContent::from(plain_payload)]);
-    send_client_event(
+    send_msg(
         &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::ToolCallUpdate(
-            model::ToolCallUpdate::new(tool_id, fields),
-        )),
+        user_message(vec![tool_result_error_block(tool_id, serde_json::json!(plain_payload))]),
     );
 
     let frame = render_frame_to_string(&mut app, 120, 36);
