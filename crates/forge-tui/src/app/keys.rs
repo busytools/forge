@@ -487,8 +487,11 @@ fn handle_history_key(app: &mut App, key: KeyEvent) -> bool {
     match (key.code, key.modifiers) {
         // macOS: Cmd+Z undo. Linux/Windows: Ctrl+Z undo.
         (KeyCode::Char('z'), m) if m == CMD_MOD => app.input.textarea_undo(),
-        // macOS: Cmd+Shift+Z redo. Most terminals report shifted-z as the
-        // uppercase 'Z' codepoint with SUPER alone (kitty-protocol convention).
+        // macOS: Cmd+Shift+Z redo. Ghostty / kitty enhanced keyboard
+        // reports this as lowercase 'z' with SUPER | SHIFT bits set;
+        // some terminals report uppercase 'Z' with SUPER. Match both.
+        #[cfg(target_os = "macos")]
+        (KeyCode::Char('z'), m) if m == CMD_MOD | KeyModifiers::SHIFT => app.input.textarea_redo(),
         #[cfg(target_os = "macos")]
         (KeyCode::Char('Z'), m) if m == CMD_MOD => app.input.textarea_redo(),
         // Linux/Windows: Ctrl+Y redo.
@@ -513,6 +516,22 @@ fn handle_navigation_key(app: &mut App, key: KeyEvent) -> bool {
             if app.focus_owner() != FocusOwner::TodoList
                 && m.contains(WORD_NAV_MOD)
                 && !m.intersects(WORD_NAV_MOD_EXCLUDED) =>
+        {
+            app.input.textarea_move_word_right()
+        }
+        // macOS readline-style fallbacks: many terminals (Ghostty,
+        // iTerm2, Terminal.app) send Option+Left as ESC+b and
+        // Option+Right as ESC+f rather than Left/Right with ALT.
+        // Crossterm decodes those as Char('b')/Char('f') with ALT.
+        #[cfg(target_os = "macos")]
+        (KeyCode::Char('b'), m)
+            if app.focus_owner() != FocusOwner::TodoList && m == KeyModifiers::ALT =>
+        {
+            app.input.textarea_move_word_left()
+        }
+        #[cfg(target_os = "macos")]
+        (KeyCode::Char('f'), m)
+            if app.focus_owner() != FocusOwner::TodoList && m == KeyModifiers::ALT =>
         {
             app.input.textarea_move_word_right()
         }
@@ -880,6 +899,8 @@ fn should_sync_autocomplete_after_key(app: &App, key: KeyEvent) -> bool {
             _,
         ) => true,
         (KeyCode::Char('z'), m) if m == CMD_MOD => true,
+        #[cfg(target_os = "macos")]
+        (KeyCode::Char('z'), m) if m == CMD_MOD | KeyModifiers::SHIFT => true,
         #[cfg(target_os = "macos")]
         (KeyCode::Char('Z'), m) if m == CMD_MOD => true,
         #[cfg(not(target_os = "macos"))]
