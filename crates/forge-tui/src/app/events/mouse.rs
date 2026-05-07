@@ -254,19 +254,32 @@ fn try_toggle_tool_call_at_click(app: &mut App, mouse: MouseEvent) -> bool {
         return false;
     };
     let current = tc.collapsed_override.unwrap_or(global_default);
-    tc.collapsed_override = Some(!current);
+    let new_collapsed = !current;
+    tc.collapsed_override = Some(new_collapsed);
+    let tool_id = tc.id.clone();
     // Layout-dirty bumps both the layout epoch (forcing a remeasure) and
     // the render epoch (which is hashed into MessageRenderSignature),
     // invalidating the per-block + message-level render caches.
     tc.mark_tool_call_layout_dirty();
-    app.invalidate_layout(crate::app::InvalidationLevel::Global);
+    app.invalidate_layout(crate::app::InvalidationLevel::MessageChanged(msg_idx));
+    tracing::debug!(
+        target: crate::logging::targets::APP_INPUT,
+        event_name = "tool_call_click_toggled",
+        tool_id = %tool_id,
+        msg_idx,
+        block_idx,
+        new_collapsed,
+        "click toggled per-tool collapse override"
+    );
     true
 }
 
 /// Map the chat-area click coordinate to a `(message_idx, block_idx)`
-/// pair when the cell falls on a tool-call block. Returns `None` for
-/// clicks outside the chat area, on non-tool-call blocks, or when
-/// block heights aren't yet measured (avoids guessing).
+/// pair when the cell falls on a tool-call block. The walk is lenient:
+/// blocks with no cached measurement (e.g. just-invalidated text blocks)
+/// fall back to a measured-vs-total estimate so a stale text block
+/// can't lock the entire hit-test out. Returns `None` for clicks
+/// outside the chat area or on non-tool-call rows.
 fn locate_tool_call_block_at_click(app: &App, mouse: MouseEvent) -> Option<(usize, usize)> {
     let chat_area = app.rendered_chat_area;
     if chat_area.width == 0 || chat_area.height == 0 {
@@ -296,19 +309,36 @@ fn locate_tool_call_block_at_click(app: &App, mouse: MouseEvent) -> Option<(usiz
     let msg_start = app.viewport.cumulative_height_before(msg_idx);
     let row_within_msg = absolute_row.checked_sub(msg_start)?;
 
-    // Walk blocks summing per-block heights until we hit the click row.
+    // Walk blocks summing per-block heights until the click row is
+    // covered. Unmeasured blocks fall back to 0 height — a small
+    // misalignment is preferable to silently giving up.
     let width = chat_area.width;
     let mut cursor = 0usize;
+    let mut tool_block_indices: Vec<usize> = Vec::new();
     for (block_idx, block) in app.messages[msg_idx].blocks.iter().enumerate() {
-        let height = block_visible_height(block, width)?;
+        let height = block_visible_height(block, width).unwrap_or(0);
+        if matches!(block, MessageBlock::ToolCall(_)) {
+            tool_block_indices.push(block_idx);
+        }
         if height == 0 {
             continue;
         }
         let next = cursor.saturating_add(height);
         if row_within_msg >= cursor && row_within_msg < next {
-            return matches!(block, MessageBlock::ToolCall(_)).then_some((msg_idx, block_idx));
+            if matches!(block, MessageBlock::ToolCall(_)) {
+                return Some((msg_idx, block_idx));
+            }
+            return None;
         }
         cursor = next;
+    }
+    // Fallback: click landed past the last measured block in a message
+    // that contains a tool call. Treat that as "toggle the only tool
+    // call" — safe when the message has exactly one (the common case);
+    // for multi-tool messages we toggle the last visible tool, which
+    // still gives consistent feedback rather than nothing.
+    if !tool_block_indices.is_empty() && row_within_msg <= app.viewport.message_height(msg_idx) {
+        return Some((msg_idx, *tool_block_indices.last()?));
     }
     None
 }
