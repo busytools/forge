@@ -50,7 +50,7 @@ pub enum ClientEvent {
         current_model: model::CurrentModel,
         available_models: Vec<model::AvailableModel>,
         mode: Option<crate::app::ModeState>,
-        history_updates: Vec<model::SessionUpdate>,
+        history_updates: Vec<forge_primitives::Message>,
     },
     /// Background connection failed.
     ConnectionFailed(String),
@@ -69,7 +69,7 @@ pub enum ClientEvent {
         current_model: model::CurrentModel,
         available_models: Vec<model::AvailableModel>,
         mode: Option<crate::app::ModeState>,
-        history_updates: Vec<model::SessionUpdate>,
+        history_updates: Vec<forge_primitives::Message>,
     },
     /// Recent sessions discovered via SDK session listing.
     SessionsListed { sessions: Vec<forge_primitives::SessionListEntry> },

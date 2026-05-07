@@ -189,8 +189,8 @@ async fn emit_connected(
     });
 
     let history_updates = resume_id.and_then(|prev_session_id| {
-        let updates = load_history_updates(prev_session_id, cwd);
-        if updates.is_empty() { None } else { Some(updates) }
+        let messages = load_history_messages(prev_session_id, cwd, session_id);
+        if messages.is_empty() { None } else { Some(messages) }
     });
 
     let _ = event_tx.send(AgentEvent::Connected {
@@ -212,7 +212,11 @@ async fn emit_connected(
     let _ = event_tx.send(AgentEvent::SessionsListed { sessions: list_recent_sessions(cwd).await });
 }
 
-fn load_history_updates(prev_session_id: &str, cwd: &str) -> Vec<forge_primitives::SessionUpdate> {
+fn load_history_messages(
+    prev_session_id: &str,
+    cwd: &str,
+    session_id: &str,
+) -> Vec<forge_primitives::Message> {
     let dir = if cwd.is_empty() { None } else { Some(cwd.to_owned()) };
     let messages = crate::userdata::catalog::scan::get_session_messages(prev_session_id, dir);
     let raw: Vec<serde_json::Value> = messages
@@ -229,7 +233,19 @@ fn load_history_updates(prev_session_id: &str, cwd: &str) -> Vec<forge_primitive
             })
         })
         .collect();
-    crate::history::map_session_messages_to_updates(&raw)
+    let mut synthesized = crate::history::synthesize_replay_messages(&raw);
+    // Stamp the resumed session_id on every synthesised Message — the
+    // synthesizer leaves it empty so the caller picks the right value.
+    for msg in &mut synthesized {
+        match msg {
+            forge_primitives::Message::Assistant { session_id: s, .. }
+            | forge_primitives::Message::User { session_id: s, .. } => {
+                session_id.clone_into(s);
+            }
+            _ => {}
+        }
+    }
+    synthesized
 }
 
 async fn list_recent_sessions(cwd: &str) -> Vec<forge_primitives::SessionListEntry> {

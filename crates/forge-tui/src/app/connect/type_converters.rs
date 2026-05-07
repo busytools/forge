@@ -151,7 +151,7 @@ pub(crate) fn convert_current_model(current_model: types::CurrentModel) -> model
     mapped
 }
 
-pub(super) fn map_session_update(update: types::SessionUpdate) -> Option<model::SessionUpdate> {
+pub(crate) fn map_session_update(update: types::SessionUpdate) -> Option<model::SessionUpdate> {
     match update {
         types::SessionUpdate::UserMessageChunk { content } => {
             let content = convert_content_block(content)?;

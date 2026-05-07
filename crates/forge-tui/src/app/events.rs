@@ -889,6 +889,63 @@ mod tests {
         }
     }
 
+    fn user_text_message(text: &str) -> forge_primitives::Message {
+        forge_primitives::Message::User {
+            message: forge_primitives::UserEnvelope {
+                role: "user".to_owned(),
+                content: vec![forge_primitives::ContentBlock::Text { text: text.to_owned() }],
+            },
+            session_id: String::new(),
+            parent_tool_use_id: None,
+            uuid: None,
+            tool_use_result: None,
+        }
+    }
+
+    fn assistant_text_message(text: &str) -> forge_primitives::Message {
+        forge_primitives::Message::Assistant {
+            message: forge_primitives::AssistantEnvelope {
+                id: "msg_test".to_owned(),
+                role: "assistant".to_owned(),
+                model: "claude-test".to_owned(),
+                content: vec![forge_primitives::ContentBlock::Text { text: text.to_owned() }],
+                stop_reason: None,
+                stop_sequence: None,
+                usage: None,
+            },
+            session_id: String::new(),
+            parent_tool_use_id: None,
+            error: None,
+            uuid: None,
+        }
+    }
+
+    fn assistant_tool_use_message(
+        tool_use_id: &str,
+        name: &str,
+        input: serde_json::Value,
+    ) -> forge_primitives::Message {
+        forge_primitives::Message::Assistant {
+            message: forge_primitives::AssistantEnvelope {
+                id: "msg_test".to_owned(),
+                role: "assistant".to_owned(),
+                model: "claude-test".to_owned(),
+                content: vec![forge_primitives::ContentBlock::ToolUse {
+                    id: tool_use_id.to_owned(),
+                    name: name.to_owned(),
+                    input,
+                }],
+                stop_reason: None,
+                stop_sequence: None,
+                usage: None,
+            },
+            session_id: String::new(),
+            parent_tool_use_id: None,
+            error: None,
+            uuid: None,
+        }
+    }
+
     fn app_with_bridge_connection()
     -> (App, tokio::sync::mpsc::UnboundedReceiver<forge_primitives::Command>) {
         let mut app = make_test_app();
@@ -2434,14 +2491,8 @@ mod tests {
     #[test]
     fn resume_history_renders_user_message_chunks() {
         let mut app = make_test_app();
-        let history_updates = vec![
-            model::SessionUpdate::UserMessageChunk(model::ContentChunk::new(
-                model::ContentBlock::Text(model::TextContent::new("first user line")),
-            )),
-            model::SessionUpdate::AgentMessageChunk(model::ContentChunk::new(
-                model::ContentBlock::Text(model::TextContent::new("assistant reply")),
-            )),
-        ];
+        let history_updates =
+            vec![user_text_message("first user line"), assistant_text_message("assistant reply")];
 
         handle_client_event(
             &mut app,
@@ -2470,18 +2521,10 @@ mod tests {
     fn resume_history_preserves_turn_order_between_user_and_assistant_messages() {
         let mut app = make_test_app();
         let history_updates = vec![
-            model::SessionUpdate::UserMessageChunk(model::ContentChunk::new(
-                model::ContentBlock::Text(model::TextContent::new("first user")),
-            )),
-            model::SessionUpdate::AgentMessageChunk(model::ContentChunk::new(
-                model::ContentBlock::Text(model::TextContent::new("first assistant")),
-            )),
-            model::SessionUpdate::UserMessageChunk(model::ContentChunk::new(
-                model::ContentBlock::Text(model::TextContent::new("second user")),
-            )),
-            model::SessionUpdate::AgentMessageChunk(model::ContentChunk::new(
-                model::ContentBlock::Text(model::TextContent::new("second assistant")),
-            )),
+            user_text_message("first user"),
+            assistant_text_message("first assistant"),
+            user_text_message("second user"),
+            assistant_text_message("second assistant"),
         ];
 
         handle_client_event(
@@ -2522,9 +2565,13 @@ mod tests {
     #[test]
     fn resume_history_forces_open_tool_calls_to_failed() {
         let mut app = make_test_app();
-        let open_tool = model::ToolCall::new("resume-open", "Execute command")
-            .kind(model::ToolKind::Execute)
-            .status(model::ToolCallStatus::InProgress);
+        // "Bash" name normalises to ToolKind::Execute via the resume
+        // synthesizer; matches the prior model::ToolKind::Execute.
+        let open_tool = assistant_tool_use_message(
+            "resume-open",
+            "Bash",
+            serde_json::json!({"command": "Execute command"}),
+        );
 
         handle_client_event(
             &mut app,
@@ -2534,7 +2581,7 @@ mod tests {
                 current_model: test_current_model("new-model"),
                 available_models: Vec::new(),
                 mode: None,
-                history_updates: vec![model::SessionUpdate::ToolCall(open_tool)],
+                history_updates: vec![open_tool],
             },
         );
 
@@ -2560,11 +2607,7 @@ mod tests {
                 current_model: test_current_model("new-model"),
                 available_models: Vec::new(),
                 mode: None,
-                history_updates: vec![model::SessionUpdate::AgentMessageChunk(
-                    model::ContentChunk::new(model::ContentBlock::Text(model::TextContent::new(
-                        "assistant reply",
-                    ))),
-                )],
+                history_updates: vec![assistant_text_message("assistant reply")],
             },
         );
 
@@ -2574,10 +2617,13 @@ mod tests {
     #[test]
     fn resume_history_clears_tool_scope_tracking_after_replay() {
         let mut app = make_test_app();
-        let task_tool = model::ToolCall::new("resume-task", "Run subagent")
-            .kind(model::ToolKind::Think)
-            .status(model::ToolCallStatus::InProgress)
-            .meta(serde_json::json!({"claudeCode": {"toolName": "Task"}}));
+        // "Task" name normalises to ToolKind::Think via the resume
+        // synthesizer and gets the matching `claudeCode.toolName` meta.
+        let task_tool = assistant_tool_use_message(
+            "resume-task",
+            "Task",
+            serde_json::json!({"description": "Run subagent"}),
+        );
 
         handle_client_event(
             &mut app,
@@ -2587,7 +2633,7 @@ mod tests {
                 current_model: test_current_model("new-model"),
                 available_models: Vec::new(),
                 mode: None,
-                history_updates: vec![model::SessionUpdate::ToolCall(task_tool)],
+                history_updates: vec![task_tool],
             },
         );
 
