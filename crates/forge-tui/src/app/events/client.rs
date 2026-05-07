@@ -1,6 +1,5 @@
 use super::{App, session, turn};
 use crate::agent::events::ClientEvent;
-use crate::agent::model;
 
 /// Early-return from the enclosing function when `incoming` doesn't
 /// match the App's current session id. Logs a stale-session drop
@@ -65,31 +64,6 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
             mode,
             history_updates,
         } => {
-            // TEMP (Task 3 deletes this conversion + rewrites the consumer):
-            // existing consumers still take Vec<model::SessionUpdate>, so we
-            // synthesise those from the new Vec<Message> via the
-            // soon-to-be-deleted history.rs::map_session_messages_to_updates,
-            // then convert to model::SessionUpdate.
-            let temp_session_updates: Vec<model::SessionUpdate> = {
-                let raw_values: Vec<serde_json::Value> = history_updates
-                    .iter()
-                    .filter_map(|m| {
-                        serde_json::to_value(m)
-                            .inspect_err(|e| {
-                                tracing::warn!(
-                                    target: crate::logging::targets::APP_SESSION,
-                                    error = %e,
-                                    "history-replay shim: failed to serialize Message; entry skipped",
-                                );
-                            })
-                            .ok()
-                    })
-                    .collect();
-                forge_agent::history::map_session_messages_to_updates(&raw_values)
-                    .into_iter()
-                    .filter_map(crate::app::connect::type_converters::map_session_update)
-                    .collect()
-            };
             session::handle_connected_client_event(
                 app,
                 session_id,
@@ -97,7 +71,7 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
                 current_model,
                 available_models,
                 mode,
-                &temp_session_updates,
+                &history_updates,
             );
             crate::app::config::refresh_mcp_snapshot(app);
             crate::app::session_runtime::request_status_snapshot_refresh(app);
@@ -144,31 +118,6 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
             mode,
             history_updates,
         } => {
-            // TEMP (Task 3 deletes this conversion + rewrites the consumer):
-            // existing consumers still take Vec<model::SessionUpdate>, so we
-            // synthesise those from the new Vec<Message> via the
-            // soon-to-be-deleted history.rs::map_session_messages_to_updates,
-            // then convert to model::SessionUpdate.
-            let temp_session_updates: Vec<model::SessionUpdate> = {
-                let raw_values: Vec<serde_json::Value> = history_updates
-                    .iter()
-                    .filter_map(|m| {
-                        serde_json::to_value(m)
-                            .inspect_err(|e| {
-                                tracing::warn!(
-                                    target: crate::logging::targets::APP_SESSION,
-                                    error = %e,
-                                    "history-replay shim: failed to serialize Message; entry skipped",
-                                );
-                            })
-                            .ok()
-                    })
-                    .collect();
-                forge_agent::history::map_session_messages_to_updates(&raw_values)
-                    .into_iter()
-                    .filter_map(crate::app::connect::type_converters::map_session_update)
-                    .collect()
-            };
             session::handle_session_replaced_event(
                 app,
                 session_id,
@@ -176,7 +125,7 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
                 current_model,
                 available_models,
                 mode,
-                &temp_session_updates,
+                &history_updates,
             );
             crate::app::config::refresh_mcp_snapshot(app);
             crate::app::session_runtime::request_status_snapshot_refresh(app);

@@ -22,7 +22,7 @@ pub(super) fn handle_connected_client_event(
     current_model: model::CurrentModel,
     available_models: Vec<model::AvailableModel>,
     mode: Option<super::super::ModeState>,
-    history_updates: &[model::SessionUpdate],
+    history_updates: &[forge_primitives::Message],
 ) {
     let session_id_for_log = session_id.to_string();
     let history_update_count = history_updates.len();
@@ -293,7 +293,7 @@ pub(super) fn handle_session_replaced_event(
     current_model: model::CurrentModel,
     available_models: Vec<model::AvailableModel>,
     mode: Option<super::super::ModeState>,
-    history_updates: &[model::SessionUpdate],
+    history_updates: &[forge_primitives::Message],
 ) {
     let session_id_for_log = session_id.to_string();
     let history_update_count = history_updates.len();
