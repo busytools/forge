@@ -105,7 +105,31 @@ Concretely:
    decoder without `DecodedLine::Unknown` or decode errors.
 10. **Never commit LLM-generated planning docs.** User plans stay at
     `~/.claude-stargate/plans/`.
-11. **Gated actions still gated.** `cargo publish`, `git push
+11. **`docs/forge-map.html` is visual truth.** This file is the
+    source of truth for every UI surface forge-tui can currently
+    render. Scope is **current state only** — no future ideas, no
+    aspirational sketches, no "v3+" sections. Anything new arrives
+    in the same PR that lands the code.
+
+    **The workflow when the user asks for a UI change** (start every
+    such session with this — it's the recommended path):
+
+    1. Read `docs/forge-map.html` first to confirm what's currently
+       implemented and where it lives.
+    2. Sketch the change in HTML — update the relevant section's
+       mockup, prose, and any glyph/colour table entries.
+    3. Apply the same change in the ratatui code.
+    4. Verify the rendered HTML still matches the code (open the
+       file in a browser, eyeball it).
+    5. Push both files together — code + HTML in one PR.
+
+    The HTML-first step matters because it forces a clear visual
+    target before code edits begin, and it keeps the doc honest
+    (the doc never describes something the code doesn't ship).
+    When in doubt about whether the doc reflects reality, re-read
+    the implementation and reconcile — never let prose drift from
+    code.
+12. **Gated actions still gated.** `cargo publish`, `git push
     --force` to `main`, `git tag` + push need explicit approval.
     Feature-branch pushes, PR creation, `gh pr comment`, non-force
     push to `main` for milestone landings, and `gh pr merge` are
