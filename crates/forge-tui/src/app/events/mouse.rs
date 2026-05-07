@@ -5,7 +5,7 @@
 
 use super::super::selection::clear_selection;
 use super::super::state::ScrollbarDragState;
-use super::super::{App, ScrollbarGeometry, SelectionKind, SelectionPoint};
+use super::super::{App, MessageBlock, ScrollbarGeometry, SelectionKind, SelectionPoint};
 use crossterm::event::{MouseEvent, MouseEventKind};
 
 pub(super) const MOUSE_SCROLL_LINES: usize = 3;
@@ -22,6 +22,9 @@ pub(super) fn handle_mouse_event(app: &mut App, mouse: MouseEvent) {
                 return;
             }
             app.scrollbar_drag = None;
+            if try_toggle_tool_call_at_click(app, mouse) {
+                return;
+            }
             if let Some(pt) = mouse_point_to_selection(app, mouse) {
                 app.selection = Some(super::super::SelectionState {
                     kind: pt.kind,
@@ -236,4 +239,90 @@ fn mouse_point_to_selection(app: &App, mouse: MouseEvent) -> Option<MouseSelecti
         });
     }
     None
+}
+
+/// If the click landed on a tool-call's rendered area inside the chat
+/// pane, flip that tool call's per-tool collapse override and consume
+/// the event. Returns `true` when a tool call was toggled (so the
+/// caller can skip starting a text selection).
+fn try_toggle_tool_call_at_click(app: &mut App, mouse: MouseEvent) -> bool {
+    let Some((msg_idx, block_idx)) = locate_tool_call_block_at_click(app, mouse) else {
+        return false;
+    };
+    let global_default = app.tools_collapsed;
+    let Some(MessageBlock::ToolCall(tc)) = app.messages[msg_idx].blocks.get_mut(block_idx) else {
+        return false;
+    };
+    let current = tc.collapsed_override.unwrap_or(global_default);
+    tc.collapsed_override = Some(!current);
+    // Layout-dirty bumps both the layout epoch (forcing a remeasure) and
+    // the render epoch (which is hashed into MessageRenderSignature),
+    // invalidating the per-block + message-level render caches.
+    tc.mark_tool_call_layout_dirty();
+    app.invalidate_layout(crate::app::InvalidationLevel::Global);
+    true
+}
+
+/// Map the chat-area click coordinate to a `(message_idx, block_idx)`
+/// pair when the cell falls on a tool-call block. Returns `None` for
+/// clicks outside the chat area, on non-tool-call blocks, or when
+/// block heights aren't yet measured (avoids guessing).
+fn locate_tool_call_block_at_click(app: &App, mouse: MouseEvent) -> Option<(usize, usize)> {
+    let chat_area = app.rendered_chat_area;
+    if chat_area.width == 0 || chat_area.height == 0 {
+        return None;
+    }
+    if mouse.column < chat_area.x
+        || mouse.column >= chat_area.right()
+        || mouse.row < chat_area.y
+        || mouse.row >= chat_area.bottom()
+    {
+        return None;
+    }
+
+    // Absolute content-row of the click (== local row + scroll offset).
+    let local_row = (mouse.row - chat_area.y) as usize;
+    let absolute_row = local_row.checked_add(app.viewport.scroll_offset)?;
+
+    // Find the message that owns this row via the existing prefix-sum
+    // index; clamp against the message count.
+    if app.messages.is_empty() {
+        return None;
+    }
+    let msg_idx = app.viewport.find_first_visible(absolute_row);
+    if msg_idx >= app.messages.len() {
+        return None;
+    }
+    let msg_start = app.viewport.cumulative_height_before(msg_idx);
+    let row_within_msg = absolute_row.checked_sub(msg_start)?;
+
+    // Walk blocks summing per-block heights until we hit the click row.
+    let width = chat_area.width;
+    let mut cursor = 0usize;
+    for (block_idx, block) in app.messages[msg_idx].blocks.iter().enumerate() {
+        let height = block_visible_height(block, width)?;
+        if height == 0 {
+            continue;
+        }
+        let next = cursor.saturating_add(height);
+        if row_within_msg >= cursor && row_within_msg < next {
+            return matches!(block, MessageBlock::ToolCall(_)).then_some((msg_idx, block_idx));
+        }
+        cursor = next;
+    }
+    None
+}
+
+/// Cached rendered height of a single message block at a given width,
+/// or `None` when the block hasn't been measured at that width yet.
+fn block_visible_height(block: &MessageBlock, width: u16) -> Option<usize> {
+    match block {
+        MessageBlock::Text(b) => b.cache.height_at(width),
+        MessageBlock::Notice(b) => b.text.cache.height_at(width),
+        MessageBlock::Welcome(b) => b.cache.height_at(width),
+        MessageBlock::ImageAttachment(b) => b.cache.height_at(width),
+        MessageBlock::ToolCall(tc) => {
+            (tc.last_measured_width == width).then_some(tc.last_measured_height)
+        }
+    }
 }

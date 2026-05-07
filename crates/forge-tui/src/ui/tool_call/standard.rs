@@ -103,7 +103,12 @@ pub(super) fn tool_call_effectively_collapsed(tc: &ToolCallInfo, tools_collapsed
     let has_permission = tc.pending_permission.is_some();
     let has_question = tc.pending_question.is_some();
     let has_diff = tc.content.iter().any(|c| matches!(c, model::ToolCallContent::Diff(_)));
-    tools_collapsed && !has_diff && !has_permission && !has_question
+    // Per-tool override (set by clicking the row) wins; otherwise fall
+    // back to the global session-level collapse default. Both paths
+    // still respect the diff/permission/question short-circuit because
+    // those interactions need to stay visible regardless of preference.
+    let prefers_collapsed = tc.collapsed_override.unwrap_or(tools_collapsed);
+    prefers_collapsed && !has_diff && !has_permission && !has_question
 }
 
 pub(super) fn render_collapsed_tool_call_summary(
@@ -114,7 +119,7 @@ pub(super) fn render_collapsed_tool_call_summary(
     lines.push(Line::from(vec![
         Span::styled("  \u{2514}\u{2500} ", pipe_style),
         Span::styled(content_summary(tc), Style::default().fg(theme::DIM)),
-        Span::styled("  ctrl+x to expand", Style::default().fg(theme::DIM)),
+        Span::styled("  click or ctrl+x to expand", Style::default().fg(theme::DIM)),
     ]));
 }
 

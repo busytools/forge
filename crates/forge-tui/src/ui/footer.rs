@@ -554,6 +554,7 @@ mod tests {
                     focused: true,
                 }),
                 pending_question: None,
+                collapsed_override: None,
             }))],
             None,
         ));

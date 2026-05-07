@@ -46,6 +46,12 @@ pub struct ToolCallInfo {
     pub pending_permission: Option<InlinePermission>,
     /// Inline question prompt from `AskUserQuestion`.
     pub pending_question: Option<InlineQuestion>,
+    /// Per-tool collapse override set by clicking the tool-call row.
+    /// `None` means follow the global `app.tools_collapsed` default;
+    /// `Some(true)` forces collapsed, `Some(false)` forces expanded.
+    /// Hashed into the message render signature so flipping it
+    /// invalidates the message-level render cache.
+    pub collapsed_override: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

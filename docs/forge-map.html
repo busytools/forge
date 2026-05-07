@@ -507,7 +507,8 @@
   </div>
   <div class="surface-body">
     <p>Single line: 2-space indent + status icon (success / fail / spinner) in status color + space + tool kind icon (white bold) + space + <strong>kind label</strong> (white bold — "Read", "Edit", "Bash", etc. from <code>theme::tool_name_label</code>) + space + display title (markdown inline spans, default fg). Body lines (when present) prefix each with "<code>  │  </code>" dim (5 chars: 2 + box-drawing-vertical + 2), last line with "<code>  └─ </code>" dim (5 chars). If <code>tc.title</code> from claude already starts with the kind label (e.g. claude often sends "Read /path/to/file.rs"), the duplicate prefix is stripped so the column reads cleanly.</p>
-    <p><strong>Collapsed</strong> (when <code>app.tools_collapsed</code> is on, and the tool call has no diff / pending permission / pending question): the body collapses to a single summary line "<code>  └─ &lt;content_summary&gt;  ctrl+x to expand</code>" (all DIM). The summary text comes from <code>content_summary</code> — last non-empty line of terminal output (capped at 80 chars), or the file name for a Diff, or an MCP resource path, etc.</p>
+    <p><strong>Collapsed</strong> (when collapse is in effect and the tool call has no diff / pending permission / pending question): the body collapses to a single summary line "<code>  └─ &lt;content_summary&gt;  click or ctrl+x to expand</code>" (all DIM). The summary text comes from <code>content_summary</code> — last non-empty line of terminal output (capped at 80 chars), or the file name for a Diff, or an MCP resource path, etc.</p>
+    <p><strong>Collapse precedence:</strong> per-tool override (<code>tc.collapsed_override: Option&lt;bool&gt;</code>, set by clicking the tool's row) wins; otherwise the global <code>app.tools_collapsed</code> default applies. Ctrl+X flips the global default — per-tool overrides survive the toggle, so you can keep specific tools pinned in their preferred state. Diff / permission / question short-circuits still keep those interactions visible regardless.</p>
     <div class="term">
       <pre class="indent">
   <span class="success">✓</span> <span class="bold">⬚</span> <span class="bold">Read</span> /path/to/file.rs
@@ -546,7 +547,7 @@
     <dl>
       <dt>code</dt><dd>title via <code>standard::render_tool_call_title</code>, body via <code>standard::render_tool_content</code> (which dispatches to <code>render_terminal_output</code> when <code>tc.is_execute_tool()</code>). When the run failed, only the first non-empty stderr line is shown via <code>failed_execute_first_line</code>.</dd>
       <dt>icon</dt><dd>kind icon <code>▶</code> (<code>U+25B6</code>) in white bold (matches every other tool icon's coloring). Replaces the previous chevron <code>⟩</code> (the lone directional outlier).</dd>
-      <dt>collapse</dt><dd>same Ctrl+X behaviour as other tools — collapses to the single-line summary <code>  └─ &lt;last output line&gt;  ctrl+x to expand</code> in DIM.</dd>
+      <dt>collapse</dt><dd>same Ctrl+X / click behaviour as other tools — collapses to the single-line summary <code>  └─ &lt;last output line&gt;  click or ctrl+x to expand</code> in DIM.</dd>
       <dt>resolves</dt><dd><a href="https://github.com/busytools/forge/issues/39">#39</a> — Bash no longer has its own bordered card. Same shape as Edit / Read / Grep. <code>render_execute_with_borders</code> deleted entirely.</dd>
     </dl>
   </div>
@@ -622,7 +623,7 @@
 <h2 class="section-title" id="footer-sec">Footer</h2>
 
 <p class="intro">
-  <strong>Two rows.</strong> Present at the bottom of the chat view (<code>ActiveView::Chat</code>) — hidden when forge swaps to a full-frame view (<code>ActiveView::Config</code>, <code>ActiveView::Trusted</code>, <code>ActiveView::SessionPicker</code>) and also hidden in ultra-compact mode (terminal height &lt; 8 rows). Pieces are positional; nothing in the footer is clickable today (mouse routing isn't implemented).
+  <strong>Two rows.</strong> Present at the bottom of the chat view (<code>ActiveView::Chat</code>) — hidden when forge swaps to a full-frame view (<code>ActiveView::Config</code>, <code>ActiveView::Trusted</code>, <code>ActiveView::SessionPicker</code>) and also hidden in ultra-compact mode (terminal height &lt; 8 rows). Pieces are positional; nothing in the footer is clickable today (footer-specific mouse routing isn't implemented — chat-pane mouse handling does cover scroll-wheel scrolling, scrollbar-thumb drag, text selection, and click-to-toggle on tool-call rows).
 </p>
 
 <div class="surface">

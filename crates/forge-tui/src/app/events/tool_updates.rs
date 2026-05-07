@@ -716,6 +716,7 @@ mod tests {
             cache: BlockCache::default(),
             pending_permission: None,
             pending_question: None,
+            collapsed_override: None,
         }
     }
 
@@ -750,6 +751,7 @@ mod tests {
             cache: BlockCache::default(),
             pending_permission: None,
             pending_question: None,
+            collapsed_override: None,
         }
     }
 

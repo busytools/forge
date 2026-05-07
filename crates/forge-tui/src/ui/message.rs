@@ -869,6 +869,10 @@ fn hash_message_block_into<H: std::hash::Hasher>(
             tool_render_context.current_mode_id.hash(hasher);
             tc.pending_permission.is_some().hash(hasher);
             tc.pending_question.is_some().hash(hasher);
+            // Per-tool collapse override flips the rendered shape, so it
+            // has to be folded into the signature alongside the global
+            // tools_collapsed bit (which lives on MessageRenderCacheKey).
+            tc.collapsed_override.hash(hasher);
             let frame = tool_call_needs_spinner_frame(tc).then_some(spinner.frame);
             frame.hash(hasher);
         }
@@ -1602,6 +1606,7 @@ mod tests {
             cache: BlockCache::default(),
             pending_permission: None,
             pending_question: None,
+            collapsed_override: None,
         }
     }
 

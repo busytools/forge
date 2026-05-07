@@ -298,6 +298,7 @@ mod tests {
             cache: BlockCache::default(),
             pending_permission: None,
             pending_question: None,
+            collapsed_override: None,
         }
     }
 
@@ -1006,6 +1007,7 @@ mod tests {
             cache: BlockCache::default(),
             pending_permission: None,
             pending_question: None,
+            collapsed_override: None,
         };
         assert_eq!(content_summary(&tc), "done");
     }
@@ -1038,6 +1040,7 @@ mod tests {
             cache: BlockCache::default(),
             pending_permission: None,
             pending_question: None,
+            collapsed_override: None,
         };
         assert_eq!(content_summary(&tc), "bad");
     }
@@ -1072,6 +1075,7 @@ mod tests {
             cache: BlockCache::default(),
             pending_permission: None,
             pending_question: None,
+            collapsed_override: None,
         };
         assert_eq!(content_summary(&tc), "Exit code 1");
     }
@@ -1129,6 +1133,7 @@ mod tests {
             cache: BlockCache::default(),
             pending_permission: None,
             pending_question: None,
+            collapsed_override: None,
         };
 
         let mut out = Vec::new();
