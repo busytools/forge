@@ -22,10 +22,10 @@ pub(super) fn handle_connected_client_event(
     current_model: model::CurrentModel,
     available_models: Vec<model::AvailableModel>,
     mode: Option<super::super::ModeState>,
-    history_updates: &[forge_primitives::Message],
+    history_messages: &[forge_primitives::Message],
 ) {
     let session_id_for_log = session_id.to_string();
-    let history_update_count = history_updates.len();
+    let history_message_count = history_messages.len();
     let available_model_count = available_models.len();
     if let Some(slot) = take_connection_slot() {
         app.conn = Some(slot.conn);
@@ -36,8 +36,8 @@ pub(super) fn handle_connected_client_event(
     refresh_session_git_watcher(app, prev_session_id);
     app.available_models = available_models;
     app.sync_welcome_snapshot();
-    if !history_updates.is_empty() {
-        load_resume_history(app, history_updates);
+    if !history_messages.is_empty() {
+        load_resume_history(app, history_messages);
     }
     clear_pending_command(app);
     app.resuming_session_id = None;
@@ -53,7 +53,7 @@ pub(super) fn handle_connected_client_event(
         session_id = %session_id_for_log,
         cwd = %app.cwd_raw,
         current_model = ?app.current_model.as_ref().map(|model| model.resolved_id.clone()),
-        history_update_count,
+        history_message_count,
         available_model_count,
     );
 }
@@ -293,10 +293,10 @@ pub(super) fn handle_session_replaced_event(
     current_model: model::CurrentModel,
     available_models: Vec<model::AvailableModel>,
     mode: Option<super::super::ModeState>,
-    history_updates: &[forge_primitives::Message],
+    history_messages: &[forge_primitives::Message],
 ) {
     let session_id_for_log = session_id.to_string();
-    let history_update_count = history_updates.len();
+    let history_message_count = history_messages.len();
     let available_model_count = available_models.len();
     super::clear_compaction_state(app, false);
     app.pending_cancel_origin = None;
@@ -307,8 +307,8 @@ pub(super) fn handle_session_replaced_event(
     reset_for_new_session(app, session_id, current_model, mode, false);
     refresh_session_git_watcher(app, prev_session_id);
     app.sync_welcome_snapshot();
-    if !history_updates.is_empty() {
-        load_resume_history(app, history_updates);
+    if !history_messages.is_empty() {
+        load_resume_history(app, history_messages);
     }
     clear_pending_command(app);
     app.resuming_session_id = None;
@@ -322,7 +322,7 @@ pub(super) fn handle_session_replaced_event(
         session_id = %session_id_for_log,
         cwd = %app.cwd_raw,
         current_model = ?app.current_model.as_ref().map(|model| model.resolved_id.clone()),
-        history_update_count,
+        history_message_count,
         available_model_count,
     );
 }
