@@ -11,90 +11,10 @@ use forge_tui::app::{AppStatus, MessageBlock, MessageRole};
 use pretty_assertions::assert_eq;
 
 use crate::helpers::{send_client_event, test_app};
-
-// Helpers: build wire `forge_primitives::Message` envelopes and dispatch
-// via `ClientEvent::SdkMessageReceived`. Replaces the old
-// `model::SessionUpdate(...)` pattern after Task 4 of the dispatcher
-// collapse refactor (issue #67).
-
-fn assistant_message(content: Vec<forge_primitives::ContentBlock>) -> forge_primitives::Message {
-    forge_primitives::Message::Assistant {
-        message: forge_primitives::AssistantEnvelope {
-            id: "msg_test".to_owned(),
-            role: "assistant".to_owned(),
-            model: "claude-test".to_owned(),
-            content,
-            stop_reason: None,
-            stop_sequence: None,
-            usage: None,
-        },
-        session_id: "test-session".to_owned(),
-        parent_tool_use_id: None,
-        error: None,
-        uuid: None,
-    }
-}
-
-fn user_message(content: Vec<forge_primitives::ContentBlock>) -> forge_primitives::Message {
-    forge_primitives::Message::User {
-        message: forge_primitives::UserEnvelope { role: "user".to_owned(), content },
-        session_id: "test-session".to_owned(),
-        parent_tool_use_id: None,
-        uuid: None,
-        tool_use_result: None,
-    }
-}
-
-fn system_message(subtype: &str, data: serde_json::Value) -> forge_primitives::Message {
-    forge_primitives::Message::System {
-        subtype: subtype.to_owned(),
-        session_id: Some("test-session".to_owned()),
-        data,
-    }
-}
-
-/// Dispatch a wire `Message` envelope. Adopts `"test-session"` as the
-/// app's session id on first use so the `SdkMessageReceived` session-id
-/// guard accepts the envelope (`test_app()` defaults `session_id` to
-/// `None`).
-fn send_msg(app: &mut forge_tui::app::App, msg: forge_primitives::Message) {
-    if app.session_id.is_none() {
-        app.session_id = Some(model::SessionId::new("test-session"));
-    }
-    send_client_event(
-        app,
-        ClientEvent::SdkMessageReceived {
-            session_id: "test-session".to_owned(),
-            msg,
-        },
-    );
-}
-
-/// Convenience: build a wire `tool_use` content block.
-fn tool_use_block(
-    id: &str,
-    name: &str,
-    input: serde_json::Value,
-) -> forge_primitives::ContentBlock {
-    forge_primitives::ContentBlock::ToolUse { id: id.to_owned(), name: name.to_owned(), input }
-}
-
-/// Convenience: build a wire `text` content block.
-fn text_block(text: &str) -> forge_primitives::ContentBlock {
-    forge_primitives::ContentBlock::Text { text: text.to_owned() }
-}
-
-/// Convenience: build a wire `tool_result` content block (success).
-fn tool_result_block(
-    tool_use_id: &str,
-    content: serde_json::Value,
-) -> forge_primitives::ContentBlock {
-    forge_primitives::ContentBlock::ToolResult {
-        tool_use_id: tool_use_id.to_owned(),
-        content,
-        is_error: false,
-    }
-}
+use crate::message_helpers::{
+    assistant_message, send_msg, system_message, text_block, tool_result_block, tool_use_block,
+    user_message,
+};
 
 // --- Full turn lifecycle ---
 

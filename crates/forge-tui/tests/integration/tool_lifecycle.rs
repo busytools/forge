@@ -1,41 +1,20 @@
 // =====
-// TESTS: 18
+// TESTS: 10
 // =====
 //
 // Tool call lifecycle integration tests.
-// Validates the full create -> update -> complete flow for tool calls.
+// Validates the full create -> update -> complete flow for tool calls
+// over the wire-message dispatch path.
 
-use forge_tui::agent::events::ClientEvent;
 use forge_tui::agent::model;
 use forge_tui::app::{App, AppStatus, MessageBlock, ToolCallInfo, ToolCallScope};
 use pretty_assertions::assert_eq;
 
-use crate::helpers::{send_client_event, test_app};
-
-fn task_meta() -> serde_json::Map<String, serde_json::Value> {
-    claude_meta("Task", None)
-}
-
-fn child_meta(parent_tool_use_id: &str) -> serde_json::Map<String, serde_json::Value> {
-    claude_meta("Bash", Some(parent_tool_use_id))
-}
-
-fn claude_meta(
-    tool_name: &str,
-    parent_tool_use_id: Option<&str>,
-) -> serde_json::Map<String, serde_json::Value> {
-    let mut meta = serde_json::Map::new();
-    let mut claude_code = serde_json::Map::new();
-    claude_code.insert("toolName".into(), serde_json::Value::String(tool_name.to_owned()));
-    if let Some(parent_tool_use_id) = parent_tool_use_id {
-        claude_code.insert(
-            "parentToolUseId".into(),
-            serde_json::Value::String(parent_tool_use_id.to_owned()),
-        );
-    }
-    meta.insert("claudeCode".into(), serde_json::Value::Object(claude_code));
-    meta
-}
+use crate::helpers::test_app;
+use crate::message_helpers::{
+    assistant_message, assistant_message_with_parent, send_msg, tool_result_block,
+    tool_result_error_block, tool_use_block, user_message,
+};
 
 fn tool_call_block<'a>(app: &'a App, id: &str) -> &'a ToolCallInfo {
     let (message_index, block_index) = app.tool_call_index[id];
@@ -56,30 +35,34 @@ async fn tool_call_updates_apply_terminal_statuses_and_title_fields() {
     let mut app = test_app();
     app.status = AppStatus::Running;
 
-    let tc = model::ToolCall::new("tc-update", "Read file")
-        .kind(model::ToolKind::Read)
-        .status(model::ToolCallStatus::InProgress);
-    send_client_event(&mut app, ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc)));
-
-    let fields = model::ToolCallUpdateFields::new()
-        .title("Read src/lib.rs".to_owned())
-        .status(model::ToolCallStatus::Completed);
-    let update = model::ToolCallUpdate::new("tc-update", fields);
-    send_client_event(
+    // Tool_use carries the file_path that drives `tool_title("Read", input)`
+    // → "Read src/lib.rs". Wire path sets the title at creation time;
+    // completion via tool_result transitions status to Completed.
+    send_msg(
         &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::ToolCallUpdate(update)),
+        assistant_message(vec![tool_use_block(
+            "tc-update",
+            "Read",
+            serde_json::json!({"file_path": "src/lib.rs"}),
+        )]),
+    );
+    send_msg(
+        &mut app,
+        user_message(vec![tool_result_block("tc-update", serde_json::json!("ok"))]),
     );
 
-    let tc = model::ToolCall::new("tc-fail", "Write file")
-        .kind(model::ToolKind::Edit)
-        .status(model::ToolCallStatus::InProgress);
-    send_client_event(&mut app, ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc)));
-
-    let fields = model::ToolCallUpdateFields::new().status(model::ToolCallStatus::Failed);
-    let update = model::ToolCallUpdate::new("tc-fail", fields);
-    send_client_event(
+    send_msg(
         &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::ToolCallUpdate(update)),
+        assistant_message(vec![tool_use_block(
+            "tc-fail",
+            "Write",
+            serde_json::json!({"file_path": "out.txt", "content": "x"}),
+        )]),
+    );
+    // is_error=true in tool_result drives status→Failed via build_tool_result_fields.
+    send_msg(
+        &mut app,
+        user_message(vec![tool_result_error_block("tc-fail", serde_json::json!("bang"))]),
     );
 
     let updated = tool_call_block(&app, "tc-update");
@@ -97,58 +80,58 @@ async fn terminal_tool_statuses_transition_running_to_thinking_once_all_calls_fi
     let mut app = test_app();
     app.status = AppStatus::Running;
 
-    let tc1 = model::ToolCall::new("tc-a", "Read A").status(model::ToolCallStatus::InProgress);
-    let tc2 = model::ToolCall::new("tc-b", "Read B").status(model::ToolCallStatus::InProgress);
-    send_client_event(&mut app, ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc1)));
-    send_client_event(&mut app, ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc2)));
+    send_msg(
+        &mut app,
+        assistant_message(vec![tool_use_block(
+            "tc-a",
+            "Read",
+            serde_json::json!({"file_path": "a.txt"}),
+        )]),
+    );
+    send_msg(
+        &mut app,
+        assistant_message(vec![tool_use_block(
+            "tc-b",
+            "Read",
+            serde_json::json!({"file_path": "b.txt"}),
+        )]),
+    );
 
     assert!(matches!(app.status, AppStatus::Running));
 
-    let fields = model::ToolCallUpdateFields::new().status(model::ToolCallStatus::Completed);
-    send_client_event(
-        &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::ToolCallUpdate(
-            model::ToolCallUpdate::new("tc-a", fields),
-        )),
-    );
+    send_msg(&mut app, user_message(vec![tool_result_block("tc-a", serde_json::json!("ok"))]));
     assert!(matches!(app.status, AppStatus::Running), "one still in progress");
 
-    let fields = model::ToolCallUpdateFields::new().status(model::ToolCallStatus::Completed);
-    send_client_event(
-        &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::ToolCallUpdate(
-            model::ToolCallUpdate::new("tc-b", fields),
-        )),
-    );
+    send_msg(&mut app, user_message(vec![tool_result_block("tc-b", serde_json::json!("ok"))]));
     assert!(matches!(app.status, AppStatus::Thinking), "all-complete should resume thinking");
 
     let mut mixed_app = test_app();
     mixed_app.status = AppStatus::Running;
 
-    let tc1 = model::ToolCall::new("tc-x", "Op 1").status(model::ToolCallStatus::InProgress);
-    let tc2 = model::ToolCall::new("tc-y", "Op 2").status(model::ToolCallStatus::InProgress);
-    send_client_event(
+    send_msg(
         &mut mixed_app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc1)),
+        assistant_message(vec![tool_use_block(
+            "tc-x",
+            "Read",
+            serde_json::json!({"file_path": "x.txt"}),
+        )]),
     );
-    send_client_event(
+    send_msg(
         &mut mixed_app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc2)),
+        assistant_message(vec![tool_use_block(
+            "tc-y",
+            "Read",
+            serde_json::json!({"file_path": "y.txt"}),
+        )]),
     );
 
-    let f1 = model::ToolCallUpdateFields::new().status(model::ToolCallStatus::Completed);
-    let f2 = model::ToolCallUpdateFields::new().status(model::ToolCallStatus::Failed);
-    send_client_event(
+    send_msg(
         &mut mixed_app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::ToolCallUpdate(
-            model::ToolCallUpdate::new("tc-x", f1),
-        )),
+        user_message(vec![tool_result_block("tc-x", serde_json::json!("ok"))]),
     );
-    send_client_event(
+    send_msg(
         &mut mixed_app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::ToolCallUpdate(
-            model::ToolCallUpdate::new("tc-y", f2),
-        )),
+        user_message(vec![tool_result_error_block("tc-y", serde_json::json!("bang"))]),
     );
 
     assert!(
@@ -163,44 +146,50 @@ async fn terminal_tool_statuses_transition_running_to_thinking_once_all_calls_fi
 async fn task_tool_calls_leave_active_set_only_on_terminal_statuses() {
     let mut app = test_app();
 
-    let tc = model::ToolCall::new("task-pend", "Running subtask")
-        .kind(model::ToolKind::Think)
-        .status(model::ToolCallStatus::InProgress)
-        .meta(task_meta());
-    send_client_event(&mut app, ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc)));
+    // "Task" tool name normalises to ToolKind::Think and registers
+    // the call as a Task in app.active_task_ids.
+    send_msg(
+        &mut app,
+        assistant_message(vec![tool_use_block(
+            "task-pend",
+            "Task",
+            serde_json::json!({"description": "Running subtask"}),
+        )]),
+    );
     assert!(app.active_task_ids.contains("task-pend"), "new Task should be tracked");
 
-    let fields = model::ToolCallUpdateFields::new().status(model::ToolCallStatus::Pending);
-    send_client_event(
+    // The wire path has no equivalent of the SessionUpdate-only
+    // intermediate "Pending" status; resending an open tool_use keeps
+    // status=in_progress, which preserves active-task tracking.
+    send_msg(
         &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::ToolCallUpdate(
-            model::ToolCallUpdate::new("task-pend", fields),
-        )),
+        assistant_message(vec![tool_use_block(
+            "task-pend",
+            "Task",
+            serde_json::json!({"description": "Running subtask"}),
+        )]),
     );
-    assert!(app.active_task_ids.contains("task-pend"), "Pending should stay active");
+    assert!(app.active_task_ids.contains("task-pend"), "still in-progress should stay active");
 
-    let fields = model::ToolCallUpdateFields::new().status(model::ToolCallStatus::Completed);
-    send_client_event(
+    send_msg(
         &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::ToolCallUpdate(
-            model::ToolCallUpdate::new("task-pend", fields),
-        )),
+        user_message(vec![tool_result_block("task-pend", serde_json::json!("ok"))]),
     );
     assert!(!app.active_task_ids.contains("task-pend"), "completed Task should be removed");
 
-    let tc = model::ToolCall::new("task-fail", "Subtask")
-        .kind(model::ToolKind::Think)
-        .status(model::ToolCallStatus::InProgress)
-        .meta(task_meta());
-    send_client_event(&mut app, ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc)));
+    send_msg(
+        &mut app,
+        assistant_message(vec![tool_use_block(
+            "task-fail",
+            "Task",
+            serde_json::json!({"description": "Subtask"}),
+        )]),
+    );
     assert!(app.active_task_ids.contains("task-fail"));
 
-    let fields = model::ToolCallUpdateFields::new().status(model::ToolCallStatus::Failed);
-    send_client_event(
+    send_msg(
         &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::ToolCallUpdate(
-            model::ToolCallUpdate::new("task-fail", fields),
-        )),
+        user_message(vec![tool_result_error_block("task-fail", serde_json::json!("bang"))]),
     );
     assert!(!app.active_task_ids.contains("task-fail"), "failed Task should also be removed");
 }
@@ -209,22 +198,39 @@ async fn task_tool_calls_leave_active_set_only_on_terminal_statuses() {
 async fn subagent_child_tools_use_explicit_parent_linkage_only() {
     let mut app = test_app();
 
-    let root = model::ToolCall::new("task-root", "Research")
-        .kind(model::ToolKind::Think)
-        .status(model::ToolCallStatus::InProgress)
-        .meta(task_meta());
-    send_client_event(&mut app, ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(root)));
+    // Root Task tool, no parent linkage.
+    send_msg(
+        &mut app,
+        assistant_message(vec![tool_use_block(
+            "task-root",
+            "Task",
+            serde_json::json!({"description": "Research"}),
+        )]),
+    );
 
-    let child = model::ToolCall::new("child-bash", "Run child command")
-        .kind(model::ToolKind::Execute)
-        .status(model::ToolCallStatus::InProgress)
-        .meta(child_meta("task-root"));
-    send_client_event(&mut app, ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(child)));
+    // Child Bash tool — parent_tool_use_id carried at the assistant
+    // envelope level (the wire shape for sub-agent child tools).
+    send_msg(
+        &mut app,
+        assistant_message_with_parent(
+            vec![tool_use_block(
+                "child-bash",
+                "Bash",
+                serde_json::json!({"command": "echo child"}),
+            )],
+            "task-root",
+        ),
+    );
 
-    let main = model::ToolCall::new("main-bash", "Run main command")
-        .kind(model::ToolKind::Execute)
-        .status(model::ToolCallStatus::InProgress);
-    send_client_event(&mut app, ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(main)));
+    // Main-agent Bash tool, no envelope-level parent.
+    send_msg(
+        &mut app,
+        assistant_message(vec![tool_use_block(
+            "main-bash",
+            "Bash",
+            serde_json::json!({"command": "echo main"}),
+        )]),
+    );
 
     assert_eq!(app.tool_call_scope("task-root"), Some(ToolCallScope::SubagentRoot));
     assert_eq!(
@@ -240,17 +246,30 @@ async fn subagent_child_tools_use_explicit_parent_linkage_only() {
 async fn tool_call_update_parent_linkage_marks_existing_tool_hidden() {
     let mut app = test_app();
 
-    let tc = model::ToolCall::new("child-late", "Run child command")
-        .kind(model::ToolKind::Execute)
-        .status(model::ToolCallStatus::InProgress);
-    send_client_event(&mut app, ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc)));
+    // Initial Bash tool with no parent linkage.
+    send_msg(
+        &mut app,
+        assistant_message(vec![tool_use_block(
+            "child-late",
+            "Bash",
+            serde_json::json!({"command": "echo child"}),
+        )]),
+    );
     assert!(!tool_call_block(&app, "child-late").hidden);
 
-    let update = model::ToolCallUpdate::new("child-late", model::ToolCallUpdateFields::new())
-        .meta(child_meta("task-root"));
-    send_client_event(
+    // A subsequent tool_use with the same id and an envelope-level
+    // parent re-runs apply_tool_use_block which re-passes meta
+    // (now containing parentToolUseId) through the update path.
+    send_msg(
         &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::ToolCallUpdate(update)),
+        assistant_message_with_parent(
+            vec![tool_use_block(
+                "child-late",
+                "Bash",
+                serde_json::json!({"command": "echo child"}),
+            )],
+            "task-root",
+        ),
     );
 
     assert_eq!(
@@ -267,27 +286,33 @@ async fn session_collapse_preference_stays_stable_across_tool_call_lifecycle() {
     let mut app = test_app();
     app.tools_collapsed = true;
 
-    let tc = model::ToolCall::new("tc-col", "Read file").status(model::ToolCallStatus::InProgress);
-    send_client_event(&mut app, ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc)));
+    send_msg(
+        &mut app,
+        assistant_message(vec![tool_use_block(
+            "tc-col",
+            "Read",
+            serde_json::json!({"file_path": "file"}),
+        )]),
+    );
     assert!(app.tools_collapsed, "session preference should remain collapsed");
     assert!(matches!(tool_call_block(&app, "tc-col").status, model::ToolCallStatus::InProgress));
 
-    let fields = model::ToolCallUpdateFields::new().status(model::ToolCallStatus::InProgress);
-    send_client_event(
+    // A duplicate tool_use re-fires apply_tool_use_block, which
+    // forces status back to in_progress for already-open calls.
+    send_msg(
         &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::ToolCallUpdate(
-            model::ToolCallUpdate::new("tc-col", fields),
-        )),
+        assistant_message(vec![tool_use_block(
+            "tc-col",
+            "Read",
+            serde_json::json!({"file_path": "file"}),
+        )]),
     );
     assert!(app.tools_collapsed, "in-progress updates should not flip the preference");
     assert!(matches!(tool_call_block(&app, "tc-col").status, model::ToolCallStatus::InProgress));
 
-    let fields = model::ToolCallUpdateFields::new().status(model::ToolCallStatus::Completed);
-    send_client_event(
+    send_msg(
         &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::ToolCallUpdate(
-            model::ToolCallUpdate::new("tc-col", fields),
-        )),
+        user_message(vec![tool_result_block("tc-col", serde_json::json!("ok"))]),
     );
     assert!(app.tools_collapsed, "completed updates should keep the preference");
     assert!(matches!(tool_call_block(&app, "tc-col").status, model::ToolCallStatus::Completed));
@@ -295,19 +320,19 @@ async fn session_collapse_preference_stays_stable_across_tool_call_lifecycle() {
     let mut expanded_app = test_app();
     expanded_app.tools_collapsed = false;
 
-    let tc = model::ToolCall::new("tc-exp", "Write file").status(model::ToolCallStatus::InProgress);
-    send_client_event(
+    send_msg(
         &mut expanded_app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc)),
+        assistant_message(vec![tool_use_block(
+            "tc-exp",
+            "Write",
+            serde_json::json!({"file_path": "file"}),
+        )]),
     );
     assert!(!expanded_app.tools_collapsed, "expanded preference should remain expanded");
 
-    let fields = model::ToolCallUpdateFields::new().status(model::ToolCallStatus::Completed);
-    send_client_event(
+    send_msg(
         &mut expanded_app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::ToolCallUpdate(
-            model::ToolCallUpdate::new("tc-exp", fields),
-        )),
+        user_message(vec![tool_result_block("tc-exp", serde_json::json!("ok"))]),
     );
     assert!(!expanded_app.tools_collapsed);
     assert!(matches!(
@@ -323,9 +348,14 @@ async fn multiple_tool_calls_independently_indexed() {
     let mut app = test_app();
 
     for i in 0..5 {
-        let tc = model::ToolCall::new(format!("tc-{i}"), format!("Tool {i}"))
-            .status(model::ToolCallStatus::InProgress);
-        send_client_event(&mut app, ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc)));
+        send_msg(
+            &mut app,
+            assistant_message(vec![tool_use_block(
+                &format!("tc-{i}"),
+                "Read",
+                serde_json::json!({"file_path": format!("file-{i}")}),
+            )]),
+        );
     }
 
     assert_eq!(app.tool_call_index.len(), 5);
@@ -341,17 +371,17 @@ async fn multiple_tool_calls_independently_indexed() {
 async fn tool_call_update_via_meta_sets_sdk_tool_name() {
     let mut app = test_app();
 
-    let tc = model::ToolCall::new("tc-meta", "Some tool").status(model::ToolCallStatus::InProgress);
-    send_client_event(&mut app, ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc)));
-
-    // Update arrives with meta setting sdk_tool_name
-    let mut meta = serde_json::Map::new();
-    meta.insert("claudeCode".into(), serde_json::json!({"toolName": "WebSearch"}));
-    let fields = model::ToolCallUpdateFields::new();
-    let update = model::ToolCallUpdate::new("tc-meta", fields).meta(meta);
-    send_client_event(
+    // Initial tool_use with `name="WebSearch"` already produces
+    // sdk_tool_name="WebSearch" via meta.claudeCode.toolName at
+    // creation time on the wire path; no separate "meta update"
+    // event is required.
+    send_msg(
         &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::ToolCallUpdate(update)),
+        assistant_message(vec![tool_use_block(
+            "tc-meta",
+            "WebSearch",
+            serde_json::json!({"query": "rust"}),
+        )]),
     );
 
     let (mi, bi) = app.tool_call_index["tc-meta"];
@@ -366,22 +396,16 @@ async fn tool_call_update_via_meta_sets_sdk_tool_name() {
 async fn todowrite_via_update_raw_input_parses_todos() {
     let mut app = test_app();
 
-    // Create a tool call, initially without TodoWrite meta
-    let tc =
-        model::ToolCall::new("tc-todo-up", "TodoWrite").status(model::ToolCallStatus::InProgress);
-    send_client_event(&mut app, ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc)));
-
-    // Update sets sdk_tool_name + raw_input with todos
-    let mut meta = serde_json::Map::new();
-    meta.insert("claudeCode".into(), serde_json::json!({"toolName": "TodoWrite"}));
+    // Wire path: TodoWrite with todos input applies the plan via
+    // apply_plan_if_todo_write at tool_use time. The original
+    // SessionUpdate test split this into create+update; the wire
+    // shape collapses to a single envelope.
     let raw = serde_json::json!({"todos": [
         {"content": "Step 1", "status": "pending", "activeForm": "Doing step 1"}
     ]});
-    let fields = model::ToolCallUpdateFields::new().raw_input(raw);
-    let update = model::ToolCallUpdate::new("tc-todo-up", fields).meta(meta);
-    send_client_event(
+    send_msg(
         &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::ToolCallUpdate(update)),
+        assistant_message(vec![tool_use_block("tc-todo-up", "TodoWrite", raw)]),
     );
 
     assert_eq!(app.todos.len(), 1);
@@ -393,9 +417,14 @@ async fn title_shortened_relative_to_cwd() {
     let mut app = test_app();
     app.cwd_raw = "/home/user/project".into();
 
-    let tc = model::ToolCall::new("tc-shorten", "Read /home/user/project/src/main.rs")
-        .status(model::ToolCallStatus::InProgress);
-    send_client_event(&mut app, ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc)));
+    send_msg(
+        &mut app,
+        assistant_message(vec![tool_use_block(
+            "tc-shorten",
+            "Read",
+            serde_json::json!({"file_path": "/home/user/project/src/main.rs"}),
+        )]),
+    );
 
     let (mi, bi) = app.tool_call_index["tc-shorten"];
     if let MessageBlock::ToolCall(tc) = &app.messages[mi].blocks[bi] {
