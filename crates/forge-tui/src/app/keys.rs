@@ -21,8 +21,39 @@ use std::time::Instant;
 const HELP_TAB_PREV_KEY: KeyCode = KeyCode::Left;
 const HELP_TAB_NEXT_KEY: KeyCode = KeyCode::Right;
 
+// Platform-aware modifier conventions. macOS native shortcuts use Cmd
+// (SUPER) for app-level actions like Cmd+C / Cmd+V / Cmd+Z, and Option
+// (ALT) for word navigation. Linux/Windows fall back to Ctrl for both.
+//
+// Reaching the app: SUPER only arrives when the terminal speaks the
+// kitty enhanced-keyboard protocol (Ghostty, kitty, WezTerm). forge-tui
+// negotiates DISAMBIGUATE_ESCAPE_CODES + REPORT_EVENT_TYPES +
+// REPORT_ALTERNATE_KEYS at startup so this is the case in our stack.
+#[cfg(target_os = "macos")]
+pub(crate) const CMD_MOD: KeyModifiers = KeyModifiers::SUPER;
+#[cfg(not(target_os = "macos"))]
+pub(crate) const CMD_MOD: KeyModifiers = KeyModifiers::CONTROL;
+
+#[cfg(target_os = "macos")]
+pub(crate) const WORD_NAV_MOD: KeyModifiers = KeyModifiers::ALT;
+#[cfg(not(target_os = "macos"))]
+pub(crate) const WORD_NAV_MOD: KeyModifiers = KeyModifiers::CONTROL;
+
+// Modifier that must NOT be set alongside WORD_NAV_MOD. On macOS, ALT is
+// the word-nav modifier so the disqualifier is empty (any modifier mix
+// containing ALT is fine). On Linux/Windows, CTRL+ALT must NOT trigger
+// word-nav (reserved for the host's compose / hotkey paths).
+#[cfg(target_os = "macos")]
+pub(crate) const WORD_NAV_MOD_EXCLUDED: KeyModifiers = KeyModifiers::empty();
+#[cfg(not(target_os = "macos"))]
+pub(crate) const WORD_NAV_MOD_EXCLUDED: KeyModifiers = KeyModifiers::ALT;
+
 fn is_ctrl_shortcut(modifiers: KeyModifiers) -> bool {
     modifiers.contains(KeyModifiers::CONTROL) && !modifiers.contains(KeyModifiers::ALT)
+}
+
+fn is_cmd_shortcut(modifiers: KeyModifiers) -> bool {
+    modifiers.contains(CMD_MOD) && !modifiers.contains(KeyModifiers::ALT)
 }
 
 fn ctrl_char(expected: char) -> Option<char> {
@@ -43,6 +74,17 @@ pub(super) fn is_ctrl_char_shortcut(key: KeyEvent, expected: char) -> bool {
     }
 }
 
+/// Cmd-prefixed shortcut: SUPER on macOS, CONTROL elsewhere. On Linux/
+/// Windows this collapses to the same predicate as `is_ctrl_char_shortcut`,
+/// so callers that accept both Cmd+X and Ctrl+X (e.g. clipboard copy/paste)
+/// see no behaviour change off macOS.
+pub(super) fn is_cmd_char_shortcut(key: KeyEvent, expected: char) -> bool {
+    match key.code {
+        KeyCode::Char(c) if c.eq_ignore_ascii_case(&expected) => is_cmd_shortcut(key.modifiers),
+        _ => false,
+    }
+}
+
 fn is_permission_ctrl_shortcut(key: KeyEvent) -> bool {
     is_ctrl_char_shortcut(key, 'y')
         || is_ctrl_char_shortcut(key, 'a')
@@ -54,7 +96,11 @@ fn handle_always_allowed_shortcuts(app: &mut App, key: KeyEvent) -> bool {
         app.should_quit = true;
         return true;
     }
-    if is_ctrl_char_shortcut(key, 'c') {
+    // Copy: Cmd+C on macOS, Ctrl+C on Linux/Windows. Both variants are
+    // accepted everywhere so muscle memory keeps working across OSes.
+    // Ctrl+C with no selection still acts as quit (unchanged); Cmd+C with
+    // no selection is a no-op (Mac convention).
+    if is_cmd_char_shortcut(key, 'c') || is_ctrl_char_shortcut(key, 'c') {
         match copy_selection_to_clipboard(app) {
             ClipboardCopyResult::Copied => {
                 clear_selection(app);
@@ -65,8 +111,11 @@ fn handle_always_allowed_shortcuts(app: &mut App, key: KeyEvent) -> bool {
             }
             ClipboardCopyResult::NoText => {}
         }
-        app.should_quit = true;
-        return true;
+        if is_ctrl_char_shortcut(key, 'c') {
+            app.should_quit = true;
+            return true;
+        }
+        return false;
     }
     false
 }
@@ -436,25 +485,34 @@ fn handle_history_key(app: &mut App, key: KeyEvent) -> bool {
         return false;
     }
     match (key.code, key.modifiers) {
-        (KeyCode::Char('z'), m) if m == KeyModifiers::CONTROL => app.input.textarea_undo(),
-        (KeyCode::Char('y'), m) if m == KeyModifiers::CONTROL => app.input.textarea_redo(),
+        // macOS: Cmd+Z undo. Linux/Windows: Ctrl+Z undo.
+        (KeyCode::Char('z'), m) if m == CMD_MOD => app.input.textarea_undo(),
+        // macOS: Cmd+Shift+Z redo. Most terminals report shifted-z as the
+        // uppercase 'Z' codepoint with SUPER alone (kitty-protocol convention).
+        #[cfg(target_os = "macos")]
+        (KeyCode::Char('Z'), m) if m == CMD_MOD => app.input.textarea_redo(),
+        // Linux/Windows: Ctrl+Y redo.
+        #[cfg(not(target_os = "macos"))]
+        (KeyCode::Char('y'), m) if m == CMD_MOD => app.input.textarea_redo(),
         _ => false,
     }
 }
 
 fn handle_navigation_key(app: &mut App, key: KeyEvent) -> bool {
     match (key.code, key.modifiers) {
+        // Word left: Alt+Left on macOS, Ctrl+Left elsewhere.
         (KeyCode::Left, m)
             if app.focus_owner() != FocusOwner::TodoList
-                && m.contains(KeyModifiers::CONTROL)
-                && !m.contains(KeyModifiers::ALT) =>
+                && m.contains(WORD_NAV_MOD)
+                && !m.intersects(WORD_NAV_MOD_EXCLUDED) =>
         {
             app.input.textarea_move_word_left()
         }
+        // Word right: Alt+Right on macOS, Ctrl+Right elsewhere.
         (KeyCode::Right, m)
             if app.focus_owner() != FocusOwner::TodoList
-                && m.contains(KeyModifiers::CONTROL)
-                && !m.contains(KeyModifiers::ALT) =>
+                && m.contains(WORD_NAV_MOD)
+                && !m.intersects(WORD_NAV_MOD_EXCLUDED) =>
         {
             app.input.textarea_move_word_right()
         }
@@ -661,7 +719,7 @@ fn handle_clipboard_paste_key(app: &mut App, key: KeyEvent) -> bool {
 }
 
 pub(super) fn is_clipboard_paste_shortcut(key: KeyEvent) -> bool {
-    is_ctrl_char_shortcut(key, 'v')
+    is_cmd_char_shortcut(key, 'v') || is_ctrl_char_shortcut(key, 'v')
 }
 
 pub(super) fn reclaim_input_from_inline_prompt_if_needed(app: &mut App) {
@@ -672,10 +730,11 @@ pub(super) fn reclaim_input_from_inline_prompt_if_needed(app: &mut App) {
 
 fn handle_editing_key(app: &mut App, key: KeyEvent) -> bool {
     match (key.code, key.modifiers) {
+        // Delete word backward: Alt+Backspace on macOS, Ctrl+Backspace elsewhere.
         (KeyCode::Backspace, m)
             if app.focus_owner() != FocusOwner::TodoList
-                && m.contains(KeyModifiers::CONTROL)
-                && !m.contains(KeyModifiers::ALT) =>
+                && m.contains(WORD_NAV_MOD)
+                && !m.intersects(WORD_NAV_MOD_EXCLUDED) =>
         {
             reclaim_input_from_inline_prompt_if_needed(app);
             if try_delete_image_badge(app, "before") {
@@ -683,10 +742,11 @@ fn handle_editing_key(app: &mut App, key: KeyEvent) -> bool {
             }
             app.input.textarea_delete_word_before()
         }
+        // Delete word forward: Alt+Delete on macOS, Ctrl+Delete elsewhere.
         (KeyCode::Delete, m)
             if app.focus_owner() != FocusOwner::TodoList
-                && m.contains(KeyModifiers::CONTROL)
-                && !m.contains(KeyModifiers::ALT) =>
+                && m.contains(WORD_NAV_MOD)
+                && !m.intersects(WORD_NAV_MOD_EXCLUDED) =>
         {
             reclaim_input_from_inline_prompt_if_needed(app);
             if try_delete_image_badge(app, "after") {
@@ -819,7 +879,11 @@ fn should_sync_autocomplete_after_key(app: &App, key: KeyEvent) -> bool {
             | KeyCode::Enter,
             _,
         ) => true,
-        (KeyCode::Char('z' | 'y'), m) if m == KeyModifiers::CONTROL => true,
+        (KeyCode::Char('z'), m) if m == CMD_MOD => true,
+        #[cfg(target_os = "macos")]
+        (KeyCode::Char('Z'), m) if m == CMD_MOD => true,
+        #[cfg(not(target_os = "macos"))]
+        (KeyCode::Char('y'), m) if m == CMD_MOD => true,
         (KeyCode::Char(_), m) if is_printable_text_modifiers(m) => true,
         _ => false,
     }
