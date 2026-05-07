@@ -225,6 +225,11 @@ pub fn synthesize_replay_messages(messages: &[Value]) -> Vec<Message> {
                 let Ok(mut envelope) =
                     serde_json::from_value::<AssistantEnvelope>(message_value.clone())
                 else {
+                    tracing::warn!(
+                        target: "agent.history",
+                        ?message_value,
+                        "synthesize_replay_messages: failed to decode AssistantEnvelope; entry skipped",
+                    );
                     continue;
                 };
                 envelope.content = transform_replay_content(envelope.content);
@@ -240,6 +245,11 @@ pub fn synthesize_replay_messages(messages: &[Value]) -> Vec<Message> {
                 let Ok(mut envelope) =
                     serde_json::from_value::<UserEnvelope>(message_value.clone())
                 else {
+                    tracing::warn!(
+                        target: "agent.history",
+                        ?message_value,
+                        "synthesize_replay_messages: failed to decode UserEnvelope; entry skipped",
+                    );
                     continue;
                 };
                 envelope.content = transform_replay_content(envelope.content);
@@ -429,5 +439,24 @@ mod tests {
             panic!("expected image block to become a Text content block");
         };
         assert_eq!(text, "[image]");
+    }
+
+    #[test]
+    fn synthesize_malformed_entry_is_skipped() {
+        let messages = vec![
+            // Missing required AssistantEnvelope fields (id/model) — must skip.
+            json!({ "type": "assistant", "message": { "role": "assistant" } }),
+            // Valid user message — must pass through.
+            json!({
+                "type": "user",
+                "message": { "role": "user", "content": [{"type":"text","text":"valid"}] }
+            }),
+        ];
+        let synthesized = synthesize_replay_messages(&messages);
+        assert_eq!(synthesized.len(), 1, "malformed entry must be skipped");
+        let Message::User { message, .. } = &synthesized[0] else {
+            panic!("surviving entry must be the user one");
+        };
+        assert!(matches!(&message.content[0], ContentBlock::Text { text } if text == "valid"));
     }
 }
