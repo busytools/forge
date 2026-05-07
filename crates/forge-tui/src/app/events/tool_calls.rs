@@ -190,6 +190,8 @@ fn build_tool_info_from_tool_call(
         cache: BlockCache::default(),
         pending_permission: None,
         pending_question: None,
+        collapsed_override: None,
+        last_measured_y_in_msg: 0,
     };
     tool_info.raw_input_bytes =
         tool_info.raw_input.as_ref().map_or(0, ToolCallInfo::estimate_json_value_bytes);

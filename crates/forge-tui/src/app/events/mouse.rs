@@ -5,7 +5,7 @@
 
 use super::super::selection::clear_selection;
 use super::super::state::ScrollbarDragState;
-use super::super::{App, ScrollbarGeometry, SelectionKind, SelectionPoint};
+use super::super::{App, MessageBlock, ScrollbarGeometry, SelectionKind, SelectionPoint};
 use crossterm::event::{MouseEvent, MouseEventKind};
 
 pub(super) const MOUSE_SCROLL_LINES: usize = 3;
@@ -22,6 +22,9 @@ pub(super) fn handle_mouse_event(app: &mut App, mouse: MouseEvent) {
                 return;
             }
             app.scrollbar_drag = None;
+            if try_toggle_tool_call_at_click(app, mouse) {
+                return;
+            }
             if let Some(pt) = mouse_point_to_selection(app, mouse) {
                 app.selection = Some(super::super::SelectionState {
                     kind: pt.kind,
@@ -235,5 +238,118 @@ fn mouse_point_to_selection(app: &App, mouse: MouseEvent) -> Option<MouseSelecti
             point: SelectionPoint { row, col },
         });
     }
+    None
+}
+
+/// If the click landed on a tool-call's rendered area inside the chat
+/// pane, flip that tool call's per-tool collapse override and consume
+/// the event. Returns `true` when a tool call was toggled (so the
+/// caller can skip starting a text selection).
+fn try_toggle_tool_call_at_click(app: &mut App, mouse: MouseEvent) -> bool {
+    let Some((msg_idx, block_idx)) = locate_tool_call_block_at_click(app, mouse) else {
+        return false;
+    };
+    let global_default = app.tools_collapsed;
+    let Some(MessageBlock::ToolCall(tc)) = app.messages[msg_idx].blocks.get_mut(block_idx) else {
+        return false;
+    };
+    let current = tc.collapsed_override.unwrap_or(global_default);
+    let new_collapsed = !current;
+    tc.collapsed_override = Some(new_collapsed);
+    let tool_id = tc.id.clone();
+    // Layout-dirty bumps both the layout epoch (forcing a remeasure) and
+    // the render epoch (which is hashed into MessageRenderSignature),
+    // invalidating the per-block + message-level render caches.
+    tc.mark_tool_call_layout_dirty();
+    app.invalidate_layout(crate::app::InvalidationLevel::MessageChanged(msg_idx));
+    tracing::debug!(
+        target: crate::logging::targets::APP_INPUT,
+        event_name = "tool_call_click_toggled",
+        tool_id = %tool_id,
+        msg_idx,
+        block_idx,
+        new_collapsed,
+        "click toggled per-tool collapse override"
+    );
+    true
+}
+
+/// Map the chat-area click coordinate to a `(message_idx, block_idx)`
+/// pair when the cell lands on a rendered tool-call's y-range.
+///
+/// Each tool call records its own `last_measured_y_in_msg` during the
+/// assistant render pass, so this hit-test reads only data the renderer
+/// just committed — no fragile peer-block height walks.
+fn locate_tool_call_block_at_click(app: &App, mouse: MouseEvent) -> Option<(usize, usize)> {
+    let chat_area = app.rendered_chat_area;
+    if chat_area.width == 0 || chat_area.height == 0 {
+        return None;
+    }
+    if mouse.column < chat_area.x
+        || mouse.column >= chat_area.right()
+        || mouse.row < chat_area.y
+        || mouse.row >= chat_area.bottom()
+    {
+        return None;
+    }
+
+    // Absolute content-row of the click (== local row + scroll offset).
+    let local_row = (mouse.row - chat_area.y) as usize;
+    let absolute_row = local_row.checked_add(app.viewport.scroll_offset)?;
+
+    // Find the message that owns this row via the existing prefix-sum
+    // index, then walk only that message's tool-call blocks. Each tool
+    // stores its own y-offset within the message and its measured
+    // height, so the inclusion test is just an interval check.
+    if app.messages.is_empty() {
+        return None;
+    }
+    let msg_idx = app.viewport.find_first_visible(absolute_row);
+    if msg_idx >= app.messages.len() {
+        return None;
+    }
+    let msg_start = app.viewport.cumulative_height_before(msg_idx);
+    let row_within_msg = absolute_row.checked_sub(msg_start)?;
+    let width = chat_area.width;
+    for (block_idx, block) in app.messages[msg_idx].blocks.iter().enumerate() {
+        let MessageBlock::ToolCall(tc) = block else {
+            continue;
+        };
+        if tc.last_measured_height == 0 || tc.last_measured_width != width {
+            continue;
+        }
+        let y_start = tc.last_measured_y_in_msg;
+        let y_end = y_start.saturating_add(tc.last_measured_height);
+        if row_within_msg >= y_start && row_within_msg < y_end {
+            tracing::debug!(
+                target: crate::logging::targets::APP_INPUT,
+                event_name = "tool_call_hit_test",
+                outcome = "hit",
+                msg_idx,
+                block_idx,
+                tool_id = %tc.id,
+                row_within_msg,
+                y_start,
+                y_end,
+                "click landed inside tool-call rendered range",
+            );
+            return Some((msg_idx, block_idx));
+        }
+    }
+    tracing::debug!(
+        target: crate::logging::targets::APP_INPUT,
+        event_name = "tool_call_hit_test",
+        outcome = "no_hit",
+        mouse_row = mouse.row,
+        mouse_column = mouse.column,
+        scroll_offset = app.viewport.scroll_offset,
+        absolute_row,
+        msg_idx,
+        msg_count = app.messages.len(),
+        msg_start,
+        row_within_msg,
+        msg_height = app.viewport.message_height(msg_idx),
+        "click did not match any tool's recorded y-range",
+    );
     None
 }
