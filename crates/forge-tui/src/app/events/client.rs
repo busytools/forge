@@ -73,7 +73,17 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
             let temp_session_updates: Vec<model::SessionUpdate> = {
                 let raw_values: Vec<serde_json::Value> = history_updates
                     .iter()
-                    .map(|m| serde_json::to_value(m).unwrap_or(serde_json::Value::Null))
+                    .filter_map(|m| {
+                        serde_json::to_value(m)
+                            .inspect_err(|e| {
+                                tracing::warn!(
+                                    target: crate::logging::targets::APP_SESSION,
+                                    error = %e,
+                                    "history-replay shim: failed to serialize Message; entry skipped",
+                                );
+                            })
+                            .ok()
+                    })
                     .collect();
                 forge_agent::history::map_session_messages_to_updates(&raw_values)
                     .into_iter()
@@ -142,7 +152,17 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
             let temp_session_updates: Vec<model::SessionUpdate> = {
                 let raw_values: Vec<serde_json::Value> = history_updates
                     .iter()
-                    .map(|m| serde_json::to_value(m).unwrap_or(serde_json::Value::Null))
+                    .filter_map(|m| {
+                        serde_json::to_value(m)
+                            .inspect_err(|e| {
+                                tracing::warn!(
+                                    target: crate::logging::targets::APP_SESSION,
+                                    error = %e,
+                                    "history-replay shim: failed to serialize Message; entry skipped",
+                                );
+                            })
+                            .ok()
+                    })
                     .collect();
                 forge_agent::history::map_session_messages_to_updates(&raw_values)
                     .into_iter()
