@@ -20,6 +20,12 @@ use super::{
     tool_output_badge_spans,
 };
 
+/// Cap for terminal output lines emitted into a Bash tool body. When
+/// the output exceeds this, render a "... N lines hidden ..." banner
+/// in DIM and show only the most recent <code>TERMINAL_MAX_LINES</code>
+/// rows below it.
+pub(super) const TERMINAL_MAX_LINES: usize = 12;
+
 pub(super) const WRITE_DIFF_MAX_LINES: usize = 50;
 pub(super) const WRITE_DIFF_HEAD_LINES: usize = 10;
 const DEFAULT_COLLAPSED_TEXT_SUMMARY_LIMIT: usize = 60;
@@ -27,9 +33,19 @@ const IN_PROGRESS_SUBAGENT_COLLAPSED_TEXT_SUMMARY_LIMIT: usize = 180;
 const DIFF_BODY_INDENT: &str = "  ";
 const DIFF_BODY_INDENT_WIDTH: u16 = 2;
 
-/// Render just the title line for a non-Execute tool call (the line containing the spinner icon).
-/// Used for in-progress tool calls where only the spinner changes each frame.
-/// Execute tool calls are handled separately via `render_execute_with_borders`.
+/// Render the title line for any tool call. Format:
+///
+/// ```text
+///   <status icon> <kind icon> <kind label> <display title> <badges>
+/// ```
+///
+/// Status icon is colored by status; kind icon and kind label are
+/// white bold. The kind label comes from `theme::tool_name_label`
+/// (e.g. "Read", "Edit", "Bash", "Subagent", or the fallback
+/// "Tool"). When `tc.title` from claude already starts with the
+/// kind label (e.g. claude often sends "Read /path/to/file.rs"),
+/// the duplicate prefix is stripped so the column reads cleanly
+/// (no "Read Read /path").
 pub(super) fn render_tool_call_title(
     tc: &ToolCallInfo,
     render_context: ToolCallRenderContext<'_>,
@@ -37,21 +53,35 @@ pub(super) fn render_tool_call_title(
     spinner_frame: usize,
 ) -> Line<'static> {
     let (icon, icon_color) = status_icon(tc.status, spinner_frame);
-    let (kind_icon, _kind_name) = theme::tool_name_label(&tc.sdk_tool_name);
+    let (kind_icon, kind_name) = theme::tool_name_label(&tc.sdk_tool_name);
+    let bold_white = Style::default().fg(ratatui::style::Color::White).add_modifier(Modifier::BOLD);
 
     let mut title_spans = vec![
         Span::styled(format!("  {icon} "), Style::default().fg(icon_color)),
-        Span::styled(
-            format!("{kind_icon} "),
-            Style::default().fg(ratatui::style::Color::White).add_modifier(Modifier::BOLD),
-        ),
+        Span::styled(format!("{kind_icon} "), bold_white),
+        Span::styled(format!("{kind_name} "), bold_white),
     ];
 
     let display_title = tool_display_title(tc, render_context);
-    title_spans.extend(markdown_inline_spans(display_title.as_ref()));
+    let title_text = strip_kind_prefix(display_title.as_ref(), kind_name);
+    title_spans.extend(markdown_inline_spans(title_text));
     title_spans.extend(tool_output_badge_spans(tc));
 
     Line::from(title_spans)
+}
+
+/// Strip a leading "<kind_name> " prefix from `title` so the rendered
+/// column doesn't repeat the tool name (e.g. claude sends
+/// `"Read /path/to/file.rs"` and we already render the "Read" label
+/// from `theme::tool_name_label`). Returns the original title when no
+/// prefix matches.
+fn strip_kind_prefix<'a>(title: &'a str, kind_name: &str) -> &'a str {
+    if let Some(rest) = title.strip_prefix(kind_name)
+        && let Some(after_space) = rest.strip_prefix(' ')
+    {
+        return after_space;
+    }
+    title
 }
 
 /// Render the body lines (everything after the title) for a non-Execute tool call.
@@ -84,17 +114,19 @@ pub(super) fn render_collapsed_tool_call_summary(
     lines.push(Line::from(vec![
         Span::styled("  \u{2514}\u{2500} ", pipe_style),
         Span::styled(content_summary(tc), Style::default().fg(theme::DIM)),
-        Span::styled("  ctrl+o to expand", Style::default().fg(theme::DIM)),
+        Span::styled("  ctrl+x to expand", Style::default().fg(theme::DIM)),
     ]));
 }
 
-/// Render the body (everything after the title line) of a standard (non-Execute) tool call.
+/// Render the body (everything after the title line) of a tool call.
 fn render_standard_body(tc: &ToolCallInfo, width: u16, lines: &mut Vec<Line<'static>>) {
     let pipe_style = Style::default().fg(theme::DIM);
     let has_permission = tc.pending_permission.is_some();
     let has_question = tc.pending_question.is_some();
+    let has_execute_output = tc.is_execute_tool()
+        && (tc.terminal_output.is_some() || matches!(tc.status, model::ToolCallStatus::InProgress));
 
-    if tc.content.is_empty() && !has_permission && !has_question {
+    if tc.content.is_empty() && !has_permission && !has_question && !has_execute_output {
         return;
     }
 
@@ -233,7 +265,18 @@ fn render_tool_content(tc: &ToolCallInfo, width: u16) -> Vec<Line<'static>> {
                     Style::default().fg(theme::STATUS_ERROR),
                 )));
             } else {
-                lines.extend(highlight::render_terminal_output(output));
+                let raw_lines = highlight::render_terminal_output(output);
+                let total = raw_lines.len();
+                if total > TERMINAL_MAX_LINES {
+                    let skipped = total - TERMINAL_MAX_LINES;
+                    lines.push(Line::from(Span::styled(
+                        format!("... {skipped} lines hidden ..."),
+                        Style::default().fg(theme::DIM),
+                    )));
+                    lines.extend(raw_lines.into_iter().skip(skipped));
+                } else {
+                    lines.extend(raw_lines);
+                }
             }
         } else if matches!(tc.status, model::ToolCallStatus::InProgress) {
             lines.push(Line::from(Span::styled("running...", Style::default().fg(theme::DIM))));

@@ -38,7 +38,7 @@ pub fn tool_name_label(sdk_tool_name: &str) -> (&'static str, &'static str) {
         "Glob" => ("\u{2315}", "Glob"),
         "Grep" => ("\u{2315}", "Grep"),
         "LS" => ("\u{2315}", "LS"),
-        "Bash" => ("\u{27e9}", "Bash"),
+        "Bash" => ("\u{25b6}", "Bash"),
         "Task" | "Agent" => ("\u{25c7}", "Subagent"),
         "WebFetch" => ("\u{2295}", "WebFetch"),
         "WebSearch" => ("\u{2295}", "WebSearch"),
