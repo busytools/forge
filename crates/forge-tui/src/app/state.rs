@@ -189,7 +189,7 @@ pub struct App {
     /// Message index that owns the current main-assistant turn indicators.
     pub active_turn_assistant_message_idx: Option<usize>,
     /// Session-level preference for collapsing non-Execute tool call bodies.
-    /// Toggled by Ctrl+O and applied at render/layout time.
+    /// Toggled by Ctrl+X and applied at render/layout time.
     pub tools_collapsed: bool,
     /// IDs of root Task/Agent tool calls currently `InProgress`.
     /// Use `insert_active_task()`, `remove_active_task()`.

@@ -1,13 +1,12 @@
 //! Tool-call rendering: entry points, caching, and shared helpers.
 //!
 //! Submodules handle specific rendering concerns:
-//! - [`standard`] -- non-Execute tool calls (Read, Write, Glob, etc.)
-//! - [`execute`] -- Execute/Bash two-layer bordered rendering
+//! - [`standard`] -- one render path for every tool (Read, Write, Bash,
+//!   Glob, etc.) — title row plus optional indented body.
 //! - [`interactions`] -- inline permissions, questions, and plan approvals
 //! - [`errors`] -- error rendering and tool-use error extraction
 
 mod errors;
-mod execute;
 mod interactions;
 mod standard;
 
@@ -20,7 +19,6 @@ use crate::ui::theme;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Paragraph, Wrap};
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 // Re-export submodule items used by tests.
 #[cfg(test)]
@@ -63,14 +61,16 @@ pub fn status_icon(status: model::ToolCallStatus, spinner_frame: usize) -> (&'st
 
 /// Render a tool call with caching. Only re-renders when cache is stale.
 ///
-/// For Execute/Bash tool calls, the cache stores **content only** (command, output,
-/// permissions) without border decoration. Borders are applied at render time using
-/// the current width, so they always fill the terminal correctly after resize.
-/// Height for Execute = `content_lines + 2` (title border + bottom border).
+/// All tool kinds — Read, Write, Edit, Bash, Grep, etc. — share the same
+/// shape: a single title row at column 2 (status icon + kind icon +
+/// display title), followed when there's body content by lines prefixed
+/// with `  │  ` (DIM). Body content varies by kind (terminal output for
+/// Bash, syntax-highlighted code for Read, unified diff for
+/// Edit/Write/MultiEdit).
 ///
-/// For other tool calls, the title is rendered live and the expanded body is cached
-/// independently, so session collapse preference can change without invalidating
-/// every completed tool-call cache.
+/// The title is rendered live; the expanded body is cached. Session
+/// collapse preference can change without invalidating completed
+/// tool-call body caches.
 pub fn render_tool_call_cached_with_tools_collapsed(
     tc: &mut ToolCallInfo,
     render_context: ToolCallRenderContext<'_>,
@@ -79,37 +79,15 @@ pub fn render_tool_call_cached_with_tools_collapsed(
     tools_collapsed: bool,
     out: &mut Vec<Line<'static>>,
 ) {
-    let is_execute = tc.is_execute_tool();
-
-    // Execute/Bash: two-layer rendering (cache content, apply borders at render time)
-    if is_execute {
-        if tc.cache.get().is_none() {
-            crate::perf::mark("tc::cache_miss_execute");
-            let _t = crate::perf::start("tc::render_exec");
-            let content = execute::render_execute_content(tc);
-            tc.cache.store(content);
-        } else {
-            crate::perf::mark("tc::cache_hit_execute");
-        }
-        if let Some(content) = tc.cache.get() {
-            let bordered = execute::render_execute_with_borders(
-                tc,
-                render_context,
-                content,
-                width,
-                spinner_frame,
-            );
-            out.extend(bordered);
-        }
-        return;
-    }
-
     let title = standard::render_tool_call_title(tc, render_context, width, spinner_frame);
     out.push(title);
 
+    let has_execute_body = tc.is_execute_tool()
+        && (tc.terminal_output.is_some() || matches!(tc.status, model::ToolCallStatus::InProgress));
     let has_body = !(tc.content.is_empty()
         && tc.pending_permission.is_none()
-        && tc.pending_question.is_none());
+        && tc.pending_question.is_none())
+        || has_execute_body;
     if !has_body {
         return;
     }
@@ -160,37 +138,15 @@ pub fn measure_tool_call_height_cached_with_tools_collapsed(
     }
     crate::perf::mark("tc_measure_recompute_count");
 
-    let is_execute = tc.is_execute_tool();
-    if is_execute {
-        if tc.cache.get().is_none() {
-            let content = execute::render_execute_content(tc);
-            tc.cache.store(content);
-        }
-        if let Some(content) = tc.cache.get() {
-            let bordered = execute::render_execute_with_borders(
-                tc,
-                render_context,
-                content,
-                width,
-                spinner_frame,
-            );
-            let h = Paragraph::new(Text::from(bordered.clone()))
-                .wrap(Wrap { trim: false })
-                .line_count(width);
-            tc.cache.set_height(h, width);
-            tc.record_measured_height(width, h, layout_generation);
-            return (h, bordered.len());
-        }
-        tc.record_measured_height(width, 0, layout_generation);
-        return (0, 0);
-    }
-
     let title = standard::render_tool_call_title(tc, render_context, width, spinner_frame);
     let title_h =
         Paragraph::new(Text::from(vec![title])).wrap(Wrap { trim: false }).line_count(width);
+    let has_execute_body = tc.is_execute_tool()
+        && (tc.terminal_output.is_some() || matches!(tc.status, model::ToolCallStatus::InProgress));
     let has_body = !(tc.content.is_empty()
         && tc.pending_permission.is_none()
-        && tc.pending_question.is_none());
+        && tc.pending_question.is_none())
+        || has_execute_body;
 
     if !has_body {
         tc.record_measured_height(width, title_h, layout_generation);
@@ -256,43 +212,6 @@ fn markdown_inline_spans(input: &str) -> Vec<Span<'static>> {
     markdown::render_markdown_safe(input, None).into_iter().next().map_or_else(Vec::new, |line| {
         line.spans.into_iter().map(|s| Span::styled(s.content.into_owned(), s.style)).collect()
     })
-}
-
-fn spans_width(spans: &[Span<'static>]) -> usize {
-    spans.iter().map(|s| UnicodeWidthStr::width(s.content.as_ref())).sum()
-}
-
-fn truncate_spans_to_width(spans: Vec<Span<'static>>, max_width: usize) -> Vec<Span<'static>> {
-    if max_width == 0 {
-        return Vec::new();
-    }
-    if spans_width(&spans) <= max_width {
-        return spans;
-    }
-
-    let keep_width = max_width.saturating_sub(1);
-    let mut used = 0usize;
-    let mut out: Vec<Span<'static>> = Vec::new();
-
-    for span in spans {
-        if used >= keep_width {
-            break;
-        }
-        let mut chunk = String::new();
-        for ch in span.content.chars() {
-            let w = UnicodeWidthChar::width(ch).unwrap_or(0);
-            if used + w > keep_width {
-                break;
-            }
-            chunk.push(ch);
-            used += w;
-        }
-        if !chunk.is_empty() {
-            out.push(Span::styled(chunk, span.style));
-        }
-    }
-    out.push(Span::styled("\u{2026}", Style::default().fg(theme::DIM)));
-    out
 }
 
 fn tool_output_badge_spans(tc: &ToolCallInfo) -> Vec<Span<'static>> {
@@ -455,15 +374,6 @@ mod tests {
     }
 
     #[test]
-    fn truncate_spans_adds_ellipsis_when_needed() {
-        let spans = vec![Span::raw("abcdefghijklmnopqrstuvwxyz")];
-        let out = truncate_spans_to_width(spans, 8);
-        let rendered: String = out.iter().map(|s| s.content.as_ref()).collect();
-        assert_eq!(rendered, "abcdefg\u{2026}");
-        assert!(spans_width(&out) <= 8);
-    }
-
-    #[test]
     fn markdown_inline_spans_removes_markdown_syntax() {
         let spans = markdown_inline_spans("**Allow** _once_");
         let rendered: String = spans.iter().map(|s| s.content.as_ref()).collect();
@@ -482,6 +392,56 @@ mod tests {
         let rendered: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
 
         assert!(rendered.contains("[backgrounded]"));
+    }
+
+    #[test]
+    fn standard_title_renders_kind_label_for_bash() {
+        // Bash title from claude is just the command (no "Bash " prefix).
+        // The renderer should emit the "Bash" label so the column is
+        // consistent with Read / Edit / Grep where claude already prefixes.
+        let mut tc = test_tool_call("ls -la", "Bash", model::ToolCallStatus::Completed);
+        tc.terminal_command = Some("ls -la".to_owned());
+
+        let line = standard::render_tool_call_title(&tc, ToolCallRenderContext::default(), 80, 0);
+        let rendered: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+
+        assert!(rendered.contains("Bash "), "expected 'Bash ' label in title; got: {rendered:?}");
+        assert!(rendered.contains("ls -la"), "expected command text in title; got: {rendered:?}");
+        // Make sure we don't double-render: title should have "Bash"
+        // exactly once (no "Bash Bash …").
+        assert_eq!(
+            rendered.matches("Bash").count(),
+            1,
+            "expected exactly one 'Bash' occurrence; got: {rendered:?}"
+        );
+    }
+
+    #[test]
+    fn standard_title_strips_duplicate_kind_prefix_from_claude_title() {
+        // Claude often sends Read titles as "Read /path/to/file.rs".
+        // The renderer adds its own "Read" label; the duplicate prefix
+        // on the title should be stripped so we render
+        // "Read /path/to/file.rs" exactly once.
+        let tc = test_tool_call(
+            "Read /Users/vedhavyas/Projects/forge/Cargo.toml",
+            "Read",
+            model::ToolCallStatus::Completed,
+        );
+
+        let line = standard::render_tool_call_title(&tc, ToolCallRenderContext::default(), 120, 0);
+        let rendered: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+
+        // "Read" appears once (from our label), the path follows,
+        // not "Read Read /Users/..."
+        assert_eq!(
+            rendered.matches("Read").count(),
+            1,
+            "duplicate 'Read' prefix not stripped; got: {rendered:?}"
+        );
+        assert!(
+            rendered.contains("/Users/vedhavyas/Projects/forge/Cargo.toml"),
+            "expected path body in title; got: {rendered:?}"
+        );
     }
 
     #[test]
@@ -513,79 +473,92 @@ mod tests {
     }
 
     #[test]
-    fn execute_top_border_does_not_wrap_for_long_title() {
-        let tc = ToolCallInfo {
-            id: "tc-1".into(),
-            title: "echo very long command title with markdown **bold** and path /a/b/c/d/e/f"
-                .into(),
-            sdk_tool_name: "Bash".into(),
-            raw_input: None,
-            raw_input_bytes: 0,
-            output_metadata: None,
-            task_metadata: None,
-            status: model::ToolCallStatus::Pending,
-            content: Vec::new(),
-            hidden: false,
-            terminal_id: None,
-            terminal_command: None,
-            terminal_output: None,
-            terminal_output_len: 0,
-            terminal_bytes_seen: 0,
-            terminal_snapshot_mode: crate::app::TerminalSnapshotMode::AppendOnly,
-            render_epoch: 0,
-            layout_epoch: 0,
-            last_measured_width: 0,
-            last_measured_height: 0,
-            last_measured_layout_epoch: 0,
-            last_measured_layout_generation: 0,
-            cache: BlockCache::default(),
-            pending_permission: None,
-            pending_question: None,
-        };
-
-        let rendered =
-            execute::render_execute_with_borders(&tc, ToolCallRenderContext::default(), &[], 80, 0);
-        let top = rendered.first().expect("top border line");
-        assert!(spans_width(&top.spans) <= 80);
-    }
-
-    #[test]
-    fn execute_title_renders_assistant_backgrounded_badge() {
+    fn bash_title_renders_assistant_backgrounded_badge() {
         let mut tc = test_tool_call("tc-bash-bg", "Bash", model::ToolCallStatus::Completed);
         tc.output_metadata =
             Some(model::ToolOutputMetadata::new().bash(Some(
                 model::BashOutputMetadata::new().assistant_auto_backgrounded(Some(true)),
             )));
 
-        let rendered = execute::render_execute_with_borders(
-            &tc,
-            ToolCallRenderContext::default(),
-            &[],
-            100,
-            0,
-        );
-        let top = rendered.first().expect("top border line");
-        let text: String = top.spans.iter().map(|span| span.content.as_ref()).collect();
+        let title = standard::render_tool_call_title(&tc, ToolCallRenderContext::default(), 100, 0);
+        let text: String = title.spans.iter().map(|span| span.content.as_ref()).collect();
         assert!(text.contains("[assistant backgrounded]"));
     }
 
     #[test]
-    fn execute_title_preserves_bash_title_in_plan_mode() {
+    fn bash_title_preserves_command_in_plan_mode() {
         let mut tc = test_tool_call("echo hi", "Bash", model::ToolCallStatus::Completed);
         tc.terminal_command = Some("echo hi".to_owned());
 
-        let rendered = execute::render_execute_with_borders(
+        let title = standard::render_tool_call_title(
             &tc,
             ToolCallRenderContext { current_mode_id: Some("plan") },
-            &[],
             80,
             0,
         );
-        let top = rendered.first().expect("top border line");
-        let text: String = top.spans.iter().map(|span| span.content.as_ref()).collect();
+        let text: String = title.spans.iter().map(|span| span.content.as_ref()).collect();
 
-        assert!(text.contains("Bash"));
         assert!(text.contains("echo hi"));
+    }
+
+    #[test]
+    fn bash_title_renders_geometric_kind_icon_not_chevron() {
+        // Issue #39: chevron ⟩ replaced with triangle ▶ in the Bash row title.
+        let mut tc = test_tool_call("ls -la", "Bash", model::ToolCallStatus::Completed);
+        tc.terminal_command = Some("ls -la".to_owned());
+
+        let title = standard::render_tool_call_title(&tc, ToolCallRenderContext::default(), 80, 0);
+        let text: String = title.spans.iter().map(|span| span.content.as_ref()).collect();
+
+        assert!(text.contains('\u{25B6}'), "expected ▶ (U+25B6) in Bash row title; got: {text:?}");
+        assert!(
+            !text.contains('\u{27E9}'),
+            "did not expect ⟩ (U+27E9) chevron in Bash row title; got: {text:?}"
+        );
+    }
+
+    #[test]
+    fn bash_renders_through_standard_path_no_box_borders() {
+        // Issue #39: Bash flows through the standard tool-call path —
+        // no bordered card. Output should be a title row + body lines
+        // prefixed with `  │  ` / `  └─ ` (DIM), like every other tool.
+        let mut tc = test_tool_call("echo hi", "Bash", model::ToolCallStatus::Completed);
+        tc.terminal_command = Some("echo hi".to_owned());
+        tc.terminal_output = Some("hello\nworld".to_owned());
+
+        let mut out = Vec::new();
+        render_tool_call_cached_with_tools_collapsed(
+            &mut tc,
+            ToolCallRenderContext::default(),
+            80,
+            0,
+            false,
+            &mut out,
+        );
+
+        let body: String =
+            out.iter().flat_map(|line| line.spans.iter().map(|s| s.content.as_ref())).collect();
+        assert!(
+            !body.contains('\u{256D}'),
+            "Bash row must not contain `╭` (top border) — got: {body:?}",
+        );
+        assert!(
+            !body.contains('\u{256E}'),
+            "Bash row must not contain `╮` (top border) — got: {body:?}",
+        );
+        assert!(
+            !body.contains('\u{2570}'),
+            "Bash row must not contain `╰` (bottom border) — got: {body:?}",
+        );
+        assert!(
+            !body.contains('\u{256F}'),
+            "Bash row must not contain `╯` (bottom border) — got: {body:?}",
+        );
+        // Body lines should have the standard `  │  ` / `  └─ ` prefix.
+        assert!(
+            body.contains("  \u{2514}\u{2500} ") || body.contains("  \u{2502}  "),
+            "expected standard body prefix `  │  ` or `  └─ ` in Bash row body; got: {body:?}",
+        );
     }
 
     #[test]
@@ -782,7 +755,7 @@ mod tests {
             .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect())
             .collect();
         assert_eq!(collapsed_text.first(), expanded_text.first());
-        assert!(collapsed_text.iter().any(|line| line.contains("ctrl+o to expand")));
+        assert!(collapsed_text.iter().any(|line| line.contains("ctrl+x to expand")));
         assert!(!collapsed_text.iter().any(|line| line.contains("beta")));
         assert!(collapsed_text.len() < expanded_text.len());
     }
@@ -1124,8 +1097,11 @@ mod tests {
     }
 
     #[test]
-    fn render_execute_content_failed_surfaces_summary_before_full_output() {
-        let tc = ToolCallInfo {
+    fn failed_bash_body_surfaces_summary_only_not_full_output() {
+        // For Failed/Killed Bash, the body shows the first non-empty
+        // stderr-ish line via `failed_execute_first_line` instead of
+        // dumping the whole captured output.
+        let mut tc = ToolCallInfo {
             id: "tc-3".into(),
             title: "Bash".into(),
             sdk_tool_name: "Bash".into(),
@@ -1155,8 +1131,17 @@ mod tests {
             pending_question: None,
         };
 
-        let lines = execute::render_execute_content(&tc);
-        let rendered: Vec<String> = lines
+        let mut out = Vec::new();
+        render_tool_call_cached_with_tools_collapsed(
+            &mut tc,
+            ToolCallRenderContext::default(),
+            120,
+            0,
+            false,
+            &mut out,
+        );
+
+        let rendered: Vec<String> = out
             .iter()
             .map(|line| line.spans.iter().map(|s| s.content.as_ref()).collect())
             .collect();
