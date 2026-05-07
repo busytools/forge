@@ -308,38 +308,70 @@ fn locate_tool_call_block_at_click(app: &App, mouse: MouseEvent) -> Option<(usiz
     }
     let msg_start = app.viewport.cumulative_height_before(msg_idx);
     let row_within_msg = absolute_row.checked_sub(msg_start)?;
+    tracing::debug!(
+        target: crate::logging::targets::APP_INPUT,
+        event_name = "tool_call_hit_test",
+        outcome = "geometry",
+        mouse_row = mouse.row,
+        mouse_column = mouse.column,
+        chat_y = chat_area.y,
+        chat_width = chat_area.width,
+        chat_height = chat_area.height,
+        scroll_offset = app.viewport.scroll_offset,
+        absolute_row,
+        msg_idx,
+        msg_count = app.messages.len(),
+        msg_start,
+        row_within_msg,
+        msg_height = app.viewport.message_height(msg_idx),
+        "click reached chat area, mapped to message",
+    );
 
     // Walk blocks summing per-block heights until the click row is
     // covered. Unmeasured blocks fall back to 0 height — a small
     // misalignment is preferable to silently giving up.
     let width = chat_area.width;
     let mut cursor = 0usize;
-    let mut tool_block_indices: Vec<usize> = Vec::new();
     for (block_idx, block) in app.messages[msg_idx].blocks.iter().enumerate() {
         let height = block_visible_height(block, width).unwrap_or(0);
-        if matches!(block, MessageBlock::ToolCall(_)) {
-            tool_block_indices.push(block_idx);
-        }
         if height == 0 {
             continue;
         }
         let next = cursor.saturating_add(height);
         if row_within_msg >= cursor && row_within_msg < next {
-            if matches!(block, MessageBlock::ToolCall(_)) {
-                return Some((msg_idx, block_idx));
-            }
-            return None;
+            let hit_kind = match block {
+                MessageBlock::ToolCall(_) => "tool",
+                MessageBlock::Text(_) => "text",
+                MessageBlock::Notice(_) => "notice",
+                MessageBlock::Welcome(_) => "welcome",
+                MessageBlock::ImageAttachment(_) => "image",
+            };
+            tracing::debug!(
+                target: crate::logging::targets::APP_INPUT,
+                event_name = "tool_call_hit_test",
+                outcome = "hit_block",
+                hit_kind,
+                msg_idx,
+                block_idx,
+                row_within_msg,
+                cursor_before = cursor,
+                cursor_after = next,
+                "click landed inside a measured block",
+            );
+            return matches!(block, MessageBlock::ToolCall(_)).then_some((msg_idx, block_idx));
         }
         cursor = next;
     }
-    // Fallback: click landed past the last measured block in a message
-    // that contains a tool call. Treat that as "toggle the only tool
-    // call" — safe when the message has exactly one (the common case);
-    // for multi-tool messages we toggle the last visible tool, which
-    // still gives consistent feedback rather than nothing.
-    if !tool_block_indices.is_empty() && row_within_msg <= app.viewport.message_height(msg_idx) {
-        return Some((msg_idx, *tool_block_indices.last()?));
-    }
+    tracing::debug!(
+        target: crate::logging::targets::APP_INPUT,
+        event_name = "tool_call_hit_test",
+        outcome = "no_hit",
+        msg_idx,
+        row_within_msg,
+        cursor_after = cursor,
+        msg_height = app.viewport.message_height(msg_idx),
+        "walked all blocks without covering click row",
+    );
     None
 }
 
