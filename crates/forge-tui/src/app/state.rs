@@ -1549,6 +1549,8 @@ mod tests {
                 cache: BlockCache::default(),
                 pending_permission: None,
                 pending_question: None,
+                collapsed_override: None,
+                last_measured_y_in_msg: 0,
             }))],
             None,
         )
@@ -1587,6 +1589,8 @@ mod tests {
                 cache: BlockCache::default(),
                 pending_permission: None,
                 pending_question: None,
+                collapsed_override: None,
+                last_measured_y_in_msg: 0,
             }))],
             None,
         )
@@ -1632,6 +1636,8 @@ mod tests {
                     focused: false,
                 }),
                 pending_question: None,
+                collapsed_override: None,
+                last_measured_y_in_msg: 0,
             }))],
             None,
         )

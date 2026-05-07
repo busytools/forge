@@ -517,6 +517,8 @@ mod tests {
             cache: BlockCache::default(),
             pending_permission: None,
             pending_question: None,
+            collapsed_override: None,
+            last_measured_y_in_msg: 0,
         }
     }
 
@@ -4660,6 +4662,116 @@ mod tests {
             }),
         );
         assert!(app.scrollbar_drag.is_none());
+    }
+
+    #[test]
+    fn click_on_tool_call_row_flips_per_tool_collapse_override() {
+        // Build a single tool-call message and pre-populate the
+        // measurement caches the hit-test relies on. Without these
+        // the helper bails out (block_visible_height returns None).
+        let mut app = make_test_app();
+        let (msg_idx, block_idx) = append_tool_call_block(&mut app, "tool-1");
+        let chat_width: u16 = 40;
+        let tool_height: usize = 4;
+        if let MessageBlock::ToolCall(tc) = &mut app.messages[msg_idx].blocks[block_idx] {
+            tc.last_measured_width = chat_width;
+            tc.last_measured_height = tool_height;
+            tc.last_measured_y_in_msg = 0;
+            tc.last_measured_layout_epoch = tc.layout_epoch;
+            tc.last_measured_layout_generation = app.viewport.layout_generation;
+        } else {
+            panic!("seeded tool-call block not found");
+        }
+        app.viewport.height_prefix_sums = vec![tool_height];
+        app.viewport.scroll_offset = 0;
+        app.rendered_chat_area = Rect::new(0, 0, chat_width, 10);
+        app.tools_collapsed = false;
+
+        // Click somewhere inside the tool call's rendered y-range.
+        handle_terminal_event(
+            &mut app,
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(crossterm::event::MouseButton::Left),
+                column: 10,
+                row: 1,
+                modifiers: KeyModifiers::NONE,
+            }),
+        );
+        let MessageBlock::ToolCall(tc) = &app.messages[msg_idx].blocks[block_idx] else {
+            panic!("tool-call block missing post-click");
+        };
+        assert_eq!(tc.collapsed_override, Some(true));
+        // Selection should NOT have started — click was consumed.
+        assert!(app.selection.is_none());
+
+        // mark_tool_call_layout_dirty zeroed the cached measurement so a
+        // real re-render would re-fill it. The test doesn't run the
+        // render pass, so re-prime manually before the second click.
+        if let MessageBlock::ToolCall(tc) = &mut app.messages[msg_idx].blocks[block_idx] {
+            tc.last_measured_width = chat_width;
+            tc.last_measured_height = tool_height;
+            tc.last_measured_y_in_msg = 0;
+            tc.last_measured_layout_epoch = tc.layout_epoch;
+            tc.last_measured_layout_generation = app.viewport.layout_generation;
+        }
+
+        // A second click toggles back.
+        handle_terminal_event(
+            &mut app,
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(crossterm::event::MouseButton::Left),
+                column: 10,
+                row: 1,
+                modifiers: KeyModifiers::NONE,
+            }),
+        );
+        let MessageBlock::ToolCall(tc) = &app.messages[msg_idx].blocks[block_idx] else {
+            panic!("tool-call block missing post-second-click");
+        };
+        assert_eq!(tc.collapsed_override, Some(false));
+    }
+
+    #[test]
+    fn click_outside_tool_call_blocks_falls_through_to_selection() {
+        // Mixed message: a leading text block then a tool-call block.
+        // Click on row 0 should land on the text block (no toggle, just
+        // a chat selection).
+        let mut app = make_test_app();
+        let chat_width: u16 = 40;
+
+        let mut text_block = TextBlock::from_complete("hello\nworld");
+        text_block.cache.set_height(2, chat_width);
+
+        let mut tool = tool_call("tool-x", model::ToolCallStatus::InProgress);
+        tool.last_measured_width = chat_width;
+        tool.last_measured_height = 3;
+        tool.last_measured_y_in_msg = 2; // sits after the 2-row text block
+
+        app.messages.push(assistant_msg(vec![
+            MessageBlock::Text(text_block),
+            MessageBlock::ToolCall(Box::new(tool)),
+        ]));
+        app.index_tool_call("tool-x".into(), 0, 1);
+        app.viewport.height_prefix_sums = vec![5]; // text(2) + tool(3)
+        app.viewport.scroll_offset = 0;
+        app.rendered_chat_area = Rect::new(0, 0, chat_width, 10);
+
+        // Click on the text portion (row 0) inside the chat area.
+        handle_terminal_event(
+            &mut app,
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(crossterm::event::MouseButton::Left),
+                column: 4,
+                row: 0,
+                modifiers: KeyModifiers::NONE,
+            }),
+        );
+        let MessageBlock::ToolCall(tc) = &app.messages[0].blocks[1] else {
+            panic!("tool-call block missing");
+        };
+        assert!(tc.collapsed_override.is_none());
+        // A text-area click should have started a selection.
+        assert!(app.selection.is_some());
     }
 
     #[test]
