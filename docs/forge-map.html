@@ -1,0 +1,1372 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>forge · TUI map</title>
+<style>
+  :root {
+    --bg:        #0d1117;
+    --panel:     #161922;
+    --panel-hi:  #1d2230;
+    --panel-lo:  #0a0d12;
+    --border:    #232733;
+    --text:      #e0e4ec;
+    --muted:     #98a0ad;
+    --subtle:    #6c7281;
+    --very-dim:  #4a4f5a;
+    /* forge-tui current theme.rs values */
+    --rust-orange:  #f47600;
+    --dim:          #7a7a7a;
+    --user-msg-bg:  #282c34;
+    --status-error: #cf6171;
+    --status-warn:  #d6c46a;
+    --slash:        #c084dc;
+    --subagent:     #88c0d8;
+    --success:      #82c76b;
+    --code-bg:      #131722;
+  }
+
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+    font-size: 14px;
+    line-height: 1.55;
+    scroll-behavior: smooth;
+  }
+  a { color: var(--subagent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code, pre, .mono {
+    font-family: "Berkeley Mono", "JetBrains Mono", "IBM Plex Mono", "SF Mono", Menlo, Consolas, monospace;
+    font-size: 12.5px;
+  }
+  code {
+    background: var(--code-bg);
+    padding: 1px 5px;
+    border-radius: 3px;
+    color: #c9cfdb;
+  }
+
+  header {
+    padding: 24px 32px 18px;
+    border-bottom: 1px solid var(--border);
+    background: var(--panel-lo);
+    position: sticky;
+    top: 0;
+    z-index: 10;
+  }
+  header h1 {
+    margin: 0;
+    font-size: 22px;
+    color: var(--rust-orange);
+    font-weight: 600;
+    letter-spacing: -0.3px;
+  }
+  header .tag {
+    color: var(--subtle);
+    margin-left: 8px;
+    font-weight: 400;
+    font-size: 14px;
+  }
+  header p {
+    margin: 6px 0 0;
+    color: var(--muted);
+    max-width: 1000px;
+    font-size: 13px;
+  }
+  header .meta {
+    margin-top: 10px;
+    color: var(--very-dim);
+    font-size: 12px;
+  }
+
+  nav.toc {
+    background: var(--panel-lo);
+    padding: 10px 32px 14px;
+    border-bottom: 1px solid var(--border);
+    font-size: 13px;
+    color: var(--muted);
+  }
+  nav.toc a { color: var(--muted); margin-right: 18px; }
+  nav.toc a:hover { color: var(--text); }
+
+  main { padding: 32px 32px 96px; max-width: 1500px; margin: 0 auto; }
+
+  h2.section-title {
+    font-size: 22px;
+    color: var(--text);
+    margin: 56px 0 12px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--border);
+    font-weight: 600;
+  }
+  h2.section-title:first-of-type { margin-top: 0; }
+
+  h3 {
+    font-size: 17px;
+    color: var(--text);
+    margin: 28px 0 10px;
+    font-weight: 600;
+  }
+  h3 .num { color: var(--rust-orange); margin-right: 8px; font-weight: 500; }
+
+  p.intro {
+    color: var(--muted);
+    margin: 0 0 16px;
+    max-width: 1100px;
+  }
+  p.hint {
+    color: var(--subtle);
+    font-size: 12px;
+    margin: 0 0 12px;
+    max-width: 1100px;
+  }
+
+  /* ─── Crate cards ────────────────────────────────────────────────── */
+  .crates {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 12px;
+    margin-bottom: 24px;
+  }
+  .crate-card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-left-width: 3px;
+    border-radius: 6px;
+    padding: 14px 16px;
+  }
+  .crate-card.c-prim { border-left-color: #6c7281; }
+  .crate-card.c-sdk  { border-left-color: var(--rust-orange); }
+  .crate-card.c-agent { border-left-color: var(--subagent); }
+  .crate-card.c-tui  { border-left-color: var(--success); }
+  .crate-card.c-test { border-left-color: var(--status-warn); }
+  .crate-card h4 {
+    margin: 0 0 6px;
+    font-size: 14px;
+    color: var(--text);
+  }
+  .crate-card .role { color: var(--muted); font-size: 12.5px; margin: 0 0 8px; }
+  .crate-card .deps { color: var(--very-dim); font-size: 11.5px; }
+
+  /* ─── UI surface inventory ───────────────────────────────────────── */
+  .surface {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 0;
+    margin: 0 0 24px;
+    overflow: hidden;
+  }
+  .surface-head {
+    padding: 14px 18px 8px;
+    border-bottom: 1px solid var(--border);
+    background: var(--panel-hi);
+  }
+  .surface-head h4 { margin: 0; font-size: 15px; color: var(--text); font-weight: 600; }
+  .surface-head .when { color: var(--subtle); font-size: 12px; margin-top: 4px; }
+  .surface-body { padding: 14px 18px 18px; }
+
+  .surface-body p { color: var(--muted); margin: 0 0 12px; font-size: 13px; }
+  .surface-body dl { margin: 8px 0 0; font-size: 12.5px; }
+  .surface-body dt { color: var(--subtle); display: inline-block; min-width: 90px; }
+  .surface-body dd { display: inline; margin: 0; color: var(--muted); }
+  .surface-body dd::after { content: "\A"; white-space: pre; }
+
+  /* ─── Terminal mockup frame ──────────────────────────────────────── */
+  .term {
+    background: var(--bg);
+    color: var(--text);
+    font-family: "Berkeley Mono", "JetBrains Mono", "IBM Plex Mono", "SF Mono", Menlo, Consolas, monospace;
+    font-size: 12.5px;
+    line-height: 1.5;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    overflow-x: auto;
+    margin: 12px 0;
+  }
+  .term-bar {
+    padding: 6px 12px;
+    background: var(--panel-hi);
+    color: var(--subtle);
+    font-size: 11.5px;
+    font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
+  .dot.r { background: #ff5f56; }
+  .dot.y { background: #ffbd2e; }
+  .dot.g { background: #27c93f; }
+  .term-bar .label { margin-left: 8px; }
+  .term pre {
+    margin: 0;
+    padding: 10px 0;
+    white-space: pre;
+    overflow: visible;
+  }
+  .term pre.indent {
+    padding-left: 14px;
+    padding-right: 14px;
+  }
+
+  /* Inline color tokens */
+  .accent       { color: var(--rust-orange); }
+  .accent-bold  { color: var(--rust-orange); font-weight: 700; }
+  .dim          { color: var(--dim); }
+  .muted-c      { color: var(--very-dim); }
+  .success      { color: var(--success); }
+  .warning      { color: var(--status-warn); }
+  .error        { color: var(--status-error); }
+  .slash        { color: var(--slash); }
+  .subagent     { color: var(--subagent); }
+  .bold         { font-weight: 700; }
+  .italic       { font-style: italic; }
+  .user-band    { background: var(--user-msg-bg); display: inline-block; }
+
+  .caption { color: var(--subtle); font-size: 12px; margin-top: 6px; padding: 0 18px 6px; }
+
+  /* ─── Theme + glyph reference ────────────────────────────────────── */
+  .palette {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 10px;
+    margin: 12px 0;
+  }
+  .swatch {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    padding: 10px 12px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .swatch .chip { width: 20px; height: 20px; border-radius: 4px; flex-shrink: 0; border: 1px solid rgba(255,255,255,0.05); }
+  .swatch .meta { font-size: 12px; color: var(--muted); flex: 1; }
+  .swatch .meta b { color: var(--text); font-weight: 600; }
+  .swatch .meta span { color: var(--subtle); }
+  .swatch .mono-ref { font-family: "SF Mono", Menlo, monospace; font-size: 11px; color: var(--subtle); }
+
+  .glyph-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 12px 0;
+  }
+  .glyph-table th, .glyph-table td {
+    text-align: left;
+    padding: 6px 12px;
+    font-size: 13px;
+    border-bottom: 1px solid var(--border);
+  }
+  .glyph-table th { color: var(--subtle); font-weight: 500; font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.04em; }
+  .glyph-table td.glyph { font-family: "Berkeley Mono", monospace; font-size: 16px; color: var(--text); width: 60px; text-align: center; }
+  .glyph-table td.codepoint { font-family: "SF Mono", monospace; font-size: 11px; color: var(--very-dim); width: 90px; }
+  .glyph-table tr.outlier td { color: var(--status-warn); }
+  .glyph-table tr.outlier td.codepoint { color: var(--status-warn); opacity: 0.8; }
+
+  /* ─── Forward-looking placeholder ────────────────────────────────── */
+  .future-section {
+    background: linear-gradient(180deg, var(--panel) 0%, var(--panel-lo) 100%);
+    border: 1px dashed var(--border);
+    border-radius: 8px;
+    padding: 18px 22px;
+    margin: 16px 0;
+  }
+  .future-section h4 { margin: 0 0 8px; color: var(--rust-orange); font-size: 15px; }
+  .future-section p { color: var(--muted); margin: 0 0 12px; font-size: 13px; }
+  .future-tag {
+    display: inline-block;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: rgba(244,118,0,0.12);
+    color: var(--rust-orange);
+    margin-bottom: 8px;
+  }
+
+  .footnote { color: var(--very-dim); font-size: 11.5px; margin-top: 32px; text-align: center; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>forge<span class="tag">TUI map · what's on screen, where, when</span></h1>
+  <p>
+    Visual truth doc for forge-tui. <strong>Current implemented state only — no future ideas, no aspirational sketches.</strong> Every UI surface the running TUI can render today is captured here, regardless of when in a session each one is actually visible. Anything new arrives in the same PR that lands the code change.
+  </p>
+  <p class="meta">v0.14.2 baseline · 2026-05-07 · open in any modern browser</p>
+</header>
+
+<nav class="toc">
+  <a href="#workspace">Workspace</a>
+  <a href="#layout">Layout</a>
+  <a href="#chat">Chat</a>
+  <a href="#tools">Tool calls</a>
+  <a href="#footer-sec">Footer</a>
+  <a href="#input">Input + autocomplete</a>
+  <a href="#prompts">Permission &amp; question prompts</a>
+  <a href="#help">Help</a>
+  <a href="#sessions">Session picker</a>
+  <a href="#welcome">Welcome + trust</a>
+  <a href="#settings">Config screen</a>
+  <a href="#diff">Diff viewer</a>
+  <a href="#errors">Error states</a>
+  <a href="#tokens">Theme tokens</a>
+  <a href="#glyphs">Glyphs</a>
+</nav>
+
+<main>
+
+<!-- ============================================================== -->
+<h2 class="section-title" id="workspace">Workspace</h2>
+
+<p class="intro">
+  forge ships as a 4-crate workspace. Only <code>forge-tui</code> renders to the terminal; the other three feed it data through clean boundaries. <code>forge-test-harness</code> is the wire-conformance harness — not in the runtime path.
+</p>
+
+<div class="crates">
+  <div class="crate-card c-prim">
+    <h4>forge-primitives</h4>
+    <p class="role">Wire-shape types shared across forge-* crates. Message envelopes, content blocks, hook/permission/option/subagent data, render-side views, channel commands, IDs. No logic, no I/O, no async.</p>
+    <p class="deps">depends on: nothing forge-shaped</p>
+  </div>
+  <div class="crate-card c-sdk">
+    <h4>forge-sdk</h4>
+    <p class="role">Wraps the <code>claude</code> CLI subprocess. Owns the stream-json codec, transport, control dispatch, in-process MCP host, callback registries, and Options builder.</p>
+    <p class="deps">depends on: forge-primitives</p>
+  </div>
+  <div class="crate-card c-agent">
+    <h4>forge-agent</h4>
+    <p class="role">Drives one forge-sdk Client behind a channel-based Agent / AgentHandle API. Owns userdata (settings, trust, sessions catalog, memory, plugins), cloud (oauth/usage/account), and env (git context). The brain between SDK and TUI.</p>
+    <p class="deps">depends on: forge-primitives, forge-sdk</p>
+  </div>
+  <div class="crate-card c-tui">
+    <h4>forge-tui</h4>
+    <p class="role">Native ratatui terminal interface. Consumes <code>AgentEvent</code>s, emits <code>Command</code>s. <strong>The subject of this map.</strong></p>
+    <p class="deps">depends on: forge-primitives, forge-agent</p>
+  </div>
+  <div class="crate-card c-test">
+    <h4>forge-test-harness</h4>
+    <p class="role">Wire-conformance harness. <code>sdk_wire</code> scope (forge-sdk ↔ claude CLI). Replay-based offline tests + opt-in live capture. Not in the runtime path.</p>
+    <p class="deps">depends on: forge-sdk (transitively gets forge-primitives)</p>
+  </div>
+</div>
+
+<!-- ============================================================== -->
+<h2 class="section-title" id="layout">Layout</h2>
+
+<p class="intro">
+  forge-tui has <strong>one screen layout</strong>. No responsive width modes, no side panels, no split panes. The frame is a strict vertical stack composed by <code>layout::compute</code>. <strong>This stack only renders in <code>ActiveView::Chat</code>.</strong> When the user opens <code>/config</code>, the resume picker, or hits the trust gate, forge swaps the entire frame to a single full-screen overlay (<code>ActiveView::Config</code>, <code>ActiveView::SessionPicker</code>, <code>ActiveView::Trusted</code>) — chat / input / todo panel / footer all disappear during those views.
+</p>
+
+<p class="intro">
+  In <code>ActiveView::Chat</code> the stack is:
+</p>
+
+<ol style="color: var(--muted); font-size: 13px; line-height: 1.7; margin: 0 0 16px 22px;">
+  <li><code>body</code> — chat scrollback (Min 3 rows, takes the flex)</li>
+  <li><code>input_sep</code> — full-width <code>─</code> separator (1 row, DIM)</li>
+  <li><code>todo</code> — todo panel (0 when no todos, else 1 row closed or up to 5 rows open)</li>
+  <li><code>input</code> — input field (1 row, grows up to N as user types)</li>
+  <li><code>input_bottom_sep</code> — full-width <code>─</code> separator (1 row, DIM)</li>
+  <li><code>help</code> — help overlay (0 when inactive, else <code>HELP_PANEL_HEIGHT = 14</code>)</li>
+  <li><code>footer</code> — 2 rows (primary + context). Hidden in ultra-compact mode (terminal height &lt; 8 rows)</li>
+</ol>
+
+<p class="intro">
+  Multiple sessions = multiple <code>forge</code> processes, each in its own terminal pane. There is no in-process coordinator view today. Multi-session is the direction we're heading; see the <a href="#multi">final section</a>.
+</p>
+
+<div class="term">
+  <div class="term-bar"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span><span class="label">forge · standard window</span></div>
+  <pre class="indent">
+  <span class="dim bold">User</span>
+  <span class="user-band">  Read the rate-limit code and add a softer wording branch.               </span>
+
+  <span class="accent-bold">Claude</span>
+  Assistant prose, full markdown rendering. Code blocks, lists, inline emphasis,
+  links — all handled via <span class="dim">tui-markdown</span> / <span class="dim">syntect</span>.
+
+  <span class="success">✓</span> <span class="bold">⬚</span> crates/forge-tui/src/app.rs
+  <span class="success">✓</span> <span class="bold">▣</span> crates/forge-tui/src/app.rs (+12, -3)
+
+  <span class="dim">╭─</span> <span class="success">✓</span> <span class="bold">Bash</span> <span class="dim">cargo nextest run -p forge-tui</span> <span class="dim">─╮</span>
+  <span class="dim">│</span>  $ cargo nextest run -p forge-tui
+  <span class="dim">│</span>     <span class="dim">Compiling forge-tui v0.14.2</span>
+  <span class="dim">│</span>  <span class="success">Summary [4.2s] 1554 tests run: 1554 passed</span>
+  <span class="dim">╰────────────────────────────────────────────────────────────────────────╯</span>
+  <span class="muted-c">────────────────────────────────────────────────────────────────────────────</span>
+  <span class="dim">[</span><span class="accent">2/5</span><span class="dim">]</span> Adding tests for the near-threshold branch
+  <span class="accent">❯</span> <span class="dim italic">Type your message…</span>
+  <span class="muted-c">────────────────────────────────────────────────────────────────────────────</span>
+   <span class="dim">[default]</span>  <span class="dim">[sonnet 4.5/Max]</span>  <span class="dim">[FAST:OFF]</span>  <span>?</span> <span class="dim">: Help</span>
+   <span class="dim">Loc:</span> <span class="dim">~/Projects/forge</span> <span class="dim">(</span><span class="dim">main</span><span class="dim">)</span>                                  <span class="dim">42%</span>
+</pre>
+</div>
+
+<p class="caption">Left padding is 2 cols across the chat body and footer. Two horizontal <code>─</code> separators in DIM frame the input + (optional) todo panel — one above, one below. The todo panel slot is between <code>input_sep</code> and <code>input</code>; here shown in compact mode showing "<code>[2/5] Adding tests…</code>". Footer is the bottom 2 rows.</p>
+
+<!-- ============================================================== -->
+<h2 class="section-title" id="chat">Chat — message types</h2>
+
+<p class="intro">Every message in the scrollback belongs to one role. Roles render with different visual treatments today.</p>
+
+<div class="surface">
+  <div class="surface-head">
+    <h4>User message</h4>
+    <div class="when">visible: whenever the user has sent a turn</div>
+  </div>
+  <div class="surface-body">
+    <p>Role banner is the literal text "<strong>User</strong>" in <code>theme::DIM</code> bold (not the user's name, and not in RUST_ORANGE). Body block is rendered as a markdown text block with <code>USER_MSG_BG</code> applied as a per-cell background that extends to roughly the right edge.</p>
+    <div class="term">
+      <pre class="indent">
+  <span class="dim bold">User</span>
+  <span class="user-band">  Read the rate-limit code and add a softer wording branch.                </span></pre>
+    </div>
+    <dl>
+      <dt>code</dt><dd><code>crates/forge-tui/src/ui/message.rs</code> · banner via <code>role_label_line(MessageRole::User)</code> · body via <code>append_user_blocks</code> with <code>text_block_layout(_, _, Some(theme::USER_MSG_BG), true)</code></dd>
+      <dt>color</dt><dd>banner: <code>theme::DIM</code> + BOLD  ·  body bg: <code>theme::USER_MSG_BG</code> (<code>Rgb(40, 44, 52)</code>)  ·  body text: terminal default fg</dd>
+    </dl>
+  </div>
+</div>
+
+<div class="surface">
+  <div class="surface-head">
+    <h4>Assistant message</h4>
+    <div class="when">visible: every assistant turn</div>
+  </div>
+  <div class="surface-body">
+    <p>Role banner is the literal text "<strong>Claude</strong>" in <code>theme::ROLE_ASSISTANT</code> (RUST_ORANGE) bold. Body is full markdown via <code>tui-markdown</code> (which uses <code>pulldown-cmark</code>) with <code>syntect</code> for fenced code blocks.</p>
+    <div class="term">
+      <pre class="indent">
+  <span class="accent-bold">Claude</span>
+  Looking at <span class="dim">crates/forge-tui/src/app/events/rate_limit.rs</span> — the warning chip
+  has only one wording today. I'll add a quieter branch for the
+  near-threshold-no-overage case.
+
+  Here's the function:
+
+      <span class="dim">fn is_near_threshold_without_overage(</span>
+      <span class="dim">    update: &amp;model::RateLimitUpdate,</span>
+      <span class="dim">) -&gt; bool {</span>
+      <span class="dim">    matches!(update.status, RateLimitStatus::AllowedWarning)</span>
+      <span class="dim">        &amp;&amp; update.is_using_overage == Some(false)</span>
+      <span class="dim">        &amp;&amp; update.surpassed_threshold.is_some_and(|t| t &gt; 0.0)</span>
+      <span class="dim">}</span>
+
+  Tests pass. Want me to push?</pre>
+    </div>
+    <dl>
+      <dt>code</dt><dd><code>crates/forge-tui/src/ui/message.rs::assistant_role_label_line</code> · markdown via <code>crates/forge-tui/src/ui/markdown.rs</code></dd>
+      <dt>color</dt><dd>banner: RUST_ORANGE bold  ·  body: terminal default fg with markdown styles  ·  inline code: <code>theme::DIM</code> tint</dd>
+    </dl>
+  </div>
+</div>
+
+<div class="surface">
+  <div class="surface-head">
+    <h4>System notice</h4>
+    <div class="when">visible: rate-limit warnings, mode changes, parse errors, retries, slash-command output, connection failures</div>
+  </div>
+  <div class="surface-body">
+    <p>Banner is the literal severity word "<strong>Info</strong>" / "<strong>Warning</strong>" / "<strong>Error</strong>" in bold, colored by severity (Info=DIM, Warning=STATUS_WARNING, Error=STATUS_ERROR). Body lines are tinted with the same color via <code>tint_lines</code> after markdown rendering. Hard wraps at the terminal width.</p>
+    <div class="term">
+      <pre class="indent">
+  <span class="warning bold">Warning</span>
+  <span class="warning">Near rate-limit threshold. Resets in 4h 23m at 14:30 UTC.</span>
+
+  <span class="error bold">Error</span>
+  <span class="error">Failed to parse ~/.claude/settings.json: expected `,` at line 42 column 5. Falling back to defaults.</span>
+
+  <span class="dim bold">Info</span>
+  <span class="dim">Mode changed: default → acceptEdits</span></pre>
+    </div>
+    <dl>
+      <dt>code</dt><dd><code>crates/forge-tui/src/ui/message.rs::system_role_label_line</code> + <code>notice_block_layout</code> + <code>tint_lines</code></dd>
+      <dt>severities</dt><dd><code>SystemSeverity::Info</code> → <code>theme::DIM</code> · <code>Warning</code> → <code>theme::STATUS_WARNING</code> · <code>Error</code> → <code>theme::STATUS_ERROR</code></dd>
+    </dl>
+  </div>
+</div>
+
+<!-- ============================================================== -->
+<h2 class="section-title" id="tools">Tool calls</h2>
+
+<p class="intro">Tool invocations render in two shapes today — most are flat single-line rows; <code>Bash</code> alone gets a bordered card. <code>TodoWrite</code> uses a dedicated checklist widget. Subagent / Task rendering uses its own treatment.</p>
+
+<div class="surface">
+  <div class="surface-head">
+    <h4>Standard row (Read · Write · Edit · Grep · Glob · etc.)</h4>
+    <div class="when">visible: any tool call that isn't Bash / TodoWrite / Subagent</div>
+  </div>
+  <div class="surface-body">
+    <p>Single line: 2-space indent + status icon (success / fail / spinner) in status color + space + tool kind icon (white bold) + space + display title (markdown inline spans, default fg). Body lines (when present) prefix each with "<code>  │  </code>" dim (5 chars: 2 + box-drawing-vertical + 2), last line with "<code>  └─ </code>" dim (5 chars). Tool name as a text label is <strong>not</strong> rendered — only the kind icon. The title text often includes the path/command from claude's tool args.</p>
+    <p><strong>Collapsed</strong> (when <code>app.tools_collapsed</code> is on via Ctrl+O, and the tool call has no diff / pending permission / pending question): the body collapses to a single summary line "<code>  └─ &lt;content_summary&gt;  ctrl+o to expand</code>" (all DIM). The summary text comes from <code>content_summary</code> — last non-empty line of terminal output (capped at 80 chars), or the file name for a Diff, or an MCP resource path, etc.</p>
+    <div class="term">
+      <pre class="indent">
+  <span class="success">✓</span> <span class="bold">⬚</span> crates/forge-tui/src/app.rs
+  <span class="success">✓</span> <span class="bold">▣</span> crates/forge-tui/src/app/events/rate_limit.rs (+34, -2)
+  <span class="success">✓</span> <span class="bold">▣</span> crates/forge-tui/src/app/events/new_file.rs
+  <span class="success">✓</span> <span class="bold">⌕</span> "is_using_overage"
+  <span class="success">✓</span> <span class="bold">⌕</span> crates/**/Cargo.toml
+  <span class="success">✓</span> <span class="bold">⊕</span> https://docs.rs/ratatui/latest/ratatui/
+  <span class="error">✗</span> <span class="bold">⬚</span> crates/forge-tui/src/missing.rs</pre>
+    </div>
+    <dl>
+      <dt>code</dt><dd><code>crates/forge-tui/src/ui/tool_call/standard.rs::render_tool_call_title</code></dd>
+      <dt>icons</dt><dd>per <code>theme::tool_name_label</code>: Read=⬚ · Write/Edit/MultiEdit/NotebookEdit/Delete=▣ · Grep/Glob/LS=⌕ · WebFetch/WebSearch=⊕ · Move/EnterWorktree=⇄ · ExitPlanMode/Config=⊙ · TodoWrite=◌ · Task/Agent=◇ · fallback=○</dd>
+      <dt>plan-mode aliases</dt><dd>when <code>current_mode_id == "plan"</code>: Write title becomes "Create Plan", Edit/MultiEdit becomes "Update Plan"</dd>
+    </dl>
+  </div>
+</div>
+
+<div class="surface">
+  <div class="surface-head">
+    <h4>Bash card (the outlier)</h4>
+    <div class="when">visible: every Bash (Execute) tool call — Bash always uses this path, never collapses to a standard row even when <code>tools_collapsed</code> is on (the <code>tools_collapsed</code> toggle only affects non-Execute tools)</div>
+  </div>
+  <div class="surface-body">
+    <p>Bordered card. Title row sits <strong>on the top border</strong> (not inside the box), which shifts content right by ~3 cols vs standard rows. Body rows have left border <code>│</code> but <strong>no right border</strong> — the card is open on its right side, with corners hanging in space. The card title shows the literal text "<strong>Bash</strong>" (white bold) — the kind icon is <strong>discarded</strong> in this render path (<code>let (_tool_icon, tool_label) = …</code>), so the chevron <code>⟩</code> from <code>theme::tool_name_label("Bash")</code> is effectively dead code for Bash today (it would only appear if Bash ever fell through to the standard renderer, which it doesn't). Tracked as issue <a href="https://github.com/busytools/forge/issues/39">#39</a>.</p>
+    <div class="term">
+      <pre class="indent">
+  <span class="dim">╭─</span> <span class="success">✓</span> <span class="bold">Bash</span> <span class="dim">cargo nextest run -p forge-tui events::rate_limit</span> <span class="dim">─╮</span>
+  <span class="dim">│</span>  $ cargo nextest run -p forge-tui events::rate_limit
+  <span class="dim">│</span>     <span class="dim">Compiling forge-primitives v0.14.2</span>
+  <span class="dim">│</span>     <span class="dim">Compiling forge-tui v0.14.2</span>
+  <span class="dim">│</span>  <span class="success">Summary [4.197s] 5 tests run: 5 passed, 1174 skipped</span>
+  <span class="dim">╰─────────────────────────────────────────────────────────────────────────╯</span></pre>
+    </div>
+    <dl>
+      <dt>code</dt><dd><code>crates/forge-tui/src/ui/tool_call/execute.rs::render_execute_with_borders</code> · dispatch in <code>tool_call.rs:85</code> (<code>if is_execute { … return; }</code>)</dd>
+      <dt>known issues</dt><dd><a href="https://github.com/busytools/forge/issues/39">#39</a> — title shifted ~3 cols right (sits on top border, breaks alignment with standard rows), right border missing on body lines, body prefix off-by-one vs standard tool body, kind icon (chevron) discarded — when the icon ever does get rendered for Bash, the chevron is the lone directional glyph in a sea of geometric shapes</dd>
+    </dl>
+  </div>
+</div>
+
+<div class="surface">
+  <div class="surface-head">
+    <h4>TodoWrite tool call (in chat)</h4>
+    <div class="when">visible: appears in chat scrollback at the moment the agent invokes <code>TodoWrite</code></div>
+  </div>
+  <div class="surface-body">
+    <p>Renders via the standard tool-call path — status icon + dotted-circle kind icon + title. The persistent live view of todos lives in the docked panel below.</p>
+    <div class="term">
+      <pre class="indent">
+  <span class="success">✓</span> <span class="bold">◌</span> 5 items</pre>
+    </div>
+  </div>
+</div>
+
+<div class="surface">
+  <div class="surface-head">
+    <h4>Todo panel (docked above input)</h4>
+    <div class="when">visible: always when <code>app.todos</code> is non-empty</div>
+  </div>
+  <div class="surface-body">
+    <p>Two states. <strong>Closed</strong> (default): single compact line showing progress + the in-progress task (or first pending if none in-progress). <code>[completed/total] active-task-text</code> — count in RUST_ORANGE, brackets in DIM, text in white.</p>
+    <div class="term">
+      <pre class="indent">
+  <span class="dim">[</span><span class="accent">2/5</span><span class="dim">]</span> Adding tests for the near-threshold branch</pre>
+    </div>
+    <p><strong>Open</strong>: up to <code>MAX_VISIBLE = 5</code> rows, scrollable. Status icons:</p>
+    <ul style="color: var(--muted); font-size: 13px; line-height: 1.7; margin: 0 0 12px 18px;">
+      <li><span class="success">✓</span> green — <code>Completed</code> (text DIM + crossed-out)</li>
+      <li><span class="accent">▸</span> RUST_ORANGE — <code>InProgress</code> (text white bold; uses <code>active_form</code> if set, else <code>content</code>)</li>
+      <li><span class="dim">○</span> DIM — <code>Pending</code> (text gray)</li>
+    </ul>
+    <p>When focus is on the panel itself, the selected row gets <code>REVERSED</code> modifier.</p>
+    <div class="term">
+      <pre class="indent">
+  <span class="success">✓</span> <span class="dim" style="text-decoration: line-through">Read the rate-limit code</span>
+  <span class="success">✓</span> <span class="dim" style="text-decoration: line-through">Add the soft-wording branch</span>
+  <span class="accent">▸</span> <span class="bold">Adding tests for the near-threshold branch</span>
+  <span class="dim">○</span> Run cargo nextest
+  <span class="dim">○</span> Open PR</pre>
+    </div>
+    <dl>
+      <dt>code</dt><dd><code>crates/forge-tui/src/ui/todo.rs</code> · <code>render_closed</code> + <code>render_open</code></dd>
+      <dt>focus</dt><dd>Tab cycles to <code>FocusOwner::TodoList</code>; arrows scroll, Esc returns focus to input</dd>
+    </dl>
+  </div>
+</div>
+
+<div class="surface">
+  <div class="surface-head">
+    <h4>Subagent (Task / Agent)</h4>
+    <div class="when">visible: when an assistant spawns a subagent (Task or Agent tool)</div>
+  </div>
+  <div class="surface-body">
+    <p>Same standard tool-call shape — status icon + diamond kind icon (white bold) + display title. Subagents have an extended summary limit (<code>IN_PROGRESS_SUBAGENT_COLLAPSED_TEXT_SUMMARY_LIMIT = 180</code> chars vs <code>DEFAULT_COLLAPSED_TEXT_SUMMARY_LIMIT = 60</code> for everything else) so collapsed subagent rows show more progress text. <code>SUBAGENT_TOKEN</code> (light blue) is reserved for token mentions of subagent names elsewhere; the tool-call row itself follows the standard color palette.</p>
+    <div class="term">
+      <pre class="indent">
+  <span class="success">✓</span> <span class="bold">◇</span> Explore the rate-limit code paths
+  <span class="dim">└─ </span>Returned 4 matches across 2 files. Key path: crates/.../rate_limit.rs:65</pre>
+    </div>
+    <dl>
+      <dt>code</dt><dd><code>crates/forge-tui/src/ui/tool_call/standard.rs</code> · <code>matches!(tc.sdk_tool_name.as_str(), "Agent" | "Task")</code> selects the longer summary limit</dd>
+      <dt>backgrounded badges</dt><dd>via <code>tool_output_badge_spans</code> — <code>  [backgrounded]</code> when <code>task_metadata.is_backgrounded == Some(true)</code> · <code>  [assistant backgrounded]</code> for Bash that the assistant auto-backgrounded (signalled in <code>BashOutputMetadata.assistant_auto_backgrounded</code>)</dd>
+    </dl>
+  </div>
+</div>
+
+<!-- ============================================================== -->
+<h2 class="section-title" id="footer-sec">Footer</h2>
+
+<p class="intro">
+  <strong>Two rows.</strong> Present at the bottom of the chat view (<code>ActiveView::Chat</code>) — hidden when forge swaps to a full-frame view (<code>ActiveView::Config</code>, <code>ActiveView::Trusted</code>, <code>ActiveView::SessionPicker</code>) and also hidden in ultra-compact mode (terminal height &lt; 8 rows). Pieces are positional; nothing in the footer is clickable today (mouse routing isn't implemented).
+</p>
+
+<div class="surface">
+  <div class="surface-head">
+    <h4>Primary row — mode · model · fast-mode · help</h4>
+    <div class="when">visible: in <code>ActiveView::Chat</code> when connected (not on Config / Trusted / SessionPicker views, not in ultra-compact mode)</div>
+  </div>
+  <div class="surface-body">
+    <p>Three bracketed badges from left to right: permission mode, model+effort, fast-mode. Brackets <code>[...]</code> share the badge color. Two-space gaps between badges. Then a white <code>?</code> + dim "<code> : Help</code>" hint. Right-aligned: pending-permission count when &gt;0 (yellow). When <code>app.mode</code> is None (pre-init), only the help hint shows.</p>
+    <div class="term">
+      <pre class="indent">
+   <span class="dim">[default]</span>  <span class="dim">[sonnet 4.5/Max]</span>  <span class="dim">[FAST:OFF]</span>  <span>?</span> <span class="dim">: Help</span>                            <span class="warning">2 PEND. PERM.</span></pre>
+    </div>
+    <dl>
+      <dt>code</dt><dd><code>crates/forge-tui/src/ui/footer.rs::build_primary_line</code></dd>
+      <dt>mode colors</dt><dd><code>default</code> → DIM · <code>auto</code> + <code>acceptEdits</code> → Yellow · <code>plan</code> → Blue · <code>bypassPermissions</code> + <code>dontAsk</code> → Red · other → Magenta</dd>
+      <dt>mode label</dt><dd>text comes from <code>mode.current_mode_name</code> (CLI-provided). Whatever the CLI sends — not a fixed enum string</dd>
+      <dt>model badge</dt><dd>format <code>display_name_short[/effort]</code>; effort segment hidden when <code>!current_model.supports_effort</code>. Effort labels: <code>Low</code> / <code>Med</code> / <code>High</code> / <code>Xhi</code> / <code>Max</code></dd>
+      <dt>fast-mode badges</dt><dd><code>FAST:OFF</code> in DIM · <code>FAST:CD</code> in Yellow · <code>FAST:ON</code> in RUST_ORANGE</dd>
+      <dt>right hint</dt><dd>"N PEND. PERM." in Yellow when there are pending-permission tool-call requests in the chat</dd>
+    </dl>
+  </div>
+</div>
+
+<div class="surface">
+  <div class="surface-head">
+    <h4>Context row — cwd · branch · usage</h4>
+    <div class="when">visible: in <code>ActiveView::Chat</code> when connected (not on Config / Trusted / SessionPicker views, not in ultra-compact mode)</div>
+  </div>
+  <div class="surface-body">
+    <p>Left-aligned: <code>Loc:</code> + truncated cwd, then optional <code>(branch)</code> in parens (yellow when detached HEAD). Right-aligned: MCP-needs-auth count when &gt;0 (yellow), else context-usage % (gray).</p>
+    <div class="term">
+      <pre class="indent">
+   <span class="dim">Loc:</span> <span class="dim">~/Projects/forge</span> <span class="dim">(</span><span class="dim">main</span><span class="dim">)</span>                                       <span class="dim">42%</span>
+   <span class="dim">Loc:</span> <span class="dim">~/Projects/forge</span> <span class="dim">(</span><span class="warning">detached</span><span class="dim">)</span>                                <span class="warning">3 MCP NEEDS AUTH</span>
+   <span class="dim">Loc:</span> <span class="dim">~/Projects/forge</span>                                                  <span class="dim">87%</span></pre>
+    </div>
+    <dl>
+      <dt>code</dt><dd><code>crates/forge-tui/src/ui/footer.rs::build_context_line</code></dd>
+      <dt>truncation</dt><dd>cwd shrinks first when width is tight; branch caps at <code>MIN_CONTEXT_BRANCH_WIDTH = 4</code></dd>
+    </dl>
+  </div>
+</div>
+
+<!-- ============================================================== -->
+<h2 class="section-title" id="input">Input area + autocomplete</h2>
+
+<div class="surface">
+  <div class="surface-head">
+    <h4>Input area (default state)</h4>
+    <div class="when">visible: in <code>ActiveView::Chat</code> (hidden when a full-frame view is active). Height grows from 1 row up to <code>MAX_INPUT_HEIGHT = 12</code> as the user types.</div>
+  </div>
+  <div class="surface-body">
+    <p>Backed by <code>tui-textarea</code> for cursor / selection / paste-burst handling. The input is sandwiched between two DIM <code>─</code> separators (<code>input_sep</code> above, <code>input_bottom_sep</code> below) that <code>chat_view</code> draws. Height grows from 1 row up to <code>MAX_INPUT_HEIGHT = 12</code> as the user types or pastes multi-line content. Prompt char is <code>❯</code> (<code>theme::PROMPT_CHAR</code>) in RUST_ORANGE. Placeholder text is in DIM italic. Slash commands typed in the input are coloured <code>SLASH_COMMAND</code> (light magenta) by <code>input.rs</code>.</p>
+    <p>Above the input there's a <strong>hint slot</strong> that grows the input region's height to accommodate. Possible hint rows (each takes 1+ lines):</p>
+    <ul style="color: var(--muted); font-size: 13px; line-height: 1.7; margin: 0 0 12px 18px;">
+      <li><strong>Login hint</strong> (when CLI reports <code>app.login_hint</code>): "<em>Authentication required: &lt;method&gt; -- &lt;description&gt;</em>" in Yellow + dim hint "<em>Run `claude auth login` in another terminal to authenticate</em>" beneath. Two lines.</li>
+      <li><strong>Cancel hint</strong> (during cancellation): spinner + "<em>Cancelling current turn... draft will auto-submit when ready.</em>" in DIM. One line.</li>
+      <li><strong>Prompt suggestion</strong>: "<em>Suggestion: &lt;text&gt;    Tab to accept</em>" — "Suggestion:" in DIM, suggestion in white, accept-hint in DIM. One line.</li>
+    </ul>
+    <p>When <code>app.status == AppStatus::Connecting</code>, the entire input area is replaced with a spinner + "<em>Connecting to Claude Code...</em>" in DIM (no separators are drawn around it for that variant — the input area takes its own row).</p>
+    <div class="term">
+      <pre class="indent">
+  <span class="muted-c">────────────────────────────────────────────────────────────────────────────</span>
+  <span class="accent">❯</span> <span class="dim italic">Type your message…</span>
+  <span class="muted-c">────────────────────────────────────────────────────────────────────────────</span></pre>
+    </div>
+    <p class="hint">With a login-required hint above the input:</p>
+    <div class="term">
+      <pre class="indent">
+  <span class="muted-c">────────────────────────────────────────────────────────────────────────────</span>
+  <span class="warning">Authentication required: claude.ai -- Anthropic OAuth (Pro)</span>
+  <span class="dim">Run `claude auth login` in another terminal to authenticate</span>
+  <span class="accent">❯</span> <span class="dim italic">Type your message…</span>
+  <span class="muted-c">────────────────────────────────────────────────────────────────────────────</span></pre>
+    </div>
+    <dl>
+      <dt>code</dt><dd><code>crates/forge-tui/src/ui/input.rs::render</code> · separators in <code>chat_view::render_separator</code></dd>
+    </dl>
+  </div>
+</div>
+
+<div class="surface">
+  <div class="surface-head">
+    <h4>Autocomplete dropdown</h4>
+    <div class="when">visible: while user is typing one of three triggers — <code>/</code> (slash), <code>@</code> (file mention), <code>&amp;</code> (subagent)</div>
+  </div>
+  <div class="surface-body">
+    <p>Rounded-border dropdown anchored to the input. Title format depends on context: <code> Commands (N) </code> for slash command names, <code> /&lt;cmd&gt; Args (N) </code> for slash-command arguments (e.g. <code> /model Args (3) </code>), <code> Files &amp; Folders </code> for <code>@</code>, <code> Subagents (N) </code> for <code>&amp;</code>. Title rendered in DIM. Border DIM. Max <code>MAX_VISIBLE = 8</code> rows visible; scrolls in place.</p>
+    <p>Each item: 3-char selection prefix (<code> ▸ </code> in RUST_ORANGE bold for selected, <code>   </code> for others) + primary text (default fg, with case-insensitive match-substring highlight when there's a query) + optional secondary description (DIM). Slash commands typed in the <em>input area</em> are colored <code>SLASH_COMMAND</code> (light magenta) by <code>input.rs</code> — but <strong>inside the dropdown</strong>, slash items use default fg, not magenta.</p>
+    <div class="term">
+      <pre class="indent">
+  <span class="dim">╭ </span><span class="dim">Commands (4)</span><span class="dim"> ───────────────────────────────────────────────────────╮</span>
+  <span class="dim">│</span> <span class="accent bold">▸ </span>/clear           <span class="dim">  Clear chat history</span>                            <span class="dim">│</span>
+  <span class="dim">│</span>    /compact         <span class="dim">  Compact conversation context</span>                  <span class="dim">│</span>
+  <span class="dim">│</span>    /<span style="text-decoration: underline">m</span>odel           <span class="dim">  Switch model</span>                                  <span class="dim">│</span>
+  <span class="dim">│</span>    /help            <span class="dim">  Show help</span>                                     <span class="dim">│</span>
+  <span class="dim">╰─────────────────────────────────────────────────────────────────────╯</span>
+  <span class="accent">❯</span> <span class="slash">/m</span>_</pre>
+    </div>
+    <p class="hint">Underlines mark match-highlighted regions (rendered with a different style — fg colour or background, depending on the implementation; not strictly underlines in the running TUI).</p>
+    <dl>
+      <dt>code</dt><dd><code>crates/forge-tui/src/ui/autocomplete.rs</code> · positioning via <code>choose_dropdown_x</code> / <code>choose_dropdown_y</code> (renders above OR below the input depending on space)</dd>
+      <dt>three triggers</dt><dd><code>/</code> = slash · <code>@</code> = file mention (paths from <code>FileIndex</code>) · <code>&amp;</code> = subagent invocation</dd>
+      <dt>known issues</dt><dd><a href="https://github.com/busytools/forge/issues/46">#46</a> — pre-init gap (CLI emits init only post-first-turn; fallback list needed)  ·  <a href="https://github.com/busytools/forge/issues/47">#47</a> — slash commands render as full expanded prompt text on session resume</dd>
+    </dl>
+  </div>
+</div>
+
+<!-- ============================================================== -->
+<h2 class="section-title" id="prompts">Permission &amp; question prompts</h2>
+
+<div class="surface">
+  <div class="surface-head">
+    <h4>Permission prompt</h4>
+    <div class="when">visible: when the SDK fires a <code>can_use_tool</code> request and forge isn't auto-approving</div>
+  </div>
+  <div class="surface-body">
+    <p>Inline block appended to a tool-call body in the chat scrollback. <strong>Unfocused state:</strong> a single dim line "<code>○ Waiting for input... (Tab to focus)</code>". <strong>Focused state:</strong> blank line, optional display block (header in white bold, description in dim, both indented 2 cols), then a single line of <strong>inline options</strong> separated by <code>  ·  </code> (middle dot, dim), then a help line.</p>
+    <p>Each option is rendered as: optional <code>▸ </code> selection indicator (RUST_ORANGE bold, only on the focused option) + ✓ (green) for allow / ✗ (red) for reject + space + option name (RUST_ORANGE bold when focused, gray otherwise) + dim shortcut hint <code>(Ctrl+y)</code> / <code>(Ctrl+a)</code> / <code>(Ctrl+n)</code>.</p>
+    <div class="term">
+      <pre class="indent">
+       <span class="bold">Allow Bash to run this command?</span>
+         <span class="dim">git push origin polish/rate-limit-chip-softer-34</span>
+
+       <span class="accent bold">▸ </span><span class="success">✓</span> <span class="accent bold">Allow once</span><span class="dim"> (Ctrl+y)</span>  <span class="dim">·</span>  <span class="success">✓</span> <span class="dim">Allow always</span><span class="dim"> (Ctrl+a)</span>  <span class="dim">·</span>  <span class="error">✗</span> <span class="dim">Deny</span><span class="dim"> (Ctrl+n)</span>
+       <span class="dim">←→ select  ↑↓ next  enter confirm  esc reject</span></pre>
+    </div>
+    <p>(Permission options come from the SDK's <code>PermissionOptionKind</code>: <code>AllowOnce</code> / <code>AllowSession</code> / <code>AllowAlways</code> / <code>RejectOnce</code> / <code>RejectAlways</code>. Allow variants share <code>(Ctrl+a)</code> for "always" and <code>(Ctrl+y)</code> for "once"; <code>RejectOnce</code> is <code>(Ctrl+n)</code>; <code>RejectAlways</code> + plan-mode + question variants don't get a shortcut hint.)</p>
+    <dl>
+      <dt>code</dt><dd><code>crates/forge-tui/src/ui/tool_call/interactions.rs::render_permission_lines</code></dd>
+      <dt>known issues</dt><dd><a href="https://github.com/busytools/forge/issues/40">#40</a> — accumulated indent / glyph inconsistencies in interactions.rs (multiple constants for option spacing, header, separator)  ·  <a href="https://github.com/busytools/forge/issues/56">#56</a> — ESC sends last option instead of a Cancelled signal</dd>
+    </dl>
+  </div>
+</div>
+
+<div class="surface">
+  <div class="surface-head">
+    <h4>Plan-approval prompt</h4>
+    <div class="when">visible: when the agent invokes the <code>ExitPlanMode</code> tool</div>
+  </div>
+  <div class="surface-body">
+    <p>Different shape from the permission prompt. <strong>Unfocused:</strong> blank line + dim "<code>○ Waiting for input... (Tab to focus)</code>". <strong>Focused:</strong> blank line, optional "<code>Pre-approved actions:</code>" header (DIM) followed by bullet rows (<code>•</code> in DIM + white-text action) parsed from <code>tc.raw_input</code>'s <code>allowed_prompts</code>, then a blank line, then <strong>vertically-stacked</strong> options (<code>PlanApprove</code> / <code>PlanReject</code>) with <code>▸ </code>/4-space prefix, ✓ green / ✗ red icon, name (RUST_ORANGE bold when focused, gray otherwise), and shortcut suffix in DIM (<code> [Ctrl+y]</code> / <code> [Ctrl+n]</code>). Bottom help line: "<code>↑↓ select  enter confirm  Ctrl+y approve  Ctrl+n/esc reject</code>".</p>
+    <div class="term">
+      <pre class="indent">
+
+  <span class="dim">Pre-approved actions:</span>
+    <span class="dim">•</span> Run cargo nextest after edits
+    <span class="dim">•</span> Open a draft PR if all tests pass
+
+  <span class="accent bold">▸ </span><span class="success">✓</span> <span class="accent bold">Approve plan</span><span class="dim"> [Ctrl+y]</span>
+    <span class="error">✗</span> <span class="dim">Reject plan</span><span class="dim"> [Ctrl+n]</span>
+  <span class="dim">↑↓ select  enter confirm  Ctrl+y approve  Ctrl+n/esc reject</span></pre>
+    </div>
+    <dl>
+      <dt>code</dt><dd><code>crates/forge-tui/src/ui/tool_call/interactions.rs::render_plan_approval_lines</code> · pre-approved actions parsed via <code>parse_exit_plan_mode_allowed_prompts</code></dd>
+    </dl>
+  </div>
+</div>
+
+<div class="surface">
+  <div class="surface-head">
+    <h4>Question prompt (AskUserQuestion)</h4>
+    <div class="when">visible: when the agent asks a structured question</div>
+  </div>
+  <div class="surface-body">
+    <p>Header line: 2-col indent + <code>? </code> in RUST_ORANGE + header text in white bold + optional <code>(N/total)</code> progress when there are multiple questions. Question body indented 4 cols (RUST_ORANGE when focused, gray otherwise).</p>
+    <p><strong>If unfocused:</strong> "<code>  waiting for input... (Tab to focus)</code>" in dim, no options shown.</p>
+    <p><strong>If focused with ≤3 short options</strong> (each ≤20 chars, no descriptions): horizontal layout — options inline separated by <code>  |  </code> (dim ASCII pipe), each with <code>▸ </code> selection indicator (RUST_ORANGE bold) or 2 spaces, optional <code>[x]</code> / <code>[ ]</code> checkbox (dim) for multi-select, label (white bold when focused, gray otherwise).</p>
+    <p><strong>Otherwise (vertical layout):</strong> each option on its own row with <code>  ▸ </code> for focused and <code>  ○ </code> for others, label, then optional 2-space-indented description on the next line(s).</p>
+    <p>Below the options the focused option's optional <strong>Preview</strong> block renders (white-bold "<code>Preview</code>" header, body lines indented 4 cols in DIM), then a blank line, then the <strong>Notes row</strong>: "<code>Notes:</code>" (white bold) + notes text (DIM, "<code>&lt;empty&gt;</code>" placeholder when blank, switches to white when in edit mode and label becomes "<code>Notes [editing]:</code>"). Help line at the bottom is "<code>Left/Right select  Tab notes  Enter confirm  Esc cancel</code>" or for multi-select "<code>Left/Right move  Space toggle  Tab notes  Enter confirm  Esc cancel</code>".</p>
+    <div class="term">
+      <pre class="indent">
+    <span class="accent">? </span><span class="bold">Which migration target?</span> <span class="bold">(1/2)</span>
+        <span class="accent">Pick the database engine to run the migration against.</span>
+
+      <span class="accent bold">▸ </span><span class="bold">Postgres 16</span>  <span class="dim">|</span>    <span class="dim">Postgres 15</span>  <span class="dim">|</span>    <span class="dim">SQLite (dev only)</span>
+
+      <span class="bold">  Preview</span>
+        <span class="dim">Postgres 16 introduces incremental sort improvements and a more efficient</span>
+        <span class="dim">vacuum. Required for the upcoming partition pruning work.</span>
+
+      <span class="bold">  Notes: </span><span class="dim">&lt;empty&gt;</span>
+      <span class="dim">  Left/Right select  Tab notes  Enter confirm  Esc cancel</span></pre>
+    </div>
+    <p class="hint">Vertical fallback (when an option has a description, or there are &gt;3 options, or any label is &gt;20 chars):</p>
+    <div class="term">
+      <pre class="indent">
+    <span class="accent">? </span><span class="bold">Pick a migration strategy:</span>
+
+      <span class="accent">▸ </span><span class="bold">Forward-only with backfill</span>
+          <span class="dim">Apply the schema change live; backfill old rows in a follow-up.</span>
+      <span class="dim">○ </span>Online with shadow table
+          <span class="dim">Mirror writes to a shadow until copy-over completes.</span></pre>
+    </div>
+    <dl>
+      <dt>code</dt><dd><code>crates/forge-tui/src/ui/tool_call/interactions.rs::render_question_lines</code></dd>
+      <dt>multi-select</dt><dd>checkbox prefix <code>[x]</code> / <code>[ ]</code> appears before the label when <code>question.prompt.multi_select == true</code></dd>
+    </dl>
+  </div>
+</div>
+
+<!-- ============================================================== -->
+<h2 class="section-title" id="help">Help screen</h2>
+
+<div class="surface">
+  <div class="surface-head">
+    <h4>Help overlay</h4>
+    <div class="when">visible: while <code>?</code>-help is active</div>
+  </div>
+  <div class="surface-body">
+    <p>Rounded-border panel above the input area, fixed height (<code>HELP_PANEL_HEIGHT = 14</code>), max <code>MAX_ROWS = 10</code> content rows. Title format: leading "<code> Help </code>" (RUST_ORANGE bold) + bracketed tabs "<code>[Keys | Slash | Subagents]</code>" with the active tab in RUST_ORANGE bold and inactive tabs in DIM (separators "<code> | </code>" and brackets in DIM) + a hint suffix in DIM. The hint changes per view: "<code>  (&lt; &gt; switch tabs)</code>" on the Keys view; "<code>  (&lt; &gt; tabs  ▲▼ scroll)</code>" on the Slash and Subagents views.</p>
+    <p>Three views with different layouts:</p>
+    <ul style="color: var(--muted); font-size: 13px; line-height: 1.7; margin: 0 0 12px 18px;">
+      <li><strong>Keys</strong> — items distributed top-half-left / bottom-half-right (so scanning down each column reads chronologically). Each cell: <code>label : description</code> with label in BOLD and <code> : </code> separator in DIM.</li>
+      <li><strong>Slash commands</strong> — single-column two-column list (name + description) via <code>two_column_list</code>. Built-in commands: <code>/config</code>, <code>/mcp</code>, <code>/plugins</code>, <code>/status</code>, <code>/usage</code>. Plus user-installed commands.</li>
+      <li><strong>Subagents</strong> — same two-column shape as Slash, listing user-defined subagents and their descriptions.</li>
+    </ul>
+    <div class="term">
+      <pre class="indent">
+  <span class="dim">╭</span> <span class="accent bold">Help</span> <span class="dim">[</span><span class="accent bold">Keys</span><span class="dim"> | </span><span class="dim">Slash</span><span class="dim"> | </span><span class="dim">Subagents</span><span class="dim">]</span>  <span class="dim">(&lt; &gt; switch tabs)</span> <span class="dim">─────────────────╮</span>
+  <span class="dim">│</span>                                                                     <span class="dim">│</span>
+  <span class="dim">│</span>     <span class="bold">↑ / ↓</span><span class="dim"> : </span>Scroll chat       <span class="bold">Esc</span><span class="dim"> : </span>Cancel current action          <span class="dim">│</span>
+  <span class="dim">│</span>     <span class="bold">PgUp / PgDn</span><span class="dim"> : </span>Page         <span class="bold">Ctrl+C</span><span class="dim"> : </span>Interrupt response          <span class="dim">│</span>
+  <span class="dim">│</span>     <span class="bold">Ctrl+O</span><span class="dim"> : </span>Expand tool      <span class="bold">?</span><span class="dim"> : </span>Toggle help                    <span class="dim">│</span>
+  <span class="dim">│</span>                                                                     <span class="dim">│</span>
+  <span class="dim">╰─────────────────────────────────────────────────────────────────────╯</span></pre>
+    </div>
+    <dl>
+      <dt>code</dt><dd><code>crates/forge-tui/src/ui/help.rs</code> — <code>render_keys_help</code> for Keys, <code>render_two_column_help</code> for Slash / Subagents</dd>
+      <dt>tabs</dt><dd>switch with <code>&lt;</code> / <code>&gt;</code> arrows; arrow keys scroll within Slash / Subagents</dd>
+    </dl>
+  </div>
+</div>
+
+<!-- ============================================================== -->
+<h2 class="section-title" id="sessions">Session picker</h2>
+
+<div class="surface">
+  <div class="surface-head">
+    <h4>Resume picker</h4>
+    <div class="when">visible: when user runs <code>/resume</code> (or app starts in startup-picker mode)</div>
+  </div>
+  <div class="surface-body">
+    <p>Full-frame bordered overlay with the block title <code>Resume Session</code> (in DIM). Inside: a 4-row layout — header line "Select a session to resume" (RUST_ORANGE bold), subtitle "Recent sessions for this project directory." (DIM), session list (filling the middle), footer text (DIM).</p>
+    <p><strong>Single list, current cwd only.</strong> No "other projects" section. Each session = 2 rows. Selected row is white-on-RUST_ORANGE (full-row background highlight). Empty state: "No recent sessions found for this directory." Loading state: "Loading recent sessions...".</p>
+    <div class="term">
+      <pre class="indent">
+  <span class="dim">╭ Resume Session ──────────────────────────────────────────────────────╮</span>
+  <span class="dim">│</span>                                                                     <span class="dim">│</span>
+  <span class="dim">│</span>  <span class="accent bold">Select a session to resume</span>                                          <span class="dim">│</span>
+  <span class="dim">│</span>  <span class="dim">Recent sessions for this project directory.</span>                         <span class="dim">│</span>
+  <span class="dim">│</span>                                                                     <span class="dim">│</span>
+  <span class="dim">│</span>  <span style="background: var(--rust-orange); color: white;"> Soften rate-limit chip wording                            (selected) </span> <span class="dim">│</span>
+  <span class="dim">│</span>  <span class="dim"> 12 minutes ago · 47 messages                                        </span> <span class="dim">│</span>
+  <span class="dim">│</span>  Audit cleanup PR batch                                              <span class="dim">│</span>
+  <span class="dim">│</span>  <span class="dim">2 hours ago · 89 messages</span>                                          <span class="dim">│</span>
+  <span class="dim">│</span>  busytools migration                                                 <span class="dim">│</span>
+  <span class="dim">│</span>  <span class="dim">yesterday · 31 messages</span>                                            <span class="dim">│</span>
+  <span class="dim">│</span>                                                                     <span class="dim">│</span>
+  <span class="dim">│</span>  <span class="dim">↑↓ to choose · Enter to resume · Esc to cancel</span>                       <span class="dim">│</span>
+  <span class="dim">╰─────────────────────────────────────────────────────────────────────╯</span></pre>
+    </div>
+    <dl>
+      <dt>code</dt><dd><code>crates/forge-tui/src/ui/session_picker.rs</code> · data via <code>forge-agent::userdata::catalog::scan::list_sessions</code></dd>
+      <dt>data</dt><dd>head/tail lite read of each <code>~/.claude/projects/&lt;slug&gt;/&lt;uuid&gt;.jsonl</code>; parallelised at 16 concurrent reads (<a href="https://github.com/busytools/forge/issues/70">#70</a>, landed)</dd>
+      <dt>scroll</dt><dd>list scrolls when count exceeds visible rows; 2 lines per item</dd>
+    </dl>
+  </div>
+</div>
+
+<!-- ============================================================== -->
+<h2 class="section-title" id="welcome">Welcome + trust</h2>
+
+<div class="surface">
+  <div class="surface-head">
+    <h4>Welcome message</h4>
+    <div class="when">visible: appears as the first message in a fresh chat (first turn before any user input)</div>
+  </div>
+  <div class="surface-body">
+    <p>Banner is the literal text "<strong>Overview</strong>" in RUST_ORANGE bold. Body is a Ferris-says ASCII art block (in RUST_ORANGE) plus a metadata block (Version, Subscription, cwd, Session ID) and a single rotating tip. Rendered as a regular message in the scrollback (role <code>MessageRole::Welcome</code>) — not a screen overlay. Tip is selected from <code>WELCOME_TIPS</code> by <code>tip_seed % WELCOME_TIPS.len()</code>.</p>
+    <div class="term">
+      <pre class="indent">
+  <span class="accent-bold">Overview</span>
+
+  <span class="accent">--------------------------------- </span>
+  <span class="accent">&lt; Welcome back to Claude, in Rust! &gt;</span>
+  <span class="accent">--------------------------------- </span>
+  <span class="accent">        \             </span>
+  <span class="accent">         \            </span>
+  <span class="accent">            _~^~^~_  </span>
+  <span class="accent">        \) /  o o  \ (/</span>
+  <span class="accent">          '_   -   _' </span>
+  <span class="accent">          / '-----' \ </span>
+
+
+  <span class="dim">Version:      </span><span class="dim">0.14.2</span>
+  <span class="dim">Subscription: </span><span class="accent bold">Pro</span>
+  <span class="dim">cwd:          ~/Projects/forge</span>
+  <span class="dim">Session ID:   550e8400-e29b-41d4-a716-446655440000</span>
+
+  <span class="dim">Tips: Use /mode plan before larger changes, then switch back to code once the plan is clear</span>
+</pre>
+    </div>
+    <dl>
+      <dt>code</dt><dd><code>crates/forge-tui/src/ui/message.rs::welcome_lines</code> · ASCII in <code>FERRIS_SAYS</code> · tips in <code>WELCOME_TIPS</code> (~21 entries)</dd>
+      <dt>color</dt><dd>art: RUST_ORANGE · field labels: DIM · subscription value: RUST_ORANGE bold · field values + tip: DIM</dd>
+    </dl>
+  </div>
+</div>
+
+<div class="surface">
+  <div class="surface-head">
+    <h4>Trust-this-project prompt</h4>
+    <div class="when">visible: first launch in a directory that hasn't been trusted yet (no <code>hasTrustDialogAccepted</code> flag in <code>~/.claude.json</code> for this cwd)</div>
+  </div>
+  <div class="surface-body">
+    <p>Full-frame bordered overlay with the block title <code>Unknown Project</code> (in DIM). Inside: a header row "Trust this project directory?" (RUST_ORANGE bold), a 3-line body intro, a message line, then two action rows. Action format: <code>&gt; Yes</code> / <code>  No</code> — selected gets a <code>&gt;</code> marker and white-on-RUST_ORANGE styling + bold; unselected uses a leading space and DIM bold.</p>
+    <div class="term">
+      <pre class="indent">
+  <span class="dim">╭ Unknown Project ─────────────────────────────────────────────────────╮</span>
+  <span class="dim">│</span>                                                                     <span class="dim">│</span>
+  <span class="dim">│</span>  <span class="accent bold">Trust this project directory?</span>                                       <span class="dim">│</span>
+  <span class="dim">│</span>  Claude Rust will wait here until you choose whether to trust this   <span class="dim">│</span>
+  <span class="dim">│</span>  workspace.                                                          <span class="dim">│</span>
+  <span class="dim">│</span>                                                                     <span class="dim">│</span>
+  <span class="dim">│</span>  Review the project before continuing if you are unsure.             <span class="dim">│</span>
+  <span class="dim">│</span>  Choose Yes to continue or No to close Claude Rust.                  <span class="dim">│</span>
+  <span class="dim">│</span>                                                                     <span class="dim">│</span>
+  <span class="dim">│</span>  <span style="background: var(--rust-orange); color: white; font-weight: 700;">&gt; Yes</span>                                                                <span class="dim">│</span>
+  <span class="dim">│</span>  <span class="dim bold">  No</span>                                                                 <span class="dim">│</span>
+  <span class="dim">│</span>                                                                     <span class="dim">│</span>
+  <span class="dim">╰─────────────────────────────────────────────────────────────────────╯</span></pre>
+    </div>
+    <dl>
+      <dt>code</dt><dd><code>crates/forge-tui/src/ui/trusted.rs</code> · 2 actions only (<code>Yes</code> / <code>No</code>)</dd>
+      <dt>error path</dt><dd>if writing the trust flag to <code>~/.claude.json</code> fails, the message line is replaced with the error text (no toast — inline replacement)</dd>
+    </dl>
+  </div>
+</div>
+
+<!-- ============================================================== -->
+<h2 class="section-title" id="settings">Config screen (Settings · Plugins · Status · Usage · MCP)</h2>
+
+<p class="intro">
+  All five "settings" surfaces live inside a <strong>single full-frame Config screen</strong> with a tabbed header. Slash commands (<code>/config</code>, <code>/mcp</code>, <code>/plugins</code>, <code>/status</code>, <code>/usage</code>) all open this screen — the slash determines which tab opens active. Outer block title: <code>Config</code> in DIM border.
+</p>
+
+<div class="surface">
+  <div class="surface-head">
+    <h4>Tab header (every Config tab shares this)</h4>
+    <div class="when">visible: top row of the Config screen at all times</div>
+  </div>
+  <div class="surface-body">
+    <p>Centered horizontal tab strip. Active tab in <code>RUST_ORANGE</code> bold; inactive tabs in <code>Color::White</code>. Separator <code> | </code> in DIM. Tab order: <strong>Settings · Plugins · Status · Usage · MCP</strong>.</p>
+    <div class="term">
+      <pre class="indent">
+  <span class="dim">╭ Config ──────────────────────────────────────────────────────────────╮</span>
+  <span class="dim">│</span>            <span class="accent bold">Settings</span><span class="dim"> | </span>Plugins<span class="dim"> | </span>Status<span class="dim"> | </span>Usage<span class="dim"> | </span>MCP                  <span class="dim">│</span>
+  <span class="dim">│</span>                                                                     <span class="dim">│</span>
+  <span class="dim">│</span>  <span class="dim">… active tab content …</span>                                                <span class="dim">│</span>
+  <span class="dim">│</span>                                                                     <span class="dim">│</span>
+  <span class="dim">╰─────────────────────────────────────────────────────────────────────╯</span></pre>
+    </div>
+    <dl>
+      <dt>code</dt><dd><code>crates/forge-tui/src/ui/config.rs::render_tab_header</code> · tabs are <code>ConfigTab::ALL</code></dd>
+    </dl>
+  </div>
+</div>
+
+<div class="surface">
+  <div class="surface-head">
+    <h4>Settings tab</h4>
+    <div class="when">visible: when the Settings tab is active</div>
+  </div>
+  <div class="surface-body">
+    <p>Two-column layout when wide enough (44% / 56%): a "<code>Settings</code>"-titled list on the left and a "<code>Details</code>"-titled detail pane on the right. Both columns have DIM-border boxes. When the area is narrow (below <code>COMPACT_SETTINGS_MIN_WIDTH</code>) it collapses to a single full-width "Settings" panel. A bottom hint reserves a wrapped line for: "<em>Currently, not all settings are supported by forge. This project uses the official Anthropic Claude Agent SDK, which limits forge implementing all Claude Code settings.</em>"</p>
+    <div class="term">
+      <pre class="indent">
+  <span class="dim">╭ Settings ────────────────╮</span>  <span class="dim">╭ Details ───────────────────────────────╮</span>
+  <span class="dim">│</span> <span class="bold">Permission default mode </span><span class="dim">│</span>  <span class="dim">│</span> <span class="bold">Permission default mode</span>                <span class="dim">│</span>
+  <span class="dim">│</span> Setting sources          <span class="dim">│</span>  <span class="dim">│</span> <span class="dim">Mode the SDK starts in for this</span>        <span class="dim">│</span>
+  <span class="dim">│</span> Tools collapsed by deflt <span class="dim">│</span>  <span class="dim">│</span> <span class="dim">session before any /mode toggle.</span>       <span class="dim">│</span>
+  <span class="dim">│</span> Capture transcripts      <span class="dim">│</span>  <span class="dim">│</span>                                        <span class="dim">│</span>
+  <span class="dim">│</span> Tracing level            <span class="dim">│</span>  <span class="dim">│</span> <span class="dim">Options:</span>                               <span class="dim">│</span>
+  <span class="dim">│</span> Mouse support            <span class="dim">│</span>  <span class="dim">│</span>   <span class="success">▸</span> default                            <span class="dim">│</span>
+  <span class="dim">│</span> ...                      <span class="dim">│</span>  <span class="dim">│</span>     acceptEdits                        <span class="dim">│</span>
+  <span class="dim">╰──────────────────────────╯</span>  <span class="dim">│</span>     plan                               <span class="dim">│</span>
+                              <span class="dim">╰────────────────────────────────────────╯</span>
+  <span class="dim">Currently, not all settings are supported by forge. This project uses the…</span>
+</pre>
+    </div>
+    <dl>
+      <dt>code</dt><dd><code>crates/forge-tui/src/ui/config/settings.rs</code> · spec data via <code>setting_specs</code> in <code>app::config</code></dd>
+      <dt>unsupported flag</dt><dd>specs that aren't honored by forge yet show an "Unsupported" hint in the details pane</dd>
+      <dt>invalid persisted</dt><dd>if the persisted value can't validate, the details pane shows a STATUS_ERROR-coloured hint with fallback explanation</dd>
+    </dl>
+  </div>
+</div>
+
+<div class="surface">
+  <div class="surface-head">
+    <h4>MCP tab</h4>
+    <div class="when">visible: when the MCP tab is active</div>
+  </div>
+  <div class="surface-body">
+    <p>Top: a status-badge summary line — <code>total N</code> (white-on-black), <code>connected N</code> (black-on-RUST_ORANGE), <code>needs auth N</code> (black-on-STATUS_WARNING), <code>pending N</code> (black-on-cyan), <code>disabled N</code> (white-on-DarkGray), <code>failed N</code> (white-on-STATUS_ERROR), and a <code>refreshing</code> badge when in-flight. Then optional "Last MCP error: …" line in STATUS_ERROR. Then per-server list rows: marker (<code>&gt;</code> selected / space) + name + status badge + scope badge + transport badge + a 1-line summary in DIM beneath.</p>
+    <div class="term">
+      <pre class="indent">
+  <span style="background: white; color: black; padding: 0 4px;">total 4</span>  <span style="background: var(--rust-orange); color: black; padding: 0 4px;">connected 2</span>  <span style="background: var(--status-warn); color: black; padding: 0 4px;">needs auth 1</span>  <span style="background: gray; color: white; padding: 0 4px;">disabled 0</span>  <span style="background: var(--status-error); color: white; padding: 0 4px;">failed 1</span>
+
+  <span class="error">Last MCP error: jetbrains: connection refused at 127.0.0.1:63342</span>
+
+  <span class="bold">&gt; notion</span>     <span style="background: var(--rust-orange); color: black; padding: 0 4px;">connected</span> <span style="background: gray; color: white; padding: 0 4px;">user</span> <span style="background: white; color: black; padding: 0 4px;">stdio</span>
+  <span class="dim">  npx -y @notionhq/notion-mcp-server · 8 tools</span>
+
+    context7   <span style="background: var(--rust-orange); color: black; padding: 0 4px;">connected</span> <span style="background: gray; color: white; padding: 0 4px;">user</span> <span style="background: white; color: black; padding: 0 4px;">stdio</span>
+  <span class="dim">  npx -y context7-mcp · 4 tools</span>
+
+    claude-ai  <span style="background: var(--status-warn); color: black; padding: 0 4px;">needs auth</span> <span style="background: gray; color: white; padding: 0 4px;">session</span> <span style="background: white; color: black; padding: 0 4px;">remote</span>
+  <span class="dim">  https://claude.ai/api/mcp · authenticate to continue</span></pre>
+    </div>
+    <dl>
+      <dt>code</dt><dd><code>crates/forge-tui/src/ui/config/mcp.rs</code></dd>
+      <dt>overlays</dt><dd>5 sub-overlays exist: <code>render_details_overlay</code>, <code>render_callback_url_overlay</code>, <code>render_elicitation_overlay</code>, <code>render_auth_redirect_overlay</code>, plus the marketplace install flow shared with Plugins</dd>
+    </dl>
+  </div>
+</div>
+
+<div class="surface">
+  <div class="surface-head">
+    <h4>Status tab</h4>
+    <div class="when">visible: when the Status tab is active</div>
+  </div>
+  <div class="surface-body">
+    <p>Plain key-value layout in the body area (no nested boxes). Section headers are RUST_ORANGE bold; key labels are DIM (with 2-space indent + trailing colon); values are white. Sections that appear in order: <strong>Session</strong> (Version, Session name, Session ID, cwd, Git branch when known), <strong>Account</strong> (Login method, API provider, Organization, Email, Subscription — only the fields that are non-empty), <strong>Model</strong> (Model display, Resolved model ID, Requested model when different), then more downstream (rate limits, etc.), ending with <strong>Settings</strong> (Memory path, Setting sources).</p>
+    <div class="term">
+      <pre class="indent">
+  <span class="accent-bold">Session</span>
+    <span class="dim">Version: </span>0.14.2
+    <span class="dim">Session name: </span>forge polish
+    <span class="dim">Session ID: </span>550e8400-e29b-41d4-a716-446655440000
+    <span class="dim">cwd: </span>~/Projects/forge
+    <span class="dim">Git branch: </span>main
+
+  <span class="accent-bold">Account</span>
+    <span class="dim">Login method: </span>OAuth (Pro)
+    <span class="dim">Subscription: </span>Pro
+
+  <span class="accent-bold">Model</span>
+    <span class="dim">Model: </span>Claude Sonnet 4.5
+    <span class="dim">Resolved model ID: </span>claude-sonnet-4-5-20250101
+
+  <span class="accent-bold">Settings</span>
+    <span class="dim">Memory: </span>~/.claude/CLAUDE.md
+    <span class="dim">Setting sources: </span>user, project, local</pre>
+    </div>
+    <dl>
+      <dt>code</dt><dd><code>crates/forge-tui/src/ui/config/status.rs::status_lines</code> · <code>section_header</code> + <code>kv_line</code></dd>
+    </dl>
+  </div>
+</div>
+
+<div class="surface">
+  <div class="surface-head">
+    <h4>Usage tab</h4>
+    <div class="when">visible: when the Usage tab is active</div>
+  </div>
+  <div class="surface-body">
+    <p>Stack of rate-limit windows from the snapshot (e.g. 5-hour / 7-day). Per window: bold label + DIM detail text + a 1-row <strong>ratatui Gauge widget</strong> (colored bar, no inline label) + a DIM "resets in …" countdown row. Optional bordered "<strong>Extra credits</strong>" panel below the windows. Optional STATUS_ERROR-coloured error line at the bottom. Empty states: "<code>Loading usage data...</code>" (DIM) or a bordered box titled "<code>No usage snapshot yet</code>" with hint "<code>Press r to fetch Claude usage for the current account.</code>" (DIM border) — or "<code>Unable to load usage</code>" with the error body when there's a stored error (border in STATUS_ERROR).</p>
+    <div class="term">
+      <pre class="indent">
+  <span class="bold">5-hour limit</span>   <span class="dim">42% of 800 message limit</span>
+  <span style="background: var(--rust-orange); color: black;">████████████████████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░</span>
+  <span class="dim">resets in 4h 23m at 14:30 UTC</span>
+
+  <span class="bold">7-day limit</span>    <span class="dim">14% of weekly window</span>
+  <span style="background: var(--rust-orange); color: black;">████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░</span>
+  <span class="dim">resets in 5d 18h at Mon 09:00 UTC</span>
+
+  <span class="dim">╭ Extra credits ─────────────────────────────────────────────────╮</span>
+  <span class="dim">│</span>  Status  Available  ·  Cap  $50.00 / month                  <span class="dim">│</span>
+  <span class="dim">╰────────────────────────────────────────────────────────────────╯</span></pre>
+    </div>
+    <dl>
+      <dt>code</dt><dd><code>crates/forge-tui/src/ui/config/usage.rs</code> · uses <code>ratatui::widgets::Gauge</code> with empty inline label · countdown text from <code>app::usage::format_window_reset</code></dd>
+    </dl>
+  </div>
+</div>
+
+<div class="surface">
+  <div class="surface-head">
+    <h4>Plugins tab</h4>
+    <div class="when">visible: when the Plugins tab is active</div>
+  </div>
+  <div class="surface-body">
+    <p>Has its own nested tab strip: <strong>Installed · Plugins · Marketplace</strong>. Each sub-tab label format is <code>" Tabname (count) "</code> (with leading and trailing spaces and the active count in parens). Active sub-tab is black-on-RUST_ORANGE bold; inactive sub-tabs are white bold. Sub-tabs separated by 2 spaces (no separator glyph). The Plugins / Marketplace sub-tabs include a search field above the list — its block title is "<code> Search </code>" (RUST_ORANGE border + cursor block when focused) or "<code> Search (Up to focus) </code>" (DIM border when not). The Installed sub-tab shows a "Configured marketplaces" header above the list instead.</p>
+    <div class="term">
+      <pre class="indent">
+  <span style="background: var(--rust-orange); color: black; font-weight: 700;"> Installed (4) </span>  <span class="bold">Plugins (12)</span>  <span class="bold">Marketplace (2)</span>
+
+  <span class="bold"> Configured marketplaces</span>
+
+    anthropic-official      <span class="dim">2 plugins · last updated 3d ago</span>
+    busytools-internal      <span class="dim">1 plugin · last updated 12h ago</span></pre>
+    </div>
+    <dl>
+      <dt>code</dt><dd><code>crates/forge-tui/src/ui/config/plugins.rs</code> · sub-tabs in <code>PluginsViewTab::ALL</code></dd>
+      <dt>marketplace flow</dt><dd>install / actions / add-marketplace each have their own overlay (rendered atop the Config screen via <code>render_marketplace_actions_overlay</code> etc.)</dd>
+    </dl>
+  </div>
+</div>
+
+<div class="surface">
+  <div class="surface-head">
+    <h4>Config overlays (model picker, output style, language, session rename, …)</h4>
+    <div class="when">visible: stacked atop the Config screen when triggered</div>
+  </div>
+  <div class="surface-body">
+    <p>Modal overlays that draw above the Config screen content. Used for picking model + effort, output style, language, renaming a session, and various plugin/MCP install/auth flows. Each is a bordered box with its own internal layout (see <code>config.rs:62–79</code> for the dispatch chain).</p>
+  </div>
+</div>
+
+<!-- ============================================================== -->
+<h2 class="section-title" id="diff">Diff viewer</h2>
+
+<div class="surface">
+  <div class="surface-head">
+    <h4>Inline diff (Edit / MultiEdit / Write)</h4>
+    <div class="when">visible: every Edit / MultiEdit / Write tool call that carries a diff</div>
+  </div>
+  <div class="surface-body">
+    <p>Computed via the <code>similar</code> crate's <code>TextDiff::from_lines</code>. Optional <code>[repository]</code> tag in DIM. Per-hunk header shown in <strong>cyan</strong> with a compacted <code>@@</code> form. Each change line carries a marker (<code>-</code> red / <code>+</code> green) plus a left-padded line number (width auto-sized to the larger of old/new line counts).</p>
+    <div class="term">
+      <pre class="indent">
+  <span class="success">✓</span> <span class="bold">▣</span> crates/forge-tui/src/app/events/rate_limit.rs (+34, -2)
+  <span class="dim">│    </span><span class="dim">[forge]</span>
+  <span class="dim">│    </span><span style="color: cyan;">@@ -65,4 +65,12 @@</span>
+  <span class="dim">│    </span> 65 fn is_org_level_disabled_extra_usage_case(...)
+  <span class="dim">│    </span><span class="success">+ 66 fn is_near_threshold_without_overage(</span>
+  <span class="dim">│    </span><span class="success">+ 67     update: &amp;model::RateLimitUpdate,</span>
+  <span class="dim">│    </span><span class="success">+ 68 ) -&gt; bool {</span>
+  <span class="dim">│    </span><span class="success">+ 69     matches!(update.status, RateLimitStatus::AllowedWarning)</span>
+  <span class="dim">│    </span><span class="success">+ 70         &amp;&amp; update.is_using_overage == Some(false)</span>
+  <span class="dim">│    </span><span class="success">+ 71         &amp;&amp; update.surpassed_threshold.is_some_and(|t| t &gt; 0.0)</span>
+  <span class="dim">│    </span><span class="success">+ 72 }</span>
+  <span class="dim">│    </span> 73 pub(super) fn format_rate_limit_summary(...)
+  <span class="dim">└─   </span><span class="error">- 74 // old comment that's no longer accurate</span></pre>
+    </div>
+    <dl>
+      <dt>code</dt><dd><code>crates/forge-tui/src/ui/diff.rs::render_diff</code> · uses <code>similar</code> crate's <code>unified_diff</code> with default 3-line context</dd>
+      <dt>colors</dt><dd>Repository tag: DIM · Hunk header: <code>Color::Cyan</code> · Add: <code>Color::Green</code> · Delete: <code>Color::Red</code> · Context: default fg</dd>
+      <dt>indenting</dt><dd>Diff body sits inside the standard tool-call body indent. Each line is the standard body prefix (<code>  │  </code> or <code>  └─ </code> in DIM, 5 cells) followed by <code>DIFF_BODY_INDENT = "  "</code> (2 cells), then the diff content — so diff content starts at column 7. Write-tool diffs cap their length via <code>cap_write_diff_lines</code> (head + ellipsis + tail). Plan-file paths bypass the diff renderer and render as markdown via <code>render_plan_content</code>.</dd>
+    </dl>
+  </div>
+</div>
+
+<!-- ============================================================== -->
+<h2 class="section-title" id="errors">Error states</h2>
+
+<p class="intro">
+  Forge does not have dedicated full-screen error views (apart from the Config-screen-loading errors above). All error / failure UI is delivered as <strong>system-message notices</strong> pushed into the chat scrollback (see <a href="#chat">Chat / system notice</a>) at one of three severities. The chat scrollback is the only error surface; on a fatal connection error the input area is locked with a hint instead of being replaced.
+</p>
+
+<div class="surface">
+  <div class="surface-head">
+    <h4>Connection failed</h4>
+    <div class="when">visible: when <code>spawn_session</code> can't start (bad path, missing binary, transport error) or the bridge later detects subprocess exit</div>
+  </div>
+  <div class="surface-body">
+    <p>Pushed via <code>push_connection_error_message</code>. Body is the literal string <code>"Connection failed: &lt;error&gt;\n\nInput disabled after an error. Press Ctrl+Q to quit and try again."</code> rendered as a system message. App status flips to <code>AppStatus::Error</code>; the input area becomes read-only.</p>
+    <div class="term">
+      <pre class="indent">
+  <span class="error">Connection failed: claude binary not found at /usr/local/bin/claude</span>
+
+  <span class="error">Input disabled after an error. Press Ctrl+Q to quit and try again.</span></pre>
+    </div>
+    <dl>
+      <dt>code</dt><dd><code>crates/forge-tui/src/app/events/session.rs::push_connection_error_message</code></dd>
+      <dt>side effects</dt><dd>session id cleared, account cleared, MCP state reset, usage reset, pending submits cleared, status → Error</dd>
+    </dl>
+  </div>
+</div>
+
+<div class="surface">
+  <div class="surface-head">
+    <h4>Settings parse error</h4>
+    <div class="when">visible: when <code>~/.claude/settings.json</code> (or a project settings file) can't parse</div>
+  </div>
+  <div class="surface-body">
+    <p>Pushed as a Warning-severity system notice. Rate-limited via <code>SessionUpdate::SettingsParseError</code> deduping (one notice per file, per parse attempt). Wording specifies the file path and the parser's hint about location.</p>
+    <div class="term">
+      <pre class="indent">
+  <span class="warning">Failed to parse ~/.claude/settings.json: expected `,` at line 42 column 5. Falling back to defaults.</span></pre>
+    </div>
+  </div>
+</div>
+
+<div class="surface">
+  <div class="surface-head">
+    <h4>Rate limit notice</h4>
+    <div class="when">visible: when wire reports <code>RateLimitStatus::AllowedWarning</code> or <code>Rejected</code></div>
+  </div>
+  <div class="surface-body">
+    <p>System notice — Warning severity for <code>AllowedWarning</code>, Error severity for <code>Rejected</code>. Body comes from <code>format_rate_limit_summary</code> (in <code>app/events/rate_limit.rs</code>). Three message branches:</p>
+    <ul style="color: var(--muted); font-size: 13px; line-height: 1.7; margin: 0 0 12px 18px;">
+      <li><strong>Org-level disabled extra usage</strong> (Rejected + no primary context + <code>overage_disabled_reason == "org_level_disabled"</code>) → "<em>Extra usage credit is required to continue. Use /extra-usage to enable it, /model to switch models, or wait for the rate-limit window to reset.</em>"</li>
+      <li><strong>Near threshold without overage</strong> (AllowedWarning + <code>is_using_overage = false</code> + <code>surpassed_threshold &gt; 0</code>) → "<em>Near rate-limit threshold. Resets in 4h 23m at 14:30 UTC.</em>"</li>
+      <li><strong>General case</strong> → "<em>{Approaching | Rate limit reached}, you've used N% of your &lt;type&gt; rate limit. {You are using your overage allowance. | You can continue using your overage allowance.} Resets in &lt;timer&gt;.</em>"</li>
+    </ul>
+    <p>Same message also drives the footer's secondary-row chip when applicable.</p>
+    <dl>
+      <dt>code</dt><dd><code>crates/forge-tui/src/app/events/rate_limit.rs::format_rate_limit_summary</code></dd>
+    </dl>
+  </div>
+</div>
+
+<div class="surface">
+  <div class="surface-head">
+    <h4>Tool-use error (per-tool failure)</h4>
+    <div class="when">visible: appended as the body of a failed tool call</div>
+  </div>
+  <div class="surface-body">
+    <p>Failed tool calls render with the <code>✗</code> status icon (red). For standard rows, the error message body comes from <code>render_tool_use_error_content</code> — every non-empty line of the message gets <code>STATUS_ERROR</code> colour (the entire body is red, not just the first line). For Bash specifically, failure renders inside the bordered card body via <code>failed_execute_first_line</code> — only the first non-empty stderr line shown, in <code>STATUS_ERROR</code>. <code>looks_like_internal_error</code> payloads get a different treatment via <code>render_internal_failure_content</code>: a bold red "Internal Agent SDK error" header followed by an <code>summarize_internal_error</code> body line in red.</p>
+    <div class="term">
+      <pre class="indent">
+  <span class="error">✗</span> <span class="bold">⬚</span> crates/forge-tui/src/missing.rs
+  <span class="dim">│  </span><span class="error">File not found: crates/forge-tui/src/missing.rs</span>
+  <span class="dim">└─ </span><span class="error">error path: open() returned ENOENT</span>
+
+  <span class="dim">╭─</span> <span class="error">✗</span> <span class="bold">Bash</span> <span class="dim">cargo build --release</span> <span class="dim">─╮</span>
+  <span class="dim">│</span>  <span class="error">error: failed to compile due to 3 errors</span>
+  <span class="dim">╰────────────────────────────────────────────────╯</span></pre>
+    </div>
+    <p class="hint">Internal-error variant (timeouts, panics, SDK protocol violations):</p>
+    <div class="term">
+      <pre class="indent">
+  <span class="error">✗</span> <span class="bold">⬚</span> crates/forge-tui/src/something.rs
+  <span class="dim">│  </span><span class="error bold">Internal Agent SDK error</span>
+  <span class="dim">└─ </span><span class="error">stream closed at offset 12483 mid-frame</span></pre>
+    </div>
+    <dl>
+      <dt>code</dt><dd><code>crates/forge-tui/src/ui/tool_call/errors.rs::render_tool_use_error_content</code> · Bash-specific stderr extraction in <code>execute.rs::render_execute_content</code> + <code>errors.rs::failed_execute_first_line</code> · internal-error variant in <code>render_internal_failure_content</code></dd>
+    </dl>
+  </div>
+</div>
+
+<div class="surface">
+  <div class="surface-head">
+    <h4>Slash-command error</h4>
+    <div class="when">visible: when a slash command fails (bad arguments, unknown command, etc.)</div>
+  </div>
+  <div class="surface-body">
+    <p>System notice with Error severity. Same shape as the connection-failed message minus the input-lock side effect.</p>
+  </div>
+</div>
+
+<!-- ============================================================== -->
+<h2 class="section-title" id="tokens">Theme tokens (current)</h2>
+
+<p class="intro">
+  Hardcoded in <code>crates/forge-tui/src/ui/theme.rs</code>. No light mode, no custom themes, no YAML config. Anything not on this list is rendered with ratatui's <code>Color::White</code> default fg + terminal-default bg.
+</p>
+
+<div class="palette">
+  <div class="swatch">
+    <span class="chip" style="background: var(--rust-orange);"></span>
+    <div class="meta"><b>RUST_ORANGE</b><br><span class="mono-ref">Rgb(244, 118, 0)</span></div>
+  </div>
+  <div class="swatch">
+    <span class="chip" style="background: var(--dim);"></span>
+    <div class="meta"><b>DIM</b><br><span class="mono-ref">Color::DarkGray</span></div>
+  </div>
+  <div class="swatch">
+    <span class="chip" style="background: var(--user-msg-bg); border: 1px solid #2e323a;"></span>
+    <div class="meta"><b>USER_MSG_BG</b><br><span class="mono-ref">Rgb(40, 44, 52)</span></div>
+  </div>
+  <div class="swatch">
+    <span class="chip" style="background: var(--status-error);"></span>
+    <div class="meta"><b>STATUS_ERROR</b><br><span class="mono-ref">Color::Red</span></div>
+  </div>
+  <div class="swatch">
+    <span class="chip" style="background: var(--status-warn);"></span>
+    <div class="meta"><b>STATUS_WARNING</b><br><span class="mono-ref">Color::Yellow</span></div>
+  </div>
+  <div class="swatch">
+    <span class="chip" style="background: var(--slash);"></span>
+    <div class="meta"><b>SLASH_COMMAND</b><br><span class="mono-ref">Color::LightMagenta</span></div>
+  </div>
+  <div class="swatch">
+    <span class="chip" style="background: var(--subagent);"></span>
+    <div class="meta"><b>SUBAGENT_TOKEN</b><br><span class="mono-ref">Color::LightBlue</span></div>
+  </div>
+</div>
+
+<p class="intro" style="margin-top: 18px;">
+  Plus inline <code>Color::White</code> (default fg) and <code>Color::Yellow</code> scattered through code (e.g. <code>build_primary_line</code>'s <code>?</code> in white). Borders and dividers use <code>theme::DIM</code>. Card borders use <code>theme::DIM</code>.
+</p>
+
+<!-- ============================================================== -->
+<h2 class="section-title" id="glyphs">Glyphs in use</h2>
+
+<p class="intro">Inventory of every Unicode character used as chrome — borders, icons, status, separators. The chevron <code>⟩</code> for Bash is the lone outlier in the tool-icon family (every other tool icon is a closed geometric shape).</p>
+
+<table class="glyph-table">
+  <thead>
+    <tr>
+      <th>Glyph</th>
+      <th>Codepoint</th>
+      <th>Where</th>
+      <th>Notes</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr><td class="glyph">╭</td><td class="codepoint">U+256D</td><td>Bash card top-left</td><td>also used by autocomplete, help, session picker, settings panes</td></tr>
+    <tr><td class="glyph">╮</td><td class="codepoint">U+256E</td><td>top-right corner</td><td></td></tr>
+    <tr><td class="glyph">╰</td><td class="codepoint">U+2570</td><td>bottom-left corner</td><td></td></tr>
+    <tr><td class="glyph">╯</td><td class="codepoint">U+256F</td><td>bottom-right corner</td><td></td></tr>
+    <tr><td class="glyph">─</td><td class="codepoint">U+2500</td><td>horizontal lines</td><td>also <code>theme::SEPARATOR_CHAR</code></td></tr>
+    <tr><td class="glyph">│</td><td class="codepoint">U+2502</td><td>vertical lines</td><td>Bash card body left border (right is missing — #39)</td></tr>
+    <tr><td class="glyph">⬚</td><td class="codepoint">U+2B1A</td><td>Read tool icon</td><td>open square — read-only inspection</td></tr>
+    <tr><td class="glyph">▣</td><td class="codepoint">U+25A3</td><td>Write/Edit/MultiEdit/NotebookEdit/Delete</td><td>filled square — mutation</td></tr>
+    <tr><td class="glyph">⌕</td><td class="codepoint">U+2315</td><td>Glob/Grep/LS</td><td>magnifier</td></tr>
+    <tr class="outlier"><td class="glyph">⟩</td><td class="codepoint">U+27E9</td><td><strong>Bash (outlier)</strong></td><td>directional chevron in a sea of geometric shapes — flagged in #39 for replacement with <code>▶</code> (U+25B6)</td></tr>
+    <tr><td class="glyph">◇</td><td class="codepoint">U+25C7</td><td>Task/Agent (Subagent)</td><td>diamond — delegated worker</td></tr>
+    <tr><td class="glyph">⊕</td><td class="codepoint">U+2295</td><td>WebFetch/WebSearch</td><td>circled plus — fetch from outside</td></tr>
+    <tr><td class="glyph">⊙</td><td class="codepoint">U+2299</td><td>ExitPlanMode/Config</td><td>circled dot — meta op</td></tr>
+    <tr><td class="glyph">◌</td><td class="codepoint">U+25CC</td><td>TodoWrite</td><td>dotted circle — checklist</td></tr>
+    <tr><td class="glyph">⇄</td><td class="codepoint">U+21C4</td><td>Move/EnterWorktree</td><td>bidirectional arrows</td></tr>
+    <tr><td class="glyph">○</td><td class="codepoint">U+25CB</td><td>fallback tool icon · todo Pending · permission/plan-approval unfocused</td><td>open circle — reused across multiple semantics (single code point)</td></tr>
+    <tr><td class="glyph">✓</td><td class="codepoint">U+2713</td><td>completed status · permission Allow icon · todo Completed</td><td><code>theme::ICON_COMPLETED</code></td></tr>
+    <tr><td class="glyph">✗</td><td class="codepoint">U+2717</td><td>failed status · permission Reject icon</td><td><code>theme::ICON_FAILED</code></td></tr>
+    <tr><td class="glyph">❯</td><td class="codepoint">U+276F</td><td>input prompt</td><td><code>theme::PROMPT_CHAR</code></td></tr>
+    <tr><td class="glyph">·</td><td class="codepoint">U+00B7</td><td>permission-prompt option separator</td><td>middle dot — used to space the inline options in <code>render_permission_lines</code> (<code>"  ·  "</code>, DIM)</td></tr>
+    <tr><td class="glyph">•</td><td class="codepoint">U+2022</td><td>plan-approval pre-approved actions list</td><td>bullet — used in plan-approval prompt's optional pre-approved actions block (DIM)</td></tr>
+    <tr><td class="glyph">?</td><td class="codepoint">U+003F</td><td>question-prompt header marker · help toggle key</td><td>RUST_ORANGE in question header; same key activates help</td></tr>
+    <tr class="outlier"><td class="glyph">|</td><td class="codepoint">U+007C</td><td>question-prompt horizontal-options separator</td><td>ASCII pipe used between options in the horizontal question layout (<code>"  |  "</code>, DIM) — sits next to box-drawing <code>│</code>; flagged in #40 for replacement</td></tr>
+    <tr><td class="glyph">[ ]</td><td class="codepoint">U+005B / U+005D</td><td>footer mode/model badges · multi-select checkbox</td><td>ASCII brackets wrap each footer badge; the multi-select checkbox in question prompt uses <code>[x]</code> / <code>[ ]</code></td></tr>
+    <tr><td class="glyph">⠋ ⠙ ⠹</td><td class="codepoint">U+280B…</td><td>spinner frames</td><td>Braille spinner during in-progress states (10 frames in <code>SPINNER_FRAMES</code>)</td></tr>
+    <tr><td class="glyph">▸</td><td class="codepoint">U+25B8</td><td>selection indicator</td><td>permission / question / plan-approval options · todo InProgress · autocomplete selected row</td></tr>
+    <tr><td class="glyph">&gt;</td><td class="codepoint">U+003E</td><td>trust prompt selected action · MCP server-list selected marker</td><td>ASCII greater-than (white-on-RUST_ORANGE bold for selected, leading space for unselected)</td></tr>
+  </tbody>
+</table>
+
+<p class="footnote">forge · TUI map · 2026-05-07 · open in any modern browser · prefers Berkeley Mono / JetBrains Mono / IBM Plex Mono / SF Mono · scope: <strong>current state only</strong> — anything new lands here in the same PR that lands the code</p>
+
+</main>
+</body>
+</html>
