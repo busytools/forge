@@ -854,6 +854,7 @@
     <dl>
       <dt>code</dt><dd><code>crates/forge-tui/src/ui/help.rs</code> — <code>render_keys_help</code> for Keys, <code>render_two_column_help</code> for Slash / Subagents</dd>
       <dt>tabs</dt><dd>switch with <code>&lt;</code> / <code>&gt;</code> arrows; arrow keys scroll within Slash / Subagents</dd>
+      <dt>platform-aware bindings</dt><dd>Input-editing shortcuts swap modifiers per OS — macOS uses <code>Cmd+Z</code> / <code>Cmd+Shift+Z</code> (undo / redo), <code>Alt+Left/Right</code> (word nav), <code>Alt+Backspace/Delete</code> (word delete), and <code>Cmd+C</code> / <code>Cmd+V</code> for copy / paste. Linux + Windows use <code>Ctrl+</code> for all of these. <code>Ctrl+C</code> still works as fallback copy + interrupt-on-empty everywhere. Constants: <code>CMD_MOD</code> / <code>WORD_NAV_MOD</code> / <code>WORD_NAV_MOD_EXCLUDED</code> in <code>app/keys.rs</code>. Reaching the app on macOS requires the kitty enhanced-keyboard protocol (Ghostty / kitty / WezTerm); forge-tui negotiates the relevant flags at startup.</dd>
     </dl>
   </div>
 </div>

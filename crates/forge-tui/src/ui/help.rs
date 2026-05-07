@@ -25,6 +25,20 @@ const HELP_BUILTIN_SLASH_COMMANDS: [(&str, &str); 5] = [
     ("/usage", "Open usage"),
 ];
 
+// Platform-aware key labels: macOS uses Cmd / Alt for native conventions,
+// other OSes use Ctrl. Mirrors the modifier constants in `app::keys`.
+const fn word_nav_label() -> &'static str {
+    if cfg!(target_os = "macos") { "Alt+Left/Right" } else { "Ctrl+Left/Right" }
+}
+
+const fn word_delete_label() -> &'static str {
+    if cfg!(target_os = "macos") { "Alt+Backspace/Delete" } else { "Ctrl+Backspace/Delete" }
+}
+
+const fn undo_redo_label() -> &'static str {
+    if cfg!(target_os = "macos") { "Cmd+z / Cmd+Shift+z" } else { "Ctrl+z/y" }
+}
+
 pub fn is_active(app: &App) -> bool {
     app.is_help_active()
 }
@@ -247,12 +261,12 @@ fn build_key_help_items(app: &App) -> Vec<(String, String)> {
         items.push(("Shift+Enter".to_owned(), "Insert newline".to_owned()));
         items.push(("Up/Down".to_owned(), "Move cursor / scroll chat".to_owned()));
         items.push(("Left/Right".to_owned(), "Move cursor".to_owned()));
-        items.push(("Ctrl+Left/Right".to_owned(), "Word left/right".to_owned()));
+        items.push((word_nav_label().to_owned(), "Word left/right".to_owned()));
         items.push(("Home/End".to_owned(), "Line start/end".to_owned()));
         items.push(("Backspace".to_owned(), "Delete before".to_owned()));
         items.push(("Delete".to_owned(), "Delete after".to_owned()));
-        items.push(("Ctrl+Backspace/Delete".to_owned(), "Delete word".to_owned()));
-        items.push(("Ctrl+z/y".to_owned(), "Undo/redo".to_owned()));
+        items.push((word_delete_label().to_owned(), "Delete word".to_owned()));
+        items.push((undo_redo_label().to_owned(), "Undo/redo".to_owned()));
         items.push(("Paste".to_owned(), "Insert text".to_owned()));
     }
 
