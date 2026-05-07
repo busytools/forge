@@ -476,7 +476,14 @@ fn append_assistant_tool_block(
         render_context.layout_generation,
         render_context.options.tools_collapsed,
     );
+    // Capture the tool's wrapped-row offset within this message *after*
+    // any leading blank from the prev-was-tool/has-body-content gap so
+    // mouse hit-testing can locate the rendered row range directly
+    // from the tool's own state — no need to walk text-block heights
+    // (which can return None when their cache version is stale).
+    let y_in_msg = layout.height;
     layout.push_lines(lines, height, wrapped_lines);
+    tc.last_measured_y_in_msg = y_in_msg;
     if height > 0 {
         state.has_body_content = true;
     }
@@ -1607,6 +1614,7 @@ mod tests {
             pending_permission: None,
             pending_question: None,
             collapsed_override: None,
+            last_measured_y_in_msg: 0,
         }
     }
 

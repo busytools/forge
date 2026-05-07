@@ -275,11 +275,11 @@ fn try_toggle_tool_call_at_click(app: &mut App, mouse: MouseEvent) -> bool {
 }
 
 /// Map the chat-area click coordinate to a `(message_idx, block_idx)`
-/// pair when the cell falls on a tool-call block. The walk is lenient:
-/// blocks with no cached measurement (e.g. just-invalidated text blocks)
-/// fall back to a measured-vs-total estimate so a stale text block
-/// can't lock the entire hit-test out. Returns `None` for clicks
-/// outside the chat area or on non-tool-call rows.
+/// pair when the cell lands on a rendered tool-call's y-range.
+///
+/// Each tool call records its own `last_measured_y_in_msg` during the
+/// assistant render pass, so this hit-test reads only data the renderer
+/// just committed — no fragile peer-block height walks.
 fn locate_tool_call_block_at_click(app: &App, mouse: MouseEvent) -> Option<(usize, usize)> {
     let chat_area = app.rendered_chat_area;
     if chat_area.width == 0 || chat_area.height == 0 {
@@ -298,7 +298,9 @@ fn locate_tool_call_block_at_click(app: &App, mouse: MouseEvent) -> Option<(usiz
     let absolute_row = local_row.checked_add(app.viewport.scroll_offset)?;
 
     // Find the message that owns this row via the existing prefix-sum
-    // index; clamp against the message count.
+    // index, then walk only that message's tool-call blocks. Each tool
+    // stores its own y-offset within the message and its measured
+    // height, so the inclusion test is just an interval check.
     if app.messages.is_empty() {
         return None;
     }
@@ -308,15 +310,38 @@ fn locate_tool_call_block_at_click(app: &App, mouse: MouseEvent) -> Option<(usiz
     }
     let msg_start = app.viewport.cumulative_height_before(msg_idx);
     let row_within_msg = absolute_row.checked_sub(msg_start)?;
+    let width = chat_area.width;
+    for (block_idx, block) in app.messages[msg_idx].blocks.iter().enumerate() {
+        let MessageBlock::ToolCall(tc) = block else {
+            continue;
+        };
+        if tc.last_measured_height == 0 || tc.last_measured_width != width {
+            continue;
+        }
+        let y_start = tc.last_measured_y_in_msg;
+        let y_end = y_start.saturating_add(tc.last_measured_height);
+        if row_within_msg >= y_start && row_within_msg < y_end {
+            tracing::debug!(
+                target: crate::logging::targets::APP_INPUT,
+                event_name = "tool_call_hit_test",
+                outcome = "hit",
+                msg_idx,
+                block_idx,
+                tool_id = %tc.id,
+                row_within_msg,
+                y_start,
+                y_end,
+                "click landed inside tool-call rendered range",
+            );
+            return Some((msg_idx, block_idx));
+        }
+    }
     tracing::debug!(
         target: crate::logging::targets::APP_INPUT,
         event_name = "tool_call_hit_test",
-        outcome = "geometry",
+        outcome = "no_hit",
         mouse_row = mouse.row,
         mouse_column = mouse.column,
-        chat_y = chat_area.y,
-        chat_width = chat_area.width,
-        chat_height = chat_area.height,
         scroll_offset = app.viewport.scroll_offset,
         absolute_row,
         msg_idx,
@@ -324,67 +349,7 @@ fn locate_tool_call_block_at_click(app: &App, mouse: MouseEvent) -> Option<(usiz
         msg_start,
         row_within_msg,
         msg_height = app.viewport.message_height(msg_idx),
-        "click reached chat area, mapped to message",
-    );
-
-    // Walk blocks summing per-block heights until the click row is
-    // covered. Unmeasured blocks fall back to 0 height — a small
-    // misalignment is preferable to silently giving up.
-    let width = chat_area.width;
-    let mut cursor = 0usize;
-    for (block_idx, block) in app.messages[msg_idx].blocks.iter().enumerate() {
-        let height = block_visible_height(block, width).unwrap_or(0);
-        if height == 0 {
-            continue;
-        }
-        let next = cursor.saturating_add(height);
-        if row_within_msg >= cursor && row_within_msg < next {
-            let hit_kind = match block {
-                MessageBlock::ToolCall(_) => "tool",
-                MessageBlock::Text(_) => "text",
-                MessageBlock::Notice(_) => "notice",
-                MessageBlock::Welcome(_) => "welcome",
-                MessageBlock::ImageAttachment(_) => "image",
-            };
-            tracing::debug!(
-                target: crate::logging::targets::APP_INPUT,
-                event_name = "tool_call_hit_test",
-                outcome = "hit_block",
-                hit_kind,
-                msg_idx,
-                block_idx,
-                row_within_msg,
-                cursor_before = cursor,
-                cursor_after = next,
-                "click landed inside a measured block",
-            );
-            return matches!(block, MessageBlock::ToolCall(_)).then_some((msg_idx, block_idx));
-        }
-        cursor = next;
-    }
-    tracing::debug!(
-        target: crate::logging::targets::APP_INPUT,
-        event_name = "tool_call_hit_test",
-        outcome = "no_hit",
-        msg_idx,
-        row_within_msg,
-        cursor_after = cursor,
-        msg_height = app.viewport.message_height(msg_idx),
-        "walked all blocks without covering click row",
+        "click did not match any tool's recorded y-range",
     );
     None
-}
-
-/// Cached rendered height of a single message block at a given width,
-/// or `None` when the block hasn't been measured at that width yet.
-fn block_visible_height(block: &MessageBlock, width: u16) -> Option<usize> {
-    match block {
-        MessageBlock::Text(b) => b.cache.height_at(width),
-        MessageBlock::Notice(b) => b.text.cache.height_at(width),
-        MessageBlock::Welcome(b) => b.cache.height_at(width),
-        MessageBlock::ImageAttachment(b) => b.cache.height_at(width),
-        MessageBlock::ToolCall(tc) => {
-            (tc.last_measured_width == width).then_some(tc.last_measured_height)
-        }
-    }
 }

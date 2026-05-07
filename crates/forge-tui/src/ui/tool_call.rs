@@ -299,6 +299,7 @@ mod tests {
             pending_permission: None,
             pending_question: None,
             collapsed_override: None,
+            last_measured_y_in_msg: 0,
         }
     }
 
@@ -1008,6 +1009,7 @@ mod tests {
             pending_permission: None,
             pending_question: None,
             collapsed_override: None,
+            last_measured_y_in_msg: 0,
         };
         assert_eq!(content_summary(&tc), "done");
     }
@@ -1041,6 +1043,7 @@ mod tests {
             pending_permission: None,
             pending_question: None,
             collapsed_override: None,
+            last_measured_y_in_msg: 0,
         };
         assert_eq!(content_summary(&tc), "bad");
     }
@@ -1076,6 +1079,7 @@ mod tests {
             pending_permission: None,
             pending_question: None,
             collapsed_override: None,
+            last_measured_y_in_msg: 0,
         };
         assert_eq!(content_summary(&tc), "Exit code 1");
     }
@@ -1134,6 +1138,7 @@ mod tests {
             pending_permission: None,
             pending_question: None,
             collapsed_override: None,
+            last_measured_y_in_msg: 0,
         };
 
         let mut out = Vec::new();

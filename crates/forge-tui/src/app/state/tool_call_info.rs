@@ -52,6 +52,13 @@ pub struct ToolCallInfo {
     /// Hashed into the message render signature so flipping it
     /// invalidates the message-level render cache.
     pub collapsed_override: Option<bool>,
+    /// Wrapped-row offset of this tool inside its parent message,
+    /// captured during the assistant render pass. Combined with
+    /// `last_measured_height` (and `viewport.cumulative_height_before`)
+    /// it gives the absolute y-range used by mouse-click hit-testing.
+    /// Cleared back to 0 whenever the tool isn't currently rendered
+    /// (hidden subagent children, layout dirty, fresh construction).
+    pub last_measured_y_in_msg: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -137,6 +144,7 @@ impl ToolCallInfo {
         self.last_measured_height = 0;
         self.last_measured_layout_epoch = 0;
         self.last_measured_layout_generation = 0;
+        self.last_measured_y_in_msg = 0;
         self.mark_tool_call_render_dirty();
     }
 

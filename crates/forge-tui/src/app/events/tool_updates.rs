@@ -717,6 +717,7 @@ mod tests {
             pending_permission: None,
             pending_question: None,
             collapsed_override: None,
+            last_measured_y_in_msg: 0,
         }
     }
 
@@ -752,6 +753,7 @@ mod tests {
             pending_permission: None,
             pending_question: None,
             collapsed_override: None,
+            last_measured_y_in_msg: 0,
         }
     }
 

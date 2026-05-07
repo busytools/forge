@@ -518,6 +518,7 @@ mod tests {
             pending_permission: None,
             pending_question: None,
             collapsed_override: None,
+            last_measured_y_in_msg: 0,
         }
     }
 
@@ -4675,6 +4676,7 @@ mod tests {
         if let MessageBlock::ToolCall(tc) = &mut app.messages[msg_idx].blocks[block_idx] {
             tc.last_measured_width = chat_width;
             tc.last_measured_height = tool_height;
+            tc.last_measured_y_in_msg = 0;
             tc.last_measured_layout_epoch = tc.layout_epoch;
             tc.last_measured_layout_generation = app.viewport.layout_generation;
         } else {
@@ -4708,6 +4710,7 @@ mod tests {
         if let MessageBlock::ToolCall(tc) = &mut app.messages[msg_idx].blocks[block_idx] {
             tc.last_measured_width = chat_width;
             tc.last_measured_height = tool_height;
+            tc.last_measured_y_in_msg = 0;
             tc.last_measured_layout_epoch = tc.layout_epoch;
             tc.last_measured_layout_generation = app.viewport.layout_generation;
         }
@@ -4742,6 +4745,7 @@ mod tests {
         let mut tool = tool_call("tool-x", model::ToolCallStatus::InProgress);
         tool.last_measured_width = chat_width;
         tool.last_measured_height = 3;
+        tool.last_measured_y_in_msg = 2; // sits after the 2-row text block
 
         app.messages.push(assistant_msg(vec![
             MessageBlock::Text(text_block),
