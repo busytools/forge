@@ -395,14 +395,13 @@
   Assistant prose, full markdown rendering. Code blocks, lists, inline emphasis,
   links — all handled via <span class="dim">tui-markdown</span> / <span class="dim">syntect</span>.
 
-  <span class="success">✓</span> <span class="bold">⬚</span> crates/forge-tui/src/app.rs
-  <span class="success">✓</span> <span class="bold">▣</span> crates/forge-tui/src/app.rs (+12, -3)
+  <span class="success">✓</span> <span class="bold">⬚</span> <span class="bold">Read</span> crates/forge-tui/src/app.rs
+  <span class="success">✓</span> <span class="bold">▣</span> <span class="bold">Edit</span> crates/forge-tui/src/app.rs (+12, -3)
 
-  <span class="dim">╭─</span> <span class="success">✓</span> <span class="bold">Bash</span> <span class="dim">cargo nextest run -p forge-tui</span> <span class="dim">─╮</span>
-  <span class="dim">│</span>  $ cargo nextest run -p forge-tui
-  <span class="dim">│</span>     <span class="dim">Compiling forge-tui v0.14.2</span>
-  <span class="dim">│</span>  <span class="success">Summary [4.2s] 1554 tests run: 1554 passed</span>
-  <span class="dim">╰────────────────────────────────────────────────────────────────────────╯</span>
+  <span class="success">✓</span> <span class="bold">▶</span> <span class="bold">Bash</span> cargo nextest run -p forge-tui
+  <span class="dim">│  </span>$ cargo nextest run -p forge-tui
+  <span class="dim">│  </span>   <span class="dim">Compiling forge-tui v0.14.2</span>
+  <span class="dim">└─ </span><span class="success">Summary [4.2s] 1565 tests run: 1565 passed</span>
   <span class="muted-c">────────────────────────────────────────────────────────────────────────────</span>
   <span class="dim">[</span><span class="accent">2/5</span><span class="dim">]</span> Adding tests for the near-threshold branch
   <span class="accent">❯</span> <span class="dim italic">Type your message…</span>
@@ -499,7 +498,7 @@
 <!-- ============================================================== -->
 <h2 class="section-title" id="tools">Tool calls</h2>
 
-<p class="intro">Tool invocations render in two shapes today — most are flat single-line rows; <code>Bash</code> alone gets a bordered card. <code>TodoWrite</code> uses a dedicated checklist widget. Subagent / Task rendering uses its own treatment.</p>
+<p class="intro">Every tool invocation renders through the same path: a single title row at column 2 (status icon + kind icon + display title) followed, when there's body content, by lines prefixed with <code>  │  </code> (DIM). No bordered cards — Bash, Read, Edit, Grep, etc. all share one shape. The body content varies by tool kind (raw terminal output for Bash, syntax-highlighted code for Read, unified diff for Edit / Write / MultiEdit, etc.).</p>
 
 <div class="surface">
   <div class="surface-head">
@@ -507,45 +506,48 @@
     <div class="when">visible: any tool call that isn't Bash / TodoWrite / Subagent</div>
   </div>
   <div class="surface-body">
-    <p>Single line: 2-space indent + status icon (success / fail / spinner) in status color + space + tool kind icon (white bold) + space + display title (markdown inline spans, default fg). Body lines (when present) prefix each with "<code>  │  </code>" dim (5 chars: 2 + box-drawing-vertical + 2), last line with "<code>  └─ </code>" dim (5 chars). Tool name as a text label is <strong>not</strong> rendered — only the kind icon. The title text often includes the path/command from claude's tool args.</p>
-    <p><strong>Collapsed</strong> (when <code>app.tools_collapsed</code> is on via Ctrl+O, and the tool call has no diff / pending permission / pending question): the body collapses to a single summary line "<code>  └─ &lt;content_summary&gt;  ctrl+o to expand</code>" (all DIM). The summary text comes from <code>content_summary</code> — last non-empty line of terminal output (capped at 80 chars), or the file name for a Diff, or an MCP resource path, etc.</p>
+    <p>Single line: 2-space indent + status icon (success / fail / spinner) in status color + space + tool kind icon (white bold) + space + <strong>kind label</strong> (white bold — "Read", "Edit", "Bash", etc. from <code>theme::tool_name_label</code>) + space + display title (markdown inline spans, default fg). Body lines (when present) prefix each with "<code>  │  </code>" dim (5 chars: 2 + box-drawing-vertical + 2), last line with "<code>  └─ </code>" dim (5 chars). If <code>tc.title</code> from claude already starts with the kind label (e.g. claude often sends "Read /path/to/file.rs"), the duplicate prefix is stripped so the column reads cleanly.</p>
+    <p><strong>Collapsed</strong> (when <code>app.tools_collapsed</code> is on, and the tool call has no diff / pending permission / pending question): the body collapses to a single summary line "<code>  └─ &lt;content_summary&gt;  ctrl+x to expand</code>" (all DIM). The summary text comes from <code>content_summary</code> — last non-empty line of terminal output (capped at 80 chars), or the file name for a Diff, or an MCP resource path, etc.</p>
     <div class="term">
       <pre class="indent">
-  <span class="success">✓</span> <span class="bold">⬚</span> crates/forge-tui/src/app.rs
-  <span class="success">✓</span> <span class="bold">▣</span> crates/forge-tui/src/app/events/rate_limit.rs (+34, -2)
-  <span class="success">✓</span> <span class="bold">▣</span> crates/forge-tui/src/app/events/new_file.rs
-  <span class="success">✓</span> <span class="bold">⌕</span> "is_using_overage"
-  <span class="success">✓</span> <span class="bold">⌕</span> crates/**/Cargo.toml
-  <span class="success">✓</span> <span class="bold">⊕</span> https://docs.rs/ratatui/latest/ratatui/
-  <span class="error">✗</span> <span class="bold">⬚</span> crates/forge-tui/src/missing.rs</pre>
+  <span class="success">✓</span> <span class="bold">⬚</span> <span class="bold">Read</span> /path/to/file.rs
+  <span class="success">✓</span> <span class="bold">▣</span> <span class="bold">Edit</span> /path/to/file.rs (+34, -2)
+  <span class="success">✓</span> <span class="bold">▣</span> <span class="bold">Write</span> /path/to/new_file.rs
+  <span class="success">✓</span> <span class="bold">⌕</span> <span class="bold">Grep</span> "is_using_overage"
+  <span class="success">✓</span> <span class="bold">⌕</span> <span class="bold">Glob</span> crates/**/Cargo.toml
+  <span class="success">✓</span> <span class="bold">▶</span> <span class="bold">Bash</span> cargo nextest run -p forge-tui
+  <span class="success">✓</span> <span class="bold">⊕</span> <span class="bold">WebFetch</span> https://docs.rs/ratatui/latest/ratatui/
+  <span class="error">✗</span> <span class="bold">⬚</span> <span class="bold">Read</span> /path/to/missing.rs</pre>
     </div>
     <dl>
       <dt>code</dt><dd><code>crates/forge-tui/src/ui/tool_call/standard.rs::render_tool_call_title</code></dd>
-      <dt>icons</dt><dd>per <code>theme::tool_name_label</code>: Read=⬚ · Write/Edit/MultiEdit/NotebookEdit/Delete=▣ · Grep/Glob/LS=⌕ · WebFetch/WebSearch=⊕ · Move/EnterWorktree=⇄ · ExitPlanMode/Config=⊙ · TodoWrite=◌ · Task/Agent=◇ · fallback=○</dd>
-      <dt>plan-mode aliases</dt><dd>when <code>current_mode_id == "plan"</code>: Write title becomes "Create Plan", Edit/MultiEdit becomes "Update Plan"</dd>
+      <dt>icons + labels</dt><dd>per <code>theme::tool_name_label</code>: Read (⬚) · Write / Edit / MultiEdit / NotebookEdit / Delete (▣) · Grep / Glob / LS (⌕) · Bash (▶) · WebFetch / WebSearch (⊕) · Move / EnterWorktree (⇄) · ExitPlanMode / Config (⊙) · TodoWrite (◌) · Task / Agent → "Subagent" (◇) · fallback "Tool" (○)</dd>
+      <dt>duplication strip</dt><dd>if <code>tc.title</code> starts with "<code>&lt;kind&gt; </code>" (kind label + space), the prefix is stripped so we don't render "Read Read /path"</dd>
+      <dt>plan-mode aliases</dt><dd>when <code>current_mode_id == "plan"</code>: Write title becomes "Create Plan", Edit/MultiEdit becomes "Update Plan". The kind label still renders ("Write Create Plan" / "Edit Update Plan") — the alias replaces the path, the kind label still names the tool.</dd>
     </dl>
   </div>
 </div>
 
 <div class="surface">
   <div class="surface-head">
-    <h4>Bash card (the outlier)</h4>
-    <div class="when">visible: every Bash (Execute) tool call — Bash always uses this path, never collapses to a standard row even when <code>tools_collapsed</code> is on (the <code>tools_collapsed</code> toggle only affects non-Execute tools)</div>
+    <h4>Bash row</h4>
+    <div class="when">visible: every Bash tool call</div>
   </div>
   <div class="surface-body">
-    <p>Bordered card. Title row sits <strong>on the top border</strong> (not inside the box), which shifts content right by ~3 cols vs standard rows. Body rows have left border <code>│</code> but <strong>no right border</strong> — the card is open on its right side, with corners hanging in space. The card title shows the literal text "<strong>Bash</strong>" (white bold) — the kind icon is <strong>discarded</strong> in this render path (<code>let (_tool_icon, tool_label) = …</code>), so the chevron <code>⟩</code> from <code>theme::tool_name_label("Bash")</code> is effectively dead code for Bash today (it would only appear if Bash ever fell through to the standard renderer, which it doesn't). Tracked as issue <a href="https://github.com/busytools/forge/issues/39">#39</a>.</p>
+    <p>Same standard tool-call shape — status icon + <code>▶</code> kind icon (white bold) + the command as the title. Body lines prefixed with <code>  │  </code> (DIM) carry the terminal output through <code>render_terminal_output</code> (ANSI handling, output cap at <code>TERMINAL_MAX_LINES = 12</code>). Last line uses <code>  └─ </code>. No bordered card — Bash flows through the same path every other tool uses.</p>
     <div class="term">
       <pre class="indent">
-  <span class="dim">╭─</span> <span class="success">✓</span> <span class="bold">Bash</span> <span class="dim">cargo nextest run -p forge-tui events::rate_limit</span> <span class="dim">─╮</span>
-  <span class="dim">│</span>  $ cargo nextest run -p forge-tui events::rate_limit
-  <span class="dim">│</span>     <span class="dim">Compiling forge-primitives v0.14.2</span>
-  <span class="dim">│</span>     <span class="dim">Compiling forge-tui v0.14.2</span>
-  <span class="dim">│</span>  <span class="success">Summary [4.197s] 5 tests run: 5 passed, 1174 skipped</span>
-  <span class="dim">╰─────────────────────────────────────────────────────────────────────────╯</span></pre>
+  <span class="success">✓</span> <span class="bold">▶</span> <span class="bold">Bash</span> cargo nextest run -p forge-tui events::rate_limit
+  <span class="dim">│  </span>$ cargo nextest run -p forge-tui events::rate_limit
+  <span class="dim">│  </span>   <span class="dim">Compiling forge-primitives v0.14.2</span>
+  <span class="dim">│  </span>   <span class="dim">Compiling forge-tui v0.14.2</span>
+  <span class="dim">└─ </span><span class="success">Summary [4.197s] 5 tests run: 5 passed, 1174 skipped</span></pre>
     </div>
     <dl>
-      <dt>code</dt><dd><code>crates/forge-tui/src/ui/tool_call/execute.rs::render_execute_with_borders</code> · dispatch in <code>tool_call.rs:85</code> (<code>if is_execute { … return; }</code>)</dd>
-      <dt>known issues</dt><dd><a href="https://github.com/busytools/forge/issues/39">#39</a> — title shifted ~3 cols right (sits on top border, breaks alignment with standard rows), right border missing on body lines, body prefix off-by-one vs standard tool body, kind icon (chevron) discarded — when the icon ever does get rendered for Bash, the chevron is the lone directional glyph in a sea of geometric shapes</dd>
+      <dt>code</dt><dd>title via <code>standard::render_tool_call_title</code>, body via <code>standard::render_tool_content</code> (which dispatches to <code>render_terminal_output</code> when <code>tc.is_execute_tool()</code>). When the run failed, only the first non-empty stderr line is shown via <code>failed_execute_first_line</code>.</dd>
+      <dt>icon</dt><dd>kind icon <code>▶</code> (<code>U+25B6</code>) in white bold (matches every other tool icon's coloring). Replaces the previous chevron <code>⟩</code> (the lone directional outlier).</dd>
+      <dt>collapse</dt><dd>same Ctrl+X behaviour as other tools — collapses to the single-line summary <code>  └─ &lt;last output line&gt;  ctrl+x to expand</code> in DIM.</dd>
+      <dt>resolves</dt><dd><a href="https://github.com/busytools/forge/issues/39">#39</a> — Bash no longer has its own bordered card. Same shape as Edit / Read / Grep. <code>render_execute_with_borders</code> deleted entirely.</dd>
     </dl>
   </div>
 </div>
@@ -845,7 +847,7 @@
   <span class="dim">│</span>                                                                     <span class="dim">│</span>
   <span class="dim">│</span>     <span class="bold">↑ / ↓</span><span class="dim"> : </span>Scroll chat       <span class="bold">Esc</span><span class="dim"> : </span>Cancel current action          <span class="dim">│</span>
   <span class="dim">│</span>     <span class="bold">PgUp / PgDn</span><span class="dim"> : </span>Page         <span class="bold">Ctrl+C</span><span class="dim"> : </span>Interrupt response          <span class="dim">│</span>
-  <span class="dim">│</span>     <span class="bold">Ctrl+O</span><span class="dim"> : </span>Expand tool      <span class="bold">?</span><span class="dim"> : </span>Toggle help                    <span class="dim">│</span>
+  <span class="dim">│</span>     <span class="bold">Ctrl+X</span><span class="dim"> : </span>Expand tool      <span class="bold">?</span><span class="dim"> : </span>Toggle help                    <span class="dim">│</span>
   <span class="dim">│</span>                                                                     <span class="dim">│</span>
   <span class="dim">╰─────────────────────────────────────────────────────────────────────╯</span></pre>
     </div>
@@ -1251,9 +1253,8 @@
   <span class="dim">│  </span><span class="error">File not found: crates/forge-tui/src/missing.rs</span>
   <span class="dim">└─ </span><span class="error">error path: open() returned ENOENT</span>
 
-  <span class="dim">╭─</span> <span class="error">✗</span> <span class="bold">Bash</span> <span class="dim">cargo build --release</span> <span class="dim">─╮</span>
-  <span class="dim">│</span>  <span class="error">error: failed to compile due to 3 errors</span>
-  <span class="dim">╰────────────────────────────────────────────────╯</span></pre>
+  <span class="error">✗</span> <span class="bold">▶</span> cargo build --release
+  <span class="dim">└─ </span><span class="error">error: failed to compile due to 3 errors</span></pre>
     </div>
     <p class="hint">Internal-error variant (timeouts, panics, SDK protocol violations):</p>
     <div class="term">
@@ -1323,7 +1324,7 @@
 <!-- ============================================================== -->
 <h2 class="section-title" id="glyphs">Glyphs in use</h2>
 
-<p class="intro">Inventory of every Unicode character used as chrome — borders, icons, status, separators. The chevron <code>⟩</code> for Bash is the lone outlier in the tool-icon family (every other tool icon is a closed geometric shape).</p>
+<p class="intro">Inventory of every Unicode character used as chrome — borders, icons, status, separators. Tool icons are all closed geometric shapes (no directional outliers).</p>
 
 <table class="glyph-table">
   <thead>
@@ -1335,16 +1336,17 @@
     </tr>
   </thead>
   <tbody>
-    <tr><td class="glyph">╭</td><td class="codepoint">U+256D</td><td>Bash card top-left</td><td>also used by autocomplete, help, session picker, settings panes</td></tr>
+    <tr><td class="glyph">╭</td><td class="codepoint">U+256D</td><td>autocomplete, help, session picker, settings panes (rounded box top-left)</td><td>via <code>BorderType::Rounded</code> on the wrapping <code>Block</code></td></tr>
     <tr><td class="glyph">╮</td><td class="codepoint">U+256E</td><td>top-right corner</td><td></td></tr>
     <tr><td class="glyph">╰</td><td class="codepoint">U+2570</td><td>bottom-left corner</td><td></td></tr>
     <tr><td class="glyph">╯</td><td class="codepoint">U+256F</td><td>bottom-right corner</td><td></td></tr>
-    <tr><td class="glyph">─</td><td class="codepoint">U+2500</td><td>horizontal lines</td><td>also <code>theme::SEPARATOR_CHAR</code></td></tr>
-    <tr><td class="glyph">│</td><td class="codepoint">U+2502</td><td>vertical lines</td><td>Bash card body left border (right is missing — #39)</td></tr>
+    <tr><td class="glyph">─</td><td class="codepoint">U+2500</td><td>horizontal lines</td><td>also <code>theme::SEPARATOR_CHAR</code> (used between chat and input, etc.)</td></tr>
+    <tr><td class="glyph">│</td><td class="codepoint">U+2502</td><td>vertical lines</td><td>standard tool body prefix (<code>  │  </code>) · overlay borders</td></tr>
+    <tr><td class="glyph">└</td><td class="codepoint">U+2514</td><td>tool body last-line corner</td><td>combined with <code>─</code> as <code>└─ </code> for the final body row</td></tr>
     <tr><td class="glyph">⬚</td><td class="codepoint">U+2B1A</td><td>Read tool icon</td><td>open square — read-only inspection</td></tr>
     <tr><td class="glyph">▣</td><td class="codepoint">U+25A3</td><td>Write/Edit/MultiEdit/NotebookEdit/Delete</td><td>filled square — mutation</td></tr>
     <tr><td class="glyph">⌕</td><td class="codepoint">U+2315</td><td>Glob/Grep/LS</td><td>magnifier</td></tr>
-    <tr class="outlier"><td class="glyph">⟩</td><td class="codepoint">U+27E9</td><td><strong>Bash (outlier)</strong></td><td>directional chevron in a sea of geometric shapes — flagged in #39 for replacement with <code>▶</code> (U+25B6)</td></tr>
+    <tr><td class="glyph">▶</td><td class="codepoint">U+25B6</td><td>Bash</td><td>black right-pointing triangle — execute. Used in the bordered Bash card title (RUST_ORANGE)</td></tr>
     <tr><td class="glyph">◇</td><td class="codepoint">U+25C7</td><td>Task/Agent (Subagent)</td><td>diamond — delegated worker</td></tr>
     <tr><td class="glyph">⊕</td><td class="codepoint">U+2295</td><td>WebFetch/WebSearch</td><td>circled plus — fetch from outside</td></tr>
     <tr><td class="glyph">⊙</td><td class="codepoint">U+2299</td><td>ExitPlanMode/Config</td><td>circled dot — meta op</td></tr>

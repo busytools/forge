@@ -257,7 +257,7 @@ fn handle_global_shortcuts(app: &mut App, key: KeyEvent) -> bool {
             toggle_todo_panel_focus(app);
             true
         }
-        (KeyCode::Char('o'), m) if m == KeyModifiers::CONTROL => {
+        (KeyCode::Char('x'), m) if m == KeyModifiers::CONTROL => {
             toggle_all_tool_calls(app);
             true
         }
