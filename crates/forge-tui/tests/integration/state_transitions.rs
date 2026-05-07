@@ -12,6 +12,90 @@ use pretty_assertions::assert_eq;
 
 use crate::helpers::{send_client_event, test_app};
 
+// Helpers: build wire `forge_primitives::Message` envelopes and dispatch
+// via `ClientEvent::SdkMessageReceived`. Replaces the old
+// `model::SessionUpdate(...)` pattern after Task 4 of the dispatcher
+// collapse refactor (issue #67).
+
+fn assistant_message(content: Vec<forge_primitives::ContentBlock>) -> forge_primitives::Message {
+    forge_primitives::Message::Assistant {
+        message: forge_primitives::AssistantEnvelope {
+            id: "msg_test".to_owned(),
+            role: "assistant".to_owned(),
+            model: "claude-test".to_owned(),
+            content,
+            stop_reason: None,
+            stop_sequence: None,
+            usage: None,
+        },
+        session_id: "test-session".to_owned(),
+        parent_tool_use_id: None,
+        error: None,
+        uuid: None,
+    }
+}
+
+fn user_message(content: Vec<forge_primitives::ContentBlock>) -> forge_primitives::Message {
+    forge_primitives::Message::User {
+        message: forge_primitives::UserEnvelope { role: "user".to_owned(), content },
+        session_id: "test-session".to_owned(),
+        parent_tool_use_id: None,
+        uuid: None,
+        tool_use_result: None,
+    }
+}
+
+fn system_message(subtype: &str, data: serde_json::Value) -> forge_primitives::Message {
+    forge_primitives::Message::System {
+        subtype: subtype.to_owned(),
+        session_id: Some("test-session".to_owned()),
+        data,
+    }
+}
+
+/// Dispatch a wire `Message` envelope. Adopts `"test-session"` as the
+/// app's session id on first use so the `SdkMessageReceived` session-id
+/// guard accepts the envelope (`test_app()` defaults `session_id` to
+/// `None`).
+fn send_msg(app: &mut forge_tui::app::App, msg: forge_primitives::Message) {
+    if app.session_id.is_none() {
+        app.session_id = Some(model::SessionId::new("test-session"));
+    }
+    send_client_event(
+        app,
+        ClientEvent::SdkMessageReceived {
+            session_id: "test-session".to_owned(),
+            msg,
+        },
+    );
+}
+
+/// Convenience: build a wire `tool_use` content block.
+fn tool_use_block(
+    id: &str,
+    name: &str,
+    input: serde_json::Value,
+) -> forge_primitives::ContentBlock {
+    forge_primitives::ContentBlock::ToolUse { id: id.to_owned(), name: name.to_owned(), input }
+}
+
+/// Convenience: build a wire `text` content block.
+fn text_block(text: &str) -> forge_primitives::ContentBlock {
+    forge_primitives::ContentBlock::Text { text: text.to_owned() }
+}
+
+/// Convenience: build a wire `tool_result` content block (success).
+fn tool_result_block(
+    tool_use_id: &str,
+    content: serde_json::Value,
+) -> forge_primitives::ContentBlock {
+    forge_primitives::ContentBlock::ToolResult {
+        tool_use_id: tool_use_id.to_owned(),
+        content,
+        is_error: false,
+    }
+}
+
 // --- Full turn lifecycle ---
 
 #[tokio::test]
@@ -20,22 +104,17 @@ async fn full_turn_lifecycle_text_only() {
     assert!(matches!(app.status, AppStatus::Ready));
 
     // Agent starts thinking (thought chunk)
-    let thought =
-        model::ContentChunk::new(model::ContentBlock::Text(model::TextContent::new("Planning...")));
-    send_client_event(
+    send_msg(
         &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::AgentThoughtChunk(thought)),
+        assistant_message(vec![forge_primitives::ContentBlock::Thinking {
+            thinking: "Planning...".to_owned(),
+            signature: String::new(),
+        }]),
     );
     assert!(matches!(app.status, AppStatus::Thinking));
 
     // Agent streams text
-    let chunk = model::ContentChunk::new(model::ContentBlock::Text(model::TextContent::new(
-        "Here is my answer.",
-    )));
-    send_client_event(
-        &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::AgentMessageChunk(chunk)),
-    );
+    send_msg(&mut app, assistant_message(vec![text_block("Here is my answer.")]));
     assert!(matches!(app.status, AppStatus::Running));
 
     // Turn completes
@@ -49,38 +128,24 @@ async fn full_turn_lifecycle_with_tool_calls() {
     let mut app = test_app();
 
     // Text chunk
-    let chunk = model::ContentChunk::new(model::ContentBlock::Text(model::TextContent::new(
-        "Let me check.",
-    )));
-    send_client_event(
-        &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::AgentMessageChunk(chunk)),
-    );
+    send_msg(&mut app, assistant_message(vec![text_block("Let me check.")]));
 
     // Tool call
-    let tc = model::ToolCall::new("tc-flow", "Read src/lib.rs")
-        .kind(model::ToolKind::Read)
-        .status(model::ToolCallStatus::InProgress);
-    send_client_event(&mut app, ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc)));
-
-    // Tool completes
-    let fields = model::ToolCallUpdateFields::new().status(model::ToolCallStatus::Completed);
-    send_client_event(
+    send_msg(
         &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::ToolCallUpdate(
-            model::ToolCallUpdate::new("tc-flow", fields),
-        )),
+        assistant_message(vec![tool_use_block(
+            "tc-flow",
+            "Read",
+            serde_json::json!({"file_path": "src/lib.rs"}),
+        )]),
     );
+
+    // Tool completes (tool result envelope)
+    send_msg(&mut app, user_message(vec![tool_result_block("tc-flow", serde_json::json!("ok"))]));
     assert!(matches!(app.status, AppStatus::Thinking));
 
     // More text
-    let chunk2 = model::ContentChunk::new(model::ContentBlock::Text(model::TextContent::new(
-        " The file looks good.",
-    )));
-    send_client_event(
-        &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::AgentMessageChunk(chunk2)),
-    );
+    send_msg(&mut app, assistant_message(vec![text_block(" The file looks good.")]));
 
     // Turn completes
     send_client_event(&mut app, ClientEvent::TurnComplete { terminal_reason: None });
@@ -100,14 +165,10 @@ async fn todowrite_tool_call_updates_todo_list() {
         ]
     });
 
-    let mut meta = serde_json::Map::new();
-    meta.insert("claudeCode".into(), serde_json::json!({"toolName": "TodoWrite"}));
-    let tc = model::ToolCall::new("todo-1", "TodoWrite")
-        .kind(model::ToolKind::Other)
-        .status(model::ToolCallStatus::InProgress)
-        .raw_input(raw_input)
-        .meta(meta);
-    send_client_event(&mut app, ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc)));
+    send_msg(
+        &mut app,
+        assistant_message(vec![tool_use_block("todo-1", "TodoWrite", raw_input)]),
+    );
 
     assert_eq!(app.todos.len(), 2);
     assert_eq!(app.todos[0].content, "Fix bug");
@@ -124,30 +185,15 @@ async fn todowrite_replaces_previous_items_and_clears_for_terminal_payloads() {
         {"content": "Task A", "status": "in_progress", "activeForm": "Doing A"},
         {"content": "Task B", "status": "pending", "activeForm": "Doing B"},
     ]});
-    let mut first_meta = serde_json::Map::new();
-    first_meta.insert("claudeCode".into(), serde_json::json!({"toolName": "TodoWrite"}));
-    let first_tc = model::ToolCall::new("todo-r1", "TodoWrite")
-        .status(model::ToolCallStatus::InProgress)
-        .raw_input(first)
-        .meta(first_meta);
-    send_client_event(
-        &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(first_tc)),
-    );
+    send_msg(&mut app, assistant_message(vec![tool_use_block("todo-r1", "TodoWrite", first)]));
     assert_eq!(app.todos.len(), 2);
 
     let replacement = serde_json::json!({"todos": [
         {"content": "Task C", "status": "pending", "activeForm": "Doing C"},
     ]});
-    let mut replacement_meta = serde_json::Map::new();
-    replacement_meta.insert("claudeCode".into(), serde_json::json!({"toolName": "TodoWrite"}));
-    let replacement_tc = model::ToolCall::new("todo-r2", "TodoWrite")
-        .status(model::ToolCallStatus::InProgress)
-        .raw_input(replacement)
-        .meta(replacement_meta);
-    send_client_event(
+    send_msg(
         &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(replacement_tc)),
+        assistant_message(vec![tool_use_block("todo-r2", "TodoWrite", replacement)]),
     );
     assert_eq!(app.todos.len(), 1, "second TodoWrite replaces first");
     assert_eq!(app.todos[0].content, "Task C");
@@ -155,15 +201,9 @@ async fn todowrite_replaces_previous_items_and_clears_for_terminal_payloads() {
     let completed = serde_json::json!({"todos": [
         {"content": "Done task", "status": "completed", "activeForm": "Done"},
     ]});
-    let mut completed_meta = serde_json::Map::new();
-    completed_meta.insert("claudeCode".into(), serde_json::json!({"toolName": "TodoWrite"}));
-    let completed_tc = model::ToolCall::new("todo-done", "TodoWrite")
-        .status(model::ToolCallStatus::InProgress)
-        .raw_input(completed)
-        .meta(completed_meta);
-    send_client_event(
+    send_msg(
         &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(completed_tc)),
+        assistant_message(vec![tool_use_block("todo-done", "TodoWrite", completed)]),
     );
 
     assert!(app.todos.is_empty(), "all-completed clears the list");
@@ -183,13 +223,7 @@ async fn error_then_new_turn_recovers() {
     assert!(matches!(app.status, AppStatus::Error));
 
     // New text chunk (simulates user retry) starts fresh
-    let chunk = model::ContentChunk::new(model::ContentBlock::Text(model::TextContent::new(
-        "Retry answer",
-    )));
-    send_client_event(
-        &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::AgentMessageChunk(chunk)),
-    );
+    send_msg(&mut app, assistant_message(vec![text_block("Retry answer")]));
     assert!(matches!(app.status, AppStatus::Running));
 }
 
@@ -207,21 +241,13 @@ async fn chunks_across_turns_open_a_new_assistant_message() {
     let mut app = test_app();
 
     // First turn.
-    let c1 = model::ContentChunk::new(model::ContentBlock::Text(model::TextContent::new("Turn 1")));
-    send_client_event(
-        &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::AgentMessageChunk(c1)),
-    );
+    send_msg(&mut app, assistant_message(vec![text_block("Turn 1")]));
     send_client_event(&mut app, ClientEvent::TurnComplete { terminal_reason: None });
     assert_eq!(app.messages.len(), 1);
 
     // Second turn (no user message between turns). Should open a
     // fresh assistant ChatMessage rather than appending to "Turn 1".
-    let c2 = model::ContentChunk::new(model::ContentBlock::Text(model::TextContent::new("Turn 2")));
-    send_client_event(
-        &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::AgentMessageChunk(c2)),
-    );
+    send_msg(&mut app, assistant_message(vec![text_block("Turn 2")]));
 
     assert_eq!(app.messages.len(), 2, "second turn must NOT merge into the first");
     let first = app.messages.first().expect("first turn message");
@@ -243,20 +269,22 @@ async fn chunks_across_turns_open_a_new_assistant_message() {
 async fn tool_call_content_update() {
     let mut app = test_app();
 
-    let tc =
-        model::ToolCall::new("tc-content", "Read file").status(model::ToolCallStatus::InProgress);
-    send_client_event(&mut app, ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc)));
-
-    // Update with content
-    let content = vec![model::ToolCallContent::from("file contents here")];
-    let fields = model::ToolCallUpdateFields::new()
-        .content(content)
-        .status(model::ToolCallStatus::Completed);
-    send_client_event(
+    send_msg(
         &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::ToolCallUpdate(
-            model::ToolCallUpdate::new("tc-content", fields),
-        )),
+        assistant_message(vec![tool_use_block(
+            "tc-content",
+            "Read",
+            serde_json::json!({"file_path": "file"}),
+        )]),
+    );
+
+    // Tool result with content payload
+    send_msg(
+        &mut app,
+        user_message(vec![tool_result_block(
+            "tc-content",
+            serde_json::json!("file contents here"),
+        )]),
     );
 
     let (mi, bi) = app.tool_call_index["tc-content"];
@@ -275,13 +303,7 @@ async fn auto_scroll_maintained_during_streaming() {
     assert!(app.viewport.auto_scroll);
 
     for _ in 0..20 {
-        let chunk = model::ContentChunk::new(model::ContentBlock::Text(model::TextContent::new(
-            "More text. ",
-        )));
-        send_client_event(
-            &mut app,
-            ClientEvent::SessionUpdate(model::SessionUpdate::AgentMessageChunk(chunk)),
-        );
+        send_msg(&mut app, assistant_message(vec![text_block("More text. ")]));
     }
 
     assert!(app.viewport.auto_scroll, "auto_scroll should stay true during streaming");
@@ -295,21 +317,26 @@ async fn stress_many_tool_calls_in_one_turn() {
     app.status = AppStatus::Running;
 
     for i in 0..50 {
-        let tc = model::ToolCall::new(format!("stress-{i}"), format!("Op {i}"))
-            .status(model::ToolCallStatus::InProgress);
-        send_client_event(&mut app, ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc)));
+        send_msg(
+            &mut app,
+            assistant_message(vec![tool_use_block(
+                &format!("stress-{i}"),
+                "Read",
+                serde_json::json!({}),
+            )]),
+        );
     }
 
     assert_eq!(app.tool_call_index.len(), 50);
 
-    // Complete all
+    // Complete all (tool result envelopes finalise each tool_use_id).
     for i in 0..50 {
-        let fields = model::ToolCallUpdateFields::new().status(model::ToolCallStatus::Completed);
-        send_client_event(
+        send_msg(
             &mut app,
-            ClientEvent::SessionUpdate(model::SessionUpdate::ToolCallUpdate(
-                model::ToolCallUpdate::new(format!("stress-{i}"), fields),
-            )),
+            user_message(vec![tool_result_block(
+                &format!("stress-{i}"),
+                serde_json::json!("ok"),
+            )]),
         );
     }
 
@@ -331,32 +358,26 @@ async fn mode_updates_switch_known_modes_fall_back_for_unknown_ids_and_noop_with
         ],
     });
 
-    send_client_event(
+    send_msg(
         &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::CurrentModeUpdate(
-            model::CurrentModeUpdate::new("plan"),
-        )),
+        system_message("status", serde_json::json!({"permissionMode": "plan"})),
     );
     let mode = app.mode.as_ref().expect("mode should still exist");
     assert_eq!(mode.current_mode_id, "plan");
     assert_eq!(mode.current_mode_name, "Plan");
 
-    send_client_event(
+    send_msg(
         &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::CurrentModeUpdate(
-            model::CurrentModeUpdate::new("unknown-mode"),
-        )),
+        system_message("status", serde_json::json!({"permissionMode": "unknown-mode"})),
     );
     let mode = app.mode.as_ref().expect("mode should still exist");
     assert_eq!(mode.current_mode_id, "unknown-mode");
     assert_eq!(mode.current_mode_name, "unknown-mode");
 
     let mut no_mode_app = test_app();
-    send_client_event(
+    send_msg(
         &mut no_mode_app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::CurrentModeUpdate(
-            model::CurrentModeUpdate::new("plan-mode"),
-        )),
+        system_message("status", serde_json::json!({"permissionMode": "plan-mode"})),
     );
     assert!(no_mode_app.mode.is_none(), "update without existing mode state is a no-op");
 }
@@ -367,34 +388,17 @@ async fn mode_updates_switch_known_modes_fall_back_for_unknown_ids_and_noop_with
 async fn text_between_tool_calls_creates_separate_blocks() {
     let mut app = test_app();
 
-    let c1 =
-        model::ContentChunk::new(model::ContentBlock::Text(model::TextContent::new("Before tool")));
-    send_client_event(
+    send_msg(&mut app, assistant_message(vec![text_block("Before tool")]));
+    send_msg(
         &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::AgentMessageChunk(c1)),
+        assistant_message(vec![tool_use_block("tc-inter", "Read", serde_json::json!({}))]),
     );
-
-    let tc =
-        model::ToolCall::new("tc-inter", "Read file").status(model::ToolCallStatus::InProgress);
-    send_client_event(&mut app, ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc)));
-
-    let c2 =
-        model::ContentChunk::new(model::ContentBlock::Text(model::TextContent::new("After tool")));
-    send_client_event(
+    send_msg(&mut app, assistant_message(vec![text_block("After tool")]));
+    send_msg(
         &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::AgentMessageChunk(c2)),
+        assistant_message(vec![tool_use_block("tc-inter2", "Write", serde_json::json!({}))]),
     );
-
-    let tc2 =
-        model::ToolCall::new("tc-inter2", "Write file").status(model::ToolCallStatus::InProgress);
-    send_client_event(&mut app, ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc2)));
-
-    let c3 =
-        model::ContentChunk::new(model::ContentBlock::Text(model::TextContent::new("Final text")));
-    send_client_event(
-        &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::AgentMessageChunk(c3)),
-    );
+    send_msg(&mut app, assistant_message(vec![text_block("Final text")]));
 
     // Should be: Text, ToolCall, Text, ToolCall, Text = 5 blocks
     assert_eq!(app.messages.len(), 1);
@@ -411,25 +415,23 @@ async fn rapid_turn_complete_then_new_streaming() {
     let mut app = test_app();
 
     // First turn
-    let c1 = model::ContentChunk::new(model::ContentBlock::Text(model::TextContent::new("Turn 1")));
-    send_client_event(
-        &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::AgentMessageChunk(c1)),
-    );
+    send_msg(&mut app, assistant_message(vec![text_block("Turn 1")]));
     send_client_event(&mut app, ClientEvent::TurnComplete { terminal_reason: None });
     assert!(matches!(app.status, AppStatus::Ready));
     assert_eq!(app.files_accessed, 0);
 
     // Immediately start second turn
-    let c2 = model::ContentChunk::new(model::ContentBlock::Text(model::TextContent::new("Turn 2")));
-    send_client_event(
-        &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::AgentMessageChunk(c2)),
-    );
+    send_msg(&mut app, assistant_message(vec![text_block("Turn 2")]));
     assert!(matches!(app.status, AppStatus::Running));
 
-    let tc = model::ToolCall::new("tc-t2", "Read file").status(model::ToolCallStatus::InProgress);
-    send_client_event(&mut app, ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc)));
+    send_msg(
+        &mut app,
+        assistant_message(vec![tool_use_block(
+            "tc-t2",
+            "Read",
+            serde_json::json!({"file_path": "file"}),
+        )]),
+    );
     assert_eq!(app.files_accessed, 1);
 
     send_client_event(&mut app, ClientEvent::TurnComplete { terminal_reason: None });
@@ -441,21 +443,19 @@ async fn rapid_turn_complete_then_new_streaming() {
 async fn available_commands_update_replaces_previous() {
     let mut app = test_app();
 
-    let cmd1 = model::AvailableCommand::new("/help", "Help");
-    let cmd2 = model::AvailableCommand::new("/clear", "Clear");
-    let update1 = model::AvailableCommandsUpdate::new(vec![cmd1, cmd2]);
-    send_client_event(
+    // System(init) wire envelope carries `slash_commands` as a string array;
+    // the wire walker derives `AvailableCommand` envelopes from it. Description
+    // and input_hint are dropped by that path, but this test only asserts count.
+    send_msg(
         &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::AvailableCommandsUpdate(update1)),
+        system_message("init", serde_json::json!({"slash_commands": ["/help", "/clear"]})),
     );
     assert_eq!(app.available_commands.len(), 2);
 
     // New update replaces, not appends
-    let cmd3 = model::AvailableCommand::new("/commit", "Commit");
-    let update2 = model::AvailableCommandsUpdate::new(vec![cmd3]);
-    send_client_event(
+    send_msg(
         &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::AvailableCommandsUpdate(update2)),
+        system_message("init", serde_json::json!({"slash_commands": ["/commit"]})),
     );
     assert_eq!(app.available_commands.len(), 1, "replaced, not appended");
 }
@@ -464,14 +464,16 @@ async fn available_commands_update_replaces_previous() {
 async fn error_during_tool_calls_leaves_tool_calls_intact() {
     let mut app = test_app();
 
-    let c = model::ContentChunk::new(model::ContentBlock::Text(model::TextContent::new("working")));
-    send_client_event(
-        &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::AgentMessageChunk(c)),
-    );
+    send_msg(&mut app, assistant_message(vec![text_block("working")]));
 
-    let tc = model::ToolCall::new("tc-err", "Read file").status(model::ToolCallStatus::InProgress);
-    send_client_event(&mut app, ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc)));
+    send_msg(
+        &mut app,
+        assistant_message(vec![tool_use_block(
+            "tc-err",
+            "Read",
+            serde_json::json!({"file_path": "file"}),
+        )]),
+    );
 
     send_client_event(
         &mut app,
@@ -502,9 +504,14 @@ async fn files_accessed_accumulates_across_tool_calls_in_one_turn() {
     let mut app = test_app();
 
     for i in 0..3 {
-        let tc = model::ToolCall::new(format!("tc-acc-{i}"), format!("Read {i}"))
-            .status(model::ToolCallStatus::InProgress);
-        send_client_event(&mut app, ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc)));
+        send_msg(
+            &mut app,
+            assistant_message(vec![tool_use_block(
+                &format!("tc-acc-{i}"),
+                "Read",
+                serde_json::json!({"file_path": format!("file-{i}")}),
+            )]),
+        );
     }
 
     assert_eq!(app.files_accessed, 3, "one per tool call");
