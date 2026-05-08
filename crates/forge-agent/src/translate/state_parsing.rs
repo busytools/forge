@@ -5,7 +5,7 @@
 use serde_json::{Map, Value};
 
 use forge_primitives::{
-    ApiRetryError, FastModeState, RateLimitStatus, RuntimeSessionState, SessionUpdate,
+    ApiRetryError, FastModeState, RateLimitStatus, RuntimeSessionState,
     SettingsParseErrorUpdate,
 };
 
@@ -111,15 +111,17 @@ fn parse_api_retry_error(value: Option<&Value>) -> ApiRetryError {
     }
 }
 
-/// Mirrors upstream's `buildRateLimitUpdate(rateLimitInfo)`. Returns
-/// `Some(SessionUpdate::RateLimitUpdate { ... })` when the input has a
-/// recognised `status`, populating optional fields when present.
+/// Mirrors upstream's `buildRateLimitUpdate(rateLimitInfo)`. Returns a
+/// typed `RateLimitUpdate` when the input has a recognised `status`,
+/// populating optional fields when present.
 #[must_use]
-pub fn build_rate_limit_update(rate_limit_info: Option<&Value>) -> Option<SessionUpdate> {
+pub fn build_rate_limit_update(
+    rate_limit_info: Option<&Value>,
+) -> Option<forge_primitives::RateLimitUpdate> {
     let info = rate_limit_info.and_then(record)?;
     let status = parse_rate_limit_status(info.get("status"))?;
 
-    Some(SessionUpdate::RateLimitUpdate(forge_primitives::RateLimitUpdate {
+    Some(forge_primitives::RateLimitUpdate {
         status,
         resets_at: number_field(info, &["resetsAt"]),
         utilization: number_field(info, &["utilization"]),
@@ -137,12 +139,12 @@ pub fn build_rate_limit_update(rate_limit_info: Option<&Value>) -> Option<Sessio
             .map(str::to_owned),
         is_using_overage: info.get("isUsingOverage").and_then(Value::as_bool),
         surpassed_threshold: number_field(info, &["surpassedThreshold"]),
-    }))
+    })
 }
 
-/// Mirrors upstream's `buildApiRetryUpdate(message)`. Returns the
-/// `ApiRetryUpdate` `SessionUpdate` when all three required numeric
-/// fields parse correctly.
+/// Mirrors upstream's `buildApiRetryUpdate(message)`. Returns a typed
+/// `ApiRetryUpdate` when all three required numeric fields parse
+/// correctly.
 ///
 /// Out-of-range values (negative or above `u64::MAX as f64` for
 /// the count fields, above `u16::MAX as f64` for the status field)
@@ -151,20 +153,22 @@ pub fn build_rate_limit_update(rate_limit_info: Option<&Value>) -> Option<Sessio
 /// upstream filters NaN/inf, so the helpers only see finite values
 /// to guard.
 #[must_use]
-pub fn build_api_retry_update(message: &Map<String, Value>) -> Option<SessionUpdate> {
+pub fn build_api_retry_update(
+    message: &Map<String, Value>,
+) -> Option<forge_primitives::ApiRetryUpdate> {
     let attempt = parse_clamped_u64(message, &["attempt"])?;
     let max_retries = parse_clamped_u64(message, &["max_retries", "maxRetries"])?;
     let retry_delay_ms = parse_clamped_u64(message, &["retry_delay_ms", "retryDelayMs"])?;
     let error_status = parse_clamped_u16_optional(message, &["error_status", "errorStatus"]);
     let error = parse_api_retry_error(message.get("error"));
 
-    Some(SessionUpdate::ApiRetryUpdate(forge_primitives::ApiRetryUpdate {
+    Some(forge_primitives::ApiRetryUpdate {
         attempt,
         max_retries,
         retry_delay_ms,
         error_status,
         error,
-    }))
+    })
 }
 
 /// Mirrors `normalizeSettingsParseError(value)`.
@@ -233,19 +237,9 @@ mod tests {
 
         let v = json!({"status": "allowed", "resetsAt": 100.0, "utilization": 0.5});
         let u = build_rate_limit_update(Some(&v)).expect("update built");
-        if let SessionUpdate::RateLimitUpdate(forge_primitives::RateLimitUpdate {
-            status,
-            resets_at,
-            utilization,
-            ..
-        }) = u
-        {
-            assert_eq!(status, RateLimitStatus::Allowed);
-            assert_eq!(resets_at, Some(100.0));
-            assert_eq!(utilization, Some(0.5));
-        } else {
-            panic!("expected RateLimitUpdate");
-        }
+        assert_eq!(u.status, RateLimitStatus::Allowed);
+        assert_eq!(u.resets_at, Some(100.0));
+        assert_eq!(u.utilization, Some(0.5));
     }
 
     #[test]
@@ -263,22 +257,11 @@ mod tests {
         }))
         .unwrap();
         let u = build_api_retry_update(&map).expect("update built");
-        if let SessionUpdate::ApiRetryUpdate(forge_primitives::ApiRetryUpdate {
-            attempt,
-            max_retries,
-            retry_delay_ms,
-            error_status,
-            error,
-        }) = u
-        {
-            assert_eq!(attempt, 1);
-            assert_eq!(max_retries, 5);
-            assert_eq!(retry_delay_ms, 1000);
-            assert_eq!(error_status, Some(429));
-            assert!(matches!(error, ApiRetryError::RateLimit));
-        } else {
-            panic!("expected ApiRetryUpdate");
-        }
+        assert_eq!(u.attempt, 1);
+        assert_eq!(u.max_retries, 5);
+        assert_eq!(u.retry_delay_ms, 1000);
+        assert_eq!(u.error_status, Some(429));
+        assert!(matches!(u.error, ApiRetryError::RateLimit));
     }
 
     #[test]
@@ -292,15 +275,7 @@ mod tests {
         }))
         .unwrap();
         let u = build_api_retry_update(&map).expect("update built");
-        if let SessionUpdate::ApiRetryUpdate(forge_primitives::ApiRetryUpdate {
-            error_status,
-            ..
-        }) = u
-        {
-            assert_eq!(error_status, None);
-        } else {
-            panic!("expected ApiRetryUpdate");
-        }
+        assert_eq!(u.error_status, None);
 
         // Negative status — drop to None.
         let map: Map<String, Value> = serde_json::from_value(json!({
@@ -311,15 +286,7 @@ mod tests {
         }))
         .unwrap();
         let u = build_api_retry_update(&map).expect("update built");
-        if let SessionUpdate::ApiRetryUpdate(forge_primitives::ApiRetryUpdate {
-            error_status,
-            ..
-        }) = u
-        {
-            assert_eq!(error_status, None);
-        } else {
-            panic!("expected ApiRetryUpdate");
-        }
+        assert_eq!(u.error_status, None);
 
         // u64 count above max — required field, whole update drops.
         let map: Map<String, Value> = serde_json::from_value(json!({

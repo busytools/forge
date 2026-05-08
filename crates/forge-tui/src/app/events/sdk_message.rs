@@ -699,13 +699,13 @@ fn apply_settings_parse_errors(app: &mut App, data: &Value) {
 /// event handler.
 fn apply_api_retry_update(app: &mut App, data: &Value) {
     let Some(record) = data.as_object() else { return };
-    let Some(forge_primitives::SessionUpdate::ApiRetryUpdate(forge_primitives::ApiRetryUpdate {
+    let Some(forge_primitives::ApiRetryUpdate {
         attempt,
         max_retries,
         retry_delay_ms,
         error_status,
         error,
-    })) = build_api_retry_update(record)
+    }) = build_api_retry_update(record)
     else {
         return;
     };
@@ -822,9 +822,7 @@ fn handle_rate_limit_event(app: &mut App, msg: Message, _raw: &Value) {
         session_id = app.session_id.as_ref().map(ToString::to_string).as_deref().unwrap_or(""),
         rate_limit_info = %value,
     );
-    let Some(forge_primitives::SessionUpdate::RateLimitUpdate(wire)) =
-        build_rate_limit_update(Some(&value))
-    else {
+    let Some(wire) = build_rate_limit_update(Some(&value)) else {
         return;
     };
     // Convert wire-side types::RateLimitUpdate → model::RateLimitUpdate

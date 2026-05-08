@@ -1,14 +1,13 @@
-//! `SessionUpdate` — the streaming event the agent emits as it drives
-//! a session. Plus everything embedded inside it: chunks, tool-call
-//! envelopes, tool-output metadata, plan entries.
+//! Wire-side support types for streaming session events: content
+//! chunks, tool-call envelopes, tool-output metadata, plan entries.
+//!
+//! The legacy `SessionUpdate` enum that wrapped these types lived
+//! here too; it was deleted when the dispatcher-collapse refactor
+//! (issue #67) routed disk replay through the same raw walker as
+//! live messages, eliminating the typed dispatcher.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-
-use crate::runtime::{
-    AvailableAgent, AvailableCommand, CompactionTrigger, CurrentModel, FastModeState, ModeState,
-    RuntimeSessionState, SessionStatus,
-};
 
 /// Render-side chunk payload for streaming session updates
 /// (`SessionUpdate::AgentMessageChunk` etc.). Distinct from the
@@ -193,57 +192,12 @@ pub struct PlanEntry {
     pub active_form: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum SessionUpdate {
-    AgentMessageChunk { content: ChunkContent },
-    UserMessageChunk { content: ChunkContent },
-    AgentThoughtChunk { content: ChunkContent },
-    ToolCall { tool_call: ToolCall },
-    ToolCallUpdate { tool_call_update: ToolCallUpdate },
-    Plan { entries: Vec<PlanEntry> },
-    AvailableCommandsUpdate { commands: Vec<AvailableCommand> },
-    AvailableAgentsUpdate { agents: Vec<AvailableAgent> },
-    ModeStateUpdate { mode: ModeState },
-    CurrentModeUpdate { current_mode_id: String },
-    CurrentModelUpdate { current_model: CurrentModel },
-    ConfigOptionUpdate { option_id: String, value: Value },
-    FastModeUpdate { fast_mode_state: FastModeState },
-    RateLimitUpdate(crate::runtime::RateLimitUpdate),
-    ApiRetryUpdate(crate::runtime::ApiRetryUpdate),
-    PromptSuggestionUpdate { suggestion: String },
-    RuntimeSessionStateUpdate { state: RuntimeSessionState },
-    SettingsParseError(crate::runtime::SettingsParseErrorUpdate),
-    SessionStatusUpdate { status: SessionStatus },
-    CompactionBoundary { trigger: CompactionTrigger, pre_tokens: u64 },
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
-        ChunkContent, SessionUpdate, TaskMetadata, ToolCall, ToolCallContent, ToolCallUpdateFields,
-        ToolLocation,
+        ChunkContent, TaskMetadata, ToolCall, ToolCallContent, ToolCallUpdateFields, ToolLocation,
     };
-    use crate::{ApiRetryError, ApiRetryUpdate};
     use serde_json::json;
-
-    #[test]
-    fn api_retry_update_deserializes_unknown_error_defensively() {
-        let update: SessionUpdate = serde_json::from_value(serde_json::json!({
-            "type": "api_retry_update",
-            "attempt": 1,
-            "max_retries": 4,
-            "retry_delay_ms": 1000,
-            "error_status": null,
-            "error": "transport_timeout"
-        }))
-        .expect("deserialize api retry update");
-
-        assert!(matches!(
-            update,
-            SessionUpdate::ApiRetryUpdate(ApiRetryUpdate { error: ApiRetryError::Unknown, .. })
-        ));
-    }
 
     fn sample_tool_call() -> ToolCall {
         ToolCall {

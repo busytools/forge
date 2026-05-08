@@ -31,7 +31,7 @@
 //! - [`runtime`] — live runtime state: mode/model state, available
 //!   commands/agents/models, rate-limit views, retry classification,
 //!   terminal reasons.
-//! - [`session_update`] — `SessionUpdate` + everything it embeds
+//! - [`session_update`] — wire-side support types for streaming session events
 //!   (chunks, tool calls, tool-call updates, plan entries, output
 //!   metadata).
 //! - [`permission_ui`] — UI-side permission-prompt request/response
@@ -112,8 +112,7 @@ pub use runtime::{
 };
 pub use session_meta::{PromptChunk, SessionListEntry};
 pub use session_update::{
-    BashOutputMetadata, ChunkContent, PlanEntry, SessionUpdate, TaskMetadata,
-    TodoWriteOutputMetadata, ToolCall, ToolCallContent, ToolCallUpdate, ToolCallUpdateFields,
-    ToolLocation, ToolOutputMetadata,
+    BashOutputMetadata, ChunkContent, PlanEntry, TaskMetadata, TodoWriteOutputMetadata, ToolCall,
+    ToolCallContent, ToolCallUpdate, ToolCallUpdateFields, ToolLocation, ToolOutputMetadata,
 };
 pub use subagents::{EffortPreset, SubagentDefinition, SubagentMcpServerRef, SubagentMemory};
