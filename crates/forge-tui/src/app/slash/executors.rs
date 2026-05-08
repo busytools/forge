@@ -27,7 +27,6 @@ pub fn try_handle_submit(app: &mut App, text: &str) -> bool {
         "/mode" => handle_mode_submit(app, &parsed.args),
         "/model" => handle_model_submit(app, &parsed.args),
         "/effort" => handle_effort_submit(app, &parsed.args),
-        "/exit-plan-mode" => handle_exit_plan_mode_submit(app, &parsed.args),
         "/new" => handle_new_session_submit(app, &parsed.args),
         "/resume" => handle_resume_submit(app, &parsed.args),
         _ => handle_unknown_submit(app, parsed.name),
@@ -67,16 +66,6 @@ fn handle_effort_submit(app: &mut App, args: &[&str]) -> bool {
         push_system_message(app, format!("Failed to forward /effort: {e}"));
     }
     true
-}
-
-/// `/exit-plan-mode` — synonym for `/mode default`. Convenience for
-/// users (and the agent) who think of "exit plan" as a discrete action.
-fn handle_exit_plan_mode_submit(app: &mut App, args: &[&str]) -> bool {
-    if !args.is_empty() {
-        push_system_message(app, "Usage: /exit-plan-mode");
-        return true;
-    }
-    handle_mode_submit(app, &["default"])
 }
 
 fn handle_compact_submit(app: &mut App, args: &[&str]) -> bool {
