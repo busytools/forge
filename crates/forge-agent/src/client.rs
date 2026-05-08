@@ -30,7 +30,7 @@ pub enum AgentEvent {
         #[serde(default)]
         available_models: Vec<types::AvailableModel>,
         mode: Option<types::ModeState>,
-        history_updates: Option<Vec<types::SessionUpdate>>,
+        history_updates: Option<Vec<types::Message>>,
     },
     AuthRequired {
         method_name: String,
@@ -82,7 +82,7 @@ pub enum AgentEvent {
         #[serde(default)]
         available_models: Vec<types::AvailableModel>,
         mode: Option<types::ModeState>,
-        history_updates: Option<Vec<types::SessionUpdate>>,
+        history_updates: Option<Vec<types::Message>>,
     },
     SessionsListed {
         sessions: Vec<types::SessionListEntry>,

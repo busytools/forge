@@ -9,6 +9,7 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
 mod helpers;
+mod message_helpers;
 
 mod caching_pipeline;
 mod internal_failures;

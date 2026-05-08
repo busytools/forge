@@ -27,7 +27,6 @@ macro_rules! drop_if_stale_session {
 pub fn handle_client_event(app: &mut App, event: ClientEvent) {
     app.needs_redraw = true;
     match event {
-        ClientEvent::SessionUpdate(update) => super::handle_session_update_event(app, update),
         ClientEvent::PermissionRequest { request, response_tx } => {
             turn::handle_permission_request_event(app, request, response_tx);
         }

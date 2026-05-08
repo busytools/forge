@@ -311,24 +311,7 @@ pub(super) fn take_connection_slot() -> Option<ConnectionSlot> {
 
 #[cfg(test)]
 mod tests {
-    use super::type_converters::map_session_update;
     use crate::Cli;
-    use crate::agent::model;
-    use forge_primitives as types;
-
-    #[test]
-    fn map_session_update_preserves_config_option_update() {
-        let mapped = map_session_update(types::SessionUpdate::ConfigOptionUpdate {
-            option_id: "model".to_owned(),
-            value: serde_json::Value::String("sonnet".to_owned()),
-        });
-
-        let Some(model::SessionUpdate::ConfigOptionUpdate(cfg)) = mapped else {
-            panic!("expected ConfigOptionUpdate mapping");
-        };
-        assert_eq!(cfg.option_id, "model");
-        assert_eq!(cfg.value, serde_json::Value::String("sonnet".to_owned()));
-    }
 
     #[test]
     fn create_app_prewarms_file_index_for_startup_cwd() {
