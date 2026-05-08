@@ -422,6 +422,34 @@ fn build_options_with_callback(
             b = b.extra_arg("effort", Some(effort.to_owned()));
         }
     }
+
+    // Effort default — forge runs at max effort by default unless the
+    // user has explicitly set otherwise. Resolution order:
+    //   1. settings.json `effortLevel` (handled above).
+    //   2. `CLAUDE_CODE_EFFORT_LEVEL` env var — if set, defer to env
+    //      inheritance: don't pass `--effort` so the CLI picks up the
+    //      env var as-is. (Avoids the CLI flag overriding the user's
+    //      explicit env-var override.)
+    //   3. Otherwise: `--effort max`.
+    let effort_source: &'static str = if applied_effort.is_some() {
+        "settings"
+    } else {
+        match std::env::var("CLAUDE_CODE_EFFORT_LEVEL") {
+            Ok(env_value) if !env_value.trim().is_empty() => {
+                // Don't pass --effort flag; let env-var inheritance carry the
+                // value to the CLI (forge-sdk doesn't strip
+                // CLAUDE_CODE_EFFORT_LEVEL on spawn).
+                applied_effort = Some(env_value);
+                "env_var"
+            }
+            _ => {
+                applied_effort = Some("max".to_owned());
+                b = b.extra_arg("effort", Some("max".to_owned()));
+                "default_max"
+            }
+        }
+    };
+
     tracing::info!(
         target: crate::logging::targets::BRIDGE_LIFECYCLE,
         event_name = "forge_sdk_options_built",
@@ -431,6 +459,7 @@ fn build_options_with_callback(
         applied_permission_mode = applied_mode.unwrap_or("(none)"),
         applied_model = applied_model.as_deref().unwrap_or("(none)"),
         applied_effort = applied_effort.as_deref().unwrap_or("(none)"),
+        effort_source,
         cwd_present = !cwd.is_empty(),
         resume_present = resume.is_some(),
     );
