@@ -1,0 +1,27 @@
+[package]
+name = "forge-workspace"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "Multi-session orchestration: pools forge-agent Agents behind a forge.toml-driven workspace surface."
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+forge-primitives = { workspace = true }
+forge-agent = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+toml = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+parking_lot = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
