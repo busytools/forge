@@ -1,4 +1,4 @@
-use clap::Parser;
+use clap::{CommandFactory, Parser};
 use forge_tui::Cli;
 use forge_tui::error::AppError;
 use std::path::PathBuf;
@@ -21,6 +21,15 @@ fn main() {
 
 fn run() -> anyhow::Result<()> {
     let cli = Cli::parse();
+
+    // Short-circuit: --generate-completion writes a completion script
+    // to stdout and exits before any logging / TUI / workspace setup.
+    if let Some(shell) = cli.generate_completion {
+        let mut cmd = Cli::command();
+        clap_complete::generate(shell, &mut cmd, "forge", &mut std::io::stdout());
+        return Ok(());
+    }
+
     let _logging = forge_tui::logging::LoggingRuntime::init(&cli)?;
     let perf_path = forge_tui::logging::resolve_perf_path(&cli)?;
 
@@ -53,6 +62,16 @@ fn run() -> anyhow::Result<()> {
             Ok(w) => Rc::new(w),
             Err(err) => return Err(anyhow::anyhow!("forge: {err}")),
         };
+
+        // Validate the CLI's positional `<PROJECT>` arg, if any, before
+        // entering the TUI. This turns `forge xyz` (where `xyz` isn't in
+        // forge.toml) into a clean stderr error + non-zero exit instead
+        // of a TUI flash followed by ConnectionFailed.
+        if let Some(name) = cli.project.as_deref()
+            && let Err(err) = workspace.validate_project_name(name)
+        {
+            return Err(anyhow::anyhow!("forge: {err}"));
+        }
 
         // Phase 1: create app in Connecting state (instant, no I/O).
         // App holds an Rc clone; main retains the original so we can

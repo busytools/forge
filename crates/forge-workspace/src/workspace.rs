@@ -11,7 +11,7 @@ use forge_agent::client::SessionLaunchSettings;
 use forge_primitives::SDKSessionInfo;
 use parking_lot::Mutex;
 
-use crate::config::{LoadedConfig, load_from_dir};
+use crate::config::{LoadedConfig, LoadedProject, load_from_dir};
 use crate::error::WorkspaceError;
 use crate::target::{ProjectKey, SessionKey, SessionTarget};
 use crate::views::{ProjectView, SessionView};
@@ -26,11 +26,9 @@ use crate::views::{ProjectView, SessionView};
 /// `~/.claude-subspace/plans/2026-05-09-forge-tui-phase-1a-workspace-design.md`
 /// for the full contract.
 pub struct Workspace {
-    /// Retained for Phase 1b's per-account config-dir binding. After
-    /// `new` consumes it to load `forge.toml`, no current code path
-    /// re-reads it; the field stays on the struct so 1b can introduce
-    /// account-scoped re-resolution without restructuring the type.
-    #[allow(dead_code)]
+    /// Retained so error messages can reference the `forge.toml`
+    /// path the workspace was constructed from, and so Phase 1b's
+    /// per-account config-dir binding can re-resolve from here.
     config_dir: PathBuf,
     config: LoadedConfig,
     /// Catalog snapshot from `userdata::catalog::scan::list_sessions`,
@@ -125,6 +123,14 @@ impl Workspace {
         views
     }
 
+    /// Validate that `name` matches a project in `forge.toml`. Used
+    /// by callers (e.g. forge-tui's main) to fail fast on an unknown
+    /// CLI positional arg before TUI setup, rather than surface the
+    /// same error later via [`Self::get_agent_handle`].
+    pub fn validate_project_name(&self, name: &str) -> Result<(), WorkspaceError> {
+        self.find_project_by_name(name).map(|_| ())
+    }
+
     /// Hands out the `Arc<AgentHandle>` for the requested session,
     /// spawning the underlying Agent lazily if it isn't already pooled.
     /// Idempotent — repeated calls for the same target return the same
@@ -143,7 +149,7 @@ impl Workspace {
         target: SessionTarget,
         settings: SessionLaunchSettings,
     ) -> Result<Arc<AgentHandle>> {
-        let session_key = self.resolve_target(&target);
+        let session_key = self.resolve_target(&target)?;
 
         // Fast path: cache hit
         {
@@ -158,6 +164,11 @@ impl Workspace {
         match &target {
             SessionTarget::Default => {
                 let cwd = self.config.default_project().path.to_string_lossy().to_string();
+                handle.new_session(cwd, settings)?;
+            }
+            SessionTarget::Named(name) => {
+                let project = self.find_project_by_name(name)?;
+                let cwd = project.path.to_string_lossy().to_string();
                 handle.new_session(cwd, settings)?;
             }
             SessionTarget::Session(key) => {
@@ -184,28 +195,48 @@ impl Workspace {
     }
 
     /// Resolves a `SessionTarget` to the `SessionKey` used to look up
-    /// the pool. For `Default` with no on-disk session for the project,
-    /// returns a project-keyed placeholder (`__fresh__:<project_key>`)
-    /// so re-entry stays idempotent against the same fresh-session
-    /// intent.
-    fn resolve_target(&self, target: &SessionTarget) -> SessionKey {
+    /// the pool. For project-rooted targets (`Default` / `Named`) with
+    /// no on-disk session for the project, returns a project-keyed
+    /// placeholder (`__fresh__:<project_key>`) so re-entry stays
+    /// idempotent against the same fresh-session intent. For `Named`
+    /// with no matching project, returns
+    /// [`WorkspaceError::ProjectNotFound`].
+    fn resolve_target(&self, target: &SessionTarget) -> Result<SessionKey, WorkspaceError> {
         match target {
-            SessionTarget::Default => {
-                let project = self.config.default_project();
-                let key = ProjectKey::new(
-                    forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
-                        &project.path.to_string_lossy(),
-                    )),
-                );
-                if let Some(entries) = self.catalog.get(&key)
-                    && let Some(lead) = entries.first()
-                {
-                    return SessionKey::new(lead.session_id.clone());
-                }
-                SessionKey::new(format!("__fresh__:{}", key.as_str()))
+            SessionTarget::Default => Ok(self.lead_session_key_for(self.config.default_project())),
+            SessionTarget::Named(name) => {
+                let project = self.find_project_by_name(name)?;
+                Ok(self.lead_session_key_for(project))
             }
-            SessionTarget::Session(key) => key.clone(),
+            SessionTarget::Session(key) => Ok(key.clone()),
         }
+    }
+
+    /// Look up a project by `name` from `forge.toml`. Returns
+    /// [`WorkspaceError::ProjectNotFound`] when no project carries
+    /// that name.
+    fn find_project_by_name(&self, name: &str) -> Result<&LoadedProject, WorkspaceError> {
+        self.config.projects.iter().find(|project| project.name == name).ok_or_else(|| {
+            WorkspaceError::ProjectNotFound {
+                name: name.to_owned(),
+                path: self.config_dir.join("forge.toml"),
+            }
+        })
+    }
+
+    /// Map a project to the `SessionKey` of its lead (most-recent)
+    /// session, or to a `__fresh__:<project_key>` placeholder when the
+    /// project has nothing on disk yet.
+    fn lead_session_key_for(&self, project: &LoadedProject) -> SessionKey {
+        let key = ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(
+            Some(&project.path.to_string_lossy()),
+        ));
+        if let Some(entries) = self.catalog.get(&key)
+            && let Some(lead) = entries.first()
+        {
+            return SessionKey::new(lead.session_id.clone());
+        }
+        SessionKey::new(format!("__fresh__:{}", key.as_str()))
     }
 
     /// Graceful shutdown of every pooled Agent. Drains the pool, then
@@ -234,7 +265,7 @@ impl Workspace {
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used, clippy::unwrap_used)]
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
     use std::fs;
@@ -316,5 +347,67 @@ default = true
         // After shutdown, only our local clone remains. If shutdown
         // didn't actually release Workspace's reference, this fails.
         assert_eq!(Arc::strong_count(&handle), 1);
+    }
+
+    #[tokio::test]
+    async fn get_agent_handle_named_project_resolves() {
+        let dir = tempdir().expect("tempdir");
+        fs::write(
+            dir.path().join("forge.toml"),
+            r#"
+[[projects]]
+name = "forge"
+path = "~/Projects/forge"
+default = true
+
+[[projects]]
+name = "dotfiles"
+path = "~/Projects/dotfiles"
+"#,
+        )
+        .expect("write forge.toml");
+
+        let workspace = Workspace::new(dir.path().to_owned()).await.expect("new");
+        let _ = workspace
+            .get_agent_handle(SessionTarget::Default, SessionLaunchSettings::default())
+            .await
+            .expect("default");
+        let _ = workspace
+            .get_agent_handle(
+                SessionTarget::Named("dotfiles".to_owned()),
+                SessionLaunchSettings::default(),
+            )
+            .await
+            .expect("named");
+        assert_eq!(workspace.pool.lock().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn get_agent_handle_named_unknown_errors() {
+        let dir = tempdir().expect("tempdir");
+        fs::write(
+            dir.path().join("forge.toml"),
+            r#"
+[[projects]]
+name = "forge"
+path = "~/Projects/forge"
+default = true
+"#,
+        )
+        .expect("write forge.toml");
+
+        let workspace = Workspace::new(dir.path().to_owned()).await.expect("new");
+        let result = workspace
+            .get_agent_handle(
+                SessionTarget::Named("nonexistent".to_owned()),
+                SessionLaunchSettings::default(),
+            )
+            .await;
+        let Err(err) = result else { panic!("unknown project name should error") };
+        let err_string = format!("{err}");
+        assert!(
+            err_string.contains("nonexistent"),
+            "error should mention the project name; got: {err_string}"
+        );
     }
 }

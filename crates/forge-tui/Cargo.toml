@@ -26,6 +26,7 @@ forge-agent = { workspace = true }
 forge-workspace = { workspace = true }
 anyhow = { workspace = true }
 clap = { workspace = true }
+clap_complete = { workspace = true }
 crossterm = { workspace = true, features = ["event-stream"] }
 ansi-to-tui = { workspace = true }
 ignore = { workspace = true }

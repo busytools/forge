@@ -379,6 +379,11 @@ pub struct App {
     pub startup_session_picker_requested: bool,
     pub startup_recent_sessions_loaded: bool,
     pub startup_session_picker_resolved: bool,
+    /// Project name from the CLI's positional `<PROJECT>` argument, if
+    /// any. `None` means open the `default = true` project.
+    /// Forwarded to [`forge_workspace::SessionTarget::Named`] when the
+    /// connection task spins up.
+    pub startup_project: Option<String>,
 }
 
 impl App {
@@ -962,6 +967,7 @@ impl App {
             startup_session_picker_requested: false,
             startup_recent_sessions_loaded: false,
             startup_session_picker_resolved: false,
+            startup_project: None,
         }
     }
 

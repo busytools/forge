@@ -47,6 +47,17 @@ impl DiagnosticsPreset {
 // Each bool maps 1:1 to a CLI flag — clap-derive needs them as struct fields.
 #[allow(clippy::struct_excessive_bools)]
 pub struct Cli {
+    /// Project name to open. When omitted, opens the project marked
+    /// `default = true` in forge.toml. Must match a project's `name`
+    /// field in forge.toml exactly.
+    #[arg(value_name = "PROJECT")]
+    pub project: Option<String>,
+
+    /// Generate a shell completion script and print to stdout, then
+    /// exit. Hidden from --help; called by install-forge.sh.
+    #[arg(long, value_name = "SHELL", hide = true)]
+    pub generate_completion: Option<clap_complete::Shell>,
+
     /// Enable runtime diagnostics using a default log path when `--log-file` is omitted.
     #[arg(long)]
     pub enable_logs: bool,
@@ -90,11 +101,13 @@ pub struct Cli {
 #[cfg(test)]
 mod tests {
     use super::Cli;
-    use clap::Parser;
+    use clap::{CommandFactory, Parser};
 
     #[test]
     fn cli_parses_bare_forge_with_default_log_and_perf_flags() {
         let cli = Cli::try_parse_from(["forge"]).expect("parse");
+        assert!(cli.project.is_none());
+        assert!(cli.generate_completion.is_none());
         assert!(!cli.enable_logs);
         assert!(cli.diagnostics_preset.is_none());
         assert!(cli.log_file.is_none());
@@ -108,5 +121,31 @@ mod tests {
     #[test]
     fn cli_rejects_legacy_resume_flag() {
         assert!(Cli::try_parse_from(["forge", "--resume", "abc-123"]).is_err());
+    }
+
+    #[test]
+    fn cli_accepts_optional_positional_project() {
+        let cli = Cli::try_parse_from(["forge", "dotfiles"]).expect("parse");
+        assert_eq!(cli.project.as_deref(), Some("dotfiles"));
+    }
+
+    #[test]
+    fn cli_generate_completion_zsh_parses() {
+        let cli = Cli::try_parse_from(["forge", "--generate-completion", "zsh"]).expect("parse");
+        assert!(matches!(cli.generate_completion, Some(clap_complete::Shell::Zsh)));
+    }
+
+    #[test]
+    fn cli_help_does_not_surface_generate_completion() {
+        // Render --help and confirm the hidden flag isn't there.
+        // (Smoke test — clap's `hide = true` is the source of truth.)
+        let mut cmd = Cli::command();
+        let mut out = Vec::new();
+        cmd.write_help(&mut out).expect("write_help");
+        let help_text = String::from_utf8(out).expect("utf8");
+        assert!(
+            !help_text.contains("generate-completion"),
+            "hidden flag should not appear in --help"
+        );
     }
 }

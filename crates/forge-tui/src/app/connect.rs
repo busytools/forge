@@ -33,6 +33,10 @@ struct StartConnectionParams {
     event_tx: mpsc::UnboundedSender<ClientEvent>,
     workspace: Rc<forge_workspace::Workspace>,
     session_launch_settings: SessionLaunchSettings,
+    /// Project name from the CLI's positional `<PROJECT>` argument.
+    /// `None` opens the `default = true` project; `Some(name)`
+    /// resolves to [`forge_workspace::SessionTarget::Named`].
+    project: Option<String>,
 }
 
 /// Shorten a path for display: substitute `~` for the home directory prefix.
@@ -238,6 +242,7 @@ pub fn create_app(cli: &Cli, workspace: Rc<forge_workspace::Workspace>) -> App {
         startup_session_picker_requested: false,
         startup_recent_sessions_loaded: false,
         startup_session_picker_resolved: false,
+        startup_project: cli.project.clone(),
     };
 
     if let Err(err) = super::config::initialize_shared_state(&mut app) {
@@ -294,6 +299,7 @@ pub fn start_connection(app: &mut App) {
             app,
             session_start::SessionStartReason::Startup,
         ),
+        project: app.startup_project.clone(),
     };
     let conn_slot: Rc<std::cell::RefCell<Option<ConnectionSlot>>> =
         Rc::new(std::cell::RefCell::new(None));
@@ -355,6 +361,8 @@ mod tests {
             forge_workspace::Workspace::new(config_dir.path().to_owned()).await.expect("workspace");
 
         let cli = Cli {
+            project: None,
+            generate_completion: None,
             enable_logs: false,
             diagnostics_preset: None,
             log_file: None,

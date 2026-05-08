@@ -41,23 +41,27 @@ pub(super) async fn run_connection_task(
         // Destructure so `workspace` can drop the moment we're done with
         // it. The spawned event loop only needs `event_tx`, so dropping
         // `workspace` here lets `Rc::try_unwrap` succeed at clean exit.
-        let StartConnectionParams { event_tx, workspace, session_launch_settings } = params;
+        let StartConnectionParams { event_tx, workspace, session_launch_settings, project } =
+            params;
+
+        let target = match project {
+            Some(name) => forge_workspace::SessionTarget::Named(name),
+            None => forge_workspace::SessionTarget::Default,
+        };
 
         let mut connected_once = false;
-        let agent: Arc<forge_agent::AgentHandle> = match workspace
-            .get_agent_handle(forge_workspace::SessionTarget::Default, session_launch_settings)
-            .await
-        {
-            Ok(handle) => handle,
-            Err(err) => {
-                emit_connection_failed(
-                    &event_tx,
-                    format!("workspace.get_agent_handle failed: {err}"),
-                    AppError::ConnectionFailed,
-                );
-                return;
-            }
-        };
+        let agent: Arc<forge_agent::AgentHandle> =
+            match workspace.get_agent_handle(target, session_launch_settings).await {
+                Ok(handle) => handle,
+                Err(err) => {
+                    emit_connection_failed(
+                        &event_tx,
+                        format!("workspace.get_agent_handle failed: {err}"),
+                        AppError::ConnectionFailed,
+                    );
+                    return;
+                }
+            };
         drop(workspace);
 
         let Some(mut event_rx) = agent.take_events() else {

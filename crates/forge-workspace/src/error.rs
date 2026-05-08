@@ -26,4 +26,7 @@ pub enum WorkspaceError {
 
     #[error("forge.toml at {} is otherwise invalid: {message}", path.display())]
     ConfigInvalid { path: PathBuf, message: String },
+
+    #[error("no project named '{name}' in forge.toml at {}", path.display())]
+    ProjectNotFound { name: String, path: PathBuf },
 }

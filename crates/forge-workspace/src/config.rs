@@ -29,10 +29,6 @@ pub(crate) struct LoadedConfig {
 
 #[derive(Debug, Clone)]
 pub(crate) struct LoadedProject {
-    /// Surfaced in tests; production code currently doesn't consume
-    /// the project name (it reaches projects via `default = true` or
-    /// path matching, not by name lookup).
-    #[allow(dead_code)]
     pub name: String,
     pub path: PathBuf,
     /// Original path string from `forge.toml`, preserved for display
