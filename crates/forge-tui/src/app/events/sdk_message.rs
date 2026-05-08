@@ -482,22 +482,37 @@ fn handle_system(app: &mut App, msg: Message) {
 /// rate_limit::handle_compaction_boundary_update with the typed
 /// boundary value.
 fn apply_compaction_boundary(app: &mut App, data: &Value) {
-    let Some(record) = data.as_object() else { return };
-    let Some(meta) = record.get("compact_metadata").and_then(Value::as_object) else { return };
-    let trigger = meta.get("trigger").and_then(Value::as_str).unwrap_or("");
-    let Some(pre_tokens) =
-        meta.get("pre_tokens").or_else(|| meta.get("preTokens")).and_then(Value::as_u64)
-    else {
+    #[derive(serde::Deserialize)]
+    struct Boundary {
+        compact_metadata: Inner,
+    }
+    #[derive(serde::Deserialize)]
+    struct Inner {
+        trigger: String,
+        // CLI emits both snake_case and camelCase shapes across versions.
+        #[serde(alias = "preTokens")]
+        pre_tokens: u64,
+    }
+
+    let Ok(boundary) = serde_json::from_value::<Boundary>(data.clone()) else {
+        tracing::warn!(
+            target: crate::logging::targets::APP_SESSION,
+            ?data,
+            "apply_compaction_boundary: failed to decode compact_boundary record; skipped",
+        );
         return;
     };
-    let model_trigger = match trigger {
+    let model_trigger = match boundary.compact_metadata.trigger.as_str() {
         "manual" => crate::agent::model::CompactionTrigger::Manual,
         "auto" => crate::agent::model::CompactionTrigger::Auto,
         _ => return,
     };
     super::rate_limit::handle_compaction_boundary_update(
         app,
-        crate::agent::model::CompactionBoundary { trigger: model_trigger, pre_tokens },
+        crate::agent::model::CompactionBoundary {
+            trigger: model_trigger,
+            pre_tokens: boundary.compact_metadata.pre_tokens,
+        },
     );
 }
 
