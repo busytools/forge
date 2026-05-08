@@ -1106,6 +1106,7 @@ name = "forge-workspace"
 version = "0.14.2"
 dependencies = [
  "anyhow",
+ "dirs",
  "forge-agent",
  "forge-primitives",
  "parking_lot",
