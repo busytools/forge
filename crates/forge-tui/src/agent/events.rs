@@ -11,8 +11,6 @@ use std::sync::{Arc, Mutex};
 
 /// Messages sent from the backend bridge path to the App/UI layer.
 pub enum ClientEvent {
-    /// Session update notification (streaming text, tool calls, etc.)
-    SessionUpdate(model::SessionUpdate),
     /// Permission request that needs user input.
     PermissionRequest {
         request: model::RequestPermissionRequest,

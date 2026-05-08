@@ -19,7 +19,6 @@ use crate::agent::model;
 use crate::app::keys::reclaim_input_from_inline_prompt_if_needed;
 #[cfg(test)]
 use crate::app::keys::{CMD_MOD, WORD_NAV_MOD};
-use crate::app::todos::apply_plan_todos;
 #[cfg(test)]
 use crossterm::event::KeyEvent;
 use crossterm::event::{Event, KeyEventKind};
@@ -128,121 +127,6 @@ fn dispatch_paste_by_view(app: &mut App, text: &str) -> bool {
         }
         ActiveView::Config => super::config::handle_paste(app, text),
         ActiveView::Trusted | ActiveView::SessionPicker => false,
-    }
-}
-
-fn handle_session_update_event(app: &mut App, update: model::SessionUpdate) {
-    let needs_history_retention = matches!(
-        &update,
-        model::SessionUpdate::AgentMessageChunk(_)
-            | model::SessionUpdate::ToolCall(_)
-            | model::SessionUpdate::ToolCallUpdate(_)
-            | model::SessionUpdate::CompactionBoundary(_)
-    );
-    handle_session_update(app, update);
-    if needs_history_retention {
-        app.enforce_history_retention_tracked();
-    }
-}
-
-fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
-    match update {
-        model::SessionUpdate::AgentMessageChunk(chunk) => {
-            clear_compaction_state(app, true);
-            streaming::handle_agent_message_chunk(app, chunk);
-        }
-        model::SessionUpdate::ToolCall(tc) => tool_calls::handle_tool_call(app, tc),
-        model::SessionUpdate::ToolCallUpdate(tcu) => {
-            tool_updates::handle_tool_call_update_session(app, &tcu);
-        }
-        model::SessionUpdate::UserMessageChunk(_) => {}
-        model::SessionUpdate::AgentThoughtChunk(chunk) => {
-            let chunk_chars = match &chunk.content {
-                model::ContentBlock::Text(text) => text.text.chars().count(),
-                model::ContentBlock::Image(_) => 0,
-            };
-            tracing::trace!(
-                target: crate::logging::targets::APP_SESSION,
-                event_name = "agent_thought_chunk_applied",
-                message = "agent thought chunk applied",
-                outcome = "success",
-                chunk_chars,
-            );
-            app.status = AppStatus::Thinking;
-        }
-        model::SessionUpdate::Plan(plan) => {
-            tracing::debug!(
-                target: crate::logging::targets::APP_SESSION,
-                event_name = "plan_update_applied",
-                message = "plan update applied",
-                outcome = "success",
-                todo_count = plan.entries.len(),
-            );
-            apply_plan_todos(app, &plan);
-        }
-        model::SessionUpdate::AvailableCommandsUpdate(cmds) => {
-            apply_available_commands_update(app, cmds);
-        }
-        model::SessionUpdate::AvailableAgentsUpdate(agents) => {
-            apply_available_agents_update(app, agents);
-        }
-        model::SessionUpdate::ModeStateUpdate(mode) => {
-            apply_mode_state_update(app, mode);
-        }
-        model::SessionUpdate::CurrentModeUpdate(update) => {
-            apply_current_mode_update(app, &update);
-        }
-        model::SessionUpdate::CurrentModelUpdate(update) => {
-            apply_current_model_update(app, update.current_model);
-        }
-        model::SessionUpdate::ConfigOptionUpdate(config) => {
-            handle_config_option_update(app, config);
-        }
-        model::SessionUpdate::FastModeUpdate(state) => {
-            app.fast_mode_state = state;
-        }
-        model::SessionUpdate::RateLimitUpdate(update) => {
-            rate_limit::handle_rate_limit_update(app, &update);
-        }
-        model::SessionUpdate::ApiRetryUpdate {
-            attempt,
-            max_retries,
-            retry_delay_ms,
-            error_status,
-            error,
-        } => {
-            api_retry::handle_api_retry_update(
-                app,
-                attempt,
-                max_retries,
-                retry_delay_ms,
-                error_status,
-                error,
-            );
-        }
-        model::SessionUpdate::PromptSuggestionUpdate(suggestion) => {
-            app.prompt_suggestion = (!suggestion.trim().is_empty()).then_some(suggestion);
-        }
-        model::SessionUpdate::RuntimeSessionStateUpdate(state) => {
-            handle_runtime_session_state_update(app, state);
-        }
-        model::SessionUpdate::SettingsParseError { file, path, message } => {
-            handle_settings_parse_error(app, file.as_deref(), &path, &message);
-        }
-        model::SessionUpdate::SessionStatusUpdate(status) => {
-            apply_session_status_update(app, status);
-            tracing::debug!(
-                target: crate::logging::targets::APP_SESSION,
-                event_name = "session_status_applied",
-                message = "session status update applied",
-                outcome = "success",
-                session_status = ?status,
-                compacting = app.is_compacting,
-            );
-        }
-        model::SessionUpdate::CompactionBoundary(boundary) => {
-            rate_limit::handle_compaction_boundary_update(app, boundary);
-        }
     }
 }
 
@@ -419,34 +303,6 @@ pub(super) fn clear_compaction_state(app: &mut App, emit_manual_success: bool) {
     }
 }
 
-fn handle_config_option_update(app: &mut App, config: model::ConfigOptionUpdate) {
-    let option_id = config.option_id;
-    let value = config.value;
-    let value_kind = match &value {
-        serde_json::Value::Null => "null",
-        serde_json::Value::Bool(_) => "bool",
-        serde_json::Value::Number(_) => "number",
-        serde_json::Value::String(_) => "string",
-        serde_json::Value::Array(_) => "array",
-        serde_json::Value::Object(_) => "object",
-    };
-    app.config_options.insert(option_id.clone(), value);
-    tracing::debug!(
-        target: crate::logging::targets::APP_CONFIG,
-        event_name = "config_option_update_applied",
-        message = "config option update applied",
-        outcome = "success",
-        option_id = %option_id,
-        value_kind,
-    );
-
-    if matches!(
-        app.pending_command_ack.as_ref(),
-        Some(PendingCommandAck::ConfigOption { option_id: expected }) if expected == &option_id
-    ) {
-        session::clear_pending_command(app);
-    }
-}
 
 #[cfg(test)]
 fn handle_normal_key(app: &mut App, key: KeyEvent) {
