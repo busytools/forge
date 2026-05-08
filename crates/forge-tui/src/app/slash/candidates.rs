@@ -388,6 +388,8 @@ pub fn is_supported_command(app: &App, command_name: &str) -> bool {
             | "/mcp"
             | "/mode"
             | "/model"
+            | "/effort"
+            | "/exit-plan-mode"
             | "/new"
             | "/resume"
             | "/plugins"

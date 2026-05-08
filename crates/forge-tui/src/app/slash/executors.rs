@@ -26,10 +26,57 @@ pub fn try_handle_submit(app: &mut App, text: &str) -> bool {
         "/usage" => handle_usage_submit(app, &parsed.args),
         "/mode" => handle_mode_submit(app, &parsed.args),
         "/model" => handle_model_submit(app, &parsed.args),
+        "/effort" => handle_effort_submit(app, &parsed.args),
+        "/exit-plan-mode" => handle_exit_plan_mode_submit(app, &parsed.args),
         "/new" => handle_new_session_submit(app, &parsed.args),
         "/resume" => handle_resume_submit(app, &parsed.args),
         _ => handle_unknown_submit(app, parsed.name),
     }
+}
+
+/// `/effort <level>` — change the active reasoning effort level.
+/// Forwards the CLI's own `/effort` slash command via a user prompt
+/// so the CLI updates its internal effort state. The next tool call's
+/// PreToolUse hook will reflect the new level via hook observation.
+fn handle_effort_submit(app: &mut App, args: &[&str]) -> bool {
+    let [requested] = args else {
+        push_system_message(app, "Usage: /effort <low|medium|high|xhigh|max>");
+        return true;
+    };
+    let level = requested.trim();
+    if !["low", "medium", "high", "xhigh", "max"].contains(&level) {
+        push_system_message(
+            app,
+            format!("Unknown effort level: {level}. Valid: low, medium, high, xhigh, max"),
+        );
+        return true;
+    }
+
+    let Some((conn, sid)) = require_active_session(
+        app,
+        "Cannot change effort: not connected yet.",
+        "Cannot change effort: no active session.",
+    ) else {
+        return true;
+    };
+
+    // Forward the slash to the CLI as a user prompt. The CLI processes
+    // `/<command>` prefixed user prompts as its own slash commands.
+    let raw_command = format!("/effort {level}");
+    if let Err(e) = conn.prompt_text(sid.to_string(), raw_command) {
+        push_system_message(app, format!("Failed to forward /effort: {e}"));
+    }
+    true
+}
+
+/// `/exit-plan-mode` — synonym for `/mode default`. Convenience for
+/// users (and the agent) who think of "exit plan" as a discrete action.
+fn handle_exit_plan_mode_submit(app: &mut App, args: &[&str]) -> bool {
+    if !args.is_empty() {
+        push_system_message(app, "Usage: /exit-plan-mode");
+        return true;
+    }
+    handle_mode_submit(app, &["default"])
 }
 
 fn handle_compact_submit(app: &mut App, args: &[&str]) -> bool {
