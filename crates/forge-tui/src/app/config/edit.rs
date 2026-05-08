@@ -206,20 +206,22 @@ pub(super) fn handle_overlay_paste(app: &mut App, text: &str) -> bool {
     }
 }
 
-pub(crate) fn model_supports_effort(app: &App, model_id: &str) -> bool {
-    model_overlay_options(app)
+pub(crate) fn supported_effort_levels_for_model(app: &App, model_id: &str) -> Vec<EffortLevel> {
+    // Always offer the full 5-level picker. The CLI's per-model
+    // `supports_effort` / `supported_effort_levels` catalogue is advisory
+    // — the user can still drive their own intent (downgrade for cost,
+    // upgrade for quality). When the catalogue says nothing useful, fall
+    // back to the standard set so the picker is never dead.
+    let from_catalog = model_overlay_options(app)
         .into_iter()
         .find(|option| option.id == model_id)
-        .is_none_or(|option| option.supports_effort)
-}
+        .filter(|option| option.supports_effort && !option.supported_effort_levels.is_empty())
+        .map(|option| option.supported_effort_levels);
 
-pub(crate) fn supported_effort_levels_for_model(app: &App, model_id: &str) -> Vec<EffortLevel> {
-    model_overlay_options(app).into_iter().find(|option| option.id == model_id).map_or_else(
-        Vec::new,
-        |option| {
-            if option.supports_effort { option.supported_effort_levels } else { Vec::new() }
-        },
-    )
+    match from_catalog {
+        Some(levels) if levels.len() >= DEFAULT_EFFORT_LEVELS.len() => levels,
+        _ => DEFAULT_EFFORT_LEVELS.to_vec(),
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -676,9 +678,14 @@ fn persist_model_and_effort_change(app: &mut App, model: &str, effort: EffortLev
     };
     let mut next_document = app.config.committed_settings_document.clone();
     store::set_model(&mut next_document, Some(model));
-    if model_supports_effort(app, model) {
-        store::set_thinking_effort_level(&mut next_document, effort);
-    }
+    // Always persist the effort selection. The CLI's per-model
+    // `supports_effort` flag is advisory — gating persistence on it
+    // turns the picker into a no-op for models the catalogue marks
+    // unsupported, which surprises users who explicitly chose a value.
+    // If the CLI then ignores the setting at runtime for that model,
+    // forge displays whatever the CLI emits (no drift), but the user's
+    // intent is preserved on the disk for future sessions.
+    store::set_thinking_effort_level(&mut next_document, effort);
     match store::save(&path, &next_document) {
         Ok(()) => {
             app.config.committed_settings_document = next_document;
