@@ -1,5 +1,5 @@
 //! Offline session scanners — stateless filesystem helpers that read
-//! transcripts from `~/.claude/projects/<project_key>/*.jsonl`.
+//! transcripts from `<config_dir>/projects/<project_key>/*.jsonl`.
 //!
 //! - [`list_sessions`] — lists sessions, either for one project or all.
 //! - [`get_session_info`] — reads metadata for one session by ID.
