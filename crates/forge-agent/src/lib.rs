@@ -17,7 +17,7 @@
 //! - [`userdata`] — disk-side state: trust file (more incoming).
 //! - [`commands`] / [`session_lifecycle`] — bridge helpers reused by
 //!   forge-tui via re-exports.
-//! - [`forge_sdk_worker`] / [`history`] / [`tooling`] / [`user_interaction`] /
+//! - [`forge_sdk_worker`] / [`replay`] / [`tooling`] / [`user_interaction`] /
 //!   [`state`] — internal implementation modules consumed by `agent`'s
 //!   dispatcher and translator paths.
 
