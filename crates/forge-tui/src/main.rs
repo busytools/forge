@@ -54,8 +54,11 @@ fn run() -> anyhow::Result<()> {
             Err(err) => return Err(anyhow::anyhow!("forge: {err}")),
         };
 
-        // Phase 1: create app in Connecting state (instant, no I/O)
-        let mut app = forge_tui::app::create_app(&cli, workspace);
+        // Phase 1: create app in Connecting state (instant, no I/O).
+        // App holds an Rc clone; main retains the original so we can
+        // reclaim ownership and call `shutdown().await` after the
+        // event loop returns.
+        let mut app = forge_tui::app::create_app(&cli, Rc::clone(&workspace));
 
         // Phase 2: start non-session startup work + TUI.
         // The bridge itself is started from the TUI loop only after trust is accepted.
@@ -65,7 +68,31 @@ fn run() -> anyhow::Result<()> {
         // Kill any spawned terminal child processes before exiting
         forge_tui::agent::events::kill_all_terminals(&app.terminals);
 
-        if let Some(app_error) = app.exit_error.take() {
+        let exit_error = app.exit_error.take();
+
+        // Phase 3: drop the App so its Rc<Workspace> clone is released,
+        // then reclaim ownership of the workspace and drain the agent
+        // pool gracefully. If any background task (e.g. the connection
+        // task in `run_connection_task`) still holds an Rc clone,
+        // `try_unwrap` fails — we log and skip the explicit shutdown,
+        // letting `Drop` on Workspace + `kill_on_drop` on the
+        // subprocesses handle teardown.
+        drop(app);
+        match Rc::try_unwrap(workspace) {
+            Ok(workspace) => {
+                workspace.shutdown().await;
+            }
+            Err(_) => {
+                tracing::warn!(
+                    target: forge_tui::logging::targets::APP_LIFECYCLE,
+                    event_name = "workspace_shutdown_skipped",
+                    message = "workspace Rc still held at exit; agents drop via Drop instead of shutdown",
+                    outcome = "skipped",
+                );
+            }
+        }
+
+        if let Some(app_error) = exit_error {
             return Err(anyhow::Error::new(app_error));
         }
 

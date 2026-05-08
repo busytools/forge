@@ -38,32 +38,35 @@ pub(super) async fn run_connection_task(
             request_kind = "create",
         );
 
+        // Destructure so `workspace` can drop the moment we're done with
+        // it. The spawned event loop only needs `event_tx`, so dropping
+        // `workspace` here lets `Rc::try_unwrap` succeed at clean exit.
+        let StartConnectionParams { event_tx, workspace, session_launch_settings } = params;
+
         let mut connected_once = false;
-        let agent: Arc<forge_agent::AgentHandle> = match params
-            .workspace
-            .get_agent_handle(
-                forge_workspace::SessionTarget::Default,
-                params.session_launch_settings.clone(),
-            )
+        let agent: Arc<forge_agent::AgentHandle> = match workspace
+            .get_agent_handle(forge_workspace::SessionTarget::Default, session_launch_settings)
             .await
         {
             Ok(handle) => handle,
             Err(err) => {
                 emit_connection_failed(
-                    &params.event_tx,
+                    &event_tx,
                     format!("workspace.get_agent_handle failed: {err}"),
                     AppError::ConnectionFailed,
                 );
                 return;
             }
         };
+        drop(workspace);
+
         let Some(mut event_rx) = agent.take_events() else {
             // The Agent the workspace just spawned for us seeds a fresh
             // receiver, so this is only reachable if a future refactor
             // double-taps `take_events`. Surface as a connection failure
             // rather than panic.
             emit_connection_failed(
-                &params.event_tx,
+                &event_tx,
                 "forge-workspace yielded no event receiver".to_owned(),
                 AppError::ConnectionFailed,
             );
@@ -72,7 +75,7 @@ pub(super) async fn run_connection_task(
 
         *conn_slot_writer.borrow_mut() = Some(ConnectionSlot { conn: Arc::clone(&agent) });
 
-        forge_sdk_event_loop(&params, &mut event_rx, &agent, &mut connected_once).await;
+        forge_sdk_event_loop(&event_tx, &mut event_rx, &agent, &mut connected_once).await;
     }
     .instrument(connection_span)
     .await;
@@ -83,13 +86,13 @@ pub(super) async fn run_connection_task(
 /// requests are forwarded with a oneshot reply channel and a
 /// dedicated forwarder task drains the reply.
 async fn forge_sdk_event_loop(
-    params: &StartConnectionParams,
+    event_tx: &mpsc::UnboundedSender<ClientEvent>,
     event_rx: &mut mpsc::UnboundedReceiver<AgentEvent>,
     agent: &Arc<forge_agent::AgentHandle>,
     connected_once: &mut bool,
 ) {
     while let Some(event) = event_rx.recv().await {
-        handle_agent_event(&params.event_tx, agent, connected_once, event);
+        handle_agent_event(event_tx, agent, connected_once, event);
     }
     tracing::info!(
         target: crate::logging::targets::BRIDGE_LIFECYCLE,
