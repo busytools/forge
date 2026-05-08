@@ -46,10 +46,7 @@ async fn tool_call_updates_apply_terminal_statuses_and_title_fields() {
             serde_json::json!({"file_path": "src/lib.rs"}),
         )]),
     );
-    send_msg(
-        &mut app,
-        user_message(vec![tool_result_block("tc-update", serde_json::json!("ok"))]),
-    );
+    send_msg(&mut app, user_message(vec![tool_result_block("tc-update", serde_json::json!("ok"))]));
 
     send_msg(
         &mut app,
@@ -171,10 +168,7 @@ async fn task_tool_calls_leave_active_set_only_on_terminal_statuses() {
     );
     assert!(app.active_task_ids.contains("task-pend"), "still in-progress should stay active");
 
-    send_msg(
-        &mut app,
-        user_message(vec![tool_result_block("task-pend", serde_json::json!("ok"))]),
-    );
+    send_msg(&mut app, user_message(vec![tool_result_block("task-pend", serde_json::json!("ok"))]));
     assert!(!app.active_task_ids.contains("task-pend"), "completed Task should be removed");
 
     send_msg(
@@ -310,10 +304,7 @@ async fn session_collapse_preference_stays_stable_across_tool_call_lifecycle() {
     assert!(app.tools_collapsed, "in-progress updates should not flip the preference");
     assert!(matches!(tool_call_block(&app, "tc-col").status, model::ToolCallStatus::InProgress));
 
-    send_msg(
-        &mut app,
-        user_message(vec![tool_result_block("tc-col", serde_json::json!("ok"))]),
-    );
+    send_msg(&mut app, user_message(vec![tool_result_block("tc-col", serde_json::json!("ok"))]));
     assert!(app.tools_collapsed, "completed updates should keep the preference");
     assert!(matches!(tool_call_block(&app, "tc-col").status, model::ToolCallStatus::Completed));
 
@@ -403,10 +394,7 @@ async fn todowrite_via_update_raw_input_parses_todos() {
     let raw = serde_json::json!({"todos": [
         {"content": "Step 1", "status": "pending", "activeForm": "Doing step 1"}
     ]});
-    send_msg(
-        &mut app,
-        assistant_message(vec![tool_use_block("tc-todo-up", "TodoWrite", raw)]),
-    );
+    send_msg(&mut app, assistant_message(vec![tool_use_block("tc-todo-up", "TodoWrite", raw)]));
 
     assert_eq!(app.todos.len(), 1);
     assert_eq!(app.todos[0].content, "Step 1");

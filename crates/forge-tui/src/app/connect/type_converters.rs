@@ -150,7 +150,6 @@ pub(crate) fn convert_current_model(current_model: types::CurrentModel) -> model
     mapped
 }
 
-
 pub(super) fn map_permission_request(
     session_id: &str,
     request: types::PermissionRequest,

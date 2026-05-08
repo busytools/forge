@@ -5,8 +5,7 @@
 use serde_json::{Map, Value};
 
 use forge_primitives::{
-    ApiRetryError, FastModeState, RateLimitStatus, RuntimeSessionState,
-    SettingsParseErrorUpdate,
+    ApiRetryError, FastModeState, RateLimitStatus, RuntimeSessionState, SettingsParseErrorUpdate,
 };
 
 // JSON walking helpers.

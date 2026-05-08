@@ -72,9 +72,9 @@ fn apply_fast_mode_state(app: &mut App, wire_state: forge_primitives::FastModeSt
 /// generic system envelope). Drops silently when the field is absent
 /// or doesn't deserialize to a known variant.
 fn apply_fast_mode_state_from_value(app: &mut App, data: &Value) {
-    let Some(wire_state) = crate::agent::state_parsing::parse_fast_mode_state(
-        data.get("fast_mode_state"),
-    ) else {
+    let Some(wire_state) =
+        crate::agent::state_parsing::parse_fast_mode_state(data.get("fast_mode_state"))
+    else {
         return;
     };
     apply_fast_mode_state(app, wire_state);
@@ -860,14 +860,7 @@ fn handle_rate_limit_event(app: &mut App, msg: Message) {
 }
 
 fn handle_result(app: &mut App, msg: Message) {
-    let Message::Result {
-        is_error,
-        subtype,
-        errors,
-        terminal_reason,
-        fast_mode_state,
-        ..
-    } = msg
+    let Message::Result { is_error, subtype, errors, terminal_reason, fast_mode_state, .. } = msg
     else {
         return;
     };

@@ -30,10 +30,8 @@ pub fn synthesize_replay_messages(messages: &[Value]) -> Vec<Message> {
             continue;
         };
         let entry_type = entry_record.get("type").and_then(Value::as_str).unwrap_or("");
-        let parent_tool_use_id = entry_record
-            .get("parent_tool_use_id")
-            .and_then(Value::as_str)
-            .map(str::to_owned);
+        let parent_tool_use_id =
+            entry_record.get("parent_tool_use_id").and_then(Value::as_str).map(str::to_owned);
         let Some(message_value) = entry_record.get("message") else {
             continue;
         };
@@ -105,9 +103,7 @@ fn transform_replay_content(content: Vec<ContentBlock>) -> Vec<ContentBlock> {
         .into_iter()
         .filter_map(|block| match block {
             ContentBlock::Thinking { .. } => None,
-            ContentBlock::Image { .. } => {
-                Some(ContentBlock::Text { text: "[image]".to_owned() })
-            }
+            ContentBlock::Image { .. } => Some(ContentBlock::Text { text: "[image]".to_owned() }),
             other => Some(other),
         })
         .collect()

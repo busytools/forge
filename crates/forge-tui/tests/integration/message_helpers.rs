@@ -89,10 +89,7 @@ pub fn send_msg(app: &mut forge_tui::app::App, msg: forge_primitives::Message) {
     }
     send_client_event(
         app,
-        ClientEvent::SdkMessageReceived {
-            session_id: "test-session".to_owned(),
-            msg,
-        },
+        ClientEvent::SdkMessageReceived { session_id: "test-session".to_owned(), msg },
     );
 }
 

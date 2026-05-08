@@ -85,10 +85,7 @@ async fn todowrite_tool_call_updates_todo_list() {
         ]
     });
 
-    send_msg(
-        &mut app,
-        assistant_message(vec![tool_use_block("todo-1", "TodoWrite", raw_input)]),
-    );
+    send_msg(&mut app, assistant_message(vec![tool_use_block("todo-1", "TodoWrite", raw_input)]));
 
     assert_eq!(app.todos.len(), 2);
     assert_eq!(app.todos[0].content, "Fix bug");
@@ -253,10 +250,7 @@ async fn stress_many_tool_calls_in_one_turn() {
     for i in 0..50 {
         send_msg(
             &mut app,
-            user_message(vec![tool_result_block(
-                &format!("stress-{i}"),
-                serde_json::json!("ok"),
-            )]),
+            user_message(vec![tool_result_block(&format!("stress-{i}"), serde_json::json!("ok"))]),
         );
     }
 
@@ -278,10 +272,7 @@ async fn mode_updates_switch_known_modes_fall_back_for_unknown_ids_and_noop_with
         ],
     });
 
-    send_msg(
-        &mut app,
-        system_message("status", serde_json::json!({"permissionMode": "plan"})),
-    );
+    send_msg(&mut app, system_message("status", serde_json::json!({"permissionMode": "plan"})));
     let mode = app.mode.as_ref().expect("mode should still exist");
     assert_eq!(mode.current_mode_id, "plan");
     assert_eq!(mode.current_mode_name, "Plan");
@@ -373,10 +364,7 @@ async fn available_commands_update_replaces_previous() {
     assert_eq!(app.available_commands.len(), 2);
 
     // New update replaces, not appends
-    send_msg(
-        &mut app,
-        system_message("init", serde_json::json!({"slash_commands": ["/commit"]})),
-    );
+    send_msg(&mut app, system_message("init", serde_json::json!({"slash_commands": ["/commit"]})));
     assert_eq!(app.available_commands.len(), 1, "replaced, not appended");
 }
 

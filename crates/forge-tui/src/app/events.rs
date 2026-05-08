@@ -303,7 +303,6 @@ pub(super) fn clear_compaction_state(app: &mut App, emit_manual_success: bool) {
     }
 }
 
-
 #[cfg(test)]
 fn handle_normal_key(app: &mut App, key: KeyEvent) {
     super::keys::handle_normal_key(app, key);
@@ -857,7 +856,9 @@ mod tests {
         }
     }
 
-    fn rate_limit_event(rate_limit_info: forge_primitives::RateLimitInfo) -> forge_primitives::Message {
+    fn rate_limit_event(
+        rate_limit_info: forge_primitives::RateLimitInfo,
+    ) -> forge_primitives::Message {
         forge_primitives::Message::RateLimitEvent {
             rate_limit_info,
             uuid: "rl_test".to_owned(),
@@ -910,11 +911,7 @@ mod tests {
         name: &str,
         input: serde_json::Value,
     ) -> forge_primitives::ContentBlock {
-        forge_primitives::ContentBlock::ToolUse {
-            id: id.to_owned(),
-            name: name.to_owned(),
-            input,
-        }
+        forge_primitives::ContentBlock::ToolUse { id: id.to_owned(), name: name.to_owned(), input }
     }
 
     fn text_block(text: &str) -> forge_primitives::ContentBlock {
@@ -941,17 +938,9 @@ mod tests {
         if app.session_id.is_none() {
             app.session_id = Some(model::SessionId::new("test-session"));
         }
-        let session_id = app
-            .session_id
-            .as_ref()
-            .map_or_else(|| "test-session".to_owned(), ToString::to_string);
-        handle_client_event(
-            app,
-            ClientEvent::SdkMessageReceived {
-                session_id,
-                msg,
-            },
-        );
+        let session_id =
+            app.session_id.as_ref().map_or_else(|| "test-session".to_owned(), ToString::to_string);
+        handle_client_event(app, ClientEvent::SdkMessageReceived { session_id, msg });
     }
 
     #[test]
@@ -989,10 +978,7 @@ mod tests {
 
         send_msg(
             &mut app,
-            user_message(vec![tool_result_block(
-                "tc-exec",
-                serde_json::json!("line 1\nline 2"),
-            )]),
+            user_message(vec![tool_result_block("tc-exec", serde_json::json!("line 1\nline 2"))]),
         );
 
         let Some((mi, bi)) = app.lookup_tool_call("tc-exec") else {
@@ -1575,10 +1561,7 @@ mod tests {
         // The wire path delivers model changes via System("init") with
         // a `model` field; same downstream path as the original
         // SessionUpdate::CurrentModelUpdate.
-        send_msg(
-            &mut app,
-            system_message("init", serde_json::json!({"model": "claude-opus-4-7"})),
-        );
+        send_msg(&mut app, system_message("init", serde_json::json!({"model": "claude-opus-4-7"})));
 
         let Some(MessageBlock::Welcome(welcome)) = app.messages[0].blocks.first() else {
             panic!("expected welcome block");
@@ -1647,10 +1630,7 @@ mod tests {
         app.messages.push(ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "-", "/test", "-"));
         app.messages.push(user_msg("hello"));
 
-        send_msg(
-            &mut app,
-            system_message("init", serde_json::json!({"model": "claude-opus-4-7"})),
-        );
+        send_msg(&mut app, system_message("init", serde_json::json!({"model": "claude-opus-4-7"})));
 
         let Some(first) = app.messages.first() else {
             panic!("missing first message");
@@ -2280,10 +2260,7 @@ mod tests {
 
         // Wire path: server-side mode switches arrive via System("status")
         // with a `permissionMode` field.
-        send_msg(
-            &mut app,
-            system_message("status", serde_json::json!({"permissionMode": "plan"})),
-        );
+        send_msg(&mut app, system_message("status", serde_json::json!({"permissionMode": "plan"})));
 
         assert!(matches!(app.status, AppStatus::Ready));
         assert!(app.pending_command_label.is_none());
@@ -2312,10 +2289,7 @@ mod tests {
         // mode state and applies via apply_mode_state_update — same
         // downstream invalidate-layout effect as the original
         // SessionUpdate::ModeStateUpdate.
-        send_msg(
-            &mut app,
-            system_message("init", serde_json::json!({"permissionMode": "plan"})),
-        );
+        send_msg(&mut app, system_message("init", serde_json::json!({"permissionMode": "plan"})));
 
         assert_eq!(app.viewport.layout_generation, layout_generation_before + 1);
     }
