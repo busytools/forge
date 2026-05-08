@@ -20,7 +20,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
     let inner = area.inner(Margin { vertical: 1, horizontal: 2 });
     let body_intro = vec![
-        Line::from("Claude Rust will wait here until you choose whether to trust this workspace."),
+        Line::from("Forge will wait here until you choose whether to trust this workspace."),
         Line::default(),
         Line::from("Review the project before continuing if you are unsure."),
     ];
@@ -28,7 +28,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         .trust
         .last_error
         .clone()
-        .unwrap_or_else(|| "Choose Yes to continue or No to close Claude Rust.".to_owned());
+        .unwrap_or_else(|| "Choose Yes to continue or No to close Forge.".to_owned());
     let title_height = wrapped_line_count(
         Text::from(vec![Line::from(vec![Span::styled(
             "Trust this project directory?",
@@ -165,7 +165,7 @@ mod tests {
         app.trust.selection = TrustSelection::Yes;
 
         let text = draw_text(&mut app);
-        let body_idx = text.find("Claude Rust will wait here").expect("body text");
+        let body_idx = text.find("Forge will wait here").expect("body text");
         let action_idx = text.find("> Yes").expect("yes action");
 
         assert!(action_idx > body_idx);
