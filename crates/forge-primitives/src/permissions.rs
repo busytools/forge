@@ -202,7 +202,7 @@ impl PermissionDecision {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum PermissionUpdateDestination {
-    /// User-level `~/.claude/settings.json`.
+    /// User-level `<config_dir>/settings.json`.
     UserSettings,
     /// Project-level `.claude/settings.json`.
     ProjectSettings,

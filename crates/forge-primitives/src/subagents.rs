@@ -67,7 +67,7 @@ pub struct SubagentDefinition {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SubagentMemory {
-    /// User-scope (`~/.claude/CLAUDE.md`).
+    /// User-scope (`<config_dir>/CLAUDE.md`).
     User,
     /// Project-scope (`<repo>/CLAUDE.md`).
     Project,
