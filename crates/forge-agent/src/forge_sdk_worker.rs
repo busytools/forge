@@ -12,7 +12,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use forge_sdk::{
-    Client, Options, OptionsBuilder, PermissionDecision, PermissionMode, ToolPermissionContext,
+    Client, HookContext, HookDecision, HooksBuilder, Options, OptionsBuilder, PermissionDecision,
+    PermissionMode, PreToolUseInput, ToolPermissionContext, UserPromptSubmitInput,
 };
 use tokio::sync::{mpsc, oneshot};
 
@@ -371,6 +372,54 @@ fn build_options_with_callback(
     pending_questions: PendingQuestions,
     session_id_slot: Arc<parking_lot::Mutex<String>>,
 ) -> Options {
+    // Observation hooks: passthrough callbacks that read CLI runtime
+    // state out of every PreToolUse and UserPromptSubmit hook input
+    // and emit `AgentEvent::HookObservation` upward without altering
+    // the dispatch outcome. Higher-fidelity than `system/status` for
+    // mode / effort drift detection (see #88, #89). PreToolUse also
+    // carries subagent attribution (`agent_id` + `agent_type`) so the
+    // TUI can label sub-agent tool calls with their type (#84
+    // partial). The callbacks own clones of `event_tx` and the
+    // `session_id` slot; the same slot the can_use_tool callback
+    // reads, kept in sync via the parking_lot mutex.
+    let pre_tool_observe_tx = event_tx.clone();
+    let pre_tool_observe_sid = Arc::clone(&session_id_slot);
+    let user_prompt_observe_tx = event_tx.clone();
+    let user_prompt_observe_sid = Arc::clone(&session_id_slot);
+
+    let observation_hooks = HooksBuilder::new()
+        .pre_tool_use("*", move |input: PreToolUseInput, _ctx: HookContext| {
+            let tx = pre_tool_observe_tx.clone();
+            let session_id = pre_tool_observe_sid.lock().clone();
+            async move {
+                let _ = tx.send(AgentEvent::HookObservation {
+                    session_id,
+                    tool_use_id: Some(input.tool_use_id.clone()),
+                    permission_mode: input.base.permission_mode.clone(),
+                    effort: input.base.effort.as_ref().map(|e| e.level.clone()),
+                    agent_id: input.subagent.agent_id.clone(),
+                    agent_type: input.subagent.agent_type.clone(),
+                });
+                HookDecision::passthrough()
+            }
+        })
+        .user_prompt_submit(move |input: UserPromptSubmitInput, _ctx: HookContext| {
+            let tx = user_prompt_observe_tx.clone();
+            let session_id = user_prompt_observe_sid.lock().clone();
+            async move {
+                let _ = tx.send(AgentEvent::HookObservation {
+                    session_id,
+                    tool_use_id: None,
+                    permission_mode: input.base.permission_mode.clone(),
+                    effort: input.base.effort.as_ref().map(|e| e.level.clone()),
+                    agent_id: None,
+                    agent_type: None,
+                });
+                HookDecision::passthrough()
+            }
+        })
+        .build();
+
     let callback = move |ctx: ToolPermissionContext| {
         let event_tx = event_tx.clone();
         let pending = Arc::clone(&pending);
@@ -385,7 +434,10 @@ fn build_options_with_callback(
         }
     };
 
-    let mut b = OptionsBuilder::new().can_use_tool(callback).permission_prompt_tool_name("stdio");
+    let mut b = OptionsBuilder::new()
+        .can_use_tool(callback)
+        .hooks(observation_hooks)
+        .permission_prompt_tool_name("stdio");
     if !cwd.is_empty() {
         b = b.cwd(PathBuf::from(cwd));
     }

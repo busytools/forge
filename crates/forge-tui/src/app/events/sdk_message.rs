@@ -87,6 +87,14 @@ fn handle_assistant(app: &mut App, msg: Message) {
     let Message::Assistant { message, parent_tool_use_id, error, .. } = msg else {
         return;
     };
+    // Per-turn model observation. The CLI's `system/init` carries the
+    // resolved model id once per session; every subsequent Assistant
+    // envelope re-states the model at `message.model`. Tracking the
+    // most recent observed model lets the App verify that the chip
+    // matches what the CLI is actually using on each turn.
+    if !message.model.is_empty() {
+        app.observed_assistant_model = Some(message.model.clone());
+    }
     // Outer-envelope error capture — `app.turn_state.last_assistant_error`
     // is consulted by `apply_result_finalize` to classify TurnError
     // variants.

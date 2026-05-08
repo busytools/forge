@@ -285,6 +285,24 @@ pub struct App {
     pub mcp: McpState,
     /// Fast mode state telemetry from the SDK.
     pub fast_mode_state: model::FastModeState,
+    /// Hook-observed permission mode. Updated from every PreToolUse /
+    /// UserPromptSubmit hook input — higher fidelity than the
+    /// `system/status` event-driven `mode` field, which goes stale when
+    /// the CLI changes mode without re-emitting status (#88). Mode chip
+    /// prefers this value when set.
+    pub observed_permission_mode: Option<crate::agent::state::PermissionMode>,
+    /// Hook-observed effort level. Same pattern as
+    /// `observed_permission_mode` — populated from hook inputs on CLI
+    /// 2.1.133+. Effort chip prefers this value when set.
+    pub observed_effort: Option<model::EffortLevel>,
+    /// Hook-observed sub-agent attribution: maps `tool_use_id` to the
+    /// sub-agent's typed identifier (e.g. `"general-purpose"`). Used
+    /// to label tool-call rows fired by sub-agents (#84 partial).
+    pub subagent_attribution: std::collections::HashMap<String, String>,
+    /// Most recent model id observed on a `Message::Assistant`
+    /// envelope. Higher-fidelity than `current_model.resolved_id` for
+    /// per-turn model verification.
+    pub observed_assistant_model: Option<String>,
     /// Latest SDK runtime liveness state.
     pub runtime_session_state: Option<model::RuntimeSessionState>,
     /// Latest prompt suggestion from the SDK, shown in the input hint band.
@@ -900,6 +918,10 @@ impl App {
             usage: UsageState::default(),
             mcp: McpState::default(),
             fast_mode_state: model::FastModeState::Off,
+            observed_permission_mode: None,
+            observed_effort: None,
+            subagent_attribution: std::collections::HashMap::new(),
+            observed_assistant_model: None,
             runtime_session_state: None,
             prompt_suggestion: None,
             last_rate_limit_update: None,
