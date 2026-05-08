@@ -100,6 +100,19 @@ pub enum ClientEvent {
     /// bridge worker. The App's `events::sdk_message::handle_sdk_message`
     /// dispatches per-variant handlers that mutate App state directly.
     SdkMessageReceived { session_id: String, msg: forge_primitives::Message },
+    /// CLI runtime state observed from a hook input as it passed
+    /// through the SDK's hook-callback dispatch. Higher-fidelity than
+    /// `system/status` events for mode / effort drift detection. The
+    /// App prefers these values for the mode and effort chips and uses
+    /// `agent_id` + `agent_type` to attribute sub-agent tool calls.
+    HookObservation {
+        session_id: String,
+        tool_use_id: Option<String>,
+        permission_mode: Option<String>,
+        effort: Option<String>,
+        agent_id: Option<String>,
+        agent_type: Option<String>,
+    },
     /// Usage refresh task started.
     UsageRefreshStarted { epoch: u64 },
     /// Usage refresh completed successfully.

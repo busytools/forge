@@ -89,8 +89,7 @@ pub struct Options {
     /// component.
     pub minimum_cli_version: Option<String>,
     /// Override the directory used to resolve project keys. When
-    /// `None`, forge-sdk defaults to `$CLAUDE_CONFIG_DIR/projects`
-    /// or `~/.claude/projects`.
+    /// `None`, forge-sdk defaults to `<config_dir>/projects`.
     pub projects_dir: Option<PathBuf>,
     /// Subagent definitions forwarded via the `initialize`
     /// `control_request`'s `agents` field. Key is the subagent name
@@ -551,8 +550,7 @@ impl OptionsBuilder {
     }
 
     /// Override the projects directory used to resolve project keys.
-    /// When unset, defaults to `$CLAUDE_CONFIG_DIR/projects` or
-    /// `~/.claude/projects`.
+    /// When unset, defaults to `<config_dir>/projects`.
     #[must_use]
     pub fn projects_dir(mut self, path: impl Into<PathBuf>) -> Self {
         self.inner.projects_dir = Some(path.into());

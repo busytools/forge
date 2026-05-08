@@ -116,6 +116,37 @@ pub enum AgentEvent {
         session_id: String,
         msg: forge_primitives::Message,
     },
+    /// Observation of CLI runtime state captured from a hook input
+    /// payload as it passes through the SDK's hook-callback dispatch.
+    /// Hooks fire on every tool use, prompt submit, etc., so this is
+    /// a high-fidelity signal compared to the lower-frequency
+    /// `system/status` events. Fields are `Option` because the CLI
+    /// only populates the relevant subset on each hook event (e.g.
+    /// `agent_id` / `agent_type` are absent for main-agent tool calls).
+    HookObservation {
+        /// Session id the hook fired in.
+        session_id: String,
+        /// `tool_use_id` when the hook event is tool-lifecycle scoped.
+        /// `None` for events that aren't bound to a specific tool call
+        /// (`UserPromptSubmit`, `Stop`, etc.).
+        tool_use_id: Option<String>,
+        /// Permission mode active at the moment the hook fired. Wire
+        /// value as a string (e.g. `"acceptEdits"`, `"plan"`); the
+        /// consumer types it with `forge_primitives::PermissionMode`.
+        permission_mode: Option<String>,
+        /// Effort level active at the moment the hook fired (CLI
+        /// 2.1.133+, absent for older CLIs). Wire value as a string
+        /// (`"low"` / `"medium"` / `"high"` / `"xhigh"` / `"max"`);
+        /// the consumer maps to `forge_primitives::EffortLevel`.
+        effort: Option<String>,
+        /// Sub-agent identifier when the hook fired inside a
+        /// `Task`-spawned worker. Matches the `agent_id` from the
+        /// subagent's `SubagentStart` / `SubagentStop` hooks.
+        agent_id: Option<String>,
+        /// Sub-agent type name (e.g. `"general-purpose"`,
+        /// `"code-reviewer"`).
+        agent_type: Option<String>,
+    },
 }
 
 impl AgentEvent {
@@ -142,6 +173,7 @@ impl AgentEvent {
             Self::ContextUsage { .. } => "context_usage",
             Self::McpSnapshot { .. } => "mcp_snapshot",
             Self::SdkMessage { .. } => "sdk_message",
+            Self::HookObservation { .. } => "hook_observation",
         }
     }
 
@@ -164,7 +196,8 @@ impl AgentEvent {
             | Self::GitContextSnapshot { session_id, .. }
             | Self::ContextUsage { session_id, .. }
             | Self::McpSnapshot { session_id, .. }
-            | Self::SdkMessage { session_id, .. } => Some(session_id.as_str()),
+            | Self::SdkMessage { session_id, .. }
+            | Self::HookObservation { session_id, .. } => Some(session_id.as_str()),
             Self::AuthRequired { .. }
             | Self::ConnectionFailed { .. }
             | Self::SessionsListed { .. } => None,
@@ -178,6 +211,7 @@ impl AgentEvent {
                 Some(request.tool_call.tool_call_id.as_str())
             }
             Self::QuestionRequest { request, .. } => Some(request.tool_call.tool_call_id.as_str()),
+            Self::HookObservation { tool_use_id, .. } => tool_use_id.as_deref(),
             Self::Connected { .. }
             | Self::AuthRequired { .. }
             | Self::ConnectionFailed { .. }

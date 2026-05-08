@@ -286,6 +286,30 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
             }
             super::sdk_message::handle_sdk_message(app, msg);
         }
+        ClientEvent::HookObservation {
+            session_id,
+            tool_use_id,
+            permission_mode,
+            effort,
+            agent_id,
+            agent_type,
+        } => {
+            drop_if_stale_session!(
+                app,
+                session_id,
+                crate::logging::targets::APP_SESSION,
+                "hook_observation_dropped",
+                "hook observation dropped for a stale session"
+            );
+            apply_hook_observation(
+                app,
+                tool_use_id.as_deref(),
+                permission_mode.as_deref(),
+                effort.as_deref(),
+                agent_id.as_deref(),
+                agent_type.as_deref(),
+            );
+        }
         ClientEvent::UsageRefreshStarted { epoch } => {
             if app.session_scope_epoch != epoch {
                 return;
@@ -329,5 +353,61 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
             crate::app::plugins::apply_cli_action_failure(app, message);
         }
         ClientEvent::FatalError(error) => session::handle_fatal_error_event(app, error),
+    }
+}
+
+/// Apply a hook-input observation to App state. Called from
+/// `ClientEvent::HookObservation` after the stale-session guard.
+///
+/// - `permission_mode`: typed via `PermissionMode::from_wire`. Stored
+///   on `app.observed_permission_mode`; the mode chip prefers this
+///   over `app.mode` when set.
+/// - `effort`: typed via `EffortLevel`'s deserialiser. Stored on
+///   `app.observed_effort`; the effort chip prefers this when set.
+/// - `agent_id` + `agent_type`: when both are present, store the type
+///   under the `tool_use_id` key. Tool-call rows render the type as a
+///   suffix on subagent rows.
+fn apply_hook_observation(
+    app: &mut crate::app::App,
+    tool_use_id: Option<&str>,
+    permission_mode: Option<&str>,
+    effort: Option<&str>,
+    agent_id: Option<&str>,
+    agent_type: Option<&str>,
+) {
+    use crate::agent::model::EffortLevel;
+    use crate::agent::state::PermissionMode;
+
+    if let Some(mode_str) = permission_mode
+        && let Some(mode) = PermissionMode::from_wire(mode_str)
+    {
+        app.observed_permission_mode = Some(mode);
+    }
+
+    if let Some(effort_str) = effort {
+        let level = match effort_str {
+            "low" => Some(EffortLevel::Low),
+            "medium" => Some(EffortLevel::Medium),
+            "high" => Some(EffortLevel::High),
+            "xhigh" => Some(EffortLevel::Xhigh),
+            "max" => Some(EffortLevel::Max),
+            _ => {
+                tracing::warn!(
+                    target: crate::logging::targets::APP_SESSION,
+                    effort = %effort_str,
+                    "hook_observation: unknown effort level; ignored",
+                );
+                None
+            }
+        };
+        if let Some(level) = level {
+            app.observed_effort = Some(level);
+        }
+    }
+
+    if let (Some(tool_use_id), Some(_agent_id), Some(agent_type)) =
+        (tool_use_id, agent_id, agent_type)
+    {
+        app.subagent_attribution.insert(tool_use_id.to_owned(), agent_type.to_owned());
     }
 }
