@@ -31,6 +31,10 @@ pub(crate) struct LoadedConfig {
 pub(crate) struct LoadedProject {
     pub name: String,
     pub path: PathBuf,
+    /// Original path string from `forge.toml`, preserved for display
+    /// (e.g. `~/Projects/forge` with `~` un-expanded). Use `path` for
+    /// filesystem access; this for human-readable output.
+    pub display_path: String,
 }
 
 impl LoadedConfig {
@@ -75,7 +79,11 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
                 default_index = Some(i);
             }
         }
-        projects.push(LoadedProject { name: entry.name, path: expand_home(&entry.path) });
+        projects.push(LoadedProject {
+            name: entry.name,
+            path: expand_home(&entry.path),
+            display_path: entry.path,
+        });
     }
 
     let default_index = default_index.ok_or(WorkspaceError::NoDefaultProject { path })?;
