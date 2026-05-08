@@ -955,40 +955,6 @@ pub struct CompactionBoundary {
     pub pre_tokens: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub enum SessionUpdate {
-    AgentMessageChunk(ContentChunk),
-    UserMessageChunk(ContentChunk),
-    AgentThoughtChunk(ContentChunk),
-    ToolCall(ToolCall),
-    ToolCallUpdate(ToolCallUpdate),
-    Plan(Plan),
-    AvailableCommandsUpdate(AvailableCommandsUpdate),
-    AvailableAgentsUpdate(AvailableAgentsUpdate),
-    ModeStateUpdate(crate::app::ModeState),
-    CurrentModeUpdate(CurrentModeUpdate),
-    CurrentModelUpdate(CurrentModelUpdate),
-    ConfigOptionUpdate(ConfigOptionUpdate),
-    FastModeUpdate(FastModeState),
-    RateLimitUpdate(RateLimitUpdate),
-    ApiRetryUpdate {
-        attempt: u64,
-        max_retries: u64,
-        retry_delay_ms: u64,
-        error_status: Option<u16>,
-        error: ApiRetryError,
-    },
-    PromptSuggestionUpdate(String),
-    RuntimeSessionStateUpdate(RuntimeSessionState),
-    SettingsParseError {
-        file: Option<String>,
-        path: String,
-        message: String,
-    },
-    SessionStatusUpdate(SessionStatus),
-    CompactionBoundary(CompactionBoundary),
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PermissionOptionKind {
