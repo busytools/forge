@@ -26,46 +26,10 @@ pub fn try_handle_submit(app: &mut App, text: &str) -> bool {
         "/usage" => handle_usage_submit(app, &parsed.args),
         "/mode" => handle_mode_submit(app, &parsed.args),
         "/model" => handle_model_submit(app, &parsed.args),
-        "/effort" => handle_effort_submit(app, &parsed.args),
         "/new" => handle_new_session_submit(app, &parsed.args),
         "/resume" => handle_resume_submit(app, &parsed.args),
         _ => handle_unknown_submit(app, parsed.name),
     }
-}
-
-/// `/effort <level>` — change the active reasoning effort level.
-/// Forwards the CLI's own `/effort` slash command via a user prompt
-/// so the CLI updates its internal effort state. The next tool call's
-/// PreToolUse hook will reflect the new level via hook observation.
-fn handle_effort_submit(app: &mut App, args: &[&str]) -> bool {
-    let [requested] = args else {
-        push_system_message(app, "Usage: /effort <low|medium|high|xhigh|max>");
-        return true;
-    };
-    let level = requested.trim();
-    if !["low", "medium", "high", "xhigh", "max"].contains(&level) {
-        push_system_message(
-            app,
-            format!("Unknown effort level: {level}. Valid: low, medium, high, xhigh, max"),
-        );
-        return true;
-    }
-
-    let Some((conn, sid)) = require_active_session(
-        app,
-        "Cannot change effort: not connected yet.",
-        "Cannot change effort: no active session.",
-    ) else {
-        return true;
-    };
-
-    // Forward the slash to the CLI as a user prompt. The CLI processes
-    // `/<command>` prefixed user prompts as its own slash commands.
-    let raw_command = format!("/effort {level}");
-    if let Err(e) = conn.prompt_text(sid.to_string(), raw_command) {
-        push_system_message(app, format!("Failed to forward /effort: {e}"));
-    }
-    true
 }
 
 fn handle_compact_submit(app: &mut App, args: &[&str]) -> bool {
