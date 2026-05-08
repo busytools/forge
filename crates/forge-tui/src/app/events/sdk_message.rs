@@ -2,9 +2,12 @@
 //!
 //! [`handle_sdk_message`] is the App-side dispatcher that receives
 //! raw `forge_primitives::Message` envelopes from the bridge worker
-//! and routes them to per-variant handlers below. Each handler walks
-//! the typed message + a JSON copy (for fields not exposed as typed
-//! accessors) and mutates App state directly.
+//! and routes them to per-variant handlers below. Each handler
+//! destructures the typed message variant directly and mutates App
+//! state. `Message::System { data: Value, .. }` is the one variant
+//! that still walks JSON — its subtype shapes aren't first-class on
+//! the typed envelope, so per-subtype handlers branch on
+//! narrow `.get()` lookups against `data`.
 //!
 //! # Clippy allows
 //!
@@ -19,7 +22,7 @@ use serde_json::Value;
 
 use crate::agent::state_parsing::{
     build_api_retry_update, build_rate_limit_update, normalize_settings_parse_errors,
-    parse_fast_mode_state, parse_runtime_session_state,
+    parse_runtime_session_state,
 };
 use crate::app::App;
 
@@ -27,34 +30,15 @@ use crate::app::App;
 /// session-id check on `ClientEvent::SdkMessageReceived`. Dispatches
 /// to per-variant handlers below.
 pub(super) fn handle_sdk_message(app: &mut App, msg: Message) {
-    // Serialise the typed Message back to JSON so per-variant
-    // handlers can read fields like `fast_mode_state`,
-    // `terminal_reason`, `error` — which are not first-class typed
-    // accessors on `forge_primitives::Message` but DO appear in the
-    // wire JSON. On serialise failure (rare; would indicate envelope
-    // corruption) every per-variant handler that consults `raw`
-    // silently sees "missing fields" — log so the failure is
-    // observable.
-    let raw = match serde_json::to_value(&msg) {
-        Ok(v) => v,
-        Err(e) => {
-            tracing::error!(
-                target: crate::logging::targets::APP_SESSION,
-                error = %e,
-                "could not serialise SDK message to JSON for raw-field read; downstream parsing will use Null",
-            );
-            Value::Null
-        }
-    };
     match msg {
-        Message::Assistant { .. } => handle_assistant(app, msg, &raw),
-        Message::User { .. } => handle_user(app, msg, &raw),
-        Message::System { .. } => handle_system(app, msg, &raw),
-        Message::TaskStarted { .. } => handle_task_started(app, msg, &raw),
-        Message::TaskProgress { .. } => handle_task_progress(app, msg, &raw),
-        Message::TaskNotification { .. } => handle_task_notification(app, msg, &raw),
-        Message::RateLimitEvent { .. } => handle_rate_limit_event(app, msg, &raw),
-        Message::Result { .. } => handle_result(app, msg, &raw),
+        Message::Assistant { .. } => handle_assistant(app, msg),
+        Message::User { .. } => handle_user(app, msg),
+        Message::System { .. } => handle_system(app, msg),
+        Message::TaskStarted { .. } => handle_task_started(app, msg),
+        Message::TaskProgress { .. } => handle_task_progress(app, msg),
+        Message::TaskNotification { .. } => handle_task_notification(app, msg),
+        Message::RateLimitEvent { .. } => handle_rate_limit_event(app, msg),
+        Message::Result { .. } => handle_result(app, msg),
         // `Message::StreamEvent` and `_` (Error / Unknown / future
         // variants on the `#[non_exhaustive]` enum) — no-op today.
         // Re-add a handler if a downstream consumer needs to react
@@ -63,18 +47,15 @@ pub(super) fn handle_sdk_message(app: &mut App, msg: Message) {
     }
 }
 
-/// Apply the optional `fast_mode_state` field from a wire JSON
-/// envelope. Idempotent — same state in re-applies as a no-op.
+/// Apply a typed `forge_primitives::FastModeState` to App state.
+/// Idempotent — same state in re-applies as a no-op.
 ///
 /// Converts the wire-side `forge_primitives::FastModeState` to the
 /// App-side `model::FastModeState`. Both enums share the same
 /// variant set; the conversion is a 1:1 match.
-fn apply_fast_mode_update(app: &mut App, raw: &Value) {
+fn apply_fast_mode_state(app: &mut App, wire_state: forge_primitives::FastModeState) {
     use crate::agent::model::FastModeState as Model;
     use forge_primitives::FastModeState as Wire;
-    let Some(wire_state) = parse_fast_mode_state(raw.get("fast_mode_state")) else {
-        return;
-    };
     let model_state = match wire_state {
         Wire::Off => Model::Off,
         Wire::Cooldown => Model::Cooldown,
@@ -86,59 +67,72 @@ fn apply_fast_mode_update(app: &mut App, raw: &Value) {
     app.fast_mode_state = model_state;
 }
 
-// Per-variant handlers. Each takes ownership of the full `Message`
-// so it can destructure ownership-tracked fields freely, plus a
-// shared JSON view of the same envelope for fields not exposed as
-// typed accessors.
+/// `apply_fast_mode_state` adapter for the System("status") path,
+/// which still reads from a `Value` payload (the `data` field on the
+/// generic system envelope). Drops silently when the field is absent
+/// or doesn't deserialize to a known variant.
+fn apply_fast_mode_state_from_value(app: &mut App, data: &Value) {
+    let Some(wire_state) = crate::agent::state_parsing::parse_fast_mode_state(
+        data.get("fast_mode_state"),
+    ) else {
+        return;
+    };
+    apply_fast_mode_state(app, wire_state);
+}
 
-fn handle_assistant(app: &mut App, msg: Message, raw: &Value) {
-    apply_fast_mode_update(app, raw);
+// Per-variant handlers. Each takes ownership of the full `Message`
+// so it can destructure ownership-tracked fields freely.
+
+fn handle_assistant(app: &mut App, msg: Message) {
+    let Message::Assistant { message, parent_tool_use_id, error, .. } = msg else {
+        return;
+    };
     // Outer-envelope error capture — `app.turn_state.last_assistant_error`
     // is consulted by `apply_result_finalize` to classify TurnError
     // variants.
-    if let Message::Assistant { error: Some(err), .. } = &msg {
-        let err_str = serde_json::to_value(err).ok().and_then(|v| v.as_str().map(str::to_owned));
-        if let Some(s) = err_str
-            && !s.is_empty()
-        {
-            app.turn_state.last_assistant_error = Some(s);
-        }
+    if let Some(err) = error {
+        let err_str = match err {
+            forge_primitives::AssistantMessageError::AuthenticationFailed => {
+                "authentication_failed"
+            }
+            forge_primitives::AssistantMessageError::BillingError => "billing_error",
+            forge_primitives::AssistantMessageError::RateLimit => "rate_limit",
+            forge_primitives::AssistantMessageError::InvalidRequest => "invalid_request",
+            forge_primitives::AssistantMessageError::ServerError => "server_error",
+            forge_primitives::AssistantMessageError::Unknown => "unknown",
+        };
+        app.turn_state.last_assistant_error = Some(err_str.to_owned());
     }
-    walk_assistant_content(app, raw);
+    walk_assistant_content(app, &message.content, parent_tool_use_id.as_deref());
 }
 
-/// Walk the raw `Message::Assistant` JSON envelope, applying text,
-/// thinking, and TodoWrite-Plan content blocks to App state directly.
-/// Tool_use (non-TodoWrite) and tool_result content blocks are
-/// handled separately on the tool_call lifecycle path.
-fn walk_assistant_content(app: &mut App, raw: &Value) {
+/// Walk the typed `Message::Assistant` content blocks, applying text,
+/// thinking, tool_use, and tool_result blocks to App state directly.
+fn walk_assistant_content(
+    app: &mut App,
+    content: &[forge_primitives::ContentBlock],
+    parent_tool_use_id: Option<&str>,
+) {
     use crate::agent::model;
+    use forge_primitives::ContentBlock;
 
-    let Some(content) = raw.get("message").and_then(|m| m.get("content")).and_then(Value::as_array)
-    else {
-        return;
-    };
     for block in content {
-        let Some(record) = block.as_object() else { continue };
-        let block_type = record.get("type").and_then(Value::as_str).unwrap_or("");
-        match block_type {
-            "text" => {
-                let text = record.get("text").and_then(Value::as_str).unwrap_or("");
+        match block {
+            ContentBlock::Text { text } => {
                 if text.is_empty() {
                     continue;
                 }
                 super::clear_compaction_state(app, true);
                 let chunk = model::ContentChunk::new(model::ContentBlock::Text(
-                    model::TextContent::new(text.to_owned()),
+                    model::TextContent::new(text.clone()),
                 ));
                 super::streaming::handle_agent_message_chunk(app, chunk);
             }
-            "thinking" => {
-                let text = record.get("thinking").and_then(Value::as_str).unwrap_or("");
-                if text.is_empty() {
+            ContentBlock::Thinking { thinking, .. } => {
+                if thinking.is_empty() {
                     continue;
                 }
-                let chunk_chars = text.chars().count();
+                let chunk_chars = thinking.chars().count();
                 tracing::trace!(
                     target: crate::logging::targets::APP_SESSION,
                     event_name = "agent_thought_chunk_applied",
@@ -148,30 +142,45 @@ fn walk_assistant_content(app: &mut App, raw: &Value) {
                 );
                 app.status = crate::app::AppStatus::Thinking;
             }
-            t if t == "tool_use" || t == "server_tool_use" => {
-                let Some(tool_use_id) = record.get("id").and_then(Value::as_str) else {
-                    continue;
-                };
-                if tool_use_id.is_empty() {
+            ContentBlock::ToolUse { id, name, input }
+            | ContentBlock::ServerToolUse { id, name, input } => {
+                if id.is_empty() {
                     continue;
                 }
-                let name = record.get("name").and_then(Value::as_str).unwrap_or("Tool");
-                let empty_input = Value::Object(serde_json::Map::new());
-                let input = record.get("input").unwrap_or(&empty_input);
-                let parent_id = parent_tool_use_id_from_envelope(raw);
                 apply_plan_if_todo_write(app, name, input);
-                apply_tool_use_block(app, tool_use_id, name, input, parent_id.as_deref());
+                apply_tool_use_block(app, id, name, input, parent_tool_use_id);
             }
-            t if crate::agent::tooling::is_tool_result_block_type(t) => {
-                let Some(tool_use_id) = record.get("tool_use_id").and_then(Value::as_str) else {
-                    continue;
-                };
+            ContentBlock::ToolResult { tool_use_id, content, is_error } => {
                 if tool_use_id.is_empty() {
                     continue;
                 }
+                let raw_block = serde_json::to_value(block).ok();
+                apply_tool_result_block(
+                    app,
+                    tool_use_id,
+                    *is_error,
+                    Some(content),
+                    raw_block.as_ref(),
+                );
+            }
+            ContentBlock::Unknown { type_str, raw }
+                if crate::agent::tooling::is_tool_result_block_type(type_str) =>
+            {
+                // Wire-side tool-result variants the typed enum
+                // doesn't enumerate: `mcp_tool_result`,
+                // `web_fetch_tool_result`, etc. (full set in
+                // `forge_agent::tooling::TOOL_RESULT_TYPES`). They
+                // share the `tool_use_id` + `content` + `is_error`
+                // shape — pull those off the raw value.
+                let Some(record) = raw.as_object() else { continue };
+                let Some(tool_use_id) =
+                    record.get("tool_use_id").and_then(Value::as_str).filter(|s| !s.is_empty())
+                else {
+                    continue;
+                };
                 let is_error = record.get("is_error").and_then(Value::as_bool).unwrap_or(false);
                 let raw_content = record.get("content");
-                apply_tool_result_block(app, tool_use_id, is_error, raw_content, Some(block));
+                apply_tool_result_block(app, tool_use_id, is_error, raw_content, Some(raw));
             }
             _ => {}
         }
@@ -213,12 +222,15 @@ fn apply_plan_if_todo_write(app: &mut App, name: &str, input: &Value) {
     crate::app::todos::apply_plan_todos(app, &plan);
 }
 
-fn handle_user(app: &mut App, msg: Message, raw: &Value) {
-    walk_user_tool_results(app, raw);
+fn handle_user(app: &mut App, msg: Message) {
+    let Message::User { message, parent_tool_use_id, tool_use_result, .. } = msg else {
+        return;
+    };
+    walk_user_tool_results(app, &message.content);
     // Sub-agent tool_use_result envelopes carry parent_tool_use_id at
     // the message level — wire the implicit parent linkage so the
     // tool_call lifecycle picks up sub-agent results correctly.
-    if let Message::User { tool_use_result: Some(result), parent_tool_use_id, .. } = &msg
+    if let Some(result) = tool_use_result.as_ref()
         && let Some(tool_use_id) = parent_tool_use_id.as_deref()
         && !tool_use_id.is_empty()
     {
@@ -233,39 +245,44 @@ fn handle_user(app: &mut App, msg: Message, raw: &Value) {
     }
 }
 
-/// Walk a `Message::User` envelope's content array and apply
+/// Walk the typed `Message::User` content blocks and apply
 /// tool_result blocks via `apply_tool_result_block`.
-fn walk_user_tool_results(app: &mut App, raw: &Value) {
-    let Some(content) = raw.get("message").and_then(|m| m.get("content")).and_then(Value::as_array)
-    else {
-        return;
-    };
-    for block in content {
-        let Some(record) = block.as_object() else { continue };
-        let block_type = record.get("type").and_then(Value::as_str).unwrap_or("");
-        if !crate::agent::tooling::is_tool_result_block_type(block_type) {
-            continue;
-        }
-        let Some(tool_use_id) = record.get("tool_use_id").and_then(Value::as_str) else {
-            continue;
-        };
-        if tool_use_id.is_empty() {
-            continue;
-        }
-        let is_error = record.get("is_error").and_then(Value::as_bool).unwrap_or(false);
-        let raw_content = record.get("content");
-        apply_tool_result_block(app, tool_use_id, is_error, raw_content, Some(block));
-    }
-}
+fn walk_user_tool_results(app: &mut App, content: &[forge_primitives::ContentBlock]) {
+    use forge_primitives::ContentBlock;
 
-/// Read `parent_tool_use_id` from the outer envelope (Assistant or
-/// User Message). Used to route subagent tool calls back to their
-/// parent in the tool-call lifecycle.
-fn parent_tool_use_id_from_envelope(raw: &Value) -> Option<String> {
-    raw.get("parent_tool_use_id")
-        .and_then(Value::as_str)
-        .filter(|s| !s.is_empty())
-        .map(str::to_owned)
+    for block in content {
+        match block {
+            ContentBlock::ToolResult { tool_use_id, content, is_error } => {
+                if tool_use_id.is_empty() {
+                    continue;
+                }
+                let raw_block = serde_json::to_value(block).ok();
+                apply_tool_result_block(
+                    app,
+                    tool_use_id,
+                    *is_error,
+                    Some(content),
+                    raw_block.as_ref(),
+                );
+            }
+            ContentBlock::Unknown { type_str, raw }
+                if crate::agent::tooling::is_tool_result_block_type(type_str) =>
+            {
+                // Same fallback as `walk_assistant_content` — wire
+                // tool-result variants outside the typed enum.
+                let Some(record) = raw.as_object() else { continue };
+                let Some(tool_use_id) =
+                    record.get("tool_use_id").and_then(Value::as_str).filter(|s| !s.is_empty())
+                else {
+                    continue;
+                };
+                let is_error = record.get("is_error").and_then(Value::as_bool).unwrap_or(false);
+                let raw_content = record.get("content");
+                apply_tool_result_block(app, tool_use_id, is_error, raw_content, Some(raw));
+            }
+            _ => {}
+        }
+    }
 }
 
 /// Reads `meta.claudeCode.parentToolUseId` from a tool_call's meta
@@ -378,11 +395,11 @@ fn finalize_open_tool_calls(app: &mut App, status: &str) {
     }
 }
 
-fn handle_system(app: &mut App, msg: Message, raw: &Value) {
-    let Message::System { ref subtype, ref data, .. } = msg else { return };
+fn handle_system(app: &mut App, msg: Message) {
+    let Message::System { subtype, data, .. } = msg else { return };
     match subtype.as_str() {
         "status" => {
-            apply_fast_mode_update(app, data);
+            apply_fast_mode_state_from_value(app, &data);
             // permissionMode → CurrentModeUpdate + typed turn_state.mode
             // mirror + supported_mode_ids recompute. The App-side
             // `apply_current_mode_update` only touches the display
@@ -433,30 +450,29 @@ fn handle_system(app: &mut App, msg: Message, raw: &Value) {
             }
         }
         "api_retry" => {
-            apply_api_retry_update(app, data);
+            apply_api_retry_update(app, &data);
         }
         "init" => {
-            apply_settings_parse_errors(app, data);
-            apply_available_commands_from_init(app, data);
-            apply_available_agents_from_init(app, data);
-            apply_current_model_from_init(app, data);
-            apply_mode_state_from_init(app, data);
+            apply_settings_parse_errors(app, &data);
+            apply_available_commands_from_init(app, &data);
+            apply_available_agents_from_init(app, &data);
+            apply_current_model_from_init(app, &data);
+            apply_mode_state_from_init(app, &data);
         }
         "compact_boundary" => {
-            apply_compaction_boundary(app, data);
+            apply_compaction_boundary(app, &data);
         }
         "elicitation_complete" => {
-            apply_elicitation_complete(app, data);
+            apply_elicitation_complete(app, &data);
         }
         "elicitation_request" => {
-            apply_elicitation_request(app, data);
+            apply_elicitation_request(app, &data);
         }
         "local_command_output" => {
-            apply_local_command_output(app, data);
+            apply_local_command_output(app, &data);
         }
         _ => {}
     }
-    let _ = raw;
 }
 
 /// Drain `settings_errors` / `settingsErrors` from a System(init)
@@ -732,8 +748,7 @@ fn convert_runtime_session_state(
     }
 }
 
-fn handle_task_started(app: &mut App, msg: Message, raw: &Value) {
-    let _ = raw;
+fn handle_task_started(app: &mut App, msg: Message) {
     let Message::TaskStarted { tool_use_id, task_id, .. } = msg else { return };
     let id = tool_use_id.as_deref().unwrap_or("");
     if id.is_empty() {
@@ -745,8 +760,7 @@ fn handle_task_started(app: &mut App, msg: Message, raw: &Value) {
     }
 }
 
-fn handle_task_progress(app: &mut App, msg: Message, raw: &Value) {
-    let _ = raw;
+fn handle_task_progress(app: &mut App, msg: Message) {
     let Message::TaskProgress { tool_use_id, .. } = msg else { return };
     let id = tool_use_id.as_deref().unwrap_or("");
     if !id.is_empty() {
@@ -754,8 +768,7 @@ fn handle_task_progress(app: &mut App, msg: Message, raw: &Value) {
     }
 }
 
-fn handle_task_notification(app: &mut App, msg: Message, raw: &Value) {
-    let _ = raw;
+fn handle_task_notification(app: &mut App, msg: Message) {
     let Message::TaskNotification { tool_use_id, summary, .. } = msg else { return };
     let id = tool_use_id.as_deref().unwrap_or("");
     if !id.is_empty() {
@@ -807,7 +820,7 @@ fn apply_tool_summary_update(app: &mut App, tool_use_id: &str, summary: &str) {
     apply_tool_call_update(app, tool_use_id, fields);
 }
 
-fn handle_rate_limit_event(app: &mut App, msg: Message, _raw: &Value) {
+fn handle_rate_limit_event(app: &mut App, msg: Message) {
     let Message::RateLimitEvent { rate_limit_info, .. } = msg else { return };
     let value = serde_json::to_value(&rate_limit_info).unwrap_or(Value::Null);
     // Raw payload at debug — useful for triaging whether a notice
@@ -831,27 +844,35 @@ fn handle_rate_limit_event(app: &mut App, msg: Message, _raw: &Value) {
     super::rate_limit::handle_rate_limit_update(app, &update);
 }
 
-fn handle_result(app: &mut App, msg: Message, raw: &Value) {
-    apply_fast_mode_update(app, raw);
-    apply_result_finalize(app, &msg, raw);
+fn handle_result(app: &mut App, msg: Message) {
+    let Message::Result {
+        is_error,
+        subtype,
+        errors,
+        terminal_reason,
+        fast_mode_state,
+        ..
+    } = msg
+    else {
+        return;
+    };
+    if let Some(state) = fast_mode_state {
+        apply_fast_mode_state(app, state);
+    }
+    apply_result_finalize(app, is_error, &subtype, errors.unwrap_or_default(), terminal_reason);
 }
 
 /// On a successful Result, finalise any still-open tool_calls
 /// (terminal "completed") and trigger the App's TurnComplete handler.
 /// On a failed Result, finalise with "failed", classify the
 /// error_kind, and trigger the App's TurnError handler.
-fn apply_result_finalize(app: &mut App, msg: &Message, raw: &Value) {
-    let Message::Result { is_error, subtype, .. } = msg else { return };
-    let raw_record = raw.as_object();
-    let terminal_reason = raw_record
-        .and_then(|r| r.get("terminal_reason"))
-        .and_then(|v| serde_json::from_value::<forge_primitives::TerminalReason>(v.clone()).ok());
-    let errors_array: Vec<String> = raw_record
-        .and_then(|r| r.get("errors"))
-        .and_then(Value::as_array)
-        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect())
-        .unwrap_or_default();
-
+fn apply_result_finalize(
+    app: &mut App,
+    is_error: bool,
+    subtype: &str,
+    errors_array: Vec<String>,
+    terminal_reason: Option<forge_primitives::TerminalReason>,
+) {
     if !is_error && subtype == "success" {
         app.turn_state.last_assistant_error = None;
         finalize_open_tool_calls(app, "completed");
