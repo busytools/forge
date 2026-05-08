@@ -15,9 +15,9 @@ const SPINNER_FRAMES: &[char] = &[
 ];
 
 const FERRIS_SAYS: &[&str] = &[
-    r" --------------------------------- ",
-    r"< Welcome back to Claude, in Rust! >",
-    r" --------------------------------- ",
+    r" ------------------------ ",
+    r"< Welcome back to Forge! >",
+    r" ------------------------ ",
     r"        \             ",
     r"         \            ",
     r"            _~^~^~_  ",
@@ -151,7 +151,7 @@ impl<'a> MessageRenderContext<'a> {
 
 fn assistant_role_label_line() -> Line<'static> {
     let spans = vec![Span::styled(
-        "Claude",
+        "Forge",
         Style::default().fg(theme::ROLE_ASSISTANT).add_modifier(Modifier::BOLD),
     )];
 
@@ -1753,7 +1753,7 @@ mod tests {
             .position(|line| line.contains("Second paragraph"))
             .expect("second block");
 
-        assert_eq!(rendered.first().map(String::as_str), Some("Claude"));
+        assert_eq!(rendered.first().map(String::as_str), Some("Forge"));
         assert!(second_idx > first_idx + 1);
         assert!(rendered[first_idx + 1].is_empty());
     }
@@ -1773,7 +1773,7 @@ mod tests {
         let after_idx =
             rendered.iter().position(|line| line.contains("After notice")).expect("after text");
 
-        assert_eq!(rendered.first().map(String::as_str), Some("Claude"));
+        assert_eq!(rendered.first().map(String::as_str), Some("Forge"));
         assert!(before_idx < notice_idx && notice_idx < after_idx);
     }
 
@@ -1831,7 +1831,7 @@ mod tests {
             &mut msg, &spinner, 80, false, false, &mut lines,
         );
 
-        assert_eq!(render_lines_to_strings(&lines), vec!["Claude".to_owned(), "hello".to_owned()]);
+        assert_eq!(render_lines_to_strings(&lines), vec!["Forge".to_owned(), "hello".to_owned()]);
 
         let (h, _) = measure_message_height_cached_with_tools_collapsed_and_separator(
             &mut msg, &spinner, 80, 1, false, false,
@@ -1855,7 +1855,7 @@ mod tests {
 
         let rendered = render_lines_to_strings(&lines);
         assert_eq!(rendered.len(), 2);
-        assert_eq!(rendered[0], "Claude");
+        assert_eq!(rendered[0], "Forge");
         assert!(rendered[1].contains("Thinking..."));
 
         let (h, _) = measure_message_height_cached_with_tools_collapsed_and_separator(
@@ -1914,7 +1914,7 @@ mod tests {
 
         let rendered = render_lines_to_strings(&lines);
         assert_eq!(rendered.len(), 2);
-        assert_eq!(rendered[0], "Claude");
+        assert_eq!(rendered[0], "Forge");
         assert!(rendered[1].contains("Compacting context..."));
 
         let (h, _) = measure_message_height_cached_with_tools_collapsed_and_separator(
@@ -1945,7 +1945,7 @@ mod tests {
 
         assert_eq!(remaining, 0);
         let rendered = render_lines_to_strings(&out);
-        assert_eq!(rendered.first().map(String::as_str), Some("Claude"));
+        assert_eq!(rendered.first().map(String::as_str), Some("Forge"));
         assert!(rendered[1].contains("Thinking..."));
         assert!(!rendered.last().is_some_and(String::is_empty));
     }
@@ -1972,7 +1972,7 @@ mod tests {
 
         assert_eq!(remaining, 0);
         let rendered = render_lines_to_strings(&out);
-        assert_eq!(rendered.first().map(String::as_str), Some("Claude"));
+        assert_eq!(rendered.first().map(String::as_str), Some("Forge"));
         assert!(rendered[1].contains("Compacting context..."));
         assert!(!rendered.last().is_some_and(String::is_empty));
     }
@@ -2357,7 +2357,7 @@ mod tests {
         render_message_with_tools_collapsed(&mut msg, &spinner, 80, false, &mut lines);
         let rendered = render_lines_to_strings(&lines);
 
-        assert_eq!(rendered.first().map(String::as_str), Some("Claude"));
+        assert_eq!(rendered.first().map(String::as_str), Some("Forge"));
         let heading_idx =
             rendered.iter().position(|line| line.contains("Heading")).expect("heading");
         assert_eq!(heading_idx, 1);
@@ -2386,7 +2386,7 @@ mod tests {
         let rendered = render_lines_to_strings(&out);
 
         assert_eq!(remaining, 0);
-        assert_eq!(rendered.first().map(String::as_str), Some("Claude"));
+        assert_eq!(rendered.first().map(String::as_str), Some("Forge"));
         let heading_idx =
             rendered.iter().position(|line| line.contains("Heading")).expect("heading");
         assert_eq!(heading_idx, 1);
