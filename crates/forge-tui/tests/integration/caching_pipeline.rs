@@ -12,7 +12,6 @@
 //   Group 5: Regression / full pipeline
 
 use forge_tui::agent::events::ClientEvent;
-use forge_tui::agent::model;
 use forge_tui::app::{
     App, AppStatus, BlockCache, ChatMessage, DEFAULT_CACHE_SPLIT_HARD_LIMIT_BYTES,
     DEFAULT_CACHE_SPLIT_SOFT_LIMIT_BYTES, MessageBlock, MessageRole, TextBlock, TextBlockSpacing,
@@ -22,6 +21,7 @@ use ratatui::text::{Line, Span};
 use std::fmt::Write as _;
 
 use crate::helpers::{send_client_event, test_app};
+use crate::message_helpers::{assistant_message, send_msg, text_block};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -38,11 +38,7 @@ fn inactive_spinner() -> SpinnerState {
 }
 
 fn stream_text(app: &mut App, text: &str) {
-    let chunk = model::ContentChunk::new(model::ContentBlock::Text(model::TextContent::new(text)));
-    send_client_event(
-        app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::AgentMessageChunk(chunk)),
-    );
+    send_msg(app, assistant_message(vec![text_block(text)]));
 }
 
 fn complete_turn(app: &mut App) {

@@ -1,10 +1,9 @@
 //! Wire-shape conversions from `forge_primitives::*` (the
-//! serde-derived envelope structs that ride on `AgentEvent` and
-//! historical `SessionUpdate`s) into `crate::agent::model::*` (the
-//! App's runtime model). Consumed by `bridge_lifecycle` (for the
-//! `AgentEvent` translation) plus the App-side `sdk_message` and
-//! slash-command executors that build model values from wire envelopes
-//! captured in tool-call payloads.
+//! serde-derived envelope structs that ride on `AgentEvent`) into
+//! `crate::agent::model::*` (the App's runtime model). Consumed by
+//! `bridge_lifecycle` (for the `AgentEvent` translation) plus the
+//! App-side `sdk_message` and slash-command executors that build
+//! model values from wire envelopes captured in tool-call payloads.
 
 use crate::agent::model;
 use crate::app::{ModeInfo, ModeState};
@@ -149,112 +148,6 @@ pub(crate) fn convert_current_model(current_model: types::CurrentModel) -> model
         mapped = mapped.catalog_id(catalog_id);
     }
     mapped
-}
-
-pub(super) fn map_session_update(update: types::SessionUpdate) -> Option<model::SessionUpdate> {
-    match update {
-        types::SessionUpdate::UserMessageChunk { content } => {
-            let content = convert_content_block(content)?;
-            Some(model::SessionUpdate::UserMessageChunk(model::ContentChunk::new(content)))
-        }
-        types::SessionUpdate::AgentMessageChunk { content } => {
-            let content = convert_content_block(content)?;
-            Some(model::SessionUpdate::AgentMessageChunk(model::ContentChunk::new(content)))
-        }
-        types::SessionUpdate::AgentThoughtChunk { content } => {
-            let content = convert_content_block(content)?;
-            Some(model::SessionUpdate::AgentThoughtChunk(model::ContentChunk::new(content)))
-        }
-        types::SessionUpdate::ToolCall { tool_call } => {
-            Some(model::SessionUpdate::ToolCall(convert_tool_call(tool_call)))
-        }
-        types::SessionUpdate::ToolCallUpdate { tool_call_update } => {
-            Some(model::SessionUpdate::ToolCallUpdate(convert_tool_call_update(tool_call_update)))
-        }
-        types::SessionUpdate::Plan { entries } => Some(model::SessionUpdate::Plan(
-            model::Plan::new(entries.into_iter().map(convert_plan_entry).collect()),
-        )),
-        types::SessionUpdate::AvailableCommandsUpdate { commands } => Some(
-            model::SessionUpdate::AvailableCommandsUpdate(map_available_commands_update(commands)),
-        ),
-        types::SessionUpdate::AvailableAgentsUpdate { agents } => {
-            Some(model::SessionUpdate::AvailableAgentsUpdate(map_available_agents_update(agents)))
-        }
-        types::SessionUpdate::ModeStateUpdate { mode } => {
-            Some(model::SessionUpdate::ModeStateUpdate(convert_mode_state(mode)))
-        }
-        types::SessionUpdate::CurrentModeUpdate { current_mode_id } => {
-            Some(model::SessionUpdate::CurrentModeUpdate(model::CurrentModeUpdate::new(
-                model::SessionModeId::new(current_mode_id),
-            )))
-        }
-        types::SessionUpdate::CurrentModelUpdate { current_model } => {
-            Some(model::SessionUpdate::CurrentModelUpdate(model::CurrentModelUpdate::new(
-                convert_current_model(current_model),
-            )))
-        }
-        types::SessionUpdate::ConfigOptionUpdate { option_id, value } => {
-            Some(model::SessionUpdate::ConfigOptionUpdate(model::ConfigOptionUpdate {
-                option_id,
-                value,
-            }))
-        }
-        types::SessionUpdate::FastModeUpdate { fast_mode_state } => {
-            Some(model::SessionUpdate::FastModeUpdate(match fast_mode_state {
-                types::FastModeState::Off => model::FastModeState::Off,
-                types::FastModeState::Cooldown => model::FastModeState::Cooldown,
-                types::FastModeState::On => model::FastModeState::On,
-            }))
-        }
-        types::SessionUpdate::RateLimitUpdate(update) => {
-            Some(model::SessionUpdate::RateLimitUpdate(map_rate_limit_update(update)))
-        }
-        types::SessionUpdate::ApiRetryUpdate(types::ApiRetryUpdate {
-            attempt,
-            max_retries,
-            retry_delay_ms,
-            error_status,
-            error,
-        }) => Some(model::SessionUpdate::ApiRetryUpdate {
-            attempt,
-            max_retries,
-            retry_delay_ms,
-            error_status,
-            error: map_api_retry_error(error),
-        }),
-        types::SessionUpdate::PromptSuggestionUpdate { suggestion } => {
-            Some(model::SessionUpdate::PromptSuggestionUpdate(suggestion))
-        }
-        types::SessionUpdate::RuntimeSessionStateUpdate { state } => {
-            Some(model::SessionUpdate::RuntimeSessionStateUpdate(match state {
-                types::RuntimeSessionState::Idle => model::RuntimeSessionState::Idle,
-                types::RuntimeSessionState::Running => model::RuntimeSessionState::Running,
-                types::RuntimeSessionState::RequiresAction => {
-                    model::RuntimeSessionState::RequiresAction
-                }
-            }))
-        }
-        types::SessionUpdate::SettingsParseError(types::SettingsParseErrorUpdate {
-            file,
-            path,
-            message,
-        }) => Some(model::SessionUpdate::SettingsParseError { file, path, message }),
-        types::SessionUpdate::SessionStatusUpdate { status } => {
-            Some(model::SessionUpdate::SessionStatusUpdate(match status {
-                types::SessionStatus::Compacting => model::SessionStatus::Compacting,
-                types::SessionStatus::Idle => model::SessionStatus::Idle,
-            }))
-        }
-        types::SessionUpdate::CompactionBoundary { trigger, pre_tokens } => {
-            Some(model::SessionUpdate::CompactionBoundary(model::CompactionBoundary {
-                trigger: match trigger {
-                    types::CompactionTrigger::Manual => model::CompactionTrigger::Manual,
-                    types::CompactionTrigger::Auto => model::CompactionTrigger::Auto,
-                },
-                pre_tokens,
-            }))
-        }
-    }
 }
 
 pub(super) fn map_permission_request(
@@ -625,7 +518,7 @@ pub(crate) fn convert_mode_state(mode: types::ModeState) -> ModeState {
 mod tests {
     use super::{
         convert_tool_call, convert_tool_call_update_fields, map_available_models,
-        map_permission_request, map_question_request, map_session_update,
+        map_permission_request, map_question_request,
     };
     use crate::agent::model;
     use forge_primitives as types;
@@ -678,40 +571,6 @@ mod tests {
                     .supports_fast_mode(None)
                     .supports_auto_mode(None),
             ]
-        );
-    }
-
-    #[test]
-    fn map_lifecycle_updates_preserves_new_sdk_state() {
-        assert_eq!(
-            map_session_update(types::SessionUpdate::ApiRetryUpdate(types::ApiRetryUpdate {
-                attempt: 2,
-                max_retries: 4,
-                retry_delay_ms: 1500,
-                error_status: Some(529),
-                error: types::ApiRetryError::ServerError,
-            })),
-            Some(model::SessionUpdate::ApiRetryUpdate {
-                attempt: 2,
-                max_retries: 4,
-                retry_delay_ms: 1500,
-                error_status: Some(529),
-                error: model::ApiRetryError::ServerError,
-            })
-        );
-        assert_eq!(
-            map_session_update(types::SessionUpdate::RuntimeSessionStateUpdate {
-                state: types::RuntimeSessionState::RequiresAction,
-            }),
-            Some(model::SessionUpdate::RuntimeSessionStateUpdate(
-                model::RuntimeSessionState::RequiresAction,
-            ))
-        );
-        assert_eq!(
-            map_session_update(types::SessionUpdate::PromptSuggestionUpdate {
-                suggestion: "Add tests".to_owned(),
-            }),
-            Some(model::SessionUpdate::PromptSuggestionUpdate("Add tests".to_owned()))
         );
     }
 

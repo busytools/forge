@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::content::ContentBlock;
+use crate::runtime::{FastModeState, TerminalReason};
 
 /// One stream-json message.
 ///
@@ -190,6 +191,14 @@ pub enum Message {
         errors: Option<Vec<String>>,
         /// Unique identifier for this result frame.
         uuid: Option<String>,
+        /// Why the turn ended at the runtime layer (`completed`,
+        /// `aborted_streaming`, `max_turns`, etc.). The CLI reports
+        /// this on `result` frames; surfaced here so consumers don't
+        /// have to re-parse the wire JSON to read it.
+        terminal_reason: Option<TerminalReason>,
+        /// Fast-mode state at the moment the turn ended. The CLI
+        /// includes this on `result` frames as a state echo.
+        fast_mode_state: Option<FastModeState>,
     },
 
     /// Streaming partial-message event emitted when
@@ -559,6 +568,10 @@ enum MessageRepr {
         errors: Option<Vec<String>>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         uuid: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        terminal_reason: Option<TerminalReason>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        fast_mode_state: Option<FastModeState>,
     },
     StreamEvent {
         uuid: String,
@@ -734,6 +747,8 @@ impl From<MessageRepr> for Message {
                 permission_denials,
                 errors,
                 uuid,
+                terminal_reason,
+                fast_mode_state,
             } => Message::Result {
                 subtype,
                 session_id,
@@ -750,6 +765,8 @@ impl From<MessageRepr> for Message {
                 permission_denials,
                 errors,
                 uuid,
+                terminal_reason,
+                fast_mode_state,
             },
             MessageRepr::StreamEvent { uuid, session_id, event, parent_tool_use_id } => {
                 Message::StreamEvent { uuid, session_id, event, parent_tool_use_id }
@@ -856,6 +873,8 @@ impl From<Message> for MessageRepr {
                 permission_denials,
                 errors,
                 uuid,
+                terminal_reason,
+                fast_mode_state,
             } => MessageRepr::Result {
                 subtype,
                 session_id,
@@ -872,6 +891,8 @@ impl From<Message> for MessageRepr {
                 permission_denials,
                 errors,
                 uuid,
+                terminal_reason,
+                fast_mode_state,
             },
             Message::StreamEvent { uuid, session_id, event, parent_tool_use_id } => {
                 MessageRepr::StreamEvent { uuid, session_id, event, parent_tool_use_id }

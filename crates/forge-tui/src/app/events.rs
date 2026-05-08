@@ -19,7 +19,6 @@ use crate::agent::model;
 use crate::app::keys::reclaim_input_from_inline_prompt_if_needed;
 #[cfg(test)]
 use crate::app::keys::{CMD_MOD, WORD_NAV_MOD};
-use crate::app::todos::apply_plan_todos;
 #[cfg(test)]
 use crossterm::event::KeyEvent;
 use crossterm::event::{Event, KeyEventKind};
@@ -128,121 +127,6 @@ fn dispatch_paste_by_view(app: &mut App, text: &str) -> bool {
         }
         ActiveView::Config => super::config::handle_paste(app, text),
         ActiveView::Trusted | ActiveView::SessionPicker => false,
-    }
-}
-
-fn handle_session_update_event(app: &mut App, update: model::SessionUpdate) {
-    let needs_history_retention = matches!(
-        &update,
-        model::SessionUpdate::AgentMessageChunk(_)
-            | model::SessionUpdate::ToolCall(_)
-            | model::SessionUpdate::ToolCallUpdate(_)
-            | model::SessionUpdate::CompactionBoundary(_)
-    );
-    handle_session_update(app, update);
-    if needs_history_retention {
-        app.enforce_history_retention_tracked();
-    }
-}
-
-fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
-    match update {
-        model::SessionUpdate::AgentMessageChunk(chunk) => {
-            clear_compaction_state(app, true);
-            streaming::handle_agent_message_chunk(app, chunk);
-        }
-        model::SessionUpdate::ToolCall(tc) => tool_calls::handle_tool_call(app, tc),
-        model::SessionUpdate::ToolCallUpdate(tcu) => {
-            tool_updates::handle_tool_call_update_session(app, &tcu);
-        }
-        model::SessionUpdate::UserMessageChunk(_) => {}
-        model::SessionUpdate::AgentThoughtChunk(chunk) => {
-            let chunk_chars = match &chunk.content {
-                model::ContentBlock::Text(text) => text.text.chars().count(),
-                model::ContentBlock::Image(_) => 0,
-            };
-            tracing::trace!(
-                target: crate::logging::targets::APP_SESSION,
-                event_name = "agent_thought_chunk_applied",
-                message = "agent thought chunk applied",
-                outcome = "success",
-                chunk_chars,
-            );
-            app.status = AppStatus::Thinking;
-        }
-        model::SessionUpdate::Plan(plan) => {
-            tracing::debug!(
-                target: crate::logging::targets::APP_SESSION,
-                event_name = "plan_update_applied",
-                message = "plan update applied",
-                outcome = "success",
-                todo_count = plan.entries.len(),
-            );
-            apply_plan_todos(app, &plan);
-        }
-        model::SessionUpdate::AvailableCommandsUpdate(cmds) => {
-            apply_available_commands_update(app, cmds);
-        }
-        model::SessionUpdate::AvailableAgentsUpdate(agents) => {
-            apply_available_agents_update(app, agents);
-        }
-        model::SessionUpdate::ModeStateUpdate(mode) => {
-            apply_mode_state_update(app, mode);
-        }
-        model::SessionUpdate::CurrentModeUpdate(update) => {
-            apply_current_mode_update(app, &update);
-        }
-        model::SessionUpdate::CurrentModelUpdate(update) => {
-            apply_current_model_update(app, update.current_model);
-        }
-        model::SessionUpdate::ConfigOptionUpdate(config) => {
-            handle_config_option_update(app, config);
-        }
-        model::SessionUpdate::FastModeUpdate(state) => {
-            app.fast_mode_state = state;
-        }
-        model::SessionUpdate::RateLimitUpdate(update) => {
-            rate_limit::handle_rate_limit_update(app, &update);
-        }
-        model::SessionUpdate::ApiRetryUpdate {
-            attempt,
-            max_retries,
-            retry_delay_ms,
-            error_status,
-            error,
-        } => {
-            api_retry::handle_api_retry_update(
-                app,
-                attempt,
-                max_retries,
-                retry_delay_ms,
-                error_status,
-                error,
-            );
-        }
-        model::SessionUpdate::PromptSuggestionUpdate(suggestion) => {
-            app.prompt_suggestion = (!suggestion.trim().is_empty()).then_some(suggestion);
-        }
-        model::SessionUpdate::RuntimeSessionStateUpdate(state) => {
-            handle_runtime_session_state_update(app, state);
-        }
-        model::SessionUpdate::SettingsParseError { file, path, message } => {
-            handle_settings_parse_error(app, file.as_deref(), &path, &message);
-        }
-        model::SessionUpdate::SessionStatusUpdate(status) => {
-            apply_session_status_update(app, status);
-            tracing::debug!(
-                target: crate::logging::targets::APP_SESSION,
-                event_name = "session_status_applied",
-                message = "session status update applied",
-                outcome = "success",
-                session_status = ?status,
-                compacting = app.is_compacting,
-            );
-        }
-        model::SessionUpdate::CompactionBoundary(boundary) => {
-            rate_limit::handle_compaction_boundary_update(app, boundary);
-        }
     }
 }
 
@@ -419,35 +303,6 @@ pub(super) fn clear_compaction_state(app: &mut App, emit_manual_success: bool) {
     }
 }
 
-fn handle_config_option_update(app: &mut App, config: model::ConfigOptionUpdate) {
-    let option_id = config.option_id;
-    let value = config.value;
-    let value_kind = match &value {
-        serde_json::Value::Null => "null",
-        serde_json::Value::Bool(_) => "bool",
-        serde_json::Value::Number(_) => "number",
-        serde_json::Value::String(_) => "string",
-        serde_json::Value::Array(_) => "array",
-        serde_json::Value::Object(_) => "object",
-    };
-    app.config_options.insert(option_id.clone(), value);
-    tracing::debug!(
-        target: crate::logging::targets::APP_CONFIG,
-        event_name = "config_option_update_applied",
-        message = "config option update applied",
-        outcome = "success",
-        option_id = %option_id,
-        value_kind,
-    );
-
-    if matches!(
-        app.pending_command_ack.as_ref(),
-        Some(PendingCommandAck::ConfigOption { option_id: expected }) if expected == &option_id
-    ) {
-        session::clear_pending_command(app);
-    }
-}
-
 #[cfg(test)]
 fn handle_normal_key(app: &mut App, key: KeyEvent) {
     super::keys::handle_normal_key(app, key);
@@ -473,7 +328,6 @@ mod tests {
     use crate::agent::error_handling::TurnErrorClass;
     use crate::agent::events::ClientEvent;
     use crate::agent::events::ServiceStatusSeverity;
-    use crate::agent::events::TerminalProcess;
     use crate::app::slash::{SlashCandidate, SlashContext, SlashState};
     use crate::app::{
         ActiveView, BlockCache, CancelOrigin, FocusOwner, FocusTarget, HelpView, InlinePermission,
@@ -484,7 +338,6 @@ mod tests {
     use pretty_assertions::assert_eq;
     use ratatui::layout::Rect;
 
-    use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
     use tokio::sync::oneshot;
 
@@ -606,14 +459,14 @@ mod tests {
     fn turn_complete_after_cancelled_task_leaves_no_stale_active_task_ids() {
         let mut app = make_test_app();
 
-        // Simulate a Task tool call arriving as InProgress (no Completed update will follow)
-        let task_tc = model::ToolCall::new("task-1", "Research")
-            .kind(model::ToolKind::Think)
-            .status(model::ToolCallStatus::InProgress)
-            .meta(serde_json::json!({"claudeCode": {"toolName": "Task"}}));
-        handle_client_event(
+        // Simulate a Task tool call arriving as in-progress (no Completed update will follow)
+        send_msg(
             &mut app,
-            ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(task_tc)),
+            assistant_message(vec![tool_use_block(
+                "task-1",
+                "Task",
+                serde_json::json!({"description": "Research"}),
+            )]),
         );
         assert!(app.active_task_ids.contains("task-1"), "task must be tracked while InProgress");
 
@@ -625,13 +478,13 @@ mod tests {
         assert!(app.active_task_ids.is_empty(), "stale task id must not survive TurnComplete");
 
         // Next turn: a normal main-agent Glob must get MainAgent scope, not Subagent
-        let glob_tc = model::ToolCall::new("glob-1", "Glob **/*.rs")
-            .kind(model::ToolKind::Search)
-            .status(model::ToolCallStatus::InProgress)
-            .meta(serde_json::json!({"claudeCode": {"toolName": "Glob"}}));
-        handle_client_event(
+        send_msg(
             &mut app,
-            ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(glob_tc)),
+            assistant_message(vec![tool_use_block(
+                "glob-1",
+                "Glob",
+                serde_json::json!({"pattern": "**/*.rs"}),
+            )]),
         );
         assert_eq!(
             app.tool_call_scope("glob-1"),
@@ -836,14 +689,7 @@ mod tests {
     #[test]
     fn agent_message_chunk_splits_into_frozen_text_blocks() {
         let mut app = make_test_app();
-        handle_client_event(
-            &mut app,
-            ClientEvent::SessionUpdate(model::SessionUpdate::AgentMessageChunk(
-                model::ContentChunk::new(model::ContentBlock::Text(model::TextContent::new(
-                    "p1\n\np2\n\np3",
-                ))),
-            )),
-        );
+        send_msg(&mut app, assistant_message(vec![text_block("p1\n\np2\n\np3")]));
 
         assert_eq!(app.messages.len(), 1);
         let Some(last) = app.messages.last() else {
@@ -889,6 +735,63 @@ mod tests {
         }
     }
 
+    fn user_text_message(text: &str) -> forge_primitives::Message {
+        forge_primitives::Message::User {
+            message: forge_primitives::UserEnvelope {
+                role: "user".to_owned(),
+                content: vec![forge_primitives::ContentBlock::Text { text: text.to_owned() }],
+            },
+            session_id: String::new(),
+            parent_tool_use_id: None,
+            uuid: None,
+            tool_use_result: None,
+        }
+    }
+
+    fn assistant_text_message(text: &str) -> forge_primitives::Message {
+        forge_primitives::Message::Assistant {
+            message: forge_primitives::AssistantEnvelope {
+                id: "msg_test".to_owned(),
+                role: "assistant".to_owned(),
+                model: "claude-test".to_owned(),
+                content: vec![forge_primitives::ContentBlock::Text { text: text.to_owned() }],
+                stop_reason: None,
+                stop_sequence: None,
+                usage: None,
+            },
+            session_id: String::new(),
+            parent_tool_use_id: None,
+            error: None,
+            uuid: None,
+        }
+    }
+
+    fn assistant_tool_use_message(
+        tool_use_id: &str,
+        name: &str,
+        input: serde_json::Value,
+    ) -> forge_primitives::Message {
+        forge_primitives::Message::Assistant {
+            message: forge_primitives::AssistantEnvelope {
+                id: "msg_test".to_owned(),
+                role: "assistant".to_owned(),
+                model: "claude-test".to_owned(),
+                content: vec![forge_primitives::ContentBlock::ToolUse {
+                    id: tool_use_id.to_owned(),
+                    name: name.to_owned(),
+                    input,
+                }],
+                stop_reason: None,
+                stop_sequence: None,
+                usage: None,
+            },
+            session_id: String::new(),
+            parent_tool_use_id: None,
+            error: None,
+            uuid: None,
+        }
+    }
+
     fn app_with_bridge_connection()
     -> (App, tokio::sync::mpsc::UnboundedReceiver<forge_primitives::Command>) {
         let mut app = make_test_app();
@@ -908,6 +811,136 @@ mod tests {
             custom_title: Some(title.to_owned()),
             first_prompt: Some(format!("prompt {title}")),
         }
+    }
+
+    // Wire-message helpers for the SdkMessageReceived path. Mirror the
+    // shared `tests/integration/message_helpers.rs` versions; each
+    // compilation unit needs its own copy since inline `#[test]` modules
+    // can't import test-only modules from the `tests/` dir.
+
+    fn assistant_message(
+        content: Vec<forge_primitives::ContentBlock>,
+    ) -> forge_primitives::Message {
+        forge_primitives::Message::Assistant {
+            message: forge_primitives::AssistantEnvelope {
+                id: "msg_test".to_owned(),
+                role: "assistant".to_owned(),
+                model: "claude-test".to_owned(),
+                content,
+                stop_reason: None,
+                stop_sequence: None,
+                usage: None,
+            },
+            session_id: "test-session".to_owned(),
+            parent_tool_use_id: None,
+            error: None,
+            uuid: None,
+        }
+    }
+
+    fn user_message(content: Vec<forge_primitives::ContentBlock>) -> forge_primitives::Message {
+        forge_primitives::Message::User {
+            message: forge_primitives::UserEnvelope { role: "user".to_owned(), content },
+            session_id: "test-session".to_owned(),
+            parent_tool_use_id: None,
+            uuid: None,
+            tool_use_result: None,
+        }
+    }
+
+    fn system_message(subtype: &str, data: serde_json::Value) -> forge_primitives::Message {
+        forge_primitives::Message::System {
+            subtype: subtype.to_owned(),
+            session_id: Some("test-session".to_owned()),
+            data,
+        }
+    }
+
+    fn rate_limit_event(
+        rate_limit_info: forge_primitives::RateLimitInfo,
+    ) -> forge_primitives::Message {
+        forge_primitives::Message::RateLimitEvent {
+            rate_limit_info,
+            uuid: "rl_test".to_owned(),
+            session_id: "test-session".to_owned(),
+        }
+    }
+
+    /// Build a wire `RateLimitInfo` whose serialised JSON drives the
+    /// `build_rate_limit_update` parser exactly as the original
+    /// `model::RateLimitUpdate` shape did.
+    ///
+    /// `rate_limit_type` is taken as a `&str` and routed through the
+    /// flattened `raw` map so non-enum-typed values like `"daily"` (used
+    /// by some tests) pass through to the model side as `Some(string)`.
+    /// `is_using_overage` and `surpassed_threshold` go through the same
+    /// raw map as `isUsingOverage` / `surpassedThreshold` (camelCase keys
+    /// the build_rate_limit_update parser reads directly).
+    fn build_rate_limit_info(
+        status: forge_primitives::RateLimitStatus,
+        resets_at_secs: Option<i64>,
+        utilization: Option<f64>,
+        rate_limit_type: Option<&str>,
+        is_using_overage: Option<bool>,
+        surpassed_threshold: Option<f64>,
+    ) -> forge_primitives::RateLimitInfo {
+        let mut raw = serde_json::Map::new();
+        if let Some(v) = rate_limit_type {
+            raw.insert("rateLimitType".to_owned(), serde_json::json!(v));
+        }
+        if let Some(v) = is_using_overage {
+            raw.insert("isUsingOverage".to_owned(), serde_json::json!(v));
+        }
+        if let Some(v) = surpassed_threshold {
+            raw.insert("surpassedThreshold".to_owned(), serde_json::json!(v));
+        }
+        forge_primitives::RateLimitInfo {
+            status,
+            resets_at: resets_at_secs,
+            rate_limit_type: None,
+            utilization,
+            overage_status: None,
+            overage_resets_at: None,
+            overage_disabled_reason: None,
+            raw,
+        }
+    }
+
+    fn tool_use_block(
+        id: &str,
+        name: &str,
+        input: serde_json::Value,
+    ) -> forge_primitives::ContentBlock {
+        forge_primitives::ContentBlock::ToolUse { id: id.to_owned(), name: name.to_owned(), input }
+    }
+
+    fn text_block(text: &str) -> forge_primitives::ContentBlock {
+        forge_primitives::ContentBlock::Text { text: text.to_owned() }
+    }
+
+    fn tool_result_block(
+        tool_use_id: &str,
+        content: serde_json::Value,
+    ) -> forge_primitives::ContentBlock {
+        forge_primitives::ContentBlock::ToolResult {
+            tool_use_id: tool_use_id.to_owned(),
+            content,
+            is_error: false,
+        }
+    }
+
+    /// Dispatch a wire `Message` envelope as `SdkMessageReceived`,
+    /// adopting `"test-session"` as the app's session id on first use
+    /// so the session-id guard in the dispatcher accepts the envelope.
+    /// If the app already has a session id set, the wire envelope is
+    /// dispatched with that id so the strict-mismatch check passes.
+    fn send_msg(app: &mut App, msg: forge_primitives::Message) {
+        if app.session_id.is_none() {
+            app.session_id = Some(model::SessionId::new("test-session"));
+        }
+        let session_id =
+            app.session_id.as_ref().map_or_else(|| "test-session".to_owned(), ToString::to_string);
+        handle_client_event(app, ClientEvent::SdkMessageReceived { session_id, msg });
     }
 
     #[test]
@@ -934,21 +967,18 @@ mod tests {
     #[test]
     fn execute_tool_update_uses_raw_output_fallback() {
         let mut app = make_test_app();
-        let tc = model::ToolCall::new("tc-exec", "Terminal")
-            .kind(model::ToolKind::Execute)
-            .status(model::ToolCallStatus::InProgress);
-        handle_client_event(
+        send_msg(
             &mut app,
-            ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc)),
+            assistant_message(vec![tool_use_block(
+                "tc-exec",
+                "Bash",
+                serde_json::json!({"command": "echo line 1"}),
+            )]),
         );
 
-        let fields = model::ToolCallUpdateFields::new()
-            .status(model::ToolCallStatus::Completed)
-            .raw_output(serde_json::json!("line 1\nline 2"));
-        let update = model::ToolCallUpdate::new("tc-exec", fields);
-        handle_client_event(
+        send_msg(
             &mut app,
-            ClientEvent::SessionUpdate(model::SessionUpdate::ToolCallUpdate(update)),
+            user_message(vec![tool_result_block("tc-exec", serde_json::json!("line 1\nline 2"))]),
         );
 
         let Some((mi, bi)) = app.lookup_tool_call("tc-exec") else {
@@ -961,57 +991,21 @@ mod tests {
         assert_eq!(tc.terminal_output.as_deref(), Some("line 1\nline 2"));
     }
 
-    #[test]
-    fn tool_call_update_with_same_terminal_content_still_invalidates_command_changes() {
-        let mut app = make_test_app();
-        let tc = model::ToolCall::new("tc-exec-terminal", "Terminal")
-            .kind(model::ToolKind::Execute)
-            .status(model::ToolCallStatus::InProgress)
-            .content(vec![model::ToolCallContent::Terminal(model::TerminalToolCallContent::new(
-                "term-1",
-            ))]);
-        handle_client_event(
-            &mut app,
-            ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc)),
-        );
-
-        app.terminals.borrow_mut().insert(
-            "term-1".to_owned(),
-            TerminalProcess {
-                child: None,
-                output_buffer: Arc::new(Mutex::new(Vec::new())),
-                command: "echo refreshed".to_owned(),
-            },
-        );
-
-        let (mi, bi) = app.lookup_tool_call("tc-exec-terminal").expect("tool call not indexed");
-        let before_layout = match &app.messages[mi].blocks[bi] {
-            MessageBlock::ToolCall(tc) => tc.layout_epoch,
-            _ => panic!("expected tool call block"),
-        };
-
-        let update = model::ToolCallUpdate::new(
-            "tc-exec-terminal",
-            model::ToolCallUpdateFields::new().content(vec![model::ToolCallContent::Terminal(
-                model::TerminalToolCallContent::new("term-1"),
-            )]),
-        );
-        handle_client_event(
-            &mut app,
-            ClientEvent::SessionUpdate(model::SessionUpdate::ToolCallUpdate(update)),
-        );
-
-        let MessageBlock::ToolCall(tc) = &app.messages[mi].blocks[bi] else {
-            panic!("expected tool call block");
-        };
-        assert_eq!(tc.terminal_command.as_deref(), Some("echo refreshed"));
-        assert!(tc.layout_epoch > before_layout);
-        assert_eq!(app.viewport.oldest_stale_index(), Some(mi));
-    }
+    // Two SessionUpdate-only tests removed in the dispatcher collapse:
+    // `tool_call_update_with_same_terminal_content_still_invalidates_command_changes`
+    // and `repeated_tool_call_updates_existing_execute_snapshot_state`
+    // both exercised the typed `model::ToolCallContent::Terminal` content
+    // variant which has no wire-side equivalent — terminal_id binding via
+    // explicit Terminal content is being deleted along with the typed
+    // dispatcher in the next commits. Coverage for execute-tool output
+    // capture lives in `execute_tool_update_uses_raw_output_fallback` (Bash
+    // tool through the wire path) and the integration tests under
+    // `tests/integration/tool_lifecycle.rs`.
 
     #[test]
     fn late_tool_update_for_removed_tool_does_not_corrupt_active_task_set() {
         let mut app = make_test_app();
+        app.session_id = Some(model::SessionId::new("test-session"));
         app.messages.push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(tool_call(
             "tool-stale",
             model::ToolCallStatus::Completed,
@@ -1026,76 +1020,32 @@ mod tests {
         assert!(removed.is_some());
         assert_eq!(app.tool_call_scope("tool-stale"), None);
 
-        let update = model::ToolCallUpdate::new(
-            "tool-stale",
-            model::ToolCallUpdateFields::new().status(model::ToolCallStatus::InProgress),
-        );
-        handle_client_event(
+        // Send a tool_use re-emit for the removed tool — the wire path
+        // attempts to reopen it as in_progress and the code must not
+        // resurrect an entry in `active_task_ids` (the original test
+        // exercised this via SessionUpdate::ToolCallUpdate).
+        send_msg(
             &mut app,
-            ClientEvent::SessionUpdate(model::SessionUpdate::ToolCallUpdate(update)),
+            assistant_message(vec![tool_use_block(
+                "tool-stale",
+                "Read",
+                serde_json::json!({"file_path": "stale.rs"}),
+            )]),
         );
 
         assert!(app.active_task_ids.is_empty());
     }
 
     #[test]
-    fn repeated_tool_call_updates_existing_execute_snapshot_state() {
-        let mut app = make_test_app();
-        app.terminals.borrow_mut().insert(
-            "term-2".to_owned(),
-            TerminalProcess {
-                child: None,
-                output_buffer: Arc::new(Mutex::new(Vec::new())),
-                command: "echo second".to_owned(),
-            },
-        );
-
-        let first = model::ToolCall::new("tc-dup", "Terminal")
-            .kind(model::ToolKind::Execute)
-            .status(model::ToolCallStatus::InProgress)
-            .content(vec![model::ToolCallContent::Terminal(model::TerminalToolCallContent::new(
-                "term-1",
-            ))])
-            .raw_output(serde_json::json!("first"));
-        handle_client_event(
-            &mut app,
-            ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(first)),
-        );
-
-        let second = model::ToolCall::new("tc-dup", "Terminal")
-            .kind(model::ToolKind::Execute)
-            .status(model::ToolCallStatus::InProgress)
-            .content(vec![model::ToolCallContent::Terminal(model::TerminalToolCallContent::new(
-                "term-2",
-            ))])
-            .raw_output(serde_json::json!("second"));
-        handle_client_event(
-            &mut app,
-            ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(second)),
-        );
-
-        let (mi, bi) = app.lookup_tool_call("tc-dup").expect("tool call not indexed");
-        let MessageBlock::ToolCall(tc) = &app.messages[mi].blocks[bi] else {
-            panic!("expected tool call block");
-        };
-        assert_eq!(tc.terminal_output.as_deref(), Some("second"));
-        assert_eq!(tc.terminal_id.as_deref(), Some("term-2"));
-        assert_eq!(tc.terminal_command.as_deref(), Some("echo second"));
-        assert!(app.terminal_tool_calls.iter().any(|entry| entry.terminal_id == "term-2"
-            && entry.msg_idx == mi
-            && entry.block_idx == bi));
-        assert!(app.terminal_tool_calls.iter().all(|entry| entry.terminal_id != "term-1"));
-    }
-
-    #[test]
     fn tool_call_update_noop_does_not_bump_epochs() {
         let mut app = make_test_app();
-        let tc = model::ToolCall::new("tc-noop", "Read file")
-            .kind(model::ToolKind::Read)
-            .status(model::ToolCallStatus::InProgress);
-        handle_client_event(
+        send_msg(
             &mut app,
-            ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc)),
+            assistant_message(vec![tool_use_block(
+                "tc-noop",
+                "Read",
+                serde_json::json!({"file_path": "noop.rs"}),
+            )]),
         );
 
         let (mi, bi) = app.lookup_tool_call("tc-noop").expect("tool call not indexed");
@@ -1106,13 +1056,16 @@ mod tests {
             (tc.render_epoch, tc.layout_epoch, app.viewport.oldest_stale_index())
         };
 
-        let update = model::ToolCallUpdate::new(
-            "tc-noop",
-            model::ToolCallUpdateFields::new().status(model::ToolCallStatus::InProgress),
-        );
-        handle_client_event(
+        // Re-send the same tool_use envelope. The wire path keeps the
+        // tool_call open with the same in_progress status — assert the
+        // re-emit doesn't bump any cache invalidation epochs.
+        send_msg(
             &mut app,
-            ClientEvent::SessionUpdate(model::SessionUpdate::ToolCallUpdate(update)),
+            assistant_message(vec![tool_use_block(
+                "tc-noop",
+                "Read",
+                serde_json::json!({"file_path": "noop.rs"}),
+            )]),
         );
 
         let MessageBlock::ToolCall(tc) = &app.messages[mi].blocks[bi] else {
@@ -1133,13 +1086,13 @@ mod tests {
         });
         app.show_todo_panel = true;
 
-        let todo_call = model::ToolCall::new("tc-todo-empty", "TodoWrite")
-            .kind(model::ToolKind::Other)
-            .raw_input(serde_json::json!({}))
-            .meta(serde_json::json!({"claudeCode": {"toolName": "TodoWrite"}}));
-        handle_client_event(
+        send_msg(
             &mut app,
-            ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(todo_call)),
+            assistant_message(vec![tool_use_block(
+                "tc-todo-empty",
+                "TodoWrite",
+                serde_json::json!({}),
+            )]),
         );
 
         assert_eq!(app.todos.len(), 1);
@@ -1151,26 +1104,30 @@ mod tests {
     #[test]
     fn todowrite_tool_call_update_without_todos_array_preserves_existing_todos() {
         let mut app = make_test_app();
-        let todo_call = model::ToolCall::new("tc-todo-update", "TodoWrite")
-            .kind(model::ToolKind::Other)
-            .raw_input(serde_json::json!({
-                "todos": [{"content": "Task A", "status": "in_progress"}]
-            }))
-            .meta(serde_json::json!({"claudeCode": {"toolName": "TodoWrite"}}));
-        handle_client_event(
+        send_msg(
             &mut app,
-            ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(todo_call)),
+            assistant_message(vec![tool_use_block(
+                "tc-todo-update",
+                "TodoWrite",
+                serde_json::json!({
+                    "todos": [{"content": "Task A", "status": "in_progress"}]
+                }),
+            )]),
         );
         assert_eq!(app.todos.len(), 1);
         assert_eq!(app.todos[0].content, "Task A");
 
-        let update = model::ToolCallUpdate::new(
-            "tc-todo-update",
-            model::ToolCallUpdateFields::new().raw_input(serde_json::json!({})),
-        );
-        handle_client_event(
+        // Re-send the same tool_use with empty input — the wire path
+        // collapses the SessionUpdate ToolCall + ToolCallUpdate split
+        // into a single envelope per tool_use re-emit; an empty input
+        // must not clobber the existing todo list.
+        send_msg(
             &mut app,
-            ClientEvent::SessionUpdate(model::SessionUpdate::ToolCallUpdate(update)),
+            assistant_message(vec![tool_use_block(
+                "tc-todo-update",
+                "TodoWrite",
+                serde_json::json!({}),
+            )]),
         );
 
         assert_eq!(app.todos.len(), 1);
@@ -1601,12 +1558,10 @@ mod tests {
         );
         app.reconcile_runtime_from_persisted_settings_change();
 
-        handle_client_event(
-            &mut app,
-            ClientEvent::SessionUpdate(model::SessionUpdate::CurrentModelUpdate(
-                model::CurrentModelUpdate::new(test_current_model("claude-opus-4-7")),
-            )),
-        );
+        // The wire path delivers model changes via System("init") with
+        // a `model` field; same downstream path as the original
+        // SessionUpdate::CurrentModelUpdate.
+        send_msg(&mut app, system_message("init", serde_json::json!({"model": "claude-opus-4-7"})));
 
         let Some(MessageBlock::Welcome(welcome)) = app.messages[0].blocks.first() else {
             panic!("expected welcome block");
@@ -1675,12 +1630,7 @@ mod tests {
         app.messages.push(ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "-", "/test", "-"));
         app.messages.push(user_msg("hello"));
 
-        handle_client_event(
-            &mut app,
-            ClientEvent::SessionUpdate(model::SessionUpdate::CurrentModelUpdate(
-                model::CurrentModelUpdate::new(test_current_model("claude-opus-4-7")),
-            )),
-        );
+        send_msg(&mut app, system_message("init", serde_json::json!({"model": "claude-opus-4-7"})));
 
         let Some(first) = app.messages.first() else {
             panic!("missing first message");
@@ -1690,11 +1640,9 @@ mod tests {
         };
         assert_eq!(welcome.session_id, "-");
 
-        handle_client_event(
+        send_msg(
             &mut app,
-            ClientEvent::SessionUpdate(model::SessionUpdate::CurrentModelUpdate(
-                model::CurrentModelUpdate::new(test_current_model("claude-sonnet-4-5")),
-            )),
+            system_message("init", serde_json::json!({"model": "claude-sonnet-4-5"})),
         );
 
         let Some(first) = app.messages.first() else {
@@ -2310,12 +2258,9 @@ mod tests {
         app.messages.push(user_msg("seed"));
         let layout_generation_before = app.viewport.layout_generation;
 
-        handle_client_event(
-            &mut app,
-            ClientEvent::SessionUpdate(model::SessionUpdate::CurrentModeUpdate(
-                model::CurrentModeUpdate::new("plan"),
-            )),
-        );
+        // Wire path: server-side mode switches arrive via System("status")
+        // with a `permissionMode` field.
+        send_msg(&mut app, system_message("status", serde_json::json!({"permissionMode": "plan"})));
 
         assert!(matches!(app.status, AppStatus::Ready));
         assert!(app.pending_command_label.is_none());
@@ -2340,19 +2285,11 @@ mod tests {
         app.messages.push(user_msg("seed"));
         let layout_generation_before = app.viewport.layout_generation;
 
-        handle_client_event(
-            &mut app,
-            ClientEvent::SessionUpdate(model::SessionUpdate::ModeStateUpdate(
-                crate::app::ModeState {
-                    current_mode_id: "plan".to_owned(),
-                    current_mode_name: "Plan".to_owned(),
-                    available_modes: vec![
-                        crate::app::ModeInfo { id: "code".to_owned(), name: "Code".to_owned() },
-                        crate::app::ModeInfo { id: "plan".to_owned(), name: "Plan".to_owned() },
-                    ],
-                },
-            )),
-        );
+        // Wire path: System("init") with permissionMode rebuilds the
+        // mode state and applies via apply_mode_state_update — same
+        // downstream invalidate-layout effect as the original
+        // SessionUpdate::ModeStateUpdate.
+        send_msg(&mut app, system_message("init", serde_json::json!({"permissionMode": "plan"})));
 
         assert_eq!(app.viewport.layout_generation, layout_generation_before + 1);
     }
@@ -2365,12 +2302,7 @@ mod tests {
         app.pending_command_ack = Some(PendingCommandAck::CurrentModel);
         app.current_model = Some(test_current_model("old-model"));
 
-        handle_client_event(
-            &mut app,
-            ClientEvent::SessionUpdate(model::SessionUpdate::CurrentModelUpdate(
-                model::CurrentModelUpdate::new(test_current_model("sonnet")),
-            )),
-        );
+        send_msg(&mut app, system_message("init", serde_json::json!({"model": "sonnet"})));
 
         assert!(matches!(app.status, AppStatus::Ready));
         assert_eq!(
@@ -2381,32 +2313,11 @@ mod tests {
         assert!(app.pending_command_ack.is_none());
     }
 
-    #[test]
-    fn non_matching_config_option_update_keeps_pending() {
-        let mut app = make_test_app();
-        app.status = AppStatus::CommandPending;
-        app.pending_command_label = Some("Switching model...".into());
-        app.pending_command_ack =
-            Some(PendingCommandAck::ConfigOption { option_id: "model".to_owned() });
-
-        handle_client_event(
-            &mut app,
-            ClientEvent::SessionUpdate(model::SessionUpdate::ConfigOptionUpdate(
-                model::ConfigOptionUpdate {
-                    option_id: "max_thinking_tokens".to_owned(),
-                    value: serde_json::json!(2048),
-                },
-            )),
-        );
-
-        assert!(matches!(app.status, AppStatus::CommandPending));
-        assert_eq!(app.config_options.get("max_thinking_tokens"), Some(&serde_json::json!(2048)));
-        assert_eq!(app.pending_command_label.as_deref(), Some("Switching model..."));
-        assert!(matches!(
-            app.pending_command_ack.as_ref(),
-            Some(PendingCommandAck::ConfigOption { option_id }) if option_id == "model"
-        ));
-    }
+    // `non_matching_config_option_update_keeps_pending` removed in the
+    // dispatcher collapse: SessionUpdate::ConfigOptionUpdate has no
+    // wire-side equivalent today (no `apply_config_option` handler in
+    // events::sdk_message), so the typed-dispatch-only path it
+    // exercised is going away with the dispatcher itself.
 
     #[test]
     fn resume_does_not_add_confirmation_system_message() {
@@ -2434,14 +2345,8 @@ mod tests {
     #[test]
     fn resume_history_renders_user_message_chunks() {
         let mut app = make_test_app();
-        let history_updates = vec![
-            model::SessionUpdate::UserMessageChunk(model::ContentChunk::new(
-                model::ContentBlock::Text(model::TextContent::new("first user line")),
-            )),
-            model::SessionUpdate::AgentMessageChunk(model::ContentChunk::new(
-                model::ContentBlock::Text(model::TextContent::new("assistant reply")),
-            )),
-        ];
+        let history_updates =
+            vec![user_text_message("first user line"), assistant_text_message("assistant reply")];
 
         handle_client_event(
             &mut app,
@@ -2470,18 +2375,10 @@ mod tests {
     fn resume_history_preserves_turn_order_between_user_and_assistant_messages() {
         let mut app = make_test_app();
         let history_updates = vec![
-            model::SessionUpdate::UserMessageChunk(model::ContentChunk::new(
-                model::ContentBlock::Text(model::TextContent::new("first user")),
-            )),
-            model::SessionUpdate::AgentMessageChunk(model::ContentChunk::new(
-                model::ContentBlock::Text(model::TextContent::new("first assistant")),
-            )),
-            model::SessionUpdate::UserMessageChunk(model::ContentChunk::new(
-                model::ContentBlock::Text(model::TextContent::new("second user")),
-            )),
-            model::SessionUpdate::AgentMessageChunk(model::ContentChunk::new(
-                model::ContentBlock::Text(model::TextContent::new("second assistant")),
-            )),
+            user_text_message("first user"),
+            assistant_text_message("first assistant"),
+            user_text_message("second user"),
+            assistant_text_message("second assistant"),
         ];
 
         handle_client_event(
@@ -2522,9 +2419,13 @@ mod tests {
     #[test]
     fn resume_history_forces_open_tool_calls_to_failed() {
         let mut app = make_test_app();
-        let open_tool = model::ToolCall::new("resume-open", "Execute command")
-            .kind(model::ToolKind::Execute)
-            .status(model::ToolCallStatus::InProgress);
+        // "Bash" name normalises to ToolKind::Execute via the resume
+        // synthesizer; matches the prior model::ToolKind::Execute.
+        let open_tool = assistant_tool_use_message(
+            "resume-open",
+            "Bash",
+            serde_json::json!({"command": "Execute command"}),
+        );
 
         handle_client_event(
             &mut app,
@@ -2534,7 +2435,7 @@ mod tests {
                 current_model: test_current_model("new-model"),
                 available_models: Vec::new(),
                 mode: None,
-                history_updates: vec![model::SessionUpdate::ToolCall(open_tool)],
+                history_updates: vec![open_tool],
             },
         );
 
@@ -2560,11 +2461,7 @@ mod tests {
                 current_model: test_current_model("new-model"),
                 available_models: Vec::new(),
                 mode: None,
-                history_updates: vec![model::SessionUpdate::AgentMessageChunk(
-                    model::ContentChunk::new(model::ContentBlock::Text(model::TextContent::new(
-                        "assistant reply",
-                    ))),
-                )],
+                history_updates: vec![assistant_text_message("assistant reply")],
             },
         );
 
@@ -2574,10 +2471,13 @@ mod tests {
     #[test]
     fn resume_history_clears_tool_scope_tracking_after_replay() {
         let mut app = make_test_app();
-        let task_tool = model::ToolCall::new("resume-task", "Run subagent")
-            .kind(model::ToolKind::Think)
-            .status(model::ToolCallStatus::InProgress)
-            .meta(serde_json::json!({"claudeCode": {"toolName": "Task"}}));
+        // "Task" name normalises to ToolKind::Think via the resume
+        // synthesizer and gets the matching `claudeCode.toolName` meta.
+        let task_tool = assistant_tool_use_message(
+            "resume-task",
+            "Task",
+            serde_json::json!({"description": "Run subagent"}),
+        );
 
         handle_client_event(
             &mut app,
@@ -2587,7 +2487,7 @@ mod tests {
                 current_model: test_current_model("new-model"),
                 available_models: Vec::new(),
                 mode: None,
-                history_updates: vec![model::SessionUpdate::ToolCall(task_tool)],
+                history_updates: vec![task_tool],
             },
         );
 
@@ -2609,14 +2509,14 @@ mod tests {
         app.messages.push(user_msg("/compact"));
         app.messages
             .push(assistant_msg(vec![MessageBlock::Text(TextBlock::from_complete("compacted"))]));
-        handle_client_event(
+        send_msg(
             &mut app,
-            ClientEvent::SessionUpdate(model::SessionUpdate::CompactionBoundary(
-                model::CompactionBoundary {
-                    trigger: model::CompactionTrigger::Manual,
-                    pre_tokens: 123_456,
-                },
-            )),
+            system_message(
+                "compact_boundary",
+                serde_json::json!({
+                    "compact_metadata": {"trigger": "manual", "pre_tokens": 123_456}
+                }),
+            ),
         );
         assert!(app.pending_compact_clear);
 
@@ -2642,14 +2542,7 @@ mod tests {
         let mut app = make_test_app();
         app.is_compacting = true;
 
-        handle_client_event(
-            &mut app,
-            ClientEvent::SessionUpdate(model::SessionUpdate::AgentMessageChunk(
-                model::ContentChunk::new(model::ContentBlock::Text(model::TextContent::new(
-                    "regular answer",
-                ))),
-            )),
-        );
+        send_msg(&mut app, assistant_message(vec![text_block("regular answer")]));
 
         assert!(!app.is_compacting);
         assert!(!app.pending_compact_clear);
@@ -2666,12 +2559,9 @@ mod tests {
         let mut app = make_test_app();
         app.is_compacting = true;
 
-        handle_client_event(
-            &mut app,
-            ClientEvent::SessionUpdate(model::SessionUpdate::SessionStatusUpdate(
-                model::SessionStatus::Idle,
-            )),
-        );
+        // Wire path: SessionStatus::Idle arrives as System("status")
+        // with `"status": null` (the CLI's idle signal).
+        send_msg(&mut app, system_message("status", serde_json::json!({"status": null})));
 
         assert!(!app.is_compacting);
         assert!(!app.pending_compact_clear);
@@ -2966,14 +2856,14 @@ mod tests {
         let mut app = make_test_app();
         assert!(!app.is_compacting);
 
-        handle_client_event(
+        send_msg(
             &mut app,
-            ClientEvent::SessionUpdate(model::SessionUpdate::CompactionBoundary(
-                model::CompactionBoundary {
-                    trigger: model::CompactionTrigger::Manual,
-                    pre_tokens: 123_456,
-                },
-            )),
+            system_message(
+                "compact_boundary",
+                serde_json::json!({
+                    "compact_metadata": {"trigger": "manual", "pre_tokens": 123_456}
+                }),
+            ),
         );
 
         assert!(app.is_compacting);
@@ -2990,14 +2880,14 @@ mod tests {
         let mut app = make_test_app();
         assert!(!app.is_compacting);
 
-        handle_client_event(
+        send_msg(
             &mut app,
-            ClientEvent::SessionUpdate(model::SessionUpdate::CompactionBoundary(
-                model::CompactionBoundary {
-                    trigger: model::CompactionTrigger::Auto,
-                    pre_tokens: 234_567,
-                },
-            )),
+            system_message(
+                "compact_boundary",
+                serde_json::json!({
+                    "compact_metadata": {"trigger": "auto", "pre_tokens": 234_567}
+                }),
+            ),
         );
 
         assert!(app.is_compacting);
@@ -3011,11 +2901,12 @@ mod tests {
         let mut app = make_test_app();
         assert_eq!(app.fast_mode_state, model::FastModeState::Off);
 
-        handle_client_event(
+        // Wire path: FastMode arrives via the `fast_mode_state` field
+        // on a System("status") data record, parsed by
+        // events::sdk_message::apply_fast_mode_update.
+        send_msg(
             &mut app,
-            ClientEvent::SessionUpdate(model::SessionUpdate::FastModeUpdate(
-                model::FastModeState::Cooldown,
-            )),
+            system_message("status", serde_json::json!({"fast_mode_state": "cooldown"})),
         );
 
         assert_eq!(app.fast_mode_state, model::FastModeState::Cooldown);
@@ -3025,47 +2916,28 @@ mod tests {
     fn rate_limit_notices_dedup_and_upgrade_in_place() {
         let mut app = make_test_app();
 
-        let warning_update = model::RateLimitUpdate {
-            status: model::RateLimitStatus::AllowedWarning,
-            resets_at: Some(123.0),
-            utilization: Some(0.92),
-            rate_limit_type: Some("five_hour".to_owned()),
-            overage_status: None,
-            overage_resets_at: None,
-            overage_disabled_reason: None,
-            is_using_overage: None,
-            surpassed_threshold: None,
-        };
+        let warning_info = build_rate_limit_info(
+            forge_primitives::RateLimitStatus::AllowedWarning,
+            Some(123),
+            Some(0.92),
+            Some("five_hour"),
+            None,
+            None,
+        );
 
-        handle_client_event(
-            &mut app,
-            ClientEvent::SessionUpdate(model::SessionUpdate::RateLimitUpdate(
-                warning_update.clone(),
-            )),
-        );
-        handle_client_event(
-            &mut app,
-            ClientEvent::SessionUpdate(model::SessionUpdate::RateLimitUpdate(
-                warning_update.clone(),
-            )),
-        );
+        send_msg(&mut app, rate_limit_event(warning_info.clone()));
+        send_msg(&mut app, rate_limit_event(warning_info.clone()));
 
         assert_eq!(app.messages.len(), 1);
         assert!(matches!(app.messages[0].role, MessageRole::System(Some(SystemSeverity::Warning))));
         assert!(matches!(app.messages[0].blocks.first(), Some(MessageBlock::Notice(_))));
 
-        let rejected_update =
-            model::RateLimitUpdate { status: model::RateLimitStatus::Rejected, ..warning_update };
-        handle_client_event(
-            &mut app,
-            ClientEvent::SessionUpdate(model::SessionUpdate::RateLimitUpdate(
-                rejected_update.clone(),
-            )),
-        );
-        handle_client_event(
-            &mut app,
-            ClientEvent::SessionUpdate(model::SessionUpdate::RateLimitUpdate(rejected_update)),
-        );
+        let rejected_info = forge_primitives::RateLimitInfo {
+            status: forge_primitives::RateLimitStatus::Rejected,
+            ..warning_info
+        };
+        send_msg(&mut app, rate_limit_event(rejected_info.clone()));
+        send_msg(&mut app, rate_limit_event(rejected_info));
 
         assert_eq!(app.messages.len(), 1);
         assert!(matches!(app.messages[0].role, MessageRole::System(Some(SystemSeverity::Error))));
@@ -3082,20 +2954,15 @@ mod tests {
         ))]));
         app.bind_active_turn_assistant(1);
 
-        handle_client_event(
+        send_msg(
             &mut app,
-            ClientEvent::SessionUpdate(model::SessionUpdate::RateLimitUpdate(
-                model::RateLimitUpdate {
-                    status: model::RateLimitStatus::AllowedWarning,
-                    resets_at: Some(1_741_280_000.0),
-                    utilization: Some(0.95),
-                    rate_limit_type: Some("five_hour".to_owned()),
-                    overage_status: None,
-                    overage_resets_at: None,
-                    overage_disabled_reason: None,
-                    is_using_overage: None,
-                    surpassed_threshold: None,
-                },
+            rate_limit_event(build_rate_limit_info(
+                forge_primitives::RateLimitStatus::AllowedWarning,
+                Some(1_741_280_000),
+                Some(0.95),
+                Some("five_hour"),
+                None,
+                None,
             )),
         );
         assert_eq!(app.messages.len(), 2);
@@ -3151,6 +3018,7 @@ mod tests {
                 terminal_reason: None,
             },
         );
+
         assert_eq!(app.messages.len(), 2);
         let first_notice_text = match app.messages[1].blocks.as_slice() {
             [MessageBlock::Notice(block)] => block.text.text.clone(),
@@ -3162,20 +3030,15 @@ mod tests {
         app.messages.push(user_msg("second"));
         app.messages.push(assistant_msg(vec![]));
         app.bind_active_turn_assistant(3);
-        handle_client_event(
+        send_msg(
             &mut app,
-            ClientEvent::SessionUpdate(model::SessionUpdate::RateLimitUpdate(
-                model::RateLimitUpdate {
-                    status: model::RateLimitStatus::Rejected,
-                    resets_at: Some(1_741_290_000.0),
-                    utilization: None,
-                    rate_limit_type: Some("daily".to_owned()),
-                    overage_status: None,
-                    overage_resets_at: None,
-                    overage_disabled_reason: None,
-                    is_using_overage: None,
-                    surpassed_threshold: None,
-                },
+            rate_limit_event(build_rate_limit_info(
+                forge_primitives::RateLimitStatus::Rejected,
+                Some(1_741_290_000),
+                None,
+                Some("daily"),
+                None,
+                None,
             )),
         );
 
@@ -3199,20 +3062,15 @@ mod tests {
         app.messages.push(assistant_msg(vec![]));
         app.bind_active_turn_assistant(1);
 
-        handle_client_event(
+        send_msg(
             &mut app,
-            ClientEvent::SessionUpdate(model::SessionUpdate::RateLimitUpdate(
-                model::RateLimitUpdate {
-                    status: model::RateLimitStatus::AllowedWarning,
-                    resets_at: Some(123.0),
-                    utilization: Some(0.91),
-                    rate_limit_type: Some("five_hour".to_owned()),
-                    overage_status: None,
-                    overage_resets_at: None,
-                    overage_disabled_reason: None,
-                    is_using_overage: None,
-                    surpassed_threshold: None,
-                },
+            rate_limit_event(build_rate_limit_info(
+                forge_primitives::RateLimitStatus::AllowedWarning,
+                Some(123),
+                Some(0.91),
+                Some("five_hour"),
+                None,
+                None,
             )),
         );
 
@@ -3224,20 +3082,15 @@ mod tests {
         app.messages.push(user_msg("again"));
         app.messages.push(assistant_msg(vec![]));
         app.bind_active_turn_assistant(app.messages.len() - 1);
-        handle_client_event(
+        send_msg(
             &mut app,
-            ClientEvent::SessionUpdate(model::SessionUpdate::RateLimitUpdate(
-                model::RateLimitUpdate {
-                    status: model::RateLimitStatus::AllowedWarning,
-                    resets_at: Some(456.0),
-                    utilization: Some(0.92),
-                    rate_limit_type: Some("daily".to_owned()),
-                    overage_status: None,
-                    overage_resets_at: None,
-                    overage_disabled_reason: None,
-                    is_using_overage: None,
-                    surpassed_threshold: None,
-                },
+            rate_limit_event(build_rate_limit_info(
+                forge_primitives::RateLimitStatus::AllowedWarning,
+                Some(456),
+                Some(0.92),
+                Some("daily"),
+                None,
+                None,
             )),
         );
         assert_eq!(app.turn_notice_refs.len(), 1);
@@ -5115,25 +4968,34 @@ mod tests {
     #[test]
     fn api_retry_updates_single_warning_notice() {
         let mut app = make_test_app();
-        handle_client_event(
+        // Wire path: ApiRetryUpdate arrives as System("api_retry") with
+        // attempt / max_retries / retry_delay_ms / error_status / error
+        // fields parsed by build_api_retry_update.
+        send_msg(
             &mut app,
-            ClientEvent::SessionUpdate(model::SessionUpdate::ApiRetryUpdate {
-                attempt: 1,
-                max_retries: 4,
-                retry_delay_ms: 1000,
-                error_status: None,
-                error: model::ApiRetryError::Unknown,
-            }),
+            system_message(
+                "api_retry",
+                serde_json::json!({
+                    "attempt": 1,
+                    "max_retries": 4,
+                    "retry_delay_ms": 1000,
+                    "error_status": null,
+                    "error": "unknown",
+                }),
+            ),
         );
-        handle_client_event(
+        send_msg(
             &mut app,
-            ClientEvent::SessionUpdate(model::SessionUpdate::ApiRetryUpdate {
-                attempt: 2,
-                max_retries: 4,
-                retry_delay_ms: 1500,
-                error_status: Some(529),
-                error: model::ApiRetryError::ServerError,
-            }),
+            system_message(
+                "api_retry",
+                serde_json::json!({
+                    "attempt": 2,
+                    "max_retries": 4,
+                    "retry_delay_ms": 1500,
+                    "error_status": 529,
+                    "error": "server_error",
+                }),
+            ),
         );
 
         assert_eq!(app.messages.len(), 1);
@@ -5177,21 +5039,19 @@ mod tests {
     #[test]
     fn runtime_session_state_updates_status_with_guards() {
         let mut app = make_test_app();
-        handle_client_event(
+        // Wire path: RuntimeSessionStateUpdate arrives as
+        // System("session_state_changed") with a `state` field.
+        send_msg(
             &mut app,
-            ClientEvent::SessionUpdate(model::SessionUpdate::RuntimeSessionStateUpdate(
-                model::RuntimeSessionState::Running,
-            )),
+            system_message("session_state_changed", serde_json::json!({"state": "running"})),
         );
         assert_eq!(app.runtime_session_state, Some(model::RuntimeSessionState::Running));
         assert!(matches!(app.status, AppStatus::Running));
 
         app.status = AppStatus::Error;
-        handle_client_event(
+        send_msg(
             &mut app,
-            ClientEvent::SessionUpdate(model::SessionUpdate::RuntimeSessionStateUpdate(
-                model::RuntimeSessionState::Idle,
-            )),
+            system_message("session_state_changed", serde_json::json!({"state": "idle"})),
         );
         assert!(matches!(app.status, AppStatus::Error));
     }
@@ -5199,13 +5059,20 @@ mod tests {
     #[test]
     fn settings_parse_error_surfaces_system_error_message() {
         let mut app = make_test_app();
-        handle_client_event(
+        // Wire path: SettingsParseError arrives as a `settings_errors`
+        // entry inside a System("init") data record.
+        send_msg(
             &mut app,
-            ClientEvent::SessionUpdate(model::SessionUpdate::SettingsParseError {
-                file: Some("C:/work/.claude/settings.json".to_owned()),
-                path: "permissions.allow".to_owned(),
-                message: "Expected array".to_owned(),
-            }),
+            system_message(
+                "init",
+                serde_json::json!({
+                    "settings_errors": [{
+                        "file": "C:/work/.claude/settings.json",
+                        "path": "permissions.allow",
+                        "message": "Expected array",
+                    }]
+                }),
+            ),
         );
 
         assert_eq!(app.messages.len(), 1);

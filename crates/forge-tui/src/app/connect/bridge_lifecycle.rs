@@ -14,7 +14,7 @@ use tracing::{Instrument as _, info_span};
 
 use super::type_converters::{
     convert_current_model, convert_mode_state, map_available_models, map_permission_request,
-    map_question_request, map_session_update,
+    map_question_request,
 };
 use super::{ConnectionSlot, StartConnectionParams};
 
@@ -186,11 +186,7 @@ fn handle_agent_event(
             mode,
             history_updates,
         } => {
-            let history_updates = history_updates
-                .unwrap_or_default()
-                .into_iter()
-                .filter_map(map_session_update)
-                .collect();
+            let history_updates = history_updates.unwrap_or_default();
             let _ = event_tx.send(ClientEvent::SessionReplaced {
                 session_id: model::SessionId::new(session_id),
                 cwd,
@@ -235,11 +231,10 @@ fn handle_connected_event(
     current_model: types::CurrentModel,
     available_models: Vec<types::AvailableModel>,
     mode: Option<types::ModeState>,
-    history_updates: Option<Vec<types::SessionUpdate>>,
+    history_updates: Option<Vec<types::Message>>,
 ) {
     let mode = mode.map(convert_mode_state);
-    let history_updates =
-        history_updates.unwrap_or_default().into_iter().filter_map(map_session_update).collect();
+    let history_updates = history_updates.unwrap_or_default();
     if *connected_once {
         let _ = event_tx.send(ClientEvent::SessionReplaced {
             session_id: model::SessionId::new(session_id),

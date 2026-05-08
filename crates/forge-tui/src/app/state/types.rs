@@ -167,10 +167,6 @@ pub struct SessionTurnState {
 
     /// Per-server cooldown timestamps for MCP status revalidation.
     pub mcp_status_revalidated_at: std::collections::HashMap<String, std::time::Instant>,
-
-    /// Resume history collected during connect handshake; attached to
-    /// the first Connected event payload.
-    pub resume_updates: Option<Vec<forge_primitives::SessionUpdate>>,
 }
 
 pub const DEFAULT_RENDER_CACHE_BUDGET_BYTES: usize = 24 * 1024 * 1024;

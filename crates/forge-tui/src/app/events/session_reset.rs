@@ -159,7 +159,7 @@ fn append_resume_user_message_chunk(app: &mut App, chunk: &model::ContentChunk) 
     ));
 }
 
-pub(super) fn load_resume_history(app: &mut App, history_updates: &[model::SessionUpdate]) {
+pub(super) fn load_resume_history(app: &mut App, history_messages: &[forge_primitives::Message]) {
     let preserved_tip_seed = app.current_welcome_tip_seed();
     app.clear_messages_tracked();
     app.history_retention_stats = super::super::state::HistoryRetentionStats::default();
@@ -169,14 +169,46 @@ pub(super) fn load_resume_history(app: &mut App, history_updates: &[model::Sessi
     }
     app.push_message_tracked(welcome);
     app.sync_welcome_snapshot();
-    for update in history_updates {
-        match update {
-            model::SessionUpdate::UserMessageChunk(chunk) => {
-                app.clear_active_turn_assistant();
-                append_resume_user_message_chunk(app, chunk);
+    for msg in history_messages {
+        // The raw walker (`handle_sdk_message`) processes user
+        // messages by walking tool_results only — live wire user
+        // text content blocks are echoes of the user's input that
+        // the input handler already rendered, so the walker
+        // correctly drops them. Replay has no input handler
+        // contribution, so render the user text content blocks here
+        // before dispatch.
+        if let forge_primitives::Message::User { message: envelope, .. } = msg {
+            // Render replay-time user text content blocks. The live raw
+            // walker drops user text (those are echoes of input the input
+            // handler already rendered); replay has no input handler
+            // contribution, so render here. Only clear the active-turn
+            // assistant pointer when we're about to actually render — an
+            // empty Text block isn't a render and shouldn't move the
+            // pointer.
+            let mut rendered_user_text = false;
+            for block in &envelope.content {
+                if let forge_primitives::ContentBlock::Text { text } = block {
+                    if text.is_empty() {
+                        continue;
+                    }
+                    if !rendered_user_text {
+                        app.clear_active_turn_assistant();
+                        tracing::debug!(
+                            target: crate::logging::targets::APP_SESSION,
+                            event_name = "resume_user_text_rendered",
+                            message = "rendering user-text content block from session resume",
+                            outcome = "success",
+                        );
+                        rendered_user_text = true;
+                    }
+                    let chunk = model::ContentChunk::new(model::ContentBlock::Text(
+                        model::TextContent::new(text.clone()),
+                    ));
+                    append_resume_user_message_chunk(app, &chunk);
+                }
             }
-            _ => super::handle_session_update(app, update.clone()),
         }
+        super::sdk_message::handle_sdk_message(app, msg.clone());
     }
     app.finalize_turn_runtime_artifacts(model::ToolCallStatus::Failed);
     app.clear_active_turn_assistant();
