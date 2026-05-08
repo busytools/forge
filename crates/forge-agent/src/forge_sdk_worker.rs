@@ -233,7 +233,7 @@ fn load_history_messages(
             })
         })
         .collect();
-    let mut synthesized = crate::history::synthesize_replay_messages(&raw);
+    let mut synthesized = crate::replay::synthesize_replay_messages(&raw);
     // Stamp the resumed session_id on every synthesised Message — the
     // synthesizer leaves it empty so the caller picks the right value.
     for msg in &mut synthesized {
