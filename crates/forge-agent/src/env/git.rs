@@ -555,7 +555,7 @@ mod tests {
     // initial-snapshot test below cover the core paths; the watcher
     // is exercised end-to-end via the TUI smoke test.
 
-    #[tokio::test(flavor = "current_thread", start_paused = false)]
+    #[tokio::test(flavor = "current_thread")]
     async fn watcher_emits_initial_snapshot_for_no_repo() {
         let dir = tempfile::tempdir().expect("tempdir");
         let mut watcher = GitContextWatcher::new(dir.path()).expect("new");
