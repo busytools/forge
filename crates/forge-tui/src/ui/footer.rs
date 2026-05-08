@@ -149,9 +149,7 @@ fn build_primary_line(app: &App) -> Line<'static> {
         .observed_permission_mode
         .map(|m| (m.as_wire().to_owned(), m.display_name().to_owned()))
         .or_else(|| {
-            app.mode
-                .as_ref()
-                .map(|m| (m.current_mode_id.clone(), m.current_mode_name.clone()))
+            app.mode.as_ref().map(|m| (m.current_mode_id.clone(), m.current_mode_name.clone()))
         });
 
     if let Some((mode_id, mode_name)) = effective_mode_id_name {
