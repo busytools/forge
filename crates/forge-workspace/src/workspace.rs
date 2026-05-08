@@ -26,7 +26,10 @@ use crate::views::{ProjectView, SessionView};
 /// `~/.claude-subspace/plans/2026-05-09-forge-tui-phase-1a-workspace-design.md`
 /// for the full contract.
 pub struct Workspace {
-    /// TEMPORARY: stored for Task 6's `shutdown` implementation.
+    /// Retained for Phase 1b's per-account config-dir binding. After
+    /// `new` consumes it to load `forge.toml`, no current code path
+    /// re-reads it; the field stays on the struct so 1b can introduce
+    /// account-scoped re-resolution without restructuring the type.
     #[allow(dead_code)]
     config_dir: PathBuf,
     config: LoadedConfig,
@@ -141,6 +144,10 @@ impl Workspace {
     ///
     /// Workspace does not track which handle the caller is "using" —
     /// that's the caller's concern.
+    ///
+    /// `async` is mandated by the spec contract — Phase 1b will need
+    /// to await account-bound resolution before pool insertion.
+    #[allow(clippy::unused_async)]
     pub async fn get_agent_handle(
         &self,
         target: SessionTarget,
@@ -216,9 +223,28 @@ impl Workspace {
         }
     }
 
-    /// See spec §3. Implemented in Task 6.
+    /// Graceful shutdown of every pooled Agent. Drains the pool, then
+    /// drops each `Arc<AgentHandle>` so the underlying
+    /// `forge_sdk::Client` kills its `claude` subprocess via its
+    /// existing `Drop` impl when the last reference goes away.
+    ///
+    /// In 1a forge-tui drops its handle reference before calling
+    /// shutdown, so Workspace is the sole owner of every pool entry
+    /// and dropping it triggers the subprocess shutdown chain (sender
+    /// drop -> dispatcher exit -> Client drop -> subprocess
+    /// kill_on_drop). Phase 2+ callers that hold cloned handles
+    /// across shutdown will need to release them for the kill-chain
+    /// to fire promptly. Synchronous and fast in 1a; the async
+    /// signature is preserved so a future "send shutdown signal,
+    /// await acknowledgement" body can slot in without restructuring
+    /// the call sites.
+    #[allow(clippy::unused_async)]
     pub async fn shutdown(self) {
-        unimplemented!("shutdown lands in Task 6")
+        let entries: Vec<_> = self.pool.lock().drain().collect();
+        // Each Arc<AgentHandle> drops here; the subprocess teardown
+        // chain (sender drop -> dispatcher exit -> Client drop ->
+        // subprocess kill_on_drop) is synchronous and fast in 1a.
+        drop(entries);
     }
 }
 
@@ -292,5 +318,27 @@ default = true
             2,
             "distinct target adds a pool entry"
         );
+    }
+
+    #[tokio::test]
+    async fn shutdown_drains_pool() {
+        let dir = make_workspace_dir();
+        let workspace = Workspace::new(dir.path().to_owned()).await.expect("new");
+        let handle = workspace
+            .get_agent_handle(SessionTarget::Default, SessionLaunchSettings::default())
+            .await
+            .expect("default");
+
+        // Pool has one entry going in.
+        assert_eq!(workspace.pool.lock().len(), 1);
+        // Workspace + this test both hold the Arc → strong_count == 2.
+        assert_eq!(Arc::strong_count(&handle), 2);
+
+        // Shutdown consumes self and must return.
+        workspace.shutdown().await;
+
+        // After shutdown, only our local clone remains. If shutdown
+        // didn't actually release Workspace's reference, this fails.
+        assert_eq!(Arc::strong_count(&handle), 1);
     }
 }

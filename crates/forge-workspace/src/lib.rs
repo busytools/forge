@@ -4,12 +4,6 @@
 //! [`Workspace`] handle. See spec at
 //! `~/.claude-subspace/plans/2026-05-09-forge-tui-phase-1a-workspace-design.md`.
 
-#![allow(clippy::unimplemented, clippy::unused_async)]
-// ↑ TEMPORARY: Workspace::shutdown is still a stub until Task 6.
-//   `unused_async` is for `get_agent_handle` + `shutdown` whose
-//   signatures are async per spec even when the bodies don't await.
-//   Removed (or further trimmed) in Task 6's final commit.
-
 mod config;
 mod error;
 mod target;
