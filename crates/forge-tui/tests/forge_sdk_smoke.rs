@@ -34,7 +34,7 @@ use std::time::Duration;
 
 use forge_agent::Agent;
 use forge_tui::agent::{AgentEvent, SessionLaunchSettings};
-use std::rc::Rc;
+use std::sync::Arc;
 use tokio::sync::mpsc;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -42,7 +42,7 @@ use tokio::sync::mpsc;
 async fn forge_sdk_e2e_round_trip() {
     let agent_handle = Agent::spawn();
     let mut event_rx = agent_handle.take_events().expect("fresh handle has events");
-    let agent: Rc<forge_agent::AgentHandle> = Rc::new(agent_handle);
+    let agent: Arc<forge_agent::AgentHandle> = Arc::new(agent_handle);
 
     // Kick off a session.
     agent
@@ -74,7 +74,7 @@ async fn forge_sdk_e2e_round_trip() {
 async fn forge_sdk_e2e_multi_turn() {
     let agent_handle = Agent::spawn();
     let mut event_rx = agent_handle.take_events().expect("fresh handle has events");
-    let agent: Rc<forge_agent::AgentHandle> = Rc::new(agent_handle);
+    let agent: Arc<forge_agent::AgentHandle> = Arc::new(agent_handle);
 
     agent
         .new_session(
@@ -116,7 +116,7 @@ async fn forge_sdk_e2e_multi_turn() {
 async fn forge_sdk_e2e_tool_call_emits_event() {
     let agent_handle = Agent::spawn();
     let mut event_rx = agent_handle.take_events().expect("fresh handle has events");
-    let agent: Rc<forge_agent::AgentHandle> = Rc::new(agent_handle);
+    let agent: Arc<forge_agent::AgentHandle> = Arc::new(agent_handle);
 
     agent
         .new_session(
@@ -156,7 +156,7 @@ async fn forge_sdk_e2e_tool_call_emits_event() {
 async fn forge_sdk_e2e_cancel_mid_turn() {
     let agent_handle = Agent::spawn();
     let mut event_rx = agent_handle.take_events().expect("fresh handle has events");
-    let agent: Rc<forge_agent::AgentHandle> = Rc::new(agent_handle);
+    let agent: Arc<forge_agent::AgentHandle> = Arc::new(agent_handle);
 
     agent
         .new_session(
@@ -225,7 +225,7 @@ async fn forge_sdk_e2e_cancel_mid_turn() {
 async fn forge_sdk_e2e_status_and_context_snapshots() {
     let agent_handle = Agent::spawn();
     let mut event_rx = agent_handle.take_events().expect("fresh handle has events");
-    let agent: Rc<forge_agent::AgentHandle> = Rc::new(agent_handle);
+    let agent: Arc<forge_agent::AgentHandle> = Arc::new(agent_handle);
 
     agent
         .new_session(
@@ -276,7 +276,7 @@ async fn forge_sdk_e2e_status_and_context_snapshots() {
 async fn forge_sdk_e2e_mcp_snapshot() {
     let agent_handle = Agent::spawn();
     let mut event_rx = agent_handle.take_events().expect("fresh handle has events");
-    let agent: Rc<forge_agent::AgentHandle> = Rc::new(agent_handle);
+    let agent: Arc<forge_agent::AgentHandle> = Arc::new(agent_handle);
 
     agent
         .new_session(
@@ -321,7 +321,7 @@ async fn forge_sdk_e2e_resume_session() {
     let session_id = {
         let agent_handle = Agent::spawn();
         let mut event_rx = agent_handle.take_events().expect("fresh handle has events");
-        let agent: Rc<forge_agent::AgentHandle> = Rc::new(agent_handle);
+        let agent: Arc<forge_agent::AgentHandle> = Arc::new(agent_handle);
 
         agent
             .new_session(
@@ -346,7 +346,7 @@ async fn forge_sdk_e2e_resume_session() {
     // Phase 2: resume by id on a fresh worker.
     let agent_handle = Agent::spawn();
     let mut event_rx = agent_handle.take_events().expect("fresh handle has events");
-    let agent: Rc<forge_agent::AgentHandle> = Rc::new(agent_handle);
+    let agent: Arc<forge_agent::AgentHandle> = Arc::new(agent_handle);
 
     agent
         .resume_session(session_id, SessionLaunchSettings::default())

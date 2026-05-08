@@ -1,6 +1,8 @@
 use clap::Parser;
 use forge_tui::Cli;
 use forge_tui::error::AppError;
+use std::path::PathBuf;
+use std::rc::Rc;
 use tracing::info_span;
 
 // Binary entry — `process::exit` is the only way to set a non-zero
@@ -43,8 +45,17 @@ fn run() -> anyhow::Result<()> {
     let local_set = tokio::task::LocalSet::new();
 
     rt.block_on(local_set.run_until(async move {
+        // Phase 0: build the workspace orchestrator. Surface its
+        // load errors to stderr (TUI hasn't started yet, no tty
+        // restoration needed) and exit non-zero.
+        let config_dir = resolve_config_dir();
+        let workspace = match forge_workspace::Workspace::new(config_dir).await {
+            Ok(w) => Rc::new(w),
+            Err(err) => return Err(anyhow::anyhow!("forge: {err}")),
+        };
+
         // Phase 1: create app in Connecting state (instant, no I/O)
-        let mut app = forge_tui::app::create_app(&cli);
+        let mut app = forge_tui::app::create_app(&cli, workspace);
 
         // Phase 2: start non-session startup work + TUI.
         // The bridge itself is started from the TUI loop only after trust is accepted.
@@ -60,6 +71,21 @@ fn run() -> anyhow::Result<()> {
 
         result
     }))
+}
+
+/// Resolve the Claude config directory: honour `$CLAUDE_CONFIG_DIR`
+/// (ignoring empty values), else fall back to `$HOME/.claude`.
+/// Mirrors `forge_sdk::claude_config_dir` — kept in-crate for now
+/// since forge-tui doesn't otherwise depend on forge-sdk and the
+/// duplication is two branches. Consolidate when more callers need it.
+fn resolve_config_dir() -> PathBuf {
+    if let Ok(value) = std::env::var("CLAUDE_CONFIG_DIR") {
+        let trimmed = value.trim_end_matches('/');
+        if !trimmed.is_empty() {
+            return PathBuf::from(trimmed);
+        }
+    }
+    dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")).join(".claude")
 }
 
 fn extract_app_error(err: &anyhow::Error) -> Option<AppError> {

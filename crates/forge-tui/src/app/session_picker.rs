@@ -153,7 +153,7 @@ mod tests {
     fn enter_triggers_resume() {
         let mut app = picker_app();
         let (handle, mut rx) = forge_agent::Agent::testing_stub();
-        app.conn = Some(std::rc::Rc::new(handle));
+        app.conn = Some(std::sync::Arc::new(handle));
 
         handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
@@ -183,7 +183,7 @@ mod tests {
         let mut app = picker_app();
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<forge_primitives::Command>();
         drop(rx);
-        app.conn = Some(std::rc::Rc::new({
+        app.conn = Some(std::sync::Arc::new({
             let _ = tx;
             let (h, _) = forge_agent::Agent::testing_stub();
             h

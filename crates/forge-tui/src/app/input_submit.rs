@@ -180,7 +180,7 @@ mod tests {
     -> (App, tokio::sync::mpsc::UnboundedReceiver<forge_primitives::Command>) {
         let mut app = App::test_default();
         let (handle, rx) = forge_agent::Agent::testing_stub();
-        app.conn = Some(std::rc::Rc::new(handle));
+        app.conn = Some(std::sync::Arc::new(handle));
         app.session_id = Some(model::SessionId::new("session-1"));
         (app, rx)
     }
@@ -335,7 +335,7 @@ mod tests {
     fn dispatch_prompt_turn_without_session_id_leaves_state_unchanged() {
         let mut app = App::test_default();
         let (handle, _rx) = forge_agent::Agent::testing_stub();
-        app.conn = Some(std::rc::Rc::new(handle));
+        app.conn = Some(std::sync::Arc::new(handle));
         app.status = AppStatus::Ready;
 
         dispatch_prompt_turn(&mut app, "hello".into());

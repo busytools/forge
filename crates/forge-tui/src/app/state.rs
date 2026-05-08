@@ -37,6 +37,7 @@ use crate::agent::model;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::Arc;
 use std::sync::mpsc as std_mpsc;
 use std::time::Instant;
 use tokio::sync::mpsc;
@@ -144,7 +145,12 @@ pub struct App {
     pub exit_error: Option<crate::error::AppError>,
     pub session_id: Option<model::SessionId>,
     /// Agent connection handle. `None` while connecting (before bridge is ready).
-    pub conn: Option<Rc<forge_agent::AgentHandle>>,
+    pub conn: Option<Arc<forge_agent::AgentHandle>>,
+    /// Multi-session orchestrator. Hands out `AgentHandle`s via
+    /// `get_agent_handle(SessionTarget::Default, ...)` at startup.
+    /// `None` only in test contexts (`App::test_default`); production
+    /// startup always populates this before construction.
+    pub workspace: Option<Rc<forge_workspace::Workspace>>,
     /// Monotonic session authority epoch used to ignore stale async view data.
     pub session_scope_epoch: u64,
     pub current_model: Option<model::CurrentModel>,
@@ -850,6 +856,7 @@ impl App {
             exit_error: None,
             session_id: None,
             conn: None,
+            workspace: None,
             session_scope_epoch: 0,
             current_model: Some(
                 model::CurrentModel::new("test-model", "test-model", "test-model")

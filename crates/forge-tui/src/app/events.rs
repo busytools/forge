@@ -796,7 +796,7 @@ mod tests {
     -> (App, tokio::sync::mpsc::UnboundedReceiver<forge_primitives::Command>) {
         let mut app = make_test_app();
         let (handle, rx) = forge_agent::Agent::testing_stub();
-        app.conn = Some(std::rc::Rc::new(handle));
+        app.conn = Some(std::sync::Arc::new(handle));
         (app, rx)
     }
 
@@ -2167,7 +2167,7 @@ mod tests {
         assert!(!app.startup_session_picker_resolved);
 
         let (handle, _rx) = forge_agent::Agent::testing_stub();
-        app.conn = Some(std::rc::Rc::new(handle));
+        app.conn = Some(std::sync::Arc::new(handle));
         handle_client_event(&mut app, connected_event("claude-updated"));
 
         assert_eq!(app.active_view, ActiveView::SessionPicker);
@@ -2179,7 +2179,7 @@ mod tests {
         let mut app = make_test_app();
         app.startup_session_picker_requested = true;
         let (handle, _rx) = forge_agent::Agent::testing_stub();
-        app.conn = Some(std::rc::Rc::new(handle));
+        app.conn = Some(std::sync::Arc::new(handle));
 
         handle_client_event(&mut app, connected_event("claude-updated"));
         assert_eq!(app.active_view, ActiveView::Chat);

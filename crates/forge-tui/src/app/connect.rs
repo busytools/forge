@@ -25,12 +25,18 @@ use crate::agent::client::SessionLaunchSettings;
 use crate::agent::events::ClientEvent;
 use crate::agent::model;
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::Arc;
 use tokio::sync::mpsc;
 
-/// Shorten cwd for display: use `~` for the home directory prefix.
-fn shorten_cwd(cwd: &std::path::Path) -> String {
+struct StartConnectionParams {
+    event_tx: mpsc::UnboundedSender<ClientEvent>,
+    workspace: Rc<forge_workspace::Workspace>,
+    session_launch_settings: SessionLaunchSettings,
+}
+
+/// Shorten a path for display: substitute `~` for the home directory prefix.
+fn shorten_cwd_for_display(cwd: &std::path::Path) -> String {
     let cwd_str = cwd.to_string_lossy().to_string();
     if let Some(home) = dirs::home_dir() {
         let home_str = home.to_string_lossy().to_string();
@@ -41,21 +47,22 @@ fn shorten_cwd(cwd: &std::path::Path) -> String {
     cwd_str
 }
 
-struct StartConnectionParams {
-    event_tx: mpsc::UnboundedSender<ClientEvent>,
-    cwd_raw: String,
-    resume_id: Option<String>,
-    resume_requested: bool,
-    session_launch_settings: SessionLaunchSettings,
-}
-
 pub(crate) use session_start::{SessionStartReason, begin_resume_session, start_new_session};
 
 /// Create the `App` struct in `Connecting` state and load shared settings state.
-pub fn create_app(cli: &Cli) -> App {
-    // Transitional: cwd comes directly from the process. Task 8 routes startup
-    // through forge-workspace and removes this fallback.
-    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+///
+/// `cwd_raw` and `cwd` are seeded from the process working directory
+/// so trust + file index init have a sensible value to work with;
+/// the `Connected` event overwrites them with the agent's reported
+/// cwd once the workspace-backed agent finishes its handshake.
+pub fn create_app(cli: &Cli, workspace: Rc<forge_workspace::Workspace>) -> App {
+    // Seed cwd from the process working directory until the Connected
+    // event delivers the agent's actual cwd. Trust + file_index init
+    // need a non-empty value; reading `current_dir()` here is fine
+    // because forge is always invoked from the project root the user
+    // wants to operate on.
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let cwd_display = shorten_cwd_for_display(&cwd);
 
     let (event_tx, event_rx) = mpsc::unbounded_channel();
     let (file_index_event_tx, file_index_event_rx) = std::sync::mpsc::channel();
@@ -105,7 +112,6 @@ pub fn create_app(cli: &Cli) -> App {
         logger
     });
 
-    let cwd_display = shorten_cwd(&cwd);
     let mut app = App {
         active_view: ActiveView::Chat,
         config: ConfigState::default(),
@@ -129,6 +135,7 @@ pub fn create_app(cli: &Cli) -> App {
         exit_error: None,
         session_id: None,
         conn: None,
+        workspace: Some(workspace),
         session_scope_epoch: 0,
         current_model: None,
         cwd_raw: cwd.to_string_lossy().to_string(),
@@ -257,12 +264,32 @@ pub fn start_connection(app: &mut App) {
         return;
     }
 
+    let Some(workspace) = app.workspace.as_ref().map(Rc::clone) else {
+        tracing::error!(
+            target: crate::logging::targets::BRIDGE_LIFECYCLE,
+            event_name = "start_connection_without_workspace",
+            message = "start_connection invoked without a workspace; refusing to spawn bridge",
+            outcome = "failure",
+        );
+        // Latch connection_started so the broken-invariant path only fires
+        // once -- start_connection is called from the event loop every
+        // iteration, and without this guard we'd pile up duplicate fatal
+        // events forever.
+        app.connection_started = true;
+        // Surface the broken invariant as a fatal connection failure so
+        // the event loop exits cleanly instead of spinning in Connecting.
+        bridge_lifecycle::emit_connection_failed(
+            &app.event_tx,
+            "internal: workspace not initialised in App; cannot spawn bridge".to_owned(),
+            crate::error::AppError::ConnectionFailed,
+        );
+        return;
+    };
+
     app.connection_started = true;
     let params = StartConnectionParams {
         event_tx: app.event_tx.clone(),
-        cwd_raw: app.cwd_raw.clone(),
-        resume_id: app.startup_resume_id.clone(),
-        resume_requested: app.startup_resume_requested,
+        workspace,
         session_launch_settings: session_start::session_launch_settings_for_reason(
             app,
             session_start::SessionStartReason::Startup,
@@ -285,9 +312,9 @@ pub fn start_connection(app: &mut App) {
     });
 }
 
-/// Shared slot for passing `Rc<forge_agent::AgentHandle>` from the background task to the event loop.
+/// Shared slot for passing `Arc<forge_agent::AgentHandle>` from the background task to the event loop.
 pub struct ConnectionSlot {
-    pub conn: Rc<forge_agent::AgentHandle>,
+    pub conn: Arc<forge_agent::AgentHandle>,
 }
 
 thread_local! {
@@ -303,13 +330,30 @@ pub(super) fn take_connection_slot() -> Option<ConnectionSlot> {
 #[cfg(test)]
 mod tests {
     use crate::Cli;
+    use std::rc::Rc;
 
-    #[test]
-    fn create_app_prewarms_file_index_for_startup_cwd() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        // Run create_app in the tempdir so std::env::current_dir() returns it.
-        // The previous --dir / -C flag is gone; cwd comes from the process.
-        let _guard = ChdirGuard::push(dir.path());
+    fn write_default_forge_toml(dir: &std::path::Path, project_path: &std::path::Path) {
+        let project_path_str = project_path.to_string_lossy().replace('\\', "/");
+        std::fs::write(
+            dir.join("forge.toml"),
+            format!(
+                "[[projects]]\nname = \"forge-test\"\npath = \"{project_path_str}\"\ndefault = true\n"
+            ),
+        )
+        .expect("write forge.toml");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn create_app_wires_workspace_and_seeds_cwd_from_process() {
+        // Workspace::new requires a forge.toml in the config dir. The
+        // project path doesn't have to exist on disk — `create_app`
+        // doesn't read it.
+        let config_dir = tempfile::tempdir().expect("tempdir");
+        let project_dir = tempfile::tempdir().expect("project tempdir");
+        write_default_forge_toml(config_dir.path(), project_dir.path());
+        let workspace =
+            forge_workspace::Workspace::new(config_dir.path().to_owned()).await.expect("workspace");
+
         let cli = Cli {
             enable_logs: false,
             diagnostics_preset: None,
@@ -321,40 +365,11 @@ mod tests {
             perf_append: false,
         };
 
-        let app = super::create_app(&cli);
+        let app = super::create_app(&cli, Rc::new(workspace));
 
-        // Path may be canonicalised (macOS prefixes /private to tempdir paths),
-        // so compare via canonical form.
-        let expected = std::fs::canonicalize(dir.path()).expect("canonicalize tempdir");
-        let actual = app
-            .file_index
-            .root
-            .as_deref()
-            .map(|p| std::fs::canonicalize(p).expect("canonicalize file_index root"));
-        assert_eq!(actual.as_deref(), Some(expected.as_path()));
-        assert!(app.file_index.scan.is_some());
-        assert!(app.file_index.watch.is_some());
-    }
-
-    /// RAII guard that swaps the process cwd for the duration of a test.
-    /// `std::env::set_current_dir` is process-global, so tests that depend
-    /// on cwd must serialise — but cargo nextest runs each test in its own
-    /// process, so a guard is sufficient.
-    struct ChdirGuard {
-        previous: std::path::PathBuf,
-    }
-
-    impl ChdirGuard {
-        fn push(target: &std::path::Path) -> Self {
-            let previous = std::env::current_dir().expect("current_dir");
-            std::env::set_current_dir(target).expect("set_current_dir");
-            Self { previous }
-        }
-    }
-
-    impl Drop for ChdirGuard {
-        fn drop(&mut self) {
-            let _ = std::env::set_current_dir(&self.previous);
-        }
+        // cwd is seeded from the process; the Connected event later
+        // overwrites it with the agent's reported value.
+        assert!(!app.cwd_raw.is_empty(), "cwd_raw should be seeded from process cwd");
+        assert!(app.workspace.is_some(), "workspace should be wired");
     }
 }

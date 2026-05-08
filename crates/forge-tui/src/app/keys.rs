@@ -15,7 +15,7 @@ use crate::app::{mention, questions, slash, subagent};
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 #[cfg(test)]
 use std::cell::Cell;
-use std::rc::Rc;
+use std::sync::Arc;
 use std::time::Instant;
 
 const HELP_TAB_PREV_KEY: KeyCode = KeyCode::Left;
@@ -645,7 +645,7 @@ fn handle_mode_cycle_key(app: &mut App, key: KeyEvent) -> bool {
         && let Some(sid) = app.session_id.clone()
     {
         let mode_id = next.id.clone();
-        let conn = Rc::clone(conn);
+        let conn = Arc::clone(conn);
         tokio::task::spawn_local(async move {
             if let Err(e) = conn.set_mode(sid.to_string(), mode_id) {
                 tracing::error!(

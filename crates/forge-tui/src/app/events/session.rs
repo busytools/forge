@@ -10,7 +10,7 @@ use super::session_reset::{load_resume_history, reset_for_new_session};
 use crate::agent::events::ServiceStatusSeverity;
 use crate::agent::model;
 use crate::error::AppError;
-use std::rc::Rc;
+use std::sync::Arc;
 
 const TURN_ERROR_INPUT_LOCK_HINT: &str =
     "Input disabled after an error. Press Ctrl+Q to quit and try again.";
@@ -199,7 +199,7 @@ pub(super) fn handle_slash_command_error_event(app: &mut App, msg: &str) {
     app.resuming_session_id = None;
 }
 
-pub(super) fn handle_auth_completed_event(app: &mut App, conn: &Rc<forge_agent::AgentHandle>) {
+pub(super) fn handle_auth_completed_event(app: &mut App, conn: &Arc<forge_agent::AgentHandle>) {
     app.login_hint = None;
     app.pending_command_label = Some("Starting session...".to_owned());
     app.pending_command_ack = None;
