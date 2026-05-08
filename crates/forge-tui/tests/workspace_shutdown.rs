@@ -41,8 +41,7 @@ default = true
     // Reclaim ownership of the workspace and shut it down. The
     // try_unwrap must succeed because we just dropped the only other
     // Rc clone.
-    let workspace = Rc::try_unwrap(workspace)
-        .map_err(|_| ())
-        .expect("Rc should be unique after App drops");
+    let workspace =
+        Rc::try_unwrap(workspace).map_err(|_| ()).expect("Rc should be unique after App drops");
     workspace.shutdown().await;
 }

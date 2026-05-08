@@ -80,12 +80,7 @@ impl Workspace {
         // descending; the per-project Vec inherits that ordering thanks
         // to push order being preserved.
 
-        Ok(Self {
-            config_dir,
-            config,
-            catalog,
-            pool: Mutex::new(HashMap::new()),
-        })
+        Ok(Self { config_dir, config, catalog, pool: Mutex::new(HashMap::new()) })
     }
 
     /// Every project listed in `forge.toml`, each carrying its catalog
@@ -99,11 +94,10 @@ impl Workspace {
 
         let mut views = Vec::with_capacity(self.config.projects.len());
         for project in &self.config.projects {
-            let key = ProjectKey::new(
-                forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
-                    &project.path.to_string_lossy(),
-                )),
-            );
+            let key =
+                ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(
+                    Some(&project.path.to_string_lossy()),
+                ));
 
             let sessions: Vec<SessionView> = self
                 .catalog
@@ -126,11 +120,7 @@ impl Workspace {
                 })
                 .unwrap_or_default();
 
-            views.push(ProjectView {
-                key,
-                display_path: project.display_path.clone(),
-                sessions,
-            });
+            views.push(ProjectView { key, display_path: project.display_path.clone(), sessions });
         }
         views
     }
@@ -167,12 +157,7 @@ impl Workspace {
         let handle = forge_agent::Agent::spawn();
         match &target {
             SessionTarget::Default => {
-                let cwd = self
-                    .config
-                    .default_project()
-                    .path
-                    .to_string_lossy()
-                    .to_string();
+                let cwd = self.config.default_project().path.to_string_lossy().to_string();
                 handle.new_session(cwd, settings)?;
             }
             SessionTarget::Session(key) => {
@@ -280,15 +265,10 @@ default = true
             .get_agent_handle(SessionTarget::Default, settings.clone())
             .await
             .expect("first");
-        let handle2 = workspace
-            .get_agent_handle(SessionTarget::Default, settings)
-            .await
-            .expect("second");
+        let handle2 =
+            workspace.get_agent_handle(SessionTarget::Default, settings).await.expect("second");
 
-        assert!(
-            Arc::ptr_eq(&handle1, &handle2),
-            "expected pool hit for repeated Default target",
-        );
+        assert!(Arc::ptr_eq(&handle1, &handle2), "expected pool hit for repeated Default target");
         assert_eq!(workspace.pool.lock().len(), 1);
     }
 
@@ -313,11 +293,7 @@ default = true
             .get_agent_handle(SessionTarget::Session(other), settings)
             .await
             .expect("session");
-        assert_eq!(
-            workspace.pool.lock().len(),
-            2,
-            "distinct target adds a pool entry"
-        );
+        assert_eq!(workspace.pool.lock().len(), 2, "distinct target adds a pool entry");
     }
 
     #[tokio::test]

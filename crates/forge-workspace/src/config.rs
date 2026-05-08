@@ -59,10 +59,7 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
             return Err(WorkspaceError::ConfigMissing { path });
         }
         Err(e) => {
-            return Err(WorkspaceError::ConfigInvalid {
-                path,
-                message: format!("io error: {e}"),
-            });
+            return Err(WorkspaceError::ConfigInvalid { path, message: format!("io error: {e}") });
         }
     };
 
