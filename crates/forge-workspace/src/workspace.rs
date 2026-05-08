@@ -26,6 +26,8 @@ use crate::views::{ProjectView, SessionView};
 /// `~/.claude-subspace/plans/2026-05-09-forge-tui-phase-1a-workspace-design.md`
 /// for the full contract.
 pub struct Workspace {
+    /// TEMPORARY: stored for Task 6's `shutdown` implementation.
+    #[allow(dead_code)]
     config_dir: PathBuf,
     config: LoadedConfig,
     /// Catalog snapshot from `userdata::catalog::scan::list_sessions`,
@@ -130,17 +132,165 @@ impl Workspace {
         views
     }
 
-    /// See spec §3. Implemented in Task 5.
+    /// Hands out the `Arc<AgentHandle>` for the requested session,
+    /// spawning the underlying Agent lazily if it isn't already pooled.
+    /// Idempotent — repeated calls for the same target return the same
+    /// handle (no second subprocess). `settings` only apply to the
+    /// spawn; subsequent calls reuse the existing Agent and ignore the
+    /// parameter.
+    ///
+    /// Workspace does not track which handle the caller is "using" —
+    /// that's the caller's concern.
     pub async fn get_agent_handle(
         &self,
-        _target: SessionTarget,
-        _settings: SessionLaunchSettings,
+        target: SessionTarget,
+        settings: SessionLaunchSettings,
     ) -> Result<Arc<AgentHandle>> {
-        unimplemented!("get_agent_handle lands in Task 5")
+        let session_key = self.resolve_target(&target);
+
+        // Fast path: cache hit
+        {
+            let pool = self.pool.lock();
+            if let Some(existing) = pool.get(&session_key) {
+                return Ok(Arc::clone(existing));
+            }
+        }
+
+        // Slow path: spawn fresh Agent and dispatch the start command.
+        let handle = forge_agent::Agent::spawn();
+        match &target {
+            SessionTarget::Default => {
+                let cwd = self
+                    .config
+                    .default_project()
+                    .path
+                    .to_string_lossy()
+                    .to_string();
+                handle.new_session(cwd, settings)?;
+            }
+            SessionTarget::Session(key) => {
+                handle.resume_session(key.as_str().to_owned(), settings)?;
+            }
+        }
+
+        let arc = Arc::new(handle);
+
+        // Insert: race-safe via "if absent" semantics. If a concurrent
+        // caller raced us to the spawn, theirs wins the pool slot and
+        // ours drops at end-of-scope (subprocess killed via Client's
+        // existing Drop). Acceptable for single-user scope; forge-tui's
+        // startup is the only caller in 1a and never races itself.
+        {
+            let mut pool = self.pool.lock();
+            if let Some(existing) = pool.get(&session_key) {
+                return Ok(Arc::clone(existing));
+            }
+            pool.insert(session_key, Arc::clone(&arc));
+        }
+
+        Ok(arc)
+    }
+
+    /// Resolves a `SessionTarget` to the `SessionKey` used to look up
+    /// the pool. For `Default` with no on-disk session for the project,
+    /// returns a project-keyed placeholder (`__fresh__:<project_key>`)
+    /// so re-entry stays idempotent against the same fresh-session
+    /// intent.
+    fn resolve_target(&self, target: &SessionTarget) -> SessionKey {
+        match target {
+            SessionTarget::Default => {
+                let project = self.config.default_project();
+                let key = ProjectKey::new(
+                    forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
+                        &project.path.to_string_lossy(),
+                    )),
+                );
+                if let Some(entries) = self.catalog.get(&key)
+                    && let Some(lead) = entries.first()
+                {
+                    return SessionKey::new(lead.session_id.clone());
+                }
+                SessionKey::new(format!("__fresh__:{}", key.as_str()))
+            }
+            SessionTarget::Session(key) => key.clone(),
+        }
     }
 
     /// See spec §3. Implemented in Task 6.
     pub async fn shutdown(self) {
         unimplemented!("shutdown lands in Task 6")
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::tempdir;
+
+    fn make_workspace_dir() -> tempfile::TempDir {
+        let dir = tempdir().expect("tempdir");
+        fs::write(
+            dir.path().join("forge.toml"),
+            r#"
+[[projects]]
+name = "forge"
+path = "~/Projects/forge"
+default = true
+"#,
+        )
+        .expect("write forge.toml");
+        dir
+    }
+
+    #[tokio::test]
+    async fn get_agent_handle_default_is_idempotent() {
+        let dir = make_workspace_dir();
+        let workspace = Workspace::new(dir.path().to_owned()).await.expect("new");
+        let settings = SessionLaunchSettings::default();
+
+        let handle1 = workspace
+            .get_agent_handle(SessionTarget::Default, settings.clone())
+            .await
+            .expect("first");
+        let handle2 = workspace
+            .get_agent_handle(SessionTarget::Default, settings)
+            .await
+            .expect("second");
+
+        assert!(
+            Arc::ptr_eq(&handle1, &handle2),
+            "expected pool hit for repeated Default target",
+        );
+        assert_eq!(workspace.pool.lock().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn distinct_targets_pool_distinct_entries() {
+        let dir = make_workspace_dir();
+        let workspace = Workspace::new(dir.path().to_owned()).await.expect("new");
+        let settings = SessionLaunchSettings::default();
+
+        let _ = workspace
+            .get_agent_handle(SessionTarget::Default, settings.clone())
+            .await
+            .expect("default");
+        let _ = workspace
+            .get_agent_handle(SessionTarget::Default, settings.clone())
+            .await
+            .expect("default again");
+        assert_eq!(workspace.pool.lock().len(), 1, "Default is idempotent");
+
+        let other = SessionKey::from_str_for_test("dual-test-other");
+        let _ = workspace
+            .get_agent_handle(SessionTarget::Session(other), settings)
+            .await
+            .expect("session");
+        assert_eq!(
+            workspace.pool.lock().len(),
+            2,
+            "distinct target adds a pool entry"
+        );
     }
 }

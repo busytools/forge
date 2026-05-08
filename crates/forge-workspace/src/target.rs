@@ -47,3 +47,11 @@ pub enum SessionTarget {
     /// suite and Phase 2's click-to-switch flow.
     Session(SessionKey),
 }
+
+#[cfg(test)]
+impl SessionKey {
+    /// Construct a `SessionKey` from a literal string. Tests only.
+    pub fn from_str_for_test(s: &str) -> Self {
+        Self(s.to_owned())
+    }
+}
