@@ -33,10 +33,7 @@ fn run() -> anyhow::Result<()> {
         let startup_bootstrap_span = info_span!(
             target: forge_tui::logging::targets::APP_LIFECYCLE,
             "startup_bootstrap",
-            resume_requested = matches!(
-                cli.command,
-                Some(forge_tui::Command::Resume { .. })
-            ),
+            resume_requested = false,
             perf_telemetry_requested = perf_path.is_some(),
         );
         let _entered = startup_bootstrap_span.enter();
@@ -53,7 +50,6 @@ fn run() -> anyhow::Result<()> {
         // The bridge itself is started from the TUI loop only after trust is accepted.
         forge_tui::app::start_service_status_check(&app);
         let result = forge_tui::app::run_tui(&mut app).await;
-        maybe_print_resume_hint(&app, result.is_ok());
 
         // Kill any spawned terminal child processes before exiting
         forge_tui::agent::events::kill_all_terminals(&app.terminals);
@@ -68,14 +64,4 @@ fn run() -> anyhow::Result<()> {
 
 fn extract_app_error(err: &anyhow::Error) -> Option<AppError> {
     err.chain().find_map(|cause| cause.downcast_ref::<AppError>().cloned())
-}
-
-fn maybe_print_resume_hint(app: &forge_tui::app::App, success: bool) {
-    if !success {
-        return;
-    }
-    let Some(session_id) = app.session_id.as_ref() else {
-        return;
-    };
-    eprintln!("Resume this session: forge resume {session_id}");
 }

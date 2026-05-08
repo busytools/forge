@@ -20,10 +20,10 @@ use super::state::{
 use super::trust;
 use super::view::ActiveView;
 use super::{App, AppStatus, ChatViewport, FocusManager, HelpView, SelectionState, TodoItem};
+use crate::Cli;
 use crate::agent::client::SessionLaunchSettings;
 use crate::agent::events::ClientEvent;
 use crate::agent::model;
-use crate::{Cli, Command};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -41,12 +41,6 @@ fn shorten_cwd(cwd: &std::path::Path) -> String {
     cwd_str
 }
 
-fn resolve_startup_cwd(cli: &Cli) -> PathBuf {
-    cli.dir
-        .clone()
-        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
-}
-
 struct StartConnectionParams {
     event_tx: mpsc::UnboundedSender<ClientEvent>,
     cwd_raw: String,
@@ -59,7 +53,9 @@ pub(crate) use session_start::{SessionStartReason, begin_resume_session, start_n
 
 /// Create the `App` struct in `Connecting` state and load shared settings state.
 pub fn create_app(cli: &Cli) -> App {
-    let cwd = resolve_startup_cwd(cli);
+    // Transitional: cwd comes directly from the process. Task 8 routes startup
+    // through forge-workspace and removes this fallback.
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
 
     let (event_tx, event_rx) = mpsc::unbounded_channel();
     let (file_index_event_tx, file_index_event_rx) = std::sync::mpsc::channel();
@@ -230,18 +226,9 @@ pub fn create_app(cli: &Cli) -> App {
         last_active_turn_height_state: None,
         startup_connection_requested: false,
         connection_started: false,
-        startup_resume_id: match &cli.command {
-            Some(Command::Resume { session_id: Some(id) }) => Some(id.clone()),
-            _ => None,
-        },
-        startup_resume_requested: matches!(
-            &cli.command,
-            Some(Command::Resume { session_id: Some(_) })
-        ),
-        startup_session_picker_requested: matches!(
-            &cli.command,
-            Some(Command::Resume { session_id: None })
-        ),
+        startup_resume_id: None,
+        startup_resume_requested: false,
+        startup_session_picker_requested: false,
         startup_recent_sessions_loaded: false,
         startup_session_picker_resolved: false,
     };
@@ -320,9 +307,10 @@ mod tests {
     #[test]
     fn create_app_prewarms_file_index_for_startup_cwd() {
         let dir = tempfile::tempdir().expect("tempdir");
+        // Run create_app in the tempdir so std::env::current_dir() returns it.
+        // The previous --dir / -C flag is gone; cwd comes from the process.
+        let _guard = ChdirGuard::push(dir.path());
         let cli = Cli {
-            command: None,
-            dir: Some(dir.path().to_path_buf()),
             enable_logs: false,
             diagnostics_preset: None,
             log_file: None,
@@ -335,8 +323,38 @@ mod tests {
 
         let app = super::create_app(&cli);
 
-        assert_eq!(app.file_index.root.as_deref(), Some(dir.path()));
+        // Path may be canonicalised (macOS prefixes /private to tempdir paths),
+        // so compare via canonical form.
+        let expected = std::fs::canonicalize(dir.path()).expect("canonicalize tempdir");
+        let actual = app
+            .file_index
+            .root
+            .as_deref()
+            .map(|p| std::fs::canonicalize(p).expect("canonicalize file_index root"));
+        assert_eq!(actual.as_deref(), Some(expected.as_path()));
         assert!(app.file_index.scan.is_some());
         assert!(app.file_index.watch.is_some());
+    }
+
+    /// RAII guard that swaps the process cwd for the duration of a test.
+    /// `std::env::set_current_dir` is process-global, so tests that depend
+    /// on cwd must serialise — but cargo nextest runs each test in its own
+    /// process, so a guard is sufficient.
+    struct ChdirGuard {
+        previous: std::path::PathBuf,
+    }
+
+    impl ChdirGuard {
+        fn push(target: &std::path::Path) -> Self {
+            let previous = std::env::current_dir().expect("current_dir");
+            std::env::set_current_dir(target).expect("set_current_dir");
+            Self { previous }
+        }
+    }
+
+    impl Drop for ChdirGuard {
+        fn drop(&mut self) {
+            let _ = std::env::set_current_dir(&self.previous);
+        }
     }
 }

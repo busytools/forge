@@ -5,7 +5,7 @@ pub mod logging;
 pub mod perf;
 pub mod ui;
 
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Parser, ValueEnum};
 
 #[derive(Clone, Debug, ValueEnum, PartialEq, Eq)]
 pub enum DiagnosticsPreset {
@@ -47,13 +47,6 @@ impl DiagnosticsPreset {
 // Each bool maps 1:1 to a CLI flag — clap-derive needs them as struct fields.
 #[allow(clippy::struct_excessive_bools)]
 pub struct Cli {
-    #[command(subcommand)]
-    pub command: Option<Command>,
-
-    /// Working directory (defaults to cwd)
-    #[arg(long, short = 'C')]
-    pub dir: Option<std::path::PathBuf>,
-
     /// Enable runtime diagnostics using a default log path when `--log-file` is omitted.
     #[arg(long)]
     pub enable_logs: bool,
@@ -94,36 +87,22 @@ pub struct Cli {
     pub perf_append: bool,
 }
 
-#[derive(Subcommand, Debug, PartialEq, Eq)]
-pub enum Command {
-    /// Resume a previous session by ID, or pick from recent sessions
-    Resume {
-        /// Session ID to resume directly. Omit to show a session picker.
-        session_id: Option<String>,
-    },
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{Cli, Command};
+    use super::Cli;
     use clap::Parser;
 
     #[test]
-    fn cli_without_subcommand_starts_new_session() {
+    fn cli_parses_bare_forge_with_default_log_and_perf_flags() {
         let cli = Cli::try_parse_from(["forge"]).expect("parse");
-        assert!(cli.command.is_none());
-    }
-
-    #[test]
-    fn cli_resume_without_id_requests_picker() {
-        let cli = Cli::try_parse_from(["forge", "resume"]).expect("parse");
-        assert_eq!(cli.command, Some(Command::Resume { session_id: None }));
-    }
-
-    #[test]
-    fn cli_resume_with_id_resumes_directly() {
-        let cli = Cli::try_parse_from(["forge", "resume", "abc-123"]).expect("parse");
-        assert_eq!(cli.command, Some(Command::Resume { session_id: Some("abc-123".to_owned()) }));
+        assert!(!cli.enable_logs);
+        assert!(cli.diagnostics_preset.is_none());
+        assert!(cli.log_file.is_none());
+        assert!(cli.log_filter.is_none());
+        assert!(!cli.log_append);
+        assert!(!cli.enable_perf);
+        assert!(cli.perf_log.is_none());
+        assert!(!cli.perf_append);
     }
 
     #[test]
