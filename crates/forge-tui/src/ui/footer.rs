@@ -141,11 +141,24 @@ fn zero_width_rect(area: Rect) -> Rect {
 }
 
 fn build_primary_line(app: &App) -> Line<'static> {
-    if let Some(ref mode) = app.mode {
-        let color = mode_color(&mode.current_mode_id);
+    // Effective mode prefers hook-observed values over the
+    // system-event-driven `app.mode`, since the CLI reliably populates
+    // `permission_mode` on every hook input but doesn't always re-emit
+    // `system/status` after mode changes (#88).
+    let effective_mode_id_name: Option<(String, String)> = app
+        .observed_permission_mode
+        .map(|m| (m.as_wire().to_owned(), m.display_name().to_owned()))
+        .or_else(|| {
+            app.mode
+                .as_ref()
+                .map(|m| (m.current_mode_id.clone(), m.current_mode_name.clone()))
+        });
+
+    if let Some((mode_id, mode_name)) = effective_mode_id_name {
+        let color = mode_color(&mode_id);
         let (fast_mode_text, fast_mode_color) = fast_mode_badge(app.fast_mode_state);
         let mut spans = Vec::new();
-        push_badge(&mut spans, mode.current_mode_name.clone(), color);
+        push_badge(&mut spans, mode_name, color);
         if let Some(model_badge) = footer_model_badge(app) {
             spans.push(Span::raw("  "));
             push_badge(&mut spans, model_badge, FOOTER_CONTEXT_VALUE);
@@ -174,8 +187,15 @@ fn footer_model_badge(app: &App) -> Option<String> {
     let current_model = app.current_model.as_ref()?;
     let mut badge = current_model.display_name_short.clone();
     if current_model.supports_effort {
+        // Effective effort prefers hook-observed values (high-fidelity
+        // signal from PreToolUse / UserPromptSubmit hook inputs) over
+        // the settings-document-derived value, which goes stale when
+        // the CLI changes effort without updating the file (e.g.
+        // mid-session `/effort` change). #87, #89.
+        let effective_effort =
+            app.observed_effort.unwrap_or_else(|| app.config.thinking_effort_effective());
         badge.push('/');
-        badge.push_str(footer_effort_label(app.config.thinking_effort_effective()));
+        badge.push_str(footer_effort_label(effective_effort));
     }
     Some(badge)
 }

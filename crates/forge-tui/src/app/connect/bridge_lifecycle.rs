@@ -218,6 +218,23 @@ fn handle_agent_event(
         AgentEvent::SdkMessage { session_id, msg } => {
             let _ = event_tx.send(ClientEvent::SdkMessageReceived { session_id, msg });
         }
+        AgentEvent::HookObservation {
+            session_id,
+            tool_use_id,
+            permission_mode,
+            effort,
+            agent_id,
+            agent_type,
+        } => {
+            let _ = event_tx.send(ClientEvent::HookObservation {
+                session_id,
+                tool_use_id,
+                permission_mode,
+                effort,
+                agent_id,
+                agent_type,
+            });
+        }
     }
 }
 
