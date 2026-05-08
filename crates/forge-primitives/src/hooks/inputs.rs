@@ -26,6 +26,28 @@ pub struct BaseHookInput {
     /// field or where the CLI omits it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permission_mode: Option<String>,
+    /// Active effort level at the moment the hook fired (CLI 2.1.133+).
+    /// `None` for older CLI versions or hook frames that predate the
+    /// field. The wire shape is `{"effort": {"level": "max"}}` per the
+    /// 2.1.133 changelog ("Hooks now receive the active effort level
+    /// via the `effort.level` JSON input field"). Defensive Option lets
+    /// older baselines decode without the field present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<EffortInfo>,
+}
+
+/// Wrapper for the `effort` field on hook inputs. Currently only
+/// carries `level` but kept as a struct so future fields (budget,
+/// adaptive flags, …) can be added without breaking decode-side
+/// pattern matches.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EffortInfo {
+    /// Effort level string (`"low"` / `"medium"` / `"high"` /
+    /// `"xhigh"` / `"max"`). Kept as `String` rather than a typed
+    /// enum so future levels the CLI introduces don't fail decode;
+    /// consumers map to `crate::EffortLevel` when they need typed
+    /// access.
+    pub level: String,
 }
 
 /// Optional sub-agent attribution present on tool-lifecycle hook
