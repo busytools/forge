@@ -870,8 +870,7 @@ impl ConfigState {
         // covered the case where launch_settings carries no effort,
         // but forge-tui always populates effortLevel from this method,
         // so the default has to live here too.
-        store::thinking_effort_level(&self.committed_settings_document)
-            .unwrap_or(EffortLevel::Max)
+        store::thinking_effort_level(&self.committed_settings_document).unwrap_or(EffortLevel::Max)
     }
 
     #[must_use]
