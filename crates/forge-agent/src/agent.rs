@@ -312,11 +312,24 @@ impl Agent {
         (handle, commands_rx)
     }
 
-    /// Spawn a new agent runtime. Returns a handle holding the
-    /// command sender + events receiver + direct-accessor passthroughs.
+    /// Spawn a new agent runtime with no extra subprocess env.
+    /// Equivalent to `spawn_with_env(HashMap::new())`. Returns a
+    /// handle holding the command sender + events receiver +
+    /// direct-accessor passthroughs.
     #[must_use]
     pub fn spawn() -> AgentHandle {
-        let bridge = ForgeSdkBridge::new();
+        Self::spawn_with_env(std::collections::HashMap::new())
+    }
+
+    /// Spawn a new agent runtime, injecting `extra_env` into every
+    /// spawned `claude` subprocess. The workspace layer uses this to
+    /// thread `CLAUDE_CONFIG_DIR=<account.config_dir>` (and any other
+    /// account-scoped env) per-spawn — empty map for the no-account
+    /// path. Returns a handle holding the command sender + events
+    /// receiver + direct-accessor passthroughs.
+    #[must_use]
+    pub fn spawn_with_env(extra_env: std::collections::HashMap<String, String>) -> AgentHandle {
+        let bridge = ForgeSdkBridge::with_env(extra_env);
         let agent_event_rx = bridge.take_events().unwrap_or_else(|| mpsc::unbounded_channel().1);
 
         let (commands_tx, commands_rx) = mpsc::unbounded_channel::<Command>();

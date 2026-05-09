@@ -8,6 +8,7 @@
 //! The bridge owns the resulting `Client`; this module exposes the
 //! helpers it calls.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -39,6 +40,7 @@ pub(crate) async fn spawn_session(
     cwd: &str,
     resume_id: Option<&str>,
     launch_settings: &crate::client::SessionLaunchSettings,
+    extra_env: &HashMap<String, String>,
 ) -> anyhow::Result<()> {
     // If we already have a client, drop it so the existing subprocess
     // shuts down cleanly before the replacement spawns. Disconnect
@@ -62,6 +64,7 @@ pub(crate) async fn spawn_session(
         Arc::clone(bridge.inner_pending()),
         Arc::clone(bridge.inner_pending_questions()),
         Arc::clone(bridge.session_id_slot_arc()),
+        extra_env,
     );
     let (client, events) = Client::spawn(options).await?;
     // For resume sessions the CLI flag carried the real session id —
@@ -366,6 +369,7 @@ fn build_options_with_callback(
     pending: PendingResponses,
     pending_questions: PendingQuestions,
     session_id_slot: Arc<parking_lot::Mutex<String>>,
+    extra_env: &HashMap<String, String>,
 ) -> Options {
     // Observation hooks: passthrough callbacks that read CLI runtime
     // state out of every PreToolUse and UserPromptSubmit hook input
@@ -497,6 +501,14 @@ fn build_options_with_callback(
         }
     };
 
+    // Workspace-supplied per-spawn env (e.g. `CLAUDE_CONFIG_DIR`).
+    // Applied last so the user-provided map wins over any prior
+    // `OptionsBuilder::env` calls in this builder chain. Order across
+    // map iteration is irrelevant — keys are unique per HashMap.
+    for (k, v) in extra_env {
+        b = b.env(k.clone(), v.clone());
+    }
+
     tracing::info!(
         target: crate::logging::targets::BRIDGE_LIFECYCLE,
         event_name = "forge_sdk_options_built",
@@ -509,6 +521,7 @@ fn build_options_with_callback(
         effort_source,
         cwd_present = !cwd.is_empty(),
         resume_present = resume.is_some(),
+        extra_env_count = extra_env.len(),
     );
     b.build()
 }

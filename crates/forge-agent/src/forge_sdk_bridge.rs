@@ -74,14 +74,31 @@ pub(crate) struct BridgeInner {
     /// Current session id, shared with the `can_use_tool` callback so
     /// permission/question events carry the right `session_id`.
     pub(crate) session_id_slot: Arc<Mutex<String>>,
+    /// Extra env vars injected into every spawned `claude` subprocess
+    /// for this bridge. Set once at construction (workspace-driven —
+    /// e.g. `CLAUDE_CONFIG_DIR=<account.config_dir>`) and applied to
+    /// the SDK `Options` in every `new_session` / `resume_session`.
+    /// Empty when callers use `ForgeSdkBridge::new()`.
+    extra_env: Arc<HashMap<String, String>>,
 }
 
 impl ForgeSdkBridge {
-    /// Construct a fresh bridge. The internal event channel is created
-    /// here; consumers grab the receiver once via
-    /// [`ForgeSdkBridge::take_events`].
+    /// Construct a fresh bridge with no extra subprocess env. Equivalent
+    /// to `with_env(HashMap::new())`. Preserves the long-standing
+    /// no-arg ctor for tests + existing call sites.
     #[must_use]
     pub(crate) fn new() -> Self {
+        Self::with_env(HashMap::new())
+    }
+
+    /// Construct a fresh bridge that injects `extra_env` into every
+    /// spawned `claude` subprocess. Used by `Agent::spawn_with_env` to
+    /// thread workspace-derived env (`CLAUDE_CONFIG_DIR`, …) all the
+    /// way down to the SDK's `OptionsBuilder`. The internal event
+    /// channel is created here; consumers grab the receiver once via
+    /// [`ForgeSdkBridge::take_events`].
+    #[must_use]
+    pub(crate) fn with_env(extra_env: HashMap<String, String>) -> Self {
         let (event_tx, events_rx) = mpsc::unbounded_channel();
         Self {
             inner: Arc::new(BridgeInner {
@@ -92,12 +109,20 @@ impl ForgeSdkBridge {
                 pending_questions: Arc::new(Mutex::new(HashMap::new())),
                 git_watchers: Mutex::new(HashMap::new()),
                 session_id_slot: Arc::new(Mutex::new(String::new())),
+                extra_env: Arc::new(extra_env),
             }),
         }
     }
 
     pub(crate) fn event_tx(&self) -> &mpsc::UnboundedSender<AgentEvent> {
         &self.inner.event_tx
+    }
+
+    /// Cheap clone of the bridge's per-spawn env map. Cloned into
+    /// each `spawn_session` task so the workspace-supplied env is
+    /// applied to every fresh `claude` subprocess.
+    pub(crate) fn extra_env(&self) -> Arc<HashMap<String, String>> {
+        Arc::clone(&self.inner.extra_env)
     }
 
     pub(crate) fn inner_pending(&self) -> &PendingResponses {
@@ -657,9 +682,11 @@ impl ForgeSdkBridge {
         launch_settings: SessionLaunchSettings,
     ) -> anyhow::Result<()> {
         let bridge = self.clone();
+        let extra_env = self.extra_env();
         tokio::spawn(async move {
             if let Err(err) =
-                forge_sdk_worker::spawn_session(&bridge, &cwd, None, &launch_settings).await
+                forge_sdk_worker::spawn_session(&bridge, &cwd, None, &launch_settings, &extra_env)
+                    .await
             {
                 let msg = format!("forge-sdk session spawn failed: {err}");
                 if bridge
@@ -684,10 +711,16 @@ impl ForgeSdkBridge {
         launch_settings: SessionLaunchSettings,
     ) -> anyhow::Result<()> {
         let bridge = self.clone();
+        let extra_env = self.extra_env();
         tokio::spawn(async move {
-            if let Err(err) =
-                forge_sdk_worker::spawn_session(&bridge, "", Some(&session_id), &launch_settings)
-                    .await
+            if let Err(err) = forge_sdk_worker::spawn_session(
+                &bridge,
+                "",
+                Some(&session_id),
+                &launch_settings,
+                &extra_env,
+            )
+            .await
             {
                 let msg = format!("forge-sdk session resume failed: {err}");
                 if bridge
