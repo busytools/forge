@@ -77,24 +77,19 @@ pub(crate) async fn spawn_session(
     };
     bridge.session_id_slot_arc().lock().clone_from(&session_id);
 
-    let cwd_owned = match std::env::current_dir() {
-        Ok(p) => p.into_os_string().into_string().unwrap_or_else(|os| {
-            tracing::warn!(
-                target: crate::logging::targets::BRIDGE_LIFECYCLE,
-                cwd_lossy = %os.to_string_lossy(),
-                "cwd is not valid UTF-8; falling back to global session scope",
-            );
-            String::new()
-        }),
-        Err(e) => {
-            tracing::warn!(
-                target: crate::logging::targets::BRIDGE_LIFECYCLE,
-                error = %e,
-                "current_dir unavailable; falling back to global session scope",
-            );
-            String::new()
-        }
-    };
+    // Source of truth for the session's cwd is the caller. Phase 1a
+    // workspace flow always passes the forge.toml-derived project
+    // path; the in-session /resume flow (out of scope for 1a) needs
+    // to source the cwd from the session's transcript before calling
+    // here. An empty cwd is a caller-side bug; log it and pass through
+    // — no `current_dir()` fallback, because that would mask the bug.
+    if cwd.is_empty() {
+        tracing::warn!(
+            target: crate::logging::targets::BRIDGE_LIFECYCLE,
+            "spawn_session received empty cwd; session will lack working-directory scope (caller should pass forge.toml-derived path or session-recorded cwd)",
+        );
+    }
+    let cwd_owned = cwd.to_owned();
 
     // Install the client into the bridge BEFORE emitting Connected.
     // The TUI's Connected handler immediately fires command-channel
