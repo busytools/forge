@@ -608,7 +608,7 @@ mod tests {
                 .authoritative(true),
         );
 
-        assert_eq!(footer_model_badge(&app), Some("Sonnet 4.7/Med".to_owned()));
+        assert_eq!(footer_model_badge(&app), Some("Sonnet 4.7/Max".to_owned()));
     }
 
     #[test]
