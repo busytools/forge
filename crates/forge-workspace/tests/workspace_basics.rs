@@ -15,6 +15,10 @@ fn write_default_config(dir: &std::path::Path) {
 name = "forge"
 path = "~/Projects/forge"
 default = true
+
+[[accounts]]
+display_name = "Subspace"
+config_dir = "~/.claude-subspace"
 "#,
     )
     .expect("write forge.toml");

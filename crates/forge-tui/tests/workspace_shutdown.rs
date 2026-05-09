@@ -25,6 +25,10 @@ async fn workspace_shutdown_drains_after_app_drop() {
 name = "forge"
 path = "~/Projects/forge"
 default = true
+
+[[accounts]]
+display_name = "Subspace"
+config_dir = "~/.claude-subspace"
 "#,
     )
     .expect("write forge.toml");

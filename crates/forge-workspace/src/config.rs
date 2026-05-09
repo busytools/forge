@@ -11,6 +11,10 @@ use crate::error::WorkspaceError;
 struct ForgeToml {
     #[serde(default)]
     projects: Vec<ProjectEntry>,
+    #[serde(default)]
+    accounts: Vec<AccountEntry>,
+    #[serde(default)]
+    selection: SelectionEntry,
 }
 
 #[derive(Debug, Deserialize)]
@@ -21,10 +25,46 @@ struct ProjectEntry {
     default: bool,
 }
 
+#[derive(Debug, Deserialize)]
+struct AccountEntry {
+    display_name: String,
+    config_dir: String,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct SelectionEntry {
+    #[serde(default)]
+    policy: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) enum SelectionPolicy {
+    #[default]
+    LeastRecentlyUsed,
+    RoundRobin,
+}
+
+#[derive(Debug, Clone)]
+#[allow(dead_code)] // wired up in subsequent Phase 1b tasks
+pub(crate) struct LoadedAccount {
+    pub display_name: String,
+    pub config_dir: PathBuf,
+}
+
+#[derive(Debug, Clone, Default)]
+#[allow(dead_code)] // wired up in subsequent Phase 1b tasks
+pub(crate) struct SelectionConfig {
+    pub policy: SelectionPolicy,
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct LoadedConfig {
     pub projects: Vec<LoadedProject>,
     pub default_index: usize,
+    #[allow(dead_code)] // wired up in subsequent Phase 1b tasks
+    pub accounts: Vec<LoadedAccount>,
+    #[allow(dead_code)] // wired up in subsequent Phase 1b tasks
+    pub selection: SelectionConfig,
 }
 
 #[derive(Debug, Clone)]
@@ -83,9 +123,50 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
         });
     }
 
-    let default_index = default_index.ok_or(WorkspaceError::NoDefaultProject { path })?;
+    let default_index = default_index.ok_or_else(|| WorkspaceError::NoDefaultProject {
+        path: path.clone(),
+    })?;
 
-    Ok(LoadedConfig { projects, default_index })
+    if parsed.accounts.is_empty() {
+        return Err(WorkspaceError::NoAccountsConfigured { path });
+    }
+
+    let mut seen_account_names: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut accounts: Vec<LoadedAccount> = Vec::with_capacity(parsed.accounts.len());
+    for entry in parsed.accounts {
+        if !seen_account_names.insert(entry.display_name.clone()) {
+            return Err(WorkspaceError::DuplicateAccount {
+                path,
+                name: entry.display_name,
+            });
+        }
+        accounts.push(LoadedAccount {
+            display_name: entry.display_name,
+            config_dir: expand_home(&entry.config_dir),
+        });
+    }
+
+    let selection = match parsed.selection.policy.as_deref() {
+        None | Some("least_recently_used") => SelectionConfig {
+            policy: SelectionPolicy::LeastRecentlyUsed,
+        },
+        Some("round_robin") => SelectionConfig {
+            policy: SelectionPolicy::RoundRobin,
+        },
+        Some(other) => {
+            return Err(WorkspaceError::UnknownSelectionPolicy {
+                path,
+                value: other.to_owned(),
+            });
+        }
+    };
+
+    Ok(LoadedConfig {
+        projects,
+        default_index,
+        accounts,
+        selection,
+    })
 }
 
 fn expand_home(path: &str) -> PathBuf {
@@ -121,6 +202,10 @@ default = true
 [[projects]]
 name = "aware"
 path = "~/Projects/aware"
+
+[[accounts]]
+display_name = "Subspace"
+config_dir = "~/.claude-subspace"
 "#,
         );
 
@@ -176,6 +261,10 @@ default = true
 name = "aware"
 path = "~/Projects/aware"
 default = true
+
+[[accounts]]
+display_name = "Subspace"
+config_dir = "~/.claude-subspace"
 "#,
         );
         let config = load_from_dir(dir.path()).expect("happy path");
@@ -194,5 +283,120 @@ name = "forge"
         );
         let err = load_from_dir(dir.path()).expect_err("missing field should error");
         assert!(matches!(err, WorkspaceError::ConfigParse { .. }));
+    }
+
+    #[test]
+    fn parses_valid_accounts_and_selection() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[projects]]
+name = "forge"
+path = "~/Projects/forge"
+default = true
+
+[[accounts]]
+display_name = "Subspace"
+config_dir = "~/.claude-subspace"
+
+[[accounts]]
+display_name = "Granite"
+config_dir = "~/.claude-granite"
+
+[selection]
+policy = "round_robin"
+"#,
+        );
+
+        let config = load_from_dir(dir.path()).expect("happy path");
+        assert_eq!(config.accounts.len(), 2);
+        assert_eq!(config.accounts[0].display_name, "Subspace");
+        let home = dirs::home_dir().expect("home");
+        assert_eq!(config.accounts[0].config_dir, home.join(".claude-subspace"));
+        assert_eq!(config.selection.policy, SelectionPolicy::RoundRobin);
+    }
+
+    #[test]
+    fn missing_accounts_returns_no_accounts_configured() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[projects]]
+name = "forge"
+path = "~/Projects/forge"
+default = true
+"#,
+        );
+        let err = load_from_dir(dir.path()).expect_err("missing accounts should error");
+        assert!(matches!(err, WorkspaceError::NoAccountsConfigured { .. }));
+    }
+
+    #[test]
+    fn duplicate_account_display_name_errors() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[projects]]
+name = "forge"
+path = "~/Projects/forge"
+default = true
+
+[[accounts]]
+display_name = "Subspace"
+config_dir = "~/.claude-subspace"
+
+[[accounts]]
+display_name = "Subspace"
+config_dir = "~/.claude-subspace-other"
+"#,
+        );
+        let err = load_from_dir(dir.path()).expect_err("duplicate should error");
+        assert!(matches!(err, WorkspaceError::DuplicateAccount { name, .. } if name == "Subspace"));
+    }
+
+    #[test]
+    fn unknown_selection_policy_errors() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[projects]]
+name = "forge"
+path = "~/Projects/forge"
+default = true
+
+[[accounts]]
+display_name = "Subspace"
+config_dir = "~/.claude-subspace"
+
+[selection]
+policy = "weird"
+"#,
+        );
+        let err = load_from_dir(dir.path()).expect_err("unknown policy should error");
+        assert!(matches!(err, WorkspaceError::UnknownSelectionPolicy { value, .. } if value == "weird"));
+    }
+
+    #[test]
+    fn selection_defaults_to_lru_when_missing() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[projects]]
+name = "forge"
+path = "~/Projects/forge"
+default = true
+
+[[accounts]]
+display_name = "Subspace"
+config_dir = "~/.claude-subspace"
+"#,
+        );
+        let config = load_from_dir(dir.path()).expect("happy path");
+        assert_eq!(config.selection.policy, SelectionPolicy::LeastRecentlyUsed);
     }
 }

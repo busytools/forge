@@ -280,6 +280,10 @@ mod tests {
 name = "forge"
 path = "~/Projects/forge"
 default = true
+
+[[accounts]]
+display_name = "Subspace"
+config_dir = "~/.claude-subspace"
 "#,
         )
         .expect("write forge.toml");
@@ -363,6 +367,10 @@ default = true
 [[projects]]
 name = "dotfiles"
 path = "~/Projects/dotfiles"
+
+[[accounts]]
+display_name = "Subspace"
+config_dir = "~/.claude-subspace"
 "#,
         )
         .expect("write forge.toml");
@@ -392,6 +400,10 @@ path = "~/Projects/dotfiles"
 name = "forge"
 path = "~/Projects/forge"
 default = true
+
+[[accounts]]
+display_name = "Subspace"
+config_dir = "~/.claude-subspace"
 "#,
         )
         .expect("write forge.toml");
