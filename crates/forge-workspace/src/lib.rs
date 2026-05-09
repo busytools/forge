@@ -4,6 +4,7 @@
 //! [`Workspace`] handle. See spec at
 //! `~/.claude-subspace/plans/2026-05-09-forge-tui-phase-1a-workspace-design.md`.
 
+mod account;
 mod config;
 mod error;
 mod state;
