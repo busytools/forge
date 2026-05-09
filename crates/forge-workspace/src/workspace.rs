@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
 use forge_agent::AgentHandle;
@@ -11,8 +11,10 @@ use forge_agent::client::SessionLaunchSettings;
 use forge_primitives::SDKSessionInfo;
 use parking_lot::Mutex;
 
+use crate::account::{AccountKey, AccountStateMap};
 use crate::config::{LoadedConfig, LoadedProject, load_from_dir};
 use crate::error::WorkspaceError;
+use crate::state::{self, PersistedAccountState, PersistedSelectionState, PersistedState};
 use crate::target::{ProjectKey, SessionKey, SessionTarget};
 use crate::views::{ProjectView, SessionView};
 
@@ -36,7 +38,24 @@ pub struct Workspace {
     catalog: HashMap<ProjectKey, Vec<SDKSessionInfo>>,
     /// Live Agents keyed by session id. `parking_lot::Mutex` so the
     /// public methods can take `&self`.
-    pool: Mutex<HashMap<SessionKey, Arc<AgentHandle>>>,
+    pool: Mutex<HashMap<SessionKey, PooledAgent>>,
+    /// Account picker state. Updated on every spawn; persisted to
+    /// `forge-state.toml` after each pick.
+    accounts: Mutex<AccountStateMap>,
+}
+
+/// Pool entry wrapping the live `Arc<AgentHandle>` together with
+/// the account it was spawned against. The account binding is
+/// retained so Phase 4+ can surface "which credential pool is this
+/// session running on" in the UI, and so tests can verify the
+/// picker's choice round-trips through the pool.
+#[derive(Clone)]
+pub(crate) struct PooledAgent {
+    pub handle: Arc<AgentHandle>,
+    /// Which account this session is bound to. Phase 1b uses this
+    /// for test-only inspection; Phase 4+ surfaces it.
+    #[allow(dead_code)] // surfaced in Phase 4+; tests read via pool_accounts_for_test
+    pub account: AccountKey,
 }
 
 impl Workspace {
@@ -78,7 +97,36 @@ impl Workspace {
         // descending; the per-project Vec inherits that ordering thanks
         // to push order being preserved.
 
-        Ok(Self { config_dir, config, catalog, pool: Mutex::new(HashMap::new()) })
+        // Load picker state from forge-state.toml (missing/malformed
+        // → empty defaults; never blocks startup) and seed
+        // `AccountStateMap` from the account list parsed out of
+        // `forge.toml`. Phase 1b's `get_agent_handle` consults this
+        // map on every spawn; the chosen account's `config_dir`
+        // becomes the spawn's `CLAUDE_CONFIG_DIR` override.
+        let persisted = state::load_or_default(&config_dir);
+        let persisted_last_used: HashMap<String, Option<SystemTime>> = persisted
+            .accounts
+            .iter()
+            .map(|(name, acct)| {
+                let parsed = acct.last_used_at.as_deref().and_then(parse_rfc3339);
+                (name.clone(), parsed)
+            })
+            .collect();
+
+        let accounts = AccountStateMap::new(
+            &config.accounts,
+            config.selection.policy.clone(),
+            persisted.selection.round_robin_next,
+            &persisted_last_used,
+        );
+
+        Ok(Self {
+            config_dir,
+            config,
+            catalog,
+            pool: Mutex::new(HashMap::new()),
+            accounts: Mutex::new(accounts),
+        })
     }
 
     /// Every project listed in `forge.toml`, each carrying its catalog
@@ -138,11 +186,19 @@ impl Workspace {
     /// spawn; subsequent calls reuse the existing Agent and ignore the
     /// parameter.
     ///
+    /// Each fresh spawn consults the account picker (LRU or
+    /// round-robin per `forge.toml`) and exports
+    /// `CLAUDE_CONFIG_DIR` to the spawned `claude` subprocess so it
+    /// reads/writes the picked account's config dir. Picker state is
+    /// persisted to `forge-state.toml` after every pick.
+    ///
     /// Workspace does not track which handle the caller is "using" —
     /// that's the caller's concern.
     ///
-    /// `async` is mandated by the spec contract — Phase 1b will need
-    /// to await account-bound resolution before pool insertion.
+    /// `async` is mandated by the spec contract — Phase 2+ work
+    /// (live-account refresh, oauth probing) will need to await
+    /// before the picker decision lands. Phase 1b's body is
+    /// synchronous; the `unused_async` allow keeps the contract.
     #[allow(clippy::unused_async)]
     pub async fn get_agent_handle(
         &self,
@@ -155,12 +211,34 @@ impl Workspace {
         {
             let pool = self.pool.lock();
             if let Some(existing) = pool.get(&session_key) {
-                return Ok(Arc::clone(existing));
+                return Ok(Arc::clone(&existing.handle));
             }
         }
 
+        // Pick an account via policy. Holds accounts lock briefly;
+        // released before we touch disk in `persist_account_state`.
+        let (account_key, account_dir) = {
+            let mut accounts = self.accounts.lock();
+            let now = SystemTime::now();
+            accounts.pick_next(now)
+        };
+
+        // Persist forge-state.toml AFTER releasing the accounts
+        // lock. `state::save` is best-effort — it logs and returns
+        // on failure rather than propagating, so a transient I/O
+        // hiccup doesn't break the spawn path.
+        self.persist_account_state();
+
+        // Build per-spawn env override. The spawned `claude`
+        // subprocess reads `CLAUDE_CONFIG_DIR` to decide which
+        // user-data tree (oauth tokens, projects history, settings)
+        // to use, so each session can be bound to a different
+        // account on the same workstation.
+        let mut extra_env = std::collections::HashMap::new();
+        extra_env.insert("CLAUDE_CONFIG_DIR".to_owned(), account_dir.to_string_lossy().to_string());
+
         // Slow path: spawn fresh Agent and dispatch the start command.
-        let handle = forge_agent::Agent::spawn();
+        let handle = forge_agent::Agent::spawn_with_env(extra_env);
         match &target {
             SessionTarget::Default => {
                 let cwd = self.config.default_project().path.to_string_lossy().to_string();
@@ -186,12 +264,45 @@ impl Workspace {
         {
             let mut pool = self.pool.lock();
             if let Some(existing) = pool.get(&session_key) {
-                return Ok(Arc::clone(existing));
+                return Ok(Arc::clone(&existing.handle));
             }
-            pool.insert(session_key, Arc::clone(&arc));
+            pool.insert(
+                session_key,
+                PooledAgent { handle: Arc::clone(&arc), account: account_key },
+            );
         }
 
         Ok(arc)
+    }
+
+    /// Snapshot the current `AccountStateMap` into a
+    /// [`PersistedState`] and write it to `forge-state.toml`.
+    /// Best-effort — `state::save` logs and returns on failure so
+    /// a transient write error never propagates back into the
+    /// spawn path.
+    fn persist_account_state(&self) {
+        let snapshot = {
+            let accounts = self.accounts.lock();
+            let mut persisted_accounts: HashMap<String, PersistedAccountState> = HashMap::new();
+            for (key, state) in &accounts.by_key {
+                persisted_accounts.insert(
+                    key.0.clone(),
+                    PersistedAccountState { last_used_at: state.last_used_at.map(format_rfc3339) },
+                );
+            }
+            // Only persist `round_robin_next` when the policy is
+            // round-robin; LRU sessions don't track a cursor and
+            // serialising a stale value would mislead a future
+            // policy switch.
+            let round_robin_next =
+                matches!(accounts.policy, crate::config::SelectionPolicy::RoundRobin)
+                    .then_some(accounts.round_robin_next);
+            PersistedState {
+                accounts: persisted_accounts,
+                selection: PersistedSelectionState { round_robin_next },
+            }
+        };
+        state::save(&self.config_dir, &snapshot);
     }
 
     /// Resolves a `SessionTarget` to the `SessionKey` used to look up
@@ -257,11 +368,52 @@ impl Workspace {
     #[allow(clippy::unused_async)]
     pub async fn shutdown(self) {
         let entries: Vec<_> = self.pool.lock().drain().collect();
-        // Each Arc<AgentHandle> drops here; the subprocess teardown
-        // chain (sender drop -> dispatcher exit -> Client drop ->
-        // subprocess kill_on_drop) is synchronous and fast in 1a.
+        // Each (SessionKey, PooledAgent) drops here; the
+        // subprocess teardown chain (sender drop -> dispatcher exit
+        // -> Client drop -> subprocess kill_on_drop) is synchronous
+        // and fast in 1a.
         drop(entries);
     }
+}
+
+#[cfg(test)]
+impl Workspace {
+    pub fn pool_len_for_test(&self) -> usize {
+        self.pool.lock().len()
+    }
+
+    pub fn pool_accounts_for_test(&self) -> Vec<String> {
+        self.pool.lock().values().map(|p| p.account.0.clone()).collect()
+    }
+}
+
+/// Parse an RFC 3339 timestamp into a [`SystemTime`]. Returns
+/// `None` on parse error so callers can fall back to "never used".
+/// Negative epochs (timestamps before 1970-01-01) are clamped to
+/// `UNIX_EPOCH` rather than rejected — they're nonsensical for the
+/// "last used" field but shouldn't block startup.
+fn parse_rfc3339(s: &str) -> Option<SystemTime> {
+    use time::OffsetDateTime;
+    OffsetDateTime::parse(s, &time::format_description::well_known::Rfc3339).ok().map(|odt| {
+        let nanos = odt.unix_timestamp_nanos();
+        if nanos < 0 {
+            SystemTime::UNIX_EPOCH
+        } else {
+            #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+            let nanos_u64 = nanos as u64;
+            SystemTime::UNIX_EPOCH + std::time::Duration::from_nanos(nanos_u64)
+        }
+    })
+}
+
+/// Format a [`SystemTime`] as an RFC 3339 UTC string. Failure
+/// (extreme out-of-range values) yields an empty string rather
+/// than panicking — the persisted file stays well-formed even if
+/// a single field misformats.
+fn format_rfc3339(t: SystemTime) -> String {
+    use time::OffsetDateTime;
+    let odt: OffsetDateTime = t.into();
+    odt.format(&time::format_description::well_known::Rfc3339).unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -421,5 +573,83 @@ config_dir = "~/.claude-subspace"
             err_string.contains("nonexistent"),
             "error should mention the project name; got: {err_string}"
         );
+    }
+
+    fn make_workspace_dir_with_two_accounts() -> tempfile::TempDir {
+        let dir = tempdir().expect("tempdir");
+        fs::write(
+            dir.path().join("forge.toml"),
+            r#"
+[[projects]]
+name = "forge"
+path = "~/Projects/forge"
+default = true
+
+[[accounts]]
+display_name = "Subspace"
+config_dir = "~/.claude-subspace"
+
+[[accounts]]
+display_name = "Granite"
+config_dir = "~/.claude-granite"
+"#,
+        )
+        .expect("write forge.toml");
+        dir
+    }
+
+    #[tokio::test]
+    async fn pool_records_picked_account() {
+        let dir = make_workspace_dir_with_two_accounts();
+        let workspace = Workspace::new(dir.path().to_owned()).await.expect("new");
+        let _ = workspace
+            .get_agent_handle(SessionTarget::Default, SessionLaunchSettings::default())
+            .await
+            .expect("default");
+        let bound = workspace.pool_accounts_for_test();
+        assert_eq!(bound.len(), 1);
+        // LRU tie-break is alphabetical on never-used: Granite < Subspace.
+        assert_eq!(bound[0], "Granite");
+    }
+
+    #[tokio::test]
+    async fn second_spawn_picks_other_account_under_lru() {
+        let dir = make_workspace_dir_with_two_accounts();
+        let workspace = Workspace::new(dir.path().to_owned()).await.expect("new");
+
+        // First spawn → Granite (alphabetical tie-break).
+        let _ = workspace
+            .get_agent_handle(SessionTarget::Default, SessionLaunchSettings::default())
+            .await
+            .expect("first");
+
+        // Second spawn (different target so pool key differs) → Subspace
+        // (Granite was just used, so it's no longer LRU).
+        let other = SessionKey::from_str_for_test("dual-account-test-other");
+        let _ = workspace
+            .get_agent_handle(SessionTarget::Session(other), SessionLaunchSettings::default())
+            .await
+            .expect("second");
+
+        let bound = workspace.pool_accounts_for_test();
+        assert_eq!(bound.len(), 2);
+        assert!(bound.contains(&"Granite".to_owned()));
+        assert!(bound.contains(&"Subspace".to_owned()));
+    }
+
+    #[tokio::test]
+    async fn forge_state_toml_persists_after_spawn() {
+        let dir = make_workspace_dir_with_two_accounts();
+        let workspace = Workspace::new(dir.path().to_owned()).await.expect("new");
+        let _ = workspace
+            .get_agent_handle(SessionTarget::Default, SessionLaunchSettings::default())
+            .await
+            .expect("spawn");
+
+        // forge-state.toml should now exist with last_used_at populated.
+        let state_path = dir.path().join("forge-state.toml");
+        let content = std::fs::read_to_string(&state_path).expect("state file written");
+        assert!(content.contains("last_used_at"));
+        assert!(content.contains("Granite") || content.contains("Subspace"));
     }
 }

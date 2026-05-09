@@ -45,14 +45,12 @@ pub(crate) enum SelectionPolicy {
 }
 
 #[derive(Debug, Clone)]
-#[allow(dead_code)] // wired up in subsequent Phase 1b tasks
 pub(crate) struct LoadedAccount {
     pub display_name: String,
     pub config_dir: PathBuf,
 }
 
 #[derive(Debug, Clone, Default)]
-#[allow(dead_code)] // wired up in subsequent Phase 1b tasks
 pub(crate) struct SelectionConfig {
     pub policy: SelectionPolicy,
 }
@@ -61,9 +59,7 @@ pub(crate) struct SelectionConfig {
 pub(crate) struct LoadedConfig {
     pub projects: Vec<LoadedProject>,
     pub default_index: usize,
-    #[allow(dead_code)] // wired up in subsequent Phase 1b tasks
     pub accounts: Vec<LoadedAccount>,
-    #[allow(dead_code)] // wired up in subsequent Phase 1b tasks
     pub selection: SelectionConfig,
 }
 
@@ -123,22 +119,19 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
         });
     }
 
-    let default_index = default_index.ok_or_else(|| WorkspaceError::NoDefaultProject {
-        path: path.clone(),
-    })?;
+    let default_index =
+        default_index.ok_or_else(|| WorkspaceError::NoDefaultProject { path: path.clone() })?;
 
     if parsed.accounts.is_empty() {
         return Err(WorkspaceError::NoAccountsConfigured { path });
     }
 
-    let mut seen_account_names: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut seen_account_names: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
     let mut accounts: Vec<LoadedAccount> = Vec::with_capacity(parsed.accounts.len());
     for entry in parsed.accounts {
         if !seen_account_names.insert(entry.display_name.clone()) {
-            return Err(WorkspaceError::DuplicateAccount {
-                path,
-                name: entry.display_name,
-            });
+            return Err(WorkspaceError::DuplicateAccount { path, name: entry.display_name });
         }
         accounts.push(LoadedAccount {
             display_name: entry.display_name,
@@ -147,26 +140,16 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
     }
 
     let selection = match parsed.selection.policy.as_deref() {
-        None | Some("least_recently_used") => SelectionConfig {
-            policy: SelectionPolicy::LeastRecentlyUsed,
-        },
-        Some("round_robin") => SelectionConfig {
-            policy: SelectionPolicy::RoundRobin,
-        },
+        None | Some("least_recently_used") => {
+            SelectionConfig { policy: SelectionPolicy::LeastRecentlyUsed }
+        }
+        Some("round_robin") => SelectionConfig { policy: SelectionPolicy::RoundRobin },
         Some(other) => {
-            return Err(WorkspaceError::UnknownSelectionPolicy {
-                path,
-                value: other.to_owned(),
-            });
+            return Err(WorkspaceError::UnknownSelectionPolicy { path, value: other.to_owned() });
         }
     };
 
-    Ok(LoadedConfig {
-        projects,
-        default_index,
-        accounts,
-        selection,
-    })
+    Ok(LoadedConfig { projects, default_index, accounts, selection })
 }
 
 fn expand_home(path: &str) -> PathBuf {
@@ -377,7 +360,9 @@ policy = "weird"
 "#,
         );
         let err = load_from_dir(dir.path()).expect_err("unknown policy should error");
-        assert!(matches!(err, WorkspaceError::UnknownSelectionPolicy { value, .. } if value == "weird"));
+        assert!(
+            matches!(err, WorkspaceError::UnknownSelectionPolicy { value, .. } if value == "weird")
+        );
     }
 
     #[test]

@@ -12,7 +12,6 @@ use serde::{Deserialize, Serialize};
 /// picker degrades to "everyone is least-recently-used" rather
 /// than blocking startup.
 #[derive(Debug, Default, Deserialize, Serialize)]
-#[allow(dead_code)] // wired up in subsequent Phase 1b tasks (Task 5)
 pub(crate) struct PersistedState {
     #[serde(default)]
     pub accounts: HashMap<String, PersistedAccountState>,
@@ -21,7 +20,6 @@ pub(crate) struct PersistedState {
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
-#[allow(dead_code)] // wired up in subsequent Phase 1b tasks (Task 5)
 pub(crate) struct PersistedAccountState {
     /// RFC 3339 UTC. `None` → never used.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -29,21 +27,18 @@ pub(crate) struct PersistedAccountState {
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
-#[allow(dead_code)] // wired up in subsequent Phase 1b tasks (Task 5)
 pub(crate) struct PersistedSelectionState {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub round_robin_next: Option<usize>,
 }
 
 /// Path: `<config_dir>/forge-state.toml`.
-#[allow(dead_code)] // wired up in subsequent Phase 1b tasks (Task 5)
 pub(crate) fn state_path(config_dir: &Path) -> std::path::PathBuf {
     config_dir.join("forge-state.toml")
 }
 
 /// Load the state file. Missing or unparseable → default
 /// (empty) state; never errors out of `Workspace::new`.
-#[allow(dead_code)] // wired up in subsequent Phase 1b tasks (Task 5)
 pub(crate) fn load_or_default(config_dir: &Path) -> PersistedState {
     let path = state_path(config_dir);
     let raw = match std::fs::read_to_string(&path) {
@@ -77,7 +72,6 @@ pub(crate) fn load_or_default(config_dir: &Path) -> PersistedState {
 
 /// Atomic-rename write. Logs `tracing::error!` on failure but
 /// does not propagate — callers continue uninterrupted.
-#[allow(dead_code)] // wired up in subsequent Phase 1b tasks (Task 5)
 pub(crate) fn save(config_dir: &Path, state: &PersistedState) {
     let path = state_path(config_dir);
     let serialised = match toml::to_string_pretty(state) {
@@ -146,9 +140,7 @@ mod tests {
         let mut state = PersistedState::default();
         state.accounts.insert(
             "Subspace".to_owned(),
-            PersistedAccountState {
-                last_used_at: Some("2026-05-09T10:23:14Z".to_owned()),
-            },
+            PersistedAccountState { last_used_at: Some("2026-05-09T10:23:14Z".to_owned()) },
         );
         state.selection.round_robin_next = Some(2);
 
@@ -177,10 +169,9 @@ mod tests {
         // /dev/null as a non-directory parent.
         let bad_dir = std::path::PathBuf::from("/dev/null/notadir");
         let mut state = PersistedState::default();
-        state.accounts.insert(
-            "X".to_owned(),
-            PersistedAccountState { last_used_at: Some("now".to_owned()) },
-        );
+        state
+            .accounts
+            .insert("X".to_owned(), PersistedAccountState { last_used_at: Some("now".to_owned()) });
         // Should not panic and not propagate an error.
         save(&bad_dir, &state);
     }

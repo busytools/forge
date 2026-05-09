@@ -13,26 +13,22 @@ use crate::config::{LoadedAccount, SelectionPolicy};
 /// Internal newtype wrapping the account's `display_name`. Phase
 /// 1b doesn't surface this publicly.
 #[derive(Clone, Debug, Hash, Eq, PartialEq)]
-#[allow(dead_code)] // wired up in Task 5
 pub(crate) struct AccountKey(pub String);
 
 #[derive(Debug, Clone)]
-#[allow(dead_code)] // wired up in Task 5
 pub(crate) struct AccountState {
     pub config_dir: PathBuf,
     pub last_used_at: Option<SystemTime>,
 }
 
 #[derive(Debug)]
-#[allow(dead_code)] // wired up in Task 5
 pub(crate) struct AccountStateMap {
-    pub ordered_keys: Vec<AccountKey>,         // forge.toml definition order
+    pub ordered_keys: Vec<AccountKey>, // forge.toml definition order
     pub by_key: std::collections::HashMap<AccountKey, AccountState>,
     pub policy: SelectionPolicy,
     pub round_robin_next: usize,
 }
 
-#[allow(dead_code)] // wired up in Task 5
 impl AccountStateMap {
     pub fn new(
         accounts: &[LoadedAccount],
@@ -45,17 +41,10 @@ impl AccountStateMap {
         for account in accounts {
             let key = AccountKey(account.display_name.clone());
             ordered_keys.push(key.clone());
-            let last_used_at = persisted_last_used
-                .get(&account.display_name)
-                .and_then(|x| x.as_ref())
-                .copied();
-            by_key.insert(
-                key,
-                AccountState {
-                    config_dir: account.config_dir.clone(),
-                    last_used_at,
-                },
-            );
+            let last_used_at =
+                persisted_last_used.get(&account.display_name).and_then(|x| x.as_ref()).copied();
+            by_key
+                .insert(key, AccountState { config_dir: account.config_dir.clone(), last_used_at });
         }
         Self {
             ordered_keys,
