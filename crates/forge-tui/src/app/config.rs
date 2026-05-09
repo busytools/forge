@@ -864,8 +864,14 @@ impl ConfigState {
 
     #[must_use]
     pub fn thinking_effort_effective(&self) -> EffortLevel {
+        // Forge defaults to `max` effort when the user hasn't set an
+        // explicit value — matches the "default forge to --effort max"
+        // intent landed in PR #91. The worker's `default_max` fallback
+        // covered the case where launch_settings carries no effort,
+        // but forge-tui always populates effortLevel from this method,
+        // so the default has to live here too.
         store::thinking_effort_level(&self.committed_settings_document)
-            .unwrap_or(EffortLevel::Medium)
+            .unwrap_or(EffortLevel::Max)
     }
 
     #[must_use]
