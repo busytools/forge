@@ -84,6 +84,18 @@ impl AgentHandle {
         self.bridge.oauth_usage().await
     }
 
+    /// Test-only accessor returning a clone of the bridge's
+    /// `extra_env` map. Hidden from public docs; production code
+    /// reads env via the spawn path. `#[doc(hidden)] pub` rather
+    /// than `#[cfg(test)]` so integration tests in sibling crates'
+    /// `tests/` directories can reach it (Rust's `#[cfg(test)]`
+    /// items aren't visible across crate boundaries).
+    #[doc(hidden)]
+    #[must_use]
+    pub fn extra_env_for_test(&self) -> std::collections::HashMap<String, String> {
+        (*self.bridge.extra_env()).clone()
+    }
+
     // ---- Fire-and-forget Command shorthands ----
     //
     // Each method builds the matching `Command` variant and pushes it

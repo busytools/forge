@@ -52,9 +52,14 @@ pub enum SessionTarget {
     Session(SessionKey),
 }
 
-#[cfg(test)]
 impl SessionKey {
-    /// Construct a `SessionKey` from a literal string. Tests only.
+    /// Construct a `SessionKey` from a literal string. Test-only;
+    /// `#[doc(hidden)] pub` rather than `#[cfg(test)]` so integration
+    /// tests in sibling crates' `tests/` directories can reach it
+    /// (Rust's `#[cfg(test)]` items aren't visible across crate
+    /// boundaries).
+    #[doc(hidden)]
+    #[must_use]
     pub fn from_str_for_test(s: &str) -> Self {
         Self(s.to_owned())
     }
