@@ -23,6 +23,4 @@ anyhow = { workspace = true }
 tracing = { workspace = true }
 parking_lot = { workspace = true }
 dirs = { workspace = true }
-
-[dev-dependencies]
 tempfile = { workspace = true }

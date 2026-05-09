@@ -6,6 +6,7 @@
 
 mod config;
 mod error;
+mod state;
 mod target;
 mod views;
 mod workspace;
