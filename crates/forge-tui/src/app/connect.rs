@@ -159,6 +159,7 @@ pub fn create_app(cli: &Cli, workspace: Rc<forge_workspace::Workspace>) -> App {
         spinner_last_advance_at: None,
         tools_collapsed: true,
         projects_pane_visible,
+        projects_pane_overlay_open: false,
         pane_hit_targets: Vec::new(),
         layout: crate::ui::layout::AppLayout::default(),
         force_redraw: false,

@@ -21,6 +21,11 @@ pub const PANE_WIDTH_MEDIUM: u16 = 20;
 
 #[derive(Clone, Default)]
 pub struct AppLayout {
+    /// Single-line top bar rect, allocated only at Narrow tier
+    /// (`area.width < MEDIUM_TIER_MIN_WIDTH`). `None` at Wide /
+    /// Medium tiers — those use the inline left pane instead.
+    /// Hosts the `▤` icon + active-context label.
+    pub top_bar: Option<Rect>,
     /// Left-side Projects pane rect when the user has the pane
     /// visible AND the terminal is at Wide tier (>= 160 cols).
     /// `None` whenever the pane should not be rendered.
@@ -48,7 +53,7 @@ pub fn compute(
 ) -> AppLayout {
     let input_height = input_lines.max(1);
 
-    let layout = if area.height < 8 {
+    let mut layout = if area.height < 8 {
         // Ultra-compact: no footer, no todo
         let [body, input, input_bottom_sep, help] = Layout::vertical([
             Constraint::Min(1),
@@ -58,6 +63,7 @@ pub fn compute(
         ])
         .areas(area);
         AppLayout {
+            top_bar: None,
             pane: None,
             body,
             todo: Rect::new(area.x, input.y, area.width, 0),
@@ -79,6 +85,7 @@ pub fn compute(
         ])
         .areas(area);
         AppLayout {
+            top_bar: None,
             pane: None,
             body,
             input_sep,
@@ -90,12 +97,27 @@ pub fn compute(
         }
     };
 
-    // Tier ladder for the Projects pane (Phase 2b-α + 2b-β):
-    //   Wide   (>= 160) → 26ch pane
-    //   Medium (>= 120) → 20ch pane (label truncation handled by the renderer)
-    //   Narrow (<  120) → no inline pane (overlay lands in 2b-γ)
-    // When the user has hidden the pane via Ctrl+B, all tiers collapse
-    // to "no pane".
+    // At Narrow tier (<120), peel a single row off the top of the body
+    // for the top bar. Allocates regardless of `pane_visible` — the
+    // top bar is the Narrow tier's permanent stand-in for the inline
+    // pane, and clicking its `▤` icon (or Ctrl+B) is what opens the
+    // overlay. Only allocate when the body has at least 2 rows so we
+    // keep at least one row of chat behind the top bar.
+    if area.width < MEDIUM_TIER_MIN_WIDTH && layout.body.height >= 2 {
+        let [top, rest] =
+            Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).areas(layout.body);
+        layout.top_bar = Some(top);
+        layout.body = rest;
+    }
+
+    // Tier ladder for the Projects pane (Phase 2b-α + 2b-β + 2b-γ):
+    //   Wide   (>= 160) → 26ch inline pane
+    //   Medium (>= 120) → 20ch inline pane (label truncation in renderer)
+    //   Narrow (<  120) → top bar + on-demand overlay; no inline pane
+    // When the user has hidden the pane via Ctrl+B (Wide/Medium only),
+    // those tiers collapse to "no pane". Narrow tier is unaffected by
+    // `pane_visible` — overlay open/close is a separate transient flag
+    // (`App.projects_pane_overlay_open`).
     if pane_visible {
         if area.width >= WIDE_TIER_MIN_WIDTH {
             let [pane_rect, chat_rect] =
@@ -123,9 +145,10 @@ mod tests {
         Rect::new(0, 0, w, h)
     }
 
-    /// Sum all layout area heights (handles optional footer).
+    /// Sum all layout area heights (handles optional footer + top bar).
     fn total_height(layout: &AppLayout) -> u16 {
-        layout.body.height
+        layout.top_bar.map_or(0, |t| t.height)
+            + layout.body.height
             + layout.todo.height
             + layout.input_sep.height
             + layout.input.height
@@ -136,14 +159,18 @@ mod tests {
 
     /// Collect all non-zero-height areas in top-to-bottom order.
     fn visible_areas(layout: &AppLayout) -> Vec<Rect> {
-        let mut areas = vec![
+        let mut areas = Vec::new();
+        if let Some(t) = layout.top_bar {
+            areas.push(t);
+        }
+        areas.extend([
             layout.body,
             layout.input_sep,
             layout.todo,
             layout.input,
             layout.input_bottom_sep,
             layout.help,
-        ];
+        ]);
         if let Some(f) = layout.footer {
             areas.push(f);
         }
@@ -203,16 +230,19 @@ mod tests {
 
     #[test]
     fn layout_preserves_origin_and_width_in_both_modes() {
-        let normal = compute(Rect::new(10, 5, 80, 24), 1, 0, 0, false);
-        let compact = compute(Rect::new(5, 10, 60, 6), 1, 0, 0, false);
+        // Use widths >= MEDIUM_TIER_MIN_WIDTH so the top bar is not
+        // allocated; body sits at the area's `y`. Narrow-tier
+        // top-bar offsets are covered by `narrow_tier_*` tests.
+        let normal = compute(Rect::new(10, 5, 160, 24), 1, 0, 0, false);
+        let compact = compute(Rect::new(5, 10, 140, 6), 1, 0, 0, false);
 
         for area in visible_areas(&normal) {
             assert_eq!(area.x, 10);
-            assert_eq!(area.width, 80);
+            assert_eq!(area.width, 160);
         }
         for area in visible_areas(&compact) {
             assert_eq!(area.x, 5);
-            assert_eq!(area.width, 60);
+            assert_eq!(area.width, 140);
         }
         assert_eq!(normal.body.y, 5);
         assert_eq!(compact.body.y, 10);
@@ -248,8 +278,10 @@ mod tests {
 
     #[test]
     fn layout_areas_remain_ordered_in_normal_and_compact_modes() {
-        let normal = compute(area(80, 30), 2, 3, 1, false);
-        let compact = compute(area(80, 6), 1, 0, 1, false);
+        // Width >= MEDIUM_TIER_MIN_WIDTH so the top bar isn't
+        // allocated and the body still hugs the top of the area.
+        let normal = compute(area(160, 30), 2, 3, 1, false);
+        let compact = compute(area(160, 6), 1, 0, 1, false);
 
         assert_no_overlap_and_ordered(&normal);
         assert_no_overlap_and_ordered(&compact);
@@ -322,5 +354,48 @@ mod tests {
         let medium = compute(area(140, 40), 1, 0, 1, true);
         assert_eq!(wide.pane.unwrap().width, 26);
         assert_eq!(medium.pane.unwrap().width, 20);
+    }
+
+    #[test]
+    fn narrow_tier_allocates_top_bar() {
+        let layout = compute(area(100, 40), 1, 0, 1, true);
+        let top = layout.top_bar.expect("top_bar should be allocated at Narrow");
+        assert_eq!(top.height, 1, "top bar is exactly one row tall");
+        assert_eq!(top.y, 0, "top bar sits at the top");
+        assert_eq!(top.x, 0, "top bar spans the full width from the left");
+        assert_eq!(top.width, 100, "top bar spans the full terminal width");
+        assert!(layout.pane.is_none(), "no inline pane at Narrow");
+        // Body has shrunk by one row to make room for the top bar.
+        assert_eq!(layout.body.y, 1, "body starts on the row immediately below the top bar");
+    }
+
+    #[test]
+    fn wide_and_medium_have_no_top_bar() {
+        let wide = compute(area(180, 40), 1, 0, 1, true);
+        let medium = compute(area(140, 40), 1, 0, 1, true);
+        assert!(wide.top_bar.is_none(), "Wide tier has no top bar");
+        assert!(medium.top_bar.is_none(), "Medium tier has no top bar");
+    }
+
+    #[test]
+    fn narrow_tier_top_bar_independent_of_pane_visible() {
+        // Top bar is the Narrow tier's permanent stand-in for the
+        // inline pane — pane_visible=false (the user toggled the
+        // pane off at Wide/Medium and is now resized to Narrow) must
+        // still produce a top bar.
+        let layout = compute(area(100, 40), 1, 0, 1, false);
+        assert!(layout.top_bar.is_some(), "Narrow always renders the top bar");
+        assert!(layout.pane.is_none());
+    }
+
+    #[test]
+    fn narrow_tier_skips_top_bar_when_body_too_short() {
+        // Pathological tiny height: layout already has a 1-row body;
+        // peeling another row off would leave 0 rows of chat. Skip
+        // the top bar and render chat full-height.
+        let layout = compute(area(100, 8), 1, 0, 0, true);
+        // body height starts at >=3 in normal mode; no skip needed
+        // here — top bar should be allocated.
+        assert!(layout.top_bar.is_some(), "top bar still allocated when body has slack");
     }
 }

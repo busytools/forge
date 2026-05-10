@@ -419,6 +419,14 @@ fn handle_turn_control_key(app: &mut App, key: KeyEvent) -> bool {
     if !matches!(key.code, KeyCode::Esc) {
         return false;
     }
+    // Narrow-tier Projects overlay is the most foreground UI when
+    // open — Esc closes it before any other Esc semantics fire.
+    if app.projects_pane_overlay_open {
+        app.projects_pane_overlay_open = false;
+        app.invalidate_layout(InvalidationLevel::Global);
+        app.needs_redraw = true;
+        return true;
+    }
     app.pending_submit = None;
     // Clear any pending image attachments on Escape.
     if !app.pending_images.is_empty() {
@@ -1147,16 +1155,27 @@ pub(super) fn toggle_all_tool_calls(app: &mut App) {
     app.invalidate_layout(InvalidationLevel::Global);
 }
 
-/// Toggle the Wide-tier Projects pane visibility and persist the
-/// new value to `forge-state.toml` via the workspace. Test-only
-/// `App::test_default` paths have no workspace, so the persistence
-/// step is skipped silently — the in-memory toggle still applies
-/// so unit tests can exercise the visibility flag without a
-/// `Workspace`.
+/// Tier-aware Ctrl+B handler.
+///
+/// At Wide / Medium tiers (terminal width ≥ `MEDIUM_TIER_MIN_WIDTH`)
+/// this toggles the inline pane's persisted visibility — same
+/// behaviour as Phases 2b-α / 2b-β. At Narrow tier it toggles the
+/// transient `projects_pane_overlay_open` flag, opening or closing
+/// the full-screen overlay rendered by
+/// [`crate::ui::projects_pane::render_overlay`]. The overlay flag
+/// is intentionally NOT persisted — each launch starts closed.
+///
+/// Test-only `App::test_default` paths have no workspace, so the
+/// persistence step is skipped silently.
 pub(super) fn toggle_projects_pane(app: &mut App) {
-    app.projects_pane_visible = !app.projects_pane_visible;
-    if let Some(workspace) = app.workspace.as_ref() {
-        workspace.set_projects_pane_visible(app.projects_pane_visible);
+    let area_width = app.cached_frame_area.width;
+    if area_width < crate::ui::layout::MEDIUM_TIER_MIN_WIDTH {
+        app.projects_pane_overlay_open = !app.projects_pane_overlay_open;
+    } else {
+        app.projects_pane_visible = !app.projects_pane_visible;
+        if let Some(workspace) = app.workspace.as_ref() {
+            workspace.set_projects_pane_visible(app.projects_pane_visible);
+        }
     }
     app.invalidate_layout(InvalidationLevel::Global);
     app.needs_redraw = true;

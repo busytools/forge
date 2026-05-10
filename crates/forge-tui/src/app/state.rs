@@ -99,6 +99,11 @@ pub struct TurnNoticeRef {
 /// [`crate::ui::projects_pane::render`] during paint and read by the
 /// mouse handler on click. Render-time-stamp pattern from PR #83
 /// (the same approach the per-tool-call expand/collapse uses).
+///
+/// `ProjectHeader` and `SessionRow` are y-only — they span the full
+/// pane width, so an x-coord doesn't add information. `TopBarIcon`
+/// and `OverlayClose` are x+y bounded — they target a specific glyph
+/// position on a one-row band shared with other content.
 #[derive(Debug, Clone)]
 pub enum PaneHitTarget {
     /// Click on a project name row → switch active session to its
@@ -107,19 +112,46 @@ pub enum PaneHitTarget {
     /// Click on a session row in the active project's drilldown →
     /// switch active session to that specific session.
     SessionRow { session_key: forge_workspace::SessionKey, y: u16, height: u16 },
+    /// Click on the `▤` icon in the Narrow-tier top bar → toggle
+    /// the projects overlay.
+    TopBarIcon { y: u16, height: u16, x_start: u16, x_end: u16 },
+    /// Click on the `✕` glyph in the overlay banner → close the
+    /// overlay without switching sessions.
+    OverlayClose { y: u16, height: u16, x_start: u16, x_end: u16 },
 }
 
 impl PaneHitTarget {
     /// Whether the target's row range covers `y` (inclusive of `y`,
-    /// exclusive of `y + height`).
+    /// exclusive of `y + height`). For full-width row targets
+    /// (`ProjectHeader`, `SessionRow`) this is the only check the
+    /// hit-tester needs; for x+y-bounded targets (`TopBarIcon`,
+    /// `OverlayClose`) call [`Self::contains`] instead so the column
+    /// constraint also applies.
     #[must_use]
     pub fn contains_y(&self, y: u16) -> bool {
         let (start, height) = match self {
-            Self::ProjectHeader { y, height, .. } | Self::SessionRow { y, height, .. } => {
-                (*y, *height)
-            }
+            Self::ProjectHeader { y, height, .. }
+            | Self::SessionRow { y, height, .. }
+            | Self::TopBarIcon { y, height, .. }
+            | Self::OverlayClose { y, height, .. } => (*y, *height),
         };
         (start..start.saturating_add(height)).contains(&y)
+    }
+
+    /// Full hit-test (x + y). For full-width row targets the x
+    /// component is unconstrained; for top-bar/✕ glyph targets the
+    /// click must fall within the recorded `[x_start, x_end)` range.
+    #[must_use]
+    pub fn contains(&self, x: u16, y: u16) -> bool {
+        if !self.contains_y(y) {
+            return false;
+        }
+        match self {
+            Self::ProjectHeader { .. } | Self::SessionRow { .. } => true,
+            Self::TopBarIcon { x_start, x_end, .. } | Self::OverlayClose { x_start, x_end, .. } => {
+                (*x_start..*x_end).contains(&x)
+            }
+        }
     }
 }
 
@@ -199,10 +231,18 @@ pub struct App {
     /// Toggled by Ctrl+X and applied at render/layout time.
     pub tools_collapsed: bool,
     /// Whether the Wide-tier Projects pane is currently visible.
-    /// Toggled by Ctrl+B; persisted to `forge-state.toml`. Default
-    /// `true` for Wide tier; ignored at Medium / Narrow tiers (those
-    /// land in 2b-β / 2b-γ).
+    /// Toggled by Ctrl+B at Wide / Medium tiers; persisted to
+    /// `forge-state.toml`. Default `true`. Has no effect at Narrow
+    /// tier — that tier renders the top bar unconditionally and
+    /// uses [`Self::projects_pane_overlay_open`] for the on-demand
+    /// overlay.
     pub projects_pane_visible: bool,
+    /// Whether the Narrow-tier Projects overlay is currently open.
+    /// Transient — NOT persisted; each launch starts closed. Toggled
+    /// by Ctrl+B at Narrow tier or by clicking the `▤` icon in the
+    /// top bar; closed by clicking the overlay's `✕` glyph, by Esc,
+    /// or by switching to a project / session row inside the overlay.
+    pub projects_pane_overlay_open: bool,
     /// Click hit-targets stamped by
     /// [`crate::ui::projects_pane::render`]. Cleared on each render
     /// and refilled. The mouse handler iterates this to find what
@@ -1819,6 +1859,7 @@ impl App {
             spinner_last_advance_at: None,
             tools_collapsed: false,
             projects_pane_visible: true,
+            projects_pane_overlay_open: false,
             pane_hit_targets: Vec::new(),
             layout: crate::ui::layout::AppLayout::default(),
             force_redraw: false,

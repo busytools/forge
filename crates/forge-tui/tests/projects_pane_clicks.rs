@@ -234,6 +234,115 @@ config_dir = "/tmp/test-account-config-2026-05-10"
     );
 }
 
+#[test]
+fn click_top_bar_icon_toggles_overlay() {
+    let mut app = App::test_default();
+    let key_a = SessionKey::from_str_for_test("a");
+    app.sessions.insert(key_a.clone(), forge_tui::app::session::Session::new(key_a.clone()));
+    app.active_session_key = Some(key_a);
+
+    // Stamp a top-bar icon target — width 1 col at the origin.
+    app.pane_hit_targets.push(PaneHitTarget::TopBarIcon { y: 0, height: 1, x_start: 0, x_end: 1 });
+    // Layout has no inline pane (Narrow tier semantics): top bar
+    // sits above the body, no `pane`.
+    app.layout.top_bar = Some(ratatui::layout::Rect::new(0, 0, 100, 1));
+    app.layout.pane = None;
+
+    assert!(!app.projects_pane_overlay_open);
+    handle_terminal_event(&mut app, down_left(0, 0));
+    assert!(app.projects_pane_overlay_open, "first click opens overlay");
+
+    // Re-stamp before the second click — render-time stamps are
+    // cleared / refilled each frame in production. The test
+    // simulates a second frame by stamping again.
+    app.pane_hit_targets.push(PaneHitTarget::TopBarIcon { y: 0, height: 1, x_start: 0, x_end: 1 });
+    handle_terminal_event(&mut app, down_left(0, 0));
+    assert!(!app.projects_pane_overlay_open, "second click closes overlay");
+}
+
+#[test]
+fn click_outside_top_bar_icon_x_range_does_not_toggle() {
+    // The icon sits at column 0 only. Clicking at column 5 (the
+    // active-context label area) must NOT flip the overlay.
+    let mut app = App::test_default();
+    let key_a = SessionKey::from_str_for_test("a");
+    app.sessions.insert(key_a.clone(), forge_tui::app::session::Session::new(key_a.clone()));
+    app.active_session_key = Some(key_a);
+    app.pane_hit_targets.push(PaneHitTarget::TopBarIcon { y: 0, height: 1, x_start: 0, x_end: 1 });
+    app.layout.top_bar = Some(ratatui::layout::Rect::new(0, 0, 100, 1));
+    app.layout.pane = None;
+
+    handle_terminal_event(&mut app, down_left(5, 0));
+    assert!(
+        !app.projects_pane_overlay_open,
+        "click outside the icon's x-range must not flip the overlay"
+    );
+}
+
+#[test]
+fn click_overlay_close_glyph_dismisses_without_switching() {
+    let mut app = App::test_default();
+    let key_a = SessionKey::from_str_for_test("a");
+    app.sessions.insert(key_a.clone(), forge_tui::app::session::Session::new(key_a.clone()));
+    app.active_session_key = Some(key_a.clone());
+    app.projects_pane_overlay_open = true;
+    // ✕ glyph stamped at the right edge of a 100-col overlay.
+    app.pane_hit_targets.push(PaneHitTarget::OverlayClose {
+        y: 0,
+        height: 1,
+        x_start: 99,
+        x_end: 100,
+    });
+    app.layout.top_bar = Some(ratatui::layout::Rect::new(0, 0, 100, 1));
+    app.layout.pane = None;
+
+    handle_terminal_event(&mut app, down_left(99, 0));
+
+    assert!(!app.projects_pane_overlay_open, "overlay closed");
+    assert_eq!(
+        app.active_session_key.as_ref(),
+        Some(&key_a),
+        "active session unchanged when ✕ is clicked"
+    );
+}
+
+#[test]
+fn click_session_row_in_overlay_switches_and_closes() {
+    let mut app = App::test_default();
+    let key_a = SessionKey::from_str_for_test("a");
+    let key_b = SessionKey::from_str_for_test("b");
+    app.sessions.insert(key_a.clone(), forge_tui::app::session::Session::new(key_a.clone()));
+    app.sessions.insert(key_b.clone(), forge_tui::app::session::Session::new(key_b.clone()));
+    app.active_session_key = Some(key_a);
+    app.projects_pane_overlay_open = true;
+    app.pane_hit_targets.push(PaneHitTarget::SessionRow {
+        session_key: key_b.clone(),
+        y: 5,
+        height: 1,
+    });
+    app.layout.top_bar = Some(ratatui::layout::Rect::new(0, 0, 100, 1));
+    app.layout.pane = None;
+
+    handle_terminal_event(&mut app, down_left(10, 5));
+
+    assert_eq!(app.active_session_key.as_ref(), Some(&key_b), "switched to B");
+    assert!(!app.projects_pane_overlay_open, "overlay closed after row click");
+}
+
+#[test]
+fn esc_closes_overlay_without_cancelling_turn() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let mut app = App::test_default();
+    let key_a = SessionKey::from_str_for_test("a");
+    app.sessions.insert(key_a.clone(), forge_tui::app::session::Session::new(key_a.clone()));
+    app.active_session_key = Some(key_a);
+    app.projects_pane_overlay_open = true;
+
+    handle_terminal_event(&mut app, Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
+
+    assert!(!app.projects_pane_overlay_open, "Esc closes overlay first");
+}
+
 /// Calling the helper a second time for the same project (before
 /// the first Connected event has migrated the bucket onto a real
 /// session id) MUST be idempotent — no second bucket inserted, no

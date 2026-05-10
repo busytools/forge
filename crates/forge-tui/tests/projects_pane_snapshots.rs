@@ -12,7 +12,7 @@
 use forge_tui::app::App;
 use forge_tui::app::PaneHitTarget;
 use forge_tui::app::session::{Session, SessionLifecycleState};
-use forge_tui::ui::projects_pane;
+use forge_tui::ui::{projects_pane, top_bar};
 use forge_workspace::{ProjectKey, ProjectView, SessionKey, SessionView};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
@@ -118,7 +118,7 @@ fn renders_banner_and_active_project_with_drilldown() {
             assert_eq!(*y, 3, "project header sits on row 3 (after banner + rule + blank)");
             assert_eq!(*height, 1);
         }
-        PaneHitTarget::SessionRow { .. } => panic!("first hit-target should be ProjectHeader"),
+        other => panic!("first hit-target should be ProjectHeader, got {other:?}"),
     }
     match &app.pane_hit_targets[1] {
         PaneHitTarget::SessionRow { session_key, y, height } => {
@@ -126,7 +126,7 @@ fn renders_banner_and_active_project_with_drilldown() {
             assert_eq!(*y, 4, "drilldown session row sits immediately under its project");
             assert_eq!(*height, 1);
         }
-        PaneHitTarget::ProjectHeader { .. } => panic!("second hit-target should be SessionRow"),
+        other => panic!("second hit-target should be SessionRow, got {other:?}"),
     }
 }
 
@@ -184,21 +184,21 @@ fn inactive_project_drilldown_collapsed_and_one_hit_target_per_row() {
         PaneHitTarget::ProjectHeader { project_name, .. } => {
             assert_eq!(project_name, "alpha");
         }
-        PaneHitTarget::SessionRow { .. } => panic!("expected ProjectHeader for alpha"),
+        other => panic!("expected ProjectHeader for alpha, got {other:?}"),
     }
     // Second stamp is alpha's session row.
     match &app.pane_hit_targets[1] {
         PaneHitTarget::SessionRow { session_key, .. } => {
             assert_eq!(session_key, &alpha_key);
         }
-        PaneHitTarget::ProjectHeader { .. } => panic!("expected SessionRow for alpha drilldown"),
+        other => panic!("expected SessionRow for alpha drilldown, got {other:?}"),
     }
     // Third stamp is bravo's project header (no drilldown for inactive).
     match &app.pane_hit_targets[2] {
         PaneHitTarget::ProjectHeader { project_name, .. } => {
             assert_eq!(project_name, "bravo");
         }
-        PaneHitTarget::SessionRow { .. } => panic!("expected ProjectHeader for bravo"),
+        other => panic!("expected ProjectHeader for bravo, got {other:?}"),
     }
 }
 
@@ -242,7 +242,7 @@ fn medium_tier_truncates_long_project_and_session_labels() {
     // name + session key so click routing works.
     let project_target_full = app.pane_hit_targets.iter().any(|t| match t {
         PaneHitTarget::ProjectHeader { project_name, .. } => project_name == "subspace-chain-pulse",
-        PaneHitTarget::SessionRow { .. } => false,
+        _ => false,
     });
     assert!(
         project_target_full,
@@ -253,11 +253,155 @@ fn medium_tier_truncates_long_project_and_session_labels() {
         PaneHitTarget::SessionRow { session_key, .. } => {
             session_key == &SessionKey::from_str_for_test("really-long-session-id")
         }
-        PaneHitTarget::ProjectHeader { .. } => false,
+        _ => false,
     });
     assert!(
         session_target_full,
         "session hit-target should retain full un-truncated key, got: {:?}",
+        app.pane_hit_targets
+    );
+}
+
+fn render_overlay_to_lines(
+    app: &mut App,
+    projects: &[ProjectView],
+    width: u16,
+    height: u16,
+) -> Vec<String> {
+    let backend = TestBackend::new(width, height);
+    let mut terminal = Terminal::new(backend).unwrap();
+    let area = Rect::new(0, 0, width, height);
+    terminal.draw(|frame| projects_pane::render_overlay(frame, area, app, projects)).unwrap();
+    let buffer = terminal.backend().buffer().clone();
+    (0..height)
+        .map(|y| {
+            (0..width)
+                .map(|x| {
+                    buffer.cell((x, y)).map_or(' ', |c| c.symbol().chars().next().unwrap_or(' '))
+                })
+                .collect::<String>()
+                .trim_end()
+                .to_owned()
+        })
+        .collect()
+}
+
+fn render_top_bar_to_lines(app: &mut App, width: u16) -> Vec<String> {
+    let backend = TestBackend::new(width, 1);
+    let mut terminal = Terminal::new(backend).unwrap();
+    let area = Rect::new(0, 0, width, 1);
+    terminal.draw(|frame| top_bar::render(frame, area, app)).unwrap();
+    let buffer = terminal.backend().buffer().clone();
+    (0..1)
+        .map(|y| {
+            (0..width)
+                .map(|x| {
+                    buffer.cell((x, y)).map_or(' ', |c| c.symbol().chars().next().unwrap_or(' '))
+                })
+                .collect::<String>()
+                .trim_end()
+                .to_owned()
+        })
+        .collect()
+}
+
+#[test]
+fn narrow_top_bar_renders_icon_and_stamps_target() {
+    let mut app = App::test_default();
+    let key_a = SessionKey::from_str_for_test("session-a");
+    app.sessions.insert(key_a.clone(), Session::new(key_a.clone()));
+    app.active_session_key = Some(key_a);
+
+    let lines = render_top_bar_to_lines(&mut app, 100);
+    assert_eq!(lines.len(), 1, "top bar is single-row");
+    assert!(lines[0].contains('▤'), "top bar shows pane icon, got: {:?}", lines[0]);
+
+    // The icon is at column 0; one TopBarIcon stamp must exist at
+    // x_start=0, x_end=1.
+    let icon_target = app.pane_hit_targets.iter().find_map(|t| match t {
+        PaneHitTarget::TopBarIcon { x_start, x_end, y, height } => {
+            Some((*x_start, *x_end, *y, *height))
+        }
+        _ => None,
+    });
+    let (x_start, x_end, y, height) = icon_target.expect("top-bar icon target stamped");
+    assert_eq!((x_start, x_end), (0, 1), "icon spans column 0 only");
+    assert_eq!((y, height), (0, 1), "icon sits on row 0, 1-row tall");
+}
+
+#[test]
+fn narrow_overlay_banner_includes_close_glyph_and_target() {
+    let mut app = App::test_default();
+    let projects = vec![project_view("forge", vec![session_view("session-a", "main")])];
+    let lead_key = SessionKey::from_str_for_test("session-a");
+    app.sessions.insert(lead_key.clone(), Session::new(lead_key.clone()));
+    app.active_session_key = Some(lead_key);
+
+    let lines = render_overlay_to_lines(&mut app, &projects, 100, 12);
+    // Row 0: banner with `▤ PROJECTS` on the left and `✕` on the right.
+    assert!(
+        lines[0].contains("▤ PROJECTS") && lines[0].contains('✕'),
+        "overlay banner should show both labels, got: {:?}",
+        lines[0]
+    );
+    // Row 1: rule. Row 2: blank. Row 3+: project list.
+    assert!(lines[1].contains('─'), "rule under banner, got: {:?}", lines[1]);
+    assert!(lines[2].is_empty(), "blank row before project list, got: {:?}", lines[2]);
+    assert!(
+        lines.iter().any(|l| l.contains("forge")),
+        "overlay should show project name 'forge', got: {lines:?}"
+    );
+
+    // Hit-targets: the OverlayClose stamp should be at the right
+    // edge of the banner row.
+    let close_target = app.pane_hit_targets.iter().find_map(|t| match t {
+        PaneHitTarget::OverlayClose { x_start, x_end, y, height } => {
+            Some((*x_start, *x_end, *y, *height))
+        }
+        _ => None,
+    });
+    let (x_start, x_end, y, height) = close_target.expect("overlay close target stamped");
+    assert_eq!(x_end, 100, "✕ glyph sits at the rightmost column");
+    assert!(x_start < x_end);
+    assert_eq!((y, height), (0, 1));
+}
+
+#[test]
+fn narrow_overlay_keeps_full_unmodified_session_key_in_targets() {
+    // Same invariant the inline pane upholds: hit-target stamps
+    // carry the full identifier even if the rendered label was
+    // truncated.
+    let mut app = App::test_default();
+    let projects = vec![project_view(
+        "really-long-project-name",
+        vec![session_view("really-long-session-id", "lead")],
+    )];
+    let lead_key = SessionKey::from_str_for_test("really-long-session-id");
+    app.sessions.insert(lead_key.clone(), Session::new(lead_key.clone()));
+    app.active_session_key = Some(lead_key.clone());
+
+    // Render at narrow width so labels likely overflow.
+    let _lines = render_overlay_to_lines(&mut app, &projects, 60, 20);
+
+    let session_target_full = app.pane_hit_targets.iter().any(|t| match t {
+        PaneHitTarget::SessionRow { session_key, .. } => session_key == &lead_key,
+        _ => false,
+    });
+    assert!(
+        session_target_full,
+        "session hit-target must retain full key, got: {:?}",
+        app.pane_hit_targets
+    );
+
+    let project_target_full = app.pane_hit_targets.iter().any(|t| match t {
+        PaneHitTarget::ProjectHeader { project_name, .. } => {
+            project_name == "really-long-project-name"
+        }
+        _ => false,
+    });
+    assert!(
+        project_target_full,
+        "project hit-target must retain full name, got: {:?}",
         app.pane_hit_targets
     );
 }

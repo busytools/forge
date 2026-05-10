@@ -33,6 +33,10 @@ use crate::app::session::SessionLifecycleState;
 /// Render the Projects pane into `area`. Takes `projects` as a slice
 /// (rather than reaching into `app.workspace`) so unit tests can
 /// pass synthetic fixtures without spinning up a real `Workspace`.
+///
+/// Used at Wide and Medium tiers where the pane is inline. The
+/// Narrow-tier overlay reuses the shared row-building helper via
+/// [`render_overlay`].
 pub fn render(frame: &mut Frame, area: Rect, app: &mut App, projects: &[ProjectView]) {
     app.pane_hit_targets.clear();
 
@@ -47,6 +51,71 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, projects: &[ProjectV
     lines.push(Line::from(Span::styled("─".repeat(rule_width), Style::default().fg(theme::DIM))));
     lines.push(Line::default());
 
+    append_project_rows(&mut lines, area, app, projects);
+
+    frame.render_widget(Paragraph::new(lines), area);
+}
+
+/// Render the Narrow-tier full-screen Projects overlay into `area`.
+/// Shares the row-building loop with the inline [`render`] path,
+/// wrapped in an overlay-specific banner with a `▤ PROJECTS` label
+/// on the left and a `✕` glyph on the right (stamped as
+/// [`PaneHitTarget::OverlayClose`] for the click handler).
+///
+/// Picking a project / session row inside the overlay calls the
+/// same `switch_*` paths the inline pane uses, plus the click
+/// handler closes the overlay. Mouse-only — no keyboard navigation.
+pub fn render_overlay(frame: &mut Frame, area: Rect, app: &mut App, projects: &[ProjectView]) {
+    app.pane_hit_targets.clear();
+
+    let mut lines: Vec<Line<'static>> = Vec::new();
+
+    // Banner row: `▤ PROJECTS … ✕` spanning the full overlay width.
+    let banner_label = "▤ PROJECTS";
+    let close_glyph = "✕";
+    let banner_chars = banner_label.chars().count();
+    let close_chars = close_glyph.chars().count();
+    let pad = usize::from(area.width).saturating_sub(banner_chars).saturating_sub(close_chars);
+    lines.push(Line::from(vec![
+        Span::styled(
+            banner_label.to_owned(),
+            Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(" ".repeat(pad)),
+        Span::styled(close_glyph.to_owned(), Style::default().fg(theme::DIM)),
+    ]));
+    // Stamp ✕ hit-target — last char on the banner row.
+    let close_x_start =
+        area.x.saturating_add(area.width).saturating_sub(u16::try_from(close_chars).unwrap_or(1));
+    let close_x_end = area.x.saturating_add(area.width);
+    app.pane_hit_targets.push(PaneHitTarget::OverlayClose {
+        y: area.y,
+        height: 1,
+        x_start: close_x_start,
+        x_end: close_x_end,
+    });
+
+    // Dim rule under the banner.
+    let rule_width = usize::from(area.width);
+    lines.push(Line::from(Span::styled("─".repeat(rule_width), Style::default().fg(theme::DIM))));
+    lines.push(Line::default());
+
+    append_project_rows(&mut lines, area, app, projects);
+
+    frame.render_widget(Paragraph::new(lines), area);
+}
+
+/// Shared row-building helper used by [`render`] and [`render_overlay`].
+/// Pushes one styled `Line` per project (header + drilldown sessions
+/// for the active project) into `lines` and stamps the matching
+/// hit-targets into `app.pane_hit_targets`. Hit-target y-positions
+/// are computed from `area.y + lines.len()` as each row is appended.
+fn append_project_rows(
+    lines: &mut Vec<Line<'static>>,
+    area: Rect,
+    app: &mut App,
+    projects: &[ProjectView],
+) {
     // Sort: most-recently-active first; alphabetical tie-break on
     // project key. `sessions[0]` is the lead by `list_projects`
     // contract, so its `last_activity` carries the project-level
@@ -74,7 +143,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, projects: &[ProjectV
         // Project row. Hit-target stamps the un-truncated name so
         // click routing keeps working when the rendered label has
         // been head-truncated.
-        let row_y = area.y + line_count_as_u16(&lines);
+        let row_y = area.y + line_count_as_u16(lines);
         let project_label = truncate_with_ellipsis(project_name.as_str(), project_budget);
         lines.push(Line::from(Span::styled(
             format!("  {project_label}"),
@@ -95,7 +164,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, projects: &[ProjectV
         // header row alone.
         if is_active {
             for (idx, session) in project.sessions.iter().enumerate() {
-                let row_y = area.y + line_count_as_u16(&lines);
+                let row_y = area.y + line_count_as_u16(lines);
                 let lifecycle = app
                     .sessions
                     .get(&session.session)
@@ -134,8 +203,6 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, projects: &[ProjectV
             }
         }
     }
-
-    frame.render_widget(Paragraph::new(lines), area);
 }
 
 /// Saturating cast of `lines.len()` to `u16`. The pane area's height
@@ -157,7 +224,10 @@ fn line_count_as_u16(lines: &[Line<'_>]) -> u16 {
 /// width > 1 (CJK, some emoji) may still overflow visually; the
 /// pane's content is project + session names which are overwhelmingly
 /// ASCII or near-ASCII in practice.
-fn truncate_with_ellipsis(s: &str, max_chars: usize) -> String {
+///
+/// Exposed as `pub(super)` so `top_bar` can reuse the same routine
+/// for the active-context label without duplicating the logic.
+pub(super) fn truncate_with_ellipsis(s: &str, max_chars: usize) -> String {
     if s.chars().count() <= max_chars {
         return s.to_owned();
     }

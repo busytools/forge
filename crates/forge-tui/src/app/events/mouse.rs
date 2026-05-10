@@ -362,12 +362,83 @@ fn locate_tool_call_block_at_click(app: &App, mouse: MouseEvent) -> Option<(usiz
     None
 }
 
-/// If the click landed inside the Projects pane, route it to either
-/// [`App::switch_active_session`] (when the row maps to an in-process
-/// session) or a placeholder log (sleeping projects — the spawn flow
-/// lands in the next commit). Returns `true` when the pane consumed
-/// the click so the chat hit-test path can be skipped.
+/// Route a left-button click that may land on the Projects surface.
+///
+/// Three shapes share this entry point:
+/// 1. Narrow-tier top bar — `▤` icon toggles the overlay; clicks
+///    elsewhere on the bar are not interactive.
+/// 2. Narrow-tier overlay — `✕` glyph dismisses without switching;
+///    project header / session row clicks switch active session AND
+///    close the overlay in one action.
+/// 3. Wide / Medium inline pane — header / row clicks switch active
+///    session; the overlay flag is irrelevant here.
+///
+/// Returns `true` when the click was consumed so the chat hit-test
+/// path is skipped.
 fn handle_pane_click(app: &mut App, mouse: MouseEvent) -> bool {
+    // X+Y-bounded targets (top-bar icon, overlay ✕). These overlap
+    // the chat body or share a one-row band with non-interactive
+    // text, so we must constrain on column too — `contains_y`
+    // alone would catch unrelated clicks on the same row.
+    let xy_target = app
+        .pane_hit_targets
+        .iter()
+        .find(|t| {
+            matches!(t, PaneHitTarget::TopBarIcon { .. } | PaneHitTarget::OverlayClose { .. })
+                && t.contains(mouse.column, mouse.row)
+        })
+        .cloned();
+    if let Some(target) = xy_target {
+        match target {
+            PaneHitTarget::TopBarIcon { .. } => {
+                app.projects_pane_overlay_open = !app.projects_pane_overlay_open;
+                app.needs_redraw = true;
+                return true;
+            }
+            PaneHitTarget::OverlayClose { .. } => {
+                app.projects_pane_overlay_open = false;
+                app.needs_redraw = true;
+                return true;
+            }
+            PaneHitTarget::ProjectHeader { .. } | PaneHitTarget::SessionRow { .. } => {}
+        }
+    }
+
+    // Overlay open: row clicks anywhere on the body switch + close
+    // in one action. The overlay covers the whole body rect so we
+    // skip the inline-pane gate.
+    if app.projects_pane_overlay_open {
+        let target = app.pane_hit_targets.iter().find(|t| t.contains_y(mouse.row)).cloned();
+        let Some(target) = target else {
+            // Click landed on overlay chrome (banner rule, blank
+            // padding). Consume so chat hit-tests don't fire
+            // through the overlay; leave the overlay open.
+            return true;
+        };
+        return match target {
+            PaneHitTarget::ProjectHeader { project_name, .. } => {
+                switch_to_project_lead(app, &project_name);
+                app.projects_pane_overlay_open = false;
+                app.needs_redraw = true;
+                true
+            }
+            PaneHitTarget::SessionRow { session_key, .. } => {
+                app.switch_active_session(session_key);
+                app.projects_pane_overlay_open = false;
+                app.needs_redraw = true;
+                true
+            }
+            // x+y-bounded glyphs handled above; reaching them here
+            // means the y-only fallback matched a row stamped on
+            // the same band as the glyph but the click missed the
+            // glyph's x range — treat as "in-overlay no-op" so we
+            // still consume.
+            PaneHitTarget::TopBarIcon { .. } | PaneHitTarget::OverlayClose { .. } => true,
+        };
+    }
+
+    // Inline pane (Wide / Medium): existing y-only routing gated by
+    // the inline pane rect.
     let Some(pane) = app.layout.pane else {
         return false;
     };
@@ -390,6 +461,9 @@ fn handle_pane_click(app: &mut App, mouse: MouseEvent) -> bool {
             app.switch_active_session(session_key);
             true
         }
+        // x+y-bounded glyphs are checked first; here for exhaustive
+        // matching only.
+        PaneHitTarget::TopBarIcon { .. } | PaneHitTarget::OverlayClose { .. } => true,
     }
 }
 

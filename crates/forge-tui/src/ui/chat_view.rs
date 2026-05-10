@@ -1,4 +1,4 @@
-use super::{autocomplete, chat, footer, help, input, layout, projects_pane, theme, todo};
+use super::{autocomplete, chat, footer, help, input, layout, projects_pane, theme, todo, top_bar};
 use crate::app::App;
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -43,19 +43,39 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     // Projects pane before consulting `pane_hit_targets`.
     app.layout = areas.clone();
 
-    {
+    // Narrow tier with the overlay open replaces the chat body with
+    // the Projects overlay. Wide / Medium tiers and Narrow-with-
+    // overlay-closed render the chat normally.
+    let overlay_active = app.projects_pane_overlay_open && areas.top_bar.is_some();
+
+    if !overlay_active {
         let _t = app.perf.as_ref().map(|p| p.start("ui::chat"));
         chat::render(frame, areas.body, app);
     }
 
-    if let Some(pane_area) = areas.pane {
+    if overlay_active {
+        // Overlay path: the projects_pane::render_overlay clears
+        // `pane_hit_targets` itself before stamping new ones.
+        let _t = app.perf.as_ref().map(|p| p.start("ui::projects_overlay"));
+        let projects = app.workspace.as_ref().map(|ws| ws.list_projects()).unwrap_or_default();
+        projects_pane::render_overlay(frame, areas.body, app, &projects);
+    } else if let Some(pane_area) = areas.pane {
         let _t = app.perf.as_ref().map(|p| p.start("ui::projects_pane"));
         let projects = app.workspace.as_ref().map(|ws| ws.list_projects()).unwrap_or_default();
         projects_pane::render(frame, pane_area, app, &projects);
     } else {
-        // No pane this frame; clear stamps so a stale set from the
-        // previous (visible) frame can't be hit-tested.
+        // No pane and no overlay this frame; clear stamps so a stale
+        // set from the previous (visible) frame can't be hit-tested.
+        // The top-bar render below will re-stamp the icon target.
         app.pane_hit_targets.clear();
+    }
+
+    // Narrow-tier top bar. Always last so its `▤` icon hit-target
+    // sits at the end of `pane_hit_targets` and doesn't get stomped
+    // by the inline-pane / overlay clearing above.
+    if let Some(top_bar_area) = areas.top_bar {
+        let _t = app.perf.as_ref().map(|p| p.start("ui::top_bar"));
+        top_bar::render(frame, top_bar_area, app);
     }
 
     render_separator(frame, areas.input_sep);

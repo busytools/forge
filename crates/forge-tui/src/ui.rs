@@ -16,6 +16,7 @@ mod session_picker;
 pub mod theme;
 mod todo;
 mod tool_call;
+pub mod top_bar;
 mod trusted;
 mod two_column_list;
 mod wrap;
