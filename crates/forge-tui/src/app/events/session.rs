@@ -151,7 +151,7 @@ pub(super) fn handle_auth_required_event(
     app.set_cancelled_turn_pending_hint(false);
     app.set_pending_cancel_origin(None);
     app.pending_auto_submit_after_cancel = false;
-    app.account_info = None;
+    app.set_account_info(None);
     app.mcp = super::super::McpState::default();
     app.config.pending_session_title_change = None;
     crate::app::usage::reset_for_session_change(app);
@@ -175,7 +175,7 @@ pub(super) fn handle_connection_failed_event(app: &mut App, msg: &str) {
     app.set_pending_cancel_origin(None);
     app.pending_auto_submit_after_cancel = false;
     app.set_last_rate_limit_update(None);
-    app.account_info = None;
+    app.set_account_info(None);
     app.mcp = super::super::McpState::default();
     app.config.pending_session_title_change = None;
     crate::app::usage::reset_for_session_change(app);
@@ -255,8 +255,8 @@ pub(super) fn handle_logout_completed_event(app: &mut App) {
     // during initialization and will fire AuthRequired immediately.
     app.bump_session_scope_epoch();
     app.clear_session_runtime_identity();
-    app.account_info = None;
-    app.oauth_credentials = None;
+    app.set_account_info(None);
+    app.set_oauth_credentials(None);
     app.mcp = super::super::McpState::default();
     app.config.pending_session_title_change = None;
     crate::app::usage::reset_for_session_change(app);

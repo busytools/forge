@@ -145,6 +145,23 @@ pub struct Session {
     pub config_options: BTreeMap<String, serde_json::Value>,
     /// Session-wide usage and cost telemetry from the bridge.
     pub session_usage: SessionUsageState,
+
+    // ---- Account / auth ----
+    /// Account info from the bridge status snapshot (email, org, subscription).
+    pub account_info: Option<forge_primitives::AccountInfo>,
+    /// Forge-side account identity: which `[[accounts]]` entry from
+    /// `forge.toml` the workspace picked for this bridge. `None`
+    /// when forge wasn't launched via the workspace (direct
+    /// `Agent::spawn` from tests / smoke). Surfaced via
+    /// [`crate::agent::events::ClientEvent::StatusSnapshotReceived`]'s
+    /// `forge_account` and rendered in the welcome message + Status
+    /// panel.
+    pub active_account_display_name: Option<String>,
+    /// OAuth credentials snapshot from the bridge — populated at
+    /// session connect, refreshed after `/login` and `/logout` so
+    /// callers can ask "is the user authenticated?" without doing
+    /// their own filesystem walk to `<config_dir>/.credentials.json`.
+    pub oauth_credentials: Option<forge_agent::cloud::oauth_credentials::OauthCredentials>,
 }
 
 impl Default for Session {
@@ -187,6 +204,9 @@ impl Default for Session {
             fast_mode_state: model::FastModeState::Off,
             config_options: BTreeMap::new(),
             session_usage: SessionUsageState::default(),
+            account_info: None,
+            active_account_display_name: None,
+            oauth_credentials: None,
         }
     }
 }

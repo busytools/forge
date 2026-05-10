@@ -39,7 +39,7 @@ pub(crate) fn status_lines(app: &App) -> Vec<Line<'static>> {
     lines.push(Line::default());
 
     // ---- Account ----
-    if let Some(ref account) = app.account_info {
+    if let Some(account) = app.account_info() {
         section_header(&mut lines, "Account");
         kv_line(&mut lines, "Login method", &login_method_label(account));
         if let Some(ref provider) = account.api_provider
@@ -57,7 +57,7 @@ pub(crate) fn status_lines(app: &App) -> Vec<Line<'static>> {
         {
             kv_line(&mut lines, "Email", email);
         }
-        if let Some(ref name) = app.active_account_display_name
+        if let Some(name) = app.active_account_display_name()
             && !name.trim().is_empty()
         {
             kv_line(&mut lines, "Profile", name);
@@ -310,10 +310,10 @@ mod tests {
     #[test]
     fn status_lines_render_api_provider() {
         let mut app = App::test_default();
-        app.account_info = Some(forge_primitives::AccountInfo {
+        app.set_account_info(Some(forge_primitives::AccountInfo {
             api_provider: Some("mantle".to_owned()),
             ..Default::default()
-        });
+        }));
 
         let text = lines_to_string(&status_lines(&app));
 
@@ -330,15 +330,15 @@ mod tests {
     #[test]
     fn account_section_renders_profile_when_display_name_set() {
         let mut app = App::test_default();
-        app.account_info = Some(forge_primitives::AccountInfo {
+        app.set_account_info(Some(forge_primitives::AccountInfo {
             email: Some("ved@subspace.network".to_owned()),
             organization: Some("Autonomys".to_owned()),
             subscription_type: Some("team".to_owned()),
             token_source: Some("claude.ai".to_owned()),
             api_key_source: Some("oauth".to_owned()),
             api_provider: Some("firstParty".to_owned()),
-        });
-        app.active_account_display_name = Some("Subspace".to_owned());
+        }));
+        app.set_active_account_display_name(Some("Subspace".to_owned()));
 
         let text = lines_to_string(&status_lines(&app));
         assert!(
@@ -354,15 +354,15 @@ mod tests {
     #[test]
     fn account_section_omits_profile_when_display_name_absent() {
         let mut app = App::test_default();
-        app.account_info = Some(forge_primitives::AccountInfo {
+        app.set_account_info(Some(forge_primitives::AccountInfo {
             email: Some("ved@example.com".to_owned()),
             organization: None,
             subscription_type: Some("pro".to_owned()),
             token_source: None,
             api_key_source: None,
             api_provider: None,
-        });
-        app.active_account_display_name = None;
+        }));
+        app.set_active_account_display_name(None);
 
         let text = lines_to_string(&status_lines(&app));
         assert!(

@@ -148,7 +148,7 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
                 outcome = "info",
                 display_name = %display_name,
             );
-            app.active_account_display_name = Some(display_name);
+            app.set_active_account_display_name(Some(display_name));
             app.sync_welcome_snapshot();
             app.needs_redraw = true;
         }
@@ -167,8 +167,8 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
             let api_key_source = account.api_key_source.clone();
             let api_provider = account.api_provider.clone();
             let forge_display_name = forge_account.as_ref().map(|f| f.display_name.clone());
-            app.account_info = Some(account);
-            app.active_account_display_name = forge_account.map(|f| f.display_name);
+            app.set_account_info(Some(account));
+            app.set_active_account_display_name(forge_account.map(|f| f.display_name));
             app.sync_welcome_snapshot();
             app.needs_redraw = true;
             tracing::info!(
@@ -196,7 +196,7 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
             );
             let has_credentials = credentials.is_some();
             let has_expiry = credentials.as_ref().is_some_and(|info| info.expires_at.is_some());
-            app.oauth_credentials = credentials;
+            app.set_oauth_credentials(credentials);
             app.needs_redraw = true;
             tracing::info!(
                 target: crate::logging::targets::APP_AUTH,

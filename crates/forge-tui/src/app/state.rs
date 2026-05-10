@@ -247,22 +247,6 @@ pub struct App {
     pub usage: UsageState,
     /// Config > MCP live server snapshot and refresh lifecycle.
     pub mcp: McpState,
-    /// Account info from the bridge status snapshot (email, org, subscription).
-    pub account_info: Option<forge_primitives::AccountInfo>,
-    /// Forge-side account identity: which `[[accounts]]` entry from
-    /// `forge.toml` the workspace picked for this bridge. `None`
-    /// when forge wasn't launched via the workspace (direct
-    /// `Agent::spawn` from tests / smoke). Surfaced via
-    /// [`crate::agent::events::ClientEvent::StatusSnapshotReceived`]'s
-    /// `forge_account` and rendered in the welcome message + Status
-    /// panel.
-    pub active_account_display_name: Option<String>,
-    /// OAuth credentials snapshot from the bridge — populated at
-    /// session connect, refreshed after `/login` and `/logout` so
-    /// callers can ask "is the user authenticated?" without doing
-    /// their own filesystem walk to `<config_dir>/.credentials.json`.
-    pub oauth_credentials: Option<forge_agent::cloud::oauth_credentials::OauthCredentials>,
-
     /// Dirty flag: skip `terminal.draw()` when nothing changed since last frame.
     pub needs_redraw: bool,
     /// Central notification manager (bell + desktop toast when unfocused).
@@ -889,6 +873,46 @@ impl App {
         &mut self.active_or_synthetic_mut().session_usage
     }
 
+    // ---- Account / auth accessors ----
+
+    /// Borrow the active session's account-info snapshot.
+    #[must_use]
+    pub fn account_info(&self) -> Option<&forge_primitives::AccountInfo> {
+        self.active_session().and_then(|s| s.account_info.as_ref())
+    }
+
+    /// Set the active session's account-info snapshot.
+    pub fn set_account_info(&mut self, value: Option<forge_primitives::AccountInfo>) {
+        self.active_or_synthetic_mut().account_info = value;
+    }
+
+    /// Borrow the active session's forge-side account display name.
+    #[must_use]
+    pub fn active_account_display_name(&self) -> Option<&str> {
+        self.active_session().and_then(|s| s.active_account_display_name.as_deref())
+    }
+
+    /// Set the active session's forge-side account display name.
+    pub fn set_active_account_display_name(&mut self, value: Option<String>) {
+        self.active_or_synthetic_mut().active_account_display_name = value;
+    }
+
+    /// Borrow the active session's OAuth credentials snapshot.
+    #[must_use]
+    pub fn oauth_credentials(
+        &self,
+    ) -> Option<&forge_agent::cloud::oauth_credentials::OauthCredentials> {
+        self.active_session().and_then(|s| s.oauth_credentials.as_ref())
+    }
+
+    /// Set the active session's OAuth credentials snapshot.
+    pub fn set_oauth_credentials(
+        &mut self,
+        value: Option<forge_agent::cloud::oauth_credentials::OauthCredentials>,
+    ) {
+        self.active_or_synthetic_mut().oauth_credentials = value;
+    }
+
     /// Queue a paste payload for drain-cycle finalization.
     ///
     /// This is fed by paste payloads captured from terminal events.
@@ -994,10 +1018,9 @@ impl App {
     #[must_use]
     fn welcome_account_display(&self) -> (String, String) {
         let display_name =
-            self.active_account_display_name.as_deref().map(str::trim).filter(|s| !s.is_empty());
+            self.active_account_display_name().map(str::trim).filter(|s| !s.is_empty());
         let subscription = self
-            .account_info
-            .as_ref()
+            .account_info()
             .and_then(|a| a.subscription_type.as_deref())
             .map(str::trim)
             .filter(|s| !s.is_empty());
@@ -1445,9 +1468,6 @@ impl App {
             git_context: GitContextState::default(),
             usage: UsageState::default(),
             mcp: McpState::default(),
-            account_info: None,
-            active_account_display_name: None,
-            oauth_credentials: None,
             needs_redraw: true,
             notifications: super::notify::NotificationManager::new(),
             perf: None,

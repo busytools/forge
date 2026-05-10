@@ -50,7 +50,7 @@ fn reset_session_identity_state(
     app.set_cancelled_turn_pending_hint(false);
     app.set_pending_cancel_origin(None);
     app.pending_auto_submit_after_cancel = false;
-    app.account_info = None;
+    app.set_account_info(None);
 }
 
 fn reset_messages_for_new_session(app: &mut App, preserve_current_welcome_tip: bool) {

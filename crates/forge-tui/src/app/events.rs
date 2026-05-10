@@ -1602,14 +1602,14 @@ mod tests {
             seven_day_sonnet: None,
             extra_usage: None,
         });
-        app.account_info = Some(forge_primitives::AccountInfo {
+        app.set_account_info(Some(forge_primitives::AccountInfo {
             email: Some("old@example.com".into()),
             organization: None,
             subscription_type: None,
             token_source: None,
             api_key_source: None,
             api_provider: None,
-        });
+        }));
         app.plugins.installed.push(crate::app::plugins::InstalledPluginEntry {
             id: "old-plugin".into(),
             version: None,
@@ -1634,7 +1634,7 @@ mod tests {
         assert!(matches!(app.messages()[0].role, MessageRole::Welcome));
         assert_eq!(app.files_accessed, 0);
         assert!(app.usage.snapshot.is_none());
-        assert!(app.account_info.is_none());
+        assert!(app.account_info().is_none());
         assert!(app.plugins.installed.is_empty());
         assert!(app.plugins.last_inventory_refresh_at.is_none());
         assert!(app.config.pending_session_title_change.is_none());
@@ -1902,7 +1902,7 @@ mod tests {
             },
         );
 
-        assert!(app.account_info.is_none());
+        assert!(app.account_info().is_none());
     }
 
     #[test]
@@ -1923,7 +1923,7 @@ mod tests {
         );
 
         // App state stores the name (Status panel needs it).
-        assert_eq!(app.active_account_display_name.as_deref(), Some("Subspace"));
+        assert_eq!(app.active_account_display_name(), Some("Subspace"));
 
         // But the welcome line stays hidden — we have the name
         // but not the tier yet. Showing "Account: Subspace" now
