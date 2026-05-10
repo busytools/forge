@@ -393,19 +393,29 @@ impl App {
     /// auto-creating a pre-Connect synthetic bucket if no active
     /// session exists. Used by the `_mut` accessors so call sites
     /// can stay infallible.
+    ///
+    /// Hot path: chat render and ~50 other `_mut` accessors hit this
+    /// per frame. Uses the `HashMap::entry` API to avoid the extra
+    /// `SessionKey` clone an `if !contains { insert }` shape would
+    /// need.
     fn active_or_synthetic_mut(&mut self) -> &mut super::session::Session {
-        if self.active_session_key.is_none() {
-            let key = forge_workspace::SessionKey::from_session_id(Self::PRE_CONNECT_KEY);
-            self.sessions
-                .entry(key.clone())
-                .or_insert_with(|| super::session::Session::new(key.clone()));
-            self.active_session_key = Some(key);
+        use std::collections::hash_map::Entry;
+        // The active key is normally already set; the synthetic
+        // fallback is the cold first-touch path.
+        let key = if let Some(key) = self.active_session_key.clone() {
+            key
+        } else {
+            let synthetic = forge_workspace::SessionKey::from_session_id(Self::PRE_CONNECT_KEY);
+            self.active_session_key = Some(synthetic.clone());
+            synthetic
+        };
+        match self.sessions.entry(key) {
+            Entry::Occupied(e) => e.into_mut(),
+            Entry::Vacant(e) => {
+                let new = super::session::Session::new(e.key().clone());
+                e.insert(new)
+            }
         }
-        let key = self
-            .active_session_key
-            .clone()
-            .unwrap_or_else(|| forge_workspace::SessionKey::from_session_id(Self::PRE_CONNECT_KEY));
-        self.sessions.entry(key.clone()).or_insert_with(|| super::session::Session::new(key))
     }
 
     /// Active session's claude session id, or `None` in the
@@ -417,16 +427,33 @@ impl App {
 
     /// Set the active session's session_id. Ensures the sessions
     /// map has an entry keyed by the id; sets `active_session_key`
-    /// to that entry. If `id` is `None`, clears the active
-    /// session's stored session_id but leaves the map intact.
+    /// to that entry.
+    ///
+    /// `id = None` clears the active bucket's `session_id` and
+    /// `key` fields but leaves the bucket attached to
+    /// `active_session_key`. The active-path event handlers
+    /// (`auth_required`, `connection_failed`) call this from inside
+    /// a longer cleanup sequence that still needs to write into the
+    /// active bucket — finalizing in-flight tool calls to Failed,
+    /// pushing system messages — so the user can see what happened.
+    /// Removing the bucket here would orphan that work into a
+    /// freshly-minted pre-Connect bucket.
     ///
     /// If a synthetic-keyed bucket exists (from an earlier
     /// `set_conn` before `set_session_id` — test ordering),
     /// migrates that bucket's contents to the real key so the conn
     /// + session_id end up on the same bucket.
+    ///
+    /// Phase 1b leak guard: when `active_session_key` was previously
+    /// `None` (Connect-after-failure path), sweeps stale buckets
+    /// from earlier disconnect cycles. The SessionReplaced and other
+    /// end-of-life paths still leak their previous bucket — Phase
+    /// 2b will tighten those once background-session reachability
+    /// rules are nailed down.
     pub fn set_session_id(&mut self, id: Option<model::SessionId>) {
         match id {
             Some(id) => {
+                let prev_active_was_none = self.active_session_key.is_none();
                 let key = forge_workspace::SessionKey::from_session_id(id.to_string());
                 // Migrate any synthetic-keyed bucket onto the real key.
                 // Guard against the case where BOTH a synthetic bucket
@@ -462,11 +489,25 @@ impl App {
                         .or_insert_with(|| super::session::Session::new(key.clone()));
                     entry.session_id = Some(id);
                 }
-                self.active_session_key = Some(key);
+                self.active_session_key = Some(key.clone());
+                // Connect-after-failure cleanup: when no session was
+                // active before this call, sweep stale buckets that
+                // accumulated across earlier disconnect cycles.
+                if prev_active_was_none {
+                    self.sessions.retain(|k, _| *k == key);
+                }
             }
             None => {
+                // Clear the bucket's session-id slot AND the bucket's
+                // own `key` field so it stops advertising the
+                // now-stale id (the next `set_session_id(Some(...))`
+                // re-stamps both). Keep the bucket attached to
+                // `active_session_key` so the active-path handler
+                // can keep writing into it (failed tool calls,
+                // system messages — see doc comment above).
                 if let Some(s) = self.active_session_mut() {
                     s.session_id = None;
+                    s.key = None;
                 }
             }
         }
