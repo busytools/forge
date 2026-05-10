@@ -786,8 +786,21 @@ impl ForgeSdkBridge {
 
     // ---- Direct-return accessors (delegate to forge_sdk::*) ----
 
+    /// Per-spawn config_dir override from `extra_env`, falling back
+    /// to `forge_sdk::claude_config_dir()` (the global, env-derived
+    /// path) when the bridge wasn't constructed with a
+    /// `CLAUDE_CONFIG_DIR` override. Phase 1b's workspace picker sets
+    /// this at spawn time so forge-tui's in-process accessors honour
+    /// the bound account.
+    fn effective_config_dir(&self) -> PathBuf {
+        self.inner
+            .extra_env
+            .get("CLAUDE_CONFIG_DIR")
+            .map_or_else(forge_sdk::claude_config_dir, PathBuf::from)
+    }
+
     pub(crate) fn config_dir(&self) -> PathBuf {
-        forge_sdk::claude_config_dir()
+        self.effective_config_dir()
     }
 
     pub(crate) fn project_memory_path(&self, cwd: &Path) -> PathBuf {
@@ -797,7 +810,9 @@ impl ForgeSdkBridge {
     pub(crate) fn oauth_credentials(
         &self,
     ) -> Option<crate::cloud::oauth_credentials::OauthCredentials> {
-        crate::cloud::oauth_credentials::load_oauth_credentials()
+        crate::cloud::oauth_credentials::load_oauth_credentials_for_dir(
+            &self.effective_config_dir(),
+        )
     }
 
     pub(crate) fn settings_documents(
@@ -819,7 +834,7 @@ impl ForgeSdkBridge {
         &self,
     ) -> Result<crate::cloud::oauth_usage::OauthUsage, crate::cloud::oauth_usage::OauthUsageError>
     {
-        crate::cloud::oauth_usage::oauth_usage().await
+        crate::cloud::oauth_usage::oauth_usage_for_dir(&self.effective_config_dir()).await
     }
 }
 

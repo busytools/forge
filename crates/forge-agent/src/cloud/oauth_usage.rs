@@ -17,12 +17,15 @@
 //! because the field is documented inconsistently (sometimes ISO-8601,
 //! sometimes a numeric epoch).
 
+use std::path::Path;
 use std::time::Duration;
 
 use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue, USER_AGENT};
 use serde::{Deserialize, Serialize};
 
-use super::oauth_credentials::load_oauth_credentials;
+use forge_sdk::claude_config_dir;
+
+use super::oauth_credentials::load_oauth_credentials_for_dir;
 
 const OAUTH_USAGE_URL: &str = "https://api.anthropic.com/api/oauth/usage";
 const OAUTH_BETA_HEADER: &str = "oauth-2025-04-20";
@@ -133,7 +136,23 @@ impl OauthUsageError {
 /// Returns [`OauthUsageError`] when credentials are missing/expired,
 /// the HTTPS request fails, or the response can't be decoded.
 pub async fn oauth_usage() -> Result<OauthUsage, OauthUsageError> {
-    let credentials = load_oauth_credentials().ok_or(OauthUsageError::NoCredentials)?;
+    oauth_usage_for_dir(&claude_config_dir()).await
+}
+
+/// Same as [`oauth_usage`] but reads credentials against an explicit
+/// `config_dir` instead of the process-env-derived
+/// `claude_config_dir()`. Phase 1b's per-spawn account binding
+/// uses this so forge-tui's in-process accessors honour the account
+/// that was bound at spawn time, not whatever `$CLAUDE_CONFIG_DIR`
+/// the parent shell happened to have.
+///
+/// # Errors
+///
+/// Returns [`OauthUsageError`] when credentials are missing/expired,
+/// the HTTPS request fails, or the response can't be decoded.
+pub async fn oauth_usage_for_dir(config_dir: &Path) -> Result<OauthUsage, OauthUsageError> {
+    let credentials =
+        load_oauth_credentials_for_dir(config_dir).ok_or(OauthUsageError::NoCredentials)?;
 
     if credentials.expires_at.is_some_and(|expires_at| expires_at <= std::time::SystemTime::now()) {
         return Err(OauthUsageError::Expired);

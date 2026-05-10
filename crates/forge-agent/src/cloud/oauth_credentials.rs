@@ -69,21 +69,29 @@ pub struct OauthCredentials {
 /// epoch.
 #[must_use]
 pub fn load_oauth_credentials() -> Option<OauthCredentials> {
-    if let Some(creds) = load_oauth_credentials_at(&credentials_path()) {
+    load_oauth_credentials_for_dir(&claude_config_dir())
+}
+
+/// Same as [`load_oauth_credentials`] but reads against an
+/// explicit `config_dir` instead of the process-env-derived
+/// `claude_config_dir()`. Phase 1b's per-spawn account binding
+/// uses this so forge-tui's in-process accessors honour the
+/// account that was bound at spawn time, not whatever
+/// `$CLAUDE_CONFIG_DIR` the parent shell happened to have.
+#[must_use]
+pub fn load_oauth_credentials_for_dir(config_dir: &Path) -> Option<OauthCredentials> {
+    let path = config_dir.join(".credentials.json");
+    if let Some(creds) = load_oauth_credentials_at(&path) {
         return Some(creds);
     }
     #[cfg(target_os = "macos")]
     {
-        load_oauth_credentials_from_keychain(&claude_config_dir())
+        load_oauth_credentials_from_keychain(config_dir)
     }
     #[cfg(not(target_os = "macos"))]
     {
         None
     }
-}
-
-fn credentials_path() -> std::path::PathBuf {
-    claude_config_dir().join(".credentials.json")
 }
 
 /// Service name the macOS keychain stores Claude Code credentials
