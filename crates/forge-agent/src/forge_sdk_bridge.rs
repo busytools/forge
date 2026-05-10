@@ -32,6 +32,12 @@ use crate::client::{AgentEvent, SessionLaunchSettings};
 use crate::forge_sdk_worker;
 use forge_primitives::{ElicitationAction, McpServerConfig, PermissionOutcome, QuestionOutcome};
 
+/// Sentinel `config_dir` for `ForgeSdkBridge` test stubs that never
+/// exercise the path. Production code constructs the bridge with a
+/// real account `config_dir`; tests that don't drive a session use
+/// this path so the typed field stays non-optional.
+const TESTING_STUB_CONFIG_DIR: &str = "/tmp/forge-testing-stub";
+
 /// Pending permission responses keyed by `tool_use_id`. The
 /// `can_use_tool` callback parks a oneshot here when the CLI asks;
 /// dispatch drains it when the matching `permission_response` arrives
@@ -74,31 +80,25 @@ pub(crate) struct BridgeInner {
     /// Current session id, shared with the `can_use_tool` callback so
     /// permission/question events carry the right `session_id`.
     pub(crate) session_id_slot: Arc<Mutex<String>>,
-    /// Extra env vars injected into every spawned `claude` subprocess
-    /// for this bridge. Set once at construction (workspace-driven —
-    /// e.g. `CLAUDE_CONFIG_DIR=<account.config_dir>`) and applied to
-    /// the SDK `Options` in every `new_session` / `resume_session`.
-    /// Empty when callers use `ForgeSdkBridge::new()`.
-    extra_env: Arc<HashMap<String, String>>,
+    /// `<config_dir>` this bridge was bound to at construction time
+    /// (workspace-driven — typically the picked account's
+    /// `config_dir`). Threaded into the spawned `claude`
+    /// subprocess as `CLAUDE_CONFIG_DIR` and consulted by every
+    /// in-process accessor (oauth, settings, catalog) so they
+    /// honour the bound account, not whatever `$CLAUDE_CONFIG_DIR`
+    /// the parent shell happened to have.
+    config_dir: PathBuf,
 }
 
 impl ForgeSdkBridge {
-    /// Construct a fresh bridge with no extra subprocess env. Equivalent
-    /// to `with_env(HashMap::new())`. Preserves the long-standing
-    /// no-arg ctor for tests + existing call sites.
+    /// Construct a fresh bridge bound to `config_dir`. The path is
+    /// stored as a typed field; every in-process accessor (oauth,
+    /// settings, catalog scans) reads it directly, and the spawned
+    /// `claude` subprocess inherits it as `CLAUDE_CONFIG_DIR`. The
+    /// internal event channel is created here; consumers grab the
+    /// receiver once via [`ForgeSdkBridge::take_events`].
     #[must_use]
-    pub(crate) fn new() -> Self {
-        Self::with_env(HashMap::new())
-    }
-
-    /// Construct a fresh bridge that injects `extra_env` into every
-    /// spawned `claude` subprocess. Used by `Agent::spawn_with_env` to
-    /// thread workspace-derived env (`CLAUDE_CONFIG_DIR`, …) all the
-    /// way down to the SDK's `OptionsBuilder`. The internal event
-    /// channel is created here; consumers grab the receiver once via
-    /// [`ForgeSdkBridge::take_events`].
-    #[must_use]
-    pub(crate) fn with_env(extra_env: HashMap<String, String>) -> Self {
+    pub(crate) fn new(config_dir: PathBuf) -> Self {
         let (event_tx, events_rx) = mpsc::unbounded_channel();
         Self {
             inner: Arc::new(BridgeInner {
@@ -109,20 +109,13 @@ impl ForgeSdkBridge {
                 pending_questions: Arc::new(Mutex::new(HashMap::new())),
                 git_watchers: Mutex::new(HashMap::new()),
                 session_id_slot: Arc::new(Mutex::new(String::new())),
-                extra_env: Arc::new(extra_env),
+                config_dir,
             }),
         }
     }
 
     pub(crate) fn event_tx(&self) -> &mpsc::UnboundedSender<AgentEvent> {
         &self.inner.event_tx
-    }
-
-    /// Cheap clone of the bridge's per-spawn env map. Cloned into
-    /// each `spawn_session` task so the workspace-supplied env is
-    /// applied to every fresh `claude` subprocess.
-    pub(crate) fn extra_env(&self) -> Arc<HashMap<String, String>> {
-        Arc::clone(&self.inner.extra_env)
     }
 
     pub(crate) fn inner_pending(&self) -> &PendingResponses {
@@ -262,7 +255,7 @@ impl ForgeSdkBridge {
 
 impl Default for ForgeSdkBridge {
     fn default() -> Self {
-        Self::new()
+        Self::new(PathBuf::from(TESTING_STUB_CONFIG_DIR))
     }
 }
 
@@ -425,16 +418,22 @@ impl ForgeSdkBridge {
 
     pub(crate) fn rename_session(&self, session_id: String, title: String) -> anyhow::Result<()> {
         // Offline disk mutation — no Client required.
-        crate::userdata::catalog::mutations::rename_session(&session_id, &title, None)?;
+        crate::userdata::catalog::mutations::rename_session(
+            &self.inner.config_dir,
+            &session_id,
+            &title,
+            None,
+        )?;
         Ok(())
     }
 
     pub(crate) fn get_status_snapshot(&self, session_id: String) -> anyhow::Result<()> {
         let event_tx = self.inner.event_tx.clone();
+        let config_dir = self.inner.config_dir.clone();
         self.dispatch("get_status_snapshot", move |client| async move {
             let account = client
                 .account_info_from_init()
-                .or_else(crate::cloud::auth_status::account_info_from_shell)
+                .or_else(|| crate::cloud::auth_status::account_info_from_shell(&config_dir))
                 .unwrap_or_default();
             let _ = event_tx.send(AgentEvent::StatusSnapshot { session_id, account });
             Ok(())
@@ -443,8 +442,9 @@ impl ForgeSdkBridge {
 
     pub(crate) fn get_oauth_credentials_snapshot(&self, session_id: String) -> anyhow::Result<()> {
         let event_tx = self.inner.event_tx.clone();
+        let config_dir = self.inner.config_dir.clone();
         self.dispatch("get_oauth_credentials_snapshot", move |_client| async move {
-            let credentials = crate::cloud::oauth_credentials::load_oauth_credentials();
+            let credentials = crate::cloud::oauth_credentials::load_oauth_credentials(&config_dir);
             let _ = event_tx.send(AgentEvent::OauthCredentialsSnapshot { session_id, credentials });
             Ok(())
         })
@@ -682,11 +682,9 @@ impl ForgeSdkBridge {
         launch_settings: SessionLaunchSettings,
     ) -> anyhow::Result<()> {
         let bridge = self.clone();
-        let extra_env = self.extra_env();
         tokio::spawn(async move {
             if let Err(err) =
-                forge_sdk_worker::spawn_session(&bridge, &cwd, None, &launch_settings, &extra_env)
-                    .await
+                forge_sdk_worker::spawn_session(&bridge, &cwd, None, &launch_settings).await
             {
                 let msg = format!("forge-sdk session spawn failed: {err}");
                 if bridge
@@ -711,16 +709,10 @@ impl ForgeSdkBridge {
         launch_settings: SessionLaunchSettings,
     ) -> anyhow::Result<()> {
         let bridge = self.clone();
-        let extra_env = self.extra_env();
         tokio::spawn(async move {
-            if let Err(err) = forge_sdk_worker::spawn_session(
-                &bridge,
-                "",
-                Some(&session_id),
-                &launch_settings,
-                &extra_env,
-            )
-            .await
+            if let Err(err) =
+                forge_sdk_worker::spawn_session(&bridge, "", Some(&session_id), &launch_settings)
+                    .await
             {
                 let msg = format!("forge-sdk session resume failed: {err}");
                 if bridge
@@ -786,40 +778,28 @@ impl ForgeSdkBridge {
 
     // ---- Direct-return accessors (delegate to forge_sdk::*) ----
 
-    /// Per-spawn config_dir override from `extra_env`, falling back
-    /// to `forge_sdk::claude_config_dir()` (the global, env-derived
-    /// path) when the bridge wasn't constructed with a
-    /// `CLAUDE_CONFIG_DIR` override. Phase 1b's workspace picker sets
-    /// this at spawn time so forge-tui's in-process accessors honour
-    /// the bound account.
-    fn effective_config_dir(&self) -> PathBuf {
-        self.inner
-            .extra_env
-            .get("CLAUDE_CONFIG_DIR")
-            .map_or_else(forge_sdk::claude_config_dir, PathBuf::from)
-    }
-
+    /// Cheap clone of the bridge's bound `config_dir`. Used by the
+    /// session worker to thread `CLAUDE_CONFIG_DIR` into the spawned
+    /// `claude` subprocess and by direct-return accessors.
     pub(crate) fn config_dir(&self) -> PathBuf {
-        self.effective_config_dir()
+        self.inner.config_dir.clone()
     }
 
     pub(crate) fn project_memory_path(&self, cwd: &Path) -> PathBuf {
-        crate::userdata::memory::project_memory_path(cwd)
+        crate::userdata::memory::project_memory_path(&self.inner.config_dir, cwd)
     }
 
     pub(crate) fn oauth_credentials(
         &self,
     ) -> Option<crate::cloud::oauth_credentials::OauthCredentials> {
-        crate::cloud::oauth_credentials::load_oauth_credentials_for_dir(
-            &self.effective_config_dir(),
-        )
+        crate::cloud::oauth_credentials::load_oauth_credentials(&self.inner.config_dir)
     }
 
     pub(crate) fn settings_documents(
         &self,
         cwd: &Path,
     ) -> crate::userdata::settings::SettingsDocuments {
-        crate::userdata::settings::settings_documents(cwd)
+        crate::userdata::settings::settings_documents(&self.inner.config_dir, cwd)
     }
 
     pub(crate) fn write_settings_document(
@@ -827,14 +807,14 @@ impl ForgeSdkBridge {
         target: &crate::userdata::settings::SettingsTarget,
         document: &Value,
     ) -> Result<(), forge_sdk::Error> {
-        crate::userdata::settings::write_settings_document(target, document)
+        crate::userdata::settings::write_settings_document(&self.inner.config_dir, target, document)
     }
 
     pub(crate) async fn oauth_usage(
         &self,
     ) -> Result<crate::cloud::oauth_usage::OauthUsage, crate::cloud::oauth_usage::OauthUsageError>
     {
-        crate::cloud::oauth_usage::oauth_usage_for_dir(&self.effective_config_dir()).await
+        crate::cloud::oauth_usage::oauth_usage(&self.inner.config_dir).await
     }
 }
 
@@ -842,23 +822,27 @@ impl ForgeSdkBridge {
 mod tests {
     use super::*;
 
+    fn test_bridge() -> ForgeSdkBridge {
+        ForgeSdkBridge::new(PathBuf::from(TESTING_STUB_CONFIG_DIR))
+    }
+
     #[test]
     fn take_events_returns_some_once_then_none() {
-        let bridge = ForgeSdkBridge::new();
+        let bridge = test_bridge();
         assert!(bridge.take_events().is_some());
         assert!(bridge.take_events().is_none());
     }
 
     #[test]
     fn dispatch_without_client_returns_error() {
-        let bridge = ForgeSdkBridge::new();
+        let bridge = test_bridge();
         let err = bridge.cancel("session-1".to_owned()).unwrap_err();
         assert!(err.to_string().contains("before active session"));
     }
 
     #[test]
     fn rename_session_runs_offline_without_client() {
-        let bridge = ForgeSdkBridge::new();
+        let bridge = test_bridge();
         // Bogus session id — `rename_session` propagates the disk
         // error rather than the "no active session" guard. The point
         // of this test is to confirm we do NOT take the dispatch path.

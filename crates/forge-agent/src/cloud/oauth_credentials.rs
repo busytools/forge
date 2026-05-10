@@ -22,8 +22,6 @@ use crate::cloud::time::parse_timestamp_value;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use forge_sdk::claude_config_dir;
-
 /// OAuth bearer credentials persisted by the `claude` CLI at
 /// `<config_dir>/.credentials.json`.
 ///
@@ -50,7 +48,10 @@ pub struct OauthCredentials {
     pub expires_at: Option<SystemTime>,
 }
 
-/// Read + parse the user's OAuth credentials.
+/// Read + parse the user's OAuth credentials against an explicit
+/// `config_dir`. The caller (typically a `ForgeSdkBridge`) is the
+/// source of truth for which account's credentials to read; there is
+/// no fallback to a process-env-derived path.
 ///
 /// Resolution order matches the `claude` CLI's behaviour as of
 /// 2.1.117:
@@ -68,18 +69,7 @@ pub struct OauthCredentials {
 /// [`SystemTime`] of the `expiresAt` numeric or stringified-numeric
 /// epoch.
 #[must_use]
-pub fn load_oauth_credentials() -> Option<OauthCredentials> {
-    load_oauth_credentials_for_dir(&claude_config_dir())
-}
-
-/// Same as [`load_oauth_credentials`] but reads against an
-/// explicit `config_dir` instead of the process-env-derived
-/// `claude_config_dir()`. Phase 1b's per-spawn account binding
-/// uses this so forge-tui's in-process accessors honour the
-/// account that was bound at spawn time, not whatever
-/// `$CLAUDE_CONFIG_DIR` the parent shell happened to have.
-#[must_use]
-pub fn load_oauth_credentials_for_dir(config_dir: &Path) -> Option<OauthCredentials> {
+pub fn load_oauth_credentials(config_dir: &Path) -> Option<OauthCredentials> {
     let path = config_dir.join(".credentials.json");
     if let Some(creds) = load_oauth_credentials_at(&path) {
         return Some(creds);

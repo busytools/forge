@@ -119,11 +119,14 @@ fn run() -> anyhow::Result<()> {
     }))
 }
 
-/// Resolve the Claude config directory: honour `$CLAUDE_CONFIG_DIR`
-/// (ignoring empty values), else fall back to `$HOME/.claude`.
-/// Mirrors `forge_sdk::claude_config_dir` — kept in-crate for now
-/// since forge-tui doesn't otherwise depend on forge-sdk and the
-/// duplication is two branches. Consolidate when more callers need it.
+/// Resolve the Claude config directory at the forge-tui orchestration
+/// boundary: honour `$CLAUDE_CONFIG_DIR` (ignoring empty values), else
+/// fall back to `$HOME/.claude`. After this point, the resolved path
+/// is threaded as a typed `PathBuf` (via `Workspace::new`, which in
+/// turn binds each `Agent::spawn(config_dir)` to its account's path).
+/// forge-sdk exposes `claude_config_dir_from_env() -> Option<PathBuf>`
+/// for the env-only branch; the host-default fallback lives here so
+/// the SDK stays opinion-free about "what to do when env is unset".
 fn resolve_config_dir() -> PathBuf {
     if let Ok(value) = std::env::var("CLAUDE_CONFIG_DIR") {
         let trimmed = value.trim_end_matches('/');

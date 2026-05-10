@@ -66,15 +66,13 @@ impl Workspace {
     pub async fn new(config_dir: PathBuf) -> Result<Self, WorkspaceError> {
         let config = load_from_dir(&config_dir)?;
 
-        // Catalog scan honours `$CLAUDE_CONFIG_DIR` from the process
-        // environment rather than `config_dir` — `forge_agent::userdata::
-        // catalog::scan::list_sessions` resolves via `forge_sdk::projects_dir`.
-        // In production this is fine: the launching profile's env matches
-        // the config_dir we received. For test isolation it leaks the
-        // developer's real catalog, which is why the existing tests assert
-        // only properties (is_open: false, project list shape) that don't
-        // depend on catalog content.
+        // Catalog scan reads against the workspace's canonical
+        // `config_dir` (where forge.toml lives). Phase 1b binds each
+        // spawn to its own account `config_dir`, but the catalog
+        // listing isn't UI-consumed yet — multi-account catalog
+        // merge is deferred to a later phase.
         let catalog_entries = forge_agent::userdata::catalog::scan::list_sessions(
+            &config_dir,
             None, // every project in the catalog
             None, // no limit
             0,
@@ -229,16 +227,13 @@ impl Workspace {
         // hiccup doesn't break the spawn path.
         self.persist_account_state();
 
-        // Build per-spawn env override. The spawned `claude`
-        // subprocess reads `CLAUDE_CONFIG_DIR` to decide which
-        // user-data tree (oauth tokens, projects history, settings)
-        // to use, so each session can be bound to a different
-        // account on the same workstation.
-        let mut extra_env = std::collections::HashMap::new();
-        extra_env.insert("CLAUDE_CONFIG_DIR".to_owned(), account_dir.to_string_lossy().to_string());
-
-        // Slow path: spawn fresh Agent and dispatch the start command.
-        let handle = forge_agent::Agent::spawn_with_env(extra_env);
+        // Slow path: spawn fresh Agent bound to the picked account's
+        // config_dir. The Agent stores it as a typed field; every
+        // in-process accessor (oauth, settings, catalog scans) reads
+        // it from there, and the spawned `claude` subprocess
+        // inherits it as `CLAUDE_CONFIG_DIR` so each session reads/
+        // writes the right account's user-data tree.
+        let handle = forge_agent::Agent::spawn(account_dir.clone());
         match &target {
             SessionTarget::Default => {
                 let cwd = self.config.default_project().path.to_string_lossy().to_string();

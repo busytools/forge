@@ -84,16 +84,17 @@ impl AgentHandle {
         self.bridge.oauth_usage().await
     }
 
-    /// Test-only accessor returning a clone of the bridge's
-    /// `extra_env` map. Hidden from public docs; production code
-    /// reads env via the spawn path. `#[doc(hidden)] pub` rather
-    /// than `#[cfg(test)]` so integration tests in sibling crates'
-    /// `tests/` directories can reach it (Rust's `#[cfg(test)]`
-    /// items aren't visible across crate boundaries).
+    /// Test-only accessor returning a clone of the bridge's bound
+    /// `config_dir`. Hidden from public docs; production code reads
+    /// the path via the spawn path or via [`AgentHandle::config_dir`].
+    /// `#[doc(hidden)] pub` rather than `#[cfg(test)]` so integration
+    /// tests in sibling crates' `tests/` directories can reach it
+    /// (Rust's `#[cfg(test)]` items aren't visible across crate
+    /// boundaries).
     #[doc(hidden)]
     #[must_use]
-    pub fn extra_env_for_test(&self) -> std::collections::HashMap<String, String> {
-        (*self.bridge.extra_env()).clone()
+    pub fn config_dir_for_test(&self) -> PathBuf {
+        self.bridge.config_dir()
     }
 
     // ---- Fire-and-forget Command shorthands ----
@@ -301,10 +302,12 @@ impl Agent {
     ///
     /// Safe to call outside a Tokio runtime — no tasks are spawned.
     /// The bridge's events stream is dropped on the floor; tests that
-    /// don't drive sessions never see events anyway.
+    /// don't drive sessions never see events anyway. The bridge is
+    /// bound to a synthetic `/tmp/forge-testing-stub` config_dir;
+    /// since no session is driven, no I/O hits this path.
     #[must_use]
     pub fn testing_stub() -> (AgentHandle, mpsc::UnboundedReceiver<Command>) {
-        let bridge = ForgeSdkBridge::new();
+        let bridge = ForgeSdkBridge::default();
         // Drop the bridge's events receiver immediately — tests don't
         // run a real session so nothing is producing.
         let _ = bridge.take_events();
@@ -324,24 +327,15 @@ impl Agent {
         (handle, commands_rx)
     }
 
-    /// Spawn a new agent runtime with no extra subprocess env.
-    /// Equivalent to `spawn_with_env(HashMap::new())`. Returns a
-    /// handle holding the command sender + events receiver +
-    /// direct-accessor passthroughs.
+    /// Spawn a new agent runtime bound to `config_dir`. The path is
+    /// stored on the bridge as a typed field; every in-process
+    /// accessor (oauth, settings, catalog scans) reads it directly,
+    /// and the spawned `claude` subprocess inherits it as
+    /// `CLAUDE_CONFIG_DIR`. Returns a handle holding the command
+    /// sender + events receiver + direct-accessor passthroughs.
     #[must_use]
-    pub fn spawn() -> AgentHandle {
-        Self::spawn_with_env(std::collections::HashMap::new())
-    }
-
-    /// Spawn a new agent runtime, injecting `extra_env` into every
-    /// spawned `claude` subprocess. The workspace layer uses this to
-    /// thread `CLAUDE_CONFIG_DIR=<account.config_dir>` (and any other
-    /// account-scoped env) per-spawn — empty map for the no-account
-    /// path. Returns a handle holding the command sender + events
-    /// receiver + direct-accessor passthroughs.
-    #[must_use]
-    pub fn spawn_with_env(extra_env: std::collections::HashMap<String, String>) -> AgentHandle {
-        let bridge = ForgeSdkBridge::with_env(extra_env);
+    pub fn spawn(config_dir: PathBuf) -> AgentHandle {
+        let bridge = ForgeSdkBridge::new(config_dir);
         let agent_event_rx = bridge.take_events().unwrap_or_else(|| mpsc::unbounded_channel().1);
 
         let (commands_tx, commands_rx) = mpsc::unbounded_channel::<Command>();

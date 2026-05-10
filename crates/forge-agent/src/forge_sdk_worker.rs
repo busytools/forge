@@ -8,8 +8,7 @@
 //! The bridge owns the resulting `Client`; this module exposes the
 //! helpers it calls.
 
-use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use forge_sdk::{
@@ -40,7 +39,6 @@ pub(crate) async fn spawn_session(
     cwd: &str,
     resume_id: Option<&str>,
     launch_settings: &crate::client::SessionLaunchSettings,
-    extra_env: &HashMap<String, String>,
 ) -> anyhow::Result<()> {
     // If we already have a client, drop it so the existing subprocess
     // shuts down cleanly before the replacement spawns. Disconnect
@@ -56,6 +54,7 @@ pub(crate) async fn spawn_session(
         );
     }
 
+    let config_dir = bridge.config_dir();
     let options = build_options_with_callback(
         cwd,
         resume_id,
@@ -64,7 +63,7 @@ pub(crate) async fn spawn_session(
         Arc::clone(bridge.inner_pending()),
         Arc::clone(bridge.inner_pending_questions()),
         Arc::clone(bridge.session_id_slot_arc()),
-        extra_env,
+        &config_dir,
     );
     let (client, events) = Client::spawn(options).await?;
     // For resume sessions the CLI flag carried the real session id —
@@ -114,7 +113,7 @@ pub(crate) async fn spawn_session(
         &cwd_owned,
         launch_settings,
         resume_id,
-        extra_env,
+        &config_dir,
     )
     .await;
 
@@ -135,7 +134,7 @@ async fn emit_connected(
     cwd: &str,
     launch_settings: &crate::client::SessionLaunchSettings,
     resume_id: Option<&str>,
-    extra_env: &HashMap<String, String>,
+    config_dir: &Path,
 ) {
     let server_info = client.get_server_info().cloned();
     let init_data = client.initial_session_data().cloned();
@@ -197,7 +196,7 @@ async fn emit_connected(
     });
 
     let history_updates = resume_id.and_then(|prev_session_id| {
-        let messages = load_history_messages(prev_session_id, cwd, session_id);
+        let messages = load_history_messages(config_dir, prev_session_id, cwd, session_id);
         if messages.is_empty() { None } else { Some(messages) }
     });
 
@@ -210,24 +209,27 @@ async fn emit_connected(
         history_updates,
     });
 
-    let config_dir_override = extra_env.get("CLAUDE_CONFIG_DIR").map(std::path::PathBuf::from);
-    if let Some(account) = client.account_info_from_init().or_else(|| {
-        crate::cloud::auth_status::account_info_from_shell_for_dir(config_dir_override.as_deref())
-    }) {
+    if let Some(account) = client
+        .account_info_from_init()
+        .or_else(|| crate::cloud::auth_status::account_info_from_shell(config_dir))
+    {
         let _ = event_tx
             .send(AgentEvent::StatusSnapshot { session_id: session_id.to_owned(), account });
     }
 
-    let _ = event_tx.send(AgentEvent::SessionsListed { sessions: list_recent_sessions(cwd).await });
+    let _ = event_tx
+        .send(AgentEvent::SessionsListed { sessions: list_recent_sessions(config_dir, cwd).await });
 }
 
 fn load_history_messages(
+    config_dir: &Path,
     prev_session_id: &str,
     cwd: &str,
     session_id: &str,
 ) -> Vec<forge_primitives::Message> {
     let dir = if cwd.is_empty() { None } else { Some(cwd.to_owned()) };
-    let messages = crate::userdata::catalog::scan::get_session_messages(prev_session_id, dir);
+    let messages =
+        crate::userdata::catalog::scan::get_session_messages(config_dir, prev_session_id, dir);
     let raw: Vec<serde_json::Value> = messages
         .into_iter()
         .map(|m| {
@@ -257,11 +259,14 @@ fn load_history_messages(
     synthesized
 }
 
-async fn list_recent_sessions(cwd: &str) -> Vec<forge_primitives::SessionListEntry> {
+async fn list_recent_sessions(
+    config_dir: &Path,
+    cwd: &str,
+) -> Vec<forge_primitives::SessionListEntry> {
     use forge_primitives::SessionListEntry;
     const MAX_RECENT: usize = 50;
     let dir = if cwd.is_empty() { None } else { Some(cwd.to_owned()) };
-    crate::userdata::catalog::scan::list_sessions(dir, Some(MAX_RECENT), 0)
+    crate::userdata::catalog::scan::list_sessions(config_dir, dir, Some(MAX_RECENT), 0)
         .await
         .into_iter()
         .map(|info| SessionListEntry {
@@ -379,7 +384,7 @@ fn build_options_with_callback(
     pending: PendingResponses,
     pending_questions: PendingQuestions,
     session_id_slot: Arc<parking_lot::Mutex<String>>,
-    extra_env: &HashMap<String, String>,
+    config_dir: &Path,
 ) -> Options {
     // Observation hooks: passthrough callbacks that read CLI runtime
     // state out of every PreToolUse and UserPromptSubmit hook input
@@ -511,13 +516,12 @@ fn build_options_with_callback(
         }
     };
 
-    // Workspace-supplied per-spawn env (e.g. `CLAUDE_CONFIG_DIR`).
-    // Applied last so the user-provided map wins over any prior
-    // `OptionsBuilder::env` calls in this builder chain. Order across
-    // map iteration is irrelevant — keys are unique per HashMap.
-    for (k, v) in extra_env {
-        b = b.env(k.clone(), v.clone());
-    }
+    // Per-spawn `CLAUDE_CONFIG_DIR` — workspace-driven so each
+    // `claude` subprocess reads/writes the bound account's
+    // user-data tree (oauth tokens, projects history, settings).
+    // Threaded through as a typed `Path` from the bridge; no
+    // free-form HashMap of env vars at this layer.
+    b = b.env("CLAUDE_CONFIG_DIR", config_dir.to_string_lossy().to_string());
 
     tracing::info!(
         target: crate::logging::targets::BRIDGE_LIFECYCLE,
@@ -531,7 +535,7 @@ fn build_options_with_callback(
         effort_source,
         cwd_present = !cwd.is_empty(),
         resume_present = resume.is_some(),
-        extra_env_count = extra_env.len(),
+        config_dir = %config_dir.display(),
     );
     b.build()
 }

@@ -30,6 +30,7 @@
 
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic, clippy::manual_assert)]
 
+use std::path::PathBuf;
 use std::time::Duration;
 
 use forge_agent::Agent;
@@ -37,10 +38,26 @@ use forge_tui::agent::{AgentEvent, SessionLaunchSettings};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
+/// Resolve the smoke-test `config_dir`. Honours `$CLAUDE_CONFIG_DIR`
+/// (the same scheme the developer's profile uses) and falls back to
+/// `$HOME/.claude` when unset — these tests are run manually against
+/// the developer's real CLI install, so the natural fallback is the
+/// developer's default profile.
+fn smoke_config_dir() -> PathBuf {
+    if let Ok(raw) = std::env::var("CLAUDE_CONFIG_DIR") {
+        let trimmed = raw.trim_end_matches('/');
+        if !trimmed.is_empty() {
+            return PathBuf::from(trimmed);
+        }
+    }
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+    PathBuf::from(home).join(".claude")
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "needs a real `claude` binary on PATH; burns API budget"]
 async fn forge_sdk_e2e_round_trip() {
-    let agent_handle = Agent::spawn();
+    let agent_handle = Agent::spawn(smoke_config_dir());
     let mut event_rx = agent_handle.take_events().expect("fresh handle has events");
     let agent: Arc<forge_agent::AgentHandle> = Arc::new(agent_handle);
 
@@ -72,7 +89,7 @@ async fn forge_sdk_e2e_round_trip() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "needs a real `claude` binary on PATH; burns API budget"]
 async fn forge_sdk_e2e_multi_turn() {
-    let agent_handle = Agent::spawn();
+    let agent_handle = Agent::spawn(smoke_config_dir());
     let mut event_rx = agent_handle.take_events().expect("fresh handle has events");
     let agent: Arc<forge_agent::AgentHandle> = Arc::new(agent_handle);
 
@@ -114,7 +131,7 @@ async fn forge_sdk_e2e_multi_turn() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "needs a real `claude` binary on PATH; burns API budget"]
 async fn forge_sdk_e2e_tool_call_emits_event() {
-    let agent_handle = Agent::spawn();
+    let agent_handle = Agent::spawn(smoke_config_dir());
     let mut event_rx = agent_handle.take_events().expect("fresh handle has events");
     let agent: Arc<forge_agent::AgentHandle> = Arc::new(agent_handle);
 
@@ -154,7 +171,7 @@ async fn forge_sdk_e2e_tool_call_emits_event() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "needs a real `claude` binary on PATH; burns API budget"]
 async fn forge_sdk_e2e_cancel_mid_turn() {
-    let agent_handle = Agent::spawn();
+    let agent_handle = Agent::spawn(smoke_config_dir());
     let mut event_rx = agent_handle.take_events().expect("fresh handle has events");
     let agent: Arc<forge_agent::AgentHandle> = Arc::new(agent_handle);
 
@@ -223,7 +240,7 @@ async fn forge_sdk_e2e_cancel_mid_turn() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "needs a real `claude` binary on PATH; burns API budget"]
 async fn forge_sdk_e2e_status_and_context_snapshots() {
-    let agent_handle = Agent::spawn();
+    let agent_handle = Agent::spawn(smoke_config_dir());
     let mut event_rx = agent_handle.take_events().expect("fresh handle has events");
     let agent: Arc<forge_agent::AgentHandle> = Arc::new(agent_handle);
 
@@ -274,7 +291,7 @@ async fn forge_sdk_e2e_status_and_context_snapshots() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "needs a real `claude` binary on PATH; burns API budget"]
 async fn forge_sdk_e2e_mcp_snapshot() {
-    let agent_handle = Agent::spawn();
+    let agent_handle = Agent::spawn(smoke_config_dir());
     let mut event_rx = agent_handle.take_events().expect("fresh handle has events");
     let agent: Arc<forge_agent::AgentHandle> = Arc::new(agent_handle);
 
@@ -319,7 +336,7 @@ async fn forge_sdk_e2e_mcp_snapshot() {
 async fn forge_sdk_e2e_resume_session() {
     // Phase 1: spawn a fresh session, drive one prompt, capture sid.
     let session_id = {
-        let agent_handle = Agent::spawn();
+        let agent_handle = Agent::spawn(smoke_config_dir());
         let mut event_rx = agent_handle.take_events().expect("fresh handle has events");
         let agent: Arc<forge_agent::AgentHandle> = Arc::new(agent_handle);
 
@@ -344,7 +361,7 @@ async fn forge_sdk_e2e_resume_session() {
     };
 
     // Phase 2: resume by id on a fresh worker.
-    let agent_handle = Agent::spawn();
+    let agent_handle = Agent::spawn(smoke_config_dir());
     let mut event_rx = agent_handle.take_events().expect("fresh handle has events");
     let agent: Arc<forge_agent::AgentHandle> = Arc::new(agent_handle);
 

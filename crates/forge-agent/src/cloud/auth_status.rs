@@ -62,7 +62,12 @@ fn map_auth_method_to_api_key_source(auth_method: &str) -> &str {
 }
 
 /// Shell out to `claude auth status` and parse its JSON output into
-/// [`AccountInfo`]. Returns `None` when:
+/// [`AccountInfo`]. The `config_dir` is exported to the subprocess as
+/// `CLAUDE_CONFIG_DIR` so the spawned `claude` reads the bound
+/// account; the caller is the source of truth for which account this
+/// is.
+///
+/// Returns `None` when:
 ///
 /// - the `claude` binary is not on `$PATH`,
 /// - the subprocess exits non-zero,
@@ -80,23 +85,10 @@ fn map_auth_method_to_api_key_source(auth_method: &str) -> &str {
 /// Synchronous; runs the subprocess inline. ~50ms first call, faster
 /// thereafter (claude warms up its keychain reads in-process).
 #[must_use]
-pub fn account_info_from_shell() -> Option<AccountInfo> {
-    account_info_from_shell_for_dir(None)
-}
-
-/// Same as [`account_info_from_shell`] but with an explicit
-/// `config_dir` override, applied to the subprocess env as
-/// `CLAUDE_CONFIG_DIR`. Phase 1b's per-spawn account binding uses
-/// this so the auth_status subprocess honours the bound account
-/// rather than whatever `$CLAUDE_CONFIG_DIR` the parent forge-tui
-/// process happens to have. Pass `None` to inherit the parent env.
-#[must_use]
-pub fn account_info_from_shell_for_dir(config_dir: Option<&Path>) -> Option<AccountInfo> {
+pub fn account_info_from_shell(config_dir: &Path) -> Option<AccountInfo> {
     let mut cmd = std::process::Command::new("claude");
     cmd.args(["auth", "status"]);
-    if let Some(dir) = config_dir {
-        cmd.env("CLAUDE_CONFIG_DIR", dir);
-    }
+    cmd.env("CLAUDE_CONFIG_DIR", config_dir);
     let output = cmd.output().ok()?;
     if !output.status.success() {
         return None;
