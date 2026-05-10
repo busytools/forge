@@ -26,7 +26,7 @@ pub(crate) fn status_lines(app: &App) -> Vec<Line<'static>> {
         app.session_id().map_or_else(|| "(none)".to_owned(), std::string::ToString::to_string);
     kv_line(&mut lines, "Session ID", &session_id_str);
 
-    kv_line(&mut lines, "cwd", &app.cwd);
+    kv_line(&mut lines, "cwd", app.cwd());
 
     if let Some(chip) = app.git_branch_chip() {
         let branch_text = match chip {
@@ -194,7 +194,7 @@ fn resolve_memory_path(app: &App) -> String {
     let Some(conn) = app.conn().cloned() else {
         return "(no connection)".to_owned();
     };
-    let memory_md = conn.project_memory_path(std::path::Path::new(&app.cwd_raw));
+    let memory_md = conn.project_memory_path(std::path::Path::new(app.cwd_raw()));
     if memory_md.exists() {
         format!("auto memory ({})", memory_md.display())
     } else {
@@ -230,7 +230,7 @@ mod tests {
     #[test]
     fn status_lines_shows_cwd() {
         let mut app = App::test_default();
-        app.cwd = "/test/project".to_owned();
+        app.set_cwd("/test/project");
         let text = lines_to_string(&status_lines(&app));
         assert!(text.contains("/test/project"));
     }

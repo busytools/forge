@@ -318,7 +318,7 @@ mod tests {
             std::fs::write(&path, "").expect("write file");
         }
         let mut app = App::test_default();
-        app.cwd_raw = tmp.path().to_string_lossy().into_owned();
+        app.set_cwd_raw(tmp.path().to_string_lossy().into_owned());
         (app, tmp)
     }
 
@@ -447,7 +447,7 @@ mod tests {
     fn nested_gitignore_hides_same_directory_children() {
         let (mut app, _tmp) =
             app_with_temp_files(&["src/.gitignore", "src/visible.rs", "src/hidden.rs"]);
-        let root = std::path::PathBuf::from(&app.cwd_raw);
+        let root = std::path::PathBuf::from(app.cwd_raw());
         std::fs::create_dir_all(root.join(".git")).expect("create .git");
         std::fs::write(root.join("src").join(".gitignore"), "hidden.rs\n")
             .expect("write .gitignore");

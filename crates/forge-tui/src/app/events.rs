@@ -1086,12 +1086,12 @@ mod tests {
     #[test]
     fn todowrite_tool_call_without_todos_array_preserves_existing_todos() {
         let mut app = make_test_app();
-        app.todos.push(TodoItem {
+        app.todos_mut().push(TodoItem {
             content: "Existing todo".into(),
             status: TodoStatus::InProgress,
             active_form: String::new(),
         });
-        app.show_todo_panel = true;
+        app.set_show_todo_panel(true);
 
         send_msg(
             &mut app,
@@ -1102,10 +1102,10 @@ mod tests {
             )]),
         );
 
-        assert_eq!(app.todos.len(), 1);
-        assert_eq!(app.todos[0].content, "Existing todo");
-        assert_eq!(app.todos[0].status, TodoStatus::InProgress);
-        assert!(app.show_todo_panel);
+        assert_eq!(app.todos().len(), 1);
+        assert_eq!(app.todos()[0].content, "Existing todo");
+        assert_eq!(app.todos()[0].status, TodoStatus::InProgress);
+        assert!(app.show_todo_panel());
     }
 
     #[test]
@@ -1121,8 +1121,8 @@ mod tests {
                 }),
             )]),
         );
-        assert_eq!(app.todos.len(), 1);
-        assert_eq!(app.todos[0].content, "Task A");
+        assert_eq!(app.todos().len(), 1);
+        assert_eq!(app.todos()[0].content, "Task A");
 
         // Re-send the same tool_use with empty input — the wire path
         // collapses the SessionUpdate ToolCall + ToolCallUpdate split
@@ -1137,9 +1137,9 @@ mod tests {
             )]),
         );
 
-        assert_eq!(app.todos.len(), 1);
-        assert_eq!(app.todos[0].content, "Task A");
-        assert_eq!(app.todos[0].status, TodoStatus::InProgress);
+        assert_eq!(app.todos().len(), 1);
+        assert_eq!(app.todos()[0].content, "Task A");
+        assert_eq!(app.todos()[0].status, TodoStatus::InProgress);
     }
 
     #[test]
@@ -1327,12 +1327,12 @@ mod tests {
         assert!(app.viewport().auto_scroll);
         assert!(!app.should_quit);
         assert!(app.session_id().is_none());
-        assert_eq!(app.files_accessed, 0);
+        assert_eq!(app.files_accessed(), 0);
         assert!(app.pending_interaction_ids().is_empty());
         assert!(!app.tools_collapsed);
         assert!(!app.force_redraw);
-        assert!(app.todos.is_empty());
-        assert!(!app.show_todo_panel);
+        assert!(app.todos().is_empty());
+        assert!(!app.show_todo_panel());
         assert!(app.selection.is_none());
         assert!(app.mention.is_none());
         assert!(!app.cancelled_turn_pending_hint());
@@ -1448,7 +1448,7 @@ mod tests {
     fn connected_requests_mcp_snapshot_even_outside_mcp_tab() {
         let (mut app, mut rx) = app_with_bridge_connection();
         app.config.active_tab = crate::app::config::ConfigTab::Status;
-        app.mcp.servers.push(forge_primitives::McpServerStatus {
+        app.mcp_mut().servers.push(forge_primitives::McpServerStatus {
             name: "supabase".into(),
             status: forge_primitives::McpServerConnectionStatus::Connected,
             server_info: None,
@@ -1472,8 +1472,8 @@ mod tests {
                 session_id: forge_primitives::SessionId::new("test-session".to_owned()),
             }
         );
-        assert!(app.mcp.in_flight);
-        assert!(app.mcp.servers.is_empty());
+        assert!(app.mcp().in_flight);
+        assert!(app.mcp().servers.is_empty());
     }
 
     #[test]
@@ -1494,8 +1494,8 @@ mod tests {
             },
         );
 
-        assert_eq!(app.cwd_raw, "/changed");
-        assert_eq!(app.cwd, "/changed");
+        assert_eq!(app.cwd_raw(), "/changed");
+        assert_eq!(app.cwd(), "/changed");
         assert!(app.resuming_session_id.is_none());
         let Some(first) = app.messages().first() else {
             panic!("missing welcome message");
@@ -1592,7 +1592,7 @@ mod tests {
         let mut app = make_test_app();
         app.messages_mut().push(user_msg("hello"));
         app.status = AppStatus::Running;
-        app.files_accessed = 9;
+        app.set_files_accessed(9);
         app.usage.snapshot = Some(UsageSnapshot {
             source: UsageSourceKind::Oauth,
             fetched_at: std::time::SystemTime::now(),
@@ -1632,7 +1632,7 @@ mod tests {
         assert!(matches!(app.status, AppStatus::Ready));
         assert_eq!(app.messages().len(), 1);
         assert!(matches!(app.messages()[0].role, MessageRole::Welcome));
-        assert_eq!(app.files_accessed, 0);
+        assert_eq!(app.files_accessed(), 0);
         assert!(app.usage.snapshot.is_none());
         assert!(app.account_info().is_none());
         assert!(app.plugins.installed.is_empty());
@@ -1745,17 +1745,17 @@ mod tests {
         app.messages_mut()
             .push(assistant_msg(vec![MessageBlock::Text(TextBlock::from_complete("world"))]));
         app.status = AppStatus::Running;
-        app.files_accessed = 9;
+        app.set_files_accessed(9);
         app.pending_interaction_ids_mut().push("perm-1".into());
-        app.todo_selected = 2;
-        app.show_todo_panel = true;
-        app.todos.push(TodoItem {
+        app.set_todo_selected(2);
+        app.set_show_todo_panel(true);
+        app.todos_mut().push(TodoItem {
             content: "Task".into(),
             status: TodoStatus::InProgress,
             active_form: String::new(),
         });
         app.mention = Some(mention::MentionState::new(0, 0, String::new(), Vec::new()));
-        app.mcp.servers.push(forge_primitives::McpServerStatus {
+        app.mcp_mut().servers.push(forge_primitives::McpServerStatus {
             name: "supabase".into(),
             status: forge_primitives::McpServerConnectionStatus::Connected,
             server_info: None,
@@ -1784,14 +1784,14 @@ mod tests {
         assert_eq!(app.current_model().map(|model| model.resolved_id.as_str()), Some("new-model"));
         assert_eq!(app.messages().len(), 1);
         assert!(matches!(app.messages()[0].role, MessageRole::Welcome));
-        assert_eq!(app.files_accessed, 0);
+        assert_eq!(app.files_accessed(), 0);
         assert!(app.pending_interaction_ids().is_empty());
-        assert!(app.todos.is_empty());
-        assert!(!app.show_todo_panel);
+        assert!(app.todos().is_empty());
+        assert!(!app.show_todo_panel());
         assert!(app.mention.is_none());
-        assert!(app.mcp.servers.is_empty());
-        assert_eq!(app.cwd_raw, "/replacement");
-        assert_eq!(app.cwd, "/replacement");
+        assert!(app.mcp().servers.is_empty());
+        assert_eq!(app.cwd_raw(), "/replacement");
+        assert_eq!(app.cwd(), "/replacement");
         let Some(MessageBlock::Welcome(welcome)) = app.messages()[0].blocks.first() else {
             panic!("expected welcome block");
         };
@@ -1803,7 +1803,7 @@ mod tests {
     fn session_replaced_requests_mcp_snapshot_even_outside_mcp_tab() {
         let (mut app, mut rx) = app_with_bridge_connection();
         app.config.active_tab = crate::app::config::ConfigTab::Status;
-        app.mcp.servers.push(forge_primitives::McpServerStatus {
+        app.mcp_mut().servers.push(forge_primitives::McpServerStatus {
             name: "supabase".into(),
             status: forge_primitives::McpServerConnectionStatus::Connected,
             server_info: None,
@@ -1837,8 +1837,8 @@ mod tests {
                 session_id: forge_primitives::SessionId::new("replacement".to_owned()),
             }
         );
-        assert!(app.mcp.in_flight);
-        assert!(app.mcp.servers.is_empty());
+        assert!(app.mcp().in_flight);
+        assert!(app.mcp().servers.is_empty());
     }
 
     #[test]
@@ -2007,7 +2007,7 @@ mod tests {
     fn stale_mcp_snapshot_for_old_session_is_ignored() {
         let mut app = make_test_app();
         app.set_session_id(Some(model::SessionId::new("current-session")));
-        app.mcp.servers.push(forge_primitives::McpServerStatus {
+        app.mcp_mut().servers.push(forge_primitives::McpServerStatus {
             name: "current".into(),
             status: forge_primitives::McpServerConnectionStatus::Connected,
             server_info: None,
@@ -2038,8 +2038,8 @@ mod tests {
             },
         );
 
-        assert_eq!(app.mcp.servers.len(), 1);
-        assert_eq!(app.mcp.servers[0].name, "current");
+        assert_eq!(app.mcp().servers.len(), 1);
+        assert_eq!(app.mcp().servers[0].name, "current");
     }
 
     #[test]
@@ -2075,7 +2075,7 @@ mod tests {
     #[test]
     fn stale_plugin_inventory_result_for_old_cwd_is_ignored() {
         let mut app = make_test_app();
-        app.cwd_raw = "/current".into();
+        app.set_cwd_raw("/current");
 
         handle_client_event(
             &mut app,
@@ -2178,7 +2178,7 @@ mod tests {
         app.config.active_tab = crate::app::config::ConfigTab::Mcp;
         app.config.status_message =
             Some("Starting MCP auth for claude.ai Google Calendar...".into());
-        app.mcp.in_flight = true;
+        app.mcp_mut().in_flight = true;
 
         handle_client_event(
             &mut app,
@@ -2193,14 +2193,14 @@ mod tests {
         );
 
         assert_eq!(
-            app.mcp.last_error.as_deref(),
+            app.mcp().last_error.as_deref(),
             Some(
                 "Failed to authenticate MCP server claude.ai Google Calendar: Server type \"claudeai-proxy\" does not support OAuth authentication"
             )
         );
-        assert_eq!(app.config.last_error, app.mcp.last_error);
+        assert_eq!(app.config.last_error, app.mcp().last_error);
         assert!(app.config.status_message.is_none());
-        assert!(!app.mcp.in_flight);
+        assert!(!app.mcp().in_flight);
         assert!(app.messages().is_empty());
     }
 
@@ -3415,12 +3415,12 @@ mod tests {
     #[test]
     fn tab_toggles_todo_focus_target_for_open_todos() {
         let mut app = make_test_app();
-        app.todos.push(TodoItem {
+        app.todos_mut().push(TodoItem {
             content: "Task".into(),
             status: TodoStatus::Pending,
             active_form: String::new(),
         });
-        app.show_todo_panel = true;
+        app.set_show_todo_panel(true);
 
         handle_normal_key(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
         assert_eq!(app.focus_owner(), FocusOwner::TodoList);
@@ -3432,7 +3432,7 @@ mod tests {
     #[test]
     fn up_down_in_todo_focus_changes_todo_selection() {
         let mut app = make_test_app();
-        app.todos = vec![
+        *app.todos_mut() = vec![
             TodoItem {
                 content: "Task 1".into(),
                 status: TodoStatus::Pending,
@@ -3449,32 +3449,32 @@ mod tests {
                 active_form: String::new(),
             },
         ];
-        app.show_todo_panel = true;
+        app.set_show_todo_panel(true);
         app.claim_focus_target(FocusTarget::TodoList);
-        app.todo_selected = 1;
+        app.set_todo_selected(1);
 
         let before_cursor_row = app.input.cursor_row();
         let before_cursor_col = app.input.cursor_col();
         handle_normal_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-        assert_eq!(app.todo_selected, 2);
+        assert_eq!(app.todo_selected(), 2);
         assert_eq!(app.input.cursor_row(), before_cursor_row);
         assert_eq!(app.input.cursor_col(), before_cursor_col);
 
         handle_normal_key(&mut app, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
-        assert_eq!(app.todo_selected, 1);
+        assert_eq!(app.todo_selected(), 1);
     }
 
     #[test]
     fn permission_owner_overrides_todo_focus_for_up_down() {
         let mut app = make_test_app();
-        app.todos.push(TodoItem {
+        app.todos_mut().push(TodoItem {
             content: "Task".into(),
             status: TodoStatus::Pending,
             active_form: String::new(),
         });
-        app.show_todo_panel = true;
+        app.set_show_todo_panel(true);
         app.claim_focus_target(FocusTarget::TodoList);
-        app.todo_selected = 0;
+        app.set_todo_selected(0);
         let _rx_a = attach_pending_permission(
             &mut app,
             "perm-a",
@@ -3517,7 +3517,7 @@ mod tests {
         );
 
         assert_eq!(app.pending_interaction_ids(), vec!["perm-b", "perm-a"]);
-        assert_eq!(app.todo_selected, 0);
+        assert_eq!(app.todo_selected(), 0);
     }
 
     #[test]
@@ -3799,18 +3799,18 @@ mod tests {
         let mut app = make_test_app();
         app.pending_interaction_ids_mut().push("perm-1".into());
         app.claim_focus_target(FocusTarget::Permission);
-        app.todos.push(TodoItem {
+        app.todos_mut().push(TodoItem {
             content: "Task".into(),
             status: TodoStatus::Pending,
             active_form: String::new(),
         });
 
-        assert!(!app.show_todo_panel);
+        assert!(!app.show_todo_panel());
         handle_terminal_event(
             &mut app,
             Event::Key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL)),
         );
-        assert!(app.show_todo_panel);
+        assert!(app.show_todo_panel());
     }
 
     #[test]
@@ -3833,7 +3833,7 @@ mod tests {
             ],
             true,
         );
-        app.todos.push(TodoItem {
+        app.todos_mut().push(TodoItem {
             content: "Task".into(),
             status: TodoStatus::Pending,
             active_form: String::new(),
@@ -3844,7 +3844,7 @@ mod tests {
             Event::Key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL)),
         );
 
-        assert!(app.show_todo_panel);
+        assert!(app.show_todo_panel());
         assert_eq!(app.focus_owner(), FocusOwner::TodoList);
     }
 
@@ -3900,12 +3900,12 @@ mod tests {
             ],
             true,
         );
-        app.todos.push(TodoItem {
+        app.todos_mut().push(TodoItem {
             content: "Task".into(),
             status: TodoStatus::Pending,
             active_form: String::new(),
         });
-        app.show_todo_panel = true;
+        app.set_show_todo_panel(true);
 
         handle_terminal_event(
             &mut app,
@@ -3985,12 +3985,12 @@ mod tests {
     }
 
     fn push_todo_and_focus(app: &mut App) {
-        app.todos.push(TodoItem {
+        app.todos_mut().push(TodoItem {
             content: "Task".into(),
             status: TodoStatus::Pending,
             active_form: String::new(),
         });
-        app.show_todo_panel = true;
+        app.set_show_todo_panel(true);
         app.claim_focus_target(FocusTarget::TodoList);
         assert_eq!(app.focus_owner(), FocusOwner::TodoList);
     }
@@ -4751,12 +4751,12 @@ mod tests {
     #[test]
     fn mention_owner_overrides_todo_focus_then_releases_back() {
         let mut app = make_test_app();
-        app.todos.push(TodoItem {
+        app.todos_mut().push(TodoItem {
             content: "Task".into(),
             status: TodoStatus::Pending,
             active_form: String::new(),
         });
-        app.show_todo_panel = true;
+        app.set_show_todo_panel(true);
         app.claim_focus_target(FocusTarget::TodoList);
         app.slash = Some(SlashState {
             trigger_row: 0,
@@ -4829,7 +4829,7 @@ mod tests {
         let mut app = make_test_app();
         let dir = tempfile::tempdir().expect("tempdir");
         app.settings_home_override = Some(dir.path().to_path_buf());
-        app.cwd_raw = dir.path().to_string_lossy().to_string();
+        app.set_cwd_raw(dir.path().to_string_lossy().to_string());
         crate::app::config::open(&mut app).expect("open settings");
         app.active_view = ActiveView::Config;
         app.config.selected_setting_index = crate::app::config::setting_specs()
@@ -4854,7 +4854,7 @@ mod tests {
         let mut app = make_test_app();
         let dir = tempfile::tempdir().expect("tempdir");
         app.settings_home_override = Some(dir.path().to_path_buf());
-        app.cwd_raw = dir.path().to_string_lossy().to_string();
+        app.set_cwd_raw(dir.path().to_string_lossy().to_string());
         crate::app::config::open(&mut app).expect("open settings");
         app.active_view = ActiveView::Config;
         app.input.set_text("seed");
@@ -4937,11 +4937,11 @@ mod tests {
         let mut app = make_test_app();
         app.active_view = ActiveView::Trusted;
         app.input.set_text("seed");
-        app.cwd_raw = dir.path().join("project").to_string_lossy().to_string();
+        app.set_cwd_raw(dir.path().join("project").to_string_lossy().to_string());
         app.config.preferences_path = Some(path);
         app.trust.status = crate::app::trust::TrustStatus::Untrusted;
         app.trust.project_key =
-            crate::app::trust::store::normalize_project_key(std::path::Path::new(&app.cwd_raw));
+            crate::app::trust::store::normalize_project_key(std::path::Path::new(app.cwd_raw()));
 
         handle_terminal_event(
             &mut app,
@@ -5113,8 +5113,8 @@ mod tests {
     fn prompt_suggestion_tab_does_not_steal_todo_focus_toggle() {
         let mut app = make_test_app();
         app.set_prompt_suggestion(Some("Write focused tests".to_owned()));
-        app.show_todo_panel = true;
-        app.todos.push(TodoItem {
+        app.set_show_todo_panel(true);
+        app.todos_mut().push(TodoItem {
             content: "todo".to_owned(),
             status: TodoStatus::Pending,
             active_form: String::new(),

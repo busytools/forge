@@ -150,7 +150,7 @@ pub(super) fn handle_mcp_key(app: &mut App, key: KeyEvent) -> bool {
             true
         }
         (KeyCode::Down, KeyModifiers::NONE) => {
-            let last_index = app.mcp.servers.len().saturating_sub(1);
+            let last_index = app.mcp().servers.len().saturating_sub(1);
             app.config.mcp_selected_server_index =
                 (app.config.mcp_selected_server_index + 1).min(last_index);
             true
@@ -166,22 +166,22 @@ pub(crate) fn refresh_mcp_snapshot_if_needed(app: &mut App) {
 }
 
 pub(crate) fn refresh_mcp_snapshot(app: &mut App) {
-    app.mcp.servers.clear();
-    app.mcp.last_error = None;
+    app.mcp_mut().servers.clear();
+    app.mcp_mut().last_error = None;
     request_mcp_snapshot(app);
 }
 
 pub(crate) fn request_mcp_snapshot(app: &mut App) {
     let Some(conn) = app.conn().cloned() else {
-        app.mcp.in_flight = false;
+        app.mcp_mut().in_flight = false;
         return;
     };
     let Some(session_id) = app.session_id().map(ToString::to_string) else {
-        app.mcp.in_flight = false;
+        app.mcp_mut().in_flight = false;
         return;
     };
-    app.mcp.in_flight = true;
-    app.mcp.last_error = None;
+    app.mcp_mut().in_flight = true;
+    app.mcp_mut().last_error = None;
     match conn.get_mcp_snapshot(session_id.clone()) {
         Ok(()) => tracing::debug!(
             target: crate::logging::targets::APP_CONFIG,
@@ -191,8 +191,8 @@ pub(crate) fn request_mcp_snapshot(app: &mut App) {
             session_id = %session_id,
         ),
         Err(err) => {
-            app.mcp.in_flight = false;
-            app.mcp.last_error = Some(err.to_string());
+            app.mcp_mut().in_flight = false;
+            app.mcp_mut().last_error = Some(err.to_string());
             tracing::warn!(
                 target: crate::logging::targets::APP_CONFIG,
                 event_name = "mcp_snapshot_request_failed",
@@ -416,7 +416,7 @@ pub(crate) fn send_mcp_elicitation_response(
         .respond_to_elicitation(session_id.to_string(), request_id.to_owned(), action, content)
         .is_ok()
     {
-        app.mcp.pending_elicitation = None;
+        app.mcp_mut().pending_elicitation = None;
         refresh_mcp_snapshot(app);
         tracing::info!(
             target: crate::logging::targets::APP_PERMISSION,
@@ -443,8 +443,11 @@ pub(crate) fn send_mcp_elicitation_response(
 }
 
 fn open_selected_mcp_server_details(app: &mut App) {
-    let Some(server_name) =
-        app.mcp.servers.get(app.config.mcp_selected_server_index).map(|server| server.name.clone())
+    let Some(server_name) = app
+        .mcp()
+        .servers
+        .get(app.config.mcp_selected_server_index)
+        .map(|server| server.name.clone())
     else {
         return;
     };
@@ -457,7 +460,7 @@ pub(crate) fn open_mcp_server_details(
     preferred_action: Option<McpServerActionKind>,
 ) {
     let selected_index =
-        app.mcp.servers.iter().find(|server| server.name == server_name).map_or(0, |server| {
+        app.mcp().servers.iter().find(|server| server.name == server_name).map_or(0, |server| {
             preferred_action
                 .and_then(|action| {
                     available_mcp_actions(server).iter().position(|candidate| *candidate == action)
@@ -520,7 +523,7 @@ pub(crate) fn present_mcp_elicitation_request(
     let mode_for_log = format!("{:?}", request.mode);
     let has_url = request.url.is_some();
     let has_requested_schema = request.requested_schema.is_some();
-    app.mcp.pending_elicitation = Some(request.clone());
+    app.mcp_mut().pending_elicitation = Some(request.clone());
     view::set_active_view(app, ActiveView::Config);
     app.config.active_tab = ConfigTab::Mcp;
     refresh_mcp_snapshot(app);
@@ -592,13 +595,13 @@ pub(crate) fn handle_mcp_elicitation_completed(
     _server_name: Option<String>,
 ) {
     let should_clear = app
-        .mcp
+        .mcp()
         .pending_elicitation
         .as_ref()
         .and_then(|request| request.elicitation_id.as_deref())
         .is_some_and(|current| current == elicitation_id);
     if should_clear {
-        app.mcp.pending_elicitation = None;
+        app.mcp_mut().pending_elicitation = None;
         if matches!(app.config.overlay, Some(ConfigOverlayState::McpElicitation(_))) {
             app.config.overlay = None;
         }
@@ -617,9 +620,9 @@ pub(crate) fn handle_mcp_operation_error(
     app: &mut App,
     error: &forge_primitives::McpOperationError,
 ) {
-    app.mcp.in_flight = false;
+    app.mcp_mut().in_flight = false;
     let formatted = format_mcp_operation_error(error);
-    app.mcp.last_error = Some(formatted.clone());
+    app.mcp_mut().last_error = Some(formatted.clone());
     app.config.last_error = Some(formatted);
     app.config.status_message = None;
     tracing::error!(

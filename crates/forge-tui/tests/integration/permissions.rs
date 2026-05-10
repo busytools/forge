@@ -192,13 +192,13 @@ async fn tool_call_does_not_change_scroll_when_auto_scroll_off() {
 async fn turn_complete_resets_transient_state() {
     let mut app = test_app();
     app.status = AppStatus::Running;
-    app.files_accessed = 5;
+    app.set_files_accessed(5);
     app.spinner_frame = 42;
 
     send_client_event(&mut app, ClientEvent::TurnComplete { terminal_reason: None });
 
     assert!(matches!(app.status, AppStatus::Ready));
-    assert_eq!(app.files_accessed, 0, "files_accessed should reset");
+    assert_eq!(app.files_accessed(), 0, "files_accessed should reset");
     // spinner_frame is a UI detail, not reset by TurnComplete (it's driven by tick)
     // pending_interaction_ids should be empty (no permissions were pending)
     assert!(app.pending_interaction_ids().is_empty());
@@ -243,17 +243,17 @@ async fn turn_complete_does_not_clear_todos() {
     let mut app = test_app();
 
     // Simulate a TodoWrite by directly setting todos
-    app.todos = vec![forge_tui::app::TodoItem {
+    *app.todos_mut() = vec![forge_tui::app::TodoItem {
         content: "Test task".into(),
         status: forge_tui::app::TodoStatus::InProgress,
         active_form: "Testing".into(),
     }];
-    app.show_todo_panel = true;
+    app.set_show_todo_panel(true);
 
     send_client_event(&mut app, ClientEvent::TurnComplete { terminal_reason: None });
 
-    assert_eq!(app.todos.len(), 1, "todos should persist across turns");
-    assert!(app.show_todo_panel, "todo panel state should persist");
+    assert_eq!(app.todos().len(), 1, "todos should persist across turns");
+    assert!(app.show_todo_panel(), "todo panel state should persist");
 }
 
 #[tokio::test]

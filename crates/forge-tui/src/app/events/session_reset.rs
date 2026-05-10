@@ -46,7 +46,7 @@ fn reset_session_identity_state(
     app.set_prompt_suggestion(None);
     app.set_last_rate_limit_update(None);
     app.should_quit = false;
-    app.files_accessed = 0;
+    app.set_files_accessed(0);
     app.set_cancelled_turn_pending_hint(false);
     app.set_pending_cancel_origin(None);
     app.pending_auto_submit_after_cancel = false;
@@ -81,10 +81,10 @@ fn reset_interaction_state_for_new_session(app: &mut App) {
     app.pending_interaction_ids_mut().clear();
     app.clear_tool_scope_tracking();
     app.tool_call_index_mut().clear();
-    app.todos.clear();
-    app.show_todo_panel = false;
-    app.todo_scroll = 0;
-    app.todo_selected = 0;
+    app.todos_mut().clear();
+    app.set_show_todo_panel(false);
+    app.set_todo_scroll(0);
+    app.set_todo_selected(0);
     app.focus = super::super::FocusManager::default();
     app.available_commands_mut().clear();
     app.available_agents_mut().clear();
@@ -109,9 +109,9 @@ fn reset_render_state_for_new_session(app: &mut App) {
 }
 
 fn reset_cache_and_footer_state_for_new_session(app: &mut App) {
-    app.cached_todo_compact = None;
+    app.set_cached_todo_compact(None);
     app.clear_terminal_tool_call_tracking();
-    app.mcp = super::super::McpState::default();
+    *app.mcp_mut() = super::super::McpState::default();
     crate::app::usage::reset_for_session_change(app);
     crate::app::plugins::reset_for_session_change(app);
     app.force_redraw = true;

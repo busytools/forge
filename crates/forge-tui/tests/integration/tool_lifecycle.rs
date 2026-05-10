@@ -408,14 +408,14 @@ async fn todowrite_via_update_raw_input_parses_todos() {
     ]});
     send_msg(&mut app, assistant_message(vec![tool_use_block("tc-todo-up", "TodoWrite", raw)]));
 
-    assert_eq!(app.todos.len(), 1);
-    assert_eq!(app.todos[0].content, "Step 1");
+    assert_eq!(app.todos().len(), 1);
+    assert_eq!(app.todos()[0].content, "Step 1");
 }
 
 #[tokio::test]
 async fn title_shortened_relative_to_cwd() {
     let mut app = test_app();
-    app.cwd_raw = "/home/user/project".into();
+    app.set_cwd_raw("/home/user/project");
 
     send_msg(
         &mut app,

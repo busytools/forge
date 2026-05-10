@@ -87,11 +87,11 @@ async fn todowrite_tool_call_updates_todo_list() {
 
     send_msg(&mut app, assistant_message(vec![tool_use_block("todo-1", "TodoWrite", raw_input)]));
 
-    assert_eq!(app.todos.len(), 2);
-    assert_eq!(app.todos[0].content, "Fix bug");
-    assert_eq!(app.todos[1].content, "Write tests");
+    assert_eq!(app.todos().len(), 2);
+    assert_eq!(app.todos()[0].content, "Fix bug");
+    assert_eq!(app.todos()[1].content, "Write tests");
     // show_todo_panel is user-toggled (Ctrl+T), not auto-shown on TodoWrite
-    assert!(!app.show_todo_panel);
+    assert!(!app.show_todo_panel());
 }
 
 #[tokio::test]
@@ -103,7 +103,7 @@ async fn todowrite_replaces_previous_items_and_clears_for_terminal_payloads() {
         {"content": "Task B", "status": "pending", "activeForm": "Doing B"},
     ]});
     send_msg(&mut app, assistant_message(vec![tool_use_block("todo-r1", "TodoWrite", first)]));
-    assert_eq!(app.todos.len(), 2);
+    assert_eq!(app.todos().len(), 2);
 
     let replacement = serde_json::json!({"todos": [
         {"content": "Task C", "status": "pending", "activeForm": "Doing C"},
@@ -112,8 +112,8 @@ async fn todowrite_replaces_previous_items_and_clears_for_terminal_payloads() {
         &mut app,
         assistant_message(vec![tool_use_block("todo-r2", "TodoWrite", replacement)]),
     );
-    assert_eq!(app.todos.len(), 1, "second TodoWrite replaces first");
-    assert_eq!(app.todos[0].content, "Task C");
+    assert_eq!(app.todos().len(), 1, "second TodoWrite replaces first");
+    assert_eq!(app.todos()[0].content, "Task C");
 
     let completed = serde_json::json!({"todos": [
         {"content": "Done task", "status": "completed", "activeForm": "Done"},
@@ -123,8 +123,8 @@ async fn todowrite_replaces_previous_items_and_clears_for_terminal_payloads() {
         assistant_message(vec![tool_use_block("todo-done", "TodoWrite", completed)]),
     );
 
-    assert!(app.todos.is_empty(), "all-completed clears the list");
-    assert!(!app.show_todo_panel, "panel hidden when all done");
+    assert!(app.todos().is_empty(), "all-completed clears the list");
+    assert!(!app.show_todo_panel(), "panel hidden when all done");
 }
 
 // --- Error recovery ---
@@ -329,7 +329,7 @@ async fn rapid_turn_complete_then_new_streaming() {
     send_msg(&mut app, assistant_message(vec![text_block("Turn 1")]));
     send_client_event(&mut app, ClientEvent::TurnComplete { terminal_reason: None });
     assert!(matches!(app.status, AppStatus::Ready));
-    assert_eq!(app.files_accessed, 0);
+    assert_eq!(app.files_accessed(), 0);
 
     // Immediately start second turn
     send_msg(&mut app, assistant_message(vec![text_block("Turn 2")]));
@@ -343,11 +343,11 @@ async fn rapid_turn_complete_then_new_streaming() {
             serde_json::json!({"file_path": "file"}),
         )]),
     );
-    assert_eq!(app.files_accessed, 1);
+    assert_eq!(app.files_accessed(), 1);
 
     send_client_event(&mut app, ClientEvent::TurnComplete { terminal_reason: None });
     assert!(matches!(app.status, AppStatus::Ready));
-    assert_eq!(app.files_accessed, 0, "reset again on second TurnComplete");
+    assert_eq!(app.files_accessed(), 0, "reset again on second TurnComplete");
 }
 
 #[tokio::test]
@@ -422,9 +422,9 @@ async fn files_accessed_accumulates_across_tool_calls_in_one_turn() {
         );
     }
 
-    assert_eq!(app.files_accessed, 3, "one per tool call");
+    assert_eq!(app.files_accessed(), 3, "one per tool call");
     send_client_event(&mut app, ClientEvent::TurnComplete { terminal_reason: None });
-    assert_eq!(app.files_accessed, 0, "reset on turn complete");
+    assert_eq!(app.files_accessed(), 0, "reset on turn complete");
 }
 
 // --- SdkMessageReceived session_id handling ---

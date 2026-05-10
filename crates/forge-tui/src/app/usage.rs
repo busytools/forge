@@ -31,7 +31,7 @@ pub(crate) fn request_refresh(app: &mut App) {
     let event_tx = app.event_tx.clone();
     let epoch = app.session_scope_epoch();
     let source_mode = app.usage.active_source;
-    let cwd_raw = app.cwd_raw.clone();
+    let cwd_raw = app.cwd_raw().to_owned();
     // Optional — the CLI fallback path doesn't need a connection,
     // and tests sometimes drive the lifecycle without a bridge. The
     // OAuth path bails with a clear "no connection" error when conn

@@ -263,8 +263,8 @@ pub(crate) fn request_inventory_refresh(app: &mut App) {
     app.plugins.status_message = Some("Refreshing plugin inventory...".to_owned());
     app.needs_redraw = true;
     let event_tx = app.event_tx.clone();
-    let cwd_context = app.cwd_raw.clone();
-    let cwd_raw = app.cwd_raw.clone();
+    let cwd_context = app.cwd_raw().to_owned();
+    let cwd_raw = app.cwd_raw().to_owned();
     let cached_claude_path = app.plugins.claude_path.clone();
     tokio::task::spawn_local(async move {
         match cli::refresh_inventory(cwd_raw, cached_claude_path).await {
@@ -631,7 +631,7 @@ fn execute_selected_installed_overlay_action(app: &mut App) {
     app.plugins.last_inventory_refresh_at = None;
     app.needs_redraw = true;
     let event_tx = app.event_tx.clone();
-    let cwd_context = app.cwd_raw.clone();
+    let cwd_context = app.cwd_raw().to_owned();
     let cached_claude_path = app.plugins.claude_path.clone();
     tokio::task::spawn_local(async move {
         match cli::run_cli_command_and_refresh(cwd_raw, cached_claude_path, args).await {
@@ -691,8 +691,8 @@ fn execute_selected_plugin_install_action(app: &mut App) {
     app.plugins.last_inventory_refresh_at = None;
     app.needs_redraw = true;
     let event_tx = app.event_tx.clone();
-    let cwd_raw = app.cwd_raw.clone();
-    let cwd_context = app.cwd_raw.clone();
+    let cwd_raw = app.cwd_raw().to_owned();
+    let cwd_context = app.cwd_raw().to_owned();
     let cached_claude_path = app.plugins.claude_path.clone();
     tokio::task::spawn_local(async move {
         match cli::run_cli_command_and_refresh(cwd_raw, cached_claude_path, args).await {
@@ -736,8 +736,8 @@ fn execute_selected_marketplace_action(app: &mut App) {
     app.plugins.last_inventory_refresh_at = None;
     app.needs_redraw = true;
     let event_tx = app.event_tx.clone();
-    let cwd_raw = app.cwd_raw.clone();
-    let cwd_context = app.cwd_raw.clone();
+    let cwd_raw = app.cwd_raw().to_owned();
+    let cwd_context = app.cwd_raw().to_owned();
     let cached_claude_path = app.plugins.claude_path.clone();
     tokio::task::spawn_local(async move {
         match cli::run_cli_command_and_refresh(cwd_raw, cached_claude_path, args).await {
@@ -789,8 +789,8 @@ fn confirm_add_marketplace_overlay(app: &mut App) {
     app.plugins.last_inventory_refresh_at = None;
     app.needs_redraw = true;
     let event_tx = app.event_tx.clone();
-    let cwd_raw = app.cwd_raw.clone();
-    let cwd_context = app.cwd_raw.clone();
+    let cwd_raw = app.cwd_raw().to_owned();
+    let cwd_context = app.cwd_raw().to_owned();
     let cached_claude_path = app.plugins.claude_path.clone();
     tokio::task::spawn_local(async move {
         match cli::run_cli_command_and_refresh(cwd_raw, cached_claude_path, args).await {
@@ -911,7 +911,7 @@ fn installed_action_command(
             format!("Updating {action_label}..."),
         ),
         InstalledPluginActionKind::InstallInCurrentProject => (
-            app.cwd_raw.clone(),
+            app.cwd_raw().to_owned(),
             vec![
                 "plugin".to_owned(),
                 "install".to_owned(),
@@ -995,8 +995,10 @@ fn marketplace_action_success_message(title: &str, action: MarketplaceActionKind
 
 fn action_cwd(app: &App, overlay: &InstalledPluginActionOverlayState) -> String {
     match overlay.scope.as_str() {
-        "local" | "project" => overlay.project_path.clone().unwrap_or_else(|| app.cwd_raw.clone()),
-        _ => app.cwd_raw.clone(),
+        "local" | "project" => {
+            overlay.project_path.clone().unwrap_or_else(|| app.cwd_raw().to_owned())
+        }
+        _ => app.cwd_raw().to_owned(),
     }
 }
 
@@ -1041,7 +1043,7 @@ fn installed_overlay_description(app: &App, entry: &InstalledPluginEntry) -> Str
 }
 
 fn can_install_in_current_project(app: &App, entry: &InstalledPluginEntry) -> bool {
-    let current_project = normalize_project_path(&app.cwd_raw);
+    let current_project = normalize_project_path(app.cwd_raw());
     let selected_project = entry.project_path.as_deref().map(normalize_project_path);
     if matches!(entry.scope.as_str(), "local" | "project")
         && selected_project.as_deref() == Some(current_project.as_str())
@@ -1058,7 +1060,9 @@ fn can_install_in_current_project(app: &App, entry: &InstalledPluginEntry) -> bo
 }
 
 fn selected_installed_entry(app: &App) -> Option<&InstalledPluginEntry> {
-    ordered_installed(&app.plugins, &app.cwd_raw).get(app.plugins.installed_selected_index).copied()
+    ordered_installed(&app.plugins, app.cwd_raw())
+        .get(app.plugins.installed_selected_index)
+        .copied()
 }
 
 fn selected_marketplace_plugin(app: &App) -> Option<&MarketplaceEntry> {
@@ -1338,7 +1342,7 @@ mod tests {
     #[test]
     fn install_in_current_project_is_available_for_other_project_local_install() {
         let mut app = crate::app::App::test_default();
-        app.cwd_raw = "C:\\work\\project-b".to_owned();
+        app.set_cwd_raw("C:\\work\\project-b");
         let entry = InstalledPluginEntry {
             id: "frontend-design@claude-plugins-official".to_owned(),
             version: Some("1.0.0".to_owned()),
@@ -1356,7 +1360,7 @@ mod tests {
     #[test]
     fn install_in_current_project_is_hidden_when_already_installed_here() {
         let mut app = crate::app::App::test_default();
-        app.cwd_raw = "C:\\work\\project-b".to_owned();
+        app.set_cwd_raw("C:\\work\\project-b");
         app.plugins.installed.push(InstalledPluginEntry {
             id: "frontend-design@claude-plugins-official".to_owned(),
             version: Some("1.0.0".to_owned()),

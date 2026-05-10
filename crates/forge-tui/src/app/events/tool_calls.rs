@@ -24,7 +24,7 @@ pub(super) fn handle_tool_call(app: &mut App, tc: model::ToolCall) {
     upsert_tool_call_into_assistant_message(app, tool_info);
 
     app.status = AppStatus::Running;
-    app.files_accessed += 1;
+    app.increment_files_accessed();
 }
 
 fn log_tool_call_received(
@@ -167,7 +167,7 @@ fn build_tool_info_from_tool_call(
 
     let mut tool_info = ToolCallInfo {
         id: tc.tool_call_id,
-        title: shorten_tool_title(&tc.title, &app.cwd_raw),
+        title: shorten_tool_title(&tc.title, app.cwd_raw()),
         sdk_tool_name,
         raw_input: tc.raw_input,
         raw_input_bytes: 0,

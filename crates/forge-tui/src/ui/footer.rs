@@ -322,13 +322,13 @@ fn context_values(app: &App, max_width: usize) -> Option<(String, Option<BranchV
             let branch_display_width =
                 branch_value.as_ref().map_or(0, |value| UnicodeWidthStr::width(value.text()));
             let location_width = available_values.saturating_sub(branch_display_width);
-            if let Some(location_value) = fit_location_value(&app.cwd, location_width) {
+            if let Some(location_value) = fit_location_value(app.cwd(), location_width) {
                 return Some((location_value, branch_value));
             }
         }
     }
 
-    fit_location_value(&app.cwd, location_only_width).map(|location_value| (location_value, None))
+    fit_location_value(app.cwd(), location_only_width).map(|location_value| (location_value, None))
 }
 
 fn fit_location_value(cwd: &str, max_width: usize) -> Option<String> {
@@ -422,7 +422,7 @@ fn pending_permission_request_count(app: &App) -> usize {
 }
 
 fn mcp_needs_auth_count(app: &App) -> usize {
-    app.mcp
+    app.mcp()
         .servers
         .iter()
         .filter(|server| {
@@ -636,7 +636,7 @@ mod tests {
     #[test]
     fn context_line_includes_loc_only_without_branch() {
         let mut app = App::test_default();
-        app.cwd = "~/repo".into();
+        app.set_cwd("~/repo");
 
         let text: String =
             build_context_line(&app, 80).spans.iter().map(|span| span.content.as_ref()).collect();
@@ -646,7 +646,7 @@ mod tests {
     #[test]
     fn context_line_includes_branch_when_present() {
         let mut app = App::test_default();
-        app.cwd = "~/repo".into();
+        app.set_cwd("~/repo");
         app.set_git_branch_for_test(Some("main"));
 
         let text: String =
@@ -657,7 +657,7 @@ mod tests {
     #[test]
     fn context_line_shortens_location_before_dropping_branch() {
         let mut app = App::test_default();
-        app.cwd = "~/work/company/claude_rust".into();
+        app.set_cwd("~/work/company/claude_rust");
         app.set_git_branch_for_test(Some("feature/footer"));
 
         let text: String =
@@ -670,7 +670,7 @@ mod tests {
     #[test]
     fn context_line_drops_branch_when_width_is_too_tight() {
         let mut app = App::test_default();
-        app.cwd = "~/work/company/claude_rust".into();
+        app.set_cwd("~/work/company/claude_rust");
         app.set_git_branch_for_test(Some("feature/footer"));
 
         let text: String =
@@ -682,7 +682,7 @@ mod tests {
     #[test]
     fn context_line_shows_detached_label_for_detached_head() {
         let mut app = App::test_default();
-        app.cwd = "~/repo".into();
+        app.set_cwd("~/repo");
         app.set_git_detached_for_test();
 
         let line = build_context_line(&app, 80);
@@ -702,7 +702,7 @@ mod tests {
     #[test]
     fn context_line_named_branch_keeps_default_color() {
         let mut app = App::test_default();
-        app.cwd = "~/repo".into();
+        app.set_cwd("~/repo");
         app.set_git_branch_for_test(Some("main"));
 
         let line = build_context_line(&app, 80);
@@ -722,7 +722,7 @@ mod tests {
             vec![MessageBlock::Text(TextBlock::from_complete("welcome"))],
             None,
         ));
-        app.mcp.servers.push(McpServerStatus {
+        app.mcp_mut().servers.push(McpServerStatus {
             name: "calendar".into(),
             status: McpServerConnectionStatus::NeedsAuth,
             server_info: None,
@@ -748,7 +748,7 @@ mod tests {
             vec![MessageBlock::Text(TextBlock::from_complete("hello"))],
             None,
         ));
-        app.mcp.servers.push(McpServerStatus {
+        app.mcp_mut().servers.push(McpServerStatus {
             name: "calendar".into(),
             status: McpServerConnectionStatus::NeedsAuth,
             server_info: None,
@@ -780,7 +780,7 @@ mod tests {
             vec![MessageBlock::Text(TextBlock::from_complete("welcome"))],
             None,
         ));
-        app.mcp.servers.push(McpServerStatus {
+        app.mcp_mut().servers.push(McpServerStatus {
             name: "calendar".into(),
             status: McpServerConnectionStatus::NeedsAuth,
             server_info: None,

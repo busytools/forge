@@ -19,7 +19,7 @@ use super::state::{
 };
 use super::trust;
 use super::view::ActiveView;
-use super::{App, AppStatus, FocusManager, HelpView, SelectionState, TodoItem};
+use super::{App, AppStatus, FocusManager, HelpView, SelectionState};
 use crate::Cli;
 use crate::agent::client::SessionLaunchSettings;
 use crate::agent::events::ClientEvent;
@@ -116,6 +116,8 @@ pub fn create_app(cli: &Cli, workspace: Rc<forge_workspace::Workspace>) -> App {
     let mut pre_connect_session = super::session::Session::new(pre_connect_key.clone());
     pre_connect_session.messages =
         vec![super::ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "", &cwd_display, "-")];
+    pre_connect_session.cwd_raw = cwd.to_string_lossy().to_string();
+    pre_connect_session.cwd = cwd_display;
     let mut sessions = std::collections::HashMap::new();
     sessions.insert(pre_connect_key.clone(), pre_connect_session);
     let mut app = App {
@@ -133,9 +135,6 @@ pub fn create_app(cli: &Cli, workspace: Rc<forge_workspace::Workspace>) -> App {
         workspace: Some(workspace),
         sessions,
         active_session_key: Some(pre_connect_key),
-        cwd_raw: cwd.to_string_lossy().to_string(),
-        cwd: cwd_display,
-        files_accessed: 0,
         login_hint: None,
         help_view: HelpView::Keys,
         help_open: false,
@@ -150,10 +149,6 @@ pub fn create_app(cli: &Cli, workspace: Rc<forge_workspace::Workspace>) -> App {
         spinner_last_advance_at: None,
         tools_collapsed: true,
         force_redraw: false,
-        todos: Vec::<TodoItem>::new(),
-        show_todo_panel: false,
-        todo_scroll: 0,
-        todo_selected: 0,
         focus: FocusManager::default(),
         plugins: PluginsState::default(),
         recent_sessions: Vec::new(),
@@ -176,10 +171,7 @@ pub fn create_app(cli: &Cli, workspace: Rc<forge_workspace::Workspace>) -> App {
         active_paste_session: None,
         next_paste_session_id: 1,
         pending_images: Vec::new(),
-        cached_todo_compact: None,
-        git_context: super::git_context::GitContextState::default(),
         usage: super::UsageState::default(),
-        mcp: super::McpState::default(),
         needs_redraw: true,
         notifications: super::notify::NotificationManager::new(),
         perf,
@@ -343,7 +335,7 @@ mod tests {
 
         // cwd is seeded from the process; the Connected event later
         // overwrites it with the agent's reported value.
-        assert!(!app.cwd_raw.is_empty(), "cwd_raw should be seeded from process cwd");
+        assert!(!app.cwd_raw().is_empty(), "cwd_raw should be seeded from process cwd");
         assert!(app.workspace.is_some(), "workspace should be wired");
     }
 }

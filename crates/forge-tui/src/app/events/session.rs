@@ -68,7 +68,7 @@ pub(super) fn handle_connected_client_event(
         message = "session connected and applied",
         outcome = "success",
         session_id = %session_id_for_log,
-        cwd = %app.cwd_raw,
+        cwd = %app.cwd_raw(),
         current_model = ?app.current_model().map(|model| model.resolved_id.clone()),
         history_message_count,
         available_model_count,
@@ -152,7 +152,7 @@ pub(super) fn handle_auth_required_event(
     app.set_pending_cancel_origin(None);
     app.pending_auto_submit_after_cancel = false;
     app.set_account_info(None);
-    app.mcp = super::super::McpState::default();
+    *app.mcp_mut() = super::super::McpState::default();
     app.config.pending_session_title_change = None;
     crate::app::usage::reset_for_session_change(app);
     app.finalize_turn_runtime_artifacts(model::ToolCallStatus::Failed);
@@ -176,7 +176,7 @@ pub(super) fn handle_connection_failed_event(app: &mut App, msg: &str) {
     app.pending_auto_submit_after_cancel = false;
     app.set_last_rate_limit_update(None);
     app.set_account_info(None);
-    app.mcp = super::super::McpState::default();
+    *app.mcp_mut() = super::super::McpState::default();
     app.config.pending_session_title_change = None;
     crate::app::usage::reset_for_session_change(app);
     app.resuming_session_id = None;
@@ -257,7 +257,7 @@ pub(super) fn handle_logout_completed_event(app: &mut App) {
     app.clear_session_runtime_identity();
     app.set_account_info(None);
     app.set_oauth_credentials(None);
-    app.mcp = super::super::McpState::default();
+    *app.mcp_mut() = super::super::McpState::default();
     app.config.pending_session_title_change = None;
     crate::app::usage::reset_for_session_change(app);
     app.force_redraw = true;
@@ -337,7 +337,7 @@ pub(super) fn handle_session_replaced_event(
         message = "replacement session applied",
         outcome = "success",
         session_id = %session_id_for_log,
-        cwd = %app.cwd_raw,
+        cwd = %app.cwd_raw(),
         current_model = ?app.current_model().map(|model| model.resolved_id.clone()),
         history_message_count,
         available_model_count,
@@ -412,8 +412,9 @@ fn sync_welcome_cwd(app: &mut App) {
 }
 
 pub(super) fn apply_session_cwd(app: &mut App, cwd_raw: String) {
-    app.cwd_raw = cwd_raw;
-    app.cwd = shorten_cwd_display(&app.cwd_raw);
+    let display = shorten_cwd_display(&cwd_raw);
+    app.set_cwd_raw(cwd_raw);
+    app.set_cwd(display);
     sync_welcome_cwd(app);
     app.reconcile_trust_state_from_preferences_and_cwd();
 }
@@ -440,7 +441,7 @@ pub(super) fn refresh_session_git_watcher(app: &App, prev_session_id: Option<Str
     let Some(session_id) = app.session_id() else {
         return;
     };
-    let cwd = std::path::PathBuf::from(&app.cwd_raw);
+    let cwd = std::path::PathBuf::from(app.cwd_raw());
     if let Err(err) = conn.start_git_context_watch(session_id.to_string(), cwd) {
         tracing::warn!(
             target: crate::logging::targets::APP_SESSION,

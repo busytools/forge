@@ -290,7 +290,7 @@ where
     // and would race across nextest's parallel runs.
     let save_result = match (&app.settings_home_override, app.conn()) {
         (None, Some(conn)) => {
-            let cwd = std::path::PathBuf::from(&app.cwd_raw);
+            let cwd = std::path::PathBuf::from(app.cwd_raw());
             let target = store::settings_target_for(spec.file, cwd);
             conn.write_settings_document(&target, &next_document)
                 .map_err(|err| format!("Failed to write settings: {err}"))

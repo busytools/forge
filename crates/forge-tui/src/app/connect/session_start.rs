@@ -130,7 +130,7 @@ fn log_session_request(
             outcome = "start",
             reason = reason.as_str(),
             session_id = %session_id,
-            cwd = %app.cwd_raw,
+            cwd = %app.cwd_raw(),
             has_language,
             has_settings,
             agent_progress_summaries_enabled,
@@ -142,7 +142,7 @@ fn log_session_request(
             message = "session request queued",
             outcome = "start",
             reason = reason.as_str(),
-            cwd = %app.cwd_raw,
+            cwd = %app.cwd_raw(),
             has_language,
             has_settings,
             agent_progress_summaries_enabled,
@@ -157,7 +157,7 @@ pub(crate) fn start_new_session(
 ) -> anyhow::Result<()> {
     let launch_settings = session_launch_settings_for_reason(app, reason);
     log_session_request(app, reason, &launch_settings, None);
-    conn.new_session(app.cwd_raw.clone(), launch_settings)
+    conn.new_session(app.cwd_raw().to_owned(), launch_settings)
 }
 
 pub(crate) fn resume_session(

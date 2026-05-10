@@ -238,15 +238,18 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
             );
             let server_count = servers.len();
             let error_present = error.is_some();
-            app.mcp.servers = servers;
-            app.mcp.in_flight = false;
-            app.mcp.last_error = error;
+            {
+                let mcp = app.mcp_mut();
+                mcp.servers = servers;
+                mcp.in_flight = false;
+                mcp.last_error = error;
+            }
             app.config.mcp_selected_server_index =
-                app.config.mcp_selected_server_index.min(app.mcp.servers.len().saturating_sub(1));
+                app.config.mcp_selected_server_index.min(app.mcp().servers.len().saturating_sub(1));
             if let Some(overlay) = app.config.mcp_auth_redirect_overlay() {
                 let server_name = overlay.redirect.server_name.clone();
                 if let Some(server) =
-                    app.mcp.servers.iter().find(|server| server.name == server_name)
+                    app.mcp().servers.iter().find(|server| server.name == server_name)
                     && !matches!(
                         server.status,
                         forge_primitives::McpServerConnectionStatus::NeedsAuth
@@ -344,25 +347,25 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
             crate::app::usage::apply_refresh_failure(app, message, source);
         }
         ClientEvent::PluginsInventoryUpdated { cwd_raw, snapshot, claude_path } => {
-            if app.cwd_raw != cwd_raw {
+            if app.cwd_raw() != cwd_raw {
                 return;
             }
             crate::app::plugins::apply_inventory_refresh_success(app, snapshot, claude_path);
         }
         ClientEvent::PluginsInventoryRefreshFailed { cwd_raw, message } => {
-            if app.cwd_raw != cwd_raw {
+            if app.cwd_raw() != cwd_raw {
                 return;
             }
             crate::app::plugins::apply_inventory_refresh_failure(app, message);
         }
         ClientEvent::PluginsCliActionSucceeded { cwd_raw, result } => {
-            if app.cwd_raw != cwd_raw {
+            if app.cwd_raw() != cwd_raw {
                 return;
             }
             crate::app::plugins::apply_cli_action_success(app, result);
         }
         ClientEvent::PluginsCliActionFailed { cwd_raw, message } => {
-            if app.cwd_raw != cwd_raw {
+            if app.cwd_raw() != cwd_raw {
                 return;
             }
             crate::app::plugins::apply_cli_action_failure(app, message);

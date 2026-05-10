@@ -235,7 +235,8 @@ fn build_key_help_items(app: &App) -> Vec<(String, String)> {
     }
     let focus_owner = app.focus_owner();
 
-    if app.show_todo_panel && !app.todos.is_empty() && app.pending_interaction_ids().is_empty() {
+    if app.show_todo_panel() && !app.todos().is_empty() && app.pending_interaction_ids().is_empty()
+    {
         items.push(("Tab".to_owned(), "Toggle todo focus".to_owned()));
     }
 
@@ -600,8 +601,8 @@ mod tests {
         let items = build_help_items(&app);
         assert!(!has_item(&items, "Tab", "Toggle todo focus"));
 
-        app.show_todo_panel = true;
-        app.todos.push(TodoItem {
+        app.set_show_todo_panel(true);
+        app.todos_mut().push(TodoItem {
             content: "Task".into(),
             status: TodoStatus::Pending,
             active_form: String::new(),

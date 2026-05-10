@@ -18,9 +18,10 @@ use forge_workspace::SessionKey;
 
 use crate::agent::events::TerminalMap;
 use crate::agent::model;
+use crate::app::git_context::GitContextState;
 use crate::app::state::messages::ChatMessage;
 use crate::app::state::types::{
-    CancelOrigin, ModeState, SessionTurnState, SessionUsageState, ToolCallScope,
+    CancelOrigin, McpState, ModeState, SessionTurnState, SessionUsageState, TodoItem, ToolCallScope,
 };
 use crate::app::state::viewport::ChatViewport;
 use crate::app::state::{TerminalToolCallRef, TurnNoticeRef};
@@ -32,6 +33,7 @@ use crate::app::state::{TerminalToolCallRef, TurnNoticeRef};
 /// doesn't derive `Debug`. `Default` is provided by hand because
 /// [`model::FastModeState`] is plain wire enum without a `Default`
 /// impl; the rest of the fields fall through to their type defaults.
+#[allow(clippy::struct_excessive_bools)]
 pub struct Session {
     /// The claude-issued session UUID, also used as the map key.
     /// Stored here for symmetry; the map lookup uses the same value.
@@ -162,6 +164,38 @@ pub struct Session {
     /// callers can ask "is the user authenticated?" without doing
     /// their own filesystem walk to `<config_dir>/.credentials.json`.
     pub oauth_credentials: Option<forge_agent::cloud::oauth_credentials::OauthCredentials>,
+
+    // ---- Filesystem ----
+    /// Display-friendly cwd (`~/foo` form) used by status panel /
+    /// footer / welcome card.
+    pub cwd: String,
+    /// Raw cwd as a filesystem path, used for trust lookups, file
+    /// indexing, and project-key derivation.
+    pub cwd_raw: String,
+    /// Number of files accessed during the active turn (incremented
+    /// on Read/Edit/Write tool starts, reset on TurnComplete).
+    pub files_accessed: usize,
+    /// Git repo context used by footer/status rendering and live
+    /// branch tracking. Mutated by bridge-pushed git context
+    /// snapshots.
+    pub(crate) git_context: GitContextState,
+    /// Config > MCP live server snapshot and refresh lifecycle.
+    pub mcp: McpState,
+
+    // ---- Todos ----
+    /// Current todo list from Claude's `TodoWrite` tool calls.
+    pub todos: Vec<TodoItem>,
+    /// Whether the todo panel is expanded (true) or shows compact
+    /// status line (false). Toggled by Ctrl+T.
+    pub show_todo_panel: bool,
+    /// Scroll offset for the expanded todo panel (capped at 5
+    /// visible lines).
+    pub todo_scroll: usize,
+    /// Selected todo index used for keyboard navigation in the open
+    /// todo panel.
+    pub todo_selected: usize,
+    /// Cached todo compact line (invalidated on `set_todos()`).
+    pub cached_todo_compact: Option<ratatui::text::Line<'static>>,
 }
 
 impl Default for Session {
@@ -207,6 +241,16 @@ impl Default for Session {
             account_info: None,
             active_account_display_name: None,
             oauth_credentials: None,
+            cwd: String::new(),
+            cwd_raw: String::new(),
+            files_accessed: 0,
+            git_context: GitContextState::default(),
+            mcp: McpState::default(),
+            todos: Vec::new(),
+            show_todo_panel: false,
+            todo_scroll: 0,
+            todo_selected: 0,
+            cached_todo_compact: None,
         }
     }
 }

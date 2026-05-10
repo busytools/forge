@@ -590,7 +590,7 @@ fn handle_focus_toggle_key(app: &mut App, key: KeyEvent) -> bool {
                     }
                     _ => false,
                 }
-            } else if app.show_todo_panel && !app.todos.is_empty() {
+            } else if app.show_todo_panel() && !app.todos().is_empty() {
                 if app.focus_owner() == FocusOwner::TodoList {
                     app.release_focus_target(FocusTarget::TodoList);
                 } else {
@@ -912,19 +912,20 @@ fn should_sync_autocomplete_after_key(app: &App, key: KeyEvent) -> bool {
 }
 
 pub(super) fn toggle_todo_panel_focus(app: &mut App) {
-    if app.todos.is_empty() {
-        app.show_todo_panel = false;
+    if app.todos().is_empty() {
+        app.set_show_todo_panel(false);
         app.release_focus_target(FocusTarget::TodoList);
-        app.todo_scroll = 0;
-        app.todo_selected = 0;
+        app.set_todo_scroll(0);
+        app.set_todo_selected(0);
         return;
     }
 
-    app.show_todo_panel = !app.show_todo_panel;
-    if app.show_todo_panel {
+    app.set_show_todo_panel(!app.show_todo_panel());
+    if app.show_todo_panel() {
         // Start at in-progress todo when available; fallback to first item.
-        app.todo_selected =
-            app.todos.iter().position(|t| t.status == super::TodoStatus::InProgress).unwrap_or(0);
+        let next =
+            app.todos().iter().position(|t| t.status == super::TodoStatus::InProgress).unwrap_or(0);
+        app.set_todo_selected(next);
         app.claim_focus_target(FocusTarget::TodoList);
     } else {
         app.release_focus_target(FocusTarget::TodoList);
@@ -932,21 +933,21 @@ pub(super) fn toggle_todo_panel_focus(app: &mut App) {
 }
 
 pub(super) fn move_todo_selection_up(app: &mut App) {
-    if app.todos.is_empty() || !app.show_todo_panel {
+    if app.todos().is_empty() || !app.show_todo_panel() {
         app.release_focus_target(FocusTarget::TodoList);
         return;
     }
-    app.todo_selected = app.todo_selected.saturating_sub(1);
+    app.set_todo_selected(app.todo_selected().saturating_sub(1));
 }
 
 pub(super) fn move_todo_selection_down(app: &mut App) {
-    if app.todos.is_empty() || !app.show_todo_panel {
+    if app.todos().is_empty() || !app.show_todo_panel() {
         app.release_focus_target(FocusTarget::TodoList);
         return;
     }
-    let max = app.todos.len().saturating_sub(1);
-    if app.todo_selected < max {
-        app.todo_selected += 1;
+    let max = app.todos().len().saturating_sub(1);
+    if app.todo_selected() < max {
+        app.set_todo_selected(app.todo_selected().saturating_add(1));
     }
 }
 

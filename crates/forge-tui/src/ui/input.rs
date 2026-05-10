@@ -457,8 +457,8 @@ mod tests {
     fn visual_line_count_hides_prompt_suggestion_hint_when_input_lacks_focus() {
         let mut app = App::test_default();
         app.set_prompt_suggestion(Some("Write tests for the retry flow".to_owned()));
-        app.show_todo_panel = true;
-        app.todos.push(crate::app::TodoItem {
+        app.set_show_todo_panel(true);
+        app.todos_mut().push(crate::app::TodoItem {
             content: "todo".to_owned(),
             status: crate::app::TodoStatus::Pending,
             active_form: String::new(),

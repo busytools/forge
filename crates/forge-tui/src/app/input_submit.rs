@@ -305,7 +305,7 @@ mod tests {
         let (mut app, mut rx) = app_with_connection();
         let dir = tempfile::tempdir().expect("tempdir");
         app.settings_home_override = Some(dir.path().to_path_buf());
-        app.cwd_raw = dir.path().to_string_lossy().to_string();
+        app.set_cwd_raw(dir.path().to_string_lossy().to_string());
         app.status = AppStatus::Running;
         app.input.set_text("/config");
 

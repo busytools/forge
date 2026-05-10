@@ -45,7 +45,6 @@ use super::config::ConfigState;
 use super::dialog;
 use super::file_index;
 use super::focus::{FocusContext, FocusManager, FocusOwner, FocusTarget};
-use super::git_context::GitContextState;
 use super::inline_interactions::{clear_inline_interaction_focus, focus_next_inline_interaction};
 use super::input::{InputSnapshot, InputState, parse_paste_placeholder_before_cursor};
 use super::mention;
@@ -148,9 +147,6 @@ pub struct App {
     /// `None` only in the brief pre-Connect window where no session
     /// has landed in the map yet.
     pub active_session_key: Option<forge_workspace::SessionKey>,
-    pub cwd: String,
-    pub cwd_raw: String,
-    pub files_accessed: usize,
     /// Login hint shown when authentication is required. Rendered above the input field.
     pub login_hint: Option<LoginHint>,
     /// Active help overlay view when `?` help is open.
@@ -176,15 +172,6 @@ pub struct App {
     pub tools_collapsed: bool,
     /// Force a full terminal clear on next render frame.
     pub force_redraw: bool,
-    /// Current todo list from Claude's `TodoWrite` tool calls.
-    pub todos: Vec<TodoItem>,
-    /// Whether the todo panel is expanded (true) or shows compact status line (false).
-    /// Toggled by Ctrl+T.
-    pub show_todo_panel: bool,
-    /// Scroll offset for the expanded todo panel (capped at 5 visible lines).
-    pub todo_scroll: usize,
-    /// Selected todo index used for keyboard navigation in the open todo panel.
-    pub todo_selected: usize,
     /// Focus manager for directional/navigation key ownership.
     pub focus: FocusManager,
     /// Plugin inventory and UI state for the Config > Plugins view.
@@ -239,14 +226,8 @@ pub struct App {
     /// consumed on submit. No cap on count — this is a developer tool, so
     /// users are trusted to attach as many images as they need.
     pub pending_images: Vec<crate::app::clipboard_image::ImageAttachment>,
-    /// Cached todo compact line (invalidated on `set_todos()`).
-    pub cached_todo_compact: Option<ratatui::text::Line<'static>>,
-    /// Git repo context used by footer/status rendering and live branch tracking.
-    pub(crate) git_context: GitContextState,
     /// Config > Usage snapshot and refresh lifecycle.
     pub usage: UsageState,
-    /// Config > MCP live server snapshot and refresh lifecycle.
-    pub mcp: McpState,
     /// Dirty flag: skip `terminal.draw()` when nothing changed since last frame.
     pub needs_redraw: bool,
     /// Central notification manager (bell + desktop toast when unfocused).
@@ -913,6 +894,130 @@ impl App {
         self.active_or_synthetic_mut().oauth_credentials = value;
     }
 
+    // ---- Filesystem accessors ----
+
+    /// Borrow the active session's display-friendly cwd.
+    ///
+    /// Returns an empty string only in the brief pre-Connect window
+    /// before any session bucket exists; production startup and
+    /// `App::test_default()` both seed a bucket up front.
+    #[must_use]
+    pub fn cwd(&self) -> &str {
+        self.active_session().map_or("", |s| s.cwd.as_str())
+    }
+
+    /// Set the active session's display-friendly cwd.
+    pub fn set_cwd(&mut self, value: impl Into<String>) {
+        self.active_or_synthetic_mut().cwd = value.into();
+    }
+
+    /// Borrow the active session's raw filesystem cwd.
+    #[must_use]
+    pub fn cwd_raw(&self) -> &str {
+        self.active_session().map_or("", |s| s.cwd_raw.as_str())
+    }
+
+    /// Set the active session's raw filesystem cwd.
+    pub fn set_cwd_raw(&mut self, value: impl Into<String>) {
+        self.active_or_synthetic_mut().cwd_raw = value.into();
+    }
+
+    /// Active session's files-accessed counter.
+    #[must_use]
+    pub fn files_accessed(&self) -> usize {
+        self.active_session().map_or(0, |s| s.files_accessed)
+    }
+
+    /// Set the active session's files-accessed counter.
+    pub fn set_files_accessed(&mut self, value: usize) {
+        self.active_or_synthetic_mut().files_accessed = value;
+    }
+
+    /// Increment the active session's files-accessed counter by one.
+    pub fn increment_files_accessed(&mut self) {
+        let s = self.active_or_synthetic_mut();
+        s.files_accessed = s.files_accessed.saturating_add(1);
+    }
+
+    /// Borrow the active session's MCP state snapshot.
+    ///
+    /// Falls back to a leaked default for the brief pre-Connect
+    /// window. Production startup seeds a synthetic bucket up front,
+    /// so the fallback is a safety net rather than a hot path.
+    #[must_use]
+    pub fn mcp(&self) -> &McpState {
+        static FALLBACK: std::sync::OnceLock<McpState> = std::sync::OnceLock::new();
+        match self.active_session() {
+            Some(s) => &s.mcp,
+            None => FALLBACK.get_or_init(McpState::default),
+        }
+    }
+
+    /// Mutable borrow of the active session's MCP state snapshot.
+    /// Auto-creates the pre-Connect bucket if missing.
+    #[must_use]
+    pub fn mcp_mut(&mut self) -> &mut McpState {
+        &mut self.active_or_synthetic_mut().mcp
+    }
+
+    // ---- Todos accessors ----
+
+    /// Borrow the active session's todo list.
+    #[must_use]
+    pub fn todos(&self) -> &[TodoItem] {
+        self.active_session().map_or(&[], |s| s.todos.as_slice())
+    }
+
+    /// Mutable borrow of the active session's todo list.
+    #[must_use]
+    pub fn todos_mut(&mut self) -> &mut Vec<TodoItem> {
+        &mut self.active_or_synthetic_mut().todos
+    }
+
+    /// Active session's todo-panel-expanded flag.
+    #[must_use]
+    pub fn show_todo_panel(&self) -> bool {
+        self.active_session().is_some_and(|s| s.show_todo_panel)
+    }
+
+    /// Set the active session's todo-panel-expanded flag.
+    pub fn set_show_todo_panel(&mut self, value: bool) {
+        self.active_or_synthetic_mut().show_todo_panel = value;
+    }
+
+    /// Active session's todo-panel scroll offset.
+    #[must_use]
+    pub fn todo_scroll(&self) -> usize {
+        self.active_session().map_or(0, |s| s.todo_scroll)
+    }
+
+    /// Set the active session's todo-panel scroll offset.
+    pub fn set_todo_scroll(&mut self, value: usize) {
+        self.active_or_synthetic_mut().todo_scroll = value;
+    }
+
+    /// Active session's selected-todo index.
+    #[must_use]
+    pub fn todo_selected(&self) -> usize {
+        self.active_session().map_or(0, |s| s.todo_selected)
+    }
+
+    /// Set the active session's selected-todo index.
+    pub fn set_todo_selected(&mut self, value: usize) {
+        self.active_or_synthetic_mut().todo_selected = value;
+    }
+
+    /// Borrow the active session's cached compact todo line.
+    #[must_use]
+    pub fn cached_todo_compact(&self) -> Option<&ratatui::text::Line<'static>> {
+        self.active_session().and_then(|s| s.cached_todo_compact.as_ref())
+    }
+
+    /// Set the active session's cached compact todo line.
+    pub fn set_cached_todo_compact(&mut self, value: Option<ratatui::text::Line<'static>>) {
+        self.active_or_synthetic_mut().cached_todo_compact = value;
+    }
+
     /// Queue a paste payload for drain-cycle finalization.
     ///
     /// This is fed by paste payloads captured from terminal events.
@@ -1036,7 +1141,7 @@ impl App {
 
     #[must_use]
     fn welcome_cwd_display(&self) -> &str {
-        let cwd = self.cwd.trim();
+        let cwd = self.cwd().trim();
         if cwd.is_empty() { "-" } else { cwd }
     }
 
@@ -1404,6 +1509,11 @@ impl App {
         pending_session.current_model = Some(
             model::CurrentModel::new("test-model", "test-model", "test-model").authoritative(true),
         );
+        // Seed cwd / cwd_raw so legacy tests that read these via the
+        // accessors observe stable values without first having to
+        // touch the active session.
+        pending_session.cwd = "/test".into();
+        pending_session.cwd_raw = "/test".into();
         let mut sessions = std::collections::HashMap::new();
         sessions.insert(pending_key.clone(), pending_session);
         Self {
@@ -1421,9 +1531,6 @@ impl App {
             workspace: None,
             sessions,
             active_session_key: Some(pending_key),
-            cwd: "/test".into(),
-            cwd_raw: "/test".into(),
-            files_accessed: 0,
             login_hint: None,
             help_view: HelpView::Keys,
             help_open: false,
@@ -1438,10 +1545,6 @@ impl App {
             spinner_last_advance_at: None,
             tools_collapsed: false,
             force_redraw: false,
-            todos: Vec::new(),
-            show_todo_panel: false,
-            todo_scroll: 0,
-            todo_selected: 0,
             focus: FocusManager::default(),
             plugins: PluginsState::default(),
             recent_sessions: Vec::new(),
@@ -1464,10 +1567,7 @@ impl App {
             active_paste_session: None,
             next_paste_session_id: 1,
             pending_images: Vec::new(),
-            cached_todo_compact: None,
-            git_context: GitContextState::default(),
             usage: UsageState::default(),
-            mcp: McpState::default(),
             needs_redraw: true,
             notifications: super::notify::NotificationManager::new(),
             perf: None,
@@ -1497,7 +1597,7 @@ impl App {
 
     #[must_use]
     pub fn git_branch(&self) -> Option<&str> {
-        self.git_context.branch_name()
+        self.active_session().and_then(|s| s.git_context.branch_name())
     }
 
     /// Structured form of `git_branch()` that distinguishes named
@@ -1506,23 +1606,24 @@ impl App {
     /// nothing to show in the chip.
     #[must_use]
     pub(crate) fn git_branch_chip(&self) -> Option<crate::app::git_context::BranchChip<'_>> {
-        self.git_context.branch_chip()
+        self.active_session().and_then(|s| s.git_context.branch_chip())
     }
 
     /// Apply a bridge-pushed git context snapshot to the local
     /// cache. Marks `needs_redraw` when the resolved branch changes.
     pub fn apply_git_context_snapshot(&mut self, info: forge_agent::env::git::GitContext) {
-        self.needs_redraw |= self.git_context.apply_snapshot(info);
+        let changed = self.active_or_synthetic_mut().git_context.apply_snapshot(info);
+        self.needs_redraw |= changed;
     }
 
     #[cfg(test)]
     pub fn set_git_detached_for_test(&mut self) {
-        self.git_context.set_detached_for_test();
+        self.active_or_synthetic_mut().git_context.set_detached_for_test();
     }
 
     #[cfg(test)]
     pub fn set_git_branch_for_test(&mut self, branch: Option<&str>) {
-        self.git_context.set_branch_for_test(branch);
+        self.active_or_synthetic_mut().git_context.set_branch_for_test(branch);
     }
 
     /// Resolve the effective focus owner for Up/Down and other directional keys.
@@ -1618,7 +1719,7 @@ impl App {
     pub fn reconcile_trust_state_from_preferences_and_cwd(&mut self) {
         let lookup = crate::app::trust::store::read_status(
             &self.config.committed_preferences_document,
-            Path::new(&self.cwd_raw),
+            Path::new(self.cwd_raw()),
         );
         self.trust.project_key = lookup.project_key;
         self.trust.status = if lookup.trusted {
@@ -1751,7 +1852,7 @@ impl App {
     #[must_use]
     fn focus_context(&self) -> FocusContext {
         FocusContext::new(
-            self.show_todo_panel && !self.todos.is_empty(),
+            self.show_todo_panel() && !self.todos().is_empty(),
             self.autocomplete_focus_available(),
             !self.pending_interaction_ids().is_empty(),
         )
@@ -3605,12 +3706,12 @@ mod tests {
 
     fn focus_test_app_with_available_targets() -> App {
         let mut app = make_test_app();
-        app.todos.push(TodoItem {
+        app.todos_mut().push(TodoItem {
             content: "Task".into(),
             status: TodoStatus::Pending,
             active_form: String::new(),
         });
-        app.show_todo_panel = true;
+        app.set_show_todo_panel(true);
         app.pending_interaction_ids_mut().push("perm-1".into());
         app.slash = Some(SlashState {
             trigger_row: 0,

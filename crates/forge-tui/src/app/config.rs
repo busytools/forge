@@ -1601,7 +1601,7 @@ fn effort_level_label(value: &str) -> Option<String> {
 }
 
 fn project_root(app: &App) -> &std::path::Path {
-    std::path::Path::new(&app.cwd_raw)
+    std::path::Path::new(app.cwd_raw())
 }
 
 fn option_label(spec: &SettingSpec, value: &str) -> Option<String> {

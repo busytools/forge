@@ -1605,7 +1605,7 @@ mod tests {
         let backend = TestBackend::new(100, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
         let mut app = App::test_default();
-        app.cwd_raw = "C:\\work\\project-b".to_owned();
+        app.set_cwd_raw("C:\\work\\project-b");
         app.active_view = crate::app::ActiveView::Config;
         app.config.active_tab = crate::app::ConfigTab::Plugins;
         app.plugins.installed = vec![
@@ -1916,7 +1916,7 @@ mod tests {
                 selected_index: 0,
             },
         ));
-        app.mcp.servers = vec![forge_primitives::McpServerStatus {
+        app.mcp_mut().servers = vec![forge_primitives::McpServerStatus {
             name: "filesystem".to_owned(),
             status: forge_primitives::McpServerConnectionStatus::Connected,
             server_info: Some(forge_primitives::McpServerInfo {
