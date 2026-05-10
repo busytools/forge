@@ -310,6 +310,10 @@ fn handle_global_shortcuts(app: &mut App, key: KeyEvent) -> bool {
             toggle_all_tool_calls(app);
             true
         }
+        (KeyCode::Char('b'), m) if m == KeyModifiers::CONTROL => {
+            toggle_projects_pane(app);
+            true
+        }
         (KeyCode::Char('l'), m) if m == KeyModifiers::CONTROL => {
             app.force_redraw = true;
             true
@@ -1141,6 +1145,21 @@ fn handle_subagent_key(app: &mut App, key: KeyEvent) -> bool {
 pub(super) fn toggle_all_tool_calls(app: &mut App) {
     app.tools_collapsed = !app.tools_collapsed;
     app.invalidate_layout(InvalidationLevel::Global);
+}
+
+/// Toggle the Wide-tier Projects pane visibility and persist the
+/// new value to `forge-state.toml` via the workspace. Test-only
+/// `App::test_default` paths have no workspace, so the persistence
+/// step is skipped silently — the in-memory toggle still applies
+/// so unit tests can exercise the visibility flag without a
+/// `Workspace`.
+pub(super) fn toggle_projects_pane(app: &mut App) {
+    app.projects_pane_visible = !app.projects_pane_visible;
+    if let Some(workspace) = app.workspace.as_ref() {
+        workspace.set_projects_pane_visible(app.projects_pane_visible);
+    }
+    app.invalidate_layout(InvalidationLevel::Global);
+    app.needs_redraw = true;
 }
 
 #[cfg(test)]

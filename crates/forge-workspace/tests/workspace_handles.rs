@@ -67,6 +67,119 @@ config_dir = "/tmp/forge-test-granite"
 }
 
 #[tokio::test]
+async fn projects_pane_visibility_round_trips_through_forge_state() {
+    let dir = tempdir().expect("tempdir");
+    fs::write(
+        dir.path().join("forge.toml"),
+        r#"
+[[projects]]
+name = "forge"
+path = "~/Projects/forge"
+default = true
+
+[[accounts]]
+display_name = "Subspace"
+config_dir = "/tmp/forge-test-pane-vis"
+"#,
+    )
+    .expect("write forge.toml");
+
+    // Default on first launch is true (no forge-state.toml yet).
+    let workspace = Workspace::new(dir.path().to_owned()).await.expect("new");
+    assert!(workspace.projects_pane_visible(), "default visibility is true");
+
+    // Flip to false, drop, reload — the preference must survive.
+    workspace.set_projects_pane_visible(false);
+    drop(workspace);
+
+    let workspace2 = Workspace::new(dir.path().to_owned()).await.expect("re-load false");
+    assert!(!workspace2.projects_pane_visible(), "false survives round trip");
+
+    // Flip back to true, reload — same again.
+    workspace2.set_projects_pane_visible(true);
+    drop(workspace2);
+
+    let workspace3 = Workspace::new(dir.path().to_owned()).await.expect("re-load true");
+    assert!(workspace3.projects_pane_visible(), "true survives round trip");
+}
+
+#[tokio::test]
+async fn ui_toggle_preserves_account_picker_state() {
+    // Toggling the Projects-pane visibility writes the full
+    // forge-state.toml; the [accounts]/[selection] sections that the
+    // picker writes must NOT be wiped when the UI toggle fires.
+    let dir = tempdir().expect("tempdir");
+    fs::write(
+        dir.path().join("forge.toml"),
+        r#"
+[[projects]]
+name = "forge"
+path = "~/Projects/forge"
+default = true
+
+[[accounts]]
+display_name = "Subspace"
+config_dir = "/tmp/forge-test-ui-toggle-subspace"
+
+[[accounts]]
+display_name = "Granite"
+config_dir = "/tmp/forge-test-ui-toggle-granite"
+"#,
+    )
+    .expect("write forge.toml");
+
+    let workspace = Workspace::new(dir.path().to_owned()).await.expect("new");
+
+    // Spawn so the picker writes [accounts].last_used_at.
+    let _ = workspace
+        .get_agent_handle(SessionTarget::Default, SessionLaunchSettings::default())
+        .await
+        .expect("spawn");
+
+    // Now toggle the Projects pane — full state file gets rewritten.
+    workspace.set_projects_pane_visible(false);
+
+    let state_text =
+        std::fs::read_to_string(dir.path().join("forge-state.toml")).expect("read state");
+    assert!(state_text.contains("last_used_at"), "account picker state preserved on UI write");
+    assert!(state_text.contains("projects_pane_visible"), "ui section written");
+}
+
+#[tokio::test]
+async fn picker_writes_preserve_ui_state() {
+    // Inverse direction: an account-picker write must NOT clobber a
+    // previously-set Projects-pane visibility.
+    let dir = tempdir().expect("tempdir");
+    fs::write(
+        dir.path().join("forge.toml"),
+        r#"
+[[projects]]
+name = "forge"
+path = "~/Projects/forge"
+default = true
+
+[[accounts]]
+display_name = "Subspace"
+config_dir = "/tmp/forge-test-picker-preserves-ui"
+"#,
+    )
+    .expect("write forge.toml");
+
+    let workspace = Workspace::new(dir.path().to_owned()).await.expect("new");
+    workspace.set_projects_pane_visible(false);
+
+    // Now spawn — picker writes forge-state.toml.
+    let _ = workspace
+        .get_agent_handle(SessionTarget::Default, SessionLaunchSettings::default())
+        .await
+        .expect("spawn");
+
+    drop(workspace);
+    let reloaded = Workspace::new(dir.path().to_owned()).await.expect("re-load");
+    assert!(!reloaded.projects_pane_visible(), "picker write did not clobber UI state");
+}
+
+#[tokio::test]
 async fn picker_display_name_reaches_bridge() {
     let dir = tempdir().expect("tempdir");
     fs::write(

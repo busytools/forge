@@ -17,6 +17,8 @@ pub(crate) struct PersistedState {
     pub accounts: HashMap<String, PersistedAccountState>,
     #[serde(default)]
     pub selection: PersistedSelectionState,
+    #[serde(default)]
+    pub ui: PersistedUiState,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -30,6 +32,28 @@ pub(crate) struct PersistedAccountState {
 pub(crate) struct PersistedSelectionState {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub round_robin_next: Option<usize>,
+}
+
+/// UI preferences persisted across forge launches. Currently scoped
+/// to the Wide-tier Projects pane visibility toggle (Ctrl+B). New
+/// fields land with their own `#[serde(default = "...")]` defaults
+/// so older `forge-state.toml` files keep round-tripping.
+#[derive(Debug, Deserialize, Serialize)]
+pub(crate) struct PersistedUiState {
+    /// Whether the Projects pane was visible at last shutdown.
+    /// Default `true` so first-launch users see the pane.
+    #[serde(default = "default_pane_visible")]
+    pub projects_pane_visible: bool,
+}
+
+impl Default for PersistedUiState {
+    fn default() -> Self {
+        Self { projects_pane_visible: default_pane_visible() }
+    }
+}
+
+const fn default_pane_visible() -> bool {
+    true
 }
 
 /// Path: `<config_dir>/forge-state.toml`.
@@ -132,6 +156,42 @@ mod tests {
         let state = load_or_default(dir.path());
         assert!(state.accounts.is_empty());
         assert!(state.selection.round_robin_next.is_none());
+        assert!(
+            state.ui.projects_pane_visible,
+            "ui.projects_pane_visible defaults to true on missing state",
+        );
+    }
+
+    #[test]
+    fn ui_section_round_trips() {
+        let dir = tempdir().expect("tempdir");
+        let mut state = PersistedState::default();
+        state.ui.projects_pane_visible = false;
+
+        save(dir.path(), &state);
+        let loaded = load_or_default(dir.path());
+        assert!(!loaded.ui.projects_pane_visible);
+
+        let mut state = loaded;
+        state.ui.projects_pane_visible = true;
+        save(dir.path(), &state);
+        let loaded = load_or_default(dir.path());
+        assert!(loaded.ui.projects_pane_visible);
+    }
+
+    #[test]
+    fn legacy_state_without_ui_section_loads_default() {
+        // forge-state.toml files written before the `[ui]` section
+        // existed must still round-trip with the default visibility.
+        let dir = tempdir().expect("tempdir");
+        std::fs::write(state_path(dir.path()), "[selection]\nround_robin_next = 1\n")
+            .expect("write");
+        let state = load_or_default(dir.path());
+        assert_eq!(state.selection.round_robin_next, Some(1));
+        assert!(
+            state.ui.projects_pane_visible,
+            "legacy state without [ui] still defaults projects_pane_visible to true",
+        );
     }
 
     #[test]

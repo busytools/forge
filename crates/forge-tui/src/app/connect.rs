@@ -127,6 +127,9 @@ pub fn create_app(cli: &Cli, workspace: Rc<forge_workspace::Workspace>) -> App {
     pre_connect_session.cwd = cwd_display;
     let mut sessions = std::collections::HashMap::new();
     sessions.insert(pre_connect_key.clone(), pre_connect_session);
+    // Snapshot the persisted Projects-pane visibility before
+    // moving `workspace` into the App struct below.
+    let projects_pane_visible = workspace.projects_pane_visible();
     let mut app = App {
         active_view: ActiveView::Chat,
         config: ConfigState::default(),
@@ -155,7 +158,7 @@ pub fn create_app(cli: &Cli, workspace: Rc<forge_workspace::Workspace>) -> App {
         spinner_frame: 0,
         spinner_last_advance_at: None,
         tools_collapsed: true,
-        projects_pane_visible: true,
+        projects_pane_visible,
         pane_hit_targets: Vec::new(),
         layout: crate::ui::layout::AppLayout::default(),
         force_redraw: false,

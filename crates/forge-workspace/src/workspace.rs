@@ -14,7 +14,9 @@ use parking_lot::Mutex;
 use crate::account::{AccountKey, AccountStateMap};
 use crate::config::{LoadedConfig, LoadedProject, load_from_dir};
 use crate::error::WorkspaceError;
-use crate::state::{self, PersistedAccountState, PersistedSelectionState, PersistedState};
+use crate::state::{
+    self, PersistedAccountState, PersistedSelectionState, PersistedState, PersistedUiState,
+};
 use crate::target::{ProjectKey, SessionKey, SessionTarget};
 use crate::views::{ProjectView, SessionView};
 
@@ -42,6 +44,12 @@ pub struct Workspace {
     /// Account picker state. Updated on every spawn; persisted to
     /// `forge-state.toml` after each pick.
     accounts: Mutex<AccountStateMap>,
+    /// In-memory mirror of the `[ui]` section in `forge-state.toml`.
+    /// Mutated by [`Workspace::set_projects_pane_visible`] (called
+    /// from forge-tui when the user presses Ctrl+B); persisted via
+    /// the same `state::save` path the account picker uses, so
+    /// `[accounts]` / `[selection]` survive UI-only writes.
+    persisted_ui: Mutex<PersistedUiState>,
 }
 
 /// Pool entry wrapping the live `Arc<AgentHandle>` together with
@@ -124,6 +132,7 @@ impl Workspace {
             catalog,
             pool: Mutex::new(HashMap::new()),
             accounts: Mutex::new(accounts),
+            persisted_ui: Mutex::new(persisted.ui),
         })
     }
 
@@ -230,7 +239,7 @@ impl Workspace {
         // lock. `state::save` is best-effort — it logs and returns
         // on failure rather than propagating, so a transient I/O
         // hiccup doesn't break the spawn path.
-        self.persist_account_state();
+        self.persist_state();
 
         // Slow path: spawn fresh Agent bound to the picked account's
         // config_dir. The Agent stores it as a typed field; every
@@ -275,12 +284,37 @@ impl Workspace {
         Ok(arc)
     }
 
-    /// Snapshot the current `AccountStateMap` into a
-    /// [`PersistedState`] and write it to `forge-state.toml`.
-    /// Best-effort — `state::save` logs and returns on failure so
-    /// a transient write error never propagates back into the
-    /// spawn path.
-    fn persist_account_state(&self) {
+    /// Read the persisted Projects-pane visibility preference.
+    /// Default `true` if `forge-state.toml` is missing, unparseable,
+    /// or omits the `[ui]` section.
+    #[must_use]
+    pub fn projects_pane_visible(&self) -> bool {
+        self.persisted_ui.lock().projects_pane_visible
+    }
+
+    /// Update + atomically persist the Projects-pane visibility
+    /// preference. Writes `forge-state.toml` via the existing
+    /// `state::save` atomic-rename path, preserving the
+    /// `[accounts]` and `[selection]` sections from the live
+    /// `AccountStateMap`. Best-effort — on I/O failure the new
+    /// value stays in memory but won't survive restart.
+    pub fn set_projects_pane_visible(&self, visible: bool) {
+        {
+            let mut ui = self.persisted_ui.lock();
+            ui.projects_pane_visible = visible;
+        }
+        self.persist_state();
+    }
+
+    /// Snapshot the live in-memory state (account picker + UI
+    /// preferences) into a [`PersistedState`] and write it to
+    /// `forge-state.toml`. Both [`Self::get_agent_handle`] (account
+    /// picker mutation) and [`Self::set_projects_pane_visible`] (UI
+    /// toggle) flow through here, keeping the on-disk file the
+    /// single source of truth. Best-effort — `state::save` logs and
+    /// returns on failure so a transient write error never
+    /// propagates back into the calling path.
+    fn persist_state(&self) {
         let snapshot = {
             let accounts = self.accounts.lock();
             let mut persisted_accounts: HashMap<String, PersistedAccountState> = HashMap::new();
@@ -297,9 +331,11 @@ impl Workspace {
             let round_robin_next =
                 matches!(accounts.policy, crate::config::SelectionPolicy::RoundRobin)
                     .then_some(accounts.round_robin_next);
+            let ui = self.persisted_ui.lock();
             PersistedState {
                 accounts: persisted_accounts,
                 selection: PersistedSelectionState { round_robin_next },
+                ui: PersistedUiState { projects_pane_visible: ui.projects_pane_visible },
             }
         };
         state::save(&self.config_dir, &snapshot);
