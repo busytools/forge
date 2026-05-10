@@ -140,6 +140,18 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
         ClientEvent::LogoutCompleted => {
             session::handle_logout_completed_event(app);
         }
+        ClientEvent::ForgeAccountIdentityReady { display_name } => {
+            tracing::info!(
+                target: crate::logging::targets::APP_AUTH,
+                event_name = "forge_account_identity_ready",
+                message = "forge-account display_name received pre-status-snapshot",
+                outcome = "info",
+                display_name = %display_name,
+            );
+            app.active_account_display_name = Some(display_name);
+            app.sync_welcome_snapshot();
+            app.needs_redraw = true;
+        }
         ClientEvent::StatusSnapshotReceived { session_id, account, forge_account } => {
             drop_if_stale_session!(
                 app,

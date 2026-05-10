@@ -83,6 +83,14 @@ pub enum ClientEvent {
         account: forge_primitives::AccountInfo,
         forge_account: Option<forge_primitives::ForgeAccountIdentity>,
     },
+    /// Forge-side account identity is known the moment
+    /// `Workspace::get_agent_handle` returns — much earlier than
+    /// the CLI-side `StatusSnapshot`. Emitted once per connection
+    /// so the welcome message can render `Account: <name>` from
+    /// the first frame after spawn rather than flickering through
+    /// the default "Subscription: -" while the CLI subprocess
+    /// boots.
+    ForgeAccountIdentityReady { display_name: String },
     /// OAuth credentials snapshot received from bridge. `credentials` is
     /// `None` when no credentials file exists or it's empty/malformed.
     OauthCredentialsSnapshotReceived {

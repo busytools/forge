@@ -1895,6 +1895,34 @@ mod tests {
     }
 
     #[test]
+    fn forge_account_identity_ready_updates_welcome_before_status_snapshot() {
+        let mut app = make_test_app();
+        app.messages.push(ChatMessage::welcome(
+            env!("CARGO_PKG_VERSION"),
+            "-",
+            "/test",
+            "session-1",
+        ));
+        app.session_id = Some(model::SessionId::new("session-1"));
+
+        // Pre-snapshot: bridge tells us which account got picked,
+        // before the CLI-side status snapshot arrives.
+        handle_client_event(
+            &mut app,
+            ClientEvent::ForgeAccountIdentityReady { display_name: "Subspace".into() },
+        );
+
+        let Some(MessageBlock::Welcome(welcome)) = app.messages[0].blocks.first() else {
+            panic!("expected welcome block");
+        };
+        // Without account_info, no tier — but label + name are
+        // correct from the first frame after spawn.
+        assert_eq!(welcome.account_label, "Account");
+        assert_eq!(welcome.subscription, "Subspace");
+        assert_eq!(app.active_account_display_name.as_deref(), Some("Subspace"));
+    }
+
+    #[test]
     fn status_snapshot_with_forge_account_renders_account_label() {
         let mut app = make_test_app();
         app.messages.push(ChatMessage::welcome(

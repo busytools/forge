@@ -98,7 +98,7 @@ config_dir = "/tmp/forge-test-display-granite"
         .await
         .expect("first spawn");
     assert_eq!(
-        h1.display_name_for_test().as_deref(),
+        h1.display_name().as_deref(),
         Some("Granite"),
         "first spawn binds to Granite's display_name",
     );
@@ -110,7 +110,7 @@ config_dir = "/tmp/forge-test-display-granite"
         .await
         .expect("second spawn");
     assert_eq!(
-        h2.display_name_for_test().as_deref(),
+        h2.display_name().as_deref(),
         Some("Subspace"),
         "second spawn binds to Subspace's display_name",
     );

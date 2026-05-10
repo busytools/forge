@@ -64,6 +64,16 @@ pub(super) async fn run_connection_task(
             };
         drop(workspace);
 
+        // Forge-side display_name is known the instant the
+        // workspace picks an account — much earlier than the CLI-
+        // side status snapshot (which has to wait for the claude
+        // subprocess to boot, init, and emit `system/init`). Emit
+        // it now so the welcome message renders the right label
+        // from the first frame after spawn.
+        if let Some(display_name) = agent.display_name() {
+            let _ = event_tx.send(ClientEvent::ForgeAccountIdentityReady { display_name });
+        }
+
         let Some(mut event_rx) = agent.take_events() else {
             // The Agent the workspace just spawned for us seeds a fresh
             // receiver, so this is only reachable if a future refactor

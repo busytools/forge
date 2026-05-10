@@ -97,13 +97,14 @@ impl AgentHandle {
         self.bridge.config_dir()
     }
 
-    /// Test-only accessor returning a clone of the bridge's bound
-    /// forge-account `display_name` (when forge-workspace picked
-    /// one). Same `#[doc(hidden)] pub` rationale as
-    /// [`Self::config_dir_for_test`].
-    #[doc(hidden)]
+    /// Returns a clone of the bridge's bound forge-account
+    /// `display_name` (when forge-workspace picked one). Used by
+    /// the connect-flow to emit a `ForgeAccountIdentityReady`
+    /// event right after spawn — eliminates the welcome-message
+    /// flicker that would otherwise wait for the slow status
+    /// snapshot to arrive from the CLI.
     #[must_use]
-    pub fn display_name_for_test(&self) -> Option<String> {
+    pub fn display_name(&self) -> Option<String> {
         self.bridge.display_name()
     }
 
