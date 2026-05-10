@@ -259,6 +259,11 @@ pub fn create_app(cli: &Cli, workspace: Rc<forge_workspace::Workspace>) -> App {
 
     app.rebuild_history_retention_accounting();
     app.rebuild_render_cache_accounting();
+    // Re-derive the welcome's account-line shape now that the App
+    // has its workspace pointer set. This lets workspace-mode
+    // sessions render `Account: …` from the very first frame
+    // instead of a hidden line that pops in once data arrives.
+    app.sync_welcome_snapshot();
     trust::initialize(&mut app);
     super::file_index::restart(&mut app);
     app

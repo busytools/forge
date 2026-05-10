@@ -486,17 +486,17 @@ impl App {
     }
 
     /// Returns `(label, value)` for the welcome message's account
-    /// line. Both empty when the renderer should skip the line —
-    /// either no data has loaded yet, or in workspace mode we have
-    /// the display_name but not yet the subscription tier (we'd
-    /// rather wait than show a half-populated line that flickers
-    /// when the tier arrives).
+    /// line. The line's *layout slot* is reserved from the first
+    /// frame in workspace mode — `Account: …` shows immediately,
+    /// then the value fills in once data lands. Avoids the
+    /// alternative options (line pops in late, or flickers
+    /// `Granite` → `Granite · team`) that surface as stale UI.
     ///
-    /// Renders the line only when:
-    /// - Workspace mode: `display_name` AND `subscription_type`
-    ///   both present → `"Account: name · tier"`.
-    /// - Legacy mode (no workspace): only `subscription_type`
-    ///   ever arrives — show it under the `"Subscription"` label.
+    /// Resolution table:
+    /// - Workspace mode + both pieces → `"Account: name · tier"`.
+    /// - Workspace mode + partial/no data → `"Account: …"` skeleton.
+    /// - Legacy mode (no workspace) + tier only → `"Subscription: tier"`.
+    /// - Legacy mode + no data → empty (renderer hides line).
     #[must_use]
     fn welcome_account_display(&self) -> (String, String) {
         let display_name =
@@ -507,15 +507,13 @@ impl App {
             .and_then(|a| a.subscription_type.as_deref())
             .map(str::trim)
             .filter(|s| !s.is_empty());
+        let workspace_mode = self.workspace.is_some();
 
-        match (display_name, subscription) {
-            (Some(name), Some(tier)) => ("Account".to_owned(), format!("{name} · {tier}")),
-            (None, Some(tier)) => ("Subscription".to_owned(), tier.to_owned()),
-            // No data, or workspace mode with display_name set but
-            // tier still in flight — hide until the status snapshot
-            // arrives so the user sees the fully-formed value, not
-            // "Granite" → "Granite · team".
-            (Some(_) | None, None) => (String::new(), String::new()),
+        match (workspace_mode, display_name, subscription) {
+            (_, Some(name), Some(tier)) => ("Account".to_owned(), format!("{name} · {tier}")),
+            (true, _, _) => ("Account".to_owned(), "…".to_owned()),
+            (false, _, Some(tier)) => ("Subscription".to_owned(), tier.to_owned()),
+            (false, _, None) => (String::new(), String::new()),
         }
     }
 
