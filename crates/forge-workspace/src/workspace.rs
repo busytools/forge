@@ -164,7 +164,12 @@ impl Workspace {
                 })
                 .unwrap_or_default();
 
-            views.push(ProjectView { key, display_path: project.display_path.clone(), sessions });
+            views.push(ProjectView {
+                key,
+                name: project.name.clone(),
+                display_path: project.display_path.clone(),
+                sessions,
+            });
         }
         views
     }

@@ -9,9 +9,14 @@
 
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
+use std::fs;
+use std::rc::Rc;
+
 use crossterm::event::{Event, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
-use forge_tui::app::{App, PaneHitTarget, handle_terminal_event};
-use forge_workspace::SessionKey;
+use forge_tui::app::session::SessionLifecycleState;
+use forge_tui::app::{App, PaneHitTarget, handle_terminal_event, spawn_for_sleeping_project};
+use forge_workspace::{SessionKey, Workspace};
+use tempfile::tempdir;
 
 fn down_left(column: u16, row: u16) -> Event {
     Event::Mouse(MouseEvent {
@@ -152,4 +157,127 @@ fn click_on_session_row_when_pane_layout_missing_is_noop() {
     handle_terminal_event(&mut app, down_left(10, 5));
 
     assert_eq!(app.active_session_key.as_ref(), Some(&key_a));
+}
+
+/// When the user clicks a sleeping project's header (lead not yet
+/// in `app.sessions`), the spawn helper should:
+/// - synthesize a `__spawn_<name>__` Session bucket synchronously,
+/// - flip `lifecycle_state` to `Spawning`,
+/// - seed a placeholder welcome message + the project's display
+///   path as the bucket's cwd,
+/// - and switch the active session to the synthetic bucket so the
+///   user immediately sees the spawning state in chat.
+///
+/// The async `Workspace::get_agent_handle` call kicks off in the
+/// background; we only assert the synchronous part. The `Connected`
+/// migration path that resolves the synthetic key onto a real
+/// session UUID is exercised by the unit tests in
+/// `events::session::tests`.
+#[test]
+fn click_sleeping_project_creates_spawning_bucket_synchronously() {
+    let dir = tempdir().expect("tempdir");
+    fs::write(
+        dir.path().join("forge.toml"),
+        r#"
+[[projects]]
+name = "test-proj"
+path = "/tmp/test-project-path-2026-05-10"
+default = true
+
+[[accounts]]
+display_name = "Test"
+config_dir = "/tmp/test-account-config-2026-05-10"
+"#,
+    )
+    .expect("write forge.toml");
+
+    let runtime =
+        tokio::runtime::Builder::new_current_thread().enable_all().build().expect("runtime");
+    let workspace =
+        runtime.block_on(async { Workspace::new(dir.path().to_owned()).await.expect("workspace") });
+
+    let mut app = App::test_default();
+    app.workspace = Some(Rc::new(workspace));
+
+    // The spawn helper itself runs synchronously up to the
+    // `tokio::task::spawn_local` for the background connection
+    // task. Drive it inside a `LocalSet` so spawn_local doesn't
+    // panic for lack of one. The local task is queued but never
+    // polled (we drop the LocalSet without `run_until`), so the
+    // background handshake doesn't actually run — exactly what we
+    // want for an isolated synchronous-state test.
+    let local = tokio::task::LocalSet::new();
+    let guard = local.enter();
+    spawn_for_sleeping_project(&mut app, "test-proj");
+    drop(guard);
+    drop(local);
+
+    let spawn_key = SessionKey::from_str_for_test("__spawn_test-proj__");
+    assert!(
+        app.sessions.contains_key(&spawn_key),
+        "spawning bucket created synchronously under the __spawn_<name>__ key",
+    );
+    assert_eq!(
+        app.active_session_key.as_ref(),
+        Some(&spawn_key),
+        "active session swapped to the spawning bucket so chat shows it immediately",
+    );
+    let bucket = app.sessions.get(&spawn_key).expect("bucket");
+    assert_eq!(
+        bucket.lifecycle_state,
+        SessionLifecycleState::Spawning,
+        "lifecycle state seeded as Spawning",
+    );
+    assert!(
+        !bucket.messages.is_empty(),
+        "placeholder welcome message added before the real Connected event",
+    );
+}
+
+/// Calling the helper a second time for the same project (before
+/// the first Connected event has migrated the bucket onto a real
+/// session id) MUST be idempotent — no second bucket inserted, no
+/// second connection task spawned, just an active swap to the
+/// already-existing spawning bucket.
+#[test]
+fn double_click_same_sleeping_project_is_idempotent() {
+    let dir = tempdir().expect("tempdir");
+    fs::write(
+        dir.path().join("forge.toml"),
+        r#"
+[[projects]]
+name = "test-proj"
+path = "/tmp/test-project-path-2026-05-10-b"
+default = true
+
+[[accounts]]
+display_name = "Test"
+config_dir = "/tmp/test-account-config-2026-05-10-b"
+"#,
+    )
+    .expect("write forge.toml");
+
+    let runtime =
+        tokio::runtime::Builder::new_current_thread().enable_all().build().expect("runtime");
+    let workspace =
+        runtime.block_on(async { Workspace::new(dir.path().to_owned()).await.expect("workspace") });
+
+    let mut app = App::test_default();
+    app.workspace = Some(Rc::new(workspace));
+
+    let local = tokio::task::LocalSet::new();
+    let guard = local.enter();
+    spawn_for_sleeping_project(&mut app, "test-proj");
+    let session_count_after_first = app.sessions.len();
+    spawn_for_sleeping_project(&mut app, "test-proj");
+    let session_count_after_second = app.sessions.len();
+    drop(guard);
+    drop(local);
+
+    assert_eq!(
+        session_count_after_first, session_count_after_second,
+        "second spawn for the same project must reuse the existing spawning bucket",
+    );
+    let spawn_key = SessionKey::from_str_for_test("__spawn_test-proj__");
+    assert_eq!(app.active_session_key.as_ref(), Some(&spawn_key));
 }

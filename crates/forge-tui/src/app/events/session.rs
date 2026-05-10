@@ -16,6 +16,20 @@ use std::sync::Arc;
 const TURN_ERROR_INPUT_LOCK_HINT: &str =
     "Input disabled after an error. Press Ctrl+Q to quit and try again.";
 
+/// Returns `true` when `key` is a synthetic placeholder (sentinel
+/// pattern `__<name>__`) rather than a real claude-issued session
+/// UUID. The Connected handler uses this to find synthetic-keyed
+/// buckets that it should migrate onto the real session key.
+///
+/// Today's sentinels: `__conn_pending__` (pre-Connect bucket from
+/// startup) and `__spawn_<project>__` (sleeping-project click in
+/// the Projects pane). Real claude session ids are UUIDs, which
+/// never start or end with `__`.
+fn is_synthetic_key(key: &SessionKey) -> bool {
+    let s = key.as_str();
+    s.len() >= 4 && s.starts_with("__") && s.ends_with("__")
+}
+
 pub(super) fn handle_connected_client_event(
     app: &mut App,
     session_id: model::SessionId,
@@ -31,10 +45,22 @@ pub(super) fn handle_connected_client_event(
     let prev_session_id = app.session_id().map(ToString::to_string);
     // Phase 2a foundation: register this session in the multi-session
     // map. Bucket-migration commits move per-session fields off App
-    // into this entry; if a pre-Connect synthetic bucket exists
-    // (welcome message buffer, viewport state, etc.) migrate it onto
-    // the real session key so the user-visible state survives the
-    // Connect transition.
+    // into this entry; if a synthetic-keyed bucket is the active key
+    // when Connected fires, migrate it onto the real session key so
+    // the user-visible state (welcome message, cwd, viewport) survives
+    // the Connect transition.
+    //
+    // The synthetic-key sentinel pattern is `__<name>__`. Two
+    // currently-used variants:
+    //
+    // - `__conn_pending__` — the pre-Connect bucket seeded by
+    //   `create_app`. Latched onto the active key from the moment
+    //   forge-tui boots until the very first Connected event.
+    // - `__spawn_<project>__` — the spawning bucket seeded when the
+    //   user clicks a sleeping project header in the Projects pane
+    //   (Phase 2b-α). Latched onto the active key while
+    //   `workspace.get_agent_handle(SessionTarget::Named(...))` runs
+    //   in the background.
     //
     // Migrate FIRST, then activate, then write conn into the target
     // bucket directly. This ordering guards against the multi-bridge
@@ -44,21 +70,35 @@ pub(super) fn handle_connected_client_event(
     // conn slot lands in the correct bucket regardless of which
     // session was active before this event fired.
     let session_key = forge_workspace::SessionKey::from_session_id(session_id.to_string());
-    let pre_connect_key = forge_workspace::SessionKey::from_session_id(App::PRE_CONNECT_KEY);
-    if let Some(mut existing) = app.sessions.remove(&pre_connect_key) {
-        if app.sessions.contains_key(&session_key) {
-            tracing::warn!(
-                target: crate::logging::targets::APP_SESSION,
-                event_name = "connected_synthetic_dropped",
-                message = "synthetic pre-Connect bucket dropped because the real-key bucket already existed",
-                outcome = "dropped",
-                session_id = %session_id_for_log,
-                reason = "real_bucket_present",
-            );
-            let _ = existing;
-        } else {
-            existing.key = Some(session_key.clone());
-            app.sessions.insert(session_key.clone(), existing);
+    // Find any synthetic-keyed bucket that this Connected event
+    // should migrate onto the real key. Priority: the active key, if
+    // it's synthetic — that's the bucket whose state the user has
+    // been seeing. Fallback: the legacy `__conn_pending__` bucket,
+    // for the brief startup window before `active_session_key` is
+    // set. (Both are typically the same bucket; the explicit fallback
+    // covers the test paths that wire one without the other.)
+    let synthetic_to_migrate =
+        app.active_session_key.as_ref().filter(|k| is_synthetic_key(k)).cloned().or_else(|| {
+            let pre = forge_workspace::SessionKey::from_session_id(App::PRE_CONNECT_KEY);
+            if app.sessions.contains_key(&pre) { Some(pre) } else { None }
+        });
+    if let Some(synth_key) = synthetic_to_migrate {
+        if let Some(mut existing) = app.sessions.remove(&synth_key) {
+            if app.sessions.contains_key(&session_key) {
+                tracing::warn!(
+                    target: crate::logging::targets::APP_SESSION,
+                    event_name = "connected_synthetic_dropped",
+                    message = "synthetic bucket dropped because the real-key bucket already existed",
+                    outcome = "dropped",
+                    session_id = %session_id_for_log,
+                    synthetic_key = %synth_key.as_str(),
+                    reason = "real_bucket_present",
+                );
+                let _ = existing;
+            } else {
+                existing.key = Some(session_key.clone());
+                app.sessions.insert(session_key.clone(), existing);
+            }
         }
     } else {
         app.sessions
@@ -794,5 +834,103 @@ mod tests {
             app.file_index.entries.keys().map(String::as_str).collect::<Vec<_>>(),
             vec!["after.rs"]
         );
+    }
+
+    #[test]
+    fn is_synthetic_key_recognises_double_underscore_pattern() {
+        assert!(is_synthetic_key(&forge_workspace::SessionKey::from_session_id(
+            "__conn_pending__"
+        )));
+        assert!(is_synthetic_key(&forge_workspace::SessionKey::from_session_id("__spawn_forge__")));
+        assert!(is_synthetic_key(&forge_workspace::SessionKey::from_session_id("____")));
+        // Real session UUIDs never look like sentinels.
+        assert!(!is_synthetic_key(&forge_workspace::SessionKey::from_session_id(
+            "abc123-def456-uuid-shape"
+        )));
+        // Half-open patterns aren't sentinels.
+        assert!(!is_synthetic_key(&forge_workspace::SessionKey::from_session_id("__notclosed")));
+        assert!(!is_synthetic_key(&forge_workspace::SessionKey::from_session_id("notopen__")));
+        // Empty or shorter-than-`__` prefixes don't qualify.
+        assert!(!is_synthetic_key(&forge_workspace::SessionKey::from_session_id("")));
+        assert!(!is_synthetic_key(&forge_workspace::SessionKey::from_session_id("_")));
+    }
+
+    /// Connected fired against an active `__spawn_<name>__` synthetic
+    /// bucket must migrate the bucket onto the real session key —
+    /// preserving the cwd, lifecycle state, and any messages the
+    /// pre-Connect path accumulated.
+    #[test]
+    fn connected_migrates_spawn_synthetic_bucket_onto_real_key() {
+        let mut app = App::test_default();
+        // Set up a `__spawn_forge__` bucket as if the user had just
+        // clicked a sleeping project.
+        let spawn_key = forge_workspace::SessionKey::from_session_id("__spawn_forge__".to_owned());
+        let mut bucket = crate::app::session::Session::new(spawn_key.clone());
+        bucket.lifecycle_state = crate::app::session::SessionLifecycleState::Spawning;
+        bucket.cwd_raw = "~/Projects/forge".to_owned();
+        bucket.cwd = "~/Projects/forge".to_owned();
+        // Strip the test_default's pre-Connect bucket out so the
+        // active key points at our spawn bucket and nothing else.
+        app.sessions.clear();
+        app.sessions.insert(spawn_key.clone(), bucket);
+        app.active_session_key = Some(spawn_key.clone());
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        handle_connected_client_event(
+            &mut app,
+            model::SessionId::new("real-uuid-9000"),
+            dir.path().to_string_lossy().into_owned(),
+            model::CurrentModel::new("model", "model", "model").authoritative(true),
+            Vec::new(),
+            None,
+            &[],
+        );
+
+        let real_key = forge_workspace::SessionKey::from_session_id("real-uuid-9000".to_owned());
+        assert!(
+            !app.sessions.contains_key(&spawn_key),
+            "spawn synthetic bucket removed after migration"
+        );
+        assert!(app.sessions.contains_key(&real_key), "real-key bucket present after migration");
+        assert_eq!(
+            app.active_session_key.as_ref(),
+            Some(&real_key),
+            "active session is the real key after migration"
+        );
+        let migrated = app.sessions.get(&real_key).expect("real-key bucket");
+        assert_eq!(
+            migrated.cwd_raw,
+            dir.path().to_string_lossy().into_owned(),
+            "cwd updated to the Connected-supplied cwd",
+        );
+    }
+
+    /// Backwards-compat: when the active key is the legacy
+    /// `__conn_pending__` sentinel, Connected still migrates the
+    /// pre-Connect bucket as before.
+    #[test]
+    fn connected_migrates_legacy_pre_connect_sentinel() {
+        let mut app = App::test_default();
+        // test_default already seeds a `__conn_pending__` bucket as
+        // active; just confirm the pre-conditions then drive Connected.
+        let pre = forge_workspace::SessionKey::from_session_id(App::PRE_CONNECT_KEY);
+        assert!(app.sessions.contains_key(&pre));
+        assert_eq!(app.active_session_key.as_ref(), Some(&pre));
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        handle_connected_client_event(
+            &mut app,
+            model::SessionId::new("real-uuid-legacy"),
+            dir.path().to_string_lossy().into_owned(),
+            model::CurrentModel::new("model", "model", "model").authoritative(true),
+            Vec::new(),
+            None,
+            &[],
+        );
+
+        let real_key = forge_workspace::SessionKey::from_session_id("real-uuid-legacy".to_owned());
+        assert!(!app.sessions.contains_key(&pre), "pre-connect synthetic bucket removed");
+        assert!(app.sessions.contains_key(&real_key));
+        assert_eq!(app.active_session_key.as_ref(), Some(&real_key));
     }
 }

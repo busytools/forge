@@ -39,7 +39,7 @@ pub use cache_policy::{
     find_text_split, find_text_split_index,
 };
 pub use config::{ConfigState, ConfigTab};
-pub use connect::{create_app, start_connection};
+pub use connect::{create_app, spawn_for_sleeping_project, start_connection};
 pub use events::{handle_client_event, handle_terminal_event};
 pub use focus::{FocusManager, FocusOwner, FocusTarget};
 pub use input::InputState;

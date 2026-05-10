@@ -402,8 +402,10 @@ fn rect_contains(rect: Rect, x: u16, y: u16) -> bool {
 
 /// Switch to the lead session of `project_name`. If the project's
 /// lead is already an in-process session in `app.sessions`, swap to
-/// it; otherwise log a placeholder — the spawn flow lands in the
-/// next Phase 2b-α commit.
+/// it; otherwise hand off to
+/// [`crate::app::connect::spawn_for_sleeping_project`] which
+/// synthesizes a spawning bucket and kicks off the async lookup of
+/// the project's lead AgentHandle.
 fn switch_to_project_lead(app: &mut App, project_name: &str) {
     let lead_session_key = app.workspace.as_ref().and_then(|workspace| {
         workspace
@@ -417,12 +419,7 @@ fn switch_to_project_lead(app: &mut App, project_name: &str) {
             app.switch_active_session(key);
         }
         _ => {
-            tracing::info!(
-                target: crate::logging::targets::APP_SESSION,
-                event_name = "projects_pane_click_sleeping",
-                project = %project_name,
-                "click on sleeping project — spawn flow lands in Phase 2b-α task 4"
-            );
+            crate::app::connect::spawn_for_sleeping_project(app, project_name);
         }
     }
 }

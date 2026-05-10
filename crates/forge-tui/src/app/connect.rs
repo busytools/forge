@@ -8,6 +8,7 @@
 
 mod bridge_lifecycle;
 mod session_start;
+mod spawn_sleeping;
 pub(crate) mod type_converters;
 
 use super::config::ConfigState;
@@ -24,14 +25,22 @@ use std::rc::Rc;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
-struct StartConnectionParams {
-    event_tx: mpsc::UnboundedSender<ClientEvent>,
-    workspace: Rc<forge_workspace::Workspace>,
-    session_launch_settings: SessionLaunchSettings,
-    /// Project name from the CLI's positional `<PROJECT>` argument.
-    /// `None` opens the `default = true` project; `Some(name)`
-    /// resolves to [`forge_workspace::SessionTarget::Named`].
-    project: Option<String>,
+pub(crate) struct StartConnectionParams {
+    pub(crate) event_tx: mpsc::UnboundedSender<ClientEvent>,
+    pub(crate) workspace: Rc<forge_workspace::Workspace>,
+    pub(crate) session_launch_settings: SessionLaunchSettings,
+    /// Which session the connection task should request from the
+    /// workspace. Startup wires `Default` (or `Named` from the CLI's
+    /// positional `<PROJECT>` argument); the sleeping-project click
+    /// flow wires `Named(<project name>)`.
+    pub(crate) target: forge_workspace::SessionTarget,
+    /// Synthetic-key sentinel under which to tag early failures
+    /// (before any real session id exists). Startup uses
+    /// [`App::PRE_CONNECT_KEY`]; the sleeping-project flow seeds a
+    /// `__spawn_<project>__` bucket and passes that key here so a
+    /// failure routes to the visible spawning bucket rather than a
+    /// stale pre-Connect bucket.
+    pub(crate) pre_connect_key: forge_workspace::SessionKey,
 }
 
 /// Shorten a path for display: substitute `~` for the home directory prefix.
@@ -47,6 +56,7 @@ fn shorten_cwd_for_display(cwd: &std::path::Path) -> String {
 }
 
 pub(crate) use session_start::{SessionStartReason, begin_resume_session, start_new_session};
+pub use spawn_sleeping::spawn_for_sleeping_project;
 
 /// Create the `App` struct in `Connecting` state and load shared settings state.
 ///
@@ -245,6 +255,10 @@ pub fn start_connection(app: &mut App) {
     };
 
     app.connection_started = true;
+    let target = match app.startup_project.clone() {
+        Some(name) => forge_workspace::SessionTarget::Named(name),
+        None => forge_workspace::SessionTarget::Default,
+    };
     let params = StartConnectionParams {
         event_tx: app.event_tx.clone(),
         workspace,
@@ -252,7 +266,8 @@ pub fn start_connection(app: &mut App) {
             app,
             session_start::SessionStartReason::Startup,
         ),
-        project: app.startup_project.clone(),
+        target,
+        pre_connect_key: forge_workspace::SessionKey::from_session_id(App::PRE_CONNECT_KEY),
     };
     let conn_slot: Rc<std::cell::RefCell<Option<ConnectionSlot>>> =
         Rc::new(std::cell::RefCell::new(None));

@@ -11,6 +11,12 @@ use crate::target::{ProjectKey, SessionKey};
 #[non_exhaustive]
 pub struct ProjectView {
     pub key: ProjectKey,
+    /// The toml `name` field from `forge.toml`. Distinct from `key`,
+    /// which is the canonicalised on-disk project key derived from
+    /// the project's path. Callers wanting to address a project via
+    /// [`crate::SessionTarget::Named`] use this value; callers
+    /// keying a HashMap of in-process Agent handles use [`Self::key`].
+    pub name: String,
     /// Human-readable rendering of the project's root path (e.g.
     /// `~/Projects/forge`, with `~` left in place rather than
     /// expanded). Display-only — not a path you can `open()`.
@@ -27,10 +33,11 @@ impl ProjectView {
     #[must_use]
     pub fn new_for_test(
         key: ProjectKey,
+        name: impl Into<String>,
         display_path: impl Into<String>,
         sessions: Vec<SessionView>,
     ) -> Self {
-        Self { key, display_path: display_path.into(), sessions }
+        Self { key, name: name.into(), display_path: display_path.into(), sessions }
     }
 }
 

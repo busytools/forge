@@ -64,19 +64,13 @@ pub(super) async fn run_connection_task(
         // Destructure so `workspace` can drop the moment we're done with
         // it. The spawned event loop only needs `event_tx`, so dropping
         // `workspace` here lets `Rc::try_unwrap` succeed at clean exit.
-        let StartConnectionParams { event_tx, workspace, session_launch_settings, project } =
-            params;
-
-        let target = match project {
-            Some(name) => forge_workspace::SessionTarget::Named(name),
-            None => forge_workspace::SessionTarget::Default,
-        };
-
-        // The forwarder hasn't bound a session yet — early failures
-        // before any AgentHandle exists are tagged with the
-        // pre-Connected synthetic key so the App's session-router
-        // finds the bucket the test/bootstrap path seeded.
-        let pre_connect_key = SessionKey::from_session_id(App::PRE_CONNECT_KEY);
+        let StartConnectionParams {
+            event_tx,
+            workspace,
+            session_launch_settings,
+            target,
+            pre_connect_key,
+        } = params;
 
         let mut connected_once = false;
         let agent: Arc<forge_agent::AgentHandle> =
