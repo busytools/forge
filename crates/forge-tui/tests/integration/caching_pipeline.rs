@@ -265,15 +265,15 @@ async fn history_retention_drops_oldest_under_pressure() {
     }
 
     // Set a budget that can hold ~2 messages.
-    app.history_retention.max_bytes = 4_000;
+    app.history_retention_mut().max_bytes = 4_000;
 
     let stats = app.enforce_history_retention();
     assert!(stats.dropped_messages >= 1, "expected drops, got {}", stats.dropped_messages);
     assert!(
-        app.measure_history_bytes() <= app.history_retention.max_bytes,
+        app.measure_history_bytes() <= app.history_retention().max_bytes,
         "remaining {} should be <= budget {}",
         app.measure_history_bytes(),
-        app.history_retention.max_bytes,
+        app.history_retention().max_bytes,
     );
 }
 
@@ -285,7 +285,7 @@ async fn history_retention_inserts_hidden_marker() {
     for _ in 0..5 {
         app.messages_mut().push(user_text_message(&text));
     }
-    app.history_retention.max_bytes = 4_000;
+    app.history_retention_mut().max_bytes = 4_000;
 
     let _ = app.enforce_history_retention();
 

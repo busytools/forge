@@ -13,10 +13,7 @@ pub(crate) mod type_converters;
 use super::config::ConfigState;
 use super::dialog::DialogState;
 use super::plugins::PluginsState;
-use super::state::{
-    CacheMetrics, HistoryRetentionPolicy, HistoryRetentionStats, RenderCacheBudget,
-    SessionPickerState,
-};
+use super::state::{RenderCacheBudget, SessionPickerState};
 use super::trust;
 use super::view::ActiveView;
 use super::{App, AppStatus, FocusManager, HelpView, SelectionState};
@@ -176,18 +173,8 @@ pub fn create_app(cli: &Cli, workspace: Rc<forge_workspace::Workspace>) -> App {
         notifications: super::notify::NotificationManager::new(),
         perf,
         render_cache_budget: RenderCacheBudget::default(),
-        render_cache_slots: Vec::new(),
-        render_cache_total_bytes: 0,
-        render_cache_protected_bytes: 0,
-        render_cache_evictable: std::collections::BTreeSet::new(),
-        render_cache_tail_msg_idx: None,
-        history_retention: HistoryRetentionPolicy::default(),
-        history_retention_stats: HistoryRetentionStats::default(),
-        cache_metrics: CacheMetrics::default(),
         fps_ema: None,
         last_frame_at: None,
-        last_chat_render_trace_state: None,
-        last_active_turn_height_state: None,
         startup_connection_requested: false,
         connection_started: false,
         startup_resume_id: None,

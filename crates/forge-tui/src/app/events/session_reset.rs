@@ -57,7 +57,7 @@ fn reset_messages_for_new_session(app: &mut App, preserve_current_welcome_tip: b
     let preserved_tip_seed =
         preserve_current_welcome_tip.then(|| app.current_welcome_tip_seed()).flatten();
     app.clear_messages_tracked();
-    app.history_retention_stats = super::super::state::HistoryRetentionStats::default();
+    *app.history_retention_stats_mut() = super::super::state::HistoryRetentionStats::default();
     let mut welcome = app.build_welcome_message();
     if let Some(tip_seed) = preserved_tip_seed {
         App::apply_welcome_tip_seed(&mut welcome, tip_seed);
@@ -165,7 +165,7 @@ fn append_resume_user_message_chunk(app: &mut App, chunk: &model::ContentChunk) 
 pub(super) fn load_resume_history(app: &mut App, history_messages: &[forge_primitives::Message]) {
     let preserved_tip_seed = app.current_welcome_tip_seed();
     app.clear_messages_tracked();
-    app.history_retention_stats = super::super::state::HistoryRetentionStats::default();
+    *app.history_retention_stats_mut() = super::super::state::HistoryRetentionStats::default();
     let mut welcome = app.build_welcome_message();
     if let Some(tip_seed) = preserved_tip_seed {
         App::apply_welcome_tip_seed(&mut welcome, tip_seed);

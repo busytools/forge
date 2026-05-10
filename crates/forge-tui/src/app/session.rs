@@ -11,7 +11,7 @@
 //! (Phase 2 of the side-panes feature; backend prerequisite for the
 //! Projects pane UI).
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 
 use forge_workspace::SessionKey;
@@ -19,12 +19,15 @@ use forge_workspace::SessionKey;
 use crate::agent::events::TerminalMap;
 use crate::agent::model;
 use crate::app::git_context::GitContextState;
+use crate::app::state::cache_metrics::CacheMetrics;
 use crate::app::state::messages::ChatMessage;
+use crate::app::state::render_budget::{RenderCacheEvictionKey, RenderCacheSlotState};
 use crate::app::state::types::{
-    CancelOrigin, McpState, ModeState, SessionTurnState, SessionUsageState, TodoItem, ToolCallScope,
+    CancelOrigin, HistoryRetentionPolicy, HistoryRetentionStats, McpState, ModeState,
+    SessionTurnState, SessionUsageState, TodoItem, ToolCallScope,
 };
 use crate::app::state::viewport::ChatViewport;
-use crate::app::state::{TerminalToolCallRef, TurnNoticeRef};
+use crate::app::state::{ChatRenderTraceState, TerminalToolCallRef, TurnNoticeRef};
 
 /// Per-session runtime state. Initialised when a session connects;
 /// dropped when the session is closed or forge-tui exits.
@@ -196,6 +199,37 @@ pub struct Session {
     pub todo_selected: usize,
     /// Cached todo compact line (invalidated on `set_todos()`).
     pub cached_todo_compact: Option<ratatui::text::Line<'static>>,
+
+    // ---- Render cache + history retention ----
+    /// Cached render-cache slot metadata parallel to
+    /// `messages[*].blocks[*]` plus one synthetic per-message slot
+    /// at the tail of each row.
+    pub(crate) render_cache_slots: Vec<Vec<RenderCacheSlotState>>,
+    /// Rolling total of cached render bytes across blocks and
+    /// message-level caches.
+    pub(crate) render_cache_total_bytes: usize,
+    /// Rolling total of cached render bytes currently excluded from
+    /// the budget.
+    pub(crate) render_cache_protected_bytes: usize,
+    /// Evictable cached blocks ordered by LRU and size tie-breaker.
+    pub(crate) render_cache_evictable: BTreeSet<RenderCacheEvictionKey>,
+    /// Last message index currently protected as the streaming tail,
+    /// if any.
+    pub(crate) render_cache_tail_msg_idx: Option<usize>,
+    /// Byte budget for source conversation history retained in
+    /// memory.
+    pub history_retention: HistoryRetentionPolicy,
+    /// Last history-retention enforcement statistics.
+    pub history_retention_stats: HistoryRetentionStats,
+    /// Cross-cutting cache metrics accumulator (enforcement counts,
+    /// watermarks, rate limits).
+    pub cache_metrics: CacheMetrics,
+    /// Height-affecting active assistant indicator state from the
+    /// previous frame.
+    pub(crate) last_active_turn_height_state: Option<(usize, bool, bool)>,
+    /// Last emitted chat render trace snapshot to suppress identical
+    /// per-frame summaries.
+    pub last_chat_render_trace_state: Option<ChatRenderTraceState>,
 }
 
 impl Default for Session {
@@ -251,6 +285,16 @@ impl Default for Session {
             todo_scroll: 0,
             todo_selected: 0,
             cached_todo_compact: None,
+            render_cache_slots: Vec::new(),
+            render_cache_total_bytes: 0,
+            render_cache_protected_bytes: 0,
+            render_cache_evictable: BTreeSet::new(),
+            render_cache_tail_msg_idx: None,
+            history_retention: HistoryRetentionPolicy::default(),
+            history_retention_stats: HistoryRetentionStats::default(),
+            cache_metrics: CacheMetrics::default(),
+            last_active_turn_height_state: None,
+            last_chat_render_trace_state: None,
         }
     }
 }

@@ -99,24 +99,27 @@ impl super::App {
 
     #[must_use]
     fn render_cache_slots_match_messages(&self) -> bool {
-        self.render_cache_slots.len() == self.messages().len()
+        self.render_cache_slots().len() == self.messages().len()
             && self
-                .render_cache_slots
+                .render_cache_slots()
                 .iter()
                 .zip(self.messages().iter())
                 .all(|(slots, msg)| slots.len() == Self::render_cache_slot_count_for_message(msg))
     }
 
     pub(crate) fn rebuild_render_cache_accounting(&mut self) {
-        self.render_cache_slots.clear();
-        self.render_cache_slots.reserve(self.messages().len());
-        self.render_cache_total_bytes = 0;
-        self.render_cache_protected_bytes = 0;
-        self.render_cache_evictable.clear();
+        let msg_count = self.messages().len();
+        {
+            let slots = self.render_cache_slots_mut();
+            slots.clear();
+            slots.reserve(msg_count);
+        }
+        *self.render_cache_total_bytes_mut() = 0;
+        *self.render_cache_protected_bytes_mut() = 0;
+        self.render_cache_evictable_mut().clear();
 
         let protected_tail = self.protected_streaming_message_idx();
-        let mut all_slots: Vec<Vec<RenderCacheSlotState>> =
-            Vec::with_capacity(self.messages().len());
+        let mut all_slots: Vec<Vec<RenderCacheSlotState>> = Vec::with_capacity(msg_count);
         let mut total_bytes: usize = 0;
         let mut protected_bytes: usize = 0;
         let mut evictable_keys: Vec<RenderCacheEvictionKey> = Vec::new();
@@ -163,13 +166,16 @@ impl super::App {
             slots.push(message_slot);
             all_slots.push(slots);
         }
-        self.render_cache_slots = all_slots;
-        self.render_cache_total_bytes = total_bytes;
-        self.render_cache_protected_bytes = protected_bytes;
-        for key in evictable_keys {
-            self.render_cache_evictable.insert(key);
+        *self.render_cache_slots_mut() = all_slots;
+        *self.render_cache_total_bytes_mut() = total_bytes;
+        *self.render_cache_protected_bytes_mut() = protected_bytes;
+        {
+            let evictable = self.render_cache_evictable_mut();
+            for key in evictable_keys {
+                evictable.insert(key);
+            }
         }
-        self.render_cache_tail_msg_idx = protected_tail;
+        self.set_render_cache_tail_msg_idx(protected_tail);
     }
 
     pub(crate) fn ensure_render_cache_accounting(&mut self) {
@@ -181,20 +187,21 @@ impl super::App {
     pub(crate) fn sync_render_cache_slot(&mut self, msg_idx: usize, block_idx: usize) {
         self.ensure_render_cache_accounting();
         let Some(old_slot) =
-            self.render_cache_slots.get(msg_idx).and_then(|slots| slots.get(block_idx)).copied()
+            self.render_cache_slots().get(msg_idx).and_then(|slots| slots.get(block_idx)).copied()
         else {
             self.rebuild_render_cache_accounting();
             return;
         };
 
         if let Some(old_key) = Self::render_cache_slot_key(msg_idx, block_idx, &old_slot) {
-            self.render_cache_evictable.remove(&old_key);
+            self.render_cache_evictable_mut().remove(&old_key);
         }
-        self.render_cache_total_bytes =
-            self.render_cache_total_bytes.saturating_sub(old_slot.cached_bytes);
+        let new_total = self.render_cache_total_bytes().saturating_sub(old_slot.cached_bytes);
+        *self.render_cache_total_bytes_mut() = new_total;
         if old_slot.protected {
-            self.render_cache_protected_bytes =
-                self.render_cache_protected_bytes.saturating_sub(old_slot.cached_bytes);
+            let new_protected =
+                self.render_cache_protected_bytes().saturating_sub(old_slot.cached_bytes);
+            *self.render_cache_protected_bytes_mut() = new_protected;
         }
 
         let new_slot = if self.is_message_render_cache_slot(msg_idx, block_idx) {
@@ -221,25 +228,29 @@ impl super::App {
                 protected: self.is_render_cache_block_protected(msg_idx, block_idx),
             }
         };
-        if let Some(slots) = self.render_cache_slots.get_mut(msg_idx) {
+        let mut needs_full_rebuild = false;
+        if let Some(slots) = self.render_cache_slots_mut().get_mut(msg_idx) {
             if let Some(slot) = slots.get_mut(block_idx) {
                 *slot = new_slot;
             } else {
-                self.rebuild_render_cache_accounting();
-                return;
+                needs_full_rebuild = true;
             }
         } else {
+            needs_full_rebuild = true;
+        }
+        if needs_full_rebuild {
             self.rebuild_render_cache_accounting();
             return;
         }
 
-        self.render_cache_total_bytes =
-            self.render_cache_total_bytes.saturating_add(new_slot.cached_bytes);
+        let new_total = self.render_cache_total_bytes().saturating_add(new_slot.cached_bytes);
+        *self.render_cache_total_bytes_mut() = new_total;
         if new_slot.protected {
-            self.render_cache_protected_bytes =
-                self.render_cache_protected_bytes.saturating_add(new_slot.cached_bytes);
+            let new_protected =
+                self.render_cache_protected_bytes().saturating_add(new_slot.cached_bytes);
+            *self.render_cache_protected_bytes_mut() = new_protected;
         } else if let Some(new_key) = Self::render_cache_slot_key(msg_idx, block_idx, &new_slot) {
-            self.render_cache_evictable.insert(new_key);
+            self.render_cache_evictable_mut().insert(new_key);
         }
     }
 
@@ -251,7 +262,7 @@ impl super::App {
         };
         let block_count = msg.blocks.len();
         let slot_count = Self::render_cache_slot_count_for_message(msg);
-        if self.render_cache_slots.get(msg_idx).map_or(usize::MAX, Vec::len) != slot_count {
+        if self.render_cache_slots().get(msg_idx).map_or(usize::MAX, Vec::len) != slot_count {
             self.rebuild_render_cache_accounting();
             return;
         }
@@ -264,12 +275,12 @@ impl super::App {
     fn refresh_tail_message_cache_protection(&mut self) {
         self.ensure_render_cache_accounting();
         let next_tail = self.protected_streaming_message_idx();
-        if self.render_cache_tail_msg_idx == next_tail {
+        if self.render_cache_tail_msg_idx() == next_tail {
             return;
         }
 
-        let previous_tail = self.render_cache_tail_msg_idx;
-        self.render_cache_tail_msg_idx = next_tail;
+        let previous_tail = self.render_cache_tail_msg_idx();
+        self.set_render_cache_tail_msg_idx(next_tail);
 
         if let Some(msg_idx) = previous_tail {
             self.sync_render_cache_message(msg_idx);
@@ -293,7 +304,7 @@ impl super::App {
         }
 
         self.ensure_render_cache_accounting();
-        self.render_cache_evictable.clear();
+        self.render_cache_evictable_mut().clear();
 
         // Phase 1: snapshot every slot's new state into a Vec so we never
         // have an immutable borrow on `self.messages()` while mutating
@@ -331,14 +342,14 @@ impl super::App {
             updates.push(SlotUpdate { msg_idx, block_idx: message_slot_idx, slot });
         }
         for SlotUpdate { msg_idx, block_idx, slot } in updates {
-            if let Some(slots) = self.render_cache_slots.get_mut(msg_idx)
+            if let Some(slots) = self.render_cache_slots_mut().get_mut(msg_idx)
                 && let Some(existing) = slots.get_mut(block_idx)
             {
                 existing.last_access_tick = slot.last_access_tick;
                 existing.protected = slot.protected;
             }
             if let Some(key) = Self::render_cache_slot_key(msg_idx, block_idx, &slot) {
-                self.render_cache_evictable.insert(key);
+                self.render_cache_evictable_mut().insert(key);
             }
         }
     }
@@ -346,8 +357,8 @@ impl super::App {
     pub fn enforce_render_cache_budget(&mut self) -> CacheBudgetEnforceStats {
         let mut stats = CacheBudgetEnforceStats::default();
         self.refresh_tail_message_cache_protection();
-        stats.total_before_bytes = self.render_cache_total_bytes;
-        stats.protected_bytes = self.render_cache_protected_bytes;
+        stats.total_before_bytes = self.render_cache_total_bytes();
+        stats.protected_bytes = self.render_cache_protected_bytes();
 
         // Budget comparison uses only non-protected (evictable) bytes.
         let budgeted_bytes = stats.total_before_bytes.saturating_sub(stats.protected_bytes);
@@ -363,11 +374,11 @@ impl super::App {
         let mut current_budgeted = budgeted_bytes;
         stats.total_after_bytes = stats.total_before_bytes;
 
-        while let Some(slot) = self.render_cache_evictable.first().copied() {
+        while let Some(slot) = self.render_cache_evictable().and_then(|s| s.first().copied()) {
             if current_budgeted <= self.render_cache_budget.max_bytes {
                 break;
             }
-            self.render_cache_evictable.remove(&slot);
+            self.render_cache_evictable_mut().remove(&slot);
             let removed = self.evict_cache_slot(slot.msg_idx, slot.block_idx);
             if removed == 0 {
                 continue;

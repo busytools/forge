@@ -481,7 +481,7 @@ impl super::App {
     ) -> Option<(usize, usize)> {
         self.ensure_history_retention_accounting();
         let marker_idx = self.messages().iter().position(Self::is_history_hidden_marker_message);
-        if self.history_retention_stats.total_dropped_messages == 0 {
+        if self.history_retention_stats().total_dropped_messages == 0 {
             if let Some(idx) = marker_idx {
                 self.remove_message_tracked(idx);
                 return Self::remap_anchor_for_remove(preserved_anchor, idx, self.messages().len());
@@ -490,8 +490,8 @@ impl super::App {
         }
 
         let marker_text = Self::history_hidden_marker_text(
-            self.history_retention_stats.total_dropped_messages,
-            self.history_retention_stats.total_dropped_bytes,
+            self.history_retention_stats().total_dropped_messages,
+            self.history_retention_stats().total_dropped_bytes,
         );
 
         if let Some(idx) = marker_idx {
@@ -526,7 +526,7 @@ impl super::App {
     pub fn enforce_history_retention(&mut self) -> HistoryRetentionStats {
         self.ensure_history_retention_accounting();
         let mut stats = HistoryRetentionStats::default();
-        let max_bytes = self.history_retention.max_bytes.max(1);
+        let max_bytes = self.history_retention().max_bytes.max(1);
         let active_turn_owner = self.active_turn_assistant_idx();
         let mut preserved_anchor = self.viewport_mut().capture_manual_scroll_anchor();
         stats.total_before_bytes = self.retained_history_bytes();
@@ -580,13 +580,14 @@ impl super::App {
             }
         }
 
-        self.history_retention_stats.total_before_bytes = stats.total_before_bytes;
-        self.history_retention_stats.total_dropped_messages = self
-            .history_retention_stats
-            .total_dropped_messages
-            .saturating_add(stats.dropped_messages);
-        self.history_retention_stats.total_dropped_bytes =
-            self.history_retention_stats.total_dropped_bytes.saturating_add(stats.dropped_bytes);
+        {
+            let h_stats = self.history_retention_stats_mut();
+            h_stats.total_before_bytes = stats.total_before_bytes;
+            h_stats.total_dropped_messages =
+                h_stats.total_dropped_messages.saturating_add(stats.dropped_messages);
+            h_stats.total_dropped_bytes =
+                h_stats.total_dropped_bytes.saturating_add(stats.dropped_bytes);
+        }
 
         preserved_anchor = self.upsert_history_hidden_marker(preserved_anchor);
         let msg_count = self.messages().len();
@@ -600,12 +601,15 @@ impl super::App {
         }
 
         stats.total_after_bytes = self.retained_history_bytes();
-        self.history_retention_stats.total_after_bytes = stats.total_after_bytes;
-        self.history_retention_stats.dropped_messages = stats.dropped_messages;
-        self.history_retention_stats.dropped_bytes = stats.dropped_bytes;
+        {
+            let h_stats = self.history_retention_stats_mut();
+            h_stats.total_after_bytes = stats.total_after_bytes;
+            h_stats.dropped_messages = stats.dropped_messages;
+            h_stats.dropped_bytes = stats.dropped_bytes;
+        }
 
-        stats.total_dropped_messages = self.history_retention_stats.total_dropped_messages;
-        stats.total_dropped_bytes = self.history_retention_stats.total_dropped_bytes;
+        stats.total_dropped_messages = self.history_retention_stats().total_dropped_messages;
+        stats.total_dropped_bytes = self.history_retention_stats().total_dropped_bytes;
 
         crate::perf::mark_with("history::bytes_before", "bytes", stats.total_before_bytes);
         crate::perf::mark_with("history::bytes_after", "bytes", stats.total_after_bytes);

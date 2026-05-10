@@ -219,12 +219,12 @@ fn sync_active_turn_height_state(
         Some((idx, empty_indicator_visible, trailing_indicator_visible))
     });
 
-    if app.last_active_turn_height_state == next {
+    if app.last_active_turn_height_state() == next {
         return;
     }
 
     let mut affected = Vec::with_capacity(2);
-    if let Some((prev_idx, _, _)) = app.last_active_turn_height_state {
+    if let Some((prev_idx, _, _)) = app.last_active_turn_height_state() {
         affected.push(prev_idx);
     }
     if let Some((next_idx, _, _)) = next
@@ -237,7 +237,7 @@ fn sync_active_turn_height_state(
         app.invalidate_message_set(affected);
     }
 
-    app.last_active_turn_height_state = next;
+    app.set_last_active_turn_height_state(next);
 }
 
 // Render fn — args are state + dimensions + scroll geometry. Bundling into a struct duplicates fields (App already holds them) without simplifying the call site.
@@ -323,7 +323,7 @@ fn sync_chat_layout(app: &mut App, area: Rect, base_spinner: SpinnerState) -> us
     {
         let _t = app.perf.as_ref().map(|p| p.start("chat::on_frame"));
         if app.viewport_mut().on_frame(width, area.height).resized() {
-            app.cache_metrics.record_resize();
+            app.cache_metrics_mut().record_resize();
         }
     }
     let height_stats = update_visual_heights(app, base_spinner, width, viewport_height);
@@ -810,10 +810,10 @@ fn remember_render_trace_state(
     app: &mut App,
     trace_state: crate::app::ChatRenderTraceState,
 ) -> bool {
-    if app.last_chat_render_trace_state == Some(trace_state) {
+    if app.last_chat_render_trace_state() == Some(trace_state) {
         return false;
     }
-    app.last_chat_render_trace_state = Some(trace_state);
+    app.set_last_chat_render_trace_state(Some(trace_state));
     true
 }
 
@@ -826,24 +826,24 @@ fn enforce_and_emit_cache_metrics(app: &mut App) {
     crate::perf::mark_with("cache::evicted_blocks", "count", budget_stats.evicted_blocks);
 
     // -- Accumulate and conditionally log render cache metrics --
+    let render_cache_budget = app.render_cache_budget;
+    let history_policy = app.history_retention();
     let should_log =
-        app.cache_metrics.record_render_enforcement(&budget_stats, &app.render_cache_budget);
+        app.cache_metrics_mut().record_render_enforcement(&budget_stats, &render_cache_budget);
 
-    let render_utilization_pct = if app.render_cache_budget.max_bytes > 0 {
-        (app.render_cache_budget.last_total_bytes as f32 / app.render_cache_budget.max_bytes as f32)
-            * 100.0
+    let render_utilization_pct = if render_cache_budget.max_bytes > 0 {
+        (render_cache_budget.last_total_bytes as f32 / render_cache_budget.max_bytes as f32) * 100.0
     } else {
         0.0
     };
-    let history_utilization_pct = if app.history_retention.max_bytes > 0 {
-        (app.history_retention_stats.total_after_bytes as f32
-            / app.history_retention.max_bytes as f32)
+    let history_utilization_pct = if history_policy.max_bytes > 0 {
+        (app.history_retention_stats().total_after_bytes as f32 / history_policy.max_bytes as f32)
             * 100.0
     } else {
         0.0
     };
 
-    if let Some(warn_kind) = app.cache_metrics.check_warn_condition(
+    if let Some(warn_kind) = app.cache_metrics_mut().check_warn_condition(
         render_utilization_pct,
         history_utilization_pct,
         budget_stats.evicted_blocks,
@@ -854,10 +854,10 @@ fn enforce_and_emit_cache_metrics(app: &mut App) {
     if should_log {
         let entry_count = count_populated_cache_slots(app.messages());
         let snap = cache_metrics::build_snapshot(
-            &app.render_cache_budget,
-            &app.history_retention_stats,
-            app.history_retention,
-            &app.cache_metrics,
+            &render_cache_budget,
+            app.history_retention_stats(),
+            history_policy,
+            app.cache_metrics(),
             app.viewport(),
             entry_count,
             budget_stats.evicted_blocks,

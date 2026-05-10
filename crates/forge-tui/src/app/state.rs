@@ -2,7 +2,7 @@ pub mod block_cache;
 pub mod cache_metrics;
 mod history_retention;
 pub mod messages;
-mod render_budget;
+pub(crate) mod render_budget;
 pub mod tool_call_info;
 pub mod types;
 pub mod viewport;
@@ -238,31 +238,10 @@ pub struct App {
     pub perf: Option<crate::perf::PerfLogger>,
     /// Global in-memory budget for rendered block and message caches.
     pub render_cache_budget: RenderCacheBudget,
-    /// Cached render-cache slot metadata parallel to `messages[*].blocks[*]`
-    /// plus one synthetic per-message slot at the tail of each row.
-    pub(crate) render_cache_slots: Vec<Vec<render_budget::RenderCacheSlotState>>,
-    /// Rolling total of cached render bytes across blocks and message-level caches.
-    pub(crate) render_cache_total_bytes: usize,
-    /// Rolling total of cached render bytes currently excluded from the budget.
-    pub(crate) render_cache_protected_bytes: usize,
-    /// Evictable cached blocks ordered by LRU and size tie-breaker.
-    pub(crate) render_cache_evictable: BTreeSet<render_budget::RenderCacheEvictionKey>,
-    /// Last message index currently protected as the streaming tail, if any.
-    pub(crate) render_cache_tail_msg_idx: Option<usize>,
-    /// Byte budget for source conversation history retained in memory.
-    pub history_retention: HistoryRetentionPolicy,
-    /// Last history-retention enforcement statistics.
-    pub history_retention_stats: HistoryRetentionStats,
-    /// Cross-cutting cache metrics accumulator (enforcement counts, watermarks, rate limits).
-    pub cache_metrics: CacheMetrics,
     /// Smoothed frames-per-second (EMA of presented frame cadence).
     pub fps_ema: Option<f32>,
     /// Timestamp of the previous presented frame.
     pub last_frame_at: Option<Instant>,
-    /// Last emitted chat render trace snapshot to suppress identical per-frame summaries.
-    pub last_chat_render_trace_state: Option<ChatRenderTraceState>,
-    /// Height-affecting active assistant indicator state from the previous frame.
-    pub(crate) last_active_turn_height_state: Option<(usize, bool, bool)>,
     pub startup_connection_requested: bool,
     pub connection_started: bool,
     pub startup_resume_id: Option<String>,
@@ -1018,6 +997,142 @@ impl App {
         self.active_or_synthetic_mut().cached_todo_compact = value;
     }
 
+    // ---- Render cache + history retention accessors ----
+
+    /// Borrow the active session's render-cache slot grid.
+    #[must_use]
+    pub(crate) fn render_cache_slots(&self) -> &[Vec<render_budget::RenderCacheSlotState>] {
+        self.active_session().map_or(&[], |s| s.render_cache_slots.as_slice())
+    }
+
+    /// Mutable borrow of the active session's render-cache slot grid.
+    /// Auto-creates the pre-Connect bucket if missing.
+    #[must_use]
+    pub(crate) fn render_cache_slots_mut(
+        &mut self,
+    ) -> &mut Vec<Vec<render_budget::RenderCacheSlotState>> {
+        &mut self.active_or_synthetic_mut().render_cache_slots
+    }
+
+    /// Active session's rolling render-cache total bytes.
+    #[must_use]
+    pub(crate) fn render_cache_total_bytes(&self) -> usize {
+        self.active_session().map_or(0, |s| s.render_cache_total_bytes)
+    }
+
+    /// Mutable accessor for the rolling render-cache total bytes.
+    #[must_use]
+    pub(crate) fn render_cache_total_bytes_mut(&mut self) -> &mut usize {
+        &mut self.active_or_synthetic_mut().render_cache_total_bytes
+    }
+
+    /// Active session's rolling render-cache protected bytes.
+    #[must_use]
+    pub(crate) fn render_cache_protected_bytes(&self) -> usize {
+        self.active_session().map_or(0, |s| s.render_cache_protected_bytes)
+    }
+
+    /// Mutable accessor for the rolling render-cache protected bytes.
+    #[must_use]
+    pub(crate) fn render_cache_protected_bytes_mut(&mut self) -> &mut usize {
+        &mut self.active_or_synthetic_mut().render_cache_protected_bytes
+    }
+
+    /// Borrow the active session's evictable render-cache key set.
+    #[must_use]
+    pub(crate) fn render_cache_evictable(
+        &self,
+    ) -> Option<&BTreeSet<render_budget::RenderCacheEvictionKey>> {
+        self.active_session().map(|s| &s.render_cache_evictable)
+    }
+
+    /// Mutable borrow of the evictable render-cache key set.
+    #[must_use]
+    pub(crate) fn render_cache_evictable_mut(
+        &mut self,
+    ) -> &mut BTreeSet<render_budget::RenderCacheEvictionKey> {
+        &mut self.active_or_synthetic_mut().render_cache_evictable
+    }
+
+    /// Active session's protected streaming-tail message index, if any.
+    #[must_use]
+    pub(crate) fn render_cache_tail_msg_idx(&self) -> Option<usize> {
+        self.active_session().and_then(|s| s.render_cache_tail_msg_idx)
+    }
+
+    /// Set the active session's protected streaming-tail message index.
+    pub(crate) fn set_render_cache_tail_msg_idx(&mut self, value: Option<usize>) {
+        self.active_or_synthetic_mut().render_cache_tail_msg_idx = value;
+    }
+
+    /// Borrow the active session's history-retention policy.
+    #[must_use]
+    pub fn history_retention(&self) -> HistoryRetentionPolicy {
+        self.active_session().map_or_else(HistoryRetentionPolicy::default, |s| s.history_retention)
+    }
+
+    /// Mutable accessor for the history-retention policy.
+    #[must_use]
+    pub fn history_retention_mut(&mut self) -> &mut HistoryRetentionPolicy {
+        &mut self.active_or_synthetic_mut().history_retention
+    }
+
+    /// Borrow the active session's history-retention enforcement
+    /// statistics.
+    #[must_use]
+    pub fn history_retention_stats(&self) -> &HistoryRetentionStats {
+        static FALLBACK: std::sync::OnceLock<HistoryRetentionStats> = std::sync::OnceLock::new();
+        match self.active_session() {
+            Some(s) => &s.history_retention_stats,
+            None => FALLBACK.get_or_init(HistoryRetentionStats::default),
+        }
+    }
+
+    /// Mutable accessor for the history-retention enforcement
+    /// statistics.
+    #[must_use]
+    pub fn history_retention_stats_mut(&mut self) -> &mut HistoryRetentionStats {
+        &mut self.active_or_synthetic_mut().history_retention_stats
+    }
+
+    /// Borrow the active session's cache-metrics accumulator.
+    #[must_use]
+    pub fn cache_metrics(&self) -> &CacheMetrics {
+        static FALLBACK: std::sync::OnceLock<CacheMetrics> = std::sync::OnceLock::new();
+        match self.active_session() {
+            Some(s) => &s.cache_metrics,
+            None => FALLBACK.get_or_init(CacheMetrics::default),
+        }
+    }
+
+    /// Mutable accessor for the cache-metrics accumulator.
+    #[must_use]
+    pub fn cache_metrics_mut(&mut self) -> &mut CacheMetrics {
+        &mut self.active_or_synthetic_mut().cache_metrics
+    }
+
+    /// Active session's previous-frame active-turn height state.
+    #[must_use]
+    pub(crate) fn last_active_turn_height_state(&self) -> Option<(usize, bool, bool)> {
+        self.active_session().and_then(|s| s.last_active_turn_height_state)
+    }
+
+    /// Set the active session's previous-frame active-turn height state.
+    pub(crate) fn set_last_active_turn_height_state(&mut self, value: Option<(usize, bool, bool)>) {
+        self.active_or_synthetic_mut().last_active_turn_height_state = value;
+    }
+
+    /// Borrow the active session's last chat-render trace snapshot.
+    #[must_use]
+    pub fn last_chat_render_trace_state(&self) -> Option<ChatRenderTraceState> {
+        self.active_session().and_then(|s| s.last_chat_render_trace_state)
+    }
+
+    /// Set the active session's last chat-render trace snapshot.
+    pub fn set_last_chat_render_trace_state(&mut self, value: Option<ChatRenderTraceState>) {
+        self.active_or_synthetic_mut().last_chat_render_trace_state = value;
+    }
+
     /// Queue a paste payload for drain-cycle finalization.
     ///
     /// This is fed by paste payloads captured from terminal events.
@@ -1359,14 +1474,14 @@ impl App {
     /// instead of `enforce_history_retention()` at all non-test call sites.
     pub fn enforce_history_retention_tracked(&mut self) {
         let stats = self.enforce_history_retention();
-        let should_log =
-            self.cache_metrics.record_history_enforcement(&stats, self.history_retention);
+        let policy = self.history_retention();
+        let should_log = self.cache_metrics_mut().record_history_enforcement(&stats, policy);
         if should_log {
             let snap = cache_metrics::build_snapshot(
                 &self.render_cache_budget,
-                &self.history_retention_stats,
-                self.history_retention,
-                &self.cache_metrics,
+                self.history_retention_stats(),
+                policy,
+                self.cache_metrics(),
                 self.viewport(),
                 0, // entry_count not needed for history-only log
                 0,
@@ -1572,18 +1687,8 @@ impl App {
             notifications: super::notify::NotificationManager::new(),
             perf: None,
             render_cache_budget: RenderCacheBudget::default(),
-            render_cache_slots: Vec::new(),
-            render_cache_total_bytes: 0,
-            render_cache_protected_bytes: 0,
-            render_cache_evictable: BTreeSet::new(),
-            render_cache_tail_msg_idx: None,
-            history_retention: HistoryRetentionPolicy::default(),
-            history_retention_stats: HistoryRetentionStats::default(),
-            cache_metrics: CacheMetrics::default(),
             fps_ema: None,
             last_frame_at: None,
-            last_chat_render_trace_state: None,
-            last_active_turn_height_state: None,
             startup_connection_requested: false,
             connection_started: false,
             startup_resume_id: None,
@@ -2610,7 +2715,7 @@ mod tests {
             user_text_message("small message"),
             user_text_message("another message"),
         ];
-        app.history_retention.max_bytes = usize::MAX / 4;
+        app.history_retention_mut().max_bytes = usize::MAX / 4;
 
         let stats = app.enforce_history_retention();
         assert_eq!(stats.dropped_messages, 0);
@@ -2627,7 +2732,7 @@ mod tests {
             user_text_message("second old message"),
             user_text_message("third old message"),
         ];
-        app.history_retention.max_bytes = 1;
+        app.history_retention_mut().max_bytes = 1;
 
         let stats = app.enforce_history_retention();
         assert_eq!(stats.dropped_messages, 3);
@@ -2644,7 +2749,7 @@ mod tests {
             user_text_message("droppable"),
             assistant_tool_message("tool-keep", model::ToolCallStatus::InProgress),
         ];
-        app.history_retention.max_bytes = 1;
+        app.history_retention_mut().max_bytes = 1;
 
         let stats = app.enforce_history_retention();
         assert_eq!(stats.dropped_messages, 1);
@@ -2667,7 +2772,7 @@ mod tests {
             user_text_message("droppable"),
             assistant_tool_message("tool-pending", model::ToolCallStatus::Pending),
         ];
-        app.history_retention.max_bytes = 1;
+        app.history_retention_mut().max_bytes = 1;
 
         let stats = app.enforce_history_retention();
         assert_eq!(stats.dropped_messages, 1);
@@ -2686,7 +2791,7 @@ mod tests {
             user_text_message("droppable"),
             assistant_tool_message_with_pending_permission("tool-perm"),
         ];
-        app.history_retention.max_bytes = 1;
+        app.history_retention_mut().max_bytes = 1;
 
         let stats = app.enforce_history_retention();
         assert_eq!(stats.dropped_messages, 1);
@@ -2707,7 +2812,7 @@ mod tests {
         ];
         app.index_tool_call("tool-idx".to_owned(), 99, 99);
         app.sync_terminal_tool_call("stale-term".to_owned(), 99, 99);
-        app.history_retention.max_bytes = 1;
+        app.history_retention_mut().max_bytes = 1;
 
         let _ = app.enforce_history_retention();
         assert_eq!(app.lookup_tool_call("tool-idx"), Some((2, 0)));
@@ -2731,7 +2836,7 @@ mod tests {
             ChatMessage::new(MessageRole::Assistant, Vec::new(), None),
         ];
         app.bind_active_turn_assistant(2);
-        app.history_retention.max_bytes = 1;
+        app.history_retention_mut().max_bytes = 1;
 
         let stats = app.enforce_history_retention();
 
@@ -2753,7 +2858,7 @@ mod tests {
             ),
         ];
         app.bind_active_turn_assistant(1);
-        app.history_retention.max_bytes = App::measure_message_bytes(&app.messages()[1]);
+        app.history_retention_mut().max_bytes = App::measure_message_bytes(&app.messages()[1]);
 
         let stats = app.enforce_history_retention();
 
@@ -2770,7 +2875,7 @@ mod tests {
             ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "-", "/cwd", "-"),
             user_text_message("drop me"),
         ];
-        app.history_retention.max_bytes = 1;
+        app.history_retention_mut().max_bytes = 1;
 
         let first = app.enforce_history_retention();
         let second = app.enforce_history_retention();
@@ -2806,7 +2911,7 @@ mod tests {
         app.viewport_mut().scroll_offset = 9;
         app.viewport_mut().scroll_target = 9;
         app.viewport_mut().scroll_pos = 9.0;
-        app.history_retention.max_bytes = app
+        app.history_retention_mut().max_bytes = app
             .measure_history_bytes()
             .saturating_sub(App::measure_message_bytes(&app.messages()[1]));
 
