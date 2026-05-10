@@ -11,7 +11,9 @@ pub(super) fn reset_for_new_session(
     mode: Option<super::super::ModeState>,
     preserve_current_welcome_tip: bool,
 ) {
-    crate::agent::events::kill_all_terminals(&app.terminals);
+    if let Some(terminals) = app.terminals() {
+        crate::agent::events::kill_all_terminals(terminals);
+    }
 
     reset_session_identity_state(app, session_id, current_model, mode);
     reset_messages_for_new_session(app, preserve_current_welcome_tip);
@@ -40,12 +42,12 @@ fn reset_session_identity_state(
     app.session_usage = super::super::SessionUsageState::default();
     app.fast_mode_state = model::FastModeState::Off;
     app.runtime_session_state = None;
-    app.prompt_suggestion = None;
-    app.last_rate_limit_update = None;
+    app.set_prompt_suggestion(None);
+    app.set_last_rate_limit_update(None);
     app.should_quit = false;
     app.files_accessed = 0;
-    app.cancelled_turn_pending_hint = false;
-    app.pending_cancel_origin = None;
+    app.set_cancelled_turn_pending_hint(false);
+    app.set_pending_cancel_origin(None);
     app.pending_auto_submit_after_cancel = false;
     app.account_info = None;
 }
@@ -75,9 +77,9 @@ fn reset_input_state_for_new_session(app: &mut App) {
 }
 
 fn reset_interaction_state_for_new_session(app: &mut App) {
-    app.pending_interaction_ids.clear();
+    app.pending_interaction_ids_mut().clear();
     app.clear_tool_scope_tracking();
-    app.tool_call_index.clear();
+    app.tool_call_index_mut().clear();
     app.todos.clear();
     app.show_todo_panel = false;
     app.todo_scroll = 0;

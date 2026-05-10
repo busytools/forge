@@ -24,7 +24,6 @@ use crate::Cli;
 use crate::agent::client::SessionLaunchSettings;
 use crate::agent::events::ClientEvent;
 use crate::agent::model;
-use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -70,8 +69,6 @@ pub fn create_app(cli: &Cli, workspace: Rc<forge_workspace::Workspace>) -> App {
 
     let (event_tx, event_rx) = mpsc::unbounded_channel();
     let (file_index_event_tx, file_index_event_rx) = std::sync::mpsc::channel();
-    let terminals: crate::agent::events::TerminalMap =
-        Rc::new(std::cell::RefCell::new(HashMap::new()));
     let perf_path = match crate::logging::resolve_perf_path(cli) {
         Ok(path) => path,
         Err(err) => {
@@ -144,14 +141,10 @@ pub fn create_app(cli: &Cli, workspace: Rc<forge_workspace::Workspace>) -> App {
         mode: None,
         config_options: std::collections::BTreeMap::new(),
         login_hint: None,
-        pending_compact_clear: false,
         help_view: HelpView::Keys,
         help_open: false,
         help_dialog: DialogState::default(),
         help_visible_count: 0,
-        pending_interaction_ids: Vec::new(),
-        cancelled_turn_pending_hint: false,
-        pending_cancel_origin: None,
         pending_auto_submit_after_cancel: false,
         event_tx,
         event_rx,
@@ -160,11 +153,7 @@ pub fn create_app(cli: &Cli, workspace: Rc<forge_workspace::Workspace>) -> App {
         spinner_frame: 0,
         spinner_last_advance_at: None,
         tools_collapsed: true,
-        active_task_ids: HashSet::new(),
-        tool_call_scopes: HashMap::new(),
-        terminals,
         force_redraw: false,
-        tool_call_index: HashMap::new(),
         todos: Vec::<TodoItem>::new(),
         show_todo_panel: false,
         todo_scroll: 0,
@@ -202,19 +191,11 @@ pub fn create_app(cli: &Cli, workspace: Rc<forge_workspace::Workspace>) -> App {
         fast_mode_state: model::FastModeState::Off,
         observed_permission_mode: None,
         observed_effort: None,
-        subagent_attribution: std::collections::HashMap::new(),
         observed_assistant_model: None,
         runtime_session_state: None,
-        prompt_suggestion: None,
-        last_rate_limit_update: None,
-        turn_notice_refs: Vec::new(),
-        is_compacting: false,
         account_info: None,
         active_account_display_name: None,
         oauth_credentials: None,
-        turn_state: super::SessionTurnState::default(),
-        terminal_tool_calls: Vec::new(),
-        terminal_tool_call_membership: HashSet::new(),
         needs_redraw: true,
         notifications: super::notify::NotificationManager::new(),
         perf,

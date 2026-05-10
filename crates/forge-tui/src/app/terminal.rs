@@ -60,11 +60,14 @@ pub(super) fn update_terminal_outputs(app: &mut App) -> bool {
         super::state::TerminalToolCallRef,
         std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
     )> = {
-        let terminals = app.terminals.borrow();
+        let Some(terminals_rc) = app.terminals() else {
+            return false;
+        };
+        let terminals = terminals_rc.borrow();
         if terminals.is_empty() {
             return false;
         }
-        app.terminal_tool_calls
+        app.terminal_tool_calls()
             .iter()
             .filter_map(|tref| {
                 terminals
@@ -219,7 +222,7 @@ mod tests {
         app.index_tool_call("bash-2".to_owned(), 2, 0);
         app.sync_terminal_tool_call("term-1".to_owned(), 0, 0);
         app.sync_terminal_tool_call("term-2".to_owned(), 2, 0);
-        app.terminals.borrow_mut().insert(
+        app.terminals_mut().borrow_mut().insert(
             "term-1".to_owned(),
             TerminalProcess {
                 child: None,
@@ -227,7 +230,7 @@ mod tests {
                 command: "echo alpha".to_owned(),
             },
         );
-        app.terminals.borrow_mut().insert(
+        app.terminals_mut().borrow_mut().insert(
             "term-2".to_owned(),
             TerminalProcess {
                 child: None,

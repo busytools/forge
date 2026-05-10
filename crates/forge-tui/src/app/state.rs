@@ -157,9 +157,6 @@ pub struct App {
     pub config_options: BTreeMap<String, serde_json::Value>,
     /// Login hint shown when authentication is required. Rendered above the input field.
     pub login_hint: Option<LoginHint>,
-    /// When true, the current/next turn completion should clear local conversation history.
-    /// Set by `/compact` once the command is accepted for bridge forwarding.
-    pub pending_compact_clear: bool,
     /// Active help overlay view when `?` help is open.
     pub help_view: HelpView,
     /// Whether the help overlay is explicitly open.
@@ -169,15 +166,6 @@ pub struct App {
     /// Number of items that currently fit in the help viewport (updated each render).
     /// Used by key handlers for accurate scroll step size.
     pub help_visible_count: usize,
-    /// Tool call IDs with pending inline interactions, ordered by arrival.
-    /// The first entry is the focused interaction that receives keyboard input.
-    /// Up / Down arrow keys cycle focus through the list.
-    pub pending_interaction_ids: Vec<String>,
-    /// Set when a cancel notification succeeds; consumed on `TurnComplete`
-    /// to render a red interruption hint in chat.
-    pub cancelled_turn_pending_hint: bool,
-    /// Origin of the in-flight cancellation request, if any.
-    pub pending_cancel_origin: Option<CancelOrigin>,
     /// Auto-submit the current input draft once cancellation transitions the app
     /// back to `Ready`.
     pub pending_auto_submit_after_cancel: bool,
@@ -190,19 +178,8 @@ pub struct App {
     /// Session-level preference for collapsing non-Execute tool call bodies.
     /// Toggled by Ctrl+X and applied at render/layout time.
     pub tools_collapsed: bool,
-    /// IDs of root Task/Agent tool calls currently `InProgress`.
-    /// Use `insert_active_task()`, `remove_active_task()`.
-    pub active_task_ids: HashSet<String>,
-    /// Tool scope keyed by tool call ID; used to distinguish main-agent, subagent roots,
-    /// and explicitly owned subagent child tools.
-    pub tool_call_scopes: HashMap<String, ToolCallScope>,
-    /// Shared terminal process map - used to snapshot output on completion.
-    pub terminals: crate::agent::events::TerminalMap,
     /// Force a full terminal clear on next render frame.
     pub force_redraw: bool,
-    /// O(1) lookup: `tool_call_id` -> `(message_index, block_index)`.
-    /// Use `lookup_tool_call()`, `index_tool_call()`.
-    pub tool_call_index: HashMap<String, (usize, usize)>,
     /// Current todo list from Claude's `TodoWrite` tool calls.
     pub todos: Vec<TodoItem>,
     /// Whether the todo panel is expanded (true) or shows compact status line (false).
@@ -294,24 +271,12 @@ pub struct App {
     /// `observed_permission_mode` — populated from hook inputs on CLI
     /// 2.1.133+. Effort chip prefers this value when set.
     pub observed_effort: Option<model::EffortLevel>,
-    /// Hook-observed sub-agent attribution: maps `tool_use_id` to the
-    /// sub-agent's typed identifier (e.g. `"general-purpose"`). Used
-    /// to label tool-call rows fired by sub-agents (#84 partial).
-    pub subagent_attribution: std::collections::HashMap<String, String>,
     /// Most recent model id observed on a `Message::Assistant`
     /// envelope. Higher-fidelity than `current_model.resolved_id` for
     /// per-turn model verification.
     pub observed_assistant_model: Option<String>,
     /// Latest SDK runtime liveness state.
     pub runtime_session_state: Option<model::RuntimeSessionState>,
-    /// Latest prompt suggestion from the SDK, shown in the input hint band.
-    pub prompt_suggestion: Option<String>,
-    /// Latest rate-limit telemetry from the SDK.
-    pub last_rate_limit_update: Option<model::RateLimitUpdate>,
-    /// Turn-local inline/system notices that may upgrade in place during the active turn.
-    pub turn_notice_refs: Vec<TurnNoticeRef>,
-    /// True while the SDK reports active compaction.
-    pub is_compacting: bool,
     /// Account info from the bridge status snapshot (email, org, subscription).
     pub account_info: Option<forge_primitives::AccountInfo>,
     /// Forge-side account identity: which `[[accounts]]` entry from
@@ -328,16 +293,6 @@ pub struct App {
     /// their own filesystem walk to `<config_dir>/.credentials.json`.
     pub oauth_credentials: Option<forge_agent::cloud::oauth_credentials::OauthCredentials>,
 
-    /// Per-session runtime state. The per-variant SDK message
-    /// handlers (`events::sdk_message::*`) populate + read these
-    /// fields. See `app/state/types.rs::SessionTurnState`.
-    pub turn_state: SessionTurnState,
-
-    /// Indexed terminal tool calls for per-frame terminal snapshot updates.
-    /// Avoids O(n*m) scan of all messages/blocks every frame.
-    pub terminal_tool_calls: Vec<TerminalToolCallRef>,
-    /// Membership index for `terminal_tool_calls`, used to avoid linear duplicate checks.
-    pub terminal_tool_call_membership: HashSet<TerminalToolCallRef>,
     /// Dirty flag: skip `terminal.draw()` when nothing changed since last frame.
     pub needs_redraw: bool,
     /// Central notification manager (bell + desktop toast when unfocused).
@@ -599,6 +554,213 @@ impl App {
         }
     }
 
+    // ---- Turn lifecycle accessors ----
+
+    /// Borrow the active session's turn state.
+    ///
+    /// Falls back to a leaked default for the brief pre-Connect
+    /// window. Production startup seeds a synthetic bucket up front,
+    /// so the fallback is a safety net rather than a hot path.
+    #[must_use]
+    pub fn turn_state(&self) -> &SessionTurnState {
+        static FALLBACK: std::sync::OnceLock<SessionTurnState> = std::sync::OnceLock::new();
+        match self.active_session() {
+            Some(s) => &s.turn_state,
+            None => FALLBACK.get_or_init(SessionTurnState::default),
+        }
+    }
+
+    /// Mutable borrow of the active session's turn state.
+    /// Auto-creates the pre-Connect bucket if missing.
+    #[must_use]
+    pub fn turn_state_mut(&mut self) -> &mut SessionTurnState {
+        &mut self.active_or_synthetic_mut().turn_state
+    }
+
+    /// Active session's `is_compacting` flag.
+    #[must_use]
+    pub fn is_compacting(&self) -> bool {
+        self.active_session().is_some_and(|s| s.is_compacting)
+    }
+
+    /// Set the active session's `is_compacting` flag.
+    pub fn set_is_compacting(&mut self, value: bool) {
+        self.active_or_synthetic_mut().is_compacting = value;
+    }
+
+    /// Active session's `pending_compact_clear` flag.
+    #[must_use]
+    pub fn pending_compact_clear(&self) -> bool {
+        self.active_session().is_some_and(|s| s.pending_compact_clear)
+    }
+
+    /// Set the active session's `pending_compact_clear` flag.
+    pub fn set_pending_compact_clear(&mut self, value: bool) {
+        self.active_or_synthetic_mut().pending_compact_clear = value;
+    }
+
+    /// Borrow the active session's pending interaction id list.
+    #[must_use]
+    pub fn pending_interaction_ids(&self) -> &[String] {
+        self.active_session().map_or(&[], |s| s.pending_interaction_ids.as_slice())
+    }
+
+    /// Mutable borrow of the pending interaction id list.
+    #[must_use]
+    pub fn pending_interaction_ids_mut(&mut self) -> &mut Vec<String> {
+        &mut self.active_or_synthetic_mut().pending_interaction_ids
+    }
+
+    /// Active session's cancelled-turn pending hint flag.
+    #[must_use]
+    pub fn cancelled_turn_pending_hint(&self) -> bool {
+        self.active_session().is_some_and(|s| s.cancelled_turn_pending_hint)
+    }
+
+    /// Set the active session's cancelled-turn pending hint flag.
+    pub fn set_cancelled_turn_pending_hint(&mut self, value: bool) {
+        self.active_or_synthetic_mut().cancelled_turn_pending_hint = value;
+    }
+
+    /// Active session's pending cancel origin.
+    #[must_use]
+    pub fn pending_cancel_origin(&self) -> Option<CancelOrigin> {
+        self.active_session().and_then(|s| s.pending_cancel_origin)
+    }
+
+    /// Set the active session's pending cancel origin.
+    pub fn set_pending_cancel_origin(&mut self, value: Option<CancelOrigin>) {
+        self.active_or_synthetic_mut().pending_cancel_origin = value;
+    }
+
+    /// Borrow the active session's prompt suggestion.
+    #[must_use]
+    pub fn prompt_suggestion(&self) -> Option<&str> {
+        self.active_session().and_then(|s| s.prompt_suggestion.as_deref())
+    }
+
+    /// Set the active session's prompt suggestion.
+    pub fn set_prompt_suggestion(&mut self, value: Option<String>) {
+        self.active_or_synthetic_mut().prompt_suggestion = value;
+    }
+
+    /// Borrow the active session's last rate-limit update.
+    #[must_use]
+    pub fn last_rate_limit_update(&self) -> Option<&model::RateLimitUpdate> {
+        self.active_session().and_then(|s| s.last_rate_limit_update.as_ref())
+    }
+
+    /// Set the active session's last rate-limit update.
+    pub fn set_last_rate_limit_update(&mut self, value: Option<model::RateLimitUpdate>) {
+        self.active_or_synthetic_mut().last_rate_limit_update = value;
+    }
+
+    /// Borrow the active session's turn notice ref list.
+    #[must_use]
+    pub fn turn_notice_refs(&self) -> &[TurnNoticeRef] {
+        self.active_session().map_or(&[], |s| s.turn_notice_refs.as_slice())
+    }
+
+    /// Mutable borrow of the turn notice ref list.
+    #[must_use]
+    pub fn turn_notice_refs_mut(&mut self) -> &mut Vec<TurnNoticeRef> {
+        &mut self.active_or_synthetic_mut().turn_notice_refs
+    }
+
+    // ---- Tool tracking accessors ----
+
+    /// Borrow the active session's active task id set.
+    #[must_use]
+    pub fn active_task_ids(&self) -> Option<&HashSet<String>> {
+        self.active_session().map(|s| &s.active_task_ids)
+    }
+
+    /// Mutable borrow of the active task id set.
+    #[must_use]
+    pub fn active_task_ids_mut(&mut self) -> &mut HashSet<String> {
+        &mut self.active_or_synthetic_mut().active_task_ids
+    }
+
+    /// Borrow the active session's tool call scope map.
+    #[must_use]
+    pub fn tool_call_scopes(&self) -> Option<&HashMap<String, ToolCallScope>> {
+        self.active_session().map(|s| &s.tool_call_scopes)
+    }
+
+    /// Mutable borrow of the tool call scope map.
+    #[must_use]
+    pub fn tool_call_scopes_mut(&mut self) -> &mut HashMap<String, ToolCallScope> {
+        &mut self.active_or_synthetic_mut().tool_call_scopes
+    }
+
+    /// Borrow the active session's tool call index.
+    #[must_use]
+    pub fn tool_call_index(&self) -> Option<&HashMap<String, (usize, usize)>> {
+        self.active_session().map(|s| &s.tool_call_index)
+    }
+
+    /// Mutable borrow of the tool call index.
+    #[must_use]
+    pub fn tool_call_index_mut(&mut self) -> &mut HashMap<String, (usize, usize)> {
+        &mut self.active_or_synthetic_mut().tool_call_index
+    }
+
+    /// Borrow the active session's terminal map (a shared
+    /// `Rc<RefCell<...>>`).
+    ///
+    /// Returns `None` only in the brief pre-Connect window where no
+    /// session bucket exists. Both `App::test_default()` and
+    /// `connect()` seed a bucket up front so production callers can
+    /// treat this as effectively always-Some.
+    #[must_use]
+    pub fn terminals(&self) -> Option<&crate::agent::events::TerminalMap> {
+        self.active_session().map(|s| &s.terminals)
+    }
+
+    /// Mutable borrow of the active session's terminal map.
+    /// Auto-creates the pre-Connect bucket if missing.
+    #[must_use]
+    pub fn terminals_mut(&mut self) -> &mut crate::agent::events::TerminalMap {
+        &mut self.active_or_synthetic_mut().terminals
+    }
+
+    /// Borrow the active session's terminal tool call list.
+    #[must_use]
+    pub fn terminal_tool_calls(&self) -> &[TerminalToolCallRef] {
+        self.active_session().map_or(&[], |s| s.terminal_tool_calls.as_slice())
+    }
+
+    /// Mutable borrow of the terminal tool call list.
+    #[must_use]
+    pub fn terminal_tool_calls_mut(&mut self) -> &mut Vec<TerminalToolCallRef> {
+        &mut self.active_or_synthetic_mut().terminal_tool_calls
+    }
+
+    /// Borrow the active session's terminal tool call membership
+    /// set.
+    #[must_use]
+    pub fn terminal_tool_call_membership(&self) -> Option<&HashSet<TerminalToolCallRef>> {
+        self.active_session().map(|s| &s.terminal_tool_call_membership)
+    }
+
+    /// Mutable borrow of the terminal tool call membership set.
+    #[must_use]
+    pub fn terminal_tool_call_membership_mut(&mut self) -> &mut HashSet<TerminalToolCallRef> {
+        &mut self.active_or_synthetic_mut().terminal_tool_call_membership
+    }
+
+    /// Borrow the active session's subagent attribution map.
+    #[must_use]
+    pub fn subagent_attribution(&self) -> Option<&HashMap<String, String>> {
+        self.active_session().map(|s| &s.subagent_attribution)
+    }
+
+    /// Mutable borrow of the subagent attribution map.
+    #[must_use]
+    pub fn subagent_attribution_mut(&mut self) -> &mut HashMap<String, String> {
+        &mut self.active_or_synthetic_mut().subagent_attribution
+    }
+
     /// Queue a paste payload for drain-cycle finalization.
     ///
     /// This is fed by paste payloads captured from terminal events.
@@ -805,21 +967,21 @@ impl App {
 
     /// Track a Task/Agent tool call as active (in-progress subagent).
     pub fn insert_active_task(&mut self, id: String) {
-        self.active_task_ids.insert(id);
+        self.active_task_ids_mut().insert(id);
     }
 
     /// Remove a Task/Agent tool call from the active set (completed/failed).
     pub fn remove_active_task(&mut self, id: &str) {
-        self.active_task_ids.remove(id);
+        self.active_task_ids_mut().remove(id);
     }
 
     pub fn register_tool_call_scope(&mut self, id: String, scope: ToolCallScope) {
-        self.tool_call_scopes.insert(id, scope);
+        self.tool_call_scopes_mut().insert(id, scope);
     }
 
     #[must_use]
     pub fn tool_call_scope(&self, id: &str) -> Option<ToolCallScope> {
-        self.tool_call_scopes.get(id).cloned()
+        self.tool_call_scopes().and_then(|m| m.get(id).cloned())
     }
 
     #[must_use]
@@ -834,19 +996,19 @@ impl App {
     }
 
     pub fn clear_tool_scope_tracking(&mut self) {
-        self.tool_call_scopes.clear();
-        self.active_task_ids.clear();
+        self.tool_call_scopes_mut().clear();
+        self.active_task_ids_mut().clear();
     }
 
     /// Look up the (`message_index`, `block_index`) for a tool call ID.
     #[must_use]
     pub fn lookup_tool_call(&self, id: &str) -> Option<(usize, usize)> {
-        self.tool_call_index.get(id).copied()
+        self.tool_call_index().and_then(|m| m.get(id).copied())
     }
 
     /// Register a tool call's position in the message/block arrays.
     pub fn index_tool_call(&mut self, id: String, msg_idx: usize, block_idx: usize) {
-        self.tool_call_index.insert(id, (msg_idx, block_idx));
+        self.tool_call_index_mut().insert(id, (msg_idx, block_idx));
     }
 
     pub(crate) fn sync_terminal_tool_call(
@@ -856,17 +1018,17 @@ impl App {
         block_idx: usize,
     ) {
         let desired = TerminalToolCallRef::new(terminal_id, msg_idx, block_idx);
-        if self.terminal_tool_call_membership.contains(&desired) {
+        if self.terminal_tool_call_membership().is_some_and(|m| m.contains(&desired)) {
             return;
         }
         self.untrack_terminal_tool_call(msg_idx, block_idx);
-        self.terminal_tool_call_membership.insert(desired.clone());
-        self.terminal_tool_calls.push(desired);
+        self.terminal_tool_call_membership_mut().insert(desired.clone());
+        self.terminal_tool_calls_mut().push(desired);
     }
 
     pub(crate) fn untrack_terminal_tool_call(&mut self, msg_idx: usize, block_idx: usize) {
         let removed: Vec<_> = self
-            .terminal_tool_calls
+            .terminal_tool_calls()
             .iter()
             .filter(|entry| entry.msg_idx == msg_idx && entry.block_idx == block_idx)
             .cloned()
@@ -874,16 +1036,16 @@ impl App {
         if removed.is_empty() {
             return;
         }
-        self.terminal_tool_calls
+        self.terminal_tool_calls_mut()
             .retain(|entry| entry.msg_idx != msg_idx || entry.block_idx != block_idx);
         for entry in removed {
-            self.terminal_tool_call_membership.remove(&entry);
+            self.terminal_tool_call_membership_mut().remove(&entry);
         }
     }
 
     pub(crate) fn clear_terminal_tool_call_tracking(&mut self) {
-        self.terminal_tool_calls.clear();
-        self.terminal_tool_call_membership.clear();
+        self.terminal_tool_calls_mut().clear();
+        self.terminal_tool_call_membership_mut().clear();
     }
 
     pub(crate) fn sync_after_message_blocks_changed(&mut self, msg_idx: usize) {
@@ -1011,7 +1173,7 @@ impl App {
 
         if changed > 0 || cleared_interaction {
             self.invalidate_message_set(changed_message_indices.iter().copied());
-            self.pending_interaction_ids.clear();
+            self.pending_interaction_ids_mut().clear();
             self.release_focus_target(FocusTarget::Permission);
         }
 
@@ -1062,8 +1224,8 @@ impl App {
             self.invalidate_message_set(changed_message_indices.iter().copied());
         }
 
-        if changed > 0 || !self.pending_interaction_ids.is_empty() {
-            self.pending_interaction_ids.clear();
+        if changed > 0 || !self.pending_interaction_ids().is_empty() {
+            self.pending_interaction_ids_mut().clear();
             self.release_focus_target(FocusTarget::Permission);
         }
 
@@ -1112,14 +1274,10 @@ impl App {
             mode: None,
             config_options: BTreeMap::new(),
             login_hint: None,
-            pending_compact_clear: false,
             help_view: HelpView::Keys,
             help_open: false,
             help_dialog: dialog::DialogState::default(),
             help_visible_count: 0,
-            pending_interaction_ids: Vec::new(),
-            cancelled_turn_pending_hint: false,
-            pending_cancel_origin: None,
             pending_auto_submit_after_cancel: false,
             event_tx: tx,
             event_rx: rx,
@@ -1128,11 +1286,7 @@ impl App {
             spinner_frame: 0,
             spinner_last_advance_at: None,
             tools_collapsed: false,
-            active_task_ids: HashSet::default(),
-            tool_call_scopes: HashMap::default(),
-            terminals: std::rc::Rc::default(),
             force_redraw: false,
-            tool_call_index: HashMap::default(),
             todos: Vec::new(),
             show_todo_panel: false,
             todo_scroll: 0,
@@ -1170,19 +1324,11 @@ impl App {
             fast_mode_state: model::FastModeState::Off,
             observed_permission_mode: None,
             observed_effort: None,
-            subagent_attribution: std::collections::HashMap::new(),
             observed_assistant_model: None,
             runtime_session_state: None,
-            prompt_suggestion: None,
-            last_rate_limit_update: None,
-            turn_notice_refs: Vec::new(),
-            is_compacting: false,
             account_info: None,
             active_account_display_name: None,
             oauth_credentials: None,
-            turn_state: SessionTurnState::default(),
-            terminal_tool_calls: Vec::new(),
-            terminal_tool_call_membership: HashSet::new(),
             needs_redraw: true,
             notifications: super::notify::NotificationManager::new(),
             perf: None,
@@ -1275,11 +1421,11 @@ impl App {
     }
 
     pub(crate) fn clear_turn_notice_refs(&mut self) {
-        self.turn_notice_refs.clear();
+        self.turn_notice_refs_mut().clear();
     }
 
     pub(crate) fn shift_turn_notice_refs_for_insert(&mut self, idx: usize) {
-        for notice_ref in &mut self.turn_notice_refs {
+        for notice_ref in self.turn_notice_refs_mut() {
             match &mut notice_ref.location {
                 TurnNoticeLocation::Inline { msg_idx, .. }
                 | TurnNoticeLocation::Standalone { msg_idx }
@@ -1293,7 +1439,7 @@ impl App {
     }
 
     pub(crate) fn shift_turn_notice_refs_for_remove(&mut self, idx: usize) {
-        self.turn_notice_refs.retain_mut(|notice_ref| match &mut notice_ref.location {
+        self.turn_notice_refs_mut().retain_mut(|notice_ref| match &mut notice_ref.location {
             TurnNoticeLocation::Inline { msg_idx, .. }
             | TurnNoticeLocation::Standalone { msg_idx } => match idx.cmp(msg_idx) {
                 std::cmp::Ordering::Less => {
@@ -1310,7 +1456,7 @@ impl App {
         &mut self,
         old_to_new: &[Option<usize>],
     ) {
-        self.turn_notice_refs.retain_mut(|notice_ref| match &mut notice_ref.location {
+        self.turn_notice_refs_mut().retain_mut(|notice_ref| match &mut notice_ref.location {
             TurnNoticeLocation::Inline { msg_idx, .. }
             | TurnNoticeLocation::Standalone { msg_idx } => {
                 let Some(new_idx) = old_to_new.get(*msg_idx).copied().flatten() else {
@@ -1417,7 +1563,7 @@ impl App {
 
         self.normalize_focus_stack();
 
-        if self.pending_interaction_ids.is_empty() {
+        if self.pending_interaction_ids().is_empty() {
             clear_inline_interaction_focus(self);
         } else if self.focus_owner() == FocusOwner::Permission || !self.has_draft_input_for_focus()
         {
@@ -1433,7 +1579,7 @@ impl App {
         }
 
         if self.is_help_active()
-            && self.pending_interaction_ids.is_empty()
+            && self.pending_interaction_ids().is_empty()
             && !self.autocomplete_focus_available()
         {
             self.claim_focus_target(FocusTarget::Help);
@@ -1468,7 +1614,7 @@ impl App {
         FocusContext::new(
             self.show_todo_panel && !self.todos.is_empty(),
             self.autocomplete_focus_available(),
-            !self.pending_interaction_ids.is_empty(),
+            !self.pending_interaction_ids().is_empty(),
         )
         .with_help(self.is_help_active())
     }
@@ -2324,11 +2470,14 @@ mod tests {
 
         let _ = app.enforce_history_retention();
         assert_eq!(app.lookup_tool_call("tool-idx"), Some((2, 0)));
-        assert_eq!(app.terminal_tool_calls.len(), 1);
-        assert_eq!(app.terminal_tool_call_membership.len(), 1);
-        assert_eq!(app.terminal_tool_calls[0].terminal_id, "term-1");
-        assert_eq!(app.terminal_tool_calls[0].msg_idx, 2);
-        assert_eq!(app.terminal_tool_calls[0].block_idx, 0);
+        assert_eq!(app.terminal_tool_calls().len(), 1);
+        assert_eq!(
+            app.terminal_tool_call_membership().map_or(0, std::collections::HashSet::len),
+            1
+        );
+        assert_eq!(app.terminal_tool_calls()[0].terminal_id, "term-1");
+        assert_eq!(app.terminal_tool_calls()[0].msg_idx, 2);
+        assert_eq!(app.terminal_tool_calls()[0].block_idx, 0);
     }
 
     #[test]
@@ -2487,16 +2636,16 @@ mod tests {
     fn active_task_insert_remove() {
         let mut app = make_test_app();
         app.insert_active_task("task-1".into());
-        assert!(app.active_task_ids.contains("task-1"));
+        assert!(app.active_task_ids().is_some_and(|ids| ids.contains("task-1")));
         app.remove_active_task("task-1");
-        assert!(!app.active_task_ids.contains("task-1"));
+        assert!(!app.active_task_ids().is_some_and(|ids| ids.contains("task-1")));
     }
 
     #[test]
     fn remove_nonexistent_task_is_noop() {
         let mut app = make_test_app();
         app.remove_active_task("does-not-exist");
-        assert!(app.active_task_ids.is_empty());
+        assert!(app.active_task_ids().is_some_and(std::collections::HashSet::is_empty));
     }
 
     // active_task_ids
@@ -2507,9 +2656,9 @@ mod tests {
         let mut app = make_test_app();
         app.insert_active_task("task-1".into());
         app.insert_active_task("task-1".into());
-        assert_eq!(app.active_task_ids.len(), 1);
+        assert_eq!(app.active_task_ids().map_or(0, std::collections::HashSet::len), 1);
         app.remove_active_task("task-1");
-        assert!(app.active_task_ids.is_empty());
+        assert!(app.active_task_ids().is_some_and(std::collections::HashSet::is_empty));
     }
 
     /// Insert many tasks, remove in different order.
@@ -2519,12 +2668,12 @@ mod tests {
         for i in 0..100 {
             app.insert_active_task(format!("task-{i}"));
         }
-        assert_eq!(app.active_task_ids.len(), 100);
+        assert_eq!(app.active_task_ids().map_or(0, std::collections::HashSet::len), 100);
         // Remove in reverse order
         for i in (0..100).rev() {
             app.remove_active_task(&format!("task-{i}"));
         }
-        assert!(app.active_task_ids.is_empty());
+        assert!(app.active_task_ids().is_some_and(std::collections::HashSet::is_empty));
     }
 
     /// Mixed insert/remove interleaving.
@@ -2535,10 +2684,10 @@ mod tests {
         app.insert_active_task("b".into());
         app.remove_active_task("a");
         app.insert_active_task("c".into());
-        assert!(!app.active_task_ids.contains("a"));
-        assert!(app.active_task_ids.contains("b"));
-        assert!(app.active_task_ids.contains("c"));
-        assert_eq!(app.active_task_ids.len(), 2);
+        assert!(!app.active_task_ids().is_some_and(|ids| ids.contains("a")));
+        assert!(app.active_task_ids().is_some_and(|ids| ids.contains("b")));
+        assert!(app.active_task_ids().is_some_and(|ids| ids.contains("c")));
+        assert_eq!(app.active_task_ids().map_or(0, std::collections::HashSet::len), 2);
     }
 
     /// Remove from empty set multiple times - no panic.
@@ -2548,7 +2697,7 @@ mod tests {
         for i in 0..100 {
             app.remove_active_task(&format!("ghost-{i}"));
         }
-        assert!(app.active_task_ids.is_empty());
+        assert!(app.active_task_ids().is_some_and(std::collections::HashSet::is_empty));
     }
 
     /// `clear_tool_scope_tracking` must also clear `active_task_ids`.
@@ -2558,9 +2707,12 @@ mod tests {
     fn clear_tool_scope_tracking_also_clears_active_task_ids() {
         let mut app = make_test_app();
         app.insert_active_task("task-leaked".into());
-        assert!(!app.active_task_ids.is_empty());
+        assert!(!app.active_task_ids().is_some_and(std::collections::HashSet::is_empty));
         app.clear_tool_scope_tracking();
-        assert!(app.active_task_ids.is_empty(), "active_task_ids must be cleared at turn end");
+        assert!(
+            app.active_task_ids().is_some_and(std::collections::HashSet::is_empty),
+            "active_task_ids must be cleared at turn end"
+        );
     }
 
     #[test]
@@ -2577,8 +2729,10 @@ mod tests {
         let changed = app.finalize_in_progress_tool_calls(model::ToolCallStatus::Completed);
 
         assert_eq!(changed, 1);
-        assert!(app.terminal_tool_calls.is_empty());
-        assert!(app.terminal_tool_call_membership.is_empty());
+        assert!(app.terminal_tool_calls().is_empty());
+        assert!(
+            app.terminal_tool_call_membership().is_some_and(std::collections::HashSet::is_empty)
+        );
         let MessageBlock::ToolCall(tc) = &app.messages()[0].blocks[0] else {
             panic!("expected tool call");
         };
@@ -2674,15 +2828,15 @@ mod tests {
         ));
         app.index_tool_call("bash-1".to_owned(), 0, 0);
         app.sync_terminal_tool_call("term-1".to_owned(), 0, 0);
-        app.pending_interaction_ids.push("bash-1".into());
+        app.pending_interaction_ids_mut().push("bash-1".into());
 
         app.clear_messages_tracked();
 
         assert!(app.messages().is_empty());
-        assert!(app.tool_call_index.is_empty());
-        assert!(app.terminal_tool_calls.is_empty());
-        assert!(app.terminal_tool_call_membership.is_empty());
-        assert!(app.pending_interaction_ids.is_empty());
+        assert!(app.tool_call_index().is_some_and(HashMap::is_empty));
+        assert!(app.terminal_tool_calls().is_empty());
+        assert!(app.terminal_tool_call_membership().is_some_and(HashSet::is_empty));
+        assert!(app.pending_interaction_ids().is_empty());
     }
 
     #[test]
@@ -2698,8 +2852,10 @@ mod tests {
 
         app.rebuild_tool_indices_and_terminal_refs();
 
-        assert!(app.terminal_tool_calls.is_empty());
-        assert!(app.terminal_tool_call_membership.is_empty());
+        assert!(app.terminal_tool_calls().is_empty());
+        assert!(
+            app.terminal_tool_call_membership().is_some_and(std::collections::HashSet::is_empty)
+        );
     }
 
     #[test]
@@ -3315,7 +3471,7 @@ mod tests {
             active_form: String::new(),
         });
         app.show_todo_panel = true;
-        app.pending_interaction_ids.push("perm-1".into());
+        app.pending_interaction_ids_mut().push("perm-1".into());
         app.slash = Some(SlashState {
             trigger_row: 0,
             trigger_col: 0,

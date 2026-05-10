@@ -117,7 +117,7 @@ fn dispatch_paste_by_view(app: &mut App, text: &str) -> bool {
             if !matches!(
                 app.status,
                 AppStatus::Connecting | AppStatus::CommandPending | AppStatus::Error
-            ) && !app.is_compacting
+            ) && !app.is_compacting()
             {
                 reclaim_input_from_inline_prompt_if_needed(app);
                 app.queue_paste_text(text);
@@ -218,9 +218,9 @@ pub fn apply_current_mode_update(app: &mut App, update: &model::CurrentModeUpdat
 pub(super) fn apply_session_status_update(app: &mut App, status: model::SessionStatus) {
     // TODO(runtime-verification): confirm in real SDK sessions that compaction
     // status updates are emitted consistently; if not, add a fallback indicator.
-    let was_compacting = app.is_compacting;
+    let was_compacting = app.is_compacting();
     if matches!(status, model::SessionStatus::Compacting) {
-        app.is_compacting = true;
+        app.set_is_compacting(true);
     } else {
         clear_compaction_state(app, true);
     }
@@ -237,7 +237,7 @@ pub(super) fn handle_runtime_session_state_update(
     match state {
         model::RuntimeSessionState::Running => {
             if matches!(app.status, AppStatus::Ready | AppStatus::Thinking | AppStatus::Running)
-                && !app.is_compacting
+                && !app.is_compacting()
             {
                 app.status = AppStatus::Running;
             }
@@ -245,8 +245,8 @@ pub(super) fn handle_runtime_session_state_update(
         model::RuntimeSessionState::RequiresAction => {}
         model::RuntimeSessionState::Idle => {
             if matches!(app.status, AppStatus::Thinking | AppStatus::Running)
-                && !app.is_compacting
-                && app.pending_cancel_origin.is_none()
+                && !app.is_compacting()
+                && app.pending_cancel_origin().is_none()
             {
                 app.status = AppStatus::Ready;
             }
@@ -288,12 +288,12 @@ pub(crate) fn push_system_message_with_severity(
 }
 
 pub(super) fn clear_compaction_state(app: &mut App, emit_manual_success: bool) {
-    if !app.is_compacting && !app.pending_compact_clear {
+    if !app.is_compacting() && !app.pending_compact_clear() {
         return;
     }
-    let should_emit_success = emit_manual_success && app.pending_compact_clear;
-    app.pending_compact_clear = false;
-    app.is_compacting = false;
+    let should_emit_success = emit_manual_success && app.pending_compact_clear();
+    app.set_pending_compact_clear(false);
+    app.set_is_compacting(false);
     if should_emit_success {
         push_system_message_with_severity(
             app,
@@ -468,14 +468,20 @@ mod tests {
                 serde_json::json!({"description": "Research"}),
             )]),
         );
-        assert!(app.active_task_ids.contains("task-1"), "task must be tracked while InProgress");
+        assert!(
+            app.active_task_ids().is_some_and(|ids| ids.contains("task-1")),
+            "task must be tracked while InProgress"
+        );
 
         // User cancels then TurnComplete finalizes the turn
         handle_client_event(&mut app, ClientEvent::TurnCancelled);
         handle_client_event(&mut app, ClientEvent::TurnComplete { terminal_reason: None });
 
         // Stale task ID must be gone after turn boundary
-        assert!(app.active_task_ids.is_empty(), "stale task id must not survive TurnComplete");
+        assert!(
+            app.active_task_ids().is_some_and(std::collections::HashSet::is_empty),
+            "stale task id must not survive TurnComplete"
+        );
 
         // Next turn: a normal main-agent Glob must get MainAgent scope, not Subagent
         send_msg(
@@ -1034,7 +1040,7 @@ mod tests {
             )]),
         );
 
-        assert!(app.active_task_ids.is_empty());
+        assert!(app.active_task_ids().is_some_and(std::collections::HashSet::is_empty));
     }
 
     #[test]
@@ -1322,14 +1328,14 @@ mod tests {
         assert!(!app.should_quit);
         assert!(app.session_id().is_none());
         assert_eq!(app.files_accessed, 0);
-        assert!(app.pending_interaction_ids.is_empty());
+        assert!(app.pending_interaction_ids().is_empty());
         assert!(!app.tools_collapsed);
         assert!(!app.force_redraw);
         assert!(app.todos.is_empty());
         assert!(!app.show_todo_panel);
         assert!(app.selection.is_none());
         assert!(app.mention.is_none());
-        assert!(!app.cancelled_turn_pending_hint);
+        assert!(!app.cancelled_turn_pending_hint());
         assert!(app.rendered_chat_lines.is_empty());
         assert!(app.rendered_input_lines.is_empty());
         assert!(matches!(app.status, AppStatus::Ready));
@@ -1340,11 +1346,11 @@ mod tests {
         let mut app = make_test_app();
 
         handle_client_event(&mut app, ClientEvent::TurnCancelled);
-        assert!(app.cancelled_turn_pending_hint);
+        assert!(app.cancelled_turn_pending_hint());
 
         handle_client_event(&mut app, ClientEvent::TurnComplete { terminal_reason: None });
 
-        assert!(!app.cancelled_turn_pending_hint);
+        assert!(!app.cancelled_turn_pending_hint());
         let last = app.messages().last().expect("expected interruption hint message");
         assert!(matches!(last.role, MessageRole::System(Some(SystemSeverity::Info))));
         let Some(MessageBlock::Text(block)) = last.blocks.first() else {
@@ -1361,7 +1367,7 @@ mod tests {
         app.messages_mut().push(assistant_msg(vec![MessageBlock::Text(TextBlock::from_complete(
             "partial output",
         ))]));
-        app.pending_cancel_origin = Some(CancelOrigin::Manual);
+        app.set_pending_cancel_origin(Some(CancelOrigin::Manual));
 
         handle_client_event(&mut app, ClientEvent::TurnComplete { terminal_reason: None });
 
@@ -1381,7 +1387,7 @@ mod tests {
         app.messages_mut().push(assistant_msg(vec![MessageBlock::Text(TextBlock::from_complete(
             "partial output",
         ))]));
-        app.pending_cancel_origin = Some(CancelOrigin::AutoQueue);
+        app.set_pending_cancel_origin(Some(CancelOrigin::AutoQueue));
 
         handle_client_event(&mut app, ClientEvent::TurnComplete { terminal_reason: None });
 
@@ -1740,7 +1746,7 @@ mod tests {
             .push(assistant_msg(vec![MessageBlock::Text(TextBlock::from_complete("world"))]));
         app.status = AppStatus::Running;
         app.files_accessed = 9;
-        app.pending_interaction_ids.push("perm-1".into());
+        app.pending_interaction_ids_mut().push("perm-1".into());
         app.todo_selected = 2;
         app.show_todo_panel = true;
         app.todos.push(TodoItem {
@@ -1782,7 +1788,7 @@ mod tests {
         assert_eq!(app.messages().len(), 1);
         assert!(matches!(app.messages()[0].role, MessageRole::Welcome));
         assert_eq!(app.files_accessed, 0);
-        assert!(app.pending_interaction_ids.is_empty());
+        assert!(app.pending_interaction_ids().is_empty());
         assert!(app.todos.is_empty());
         assert!(!app.show_todo_panel);
         assert!(app.mention.is_none());
@@ -2574,7 +2580,7 @@ mod tests {
             },
         );
 
-        assert!(app.active_task_ids.is_empty());
+        assert!(app.active_task_ids().is_some_and(std::collections::HashSet::is_empty));
         assert_eq!(app.tool_call_scope("resume-task"), None);
     }
 
@@ -2601,11 +2607,11 @@ mod tests {
                 }),
             ),
         );
-        assert!(app.pending_compact_clear);
+        assert!(app.pending_compact_clear());
 
         handle_client_event(&mut app, ClientEvent::TurnComplete { terminal_reason: None });
 
-        assert!(!app.pending_compact_clear);
+        assert!(!app.pending_compact_clear());
         assert_eq!(app.messages().len(), 3);
         let Some(ChatMessage {
             role: MessageRole::System(Some(SystemSeverity::Info)), blocks, ..
@@ -2623,12 +2629,12 @@ mod tests {
     #[test]
     fn first_agent_chunk_clears_unconfirmed_compacting_without_success_message() {
         let mut app = make_test_app();
-        app.is_compacting = true;
+        app.set_is_compacting(true);
 
         send_msg(&mut app, assistant_message(vec![text_block("regular answer")]));
 
-        assert!(!app.is_compacting);
-        assert!(!app.pending_compact_clear);
+        assert!(!app.is_compacting());
+        assert!(!app.pending_compact_clear());
         assert!(app.messages().iter().all(|message| {
             !matches!(
                 message,
@@ -2640,21 +2646,21 @@ mod tests {
     #[test]
     fn session_status_idle_does_not_emit_compaction_success_without_boundary() {
         let mut app = make_test_app();
-        app.is_compacting = true;
+        app.set_is_compacting(true);
 
         // Wire path: SessionStatus::Idle arrives as System("status")
         // with `"status": null` (the CLI's idle signal).
         send_msg(&mut app, system_message("status", serde_json::json!({"status": null})));
 
-        assert!(!app.is_compacting);
-        assert!(!app.pending_compact_clear);
+        assert!(!app.is_compacting());
+        assert!(!app.pending_compact_clear());
         assert!(app.messages().is_empty());
     }
 
     #[test]
     fn turn_error_keeps_history_when_compact_pending() {
         let mut app = make_test_app();
-        app.pending_compact_clear = true;
+        app.set_pending_compact_clear(true);
         app.messages_mut().push(user_msg("/compact"));
 
         handle_client_event(
@@ -2662,7 +2668,7 @@ mod tests {
             ClientEvent::TurnError { message: "adapter failed".into(), terminal_reason: None },
         );
 
-        assert!(!app.pending_compact_clear);
+        assert!(!app.pending_compact_clear());
         assert!(matches!(app.status, AppStatus::Error));
         assert_eq!(app.messages().len(), 3);
         assert!(matches!(app.messages()[0].role, MessageRole::User));
@@ -2690,21 +2696,21 @@ mod tests {
     #[test]
     fn turn_cancel_keeps_manual_compaction_success_pending_until_exit() {
         let mut app = make_test_app();
-        app.pending_compact_clear = true;
-        app.is_compacting = true;
+        app.set_pending_compact_clear(true);
+        app.set_is_compacting(true);
 
         handle_client_event(&mut app, ClientEvent::TurnCancelled);
 
-        assert!(app.pending_compact_clear);
-        assert!(app.is_compacting);
+        assert!(app.pending_compact_clear());
+        assert!(app.is_compacting());
     }
 
     #[test]
     fn turn_error_after_cancel_keeps_compaction_success_before_interrupted_hint() {
         let mut app = make_test_app();
         app.messages_mut().push(user_msg("/compact"));
-        app.pending_compact_clear = true;
-        app.is_compacting = true;
+        app.set_pending_compact_clear(true);
+        app.set_is_compacting(true);
 
         handle_client_event(&mut app, ClientEvent::TurnCancelled);
         handle_client_event(
@@ -2805,7 +2811,7 @@ mod tests {
             ClientEvent::TurnError { message: "boom".into(), terminal_reason: None },
         );
 
-        assert!(app.active_task_ids.is_empty());
+        assert!(app.active_task_ids().is_some_and(std::collections::HashSet::is_empty));
         assert_eq!(app.tool_call_scope("task-1"), None);
     }
 
@@ -2828,7 +2834,7 @@ mod tests {
         app.bind_active_turn_assistant(0);
         app.register_tool_call_scope("task-1".into(), ToolCallScope::SubagentRoot);
         app.insert_active_task("task-1".into());
-        app.pending_interaction_ids.push("task-1".into());
+        app.pending_interaction_ids_mut().push("task-1".into());
         app.claim_focus_target(FocusTarget::Permission);
 
         handle_client_event(
@@ -2840,8 +2846,8 @@ mod tests {
         );
 
         assert_eq!(app.active_turn_assistant_idx(), None);
-        assert!(app.active_task_ids.is_empty());
-        assert!(app.pending_interaction_ids.is_empty());
+        assert!(app.active_task_ids().is_some_and(std::collections::HashSet::is_empty));
+        assert!(app.pending_interaction_ids().is_empty());
         assert_ne!(app.focus_owner(), FocusOwner::Permission);
         let Some(MessageBlock::ToolCall(tc)) = app.messages()[0].blocks.first() else {
             panic!("expected tool call block");
@@ -2902,7 +2908,7 @@ mod tests {
         handle_client_event(&mut app, ClientEvent::ConnectionFailed("bridge down".into()));
 
         assert_eq!(app.active_turn_assistant_idx(), None);
-        assert!(app.active_task_ids.is_empty());
+        assert!(app.active_task_ids().is_some_and(std::collections::HashSet::is_empty));
         let Some(MessageBlock::ToolCall(tc)) = app.messages()[0].blocks.first() else {
             panic!("expected tool call block");
         };
@@ -2927,7 +2933,7 @@ mod tests {
         );
 
         assert_eq!(app.active_turn_assistant_idx(), None);
-        assert!(app.active_task_ids.is_empty());
+        assert!(app.active_task_ids().is_some_and(std::collections::HashSet::is_empty));
         let Some(MessageBlock::ToolCall(tc)) = app.messages()[0].blocks.first() else {
             panic!("expected tool call block");
         };
@@ -2937,7 +2943,7 @@ mod tests {
     #[test]
     fn compaction_boundary_enables_compacting_and_records_boundary() {
         let mut app = make_test_app();
-        assert!(!app.is_compacting);
+        assert!(!app.is_compacting());
 
         send_msg(
             &mut app,
@@ -2949,8 +2955,8 @@ mod tests {
             ),
         );
 
-        assert!(app.is_compacting);
-        assert!(app.pending_compact_clear);
+        assert!(app.is_compacting());
+        assert!(app.pending_compact_clear());
         assert_eq!(
             app.session_usage.last_compaction_trigger,
             Some(model::CompactionTrigger::Manual)
@@ -2961,7 +2967,7 @@ mod tests {
     #[test]
     fn auto_compaction_boundary_sets_compacting_without_manual_success_pending() {
         let mut app = make_test_app();
-        assert!(!app.is_compacting);
+        assert!(!app.is_compacting());
 
         send_msg(
             &mut app,
@@ -2973,8 +2979,8 @@ mod tests {
             ),
         );
 
-        assert!(app.is_compacting);
-        assert!(!app.pending_compact_clear);
+        assert!(app.is_compacting());
+        assert!(!app.pending_compact_clear());
         assert_eq!(app.session_usage.last_compaction_trigger, Some(model::CompactionTrigger::Auto));
         assert_eq!(app.session_usage.last_compaction_pre_tokens, Some(234_567));
     }
@@ -3054,7 +3060,7 @@ mod tests {
         assert_eq!(app.messages().len(), 2);
         assert_eq!(app.messages()[1].blocks.len(), 2);
         assert!(matches!(app.messages()[1].blocks[1], MessageBlock::Notice(_)));
-        assert_eq!(app.turn_notice_refs.len(), 1);
+        assert_eq!(app.turn_notice_refs().len(), 1);
 
         handle_client_event(
             &mut app,
@@ -3074,13 +3080,13 @@ mod tests {
         assert_eq!(block.severity, SystemSeverity::Warning);
         assert!(block.text.text.contains("Approaching rate limit"));
         assert!(block.text.text.contains("Turn blocked by account or plan limits"));
-        assert!(app.turn_notice_refs.is_empty());
+        assert!(app.turn_notice_refs().is_empty());
     }
 
     #[test]
     fn different_rate_limit_incident_in_later_turn_keeps_older_notice() {
         let mut app = make_test_app();
-        app.last_rate_limit_update = Some(model::RateLimitUpdate {
+        app.set_last_rate_limit_update(Some(model::RateLimitUpdate {
             status: model::RateLimitStatus::AllowedWarning,
             resets_at: Some(1_741_280_000.0),
             utilization: Some(0.95),
@@ -3090,7 +3096,7 @@ mod tests {
             overage_disabled_reason: None,
             is_using_overage: None,
             surpassed_threshold: None,
-        });
+        }));
         app.status = AppStatus::Thinking;
         app.messages_mut().push(user_msg("first"));
         app.messages_mut().push(assistant_msg(vec![]));
@@ -3160,9 +3166,9 @@ mod tests {
             )),
         );
 
-        assert_eq!(app.turn_notice_refs.len(), 1);
+        assert_eq!(app.turn_notice_refs().len(), 1);
         handle_client_event(&mut app, ClientEvent::TurnComplete { terminal_reason: None });
-        assert!(app.turn_notice_refs.is_empty());
+        assert!(app.turn_notice_refs().is_empty());
 
         app.status = AppStatus::Thinking;
         app.messages_mut().push(user_msg("again"));
@@ -3179,7 +3185,7 @@ mod tests {
                 None,
             )),
         );
-        assert_eq!(app.turn_notice_refs.len(), 1);
+        assert_eq!(app.turn_notice_refs().len(), 1);
 
         handle_client_event(
             &mut app,
@@ -3192,7 +3198,7 @@ mod tests {
                 history_updates: Vec::new(),
             },
         );
-        assert!(app.turn_notice_refs.is_empty());
+        assert!(app.turn_notice_refs().is_empty());
     }
 
     #[test]
@@ -3201,7 +3207,7 @@ mod tests {
         app.messages_mut().push(user_msg("build app"));
 
         handle_client_event(&mut app, ClientEvent::TurnCancelled);
-        assert!(app.cancelled_turn_pending_hint);
+        assert!(app.cancelled_turn_pending_hint());
 
         handle_client_event(
             &mut app,
@@ -3211,7 +3217,7 @@ mod tests {
             },
         );
 
-        assert!(!app.cancelled_turn_pending_hint);
+        assert!(!app.cancelled_turn_pending_hint());
         assert!(matches!(app.status, AppStatus::Ready));
 
         let Some(last) = app.messages().last() else {
@@ -3232,7 +3238,7 @@ mod tests {
         app.messages_mut().push(assistant_msg(vec![MessageBlock::Text(TextBlock::from_complete(
             "partial output",
         ))]));
-        app.pending_cancel_origin = Some(CancelOrigin::AutoQueue);
+        app.set_pending_cancel_origin(Some(CancelOrigin::AutoQueue));
 
         handle_client_event(
             &mut app,
@@ -3513,14 +3519,14 @@ mod tests {
             Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)),
         );
 
-        assert_eq!(app.pending_interaction_ids, vec!["perm-b", "perm-a"]);
+        assert_eq!(app.pending_interaction_ids(), vec!["perm-b", "perm-a"]);
         assert_eq!(app.todo_selected, 0);
     }
 
     #[test]
     fn permission_focus_allows_typing_for_non_permission_keys() {
         let mut app = make_test_app();
-        app.pending_interaction_ids.push("perm-1".into());
+        app.pending_interaction_ids_mut().push("perm-1".into());
         app.claim_focus_target(FocusTarget::Permission);
 
         handle_terminal_event(
@@ -3563,7 +3569,7 @@ mod tests {
         );
 
         assert_eq!(app.focus_owner(), FocusOwner::Input);
-        assert_eq!(app.pending_interaction_ids, vec![tool_id]);
+        assert_eq!(app.pending_interaction_ids(), vec![tool_id]);
         assert_eq!(permission_focus_state(&app, tool_id), Some(false));
     }
 
@@ -3596,7 +3602,7 @@ mod tests {
         );
 
         assert_eq!(app.focus_owner(), FocusOwner::Input);
-        assert_eq!(app.pending_interaction_ids, vec![tool_id]);
+        assert_eq!(app.pending_interaction_ids(), vec![tool_id]);
         assert_eq!(question_focus_state(&app, tool_id), Some(false));
     }
 
@@ -3645,7 +3651,7 @@ mod tests {
         super::super::finalize_deferred_submit(&mut app);
 
         assert!(app.pending_submit.is_none());
-        assert!(app.pending_interaction_ids.is_empty());
+        assert!(app.pending_interaction_ids().is_empty());
         assert!(bridge_rx.try_recv().is_ok());
         assert!(response_rx.try_recv().is_err());
     }
@@ -3794,7 +3800,7 @@ mod tests {
     #[test]
     fn permission_focus_allows_ctrl_t_toggle_todos() {
         let mut app = make_test_app();
-        app.pending_interaction_ids.push("perm-1".into());
+        app.pending_interaction_ids_mut().push("perm-1".into());
         app.claim_focus_target(FocusTarget::Permission);
         app.todos.push(TodoItem {
             content: "Task".into(),
@@ -3865,7 +3871,7 @@ mod tests {
             ],
             false,
         );
-        app.pending_interaction_ids.insert(0, "stale-id".into());
+        app.pending_interaction_ids_mut().insert(0, "stale-id".into());
 
         handle_terminal_event(
             &mut app,
@@ -3874,7 +3880,7 @@ mod tests {
 
         let response = response_rx.try_recv().expect("permission response");
         assert!(matches!(response.outcome, model::RequestPermissionOutcome::Selected(_)));
-        assert!(app.pending_interaction_ids.is_empty());
+        assert!(app.pending_interaction_ids().is_empty());
     }
 
     #[test]
@@ -3930,7 +3936,7 @@ mod tests {
         app.messages_mut().push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(tc))]));
         let msg_idx = app.messages().len().saturating_sub(1);
         app.index_tool_call(tool_id.into(), msg_idx, 0);
-        app.pending_interaction_ids.push(tool_id.into());
+        app.pending_interaction_ids_mut().push(tool_id.into());
         app.claim_focus_target(FocusTarget::Permission);
         response_rx
     }
@@ -3958,7 +3964,7 @@ mod tests {
         app.messages_mut().push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(tc))]));
         let msg_idx = app.messages().len().saturating_sub(1);
         app.index_tool_call(tool_id.into(), msg_idx, 0);
-        app.pending_interaction_ids.push(tool_id.into());
+        app.pending_interaction_ids_mut().push(tool_id.into());
         if focused {
             app.claim_focus_target(FocusTarget::Permission);
         }
@@ -4026,7 +4032,7 @@ mod tests {
             panic!("expected selected permission response");
         };
         assert_eq!(selected.option_id.clone(), "allow");
-        assert!(app.pending_interaction_ids.is_empty());
+        assert!(app.pending_interaction_ids().is_empty());
     }
 
     #[test]
@@ -4066,7 +4072,7 @@ mod tests {
             panic!("expected selected permission response");
         };
         assert_eq!(selected.option_id.clone(), "allow-always");
-        assert!(app.pending_interaction_ids.is_empty());
+        assert!(app.pending_interaction_ids().is_empty());
     }
 
     #[test]
@@ -4115,7 +4121,7 @@ mod tests {
             panic!("expected selected permission response");
         };
         assert_eq!(selected.option_id.clone(), "deny");
-        assert!(app.pending_interaction_ids.is_empty());
+        assert!(app.pending_interaction_ids().is_empty());
     }
 
     #[test]
@@ -4151,7 +4157,7 @@ mod tests {
         };
         assert_eq!(selected.option_id.clone(), "plan-approve");
         assert_eq!(app.input.text(), "seed");
-        assert!(app.pending_interaction_ids.is_empty());
+        assert!(app.pending_interaction_ids().is_empty());
     }
 
     #[test]
@@ -4210,15 +4216,15 @@ mod tests {
             panic!("expected selected permission response");
         };
         assert_eq!(selected.option_id.clone(), "deny");
-        assert!(app.pending_interaction_ids.is_empty());
-        assert_eq!(app.pending_cancel_origin, None);
+        assert!(app.pending_interaction_ids().is_empty());
+        assert_eq!(app.pending_cancel_origin(), None);
 
         handle_terminal_event(
             &mut app,
             Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
         );
 
-        assert_eq!(app.pending_cancel_origin, Some(CancelOrigin::Manual));
+        assert_eq!(app.pending_cancel_origin(), Some(CancelOrigin::Manual));
         let envelope = rx.try_recv().expect("second Esc should send turn cancel");
         assert!(matches!(
             envelope,
@@ -5087,7 +5093,7 @@ mod tests {
         );
 
         assert_eq!(app.messages().len(), 1);
-        assert_eq!(app.turn_notice_refs.len(), 1);
+        assert_eq!(app.turn_notice_refs().len(), 1);
         let MessageBlock::Notice(notice) = &app.messages()[0].blocks[0] else {
             panic!("expected API retry notice");
         };
@@ -5098,18 +5104,18 @@ mod tests {
     #[test]
     fn prompt_suggestion_tab_accepts_empty_input_only_after_todo_focus() {
         let mut app = make_test_app();
-        app.prompt_suggestion = Some("Write focused tests".to_owned());
+        app.set_prompt_suggestion(Some("Write focused tests".to_owned()));
 
         handle_normal_key(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
 
         assert_eq!(app.input.text(), "Write focused tests");
-        assert!(app.prompt_suggestion.is_none());
+        assert!(app.prompt_suggestion().is_none());
     }
 
     #[test]
     fn prompt_suggestion_tab_does_not_steal_todo_focus_toggle() {
         let mut app = make_test_app();
-        app.prompt_suggestion = Some("Write focused tests".to_owned());
+        app.set_prompt_suggestion(Some("Write focused tests".to_owned()));
         app.show_todo_panel = true;
         app.todos.push(TodoItem {
             content: "todo".to_owned(),
@@ -5121,7 +5127,7 @@ mod tests {
 
         assert_eq!(app.focus_owner(), FocusOwner::TodoList);
         assert!(app.input.is_empty());
-        assert_eq!(app.prompt_suggestion.as_deref(), Some("Write focused tests"));
+        assert_eq!(app.prompt_suggestion(), Some("Write focused tests"));
     }
 
     #[test]

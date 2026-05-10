@@ -47,7 +47,7 @@ fn handle_compact_submit(app: &mut App, args: &[&str]) -> bool {
         return true;
     }
 
-    app.is_compacting = true;
+    app.set_is_compacting(true);
     false
 }
 
@@ -168,16 +168,16 @@ fn apply_optimistic_mode_change(app: &mut App, requested_mode: &str) {
     use crate::app::connect::type_converters::convert_mode_state;
 
     let Some(parsed) = PermissionMode::from_wire(requested_mode) else { return };
-    app.turn_state.mode = Some(parsed);
+    app.turn_state_mut().mode = Some(parsed);
     let supports_auto_mode =
         app.current_model.as_ref().is_some_and(|m| m.supports_auto_mode == Some(true));
     let supported = supported_mode_ids_filtered(
         supports_auto_mode,
-        app.turn_state.supports_bypass_permissions_mode,
+        app.turn_state().supports_bypass_permissions_mode,
         Some(parsed),
-        &app.turn_state.runtime_unavailable_mode_ids,
+        &app.turn_state().runtime_unavailable_mode_ids,
     );
-    app.turn_state.supported_mode_ids.clone_from(&supported);
+    app.turn_state_mut().supported_mode_ids.clone_from(&supported);
 
     let current_mode_update = crate::agent::model::CurrentModeUpdate::new(parsed.as_wire());
     crate::app::events::apply_current_mode_update(app, &current_mode_update);
@@ -237,26 +237,26 @@ fn apply_optimistic_model_change(app: &mut App, model_name: &str) {
     use crate::agent::session_lifecycle::resolve_current_model_from_inputs;
     use crate::app::connect::type_converters::{convert_current_model, convert_mode_state};
 
-    app.turn_state.requested_model_id = Some(model_name.to_owned());
+    app.turn_state_mut().requested_model_id = Some(model_name.to_owned());
     let next_wire = resolve_current_model_from_inputs(
-        &app.turn_state.model_id,
+        &app.turn_state().model_id,
         Some(model_name),
-        app.turn_state.resolved_runtime_model_id.as_deref(),
+        app.turn_state().resolved_runtime_model_id.as_deref(),
         &[],
     );
     let next_model = convert_current_model(next_wire);
     crate::app::events::apply_current_model_update(app, next_model);
 
-    if let Some(mode) = app.turn_state.mode {
+    if let Some(mode) = app.turn_state().mode {
         let supports_auto_mode =
             app.current_model.as_ref().is_some_and(|m| m.supports_auto_mode == Some(true));
         let supported = supported_mode_ids_filtered(
             supports_auto_mode,
-            app.turn_state.supports_bypass_permissions_mode,
+            app.turn_state().supports_bypass_permissions_mode,
             Some(mode),
-            &app.turn_state.runtime_unavailable_mode_ids,
+            &app.turn_state().runtime_unavailable_mode_ids,
         );
-        app.turn_state.supported_mode_ids.clone_from(&supported);
+        app.turn_state_mut().supported_mode_ids.clone_from(&supported);
         let wire_mode_state = build_mode_state_from_supported(mode, &supported);
         let model_mode_state = convert_mode_state(wire_mode_state);
         crate::app::events::apply_mode_state_update(app, model_mode_state);

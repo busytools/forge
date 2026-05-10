@@ -85,7 +85,9 @@ fn run() -> anyhow::Result<()> {
         let result = forge_tui::app::run_tui(&mut app).await;
 
         // Kill any spawned terminal child processes before exiting
-        forge_tui::agent::events::kill_all_terminals(&app.terminals);
+        if let Some(terminals) = app.terminals() {
+            forge_tui::agent::events::kill_all_terminals(terminals);
+        }
 
         let exit_error = app.exit_error.take();
 

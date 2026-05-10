@@ -147,9 +147,9 @@ pub(super) fn handle_auth_required_event(
     app.bump_session_scope_epoch();
     app.clear_session_runtime_identity();
     super::clear_compaction_state(app, false);
-    app.last_rate_limit_update = None;
-    app.cancelled_turn_pending_hint = false;
-    app.pending_cancel_origin = None;
+    app.set_last_rate_limit_update(None);
+    app.set_cancelled_turn_pending_hint(false);
+    app.set_pending_cancel_origin(None);
     app.pending_auto_submit_after_cancel = false;
     app.account_info = None;
     app.mcp = super::super::McpState::default();
@@ -171,10 +171,10 @@ pub(super) fn handle_connection_failed_event(app: &mut App, msg: &str) {
     app.bump_session_scope_epoch();
     app.clear_session_runtime_identity();
     super::clear_compaction_state(app, false);
-    app.cancelled_turn_pending_hint = false;
-    app.pending_cancel_origin = None;
+    app.set_cancelled_turn_pending_hint(false);
+    app.set_pending_cancel_origin(None);
     app.pending_auto_submit_after_cancel = false;
-    app.last_rate_limit_update = None;
+    app.set_last_rate_limit_update(None);
     app.account_info = None;
     app.mcp = super::super::McpState::default();
     app.config.pending_session_title_change = None;
@@ -316,7 +316,7 @@ pub(super) fn handle_session_replaced_event(
     let history_message_count = history_messages.len();
     let available_model_count = available_models.len();
     super::clear_compaction_state(app, false);
-    app.pending_cancel_origin = None;
+    app.set_pending_cancel_origin(None);
     app.pending_auto_submit_after_cancel = false;
     let prev_session_id = app.session_id().map(ToString::to_string);
     apply_session_cwd(app, cwd);

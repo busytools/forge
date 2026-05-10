@@ -50,7 +50,7 @@ pub(super) fn handle_permission_request_event(
         return;
     };
 
-    if app.pending_interaction_ids.iter().any(|id| id == &tool_id) {
+    if app.pending_interaction_ids().iter().any(|id| id == &tool_id) {
         tracing::warn!(
             target: crate::logging::targets::APP_PERMISSION,
             event_name = "permission_request_rejected",
@@ -65,7 +65,7 @@ pub(super) fn handle_permission_request_event(
     }
 
     let mut layout_dirty = false;
-    let auto_focus = app.pending_interaction_ids.is_empty() && !app.has_draft_input_for_focus();
+    let auto_focus = app.pending_interaction_ids().is_empty() && !app.has_draft_input_for_focus();
     if let Some(MessageBlock::ToolCall(tc)) =
         app.messages_mut().get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
     {
@@ -79,7 +79,7 @@ pub(super) fn handle_permission_request_event(
         });
         tc.mark_tool_call_layout_dirty();
         layout_dirty = true;
-        app.pending_interaction_ids.push(tool_id.clone());
+        app.pending_interaction_ids_mut().push(tool_id.clone());
         if auto_focus {
             app.claim_focus_target(FocusTarget::Permission);
         }
@@ -144,7 +144,7 @@ pub(super) fn handle_question_request_event(
         return;
     };
 
-    if app.pending_interaction_ids.iter().any(|id| id == &tool_id) {
+    if app.pending_interaction_ids().iter().any(|id| id == &tool_id) {
         tracing::warn!(
             target: crate::logging::targets::APP_PERMISSION,
             event_name = "question_request_rejected",
@@ -160,7 +160,7 @@ pub(super) fn handle_question_request_event(
     }
 
     let mut layout_dirty = false;
-    let auto_focus = app.pending_interaction_ids.is_empty() && !app.has_draft_input_for_focus();
+    let auto_focus = app.pending_interaction_ids().is_empty() && !app.has_draft_input_for_focus();
     if let Some(MessageBlock::ToolCall(tc)) =
         app.messages_mut().get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
     {
@@ -179,7 +179,7 @@ pub(super) fn handle_question_request_event(
         });
         tc.mark_tool_call_layout_dirty();
         layout_dirty = true;
-        app.pending_interaction_ids.push(tool_id.clone());
+        app.pending_interaction_ids_mut().push(tool_id.clone());
         if auto_focus {
             app.claim_focus_target(FocusTarget::Permission);
         }
@@ -235,11 +235,13 @@ fn reject_permission_request(
 }
 
 pub(super) fn handle_turn_cancelled_event(app: &mut App) {
-    if app.pending_cancel_origin.is_none() {
-        app.pending_cancel_origin = Some(CancelOrigin::Manual);
+    if app.pending_cancel_origin().is_none() {
+        app.set_pending_cancel_origin(Some(CancelOrigin::Manual));
     }
-    app.cancelled_turn_pending_hint =
-        matches!(app.pending_cancel_origin, Some(CancelOrigin::Manual));
+    app.set_cancelled_turn_pending_hint(matches!(
+        app.pending_cancel_origin(),
+        Some(CancelOrigin::Manual)
+    ));
     let _ = app.finalize_in_progress_tool_calls(model::ToolCallStatus::Failed);
 }
 
@@ -250,12 +252,12 @@ fn begin_turn_exit(app: &mut App, emit_manual_compaction_success: bool) -> TurnE
             .iter()
             .rposition(|m| matches!(m.role, MessageRole::Assistant)),
         turn_was_active: matches!(app.status, AppStatus::Thinking | AppStatus::Running),
-        cancelled_requested: app.pending_cancel_origin,
-        show_interrupted_hint: matches!(app.pending_cancel_origin, Some(CancelOrigin::Manual)),
+        cancelled_requested: app.pending_cancel_origin(),
+        show_interrupted_hint: matches!(app.pending_cancel_origin(), Some(CancelOrigin::Manual)),
     };
     clear_compaction_state(app, emit_manual_compaction_success);
-    app.pending_cancel_origin = None;
-    app.cancelled_turn_pending_hint = false;
+    app.set_pending_cancel_origin(None);
+    app.set_cancelled_turn_pending_hint(false);
     state
 }
 
@@ -389,8 +391,8 @@ pub(super) fn handle_turn_error_event(
     app.pending_submit = None;
     app.status = AppStatus::Error;
     let rate_limit_context = if matches!(error_class, TurnErrorClass::PlanLimit) {
-        app.last_rate_limit_update
-            .clone()
+        app.last_rate_limit_update()
+            .cloned()
             .filter(|update| !matches!(update.status, model::RateLimitStatus::Allowed))
     } else {
         None
@@ -532,7 +534,7 @@ mod tests {
     fn cancelled_turn_error_removes_empty_tail_assistant_before_hint() {
         let mut app = App::test_default();
         app.status = AppStatus::Thinking;
-        app.pending_cancel_origin = Some(CancelOrigin::Manual);
+        app.set_pending_cancel_origin(Some(CancelOrigin::Manual));
         app.messages_mut().push(user_message("hello"));
         app.messages_mut().push(empty_assistant_message());
 

@@ -409,7 +409,7 @@ fn fit_footer_suffix_text(text: &str, max_width: usize) -> Option<String> {
 }
 
 fn pending_permission_request_count(app: &App) -> usize {
-    app.pending_interaction_ids
+    app.pending_interaction_ids()
         .iter()
         .filter(|tool_id| {
             let Some((mi, bi)) = app.lookup_tool_call(tool_id) else {
@@ -578,7 +578,7 @@ mod tests {
             None,
         ));
         app.index_tool_call("perm-1".into(), 0, 0);
-        app.pending_interaction_ids.push("perm-1".into());
+        app.pending_interaction_ids_mut().push("perm-1".into());
 
         assert_eq!(footer_primary_hint(&app), Some(("1 PEND. PERM.".to_owned(), Color::Yellow)));
     }

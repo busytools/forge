@@ -423,6 +423,6 @@ fn apply_hook_observation(
     if let (Some(tool_use_id), Some(_agent_id), Some(agent_type)) =
         (tool_use_id, agent_id, agent_type)
     {
-        app.subagent_attribution.insert(tool_use_id.to_owned(), agent_type.to_owned());
+        app.subagent_attribution_mut().insert(tool_use_id.to_owned(), agent_type.to_owned());
     }
 }

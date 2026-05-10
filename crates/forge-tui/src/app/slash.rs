@@ -588,7 +588,7 @@ mod tests {
 
         let consumed = try_handle_submit(&mut app, "/compact");
         assert!(consumed);
-        assert!(!app.pending_compact_clear);
+        assert!(!app.pending_compact_clear());
         let Some(last) = app.messages().last() else {
             panic!("expected system message");
         };
@@ -608,8 +608,8 @@ mod tests {
 
         let consumed = try_handle_submit(&mut app, "/compact");
         assert!(!consumed);
-        assert!(!app.pending_compact_clear);
-        assert!(app.is_compacting);
+        assert!(!app.pending_compact_clear());
+        assert!(app.is_compacting());
     }
 
     #[test]

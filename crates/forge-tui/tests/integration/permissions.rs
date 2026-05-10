@@ -52,11 +52,11 @@ async fn permission_request_attaches_to_tool_call() {
     let mut app = test_app();
     let _rx = setup_permission(&mut app, "tc-perm-1", allow_deny_options());
 
-    assert_eq!(app.pending_interaction_ids.len(), 1);
-    assert_eq!(app.pending_interaction_ids[0], "tc-perm-1");
+    assert_eq!(app.pending_interaction_ids().len(), 1);
+    assert_eq!(app.pending_interaction_ids()[0], "tc-perm-1");
 
     // The tool call should have a pending_permission
-    let (mi, bi) = app.tool_call_index["tc-perm-1"];
+    let (mi, bi) = app.lookup_tool_call("tc-perm-1").expect("missing tool index");
     if let MessageBlock::ToolCall(tc) = &app.messages()[mi].blocks[bi] {
         assert!(tc.pending_permission.is_some());
         let perm = tc.pending_permission.as_ref().unwrap();
@@ -91,7 +91,7 @@ async fn permission_for_unknown_tool_call_auto_rejects() {
     send_client_event(&mut app, ClientEvent::PermissionRequest { request, response_tx });
 
     // Should NOT be in pending queue
-    assert!(app.pending_interaction_ids.is_empty());
+    assert!(app.pending_interaction_ids().is_empty());
 
     // The response should have been sent (auto-reject with last option = "deny")
     let response = response_rx.try_recv();
@@ -112,16 +112,16 @@ async fn multiple_permissions_queue_in_order() {
     let _rx1 = setup_permission(&mut app, "tc-q1", allow_deny_options());
     let _rx2 = setup_permission(&mut app, "tc-q2", allow_deny_options());
 
-    assert_eq!(app.pending_interaction_ids.len(), 2);
-    assert_eq!(app.pending_interaction_ids[0], "tc-q1");
-    assert_eq!(app.pending_interaction_ids[1], "tc-q2");
+    assert_eq!(app.pending_interaction_ids().len(), 2);
+    assert_eq!(app.pending_interaction_ids()[0], "tc-q1");
+    assert_eq!(app.pending_interaction_ids()[1], "tc-q2");
 
     // First should be focused, second should not
-    let (mi1, bi1) = app.tool_call_index["tc-q1"];
+    let (mi1, bi1) = app.lookup_tool_call("tc-q1").expect("missing tool index");
     if let MessageBlock::ToolCall(tc) = &app.messages()[mi1].blocks[bi1] {
         assert!(tc.pending_permission.as_ref().unwrap().focused);
     }
-    let (mi2, bi2) = app.tool_call_index["tc-q2"];
+    let (mi2, bi2) = app.lookup_tool_call("tc-q2").expect("missing tool index");
     if let MessageBlock::ToolCall(tc) = &app.messages()[mi2].blocks[bi2] {
         assert!(!tc.pending_permission.as_ref().unwrap().focused);
     }
@@ -142,7 +142,7 @@ async fn duplicate_permission_request_is_rejected_without_duplicate_queue_entry(
     );
     send_client_event(&mut app, ClientEvent::PermissionRequest { request, response_tx });
 
-    assert_eq!(app.pending_interaction_ids, vec!["tc-dup"]);
+    assert_eq!(app.pending_interaction_ids(), vec!["tc-dup"]);
     assert!(matches!(first_rx.try_recv(), Err(tokio::sync::oneshot::error::TryRecvError::Empty)));
 
     let resp = duplicate_rx.try_recv().expect("duplicate permission should be auto-rejected");
@@ -201,7 +201,7 @@ async fn turn_complete_resets_transient_state() {
     assert_eq!(app.files_accessed, 0, "files_accessed should reset");
     // spinner_frame is a UI detail, not reset by TurnComplete (it's driven by tick)
     // pending_interaction_ids should be empty (no permissions were pending)
-    assert!(app.pending_interaction_ids.is_empty());
+    assert!(app.pending_interaction_ids().is_empty());
 }
 
 #[tokio::test]
@@ -228,12 +228,12 @@ async fn turn_complete_does_not_clear_tool_call_index() {
             serde_json::json!({"file_path": "file"}),
         )]),
     );
-    assert!(app.tool_call_index.contains_key("tc-persist"));
+    assert!(app.tool_call_index().expect("session bucket").contains_key("tc-persist"));
 
     send_client_event(&mut app, ClientEvent::TurnComplete { terminal_reason: None });
 
     assert!(
-        app.tool_call_index.contains_key("tc-persist"),
+        app.tool_call_index().expect("session bucket").contains_key("tc-persist"),
         "tool_call_index should persist across turns"
     );
 }

@@ -312,7 +312,7 @@ fn build_base_spinner(app: &App) -> SpinnerState {
         is_active_turn_assistant: false,
         show_empty_thinking: matches!(app.status, AppStatus::Thinking | AppStatus::Running),
         show_thinking: matches!(app.status, AppStatus::Thinking),
-        show_compacting: app.is_compacting,
+        show_compacting: app.is_compacting(),
     }
 }
 

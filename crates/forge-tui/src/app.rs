@@ -213,7 +213,7 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
                 | AppStatus::CommandPending
                 | AppStatus::Thinking
                 | AppStatus::Running
-        ) || app.is_compacting;
+        ) || app.is_compacting();
         if is_animating {
             advance_spinner_frame(app, Instant::now());
             tab_title::update_tab_title(&app.status, app.spinner_frame, &app.cwd);
@@ -268,8 +268,8 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
     // --- Graceful shutdown ---
 
     // Dismiss all pending inline permissions (reject via last option)
-    for tool_id in std::mem::take(&mut app.pending_interaction_ids) {
-        if let Some((mi, bi)) = app.tool_call_index.get(&tool_id).copied()
+    for tool_id in std::mem::take(app.pending_interaction_ids_mut()) {
+        if let Some((mi, bi)) = app.lookup_tool_call(&tool_id)
             && let Some(MessageBlock::ToolCall(tc)) =
                 app.messages_mut().get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
         {

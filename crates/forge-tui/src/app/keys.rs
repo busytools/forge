@@ -223,7 +223,7 @@ pub(super) fn dispatch_key_by_focus(app: &mut App, key: KeyEvent) -> bool {
     }
 
     if matches!(app.status, AppStatus::Connecting | AppStatus::CommandPending | AppStatus::Error)
-        || app.is_compacting
+        || app.is_compacting()
     {
         return handle_blocked_input_shortcuts(app, key);
     }
@@ -297,7 +297,7 @@ fn handle_blocked_input_shortcuts(app: &mut App, key: KeyEvent) -> bool {
 /// Handle shortcuts that should work regardless of current focus owner.
 fn handle_global_shortcuts(app: &mut App, key: KeyEvent) -> bool {
     // Permission quick shortcuts are global when permissions are pending.
-    if !app.pending_interaction_ids.is_empty() && is_permission_ctrl_shortcut(key) {
+    if !app.pending_interaction_ids().is_empty() && is_permission_ctrl_shortcut(key) {
         return handle_inline_interaction_key(app, key);
     }
 
@@ -578,7 +578,7 @@ fn handle_focus_toggle_key(app: &mut App, key: KeyEvent) -> bool {
                 && !m.contains(KeyModifiers::CONTROL)
                 && !m.contains(KeyModifiers::ALT) =>
         {
-            if !app.pending_interaction_ids.is_empty() {
+            if !app.pending_interaction_ids().is_empty() {
                 match app.focus_owner() {
                     FocusOwner::Permission => {
                         clear_inline_interaction_focus(app);
@@ -614,12 +614,13 @@ fn handle_prompt_suggestion_key(app: &mut App, key: KeyEvent) -> bool {
         return false;
     }
 
-    let Some(suggestion) = app.prompt_suggestion.take() else {
+    let Some(suggestion) = app.prompt_suggestion().map(str::to_owned) else {
         return false;
     };
     if suggestion.trim().is_empty() {
         return false;
     }
+    app.set_prompt_suggestion(None);
     app.input.set_text(&suggestion);
     app.sync_help_open_with_input();
     true
@@ -1013,7 +1014,7 @@ fn set_help_view(app: &mut App, next: HelpView) {
 
 fn sync_help_focus(app: &mut App) {
     if app.is_help_active()
-        && app.pending_interaction_ids.is_empty()
+        && app.pending_interaction_ids().is_empty()
         && !app.autocomplete_focus_available()
     {
         app.claim_focus_target(FocusTarget::Help);
