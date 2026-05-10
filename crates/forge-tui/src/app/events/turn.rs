@@ -37,6 +37,18 @@ pub(super) fn handle_permission_request_event(
     let tool_id = request.tool_call.tool_call_id.clone();
     let options = request.options.clone();
 
+    // Lifecycle: a permission prompt landing on a non-active session
+    // means that bucket is paused awaiting user input — flip to
+    // Attention so the Projects pane shows the △ glyph. Active
+    // sessions don't need this — the inline permission card itself
+    // surfaces the prompt to the user.
+    let request_key = SessionKey::from_session_id(session_id.clone());
+    if app.active_session_key.as_ref() != Some(&request_key)
+        && let Some(session) = app.session_mut(&request_key)
+    {
+        session.lifecycle_state = crate::app::session::SessionLifecycleState::Attention;
+    }
+
     let Some((mi, bi)) = app.lookup_tool_call(&tool_id) else {
         tracing::warn!(
             target: crate::logging::targets::APP_PERMISSION,
@@ -129,6 +141,15 @@ pub(super) fn handle_question_request_event(
     let option_count = request.prompt.options.len();
     let question_index = request.question_index;
     let total_questions = request.total_questions;
+
+    // Lifecycle: as with permission prompts — a question landing on a
+    // non-active session flips that bucket to Attention.
+    let request_key = SessionKey::from_session_id(session_id.clone());
+    if app.active_session_key.as_ref() != Some(&request_key)
+        && let Some(session) = app.session_mut(&request_key)
+    {
+        session.lifecycle_state = crate::app::session::SessionLifecycleState::Attention;
+    }
 
     let Some((mi, bi)) = app.lookup_tool_call(&tool_id) else {
         tracing::warn!(
@@ -245,6 +266,12 @@ pub(super) fn handle_turn_cancelled_event(app: &mut App, session_key: &SessionKe
             Some(CancelOrigin::Manual)
         ));
         let _ = app.finalize_in_progress_tool_calls(model::ToolCallStatus::Failed);
+        // Lifecycle: cancellation accepted — return active session
+        // to Idle. (Steady-state TurnComplete fires shortly after,
+        // also setting Idle — this is a defensive idempotent set.)
+        if let Some(session) = app.active_session_mut() {
+            session.lifecycle_state = crate::app::session::SessionLifecycleState::Idle;
+        }
         return;
     }
     let Some(session) = app.session_mut(session_key) else {
@@ -264,6 +291,8 @@ pub(super) fn handle_turn_cancelled_event(app: &mut App, session_key: &SessionKe
     session.cancelled_turn_pending_hint =
         matches!(session.pending_cancel_origin, Some(CancelOrigin::Manual));
     finalize_background_tool_calls(session, model::ToolCallStatus::Failed);
+    // Lifecycle: background cancel accepted — same Idle target.
+    session.lifecycle_state = crate::app::session::SessionLifecycleState::Idle;
 }
 
 /// Background-session version of [`App::finalize_in_progress_tool_calls`].
@@ -356,6 +385,9 @@ pub(super) fn handle_turn_complete_event(
         session.cancelled_turn_pending_hint = false;
         session.active_turn_assistant_message_idx = None;
         session.turn_notice_refs.clear();
+        // Lifecycle: background bucket's turn has wrapped — return
+        // it to Idle so the Projects pane drops the spinner glyph.
+        session.lifecycle_state = crate::app::session::SessionLifecycleState::Idle;
         if let Some(reason) = terminal_reason {
             tracing::debug!(
                 target: crate::logging::targets::APP_SESSION,
@@ -385,6 +417,12 @@ pub(super) fn handle_turn_complete_event(
         model::ToolCallStatus::Completed
     };
     finish_ready_turn_exit(app, exit, tool_status);
+    // Lifecycle: turn done, active session returns to Idle. The
+    // Projects pane drops the spinner glyph back to the default
+    // foreground color.
+    if let Some(session) = app.active_session_mut() {
+        session.lifecycle_state = crate::app::session::SessionLifecycleState::Idle;
+    }
     crate::app::session_runtime::request_context_usage_refresh(app);
     if turn_was_active {
         app.notifications.notify(
@@ -426,6 +464,9 @@ pub(super) fn handle_turn_error_event(
         session.cancelled_turn_pending_hint = false;
         session.active_turn_assistant_message_idx = None;
         session.turn_notice_refs.clear();
+        // Lifecycle: turn ended (with error) — return the background
+        // bucket to Idle so the Projects pane drops the spinner glyph.
+        session.lifecycle_state = crate::app::session::SessionLifecycleState::Idle;
         let summary = summarize_internal_error(msg);
         if cancelled_requested.is_some() {
             tracing::warn!(
@@ -466,6 +507,10 @@ pub(super) fn handle_turn_error_event(
         );
         app.pending_submit = None;
         finish_ready_turn_exit(app, exit, model::ToolCallStatus::Failed);
+        // Lifecycle: cancelled turn — back to Idle.
+        if let Some(session) = app.active_session_mut() {
+            session.lifecycle_state = crate::app::session::SessionLifecycleState::Idle;
+        }
         crate::app::session_runtime::request_context_usage_refresh(app);
         if app.active_view == super::super::ActiveView::Chat {
             super::super::input_submit::maybe_auto_submit_after_cancel(app);
@@ -538,6 +583,13 @@ pub(super) fn handle_turn_error_event(
     }
     app.clear_active_turn_assistant();
     super::notices::clear_turn_notice_tracking(app);
+    // Lifecycle: errored turn — back to Idle. The active session
+    // status itself is already AppStatus::Error (set above) so the
+    // input remains locked; lifecycle is the per-session pane glyph,
+    // independent of the App-global input lock.
+    if let Some(session) = app.active_session_mut() {
+        session.lifecycle_state = crate::app::session::SessionLifecycleState::Idle;
+    }
     crate::app::session_runtime::request_context_usage_refresh(app);
 }
 

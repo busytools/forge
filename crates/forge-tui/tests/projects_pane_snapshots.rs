@@ -429,3 +429,133 @@ fn sleeping_lead_shows_dot_glyph() {
         "sleeping lifecycle should render with · glyph, got: {drilldown:?}"
     );
 }
+
+/// Find the foreground color of the first cell in `buffer` whose
+/// symbol matches `glyph`. Returns `None` if the glyph isn't found.
+/// Used by per-state-color tests to look up the glyph's `Color`
+/// directly from the rendered buffer rather than just asserting the
+/// symbol is present.
+fn find_glyph_fg(buffer: &ratatui::buffer::Buffer, glyph: char) -> Option<ratatui::style::Color> {
+    let area = buffer.area();
+    for y in 0..area.height {
+        for x in 0..area.width {
+            if let Some(cell) = buffer.cell((x, y))
+                && cell.symbol().starts_with(glyph)
+            {
+                return Some(cell.fg);
+            }
+        }
+    }
+    None
+}
+
+#[test]
+fn wide_tier_running_session_glyph_uses_accent_color() {
+    let mut app = App::test_default();
+
+    // Single project, lead session marked Running and active. The
+    // spinner glyph (⠋) for an active+Running session must render in
+    // RUST_ORANGE per the Projects-pane spec.
+    let projects = vec![project_view("forge", vec![session_view("session-r", "lead")])];
+
+    let lead_key = SessionKey::from_str_for_test("session-r");
+    let mut lead_session = Session::new(lead_key.clone());
+    lead_session.lifecycle_state = SessionLifecycleState::Running;
+    app.sessions.insert(lead_key.clone(), lead_session);
+    app.active_session_key = Some(lead_key);
+
+    let backend = TestBackend::new(26, 10);
+    let mut terminal = Terminal::new(backend).unwrap();
+    let area = Rect::new(0, 0, 26, 10);
+    terminal.draw(|frame| projects_pane::render(frame, area, &mut app, &projects)).unwrap();
+    let buffer = terminal.backend().buffer().clone();
+
+    let fg = find_glyph_fg(&buffer, '⠋').expect("spinner glyph rendered");
+    assert_eq!(
+        fg,
+        ratatui::style::Color::Rgb(244, 118, 0),
+        "active+Running spinner must use RUST_ORANGE, got: {fg:?}"
+    );
+}
+
+#[test]
+fn wide_tier_attention_session_glyph_uses_warning_color() {
+    let mut app = App::test_default();
+
+    // Lead session marked Attention (a paused background session
+    // awaiting permission input). The △ glyph must render in
+    // STATUS_WARNING per spec.
+    let projects = vec![project_view("forge", vec![session_view("session-a", "lead")])];
+
+    let lead_key = SessionKey::from_str_for_test("session-a");
+    let mut lead_session = Session::new(lead_key.clone());
+    lead_session.lifecycle_state = SessionLifecycleState::Attention;
+    app.sessions.insert(lead_key.clone(), lead_session);
+    app.active_session_key = Some(lead_key);
+
+    let backend = TestBackend::new(26, 10);
+    let mut terminal = Terminal::new(backend).unwrap();
+    let area = Rect::new(0, 0, 26, 10);
+    terminal.draw(|frame| projects_pane::render(frame, area, &mut app, &projects)).unwrap();
+    let buffer = terminal.backend().buffer().clone();
+
+    let fg = find_glyph_fg(&buffer, '△').expect("attention glyph rendered");
+    assert_eq!(
+        fg,
+        ratatui::style::Color::Yellow,
+        "Attention glyph must use STATUS_WARNING (Yellow), got: {fg:?}"
+    );
+}
+
+#[test]
+fn wide_tier_lead_plus_extras_renders_diamond_only_on_lead() {
+    let mut app = App::test_default();
+
+    // Three sessions on the active project; the ◆ marker must only
+    // appear on row 0 (the lead). Subsequent rows just blank-pad
+    // the lead column.
+    let session_lead = session_view("s-lead", "main");
+    let session_b = session_view("s-b", "feat");
+    let session_c = session_view("s-c", "fix");
+    let projects = vec![project_view(
+        "forge",
+        vec![session_lead.clone(), session_b.clone(), session_c.clone()],
+    )];
+
+    let lead_key = SessionKey::from_str_for_test("s-lead");
+    app.sessions.insert(lead_key.clone(), Session::new(lead_key.clone()));
+    let key_b = SessionKey::from_str_for_test("s-b");
+    app.sessions.insert(key_b.clone(), Session::new(key_b));
+    let key_c = SessionKey::from_str_for_test("s-c");
+    app.sessions.insert(key_c.clone(), Session::new(key_c));
+    app.active_session_key = Some(lead_key);
+
+    let lines = render_to_lines(&mut app, &projects, 26, 12);
+
+    // Header row + 3 drilldown rows; only the first drilldown carries
+    // the ◆ marker. Find every row that mentions a session label and
+    // count diamonds.
+    let drilldown_rows: Vec<&String> = lines
+        .iter()
+        .filter(|l| l.contains("main") || l.contains("feat") || l.contains("fix"))
+        .collect();
+    assert_eq!(drilldown_rows.len(), 3, "expected 3 drilldown rows, got: {drilldown_rows:?}");
+
+    let main_row = drilldown_rows
+        .iter()
+        .find(|l| l.contains("main"))
+        .expect("lead row containing 'main' label");
+    assert!(main_row.contains('◆'), "lead drilldown row should carry ◆, got: {main_row:?}");
+
+    let feat_row = drilldown_rows
+        .iter()
+        .find(|l| l.contains("feat"))
+        .expect("non-lead row containing 'feat' label");
+    assert!(!feat_row.contains('◆'), "non-lead drilldown row must not carry ◆, got: {feat_row:?}");
+
+    let fix_row = drilldown_rows
+        .iter()
+        .find(|l| l.contains("fix"))
+        .expect("non-lead row containing 'fix' label");
+    assert!(!fix_row.contains('◆'), "non-lead drilldown row must not carry ◆, got: {fix_row:?}");
+}

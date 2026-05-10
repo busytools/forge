@@ -27,6 +27,17 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
         Some(key) => app.active_session_key.as_ref() == Some(key),
         None => true,
     };
+    // Stamp `last_activity_at` for the session this event targets so
+    // the Projects pane's "2m / 1h / 5d" relative-time column has a
+    // ground truth. Update the bucket directly via `session_mut`
+    // (skips `active_or_synthetic_mut`'s synthetic-bucket auto-create
+    // — we don't want a stray event for an unknown session id to
+    // materialise a phantom bucket here).
+    if let Some(key) = target_key.as_ref()
+        && let Some(session) = app.session_mut(key)
+    {
+        session.last_activity_at = std::time::Instant::now();
+    }
     match event {
         ClientEvent::PermissionRequest { request, response_tx } => {
             turn::handle_permission_request_event(app, request, response_tx);

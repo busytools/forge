@@ -346,6 +346,7 @@ pub(super) fn handle_auth_required_event(
 }
 
 pub(super) fn handle_connection_failed_event(app: &mut App, session_key: &SessionKey, msg: &str) {
+    let is_rate_limited = is_rate_limited_failure(msg);
     if app.active_session_key.as_ref() != Some(session_key) {
         let Some(session) = app.session_mut(session_key) else {
             tracing::warn!(
@@ -378,11 +379,27 @@ pub(super) fn handle_connection_failed_event(app: &mut App, session_key: &Sessio
         session.active_turn_assistant_message_idx = None;
         session.turn_notice_refs.clear();
         session.session_scope_epoch = session.session_scope_epoch.saturating_add(1);
-        // Lifecycle: a failed connection lands the bucket back in
-        // Sleeping rather than leaving it stuck on the Spawning
-        // glyph. The Projects pane reads this for the per-session
-        // state indicator.
-        session.lifecycle_state = crate::app::session::SessionLifecycleState::Sleeping;
+        // Lifecycle: rate-limit failure → Attention (drives △ glyph
+        // and signals "waiting for account reset"). Other failures
+        // → Sleeping so the spawn glyph isn't stuck on a spinner.
+        session.lifecycle_state = if is_rate_limited {
+            crate::app::session::SessionLifecycleState::Attention
+        } else {
+            crate::app::session::SessionLifecycleState::Sleeping
+        };
+        // Rate-limit fallback message in the bucket's own chat
+        // buffer so a future switch shows the explainer. Other
+        // failures stay quiet on a background bucket — the user
+        // didn't choose to look at this session and we don't want
+        // to clutter its history with unrelated errors.
+        if is_rate_limited {
+            session.messages.push(ChatMessage::new(
+                MessageRole::System(Some(SystemSeverity::Warning)),
+                vec![MessageBlock::Text(TextBlock::from_complete(RATE_LIMIT_FALLBACK_MESSAGE))],
+                None,
+            ));
+            session.message_retained_bytes.push(0);
+        }
         tracing::error!(
             target: crate::logging::targets::APP_SESSION,
             event_name = "session_connection_failed_background",
@@ -390,6 +407,7 @@ pub(super) fn handle_connection_failed_event(app: &mut App, session_key: &Sessio
             outcome = "failure",
             session_key = %session_key.as_str(),
             error_message = %msg,
+            is_rate_limited,
         );
         return;
     }
@@ -413,19 +431,52 @@ pub(super) fn handle_connection_failed_event(app: &mut App, session_key: &Sessio
     app.status = AppStatus::Error;
     app.clear_active_turn_assistant();
     super::notices::clear_turn_notice_tracking(app);
-    // Lifecycle: a failed connection on the active bucket also lands
-    // back in Sleeping, matching the background path.
+    // Lifecycle: rate-limit failure → Attention; other failures →
+    // Sleeping. Matches the background-bucket branch.
     if let Some(session) = app.session_mut(session_key) {
-        session.lifecycle_state = crate::app::session::SessionLifecycleState::Sleeping;
+        session.lifecycle_state = if is_rate_limited {
+            crate::app::session::SessionLifecycleState::Attention
+        } else {
+            crate::app::session::SessionLifecycleState::Sleeping
+        };
     }
-    push_connection_error_message(app, msg);
+    if is_rate_limited {
+        push_system_message_with_severity(
+            app,
+            Some(SystemSeverity::Warning),
+            RATE_LIMIT_FALLBACK_MESSAGE,
+        );
+    } else {
+        push_connection_error_message(app, msg);
+    }
     tracing::error!(
         target: crate::logging::targets::APP_SESSION,
         event_name = "session_connection_failed",
         message = "session connection failure applied",
         outcome = "failure",
         error_message = %msg,
+        is_rate_limited,
     );
+}
+
+/// Spec text for the rate-limit fallback chat message. See
+/// `~/.claude-subspace/plans/2026-05-10-forge-tui-projects-pane-wide-design.md`.
+const RATE_LIMIT_FALLBACK_MESSAGE: &str =
+    "Waiting for account reset; click another project or wait.";
+
+/// Returns true when the connection-failed message looks like
+/// "all accounts are rate-limited". Workspace doesn't surface a
+/// typed error variant for this yet, so we fall back to substring
+/// matching on the rendered message. False positives are
+/// preferable to false negatives — if the heuristic misfires the
+/// user sees the rate-limit explainer instead of the raw error,
+/// which is still recoverable (click another project, wait).
+fn is_rate_limited_failure(msg: &str) -> bool {
+    let lower = msg.to_ascii_lowercase();
+    (lower.contains("rate") && lower.contains("limit"))
+        || lower.contains("rate-limited")
+        || lower.contains("rate_limited")
+        || lower.contains("all accounts")
 }
 
 pub(super) fn handle_slash_command_error_event(app: &mut App, session_key: &SessionKey, msg: &str) {

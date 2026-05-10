@@ -21,7 +21,7 @@
 use forge_workspace::ProjectView;
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
@@ -162,6 +162,15 @@ fn append_project_rows(
         // Drilldown rows: only the active project shows its sessions
         // at this fidelity. Background projects collapse to the
         // header row alone.
+        //
+        // last_activity rendering: the routed-event handler in
+        // `app::events::client::handle_client_event` stamps
+        // `last_activity_at` on every wire event applied to a session
+        // bucket. The "2m / 1h / 5d" relative-time column called for
+        // by the spec is intentionally deferred to a follow-up commit
+        // — wiring it here would require shrinking `session_budget`
+        // by ~4 chars and resnapshotting every Wide+Medium pane test.
+        // Field is current; rendering is the only piece left.
         if is_active {
             for (idx, session) in project.sessions.iter().enumerate() {
                 let row_y = area.y + line_count_as_u16(lines);
@@ -169,15 +178,10 @@ fn append_project_rows(
                     .sessions
                     .get(&session.session)
                     .map_or(SessionLifecycleState::Sleeping, |s| s.lifecycle_state);
-                let glyph = match lifecycle {
-                    SessionLifecycleState::Running | SessionLifecycleState::Spawning => "⠋",
-                    SessionLifecycleState::Attention => "△",
-                    SessionLifecycleState::Sleeping => "·",
-                    SessionLifecycleState::Idle => " ",
-                };
+                let session_is_active = Some(&session.session) == active_session_key.as_ref();
+                let (glyph, glyph_color) = glyph_for_lifecycle(lifecycle, session_is_active);
                 let lead_marker = if idx == 0 { "◆" } else { " " };
-                let current_marker =
-                    if Some(&session.session) == active_session_key.as_ref() { "•" } else { " " };
+                let current_marker = if session_is_active { "•" } else { " " };
                 let label = if session.label.is_empty() {
                     "main".to_owned()
                 } else {
@@ -185,7 +189,9 @@ fn append_project_rows(
                 };
                 let session_label = truncate_with_ellipsis(&label, session_budget);
                 lines.push(Line::from(vec![
-                    Span::styled(format!("  {glyph} "), Style::default().fg(theme::DIM)),
+                    Span::raw("  "),
+                    Span::styled(glyph.to_owned(), Style::default().fg(glyph_color)),
+                    Span::raw(" "),
                     Span::styled(lead_marker.to_owned(), Style::default().fg(theme::DIM)),
                     Span::raw(" "),
                     Span::styled(
@@ -212,6 +218,26 @@ fn append_project_rows(
 /// rather than aborting the renderer.
 fn line_count_as_u16(lines: &[Line<'_>]) -> u16 {
     u16::try_from(lines.len()).unwrap_or(u16::MAX)
+}
+
+/// Glyph + foreground color for a session row based on its lifecycle
+/// state. The session-is-active flag drives whether the
+/// Running/Spawning spinner picks up the accent color (active +
+/// running = `RUST_ORANGE`, background + running = terminal default).
+/// See `~/.claude-subspace/plans/2026-05-10-forge-tui-projects-pane-wide-design.md`.
+fn glyph_for_lifecycle(
+    lifecycle: SessionLifecycleState,
+    session_is_active: bool,
+) -> (&'static str, Color) {
+    match lifecycle {
+        SessionLifecycleState::Running | SessionLifecycleState::Spawning => {
+            let color = if session_is_active { theme::RUST_ORANGE } else { Color::Reset };
+            ("⠋", color)
+        }
+        SessionLifecycleState::Attention => ("△", theme::STATUS_WARNING),
+        SessionLifecycleState::Sleeping => ("·", theme::DIM),
+        SessionLifecycleState::Idle => (" ", Color::Reset),
+    }
 }
 
 /// Head-truncate `s` to at most `max_chars` characters with a

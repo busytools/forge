@@ -147,6 +147,12 @@ fn dispatch_prompt_turn(app: &mut App, text: String) {
     app.bind_active_turn_assistant_to_tail();
     app.enforce_history_retention_tracked();
     app.status = AppStatus::Thinking;
+    // Lifecycle: turn started, the active session moves into Running.
+    // The Projects pane reads this so the spinner glyph picks up the
+    // accent color while the turn is in flight.
+    if let Some(session) = app.active_session_mut() {
+        session.lifecycle_state = crate::app::session::SessionLifecycleState::Running;
+    }
     app.viewport_mut().engage_auto_scroll();
 
     let tx = app.event_tx.clone();
