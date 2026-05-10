@@ -30,7 +30,13 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     };
     let areas = {
         let _t = app.perf.as_ref().map(|p| p.start("ui::layout"));
-        layout::compute(frame_area, input_visual_lines, todo_height, help_height)
+        layout::compute(
+            frame_area,
+            input_visual_lines,
+            todo_height,
+            help_height,
+            app.projects_pane_visible,
+        )
     };
 
     {

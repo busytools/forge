@@ -145,6 +145,7 @@ pub fn create_app(cli: &Cli, workspace: Rc<forge_workspace::Workspace>) -> App {
         spinner_frame: 0,
         spinner_last_advance_at: None,
         tools_collapsed: true,
+        projects_pane_visible: true,
         force_redraw: false,
         focus: FocusManager::default(),
         plugins: PluginsState::default(),

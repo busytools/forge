@@ -170,6 +170,11 @@ pub struct App {
     /// Session-level preference for collapsing non-Execute tool call bodies.
     /// Toggled by Ctrl+X and applied at render/layout time.
     pub tools_collapsed: bool,
+    /// Whether the Wide-tier Projects pane is currently visible.
+    /// Toggled by Ctrl+B; persisted to `forge-state.toml`. Default
+    /// `true` for Wide tier; ignored at Medium / Narrow tiers (those
+    /// land in 2b-β / 2b-γ).
+    pub projects_pane_visible: bool,
     /// Force a full terminal clear on next render frame.
     pub force_redraw: bool,
     /// Focus manager for directional/navigation key ownership.
@@ -1775,6 +1780,7 @@ impl App {
             spinner_frame: 0,
             spinner_last_advance_at: None,
             tools_collapsed: false,
+            projects_pane_visible: true,
             force_redraw: false,
             focus: FocusManager::default(),
             plugins: PluginsState::default(),
