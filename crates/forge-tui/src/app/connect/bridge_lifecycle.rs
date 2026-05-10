@@ -70,6 +70,7 @@ pub(super) async fn run_connection_task(
             session_launch_settings,
             target,
             pre_connect_key,
+            is_fatal_on_failure,
         } = params;
 
         let mut connected_once = false;
@@ -82,6 +83,7 @@ pub(super) async fn run_connection_task(
                         &pre_connect_key,
                         format!("workspace.get_agent_handle failed: {err}"),
                         AppError::ConnectionFailed,
+                        is_fatal_on_failure,
                     );
                     return;
                 }
@@ -111,13 +113,21 @@ pub(super) async fn run_connection_task(
                 &pre_connect_key,
                 "forge-workspace yielded no event receiver".to_owned(),
                 AppError::ConnectionFailed,
+                is_fatal_on_failure,
             );
             return;
         };
 
         *conn_slot_writer.borrow_mut() = Some(ConnectionSlot { conn: Arc::clone(&agent) });
 
-        forge_sdk_event_loop(&event_tx, &mut event_rx, &agent, &mut connected_once).await;
+        forge_sdk_event_loop(
+            &event_tx,
+            &mut event_rx,
+            &agent,
+            &mut connected_once,
+            &pre_connect_key,
+        )
+        .await;
     }
     .instrument(connection_span)
     .await;
@@ -132,9 +142,10 @@ async fn forge_sdk_event_loop(
     event_rx: &mut mpsc::UnboundedReceiver<AgentEvent>,
     agent: &Arc<forge_agent::AgentHandle>,
     connected_once: &mut bool,
+    pre_connect_key: &SessionKey,
 ) {
     while let Some(event) = event_rx.recv().await {
-        handle_agent_event(event_tx, agent, connected_once, event);
+        handle_agent_event(event_tx, agent, connected_once, pre_connect_key, event);
     }
     tracing::info!(
         target: crate::logging::targets::BRIDGE_LIFECYCLE,
@@ -148,6 +159,7 @@ fn handle_agent_event(
     event_tx: &mpsc::UnboundedSender<ClientEvent>,
     agent: &Arc<forge_agent::AgentHandle>,
     connected_once: &mut bool,
+    pre_connect_key: &SessionKey,
     event: AgentEvent,
 ) {
     let session_key = session_key_for(&event);
@@ -163,6 +175,7 @@ fn handle_agent_event(
             handle_connected_event(
                 event_tx,
                 connected_once,
+                pre_connect_key,
                 session_id,
                 cwd,
                 current_model,
@@ -179,7 +192,19 @@ fn handle_agent_event(
             });
         }
         AgentEvent::ConnectionFailed { message } => {
-            emit_connection_failed(event_tx, &session_key, message, AppError::ConnectionFailed);
+            // After the first Connected event, an in-flight session
+            // failure must not also kill the app even on the startup
+            // path — the user has working state to preserve. Setting
+            // `is_fatal_on_failure: false` here is correct: this code
+            // path only runs once `forge_sdk_event_loop` is alive,
+            // which means startup succeeded.
+            emit_connection_failed(
+                event_tx,
+                &session_key,
+                message,
+                AppError::ConnectionFailed,
+                false,
+            );
         }
         AgentEvent::PermissionRequest { session_id, request } => {
             handle_permission_request_event(event_tx, agent, session_id, request);
@@ -289,6 +314,7 @@ fn handle_agent_event(
 fn handle_connected_event(
     event_tx: &mpsc::UnboundedSender<ClientEvent>,
     connected_once: &mut bool,
+    pre_connect_key: &SessionKey,
     session_id: String,
     cwd: String,
     current_model: types::CurrentModel,
@@ -316,6 +342,7 @@ fn handle_connected_event(
             available_models: map_available_models(available_models),
             mode,
             history_updates,
+            pre_connect_key: Some(pre_connect_key.clone()),
         });
     }
 }
@@ -491,13 +518,25 @@ fn spawn_question_response_forwarder(
     });
 }
 
+/// Emit a connection failure for the bucket addressed by `session_key`.
+///
+/// `is_fatal` controls whether forge-tui should also exit. The
+/// startup connection task sets this `true` — if the very first
+/// bridge fails before any session exists, there's nothing to
+/// render and the app should terminate. The sleeping-project spawn
+/// flow sets this `false` — the user has an active session whose
+/// state must survive a fresh spawn's failure; the failure surfaces
+/// inline in the spawn bucket.
 pub(super) fn emit_connection_failed(
     event_tx: &mpsc::UnboundedSender<ClientEvent>,
     session_key: &SessionKey,
     message: String,
     app_error: AppError,
+    is_fatal: bool,
 ) {
     let _ =
         event_tx.send(ClientEvent::ConnectionFailed { session_key: session_key.clone(), message });
-    let _ = event_tx.send(ClientEvent::FatalError(app_error));
+    if is_fatal {
+        let _ = event_tx.send(ClientEvent::FatalError(app_error));
+    }
 }

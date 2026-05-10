@@ -30,6 +30,7 @@ fn is_synthetic_key(key: &SessionKey) -> bool {
     s.len() >= 4 && s.starts_with("__") && s.ends_with("__")
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn handle_connected_client_event(
     app: &mut App,
     session_id: model::SessionId,
@@ -38,6 +39,7 @@ pub(super) fn handle_connected_client_event(
     available_models: Vec<model::AvailableModel>,
     mode: Option<super::super::ModeState>,
     history_messages: &[forge_primitives::Message],
+    pre_connect_key: Option<SessionKey>,
 ) {
     let session_id_for_log = session_id.to_string();
     let history_message_count = history_messages.len();
@@ -70,20 +72,45 @@ pub(super) fn handle_connected_client_event(
     // conn slot lands in the correct bucket regardless of which
     // session was active before this event fired.
     let session_key = forge_workspace::SessionKey::from_session_id(session_id.to_string());
-    // Find any synthetic-keyed bucket that this Connected event
-    // should migrate onto the real key. Priority: the active key, if
-    // it's synthetic — that's the bucket whose state the user has
-    // been seeing. Fallback: the legacy `__conn_pending__` bucket,
-    // for the brief startup window before `active_session_key` is
-    // set. (Both are typically the same bucket; the explicit fallback
-    // covers the test paths that wire one without the other.)
-    let synthetic_to_migrate =
-        app.active_session_key.as_ref().filter(|k| is_synthetic_key(k)).cloned().or_else(|| {
+    // Determine which synthetic bucket this Connected event should
+    // migrate. Preferred path: the connection task carried the
+    // pre_connect_key it was seeded with — migrate THAT specific
+    // bucket. Without this, rapid clicks on different sleeping
+    // projects can race: A's Connected might pick up B's synthetic
+    // bucket from the active key. Fallback chain (for paths that
+    // don't yet thread pre_connect_key through, e.g. tests that
+    // construct ClientEvent::Connected directly): the active
+    // synthetic key, then the legacy `__conn_pending__` sentinel.
+    let synthetic_to_migrate = pre_connect_key
+        .filter(is_synthetic_key)
+        .filter(|k| app.sessions.contains_key(k))
+        .or_else(|| app.active_session_key.as_ref().filter(|k| is_synthetic_key(k)).cloned())
+        .or_else(|| {
             let pre = forge_workspace::SessionKey::from_session_id(App::PRE_CONNECT_KEY);
             if app.sessions.contains_key(&pre) { Some(pre) } else { None }
         });
-    if let Some(synth_key) = synthetic_to_migrate {
-        if let Some(mut existing) = app.sessions.remove(&synth_key) {
+    // Decide whether this Connected event corresponds to a session
+    // change the user is watching, or a background spawn that
+    // completed while the user was elsewhere.
+    //
+    // - Synthetic-migration case: was_active is true iff the
+    //   synthetic bucket is the active key. If the user switched
+    //   away during the spawn window, the synthetic exists but is
+    //   no longer active — the migration still happens but we
+    //   don't yank `active_session_key` away from the user's
+    //   deliberate pick.
+    // - No-synthetic case (legacy single-session flow / second
+    //   Connected as session reset): default to active-path
+    //   behaviour. The original handler always ran the apply
+    //   chain in this case; preserve that so `Connected` retains
+    //   its long-standing "session reset" semantics on the
+    //   single-session path.
+    let was_active = match synthetic_to_migrate.as_ref() {
+        Some(_) => synthetic_to_migrate.as_ref() == app.active_session_key.as_ref(),
+        None => true,
+    };
+    if let Some(synth_key) = synthetic_to_migrate.as_ref() {
+        if let Some(mut existing) = app.sessions.remove(synth_key) {
             if app.sessions.contains_key(&session_key) {
                 tracing::warn!(
                     target: crate::logging::targets::APP_SESSION,
@@ -97,34 +124,78 @@ pub(super) fn handle_connected_client_event(
                 let _ = existing;
             } else {
                 existing.key = Some(session_key.clone());
+                // Lifecycle: the bucket that was just spawned is now
+                // connected and idle. Future Running/Attention
+                // transitions land on turn-start / permission-pending;
+                // Idle on Connect is the right minimum.
+                existing.lifecycle_state = crate::app::session::SessionLifecycleState::Idle;
                 app.sessions.insert(session_key.clone(), existing);
             }
         }
     } else {
-        app.sessions
-            .entry(session_key.clone())
-            .or_insert_with(|| crate::app::session::Session::new(session_key.clone()));
+        app.sessions.entry(session_key.clone()).or_insert_with(|| {
+            let mut bucket = crate::app::session::Session::new(session_key.clone());
+            bucket.lifecycle_state = crate::app::session::SessionLifecycleState::Idle;
+            bucket
+        });
     }
-    app.active_session_key = Some(session_key.clone());
-    if let Some(slot) = take_connection_slot()
-        && let Some(bucket) = app.sessions.get_mut(&session_key)
-    {
-        bucket.conn = Some(slot.conn);
+    if was_active {
+        // Active path: the user has been watching the spawning
+        // bucket OR this is the startup connect (where the
+        // pre-Connect synthetic bucket is the active key by
+        // construction). Run the full active-session apply chain
+        // below so welcome / file-index / runtime-tabs all sync.
+        app.active_session_key = Some(session_key.clone());
+        if let Some(slot) = take_connection_slot()
+            && let Some(bucket) = app.sessions.get_mut(&session_key)
+        {
+            bucket.conn = Some(slot.conn);
+        }
+        apply_session_cwd(app, cwd);
+        reset_for_new_session(app, session_id, current_model, mode, true);
+        refresh_session_git_watcher(app, prev_session_id);
+        *app.available_models_mut() = available_models;
+        app.sync_welcome_snapshot();
+        if !history_messages.is_empty() {
+            load_resume_history(app, history_messages);
+        }
+        clear_pending_command(app);
+        app.resuming_session_id = None;
+        crate::app::file_index::restart(app);
+        app.rebuild_chat_focus_from_state();
+        crate::app::config::refresh_runtime_tabs_for_session_change(app);
+        maybe_open_startup_session_picker(app);
+    } else {
+        // Background path: the user switched to a different session
+        // while this one was spawning. Park the connection in the
+        // newly-migrated bucket but don't yank the active session.
+        if let Some(slot) = take_connection_slot()
+            && let Some(bucket) = app.sessions.get_mut(&session_key)
+        {
+            bucket.conn = Some(slot.conn);
+        }
+        // Apply per-bucket cwd and identity directly rather than
+        // running the full active-session apply chain (which would
+        // touch app-global UI). The bucket already has cwd from its
+        // Spawning state seed; apply the Connected-supplied value
+        // without rewriting App-level fields.
+        if let Some(bucket) = app.sessions.get_mut(&session_key) {
+            let display = shorten_cwd_display(&cwd);
+            bucket.cwd_raw = cwd;
+            bucket.cwd = display;
+            bucket.session_id = Some(session_id);
+            bucket.current_model = Some(current_model);
+            bucket.mode = mode;
+            bucket.available_models = available_models;
+            // Best-effort load of resume history into the bucket's
+            // own message buffer — keep the bucket internally
+            // consistent for a future switch.
+            if !history_messages.is_empty() {
+                bucket.messages.clear();
+                bucket.message_retained_bytes.clear();
+            }
+        }
     }
-    apply_session_cwd(app, cwd);
-    reset_for_new_session(app, session_id, current_model, mode, true);
-    refresh_session_git_watcher(app, prev_session_id);
-    *app.available_models_mut() = available_models;
-    app.sync_welcome_snapshot();
-    if !history_messages.is_empty() {
-        load_resume_history(app, history_messages);
-    }
-    clear_pending_command(app);
-    app.resuming_session_id = None;
-    crate::app::file_index::restart(app);
-    app.rebuild_chat_focus_from_state();
-    crate::app::config::refresh_runtime_tabs_for_session_change(app);
-    maybe_open_startup_session_picker(app);
     tracing::info!(
         target: crate::logging::targets::APP_SESSION,
         event_name = "session_connected",
@@ -135,6 +206,7 @@ pub(super) fn handle_connected_client_event(
         current_model = ?app.current_model().map(|model| model.resolved_id.clone()),
         history_message_count,
         available_model_count,
+        was_active,
     );
 }
 
@@ -306,6 +378,11 @@ pub(super) fn handle_connection_failed_event(app: &mut App, session_key: &Sessio
         session.active_turn_assistant_message_idx = None;
         session.turn_notice_refs.clear();
         session.session_scope_epoch = session.session_scope_epoch.saturating_add(1);
+        // Lifecycle: a failed connection lands the bucket back in
+        // Sleeping rather than leaving it stuck on the Spawning
+        // glyph. The Projects pane reads this for the per-session
+        // state indicator.
+        session.lifecycle_state = crate::app::session::SessionLifecycleState::Sleeping;
         tracing::error!(
             target: crate::logging::targets::APP_SESSION,
             event_name = "session_connection_failed_background",
@@ -336,6 +413,11 @@ pub(super) fn handle_connection_failed_event(app: &mut App, session_key: &Sessio
     app.status = AppStatus::Error;
     app.clear_active_turn_assistant();
     super::notices::clear_turn_notice_tracking(app);
+    // Lifecycle: a failed connection on the active bucket also lands
+    // back in Sleeping, matching the background path.
+    if let Some(session) = app.session_mut(session_key) {
+        session.lifecycle_state = crate::app::session::SessionLifecycleState::Sleeping;
+    }
     push_connection_error_message(app, msg);
     tracing::error!(
         target: crate::logging::targets::APP_SESSION,
@@ -785,6 +867,7 @@ mod tests {
             Vec::new(),
             None,
             &[],
+            None,
         );
 
         assert_eq!(app.file_index.root.as_deref(), Some(dir.path()));
@@ -884,6 +967,7 @@ mod tests {
             Vec::new(),
             None,
             &[],
+            Some(spawn_key.clone()),
         );
 
         let real_key = forge_workspace::SessionKey::from_session_id("real-uuid-9000".to_owned());
@@ -926,6 +1010,7 @@ mod tests {
             Vec::new(),
             None,
             &[],
+            None,
         );
 
         let real_key = forge_workspace::SessionKey::from_session_id("real-uuid-legacy".to_owned());

@@ -131,6 +131,11 @@ pub fn spawn_for_sleeping_project(app: &mut App, project_key: &str) {
         session_launch_settings: SessionLaunchSettings::default(),
         target: forge_workspace::SessionTarget::Named(project_name.clone()),
         pre_connect_key: spawn_key.clone(),
+        // Sleeping-project spawn failure must NOT kill forge-tui:
+        // the user has an active session; a fresh spawn's failure
+        // surfaces inline in the spawn bucket and lets the app keep
+        // running. Only the startup connection task sets this true.
+        is_fatal_on_failure: false,
     };
 
     // Allocate a fresh slot pointer, install it as the latest

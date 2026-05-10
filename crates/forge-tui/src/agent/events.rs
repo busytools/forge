@@ -75,6 +75,16 @@ pub enum ClientEvent {
     ///
     /// `session_id` is the claude-issued session UUID; the
     /// multiplexer derives [`SessionKey`] from it at routing time.
+    ///
+    /// `pre_connect_key` carries the synthetic-key sentinel under
+    /// which the App seeded the spawning bucket (e.g.
+    /// `__spawn_<project>__` or `__conn_pending__`). The handler
+    /// uses this to migrate ONLY the spawn-task's own bucket onto
+    /// the real session UUID — without it, rapid clicks on
+    /// different sleeping projects could cause one Connected event
+    /// to migrate another spawn's bucket. `None` is tolerated for
+    /// backward compatibility / tests; the handler falls back to
+    /// the legacy heuristic in that case.
     Connected {
         session_id: model::SessionId,
         cwd: String,
@@ -82,6 +92,7 @@ pub enum ClientEvent {
         available_models: Vec<model::AvailableModel>,
         mode: Option<crate::app::ModeState>,
         history_updates: Vec<forge_primitives::Message>,
+        pre_connect_key: Option<SessionKey>,
     },
     /// Background connection failed.
     ConnectionFailed { session_key: SessionKey, message: String },

@@ -85,6 +85,7 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
             available_models,
             mode,
             history_updates,
+            pre_connect_key,
         } => {
             session::handle_connected_client_event(
                 app,
@@ -94,6 +95,7 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
                 available_models,
                 mode,
                 &history_updates,
+                pre_connect_key,
             );
             crate::app::config::refresh_mcp_snapshot(app);
             crate::app::session_runtime::request_status_snapshot_refresh(app);

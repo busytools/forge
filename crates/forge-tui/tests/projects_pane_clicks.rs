@@ -13,8 +13,12 @@ use std::fs;
 use std::rc::Rc;
 
 use crossterm::event::{Event, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+use forge_tui::agent::events::ClientEvent;
+use forge_tui::agent::model;
 use forge_tui::app::session::SessionLifecycleState;
-use forge_tui::app::{App, PaneHitTarget, handle_terminal_event, spawn_for_sleeping_project};
+use forge_tui::app::{
+    App, PaneHitTarget, handle_client_event, handle_terminal_event, spawn_for_sleeping_project,
+};
 use forge_workspace::{SessionKey, Workspace};
 use tempfile::tempdir;
 
@@ -389,4 +393,265 @@ config_dir = "/tmp/test-account-config-2026-05-10-b"
     );
     let spawn_key = SessionKey::from_str_for_test("__spawn_test-proj__");
     assert_eq!(app.active_session_key.as_ref(), Some(&spawn_key));
+}
+
+/// Helper used by the audit-fix tests below: build a stock
+/// `Connected` event with the fields the migration handler reads.
+fn connected_event_for(
+    session_id: &str,
+    cwd: &str,
+    pre_connect_key: Option<SessionKey>,
+) -> ClientEvent {
+    ClientEvent::Connected {
+        session_id: model::SessionId::new(session_id.to_owned()),
+        cwd: cwd.to_owned(),
+        current_model: model::CurrentModel::new("model", "model", "model").authoritative(true),
+        available_models: Vec::new(),
+        mode: None,
+        history_updates: Vec::new(),
+        pre_connect_key,
+    }
+}
+
+/// C1 regression: a sleeping-project spawn failure must NOT kill
+/// forge-tui. The spawn task wires `is_fatal_on_failure: false`,
+/// so the failure surfaces inline as `ConnectionFailed` only —
+/// `should_quit` stays false and the bucket lands back in
+/// `Sleeping`. (Pre-fix: the unconditional `FatalError` send in
+/// `emit_connection_failed` killed the app on every sleeping-spawn
+/// failure.)
+#[test]
+fn spawn_failure_does_not_kill_forge_tui() {
+    let mut app = App::test_default();
+    let key_existing = SessionKey::from_str_for_test("existing-session");
+    app.sessions
+        .insert(key_existing.clone(), forge_tui::app::session::Session::new(key_existing.clone()));
+    app.active_session_key = Some(key_existing.clone());
+
+    // Synthesize a spawning bucket as if `spawn_for_sleeping_project`
+    // had just kicked off but the bridge handshake then failed.
+    let spawn_key = SessionKey::from_str_for_test("__spawn_failing-proj__");
+    let mut bucket = forge_tui::app::session::Session::new(spawn_key.clone());
+    bucket.lifecycle_state = SessionLifecycleState::Spawning;
+    app.sessions.insert(spawn_key.clone(), bucket);
+    // User has already switched away from the spawning bucket.
+    // The failure should land on the spawn bucket without yanking
+    // the active session.
+    assert_eq!(app.active_session_key.as_ref(), Some(&key_existing));
+
+    handle_client_event(
+        &mut app,
+        ClientEvent::ConnectionFailed {
+            session_key: spawn_key.clone(),
+            message: "workspace.get_agent_handle failed: simulated".to_owned(),
+        },
+    );
+
+    // Without the C1 fix, the spawn task would have followed up with
+    // `FatalError`, flipping `should_quit`. With the fix, the spawn
+    // path's `is_fatal_on_failure: false` means only the
+    // `ConnectionFailed` event is dispatched.
+    assert!(!app.should_quit, "sleeping-project spawn failure must NOT kill forge-tui");
+    assert!(app.exit_error.is_none(), "no fatal error should be set");
+    let migrated = app.sessions.get(&spawn_key).expect("spawn bucket present");
+    assert_eq!(
+        migrated.lifecycle_state,
+        SessionLifecycleState::Sleeping,
+        "failed spawn lands the bucket back in Sleeping",
+    );
+}
+
+/// C2 regression: rapid clicks on different sleeping projects must
+/// each migrate ONLY their own bucket. Without the fix, the
+/// migration heuristic ("any synthetic bucket that's currently
+/// active") could pick up B's spawn bucket when A's `Connected`
+/// arrived, scrambling cross-project data.
+#[test]
+fn rapid_clicks_on_different_sleeping_projects_each_get_correct_bucket() {
+    let mut app = App::test_default();
+    // Strip the test_default's pre-Connect bucket so the fixture is
+    // explicit about the synthetic buckets in play.
+    app.sessions.clear();
+
+    // Click A: synthesize the `__spawn_A__` bucket.
+    let spawn_a = SessionKey::from_str_for_test("__spawn_A__");
+    let mut bucket_a = forge_tui::app::session::Session::new(spawn_a.clone());
+    bucket_a.lifecycle_state = SessionLifecycleState::Spawning;
+    bucket_a.cwd = "/projects/A".to_owned();
+    bucket_a.cwd_raw = "/projects/A".to_owned();
+    app.sessions.insert(spawn_a.clone(), bucket_a);
+
+    // Click B: synthesize the `__spawn_B__` bucket; B is the active
+    // session at the moment A's Connected fires.
+    let spawn_b = SessionKey::from_str_for_test("__spawn_B__");
+    let mut bucket_b = forge_tui::app::session::Session::new(spawn_b.clone());
+    bucket_b.lifecycle_state = SessionLifecycleState::Spawning;
+    bucket_b.cwd = "/projects/B".to_owned();
+    bucket_b.cwd_raw = "/projects/B".to_owned();
+    app.sessions.insert(spawn_b.clone(), bucket_b);
+    app.active_session_key = Some(spawn_b.clone());
+
+    // A's Connected lands. With the fix it carries
+    // `pre_connect_key: Some(spawn_a)`, so the handler migrates A's
+    // bucket onto A's UUID and leaves B alone.
+    handle_client_event(
+        &mut app,
+        connected_event_for("uuid-A", "/projects/A", Some(spawn_a.clone())),
+    );
+
+    let real_a = SessionKey::from_session_id("uuid-A".to_owned());
+    assert!(
+        !app.sessions.contains_key(&spawn_a),
+        "A's synthetic bucket migrated onto its real UUID",
+    );
+    assert!(app.sessions.contains_key(&real_a), "A's real-key bucket present");
+    let migrated_a = app.sessions.get(&real_a).expect("A's bucket");
+    assert_eq!(
+        migrated_a.cwd_raw, "/projects/A",
+        "A's bucket preserved its own cwd through the migration",
+    );
+
+    // B's bucket is untouched.
+    assert!(
+        app.sessions.contains_key(&spawn_b),
+        "B's synthetic bucket must NOT have been migrated by A's Connected",
+    );
+    let untouched_b = app.sessions.get(&spawn_b).expect("B's bucket");
+    assert_eq!(untouched_b.cwd_raw, "/projects/B", "B's bucket cwd preserved");
+    assert_eq!(
+        untouched_b.lifecycle_state,
+        SessionLifecycleState::Spawning,
+        "B's lifecycle still Spawning — its own Connected hasn't fired",
+    );
+}
+
+/// C3 regression: when the user switches to a different session
+/// during a sleeping-project spawn, that spawn's `Connected` must
+/// NOT yank `active_session_key` away from the user's deliberate
+/// pick.
+#[test]
+fn connected_for_background_spawn_does_not_hijack_active() {
+    let mut app = App::test_default();
+    app.sessions.clear();
+
+    let spawn_a = SessionKey::from_str_for_test("__spawn_A__");
+    let mut bucket_a = forge_tui::app::session::Session::new(spawn_a.clone());
+    bucket_a.lifecycle_state = SessionLifecycleState::Spawning;
+    bucket_a.cwd = "/projects/A".to_owned();
+    bucket_a.cwd_raw = "/projects/A".to_owned();
+    app.sessions.insert(spawn_a.clone(), bucket_a);
+
+    // User had clicked the sleeping project A, then deliberately
+    // switched to a known session X in the meantime.
+    let key_x = SessionKey::from_str_for_test("known-session-X");
+    let mut session_x = forge_tui::app::session::Session::new(key_x.clone());
+    session_x.session_id = Some(model::SessionId::new("known-session-X"));
+    app.sessions.insert(key_x.clone(), session_x);
+    app.active_session_key = Some(key_x.clone());
+
+    // A's Connected arrives.
+    handle_client_event(
+        &mut app,
+        connected_event_for("uuid-A", "/projects/A", Some(spawn_a.clone())),
+    );
+
+    // The migration happened but did NOT yank the active session.
+    let real_a = SessionKey::from_session_id("uuid-A".to_owned());
+    assert!(app.sessions.contains_key(&real_a), "A's real-key bucket exists post-migration");
+    assert_eq!(
+        app.active_session_key.as_ref(),
+        Some(&key_x),
+        "active session must remain on X — the user's deliberate pick",
+    );
+}
+
+/// I2 + I6 regression: handle_resize must clear the projects-pane
+/// overlay flag and stale layout state. Without this, opening the
+/// overlay at Narrow tier and resizing to Wide leaves the flag set
+/// — Esc and chat clicks then route into stale overlay handlers.
+#[test]
+fn overlay_flag_cleared_on_resize() {
+    let mut app = App::test_default();
+    app.projects_pane_overlay_open = true;
+    app.pane_hit_targets.push(PaneHitTarget::SessionRow {
+        session_key: SessionKey::from_str_for_test("a"),
+        y: 5,
+        height: 1,
+    });
+    app.layout.pane = Some(ratatui::layout::Rect::new(0, 0, 26, 40));
+
+    handle_terminal_event(&mut app, Event::Resize(200, 60));
+
+    assert!(!app.projects_pane_overlay_open, "resize must clear overlay-open flag");
+    assert!(app.pane_hit_targets.is_empty(), "resize must clear hit targets");
+    assert!(
+        app.layout.pane.is_none(),
+        "resize must reset layout cache (pane rect cleared until next render)",
+    );
+}
+
+/// I1 regression: a successful Connected migration leaves the
+/// bucket's `lifecycle_state` at `Idle` rather than the stale
+/// `Spawning` it had during the handshake. Without this, the
+/// Projects pane drilldown spinner stays spinning forever.
+#[test]
+fn lifecycle_state_idle_after_connected() {
+    let mut app = App::test_default();
+    app.sessions.clear();
+
+    let spawn_key = SessionKey::from_str_for_test("__spawn_proj__");
+    let mut bucket = forge_tui::app::session::Session::new(spawn_key.clone());
+    bucket.lifecycle_state = SessionLifecycleState::Spawning;
+    bucket.cwd = "/projects/proj".to_owned();
+    bucket.cwd_raw = "/projects/proj".to_owned();
+    app.sessions.insert(spawn_key.clone(), bucket);
+    app.active_session_key = Some(spawn_key.clone());
+
+    handle_client_event(
+        &mut app,
+        connected_event_for("uuid-proj", "/projects/proj", Some(spawn_key.clone())),
+    );
+
+    let real = SessionKey::from_session_id("uuid-proj".to_owned());
+    let migrated = app.sessions.get(&real).expect("real-key bucket");
+    assert_eq!(
+        migrated.lifecycle_state,
+        SessionLifecycleState::Idle,
+        "lifecycle_state transitions to Idle after Connected",
+    );
+}
+
+/// M2 regression: a ConnectionFailed for an active spawn bucket
+/// must reset its `lifecycle_state` to `Sleeping`. Without this,
+/// the failed bucket keeps showing the Spawning glyph in the
+/// Projects pane forever.
+#[test]
+fn lifecycle_state_sleeping_after_connection_failed() {
+    let mut app = App::test_default();
+    app.sessions.clear();
+
+    let spawn_key = SessionKey::from_str_for_test("__spawn_failing__");
+    let mut bucket = forge_tui::app::session::Session::new(spawn_key.clone());
+    bucket.lifecycle_state = SessionLifecycleState::Spawning;
+    app.sessions.insert(spawn_key.clone(), bucket);
+    // Not active — this is the background-spawn failure path.
+    let key_other = SessionKey::from_str_for_test("other");
+    app.sessions
+        .insert(key_other.clone(), forge_tui::app::session::Session::new(key_other.clone()));
+    app.active_session_key = Some(key_other);
+
+    handle_client_event(
+        &mut app,
+        ClientEvent::ConnectionFailed {
+            session_key: spawn_key.clone(),
+            message: "spawn failed".to_owned(),
+        },
+    );
+
+    let bucket = app.sessions.get(&spawn_key).expect("failed bucket");
+    assert_eq!(
+        bucket.lifecycle_state,
+        SessionLifecycleState::Sleeping,
+        "lifecycle_state lands back in Sleeping after a connection failure",
+    );
 }

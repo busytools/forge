@@ -75,6 +75,21 @@ fn handle_resize(app: &mut App, width: u16, height: u16) {
     app.selection = None;
     app.scrollbar_drag = None;
 
+    // The Narrow-tier Projects overlay is transient — its design
+    // contract is "each launch starts closed" — so resetting on
+    // resize matches the documented model. Without this, an overlay
+    // opened at Narrow tier persists across a resize to Wide; later
+    // Esc keypresses get consumed by the overlay-close handler
+    // instead of cancelling a turn, and chat row clicks bleed into
+    // overlay session-row hit targets stamped by a Narrow render.
+    app.projects_pane_overlay_open = false;
+    // Hit targets and the cached layout describe last-frame geometry;
+    // both are stale across a resize and must be cleared so post-
+    // resize hit-testing finds nothing until the next render fills
+    // them in.
+    app.pane_hit_targets.clear();
+    app.layout = crate::ui::layout::AppLayout::default();
+
     crate::ui::help::sync_geometry_state(app, width);
 }
 
@@ -753,6 +768,7 @@ mod tests {
             available_models: Vec::new(),
             mode: None,
             history_updates: Vec::new(),
+            pre_connect_key: None,
         }
     }
 
@@ -1519,6 +1535,7 @@ mod tests {
                 available_models: Vec::new(),
                 mode: None,
                 history_updates: Vec::new(),
+                pre_connect_key: None,
             },
         );
 
@@ -1551,6 +1568,7 @@ mod tests {
                 available_models: Vec::new(),
                 mode: None,
                 history_updates: Vec::new(),
+                pre_connect_key: None,
             },
         );
 
@@ -3276,6 +3294,7 @@ mod tests {
                 available_models: Vec::new(),
                 mode: None,
                 history_updates: Vec::new(),
+                pre_connect_key: None,
             },
         );
         assert!(app.turn_notice_refs().is_empty());

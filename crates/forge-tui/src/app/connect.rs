@@ -41,6 +41,15 @@ pub(crate) struct StartConnectionParams {
     /// failure routes to the visible spawning bucket rather than a
     /// stale pre-Connect bucket.
     pub(crate) pre_connect_key: forge_workspace::SessionKey,
+    /// Whether a connection failure during this task's startup phase
+    /// (before any real session id exists) should also emit a
+    /// [`ClientEvent::FatalError`] alongside [`ClientEvent::ConnectionFailed`].
+    /// `true` for the startup connection task — forge-tui has nothing
+    /// to render if the very first bridge fails. `false` for the
+    /// sleeping-project spawn flow — the user has an active session;
+    /// a fresh spawn's failure should surface inline in the spawn
+    /// bucket, not kill the app.
+    pub(crate) is_fatal_on_failure: bool,
 }
 
 /// Shorten a path for display: substitute `~` for the home directory prefix.
@@ -254,6 +263,7 @@ pub fn start_connection(app: &mut App) {
             &session_key,
             "internal: workspace not initialised in App; cannot spawn bridge".to_owned(),
             crate::error::AppError::ConnectionFailed,
+            true,
         );
         return;
     };
@@ -272,6 +282,7 @@ pub fn start_connection(app: &mut App) {
         ),
         target,
         pre_connect_key: forge_workspace::SessionKey::from_session_id(App::PRE_CONNECT_KEY),
+        is_fatal_on_failure: true,
     };
     let conn_slot: Rc<std::cell::RefCell<Option<ConnectionSlot>>> =
         Rc::new(std::cell::RefCell::new(None));
