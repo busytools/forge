@@ -1900,31 +1900,33 @@ mod tests {
     }
 
     #[test]
-    fn forge_account_identity_ready_updates_welcome_before_status_snapshot() {
+    fn forge_account_identity_ready_stores_name_but_keeps_welcome_hidden_until_tier_arrives() {
         let mut app = make_test_app();
         app.messages.push(ChatMessage::welcome(
             env!("CARGO_PKG_VERSION"),
-            "-",
+            "",
             "/test",
             "session-1",
         ));
         app.session_id = Some(model::SessionId::new("session-1"));
 
-        // Pre-snapshot: bridge tells us which account got picked,
-        // before the CLI-side status snapshot arrives.
+        // Pre-snapshot: bridge tells us which account got picked.
         handle_client_event(
             &mut app,
             ClientEvent::ForgeAccountIdentityReady { display_name: "Subspace".into() },
         );
 
+        // App state stores the name (Status panel needs it).
+        assert_eq!(app.active_account_display_name.as_deref(), Some("Subspace"));
+
+        // But the welcome line stays hidden — we have the name
+        // but not the tier yet. Showing "Account: Subspace" now
+        // would flicker into "Account: Subspace · team" once the
+        // status snapshot lands.
         let Some(MessageBlock::Welcome(welcome)) = app.messages[0].blocks.first() else {
             panic!("expected welcome block");
         };
-        // Without account_info, no tier — but label + name are
-        // correct from the first frame after spawn.
-        assert_eq!(welcome.account_label, "Account");
-        assert_eq!(welcome.subscription, "Subspace");
-        assert_eq!(app.active_account_display_name.as_deref(), Some("Subspace"));
+        assert_eq!(welcome.subscription, "");
     }
 
     #[test]

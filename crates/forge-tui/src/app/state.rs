@@ -486,17 +486,17 @@ impl App {
     }
 
     /// Returns `(label, value)` for the welcome message's account
-    /// line. Both empty when no data has loaded yet — the renderer
-    /// skips the line in that case, so the welcome doesn't show a
-    /// placeholder while the workspace picker / status snapshot
-    /// are still in flight.
+    /// line. Both empty when the renderer should skip the line —
+    /// either no data has loaded yet, or in workspace mode we have
+    /// the display_name but not yet the subscription tier (we'd
+    /// rather wait than show a half-populated line that flickers
+    /// when the tier arrives).
     ///
-    /// Once data lands: when `active_account_display_name` is set,
-    /// label is `"Account"` and value composes display_name with
-    /// subscription_type (`"name"`, or `"name · tier"` when both
-    /// are present). When only subscription_type is set (direct
-    /// `Agent::spawn` callers — tests / smoke), label is
-    /// `"Subscription"` and value is the tier alone.
+    /// Renders the line only when:
+    /// - Workspace mode: `display_name` AND `subscription_type`
+    ///   both present → `"Account: name · tier"`.
+    /// - Legacy mode (no workspace): only `subscription_type`
+    ///   ever arrives — show it under the `"Subscription"` label.
     #[must_use]
     fn welcome_account_display(&self) -> (String, String) {
         let display_name =
@@ -510,9 +510,12 @@ impl App {
 
         match (display_name, subscription) {
             (Some(name), Some(tier)) => ("Account".to_owned(), format!("{name} · {tier}")),
-            (Some(name), None) => ("Account".to_owned(), name.to_owned()),
             (None, Some(tier)) => ("Subscription".to_owned(), tier.to_owned()),
-            (None, None) => (String::new(), String::new()),
+            // No data, or workspace mode with display_name set but
+            // tier still in flight — hide until the status snapshot
+            // arrives so the user sees the fully-formed value, not
+            // "Granite" → "Granite · team".
+            (Some(_) | None, None) => (String::new(), String::new()),
         }
     }
 
