@@ -63,4 +63,13 @@ impl SessionKey {
     pub fn from_str_for_test(s: &str) -> Self {
         Self(s.to_owned())
     }
+
+    /// Construct a `SessionKey` from a claude-issued session UUID.
+    /// Production-side constructor used by forge-tui's event
+    /// multiplexer to tag incoming events with the bound session's
+    /// key.
+    #[must_use]
+    pub fn from_session_id(id: impl Into<String>) -> Self {
+        Self(id.into())
+    }
 }

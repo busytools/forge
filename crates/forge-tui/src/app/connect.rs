@@ -140,6 +140,8 @@ pub fn create_app(cli: &Cli, workspace: Rc<forge_workspace::Workspace>) -> App {
         session_id: None,
         conn: None,
         workspace: Some(workspace),
+        sessions: std::collections::HashMap::new(),
+        active_session_key: None,
         session_scope_epoch: 0,
         current_model: None,
         cwd_raw: cwd.to_string_lossy().to_string(),

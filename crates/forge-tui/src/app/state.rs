@@ -151,6 +151,17 @@ pub struct App {
     /// `None` only in test contexts (`App::test_default`); production
     /// startup always populates this before construction.
     pub workspace: Option<Rc<forge_workspace::Workspace>>,
+    /// Per-session state buckets, keyed by claude session UUID.
+    /// Phase 2a moves per-session fields off `App` into the
+    /// [`super::session::Session`] value type one bucket at a time.
+    /// With this commit the map is populated with one entry on
+    /// Connect; the bucket itself is empty and existing per-session
+    /// fields stay on `App` until subsequent commits migrate them.
+    pub sessions: std::collections::HashMap<forge_workspace::SessionKey, super::session::Session>,
+    /// Which entry of [`Self::sessions`] the renderer reads from.
+    /// `None` only in the brief pre-Connect window where no session
+    /// has landed in the map yet.
+    pub active_session_key: Option<forge_workspace::SessionKey>,
     /// Monotonic session authority epoch used to ignore stale async view data.
     pub session_scope_epoch: u64,
     pub current_model: Option<model::CurrentModel>,
@@ -395,6 +406,31 @@ pub struct App {
 }
 
 impl App {
+    // ---- Multi-session accessors (Phase 2a) ----
+
+    /// Returns a reference to the currently-active session bucket,
+    /// or `None` in the brief pre-Connect window before any session
+    /// has landed in [`Self::sessions`].
+    #[must_use]
+    pub fn active_session(&self) -> Option<&super::session::Session> {
+        self.active_session_key.as_ref().and_then(|key| self.sessions.get(key))
+    }
+
+    /// Mutable accessor for the active session bucket.
+    pub fn active_session_mut(&mut self) -> Option<&mut super::session::Session> {
+        let key = self.active_session_key.clone()?;
+        self.sessions.get_mut(&key)
+    }
+
+    /// Lookup a session by key (used by the event multiplexer to
+    /// route background-session events to their bucket).
+    pub fn session_mut(
+        &mut self,
+        key: &forge_workspace::SessionKey,
+    ) -> Option<&mut super::session::Session> {
+        self.sessions.get_mut(key)
+    }
+
     /// Queue a paste payload for drain-cycle finalization.
     ///
     /// This is fed by paste payloads captured from terminal events.
@@ -900,6 +936,8 @@ impl App {
             session_id: None,
             conn: None,
             workspace: None,
+            sessions: std::collections::HashMap::new(),
+            active_session_key: None,
             session_scope_epoch: 0,
             current_model: Some(
                 model::CurrentModel::new("test-model", "test-model", "test-model")
@@ -1288,6 +1326,33 @@ mod tests {
     use pretty_assertions::assert_eq;
     use ratatui::style::{Color, Style};
     use ratatui::text::{Line, Span};
+
+    // Phase 2a foundation
+
+    #[test]
+    fn sessions_map_starts_empty_and_active_key_is_none() {
+        let app = App::test_default();
+        assert!(app.sessions.is_empty());
+        assert!(app.active_session_key.is_none());
+        assert!(app.active_session().is_none());
+    }
+
+    #[test]
+    fn inserting_a_session_makes_it_active_via_accessors() {
+        let mut app = App::test_default();
+        let key = forge_workspace::SessionKey::from_str_for_test("abc-123");
+        app.sessions
+            .entry(key.clone())
+            .or_insert_with(|| crate::app::session::Session::new(key.clone()));
+        app.active_session_key = Some(key.clone());
+
+        assert_eq!(app.sessions.len(), 1);
+        assert_eq!(app.active_session_key.as_ref(), Some(&key));
+        assert!(app.active_session().is_some());
+        assert_eq!(app.active_session().and_then(|s| s.key.as_ref()), Some(&key));
+        assert!(app.active_session_mut().is_some());
+        assert!(app.session_mut(&key).is_some());
+    }
 
     // BlockCache
 

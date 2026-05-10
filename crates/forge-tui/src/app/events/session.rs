@@ -31,6 +31,16 @@ pub(super) fn handle_connected_client_event(
         app.conn = Some(slot.conn);
     }
     let prev_session_id = app.session_id.as_ref().map(ToString::to_string);
+    // Phase 2a foundation: register this session in the multi-session
+    // map. Bucket-migration commits will move per-session fields off
+    // App into this entry; for now the bucket is empty, but having
+    // the entry + active pointer in place lets later commits route
+    // events to it.
+    let session_key = forge_workspace::SessionKey::from_session_id(session_id.to_string());
+    app.sessions
+        .entry(session_key.clone())
+        .or_insert_with(|| crate::app::session::Session::new(session_key.clone()));
+    app.active_session_key = Some(session_key);
     apply_session_cwd(app, cwd);
     reset_for_new_session(app, session_id, current_model, mode, true);
     refresh_session_git_watcher(app, prev_session_id);
