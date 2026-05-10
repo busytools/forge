@@ -14,9 +14,6 @@ pub struct AppLayout {
     /// Left-side Projects pane rect when the user has the pane
     /// visible AND the terminal is at Wide tier (>= 160 cols).
     /// `None` whenever the pane should not be rendered.
-    // TODO: remove `dead_code` allow once the pane renderer lands
-    // (next commit in Phase 2b-α).
-    #[allow(dead_code)]
     pub pane: Option<Rect>,
     /// Chat body. When the pane is allocated this is the rect
     /// remaining to the right of the pane; otherwise it spans the

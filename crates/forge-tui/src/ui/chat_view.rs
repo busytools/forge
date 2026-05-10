@@ -1,4 +1,4 @@
-use super::{autocomplete, chat, footer, help, input, layout, theme, todo};
+use super::{autocomplete, chat, footer, help, input, layout, projects_pane, theme, todo};
 use crate::app::App;
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -42,6 +42,16 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     {
         let _t = app.perf.as_ref().map(|p| p.start("ui::chat"));
         chat::render(frame, areas.body, app);
+    }
+
+    if let Some(pane_area) = areas.pane {
+        let _t = app.perf.as_ref().map(|p| p.start("ui::projects_pane"));
+        let projects = app.workspace.as_ref().map(|ws| ws.list_projects()).unwrap_or_default();
+        projects_pane::render(frame, pane_area, app, &projects);
+    } else {
+        // No pane this frame; clear stamps so a stale set from the
+        // previous (visible) frame can't be hit-tested.
+        app.pane_hit_targets.clear();
     }
 
     render_separator(frame, areas.input_sep);

@@ -18,6 +18,22 @@ pub struct ProjectView {
     pub sessions: Vec<SessionView>,
 }
 
+#[cfg(feature = "test-helpers")]
+impl ProjectView {
+    /// Test-only constructor for cross-crate fixtures (forge-tui's
+    /// Projects pane snapshot tests). Behind the `test-helpers`
+    /// Cargo feature so the production API stays
+    /// `#[non_exhaustive]`-locked.
+    #[must_use]
+    pub fn new_for_test(
+        key: ProjectKey,
+        display_path: impl Into<String>,
+        sessions: Vec<SessionView>,
+    ) -> Self {
+        Self { key, display_path: display_path.into(), sessions }
+    }
+}
+
 /// One session under a project.
 #[derive(Clone, Debug)]
 #[non_exhaustive]
@@ -32,4 +48,18 @@ pub struct SessionView {
     /// workspace pool.
     pub is_open: bool,
     pub last_activity: Option<SystemTime>,
+}
+
+#[cfg(feature = "test-helpers")]
+impl SessionView {
+    /// Test-only constructor for cross-crate fixtures.
+    #[must_use]
+    pub fn new_for_test(
+        session: SessionKey,
+        label: impl Into<String>,
+        is_open: bool,
+        last_activity: Option<SystemTime>,
+    ) -> Self {
+        Self { session, label: label.into(), is_open, last_activity }
+    }
 }

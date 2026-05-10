@@ -95,6 +95,34 @@ pub struct TurnNoticeRef {
     pub location: TurnNoticeLocation,
 }
 
+/// A click-targetable row in the Projects pane, stamped by
+/// [`crate::ui::projects_pane::render`] during paint and read by the
+/// mouse handler on click. Render-time-stamp pattern from PR #83
+/// (the same approach the per-tool-call expand/collapse uses).
+#[derive(Debug, Clone)]
+pub enum PaneHitTarget {
+    /// Click on a project name row → switch active session to its
+    /// lead.
+    ProjectHeader { project_name: String, y: u16, height: u16 },
+    /// Click on a session row in the active project's drilldown →
+    /// switch active session to that specific session.
+    SessionRow { session_key: forge_workspace::SessionKey, y: u16, height: u16 },
+}
+
+impl PaneHitTarget {
+    /// Whether the target's row range covers `y` (inclusive of `y`,
+    /// exclusive of `y + height`).
+    #[must_use]
+    pub fn contains_y(&self, y: u16) -> bool {
+        let (start, height) = match self {
+            Self::ProjectHeader { y, height, .. } | Self::SessionRow { y, height, .. } => {
+                (*y, *height)
+            }
+        };
+        (start..start.saturating_add(height)).contains(&y)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ChatRenderTraceState {
     pub width: u16,
@@ -175,6 +203,12 @@ pub struct App {
     /// `true` for Wide tier; ignored at Medium / Narrow tiers (those
     /// land in 2b-β / 2b-γ).
     pub projects_pane_visible: bool,
+    /// Click hit-targets stamped by
+    /// [`crate::ui::projects_pane::render`]. Cleared on each render
+    /// and refilled. The mouse handler (next commit) iterates this
+    /// to find what was clicked. Render-time-stamp pattern from PR
+    /// #83.
+    pub pane_hit_targets: Vec<PaneHitTarget>,
     /// Force a full terminal clear on next render frame.
     pub force_redraw: bool,
     /// Focus manager for directional/navigation key ownership.
@@ -1781,6 +1815,7 @@ impl App {
             spinner_last_advance_at: None,
             tools_collapsed: false,
             projects_pane_visible: true,
+            pane_hit_targets: Vec::new(),
             force_redraw: false,
             focus: FocusManager::default(),
             plugins: PluginsState::default(),

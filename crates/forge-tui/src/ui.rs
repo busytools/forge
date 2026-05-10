@@ -11,6 +11,7 @@ mod input;
 mod layout;
 mod markdown;
 mod message;
+pub mod projects_pane;
 mod session_picker;
 pub mod theme;
 mod todo;

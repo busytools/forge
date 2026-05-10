@@ -13,6 +13,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
+use std::time::Instant;
 
 use forge_workspace::SessionKey;
 
@@ -33,13 +34,13 @@ use crate::app::state::{ChatRenderTraceState, TerminalToolCallRef, TurnNoticeRef
 /// dropped when the session is closed or forge-tui exits.
 ///
 /// No `Debug` derive — `AgentHandle` owns callback closures and
-/// doesn't derive `Debug`. Every field's default matches its type's
-/// `Default` impl, so `Default` is derived; if a field needs a
-/// non-`Default::default()` initializer, factor it through
-/// [`Session::new`] (or a new constructor) rather than re-introducing
-/// a hand-written impl.
+/// doesn't derive `Debug`. `Default` is hand-rolled (rather than
+/// derived) because [`Self::last_activity_at`] is an [`Instant`]
+/// which has no `Default` impl. Every other field falls through to
+/// its type's `Default::default()`; if a field needs a non-default
+/// initializer, factor it through [`Session::new`] rather than
+/// expanding the manual impl.
 #[allow(clippy::struct_excessive_bools)]
-#[derive(Default)]
 pub struct Session {
     /// The claude-issued session UUID, also used as the map key.
     /// Stored here for symmetry; the map lookup uses the same value.
@@ -47,6 +48,16 @@ pub struct Session {
     /// Claude-issued session id (typed wrapper). `None` until the
     /// first `Connected` event from this session's bridge.
     pub session_id: Option<model::SessionId>,
+    /// Lifecycle state for the Projects pane (Phase 2b-α). Set on
+    /// bucket creation; transitions wired by event handlers in a
+    /// follow-up task. The pane reads this to pick the per-session
+    /// state glyph.
+    pub lifecycle_state: SessionLifecycleState,
+    /// Wall-clock instant of the last wire event applied to this
+    /// session. Seeded at bucket creation so the Projects pane's
+    /// "2m" / "1h" / "5d" rendering has a stable baseline before
+    /// the first event arrives.
+    pub last_activity_at: Instant,
     /// Agent connection handle for this session. `None` while the
     /// session's bridge is starting up.
     pub conn: Option<Arc<forge_agent::AgentHandle>>,
@@ -238,8 +249,106 @@ pub struct Session {
 impl Session {
     #[must_use]
     pub fn new(key: SessionKey) -> Self {
-        Self { key: Some(key), ..Self::default() }
+        Self { key: Some(key), last_activity_at: Instant::now(), ..Self::default() }
     }
+}
+
+impl Default for Session {
+    fn default() -> Self {
+        // `Instant` has no `Default` impl, so the derive is replaced
+        // with a hand-rolled version that seeds `last_activity_at`
+        // to "now" and falls through to `Default::default()` for
+        // every other field via destructuring of an internal
+        // synthesizer. The shape stays maintainable: any field added
+        // to `Session` whose type does have `Default` lands here for
+        // free without code change.
+        Self {
+            key: Option::default(),
+            session_id: Option::default(),
+            lifecycle_state: SessionLifecycleState::default(),
+            last_activity_at: Instant::now(),
+            conn: Option::default(),
+            session_scope_epoch: u64::default(),
+            messages: Vec::default(),
+            message_retained_bytes: Vec::default(),
+            retained_history_bytes: usize::default(),
+            viewport: ChatViewport::default(),
+            active_turn_assistant_message_idx: Option::default(),
+            turn_state: SessionTurnState::default(),
+            is_compacting: bool::default(),
+            pending_compact_clear: bool::default(),
+            pending_interaction_ids: Vec::default(),
+            cancelled_turn_pending_hint: bool::default(),
+            pending_cancel_origin: Option::default(),
+            prompt_suggestion: Option::default(),
+            last_rate_limit_update: Option::default(),
+            turn_notice_refs: Vec::default(),
+            active_task_ids: HashSet::default(),
+            tool_call_scopes: HashMap::default(),
+            tool_call_index: HashMap::default(),
+            terminals: TerminalMap::default(),
+            terminal_tool_calls: Vec::default(),
+            terminal_tool_call_membership: HashSet::default(),
+            subagent_attribution: HashMap::default(),
+            current_model: Option::default(),
+            available_models: Vec::default(),
+            available_commands: Vec::default(),
+            available_agents: Vec::default(),
+            mode: Option::default(),
+            observed_permission_mode: Option::default(),
+            observed_effort: Option::default(),
+            observed_assistant_model: Option::default(),
+            runtime_session_state: Option::default(),
+            fast_mode_state: model::FastModeState::default(),
+            config_options: BTreeMap::default(),
+            session_usage: SessionUsageState::default(),
+            account_info: Option::default(),
+            active_account_display_name: Option::default(),
+            oauth_credentials: Option::default(),
+            cwd: String::default(),
+            cwd_raw: String::default(),
+            files_accessed: usize::default(),
+            git_context: GitContextState::default(),
+            mcp: McpState::default(),
+            todos: Vec::default(),
+            show_todo_panel: bool::default(),
+            todo_scroll: usize::default(),
+            todo_selected: usize::default(),
+            cached_todo_compact: Option::default(),
+            render_cache_slots: Vec::default(),
+            render_cache_total_bytes: usize::default(),
+            render_cache_protected_bytes: usize::default(),
+            render_cache_evictable: BTreeSet::default(),
+            render_cache_tail_msg_idx: Option::default(),
+            history_retention: HistoryRetentionPolicy::default(),
+            history_retention_stats: HistoryRetentionStats::default(),
+            cache_metrics: CacheMetrics::default(),
+            last_active_turn_height_state: Option::default(),
+            last_chat_render_trace_state: Option::default(),
+        }
+    }
+}
+
+/// Lifecycle state of a [`Session`], used by the Projects pane to
+/// render the right state glyph and (in later phases) by the
+/// multiplexer to decide redraw semantics. See
+/// `~/.claude-subspace/plans/2026-05-10-forge-tui-projects-pane-wide-design.md`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SessionLifecycleState {
+    /// No subprocess yet; lead exists conceptually but has never
+    /// been spawned (or has been freed).
+    #[default]
+    Sleeping,
+    /// Subprocess spawn in flight — between user click and first
+    /// `Connected` event from the bridge.
+    Spawning,
+    /// Subprocess is alive and idle (no turn in progress).
+    Idle,
+    /// Subprocess is mid-turn or actively streaming.
+    Running,
+    /// Background session is paused on a permission prompt and
+    /// needs user input to continue.
+    Attention,
 }
 
 #[cfg(test)]

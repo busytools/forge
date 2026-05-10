@@ -12,6 +12,13 @@ publish = false
 [lints]
 workspace = true
 
+[features]
+# Cross-crate test helpers. Exposes constructors on `ProjectView`,
+# `SessionView`, and `ProjectKey` so integration tests in sibling
+# crates' `tests/` directories (e.g. `forge-tui`) can build view
+# fixtures without spinning up a real on-disk catalog.
+test-helpers = []
+
 [dependencies]
 forge-primitives = { workspace = true }
 forge-agent = { workspace = true }

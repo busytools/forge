@@ -33,6 +33,16 @@ impl ProjectKey {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+
+    /// Test-only constructor for cross-crate fixtures (forge-tui's
+    /// Projects pane snapshot tests). Behind the `test-helpers`
+    /// Cargo feature so the production constructor stays
+    /// crate-private.
+    #[cfg(feature = "test-helpers")]
+    #[must_use]
+    pub fn new_for_test(key: impl Into<String>) -> Self {
+        Self(key.into())
+    }
 }
 
 /// What [`crate::Workspace::get_agent_handle`] should hand back.
