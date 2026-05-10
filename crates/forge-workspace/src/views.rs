@@ -1,5 +1,6 @@
 //! Read-only views surfaced by [`crate::Workspace::list_projects`].
 
+use std::path::PathBuf;
 use std::time::SystemTime;
 
 use crate::target::{ProjectKey, SessionKey};
@@ -17,6 +18,13 @@ pub struct ProjectView {
     /// [`crate::SessionTarget::Named`] use this value; callers
     /// keying a HashMap of in-process Agent handles use [`Self::key`].
     pub name: String,
+    /// Filesystem-resolved project root (`~` expanded). This is the
+    /// path callers should hand to filesystem APIs — `cwd_raw` for
+    /// the spawning bucket, `file_index::restart`,
+    /// `trust::store::normalize_project_key`, the git-context
+    /// watcher, etc. Use [`Self::display_path`] for human-readable
+    /// rendering instead.
+    pub path: PathBuf,
     /// Human-readable rendering of the project's root path (e.g.
     /// `~/Projects/forge`, with `~` left in place rather than
     /// expanded). Display-only — not a path you can `open()`.
@@ -37,7 +45,8 @@ impl ProjectView {
         display_path: impl Into<String>,
         sessions: Vec<SessionView>,
     ) -> Self {
-        Self { key, name: name.into(), display_path: display_path.into(), sessions }
+        let display_path = display_path.into();
+        Self { key, name: name.into(), path: PathBuf::from(&display_path), display_path, sessions }
     }
 }
 

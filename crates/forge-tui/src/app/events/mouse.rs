@@ -61,12 +61,22 @@ pub(super) fn handle_mouse_event(app: &mut App, mouse: MouseEvent) {
     }
     match mouse.kind {
         MouseEventKind::ScrollUp => {
+            // While the Narrow-tier overlay is open the chat is
+            // hidden behind it; scrolling the chat viewport would
+            // silently move content the user can't see. Future:
+            // scroll the overlay's project list when it overflows.
+            if app.projects_pane_overlay_open && app.layout.top_bar.is_some() {
+                return;
+            }
             if app.selection.is_some() {
                 clear_selection(app);
             }
             app.viewport_mut().scroll_up(MOUSE_SCROLL_LINES);
         }
         MouseEventKind::ScrollDown => {
+            if app.projects_pane_overlay_open && app.layout.top_bar.is_some() {
+                return;
+            }
             if app.selection.is_some() {
                 clear_selection(app);
             }
@@ -423,7 +433,7 @@ fn handle_pane_click(app: &mut App, mouse: MouseEvent) -> bool {
                 true
             }
             PaneHitTarget::SessionRow { session_key, .. } => {
-                app.switch_active_session(session_key);
+                switch_to_session_or_spawn(app, session_key);
                 app.projects_pane_overlay_open = false;
                 app.needs_redraw = true;
                 true
@@ -458,12 +468,34 @@ fn handle_pane_click(app: &mut App, mouse: MouseEvent) -> bool {
             true
         }
         PaneHitTarget::SessionRow { session_key, .. } => {
-            app.switch_active_session(session_key);
+            switch_to_session_or_spawn(app, session_key);
             true
         }
         // x+y-bounded glyphs are checked first; here for exhaustive
         // matching only.
         PaneHitTarget::TopBarIcon { .. } | PaneHitTarget::OverlayClose { .. } => true,
+    }
+}
+
+/// Switch to the clicked session row's bucket, or kick off a fresh
+/// resume spawn when the bucket isn't in `app.sessions` yet.
+///
+/// The Projects-pane drilldown lists every session for the active
+/// project (lead + non-lead) from the on-disk catalog; non-lead
+/// sessions typically aren't pooled in `app.sessions` until the
+/// user clicks them. Without this fallback, clicking a non-lead row
+/// would silently no-op (the closest thing to a useless button).
+///
+/// The lead-session row click still lands here too, but
+/// `switch_active_session` returns immediately when the key matches,
+/// and the spawn helper short-circuits when the key is already
+/// present — so the lead-click path keeps its existing
+/// switch-only semantics.
+fn switch_to_session_or_spawn(app: &mut App, session_key: forge_workspace::SessionKey) {
+    if app.sessions.contains_key(&session_key) {
+        app.switch_active_session(session_key);
+    } else {
+        crate::app::connect::spawn_for_sleeping_session(app, &session_key);
     }
 }
 

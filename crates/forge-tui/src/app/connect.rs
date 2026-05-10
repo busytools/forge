@@ -65,7 +65,7 @@ fn shorten_cwd_for_display(cwd: &std::path::Path) -> String {
 }
 
 pub(crate) use session_start::{SessionStartReason, begin_resume_session, start_new_session};
-pub use spawn_sleeping::spawn_for_sleeping_project;
+pub use spawn_sleeping::{spawn_for_sleeping_project, spawn_for_sleeping_session};
 
 /// Create the `App` struct in `Connecting` state and load shared settings state.
 ///

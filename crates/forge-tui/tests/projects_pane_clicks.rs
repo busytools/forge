@@ -56,29 +56,106 @@ fn click_on_session_row_switches_active() {
 
 #[test]
 fn click_on_project_header_for_in_process_lead_switches_active() {
-    // We can't easily build a real Workspace in a test, so we cover
-    // the in-process branch by routing through `SessionRow` (the
-    // semantic outcome — `App::switch_active_session` — is the same
-    // either way). The header → workspace lookup → switch_active
-    // path is covered by the sleeping-project test below, which
-    // exercises the no-workspace case.
-    let mut app = App::test_default();
-    let key_a = SessionKey::from_str_for_test("a");
-    let key_b = SessionKey::from_str_for_test("b");
-    app.sessions.insert(key_a.clone(), forge_tui::app::session::Session::new(key_a.clone()));
-    app.sessions.insert(key_b.clone(), forge_tui::app::session::Session::new(key_b.clone()));
-    app.active_session_key = Some(key_a.clone());
+    // Cover the `switch_to_project_lead` workspace-lookup path: the
+    // pane stamps a `ProjectHeader` hit target, the click handler
+    // resolves the project's lead session via the live workspace,
+    // and (when the lead is in `app.sessions`) hands off to
+    // `switch_active_session`.
+    //
+    // To trigger that path we need a Workspace whose `list_projects`
+    // returns a project with at least one session whose key matches
+    // an in-process bucket. Build a `forge.toml` for "test-proj"
+    // pointed at a tempdir, then plant a minimal session jsonl file
+    // under `<config_dir>/projects/<sanitized>/<uuid>.jsonl` so
+    // `Workspace::new`'s catalog scan picks it up. Insert a
+    // `Session` keyed by that same UUID into `app.sessions`.
+    let config_dir = tempdir().expect("config_dir tempdir");
+    let project_dir = tempdir().expect("project tempdir");
+    fs::write(
+        config_dir.path().join("forge.toml"),
+        format!(
+            r#"
+[[projects]]
+name = "test-proj"
+path = "{}"
+default = true
 
-    app.pane_hit_targets.push(PaneHitTarget::SessionRow {
-        session_key: key_b.clone(),
-        y: 7,
+[[accounts]]
+display_name = "Test"
+config_dir = "{}"
+"#,
+            project_dir.path().to_string_lossy(),
+            project_dir.path().to_string_lossy(),
+        ),
+    )
+    .expect("write forge.toml");
+
+    // Compute the catalog directory the way Workspace expects:
+    // `<config_dir>/projects/<sanitised_canonicalised_path>/`.
+    let project_path_str = project_dir.path().to_string_lossy().to_string();
+    let project_key =
+        forge_agent::userdata::catalog::scan::project_key_for_directory(Some(&project_path_str));
+    let catalog_dir = config_dir.path().join("projects").join(&project_key);
+    fs::create_dir_all(&catalog_dir).expect("create catalog dir");
+
+    // Plant a minimal session transcript. The catalog scanner only
+    // needs a UUID-named .jsonl file with a parseable summary
+    // hint — a single JSON line carrying `lastPrompt` satisfies the
+    // summary fallback chain.
+    let lead_uuid = "12345678-1234-4234-8234-123456789abc";
+    let session_path = catalog_dir.join(format!("{lead_uuid}.jsonl"));
+    fs::write(
+        &session_path,
+        format!(
+            "{{\"type\":\"user\",\"sessionId\":\"{lead_uuid}\",\"cwd\":\"{}\",\"message\":{{\"content\":\"hi\"}},\"lastPrompt\":\"hi\",\"timestamp\":\"2026-05-10T12:00:00Z\"}}\n",
+            project_dir.path().to_string_lossy(),
+        ),
+    )
+    .expect("write session file");
+
+    let runtime =
+        tokio::runtime::Builder::new_current_thread().enable_all().build().expect("runtime");
+    let workspace = runtime
+        .block_on(async { Workspace::new(config_dir.path().to_owned()).await.expect("workspace") });
+
+    // Sanity-check that the catalog scan actually found the session
+    // — without this the test below would silently fall back to the
+    // sleeping-project spawn path and miss the workspace-lookup
+    // branch we're trying to cover.
+    let projects = workspace.list_projects();
+    let project_view = projects.iter().find(|p| p.name == "test-proj").expect("test-proj surfaces");
+    assert!(
+        !project_view.sessions.is_empty(),
+        "catalog scan must surface the planted session for the workspace-lookup branch"
+    );
+    let lead_key = project_view.sessions[0].session.clone();
+
+    let mut app = App::test_default();
+    app.workspace = Some(Rc::new(workspace));
+
+    // Plant the lead session as an in-process bucket so the click
+    // handler's "lead is in app.sessions" branch fires.
+    app.sessions.insert(lead_key.clone(), forge_tui::app::session::Session::new(lead_key.clone()));
+    let key_a = SessionKey::from_str_for_test("a");
+    app.sessions.insert(key_a.clone(), forge_tui::app::session::Session::new(key_a.clone()));
+    app.active_session_key = Some(key_a);
+
+    // Stamp a ProjectHeader hit target keyed by the project's
+    // canonicalised key (matches the renderer's stamp shape).
+    app.pane_hit_targets.push(PaneHitTarget::ProjectHeader {
+        project_name: project_view.key.as_str().to_owned(),
+        y: 4,
         height: 1,
     });
     app.layout.pane = Some(ratatui::layout::Rect::new(0, 0, 26, 40));
 
-    handle_terminal_event(&mut app, down_left(5, 7));
+    handle_terminal_event(&mut app, down_left(5, 4));
 
-    assert_eq!(app.active_session_key.as_ref(), Some(&key_b));
+    assert_eq!(
+        app.active_session_key.as_ref(),
+        Some(&lead_key),
+        "ProjectHeader click should switch active to the lead session via the workspace lookup",
+    );
 }
 
 #[test]

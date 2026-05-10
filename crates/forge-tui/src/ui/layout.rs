@@ -389,13 +389,60 @@ mod tests {
     }
 
     #[test]
-    fn narrow_tier_skips_top_bar_when_body_too_short() {
-        // Pathological tiny height: layout already has a 1-row body;
-        // peeling another row off would leave 0 rows of chat. Skip
-        // the top bar and render chat full-height.
+    fn narrow_tier_top_bar_allocated_when_body_has_slack() {
+        // Renamed from `narrow_tier_skips_top_bar_when_body_too_short`:
+        // the asserted shape was actually the slack case, not the
+        // skip case. Keeps the slack-path coverage explicit and
+        // separate from the genuine skip case below.
         let layout = compute(area(100, 8), 1, 0, 0, true);
-        // body height starts at >=3 in normal mode; no skip needed
-        // here — top bar should be allocated.
         assert!(layout.top_bar.is_some(), "top bar still allocated when body has slack");
+    }
+
+    #[test]
+    fn narrow_tier_skips_top_bar_when_body_truly_too_short() {
+        // Compact-mode area (height < 8) with input+separator+help
+        // chewing 1+1+1=3 of the 4 rows leaves body.height=1. The
+        // skip guard refuses to peel another row off, so `top_bar`
+        // stays `None`.
+        let layout = compute(area(100, 4), 1, 0, 1, true);
+        assert!(layout.body.height < 2, "fixture must produce a 1-row body");
+        assert!(
+            layout.top_bar.is_none(),
+            "top bar must skip when peeling would leave body with 0 rows"
+        );
+    }
+
+    #[test]
+    fn tier_boundaries_inclusive_at_min_widths() {
+        // Wide tier kicks in inclusive at WIDE_TIER_MIN_WIDTH (160);
+        // exactly one column shy collapses to Medium's 20-col pane.
+        assert_eq!(
+            compute(area(WIDE_TIER_MIN_WIDTH, 40), 1, 0, 1, true).pane.unwrap().width,
+            PANE_WIDTH_WIDE,
+        );
+        assert_eq!(
+            compute(area(WIDE_TIER_MIN_WIDTH - 1, 40), 1, 0, 1, true).pane.unwrap().width,
+            PANE_WIDTH_MEDIUM,
+        );
+        // Medium tier kicks in inclusive at MEDIUM_TIER_MIN_WIDTH (120);
+        // exactly one column shy is Narrow — no inline pane, top bar
+        // takes over.
+        assert_eq!(
+            compute(area(MEDIUM_TIER_MIN_WIDTH, 40), 1, 0, 1, true).pane.unwrap().width,
+            PANE_WIDTH_MEDIUM,
+        );
+        assert!(compute(area(MEDIUM_TIER_MIN_WIDTH - 1, 40), 1, 0, 1, true).pane.is_none());
+        assert!(
+            compute(area(MEDIUM_TIER_MIN_WIDTH - 1, 40), 1, 0, 1, true).top_bar.is_some(),
+            "Narrow tier replaces the inline pane with a top bar"
+        );
+        assert!(
+            compute(area(MEDIUM_TIER_MIN_WIDTH, 40), 1, 0, 1, true).top_bar.is_none(),
+            "Medium tier hosts the inline pane, no top bar"
+        );
+        assert!(
+            compute(area(WIDE_TIER_MIN_WIDTH, 40), 1, 0, 1, true).top_bar.is_none(),
+            "Wide tier hosts the inline pane, no top bar"
+        );
     }
 }

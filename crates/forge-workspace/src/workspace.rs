@@ -176,6 +176,7 @@ impl Workspace {
             views.push(ProjectView {
                 key,
                 name: project.name.clone(),
+                path: project.path.clone(),
                 display_path: project.display_path.clone(),
                 sessions,
             });

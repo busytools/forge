@@ -1290,4 +1290,94 @@ mod tests {
 
         assert_eq!(selection_text_for_copy(&mut app), Some("hello world".to_owned()));
     }
+
+    /// Helper: build a tempdir-backed Workspace + plant it on the app
+    /// so the Wide/Medium-tier `toggle_projects_pane` branches have
+    /// somewhere to persist the new visibility flag.
+    fn with_workspace(app: &mut App) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join("forge.toml"),
+            r#"
+[[projects]]
+name = "test-proj"
+path = "/tmp/test-proj"
+default = true
+
+[[accounts]]
+display_name = "Test"
+config_dir = "/tmp/test-account"
+"#,
+        )
+        .expect("write forge.toml");
+        let runtime =
+            tokio::runtime::Builder::new_current_thread().enable_all().build().expect("runtime");
+        let workspace = runtime.block_on(async {
+            forge_workspace::Workspace::new(dir.path().to_owned()).await.expect("workspace")
+        });
+        app.workspace = Some(std::rc::Rc::new(workspace));
+        dir
+    }
+
+    #[test]
+    fn ctrl_b_at_wide_tier_flips_visibility_and_persists() {
+        let mut app = App::test_default();
+        let _guard = with_workspace(&mut app);
+        app.cached_frame_area = Rect::new(0, 0, crate::ui::layout::WIDE_TIER_MIN_WIDTH, 40);
+        app.projects_pane_visible = true;
+        app.projects_pane_overlay_open = false;
+
+        toggle_projects_pane(&mut app);
+
+        assert!(!app.projects_pane_visible, "Wide tier flips persistent visibility");
+        assert!(!app.projects_pane_overlay_open, "Wide tier leaves overlay flag alone");
+        let workspace = app.workspace.as_ref().expect("workspace");
+        assert!(
+            !workspace.projects_pane_visible(),
+            "new visibility persists through forge-state.toml",
+        );
+    }
+
+    #[test]
+    fn ctrl_b_at_medium_tier_flips_visibility_and_persists() {
+        let mut app = App::test_default();
+        let _guard = with_workspace(&mut app);
+        app.cached_frame_area = Rect::new(0, 0, crate::ui::layout::MEDIUM_TIER_MIN_WIDTH, 40);
+        app.projects_pane_visible = false;
+        app.projects_pane_overlay_open = false;
+
+        toggle_projects_pane(&mut app);
+
+        assert!(app.projects_pane_visible, "Medium tier flips persistent visibility");
+        assert!(!app.projects_pane_overlay_open, "Medium tier leaves overlay flag alone");
+        let workspace = app.workspace.as_ref().expect("workspace");
+        assert!(workspace.projects_pane_visible());
+    }
+
+    #[test]
+    fn ctrl_b_at_narrow_tier_toggles_overlay_only() {
+        // Narrow tier: width < MEDIUM_TIER_MIN_WIDTH. No workspace
+        // needed — the narrow branch never persists.
+        let mut app = App::test_default();
+        app.cached_frame_area = Rect::new(0, 0, crate::ui::layout::MEDIUM_TIER_MIN_WIDTH - 1, 40);
+        let initial_visible = app.projects_pane_visible;
+        app.projects_pane_overlay_open = false;
+
+        toggle_projects_pane(&mut app);
+
+        assert!(app.projects_pane_overlay_open, "Narrow tier opens overlay");
+        assert_eq!(
+            app.projects_pane_visible, initial_visible,
+            "Narrow tier must not flip the persistent visibility flag",
+        );
+
+        // Second invocation closes it back up — confirms the
+        // toggle isn't sticky.
+        toggle_projects_pane(&mut app);
+        assert!(!app.projects_pane_overlay_open, "second Narrow toggle closes the overlay");
+        assert_eq!(
+            app.projects_pane_visible, initial_visible,
+            "persistent visibility still untouched after a second narrow toggle",
+        );
+    }
 }

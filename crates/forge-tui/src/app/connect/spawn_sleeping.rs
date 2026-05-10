@@ -24,7 +24,10 @@
 //! event lands) can race. Acceptable for Phase 2b-α; Phase 2b
 //! tightens this.
 
+use std::panic::AssertUnwindSafe;
 use std::rc::Rc;
+
+use futures::FutureExt as _;
 
 use crate::agent::client::SessionLaunchSettings;
 use crate::app::App;
@@ -106,15 +109,27 @@ pub fn spawn_for_sleeping_project(app: &mut App, project_key: &str) {
 
     let mut bucket = crate::app::session::Session::new(spawn_key.clone());
     bucket.lifecycle_state = crate::app::session::SessionLifecycleState::Spawning;
-    bucket.cwd_raw.clone_from(&project.display_path);
+    // `cwd_raw` is the absolute filesystem path consumed by
+    // `file_index::restart`, `trust::store::normalize_project_key`,
+    // and the git-context watcher. `display_path` keeps the un-
+    // expanded `~/...` form for the visible cwd label.
+    bucket.cwd_raw = project.path.to_string_lossy().to_string();
     bucket.cwd.clone_from(&project.display_path);
-    // Placeholder welcome — `sync_welcome_snapshot` after Connected
-    // refreshes this with the real account / subscription details.
-    bucket.messages.push(crate::app::ChatMessage::welcome(
-        env!("CARGO_PKG_VERSION"),
-        "...",
-        &project.display_path,
-        "...",
+    // "Waking <project>…" placeholder system message — the only
+    // chat content the user sees during the spawn window. The
+    // Connected handler clears `bucket.messages` wholesale and
+    // replays history into the migrated bucket, so this placeholder
+    // is naturally replaced when the spawn completes. No upfront
+    // welcome card here — the real welcome lands via
+    // `sync_welcome_snapshot` after Connected, with proper
+    // account / subscription / session-id values rather than the
+    // literal `"..."` stand-ins.
+    bucket.messages.push(crate::app::ChatMessage::new(
+        crate::app::MessageRole::System(Some(crate::app::SystemSeverity::Info)),
+        vec![crate::app::MessageBlock::Text(crate::app::TextBlock::from_complete(&format!(
+            "Waking {project_name}…"
+        )))],
+        None,
     ));
     bucket.message_retained_bytes.push(0);
     app.sessions.insert(spawn_key.clone(), bucket);
@@ -125,6 +140,13 @@ pub fn spawn_for_sleeping_project(app: &mut App, project_key: &str) {
     // Named target. Failures before the first Connected event get
     // tagged with the spawn synthetic key so the visible spawning
     // bucket gets the connection-failed message.
+    //
+    // Clone `event_tx` + `spawn_key` for the panic-recovery path
+    // before moving them into `params`: if `run_connection_task`
+    // panics the bucket would otherwise stay stuck in `Spawning`
+    // forever, with no user-visible diagnostic.
+    let panic_event_tx = app.event_tx.clone();
+    let panic_session_key = spawn_key.clone();
     let params = StartConnectionParams {
         event_tx: app.event_tx.clone(),
         workspace,
@@ -150,15 +172,13 @@ pub fn spawn_for_sleeping_project(app: &mut App, project_key: &str) {
     });
 
     let project_for_log = project_name.clone();
-    tokio::task::spawn_local(async move {
-        bridge_lifecycle::run_connection_task(params, conn_slot_writer).await;
-        tracing::debug!(
-            target: crate::logging::targets::APP_SESSION,
-            event_name = "spawn_for_sleeping_project_task_exited",
-            project = %project_for_log,
-            "sleeping-project spawn connection task exited",
-        );
-    });
+    spawn_connection_task(
+        params,
+        conn_slot_writer,
+        panic_event_tx,
+        panic_session_key,
+        project_for_log,
+    );
 
     tracing::info!(
         target: crate::logging::targets::APP_SESSION,
@@ -166,4 +186,170 @@ pub fn spawn_for_sleeping_project(app: &mut App, project_key: &str) {
         project = %project_name,
         "sleeping-project spawn task started",
     );
+}
+
+/// Public entry point invoked by the Projects-pane click handler
+/// when the user clicks a non-lead session row whose session isn't
+/// currently in `app.sessions`. The drilldown lists every session
+/// from the on-disk catalog (lead + non-lead), so any non-lead
+/// click lands here.
+///
+/// Synthesizes a `__resume_<session_id>__` Session bucket
+/// (lifecycle = Spawning, placeholder welcome message, cwd seeded
+/// from the parent project's display path), switches the active
+/// session to it, and spawns a background task that calls
+/// [`forge_workspace::Workspace::get_agent_handle`] with
+/// [`forge_workspace::SessionTarget::Session`].
+///
+/// The synthetic-key migration in
+/// `crate::app::events::session::handle_connected_client_event`
+/// recognises the `__resume_<id>__` sentinel via the same
+/// `__<name>__` rule it applies to `__spawn_<project>__`, so the
+/// placeholder bucket migrates onto the real session UUID once the
+/// bridge emits its first `Connected` event.
+///
+/// No-op when the App has no workspace, when the session id can't
+/// be located in the workspace catalog, or when the parent project
+/// of the session is missing.
+pub fn spawn_for_sleeping_session(app: &mut App, session_key: &forge_workspace::SessionKey) {
+    let Some(workspace) = app.workspace.as_ref().map(Rc::clone) else {
+        tracing::warn!(
+            target: crate::logging::targets::APP_SESSION,
+            event_name = "spawn_for_sleeping_session_no_workspace",
+            session_id = %session_key.as_str(),
+            "session resume requested without a workspace; ignoring"
+        );
+        return;
+    };
+
+    // Locate the parent project so we can seed `cwd` / `cwd_raw`
+    // sensibly for the spawning window. Without this the bucket
+    // would render an empty cwd label and any user interaction
+    // during the Spawning phase (e.g. typing `@` to mention a file)
+    // would hit the empty-path branch in file_index.
+    let Some(project) = workspace
+        .list_projects()
+        .into_iter()
+        .find(|p| p.sessions.iter().any(|s| &s.session == session_key))
+    else {
+        tracing::warn!(
+            target: crate::logging::targets::APP_SESSION,
+            event_name = "spawn_for_sleeping_session_unknown",
+            session_id = %session_key.as_str(),
+            "session resume requested for an unknown session id; ignoring"
+        );
+        return;
+    };
+
+    // Synthesize the resume bucket. The synthetic-key sentinel
+    // pattern `__<name>__` is what the Connected handler matches
+    // when it migrates the bucket onto the real session UUID. Use
+    // `__resume_<id>__` to mirror the `__spawn_<project>__` flow
+    // for sleeping projects; both follow the same migration rule.
+    let synthetic_key = forge_workspace::SessionKey::from_session_id(format!(
+        "__resume_{}__",
+        session_key.as_str()
+    ));
+
+    // Idempotency: a second click on the same session row before
+    // the first Connected event lands just switches to the existing
+    // bucket — no second connection task spawned, no duplicate
+    // bucket inserted.
+    if app.sessions.contains_key(&synthetic_key) {
+        app.switch_active_session(synthetic_key);
+        return;
+    }
+
+    let mut bucket = crate::app::session::Session::new(synthetic_key.clone());
+    bucket.lifecycle_state = crate::app::session::SessionLifecycleState::Spawning;
+    bucket.cwd_raw = project.path.to_string_lossy().to_string();
+    bucket.cwd.clone_from(&project.display_path);
+    // "Waking <project>…" placeholder system message — replaced
+    // by the real welcome card via `sync_welcome_snapshot` once
+    // Connected lands and the bucket migrates to its real key.
+    let display_label = project.name.clone();
+    bucket.messages.push(crate::app::ChatMessage::new(
+        crate::app::MessageRole::System(Some(crate::app::SystemSeverity::Info)),
+        vec![crate::app::MessageBlock::Text(crate::app::TextBlock::from_complete(&format!(
+            "Waking {display_label}…"
+        )))],
+        None,
+    ));
+    bucket.message_retained_bytes.push(0);
+    app.sessions.insert(synthetic_key.clone(), bucket);
+    app.switch_active_session(synthetic_key.clone());
+
+    let panic_event_tx = app.event_tx.clone();
+    let panic_session_key = synthetic_key.clone();
+    let params = StartConnectionParams {
+        event_tx: app.event_tx.clone(),
+        workspace,
+        session_launch_settings: SessionLaunchSettings::default(),
+        target: forge_workspace::SessionTarget::Session(session_key.clone()),
+        pre_connect_key: synthetic_key.clone(),
+        is_fatal_on_failure: false,
+    };
+
+    let conn_slot: Rc<std::cell::RefCell<Option<ConnectionSlot>>> =
+        Rc::new(std::cell::RefCell::new(None));
+    let conn_slot_writer = Rc::clone(&conn_slot);
+    CONN_SLOT.with(|slot| {
+        *slot.borrow_mut() = Some(conn_slot);
+    });
+
+    let session_id_for_log = session_key.as_str().to_owned();
+    spawn_connection_task(
+        params,
+        conn_slot_writer,
+        panic_event_tx,
+        panic_session_key,
+        session_id_for_log.clone(),
+    );
+
+    tracing::info!(
+        target: crate::logging::targets::APP_SESSION,
+        event_name = "spawn_for_sleeping_session_started",
+        session_id = %session_id_for_log,
+        "session resume task started",
+    );
+}
+
+/// Wrap the connection task in `catch_unwind` and dispatch a
+/// `ConnectionFailed` event if it panics, so the spawning bucket
+/// doesn't sit at `Spawning` forever with no diagnostic. Shared
+/// between the project-spawn and session-resume helpers — both
+/// route through the same `bridge_lifecycle::run_connection_task`
+/// and share the panic-recovery contract.
+fn spawn_connection_task(
+    params: StartConnectionParams,
+    conn_slot_writer: Rc<std::cell::RefCell<Option<ConnectionSlot>>>,
+    panic_event_tx: tokio::sync::mpsc::UnboundedSender<crate::agent::events::ClientEvent>,
+    panic_session_key: forge_workspace::SessionKey,
+    label_for_log: String,
+) {
+    tokio::task::spawn_local(async move {
+        let result =
+            AssertUnwindSafe(bridge_lifecycle::run_connection_task(params, conn_slot_writer))
+                .catch_unwind()
+                .await;
+        if let Err(panic) = result {
+            tracing::error!(
+                target: crate::logging::targets::APP_SESSION,
+                event_name = "spawn_task_panic",
+                label = %label_for_log,
+                session_key = %panic_session_key.as_str(),
+                "spawn task panicked; emitting ConnectionFailed",
+            );
+            let _ = panic_event_tx.send(crate::agent::events::ClientEvent::ConnectionFailed {
+                session_key: panic_session_key,
+                message: format!("internal error during spawn: {panic:?}"),
+            });
+        }
+        tracing::debug!(
+            target: crate::logging::targets::APP_SESSION,
+            event_name = "spawn_connection_task_exited",
+            label = %label_for_log,
+            "spawn connection task exited",
+        );
+    });
 }
