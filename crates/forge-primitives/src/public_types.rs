@@ -78,10 +78,21 @@ pub struct AccountInfo {
 /// names the active account from `forge.toml`. Surfaced when
 /// forge-workspace picks an account; absent when `Agent::spawn`
 /// is called directly with `display_name = None` (tests, smoke).
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 #[non_exhaustive]
 pub struct ForgeAccountIdentity {
     pub display_name: String,
+}
+
+impl ForgeAccountIdentity {
+    /// Convenience constructor — needed because the struct is
+    /// `#[non_exhaustive]`, which blocks struct-literal
+    /// construction outside this crate.
+    #[must_use]
+    pub fn new(display_name: String) -> Self {
+        Self { display_name }
+    }
 }
 
 /// Streaming partial-message event surfaced when
