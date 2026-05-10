@@ -182,6 +182,7 @@ pub(super) fn handle_auth_required_event(
         // becomes "needs auth"; if/when the user switches to it we
         // surface the hint then.
         session.session_id = None;
+        session.key = None;
         session.current_model = None;
         session.mode = None;
         session.fast_mode_state = model::FastModeState::Off;
@@ -251,6 +252,7 @@ pub(super) fn handle_connection_failed_event(app: &mut App, session_key: &Sessio
         // a background bucket is the bucket itself; the active
         // session's status stays as-is.
         session.session_id = None;
+        session.key = None;
         session.current_model = None;
         session.mode = None;
         session.fast_mode_state = model::FastModeState::Off;
@@ -431,6 +433,7 @@ pub(super) fn handle_logout_completed_event(app: &mut App, session_key: &Session
         // pending_command). Foreground switching to that bucket
         // will surface the auth-required hint via AuthRequired.
         session.session_id = None;
+        session.key = None;
         session.current_model = None;
         session.mode = None;
         session.fast_mode_state = model::FastModeState::Off;

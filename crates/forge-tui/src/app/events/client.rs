@@ -557,7 +557,6 @@ fn apply_mcp_snapshot_routed(
 /// future single-bridge multi-session expansion can detect missed
 /// frames.
 fn apply_sdk_message_routed(app: &mut App, session_id: &str, msg: forge_primitives::Message) {
-    let session_key = SessionKey::from_session_id(session_id.to_owned());
     // For new sessions the CLI doesn't emit `system/init` until AFTER
     // the first user message lands (per `spawn_inner` docs), so
     // `Client::session_id()` is empty at spawn time and that empty
@@ -582,6 +581,7 @@ fn apply_sdk_message_routed(app: &mut App, session_id: &str, msg: forge_primitiv
         // take a `&mut Session`. Drop with a breadcrumb instead and
         // keep the active bucket clean. Phase 2b's multi-bridge
         // delivery will revisit this.
+        let session_key = SessionKey::from_session_id(session_id.to_owned());
         if app.session_mut(&session_key).is_none() {
             tracing::warn!(
                 target: crate::logging::targets::APP_SESSION,
@@ -1058,7 +1058,12 @@ mod tests {
                 forge_account: None,
             },
         );
-        // Sessions A and B both unaffected; redraw flag stays false.
+        // Sessions A and B both unaffected; redraw flag stays false;
+        // the unknown key must NOT have been silently inserted.
         assert!(!app.needs_redraw);
+        assert!(
+            !app.sessions.contains_key(&unknown),
+            "unknown session key must not be inserted by the routing path"
+        );
     }
 }
