@@ -233,7 +233,7 @@ impl Workspace {
         // it from there, and the spawned `claude` subprocess
         // inherits it as `CLAUDE_CONFIG_DIR` so each session reads/
         // writes the right account's user-data tree.
-        let handle = forge_agent::Agent::spawn(account_dir.clone(), None);
+        let handle = forge_agent::Agent::spawn(account_dir.clone(), Some(account_key.0.clone()));
         match &target {
             SessionTarget::Default => {
                 let cwd = self.config.default_project().path.to_string_lossy().to_string();

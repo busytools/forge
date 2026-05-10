@@ -65,3 +65,53 @@ config_dir = "/tmp/forge-test-granite"
         "second spawn binds to Subspace's config_dir",
     );
 }
+
+#[tokio::test]
+async fn picker_display_name_reaches_bridge() {
+    let dir = tempdir().expect("tempdir");
+    fs::write(
+        dir.path().join("forge.toml"),
+        r#"
+[[projects]]
+name = "forge"
+path = "~/Projects/forge"
+default = true
+
+[[accounts]]
+display_name = "Subspace"
+config_dir = "/tmp/forge-test-display-subspace"
+
+[[accounts]]
+display_name = "Granite"
+config_dir = "/tmp/forge-test-display-granite"
+"#,
+    )
+    .expect("write forge.toml");
+
+    let workspace = Workspace::new(dir.path().to_owned()).await.expect("new");
+
+    // First spawn — LRU picks Granite (alphabetical tie-break, no
+    // usage yet: Granite < Subspace). Bridge should carry Granite's
+    // display_name.
+    let h1 = workspace
+        .get_agent_handle(SessionTarget::Default, SessionLaunchSettings::default())
+        .await
+        .expect("first spawn");
+    assert_eq!(
+        h1.display_name_for_test().as_deref(),
+        Some("Granite"),
+        "first spawn binds to Granite's display_name",
+    );
+
+    // Second spawn under a fresh SessionTarget — Subspace is now LRU.
+    let other = SessionKey::from_str_for_test("display-name-other");
+    let h2 = workspace
+        .get_agent_handle(SessionTarget::Session(other), SessionLaunchSettings::default())
+        .await
+        .expect("second spawn");
+    assert_eq!(
+        h2.display_name_for_test().as_deref(),
+        Some("Subspace"),
+        "second spawn binds to Subspace's display_name",
+    );
+}

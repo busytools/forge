@@ -97,6 +97,16 @@ impl AgentHandle {
         self.bridge.config_dir()
     }
 
+    /// Test-only accessor returning a clone of the bridge's bound
+    /// forge-account `display_name` (when forge-workspace picked
+    /// one). Same `#[doc(hidden)] pub` rationale as
+    /// [`Self::config_dir_for_test`].
+    #[doc(hidden)]
+    #[must_use]
+    pub fn display_name_for_test(&self) -> Option<String> {
+        self.bridge.display_name()
+    }
+
     // ---- Fire-and-forget Command shorthands ----
     //
     // Each method builds the matching `Command` variant and pushes it
