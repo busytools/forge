@@ -205,10 +205,14 @@ pub struct App {
     pub projects_pane_visible: bool,
     /// Click hit-targets stamped by
     /// [`crate::ui::projects_pane::render`]. Cleared on each render
-    /// and refilled. The mouse handler (next commit) iterates this
-    /// to find what was clicked. Render-time-stamp pattern from PR
-    /// #83.
+    /// and refilled. The mouse handler iterates this to find what
+    /// was clicked. Render-time-stamp pattern from PR #83.
     pub pane_hit_targets: Vec<PaneHitTarget>,
+    /// Last computed `AppLayout`, captured each frame so the mouse
+    /// handler has rect coordinates available for click math. The
+    /// Projects pane click path uses `layout.pane.contains(...)` to
+    /// gate the pane-aware hit-test.
+    pub layout: crate::ui::layout::AppLayout,
     /// Force a full terminal clear on next render frame.
     pub force_redraw: bool,
     /// Focus manager for directional/navigation key ownership.
@@ -1816,6 +1820,7 @@ impl App {
             tools_collapsed: false,
             projects_pane_visible: true,
             pane_hit_targets: Vec::new(),
+            layout: crate::ui::layout::AppLayout::default(),
             force_redraw: false,
             focus: FocusManager::default(),
             plugins: PluginsState::default(),

@@ -8,7 +8,7 @@ mod footer;
 pub(crate) mod help;
 mod highlight;
 mod input;
-mod layout;
+pub(crate) mod layout;
 mod markdown;
 mod message;
 pub mod projects_pane;

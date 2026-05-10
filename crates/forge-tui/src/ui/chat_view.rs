@@ -38,6 +38,10 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             app.projects_pane_visible,
         )
     };
+    // Cache for the mouse handler: pane click math reads
+    // `app.layout.pane` to decide whether a click landed inside the
+    // Projects pane before consulting `pane_hit_targets`.
+    app.layout = areas.clone();
 
     {
         let _t = app.perf.as_ref().map(|p| p.start("ui::chat"));

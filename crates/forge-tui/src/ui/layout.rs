@@ -9,7 +9,7 @@ pub const WIDE_TIER_MIN_WIDTH: u16 = 160;
 /// Width (columns) of the Projects pane at Wide tier.
 pub const PANE_WIDTH_WIDE: u16 = 26;
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct AppLayout {
     /// Left-side Projects pane rect when the user has the pane
     /// visible AND the terminal is at Wide tier (>= 160 cols).

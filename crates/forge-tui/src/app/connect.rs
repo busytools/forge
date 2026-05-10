@@ -147,6 +147,7 @@ pub fn create_app(cli: &Cli, workspace: Rc<forge_workspace::Workspace>) -> App {
         tools_collapsed: true,
         projects_pane_visible: true,
         pane_hit_targets: Vec::new(),
+        layout: crate::ui::layout::AppLayout::default(),
         force_redraw: false,
         focus: FocusManager::default(),
         plugins: PluginsState::default(),

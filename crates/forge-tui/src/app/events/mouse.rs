@@ -5,8 +5,11 @@
 
 use super::super::selection::clear_selection;
 use super::super::state::ScrollbarDragState;
-use super::super::{App, MessageBlock, ScrollbarGeometry, SelectionKind, SelectionPoint};
+use super::super::{
+    App, MessageBlock, PaneHitTarget, ScrollbarGeometry, SelectionKind, SelectionPoint,
+};
 use crossterm::event::{MouseEvent, MouseEventKind};
+use ratatui::layout::Rect;
 
 pub(super) const MOUSE_SCROLL_LINES: usize = 3;
 
@@ -18,6 +21,9 @@ struct MouseSelectionPoint {
 pub(super) fn handle_mouse_event(app: &mut App, mouse: MouseEvent) {
     match mouse.kind {
         MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
+            if handle_pane_click(app, mouse) {
+                return;
+            }
             if start_scrollbar_drag(app, mouse) {
                 return;
             }
@@ -354,4 +360,69 @@ fn locate_tool_call_block_at_click(app: &App, mouse: MouseEvent) -> Option<(usiz
         "click did not match any tool's recorded y-range",
     );
     None
+}
+
+/// If the click landed inside the Projects pane, route it to either
+/// [`App::switch_active_session`] (when the row maps to an in-process
+/// session) or a placeholder log (sleeping projects — the spawn flow
+/// lands in the next commit). Returns `true` when the pane consumed
+/// the click so the chat hit-test path can be skipped.
+fn handle_pane_click(app: &mut App, mouse: MouseEvent) -> bool {
+    let Some(pane) = app.layout.pane else {
+        return false;
+    };
+    if !rect_contains(pane, mouse.column, mouse.row) {
+        return false;
+    }
+    let target = app.pane_hit_targets.iter().find(|t| t.contains_y(mouse.row)).cloned();
+    let Some(target) = target else {
+        // Click landed in the pane area but outside any stamped row
+        // (banner rule, blank line, padding). Consume so the chat
+        // hit-test below can't accidentally fire on a pane click.
+        return true;
+    };
+    match target {
+        PaneHitTarget::ProjectHeader { project_name, .. } => {
+            switch_to_project_lead(app, &project_name);
+            true
+        }
+        PaneHitTarget::SessionRow { session_key, .. } => {
+            app.switch_active_session(session_key);
+            true
+        }
+    }
+}
+
+fn rect_contains(rect: Rect, x: u16, y: u16) -> bool {
+    x >= rect.x
+        && x < rect.x.saturating_add(rect.width)
+        && y >= rect.y
+        && y < rect.y.saturating_add(rect.height)
+}
+
+/// Switch to the lead session of `project_name`. If the project's
+/// lead is already an in-process session in `app.sessions`, swap to
+/// it; otherwise log a placeholder — the spawn flow lands in the
+/// next Phase 2b-α commit.
+fn switch_to_project_lead(app: &mut App, project_name: &str) {
+    let lead_session_key = app.workspace.as_ref().and_then(|workspace| {
+        workspace
+            .list_projects()
+            .into_iter()
+            .find(|p| p.key.as_str() == project_name)
+            .and_then(|p| p.sessions.into_iter().next().map(|s| s.session))
+    });
+    match lead_session_key {
+        Some(key) if app.sessions.contains_key(&key) => {
+            app.switch_active_session(key);
+        }
+        _ => {
+            tracing::info!(
+                target: crate::logging::targets::APP_SESSION,
+                event_name = "projects_pane_click_sleeping",
+                project = %project_name,
+                "click on sleeping project — spawn flow lands in Phase 2b-α task 4"
+            );
+        }
+    }
 }
