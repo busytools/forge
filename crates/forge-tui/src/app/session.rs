@@ -11,7 +11,7 @@
 //! (Phase 2 of the side-panes feature; backend prerequisite for the
 //! Projects pane UI).
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
 use forge_workspace::SessionKey;
@@ -19,16 +19,19 @@ use forge_workspace::SessionKey;
 use crate::agent::events::TerminalMap;
 use crate::agent::model;
 use crate::app::state::messages::ChatMessage;
-use crate::app::state::types::{CancelOrigin, SessionTurnState, ToolCallScope};
+use crate::app::state::types::{
+    CancelOrigin, ModeState, SessionTurnState, SessionUsageState, ToolCallScope,
+};
 use crate::app::state::viewport::ChatViewport;
 use crate::app::state::{TerminalToolCallRef, TurnNoticeRef};
 
 /// Per-session runtime state. Initialised when a session connects;
 /// dropped when the session is closed or forge-tui exits.
 ///
-/// `Default` only — `AgentHandle` doesn't derive `Debug` (it owns
-/// callback closures), so we can't derive `Debug` here either.
-#[derive(Default)]
+/// No `Debug` derive — `AgentHandle` owns callback closures and
+/// doesn't derive `Debug`. `Default` is provided by hand because
+/// [`model::FastModeState`] is plain wire enum without a `Default`
+/// impl; the rest of the fields fall through to their type defaults.
 pub struct Session {
     /// The claude-issued session UUID, also used as the map key.
     /// Stored here for symmetry; the map lookup uses the same value.
@@ -112,6 +115,80 @@ pub struct Session {
     /// Used to label tool-call rows fired by sub-agents (#84
     /// partial).
     pub subagent_attribution: HashMap<String, String>,
+
+    // ---- Runtime + model ----
+    /// Current model resolution as advertised by the bridge.
+    pub current_model: Option<model::CurrentModel>,
+    /// Models advertised by the agent SDK for this session.
+    pub available_models: Vec<model::AvailableModel>,
+    /// Commands advertised by the agent via `AvailableCommandsUpdate`.
+    pub available_commands: Vec<model::AvailableCommand>,
+    /// Subagents advertised by the agent via `AvailableAgentsUpdate`.
+    pub available_agents: Vec<model::AvailableAgent>,
+    /// Latest mode snapshot from the SDK's `system/status` events.
+    pub mode: Option<ModeState>,
+    /// Hook-observed permission mode. Higher fidelity than [`Self::mode`]
+    /// when the CLI changes mode without re-emitting status (#88).
+    pub observed_permission_mode: Option<crate::agent::state::PermissionMode>,
+    /// Hook-observed effort level. Same pattern as
+    /// [`Self::observed_permission_mode`].
+    pub observed_effort: Option<model::EffortLevel>,
+    /// Most recent model id observed on a `Message::Assistant`
+    /// envelope. Higher-fidelity than `current_model.resolved_id` for
+    /// per-turn model verification.
+    pub observed_assistant_model: Option<String>,
+    /// Latest SDK runtime liveness state.
+    pub runtime_session_state: Option<model::RuntimeSessionState>,
+    /// Fast mode state telemetry from the SDK.
+    pub fast_mode_state: model::FastModeState,
+    /// Latest config options observed from bridge `config_option_update` events.
+    pub config_options: BTreeMap<String, serde_json::Value>,
+    /// Session-wide usage and cost telemetry from the bridge.
+    pub session_usage: SessionUsageState,
+}
+
+impl Default for Session {
+    fn default() -> Self {
+        Self {
+            key: None,
+            session_id: None,
+            conn: None,
+            session_scope_epoch: 0,
+            messages: Vec::new(),
+            message_retained_bytes: Vec::new(),
+            retained_history_bytes: 0,
+            viewport: ChatViewport::default(),
+            active_turn_assistant_message_idx: None,
+            turn_state: SessionTurnState::default(),
+            is_compacting: false,
+            pending_compact_clear: false,
+            pending_interaction_ids: Vec::new(),
+            cancelled_turn_pending_hint: false,
+            pending_cancel_origin: None,
+            prompt_suggestion: None,
+            last_rate_limit_update: None,
+            turn_notice_refs: Vec::new(),
+            active_task_ids: HashSet::new(),
+            tool_call_scopes: HashMap::new(),
+            tool_call_index: HashMap::new(),
+            terminals: TerminalMap::default(),
+            terminal_tool_calls: Vec::new(),
+            terminal_tool_call_membership: HashSet::new(),
+            subagent_attribution: HashMap::new(),
+            current_model: None,
+            available_models: Vec::new(),
+            available_commands: Vec::new(),
+            available_agents: Vec::new(),
+            mode: None,
+            observed_permission_mode: None,
+            observed_effort: None,
+            observed_assistant_model: None,
+            runtime_session_state: None,
+            fast_mode_state: model::FastModeState::Off,
+            config_options: BTreeMap::new(),
+            session_usage: SessionUsageState::default(),
+        }
+    }
 }
 
 impl Session {

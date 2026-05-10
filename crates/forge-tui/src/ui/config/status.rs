@@ -73,7 +73,7 @@ pub(crate) fn status_lines(app: &App) -> Vec<Line<'static>> {
     // ---- Model ----
     section_header(&mut lines, "Model");
     kv_line(&mut lines, "Model", &model_display(app));
-    if let Some(current_model) = app.current_model.as_ref() {
+    if let Some(current_model) = app.current_model() {
         kv_line(&mut lines, "Resolved model ID", &current_model.resolved_id);
         if let Some(requested_id) = current_model.requested_id.as_deref()
             && requested_id != current_model.resolved_id
@@ -82,7 +82,7 @@ pub(crate) fn status_lines(app: &App) -> Vec<Line<'static>> {
         }
     }
 
-    if let Some(ref mode) = app.mode {
+    if let Some(mode) = app.mode() {
         kv_line(&mut lines, "Mode", &mode.current_mode_name);
     }
 
@@ -146,7 +146,7 @@ fn derive_session_name(app: &App) -> String {
 }
 
 fn model_display(app: &App) -> String {
-    let Some(current_model) = app.current_model.as_ref() else {
+    let Some(current_model) = app.current_model() else {
         return "(not set)".to_owned();
     };
     current_model.display_name_long.clone()
@@ -238,10 +238,10 @@ mod tests {
     #[test]
     fn status_lines_shows_model() {
         let mut app = App::test_default();
-        app.current_model = Some(
+        app.set_current_model(Some(
             crate::agent::model::CurrentModel::new("claude-sonnet-4-7", "Sonnet", "Sonnet 4.7")
                 .authoritative(true),
-        );
+        ));
         let text = lines_to_string(&status_lines(&app));
         assert!(text.contains("Sonnet 4.7"));
     }

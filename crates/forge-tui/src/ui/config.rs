@@ -959,7 +959,7 @@ mod tests {
     #[test]
     fn model_overlay_scroll_keeps_selected_multiline_model_visible() {
         let mut app = App::test_default();
-        app.available_models = vec![
+        app.active_session_mut().unwrap().available_models = vec![
             AvailableModel::new("opus", "Opus")
                 .description("Opus 4.7")
                 .supports_effort(true)
@@ -999,7 +999,7 @@ mod tests {
     #[test]
     fn model_overlay_scroll_accounts_for_wrapped_lines() {
         let mut app = App::test_default();
-        app.available_models = vec![
+        app.active_session_mut().unwrap().available_models = vec![
             AvailableModel::new("opus", "Opus")
                 .description("1234567890")
                 .supports_effort(true)
@@ -1024,7 +1024,7 @@ mod tests {
     #[test]
     fn model_overlay_scroll_accounts_for_badge_padding_width() {
         let mut app = App::test_default();
-        app.available_models = vec![
+        app.active_session_mut().unwrap().available_models = vec![
             AvailableModel::new("opus", "Opus")
                 .description("Frontier")
                 .supports_effort(true)
@@ -1059,7 +1059,7 @@ mod tests {
     #[test]
     fn model_overlay_lines_show_positive_capability_badges_only() {
         let mut app = App::test_default();
-        app.available_models = vec![
+        app.active_session_mut().unwrap().available_models = vec![
             AvailableModel::new("sonnet", "Sonnet")
                 .description("Everyday tasks")
                 .supports_effort(true)

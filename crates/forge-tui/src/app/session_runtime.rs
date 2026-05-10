@@ -40,8 +40,8 @@ pub(crate) fn request_runtime_reload(app: &mut App) -> RuntimeReloadRequestOutco
 }
 
 pub(crate) fn request_context_usage_refresh(app: &mut App) {
-    if app.session_usage.context_usage_in_flight {
-        app.session_usage.context_usage_refresh_pending = true;
+    if app.session_usage().context_usage_in_flight {
+        app.session_usage_mut().context_usage_refresh_pending = true;
         return;
     }
 
@@ -55,8 +55,11 @@ pub(crate) fn request_context_usage_refresh(app: &mut App) {
     };
 
     let session_id = session_id.to_string();
-    app.session_usage.context_usage_in_flight = true;
-    app.session_usage.context_usage_refresh_pending = false;
+    {
+        let usage = app.session_usage_mut();
+        usage.context_usage_in_flight = true;
+        usage.context_usage_refresh_pending = false;
+    }
     match conn.get_context_usage(session_id.clone()) {
         Ok(()) => tracing::debug!(
             target: crate::logging::targets::APP_SESSION,
@@ -66,7 +69,7 @@ pub(crate) fn request_context_usage_refresh(app: &mut App) {
             session_id = %session_id,
         ),
         Err(error) => {
-            app.session_usage.context_usage_in_flight = false;
+            app.session_usage_mut().context_usage_in_flight = false;
             tracing::warn!(
                 target: crate::logging::targets::APP_SESSION,
                 event_name = "context_usage_request_failed",
@@ -136,17 +139,21 @@ pub(crate) fn request_oauth_credentials_snapshot_refresh(app: &mut App) {
 }
 
 pub(crate) fn apply_context_usage_snapshot(app: &mut App, percentage: Option<u8>) {
-    app.session_usage.context_usage_percent = percentage;
-    app.session_usage.context_usage_in_flight = false;
-    let refresh_pending = std::mem::take(&mut app.session_usage.context_usage_refresh_pending);
+    let refresh_pending = {
+        let usage = app.session_usage_mut();
+        usage.context_usage_percent = percentage;
+        usage.context_usage_in_flight = false;
+        std::mem::take(&mut usage.context_usage_refresh_pending)
+    };
     if refresh_pending {
         request_context_usage_refresh(app);
     }
 }
 
 fn clear_context_usage_refresh_state(app: &mut App) {
-    app.session_usage.context_usage_in_flight = false;
-    app.session_usage.context_usage_refresh_pending = false;
+    let usage = app.session_usage_mut();
+    usage.context_usage_in_flight = false;
+    usage.context_usage_refresh_pending = false;
 }
 
 #[cfg(test)]
@@ -198,8 +205,8 @@ mod tests {
         request_context_usage_refresh(&mut app);
         request_context_usage_refresh(&mut app);
 
-        assert!(app.session_usage.context_usage_in_flight);
-        assert!(app.session_usage.context_usage_refresh_pending);
+        assert!(app.session_usage().context_usage_in_flight);
+        assert!(app.session_usage().context_usage_refresh_pending);
         let envelope = rx.try_recv().expect("context usage command");
         assert!(matches!(
             envelope,
@@ -217,9 +224,9 @@ mod tests {
 
         apply_context_usage_snapshot(&mut app, Some(62));
 
-        assert_eq!(app.session_usage.context_usage_percent, Some(62));
-        assert!(app.session_usage.context_usage_in_flight);
-        assert!(!app.session_usage.context_usage_refresh_pending);
+        assert_eq!(app.session_usage().context_usage_percent, Some(62));
+        assert!(app.session_usage().context_usage_in_flight);
+        assert!(!app.session_usage().context_usage_refresh_pending);
         let envelope = rx.try_recv().expect("replayed context usage command");
         assert!(matches!(
             envelope,

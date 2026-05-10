@@ -263,17 +263,17 @@ async fn stress_many_tool_calls_in_one_turn() {
 async fn mode_updates_switch_known_modes_fall_back_for_unknown_ids_and_noop_without_state() {
     let mut app = test_app();
 
-    app.mode = Some(forge_tui::app::ModeState {
+    app.set_mode(Some(forge_tui::app::ModeState {
         current_mode_id: "code".into(),
         current_mode_name: "Code".into(),
         available_modes: vec![
             forge_tui::app::ModeInfo { id: "code".into(), name: "Code".into() },
             forge_tui::app::ModeInfo { id: "plan".into(), name: "Plan".into() },
         ],
-    });
+    }));
 
     send_msg(&mut app, system_message("status", serde_json::json!({"permissionMode": "plan"})));
-    let mode = app.mode.as_ref().expect("mode should still exist");
+    let mode = app.mode().expect("mode should still exist");
     assert_eq!(mode.current_mode_id, "plan");
     assert_eq!(mode.current_mode_name, "Plan");
 
@@ -281,7 +281,7 @@ async fn mode_updates_switch_known_modes_fall_back_for_unknown_ids_and_noop_with
         &mut app,
         system_message("status", serde_json::json!({"permissionMode": "unknown-mode"})),
     );
-    let mode = app.mode.as_ref().expect("mode should still exist");
+    let mode = app.mode().expect("mode should still exist");
     assert_eq!(mode.current_mode_id, "unknown-mode");
     assert_eq!(mode.current_mode_name, "unknown-mode");
 
@@ -290,7 +290,7 @@ async fn mode_updates_switch_known_modes_fall_back_for_unknown_ids_and_noop_with
         &mut no_mode_app,
         system_message("status", serde_json::json!({"permissionMode": "plan-mode"})),
     );
-    assert!(no_mode_app.mode.is_none(), "update without existing mode state is a no-op");
+    assert!(no_mode_app.mode().is_none(), "update without existing mode state is a no-op");
 }
 
 // --- Edge cases: interleaved events ---
@@ -361,11 +361,11 @@ async fn available_commands_update_replaces_previous() {
         &mut app,
         system_message("init", serde_json::json!({"slash_commands": ["/help", "/clear"]})),
     );
-    assert_eq!(app.available_commands.len(), 2);
+    assert_eq!(app.available_commands().len(), 2);
 
     // New update replaces, not appends
     send_msg(&mut app, system_message("init", serde_json::json!({"slash_commands": ["/commit"]})));
-    assert_eq!(app.available_commands.len(), 1, "replaced, not appended");
+    assert_eq!(app.available_commands().len(), 1, "replaced, not appended");
 }
 
 #[tokio::test]

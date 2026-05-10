@@ -135,7 +135,7 @@ fn handle_mode_submit(app: &mut App, args: &[&str]) -> bool {
         return true;
     };
 
-    if let Some(ref mode) = app.mode
+    if let Some(mode) = app.mode()
         && !mode.available_modes.iter().any(|m| m.id == requested_mode)
     {
         push_system_message(app, format!("Unknown mode: {requested_mode}"));
@@ -170,7 +170,7 @@ fn apply_optimistic_mode_change(app: &mut App, requested_mode: &str) {
     let Some(parsed) = PermissionMode::from_wire(requested_mode) else { return };
     app.turn_state_mut().mode = Some(parsed);
     let supports_auto_mode =
-        app.current_model.as_ref().is_some_and(|m| m.supports_auto_mode == Some(true));
+        app.current_model().is_some_and(|m| m.supports_auto_mode == Some(true));
     let supported = supported_mode_ids_filtered(
         supports_auto_mode,
         app.turn_state().supports_bypass_permissions_mode,
@@ -206,8 +206,8 @@ fn handle_model_submit(app: &mut App, args: &[&str]) -> bool {
         return true;
     };
 
-    if !app.available_models.is_empty()
-        && !app.available_models.iter().any(|candidate| candidate.id == model_name)
+    if !app.available_models().is_empty()
+        && !app.available_models().iter().any(|candidate| candidate.id == model_name)
     {
         push_system_message(app, format!("Unknown model: {model_name}"));
         return true;
@@ -249,7 +249,7 @@ fn apply_optimistic_model_change(app: &mut App, model_name: &str) {
 
     if let Some(mode) = app.turn_state().mode {
         let supports_auto_mode =
-            app.current_model.as_ref().is_some_and(|m| m.supports_auto_mode == Some(true));
+            app.current_model().is_some_and(|m| m.supports_auto_mode == Some(true));
         let supported = supported_mode_ids_filtered(
             supports_auto_mode,
             app.turn_state().supports_bypass_permissions_mode,

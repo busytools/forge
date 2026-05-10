@@ -31,17 +31,18 @@ fn reset_session_identity_state(
 ) {
     app.bump_session_scope_epoch();
     app.set_session_id(Some(session_id));
-    app.current_model = Some(current_model.clone());
-    app.mode = mode;
-    app.config_options.clear();
+    app.set_current_model(Some(current_model.clone()));
+    app.set_mode(mode);
+    app.config_options_mut().clear();
     if let Some(requested_id) = current_model.requested_id {
-        app.config_options.insert("model".to_owned(), serde_json::Value::String(requested_id));
+        app.config_options_mut()
+            .insert("model".to_owned(), serde_json::Value::String(requested_id));
     }
     app.login_hint = None;
     super::clear_compaction_state(app, false);
-    app.session_usage = super::super::SessionUsageState::default();
-    app.fast_mode_state = model::FastModeState::Off;
-    app.runtime_session_state = None;
+    *app.session_usage_mut() = super::super::SessionUsageState::default();
+    app.set_fast_mode_state(model::FastModeState::Off);
+    app.set_runtime_session_state(None);
     app.set_prompt_suggestion(None);
     app.set_last_rate_limit_update(None);
     app.should_quit = false;
@@ -85,8 +86,8 @@ fn reset_interaction_state_for_new_session(app: &mut App) {
     app.todo_scroll = 0;
     app.todo_selected = 0;
     app.focus = super::super::FocusManager::default();
-    app.available_commands.clear();
-    app.available_agents.clear();
+    app.available_commands_mut().clear();
+    app.available_agents_mut().clear();
     app.config.overlay = None;
     app.config.pending_session_title_change = None;
 }

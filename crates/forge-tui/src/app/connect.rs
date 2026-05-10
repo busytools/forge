@@ -23,7 +23,6 @@ use super::{App, AppStatus, FocusManager, HelpView, SelectionState, TodoItem};
 use crate::Cli;
 use crate::agent::client::SessionLaunchSettings;
 use crate::agent::events::ClientEvent;
-use crate::agent::model;
 use std::rc::Rc;
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -134,12 +133,9 @@ pub fn create_app(cli: &Cli, workspace: Rc<forge_workspace::Workspace>) -> App {
         workspace: Some(workspace),
         sessions,
         active_session_key: Some(pre_connect_key),
-        current_model: None,
         cwd_raw: cwd.to_string_lossy().to_string(),
         cwd: cwd_display,
         files_accessed: 0,
-        mode: None,
-        config_options: std::collections::BTreeMap::new(),
         login_hint: None,
         help_view: HelpView::Keys,
         help_open: false,
@@ -159,10 +155,7 @@ pub fn create_app(cli: &Cli, workspace: Rc<forge_workspace::Workspace>) -> App {
         todo_scroll: 0,
         todo_selected: 0,
         focus: FocusManager::default(),
-        available_commands: Vec::new(),
         plugins: PluginsState::default(),
-        available_agents: Vec::new(),
-        available_models: Vec::new(),
         recent_sessions: Vec::new(),
         session_picker: SessionPickerState::default(),
         cached_frame_area: ratatui::layout::Rect::new(0, 0, 0, 0),
@@ -185,14 +178,8 @@ pub fn create_app(cli: &Cli, workspace: Rc<forge_workspace::Workspace>) -> App {
         pending_images: Vec::new(),
         cached_todo_compact: None,
         git_context: super::git_context::GitContextState::default(),
-        session_usage: super::SessionUsageState::default(),
         usage: super::UsageState::default(),
         mcp: super::McpState::default(),
-        fast_mode_state: model::FastModeState::Off,
-        observed_permission_mode: None,
-        observed_effort: None,
-        observed_assistant_model: None,
-        runtime_session_state: None,
         account_info: None,
         active_account_display_name: None,
         oauth_credentials: None,

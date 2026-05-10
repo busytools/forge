@@ -364,7 +364,7 @@ fn build_slash_command_items(
         .map(|(name, description)| ((*name).to_owned(), (*description).to_owned()))
         .collect();
 
-    for cmd in &app.available_commands {
+    for cmd in app.available_commands() {
         let name =
             if cmd.name.starts_with('/') { cmd.name.clone() } else { format!("/{}", cmd.name) };
         match commands.get_mut(&name) {
@@ -407,7 +407,7 @@ fn build_subagent_help_items(app: &App) -> Vec<(String, String)> {
     }
 
     let mut agents: Vec<(String, String)> = app
-        .available_agents
+        .available_agents()
         .iter()
         .filter(|agent| !agent.name.trim().is_empty())
         .map(|agent| {
@@ -635,7 +635,7 @@ mod tests {
     fn slash_tab_shows_advertised_commands_with_description() {
         let mut app = App::test_default();
         app.help_view = HelpView::SlashCommands;
-        app.available_commands = vec![
+        app.active_session_mut().unwrap().available_commands = vec![
             crate::agent::model::AvailableCommand::new("/help", "Open help"),
             crate::agent::model::AvailableCommand::new("memory", ""),
         ];
@@ -709,7 +709,7 @@ mod tests {
     fn subagent_tab_shows_advertised_subagents() {
         let mut app = App::test_default();
         app.help_view = HelpView::Subagents;
-        app.available_agents = vec![
+        app.active_session_mut().unwrap().available_agents = vec![
             crate::agent::model::AvailableAgent::new("reviewer", "Review code").model("haiku"),
             crate::agent::model::AvailableAgent::new("explore", ""),
         ];

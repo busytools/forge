@@ -238,7 +238,7 @@ pub(crate) struct OverlayModelOption {
 
 pub(crate) fn model_overlay_options(app: &App) -> Vec<OverlayModelOption> {
     let mut options = app
-        .available_models
+        .available_models()
         .iter()
         .map(|model| OverlayModelOption {
             id: model.id.clone(),

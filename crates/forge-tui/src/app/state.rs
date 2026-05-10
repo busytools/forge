@@ -148,13 +148,9 @@ pub struct App {
     /// `None` only in the brief pre-Connect window where no session
     /// has landed in the map yet.
     pub active_session_key: Option<forge_workspace::SessionKey>,
-    pub current_model: Option<model::CurrentModel>,
     pub cwd: String,
     pub cwd_raw: String,
     pub files_accessed: usize,
-    pub mode: Option<ModeState>,
-    /// Latest config options observed from bridge `config_option_update` events.
-    pub config_options: BTreeMap<String, serde_json::Value>,
     /// Login hint shown when authentication is required. Rendered above the input field.
     pub login_hint: Option<LoginHint>,
     /// Active help overlay view when `?` help is open.
@@ -191,14 +187,8 @@ pub struct App {
     pub todo_selected: usize,
     /// Focus manager for directional/navigation key ownership.
     pub focus: FocusManager,
-    /// Commands advertised by the agent via `AvailableCommandsUpdate`.
-    pub available_commands: Vec<model::AvailableCommand>,
     /// Plugin inventory and UI state for the Config > Plugins view.
     pub plugins: PluginsState,
-    /// Subagents advertised by the agent via `AvailableAgentsUpdate`.
-    pub available_agents: Vec<model::AvailableAgent>,
-    /// Models advertised by the agent SDK for the active session.
-    pub available_models: Vec<model::AvailableModel>,
     /// Recently persisted session IDs discovered at startup.
     pub recent_sessions: Vec<RecentSessionInfo>,
     /// Selection state for the startup session picker screen.
@@ -253,30 +243,10 @@ pub struct App {
     pub cached_todo_compact: Option<ratatui::text::Line<'static>>,
     /// Git repo context used by footer/status rendering and live branch tracking.
     pub(crate) git_context: GitContextState,
-    /// Session-wide usage and cost telemetry from the bridge.
-    pub session_usage: SessionUsageState,
     /// Config > Usage snapshot and refresh lifecycle.
     pub usage: UsageState,
     /// Config > MCP live server snapshot and refresh lifecycle.
     pub mcp: McpState,
-    /// Fast mode state telemetry from the SDK.
-    pub fast_mode_state: model::FastModeState,
-    /// Hook-observed permission mode. Updated from every PreToolUse /
-    /// UserPromptSubmit hook input — higher fidelity than the
-    /// `system/status` event-driven `mode` field, which goes stale when
-    /// the CLI changes mode without re-emitting status (#88). Mode chip
-    /// prefers this value when set.
-    pub observed_permission_mode: Option<crate::agent::state::PermissionMode>,
-    /// Hook-observed effort level. Same pattern as
-    /// `observed_permission_mode` — populated from hook inputs on CLI
-    /// 2.1.133+. Effort chip prefers this value when set.
-    pub observed_effort: Option<model::EffortLevel>,
-    /// Most recent model id observed on a `Message::Assistant`
-    /// envelope. Higher-fidelity than `current_model.resolved_id` for
-    /// per-turn model verification.
-    pub observed_assistant_model: Option<String>,
-    /// Latest SDK runtime liveness state.
-    pub runtime_session_state: Option<model::RuntimeSessionState>,
     /// Account info from the bridge status snapshot (email, org, subscription).
     pub account_info: Option<forge_primitives::AccountInfo>,
     /// Forge-side account identity: which `[[accounts]]` entry from
@@ -759,6 +729,164 @@ impl App {
     #[must_use]
     pub fn subagent_attribution_mut(&mut self) -> &mut HashMap<String, String> {
         &mut self.active_or_synthetic_mut().subagent_attribution
+    }
+
+    // ---- Runtime + model accessors ----
+
+    /// Borrow the active session's current model resolution.
+    #[must_use]
+    pub fn current_model(&self) -> Option<&model::CurrentModel> {
+        self.active_session().and_then(|s| s.current_model.as_ref())
+    }
+
+    /// Set the active session's current model resolution.
+    pub fn set_current_model(&mut self, value: Option<model::CurrentModel>) {
+        self.active_or_synthetic_mut().current_model = value;
+    }
+
+    /// Mutable borrow of the active session's current model.
+    #[must_use]
+    pub fn current_model_mut(&mut self) -> Option<&mut model::CurrentModel> {
+        self.active_or_synthetic_mut().current_model.as_mut()
+    }
+
+    /// Borrow the active session's available-models list.
+    #[must_use]
+    pub fn available_models(&self) -> &[model::AvailableModel] {
+        self.active_session().map_or(&[], |s| s.available_models.as_slice())
+    }
+
+    /// Mutable borrow of the available-models list.
+    #[must_use]
+    pub fn available_models_mut(&mut self) -> &mut Vec<model::AvailableModel> {
+        &mut self.active_or_synthetic_mut().available_models
+    }
+
+    /// Borrow the active session's available-commands list.
+    #[must_use]
+    pub fn available_commands(&self) -> &[model::AvailableCommand] {
+        self.active_session().map_or(&[], |s| s.available_commands.as_slice())
+    }
+
+    /// Mutable borrow of the available-commands list.
+    #[must_use]
+    pub fn available_commands_mut(&mut self) -> &mut Vec<model::AvailableCommand> {
+        &mut self.active_or_synthetic_mut().available_commands
+    }
+
+    /// Borrow the active session's available-agents list.
+    #[must_use]
+    pub fn available_agents(&self) -> &[model::AvailableAgent] {
+        self.active_session().map_or(&[], |s| s.available_agents.as_slice())
+    }
+
+    /// Mutable borrow of the available-agents list.
+    #[must_use]
+    pub fn available_agents_mut(&mut self) -> &mut Vec<model::AvailableAgent> {
+        &mut self.active_or_synthetic_mut().available_agents
+    }
+
+    /// Borrow the active session's mode snapshot.
+    #[must_use]
+    pub fn mode(&self) -> Option<&ModeState> {
+        self.active_session().and_then(|s| s.mode.as_ref())
+    }
+
+    /// Set the active session's mode snapshot.
+    pub fn set_mode(&mut self, value: Option<ModeState>) {
+        self.active_or_synthetic_mut().mode = value;
+    }
+
+    /// Mutable borrow of the active session's mode snapshot.
+    #[must_use]
+    pub fn mode_mut(&mut self) -> Option<&mut ModeState> {
+        self.active_or_synthetic_mut().mode.as_mut()
+    }
+
+    /// Active session's hook-observed permission mode.
+    #[must_use]
+    pub fn observed_permission_mode(&self) -> Option<crate::agent::state::PermissionMode> {
+        self.active_session().and_then(|s| s.observed_permission_mode)
+    }
+
+    /// Set the active session's hook-observed permission mode.
+    pub fn set_observed_permission_mode(
+        &mut self,
+        value: Option<crate::agent::state::PermissionMode>,
+    ) {
+        self.active_or_synthetic_mut().observed_permission_mode = value;
+    }
+
+    /// Active session's hook-observed effort level.
+    #[must_use]
+    pub fn observed_effort(&self) -> Option<model::EffortLevel> {
+        self.active_session().and_then(|s| s.observed_effort)
+    }
+
+    /// Set the active session's hook-observed effort level.
+    pub fn set_observed_effort(&mut self, value: Option<model::EffortLevel>) {
+        self.active_or_synthetic_mut().observed_effort = value;
+    }
+
+    /// Borrow the active session's observed assistant model id.
+    #[must_use]
+    pub fn observed_assistant_model(&self) -> Option<&str> {
+        self.active_session().and_then(|s| s.observed_assistant_model.as_deref())
+    }
+
+    /// Set the active session's observed assistant model id.
+    pub fn set_observed_assistant_model(&mut self, value: Option<String>) {
+        self.active_or_synthetic_mut().observed_assistant_model = value;
+    }
+
+    /// Active session's runtime session state.
+    #[must_use]
+    pub fn runtime_session_state(&self) -> Option<model::RuntimeSessionState> {
+        self.active_session().and_then(|s| s.runtime_session_state)
+    }
+
+    /// Set the active session's runtime session state.
+    pub fn set_runtime_session_state(&mut self, value: Option<model::RuntimeSessionState>) {
+        self.active_or_synthetic_mut().runtime_session_state = value;
+    }
+
+    /// Active session's fast-mode state.
+    #[must_use]
+    pub fn fast_mode_state(&self) -> model::FastModeState {
+        self.active_session().map_or(model::FastModeState::Off, |s| s.fast_mode_state)
+    }
+
+    /// Set the active session's fast-mode state.
+    pub fn set_fast_mode_state(&mut self, value: model::FastModeState) {
+        self.active_or_synthetic_mut().fast_mode_state = value;
+    }
+
+    /// Borrow the active session's config-options map.
+    #[must_use]
+    pub fn config_options(&self) -> Option<&BTreeMap<String, serde_json::Value>> {
+        self.active_session().map(|s| &s.config_options)
+    }
+
+    /// Mutable borrow of the config-options map.
+    #[must_use]
+    pub fn config_options_mut(&mut self) -> &mut BTreeMap<String, serde_json::Value> {
+        &mut self.active_or_synthetic_mut().config_options
+    }
+
+    /// Borrow the active session's session-usage telemetry.
+    #[must_use]
+    pub fn session_usage(&self) -> &SessionUsageState {
+        static FALLBACK: std::sync::OnceLock<SessionUsageState> = std::sync::OnceLock::new();
+        match self.active_session() {
+            Some(s) => &s.session_usage,
+            None => FALLBACK.get_or_init(SessionUsageState::default),
+        }
+    }
+
+    /// Mutable borrow of the session-usage telemetry.
+    #[must_use]
+    pub fn session_usage_mut(&mut self) -> &mut SessionUsageState {
+        &mut self.active_or_synthetic_mut().session_usage
     }
 
     /// Queue a paste payload for drain-cycle finalization.
@@ -1247,8 +1375,14 @@ impl App {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         let (file_index_tx, file_index_rx) = std_mpsc::channel();
         let pending_key = forge_workspace::SessionKey::from_session_id(Self::PRE_CONNECT_KEY);
+        let mut pending_session = super::session::Session::new(pending_key.clone());
+        // Seed a synthetic `current_model` so tests that depend on
+        // model-resolution UI paths see a stable value.
+        pending_session.current_model = Some(
+            model::CurrentModel::new("test-model", "test-model", "test-model").authoritative(true),
+        );
         let mut sessions = std::collections::HashMap::new();
-        sessions.insert(pending_key.clone(), super::session::Session::new(pending_key.clone()));
+        sessions.insert(pending_key.clone(), pending_session);
         Self {
             active_view: ActiveView::Chat,
             config: ConfigState::default(),
@@ -1264,15 +1398,9 @@ impl App {
             workspace: None,
             sessions,
             active_session_key: Some(pending_key),
-            current_model: Some(
-                model::CurrentModel::new("test-model", "test-model", "test-model")
-                    .authoritative(true),
-            ),
             cwd: "/test".into(),
             cwd_raw: "/test".into(),
             files_accessed: 0,
-            mode: None,
-            config_options: BTreeMap::new(),
             login_hint: None,
             help_view: HelpView::Keys,
             help_open: false,
@@ -1292,10 +1420,7 @@ impl App {
             todo_scroll: 0,
             todo_selected: 0,
             focus: FocusManager::default(),
-            available_commands: Vec::new(),
             plugins: PluginsState::default(),
-            available_agents: Vec::new(),
-            available_models: Vec::new(),
             recent_sessions: Vec::new(),
             session_picker: SessionPickerState::default(),
             cached_frame_area: ratatui::layout::Rect::default(),
@@ -1318,14 +1443,8 @@ impl App {
             pending_images: Vec::new(),
             cached_todo_compact: None,
             git_context: GitContextState::default(),
-            session_usage: SessionUsageState::default(),
             usage: UsageState::default(),
             mcp: McpState::default(),
-            fast_mode_state: model::FastModeState::Off,
-            observed_permission_mode: None,
-            observed_effort: None,
-            observed_assistant_model: None,
-            runtime_session_state: None,
             account_info: None,
             active_account_display_name: None,
             oauth_credentials: None,
@@ -1470,10 +1589,10 @@ impl App {
 
     pub fn clear_session_runtime_identity(&mut self) {
         self.set_session_id(None);
-        self.current_model = None;
-        self.mode = None;
-        self.fast_mode_state = model::FastModeState::Off;
-        self.session_usage = SessionUsageState::default();
+        self.set_current_model(None);
+        self.set_mode(None);
+        self.set_fast_mode_state(model::FastModeState::Off);
+        *self.session_usage_mut() = SessionUsageState::default();
     }
 
     pub fn reconcile_trust_state_from_preferences_and_cwd(&mut self) {
@@ -1832,26 +1951,27 @@ mod tests {
     fn clear_session_runtime_identity_resets_session_usage() {
         let mut app = App::test_default();
         app.set_session_id(Some(crate::agent::model::SessionId::new("session-1")));
-        app.current_model = Some(
+        app.set_current_model(Some(
             crate::agent::model::CurrentModel::new("sonnet", "Claude Sonnet", "Claude Sonnet")
                 .authoritative(true),
-        );
-        app.mode = Some(crate::app::ModeState {
+        ));
+        app.set_mode(Some(crate::app::ModeState {
             current_mode_id: "plan".to_owned(),
             current_mode_name: "Plan".to_owned(),
             available_modes: Vec::new(),
-        });
-        app.session_usage.context_usage_percent = Some(62);
-        app.session_usage.context_usage_in_flight = true;
-        app.session_usage.context_usage_refresh_pending = true;
-        app.session_usage.last_compaction_pre_tokens = Some(123_456);
+        }));
+        let usage = app.session_usage_mut();
+        usage.context_usage_percent = Some(62);
+        usage.context_usage_in_flight = true;
+        usage.context_usage_refresh_pending = true;
+        usage.last_compaction_pre_tokens = Some(123_456);
 
         app.clear_session_runtime_identity();
 
         assert!(app.session_id().is_none());
-        assert!(app.current_model.is_none());
-        assert!(app.mode.is_none());
-        assert_eq!(app.session_usage, SessionUsageState::default());
+        assert!(app.current_model().is_none());
+        assert!(app.mode().is_none());
+        assert_eq!(*app.session_usage(), SessionUsageState::default());
     }
 
     #[test]

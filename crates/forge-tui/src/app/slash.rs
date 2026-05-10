@@ -170,7 +170,8 @@ mod tests {
     #[test]
     fn advertised_command_is_forwarded() {
         let mut app = App::test_default();
-        app.available_commands = vec![model::AvailableCommand::new("/help", "Help")];
+        app.active_session_mut().unwrap().available_commands =
+            vec![model::AvailableCommand::new("/help", "Help")];
         let consumed = try_handle_submit(&mut app, "/help");
         assert!(!consumed);
     }
@@ -294,14 +295,14 @@ mod tests {
     #[test]
     fn mode_argument_candidates_are_dynamic() {
         let mut app = App::test_default();
-        app.mode = Some(super::super::ModeState {
+        app.set_mode(Some(super::super::ModeState {
             current_mode_id: "plan".to_owned(),
             current_mode_name: "Plan".to_owned(),
             available_modes: vec![
                 super::super::ModeInfo { id: "plan".to_owned(), name: "Plan".to_owned() },
                 super::super::ModeInfo { id: "code".to_owned(), name: "Code".to_owned() },
             ],
-        });
+        }));
 
         let candidates = argument_candidates(&app, "/mode", 0);
         assert!(candidates.iter().any(|c| c.insert_value == "plan"));
@@ -313,7 +314,7 @@ mod tests {
     #[test]
     fn model_argument_candidates_are_dynamic() {
         let mut app = App::test_default();
-        app.available_models = vec![
+        app.active_session_mut().unwrap().available_models = vec![
             crate::agent::model::AvailableModel::new("sonnet", "Claude Sonnet")
                 .description("Balanced coding model"),
             crate::agent::model::AvailableModel::new("opus", "Claude Opus"),
@@ -328,7 +329,7 @@ mod tests {
     #[test]
     fn model_argument_candidates_hide_sdk_default_option() {
         let mut app = App::test_default();
-        app.available_models = vec![
+        app.active_session_mut().unwrap().available_models = vec![
             crate::agent::model::AvailableModel::new("default", "Default")
                 .description("Default (recommended)"),
             crate::agent::model::AvailableModel::new("sonnet", "Claude Sonnet"),
@@ -351,7 +352,7 @@ mod tests {
                 "ANTHROPIC_DEFAULT_OPUS_MODEL": "claude-opus-4-5-20251101"
             }
         });
-        app.available_models = vec![
+        app.active_session_mut().unwrap().available_models = vec![
             crate::agent::model::AvailableModel::new("opus", "Opus")
                 .description("Opus 4.7 · Most capable for complex work"),
         ];
@@ -369,7 +370,7 @@ mod tests {
     #[test]
     fn model_argument_candidates_keep_sdk_opus_description_when_unpinned() {
         let mut app = App::test_default();
-        app.available_models = vec![
+        app.active_session_mut().unwrap().available_models = vec![
             crate::agent::model::AvailableModel::new("opus", "Opus")
                 .description("Opus 4.7 · Most capable for complex work"),
         ];
@@ -396,14 +397,14 @@ mod tests {
     #[test]
     fn variable_command_argument_mode_deactivates_when_no_match() {
         let mut app = App::test_default();
-        app.mode = Some(super::super::ModeState {
+        app.set_mode(Some(super::super::ModeState {
             current_mode_id: "plan".to_owned(),
             current_mode_name: "Plan".to_owned(),
             available_modes: vec![super::super::ModeInfo {
                 id: "plan".to_owned(),
                 name: "Plan".to_owned(),
             }],
-        });
+        }));
         app.input.set_text("/mode xyz");
         let _ = app.input.set_cursor(0, "/mode xyz".chars().count());
         sync_with_cursor(&mut app);
@@ -513,19 +514,19 @@ mod tests {
                 let (handle, _rx) = forge_agent::Agent::testing_stub();
                 app.set_conn(Some(std::sync::Arc::new(handle)));
                 app.set_session_id(Some("sess-1".into()));
-                app.mode = Some(super::super::ModeState {
+                app.set_mode(Some(super::super::ModeState {
                     current_mode_id: "code".to_owned(),
                     current_mode_name: "Code".to_owned(),
                     available_modes: vec![
                         super::super::ModeInfo { id: "plan".to_owned(), name: "Plan".to_owned() },
                         super::super::ModeInfo { id: "code".to_owned(), name: "Code".to_owned() },
                     ],
-                });
+                }));
 
                 let consumed = try_handle_submit(&mut app, "/mode plan");
                 assert!(consumed);
                 assert_eq!(
-                    app.mode.as_ref().map(|m| m.current_mode_id.as_str()),
+                    app.mode().map(|m| m.current_mode_id.as_str()),
                     Some("plan"),
                     "expected mode applied synchronously to plan"
                 );
@@ -545,15 +546,15 @@ mod tests {
                 let (handle, _rx) = forge_agent::Agent::testing_stub();
                 app.set_conn(Some(std::sync::Arc::new(handle)));
                 app.set_session_id(Some("sess-1".into()));
-                app.current_model = Some(
+                app.set_current_model(Some(
                     crate::agent::model::CurrentModel::new("old-model", "old-model", "old-model")
                         .authoritative(true),
-                );
+                ));
 
                 let consumed = try_handle_submit(&mut app, "/model sonnet");
                 assert!(consumed);
                 assert_eq!(
-                    app.current_model.as_ref().map(|m| m.resolved_id.as_str()),
+                    app.current_model().map(|m| m.resolved_id.as_str()),
                     Some("sonnet"),
                     "expected current_model applied synchronously to sonnet"
                 );

@@ -630,7 +630,7 @@ fn handle_mode_cycle_key(app: &mut App, key: KeyEvent) -> bool {
     if !matches!(key.code, KeyCode::BackTab) {
         return false;
     }
-    let Some(ref mode) = app.mode else {
+    let Some(mode) = app.mode() else {
         return true;
     };
     if mode.available_modes.len() <= 1 {
@@ -641,11 +641,18 @@ fn handle_mode_cycle_key(app: &mut App, key: KeyEvent) -> bool {
         mode.available_modes.iter().position(|m| m.id == mode.current_mode_id).unwrap_or(0);
     let next_idx = (current_idx + 1) % mode.available_modes.len();
     let next = &mode.available_modes[next_idx];
+    let next_id = next.id.clone();
+    let next_name = next.name.clone();
+    let modes = mode
+        .available_modes
+        .iter()
+        .map(|m| ModeInfo { id: m.id.clone(), name: m.name.clone() })
+        .collect();
 
     if let Some(conn) = app.conn()
         && let Some(sid) = app.session_id().cloned()
     {
-        let mode_id = next.id.clone();
+        let mode_id = next_id.clone();
         let conn = Arc::clone(conn);
         tokio::task::spawn_local(async move {
             if let Err(e) = conn.set_mode(sid.to_string(), mode_id) {
@@ -660,18 +667,11 @@ fn handle_mode_cycle_key(app: &mut App, key: KeyEvent) -> bool {
         });
     }
 
-    let next_id = next.id.clone();
-    let next_name = next.name.clone();
-    let modes = mode
-        .available_modes
-        .iter()
-        .map(|m| ModeInfo { id: m.id.clone(), name: m.name.clone() })
-        .collect();
-    app.mode = Some(ModeState {
+    app.set_mode(Some(ModeState {
         current_mode_id: next_id,
         current_mode_name: next_name,
         available_modes: modes,
-    });
+    }));
     app.invalidate_layout(InvalidationLevel::Global);
     true
 }

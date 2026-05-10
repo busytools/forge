@@ -396,7 +396,7 @@ fn apply_hook_observation(
     if let Some(mode_str) = permission_mode
         && let Some(mode) = PermissionMode::from_wire(mode_str)
     {
-        app.observed_permission_mode = Some(mode);
+        app.set_observed_permission_mode(Some(mode));
     }
 
     if let Some(effort_str) = effort {
@@ -416,7 +416,7 @@ fn apply_hook_observation(
             }
         };
         if let Some(level) = level {
-            app.observed_effort = Some(level);
+            app.set_observed_effort(Some(level));
         }
     }
 

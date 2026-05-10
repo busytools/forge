@@ -260,13 +260,13 @@ async fn turn_complete_does_not_clear_todos() {
 async fn turn_complete_does_not_affect_mode() {
     let mut app = test_app();
 
-    app.mode = Some(forge_tui::app::ModeState {
+    app.set_mode(Some(forge_tui::app::ModeState {
         current_mode_id: "plan".into(),
         current_mode_name: "Plan".into(),
         available_modes: vec![forge_tui::app::ModeInfo { id: "plan".into(), name: "Plan".into() }],
-    });
+    }));
 
     send_client_event(&mut app, ClientEvent::TurnComplete { terminal_reason: None });
 
-    assert!(app.mode.is_some(), "mode should persist across turns");
+    assert!(app.mode().is_some(), "mode should persist across turns");
 }

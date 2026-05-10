@@ -51,7 +51,7 @@ pub(super) fn handle_connected_client_event(
     apply_session_cwd(app, cwd);
     reset_for_new_session(app, session_id, current_model, mode, true);
     refresh_session_git_watcher(app, prev_session_id);
-    app.available_models = available_models;
+    *app.available_models_mut() = available_models;
     app.sync_welcome_snapshot();
     if !history_messages.is_empty() {
         load_resume_history(app, history_messages);
@@ -69,7 +69,7 @@ pub(super) fn handle_connected_client_event(
         outcome = "success",
         session_id = %session_id_for_log,
         cwd = %app.cwd_raw,
-        current_model = ?app.current_model.as_ref().map(|model| model.resolved_id.clone()),
+        current_model = ?app.current_model().map(|model| model.resolved_id.clone()),
         history_message_count,
         available_model_count,
     );
@@ -320,7 +320,7 @@ pub(super) fn handle_session_replaced_event(
     app.pending_auto_submit_after_cancel = false;
     let prev_session_id = app.session_id().map(ToString::to_string);
     apply_session_cwd(app, cwd);
-    app.available_models = available_models;
+    *app.available_models_mut() = available_models;
     reset_for_new_session(app, session_id, current_model, mode, false);
     refresh_session_git_watcher(app, prev_session_id);
     app.sync_welcome_snapshot();
@@ -338,7 +338,7 @@ pub(super) fn handle_session_replaced_event(
         outcome = "success",
         session_id = %session_id_for_log,
         cwd = %app.cwd_raw,
-        current_model = ?app.current_model.as_ref().map(|model| model.resolved_id.clone()),
+        current_model = ?app.current_model().map(|model| model.resolved_id.clone()),
         history_message_count,
         available_model_count,
     );

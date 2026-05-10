@@ -255,7 +255,7 @@ fn measure_message_height_at(
     let sp = msg_spinner(base, idx, active_turn_assistant, &app.messages()[idx]);
     // Snapshot small Copy/owned fields up front so the &mut borrow on
     // `app.messages_mut()` doesn't conflict with reads of other App fields.
-    let mode_id = app.mode.as_ref().map(|mode| mode.current_mode_id.clone());
+    let mode_id = app.mode().map(|mode| mode.current_mode_id.clone());
     let layout_generation = app.viewport().layout_generation;
     let tools_collapsed = app.tools_collapsed;
     let (h, rendered_lines) = measure_message_height(
@@ -649,7 +649,7 @@ fn render_culled_messages(
         // Snapshot small App-side fields up front so the &mut borrow on
         // `app.messages_mut()` doesn't collide with concurrent reads of
         // mode / viewport / tools_collapsed.
-        let mode_id = app.mode.as_ref().map(|mode| mode.current_mode_id.clone());
+        let mode_id = app.mode().map(|mode| mode.current_mode_id.clone());
         let layout_generation = app.viewport().layout_generation;
         let tools_collapsed = app.tools_collapsed;
         if structural_skip > 0 {

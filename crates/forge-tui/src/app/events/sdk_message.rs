@@ -61,10 +61,10 @@ fn apply_fast_mode_state(app: &mut App, wire_state: forge_primitives::FastModeSt
         Wire::Cooldown => Model::Cooldown,
         Wire::On => Model::On,
     };
-    if app.fast_mode_state == model_state {
+    if app.fast_mode_state() == model_state {
         return;
     }
-    app.fast_mode_state = model_state;
+    app.set_fast_mode_state(model_state);
 }
 
 /// `apply_fast_mode_state` adapter for the System("status") path,
@@ -93,7 +93,7 @@ fn handle_assistant(app: &mut App, msg: Message) {
     // most recent observed model lets the App verify that the chip
     // matches what the CLI is actually using on each turn.
     if !message.model.is_empty() {
-        app.observed_assistant_model = Some(message.model.clone());
+        app.set_observed_assistant_model(Some(message.model.clone()));
     }
     // Outer-envelope error capture — `app.turn_state.last_assistant_error`
     // is consulted by `apply_result_finalize` to classify TurnError
@@ -423,10 +423,8 @@ fn handle_system(app: &mut App, msg: Message) {
                 if let Some(parsed) = crate::agent::state::PermissionMode::from_wire(mode_str) {
                     use crate::agent::commands::supported_mode_ids_filtered;
                     app.turn_state_mut().mode = Some(parsed);
-                    let supports_auto_mode = app
-                        .current_model
-                        .as_ref()
-                        .is_some_and(|m| m.supports_auto_mode == Some(true));
+                    let supports_auto_mode =
+                        app.current_model().is_some_and(|m| m.supports_auto_mode == Some(true));
                     let supported = supported_mode_ids_filtered(
                         supports_auto_mode,
                         app.turn_state().supports_bypass_permissions_mode,
@@ -593,7 +591,7 @@ fn apply_current_model_from_init(app: &mut App, data: &Value) {
     // into the wire shape the catalogue resolver expects. Cheap, runs
     // once on init.
     let available_models: Vec<wire::AvailableModel> = app
-        .available_models
+        .available_models()
         .iter()
         .map(|m| wire::AvailableModel {
             id: m.id.clone(),
@@ -620,7 +618,7 @@ fn apply_current_model_from_init(app: &mut App, data: &Value) {
     let next_wire =
         resolve_current_model_from_inputs(model_id, requested, resolved_runtime, &available_models);
     let next_model = convert_current_model(next_wire);
-    if app.current_model.as_ref() == Some(&next_model) {
+    if app.current_model() == Some(&next_model) {
         return;
     }
     super::apply_current_model_update(app, next_model);
@@ -653,7 +651,7 @@ fn apply_mode_state_from_init(app: &mut App, data: &Value) {
     }
 
     let supports_auto_mode =
-        app.current_model.as_ref().is_some_and(|m| m.supports_auto_mode == Some(true));
+        app.current_model().is_some_and(|m| m.supports_auto_mode == Some(true));
     let supported = supported_mode_ids_filtered(
         supports_auto_mode,
         app.turn_state().supports_bypass_permissions_mode,

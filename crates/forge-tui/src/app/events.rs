@@ -138,7 +138,7 @@ pub(super) fn apply_available_commands_update(app: &mut App, cmds: model::Availa
         outcome = "success",
         command_count = cmds.available_commands.len(),
     );
-    app.available_commands = cmds.available_commands;
+    *app.available_commands_mut() = cmds.available_commands;
     crate::app::plugins::clamp_selection(app);
     if app.slash.is_some() {
         super::slash::update_query(app);
@@ -153,16 +153,16 @@ pub(super) fn apply_available_agents_update(app: &mut App, agents: model::Availa
         outcome = "success",
         agent_count = agents.available_agents.len(),
     );
-    app.available_agents = agents.available_agents;
+    *app.available_agents_mut() = agents.available_agents;
     if app.subagent.is_some() {
         super::subagent::update_query(app);
     }
 }
 
 pub fn apply_mode_state_update(app: &mut App, mode: crate::app::ModeState) {
-    let mode_changed = app.mode.as_ref().map(|current| current.current_mode_id.as_str())
+    let mode_changed = app.mode().map(|current| current.current_mode_id.as_str())
         != Some(mode.current_mode_id.as_str());
-    app.mode = Some(mode);
+    app.set_mode(Some(mode));
     if mode_changed {
         app.invalidate_layout(InvalidationLevel::Global);
     }
@@ -176,7 +176,7 @@ pub fn apply_current_model_update(app: &mut App, current_model: model::CurrentMo
     let next_display_short = current_model.display_name_short.clone();
     let next_display_long = current_model.display_name_long.clone();
     let pending_ack_before = format!("{:?}", app.pending_command_ack);
-    app.current_model = Some(current_model);
+    app.set_current_model(Some(current_model));
     let clearing_pending = matches!(app.pending_command_ack, Some(PendingCommandAck::CurrentModel));
     if matches!(app.pending_command_ack, Some(PendingCommandAck::CurrentModel)) {
         session::clear_pending_command(app);
@@ -197,7 +197,7 @@ pub fn apply_current_model_update(app: &mut App, current_model: model::CurrentMo
 pub fn apply_current_mode_update(app: &mut App, update: &model::CurrentModeUpdate) {
     let mode_id = update.current_mode_id.to_string();
     let mut mode_changed = false;
-    if let Some(ref mut mode) = app.mode {
+    if let Some(mode) = app.mode_mut() {
         mode_changed = mode.current_mode_id != mode_id;
         if let Some(info) = mode.available_modes.iter().find(|m| m.id == mode_id) {
             mode.current_mode_name.clone_from(&info.name);
@@ -233,7 +233,7 @@ pub(super) fn handle_runtime_session_state_update(
     app: &mut App,
     state: model::RuntimeSessionState,
 ) {
-    app.runtime_session_state = Some(state);
+    app.set_runtime_session_state(Some(state));
     match state {
         model::RuntimeSessionState::Running => {
             if matches!(app.status, AppStatus::Ready | AppStatus::Thinking | AppStatus::Running)
@@ -1559,7 +1559,7 @@ mod tests {
     fn current_model_update_does_not_mutate_welcome_snapshot_after_settings_reconcile() {
         let mut app = make_test_app();
         app.set_session_id(Some(model::SessionId::new("session-1")));
-        app.current_model = Some(test_current_model("opus"));
+        app.set_current_model(Some(test_current_model("opus")));
         *app.messages_mut() =
             vec![ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "-", "/test", "session-1")];
         crate::app::config::store::set_model(
@@ -1643,7 +1643,7 @@ mod tests {
     #[test]
     fn current_model_update_leaves_existing_welcome_snapshot_unchanged() {
         let mut app = make_test_app();
-        app.current_model = Some(test_current_model("opus"));
+        app.set_current_model(Some(test_current_model("opus")));
         app.messages_mut().push(ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "-", "/test", "-"));
         app.messages_mut().push(user_msg("hello"));
 
@@ -1781,10 +1781,7 @@ mod tests {
 
         assert!(matches!(app.status, AppStatus::Ready));
         assert_eq!(app.session_id().map(ToString::to_string).as_deref(), Some("replacement"));
-        assert_eq!(
-            app.current_model.as_ref().map(|model| model.resolved_id.as_str()),
-            Some("new-model")
-        );
+        assert_eq!(app.current_model().map(|model| model.resolved_id.as_str()), Some("new-model"));
         assert_eq!(app.messages().len(), 1);
         assert!(matches!(app.messages()[0].role, MessageRole::Welcome));
         assert_eq!(app.files_accessed, 0);
@@ -2334,14 +2331,14 @@ mod tests {
         app.status = AppStatus::CommandPending;
         app.pending_command_label = Some("Switching mode...".into());
         app.pending_command_ack = Some(PendingCommandAck::CurrentMode);
-        app.mode = Some(crate::app::ModeState {
+        app.set_mode(Some(crate::app::ModeState {
             current_mode_id: "code".to_owned(),
             current_mode_name: "Code".to_owned(),
             available_modes: vec![
                 crate::app::ModeInfo { id: "code".to_owned(), name: "Code".to_owned() },
                 crate::app::ModeInfo { id: "plan".to_owned(), name: "Plan".to_owned() },
             ],
-        });
+        }));
         app.messages_mut().push(user_msg("seed"));
         let layout_generation_before = app.viewport().layout_generation;
 
@@ -2353,7 +2350,7 @@ mod tests {
         assert!(app.pending_command_label.is_none());
         assert!(app.pending_command_ack.is_none());
         let layout_generation_after = app.viewport().layout_generation;
-        let mode = app.mode.expect("mode should be present");
+        let mode = app.mode().cloned().expect("mode should be present");
         assert_eq!(mode.current_mode_id, "plan");
         assert_eq!(mode.current_mode_name, "Plan");
         assert_eq!(layout_generation_after, layout_generation_before + 1);
@@ -2362,14 +2359,14 @@ mod tests {
     #[test]
     fn mode_state_update_invalidates_layout_when_mode_changes() {
         let mut app = make_test_app();
-        app.mode = Some(crate::app::ModeState {
+        app.set_mode(Some(crate::app::ModeState {
             current_mode_id: "code".to_owned(),
             current_mode_name: "Code".to_owned(),
             available_modes: vec![
                 crate::app::ModeInfo { id: "code".to_owned(), name: "Code".to_owned() },
                 crate::app::ModeInfo { id: "plan".to_owned(), name: "Plan".to_owned() },
             ],
-        });
+        }));
         app.messages_mut().push(user_msg("seed"));
         let layout_generation_before = app.viewport().layout_generation;
 
@@ -2388,15 +2385,12 @@ mod tests {
         app.status = AppStatus::CommandPending;
         app.pending_command_label = Some("Switching model...".into());
         app.pending_command_ack = Some(PendingCommandAck::CurrentModel);
-        app.current_model = Some(test_current_model("old-model"));
+        app.set_current_model(Some(test_current_model("old-model")));
 
         send_msg(&mut app, system_message("init", serde_json::json!({"model": "sonnet"})));
 
         assert!(matches!(app.status, AppStatus::Ready));
-        assert_eq!(
-            app.current_model.as_ref().map(|model| model.resolved_id.as_str()),
-            Some("sonnet")
-        );
+        assert_eq!(app.current_model().map(|model| model.resolved_id.as_str()), Some("sonnet"));
         assert!(app.pending_command_label.is_none());
         assert!(app.pending_command_ack.is_none());
     }
@@ -2820,13 +2814,13 @@ mod tests {
         let mut app = make_test_app();
         app.status = AppStatus::Running;
         app.set_session_id(Some(model::SessionId::new("session-auth")));
-        app.current_model = Some(test_current_model("claude-old"));
-        app.mode = Some(crate::app::ModeState {
+        app.set_current_model(Some(test_current_model("claude-old")));
+        app.set_mode(Some(crate::app::ModeState {
             current_mode_id: "plan".into(),
             current_mode_name: "Plan".into(),
             available_modes: vec![crate::app::ModeInfo { id: "plan".into(), name: "Plan".into() }],
-        });
-        app.fast_mode_state = model::FastModeState::On;
+        }));
+        app.set_fast_mode_state(model::FastModeState::On);
         app.messages_mut().push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(tool_call(
             "task-1",
             model::ToolCallStatus::InProgress,
@@ -2854,29 +2848,29 @@ mod tests {
         };
         assert_eq!(tc.status, model::ToolCallStatus::Failed);
         assert!(app.session_id().is_none());
-        assert!(app.current_model.is_none());
-        assert!(app.mode.is_none());
-        assert_eq!(app.fast_mode_state, model::FastModeState::Off);
+        assert!(app.current_model().is_none());
+        assert!(app.mode().is_none());
+        assert_eq!(app.fast_mode_state(), model::FastModeState::Off);
     }
 
     #[test]
     fn logout_completed_clears_session_runtime_identity_caches() {
         let mut app = make_test_app();
         app.set_session_id(Some(model::SessionId::new("session-x")));
-        app.current_model = Some(test_current_model("claude-old"));
-        app.mode = Some(crate::app::ModeState {
+        app.set_current_model(Some(test_current_model("claude-old")));
+        app.set_mode(Some(crate::app::ModeState {
             current_mode_id: "plan".into(),
             current_mode_name: "Plan".into(),
             available_modes: vec![crate::app::ModeInfo { id: "plan".into(), name: "Plan".into() }],
-        });
-        app.fast_mode_state = model::FastModeState::On;
+        }));
+        app.set_fast_mode_state(model::FastModeState::On);
 
         handle_client_event(&mut app, ClientEvent::LogoutCompleted);
 
         assert!(app.session_id().is_none());
-        assert!(app.current_model.is_none());
-        assert!(app.mode.is_none());
-        assert_eq!(app.fast_mode_state, model::FastModeState::Off);
+        assert!(app.current_model().is_none());
+        assert!(app.mode().is_none());
+        assert_eq!(app.fast_mode_state(), model::FastModeState::Off);
     }
 
     #[test]
@@ -2958,10 +2952,10 @@ mod tests {
         assert!(app.is_compacting());
         assert!(app.pending_compact_clear());
         assert_eq!(
-            app.session_usage.last_compaction_trigger,
+            app.session_usage().last_compaction_trigger,
             Some(model::CompactionTrigger::Manual)
         );
-        assert_eq!(app.session_usage.last_compaction_pre_tokens, Some(123_456));
+        assert_eq!(app.session_usage().last_compaction_pre_tokens, Some(123_456));
     }
 
     #[test]
@@ -2981,14 +2975,17 @@ mod tests {
 
         assert!(app.is_compacting());
         assert!(!app.pending_compact_clear());
-        assert_eq!(app.session_usage.last_compaction_trigger, Some(model::CompactionTrigger::Auto));
-        assert_eq!(app.session_usage.last_compaction_pre_tokens, Some(234_567));
+        assert_eq!(
+            app.session_usage().last_compaction_trigger,
+            Some(model::CompactionTrigger::Auto)
+        );
+        assert_eq!(app.session_usage().last_compaction_pre_tokens, Some(234_567));
     }
 
     #[test]
     fn fast_mode_update_sets_state() {
         let mut app = make_test_app();
-        assert_eq!(app.fast_mode_state, model::FastModeState::Off);
+        assert_eq!(app.fast_mode_state(), model::FastModeState::Off);
 
         // Wire path: FastMode arrives via the `fast_mode_state` field
         // on a System("status") data record, parsed by
@@ -2998,7 +2995,7 @@ mod tests {
             system_message("status", serde_json::json!({"fast_mode_state": "cooldown"})),
         );
 
-        assert_eq!(app.fast_mode_state, model::FastModeState::Cooldown);
+        assert_eq!(app.fast_mode_state(), model::FastModeState::Cooldown);
     }
 
     #[test]
@@ -5139,7 +5136,7 @@ mod tests {
             &mut app,
             system_message("session_state_changed", serde_json::json!({"state": "running"})),
         );
-        assert_eq!(app.runtime_session_state, Some(model::RuntimeSessionState::Running));
+        assert_eq!(app.runtime_session_state(), Some(model::RuntimeSessionState::Running));
         assert!(matches!(app.status, AppStatus::Running));
 
         app.status = AppStatus::Error;

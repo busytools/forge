@@ -73,7 +73,7 @@ fn footer_mcp_auth_hint(app: &App) -> FooterItem {
 }
 
 fn footer_context_usage_hint(app: &App) -> FooterItem {
-    app.session_usage
+    app.session_usage()
         .context_usage_percent
         .map(|percentage| (format!("{percentage}%"), FOOTER_CONTEXT_VALUE))
 }
@@ -146,15 +146,13 @@ fn build_primary_line(app: &App) -> Line<'static> {
     // `permission_mode` on every hook input but doesn't always re-emit
     // `system/status` after mode changes (#88).
     let effective_mode_id_name: Option<(String, String)> = app
-        .observed_permission_mode
+        .observed_permission_mode()
         .map(|m| (m.as_wire().to_owned(), m.display_name().to_owned()))
-        .or_else(|| {
-            app.mode.as_ref().map(|m| (m.current_mode_id.clone(), m.current_mode_name.clone()))
-        });
+        .or_else(|| app.mode().map(|m| (m.current_mode_id.clone(), m.current_mode_name.clone())));
 
     if let Some((mode_id, mode_name)) = effective_mode_id_name {
         let color = mode_color(&mode_id);
-        let (fast_mode_text, fast_mode_color) = fast_mode_badge(app.fast_mode_state);
+        let (fast_mode_text, fast_mode_color) = fast_mode_badge(app.fast_mode_state());
         let mut spans = Vec::new();
         push_badge(&mut spans, mode_name, color);
         if let Some(model_badge) = footer_model_badge(app) {
@@ -182,7 +180,7 @@ fn push_badge(spans: &mut Vec<Span<'static>>, text: String, color: Color) {
 }
 
 fn footer_model_badge(app: &App) -> Option<String> {
-    let current_model = app.current_model.as_ref()?;
+    let current_model = app.current_model()?;
     let mut badge = current_model.display_name_short.clone();
     if current_model.supports_effort {
         // Effective effort prefers hook-observed values (high-fidelity
@@ -191,7 +189,7 @@ fn footer_model_badge(app: &App) -> Option<String> {
         // the CLI changes effort without updating the file (e.g.
         // mid-session `/effort` change). #87, #89.
         let effective_effort =
-            app.observed_effort.unwrap_or_else(|| app.config.thinking_effort_effective());
+            app.observed_effort().unwrap_or_else(|| app.config.thinking_effort_effective());
         badge.push('/');
         badge.push_str(footer_effort_label(effective_effort));
     }
@@ -597,7 +595,7 @@ mod tests {
     #[test]
     fn footer_model_badge_uses_resolved_model_and_effort() {
         let mut app = App::test_default();
-        app.current_model = Some(
+        app.set_current_model(Some(
             model::CurrentModel::new("claude-sonnet-4-7", "Sonnet 4.7", "Sonnet 4.7")
                 .supports_effort(true)
                 .supported_effort_levels(vec![
@@ -606,7 +604,7 @@ mod tests {
                     model::EffortLevel::High,
                 ])
                 .authoritative(true),
-        );
+        ));
 
         assert_eq!(footer_model_badge(&app), Some("Sonnet 4.7/Max".to_owned()));
     }
@@ -614,10 +612,10 @@ mod tests {
     #[test]
     fn footer_model_badge_hides_effort_for_models_without_support() {
         let mut app = App::test_default();
-        app.current_model = Some(
+        app.set_current_model(Some(
             model::CurrentModel::new("claude-haiku-4-5", "Haiku 4.5", "Haiku 4.5")
                 .authoritative(true),
-        );
+        ));
 
         assert_eq!(footer_model_badge(&app), Some("Haiku 4.5".to_owned()));
     }
@@ -625,13 +623,13 @@ mod tests {
     #[test]
     fn footer_model_badge_falls_back_to_runtime_name_for_unknown_model() {
         let mut app = App::test_default();
-        app.current_model = None;
+        app.set_current_model(None);
         assert_eq!(footer_model_badge(&app), None);
 
-        app.current_model = Some(
+        app.set_current_model(Some(
             model::CurrentModel::new("unknown-model", "unknown-model", "unknown-model")
                 .authoritative(true),
-        );
+        ));
         assert_eq!(footer_model_badge(&app), Some("unknown-model".to_owned()));
     }
 
@@ -768,7 +766,7 @@ mod tests {
     #[test]
     fn footer_context_usage_hint_renders_used_percentage() {
         let mut app = App::test_default();
-        app.session_usage.context_usage_percent = Some(62);
+        app.session_usage_mut().context_usage_percent = Some(62);
 
         assert_eq!(footer_context_usage_hint(&app), Some(("62%".to_owned(), FOOTER_CONTEXT_VALUE)));
     }
@@ -776,7 +774,7 @@ mod tests {
     #[test]
     fn footer_secondary_hint_prefers_mcp_auth_over_context_usage() {
         let mut app = App::test_default();
-        app.session_usage.context_usage_percent = Some(62);
+        app.session_usage_mut().context_usage_percent = Some(62);
         app.messages_mut().push(ChatMessage::new(
             MessageRole::Welcome,
             vec![MessageBlock::Text(TextBlock::from_complete("welcome"))],

@@ -257,8 +257,9 @@ pub(crate) fn handle_compaction_boundary_update(
     if matches!(boundary.trigger, model::CompactionTrigger::Manual) {
         app.set_pending_compact_clear(true);
     }
-    app.session_usage.last_compaction_trigger = Some(boundary.trigger);
-    app.session_usage.last_compaction_pre_tokens = Some(boundary.pre_tokens);
+    let usage = app.session_usage_mut();
+    usage.last_compaction_trigger = Some(boundary.trigger);
+    usage.last_compaction_pre_tokens = Some(boundary.pre_tokens);
     tracing::debug!(
         "CompactionBoundary: trigger={:?} pre_tokens={}",
         boundary.trigger,

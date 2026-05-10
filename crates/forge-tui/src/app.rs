@@ -771,14 +771,14 @@ mod tests {
     #[test]
     fn mode_selection_then_second_enter_arms_submit() {
         let mut app = App::test_default();
-        app.mode = Some(ModeState {
+        app.set_mode(Some(ModeState {
             current_mode_id: "code".to_owned(),
             current_mode_name: "Code".to_owned(),
             available_modes: vec![
                 ModeInfo { id: "plan".to_owned(), name: "Plan".to_owned() },
                 ModeInfo { id: "code".to_owned(), name: "Code".to_owned() },
             ],
-        });
+        }));
         app.input.set_text("/mode pl");
         let _ = app.input.set_cursor(0, "/mode pl".chars().count());
         crate::app::slash::sync_with_cursor(&mut app);
@@ -803,7 +803,7 @@ mod tests {
     #[test]
     fn model_selection_then_second_enter_arms_submit() {
         let mut app = App::test_default();
-        app.available_models = vec![
+        app.active_session_mut().unwrap().available_models = vec![
             model::AvailableModel::new("sonnet", "Claude Sonnet"),
             model::AvailableModel::new("haiku", "Claude Haiku"),
         ];

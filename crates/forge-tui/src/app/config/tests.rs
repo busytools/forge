@@ -851,7 +851,8 @@ fn save_preserves_invalid_unedited_values() {
 #[test]
 fn resolved_model_uses_runtime_fallback_when_catalog_rejects_value() {
     let mut app = App::test_default();
-    app.available_models = vec![AvailableModel::new("sonnet", "Claude Sonnet")];
+    app.active_session_mut().unwrap().available_models =
+        vec![AvailableModel::new("sonnet", "Claude Sonnet")];
     store::set_model(&mut app.config.committed_settings_document, Some("unknown"));
 
     let resolved = resolved_setting(&app, setting_spec(SettingId::Model));
@@ -863,7 +864,7 @@ fn resolved_model_uses_runtime_fallback_when_catalog_rejects_value() {
 #[test]
 fn model_overlay_options_are_sorted_alphabetically() {
     let mut app = App::test_default();
-    app.available_models = vec![
+    app.active_session_mut().unwrap().available_models = vec![
         AvailableModel::new("sonnet", "Sonnet"),
         AvailableModel::new("haiku", "Haiku"),
         AvailableModel::new("opus", "Opus"),
