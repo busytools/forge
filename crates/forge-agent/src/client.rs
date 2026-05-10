@@ -90,6 +90,7 @@ pub enum AgentEvent {
     StatusSnapshot {
         session_id: String,
         account: forge_primitives::AccountInfo,
+        forge_account: Option<forge_primitives::ForgeAccountIdentity>,
     },
     OauthCredentialsSnapshot {
         session_id: String,

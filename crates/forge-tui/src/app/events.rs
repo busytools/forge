@@ -1887,6 +1887,7 @@ mod tests {
                     api_key_source: None,
                     api_provider: None,
                 },
+                forge_account: None,
             },
         );
 
@@ -1916,6 +1917,7 @@ mod tests {
                     api_key_source: None,
                     api_provider: None,
                 },
+                forge_account: None,
             },
         );
 

@@ -327,15 +327,19 @@ impl Agent {
         (handle, commands_rx)
     }
 
-    /// Spawn a new agent runtime bound to `config_dir`. The path is
-    /// stored on the bridge as a typed field; every in-process
-    /// accessor (oauth, settings, catalog scans) reads it directly,
-    /// and the spawned `claude` subprocess inherits it as
-    /// `CLAUDE_CONFIG_DIR`. Returns a handle holding the command
-    /// sender + events receiver + direct-accessor passthroughs.
+    /// Spawn a new agent runtime bound to `config_dir` with an
+    /// optional forge-account `display_name`. Both are stored on
+    /// the bridge as typed fields. `config_dir` is consulted by
+    /// every in-process accessor (oauth, settings, catalog scans)
+    /// and exported to the spawned `claude` subprocess as
+    /// `CLAUDE_CONFIG_DIR`. `display_name`, when set, is surfaced
+    /// via [`crate::client::AgentEvent::StatusSnapshot`] so the TUI
+    /// renders which forge-account the bridge is bound to. Returns a handle
+    /// holding the command sender + events receiver + direct-
+    /// accessor passthroughs.
     #[must_use]
-    pub fn spawn(config_dir: PathBuf) -> AgentHandle {
-        let bridge = ForgeSdkBridge::new(config_dir);
+    pub fn spawn(config_dir: PathBuf, display_name: Option<String>) -> AgentHandle {
+        let bridge = ForgeSdkBridge::new(config_dir, display_name);
         let agent_event_rx = bridge.take_events().unwrap_or_else(|| mpsc::unbounded_channel().1);
 
         let (commands_tx, commands_rx) = mpsc::unbounded_channel::<Command>();

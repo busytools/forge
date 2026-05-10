@@ -78,7 +78,11 @@ pub enum ClientEvent {
     /// /logout completed via `claude auth logout`.
     LogoutCompleted,
     /// Status snapshot received from bridge (account info).
-    StatusSnapshotReceived { session_id: String, account: forge_primitives::AccountInfo },
+    StatusSnapshotReceived {
+        session_id: String,
+        account: forge_primitives::AccountInfo,
+        forge_account: Option<forge_primitives::ForgeAccountIdentity>,
+    },
     /// OAuth credentials snapshot received from bridge. `credentials` is
     /// `None` when no credentials file exists or it's empty/malformed.
     OauthCredentialsSnapshotReceived {

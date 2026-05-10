@@ -140,7 +140,7 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
         ClientEvent::LogoutCompleted => {
             session::handle_logout_completed_event(app);
         }
-        ClientEvent::StatusSnapshotReceived { session_id, account } => {
+        ClientEvent::StatusSnapshotReceived { session_id, account, forge_account: _ } => {
             drop_if_stale_session!(
                 app,
                 session_id,

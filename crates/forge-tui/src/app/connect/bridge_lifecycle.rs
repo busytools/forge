@@ -195,8 +195,12 @@ fn handle_agent_event(
         AgentEvent::SessionsListed { sessions } => {
             let _ = event_tx.send(ClientEvent::SessionsListed { sessions });
         }
-        AgentEvent::StatusSnapshot { session_id, account } => {
-            let _ = event_tx.send(ClientEvent::StatusSnapshotReceived { session_id, account });
+        AgentEvent::StatusSnapshot { session_id, account, forge_account } => {
+            let _ = event_tx.send(ClientEvent::StatusSnapshotReceived {
+                session_id,
+                account,
+                forge_account,
+            });
         }
         AgentEvent::OauthCredentialsSnapshot { session_id, credentials } => {
             let _ = event_tx

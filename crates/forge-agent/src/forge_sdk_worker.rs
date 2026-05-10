@@ -55,6 +55,7 @@ pub(crate) async fn spawn_session(
     }
 
     let config_dir = bridge.config_dir();
+    let display_name = bridge.display_name();
     let options = build_options_with_callback(
         cwd,
         resume_id,
@@ -114,6 +115,7 @@ pub(crate) async fn spawn_session(
         launch_settings,
         resume_id,
         &config_dir,
+        display_name.as_deref(),
     )
     .await;
 
@@ -127,6 +129,7 @@ pub(crate) async fn spawn_session(
 
 /// Build the typed `Connected` envelope from the SDK's cached init data
 /// + the initialize `control_response`, and emit it onto `event_tx`.
+#[allow(clippy::too_many_arguments)]
 async fn emit_connected(
     event_tx: &mpsc::UnboundedSender<AgentEvent>,
     client: &Client,
@@ -135,6 +138,7 @@ async fn emit_connected(
     launch_settings: &crate::client::SessionLaunchSettings,
     resume_id: Option<&str>,
     config_dir: &Path,
+    display_name: Option<&str>,
 ) {
     let server_info = client.get_server_info().cloned();
     let init_data = client.initial_session_data().cloned();
@@ -213,8 +217,13 @@ async fn emit_connected(
         .account_info_from_init()
         .or_else(|| crate::cloud::auth_status::account_info_from_shell(config_dir))
     {
-        let _ = event_tx
-            .send(AgentEvent::StatusSnapshot { session_id: session_id.to_owned(), account });
+        let forge_account =
+            display_name.map(|d| forge_primitives::ForgeAccountIdentity::new(d.to_owned()));
+        let _ = event_tx.send(AgentEvent::StatusSnapshot {
+            session_id: session_id.to_owned(),
+            account,
+            forge_account,
+        });
     }
 
     let _ = event_tx

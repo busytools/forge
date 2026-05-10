@@ -88,17 +88,26 @@ pub(crate) struct BridgeInner {
     /// honour the bound account, not whatever `$CLAUDE_CONFIG_DIR`
     /// the parent shell happened to have.
     config_dir: PathBuf,
+    /// Forge-internal account display name from `forge.toml`'s
+    /// `[[accounts]]`, set by the workspace picker. `None` when
+    /// `Agent::spawn` is called directly (tests, smoke). When
+    /// present, surfaced via [`AgentEvent::StatusSnapshot`] so the
+    /// TUI can render which forge-account the bridge is bound to.
+    display_name: Option<String>,
 }
 
 impl ForgeSdkBridge {
-    /// Construct a fresh bridge bound to `config_dir`. The path is
-    /// stored as a typed field; every in-process accessor (oauth,
-    /// settings, catalog scans) reads it directly, and the spawned
-    /// `claude` subprocess inherits it as `CLAUDE_CONFIG_DIR`. The
-    /// internal event channel is created here; consumers grab the
-    /// receiver once via [`ForgeSdkBridge::take_events`].
+    /// Construct a fresh bridge bound to `config_dir` with an
+    /// optional forge-account `display_name`. Both are stored as
+    /// typed fields. `config_dir` is consulted by every in-process
+    /// accessor (oauth, settings, catalog scans) and exported to
+    /// the spawned `claude` subprocess as `CLAUDE_CONFIG_DIR`.
+    /// `display_name`, when present, is surfaced via
+    /// [`AgentEvent::StatusSnapshot`]. The internal event channel
+    /// is created here; consumers grab the receiver once via
+    /// [`ForgeSdkBridge::take_events`].
     #[must_use]
-    pub(crate) fn new(config_dir: PathBuf) -> Self {
+    pub(crate) fn new(config_dir: PathBuf, display_name: Option<String>) -> Self {
         let (event_tx, events_rx) = mpsc::unbounded_channel();
         Self {
             inner: Arc::new(BridgeInner {
@@ -110,6 +119,7 @@ impl ForgeSdkBridge {
                 git_watchers: Mutex::new(HashMap::new()),
                 session_id_slot: Arc::new(Mutex::new(String::new())),
                 config_dir,
+                display_name,
             }),
         }
     }
@@ -255,7 +265,7 @@ impl ForgeSdkBridge {
 
 impl Default for ForgeSdkBridge {
     fn default() -> Self {
-        Self::new(PathBuf::from(TESTING_STUB_CONFIG_DIR))
+        Self::new(PathBuf::from(TESTING_STUB_CONFIG_DIR), None)
     }
 }
 
@@ -430,12 +440,15 @@ impl ForgeSdkBridge {
     pub(crate) fn get_status_snapshot(&self, session_id: String) -> anyhow::Result<()> {
         let event_tx = self.inner.event_tx.clone();
         let config_dir = self.inner.config_dir.clone();
+        let display_name = self.inner.display_name.clone();
         self.dispatch("get_status_snapshot", move |client| async move {
             let account = client
                 .account_info_from_init()
                 .or_else(|| crate::cloud::auth_status::account_info_from_shell(&config_dir))
                 .unwrap_or_default();
-            let _ = event_tx.send(AgentEvent::StatusSnapshot { session_id, account });
+            let forge_account = display_name.map(forge_primitives::ForgeAccountIdentity::new);
+            let _ =
+                event_tx.send(AgentEvent::StatusSnapshot { session_id, account, forge_account });
             Ok(())
         })
     }
@@ -785,6 +798,14 @@ impl ForgeSdkBridge {
         self.inner.config_dir.clone()
     }
 
+    /// Cheap clone of the bridge's bound forge-account
+    /// `display_name`, when forge-workspace picked one. Used by the
+    /// session worker to attach `forge_account` to the initial
+    /// `StatusSnapshot` emit alongside the CLI-side `account`.
+    pub(crate) fn display_name(&self) -> Option<String> {
+        self.inner.display_name.clone()
+    }
+
     pub(crate) fn project_memory_path(&self, cwd: &Path) -> PathBuf {
         crate::userdata::memory::project_memory_path(&self.inner.config_dir, cwd)
     }
@@ -823,7 +844,7 @@ mod tests {
     use super::*;
 
     fn test_bridge() -> ForgeSdkBridge {
-        ForgeSdkBridge::new(PathBuf::from(TESTING_STUB_CONFIG_DIR))
+        ForgeSdkBridge::new(PathBuf::from(TESTING_STUB_CONFIG_DIR), None)
     }
 
     #[test]
