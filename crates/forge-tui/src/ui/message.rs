@@ -1090,16 +1090,22 @@ fn welcome_lines(block: &WelcomeBlock, _width: u16) -> Vec<Line<'static>> {
     // account, "Subscription" for direct Agent::spawn callers
     // (tests / smoke). Width-pad to 13 chars + 1 space = 14 chars
     // total to align with Version/cwd/Session ID rows.
-    lines.push(Line::from(vec![
-        Span::styled(
-            format!("{pad}{:<13} ", format!("{}:", block.account_label)),
-            Style::default().fg(theme::DIM),
-        ),
-        Span::styled(
-            block.subscription.clone(),
-            Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
-        ),
-    ]));
+    //
+    // Skip the line entirely when value is empty (no data yet) —
+    // avoids flashing a placeholder while the workspace picker /
+    // status snapshot are still in flight.
+    if !block.subscription.is_empty() {
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("{pad}{:<13} ", format!("{}:", block.account_label)),
+                Style::default().fg(theme::DIM),
+            ),
+            Span::styled(
+                block.subscription.clone(),
+                Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
+            ),
+        ]));
+    }
     lines.push(Line::from(Span::styled(
         format!("{pad}cwd:          {}", block.cwd),
         Style::default().fg(theme::DIM),
@@ -1459,7 +1465,10 @@ mod tests {
 
     #[test]
     fn welcome_lines_render_expected_fields() {
-        let message = ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "-", "/cwd", "-");
+        // Pass a non-empty subscription value so the account line
+        // renders. Empty value would hide the line — see
+        // `welcome_lines_skip_account_line_when_value_empty`.
+        let message = ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "Pro", "/cwd", "-");
         let MessageBlock::Welcome(block) = &message.blocks[0] else {
             panic!("expected welcome block");
         };
@@ -1469,7 +1478,7 @@ mod tests {
             .map(|line| line.spans.into_iter().map(|s| s.content).collect())
             .collect();
         assert!(lines.iter().any(|line| line.contains("Version:")));
-        assert!(lines.iter().any(|line| line.contains("Subscription: -")));
+        assert!(lines.iter().any(|line| line.contains("Subscription:") && line.contains("Pro")));
         assert!(lines.iter().any(|line| line.contains("cwd:          /cwd")));
         assert!(lines.iter().any(|line| line.contains("Session ID:   -")));
         assert!(lines.iter().any(|line| line.contains("Tips: ")));
@@ -1477,6 +1486,30 @@ mod tests {
             WELCOME_TIPS.iter().any(|tip| lines.iter().any(|line| line.contains(tip))),
             "expected one welcome tip to be rendered"
         );
+    }
+
+    #[test]
+    fn welcome_lines_skip_account_line_when_value_empty() {
+        // Empty subscription value means no data has loaded yet
+        // (workspace picker still in flight or no workspace at
+        // all). The renderer hides the line entirely — better than
+        // showing a "-" placeholder that flickers when the real
+        // value lands.
+        let message = ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "", "/cwd", "-");
+        let MessageBlock::Welcome(block) = &message.blocks[0] else {
+            panic!("expected welcome block");
+        };
+        let rendered = welcome_lines(block, 120);
+        let lines: Vec<String> = rendered
+            .into_iter()
+            .map(|line| line.spans.into_iter().map(|s| s.content).collect())
+            .collect();
+        assert!(lines.iter().any(|line| line.contains("Version:")));
+        assert!(
+            !lines.iter().any(|line| line.contains("Subscription") || line.contains("Account:")),
+            "account/subscription line must not render when value is empty, got: {lines:?}"
+        );
+        assert!(lines.iter().any(|line| line.contains("cwd:          /cwd")));
     }
 
     // force_markdown_line_breaks

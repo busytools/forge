@@ -1414,7 +1414,7 @@ mod tests {
     }
 
     #[test]
-    fn connected_keeps_subscription_placeholder_until_status_snapshot_arrives() {
+    fn connected_leaves_account_line_empty_until_data_arrives() {
         let mut app = make_test_app();
         app.messages.push(ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "old", "/test", "old"));
 
@@ -1426,7 +1426,10 @@ mod tests {
         let Some(MessageBlock::Welcome(welcome)) = first.blocks.first() else {
             panic!("expected welcome block");
         };
-        assert_eq!(welcome.subscription, "-");
+        // Empty value means the renderer hides the line — no
+        // placeholder while the workspace picker / status snapshot
+        // are still in flight.
+        assert_eq!(welcome.subscription, "");
     }
 
     #[test]
@@ -1567,6 +1570,8 @@ mod tests {
             panic!("expected welcome block");
         };
         assert_eq!(welcome.session_id, "session-1");
+        // Reconcile must not touch the welcome — value stays at
+        // whatever the test fixture wrote ("-").
         assert_eq!(welcome.subscription, "-");
     }
 

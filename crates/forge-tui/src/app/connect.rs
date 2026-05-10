@@ -123,7 +123,7 @@ pub fn create_app(cli: &Cli, workspace: Rc<forge_workspace::Workspace>) -> App {
         settings_home_override: None,
         messages: vec![super::ChatMessage::welcome(
             env!("CARGO_PKG_VERSION"),
-            "-",
+            "",
             &cwd_display,
             "-",
         )],

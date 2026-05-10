@@ -86,10 +86,9 @@ pub enum ClientEvent {
     /// Forge-side account identity is known the moment
     /// `Workspace::get_agent_handle` returns — much earlier than
     /// the CLI-side `StatusSnapshot`. Emitted once per connection
-    /// so the welcome message can render `Account: <name>` from
-    /// the first frame after spawn rather than flickering through
-    /// the default "Subscription: -" while the CLI subprocess
-    /// boots.
+    /// so the welcome message can render `Account: <name>` as soon
+    /// as the workspace picks the account, rather than waiting for
+    /// the CLI subprocess to boot.
     ForgeAccountIdentityReady { display_name: String },
     /// OAuth credentials snapshot received from bridge. `credentials` is
     /// `None` when no credentials file exists or it's empty/malformed.

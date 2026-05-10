@@ -486,13 +486,17 @@ impl App {
     }
 
     /// Returns `(label, value)` for the welcome message's account
-    /// line. When `active_account_display_name` is set, label is
-    /// `"Account"` and value composes display_name with
+    /// line. Both empty when no data has loaded yet — the renderer
+    /// skips the line in that case, so the welcome doesn't show a
+    /// placeholder while the workspace picker / status snapshot
+    /// are still in flight.
+    ///
+    /// Once data lands: when `active_account_display_name` is set,
+    /// label is `"Account"` and value composes display_name with
     /// subscription_type (`"name"`, or `"name · tier"` when both
-    /// are present). Otherwise label is `"Subscription"` and the
-    /// value falls back to the CLI-side subscription_type alone
-    /// (preserves pre-multi-account behavior for direct
-    /// `Agent::spawn` callers).
+    /// are present). When only subscription_type is set (direct
+    /// `Agent::spawn` callers — tests / smoke), label is
+    /// `"Subscription"` and value is the tier alone.
     #[must_use]
     fn welcome_account_display(&self) -> (String, String) {
         let display_name =
@@ -508,7 +512,7 @@ impl App {
             (Some(name), Some(tier)) => ("Account".to_owned(), format!("{name} · {tier}")),
             (Some(name), None) => ("Account".to_owned(), name.to_owned()),
             (None, Some(tier)) => ("Subscription".to_owned(), tier.to_owned()),
-            (None, None) => ("Subscription".to_owned(), "-".to_owned()),
+            (None, None) => (String::new(), String::new()),
         }
     }
 
