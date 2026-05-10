@@ -2,12 +2,20 @@
 //! receiver into the App's [`ClientEvent`] channel, and own the
 //! permission/question response forwarders. The `AgentEvent` →
 //! `ClientEvent` translation lives here as private helpers.
+//!
+//! Each connection task is the per-session forwarder: it consumes
+//! [`AgentEvent`]s emitted by one [`forge_agent::AgentHandle`] and
+//! tags each translated [`ClientEvent`] with the [`SessionKey`] the
+//! App's multiplexer uses to route to the right
+//! [`crate::app::session::Session`] bucket.
 
 use crate::agent::client::AgentEvent;
 use crate::agent::events::ClientEvent;
 use crate::agent::model;
+use crate::app::App;
 use crate::error::AppError;
 use forge_primitives as types;
+use forge_workspace::SessionKey;
 use std::rc::Rc;
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -18,6 +26,21 @@ use super::type_converters::{
     map_question_request,
 };
 use super::{ConnectionSlot, StartConnectionParams};
+
+/// Resolve the [`SessionKey`] used to tag a translated
+/// [`ClientEvent`]. AgentEvents that already carry a `session_id`
+/// derive directly from it (this is the post-Connected steady
+/// state). The few AgentEvents that lack a session id
+/// (`AuthRequired`, `ConnectionFailed`, `SessionsListed`) fall back
+/// to the pre-Connected synthetic key — the App's bucket map keeps
+/// an entry under that key until the first `Connected` event
+/// migrates the bucket onto the real session UUID.
+fn session_key_for(event: &AgentEvent) -> SessionKey {
+    match event.session_id() {
+        Some(id) => SessionKey::from_session_id(id.to_owned()),
+        None => SessionKey::from_session_id(App::PRE_CONNECT_KEY),
+    }
+}
 
 pub(super) async fn run_connection_task(
     params: StartConnectionParams,
@@ -49,6 +72,12 @@ pub(super) async fn run_connection_task(
             None => forge_workspace::SessionTarget::Default,
         };
 
+        // The forwarder hasn't bound a session yet — early failures
+        // before any AgentHandle exists are tagged with the
+        // pre-Connected synthetic key so the App's session-router
+        // finds the bucket the test/bootstrap path seeded.
+        let pre_connect_key = SessionKey::from_session_id(App::PRE_CONNECT_KEY);
+
         let mut connected_once = false;
         let agent: Arc<forge_agent::AgentHandle> =
             match workspace.get_agent_handle(target, session_launch_settings).await {
@@ -56,6 +85,7 @@ pub(super) async fn run_connection_task(
                 Err(err) => {
                     emit_connection_failed(
                         &event_tx,
+                        &pre_connect_key,
                         format!("workspace.get_agent_handle failed: {err}"),
                         AppError::ConnectionFailed,
                     );
@@ -71,7 +101,10 @@ pub(super) async fn run_connection_task(
         // it now so the welcome message renders the right label
         // from the first frame after spawn.
         if let Some(display_name) = agent.display_name() {
-            let _ = event_tx.send(ClientEvent::ForgeAccountIdentityReady { display_name });
+            let _ = event_tx.send(ClientEvent::ForgeAccountIdentityReady {
+                session_key: pre_connect_key.clone(),
+                display_name,
+            });
         }
 
         let Some(mut event_rx) = agent.take_events() else {
@@ -81,6 +114,7 @@ pub(super) async fn run_connection_task(
             // rather than panic.
             emit_connection_failed(
                 &event_tx,
+                &pre_connect_key,
                 "forge-workspace yielded no event receiver".to_owned(),
                 AppError::ConnectionFailed,
             );
@@ -122,6 +156,7 @@ fn handle_agent_event(
     connected_once: &mut bool,
     event: AgentEvent,
 ) {
+    let session_key = session_key_for(&event);
     match event {
         AgentEvent::Connected {
             session_id,
@@ -143,10 +178,14 @@ fn handle_agent_event(
             );
         }
         AgentEvent::AuthRequired { method_name, method_description } => {
-            let _ = event_tx.send(ClientEvent::AuthRequired { method_name, method_description });
+            let _ = event_tx.send(ClientEvent::AuthRequired {
+                session_key,
+                method_name,
+                method_description,
+            });
         }
         AgentEvent::ConnectionFailed { message } => {
-            emit_connection_failed(event_tx, message, AppError::ConnectionFailed);
+            emit_connection_failed(event_tx, &session_key, message, AppError::ConnectionFailed);
         }
         AgentEvent::PermissionRequest { session_id, request } => {
             handle_permission_request_event(event_tx, agent, session_id, request);
@@ -155,7 +194,7 @@ fn handle_agent_event(
             handle_question_request_event(event_tx, agent, session_id, request);
         }
         AgentEvent::ElicitationRequest { session_id, request } => {
-            if event_tx.send(ClientEvent::McpElicitationRequest { request }).is_err() {
+            if event_tx.send(ClientEvent::McpElicitationRequest { session_key, request }).is_err() {
                 tracing::error!(
                     target: crate::logging::targets::APP_PERMISSION,
                     event_name = "elicitation_request_dispatch_failed",
@@ -166,17 +205,20 @@ fn handle_agent_event(
             }
         }
         AgentEvent::ElicitationComplete { elicitation_id, server_name, .. } => {
-            let _ =
-                event_tx.send(ClientEvent::McpElicitationCompleted { elicitation_id, server_name });
+            let _ = event_tx.send(ClientEvent::McpElicitationCompleted {
+                session_key,
+                elicitation_id,
+                server_name,
+            });
         }
         AgentEvent::McpAuthRedirect { redirect, .. } => {
-            let _ = event_tx.send(ClientEvent::McpAuthRedirect { redirect });
+            let _ = event_tx.send(ClientEvent::McpAuthRedirect { session_key, redirect });
         }
         AgentEvent::McpOperationError { error, .. } => {
-            let _ = event_tx.send(ClientEvent::McpOperationError { error });
+            let _ = event_tx.send(ClientEvent::McpOperationError { session_key, error });
         }
         AgentEvent::SlashError { message, .. } => {
-            let _ = event_tx.send(ClientEvent::SlashCommandError(message));
+            let _ = event_tx.send(ClientEvent::SlashCommandError { session_key, message });
         }
         AgentEvent::RuntimeReloadCompleted { session_id } => {
             let _ = event_tx.send(ClientEvent::RuntimeReloadCompleted { session_id });
@@ -457,9 +499,11 @@ fn spawn_question_response_forwarder(
 
 pub(super) fn emit_connection_failed(
     event_tx: &mpsc::UnboundedSender<ClientEvent>,
+    session_key: &SessionKey,
     message: String,
     app_error: AppError,
 ) {
-    let _ = event_tx.send(ClientEvent::ConnectionFailed(message));
+    let _ =
+        event_tx.send(ClientEvent::ConnectionFailed { session_key: session_key.clone(), message });
     let _ = event_tx.send(ClientEvent::FatalError(app_error));
 }

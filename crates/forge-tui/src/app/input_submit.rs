@@ -89,7 +89,8 @@ pub(super) fn request_cancel(app: &mut App, origin: CancelOrigin) -> Result<(), 
     conn.cancel(session_id.clone()).map_err(|e| e.to_string())?;
     app.set_pending_cancel_origin(Some(origin));
     app.set_cancelled_turn_pending_hint(matches!(origin, CancelOrigin::Manual));
-    let _ = app.event_tx.send(ClientEvent::TurnCancelled);
+    let session_key = forge_workspace::SessionKey::from_session_id(session_id.clone());
+    let _ = app.event_tx.send(ClientEvent::TurnCancelled { session_key });
     tracing::info!(
         target: crate::logging::targets::APP_INPUT,
         event_name = "turn_cancel_requested",
@@ -164,8 +165,12 @@ fn dispatch_prompt_turn(app: &mut App, text: String) {
             );
         }
         Err(e) => {
-            let _ =
-                tx.send(ClientEvent::TurnError { message: e.to_string(), terminal_reason: None });
+            let session_key = forge_workspace::SessionKey::from_session_id(session_id);
+            let _ = tx.send(ClientEvent::TurnError {
+                session_key,
+                message: e.to_string(),
+                terminal_reason: None,
+            });
         }
     }
 }

@@ -150,12 +150,15 @@ fn handle_mode_submit(app: &mut App, args: &[&str]) -> bool {
 
     let tx = app.event_tx.clone();
     let requested_mode_owned = requested_mode.to_owned();
+    let session_key = forge_workspace::SessionKey::from_session_id(sid.to_string());
     tokio::task::spawn_local(async move {
         match conn.set_mode(sid.to_string(), requested_mode_owned) {
             Ok(()) => {}
             Err(e) => {
-                let _ =
-                    tx.send(ClientEvent::SlashCommandError(format!("Failed to run /mode: {e}")));
+                let _ = tx.send(ClientEvent::SlashCommandError {
+                    session_key,
+                    message: format!("Failed to run /mode: {e}"),
+                });
             }
         }
     });
@@ -220,12 +223,15 @@ fn handle_model_submit(app: &mut App, args: &[&str]) -> bool {
 
     let tx = app.event_tx.clone();
     let model_name = model_name.to_owned();
+    let session_key = forge_workspace::SessionKey::from_session_id(sid.to_string());
     tokio::task::spawn_local(async move {
         match conn.set_model(sid.to_string(), model_name) {
             Ok(()) => {}
             Err(e) => {
-                let _ =
-                    tx.send(ClientEvent::SlashCommandError(format!("Failed to run /model: {e}")));
+                let _ = tx.send(ClientEvent::SlashCommandError {
+                    session_key,
+                    message: format!("Failed to run /model: {e}"),
+                });
             }
         }
     });
@@ -279,8 +285,14 @@ fn handle_new_session_submit(app: &mut App, args: &[&str]) -> bool {
     set_command_pending(app, "Starting new session...", None);
 
     if let Err(e) = start_new_session(app, conn.as_ref(), SessionStartReason::NewSession) {
-        let _ =
-            app.event_tx.send(ClientEvent::SlashCommandError(format!("Failed to run /new: {e}")));
+        let session_key = app
+            .active_session_key
+            .clone()
+            .unwrap_or_else(|| forge_workspace::SessionKey::from_session_id(App::PRE_CONNECT_KEY));
+        let _ = app.event_tx.send(ClientEvent::SlashCommandError {
+            session_key,
+            message: format!("Failed to run /new: {e}"),
+        });
     }
     true
 }
@@ -304,9 +316,14 @@ fn handle_resume_submit(app: &mut App, args: &[&str]) -> bool {
     set_command_pending(app, &format!("Resuming session {session_id}..."), None);
     let session_id = session_id.to_owned();
     if let Err(e) = begin_resume_session(app, conn.as_ref(), session_id) {
-        let _ = app
-            .event_tx
-            .send(ClientEvent::SlashCommandError(format!("Failed to run /resume: {e}")));
+        let session_key = app
+            .active_session_key
+            .clone()
+            .unwrap_or_else(|| forge_workspace::SessionKey::from_session_id(App::PRE_CONNECT_KEY));
+        let _ = app.event_tx.send(ClientEvent::SlashCommandError {
+            session_key,
+            message: format!("Failed to run /resume: {e}"),
+        });
     }
     true
 }

@@ -20,7 +20,7 @@ use forge_tui::ui::{SpinnerState, measure_message_height_cached};
 use ratatui::text::{Line, Span};
 use std::fmt::Write as _;
 
-use crate::helpers::{send_client_event, test_app};
+use crate::helpers::{active_session_key, send_client_event, test_app};
 use crate::message_helpers::{assistant_message, send_msg, text_block};
 
 // ---------------------------------------------------------------------------
@@ -42,7 +42,8 @@ fn stream_text(app: &mut App, text: &str) {
 }
 
 fn complete_turn(app: &mut App) {
-    send_client_event(app, ClientEvent::TurnComplete { terminal_reason: None });
+    let session_key = active_session_key(app);
+    send_client_event(app, ClientEvent::TurnComplete { session_key, terminal_reason: None });
 }
 
 /// Build a `ChatMessage` with a single text block for direct insertion.

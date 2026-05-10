@@ -10,7 +10,7 @@ use forge_tui::agent::model;
 use forge_tui::app::{AppStatus, MessageBlock, MessageRole};
 use pretty_assertions::assert_eq;
 
-use crate::helpers::{send_client_event, test_app};
+use crate::helpers::{active_session_key, send_client_event, test_app};
 use crate::message_helpers::{
     assistant_message, send_msg, system_message, text_block, tool_result_block, tool_use_block,
     user_message,
@@ -38,7 +38,8 @@ async fn full_turn_lifecycle_text_only() {
     assert!(matches!(app.status, AppStatus::Running));
 
     // Turn completes
-    send_client_event(&mut app, ClientEvent::TurnComplete { terminal_reason: None });
+    let session_key = active_session_key(&app);
+    send_client_event(&mut app, ClientEvent::TurnComplete { session_key, terminal_reason: None });
     assert!(matches!(app.status, AppStatus::Ready));
     assert_eq!(app.messages().len(), 1);
 }
@@ -68,7 +69,8 @@ async fn full_turn_lifecycle_with_tool_calls() {
     send_msg(&mut app, assistant_message(vec![text_block(" The file looks good.")]));
 
     // Turn completes
-    send_client_event(&mut app, ClientEvent::TurnComplete { terminal_reason: None });
+    let session_key = active_session_key(&app);
+    send_client_event(&mut app, ClientEvent::TurnComplete { session_key, terminal_reason: None });
     assert!(matches!(app.status, AppStatus::Ready));
 }
 
@@ -133,9 +135,10 @@ async fn todowrite_replaces_previous_items_and_clears_for_terminal_payloads() {
 async fn error_then_new_turn_recovers() {
     let mut app = test_app();
 
+    let session_key = active_session_key(&app);
     send_client_event(
         &mut app,
-        ClientEvent::TurnError { message: "timeout".into(), terminal_reason: None },
+        ClientEvent::TurnError { session_key, message: "timeout".into(), terminal_reason: None },
     );
     assert!(matches!(app.status, AppStatus::Error));
 
@@ -159,7 +162,8 @@ async fn chunks_across_turns_open_a_new_assistant_message() {
 
     // First turn.
     send_msg(&mut app, assistant_message(vec![text_block("Turn 1")]));
-    send_client_event(&mut app, ClientEvent::TurnComplete { terminal_reason: None });
+    let session_key = active_session_key(&app);
+    send_client_event(&mut app, ClientEvent::TurnComplete { session_key, terminal_reason: None });
     assert_eq!(app.messages().len(), 1);
 
     // Second turn (no user message between turns). Should open a
@@ -327,7 +331,8 @@ async fn rapid_turn_complete_then_new_streaming() {
 
     // First turn
     send_msg(&mut app, assistant_message(vec![text_block("Turn 1")]));
-    send_client_event(&mut app, ClientEvent::TurnComplete { terminal_reason: None });
+    let session_key = active_session_key(&app);
+    send_client_event(&mut app, ClientEvent::TurnComplete { session_key, terminal_reason: None });
     assert!(matches!(app.status, AppStatus::Ready));
     assert_eq!(app.files_accessed(), 0);
 
@@ -345,7 +350,8 @@ async fn rapid_turn_complete_then_new_streaming() {
     );
     assert_eq!(app.files_accessed(), 1);
 
-    send_client_event(&mut app, ClientEvent::TurnComplete { terminal_reason: None });
+    let session_key = active_session_key(&app);
+    send_client_event(&mut app, ClientEvent::TurnComplete { session_key, terminal_reason: None });
     assert!(matches!(app.status, AppStatus::Ready));
     assert_eq!(app.files_accessed(), 0, "reset again on second TurnComplete");
 }
@@ -383,9 +389,10 @@ async fn error_during_tool_calls_leaves_tool_calls_intact() {
         )]),
     );
 
+    let session_key = active_session_key(&app);
     send_client_event(
         &mut app,
-        ClientEvent::TurnError { message: "crashed".into(), terminal_reason: None },
+        ClientEvent::TurnError { session_key, message: "crashed".into(), terminal_reason: None },
     );
 
     assert!(matches!(app.status, AppStatus::Error));
@@ -423,7 +430,8 @@ async fn files_accessed_accumulates_across_tool_calls_in_one_turn() {
     }
 
     assert_eq!(app.files_accessed(), 3, "one per tool call");
-    send_client_event(&mut app, ClientEvent::TurnComplete { terminal_reason: None });
+    let session_key = active_session_key(&app);
+    send_client_event(&mut app, ClientEvent::TurnComplete { session_key, terminal_reason: None });
     assert_eq!(app.files_accessed(), 0, "reset on turn complete");
 }
 

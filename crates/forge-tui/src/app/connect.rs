@@ -228,8 +228,13 @@ pub fn start_connection(app: &mut App) {
         app.connection_started = true;
         // Surface the broken invariant as a fatal connection failure so
         // the event loop exits cleanly instead of spinning in Connecting.
+        let session_key = app
+            .active_session_key
+            .clone()
+            .unwrap_or_else(|| forge_workspace::SessionKey::from_session_id(App::PRE_CONNECT_KEY));
         bridge_lifecycle::emit_connection_failed(
             &app.event_tx,
+            &session_key,
             "internal: workspace not initialised in App; cannot spawn bridge".to_owned(),
             crate::error::AppError::ConnectionFailed,
         );

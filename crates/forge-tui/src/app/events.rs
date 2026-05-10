@@ -341,6 +341,22 @@ mod tests {
     use std::time::{Duration, Instant};
     use tokio::sync::oneshot;
 
+    /// Helper: synthetic [`forge_workspace::SessionKey`] used to
+    /// tag `ClientEvent`s emitted by tests. Tests built around
+    /// `App::test_default` always have one bucket keyed by
+    /// `App::PRE_CONNECT_KEY`, and tests that swap session ids in
+    /// (via `App::set_session_id`) migrate the bucket onto the new
+    /// key — but for tagging synthetic events both forms route
+    /// through the active-session matcher in
+    /// [`super::handle_client_event`], so the pre-Connected key is
+    /// what the multiplexer expects when no real
+    /// Connect/SessionReplaced has flowed through yet.
+    fn active_session_key(app: &App) -> forge_workspace::SessionKey {
+        app.active_session_key
+            .clone()
+            .unwrap_or_else(|| forge_workspace::SessionKey::from_session_id(App::PRE_CONNECT_KEY))
+    }
+
     // Helper: build a minimal ToolCallInfo with given id + status
 
     fn tool_call(id: &str, status: model::ToolCallStatus) -> ToolCallInfo {
@@ -474,8 +490,13 @@ mod tests {
         );
 
         // User cancels then TurnComplete finalizes the turn
-        handle_client_event(&mut app, ClientEvent::TurnCancelled);
-        handle_client_event(&mut app, ClientEvent::TurnComplete { terminal_reason: None });
+        let session_key = active_session_key(&app);
+        handle_client_event(&mut app, ClientEvent::TurnCancelled { session_key });
+        let session_key = active_session_key(&app);
+        handle_client_event(
+            &mut app,
+            ClientEvent::TurnComplete { session_key, terminal_reason: None },
+        );
 
         // Stale task ID must be gone after turn boundary
         assert!(
@@ -1345,10 +1366,15 @@ mod tests {
     fn turn_complete_after_cancel_renders_interrupted_hint() {
         let mut app = make_test_app();
 
-        handle_client_event(&mut app, ClientEvent::TurnCancelled);
+        let session_key = active_session_key(&app);
+        handle_client_event(&mut app, ClientEvent::TurnCancelled { session_key });
         assert!(app.cancelled_turn_pending_hint());
 
-        handle_client_event(&mut app, ClientEvent::TurnComplete { terminal_reason: None });
+        let session_key = active_session_key(&app);
+        handle_client_event(
+            &mut app,
+            ClientEvent::TurnComplete { session_key, terminal_reason: None },
+        );
 
         assert!(!app.cancelled_turn_pending_hint());
         let last = app.messages().last().expect("expected interruption hint message");
@@ -1369,7 +1395,11 @@ mod tests {
         ))]));
         app.set_pending_cancel_origin(Some(CancelOrigin::Manual));
 
-        handle_client_event(&mut app, ClientEvent::TurnComplete { terminal_reason: None });
+        let session_key = active_session_key(&app);
+        handle_client_event(
+            &mut app,
+            ClientEvent::TurnComplete { session_key, terminal_reason: None },
+        );
 
         assert!(matches!(app.status, AppStatus::Ready));
         assert!(!app.viewport_mut().message_height_is_current(1));
@@ -1389,7 +1419,11 @@ mod tests {
         ))]));
         app.set_pending_cancel_origin(Some(CancelOrigin::AutoQueue));
 
-        handle_client_event(&mut app, ClientEvent::TurnComplete { terminal_reason: None });
+        let session_key = active_session_key(&app);
+        handle_client_event(
+            &mut app,
+            ClientEvent::TurnComplete { session_key, terminal_reason: None },
+        );
 
         assert!(matches!(app.status, AppStatus::Ready));
         assert!(!app.viewport_mut().message_height_is_current(1));
@@ -1676,9 +1710,11 @@ mod tests {
         let mut app = make_test_app();
         app.input.set_text("keep me");
 
+        let session_key = active_session_key(&app);
         handle_client_event(
             &mut app,
             ClientEvent::AuthRequired {
+                session_key,
                 method_name: "oauth".into(),
                 method_description: "Open browser".into(),
             },
@@ -1917,9 +1953,10 @@ mod tests {
         app.set_session_id(Some(model::SessionId::new("session-1")));
 
         // Pre-snapshot: bridge tells us which account got picked.
+        let session_key = active_session_key(&app);
         handle_client_event(
             &mut app,
-            ClientEvent::ForgeAccountIdentityReady { display_name: "Subspace".into() },
+            ClientEvent::ForgeAccountIdentityReady { session_key, display_name: "Subspace".into() },
         );
 
         // App state stores the name (Status panel needs it).
@@ -2108,7 +2145,11 @@ mod tests {
         app.status = AppStatus::CommandPending;
         app.resuming_session_id = Some("resume-123".into());
 
-        handle_client_event(&mut app, ClientEvent::SlashCommandError("resume failed".into()));
+        let session_key = active_session_key(&app);
+        handle_client_event(
+            &mut app,
+            ClientEvent::SlashCommandError { session_key, message: "resume failed".into() },
+        );
 
         assert!(matches!(app.status, AppStatus::Ready));
         assert!(app.resuming_session_id.is_none());
@@ -2161,9 +2202,13 @@ mod tests {
                 },
             });
 
+        let session_key = active_session_key(&app);
         handle_client_event(
             &mut app,
-            ClientEvent::SlashCommandError("failed to rename session: boom".into()),
+            ClientEvent::SlashCommandError {
+                session_key,
+                message: "failed to rename session: boom".into(),
+            },
         );
 
         assert!(app.config.pending_session_title_change.is_none());
@@ -2180,9 +2225,11 @@ mod tests {
             Some("Starting MCP auth for claude.ai Google Calendar...".into());
         app.mcp_mut().in_flight = true;
 
+        let session_key = active_session_key(&app);
         handle_client_event(
             &mut app,
             ClientEvent::McpOperationError {
+                session_key,
                 error: forge_primitives::McpOperationError {
                     server_name: Some("claude.ai Google Calendar".into()),
                     operation: "authenticate".into(),
@@ -2581,7 +2628,11 @@ mod tests {
     #[test]
     fn turn_complete_without_cancel_does_not_render_interrupted_hint() {
         let mut app = make_test_app();
-        handle_client_event(&mut app, ClientEvent::TurnComplete { terminal_reason: None });
+        let session_key = active_session_key(&app);
+        handle_client_event(
+            &mut app,
+            ClientEvent::TurnComplete { session_key, terminal_reason: None },
+        );
         assert!(app.messages().is_empty());
     }
 
@@ -2603,7 +2654,11 @@ mod tests {
         );
         assert!(app.pending_compact_clear());
 
-        handle_client_event(&mut app, ClientEvent::TurnComplete { terminal_reason: None });
+        let session_key = active_session_key(&app);
+        handle_client_event(
+            &mut app,
+            ClientEvent::TurnComplete { session_key, terminal_reason: None },
+        );
 
         assert!(!app.pending_compact_clear());
         assert_eq!(app.messages().len(), 3);
@@ -2657,9 +2712,14 @@ mod tests {
         app.set_pending_compact_clear(true);
         app.messages_mut().push(user_msg("/compact"));
 
+        let session_key = active_session_key(&app);
         handle_client_event(
             &mut app,
-            ClientEvent::TurnError { message: "adapter failed".into(), terminal_reason: None },
+            ClientEvent::TurnError {
+                session_key,
+                message: "adapter failed".into(),
+                terminal_reason: None,
+            },
         );
 
         assert!(!app.pending_compact_clear());
@@ -2693,7 +2753,8 @@ mod tests {
         app.set_pending_compact_clear(true);
         app.set_is_compacting(true);
 
-        handle_client_event(&mut app, ClientEvent::TurnCancelled);
+        let session_key = active_session_key(&app);
+        handle_client_event(&mut app, ClientEvent::TurnCancelled { session_key });
 
         assert!(app.pending_compact_clear());
         assert!(app.is_compacting());
@@ -2706,10 +2767,16 @@ mod tests {
         app.set_pending_compact_clear(true);
         app.set_is_compacting(true);
 
-        handle_client_event(&mut app, ClientEvent::TurnCancelled);
+        let session_key = active_session_key(&app);
+        handle_client_event(&mut app, ClientEvent::TurnCancelled { session_key });
+        let session_key = active_session_key(&app);
         handle_client_event(
             &mut app,
-            ClientEvent::TurnError { message: "cancelled".into(), terminal_reason: None },
+            ClientEvent::TurnError {
+                session_key,
+                message: "cancelled".into(),
+                terminal_reason: None,
+            },
         );
 
         assert_eq!(app.messages().len(), 3);
@@ -2728,9 +2795,11 @@ mod tests {
     fn turn_error_plan_limit_shows_next_steps_guidance() {
         let mut app = make_test_app();
 
+        let session_key = active_session_key(&app);
         handle_client_event(
             &mut app,
             ClientEvent::TurnError {
+                session_key,
                 message: "HTTP 429 Too Many Requests: max turns exceeded".into(),
                 terminal_reason: None,
             },
@@ -2752,9 +2821,11 @@ mod tests {
     fn classified_turn_error_plan_limit_uses_guidance_without_text_matching() {
         let mut app = make_test_app();
 
+        let session_key = active_session_key(&app);
         handle_client_event(
             &mut app,
             ClientEvent::TurnErrorClassified {
+                session_key,
                 message: "turn failed".into(),
                 class: TurnErrorClass::PlanLimit,
                 terminal_reason: None,
@@ -2776,9 +2847,11 @@ mod tests {
     fn classified_turn_error_auth_required_sets_exit_error_and_quits() {
         let mut app = make_test_app();
 
+        let session_key = active_session_key(&app);
         handle_client_event(
             &mut app,
             ClientEvent::TurnErrorClassified {
+                session_key,
                 message: "auth required".into(),
                 class: TurnErrorClass::AuthRequired,
                 terminal_reason: None,
@@ -2800,9 +2873,10 @@ mod tests {
         app.register_tool_call_scope("task-1".into(), ToolCallScope::SubagentRoot);
         app.insert_active_task("task-1".into());
 
+        let session_key = active_session_key(&app);
         handle_client_event(
             &mut app,
-            ClientEvent::TurnError { message: "boom".into(), terminal_reason: None },
+            ClientEvent::TurnError { session_key, message: "boom".into(), terminal_reason: None },
         );
 
         assert!(app.active_task_ids().is_some_and(std::collections::HashSet::is_empty));
@@ -2831,9 +2905,11 @@ mod tests {
         app.pending_interaction_ids_mut().push("task-1".into());
         app.claim_focus_target(FocusTarget::Permission);
 
+        let session_key = active_session_key(&app);
         handle_client_event(
             &mut app,
             ClientEvent::AuthRequired {
+                session_key,
                 method_name: "oauth".into(),
                 method_description: "Open browser".into(),
             },
@@ -2865,7 +2941,8 @@ mod tests {
         }));
         app.set_fast_mode_state(model::FastModeState::On);
 
-        handle_client_event(&mut app, ClientEvent::LogoutCompleted);
+        let session_key = active_session_key(&app);
+        handle_client_event(&mut app, ClientEvent::LogoutCompleted { session_key });
 
         assert!(app.session_id().is_none());
         assert!(app.current_model().is_none());
@@ -2899,7 +2976,11 @@ mod tests {
         app.register_tool_call_scope("task-1".into(), ToolCallScope::SubagentRoot);
         app.insert_active_task("task-1".into());
 
-        handle_client_event(&mut app, ClientEvent::ConnectionFailed("bridge down".into()));
+        let session_key = active_session_key(&app);
+        handle_client_event(
+            &mut app,
+            ClientEvent::ConnectionFailed { session_key, message: "bridge down".into() },
+        );
 
         assert_eq!(app.active_turn_assistant_idx(), None);
         assert!(app.active_task_ids().is_some_and(std::collections::HashSet::is_empty));
@@ -3059,9 +3140,11 @@ mod tests {
         assert!(matches!(app.messages()[1].blocks[1], MessageBlock::Notice(_)));
         assert_eq!(app.turn_notice_refs().len(), 1);
 
+        let session_key = active_session_key(&app);
         handle_client_event(
             &mut app,
             ClientEvent::TurnErrorClassified {
+                session_key,
                 message: "HTTP 429 Too Many Requests".to_owned(),
                 class: TurnErrorClass::PlanLimit,
                 terminal_reason: None,
@@ -3099,9 +3182,11 @@ mod tests {
         app.messages_mut().push(assistant_msg(vec![]));
         app.bind_active_turn_assistant(1);
 
+        let session_key = active_session_key(&app);
         handle_client_event(
             &mut app,
             ClientEvent::TurnErrorClassified {
+                session_key,
                 message: "HTTP 429 Too Many Requests".to_owned(),
                 class: TurnErrorClass::PlanLimit,
                 terminal_reason: None,
@@ -3164,7 +3249,11 @@ mod tests {
         );
 
         assert_eq!(app.turn_notice_refs().len(), 1);
-        handle_client_event(&mut app, ClientEvent::TurnComplete { terminal_reason: None });
+        let session_key = active_session_key(&app);
+        handle_client_event(
+            &mut app,
+            ClientEvent::TurnComplete { session_key, terminal_reason: None },
+        );
         assert!(app.turn_notice_refs().is_empty());
 
         app.status = AppStatus::Thinking;
@@ -3203,12 +3292,15 @@ mod tests {
         let mut app = make_test_app();
         app.messages_mut().push(user_msg("build app"));
 
-        handle_client_event(&mut app, ClientEvent::TurnCancelled);
+        let session_key = active_session_key(&app);
+        handle_client_event(&mut app, ClientEvent::TurnCancelled { session_key });
         assert!(app.cancelled_turn_pending_hint());
 
+        let session_key = active_session_key(&app);
         handle_client_event(
             &mut app,
             ClientEvent::TurnError {
+                session_key,
                 message: "Error: Request was aborted.\n    at stack line".into(),
                 terminal_reason: None,
             },
@@ -3237,9 +3329,11 @@ mod tests {
         ))]));
         app.set_pending_cancel_origin(Some(CancelOrigin::AutoQueue));
 
+        let session_key = active_session_key(&app);
         handle_client_event(
             &mut app,
             ClientEvent::TurnError {
+                session_key,
                 message: "Error: Request was aborted.\n    at stack line".into(),
                 terminal_reason: None,
             },
@@ -3263,7 +3357,8 @@ mod tests {
             MessageBlock::ToolCall(Box::new(tool_call("tc3", model::ToolCallStatus::Completed))),
         ]));
 
-        handle_client_event(&mut app, ClientEvent::TurnCancelled);
+        let session_key = active_session_key(&app);
+        handle_client_event(&mut app, ClientEvent::TurnCancelled { session_key });
 
         let Some(last) = app.messages().last() else {
             panic!("missing assistant message");
@@ -3294,7 +3389,11 @@ mod tests {
             MessageBlock::ToolCall(Box::new(tool_call("tc2", model::ToolCallStatus::Pending))),
         ]));
 
-        handle_client_event(&mut app, ClientEvent::TurnComplete { terminal_reason: None });
+        let session_key = active_session_key(&app);
+        handle_client_event(
+            &mut app,
+            ClientEvent::TurnComplete { session_key, terminal_reason: None },
+        );
 
         let Some(last) = app.messages().last() else {
             panic!("missing assistant message");

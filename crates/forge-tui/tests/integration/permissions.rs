@@ -9,7 +9,7 @@ use forge_tui::app::{AppStatus, MessageBlock};
 use pretty_assertions::assert_eq;
 use tokio::sync::oneshot;
 
-use crate::helpers::{send_client_event, test_app};
+use crate::helpers::{active_session_key, send_client_event, test_app};
 use crate::message_helpers::{assistant_message, send_msg, text_block, tool_use_block};
 
 /// Helper: create a tool call, send it, then send a permission request for it.
@@ -195,7 +195,8 @@ async fn turn_complete_resets_transient_state() {
     app.set_files_accessed(5);
     app.spinner_frame = 42;
 
-    send_client_event(&mut app, ClientEvent::TurnComplete { terminal_reason: None });
+    let session_key = active_session_key(&app);
+    send_client_event(&mut app, ClientEvent::TurnComplete { session_key, terminal_reason: None });
 
     assert!(matches!(app.status, AppStatus::Ready));
     assert_eq!(app.files_accessed(), 0, "files_accessed should reset");
@@ -211,7 +212,8 @@ async fn turn_complete_does_not_clear_messages() {
     send_msg(&mut app, assistant_message(vec![text_block("hello")]));
     assert_eq!(app.messages().len(), 1);
 
-    send_client_event(&mut app, ClientEvent::TurnComplete { terminal_reason: None });
+    let session_key = active_session_key(&app);
+    send_client_event(&mut app, ClientEvent::TurnComplete { session_key, terminal_reason: None });
 
     assert_eq!(app.messages().len(), 1, "messages should persist across turns");
 }
@@ -230,7 +232,8 @@ async fn turn_complete_does_not_clear_tool_call_index() {
     );
     assert!(app.tool_call_index().expect("session bucket").contains_key("tc-persist"));
 
-    send_client_event(&mut app, ClientEvent::TurnComplete { terminal_reason: None });
+    let session_key = active_session_key(&app);
+    send_client_event(&mut app, ClientEvent::TurnComplete { session_key, terminal_reason: None });
 
     assert!(
         app.tool_call_index().expect("session bucket").contains_key("tc-persist"),
@@ -250,7 +253,8 @@ async fn turn_complete_does_not_clear_todos() {
     }];
     app.set_show_todo_panel(true);
 
-    send_client_event(&mut app, ClientEvent::TurnComplete { terminal_reason: None });
+    let session_key = active_session_key(&app);
+    send_client_event(&mut app, ClientEvent::TurnComplete { session_key, terminal_reason: None });
 
     assert_eq!(app.todos().len(), 1, "todos should persist across turns");
     assert!(app.show_todo_panel(), "todo panel state should persist");
@@ -266,7 +270,8 @@ async fn turn_complete_does_not_affect_mode() {
         available_modes: vec![forge_tui::app::ModeInfo { id: "plan".into(), name: "Plan".into() }],
     }));
 
-    send_client_event(&mut app, ClientEvent::TurnComplete { terminal_reason: None });
+    let session_key = active_session_key(&app);
+    send_client_event(&mut app, ClientEvent::TurnComplete { session_key, terminal_reason: None });
 
     assert!(app.mode().is_some(), "mode should persist across turns");
 }

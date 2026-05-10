@@ -3,6 +3,7 @@ use crate::agent::model;
 use crate::app::plugins::{PluginsCliActionSuccess, PluginsInventorySnapshot};
 use crate::app::{UsageSnapshot, UsageSourceKind};
 use crate::error::AppError;
+use forge_workspace::SessionKey;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -10,38 +11,70 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 /// Messages sent from the backend bridge path to the App/UI layer.
+///
+/// Variants that route to per-session state carry an explicit
+/// `session_key` field (or a `session_id` from which the key is
+/// derived at routing time). The per-session multiplexer in
+/// [`crate::app::events::handle_client_event`] uses this key to
+/// look up the target [`crate::app::session::Session`] bucket so
+/// background-session events update silently while only active-
+/// session events flip [`crate::app::App::needs_redraw`].
+///
+/// App-global variants that aren't bound to any single session
+/// (`SessionsListed`, `Plugins*`, `Usage*`, `FatalError`,
+/// `ServiceStatus`) carry no `session_key` field and update App-
+/// level state directly.
 pub enum ClientEvent {
     /// Permission request that needs user input.
+    ///
+    /// `request.session_id` carries the routing key.
     PermissionRequest {
         request: model::RequestPermissionRequest,
         response_tx: tokio::sync::oneshot::Sender<model::RequestPermissionResponse>,
     },
     /// Question request from `AskUserQuestion` that needs structured user input.
+    ///
+    /// `request.session_id` carries the routing key.
     QuestionRequest {
         request: model::RequestQuestionRequest,
         response_tx: tokio::sync::oneshot::Sender<model::RequestQuestionResponse>,
     },
     /// MCP elicitation request that needs auth or other MCP input.
-    McpElicitationRequest { request: forge_primitives::ElicitationRequest },
+    McpElicitationRequest { session_key: SessionKey, request: forge_primitives::ElicitationRequest },
     /// MCP elicitation completed in the SDK.
-    McpElicitationCompleted { elicitation_id: String, server_name: Option<String> },
+    McpElicitationCompleted {
+        session_key: SessionKey,
+        elicitation_id: String,
+        server_name: Option<String>,
+    },
     /// MCP auth redirect returned directly by the SDK auth call.
-    McpAuthRedirect { redirect: forge_primitives::McpAuthRedirect },
+    McpAuthRedirect { session_key: SessionKey, redirect: forge_primitives::McpAuthRedirect },
     /// MCP operation failed and should be surfaced in the MCP config UI.
-    McpOperationError { error: forge_primitives::McpOperationError },
+    McpOperationError { session_key: SessionKey, error: forge_primitives::McpOperationError },
     /// A prompt turn completed successfully.
-    TurnComplete { terminal_reason: Option<forge_primitives::TerminalReason> },
+    TurnComplete {
+        session_key: SessionKey,
+        terminal_reason: Option<forge_primitives::TerminalReason>,
+    },
     /// `cancel` notification was accepted by the bridge.
-    TurnCancelled,
+    TurnCancelled { session_key: SessionKey },
     /// A prompt turn failed with an error.
-    TurnError { message: String, terminal_reason: Option<forge_primitives::TerminalReason> },
+    TurnError {
+        session_key: SessionKey,
+        message: String,
+        terminal_reason: Option<forge_primitives::TerminalReason>,
+    },
     /// A prompt turn failed with bridge-provided classification metadata.
     TurnErrorClassified {
+        session_key: SessionKey,
         message: String,
         class: TurnErrorClass,
         terminal_reason: Option<forge_primitives::TerminalReason>,
     },
     /// Background connection completed successfully.
+    ///
+    /// `session_id` is the claude-issued session UUID; the
+    /// multiplexer derives [`SessionKey`] from it at routing time.
     Connected {
         session_id: model::SessionId,
         cwd: String,
@@ -51,11 +84,11 @@ pub enum ClientEvent {
         history_updates: Vec<forge_primitives::Message>,
     },
     /// Background connection failed.
-    ConnectionFailed(String),
+    ConnectionFailed { session_key: SessionKey, message: String },
     /// Authentication is required before a session can be created.
-    AuthRequired { method_name: String, method_description: String },
+    AuthRequired { session_key: SessionKey, method_name: String, method_description: String },
     /// Slash-command execution failed with a user-facing error.
-    SlashCommandError(String),
+    SlashCommandError { session_key: SessionKey, message: String },
     /// Session runtime plugin reload completed successfully.
     RuntimeReloadCompleted { session_id: String },
     /// Session runtime plugin reload failed after dispatch.
@@ -74,9 +107,9 @@ pub enum ClientEvent {
     /// Startup Claude Code status check detected degraded/outage conditions.
     ServiceStatus { severity: ServiceStatusSeverity, message: String },
     /// /login completed via `claude auth login` -- credentials stored, ready to start a session.
-    AuthCompleted { conn: Arc<forge_agent::AgentHandle> },
+    AuthCompleted { session_key: SessionKey, conn: Arc<forge_agent::AgentHandle> },
     /// /logout completed via `claude auth logout`.
-    LogoutCompleted,
+    LogoutCompleted { session_key: SessionKey },
     /// Status snapshot received from bridge (account info).
     StatusSnapshotReceived {
         session_id: String,
@@ -89,7 +122,7 @@ pub enum ClientEvent {
     /// so the welcome message can render `Account: <name>` as soon
     /// as the workspace picks the account, rather than waiting for
     /// the CLI subprocess to boot.
-    ForgeAccountIdentityReady { display_name: String },
+    ForgeAccountIdentityReady { session_key: SessionKey, display_name: String },
     /// OAuth credentials snapshot received from bridge. `credentials` is
     /// `None` when no credentials file exists or it's empty/malformed.
     OauthCredentialsSnapshotReceived {
@@ -144,6 +177,65 @@ pub enum ClientEvent {
     PluginsCliActionFailed { cwd_raw: String, message: String },
     /// Fatal app error that should terminate and map to an exit code.
     FatalError(AppError),
+}
+
+impl ClientEvent {
+    /// Routing key for the per-session multiplexer. Variants that
+    /// carry an explicit `session_key` field return it directly;
+    /// variants that carry a `session_id: String` (or
+    /// `model::SessionId`) derive a [`SessionKey`] from it.
+    /// App-global variants (sessions list, plugins, usage refresh,
+    /// fatal error, service status) return [`None`] — they update
+    /// App-level state and don't need session routing.
+    #[must_use]
+    pub fn session_key(&self) -> Option<SessionKey> {
+        match self {
+            Self::PermissionRequest { request, .. } => {
+                Some(SessionKey::from_session_id(request.session_id.to_string()))
+            }
+            Self::QuestionRequest { request, .. } => {
+                Some(SessionKey::from_session_id(request.session_id.to_string()))
+            }
+            Self::McpElicitationRequest { session_key, .. }
+            | Self::McpElicitationCompleted { session_key, .. }
+            | Self::McpAuthRedirect { session_key, .. }
+            | Self::McpOperationError { session_key, .. }
+            | Self::TurnComplete { session_key, .. }
+            | Self::TurnCancelled { session_key }
+            | Self::TurnError { session_key, .. }
+            | Self::TurnErrorClassified { session_key, .. }
+            | Self::ConnectionFailed { session_key, .. }
+            | Self::AuthRequired { session_key, .. }
+            | Self::SlashCommandError { session_key, .. }
+            | Self::AuthCompleted { session_key, .. }
+            | Self::LogoutCompleted { session_key }
+            | Self::ForgeAccountIdentityReady { session_key, .. } => Some(session_key.clone()),
+            Self::Connected { session_id, .. } | Self::SessionReplaced { session_id, .. } => {
+                Some(SessionKey::from_session_id(session_id.to_string()))
+            }
+            Self::RuntimeReloadCompleted { session_id }
+            | Self::RuntimeReloadFailed { session_id, .. }
+            | Self::StatusSnapshotReceived { session_id, .. }
+            | Self::OauthCredentialsSnapshotReceived { session_id, .. }
+            | Self::GitContextSnapshotReceived { session_id, .. }
+            | Self::ContextUsageReceived { session_id, .. }
+            | Self::McpSnapshotReceived { session_id, .. }
+            | Self::SdkMessageReceived { session_id, .. }
+            | Self::HookObservation { session_id, .. } => {
+                Some(SessionKey::from_session_id(session_id.clone()))
+            }
+            Self::SessionsListed { .. }
+            | Self::ServiceStatus { .. }
+            | Self::UsageRefreshStarted { .. }
+            | Self::UsageSnapshotReceived { .. }
+            | Self::UsageRefreshFailed { .. }
+            | Self::PluginsInventoryUpdated { .. }
+            | Self::PluginsInventoryRefreshFailed { .. }
+            | Self::PluginsCliActionSucceeded { .. }
+            | Self::PluginsCliActionFailed { .. }
+            | Self::FatalError(..) => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
