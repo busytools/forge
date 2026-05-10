@@ -172,15 +172,14 @@ pub(crate) fn refresh_mcp_snapshot(app: &mut App) {
 }
 
 pub(crate) fn request_mcp_snapshot(app: &mut App) {
-    let Some(conn) = app.conn.as_ref() else {
+    let Some(conn) = app.conn().cloned() else {
         app.mcp.in_flight = false;
         return;
     };
-    let Some(ref sid) = app.session_id else {
+    let Some(session_id) = app.session_id().map(ToString::to_string) else {
         app.mcp.in_flight = false;
         return;
     };
-    let session_id = sid.to_string();
     app.mcp.in_flight = true;
     app.mcp.last_error = None;
     match conn.get_mcp_snapshot(session_id.clone()) {
@@ -207,13 +206,13 @@ pub(crate) fn request_mcp_snapshot(app: &mut App) {
 }
 
 pub(crate) fn reconnect_mcp_server(app: &mut App, server_name: &str) {
-    let Some(conn) = app.conn.as_ref() else {
+    let Some(conn) = app.conn().cloned() else {
         return;
     };
-    let Some(ref sid) = app.session_id else {
+    let Some(session_id) = app.session_id().cloned() else {
         return;
     };
-    let session_id = sid.to_string();
+    let session_id = session_id.to_string();
     match conn.reconnect_mcp_server(session_id.clone(), server_name.to_owned()) {
         Ok(()) => {
             tracing::info!(
@@ -239,13 +238,13 @@ pub(crate) fn reconnect_mcp_server(app: &mut App, server_name: &str) {
 }
 
 pub(crate) fn set_mcp_server_enabled(app: &mut App, server_name: &str, enabled: bool) {
-    let Some(conn) = app.conn.as_ref() else {
+    let Some(conn) = app.conn().cloned() else {
         return;
     };
-    let Some(ref sid) = app.session_id else {
+    let Some(session_id) = app.session_id().cloned() else {
         return;
     };
-    let session_id = sid.to_string();
+    let session_id = session_id.to_string();
     match conn.toggle_mcp_server(session_id.clone(), server_name.to_owned(), enabled) {
         Ok(()) => {
             tracing::info!(
@@ -273,13 +272,13 @@ pub(crate) fn set_mcp_server_enabled(app: &mut App, server_name: &str, enabled: 
 }
 
 pub(crate) fn authenticate_mcp_server(app: &mut App, server_name: &str) {
-    let Some(conn) = app.conn.as_ref() else {
+    let Some(conn) = app.conn().cloned() else {
         return;
     };
-    let Some(ref sid) = app.session_id else {
+    let Some(session_id) = app.session_id().cloned() else {
         return;
     };
-    let session_id = sid.to_string();
+    let session_id = session_id.to_string();
     match conn.authenticate_mcp_server(session_id.clone(), server_name.to_owned()) {
         Ok(()) => {
             tracing::info!(
@@ -307,13 +306,13 @@ pub(crate) fn authenticate_mcp_server(app: &mut App, server_name: &str) {
 }
 
 pub(crate) fn clear_mcp_server_auth(app: &mut App, server_name: &str) {
-    let Some(conn) = app.conn.as_ref() else {
+    let Some(conn) = app.conn().cloned() else {
         return;
     };
-    let Some(ref sid) = app.session_id else {
+    let Some(session_id) = app.session_id().cloned() else {
         return;
     };
-    let session_id = sid.to_string();
+    let session_id = session_id.to_string();
     match conn.clear_mcp_auth(session_id.clone(), server_name.to_owned()) {
         Ok(()) => {
             tracing::info!(
@@ -343,13 +342,13 @@ pub(crate) fn submit_mcp_oauth_callback_url(
     server_name: &str,
     callback_url: String,
 ) {
-    let Some(conn) = app.conn.as_ref() else {
+    let Some(conn) = app.conn().cloned() else {
         return;
     };
-    let Some(ref sid) = app.session_id else {
+    let Some(session_id) = app.session_id().cloned() else {
         return;
     };
-    let session_id = sid.to_string();
+    let session_id = session_id.to_string();
     let callback_url_chars = callback_url.chars().count();
     match conn.submit_mcp_oauth_callback_url(
         session_id.clone(),
@@ -387,7 +386,7 @@ pub(crate) fn send_mcp_elicitation_response(
     action: forge_primitives::ElicitationAction,
     content: Option<serde_json::Value>,
 ) {
-    let Some(conn) = app.conn.as_ref() else {
+    let Some(conn) = app.conn().cloned() else {
         tracing::warn!(
             target: crate::logging::targets::APP_PERMISSION,
             event_name = "elicitation_response_blocked",
@@ -399,7 +398,7 @@ pub(crate) fn send_mcp_elicitation_response(
         );
         return;
     };
-    let Some(ref sid) = app.session_id else {
+    let Some(session_id) = app.session_id().cloned() else {
         tracing::warn!(
             target: crate::logging::targets::APP_PERMISSION,
             event_name = "elicitation_response_blocked",
@@ -411,9 +410,11 @@ pub(crate) fn send_mcp_elicitation_response(
         );
         return;
     };
-    let session_id_for_log = sid.to_string();
+    let session_id_for_log = session_id.to_string();
     let has_content = content.is_some();
-    if conn.respond_to_elicitation(sid.to_string(), request_id.to_owned(), action, content).is_ok()
+    if conn
+        .respond_to_elicitation(session_id.to_string(), request_id.to_owned(), action, content)
+        .is_ok()
     {
         app.mcp.pending_elicitation = None;
         refresh_mcp_snapshot(app);

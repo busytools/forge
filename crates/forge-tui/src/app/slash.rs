@@ -106,11 +106,11 @@ fn require_connection(
     app: &mut App,
     not_connected_msg: &'static str,
 ) -> Option<Arc<forge_agent::AgentHandle>> {
-    let Some(conn) = app.conn.as_ref() else {
+    let Some(conn) = app.conn().cloned() else {
         push_system_message(app, not_connected_msg);
         return None;
     };
-    Some(Arc::clone(conn))
+    Some(conn)
 }
 
 fn require_active_session(
@@ -119,7 +119,7 @@ fn require_active_session(
     no_session_msg: &'static str,
 ) -> Option<(Arc<forge_agent::AgentHandle>, model::SessionId)> {
     let conn = require_connection(app, not_connected_msg)?;
-    let Some(session_id) = app.session_id.clone() else {
+    let Some(session_id) = app.session_id().cloned() else {
         push_system_message(app, no_session_msg);
         return None;
     };
@@ -489,7 +489,7 @@ mod tests {
             .run_until(async {
                 let mut app = App::test_default();
                 let (handle, mut rx) = forge_agent::Agent::testing_stub();
-                app.conn = Some(std::sync::Arc::new(handle));
+                app.set_conn(Some(std::sync::Arc::new(handle)));
 
                 let consumed = try_handle_submit(&mut app, "/resume abc-123");
                 assert!(consumed);
@@ -511,8 +511,8 @@ mod tests {
             .run_until(async {
                 let mut app = App::test_default();
                 let (handle, _rx) = forge_agent::Agent::testing_stub();
-                app.conn = Some(std::sync::Arc::new(handle));
-                app.session_id = Some("sess-1".into());
+                app.set_conn(Some(std::sync::Arc::new(handle)));
+                app.set_session_id(Some("sess-1".into()));
                 app.mode = Some(super::super::ModeState {
                     current_mode_id: "code".to_owned(),
                     current_mode_name: "Code".to_owned(),
@@ -543,8 +543,8 @@ mod tests {
             .run_until(async {
                 let mut app = App::test_default();
                 let (handle, _rx) = forge_agent::Agent::testing_stub();
-                app.conn = Some(std::sync::Arc::new(handle));
-                app.session_id = Some("sess-1".into());
+                app.set_conn(Some(std::sync::Arc::new(handle)));
+                app.set_session_id(Some("sess-1".into()));
                 app.current_model = Some(
                     crate::agent::model::CurrentModel::new("old-model", "old-model", "old-model")
                         .authoritative(true),
@@ -568,7 +568,7 @@ mod tests {
             .run_until(async {
                 let mut app = App::test_default();
                 let (handle, _rx) = forge_agent::Agent::testing_stub();
-                app.conn = Some(std::sync::Arc::new(handle));
+                app.set_conn(Some(std::sync::Arc::new(handle)));
 
                 let consumed = try_handle_submit(&mut app, "/new");
                 assert!(consumed);
@@ -603,8 +603,8 @@ mod tests {
     fn compact_with_active_session_sets_compacting_without_success_pending() {
         let mut app = App::test_default();
         let (handle, _rx) = forge_agent::Agent::testing_stub();
-        app.conn = Some(std::sync::Arc::new(handle));
-        app.session_id = Some(model::SessionId::new("session-1"));
+        app.set_conn(Some(std::sync::Arc::new(handle)));
+        app.set_session_id(Some(model::SessionId::new("session-1")));
 
         let consumed = try_handle_submit(&mut app, "/compact");
         assert!(!consumed);

@@ -1394,7 +1394,7 @@ pub fn initialize_shared_state(app: &mut App) -> Result<(), String> {
     let loaded = store::load(
         app.settings_home_override.as_deref(),
         Some(project_root(app)),
-        app.conn.as_deref(),
+        app.conn().map(std::sync::Arc::as_ref),
     )?;
     app.config.apply_loaded(loaded, false);
     app.reconcile_runtime_from_persisted_settings_change();
@@ -1409,7 +1409,7 @@ pub fn open(app: &mut App) -> Result<(), String> {
     let loaded = store::load(
         app.settings_home_override.as_deref(),
         Some(project_root(app)),
-        app.conn.as_deref(),
+        app.conn().map(std::sync::Arc::as_ref),
     )?;
     app.config.apply_loaded(loaded, false);
     app.reconcile_runtime_from_persisted_settings_change();
@@ -1551,13 +1551,13 @@ pub fn request_status_snapshot_if_needed(app: &App) {
     if app.config.active_tab != ConfigTab::Status {
         return;
     }
-    let Some(conn) = app.conn.as_ref() else {
+    let Some(conn) = app.conn().cloned() else {
         return;
     };
-    let Some(ref sid) = app.session_id else {
+    let Some(session_id) = app.session_id().cloned() else {
         return;
     };
-    let session_id = sid.to_string();
+    let session_id = session_id.to_string();
     match conn.get_status_snapshot(session_id.clone()) {
         Ok(()) => tracing::debug!(
             target: crate::logging::targets::APP_AUTH,

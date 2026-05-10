@@ -22,10 +22,8 @@ pub(crate) fn status_lines(app: &App) -> Vec<Line<'static>> {
     kv_line(&mut lines, "Version", env!("CARGO_PKG_VERSION"));
     kv_line(&mut lines, "Session name", &derive_session_name(app));
 
-    let session_id_str = app
-        .session_id
-        .as_ref()
-        .map_or_else(|| "(none)".to_owned(), std::string::ToString::to_string);
+    let session_id_str =
+        app.session_id().map_or_else(|| "(none)".to_owned(), std::string::ToString::to_string);
     kv_line(&mut lines, "Session ID", &session_id_str);
 
     kv_line(&mut lines, "cwd", &app.cwd);
@@ -117,7 +115,7 @@ fn kv_line(lines: &mut Vec<Line<'static>>, key: &str, value: &str) {
 }
 
 fn derive_session_name(app: &App) -> String {
-    if let Some(ref sid) = app.session_id {
+    if let Some(sid) = app.session_id() {
         let sid_str = sid.to_string();
         if let Some(session) = app.recent_sessions.iter().find(|s| s.session_id == sid_str) {
             if let Some(ref title) = session.custom_title
@@ -193,7 +191,7 @@ fn api_provider_label(provider: &str) -> String {
 }
 
 fn resolve_memory_path(app: &App) -> String {
-    let Some(conn) = app.conn.as_ref() else {
+    let Some(conn) = app.conn().cloned() else {
         return "(no connection)".to_owned();
     };
     let memory_md = conn.project_memory_path(std::path::Path::new(&app.cwd_raw));
@@ -258,7 +256,7 @@ mod tests {
     #[test]
     fn status_lines_uses_custom_title() {
         let mut app = App::test_default();
-        app.session_id = Some(crate::agent::model::SessionId::new("test-sess-1"));
+        app.set_session_id(Some(crate::agent::model::SessionId::new("test-sess-1")));
         app.recent_sessions = vec![crate::app::RecentSessionInfo {
             session_id: "test-sess-1".to_owned(),
             summary: String::new(),

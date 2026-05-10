@@ -796,7 +796,7 @@ mod tests {
     -> (App, tokio::sync::mpsc::UnboundedReceiver<forge_primitives::Command>) {
         let mut app = make_test_app();
         let (handle, rx) = forge_agent::Agent::testing_stub();
-        app.conn = Some(std::sync::Arc::new(handle));
+        app.set_conn(Some(std::sync::Arc::new(handle)));
         (app, rx)
     }
 
@@ -935,11 +935,11 @@ mod tests {
     /// If the app already has a session id set, the wire envelope is
     /// dispatched with that id so the strict-mismatch check passes.
     fn send_msg(app: &mut App, msg: forge_primitives::Message) {
-        if app.session_id.is_none() {
-            app.session_id = Some(model::SessionId::new("test-session"));
+        if app.session_id().is_none() {
+            app.set_session_id(Some(model::SessionId::new("test-session")));
         }
         let session_id =
-            app.session_id.as_ref().map_or_else(|| "test-session".to_owned(), ToString::to_string);
+            app.session_id().map_or_else(|| "test-session".to_owned(), ToString::to_string);
         handle_client_event(app, ClientEvent::SdkMessageReceived { session_id, msg });
     }
 
@@ -1005,7 +1005,7 @@ mod tests {
     #[test]
     fn late_tool_update_for_removed_tool_does_not_corrupt_active_task_set() {
         let mut app = make_test_app();
-        app.session_id = Some(model::SessionId::new("test-session"));
+        app.set_session_id(Some(model::SessionId::new("test-session")));
         app.messages.push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(tool_call(
             "tool-stale",
             model::ToolCallStatus::Completed,
@@ -1319,7 +1319,7 @@ mod tests {
         assert_eq!(app.viewport.scroll_target, 0);
         assert!(app.viewport.auto_scroll);
         assert!(!app.should_quit);
-        assert!(app.session_id.is_none());
+        assert!(app.session_id().is_none());
         assert_eq!(app.files_accessed, 0);
         assert!(app.pending_interaction_ids.is_empty());
         assert!(!app.tools_collapsed);
@@ -1546,7 +1546,7 @@ mod tests {
     #[test]
     fn current_model_update_does_not_mutate_welcome_snapshot_after_settings_reconcile() {
         let mut app = make_test_app();
-        app.session_id = Some(model::SessionId::new("session-1"));
+        app.set_session_id(Some(model::SessionId::new("session-1")));
         app.current_model = Some(test_current_model("opus"));
         app.messages =
             vec![ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "-", "/test", "session-1")];
@@ -1768,10 +1768,7 @@ mod tests {
         );
 
         assert!(matches!(app.status, AppStatus::Ready));
-        assert_eq!(
-            app.session_id.as_ref().map(ToString::to_string).as_deref(),
-            Some("replacement")
-        );
+        assert_eq!(app.session_id().map(ToString::to_string).as_deref(), Some("replacement"));
         assert_eq!(
             app.current_model.as_ref().map(|model| model.resolved_id.as_str()),
             Some("new-model")
@@ -1878,7 +1875,7 @@ mod tests {
     #[test]
     fn stale_status_snapshot_for_old_session_is_ignored() {
         let mut app = make_test_app();
-        app.session_id = Some(model::SessionId::new("current-session"));
+        app.set_session_id(Some(model::SessionId::new("current-session")));
 
         handle_client_event(
             &mut app,
@@ -1908,7 +1905,7 @@ mod tests {
             "/test",
             "session-1",
         ));
-        app.session_id = Some(model::SessionId::new("session-1"));
+        app.set_session_id(Some(model::SessionId::new("session-1")));
 
         // Pre-snapshot: bridge tells us which account got picked.
         handle_client_event(
@@ -1938,7 +1935,7 @@ mod tests {
             "/test",
             "session-1",
         ));
-        app.session_id = Some(model::SessionId::new("session-1"));
+        app.set_session_id(Some(model::SessionId::new("session-1")));
 
         handle_client_event(
             &mut app,
@@ -1972,7 +1969,7 @@ mod tests {
             "/test",
             "session-1",
         ));
-        app.session_id = Some(model::SessionId::new("session-1"));
+        app.set_session_id(Some(model::SessionId::new("session-1")));
 
         handle_client_event(
             &mut app,
@@ -2000,7 +1997,7 @@ mod tests {
     #[test]
     fn stale_mcp_snapshot_for_old_session_is_ignored() {
         let mut app = make_test_app();
-        app.session_id = Some(model::SessionId::new("current-session"));
+        app.set_session_id(Some(model::SessionId::new("current-session")));
         app.mcp.servers.push(forge_primitives::McpServerStatus {
             name: "current".into(),
             status: forge_primitives::McpServerConnectionStatus::Connected,
@@ -2039,7 +2036,13 @@ mod tests {
     #[test]
     fn stale_usage_refresh_result_for_old_epoch_is_ignored() {
         let mut app = make_test_app();
-        app.session_scope_epoch = 5;
+        // Set up an active session bucket so the scope-epoch read
+        // path returns a non-zero value. Direct field manipulation
+        // is fine here — we're inside the same module's test code.
+        app.set_session_id(Some(model::SessionId::new("scope-epoch-test")));
+        if let Some(s) = app.active_session_mut() {
+            s.session_scope_epoch = 5;
+        }
 
         handle_client_event(
             &mut app,
@@ -2239,7 +2242,7 @@ mod tests {
         assert!(!app.startup_session_picker_resolved);
 
         let (handle, _rx) = forge_agent::Agent::testing_stub();
-        app.conn = Some(std::sync::Arc::new(handle));
+        app.set_conn(Some(std::sync::Arc::new(handle)));
         handle_client_event(&mut app, connected_event("claude-updated"));
 
         assert_eq!(app.active_view, ActiveView::SessionPicker);
@@ -2251,7 +2254,7 @@ mod tests {
         let mut app = make_test_app();
         app.startup_session_picker_requested = true;
         let (handle, _rx) = forge_agent::Agent::testing_stub();
-        app.conn = Some(std::sync::Arc::new(handle));
+        app.set_conn(Some(std::sync::Arc::new(handle)));
 
         handle_client_event(&mut app, connected_event("claude-updated"));
         assert_eq!(app.active_view, ActiveView::Chat);
@@ -2577,7 +2580,7 @@ mod tests {
     #[test]
     fn turn_complete_keeps_history_and_adds_compaction_success_after_manual_boundary() {
         let mut app = make_test_app();
-        app.session_id = Some(model::SessionId::new("session-x"));
+        app.set_session_id(Some(model::SessionId::new("session-x")));
         app.messages.push(user_msg("/compact"));
         app.messages
             .push(assistant_msg(vec![MessageBlock::Text(TextBlock::from_complete("compacted"))]));
@@ -2606,7 +2609,7 @@ mod tests {
             panic!("expected text block");
         };
         assert_eq!(block.text, "Session successfully compacted.");
-        assert_eq!(app.session_id.as_ref().map(ToString::to_string).as_deref(), Some("session-x"));
+        assert_eq!(app.session_id().map(ToString::to_string).as_deref(), Some("session-x"));
     }
 
     #[test]
@@ -2802,7 +2805,7 @@ mod tests {
     fn auth_required_clears_active_turn_runtime_tracking() {
         let mut app = make_test_app();
         app.status = AppStatus::Running;
-        app.session_id = Some(model::SessionId::new("session-auth"));
+        app.set_session_id(Some(model::SessionId::new("session-auth")));
         app.current_model = Some(test_current_model("claude-old"));
         app.mode = Some(crate::app::ModeState {
             current_mode_id: "plan".into(),
@@ -2836,7 +2839,7 @@ mod tests {
             panic!("expected tool call block");
         };
         assert_eq!(tc.status, model::ToolCallStatus::Failed);
-        assert!(app.session_id.is_none());
+        assert!(app.session_id().is_none());
         assert!(app.current_model.is_none());
         assert!(app.mode.is_none());
         assert_eq!(app.fast_mode_state, model::FastModeState::Off);
@@ -2845,7 +2848,7 @@ mod tests {
     #[test]
     fn logout_completed_clears_session_runtime_identity_caches() {
         let mut app = make_test_app();
-        app.session_id = Some(model::SessionId::new("session-x"));
+        app.set_session_id(Some(model::SessionId::new("session-x")));
         app.current_model = Some(test_current_model("claude-old"));
         app.mode = Some(crate::app::ModeState {
             current_mode_id: "plan".into(),
@@ -2856,7 +2859,7 @@ mod tests {
 
         handle_client_event(&mut app, ClientEvent::LogoutCompleted);
 
-        assert!(app.session_id.is_none());
+        assert!(app.session_id().is_none());
         assert!(app.current_model.is_none());
         assert!(app.mode.is_none());
         assert_eq!(app.fast_mode_state, model::FastModeState::Off);
@@ -3591,7 +3594,7 @@ mod tests {
         let (mut app, mut bridge_rx) = app_with_bridge_connection();
         let tool_id = "perm-submit";
         append_tool_call_block(&mut app, tool_id);
-        app.session_id = Some(model::SessionId::new("session-1"));
+        app.set_session_id(Some(model::SessionId::new("session-1")));
         app.input.set_text("ship the fix");
 
         let (response_tx, mut response_rx) = oneshot::channel();
@@ -4167,7 +4170,7 @@ mod tests {
     fn second_esc_after_permission_rejection_requests_turn_cancel() {
         let (mut app, mut rx) = app_with_bridge_connection();
         app.status = AppStatus::Running;
-        app.session_id = Some(model::SessionId::new("session-1"));
+        app.set_session_id(Some(model::SessionId::new("session-1")));
         let mut response_rx = attach_pending_permission(
             &mut app,
             "perm-1",

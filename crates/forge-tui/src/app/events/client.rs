@@ -8,7 +8,7 @@ use crate::agent::events::ClientEvent;
 /// this file to keep the guard from sprawling 7+ times.
 macro_rules! drop_if_stale_session {
     ($app:expr, $session_id:expr, $target:expr, $event_name:expr, $message:expr) => {
-        if $app.session_id.as_ref().map(ToString::to_string).as_deref()
+        if $app.session_id().map(ToString::to_string).as_deref()
             != Some($session_id.as_str())
         {
             tracing::debug!(
@@ -286,7 +286,7 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
             // for Connected, so adoption is a no-op and the strict
             // mismatch check covers stale-Client races during session
             // swap.
-            let Some(current) = app.session_id.as_ref() else {
+            let Some(current) = app.session_id() else {
                 // No session yet — Connected hasn't been processed.
                 // The bridge emits Connected before spawning the
                 // reader, so this should be unreachable; drop
@@ -295,7 +295,7 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
             };
             let current_str = current.to_string();
             if current_str.is_empty() && !session_id.is_empty() {
-                app.session_id = Some(crate::agent::model::SessionId::new(session_id.clone()));
+                app.set_session_id(Some(crate::agent::model::SessionId::new(session_id.clone())));
             } else if !current_str.is_empty() && current_str != session_id {
                 return;
             }
@@ -326,19 +326,19 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
             );
         }
         ClientEvent::UsageRefreshStarted { epoch } => {
-            if app.session_scope_epoch != epoch {
+            if app.session_scope_epoch() != epoch {
                 return;
             }
             crate::app::usage::apply_refresh_started(app);
         }
         ClientEvent::UsageSnapshotReceived { epoch, snapshot } => {
-            if app.session_scope_epoch != epoch {
+            if app.session_scope_epoch() != epoch {
                 return;
             }
             crate::app::usage::apply_refresh_success(app, snapshot);
         }
         ClientEvent::UsageRefreshFailed { epoch, message, source } => {
-            if app.session_scope_epoch != epoch {
+            if app.session_scope_epoch() != epoch {
                 return;
             }
             crate::app::usage::apply_refresh_failure(app, message, source);

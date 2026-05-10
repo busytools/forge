@@ -11,20 +11,36 @@
 //! (Phase 2 of the side-panes feature; backend prerequisite for the
 //! Projects pane UI).
 
+use std::sync::Arc;
+
 use forge_workspace::SessionKey;
+
+use crate::agent::model;
 
 /// Per-session runtime state. Initialised when a session connects;
 /// dropped when the session is closed or forge-tui exits.
-#[derive(Debug, Default)]
+///
+/// `Default` only — `AgentHandle` doesn't derive `Debug` (it owns
+/// callback closures), so we can't derive `Debug` here either.
+#[derive(Default)]
 pub struct Session {
     /// The claude-issued session UUID, also used as the map key.
     /// Stored here for symmetry; the map lookup uses the same value.
     pub key: Option<SessionKey>,
+    /// Claude-issued session id (typed wrapper). `None` until the
+    /// first `Connected` event from this session's bridge.
+    pub session_id: Option<model::SessionId>,
+    /// Agent connection handle for this session. `None` while the
+    /// session's bridge is starting up.
+    pub conn: Option<Arc<forge_agent::AgentHandle>>,
+    /// Monotonic session authority epoch — used to ignore stale
+    /// async view data after a session reset / reconnect.
+    pub session_scope_epoch: u64,
 }
 
 impl Session {
     #[must_use]
     pub fn new(key: SessionKey) -> Self {
-        Self { key: Some(key) }
+        Self { key: Some(key), ..Self::default() }
     }
 }

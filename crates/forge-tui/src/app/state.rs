@@ -37,7 +37,6 @@ use crate::agent::model;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::sync::Arc;
 use std::sync::mpsc as std_mpsc;
 use std::time::Instant;
 use tokio::sync::mpsc;
@@ -143,9 +142,6 @@ pub struct App {
     pub should_quit: bool,
     /// Optional fatal app error that should be surfaced at CLI boundary.
     pub exit_error: Option<crate::error::AppError>,
-    pub session_id: Option<model::SessionId>,
-    /// Agent connection handle. `None` while connecting (before bridge is ready).
-    pub conn: Option<Arc<forge_agent::AgentHandle>>,
     /// Multi-session orchestrator. Hands out `AgentHandle`s via
     /// `get_agent_handle(SessionTarget::Default, ...)` at startup.
     /// `None` only in test contexts (`App::test_default`); production
@@ -154,16 +150,11 @@ pub struct App {
     /// Per-session state buckets, keyed by claude session UUID.
     /// Phase 2a moves per-session fields off `App` into the
     /// [`super::session::Session`] value type one bucket at a time.
-    /// With this commit the map is populated with one entry on
-    /// Connect; the bucket itself is empty and existing per-session
-    /// fields stay on `App` until subsequent commits migrate them.
     pub sessions: std::collections::HashMap<forge_workspace::SessionKey, super::session::Session>,
     /// Which entry of [`Self::sessions`] the renderer reads from.
     /// `None` only in the brief pre-Connect window where no session
     /// has landed in the map yet.
     pub active_session_key: Option<forge_workspace::SessionKey>,
-    /// Monotonic session authority epoch used to ignore stale async view data.
-    pub session_scope_epoch: u64,
     pub current_model: Option<model::CurrentModel>,
     pub cwd: String,
     pub cwd_raw: String,
@@ -431,6 +422,86 @@ impl App {
         self.sessions.get_mut(key)
     }
 
+    /// Active session's claude session id, or `None` in the
+    /// pre-Connect window.
+    #[must_use]
+    pub fn session_id(&self) -> Option<&model::SessionId> {
+        self.active_session().and_then(|s| s.session_id.as_ref())
+    }
+
+    /// Set the active session's session_id. Ensures the sessions
+    /// map has an entry keyed by the id; sets `active_session_key`
+    /// to that entry. If `id` is `None`, clears the active
+    /// session's stored session_id but leaves the map intact.
+    ///
+    /// If a synthetic-keyed bucket exists (from an earlier
+    /// `set_conn` before `set_session_id` — test ordering),
+    /// migrates that bucket's contents to the real key so the conn
+    /// + session_id end up on the same bucket.
+    pub fn set_session_id(&mut self, id: Option<model::SessionId>) {
+        const PENDING_KEY: &str = "__conn_pending__";
+        match id {
+            Some(id) => {
+                let key = forge_workspace::SessionKey::from_session_id(id.to_string());
+                // Migrate any synthetic-keyed bucket onto the real key.
+                let pending = forge_workspace::SessionKey::from_session_id(PENDING_KEY);
+                if let Some(mut existing) = self.sessions.remove(&pending) {
+                    existing.key = Some(key.clone());
+                    existing.session_id = Some(id);
+                    self.sessions.insert(key.clone(), existing);
+                } else {
+                    let entry = self
+                        .sessions
+                        .entry(key.clone())
+                        .or_insert_with(|| super::session::Session::new(key.clone()));
+                    entry.session_id = Some(id);
+                }
+                self.active_session_key = Some(key);
+            }
+            None => {
+                if let Some(s) = self.active_session_mut() {
+                    s.session_id = None;
+                }
+            }
+        }
+    }
+
+    /// Active session's agent connection handle.
+    #[must_use]
+    pub fn conn(&self) -> Option<&std::sync::Arc<forge_agent::AgentHandle>> {
+        self.active_session().and_then(|s| s.conn.as_ref())
+    }
+
+    /// Set the active session's connection handle. Auto-creates
+    /// a session bucket with a synthetic key if no active session
+    /// exists yet — needed for tests that wire `set_conn` before
+    /// `set_session_id`. Production code calls these in
+    /// chronological order (Connected event fires both with the
+    /// real session_id), so the synthetic-key path is test-only.
+    pub fn set_conn(&mut self, conn: Option<std::sync::Arc<forge_agent::AgentHandle>>) {
+        if self.active_session_key.is_none() && conn.is_some() {
+            let key = forge_workspace::SessionKey::from_session_id("__conn_pending__");
+            self.sessions.insert(key.clone(), super::session::Session::new(key.clone()));
+            self.active_session_key = Some(key);
+        }
+        if let Some(s) = self.active_session_mut() {
+            s.conn = conn;
+        }
+    }
+
+    /// Active session's monotonic scope epoch.
+    #[must_use]
+    pub fn session_scope_epoch(&self) -> u64 {
+        self.active_session().map_or(0, |s| s.session_scope_epoch)
+    }
+
+    /// Increment the active session's scope epoch.
+    pub fn bump_session_scope_epoch(&mut self) {
+        if let Some(s) = self.active_session_mut() {
+            s.session_scope_epoch = s.session_scope_epoch.saturating_add(1);
+        }
+    }
+
     /// Queue a paste payload for drain-cycle finalization.
     ///
     /// This is fed by paste payloads captured from terminal events.
@@ -561,8 +632,7 @@ impl App {
 
     #[must_use]
     fn welcome_session_id_display(&self) -> String {
-        self.session_id
-            .as_ref()
+        self.session_id()
             .map(std::string::ToString::to_string)
             .map(|value| value.trim().to_owned())
             .filter(|value| !value.is_empty())
@@ -933,12 +1003,9 @@ impl App {
             pending_command_ack: None,
             should_quit: false,
             exit_error: None,
-            session_id: None,
-            conn: None,
             workspace: None,
             sessions: std::collections::HashMap::new(),
             active_session_key: None,
-            session_scope_epoch: 0,
             current_model: Some(
                 model::CurrentModel::new("test-model", "test-model", "test-model")
                     .authoritative(true),
@@ -1159,12 +1226,8 @@ impl App {
         });
     }
 
-    pub fn bump_session_scope_epoch(&mut self) {
-        self.session_scope_epoch = self.session_scope_epoch.saturating_add(1);
-    }
-
     pub fn clear_session_runtime_identity(&mut self) {
-        self.session_id = None;
+        self.set_session_id(None);
         self.current_model = None;
         self.mode = None;
         self.fast_mode_state = model::FastModeState::Off;
@@ -1521,7 +1584,7 @@ mod tests {
     #[test]
     fn clear_session_runtime_identity_resets_session_usage() {
         let mut app = App::test_default();
-        app.session_id = Some(crate::agent::model::SessionId::new("session-1"));
+        app.set_session_id(Some(crate::agent::model::SessionId::new("session-1")));
         app.current_model = Some(
             crate::agent::model::CurrentModel::new("sonnet", "Claude Sonnet", "Claude Sonnet")
                 .authoritative(true),
@@ -1538,7 +1601,7 @@ mod tests {
 
         app.clear_session_runtime_identity();
 
-        assert!(app.session_id.is_none());
+        assert!(app.session_id().is_none());
         assert!(app.current_model.is_none());
         assert!(app.mode.is_none());
         assert_eq!(app.session_usage, SessionUsageState::default());

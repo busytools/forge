@@ -28,7 +28,7 @@ fn reset_session_identity_state(
     mode: Option<super::super::ModeState>,
 ) {
     app.bump_session_scope_epoch();
-    app.session_id = Some(session_id);
+    app.set_session_id(Some(session_id));
     app.current_model = Some(current_model.clone());
     app.mode = mode;
     app.config_options.clear();

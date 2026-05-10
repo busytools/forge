@@ -855,7 +855,7 @@ fn handle_rate_limit_event(app: &mut App, msg: Message) {
         outcome = "wire_evidence",
         config_dir = std::env::var("CLAUDE_CONFIG_DIR")
             .unwrap_or_else(|_| "(unset, falls back to ~/.claude)".to_owned()),
-        session_id = app.session_id.as_ref().map(ToString::to_string).as_deref().unwrap_or(""),
+        session_id = app.session_id().map(ToString::to_string).as_deref().unwrap_or(""),
         rate_limit_info = %value,
     );
     let Some(wire) = build_rate_limit_update(Some(&value)) else {

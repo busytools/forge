@@ -13,7 +13,7 @@ pub(crate) fn picker_session_count(app: &App) -> usize {
 pub(crate) fn startup_picker_is_loading(app: &App) -> bool {
     app.startup_session_picker_requested
         && !app.startup_session_picker_resolved
-        && (app.conn.is_none() || !app.startup_recent_sessions_loaded)
+        && (app.conn().is_none() || !app.startup_recent_sessions_loaded)
 }
 
 pub fn handle_key(app: &mut App, key: KeyEvent) {
@@ -61,7 +61,7 @@ fn activate_selection(app: &mut App) {
         return;
     };
     let session_id = session.session_id.clone();
-    let Some(conn) = app.conn.clone() else {
+    let Some(conn) = app.conn().cloned() else {
         app.startup_session_picker_resolved = true;
         view::set_active_view(app, ActiveView::Chat);
         return;
@@ -130,7 +130,7 @@ mod tests {
         let mut app = picker_app();
         app.startup_session_picker_requested = true;
         app.startup_recent_sessions_loaded = false;
-        app.conn = None;
+        app.set_conn(None);
 
         handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
 
@@ -153,7 +153,7 @@ mod tests {
     fn enter_triggers_resume() {
         let mut app = picker_app();
         let (handle, mut rx) = forge_agent::Agent::testing_stub();
-        app.conn = Some(std::sync::Arc::new(handle));
+        app.set_conn(Some(std::sync::Arc::new(handle)));
 
         handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
@@ -183,11 +183,11 @@ mod tests {
         let mut app = picker_app();
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<forge_primitives::Command>();
         drop(rx);
-        app.conn = Some(std::sync::Arc::new({
+        app.set_conn(Some(std::sync::Arc::new({
             let _ = tx;
             let (h, _) = forge_agent::Agent::testing_stub();
             h
-        }));
+        })));
 
         handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 

@@ -288,7 +288,7 @@ where
     // home_override (and the disconnected case where app.conn is
     // None) keep the direct fs save — env vars are process-global
     // and would race across nextest's parallel runs.
-    let save_result = match (&app.settings_home_override, app.conn.as_ref()) {
+    let save_result = match (&app.settings_home_override, app.conn()) {
         (None, Some(conn)) => {
             let cwd = std::path::PathBuf::from(&app.cwd_raw);
             let target = store::settings_target_for(spec.file, cwd);
@@ -416,7 +416,7 @@ fn open_language_overlay(app: &mut App) {
 }
 
 pub(super) fn open_session_rename_overlay(app: &mut App) {
-    let Some(session_id) = app.session_id.as_ref() else {
+    let Some(session_id) = app.session_id() else {
         return;
     };
     let session_id = session_id.to_string();
@@ -434,10 +434,10 @@ pub(super) fn open_session_rename_overlay(app: &mut App) {
 }
 
 pub(super) fn generate_session_title(app: &mut App) {
-    let Some(session_id) = app.session_id.as_ref().map(std::string::ToString::to_string) else {
+    let Some(session_id) = app.session_id().map(std::string::ToString::to_string) else {
         return;
     };
-    let Some(conn) = app.conn.clone() else {
+    let Some(conn) = app.conn().cloned() else {
         app.config.last_error = Some("No active bridge connection".to_owned());
         app.config.status_message = None;
         return;
@@ -632,11 +632,11 @@ fn handle_session_rename_overlay_key(app: &mut App, key: KeyEvent) {
 }
 
 fn confirm_session_rename_overlay(app: &mut App) {
-    let Some(session_id) = app.session_id.as_ref().map(std::string::ToString::to_string) else {
+    let Some(session_id) = app.session_id().map(std::string::ToString::to_string) else {
         app.config.overlay = None;
         return;
     };
-    let Some(conn) = app.conn.clone() else {
+    let Some(conn) = app.conn().cloned() else {
         app.config.last_error = Some("No active bridge connection".to_owned());
         app.config.status_message = None;
         return;

@@ -65,6 +65,9 @@ pub(super) fn update_terminal_outputs(app: &mut App) -> bool {
         let Some(terminal) = terminals.get(terminal_ref.terminal_id.as_str()) else {
             continue;
         };
+        // Capture the session id BEFORE the mutable borrow on
+        // app.messages so the tracing line below can still log it.
+        let log_session_id = app.session_id().map_or_else(String::new, ToString::to_string);
         let Some(MessageBlock::ToolCall(tc)) = app
             .messages
             .get_mut(terminal_ref.msg_idx)
@@ -110,7 +113,7 @@ pub(super) fn update_terminal_outputs(app: &mut App) -> bool {
                 event_name = "terminal_output_summary",
                 message = "terminal output updated",
                 outcome = "success",
-                session_id = %app.session_id.as_ref().map_or_else(String::new, ToString::to_string),
+                session_id = %log_session_id,
                 tool_call_id = %tc.id,
                 terminal_id = %terminal_ref.terminal_id,
                 terminal_update_mode = update_mode,

@@ -439,7 +439,7 @@ async fn files_accessed_accumulates_across_tool_calls_in_one_turn() {
 #[tokio::test]
 async fn sdk_message_with_empty_app_session_id_adopts_wire_id() {
     let mut app = test_app();
-    app.session_id = Some(model::SessionId::new(""));
+    app.set_session_id(Some(model::SessionId::new("")));
     app.status = AppStatus::Thinking;
     // Empty assistant message slot, mimicking what `submit_input`
     // creates right before the first chunk arrives.
@@ -469,7 +469,7 @@ async fn sdk_message_with_empty_app_session_id_adopts_wire_id() {
     );
 
     assert_eq!(
-        app.session_id.as_ref().map(ToString::to_string).as_deref(),
+        app.session_id().map(ToString::to_string).as_deref(),
         Some("real-session-abc"),
         "App should have adopted the wire session id",
     );
@@ -494,7 +494,7 @@ async fn sdk_message_with_empty_app_session_id_adopts_wire_id() {
 #[tokio::test]
 async fn sdk_message_with_mismatched_real_session_id_is_dropped() {
     let mut app = test_app();
-    app.session_id = Some(model::SessionId::new("real-session-abc"));
+    app.set_session_id(Some(model::SessionId::new("real-session-abc")));
     let initial_message_count = app.messages.len();
 
     let wire_msg: forge_primitives::Message = serde_json::from_value(serde_json::json!({
@@ -520,7 +520,7 @@ async fn sdk_message_with_mismatched_real_session_id_is_dropped() {
     );
 
     assert_eq!(
-        app.session_id.as_ref().map(ToString::to_string).as_deref(),
+        app.session_id().map(ToString::to_string).as_deref(),
         Some("real-session-abc"),
         "session id must not change on stale envelope",
     );

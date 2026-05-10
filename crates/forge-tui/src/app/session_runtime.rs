@@ -7,13 +7,13 @@ pub(crate) enum RuntimeReloadRequestOutcome {
 }
 
 pub(crate) fn request_runtime_reload(app: &mut App) -> RuntimeReloadRequestOutcome {
-    let Some(conn) = app.conn.as_ref() else {
+    let Some(conn) = app.conn().cloned() else {
         return RuntimeReloadRequestOutcome::Unavailable;
     };
-    let Some(ref sid) = app.session_id else {
+    let Some(session_id) = app.session_id().cloned() else {
         return RuntimeReloadRequestOutcome::Unavailable;
     };
-    let session_id = sid.to_string();
+    let session_id = session_id.to_string();
     match conn.reload_plugins(session_id.clone()) {
         Ok(()) => {
             tracing::debug!(
@@ -45,16 +45,16 @@ pub(crate) fn request_context_usage_refresh(app: &mut App) {
         return;
     }
 
-    let Some(conn) = app.conn.as_ref() else {
+    let Some(conn) = app.conn().cloned() else {
         clear_context_usage_refresh_state(app);
         return;
     };
-    let Some(ref sid) = app.session_id else {
+    let Some(session_id) = app.session_id().cloned() else {
         clear_context_usage_refresh_state(app);
         return;
     };
 
-    let session_id = sid.to_string();
+    let session_id = session_id.to_string();
     app.session_usage.context_usage_in_flight = true;
     app.session_usage.context_usage_refresh_pending = false;
     match conn.get_context_usage(session_id.clone()) {
@@ -80,14 +80,14 @@ pub(crate) fn request_context_usage_refresh(app: &mut App) {
 }
 
 pub(crate) fn request_status_snapshot_refresh(app: &mut App) {
-    let Some(conn) = app.conn.as_ref() else {
+    let Some(conn) = app.conn().cloned() else {
         return;
     };
-    let Some(ref sid) = app.session_id else {
+    let Some(session_id) = app.session_id().cloned() else {
         return;
     };
 
-    let session_id = sid.to_string();
+    let session_id = session_id.to_string();
     match conn.get_status_snapshot(session_id.clone()) {
         Ok(()) => tracing::debug!(
             target: crate::logging::targets::APP_AUTH,
@@ -108,14 +108,14 @@ pub(crate) fn request_status_snapshot_refresh(app: &mut App) {
 }
 
 pub(crate) fn request_oauth_credentials_snapshot_refresh(app: &mut App) {
-    let Some(conn) = app.conn.as_ref() else {
+    let Some(conn) = app.conn().cloned() else {
         return;
     };
-    let Some(ref sid) = app.session_id else {
+    let Some(session_id) = app.session_id().cloned() else {
         return;
     };
 
-    let session_id = sid.to_string();
+    let session_id = session_id.to_string();
     match conn.get_oauth_credentials_snapshot(session_id.clone()) {
         Ok(()) => tracing::debug!(
             target: crate::logging::targets::APP_AUTH,
@@ -163,8 +163,8 @@ mod tests {
     -> (App, tokio::sync::mpsc::UnboundedReceiver<forge_primitives::Command>) {
         let mut app = App::test_default();
         let (handle, rx) = forge_agent::Agent::testing_stub();
-        app.conn = Some(std::sync::Arc::new(handle));
-        app.session_id = Some(model::SessionId::new("session-1"));
+        app.set_conn(Some(std::sync::Arc::new(handle)));
+        app.set_session_id(Some(model::SessionId::new("session-1")));
         (app, rx)
     }
 

@@ -293,8 +293,8 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
 
     // Cancel any active turn and give the adapter a moment to clean up
     if matches!(app.status, AppStatus::Thinking | AppStatus::Running)
-        && let Some(ref conn) = app.conn
-        && let Some(sid) = app.session_id.clone()
+        && let Some(conn) = app.conn()
+        && let Some(sid) = app.session_id().cloned()
     {
         let _ = conn.cancel(sid.to_string());
     }
@@ -523,8 +523,8 @@ mod tests {
     -> (App, tokio::sync::mpsc::UnboundedReceiver<forge_primitives::Command>) {
         let mut app = App::test_default();
         let (handle, rx) = forge_agent::Agent::testing_stub();
-        app.conn = Some(std::sync::Arc::new(handle));
-        app.session_id = Some(model::SessionId::new("session-1"));
+        app.set_conn(Some(std::sync::Arc::new(handle)));
+        app.set_session_id(Some(model::SessionId::new("session-1")));
         (app, rx)
     }
 

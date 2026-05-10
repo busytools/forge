@@ -78,10 +78,10 @@ pub(super) fn request_cancel(app: &mut App, origin: CancelOrigin) -> Result<(), 
         return Ok(());
     }
 
-    let Some(ref conn) = app.conn else {
+    let Some(conn) = app.conn().cloned() else {
         return Err("not connected yet".to_owned());
     };
-    let Some(sid) = app.session_id.clone() else {
+    let Some(sid) = app.session_id().cloned() else {
         return Err("no active session".to_owned());
     };
 
@@ -128,8 +128,8 @@ fn dispatch_prompt_turn(app: &mut App, text: String) {
     // so their spinners don't continue during this turn.
     let _ = app.finalize_in_progress_tool_calls(model::ToolCallStatus::Failed);
 
-    let Some(conn) = app.conn.clone() else { return };
-    let Some(sid) = app.session_id.clone() else {
+    let Some(conn) = app.conn().cloned() else { return };
+    let Some(sid) = app.session_id().cloned() else {
         return;
     };
     let input_chars = text.chars().count();
@@ -180,8 +180,8 @@ mod tests {
     -> (App, tokio::sync::mpsc::UnboundedReceiver<forge_primitives::Command>) {
         let mut app = App::test_default();
         let (handle, rx) = forge_agent::Agent::testing_stub();
-        app.conn = Some(std::sync::Arc::new(handle));
-        app.session_id = Some(model::SessionId::new("session-1"));
+        app.set_conn(Some(std::sync::Arc::new(handle)));
+        app.set_session_id(Some(model::SessionId::new("session-1")));
         (app, rx)
     }
 
@@ -335,7 +335,7 @@ mod tests {
     fn dispatch_prompt_turn_without_session_id_leaves_state_unchanged() {
         let mut app = App::test_default();
         let (handle, _rx) = forge_agent::Agent::testing_stub();
-        app.conn = Some(std::sync::Arc::new(handle));
+        app.set_conn(Some(std::sync::Arc::new(handle)));
         app.status = AppStatus::Ready;
 
         dispatch_prompt_turn(&mut app, "hello".into());

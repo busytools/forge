@@ -28,9 +28,9 @@ pub(super) fn handle_connected_client_event(
     let history_message_count = history_messages.len();
     let available_model_count = available_models.len();
     if let Some(slot) = take_connection_slot() {
-        app.conn = Some(slot.conn);
+        app.set_conn(Some(slot.conn));
     }
-    let prev_session_id = app.session_id.as_ref().map(ToString::to_string);
+    let prev_session_id = app.session_id().map(ToString::to_string);
     // Phase 2a foundation: register this session in the multi-session
     // map. Bucket-migration commits will move per-session fields off
     // App into this entry; for now the bucket is empty, but having
@@ -261,7 +261,7 @@ pub(super) fn handle_logout_completed_event(app: &mut App) {
         outcome = "success",
     );
 
-    if let Some(ref conn) = app.conn {
+    if let Some(conn) = app.conn().cloned() {
         app.pending_command_label = Some("Starting session...".to_owned());
         app.pending_command_ack = None;
         if let Err(e) = start_new_session(app, conn.as_ref(), SessionStartReason::Logout) {
@@ -311,7 +311,7 @@ pub(super) fn handle_session_replaced_event(
     super::clear_compaction_state(app, false);
     app.pending_cancel_origin = None;
     app.pending_auto_submit_after_cancel = false;
-    let prev_session_id = app.session_id.as_ref().map(ToString::to_string);
+    let prev_session_id = app.session_id().map(ToString::to_string);
     apply_session_cwd(app, cwd);
     app.available_models = available_models;
     reset_for_new_session(app, session_id, current_model, mode, false);
@@ -418,7 +418,7 @@ pub(super) fn apply_session_cwd(app: &mut App, cwd_raw: String) {
 /// watcher is stopped first to prevent the bridge worker from
 /// accumulating zombie watchers across replaced sessions.
 pub(super) fn refresh_session_git_watcher(app: &App, prev_session_id: Option<String>) {
-    let Some(conn) = app.conn.as_ref() else {
+    let Some(conn) = app.conn().cloned() else {
         return;
     };
     if let Some(prev) = prev_session_id
@@ -430,7 +430,7 @@ pub(super) fn refresh_session_git_watcher(app: &App, prev_session_id: Option<Str
             "failed to stop previous git context watcher",
         );
     }
-    let Some(session_id) = app.session_id.as_ref() else {
+    let Some(session_id) = app.session_id() else {
         return;
     };
     let cwd = std::path::PathBuf::from(&app.cwd_raw);
@@ -469,7 +469,7 @@ fn maybe_open_startup_session_picker(app: &mut App) {
     if !app.startup_session_picker_requested || app.startup_session_picker_resolved {
         return;
     }
-    if app.conn.is_none() || !app.startup_recent_sessions_loaded {
+    if app.conn().is_none() || !app.startup_recent_sessions_loaded {
         return;
     }
 
