@@ -2,12 +2,22 @@ use ratatui::layout::{Constraint, Layout, Rect};
 
 /// Minimum terminal width (columns) at which the Wide tier kicks in.
 /// At Wide tier the Projects pane gets its own slot on the left of
-/// the body. Medium / Narrow tiers (below this threshold) land in
-/// later phases (2b-β, 2b-γ).
+/// the body at full width. Below this we fall back to Medium tier
+/// (compact pane) and eventually to Narrow tier (overlay; lands in
+/// Phase 2b-γ).
 pub const WIDE_TIER_MIN_WIDTH: u16 = 160;
+
+/// Minimum terminal width (columns) at which the Medium tier kicks
+/// in. Between this and `WIDE_TIER_MIN_WIDTH` the Projects pane
+/// renders inline at compact width with label truncation. Below
+/// this the pane is hidden inline (Narrow tier overlay lands later).
+pub const MEDIUM_TIER_MIN_WIDTH: u16 = 120;
 
 /// Width (columns) of the Projects pane at Wide tier.
 pub const PANE_WIDTH_WIDE: u16 = 26;
+
+/// Width (columns) of the Projects pane at Medium tier.
+pub const PANE_WIDTH_MEDIUM: u16 = 20;
 
 #[derive(Clone, Default)]
 pub struct AppLayout {
@@ -80,15 +90,26 @@ pub fn compute(
         }
     };
 
-    // At Wide tier with the pane visible, carve a fixed-width pane
-    // off the left of the body. Below Wide tier (or when the user
-    // has the pane hidden) the body keeps the full width and `pane`
-    // stays None.
-    if pane_visible && area.width >= WIDE_TIER_MIN_WIDTH {
-        let [pane_rect, chat_rect] =
-            Layout::horizontal([Constraint::Length(PANE_WIDTH_WIDE), Constraint::Min(1)])
-                .areas(layout.body);
-        AppLayout { pane: Some(pane_rect), body: chat_rect, ..layout }
+    // Tier ladder for the Projects pane (Phase 2b-α + 2b-β):
+    //   Wide   (>= 160) → 26ch pane
+    //   Medium (>= 120) → 20ch pane (label truncation handled by the renderer)
+    //   Narrow (<  120) → no inline pane (overlay lands in 2b-γ)
+    // When the user has hidden the pane via Ctrl+B, all tiers collapse
+    // to "no pane".
+    if pane_visible {
+        if area.width >= WIDE_TIER_MIN_WIDTH {
+            let [pane_rect, chat_rect] =
+                Layout::horizontal([Constraint::Length(PANE_WIDTH_WIDE), Constraint::Min(1)])
+                    .areas(layout.body);
+            AppLayout { pane: Some(pane_rect), body: chat_rect, ..layout }
+        } else if area.width >= MEDIUM_TIER_MIN_WIDTH {
+            let [pane_rect, chat_rect] =
+                Layout::horizontal([Constraint::Length(PANE_WIDTH_MEDIUM), Constraint::Min(1)])
+                    .areas(layout.body);
+            AppLayout { pane: Some(pane_rect), body: chat_rect, ..layout }
+        } else {
+            layout
+        }
     } else {
         layout
     }
@@ -280,8 +301,26 @@ mod tests {
     }
 
     #[test]
-    fn pane_not_allocated_below_wide_tier() {
+    fn pane_allocated_at_medium_tier() {
         let layout = compute(area(140, 40), 1, 0, 1, true);
-        assert!(layout.pane.is_none(), "Medium tier (<160) gets pane in 2b-β, not now");
+        let pane = layout.pane.expect("pane should be allocated at width 140");
+        assert_eq!(pane.width, 20);
+        assert!(layout.body.width >= 1);
+        assert_eq!(pane.x, 0);
+        assert_eq!(layout.body.x, pane.x + pane.width);
+    }
+
+    #[test]
+    fn pane_not_allocated_below_medium_tier() {
+        let layout = compute(area(100, 40), 1, 0, 1, true);
+        assert!(layout.pane.is_none(), "Narrow tier (<120) gets overlay in 2b-γ, not inline pane");
+    }
+
+    #[test]
+    fn pane_widths_match_tier() {
+        let wide = compute(area(180, 40), 1, 0, 1, true);
+        let medium = compute(area(140, 40), 1, 0, 1, true);
+        assert_eq!(wide.pane.unwrap().width, 26);
+        assert_eq!(medium.pane.unwrap().width, 20);
     }
 }

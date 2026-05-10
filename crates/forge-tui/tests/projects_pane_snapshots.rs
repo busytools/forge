@@ -203,6 +203,66 @@ fn inactive_project_drilldown_collapsed_and_one_hit_target_per_row() {
 }
 
 #[test]
+fn medium_tier_truncates_long_project_and_session_labels() {
+    let mut app = App::test_default();
+
+    // Lead session — long label so the drilldown row will overflow
+    // the 12-char Medium session budget (20 - 8 chrome = 12).
+    let long_session = session_view("really-long-session-id", "really-long-feature-branch");
+    // Project name ("subspace-chain-pulse" = 20 chars) overflows the
+    // 18-char Medium project budget (20 - 2 indent = 18).
+    let projects = vec![project_view("subspace-chain-pulse", vec![long_session.clone()])];
+
+    let lead_key = SessionKey::from_str_for_test("really-long-session-id");
+    app.sessions.insert(lead_key.clone(), Session::new(lead_key.clone()));
+    app.active_session_key = Some(lead_key);
+
+    // Medium tier renders in a 20ch-wide pane.
+    let lines = render_to_lines(&mut app, &projects, 20, 20);
+
+    // Project header truncated: name had 20 chars, budget is 18, so
+    // we expect 17 chars of the name + `…`. The 17-char prefix of
+    // "subspace-chain-pulse" is "subspace-chain-pu".
+    let any_truncated_project =
+        lines.iter().any(|l| l.contains('…') && l.contains("subspace-chain-pu"));
+    assert!(
+        any_truncated_project,
+        "expected truncated project label in pane output, got: {lines:?}"
+    );
+
+    // Session label truncated: "really-long-feature-branch" is 26
+    // chars, budget is 12, so we expect 11 chars + `…` = "really-long…".
+    let any_truncated_session = lines.iter().any(|l| l.contains('…') && l.contains("really-long"));
+    assert!(
+        any_truncated_session,
+        "expected truncated session label in pane output, got: {lines:?}"
+    );
+
+    // Hit-target stamps must still carry the un-truncated project
+    // name + session key so click routing works.
+    let project_target_full = app.pane_hit_targets.iter().any(|t| match t {
+        PaneHitTarget::ProjectHeader { project_name, .. } => project_name == "subspace-chain-pulse",
+        PaneHitTarget::SessionRow { .. } => false,
+    });
+    assert!(
+        project_target_full,
+        "project hit-target should retain full un-truncated name, got: {:?}",
+        app.pane_hit_targets
+    );
+    let session_target_full = app.pane_hit_targets.iter().any(|t| match t {
+        PaneHitTarget::SessionRow { session_key, .. } => {
+            session_key == &SessionKey::from_str_for_test("really-long-session-id")
+        }
+        PaneHitTarget::ProjectHeader { .. } => false,
+    });
+    assert!(
+        session_target_full,
+        "session hit-target should retain full un-truncated key, got: {:?}",
+        app.pane_hit_targets
+    );
+}
+
+#[test]
 fn sleeping_lead_shows_dot_glyph() {
     let mut app = App::test_default();
 

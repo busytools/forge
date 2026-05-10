@@ -1,4 +1,4 @@
-//! Projects pane (left side, Wide tier ≥160 cols).
+//! Projects pane (left side, Wide + Medium tiers).
 //!
 //! Renders projects from
 //! [`forge_workspace::Workspace::list_projects`] with the active
@@ -7,8 +7,16 @@
 //! into [`App::pane_hit_targets`] for the mouse handler (next
 //! commit) to read on click events.
 //!
-//! Render-time-stamp pattern from PR #83. See spec at
-//! `~/.claude-subspace/plans/2026-05-10-forge-tui-projects-pane-wide-design.md`.
+//! Width handling: project + session labels are head-truncated with
+//! a trailing `…` when they overflow the available row width. At
+//! Wide tier (26ch) truncation is rare; at Medium tier (20ch) it is
+//! routine. Hit-target stamps always carry the *un-truncated*
+//! identifier so click routing keeps working regardless of
+//! truncation.
+//!
+//! Render-time-stamp pattern from PR #83. See specs at
+//! `~/.claude-subspace/plans/2026-05-10-forge-tui-projects-pane-wide-design.md`
+//! and `~/.claude-subspace/plans/2026-05-10-forge-tui-projects-pane-medium-design.md`.
 
 use forge_workspace::ProjectView;
 use ratatui::Frame;
@@ -56,14 +64,20 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, projects: &[ProjectV
         .and_then(|key| sorted.iter().find(|p| p.sessions.iter().any(|s| &s.session == key)))
         .map(|p| p.key.as_str().to_owned());
 
+    let project_budget = project_max_chars(area.width);
+    let session_budget = session_max_chars(area.width);
+
     for project in &sorted {
         let project_name = project.key.as_str().to_owned();
         let is_active = active_project_name.as_deref() == Some(project.key.as_str());
 
-        // Project row.
+        // Project row. Hit-target stamps the un-truncated name so
+        // click routing keeps working when the rendered label has
+        // been head-truncated.
         let row_y = area.y + line_count_as_u16(&lines);
+        let project_label = truncate_with_ellipsis(project_name.as_str(), project_budget);
         lines.push(Line::from(Span::styled(
-            format!("  {project_name}"),
+            format!("  {project_label}"),
             if is_active {
                 Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD)
             } else {
@@ -100,6 +114,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, projects: &[ProjectV
                 } else {
                     session.label.clone()
                 };
+                let session_label = truncate_with_ellipsis(&label, session_budget);
                 lines.push(Line::from(vec![
                     Span::styled(format!("  {glyph} "), Style::default().fg(theme::DIM)),
                     Span::styled(lead_marker.to_owned(), Style::default().fg(theme::DIM)),
@@ -109,7 +124,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, projects: &[ProjectV
                         Style::default().fg(theme::RUST_ORANGE),
                     ),
                     Span::raw(" "),
-                    Span::raw(label),
+                    Span::raw(session_label),
                 ]));
                 app.pane_hit_targets.push(PaneHitTarget::SessionRow {
                     session_key: session.session.clone(),
@@ -130,4 +145,83 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, projects: &[ProjectV
 /// rather than aborting the renderer.
 fn line_count_as_u16(lines: &[Line<'_>]) -> u16 {
     u16::try_from(lines.len()).unwrap_or(u16::MAX)
+}
+
+/// Head-truncate `s` to at most `max_chars` characters with a
+/// trailing `…` ellipsis. Returns the original string if it
+/// already fits. When `max_chars` is `0` or `1` the result is just
+/// `…` — there's no room for content + ellipsis at those budgets.
+///
+/// Counts Unicode chars, not bytes, so multibyte labels truncate at
+/// a sane visual position. Note that non-ASCII chars with display
+/// width > 1 (CJK, some emoji) may still overflow visually; the
+/// pane's content is project + session names which are overwhelmingly
+/// ASCII or near-ASCII in practice.
+fn truncate_with_ellipsis(s: &str, max_chars: usize) -> String {
+    if s.chars().count() <= max_chars {
+        return s.to_owned();
+    }
+    if max_chars <= 1 {
+        return "…".to_owned();
+    }
+    let mut out: String = s.chars().take(max_chars - 1).collect();
+    out.push('…');
+    out
+}
+
+/// Max characters available for a project name on a single row.
+/// Project rows have a 2-char indent before the name; the rest of
+/// the row width is the budget.
+fn project_max_chars(area_width: u16) -> usize {
+    usize::from(area_width.saturating_sub(2))
+}
+
+/// Max characters available for a session label in the active-project
+/// drilldown. The leading chrome before the label is 8 chars: 2
+/// indent + 1 lifecycle glyph + 1 sp + 1 lead marker (◆) + 1 sp + 1
+/// current marker (•) + 1 sp.
+fn session_max_chars(area_width: u16) -> usize {
+    usize::from(area_width.saturating_sub(8))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn truncate_short_string_unchanged() {
+        assert_eq!(truncate_with_ellipsis("forge", 18), "forge");
+    }
+
+    #[test]
+    fn truncate_long_string_head_with_ellipsis() {
+        assert_eq!(truncate_with_ellipsis("subspace-chain-pulse", 12), "subspace-ch…");
+    }
+
+    #[test]
+    fn truncate_unicode_counts_chars_not_bytes() {
+        assert_eq!(truncate_with_ellipsis("héllo wörld", 6), "héllo…");
+    }
+
+    #[test]
+    fn truncate_max_one_returns_just_ellipsis() {
+        assert_eq!(truncate_with_ellipsis("anything", 1), "…");
+    }
+
+    #[test]
+    fn truncate_max_zero_returns_just_ellipsis() {
+        assert_eq!(truncate_with_ellipsis("anything", 0), "…");
+    }
+
+    #[test]
+    fn project_max_chars_matches_indent() {
+        assert_eq!(project_max_chars(20), 18);
+        assert_eq!(project_max_chars(26), 24);
+    }
+
+    #[test]
+    fn session_max_chars_accounts_for_chrome() {
+        assert_eq!(session_max_chars(20), 12);
+        assert_eq!(session_max_chars(26), 18);
+    }
 }
