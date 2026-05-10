@@ -13,6 +13,15 @@ use forge_workspace::SessionKey;
 /// silently. App-global events (no `session_key`) flip the redraw
 /// flag unconditionally because they affect the rendered view.
 pub fn handle_client_event(app: &mut App, event: ClientEvent) {
+    // INVARIANT: `is_active_or_global` is captured BEFORE the match, so
+    // handlers that themselves mutate `active_session_key` (e.g.
+    // `Connected`, `SessionReplaced`) must set `needs_redraw = true`
+    // explicitly via their own side effects. The post-match flip below
+    // sees the pre-handler active_session_key. Today the handlers that
+    // change the active key already trip needs_redraw via
+    // `reset_cache_and_footer_state_for_new_session`; new handlers in
+    // that category must do the same, OR move the redraw flip back
+    // inside each handler.
     let target_key = event.session_key();
     let is_active_or_global = match &target_key {
         Some(key) => app.active_session_key.as_ref() == Some(key),
@@ -189,42 +198,91 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
         }
         ClientEvent::UsageRefreshStarted { epoch } => {
             if app.session_scope_epoch() != epoch {
+                tracing::debug!(
+                    target: crate::logging::targets::APP_CONFIG,
+                    event_name = "usage_refresh_started_dropped",
+                    expected_epoch = app.session_scope_epoch(),
+                    received_epoch = epoch,
+                    "stale usage refresh start dropped"
+                );
                 return;
             }
             crate::app::usage::apply_refresh_started(app);
         }
         ClientEvent::UsageSnapshotReceived { epoch, snapshot } => {
             if app.session_scope_epoch() != epoch {
+                tracing::debug!(
+                    target: crate::logging::targets::APP_CONFIG,
+                    event_name = "usage_snapshot_dropped",
+                    expected_epoch = app.session_scope_epoch(),
+                    received_epoch = epoch,
+                    "stale usage snapshot dropped"
+                );
                 return;
             }
             crate::app::usage::apply_refresh_success(app, snapshot);
         }
         ClientEvent::UsageRefreshFailed { epoch, message, source } => {
             if app.session_scope_epoch() != epoch {
+                tracing::debug!(
+                    target: crate::logging::targets::APP_CONFIG,
+                    event_name = "usage_refresh_failure_dropped",
+                    expected_epoch = app.session_scope_epoch(),
+                    received_epoch = epoch,
+                    "stale usage refresh failure dropped"
+                );
                 return;
             }
             crate::app::usage::apply_refresh_failure(app, message, source);
         }
         ClientEvent::PluginsInventoryUpdated { cwd_raw, snapshot, claude_path } => {
             if app.cwd_raw() != cwd_raw {
+                tracing::debug!(
+                    target: crate::logging::targets::APP_CONFIG,
+                    event_name = "plugins_inventory_dropped",
+                    expected_cwd = %app.cwd_raw(),
+                    received_cwd = %cwd_raw,
+                    "plugins inventory for stale cwd dropped"
+                );
                 return;
             }
             crate::app::plugins::apply_inventory_refresh_success(app, snapshot, claude_path);
         }
         ClientEvent::PluginsInventoryRefreshFailed { cwd_raw, message } => {
             if app.cwd_raw() != cwd_raw {
+                tracing::debug!(
+                    target: crate::logging::targets::APP_CONFIG,
+                    event_name = "plugins_inventory_failure_dropped",
+                    expected_cwd = %app.cwd_raw(),
+                    received_cwd = %cwd_raw,
+                    "plugins inventory failure for stale cwd dropped"
+                );
                 return;
             }
             crate::app::plugins::apply_inventory_refresh_failure(app, message);
         }
         ClientEvent::PluginsCliActionSucceeded { cwd_raw, result } => {
             if app.cwd_raw() != cwd_raw {
+                tracing::debug!(
+                    target: crate::logging::targets::APP_CONFIG,
+                    event_name = "plugins_cli_success_dropped",
+                    expected_cwd = %app.cwd_raw(),
+                    received_cwd = %cwd_raw,
+                    "plugins cli success for stale cwd dropped"
+                );
                 return;
             }
             crate::app::plugins::apply_cli_action_success(app, result);
         }
         ClientEvent::PluginsCliActionFailed { cwd_raw, message } => {
             if app.cwd_raw() != cwd_raw {
+                tracing::debug!(
+                    target: crate::logging::targets::APP_CONFIG,
+                    event_name = "plugins_cli_failure_dropped",
+                    expected_cwd = %app.cwd_raw(),
+                    received_cwd = %cwd_raw,
+                    "plugins cli failure for stale cwd dropped"
+                );
                 return;
             }
             crate::app::plugins::apply_cli_action_failure(app, message);
