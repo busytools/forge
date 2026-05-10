@@ -396,11 +396,10 @@ impl super::App {
         *self.tool_call_index_mut() = new_tool_call_index;
         *self.terminal_tool_calls_mut() = terminal_tool_calls;
         *self.terminal_tool_call_membership_mut() = terminal_tool_call_membership;
-        let live_ids: HashSet<String> =
-            self.tool_call_index().map_or_else(HashSet::new, |m| m.keys().cloned().collect());
+        let live_ids: HashSet<String> = self.tool_call_index().keys().cloned().collect();
         self.tool_call_scopes_mut().retain(|id, _| live_ids.contains(id));
         let scopes_snapshot: std::collections::HashMap<String, super::ToolCallScope> =
-            self.tool_call_scopes().cloned().unwrap_or_default();
+            self.tool_call_scopes().clone();
         let mut new_active_task_ids: Vec<String> = Vec::new();
         for msg in self.messages() {
             for block in &msg.blocks {
@@ -567,13 +566,16 @@ impl super::App {
                 );
                 self.rebuild_tool_indices_and_terminal_refs();
                 let msg_count = self.messages().len();
-                self.viewport_mut().sync_message_count(msg_count);
-                if let Some((anchor_idx, anchor_offset)) = preserved_anchor {
-                    self.viewport_mut().preserve_scroll_anchor(
-                        LayoutRemeasureReason::MessagesFrom,
-                        anchor_idx,
-                        anchor_offset,
-                    );
+                {
+                    let vp = self.viewport_mut();
+                    vp.sync_message_count(msg_count);
+                    if let Some((anchor_idx, anchor_offset)) = preserved_anchor {
+                        vp.preserve_scroll_anchor(
+                            LayoutRemeasureReason::MessagesFrom,
+                            anchor_idx,
+                            anchor_offset,
+                        );
+                    }
                 }
                 self.invalidate_layout(InvalidationLevel::MessagesFrom(0));
                 self.needs_redraw = true;
@@ -591,13 +593,16 @@ impl super::App {
 
         preserved_anchor = self.upsert_history_hidden_marker(preserved_anchor);
         let msg_count = self.messages().len();
-        self.viewport_mut().sync_message_count(msg_count);
-        if let Some((anchor_idx, anchor_offset)) = preserved_anchor {
-            self.viewport_mut().preserve_scroll_anchor(
-                LayoutRemeasureReason::MessagesFrom,
-                anchor_idx,
-                anchor_offset,
-            );
+        {
+            let vp = self.viewport_mut();
+            vp.sync_message_count(msg_count);
+            if let Some((anchor_idx, anchor_offset)) = preserved_anchor {
+                vp.preserve_scroll_anchor(
+                    LayoutRemeasureReason::MessagesFrom,
+                    anchor_idx,
+                    anchor_offset,
+                );
+            }
         }
 
         stats.total_after_bytes = self.retained_history_bytes();

@@ -153,10 +153,7 @@ async fn task_tool_calls_leave_active_set_only_on_terminal_statuses() {
             serde_json::json!({"description": "Running subtask"}),
         )]),
     );
-    assert!(
-        app.active_task_ids().is_some_and(|ids| ids.contains("task-pend")),
-        "new Task should be tracked"
-    );
+    assert!(app.active_task_ids().contains("task-pend"), "new Task should be tracked");
 
     // The wire path has no equivalent of the SessionUpdate-only
     // intermediate "Pending" status; resending an open tool_use keeps
@@ -169,16 +166,10 @@ async fn task_tool_calls_leave_active_set_only_on_terminal_statuses() {
             serde_json::json!({"description": "Running subtask"}),
         )]),
     );
-    assert!(
-        app.active_task_ids().is_some_and(|ids| ids.contains("task-pend")),
-        "still in-progress should stay active"
-    );
+    assert!(app.active_task_ids().contains("task-pend"), "still in-progress should stay active");
 
     send_msg(&mut app, user_message(vec![tool_result_block("task-pend", serde_json::json!("ok"))]));
-    assert!(
-        !app.active_task_ids().is_some_and(|ids| ids.contains("task-pend")),
-        "completed Task should be removed"
-    );
+    assert!(!app.active_task_ids().contains("task-pend"), "completed Task should be removed");
 
     send_msg(
         &mut app,
@@ -188,16 +179,13 @@ async fn task_tool_calls_leave_active_set_only_on_terminal_statuses() {
             serde_json::json!({"description": "Subtask"}),
         )]),
     );
-    assert!(app.active_task_ids().is_some_and(|ids| ids.contains("task-fail")));
+    assert!(app.active_task_ids().contains("task-fail"));
 
     send_msg(
         &mut app,
         user_message(vec![tool_result_error_block("task-fail", serde_json::json!("bang"))]),
     );
-    assert!(
-        !app.active_task_ids().is_some_and(|ids| ids.contains("task-fail")),
-        "failed Task should also be removed"
-    );
+    assert!(!app.active_task_ids().contains("task-fail"), "failed Task should also be removed");
 }
 
 #[tokio::test]
@@ -361,10 +349,10 @@ async fn multiple_tool_calls_independently_indexed() {
         );
     }
 
-    assert_eq!(app.tool_call_index().expect("session bucket").len(), 5);
+    assert_eq!(app.tool_call_index().len(), 5);
     for i in 0..5 {
         let key = format!("tc-{i}");
-        assert!(app.tool_call_index().expect("session bucket").contains_key(&key), "missing {key}");
+        assert!(app.tool_call_index().contains_key(&key), "missing {key}");
     }
 }
 

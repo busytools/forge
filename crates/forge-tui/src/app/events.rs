@@ -484,10 +484,7 @@ mod tests {
                 serde_json::json!({"description": "Research"}),
             )]),
         );
-        assert!(
-            app.active_task_ids().is_some_and(|ids| ids.contains("task-1")),
-            "task must be tracked while InProgress"
-        );
+        assert!(app.active_task_ids().contains("task-1"), "task must be tracked while InProgress");
 
         // User cancels then TurnComplete finalizes the turn
         let session_key = active_session_key(&app);
@@ -499,10 +496,7 @@ mod tests {
         );
 
         // Stale task ID must be gone after turn boundary
-        assert!(
-            app.active_task_ids().is_some_and(std::collections::HashSet::is_empty),
-            "stale task id must not survive TurnComplete"
-        );
+        assert!(app.active_task_ids().is_empty(), "stale task id must not survive TurnComplete");
 
         // Next turn: a normal main-agent Glob must get MainAgent scope, not Subagent
         send_msg(
@@ -1061,7 +1055,7 @@ mod tests {
             )]),
         );
 
-        assert!(app.active_task_ids().is_some_and(std::collections::HashSet::is_empty));
+        assert!(app.active_task_ids().is_empty());
     }
 
     #[test]
@@ -2621,7 +2615,7 @@ mod tests {
             },
         );
 
-        assert!(app.active_task_ids().is_some_and(std::collections::HashSet::is_empty));
+        assert!(app.active_task_ids().is_empty());
         assert_eq!(app.tool_call_scope("resume-task"), None);
     }
 
@@ -2879,7 +2873,7 @@ mod tests {
             ClientEvent::TurnError { session_key, message: "boom".into(), terminal_reason: None },
         );
 
-        assert!(app.active_task_ids().is_some_and(std::collections::HashSet::is_empty));
+        assert!(app.active_task_ids().is_empty());
         assert_eq!(app.tool_call_scope("task-1"), None);
     }
 
@@ -2916,7 +2910,7 @@ mod tests {
         );
 
         assert_eq!(app.active_turn_assistant_idx(), None);
-        assert!(app.active_task_ids().is_some_and(std::collections::HashSet::is_empty));
+        assert!(app.active_task_ids().is_empty());
         assert!(app.pending_interaction_ids().is_empty());
         assert_ne!(app.focus_owner(), FocusOwner::Permission);
         let Some(MessageBlock::ToolCall(tc)) = app.messages()[0].blocks.first() else {
@@ -2983,7 +2977,7 @@ mod tests {
         );
 
         assert_eq!(app.active_turn_assistant_idx(), None);
-        assert!(app.active_task_ids().is_some_and(std::collections::HashSet::is_empty));
+        assert!(app.active_task_ids().is_empty());
         let Some(MessageBlock::ToolCall(tc)) = app.messages()[0].blocks.first() else {
             panic!("expected tool call block");
         };
@@ -3008,7 +3002,7 @@ mod tests {
         );
 
         assert_eq!(app.active_turn_assistant_idx(), None);
-        assert!(app.active_task_ids().is_some_and(std::collections::HashSet::is_empty));
+        assert!(app.active_task_ids().is_empty());
         let Some(MessageBlock::ToolCall(tc)) = app.messages()[0].blocks.first() else {
             panic!("expected tool call block");
         };

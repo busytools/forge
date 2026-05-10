@@ -773,6 +773,34 @@ mod tests {
         assert!(app.needs_redraw);
     }
 
+    /// Single-session focused twin of
+    /// [`background_event_updates_target_session_only`]: with only one
+    /// real session in the map, an event tagged for the active key
+    /// must still flip `needs_redraw`. Guards the routing rule
+    /// (active-target events trigger redraw) without the multi-session
+    /// noise of [`status_snapshot_routes_to_active_session_and_flips_redraw`].
+    #[test]
+    fn active_session_event_flips_needs_redraw() {
+        let mut app = App::test_default();
+        let key_a = SessionKey::from_str_for_test("a");
+        let mut session_a = Session::new(key_a.clone());
+        session_a.session_id = Some(crate::agent::model::SessionId::new("a"));
+        app.sessions.insert(key_a.clone(), session_a);
+        app.active_session_key = Some(key_a.clone());
+        app.needs_redraw = false;
+
+        handle_client_event(
+            &mut app,
+            ClientEvent::StatusSnapshotReceived {
+                session_id: "a".to_owned(),
+                account: forge_primitives::AccountInfo::default(),
+                forge_account: None,
+            },
+        );
+
+        assert!(app.needs_redraw, "active-session events must flip needs_redraw");
+    }
+
     fn make_creds() -> forge_agent::cloud::oauth_credentials::OauthCredentials {
         // Round-trip through serde_json so the non-exhaustive
         // constructor doesn't trip in tests. The test crate doesn't

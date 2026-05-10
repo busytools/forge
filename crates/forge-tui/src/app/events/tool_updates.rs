@@ -800,9 +800,7 @@ mod tests {
         assert_eq!(tc.terminal_id, None);
         assert_eq!(tc.terminal_output.as_deref(), Some("done"));
         assert!(app.terminal_tool_calls().is_empty());
-        assert!(
-            app.terminal_tool_call_membership().is_some_and(std::collections::HashSet::is_empty)
-        );
+        assert!(app.terminal_tool_call_membership().is_empty());
     }
 
     #[test]
@@ -829,10 +827,7 @@ mod tests {
         handle_tool_call_update_session(&mut app, &update);
 
         assert_eq!(app.terminal_tool_calls().len(), 1);
-        assert_eq!(
-            app.terminal_tool_call_membership().map_or(0, std::collections::HashSet::len),
-            1
-        );
+        assert_eq!(app.terminal_tool_call_membership().len(), 1);
         assert_eq!(app.terminal_tool_calls()[0].terminal_id, "term-1");
     }
 
@@ -860,10 +855,7 @@ mod tests {
         handle_tool_call_update_session(&mut app, &update);
 
         assert_eq!(app.terminal_tool_calls().len(), 1);
-        assert_eq!(
-            app.terminal_tool_call_membership().map_or(0, std::collections::HashSet::len),
-            1
-        );
+        assert_eq!(app.terminal_tool_call_membership().len(), 1);
         assert_eq!(app.terminal_tool_calls()[0].terminal_id, "term-2");
         let MessageBlock::ToolCall(tc) = &app.messages()[0].blocks[0] else {
             panic!("expected tool call block");
@@ -1010,6 +1002,6 @@ mod tests {
             panic!("expected tool call block");
         };
         assert_eq!(tc.status, model::ToolCallStatus::Killed);
-        assert!(!app.active_task_ids().is_some_and(|ids| ids.contains(tool_id)));
+        assert!(!app.active_task_ids().contains(tool_id));
     }
 }

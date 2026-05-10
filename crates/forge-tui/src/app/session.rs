@@ -33,10 +33,13 @@ use crate::app::state::{ChatRenderTraceState, TerminalToolCallRef, TurnNoticeRef
 /// dropped when the session is closed or forge-tui exits.
 ///
 /// No `Debug` derive — `AgentHandle` owns callback closures and
-/// doesn't derive `Debug`. `Default` is provided by hand because
-/// [`model::FastModeState`] is plain wire enum without a `Default`
-/// impl; the rest of the fields fall through to their type defaults.
+/// doesn't derive `Debug`. Every field's default matches its type's
+/// `Default` impl, so `Default` is derived; if a field needs a
+/// non-`Default::default()` initializer, factor it through
+/// [`Session::new`] (or a new constructor) rather than re-introducing
+/// a hand-written impl.
 #[allow(clippy::struct_excessive_bools)]
+#[derive(Default)]
 pub struct Session {
     /// The claude-issued session UUID, also used as the map key.
     /// Stored here for symmetry; the map lookup uses the same value.
@@ -232,76 +235,40 @@ pub struct Session {
     pub last_chat_render_trace_state: Option<ChatRenderTraceState>,
 }
 
-impl Default for Session {
-    fn default() -> Self {
-        Self {
-            key: None,
-            session_id: None,
-            conn: None,
-            session_scope_epoch: 0,
-            messages: Vec::new(),
-            message_retained_bytes: Vec::new(),
-            retained_history_bytes: 0,
-            viewport: ChatViewport::default(),
-            active_turn_assistant_message_idx: None,
-            turn_state: SessionTurnState::default(),
-            is_compacting: false,
-            pending_compact_clear: false,
-            pending_interaction_ids: Vec::new(),
-            cancelled_turn_pending_hint: false,
-            pending_cancel_origin: None,
-            prompt_suggestion: None,
-            last_rate_limit_update: None,
-            turn_notice_refs: Vec::new(),
-            active_task_ids: HashSet::new(),
-            tool_call_scopes: HashMap::new(),
-            tool_call_index: HashMap::new(),
-            terminals: TerminalMap::default(),
-            terminal_tool_calls: Vec::new(),
-            terminal_tool_call_membership: HashSet::new(),
-            subagent_attribution: HashMap::new(),
-            current_model: None,
-            available_models: Vec::new(),
-            available_commands: Vec::new(),
-            available_agents: Vec::new(),
-            mode: None,
-            observed_permission_mode: None,
-            observed_effort: None,
-            observed_assistant_model: None,
-            runtime_session_state: None,
-            fast_mode_state: model::FastModeState::Off,
-            config_options: BTreeMap::new(),
-            session_usage: SessionUsageState::default(),
-            account_info: None,
-            active_account_display_name: None,
-            oauth_credentials: None,
-            cwd: String::new(),
-            cwd_raw: String::new(),
-            files_accessed: 0,
-            git_context: GitContextState::default(),
-            mcp: McpState::default(),
-            todos: Vec::new(),
-            show_todo_panel: false,
-            todo_scroll: 0,
-            todo_selected: 0,
-            cached_todo_compact: None,
-            render_cache_slots: Vec::new(),
-            render_cache_total_bytes: 0,
-            render_cache_protected_bytes: 0,
-            render_cache_evictable: BTreeSet::new(),
-            render_cache_tail_msg_idx: None,
-            history_retention: HistoryRetentionPolicy::default(),
-            history_retention_stats: HistoryRetentionStats::default(),
-            cache_metrics: CacheMetrics::default(),
-            last_active_turn_height_state: None,
-            last_chat_render_trace_state: None,
-        }
-    }
-}
-
 impl Session {
     #[must_use]
     pub fn new(key: SessionKey) -> Self {
         Self { key: Some(key), ..Self::default() }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::expect_used, clippy::unwrap_used)]
+
+    use crate::app::App;
+
+    /// Pre-Connect bucket state (cwd, files_accessed, …) accumulated
+    /// before the first `Connected` event must survive the
+    /// synthetic-key → real-key migration that happens when
+    /// `set_session_id` finally lands. Without the migration the
+    /// welcome card / status panel would lose state on connect.
+    #[test]
+    fn set_session_id_migrates_pre_connect_bucket_state_onto_real_key() {
+        let mut app = App::test_default();
+        // Pre-connect bucket holds welcome state.
+        app.set_cwd("/work/foo");
+        app.set_files_accessed(3);
+
+        let pre = forge_workspace::SessionKey::from_session_id(App::PRE_CONNECT_KEY);
+        assert!(app.sessions.contains_key(&pre));
+
+        app.set_session_id(Some(crate::agent::model::SessionId::new("real-uuid")));
+
+        let real = forge_workspace::SessionKey::from_session_id("real-uuid");
+        assert!(!app.sessions.contains_key(&pre), "synthetic bucket removed");
+        assert!(app.sessions.contains_key(&real), "real bucket exists");
+        assert_eq!(app.cwd(), "/work/foo");
+        assert_eq!(app.files_accessed(), 3);
     }
 }

@@ -230,13 +230,13 @@ async fn turn_complete_does_not_clear_tool_call_index() {
             serde_json::json!({"file_path": "file"}),
         )]),
     );
-    assert!(app.tool_call_index().expect("session bucket").contains_key("tc-persist"));
+    assert!(app.tool_call_index().contains_key("tc-persist"));
 
     let session_key = active_session_key(&app);
     send_client_event(&mut app, ClientEvent::TurnComplete { session_key, terminal_reason: None });
 
     assert!(
-        app.tool_call_index().expect("session bucket").contains_key("tc-persist"),
+        app.tool_call_index().contains_key("tc-persist"),
         "tool_call_index should persist across turns"
     );
 }

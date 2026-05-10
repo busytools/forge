@@ -248,7 +248,7 @@ async fn stress_many_tool_calls_in_one_turn() {
         );
     }
 
-    assert_eq!(app.tool_call_index().expect("session bucket").len(), 50);
+    assert_eq!(app.tool_call_index().len(), 50);
 
     // Complete all (tool result envelopes finalise each tool_use_id).
     for i in 0..50 {
@@ -397,7 +397,7 @@ async fn error_during_tool_calls_leaves_tool_calls_intact() {
 
     assert!(matches!(app.status, AppStatus::Error));
     // Tool call should remain indexed and preserved in the original assistant message.
-    assert!(app.tool_call_index().expect("session bucket").contains_key("tc-err"));
+    assert!(app.tool_call_index().contains_key("tc-err"));
     assert_eq!(app.messages().len(), 2, "assistant message + system error message");
     assert!(matches!(app.messages()[0].role, MessageRole::Assistant));
     assert_eq!(app.messages()[0].blocks.len(), 2, "text + tool call preserved");

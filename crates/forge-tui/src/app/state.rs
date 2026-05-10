@@ -665,9 +665,17 @@ impl App {
     // ---- Tool tracking accessors ----
 
     /// Borrow the active session's active task id set.
+    ///
+    /// Falls back to a leaked empty set when the active bucket is
+    /// missing — matches the existing infallible-reader pattern
+    /// (`viewport()`, `turn_state()`, …).
     #[must_use]
-    pub fn active_task_ids(&self) -> Option<&HashSet<String>> {
-        self.active_session().map(|s| &s.active_task_ids)
+    pub fn active_task_ids(&self) -> &HashSet<String> {
+        static FALLBACK: std::sync::OnceLock<HashSet<String>> = std::sync::OnceLock::new();
+        match self.active_session() {
+            Some(s) => &s.active_task_ids,
+            None => FALLBACK.get_or_init(HashSet::new),
+        }
     }
 
     /// Mutable borrow of the active task id set.
@@ -678,8 +686,13 @@ impl App {
 
     /// Borrow the active session's tool call scope map.
     #[must_use]
-    pub fn tool_call_scopes(&self) -> Option<&HashMap<String, ToolCallScope>> {
-        self.active_session().map(|s| &s.tool_call_scopes)
+    pub fn tool_call_scopes(&self) -> &HashMap<String, ToolCallScope> {
+        static FALLBACK: std::sync::OnceLock<HashMap<String, ToolCallScope>> =
+            std::sync::OnceLock::new();
+        match self.active_session() {
+            Some(s) => &s.tool_call_scopes,
+            None => FALLBACK.get_or_init(HashMap::new),
+        }
     }
 
     /// Mutable borrow of the tool call scope map.
@@ -690,8 +703,13 @@ impl App {
 
     /// Borrow the active session's tool call index.
     #[must_use]
-    pub fn tool_call_index(&self) -> Option<&HashMap<String, (usize, usize)>> {
-        self.active_session().map(|s| &s.tool_call_index)
+    pub fn tool_call_index(&self) -> &HashMap<String, (usize, usize)> {
+        static FALLBACK: std::sync::OnceLock<HashMap<String, (usize, usize)>> =
+            std::sync::OnceLock::new();
+        match self.active_session() {
+            Some(s) => &s.tool_call_index,
+            None => FALLBACK.get_or_init(HashMap::new),
+        }
     }
 
     /// Mutable borrow of the tool call index.
@@ -704,9 +722,12 @@ impl App {
     /// `Rc<RefCell<...>>`).
     ///
     /// Returns `None` only in the brief pre-Connect window where no
-    /// session bucket exists. Both `App::test_default()` and
-    /// `connect()` seed a bucket up front so production callers can
-    /// treat this as effectively always-Some.
+    /// session bucket exists. Stays fallible because `TerminalMap`
+    /// (`Rc<RefCell<...>>`) is `!Send + !Sync`, so a `OnceLock`
+    /// fallback (the pattern used by the other infallible readers)
+    /// won't compile. Both `App::test_default()` and `connect()`
+    /// seed a bucket up front so production callers can treat this
+    /// as effectively always-`Some`.
     #[must_use]
     pub fn terminals(&self) -> Option<&crate::agent::events::TerminalMap> {
         self.active_session().map(|s| &s.terminals)
@@ -734,8 +755,13 @@ impl App {
     /// Borrow the active session's terminal tool call membership
     /// set.
     #[must_use]
-    pub fn terminal_tool_call_membership(&self) -> Option<&HashSet<TerminalToolCallRef>> {
-        self.active_session().map(|s| &s.terminal_tool_call_membership)
+    pub fn terminal_tool_call_membership(&self) -> &HashSet<TerminalToolCallRef> {
+        static FALLBACK: std::sync::OnceLock<HashSet<TerminalToolCallRef>> =
+            std::sync::OnceLock::new();
+        match self.active_session() {
+            Some(s) => &s.terminal_tool_call_membership,
+            None => FALLBACK.get_or_init(HashSet::new),
+        }
     }
 
     /// Mutable borrow of the terminal tool call membership set.
@@ -746,8 +772,12 @@ impl App {
 
     /// Borrow the active session's subagent attribution map.
     #[must_use]
-    pub fn subagent_attribution(&self) -> Option<&HashMap<String, String>> {
-        self.active_session().map(|s| &s.subagent_attribution)
+    pub fn subagent_attribution(&self) -> &HashMap<String, String> {
+        static FALLBACK: std::sync::OnceLock<HashMap<String, String>> = std::sync::OnceLock::new();
+        match self.active_session() {
+            Some(s) => &s.subagent_attribution,
+            None => FALLBACK.get_or_init(HashMap::new),
+        }
     }
 
     /// Mutable borrow of the subagent attribution map.
@@ -888,8 +918,13 @@ impl App {
 
     /// Borrow the active session's config-options map.
     #[must_use]
-    pub fn config_options(&self) -> Option<&BTreeMap<String, serde_json::Value>> {
-        self.active_session().map(|s| &s.config_options)
+    pub fn config_options(&self) -> &BTreeMap<String, serde_json::Value> {
+        static FALLBACK: std::sync::OnceLock<BTreeMap<String, serde_json::Value>> =
+            std::sync::OnceLock::new();
+        match self.active_session() {
+            Some(s) => &s.config_options,
+            None => FALLBACK.get_or_init(BTreeMap::new),
+        }
     }
 
     /// Mutable borrow of the config-options map.
@@ -1433,7 +1468,7 @@ impl App {
 
     #[must_use]
     pub fn tool_call_scope(&self, id: &str) -> Option<ToolCallScope> {
-        self.tool_call_scopes().and_then(|m| m.get(id).cloned())
+        self.tool_call_scopes().get(id).cloned()
     }
 
     #[must_use]
@@ -1455,7 +1490,7 @@ impl App {
     /// Look up the (`message_index`, `block_index`) for a tool call ID.
     #[must_use]
     pub fn lookup_tool_call(&self, id: &str) -> Option<(usize, usize)> {
-        self.tool_call_index().and_then(|m| m.get(id).copied())
+        self.tool_call_index().get(id).copied()
     }
 
     /// Register a tool call's position in the message/block arrays.
@@ -1470,7 +1505,7 @@ impl App {
         block_idx: usize,
     ) {
         let desired = TerminalToolCallRef::new(terminal_id, msg_idx, block_idx);
-        if self.terminal_tool_call_membership().is_some_and(|m| m.contains(&desired)) {
+        if self.terminal_tool_call_membership().contains(&desired) {
             return;
         }
         self.untrack_terminal_tool_call(msg_idx, block_idx);
@@ -2898,10 +2933,7 @@ mod tests {
         let _ = app.enforce_history_retention();
         assert_eq!(app.lookup_tool_call("tool-idx"), Some((2, 0)));
         assert_eq!(app.terminal_tool_calls().len(), 1);
-        assert_eq!(
-            app.terminal_tool_call_membership().map_or(0, std::collections::HashSet::len),
-            1
-        );
+        assert_eq!(app.terminal_tool_call_membership().len(), 1);
         assert_eq!(app.terminal_tool_calls()[0].terminal_id, "term-1");
         assert_eq!(app.terminal_tool_calls()[0].msg_idx, 2);
         assert_eq!(app.terminal_tool_calls()[0].block_idx, 0);
@@ -3063,16 +3095,16 @@ mod tests {
     fn active_task_insert_remove() {
         let mut app = make_test_app();
         app.insert_active_task("task-1".into());
-        assert!(app.active_task_ids().is_some_and(|ids| ids.contains("task-1")));
+        assert!(app.active_task_ids().contains("task-1"));
         app.remove_active_task("task-1");
-        assert!(!app.active_task_ids().is_some_and(|ids| ids.contains("task-1")));
+        assert!(!app.active_task_ids().contains("task-1"));
     }
 
     #[test]
     fn remove_nonexistent_task_is_noop() {
         let mut app = make_test_app();
         app.remove_active_task("does-not-exist");
-        assert!(app.active_task_ids().is_some_and(std::collections::HashSet::is_empty));
+        assert!(app.active_task_ids().is_empty());
     }
 
     // active_task_ids
@@ -3083,9 +3115,9 @@ mod tests {
         let mut app = make_test_app();
         app.insert_active_task("task-1".into());
         app.insert_active_task("task-1".into());
-        assert_eq!(app.active_task_ids().map_or(0, std::collections::HashSet::len), 1);
+        assert_eq!(app.active_task_ids().len(), 1);
         app.remove_active_task("task-1");
-        assert!(app.active_task_ids().is_some_and(std::collections::HashSet::is_empty));
+        assert!(app.active_task_ids().is_empty());
     }
 
     /// Insert many tasks, remove in different order.
@@ -3095,12 +3127,12 @@ mod tests {
         for i in 0..100 {
             app.insert_active_task(format!("task-{i}"));
         }
-        assert_eq!(app.active_task_ids().map_or(0, std::collections::HashSet::len), 100);
+        assert_eq!(app.active_task_ids().len(), 100);
         // Remove in reverse order
         for i in (0..100).rev() {
             app.remove_active_task(&format!("task-{i}"));
         }
-        assert!(app.active_task_ids().is_some_and(std::collections::HashSet::is_empty));
+        assert!(app.active_task_ids().is_empty());
     }
 
     /// Mixed insert/remove interleaving.
@@ -3111,10 +3143,10 @@ mod tests {
         app.insert_active_task("b".into());
         app.remove_active_task("a");
         app.insert_active_task("c".into());
-        assert!(!app.active_task_ids().is_some_and(|ids| ids.contains("a")));
-        assert!(app.active_task_ids().is_some_and(|ids| ids.contains("b")));
-        assert!(app.active_task_ids().is_some_and(|ids| ids.contains("c")));
-        assert_eq!(app.active_task_ids().map_or(0, std::collections::HashSet::len), 2);
+        assert!(!app.active_task_ids().contains("a"));
+        assert!(app.active_task_ids().contains("b"));
+        assert!(app.active_task_ids().contains("c"));
+        assert_eq!(app.active_task_ids().len(), 2);
     }
 
     /// Remove from empty set multiple times - no panic.
@@ -3124,7 +3156,7 @@ mod tests {
         for i in 0..100 {
             app.remove_active_task(&format!("ghost-{i}"));
         }
-        assert!(app.active_task_ids().is_some_and(std::collections::HashSet::is_empty));
+        assert!(app.active_task_ids().is_empty());
     }
 
     /// `clear_tool_scope_tracking` must also clear `active_task_ids`.
@@ -3134,12 +3166,9 @@ mod tests {
     fn clear_tool_scope_tracking_also_clears_active_task_ids() {
         let mut app = make_test_app();
         app.insert_active_task("task-leaked".into());
-        assert!(!app.active_task_ids().is_some_and(std::collections::HashSet::is_empty));
+        assert!(!app.active_task_ids().is_empty());
         app.clear_tool_scope_tracking();
-        assert!(
-            app.active_task_ids().is_some_and(std::collections::HashSet::is_empty),
-            "active_task_ids must be cleared at turn end"
-        );
+        assert!(app.active_task_ids().is_empty(), "active_task_ids must be cleared at turn end");
     }
 
     #[test]
@@ -3157,9 +3186,7 @@ mod tests {
 
         assert_eq!(changed, 1);
         assert!(app.terminal_tool_calls().is_empty());
-        assert!(
-            app.terminal_tool_call_membership().is_some_and(std::collections::HashSet::is_empty)
-        );
+        assert!(app.terminal_tool_call_membership().is_empty());
         let MessageBlock::ToolCall(tc) = &app.messages()[0].blocks[0] else {
             panic!("expected tool call");
         };
@@ -3260,9 +3287,9 @@ mod tests {
         app.clear_messages_tracked();
 
         assert!(app.messages().is_empty());
-        assert!(app.tool_call_index().is_some_and(HashMap::is_empty));
+        assert!(app.tool_call_index().is_empty());
         assert!(app.terminal_tool_calls().is_empty());
-        assert!(app.terminal_tool_call_membership().is_some_and(HashSet::is_empty));
+        assert!(app.terminal_tool_call_membership().is_empty());
         assert!(app.pending_interaction_ids().is_empty());
     }
 
@@ -3280,9 +3307,7 @@ mod tests {
         app.rebuild_tool_indices_and_terminal_refs();
 
         assert!(app.terminal_tool_calls().is_empty());
-        assert!(
-            app.terminal_tool_call_membership().is_some_and(std::collections::HashSet::is_empty)
-        );
+        assert!(app.terminal_tool_call_membership().is_empty());
     }
 
     #[test]

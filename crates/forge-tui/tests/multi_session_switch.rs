@@ -69,7 +69,44 @@ fn switch_to_unknown_key_is_noop() {
     app.active_session_key = Some(known.clone());
     app.needs_redraw = false;
 
-    app.switch_active_session(unknown);
+    app.switch_active_session(unknown.clone());
     assert_eq!(app.active_session_key.as_ref(), Some(&known));
     assert!(!app.needs_redraw);
+    assert!(!app.sessions.contains_key(&unknown), "unknown key must not be inserted");
+}
+
+/// Switching A → B → A must restore A's bucket exactly. Background
+/// sessions accumulate state silently while another session is
+/// rendered, and switching back must surface that state on the next
+/// paint.
+#[test]
+fn switch_round_trip_preserves_state() {
+    let mut app = App::test_default();
+    let key_a = SessionKey::from_str_for_test("session-a");
+    let key_b = SessionKey::from_str_for_test("session-b");
+    app.sessions.insert(key_a.clone(), forge_tui::app::session::Session::new(key_a.clone()));
+    app.sessions.insert(key_b.clone(), forge_tui::app::session::Session::new(key_b.clone()));
+    app.active_session_key = Some(key_a.clone());
+
+    // Mutate A's bucket.
+    {
+        let a = app.sessions.get_mut(&key_a).expect("a");
+        a.cwd = "/from/a".to_string();
+        a.files_accessed = 5;
+    }
+
+    // Mutate B's bucket.
+    {
+        let b = app.sessions.get_mut(&key_b).expect("b");
+        b.cwd = "/from/b".to_string();
+    }
+
+    // A → B: B's bucket is now rendered.
+    app.switch_active_session(key_b.clone());
+    assert_eq!(app.cwd(), "/from/b");
+
+    // B → A: A's bucket survives the round trip.
+    app.switch_active_session(key_a);
+    assert_eq!(app.cwd(), "/from/a", "A's cwd survives the round trip");
+    assert_eq!(app.files_accessed(), 5, "A's files_accessed survives the round trip");
 }

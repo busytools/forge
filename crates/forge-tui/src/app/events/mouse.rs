@@ -179,11 +179,12 @@ fn set_scroll_from_thumb_top(
     }
     .min(max_scroll);
 
-    app.viewport_mut().auto_scroll = false;
-    app.viewport_mut().scroll_target = target;
+    let vp = app.viewport_mut();
+    vp.auto_scroll = false;
+    vp.scroll_target = target;
     // Keep content movement responsive while dragging the thumb.
-    app.viewport_mut().scroll_pos = target as f32;
-    app.viewport_mut().scroll_offset = target;
+    vp.scroll_pos = target as f32;
+    vp.scroll_offset = target;
 }
 
 fn mouse_on_scrollbar_rail(app: &App, mouse: MouseEvent) -> bool {

@@ -139,6 +139,16 @@ fn update_visual_heights(
         return stats;
     }
 
+    // Snapshot loop-invariant fields once. `mode_id` was previously
+    // cloned per-iteration; `layout_generation` and `tools_collapsed`
+    // are stable across the remeasure loops below — bumping
+    // `layout_generation` requires a full `sync_message_count` /
+    // resize, which already ran above.
+    let mode_id_owned = app.mode().map(|mode| mode.current_mode_id.clone());
+    let mode_id = mode_id_owned.as_deref();
+    let layout_generation = app.viewport().layout_generation;
+    let tools_collapsed = app.tools_collapsed;
+
     let (visible_start, visible_end) = app
         .viewport_mut()
         .remeasure_anchor_window(viewport_height)
@@ -152,7 +162,17 @@ fn update_visual_heights(
             stats.reused_msgs += 1;
             continue;
         }
-        measure_message_height_at(app, base, active_turn_assistant, width, i, &mut stats);
+        measure_message_height_at(
+            app,
+            base,
+            active_turn_assistant,
+            width,
+            i,
+            mode_id,
+            layout_generation,
+            tools_collapsed,
+            &mut stats,
+        );
     }
 
     for i in visible_start..=visible_end {
@@ -161,13 +181,33 @@ fn update_visual_heights(
             stats.reused_msgs += 1;
             continue;
         }
-        measure_message_height_at(app, base, active_turn_assistant, width, i, &mut stats);
+        measure_message_height_at(
+            app,
+            base,
+            active_turn_assistant,
+            width,
+            i,
+            mode_id,
+            layout_generation,
+            tools_collapsed,
+            &mut stats,
+        );
     }
 
     if is_streaming {
         let last = msg_count.saturating_sub(1);
         if needs_height_measure(app, last, true, active_turn_assistant, true) {
-            measure_message_height_at(app, base, active_turn_assistant, width, last, &mut stats);
+            measure_message_height_at(
+                app,
+                base,
+                active_turn_assistant,
+                width,
+                last,
+                mode_id,
+                layout_generation,
+                tools_collapsed,
+                &mut stats,
+            );
         }
     }
 
@@ -185,7 +225,17 @@ fn update_visual_heights(
             continue;
         }
         let measured_lines_before = stats.measured_lines;
-        measure_message_height_at(app, base, active_turn_assistant, width, i, &mut stats);
+        measure_message_height_at(
+            app,
+            base,
+            active_turn_assistant,
+            width,
+            i,
+            mode_id,
+            layout_generation,
+            tools_collapsed,
+            &mut stats,
+        );
         budget.consume(stats.measured_lines.saturating_sub(measured_lines_before));
     }
 
@@ -241,6 +291,11 @@ fn sync_active_turn_height_state(
 }
 
 // Render fn — args are state + dimensions + scroll geometry. Bundling into a struct duplicates fields (App already holds them) without simplifying the call site.
+//
+// `mode_id`, `layout_generation`, `tools_collapsed` are loop-invariant
+// across `update_visual_heights`'s remeasure loops — callers snapshot
+// them once above the loop and pass references / Copy values in. This
+// avoids N String allocations on remeasure-heavy frames.
 #[allow(clippy::too_many_arguments)]
 fn measure_message_height_at(
     app: &mut App,
@@ -248,20 +303,18 @@ fn measure_message_height_at(
     active_turn_assistant: Option<usize>,
     width: u16,
     idx: usize,
+    mode_id: Option<&str>,
+    layout_generation: u64,
+    tools_collapsed: bool,
     stats: &mut HeightUpdateStats,
 ) {
     let msg_count = app.messages().len();
     let is_last_message = idx + 1 == msg_count;
     let sp = msg_spinner(base, idx, active_turn_assistant, &app.messages()[idx]);
-    // Snapshot small Copy/owned fields up front so the &mut borrow on
-    // `app.messages_mut()` doesn't conflict with reads of other App fields.
-    let mode_id = app.mode().map(|mode| mode.current_mode_id.clone());
-    let layout_generation = app.viewport().layout_generation;
-    let tools_collapsed = app.tools_collapsed;
     let (h, rendered_lines) = measure_message_height(
         &mut app.messages_mut()[idx],
         &sp,
-        mode_id.as_deref(),
+        mode_id,
         width,
         layout_generation,
         tools_collapsed,
@@ -270,8 +323,9 @@ fn measure_message_height_at(
     app.sync_render_cache_message(idx);
     stats.measured_msgs += 1;
     stats.measured_lines += rendered_lines;
-    app.viewport_mut().set_message_height(idx, h);
-    app.viewport_mut().mark_message_height_measured(idx);
+    let vp = app.viewport_mut();
+    vp.set_message_height(idx, h);
+    vp.mark_message_height_measured(idx);
 }
 
 /// Measure message height using ground truth: render the message into a scratch
@@ -343,8 +397,11 @@ fn sync_chat_layout(app: &mut App, area: Rect, base_spinner: SpinnerState) -> us
         let _t = app.perf.as_ref().map(|p| p.start("chat::prefix_sums"));
         app.viewport_mut().rebuild_prefix_sums();
     }
-    if let Some((anchor_idx, anchor_offset)) = app.viewport_mut().ready_scroll_anchor_to_restore() {
-        app.viewport_mut().restore_scroll_anchor(anchor_idx, anchor_offset);
+    {
+        let vp = app.viewport_mut();
+        if let Some((anchor_idx, anchor_offset)) = vp.ready_scroll_anchor_to_restore() {
+            vp.restore_scroll_anchor(anchor_idx, anchor_offset);
+        }
     }
 
     let content_height = app.viewport_mut().total_message_height();
@@ -642,22 +699,24 @@ fn render_culled_messages(
     let mut local_scroll = 0usize;
     let mut rendered_rows = 0usize;
     let mut last_rendered_idx = None;
+    // Loop-invariant snapshots — `mode_id` was previously cloned per
+    // iteration, `layout_generation` and `tools_collapsed` re-read on
+    // every pass. Hoisting avoids N String allocations on
+    // remeasure-heavy frames.
+    let mode_id_owned = app.mode().map(|mode| mode.current_mode_id.clone());
+    let mode_id = mode_id_owned.as_deref();
+    let layout_generation = app.viewport().layout_generation;
+    let tools_collapsed = app.tools_collapsed;
     for i in render_start..msg_count {
         let sp = msg_spinner(base, i, active_turn_assistant, &app.messages()[i]);
         let before = out.len();
         let message_height = app.viewport().message_height(i);
-        // Snapshot small App-side fields up front so the &mut borrow on
-        // `app.messages_mut()` doesn't collide with concurrent reads of
-        // mode / viewport / tools_collapsed.
-        let mode_id = app.mode().map(|mode| mode.current_mode_id.clone());
-        let layout_generation = app.viewport().layout_generation;
-        let tools_collapsed = app.tools_collapsed;
         if structural_skip > 0 {
             let remaining_skip = message::render_message_from_offset_internal_with_mode(
                 &mut app.messages_mut()[i],
                 &sp,
                 message::MessageRenderContext::new(
-                    mode_id.as_deref(),
+                    mode_id,
                     width,
                     layout_generation,
                     message::MessageRenderOptions {
@@ -678,7 +737,7 @@ fn render_culled_messages(
                 &mut app.messages_mut()[i],
                 &sp,
                 message::MessageRenderContext::new(
-                    mode_id.as_deref(),
+                    mode_id,
                     width,
                     layout_generation,
                     message::MessageRenderOptions {

@@ -888,9 +888,10 @@ pub struct ConfigOptionUpdate {
     pub value: serde_json::Value,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FastModeState {
+    #[default]
     Off,
     Cooldown,
     On,
