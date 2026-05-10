@@ -321,6 +321,14 @@ pub struct App {
     pub is_compacting: bool,
     /// Account info from the bridge status snapshot (email, org, subscription).
     pub account_info: Option<forge_primitives::AccountInfo>,
+    /// Forge-side account identity: which `[[accounts]]` entry from
+    /// `forge.toml` the workspace picked for this bridge. `None`
+    /// when forge wasn't launched via the workspace (direct
+    /// `Agent::spawn` from tests / smoke). Surfaced via
+    /// [`crate::agent::events::ClientEvent::StatusSnapshotReceived`]'s
+    /// `forge_account` and rendered in the welcome message + Status
+    /// panel.
+    pub active_account_display_name: Option<String>,
     /// OAuth credentials snapshot from the bridge — populated at
     /// session connect, refreshed after `/login` and `/logout` so
     /// callers can ask "is the user authenticated?" without doing
@@ -477,14 +485,31 @@ impl App {
         self.insert_message_tracked(0, self.build_welcome_message());
     }
 
+    /// Returns `(label, value)` for the welcome message's account
+    /// line. When `active_account_display_name` is set, label is
+    /// `"Account"` and value composes display_name with
+    /// subscription_type (`"name"`, or `"name · tier"` when both
+    /// are present). Otherwise label is `"Subscription"` and the
+    /// value falls back to the CLI-side subscription_type alone
+    /// (preserves pre-multi-account behavior for direct
+    /// `Agent::spawn` callers).
     #[must_use]
-    fn welcome_subscription_display(&self) -> &str {
-        self.account_info
+    fn welcome_account_display(&self) -> (String, String) {
+        let display_name =
+            self.active_account_display_name.as_deref().map(str::trim).filter(|s| !s.is_empty());
+        let subscription = self
+            .account_info
             .as_ref()
-            .and_then(|account| account.subscription_type.as_deref())
+            .and_then(|a| a.subscription_type.as_deref())
             .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .unwrap_or("-")
+            .filter(|s| !s.is_empty());
+
+        match (display_name, subscription) {
+            (Some(name), Some(tier)) => ("Account".to_owned(), format!("{name} · {tier}")),
+            (Some(name), None) => ("Account".to_owned(), name.to_owned()),
+            (None, Some(tier)) => ("Subscription".to_owned(), tier.to_owned()),
+            (None, None) => ("Subscription".to_owned(), "-".to_owned()),
+        }
     }
 
     #[must_use]
@@ -505,14 +530,20 @@ impl App {
 
     #[must_use]
     pub(crate) fn build_welcome_message(&self) -> ChatMessage {
-        let subscription = self.welcome_subscription_display();
+        let (label, value) = self.welcome_account_display();
         let session_id = self.welcome_session_id_display();
-        ChatMessage::welcome(
+        let mut message = ChatMessage::welcome(
             env!("CARGO_PKG_VERSION"),
-            subscription,
+            &value,
             self.welcome_cwd_display(),
             &session_id,
-        )
+        );
+        // Override the constructor's default "Subscription" label
+        // with the dynamic one chosen by `welcome_account_display`.
+        if let Some(MessageBlock::Welcome(welcome)) = message.blocks.first_mut() {
+            welcome.account_label = label;
+        }
+        message
     }
 
     #[must_use]
@@ -534,7 +565,7 @@ impl App {
     /// Update the welcome message with the latest session/account snapshot.
     pub fn sync_welcome_snapshot(&mut self) {
         let version = env!("CARGO_PKG_VERSION");
-        let subscription = self.welcome_subscription_display().to_owned();
+        let (label, value) = self.welcome_account_display();
         let cwd = self.welcome_cwd_display().to_owned();
         let session_id = self.welcome_session_id_display();
         let Some(first) = self.messages.first_mut() else {
@@ -547,12 +578,14 @@ impl App {
             return;
         };
         if welcome.version != version
-            || welcome.subscription != subscription
+            || welcome.account_label != label
+            || welcome.subscription != value
             || welcome.cwd != cwd
             || welcome.session_id != session_id
         {
             version.clone_into(&mut welcome.version);
-            welcome.subscription = subscription;
+            welcome.account_label = label;
+            welcome.subscription = value;
             welcome.cwd = cwd;
             welcome.session_id = session_id;
             welcome.cache.invalidate();
@@ -940,6 +973,7 @@ impl App {
             turn_notice_refs: Vec::new(),
             is_compacting: false,
             account_info: None,
+            active_account_display_name: None,
             oauth_credentials: None,
             turn_state: SessionTurnState::default(),
             terminal_tool_calls: Vec::new(),

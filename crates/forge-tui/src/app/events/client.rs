@@ -140,7 +140,7 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
         ClientEvent::LogoutCompleted => {
             session::handle_logout_completed_event(app);
         }
-        ClientEvent::StatusSnapshotReceived { session_id, account, forge_account: _ } => {
+        ClientEvent::StatusSnapshotReceived { session_id, account, forge_account } => {
             drop_if_stale_session!(
                 app,
                 session_id,
@@ -154,7 +154,9 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
             let token_source = account.token_source.clone();
             let api_key_source = account.api_key_source.clone();
             let api_provider = account.api_provider.clone();
+            let forge_display_name = forge_account.as_ref().map(|f| f.display_name.clone());
             app.account_info = Some(account);
+            app.active_account_display_name = forge_account.map(|f| f.display_name);
             app.sync_welcome_snapshot();
             app.needs_redraw = true;
             tracing::info!(
@@ -169,6 +171,7 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
                 token_source = ?token_source,
                 api_key_source = ?api_key_source,
                 api_provider = ?api_provider,
+                forge_display_name = ?forge_display_name,
             );
         }
         ClientEvent::OauthCredentialsSnapshotReceived { session_id, credentials } => {

@@ -215,6 +215,7 @@ pub fn create_app(cli: &Cli, workspace: Rc<forge_workspace::Workspace>) -> App {
         turn_notice_refs: Vec::new(),
         is_compacting: false,
         account_info: None,
+        active_account_display_name: None,
         oauth_credentials: None,
         turn_state: super::SessionTurnState::default(),
         terminal_tool_calls: Vec::new(),

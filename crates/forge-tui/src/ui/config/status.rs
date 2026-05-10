@@ -59,6 +59,11 @@ pub(crate) fn status_lines(app: &App) -> Vec<Line<'static>> {
         {
             kv_line(&mut lines, "Email", email);
         }
+        if let Some(ref name) = app.active_account_display_name
+            && !name.trim().is_empty()
+        {
+            kv_line(&mut lines, "Profile", name);
+        }
         if let Some(ref sub) = account.subscription_type
             && !sub.is_empty()
         {
@@ -322,6 +327,54 @@ mod tests {
     fn login_method_falls_back_to_unknown() {
         let account = forge_primitives::AccountInfo::default();
         assert_eq!(login_method_label(&account), "Unknown");
+    }
+
+    #[test]
+    fn account_section_renders_profile_when_display_name_set() {
+        let mut app = App::test_default();
+        app.account_info = Some(forge_primitives::AccountInfo {
+            email: Some("ved@subspace.network".to_owned()),
+            organization: Some("Autonomys".to_owned()),
+            subscription_type: Some("team".to_owned()),
+            token_source: Some("claude.ai".to_owned()),
+            api_key_source: Some("oauth".to_owned()),
+            api_provider: Some("firstParty".to_owned()),
+        });
+        app.active_account_display_name = Some("Subspace".to_owned());
+
+        let text = lines_to_string(&status_lines(&app));
+        assert!(
+            text.contains("Profile") && text.contains("Subspace"),
+            "expected Profile: Subspace line, got:\n{text}"
+        );
+        assert!(
+            text.contains("Subscription") && text.contains("team"),
+            "expected Subscription: team line, got:\n{text}"
+        );
+    }
+
+    #[test]
+    fn account_section_omits_profile_when_display_name_absent() {
+        let mut app = App::test_default();
+        app.account_info = Some(forge_primitives::AccountInfo {
+            email: Some("ved@example.com".to_owned()),
+            organization: None,
+            subscription_type: Some("pro".to_owned()),
+            token_source: None,
+            api_key_source: None,
+            api_provider: None,
+        });
+        app.active_account_display_name = None;
+
+        let text = lines_to_string(&status_lines(&app));
+        assert!(
+            !text.contains("Profile"),
+            "Profile line must not render when display_name is None, got:\n{text}"
+        );
+        assert!(
+            text.contains("Subscription") && text.contains("pro"),
+            "expected Subscription: pro line, got:\n{text}"
+        );
     }
 
     fn lines_to_string(lines: &[Line<'_>]) -> String {

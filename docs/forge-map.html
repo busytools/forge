@@ -905,7 +905,7 @@
     <div class="when">visible: appears as the first message in a fresh chat (first turn before any user input)</div>
   </div>
   <div class="surface-body">
-    <p>Banner is the literal text "<strong>Overview</strong>" in RUST_ORANGE bold. Body is a Ferris-says ASCII art block (in RUST_ORANGE) plus a metadata block (Version, Subscription, cwd, Session ID) and a single rotating tip. Rendered as a regular message in the scrollback (role <code>MessageRole::Welcome</code>) — not a screen overlay. Tip is selected from <code>WELCOME_TIPS</code> by <code>tip_seed % WELCOME_TIPS.len()</code>.</p>
+    <p>Banner is the literal text "<strong>Overview</strong>" in RUST_ORANGE bold. Body is a Ferris-says ASCII art block (in RUST_ORANGE) plus a metadata block (Version, Account, cwd, Session ID) and a single rotating tip. Rendered as a regular message in the scrollback (role <code>MessageRole::Welcome</code>) — not a screen overlay. Tip is selected from <code>WELCOME_TIPS</code> by <code>tip_seed % WELCOME_TIPS.len()</code>. The second metadata line shows <code>Account: &lt;display_name&gt; · &lt;tier&gt;</code> when forge-workspace picked the active account from <code>forge.toml</code>'s <code>[[accounts]]</code>; falls back to <code>Subscription: &lt;tier&gt;</code> when forge wasn't launched via the workspace (direct <code>Agent::spawn</code> from tests / smoke).</p>
     <div class="term">
       <pre class="indent">
   <span class="accent-bold">Overview</span>
@@ -922,7 +922,7 @@
 
 
   <span class="dim">Version:      </span><span class="dim">0.14.2</span>
-  <span class="dim">Subscription: </span><span class="accent bold">Pro</span>
+  <span class="dim">Account:      </span><span class="accent bold">Subspace · team</span>
   <span class="dim">cwd:          ~/Projects/forge</span>
   <span class="dim">Session ID:   550e8400-e29b-41d4-a716-446655440000</span>
 
@@ -931,7 +931,7 @@
     </div>
     <dl>
       <dt>code</dt><dd><code>crates/forge-tui/src/ui/message.rs::welcome_lines</code> · ASCII in <code>FERRIS_SAYS</code> · tips in <code>WELCOME_TIPS</code> (~21 entries)</dd>
-      <dt>color</dt><dd>art: RUST_ORANGE · field labels: DIM · subscription value: RUST_ORANGE bold · field values + tip: DIM</dd>
+      <dt>color</dt><dd>art: RUST_ORANGE · field labels: DIM · account/subscription value: RUST_ORANGE bold · field values + tip: DIM</dd>
     </dl>
   </div>
 </div>
@@ -1060,7 +1060,7 @@
     <div class="when">visible: when the Status tab is active</div>
   </div>
   <div class="surface-body">
-    <p>Plain key-value layout in the body area (no nested boxes). Section headers are RUST_ORANGE bold; key labels are DIM (with 2-space indent + trailing colon); values are white. Sections that appear in order: <strong>Session</strong> (Version, Session name, Session ID, cwd, Git branch when known), <strong>Account</strong> (Login method, API provider, Organization, Email, Subscription — only the fields that are non-empty), <strong>Model</strong> (Model display, Resolved model ID, Requested model when different), then more downstream (rate limits, etc.), ending with <strong>Settings</strong> (Memory path, Setting sources).</p>
+    <p>Plain key-value layout in the body area (no nested boxes). Section headers are RUST_ORANGE bold; key labels are DIM (with 2-space indent + trailing colon); values are white. Sections that appear in order: <strong>Session</strong> (Version, Session name, Session ID, cwd, Git branch when known), <strong>Account</strong> (Login method, API provider, Organization, Email, Profile, Subscription — only the fields that are non-empty; Profile is the forge-side <code>display_name</code> from <code>forge.toml</code>'s <code>[[accounts]]</code>, present only when forge-workspace picked an account), <strong>Model</strong> (Model display, Resolved model ID, Requested model when different), then more downstream (rate limits, etc.), ending with <strong>Settings</strong> (Memory path, Setting sources).</p>
     <div class="term">
       <pre class="indent">
   <span class="accent-bold">Session</span>
@@ -1071,8 +1071,12 @@
     <span class="dim">Git branch: </span>main
 
   <span class="accent-bold">Account</span>
-    <span class="dim">Login method: </span>OAuth (Pro)
-    <span class="dim">Subscription: </span>Pro
+    <span class="dim">Login method: </span>Claude Max Account
+    <span class="dim">API provider: </span>First party
+    <span class="dim">Organization: </span>Autonomys
+    <span class="dim">Email: </span>ved@subspace.network
+    <span class="dim">Profile: </span>Subspace
+    <span class="dim">Subscription: </span>team
 
   <span class="accent-bold">Model</span>
     <span class="dim">Model: </span>Claude Sonnet 4.5

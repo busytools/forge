@@ -1086,8 +1086,15 @@ fn welcome_lines(block: &WelcomeBlock, _width: u16) -> Vec<Line<'static>> {
         Span::styled(format!("{pad}Version:      "), Style::default().fg(theme::DIM)),
         Span::styled(block.version.clone(), Style::default().fg(theme::DIM)),
     ]));
+    // Label is dynamic: "Account" when forge-workspace picked the
+    // account, "Subscription" for direct Agent::spawn callers
+    // (tests / smoke). Width-pad to 13 chars + 1 space = 14 chars
+    // total to align with Version/cwd/Session ID rows.
     lines.push(Line::from(vec![
-        Span::styled(format!("{pad}Subscription: "), Style::default().fg(theme::DIM)),
+        Span::styled(
+            format!("{pad}{:<13} ", format!("{}:", block.account_label)),
+            Style::default().fg(theme::DIM),
+        ),
         Span::styled(
             block.subscription.clone(),
             Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),

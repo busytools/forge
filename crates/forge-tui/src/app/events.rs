@@ -1895,7 +1895,41 @@ mod tests {
     }
 
     #[test]
-    fn status_snapshot_updates_welcome_subscription() {
+    fn status_snapshot_with_forge_account_renders_account_label() {
+        let mut app = make_test_app();
+        app.messages.push(ChatMessage::welcome(
+            env!("CARGO_PKG_VERSION"),
+            "-",
+            "/test",
+            "session-1",
+        ));
+        app.session_id = Some(model::SessionId::new("session-1"));
+
+        handle_client_event(
+            &mut app,
+            ClientEvent::StatusSnapshotReceived {
+                session_id: "session-1".into(),
+                account: forge_primitives::AccountInfo {
+                    email: None,
+                    organization: None,
+                    subscription_type: Some("team".into()),
+                    token_source: None,
+                    api_key_source: None,
+                    api_provider: None,
+                },
+                forge_account: Some(forge_primitives::ForgeAccountIdentity::new("Subspace".into())),
+            },
+        );
+
+        let Some(MessageBlock::Welcome(welcome)) = app.messages[0].blocks.first() else {
+            panic!("expected welcome block");
+        };
+        assert_eq!(welcome.account_label, "Account");
+        assert_eq!(welcome.subscription, "Subspace · team");
+    }
+
+    #[test]
+    fn status_snapshot_without_forge_account_keeps_subscription_label() {
         let mut app = make_test_app();
         app.messages.push(ChatMessage::welcome(
             env!("CARGO_PKG_VERSION"),
@@ -1924,6 +1958,7 @@ mod tests {
         let Some(MessageBlock::Welcome(welcome)) = app.messages[0].blocks.first() else {
             panic!("expected welcome block");
         };
+        assert_eq!(welcome.account_label, "Subscription");
         assert_eq!(welcome.subscription, "Claude Max");
     }
 
