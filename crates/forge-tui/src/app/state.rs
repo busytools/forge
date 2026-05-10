@@ -362,8 +362,6 @@ impl App {
     /// so the fallback is a safety net rather than a hot path.
     #[must_use]
     pub fn viewport(&self) -> &ChatViewport {
-        // SAFETY: the leaked default never escapes the program;
-        // we only ever hand out shared borrows of it.
         static FALLBACK: std::sync::OnceLock<ChatViewport> = std::sync::OnceLock::new();
         match self.active_session() {
             Some(s) => &s.viewport,
