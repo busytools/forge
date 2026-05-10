@@ -14,7 +14,7 @@ pub(super) fn handle_agent_message_chunk(app: &mut App, chunk: model::ContentChu
         return;
     }
     if let Some(owner_idx) = app.active_turn_assistant_idx()
-        && let Some(owner) = app.messages.get_mut(owner_idx)
+        && let Some(owner) = app.messages_mut().get_mut(owner_idx)
     {
         append_agent_stream_text(&mut owner.blocks, &text.text);
         app.sync_after_message_blocks_changed(owner_idx);

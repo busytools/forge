@@ -16,6 +16,8 @@ use std::sync::Arc;
 use forge_workspace::SessionKey;
 
 use crate::agent::model;
+use crate::app::state::messages::ChatMessage;
+use crate::app::state::viewport::ChatViewport;
 
 /// Per-session runtime state. Initialised when a session connects;
 /// dropped when the session is closed or forge-tui exits.
@@ -36,6 +38,20 @@ pub struct Session {
     /// Monotonic session authority epoch — used to ignore stale
     /// async view data after a session reset / reconnect.
     pub session_scope_epoch: u64,
+    /// Chat history buffer for this session. Welcome message at
+    /// index 0; user/assistant turns appended.
+    pub messages: Vec<ChatMessage>,
+    /// Cached approximate retained bytes for each message,
+    /// parallel to [`Self::messages`].
+    pub message_retained_bytes: Vec<usize>,
+    /// Rolling total of [`Self::message_retained_bytes`].
+    pub retained_history_bytes: usize,
+    /// Single owner of all chat layout state: scroll, per-message
+    /// heights, prefix sums.
+    pub viewport: ChatViewport,
+    /// Message index that owns the current main-assistant turn
+    /// indicators (spinner, status chips). Cleared on `TurnComplete`.
+    pub active_turn_assistant_message_idx: Option<usize>,
 }
 
 impl Session {

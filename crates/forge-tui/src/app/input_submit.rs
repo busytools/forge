@@ -146,7 +146,7 @@ fn dispatch_prompt_turn(app: &mut App, text: String) {
     app.bind_active_turn_assistant_to_tail();
     app.enforce_history_retention_tracked();
     app.status = AppStatus::Thinking;
-    app.viewport.engage_auto_scroll();
+    app.viewport_mut().engage_auto_scroll();
 
     let tx = app.event_tx.clone();
     // The text already contains [Image #N] badges from the textarea,
@@ -197,7 +197,7 @@ mod tests {
         assert_eq!(app.pending_cancel_origin, Some(CancelOrigin::AutoQueue));
         assert!(app.pending_auto_submit_after_cancel);
         assert!(matches!(app.status, AppStatus::Running));
-        assert!(app.messages.is_empty());
+        assert!(app.messages().is_empty());
         let envelope = rx.try_recv().expect("cancel command should be sent");
         assert!(matches!(
             envelope,
@@ -249,7 +249,7 @@ mod tests {
 
         assert_eq!(app.input.text(), "draft");
         assert!(matches!(app.status, AppStatus::Ready));
-        assert!(app.messages.is_empty());
+        assert!(app.messages().is_empty());
         assert!(rx.try_recv().is_err(), "manual cancel should suppress queued prompt submit");
     }
 
@@ -292,7 +292,7 @@ mod tests {
         assert!(!app.pending_auto_submit_after_cancel);
         assert!(app.input.text().is_empty());
         assert!(matches!(app.status, AppStatus::Thinking));
-        assert_eq!(app.messages.len(), 2);
+        assert_eq!(app.messages().len(), 2);
         let prompt = rx.try_recv().expect("prompt command should be sent");
         assert!(matches!(
             prompt,
@@ -340,7 +340,7 @@ mod tests {
 
         dispatch_prompt_turn(&mut app, "hello".into());
 
-        assert!(app.messages.is_empty());
+        assert!(app.messages().is_empty());
         assert!(matches!(app.status, AppStatus::Ready));
     }
 }

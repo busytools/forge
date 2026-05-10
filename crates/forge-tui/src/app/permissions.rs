@@ -248,7 +248,7 @@ fn respond_permission(app: &mut App, override_index: Option<usize>) {
         return;
     };
     let Some(MessageBlock::ToolCall(tc)) =
-        app.messages.get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
+        app.messages_mut().get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
     else {
         return;
     };
@@ -306,7 +306,7 @@ fn respond_permission_cancel(app: &mut App) {
         return;
     };
     let Some(MessageBlock::ToolCall(tc)) =
-        app.messages.get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
+        app.messages_mut().get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
     else {
         return;
     };
@@ -393,13 +393,13 @@ mod tests {
         options: Vec<model::PermissionOption>,
         focused: bool,
     ) -> oneshot::Receiver<model::RequestPermissionResponse> {
-        let msg_idx = app.messages.len();
-        app.messages.push(assistant_tool_msg(test_tool_call(tool_id)));
+        let msg_idx = app.messages().len();
+        app.messages_mut().push(assistant_tool_msg(test_tool_call(tool_id)));
         app.index_tool_call(tool_id.to_owned(), msg_idx, 0);
 
         let (tx, rx) = oneshot::channel();
         if let Some(MessageBlock::ToolCall(tc)) =
-            app.messages.get_mut(msg_idx).and_then(|m| m.blocks.get_mut(0))
+            app.messages_mut().get_mut(msg_idx).and_then(|m| m.blocks.get_mut(0))
         {
             tc.pending_permission = Some(InlinePermission {
                 options,
@@ -417,7 +417,8 @@ mod tests {
         let Some((mi, bi)) = app.lookup_tool_call(tool_id) else {
             return false;
         };
-        let Some(MessageBlock::ToolCall(tc)) = app.messages.get(mi).and_then(|m| m.blocks.get(bi))
+        let Some(MessageBlock::ToolCall(tc)) =
+            app.messages().get(mi).and_then(|m| m.blocks.get(bi))
         else {
             return false;
         };
@@ -837,14 +838,14 @@ mod tests {
     fn keeps_non_tool_blocks_untouched() {
         let app = App::test_default();
         let _ = IncrementalMarkdown::default();
-        assert!(app.messages.is_empty());
+        assert!(app.messages().is_empty());
     }
 
     #[test]
     fn single_focused_permission_consumes_up_down_without_rotation() {
         let mut app = App::test_default();
         let mut rx = add_permission(&mut app, "perm-1", allow_options(), true);
-        app.viewport.scroll_target = 7;
+        app.viewport_mut().scroll_target = 7;
 
         let consumed_up = crate::app::inline_interactions::handle_interaction_focus_cycle(
             &mut app,
@@ -862,7 +863,7 @@ mod tests {
         assert_eq!(consumed_up, Some(true));
         assert_eq!(consumed_down, Some(true));
         assert_eq!(app.pending_interaction_ids, vec!["perm-1"]);
-        assert_eq!(app.viewport.scroll_target, 7);
+        assert_eq!(app.viewport().scroll_target, 7);
         assert!(matches!(rx.try_recv(), Err(tokio::sync::oneshot::error::TryRecvError::Empty)));
     }
 

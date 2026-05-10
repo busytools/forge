@@ -195,7 +195,7 @@ mod tests {
         assert!(matches!(app.status, AppStatus::Ready));
         assert!(app.resuming_session_id.is_none());
         assert!(app.pending_command_label.is_none());
-        let last = app.messages.last().expect("error message");
+        let last = app.messages().last().expect("error message");
         let text = match last.blocks.first().expect("text block") {
             crate::app::MessageBlock::Text(block) => block.text.as_str(),
             _ => panic!("expected text block"),

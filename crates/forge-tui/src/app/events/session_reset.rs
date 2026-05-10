@@ -61,7 +61,7 @@ fn reset_messages_for_new_session(app: &mut App, preserve_current_welcome_tip: b
     }
     app.push_message_tracked(welcome);
     app.sync_welcome_snapshot();
-    app.viewport = super::super::ChatViewport::new();
+    *app.viewport_mut() = super::super::ChatViewport::new();
 }
 
 fn reset_input_state_for_new_session(app: &mut App) {
@@ -123,7 +123,7 @@ fn append_resume_user_message_chunk(app: &mut App, chunk: &model::ContentChunk) 
         return;
     }
 
-    if let Some(last) = app.messages.last_mut()
+    if let Some(last) = app.messages_mut().last_mut()
         && matches!(last.role, MessageRole::User)
     {
         if let Some(MessageBlock::Text(block)) = last.blocks.last_mut() {
@@ -140,7 +140,7 @@ fn append_resume_user_message_chunk(app: &mut App, chunk: &model::ContentChunk) 
                 trailing_spacing: TextBlockSpacing::default(),
             }));
         }
-        let last_idx = app.messages.len().saturating_sub(1);
+        let last_idx = app.messages().len().saturating_sub(1);
         app.sync_after_message_blocks_changed(last_idx);
         return;
     }
@@ -213,6 +213,6 @@ pub(super) fn load_resume_history(app: &mut App, history_messages: &[forge_primi
     app.finalize_turn_runtime_artifacts(model::ToolCallStatus::Failed);
     app.clear_active_turn_assistant();
     app.enforce_history_retention_tracked();
-    app.viewport = super::super::ChatViewport::new();
-    app.viewport.engage_auto_scroll();
+    *app.viewport_mut() = super::super::ChatViewport::new();
+    app.viewport_mut().engage_auto_scroll();
 }

@@ -311,7 +311,7 @@ fn focused_question_prompt(app: &App) -> bool {
         return false;
     };
     let Some(crate::app::MessageBlock::ToolCall(tc)) =
-        app.messages.get(mi).and_then(|message| message.blocks.get(bi))
+        app.messages().get(mi).and_then(|message| message.blocks.get(bi))
     else {
         return false;
     };

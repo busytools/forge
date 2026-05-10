@@ -19,7 +19,7 @@ use super::state::{
 };
 use super::trust;
 use super::view::ActiveView;
-use super::{App, AppStatus, ChatViewport, FocusManager, HelpView, SelectionState, TodoItem};
+use super::{App, AppStatus, FocusManager, HelpView, SelectionState, TodoItem};
 use crate::Cli;
 use crate::agent::client::SessionLaunchSettings;
 use crate::agent::events::ClientEvent;
@@ -116,20 +116,17 @@ pub fn create_app(cli: &Cli, workspace: Rc<forge_workspace::Workspace>) -> App {
         logger
     });
 
+    let pre_connect_key = forge_workspace::SessionKey::from_session_id(App::PRE_CONNECT_KEY);
+    let mut pre_connect_session = super::session::Session::new(pre_connect_key.clone());
+    pre_connect_session.messages =
+        vec![super::ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "", &cwd_display, "-")];
+    let mut sessions = std::collections::HashMap::new();
+    sessions.insert(pre_connect_key.clone(), pre_connect_session);
     let mut app = App {
         active_view: ActiveView::Chat,
         config: ConfigState::default(),
         trust: trust::TrustState::default(),
         settings_home_override: None,
-        messages: vec![super::ChatMessage::welcome(
-            env!("CARGO_PKG_VERSION"),
-            "",
-            &cwd_display,
-            "-",
-        )],
-        message_retained_bytes: Vec::new(),
-        retained_history_bytes: 0,
-        viewport: ChatViewport::new(),
         input: super::InputState::new(),
         status: AppStatus::Connecting,
         resuming_session_id: None,
@@ -138,8 +135,8 @@ pub fn create_app(cli: &Cli, workspace: Rc<forge_workspace::Workspace>) -> App {
         should_quit: false,
         exit_error: None,
         workspace: Some(workspace),
-        sessions: std::collections::HashMap::new(),
-        active_session_key: None,
+        sessions,
+        active_session_key: Some(pre_connect_key),
         current_model: None,
         cwd_raw: cwd.to_string_lossy().to_string(),
         cwd: cwd_display,
@@ -162,7 +159,6 @@ pub fn create_app(cli: &Cli, workspace: Rc<forge_workspace::Workspace>) -> App {
         file_index_event_rx,
         spinner_frame: 0,
         spinner_last_advance_at: None,
-        active_turn_assistant_message_idx: None,
         tools_collapsed: true,
         active_task_ids: HashSet::new(),
         tool_call_scopes: HashMap::new(),

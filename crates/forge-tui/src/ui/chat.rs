@@ -125,29 +125,28 @@ fn update_visual_heights(
     width: u16,
     viewport_height: usize,
 ) -> HeightUpdateStats {
-    let _t =
-        app.perf.as_ref().map(|p| p.start_with("chat::update_heights", "msgs", app.messages.len()));
-    app.viewport.sync_message_count(app.messages.len());
+    let msg_count = app.messages().len();
+    let _t = app.perf.as_ref().map(|p| p.start_with("chat::update_heights", "msgs", msg_count));
+    app.viewport_mut().sync_message_count(msg_count);
 
-    let msg_count = app.messages.len();
     let is_streaming = matches!(app.status, AppStatus::Thinking | AppStatus::Running);
     let active_turn_assistant = app.active_turn_assistant_idx();
     sync_active_turn_height_state(app, base, active_turn_assistant);
     let mut stats = HeightUpdateStats::default();
 
     if msg_count == 0 {
-        app.viewport.finalize_remeasure_if_clean();
+        app.viewport_mut().finalize_remeasure_if_clean();
         return stats;
     }
 
     let (visible_start, visible_end) = app
-        .viewport
+        .viewport_mut()
         .remeasure_anchor_window(viewport_height)
-        .or_else(|| app.viewport.current_visible_window(viewport_height))
+        .or_else(|| app.viewport_mut().current_visible_window(viewport_height))
         .unwrap_or((0, 0));
-    app.viewport.ensure_remeasure_anchor(visible_start, visible_end, msg_count);
+    app.viewport_mut().ensure_remeasure_anchor(visible_start, visible_end, msg_count);
 
-    while let Some(i) = app.viewport.next_priority_remeasure() {
+    while let Some(i) = app.viewport_mut().next_priority_remeasure() {
         let is_last = i + 1 == msg_count;
         if !needs_height_measure(app, i, is_last, active_turn_assistant, is_streaming) {
             stats.reused_msgs += 1;
@@ -173,8 +172,8 @@ fn update_visual_heights(
     }
 
     let mut budget = RemeasureBudget::new(viewport_height);
-    while app.viewport.remeasure_active() && !budget.exhausted() {
-        let Some(i) = app.viewport.next_remeasure_index(msg_count) else {
+    while app.viewport_mut().remeasure_active() && !budget.exhausted() {
+        let Some(i) = app.viewport_mut().next_remeasure_index(msg_count) else {
             break;
         };
         if (visible_start..=visible_end).contains(&i) {
@@ -190,7 +189,7 @@ fn update_visual_heights(
         budget.consume(stats.measured_lines.saturating_sub(measured_lines_before));
     }
 
-    app.viewport.finalize_remeasure_if_clean();
+    app.viewport_mut().finalize_remeasure_if_clean();
     stats
 }
 
@@ -202,7 +201,7 @@ fn needs_height_measure(
     is_streaming: bool,
 ) -> bool {
     let _ = (is_last, active_turn_assistant, is_streaming);
-    !app.viewport.message_height_is_current(idx)
+    !app.viewport().message_height_is_current(idx)
 }
 
 fn sync_active_turn_height_state(
@@ -211,7 +210,7 @@ fn sync_active_turn_height_state(
     active_turn_assistant: Option<usize>,
 ) {
     let next = active_turn_assistant.and_then(|idx| {
-        let message = app.messages.get(idx)?;
+        let message = app.messages().get(idx)?;
         let spinner = msg_spinner(base, idx, active_turn_assistant, message);
         let empty_indicator_visible =
             message.blocks.is_empty() && (spinner.show_compacting || spinner.show_empty_thinking);
@@ -251,23 +250,28 @@ fn measure_message_height_at(
     idx: usize,
     stats: &mut HeightUpdateStats,
 ) {
-    let msg_count = app.messages.len();
+    let msg_count = app.messages().len();
     let is_last_message = idx + 1 == msg_count;
-    let sp = msg_spinner(base, idx, active_turn_assistant, &app.messages[idx]);
+    let sp = msg_spinner(base, idx, active_turn_assistant, &app.messages()[idx]);
+    // Snapshot small Copy/owned fields up front so the &mut borrow on
+    // `app.messages_mut()` doesn't conflict with reads of other App fields.
+    let mode_id = app.mode.as_ref().map(|mode| mode.current_mode_id.clone());
+    let layout_generation = app.viewport().layout_generation;
+    let tools_collapsed = app.tools_collapsed;
     let (h, rendered_lines) = measure_message_height(
-        &mut app.messages[idx],
+        &mut app.messages_mut()[idx],
         &sp,
-        app.mode.as_ref().map(|mode| mode.current_mode_id.as_str()),
+        mode_id.as_deref(),
         width,
-        app.viewport.layout_generation,
-        app.tools_collapsed,
+        layout_generation,
+        tools_collapsed,
         !is_last_message,
     );
     app.sync_render_cache_message(idx);
     stats.measured_msgs += 1;
     stats.measured_lines += rendered_lines;
-    app.viewport.set_message_height(idx, h);
-    app.viewport.mark_message_height_measured(idx);
+    app.viewport_mut().set_message_height(idx, h);
+    app.viewport_mut().mark_message_height_measured(idx);
 }
 
 /// Measure message height using ground truth: render the message into a scratch
@@ -318,7 +322,7 @@ fn sync_chat_layout(app: &mut App, area: Rect, base_spinner: SpinnerState) -> us
 
     {
         let _t = app.perf.as_ref().map(|p| p.start("chat::on_frame"));
-        if app.viewport.on_frame(width, area.height).resized() {
+        if app.viewport_mut().on_frame(width, area.height).resized() {
             app.cache_metrics.record_resize();
         }
     }
@@ -337,13 +341,13 @@ fn sync_chat_layout(app: &mut App, area: Rect, base_spinner: SpinnerState) -> us
 
     {
         let _t = app.perf.as_ref().map(|p| p.start("chat::prefix_sums"));
-        app.viewport.rebuild_prefix_sums();
+        app.viewport_mut().rebuild_prefix_sums();
     }
-    if let Some((anchor_idx, anchor_offset)) = app.viewport.ready_scroll_anchor_to_restore() {
-        app.viewport.restore_scroll_anchor(anchor_idx, anchor_offset);
+    if let Some((anchor_idx, anchor_offset)) = app.viewport_mut().ready_scroll_anchor_to_restore() {
+        app.viewport_mut().restore_scroll_anchor(anchor_idx, anchor_offset);
     }
 
-    let content_height = app.viewport.total_message_height();
+    let content_height = app.viewport_mut().total_message_height();
     crate::perf::mark_with("chat::content_height", "rows", content_height);
     crate::perf::mark_with("chat::viewport_height", "rows", viewport_height);
     crate::perf::mark_with(
@@ -363,8 +367,8 @@ fn build_scrolled_render_data(
     content_height: usize,
     viewport_height: usize,
 ) -> ScrolledRenderData {
-    let vp = &mut app.viewport;
     let reduced_motion = app.config.prefers_reduced_motion_effective();
+    let vp = app.viewport_mut();
     let max_scroll = content_height.saturating_sub(viewport_height);
     if vp.auto_scroll {
         vp.scroll_target = max_scroll;
@@ -394,7 +398,7 @@ fn build_scrolled_render_data(
         let _t = app
             .perf
             .as_ref()
-            .map(|p| p.start_with("chat::render_msgs", "msgs", app.messages.len()));
+            .map(|p| p.start_with("chat::render_msgs", "msgs", app.messages().len()));
         render_culled_messages(app, base, width, scroll_offset, viewport_height, &mut all_lines)
     };
     crate::perf::mark_with("chat::render_scrolled_lines", "lines", all_lines.len());
@@ -617,17 +621,17 @@ fn render_culled_messages(
     viewport_height: usize,
     out: &mut Vec<Line<'static>>,
 ) -> CulledRenderStats {
-    let msg_count = app.messages.len();
+    let msg_count = app.messages().len();
     let active_turn_assistant = app.active_turn_assistant_idx();
 
     // O(log n) binary search via prefix sums to find first visible message.
-    let first_visible = app.viewport.find_first_visible(scroll);
+    let first_visible = app.viewport_mut().find_first_visible(scroll);
 
     // Apply margin: render a few extra messages above/below for safety
     let render_start = first_visible.saturating_sub(CULLING_MARGIN);
 
     // O(1) cumulative height lookup via prefix sums
-    let height_before_start = app.viewport.cumulative_height_before(render_start);
+    let height_before_start = app.viewport_mut().cumulative_height_before(render_start);
 
     // Render messages from render_start onward, stopping once the exact wrapped
     // height in the output buffer covers the viewport plus a small overscan.
@@ -639,19 +643,25 @@ fn render_culled_messages(
     let mut rendered_rows = 0usize;
     let mut last_rendered_idx = None;
     for i in render_start..msg_count {
-        let sp = msg_spinner(base, i, active_turn_assistant, &app.messages[i]);
+        let sp = msg_spinner(base, i, active_turn_assistant, &app.messages()[i]);
         let before = out.len();
-        let message_height = app.viewport.message_height(i);
+        let message_height = app.viewport().message_height(i);
+        // Snapshot small App-side fields up front so the &mut borrow on
+        // `app.messages_mut()` doesn't collide with concurrent reads of
+        // mode / viewport / tools_collapsed.
+        let mode_id = app.mode.as_ref().map(|mode| mode.current_mode_id.clone());
+        let layout_generation = app.viewport().layout_generation;
+        let tools_collapsed = app.tools_collapsed;
         if structural_skip > 0 {
             let remaining_skip = message::render_message_from_offset_internal_with_mode(
-                &mut app.messages[i],
+                &mut app.messages_mut()[i],
                 &sp,
                 message::MessageRenderContext::new(
-                    app.mode.as_ref().map(|mode| mode.current_mode_id.as_str()),
+                    mode_id.as_deref(),
                     width,
-                    app.viewport.layout_generation,
+                    layout_generation,
                     message::MessageRenderOptions {
-                        tools_collapsed: app.tools_collapsed,
+                        tools_collapsed,
                         include_trailing_separator: i + 1 != msg_count,
                     },
                 ),
@@ -665,14 +675,14 @@ fn render_culled_messages(
             structural_skip = 0;
         } else {
             message::render_message_with_tools_collapsed_and_separator_and_layout_generation_with_mode(
-                &mut app.messages[i],
+                &mut app.messages_mut()[i],
                 &sp,
                 message::MessageRenderContext::new(
-                    app.mode.as_ref().map(|mode| mode.current_mode_id.as_str()),
+                    mode_id.as_deref(),
                     width,
-                    app.viewport.layout_generation,
+                    layout_generation,
                     message::MessageRenderOptions {
-                        tools_collapsed: app.tools_collapsed,
+                        tools_collapsed,
                         include_trailing_separator: i + 1 != msg_count,
                     },
                 ),
@@ -702,7 +712,7 @@ fn render_culled_messages(
 
 pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     let _t = app.perf.as_ref().map(|p| p.start("chat::render"));
-    crate::perf::mark_with("chat::message_count", "msgs", app.messages.len());
+    crate::perf::mark_with("chat::message_count", "msgs", app.messages().len());
     let content_area = chat_content_area(area);
     let width = content_area.width;
     let viewport_height = content_area.height as usize;
@@ -724,10 +734,11 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     }
 
     if let Some(scrollbar_area) = chat_scrollbar_area(area) {
+        let reduced_motion = app.config.prefers_reduced_motion_effective();
         render_scrollbar_overlay(
             frame,
-            &mut app.viewport,
-            app.config.prefers_reduced_motion_effective(),
+            app.viewport_mut(),
+            reduced_motion,
             scrollbar_area,
             content_height,
             viewport_height,
@@ -745,15 +756,15 @@ fn emit_render_summary(
     pinned_to_bottom: bool,
     render_data: &ScrolledRenderData,
 ) {
-    let last_message_idx = app.messages.len().checked_sub(1);
-    let last_message_height = last_message_idx.map(|idx| app.viewport.message_height(idx));
+    let last_message_idx = app.messages().len().checked_sub(1);
+    let last_message_height = last_message_idx.map(|idx| app.viewport_mut().message_height(idx));
     let trace_state = crate::app::ChatRenderTraceState {
         width,
         content_height,
         viewport_height,
-        auto_scroll: app.viewport.auto_scroll,
+        auto_scroll: app.viewport().auto_scroll,
         pinned_to_bottom,
-        scroll_target: app.viewport.scroll_target,
+        scroll_target: app.viewport().scroll_target,
         scroll_offset: render_data.scroll_offset,
         max_scroll: render_data.max_scroll,
         first_visible: render_data.stats.first_visible,
@@ -779,8 +790,8 @@ fn emit_render_summary(
         viewport_height,
         auto_scroll = trace_state.auto_scroll,
         pinned_to_bottom = trace_state.pinned_to_bottom,
-        scroll_target = ?app.viewport.scroll_target,
-        scroll_pos = app.viewport.scroll_pos,
+        scroll_target = ?app.viewport().scroll_target,
+        scroll_pos = app.viewport().scroll_pos,
         scroll_offset = trace_state.scroll_offset,
         max_scroll = trace_state.max_scroll,
         first_visible = trace_state.first_visible,
@@ -841,13 +852,13 @@ fn enforce_and_emit_cache_metrics(app: &mut App) {
     }
 
     if should_log {
-        let entry_count = count_populated_cache_slots(&app.messages);
+        let entry_count = count_populated_cache_slots(app.messages());
         let snap = cache_metrics::build_snapshot(
             &app.render_cache_budget,
             &app.history_retention_stats,
             app.history_retention,
             &app.cache_metrics,
-            &app.viewport,
+            app.viewport(),
             entry_count,
             budget_stats.evicted_blocks,
             0,
@@ -991,21 +1002,22 @@ mod tests {
             .draw(|frame| {
                 let spinner = idle_spinner();
                 let content_area = chat_content_area(Rect::new(0, 0, width, height));
-                let _ = app.viewport.on_frame(content_area.width, content_area.height);
+                let _ = app.viewport_mut().on_frame(content_area.width, content_area.height);
                 update_visual_heights(
                     app,
                     spinner,
                     content_area.width,
                     usize::from(content_area.height),
                 );
-                app.viewport.rebuild_prefix_sums();
+                app.viewport_mut().rebuild_prefix_sums();
+                let total_h = app.viewport().total_message_height();
                 render_scrolled(
                     frame,
                     content_area,
                     app,
                     spinner,
                     content_area.width,
-                    app.viewport.total_message_height(),
+                    total_h,
                     usize::from(content_area.height),
                 );
             })
@@ -1017,10 +1029,10 @@ mod tests {
     fn spinner_only_frames_do_not_remeasure_active_assistant_height() {
         let mut app = App::test_default();
         app.status = AppStatus::Running;
-        app.messages = vec![assistant_text_message("streaming body")];
+        *app.messages_mut() = vec![assistant_text_message("streaming body")];
         app.bind_active_turn_assistant(0);
 
-        let _ = app.viewport.on_frame(40, 8);
+        let _ = app.viewport_mut().on_frame(40, 8);
         let first_spinner = SpinnerState { frame: 0, show_thinking: true, ..idle_spinner() };
         let first = update_visual_heights(&mut app, first_spinner, 40, 8);
         assert_eq!(first.measured_msgs, 1);
@@ -1087,18 +1099,18 @@ mod tests {
     fn update_visual_heights_remeasures_dirty_non_tail_message() {
         let mut app = App::test_default();
         app.status = AppStatus::Ready;
-        app.messages =
+        *app.messages_mut() =
             vec![assistant_text_message("short"), assistant_text_message("tail stays unchanged")];
 
-        let _ = app.viewport.on_frame(12, 8);
+        let _ = app.viewport_mut().on_frame(12, 8);
         let spinner = idle_spinner();
 
         update_visual_heights(&mut app, spinner, 12, 8);
-        let base_h = app.viewport.message_height(0);
+        let base_h = app.viewport_mut().message_height(0);
         assert!(base_h > 0);
 
         if let Some(MessageBlock::Text(block)) =
-            app.messages.get_mut(0).and_then(|m| m.blocks.get_mut(0))
+            app.messages_mut().get_mut(0).and_then(|m| m.blocks.get_mut(0))
         {
             let extra = " this now wraps across multiple lines";
             block.text.push_str(extra);
@@ -1109,7 +1121,7 @@ mod tests {
 
         update_visual_heights(&mut app, spinner, 12, 8);
         assert!(
-            app.viewport.message_height(0) > base_h,
+            app.viewport_mut().message_height(0) > base_h,
             "dirty non-tail message should be remeasured"
         );
     }
@@ -1118,23 +1130,23 @@ mod tests {
     fn last_message_height_omits_trailing_separator() {
         let mut app = App::test_default();
         app.status = AppStatus::Ready;
-        app.messages = vec![assistant_text_message("hello")];
+        *app.messages_mut() = vec![assistant_text_message("hello")];
 
-        let _ = app.viewport.on_frame(40, 8);
+        let _ = app.viewport_mut().on_frame(40, 8);
         let spinner = idle_spinner();
 
         update_visual_heights(&mut app, spinner, 40, 8);
-        app.viewport.rebuild_prefix_sums();
+        app.viewport_mut().rebuild_prefix_sums();
 
-        assert_eq!(app.viewport.message_height(0), 2);
-        assert_eq!(app.viewport.total_message_height(), 2);
+        assert_eq!(app.viewport_mut().message_height(0), 2);
+        assert_eq!(app.viewport_mut().total_message_height(), 2);
     }
 
     #[test]
     fn active_turn_assistant_owns_thinking_when_system_message_trails() {
         let mut app = App::test_default();
         app.status = AppStatus::Thinking;
-        app.messages = vec![
+        *app.messages_mut() = vec![
             assistant_text_message("older reply"),
             user_message("next prompt"),
             ChatMessage::new(MessageRole::Assistant, Vec::new(), None),
@@ -1144,14 +1156,14 @@ mod tests {
 
         assert_eq!(app.active_turn_assistant_idx(), Some(2));
 
-        let _ = app.viewport.on_frame(40, 8);
+        let _ = app.viewport_mut().on_frame(40, 8);
         let spinner = SpinnerState { show_empty_thinking: true, ..idle_spinner() };
 
         update_visual_heights(&mut app, spinner, 40, 8);
-        app.viewport.rebuild_prefix_sums();
+        app.viewport_mut().rebuild_prefix_sums();
 
         assert_eq!(
-            app.viewport.message_height(2),
+            app.viewport_mut().message_height(2),
             3,
             "active assistant should render label + thinking + separator even when a system row trails"
         );
@@ -1161,7 +1173,7 @@ mod tests {
     fn active_turn_assistant_uses_explicit_owner_without_user_anchor() {
         let mut app = App::test_default();
         app.status = AppStatus::Thinking;
-        app.messages = vec![
+        *app.messages_mut() = vec![
             assistant_text_message("older reply"),
             ChatMessage::new(MessageRole::Assistant, Vec::new(), None),
             system_message("status"),
@@ -1177,21 +1189,21 @@ mod tests {
         app.status = AppStatus::Ready;
         app.push_message_tracked(assistant_text_message("first reply"));
 
-        let _ = app.viewport.on_frame(40, 8);
+        let _ = app.viewport_mut().on_frame(40, 8);
         let spinner = idle_spinner();
 
         update_visual_heights(&mut app, spinner, 40, 8);
-        app.viewport.rebuild_prefix_sums();
-        assert_eq!(app.viewport.message_height(0), 2);
-        assert_eq!(app.viewport.total_message_height(), 2);
+        app.viewport_mut().rebuild_prefix_sums();
+        assert_eq!(app.viewport_mut().message_height(0), 2);
+        assert_eq!(app.viewport_mut().total_message_height(), 2);
 
         app.push_message_tracked(user_message("follow-up"));
 
         update_visual_heights(&mut app, spinner, 40, 8);
-        app.viewport.rebuild_prefix_sums();
-        assert_eq!(app.viewport.message_height(0), 3);
-        assert_eq!(app.viewport.message_height(1), 2);
-        assert_eq!(app.viewport.total_message_height(), 5);
+        app.viewport_mut().rebuild_prefix_sums();
+        assert_eq!(app.viewport_mut().message_height(0), 3);
+        assert_eq!(app.viewport_mut().message_height(1), 2);
+        assert_eq!(app.viewport_mut().total_message_height(), 5);
     }
 
     #[test]
@@ -1201,21 +1213,21 @@ mod tests {
         app.push_message_tracked(assistant_text_message("first reply"));
         app.push_message_tracked(user_message("follow-up"));
 
-        let _ = app.viewport.on_frame(40, 8);
+        let _ = app.viewport_mut().on_frame(40, 8);
         let spinner = idle_spinner();
 
         update_visual_heights(&mut app, spinner, 40, 8);
-        app.viewport.rebuild_prefix_sums();
-        assert_eq!(app.viewport.message_height(0), 3);
-        assert_eq!(app.viewport.message_height(1), 2);
+        app.viewport_mut().rebuild_prefix_sums();
+        assert_eq!(app.viewport_mut().message_height(0), 3);
+        assert_eq!(app.viewport_mut().message_height(1), 2);
 
         let removed = app.remove_message_tracked(1);
         assert!(removed.is_some());
 
         update_visual_heights(&mut app, spinner, 40, 8);
-        app.viewport.rebuild_prefix_sums();
-        assert_eq!(app.viewport.message_height(0), 2);
-        assert_eq!(app.viewport.total_message_height(), 2);
+        app.viewport_mut().rebuild_prefix_sums();
+        assert_eq!(app.viewport_mut().message_height(0), 2);
+        assert_eq!(app.viewport_mut().total_message_height(), 2);
     }
 
     #[test]
@@ -1223,29 +1235,29 @@ mod tests {
         let mut app = App::test_default();
         let text = "This message should wrap after resize and stay expensive enough to measure. "
             .repeat(6);
-        app.messages = (0..32).map(|_| assistant_text_message(&text)).collect();
+        *app.messages_mut() = (0..32).map(|_| assistant_text_message(&text)).collect();
 
         let spinner = idle_spinner();
 
-        let _ = app.viewport.on_frame(48, 12);
+        let _ = app.viewport_mut().on_frame(48, 12);
         update_visual_heights(&mut app, spinner, 48, 12);
-        app.viewport.rebuild_prefix_sums();
-        let per_message_height = app.viewport.message_height(0);
+        app.viewport_mut().rebuild_prefix_sums();
+        let per_message_height = app.viewport_mut().message_height(0);
         assert!(per_message_height > 0);
 
         let visible_rows = per_message_height * 2;
-        app.viewport.scroll_offset = per_message_height * 15;
-        app.viewport.scroll_target = app.viewport.scroll_offset;
-        app.viewport.scroll_pos = app.viewport.scroll_offset as f32;
+        app.viewport_mut().scroll_offset = per_message_height * 15;
+        app.viewport_mut().scroll_target = app.viewport().scroll_offset;
+        app.viewport_mut().scroll_pos = app.viewport().scroll_offset as f32;
 
-        assert!(app.viewport.on_frame(18, 12).width_changed);
+        assert!(app.viewport_mut().on_frame(18, 12).width_changed);
         update_visual_heights(&mut app, spinner, 18, visible_rows);
 
-        assert_eq!(app.viewport.message_heights_width, 0);
-        assert!(app.viewport.resize_remeasure_active());
-        assert!(app.viewport.message_height_is_current(15));
-        assert!(app.viewport.message_height_is_current(16));
-        assert!(!app.viewport.message_height_is_current(31));
+        assert_eq!(app.viewport().message_heights_width, 0);
+        assert!(app.viewport_mut().resize_remeasure_active());
+        assert!(app.viewport_mut().message_height_is_current(15));
+        assert!(app.viewport_mut().message_height_is_current(16));
+        assert!(!app.viewport_mut().message_height_is_current(31));
     }
 
     #[test]
@@ -1253,31 +1265,31 @@ mod tests {
         let mut app = App::test_default();
         let text = "This message should wrap after resize and stay expensive enough to measure. "
             .repeat(6);
-        app.messages = (0..40).map(|_| assistant_text_message(&text)).collect();
+        *app.messages_mut() = (0..40).map(|_| assistant_text_message(&text)).collect();
 
         let spinner = idle_spinner();
 
-        let _ = app.viewport.on_frame(48, 12);
+        let _ = app.viewport_mut().on_frame(48, 12);
         update_visual_heights(&mut app, spinner, 48, 12);
-        app.viewport.rebuild_prefix_sums();
-        let per_message_height = app.viewport.message_height(0);
-        app.viewport.scroll_offset = per_message_height * 12;
-        app.viewport.scroll_target = app.viewport.scroll_offset;
-        app.viewport.scroll_pos = app.viewport.scroll_offset as f32;
+        app.viewport_mut().rebuild_prefix_sums();
+        let per_message_height = app.viewport_mut().message_height(0);
+        app.viewport_mut().scroll_offset = per_message_height * 12;
+        app.viewport_mut().scroll_target = app.viewport().scroll_offset;
+        app.viewport_mut().scroll_pos = app.viewport().scroll_offset as f32;
 
-        assert!(app.viewport.on_frame(18, 12).width_changed);
+        assert!(app.viewport_mut().on_frame(18, 12).width_changed);
         for _ in 0..8 {
             update_visual_heights(&mut app, spinner, 18, per_message_height * 2);
-            app.viewport.rebuild_prefix_sums();
-            if !app.viewport.resize_remeasure_active() {
+            app.viewport_mut().rebuild_prefix_sums();
+            if !app.viewport_mut().resize_remeasure_active() {
                 break;
             }
         }
 
-        assert_eq!(app.viewport.message_heights_width, 18);
-        assert!(!app.viewport.resize_remeasure_active());
-        assert!(app.viewport.message_height_is_current(0));
-        assert!(app.viewport.message_height_is_current(39));
+        assert_eq!(app.viewport().message_heights_width, 18);
+        assert!(!app.viewport_mut().resize_remeasure_active());
+        assert!(app.viewport_mut().message_height_is_current(0));
+        assert!(app.viewport_mut().message_height_is_current(39));
     }
 
     #[test]
@@ -1285,52 +1297,53 @@ mod tests {
         let mut app = App::test_default();
         let text = "This message should wrap after resize and stay expensive enough to measure. "
             .repeat(6);
-        app.messages = (0..8).map(|_| assistant_text_message(&text)).collect();
+        *app.messages_mut() = (0..8).map(|_| assistant_text_message(&text)).collect();
 
         let spinner = idle_spinner();
 
-        let _ = app.viewport.on_frame(48, 12);
+        let _ = app.viewport_mut().on_frame(48, 12);
         update_visual_heights(&mut app, spinner, 48, 12);
-        app.viewport.rebuild_prefix_sums();
-        let per_message_height = app.viewport.message_height(0);
-        app.viewport.scroll_offset = per_message_height * 2;
-        app.viewport.scroll_target = app.viewport.scroll_offset;
-        app.viewport.scroll_pos = app.viewport.scroll_offset as f32;
+        app.viewport_mut().rebuild_prefix_sums();
+        let per_message_height = app.viewport_mut().message_height(0);
+        app.viewport_mut().scroll_offset = per_message_height * 2;
+        app.viewport_mut().scroll_target = app.viewport().scroll_offset;
+        app.viewport_mut().scroll_pos = app.viewport().scroll_offset as f32;
 
-        assert!(app.viewport.on_frame(18, 12).width_changed);
+        assert!(app.viewport_mut().on_frame(18, 12).width_changed);
         app.invalidate_layout(InvalidationLevel::MessagesFrom(0));
 
         let first = update_visual_heights(&mut app, spinner, 18, per_message_height * 2);
-        app.viewport.rebuild_prefix_sums();
+        app.viewport_mut().rebuild_prefix_sums();
         let second = update_visual_heights(&mut app, spinner, 18, per_message_height * 2);
 
-        assert!(first.measured_msgs >= app.messages.len());
+        assert!(first.measured_msgs >= app.messages().len());
         assert_eq!(second.measured_msgs, 0);
-        assert_eq!(app.viewport.message_heights_width, 18);
+        assert_eq!(app.viewport().message_heights_width, 18);
     }
 
     #[test]
     fn render_culled_messages_matches_full_render_when_scrolled_inside_message() {
         let mut app = App::test_default();
         let text = (0..160).map(|i| format!("line {i:03}")).collect::<Vec<_>>().join("\n");
-        app.messages = vec![assistant_text_message(&text)];
+        *app.messages_mut() = vec![assistant_text_message(&text)];
         let width = 24u16;
         let viewport_height_u16 = 8u16;
         let viewport_height = usize::from(viewport_height_u16);
         let area = Rect::new(0, 0, width, viewport_height_u16);
         let spinner = idle_spinner();
 
-        let _ = app.viewport.on_frame(width, viewport_height_u16);
+        let _ = app.viewport_mut().on_frame(width, viewport_height_u16);
         update_visual_heights(&mut app, spinner, width, viewport_height);
-        app.viewport.rebuild_prefix_sums();
+        app.viewport_mut().rebuild_prefix_sums();
 
         let scroll = 60;
         let mut full_lines = Vec::new();
+        let tools_collapsed = app.tools_collapsed;
         message::render_message_with_tools_collapsed_and_separator(
-            &mut app.messages[0],
+            &mut app.messages_mut()[0],
             &spinner,
             width,
-            app.tools_collapsed,
+            tools_collapsed,
             false,
             &mut full_lines,
         );
@@ -1363,26 +1376,27 @@ mod tests {
     #[test]
     fn render_culled_messages_matches_full_render_when_scrolled_inside_wrapped_role_label() {
         let mut app = App::test_default();
-        app.messages = vec![user_message("ok")];
+        *app.messages_mut() = vec![user_message("ok")];
         let width = 2u16;
         let viewport_height_u16 = 4u16;
         let viewport_height = usize::from(viewport_height_u16);
         let area = Rect::new(0, 0, width, viewport_height_u16);
         let spinner = idle_spinner();
 
-        let _ = app.viewport.on_frame(width, viewport_height_u16);
+        let _ = app.viewport_mut().on_frame(width, viewport_height_u16);
         update_visual_heights(&mut app, spinner, width, viewport_height);
-        app.viewport.rebuild_prefix_sums();
+        app.viewport_mut().rebuild_prefix_sums();
 
-        assert!(app.viewport.message_height(0) >= 3);
+        assert!(app.viewport_mut().message_height(0) >= 3);
 
         let scroll = 1;
         let mut full_lines = Vec::new();
+        let tools_collapsed = app.tools_collapsed;
         message::render_message_with_tools_collapsed_and_separator(
-            &mut app.messages[0],
+            &mut app.messages_mut()[0],
             &spinner,
             width,
-            app.tools_collapsed,
+            tools_collapsed,
             false,
             &mut full_lines,
         );
@@ -1416,7 +1430,7 @@ mod tests {
     fn render_culled_messages_stops_after_first_wrapped_message_when_viewport_is_covered() {
         let mut app = App::test_default();
         let huge_wrapped = "wrap ".repeat(2_000);
-        app.messages = vec![
+        *app.messages_mut() = vec![
             assistant_text_message(&huge_wrapped),
             assistant_text_message("this should remain offscreen"),
         ];
@@ -1425,11 +1439,11 @@ mod tests {
         let viewport_height = usize::from(viewport_height_u16);
         let spinner = idle_spinner();
 
-        let _ = app.viewport.on_frame(width, viewport_height_u16);
+        let _ = app.viewport_mut().on_frame(width, viewport_height_u16);
         update_visual_heights(&mut app, spinner, width, viewport_height);
-        app.viewport.rebuild_prefix_sums();
+        app.viewport_mut().rebuild_prefix_sums();
 
-        assert!(app.viewport.message_height(0) > 200);
+        assert!(app.viewport_mut().message_height(0) > 200);
 
         let mut culled_lines = Vec::new();
         let stats = render_culled_messages(
@@ -1455,7 +1469,7 @@ mod tests {
     fn chat_selection_snapshot_refreshes_without_dragging_after_streaming_change() {
         let mut app = App::test_default();
         app.status = AppStatus::Running;
-        app.messages = vec![assistant_text_message("hello")];
+        *app.messages_mut() = vec![assistant_text_message("hello")];
         app.bind_active_turn_assistant(0);
         app.selection = Some(SelectionState {
             kind: SelectionKind::Chat,
@@ -1469,7 +1483,7 @@ mod tests {
         assert!(!first_snapshot.is_empty());
 
         if let Some(MessageBlock::Text(block)) =
-            app.messages.get_mut(0).and_then(|message| message.blocks.get_mut(0))
+            app.messages_mut().get_mut(0).and_then(|message| message.blocks.get_mut(0))
         {
             block.text.push_str("\nworld");
             block.markdown.append("\nworld");

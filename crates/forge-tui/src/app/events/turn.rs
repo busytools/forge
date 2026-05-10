@@ -67,7 +67,7 @@ pub(super) fn handle_permission_request_event(
     let mut layout_dirty = false;
     let auto_focus = app.pending_interaction_ids.is_empty() && !app.has_draft_input_for_focus();
     if let Some(MessageBlock::ToolCall(tc)) =
-        app.messages.get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
+        app.messages_mut().get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
     {
         let tc = tc.as_mut();
         tc.pending_permission = Some(InlinePermission {
@@ -83,7 +83,7 @@ pub(super) fn handle_permission_request_event(
         if auto_focus {
             app.claim_focus_target(FocusTarget::Permission);
         }
-        app.viewport.engage_auto_scroll();
+        app.viewport_mut().engage_auto_scroll();
         app.notifications.notify(
             app.config.preferred_notification_channel_effective(),
             super::super::notify::NotifyEvent::PermissionRequired,
@@ -162,7 +162,7 @@ pub(super) fn handle_question_request_event(
     let mut layout_dirty = false;
     let auto_focus = app.pending_interaction_ids.is_empty() && !app.has_draft_input_for_focus();
     if let Some(MessageBlock::ToolCall(tc)) =
-        app.messages.get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
+        app.messages_mut().get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
     {
         let tc = tc.as_mut();
         tc.pending_question = Some(InlineQuestion {
@@ -183,7 +183,7 @@ pub(super) fn handle_question_request_event(
         if auto_focus {
             app.claim_focus_target(FocusTarget::Permission);
         }
-        app.viewport.engage_auto_scroll();
+        app.viewport_mut().engage_auto_scroll();
         app.notifications.notify(
             app.config.preferred_notification_channel_effective(),
             super::super::notify::NotifyEvent::QuestionRequired,
@@ -246,7 +246,7 @@ pub(super) fn handle_turn_cancelled_event(app: &mut App) {
 fn begin_turn_exit(app: &mut App, emit_manual_compaction_success: bool) -> TurnExitState {
     let state = TurnExitState {
         tail_assistant_idx: app
-            .messages
+            .messages()
             .iter()
             .rposition(|m| matches!(m.role, MessageRole::Assistant)),
         turn_was_active: matches!(app.status, AppStatus::Thinking | AppStatus::Running),
@@ -412,13 +412,13 @@ fn push_interrupted_hint(app: &mut App) {
         None,
     ));
     app.enforce_history_retention_tracked();
-    app.viewport.engage_auto_scroll();
+    app.viewport_mut().engage_auto_scroll();
 }
 
 fn remove_empty_tail_assistant(app: &mut App, idx: Option<usize>) -> Option<usize> {
     let idx = idx?;
     let should_remove = app
-        .messages
+        .messages()
         .get(idx)
         .is_some_and(|msg| matches!(msg.role, MessageRole::Assistant) && msg.blocks.is_empty());
     if !should_remove {
@@ -432,7 +432,7 @@ fn mark_turn_exit_assistant_layout_dirty(app: &mut App, idx: Option<usize>) {
     let Some(idx) = idx else {
         return;
     };
-    if app.messages.get(idx).is_some_and(|msg| matches!(msg.role, MessageRole::Assistant)) {
+    if app.messages().get(idx).is_some_and(|msg| matches!(msg.role, MessageRole::Assistant)) {
         app.invalidate_layout(InvalidationLevel::MessageChanged(idx));
     }
 }
@@ -519,13 +519,13 @@ mod tests {
     fn turn_complete_removes_empty_tail_assistant() {
         let mut app = App::test_default();
         app.status = AppStatus::Thinking;
-        app.messages.push(user_message("hello"));
-        app.messages.push(empty_assistant_message());
+        app.messages_mut().push(user_message("hello"));
+        app.messages_mut().push(empty_assistant_message());
 
         handle_turn_complete_event(&mut app, None);
 
-        assert_eq!(app.messages.len(), 1);
-        assert!(matches!(app.messages[0].role, MessageRole::User));
+        assert_eq!(app.messages().len(), 1);
+        assert!(matches!(app.messages()[0].role, MessageRole::User));
     }
 
     #[test]
@@ -533,27 +533,27 @@ mod tests {
         let mut app = App::test_default();
         app.status = AppStatus::Thinking;
         app.pending_cancel_origin = Some(CancelOrigin::Manual);
-        app.messages.push(user_message("hello"));
-        app.messages.push(empty_assistant_message());
+        app.messages_mut().push(user_message("hello"));
+        app.messages_mut().push(empty_assistant_message());
 
         handle_turn_error_event(&mut app, "cancelled", None, None);
 
-        assert_eq!(app.messages.len(), 2);
-        assert!(matches!(app.messages[0].role, MessageRole::User));
-        assert!(matches!(app.messages[1].role, MessageRole::System(Some(SystemSeverity::Info))));
+        assert_eq!(app.messages().len(), 2);
+        assert!(matches!(app.messages()[0].role, MessageRole::User));
+        assert!(matches!(app.messages()[1].role, MessageRole::System(Some(SystemSeverity::Info))));
     }
 
     #[test]
     fn turn_error_removes_empty_tail_assistant_before_error_message() {
         let mut app = App::test_default();
         app.status = AppStatus::Thinking;
-        app.messages.push(user_message("hello"));
-        app.messages.push(empty_assistant_message());
+        app.messages_mut().push(user_message("hello"));
+        app.messages_mut().push(empty_assistant_message());
 
         handle_turn_error_event(&mut app, "boom", None, None);
 
-        assert_eq!(app.messages.len(), 2);
-        assert!(matches!(app.messages[0].role, MessageRole::User));
-        assert!(matches!(app.messages[1].role, MessageRole::System(None)));
+        assert_eq!(app.messages().len(), 2);
+        assert!(matches!(app.messages()[0].role, MessageRole::User));
+        assert!(matches!(app.messages()[1].role, MessageRole::System(None)));
     }
 }

@@ -58,13 +58,13 @@ pub(super) fn handle_mouse_event(app: &mut App, mouse: MouseEvent) {
             if app.selection.is_some() {
                 clear_selection(app);
             }
-            app.viewport.scroll_up(MOUSE_SCROLL_LINES);
+            app.viewport_mut().scroll_up(MOUSE_SCROLL_LINES);
         }
         MouseEventKind::ScrollDown => {
             if app.selection.is_some() {
                 clear_selection(app);
             }
-            app.viewport.scroll_down(MOUSE_SCROLL_LINES);
+            app.viewport_mut().scroll_down(MOUSE_SCROLL_LINES);
         }
         _ => {}
     }
@@ -140,23 +140,23 @@ fn scrollbar_metrics(app: &App) -> Option<ScrollbarMetrics> {
     }
 
     let viewport_height = area.height as usize;
-    let content_height = app.viewport.total_message_height();
+    let content_height = app.viewport().total_message_height();
     let target = crate::app::compute_scrollbar_geometry(
         content_height,
         viewport_height,
-        app.viewport.scroll_pos,
+        app.viewport().scroll_pos,
     )?;
     Some(ScrollbarMetrics { viewport_height, target })
 }
 
 fn current_thumb_geometry(app: &App, metrics: ScrollbarMetrics) -> ScrollbarGeometry {
-    let mut thumb_size = app.viewport.scrollbar_thumb_size.round() as usize;
+    let mut thumb_size = app.viewport().scrollbar_thumb_size.round() as usize;
     if thumb_size == 0 {
         thumb_size = metrics.target.thumb_size;
     }
     thumb_size = thumb_size.max(1).min(metrics.viewport_height);
     let max_top = metrics.viewport_height.saturating_sub(thumb_size);
-    let thumb_top = app.viewport.scrollbar_thumb_top.round().clamp(0.0, max_top as f32) as usize;
+    let thumb_top = app.viewport().scrollbar_thumb_top.round().clamp(0.0, max_top as f32) as usize;
     ScrollbarGeometry {
         thumb_top,
         thumb_size,
@@ -179,11 +179,11 @@ fn set_scroll_from_thumb_top(
     }
     .min(max_scroll);
 
-    app.viewport.auto_scroll = false;
-    app.viewport.scroll_target = target;
+    app.viewport_mut().auto_scroll = false;
+    app.viewport_mut().scroll_target = target;
     // Keep content movement responsive while dragging the thumb.
-    app.viewport.scroll_pos = target as f32;
-    app.viewport.scroll_offset = target;
+    app.viewport_mut().scroll_pos = target as f32;
+    app.viewport_mut().scroll_offset = target;
 }
 
 fn mouse_on_scrollbar_rail(app: &App, mouse: MouseEvent) -> bool {
@@ -250,7 +250,8 @@ fn try_toggle_tool_call_at_click(app: &mut App, mouse: MouseEvent) -> bool {
         return false;
     };
     let global_default = app.tools_collapsed;
-    let Some(MessageBlock::ToolCall(tc)) = app.messages[msg_idx].blocks.get_mut(block_idx) else {
+    let Some(MessageBlock::ToolCall(tc)) = app.messages_mut()[msg_idx].blocks.get_mut(block_idx)
+    else {
         return false;
     };
     let current = tc.collapsed_override.unwrap_or(global_default);
@@ -295,23 +296,23 @@ fn locate_tool_call_block_at_click(app: &App, mouse: MouseEvent) -> Option<(usiz
 
     // Absolute content-row of the click (== local row + scroll offset).
     let local_row = (mouse.row - chat_area.y) as usize;
-    let absolute_row = local_row.checked_add(app.viewport.scroll_offset)?;
+    let absolute_row = local_row.checked_add(app.viewport().scroll_offset)?;
 
     // Find the message that owns this row via the existing prefix-sum
     // index, then walk only that message's tool-call blocks. Each tool
     // stores its own y-offset within the message and its measured
     // height, so the inclusion test is just an interval check.
-    if app.messages.is_empty() {
+    if app.messages().is_empty() {
         return None;
     }
-    let msg_idx = app.viewport.find_first_visible(absolute_row);
-    if msg_idx >= app.messages.len() {
+    let msg_idx = app.viewport().find_first_visible(absolute_row);
+    if msg_idx >= app.messages().len() {
         return None;
     }
-    let msg_start = app.viewport.cumulative_height_before(msg_idx);
+    let msg_start = app.viewport().cumulative_height_before(msg_idx);
     let row_within_msg = absolute_row.checked_sub(msg_start)?;
     let width = chat_area.width;
-    for (block_idx, block) in app.messages[msg_idx].blocks.iter().enumerate() {
+    for (block_idx, block) in app.messages()[msg_idx].blocks.iter().enumerate() {
         let MessageBlock::ToolCall(tc) = block else {
             continue;
         };
@@ -342,13 +343,13 @@ fn locate_tool_call_block_at_click(app: &App, mouse: MouseEvent) -> Option<(usiz
         outcome = "no_hit",
         mouse_row = mouse.row,
         mouse_column = mouse.column,
-        scroll_offset = app.viewport.scroll_offset,
+        scroll_offset = app.viewport().scroll_offset,
         absolute_row,
         msg_idx,
-        msg_count = app.messages.len(),
+        msg_count = app.messages().len(),
         msg_start,
         row_within_msg,
-        msg_height = app.viewport.message_height(msg_idx),
+        msg_height = app.viewport().message_height(msg_idx),
         "click did not match any tool's recorded y-range",
     );
     None

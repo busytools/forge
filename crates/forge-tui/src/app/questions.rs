@@ -268,7 +268,7 @@ fn respond_question(app: &mut App) {
         return;
     };
     let Some(MessageBlock::ToolCall(tc)) =
-        app.messages.get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
+        app.messages_mut().get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
     else {
         return;
     };
@@ -332,7 +332,7 @@ fn respond_question_cancel(app: &mut App) {
         return;
     };
     let Some(MessageBlock::ToolCall(tc)) =
-        app.messages.get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
+        app.messages_mut().get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
     else {
         return;
     };
@@ -498,13 +498,13 @@ mod tests {
         prompt: model::QuestionPrompt,
         focused: bool,
     ) -> oneshot::Receiver<model::RequestQuestionResponse> {
-        let msg_idx = app.messages.len();
-        app.messages.push(assistant_tool_msg(test_tool_call(tool_id)));
+        let msg_idx = app.messages().len();
+        app.messages_mut().push(assistant_tool_msg(test_tool_call(tool_id)));
         app.index_tool_call(tool_id.to_owned(), msg_idx, 0);
 
         let (tx, rx) = oneshot::channel();
         if let Some(MessageBlock::ToolCall(tc)) =
-            app.messages.get_mut(msg_idx).and_then(|m| m.blocks.get_mut(0))
+            app.messages_mut().get_mut(msg_idx).and_then(|m| m.blocks.get_mut(0))
         {
             tc.pending_question = Some(InlineQuestion {
                 prompt,

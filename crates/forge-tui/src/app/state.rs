@@ -124,13 +124,6 @@ pub struct App {
     pub config: ConfigState,
     pub trust: TrustState,
     pub settings_home_override: Option<PathBuf>,
-    pub messages: Vec<ChatMessage>,
-    /// Cached approximate retained bytes for each message, parallel to `messages`.
-    pub message_retained_bytes: Vec<usize>,
-    /// Rolling total of `message_retained_bytes`.
-    pub retained_history_bytes: usize,
-    /// Single owner of all chat layout state: scroll, per-message heights, prefix sums.
-    pub viewport: ChatViewport,
     pub input: InputState,
     pub status: AppStatus,
     /// Session id currently being resumed via `/resume`.
@@ -194,8 +187,6 @@ pub struct App {
     pub file_index_event_rx: std_mpsc::Receiver<file_index::FileIndexEvent>,
     pub spinner_frame: usize,
     pub spinner_last_advance_at: Option<Instant>,
-    /// Message index that owns the current main-assistant turn indicators.
-    pub active_turn_assistant_message_idx: Option<usize>,
     /// Session-level preference for collapsing non-Execute tool call bodies.
     /// Toggled by Ctrl+X and applied at render/layout time.
     pub tools_collapsed: bool,
@@ -399,6 +390,13 @@ pub struct App {
 impl App {
     // ---- Multi-session accessors (Phase 2a) ----
 
+    /// Synthetic session key used during the pre-Connect window
+    /// (test contexts and the brief startup interval before the
+    /// first `Connected` event lands). [`Self::set_session_id`]
+    /// migrates the bucket onto the real session key when the
+    /// claude-issued id arrives.
+    pub(crate) const PRE_CONNECT_KEY: &'static str = "__conn_pending__";
+
     /// Returns a reference to the currently-active session bucket,
     /// or `None` in the brief pre-Connect window before any session
     /// has landed in [`Self::sessions`].
@@ -422,6 +420,104 @@ impl App {
         self.sessions.get_mut(key)
     }
 
+    /// Borrow the active session's chat buffer.
+    ///
+    /// Production startup and `App::test_default()` both seed a
+    /// pre-Connect bucket so the active session is always populated.
+    /// On the off chance the invariant is violated we log and return
+    /// a static empty slice so call sites stay infallible.
+    #[must_use]
+    pub fn messages(&self) -> &[ChatMessage] {
+        self.active_session().map_or(&[], |s| s.messages.as_slice())
+    }
+
+    /// Mutable borrow of the active session's chat buffer.
+    ///
+    /// Returns a mutable reference to the active bucket's `messages`
+    /// vector. Auto-creates the pre-Connect bucket if the active
+    /// session is missing, so call sites don't need to guard.
+    #[must_use]
+    pub fn messages_mut(&mut self) -> &mut Vec<ChatMessage> {
+        &mut self.active_or_synthetic_mut().messages
+    }
+
+    /// Borrow the parallel `message_retained_bytes` cache.
+    #[must_use]
+    pub fn message_retained_bytes(&self) -> &[usize] {
+        self.active_session().map_or(&[], |s| s.message_retained_bytes.as_slice())
+    }
+
+    /// Mutable borrow of the `message_retained_bytes` cache.
+    #[must_use]
+    pub fn message_retained_bytes_mut(&mut self) -> &mut Vec<usize> {
+        &mut self.active_or_synthetic_mut().message_retained_bytes
+    }
+
+    /// Active session's rolling retained-history byte total.
+    #[must_use]
+    pub fn retained_history_bytes(&self) -> usize {
+        self.active_session().map_or(0, |s| s.retained_history_bytes)
+    }
+
+    /// Mutable accessor for the rolling retained-history byte total.
+    #[must_use]
+    pub fn retained_history_bytes_mut(&mut self) -> &mut usize {
+        &mut self.active_or_synthetic_mut().retained_history_bytes
+    }
+
+    /// Borrow the active session's chat viewport.
+    ///
+    /// Falls back to a leaked default viewport if the active bucket
+    /// is missing — the production startup path always seeds one,
+    /// so the fallback is a safety net rather than a hot path.
+    #[must_use]
+    pub fn viewport(&self) -> &ChatViewport {
+        // SAFETY: the leaked default never escapes the program;
+        // we only ever hand out shared borrows of it.
+        static FALLBACK: std::sync::OnceLock<ChatViewport> = std::sync::OnceLock::new();
+        match self.active_session() {
+            Some(s) => &s.viewport,
+            None => FALLBACK.get_or_init(ChatViewport::new),
+        }
+    }
+
+    /// Mutable accessor for the active session's chat viewport.
+    /// Auto-creates the pre-Connect bucket if missing.
+    #[must_use]
+    pub fn viewport_mut(&mut self) -> &mut ChatViewport {
+        &mut self.active_or_synthetic_mut().viewport
+    }
+
+    /// Active session's main-assistant turn message index.
+    #[must_use]
+    pub fn active_turn_assistant_message_idx(&self) -> Option<usize> {
+        self.active_session().and_then(|s| s.active_turn_assistant_message_idx)
+    }
+
+    /// Set the active session's main-assistant turn message index.
+    pub fn set_active_turn_assistant_message_idx(&mut self, idx: Option<usize>) {
+        self.active_or_synthetic_mut().active_turn_assistant_message_idx = idx;
+    }
+
+    /// Internal helper: yield a `&mut Session` for the active bucket,
+    /// auto-creating a pre-Connect synthetic bucket if no active
+    /// session exists. Used by the `_mut` accessors so call sites
+    /// can stay infallible.
+    fn active_or_synthetic_mut(&mut self) -> &mut super::session::Session {
+        if self.active_session_key.is_none() {
+            let key = forge_workspace::SessionKey::from_session_id(Self::PRE_CONNECT_KEY);
+            self.sessions
+                .entry(key.clone())
+                .or_insert_with(|| super::session::Session::new(key.clone()));
+            self.active_session_key = Some(key);
+        }
+        let key = self
+            .active_session_key
+            .clone()
+            .unwrap_or_else(|| forge_workspace::SessionKey::from_session_id(Self::PRE_CONNECT_KEY));
+        self.sessions.entry(key.clone()).or_insert_with(|| super::session::Session::new(key))
+    }
+
     /// Active session's claude session id, or `None` in the
     /// pre-Connect window.
     #[must_use]
@@ -439,12 +535,11 @@ impl App {
     /// migrates that bucket's contents to the real key so the conn
     /// + session_id end up on the same bucket.
     pub fn set_session_id(&mut self, id: Option<model::SessionId>) {
-        const PENDING_KEY: &str = "__conn_pending__";
         match id {
             Some(id) => {
                 let key = forge_workspace::SessionKey::from_session_id(id.to_string());
                 // Migrate any synthetic-keyed bucket onto the real key.
-                let pending = forge_workspace::SessionKey::from_session_id(PENDING_KEY);
+                let pending = forge_workspace::SessionKey::from_session_id(Self::PRE_CONNECT_KEY);
                 if let Some(mut existing) = self.sessions.remove(&pending) {
                     existing.key = Some(key.clone());
                     existing.session_id = Some(id);
@@ -480,8 +575,10 @@ impl App {
     /// real session_id), so the synthetic-key path is test-only.
     pub fn set_conn(&mut self, conn: Option<std::sync::Arc<forge_agent::AgentHandle>>) {
         if self.active_session_key.is_none() && conn.is_some() {
-            let key = forge_workspace::SessionKey::from_session_id("__conn_pending__");
-            self.sessions.insert(key.clone(), super::session::Session::new(key.clone()));
+            let key = forge_workspace::SessionKey::from_session_id(Self::PRE_CONNECT_KEY);
+            self.sessions
+                .entry(key.clone())
+                .or_insert_with(|| super::session::Session::new(key.clone()));
             self.active_session_key = Some(key);
         }
         if let Some(s) = self.active_session_mut() {
@@ -586,7 +683,7 @@ impl App {
 
     /// Ensure the synthetic welcome message exists at index 0.
     pub fn ensure_welcome_message(&mut self) {
-        if self.messages.first().is_some_and(|m| matches!(m.role, MessageRole::Welcome)) {
+        if self.messages().first().is_some_and(|m| matches!(m.role, MessageRole::Welcome)) {
             return;
         }
         self.insert_message_tracked(0, self.build_welcome_message());
@@ -659,7 +756,7 @@ impl App {
 
     #[must_use]
     pub(crate) fn current_welcome_tip_seed(&self) -> Option<u64> {
-        let first = self.messages.first()?;
+        let first = self.messages().first()?;
         let MessageBlock::Welcome(welcome) = first.blocks.first()? else {
             return None;
         };
@@ -679,7 +776,7 @@ impl App {
         let (label, value) = self.welcome_account_display();
         let cwd = self.welcome_cwd_display().to_owned();
         let session_id = self.welcome_session_id_display();
-        let Some(first) = self.messages.first_mut() else {
+        let Some(first) = self.messages_mut().first_mut() else {
             return;
         };
         if !matches!(first.role, MessageRole::Welcome) {
@@ -791,7 +888,7 @@ impl App {
 
     pub(crate) fn sync_after_message_blocks_changed(&mut self, msg_idx: usize) {
         self.note_render_cache_structure_changed();
-        if let Some(message) = self.messages.get_mut(msg_idx) {
+        if let Some(message) = self.messages_mut().get_mut(msg_idx) {
             message.invalidate_render_cache();
         }
         self.sync_render_cache_message(msg_idx);
@@ -806,17 +903,17 @@ impl App {
     pub fn invalidate_layout(&mut self, level: LayoutInvalidation) {
         match level {
             LayoutInvalidation::MessageChanged(idx) => {
-                self.viewport.invalidate_message(idx);
+                self.viewport_mut().invalidate_message(idx);
             }
             LayoutInvalidation::MessagesFrom(idx) => {
-                self.viewport.invalidate_messages_from(idx);
+                self.viewport_mut().invalidate_messages_from(idx);
             }
             LayoutInvalidation::Global => {
-                if self.messages.is_empty() {
+                if self.messages().is_empty() {
                     return;
                 }
-                self.viewport.invalidate_all_messages(LayoutRemeasureReason::Global);
-                self.viewport.bump_layout_generation();
+                self.viewport_mut().invalidate_all_messages(LayoutRemeasureReason::Global);
+                self.viewport_mut().bump_layout_generation();
             }
             LayoutInvalidation::Resize => {
                 // Resize is handled by viewport.on_frame(). This arm exists
@@ -831,9 +928,9 @@ impl App {
         I: IntoIterator<Item = usize>,
     {
         let unique: BTreeSet<_> =
-            indices.into_iter().filter(|&idx| idx < self.messages.len()).collect();
+            indices.into_iter().filter(|&idx| idx < self.messages().len()).collect();
         for idx in unique {
-            self.viewport.invalidate_message(idx);
+            self.viewport_mut().invalidate_message(idx);
         }
     }
 
@@ -852,7 +949,7 @@ impl App {
                 &self.history_retention_stats,
                 self.history_retention,
                 &self.cache_metrics,
-                &self.viewport,
+                self.viewport(),
                 0, // entry_count not needed for history-only log
                 0,
                 stats.dropped_messages,
@@ -871,7 +968,7 @@ impl App {
         let mut changed_slots = Vec::new();
         let mut detached_terminal = false;
 
-        for (msg_idx, msg) in self.messages.iter_mut().enumerate() {
+        for (msg_idx, msg) in self.messages_mut().iter_mut().enumerate() {
             for (block_idx, block) in msg.blocks.iter_mut().enumerate() {
                 if let MessageBlock::ToolCall(tc) = block {
                     let tc = tc.as_mut();
@@ -928,7 +1025,7 @@ impl App {
         let mut changed_message_indices = Vec::new();
         let mut changed_slots = Vec::new();
 
-        for (msg_idx, msg) in self.messages.iter_mut().enumerate() {
+        for (msg_idx, msg) in self.messages_mut().iter_mut().enumerate() {
             for (block_idx, block) in msg.blocks.iter_mut().enumerate() {
                 let MessageBlock::ToolCall(tc) = block else {
                     continue;
@@ -987,15 +1084,14 @@ impl App {
     pub fn test_default() -> Self {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         let (file_index_tx, file_index_rx) = std_mpsc::channel();
+        let pending_key = forge_workspace::SessionKey::from_session_id(Self::PRE_CONNECT_KEY);
+        let mut sessions = std::collections::HashMap::new();
+        sessions.insert(pending_key.clone(), super::session::Session::new(pending_key.clone()));
         Self {
             active_view: ActiveView::Chat,
             config: ConfigState::default(),
             trust: TrustState::default(),
             settings_home_override: None,
-            messages: Vec::new(),
-            message_retained_bytes: Vec::new(),
-            retained_history_bytes: 0,
-            viewport: ChatViewport::new(),
             input: InputState::new(),
             status: AppStatus::Ready,
             resuming_session_id: None,
@@ -1004,8 +1100,8 @@ impl App {
             should_quit: false,
             exit_error: None,
             workspace: None,
-            sessions: std::collections::HashMap::new(),
-            active_session_key: None,
+            sessions,
+            active_session_key: Some(pending_key),
             current_model: Some(
                 model::CurrentModel::new("test-model", "test-model", "test-model")
                     .authoritative(true),
@@ -1031,7 +1127,6 @@ impl App {
             file_index_event_rx: file_index_rx,
             spinner_frame: 0,
             spinner_last_advance_at: None,
-            active_turn_assistant_message_idx: None,
             tools_collapsed: false,
             active_task_ids: HashSet::default(),
             tool_call_scopes: HashMap::default(),
@@ -1153,21 +1248,22 @@ impl App {
 
     #[must_use]
     pub fn active_turn_assistant_idx(&self) -> Option<usize> {
-        self.active_turn_assistant_message_idx.filter(|&idx| {
-            self.messages.get(idx).is_some_and(|msg| matches!(msg.role, MessageRole::Assistant))
+        self.active_turn_assistant_message_idx().filter(|&idx| {
+            self.messages().get(idx).is_some_and(|msg| matches!(msg.role, MessageRole::Assistant))
         })
     }
 
     pub fn bind_active_turn_assistant(&mut self, idx: usize) {
-        self.active_turn_assistant_message_idx = self
-            .messages
+        let next = self
+            .messages()
             .get(idx)
             .is_some_and(|msg| matches!(msg.role, MessageRole::Assistant))
             .then_some(idx);
+        self.set_active_turn_assistant_message_idx(next);
     }
 
     pub fn bind_active_turn_assistant_to_tail(&mut self) {
-        if let Some(idx) = self.messages.len().checked_sub(1) {
+        if let Some(idx) = self.messages().len().checked_sub(1) {
             self.bind_active_turn_assistant(idx);
         } else {
             self.clear_active_turn_assistant();
@@ -1175,7 +1271,7 @@ impl App {
     }
 
     pub fn clear_active_turn_assistant(&mut self) {
-        self.active_turn_assistant_message_idx = None;
+        self.set_active_turn_assistant_message_idx(None);
     }
 
     pub(crate) fn clear_turn_notice_refs(&mut self) {
@@ -1258,22 +1354,23 @@ impl App {
     }
 
     pub(crate) fn shift_active_turn_assistant_for_insert(&mut self, idx: usize) {
-        if let Some(owner_idx) = self.active_turn_assistant_message_idx
+        if let Some(owner_idx) = self.active_turn_assistant_message_idx()
             && idx <= owner_idx
         {
-            self.active_turn_assistant_message_idx = Some(owner_idx.saturating_add(1));
+            self.set_active_turn_assistant_message_idx(Some(owner_idx.saturating_add(1)));
         }
     }
 
     pub(crate) fn shift_active_turn_assistant_for_remove(&mut self, idx: usize) {
-        let Some(owner_idx) = self.active_turn_assistant_message_idx else {
+        let Some(owner_idx) = self.active_turn_assistant_message_idx() else {
             return;
         };
-        self.active_turn_assistant_message_idx = match idx.cmp(&owner_idx) {
+        let next = match idx.cmp(&owner_idx) {
             std::cmp::Ordering::Less => Some(owner_idx.saturating_sub(1)),
             std::cmp::Ordering::Equal => None,
             std::cmp::Ordering::Greater => Some(owner_idx),
         };
+        self.set_active_turn_assistant_message_idx(next);
     }
 
     #[must_use]
@@ -1393,11 +1490,16 @@ mod tests {
     // Phase 2a foundation
 
     #[test]
-    fn sessions_map_starts_empty_and_active_key_is_none() {
+    fn test_default_seeds_pre_connect_bucket_so_accessors_are_infallible() {
         let app = App::test_default();
-        assert!(app.sessions.is_empty());
-        assert!(app.active_session_key.is_none());
-        assert!(app.active_session().is_none());
+        // Task 3 onwards: per-session field accessors (messages, viewport,
+        // …) need an active session to read/write. test_default seeds a
+        // synthetic pre-Connect bucket so call sites stay infallible
+        // before Connect lands.
+        assert_eq!(app.sessions.len(), 1);
+        let pre_connect_key = forge_workspace::SessionKey::from_session_id(App::PRE_CONNECT_KEY);
+        assert_eq!(app.active_session_key.as_ref(), Some(&pre_connect_key));
+        assert!(app.active_session().is_some());
     }
 
     #[test]
@@ -1409,7 +1511,6 @@ mod tests {
             .or_insert_with(|| crate::app::session::Session::new(key.clone()));
         app.active_session_key = Some(key.clone());
 
-        assert_eq!(app.sessions.len(), 1);
         assert_eq!(app.active_session_key.as_ref(), Some(&key));
         assert!(app.active_session().is_some());
         assert_eq!(app.active_session().and_then(|s| s.key.as_ref()), Some(&key));
@@ -1848,18 +1949,18 @@ mod tests {
     #[test]
     fn enforce_render_cache_budget_evicts_lru_block() {
         let mut app = make_test_app();
-        app.messages = vec![
+        *app.messages_mut() = vec![
             ChatMessage::new(MessageRole::Assistant, vec![assistant_text_block("a")], None),
             ChatMessage::new(MessageRole::Assistant, vec![assistant_text_block("b")], None),
         ];
 
-        let bytes_a = if let MessageBlock::Text(block) = &mut app.messages[0].blocks[0] {
+        let bytes_a = if let MessageBlock::Text(block) = &mut app.messages_mut()[0].blocks[0] {
             block.cache.store(vec![Line::from("x".repeat(2200))]);
             block.cache.cached_bytes()
         } else {
             0
         };
-        let bytes_b = if let MessageBlock::Text(block) = &mut app.messages[1].blocks[0] {
+        let bytes_b = if let MessageBlock::Text(block) = &mut app.messages_mut()[1].blocks[0] {
             block.cache.store(vec![Line::from("y".repeat(2200))]);
             let _ = block.cache.get();
             block.cache.cached_bytes()
@@ -1874,12 +1975,12 @@ mod tests {
         assert!(stats.total_after_bytes <= app.render_cache_budget.max_bytes);
         assert_eq!(stats.protected_bytes, 0);
 
-        if let MessageBlock::Text(block) = &app.messages[0].blocks[0] {
+        if let MessageBlock::Text(block) = &app.messages()[0].blocks[0] {
             assert_eq!(block.cache.cached_bytes(), 0);
         } else {
             panic!("expected text block");
         }
-        if let MessageBlock::Text(block) = &app.messages[1].blocks[0] {
+        if let MessageBlock::Text(block) = &app.messages()[1].blocks[0] {
             assert_eq!(block.cache.cached_bytes(), bytes_b);
         } else {
             panic!("expected text block");
@@ -1890,13 +1991,13 @@ mod tests {
     fn enforce_render_cache_budget_protects_streaming_tail_message() {
         let mut app = make_test_app();
         app.status = AppStatus::Thinking;
-        app.messages = vec![ChatMessage::new(
+        *app.messages_mut() = vec![ChatMessage::new(
             MessageRole::Assistant,
             vec![assistant_text_block("streaming tail")],
             None,
         )];
 
-        let before = if let MessageBlock::Text(block) = &mut app.messages[0].blocks[0] {
+        let before = if let MessageBlock::Text(block) = &mut app.messages_mut()[0].blocks[0] {
             block.cache.store(vec![Line::from("z".repeat(4096))]);
             block.cache.cached_bytes()
         } else {
@@ -1908,7 +2009,7 @@ mod tests {
         assert_eq!(stats.evicted_bytes, 0);
         assert_eq!(stats.protected_bytes, before);
 
-        if let MessageBlock::Text(block) = &app.messages[0].blocks[0] {
+        if let MessageBlock::Text(block) = &app.messages()[0].blocks[0] {
             assert_eq!(block.cache.cached_bytes(), before);
         } else {
             panic!("expected text block");
@@ -1919,7 +2020,7 @@ mod tests {
     fn enforce_render_cache_budget_excludes_protected_from_budget() {
         let mut app = make_test_app();
         app.status = AppStatus::Running;
-        app.messages = vec![
+        *app.messages_mut() = vec![
             ChatMessage::new(
                 MessageRole::Assistant,
                 vec![assistant_text_block("old message")],
@@ -1932,13 +2033,13 @@ mod tests {
             ),
         ];
 
-        let bytes_a = if let MessageBlock::Text(block) = &mut app.messages[0].blocks[0] {
+        let bytes_a = if let MessageBlock::Text(block) = &mut app.messages_mut()[0].blocks[0] {
             block.cache.store(vec![Line::from("x".repeat(2200))]);
             block.cache.cached_bytes()
         } else {
             0
         };
-        let bytes_b = if let MessageBlock::Text(block) = &mut app.messages[1].blocks[0] {
+        let bytes_b = if let MessageBlock::Text(block) = &mut app.messages_mut()[1].blocks[0] {
             block.cache.store(vec![Line::from("y".repeat(5000))]);
             block.cache.cached_bytes()
         } else {
@@ -1957,7 +2058,7 @@ mod tests {
         assert_eq!(stats.evicted_blocks, 0);
         assert_eq!(stats.evicted_bytes, 0);
         // Old message cache intact.
-        if let MessageBlock::Text(block) = &app.messages[0].blocks[0] {
+        if let MessageBlock::Text(block) = &app.messages()[0].blocks[0] {
             assert_eq!(block.cache.cached_bytes(), bytes_a);
         } else {
             panic!("expected text block");
@@ -1968,7 +2069,7 @@ mod tests {
     fn enforce_render_cache_budget_protects_active_streaming_owner_not_physical_tail() {
         let mut app = make_test_app();
         app.status = AppStatus::Running;
-        app.messages = vec![
+        *app.messages_mut() = vec![
             ChatMessage::new(
                 MessageRole::Assistant,
                 vec![assistant_text_block("old message")],
@@ -1987,16 +2088,17 @@ mod tests {
         ];
         app.bind_active_turn_assistant(1);
 
-        if let MessageBlock::Text(block) = &mut app.messages[0].blocks[0] {
+        if let MessageBlock::Text(block) = &mut app.messages_mut()[0].blocks[0] {
             block.cache.store(vec![Line::from("x".repeat(2000))]);
         }
-        let protected_bytes = if let MessageBlock::Text(block) = &mut app.messages[1].blocks[0] {
-            block.cache.store(vec![Line::from("y".repeat(4000))]);
-            block.cache.cached_bytes()
-        } else {
-            0
-        };
-        if let MessageBlock::Text(block) = &mut app.messages[2].blocks[0] {
+        let protected_bytes =
+            if let MessageBlock::Text(block) = &mut app.messages_mut()[1].blocks[0] {
+                block.cache.store(vec![Line::from("y".repeat(4000))]);
+                block.cache.cached_bytes()
+            } else {
+                0
+            };
+        if let MessageBlock::Text(block) = &mut app.messages_mut()[2].blocks[0] {
             block.cache.store(vec![Line::from("z".repeat(5000))]);
         }
 
@@ -2010,24 +2112,24 @@ mod tests {
     fn enforce_render_cache_budget_evicts_when_budgeted_over_limit() {
         let mut app = make_test_app();
         app.status = AppStatus::Running;
-        app.messages = vec![
+        *app.messages_mut() = vec![
             ChatMessage::new(MessageRole::Assistant, vec![assistant_text_block("old-a")], None),
             ChatMessage::new(MessageRole::Assistant, vec![assistant_text_block("old-b")], None),
             ChatMessage::new(MessageRole::Assistant, vec![assistant_text_block("streaming")], None),
         ];
 
         // Populate caches: messages 0 and 1 evictable, message 2 protected.
-        if let MessageBlock::Text(block) = &mut app.messages[0].blocks[0] {
+        if let MessageBlock::Text(block) = &mut app.messages_mut()[0].blocks[0] {
             block.cache.store(vec![Line::from("x".repeat(3000))]);
         }
-        let bytes_b = if let MessageBlock::Text(block) = &mut app.messages[1].blocks[0] {
+        let bytes_b = if let MessageBlock::Text(block) = &mut app.messages_mut()[1].blocks[0] {
             block.cache.store(vec![Line::from("y".repeat(3000))]);
             let _ = block.cache.get(); // touch to make more recently accessed
             block.cache.cached_bytes()
         } else {
             0
         };
-        let bytes_c = if let MessageBlock::Text(block) = &mut app.messages[2].blocks[0] {
+        let bytes_c = if let MessageBlock::Text(block) = &mut app.messages_mut()[2].blocks[0] {
             block.cache.store(vec![Line::from("z".repeat(5000))]);
             block.cache.cached_bytes()
         } else {
@@ -2042,7 +2144,7 @@ mod tests {
         assert_eq!(stats.protected_bytes, bytes_c);
         assert!(stats.evicted_blocks >= 1); // message A evicted (older access)
         // Message B should survive (more recent access).
-        if let MessageBlock::Text(block) = &app.messages[1].blocks[0] {
+        if let MessageBlock::Text(block) = &app.messages()[1].blocks[0] {
             assert_eq!(block.cache.cached_bytes(), bytes_b);
         } else {
             panic!("expected text block");
@@ -2053,13 +2155,13 @@ mod tests {
     fn enforce_render_cache_budget_protected_bytes_zero_when_not_streaming() {
         let mut app = make_test_app();
         app.status = AppStatus::Ready;
-        app.messages = vec![ChatMessage::new(
+        *app.messages_mut() = vec![ChatMessage::new(
             MessageRole::Assistant,
             vec![assistant_text_block("done")],
             None,
         )];
 
-        if let MessageBlock::Text(block) = &mut app.messages[0].blocks[0] {
+        if let MessageBlock::Text(block) = &mut app.messages_mut()[0].blocks[0] {
             block.cache.store(vec![Line::from("x".repeat(2000))]);
         }
         app.render_cache_budget.max_bytes = usize::MAX;
@@ -2071,7 +2173,7 @@ mod tests {
     #[test]
     fn enforce_render_cache_budget_accounts_for_message_render_cache() {
         let mut app = make_test_app();
-        app.messages = vec![
+        *app.messages_mut() = vec![
             ChatMessage::new(
                 MessageRole::Assistant,
                 vec![assistant_text_block(&"a".repeat(4000))],
@@ -2092,11 +2194,13 @@ mod tests {
             show_compacting: false,
         };
 
-        let _ = crate::ui::measure_message_height_cached(&mut app.messages[0], &spinner, 80, 1);
-        let _ = crate::ui::measure_message_height_cached(&mut app.messages[1], &spinner, 80, 1);
+        let _ =
+            crate::ui::measure_message_height_cached(&mut app.messages_mut()[0], &spinner, 80, 1);
+        let _ =
+            crate::ui::measure_message_height_cached(&mut app.messages_mut()[1], &spinner, 80, 1);
 
-        let bytes_a = app.messages[0].render_cache.cached_bytes();
-        let bytes_b = app.messages[1].render_cache.cached_bytes();
+        let bytes_a = app.messages()[0].render_cache.cached_bytes();
+        let bytes_b = app.messages()[1].render_cache.cached_bytes();
         assert!(bytes_a > 0);
         assert!(bytes_b > 0);
 
@@ -2106,15 +2210,15 @@ mod tests {
 
         assert!(stats.evicted_bytes >= bytes_a);
         assert!(
-            app.messages[0].render_cache.cached_bytes() == 0
-                || app.messages[1].render_cache.cached_bytes() == 0
+            app.messages()[0].render_cache.cached_bytes() == 0
+                || app.messages()[1].render_cache.cached_bytes() == 0
         );
     }
 
     #[test]
     fn enforce_history_retention_noop_under_budget() {
         let mut app = make_test_app();
-        app.messages = vec![
+        *app.messages_mut() = vec![
             ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "-", "/cwd", "-"),
             user_text_message("small message"),
             user_text_message("another message"),
@@ -2124,13 +2228,13 @@ mod tests {
         let stats = app.enforce_history_retention();
         assert_eq!(stats.dropped_messages, 0);
         assert_eq!(stats.total_dropped_messages, 0);
-        assert!(!app.messages.iter().any(App::is_history_hidden_marker_message));
+        assert!(!app.messages().iter().any(App::is_history_hidden_marker_message));
     }
 
     #[test]
     fn enforce_history_retention_drops_oldest_and_adds_marker() {
         let mut app = make_test_app();
-        app.messages = vec![
+        *app.messages_mut() = vec![
             ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "-", "/cwd", "-"),
             user_text_message("first old message"),
             user_text_message("second old message"),
@@ -2140,15 +2244,15 @@ mod tests {
 
         let stats = app.enforce_history_retention();
         assert_eq!(stats.dropped_messages, 3);
-        assert!(matches!(app.messages[0].role, MessageRole::Welcome));
-        assert!(app.messages.iter().any(App::is_history_hidden_marker_message));
-        assert_eq!(app.messages.len(), 2);
+        assert!(matches!(app.messages()[0].role, MessageRole::Welcome));
+        assert!(app.messages().iter().any(App::is_history_hidden_marker_message));
+        assert_eq!(app.messages().len(), 2);
     }
 
     #[test]
     fn enforce_history_retention_preserves_in_progress_tool_message() {
         let mut app = make_test_app();
-        app.messages = vec![
+        *app.messages_mut() = vec![
             ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "-", "/cwd", "-"),
             user_text_message("droppable"),
             assistant_tool_message("tool-keep", model::ToolCallStatus::InProgress),
@@ -2157,7 +2261,7 @@ mod tests {
 
         let stats = app.enforce_history_retention();
         assert_eq!(stats.dropped_messages, 1);
-        assert!(app.messages.iter().any(|msg| {
+        assert!(app.messages().iter().any(|msg| {
             msg.blocks.iter().any(|block| {
                 matches!(
                     block,
@@ -2171,7 +2275,7 @@ mod tests {
     #[test]
     fn enforce_history_retention_preserves_pending_tool_message() {
         let mut app = make_test_app();
-        app.messages = vec![
+        *app.messages_mut() = vec![
             ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "-", "/cwd", "-"),
             user_text_message("droppable"),
             assistant_tool_message("tool-pending", model::ToolCallStatus::Pending),
@@ -2180,7 +2284,7 @@ mod tests {
 
         let stats = app.enforce_history_retention();
         assert_eq!(stats.dropped_messages, 1);
-        assert!(app.messages.iter().any(|msg| {
+        assert!(app.messages().iter().any(|msg| {
             msg.blocks
                 .iter()
                 .any(|block| matches!(block, MessageBlock::ToolCall(tc) if tc.id == "tool-pending"))
@@ -2190,7 +2294,7 @@ mod tests {
     #[test]
     fn enforce_history_retention_preserves_permission_tool_message() {
         let mut app = make_test_app();
-        app.messages = vec![
+        *app.messages_mut() = vec![
             ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "-", "/cwd", "-"),
             user_text_message("droppable"),
             assistant_tool_message_with_pending_permission("tool-perm"),
@@ -2199,7 +2303,7 @@ mod tests {
 
         let stats = app.enforce_history_retention();
         assert_eq!(stats.dropped_messages, 1);
-        assert!(app.messages.iter().any(|msg| {
+        assert!(app.messages().iter().any(|msg| {
             msg.blocks
                 .iter()
                 .any(|block| matches!(block, MessageBlock::ToolCall(tc) if tc.id == "tool-perm"))
@@ -2209,7 +2313,7 @@ mod tests {
     #[test]
     fn enforce_history_retention_rebuilds_tool_index_after_prune() {
         let mut app = make_test_app();
-        app.messages = vec![
+        *app.messages_mut() = vec![
             ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "-", "/cwd", "-"),
             user_text_message("drop this"),
             assistant_bash_tool_message("tool-idx", model::ToolCallStatus::InProgress, "term-1"),
@@ -2231,7 +2335,7 @@ mod tests {
     fn enforce_history_retention_preserves_active_turn_assistant_message() {
         let mut app = make_test_app();
         app.status = AppStatus::Thinking;
-        app.messages = vec![
+        *app.messages_mut() = vec![
             ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "-", "/cwd", "-"),
             user_text_message("drop this"),
             ChatMessage::new(MessageRole::Assistant, Vec::new(), None),
@@ -2243,14 +2347,14 @@ mod tests {
 
         assert_eq!(stats.dropped_messages, 1);
         assert_eq!(app.active_turn_assistant_idx(), Some(2));
-        assert!(matches!(app.messages[2].role, MessageRole::Assistant));
+        assert!(matches!(app.messages()[2].role, MessageRole::Assistant));
     }
 
     #[test]
     fn enforce_history_retention_remaps_active_turn_assistant_after_prune() {
         let mut app = make_test_app();
         app.status = AppStatus::Thinking;
-        app.messages = vec![
+        *app.messages_mut() = vec![
             user_text_message("drop this"),
             ChatMessage::new(
                 MessageRole::Assistant,
@@ -2259,20 +2363,20 @@ mod tests {
             ),
         ];
         app.bind_active_turn_assistant(1);
-        app.history_retention.max_bytes = App::measure_message_bytes(&app.messages[1]);
+        app.history_retention.max_bytes = App::measure_message_bytes(&app.messages()[1]);
 
         let stats = app.enforce_history_retention();
 
         assert_eq!(stats.dropped_messages, 1);
         assert_eq!(app.active_turn_assistant_idx(), Some(1));
-        assert!(App::is_history_hidden_marker_message(&app.messages[0]));
-        assert!(matches!(app.messages[1].role, MessageRole::Assistant));
+        assert!(App::is_history_hidden_marker_message(&app.messages()[0]));
+        assert!(matches!(app.messages()[1].role, MessageRole::Assistant));
     }
 
     #[test]
     fn enforce_history_retention_keeps_single_marker_on_repeat() {
         let mut app = make_test_app();
-        app.messages = vec![
+        *app.messages_mut() = vec![
             ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "-", "/cwd", "-"),
             user_text_message("drop me"),
         ];
@@ -2281,7 +2385,7 @@ mod tests {
         let first = app.enforce_history_retention();
         let second = app.enforce_history_retention();
         let marker_count =
-            app.messages.iter().filter(|msg| App::is_history_hidden_marker_message(msg)).count();
+            app.messages().iter().filter(|msg| App::is_history_hidden_marker_message(msg)).count();
 
         assert_eq!(first.dropped_messages, 1);
         assert_eq!(second.dropped_messages, 0);
@@ -2291,32 +2395,35 @@ mod tests {
     #[test]
     fn enforce_history_retention_preserves_manual_scroll_anchor_across_drop_and_marker_insert() {
         let mut app = make_test_app();
-        app.messages = vec![
+        *app.messages_mut() = vec![
             ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "-", "/cwd", "-"),
             user_text_message("drop me first"),
             user_text_message("keep this anchored"),
             user_text_message("tail"),
         ];
-        let _ = app.viewport.on_frame(40, 12);
-        app.viewport.sync_message_count(app.messages.len());
-        for idx in 0..app.messages.len() {
-            app.viewport.set_message_height(idx, 4);
+        let _ = app.viewport_mut().on_frame(40, 12);
+        {
+            let n = app.messages().len();
+            app.viewport_mut().sync_message_count(n);
+        };
+        for idx in 0..app.messages().len() {
+            app.viewport_mut().set_message_height(idx, 4);
         }
-        app.viewport.mark_heights_valid();
-        app.viewport.rebuild_prefix_sums();
+        app.viewport_mut().mark_heights_valid();
+        app.viewport_mut().rebuild_prefix_sums();
 
-        app.viewport.auto_scroll = false;
-        app.viewport.scroll_offset = 9;
-        app.viewport.scroll_target = 9;
-        app.viewport.scroll_pos = 9.0;
+        app.viewport_mut().auto_scroll = false;
+        app.viewport_mut().scroll_offset = 9;
+        app.viewport_mut().scroll_target = 9;
+        app.viewport_mut().scroll_pos = 9.0;
         app.history_retention.max_bytes = app
             .measure_history_bytes()
-            .saturating_sub(App::measure_message_bytes(&app.messages[1]));
+            .saturating_sub(App::measure_message_bytes(&app.messages()[1]));
 
         let _ = app.enforce_history_retention();
 
-        assert!(app.messages.iter().any(App::is_history_hidden_marker_message));
-        assert_eq!(app.viewport.scroll_anchor_to_restore(), Some((2, 1)));
+        assert!(app.messages().iter().any(App::is_history_hidden_marker_message));
+        assert_eq!(app.viewport_mut().scroll_anchor_to_restore(), Some((2, 1)));
     }
 
     #[test]
@@ -2459,7 +2566,7 @@ mod tests {
     #[test]
     fn finalize_in_progress_tool_calls_detaches_execute_terminal_refs() {
         let mut app = make_test_app();
-        app.messages.push(assistant_bash_tool_message(
+        app.messages_mut().push(assistant_bash_tool_message(
             "bash-1",
             model::ToolCallStatus::InProgress,
             "term-1",
@@ -2472,7 +2579,7 @@ mod tests {
         assert_eq!(changed, 1);
         assert!(app.terminal_tool_calls.is_empty());
         assert!(app.terminal_tool_call_membership.is_empty());
-        let MessageBlock::ToolCall(tc) = &app.messages[0].blocks[0] else {
+        let MessageBlock::ToolCall(tc) = &app.messages()[0].blocks[0] else {
             panic!("expected tool call");
         };
         assert_eq!(tc.status, model::ToolCallStatus::Completed);
@@ -2482,51 +2589,57 @@ mod tests {
     #[test]
     fn insert_message_tracked_nontail_rebuilds_tool_indices_and_invalidates_suffix() {
         let mut app = make_test_app();
-        app.messages.push(user_text_message("before"));
-        app.messages.push(assistant_tool_message("tool-1", model::ToolCallStatus::Completed));
-        app.messages.push(user_text_message("after"));
+        app.messages_mut().push(user_text_message("before"));
+        app.messages_mut().push(assistant_tool_message("tool-1", model::ToolCallStatus::Completed));
+        app.messages_mut().push(user_text_message("after"));
         app.index_tool_call("tool-1".to_owned(), 1, 0);
 
-        let _ = app.viewport.on_frame(80, 24);
-        app.viewport.sync_message_count(3);
-        app.viewport.mark_heights_valid();
-        app.viewport.rebuild_prefix_sums();
+        let _ = app.viewport_mut().on_frame(80, 24);
+        app.viewport_mut().sync_message_count(3);
+        app.viewport_mut().mark_heights_valid();
+        app.viewport_mut().rebuild_prefix_sums();
 
         app.insert_message_tracked(1, user_text_message("inserted"));
-        app.viewport.sync_message_count(app.messages.len());
+        {
+            let n = app.messages().len();
+            app.viewport_mut().sync_message_count(n);
+        };
 
         assert_eq!(app.lookup_tool_call("tool-1"), Some((2, 0)));
-        assert_eq!(app.viewport.oldest_stale_index(), Some(1));
-        assert_eq!(app.viewport.prefix_dirty_from(), Some(1));
+        assert_eq!(app.viewport_mut().oldest_stale_index(), Some(1));
+        assert_eq!(app.viewport_mut().prefix_dirty_from(), Some(1));
     }
 
     #[test]
     fn remove_message_tracked_nontail_rebuilds_tool_indices_and_invalidates_suffix() {
         let mut app = make_test_app();
-        app.messages.push(user_text_message("before"));
-        app.messages.push(assistant_tool_message("tool-1", model::ToolCallStatus::Completed));
-        app.messages.push(user_text_message("after"));
+        app.messages_mut().push(user_text_message("before"));
+        app.messages_mut().push(assistant_tool_message("tool-1", model::ToolCallStatus::Completed));
+        app.messages_mut().push(user_text_message("after"));
         app.index_tool_call("tool-1".to_owned(), 1, 0);
 
-        let _ = app.viewport.on_frame(80, 24);
-        app.viewport.sync_message_count(3);
-        app.viewport.mark_heights_valid();
-        app.viewport.rebuild_prefix_sums();
+        let _ = app.viewport_mut().on_frame(80, 24);
+        app.viewport_mut().sync_message_count(3);
+        app.viewport_mut().mark_heights_valid();
+        app.viewport_mut().rebuild_prefix_sums();
 
         let removed = app.remove_message_tracked(0);
-        app.viewport.sync_message_count(app.messages.len());
+        {
+            let n = app.messages().len();
+            app.viewport_mut().sync_message_count(n);
+        };
 
         assert!(removed.is_some());
         assert_eq!(app.lookup_tool_call("tool-1"), Some((0, 0)));
-        assert_eq!(app.viewport.oldest_stale_index(), Some(0));
-        assert_eq!(app.viewport.prefix_dirty_from(), Some(0));
+        assert_eq!(app.viewport_mut().oldest_stale_index(), Some(0));
+        assert_eq!(app.viewport_mut().prefix_dirty_from(), Some(0));
     }
 
     #[test]
     fn remove_message_tracked_tail_removes_orphaned_tool_indices() {
         let mut app = make_test_app();
-        app.messages.push(user_text_message("before"));
-        app.messages.push(assistant_tool_message("tool-1", model::ToolCallStatus::Completed));
+        app.messages_mut().push(user_text_message("before"));
+        app.messages_mut().push(assistant_tool_message("tool-1", model::ToolCallStatus::Completed));
         app.index_tool_call("tool-1".to_owned(), 1, 0);
 
         let removed = app.remove_message_tracked(1);
@@ -2538,7 +2651,7 @@ mod tests {
     #[test]
     fn remove_message_tracked_prunes_tool_scope_entries() {
         let mut app = make_test_app();
-        app.messages.push(assistant_tool_message("tool-1", model::ToolCallStatus::Completed));
+        app.messages_mut().push(assistant_tool_message("tool-1", model::ToolCallStatus::Completed));
         app.index_tool_call("tool-1".to_owned(), 0, 0);
         app.register_tool_call_scope(
             "tool-1".to_owned(),
@@ -2554,7 +2667,7 @@ mod tests {
     #[test]
     fn clear_messages_tracked_clears_tool_and_terminal_tracking() {
         let mut app = make_test_app();
-        app.messages.push(assistant_bash_tool_message(
+        app.messages_mut().push(assistant_bash_tool_message(
             "bash-1",
             model::ToolCallStatus::InProgress,
             "term-1",
@@ -2565,7 +2678,7 @@ mod tests {
 
         app.clear_messages_tracked();
 
-        assert!(app.messages.is_empty());
+        assert!(app.messages().is_empty());
         assert!(app.tool_call_index.is_empty());
         assert!(app.terminal_tool_calls.is_empty());
         assert!(app.terminal_tool_call_membership.is_empty());
@@ -2575,7 +2688,7 @@ mod tests {
     #[test]
     fn rebuild_tool_indices_skips_completed_terminal_refs() {
         let mut app = make_test_app();
-        app.messages.push(assistant_bash_tool_message(
+        app.messages_mut().push(assistant_bash_tool_message(
             "bash-1",
             model::ToolCallStatus::Completed,
             "term-1",
@@ -2592,22 +2705,24 @@ mod tests {
     #[test]
     fn finalize_in_progress_tool_calls_invalidates_all_changed_messages() {
         let mut app = make_test_app();
-        app.messages.push(assistant_tool_message("tool-1", model::ToolCallStatus::InProgress));
-        app.messages.push(user_text_message("gap"));
-        app.messages.push(assistant_tool_message("tool-2", model::ToolCallStatus::InProgress));
+        app.messages_mut()
+            .push(assistant_tool_message("tool-1", model::ToolCallStatus::InProgress));
+        app.messages_mut().push(user_text_message("gap"));
+        app.messages_mut()
+            .push(assistant_tool_message("tool-2", model::ToolCallStatus::InProgress));
 
-        let _ = app.viewport.on_frame(80, 24);
-        app.viewport.sync_message_count(3);
-        app.viewport.mark_heights_valid();
-        app.viewport.rebuild_prefix_sums();
+        let _ = app.viewport_mut().on_frame(80, 24);
+        app.viewport_mut().sync_message_count(3);
+        app.viewport_mut().mark_heights_valid();
+        app.viewport_mut().rebuild_prefix_sums();
 
         let changed = app.finalize_in_progress_tool_calls(model::ToolCallStatus::Completed);
 
         assert_eq!(changed, 2);
-        assert!(!app.viewport.message_height_is_current(0));
-        assert!(app.viewport.message_height_is_current(1));
-        assert!(!app.viewport.message_height_is_current(2));
-        assert_eq!(app.viewport.oldest_stale_index(), Some(0));
+        assert!(!app.viewport_mut().message_height_is_current(0));
+        assert!(app.viewport_mut().message_height_is_current(1));
+        assert!(!app.viewport_mut().message_height_is_current(2));
+        assert_eq!(app.viewport_mut().oldest_stale_index(), Some(0));
     }
 
     // IncrementalMarkdown
@@ -3253,115 +3368,115 @@ mod tests {
     #[test]
     fn invalidate_single_tail_preserves_prefix_sums() {
         let mut app = make_test_app();
-        app.messages.push(user_text_message("a"));
-        app.messages.push(user_text_message("b"));
-        app.messages.push(user_text_message("c"));
-        let _ = app.viewport.on_frame(80, 24);
-        app.viewport.set_message_height(0, 5);
-        app.viewport.set_message_height(1, 10);
-        app.viewport.set_message_height(2, 3);
-        app.viewport.mark_heights_valid();
-        app.viewport.rebuild_prefix_sums();
+        app.messages_mut().push(user_text_message("a"));
+        app.messages_mut().push(user_text_message("b"));
+        app.messages_mut().push(user_text_message("c"));
+        let _ = app.viewport_mut().on_frame(80, 24);
+        app.viewport_mut().set_message_height(0, 5);
+        app.viewport_mut().set_message_height(1, 10);
+        app.viewport_mut().set_message_height(2, 3);
+        app.viewport_mut().mark_heights_valid();
+        app.viewport_mut().rebuild_prefix_sums();
 
         app.invalidate_layout(InvalidationLevel::MessageChanged(2)); // tail
 
-        assert_eq!(app.viewport.oldest_stale_index(), Some(2));
-        assert_eq!(app.viewport.prefix_dirty_from(), Some(2));
-        assert_eq!(app.viewport.prefix_sums_width, 0);
+        assert_eq!(app.viewport_mut().oldest_stale_index(), Some(2));
+        assert_eq!(app.viewport_mut().prefix_dirty_from(), Some(2));
+        assert_eq!(app.viewport().prefix_sums_width, 0);
     }
 
     #[test]
     fn invalidate_single_nontail_invalidates_prefix_sums() {
         let mut app = make_test_app();
-        app.messages.push(user_text_message("a"));
-        app.messages.push(user_text_message("b"));
-        app.messages.push(user_text_message("c"));
-        let _ = app.viewport.on_frame(80, 24);
-        app.viewport.set_message_height(0, 5);
-        app.viewport.set_message_height(1, 10);
-        app.viewport.set_message_height(2, 3);
-        app.viewport.mark_heights_valid();
-        app.viewport.rebuild_prefix_sums();
+        app.messages_mut().push(user_text_message("a"));
+        app.messages_mut().push(user_text_message("b"));
+        app.messages_mut().push(user_text_message("c"));
+        let _ = app.viewport_mut().on_frame(80, 24);
+        app.viewport_mut().set_message_height(0, 5);
+        app.viewport_mut().set_message_height(1, 10);
+        app.viewport_mut().set_message_height(2, 3);
+        app.viewport_mut().mark_heights_valid();
+        app.viewport_mut().rebuild_prefix_sums();
 
         app.invalidate_layout(InvalidationLevel::MessageChanged(1)); // non-tail
 
-        assert_eq!(app.viewport.oldest_stale_index(), Some(1));
-        assert_eq!(app.viewport.prefix_dirty_from(), Some(1));
-        assert_eq!(app.viewport.prefix_sums_width, 0);
+        assert_eq!(app.viewport_mut().oldest_stale_index(), Some(1));
+        assert_eq!(app.viewport_mut().prefix_dirty_from(), Some(1));
+        assert_eq!(app.viewport().prefix_sums_width, 0);
     }
 
     #[test]
     fn invalidate_from_always_invalidates_prefix_sums() {
         let mut app = make_test_app();
-        app.messages.push(user_text_message("a"));
-        app.messages.push(user_text_message("b"));
-        app.messages.push(user_text_message("c"));
-        let _ = app.viewport.on_frame(80, 24);
-        app.viewport.set_message_height(0, 5);
-        app.viewport.set_message_height(1, 10);
-        app.viewport.set_message_height(2, 3);
-        app.viewport.mark_heights_valid();
-        app.viewport.rebuild_prefix_sums();
-        assert_ne!(app.viewport.prefix_sums_width, 0);
+        app.messages_mut().push(user_text_message("a"));
+        app.messages_mut().push(user_text_message("b"));
+        app.messages_mut().push(user_text_message("c"));
+        let _ = app.viewport_mut().on_frame(80, 24);
+        app.viewport_mut().set_message_height(0, 5);
+        app.viewport_mut().set_message_height(1, 10);
+        app.viewport_mut().set_message_height(2, 3);
+        app.viewport_mut().mark_heights_valid();
+        app.viewport_mut().rebuild_prefix_sums();
+        assert_ne!(app.viewport().prefix_sums_width, 0);
 
         // From at tail index still invalidates prefix sums (unlike Single).
         app.invalidate_layout(InvalidationLevel::MessagesFrom(2));
 
-        assert_eq!(app.viewport.oldest_stale_index(), Some(2));
-        assert_eq!(app.viewport.prefix_dirty_from(), Some(2));
-        assert_eq!(app.viewport.prefix_sums_width, 0);
+        assert_eq!(app.viewport_mut().oldest_stale_index(), Some(2));
+        assert_eq!(app.viewport_mut().prefix_dirty_from(), Some(2));
+        assert_eq!(app.viewport().prefix_sums_width, 0);
     }
 
     #[test]
     fn invalidate_from_zero_matches_old_mark_all() {
         let mut app = make_test_app();
-        app.messages.push(user_text_message("a"));
-        app.messages.push(user_text_message("b"));
-        app.messages.push(user_text_message("c"));
-        let _ = app.viewport.on_frame(80, 24);
-        app.viewport.set_message_height(0, 5);
-        app.viewport.set_message_height(1, 10);
-        app.viewport.set_message_height(2, 3);
-        app.viewport.mark_heights_valid();
-        app.viewport.rebuild_prefix_sums();
+        app.messages_mut().push(user_text_message("a"));
+        app.messages_mut().push(user_text_message("b"));
+        app.messages_mut().push(user_text_message("c"));
+        let _ = app.viewport_mut().on_frame(80, 24);
+        app.viewport_mut().set_message_height(0, 5);
+        app.viewport_mut().set_message_height(1, 10);
+        app.viewport_mut().set_message_height(2, 3);
+        app.viewport_mut().mark_heights_valid();
+        app.viewport_mut().rebuild_prefix_sums();
 
         app.invalidate_layout(InvalidationLevel::MessagesFrom(0));
 
-        assert_eq!(app.viewport.oldest_stale_index(), Some(0));
-        assert_eq!(app.viewport.prefix_dirty_from(), Some(0));
-        assert_eq!(app.viewport.prefix_sums_width, 0);
+        assert_eq!(app.viewport_mut().oldest_stale_index(), Some(0));
+        assert_eq!(app.viewport_mut().prefix_dirty_from(), Some(0));
+        assert_eq!(app.viewport().prefix_sums_width, 0);
     }
 
     #[test]
     fn invalidate_global_bumps_generation() {
         let mut app = make_test_app();
-        app.messages.push(user_text_message("a"));
-        app.messages.push(user_text_message("b"));
-        app.messages.push(user_text_message("c"));
-        let _ = app.viewport.on_frame(80, 24);
-        app.viewport.sync_message_count(3);
-        app.viewport.mark_heights_valid();
-        app.viewport.rebuild_prefix_sums();
-        let gen_before = app.viewport.layout_generation;
+        app.messages_mut().push(user_text_message("a"));
+        app.messages_mut().push(user_text_message("b"));
+        app.messages_mut().push(user_text_message("c"));
+        let _ = app.viewport_mut().on_frame(80, 24);
+        app.viewport_mut().sync_message_count(3);
+        app.viewport_mut().mark_heights_valid();
+        app.viewport_mut().rebuild_prefix_sums();
+        let gen_before = app.viewport().layout_generation;
 
         app.invalidate_layout(InvalidationLevel::Global);
 
-        assert_eq!(app.viewport.oldest_stale_index(), Some(0));
-        assert_eq!(app.viewport.prefix_dirty_from(), Some(0));
-        assert_eq!(app.viewport.prefix_sums_width, 0);
-        assert_eq!(app.viewport.layout_generation, gen_before + 1);
+        assert_eq!(app.viewport_mut().oldest_stale_index(), Some(0));
+        assert_eq!(app.viewport_mut().prefix_dirty_from(), Some(0));
+        assert_eq!(app.viewport().prefix_sums_width, 0);
+        assert_eq!(app.viewport().layout_generation, gen_before + 1);
     }
 
     #[test]
     fn invalidate_global_noop_on_empty() {
         let mut app = make_test_app();
-        assert!(app.messages.is_empty());
-        let gen_before = app.viewport.layout_generation;
+        assert!(app.messages().is_empty());
+        let gen_before = app.viewport().layout_generation;
 
         app.invalidate_layout(InvalidationLevel::Global);
 
-        assert!(app.viewport.oldest_stale_index().is_none());
-        assert_eq!(app.viewport.layout_generation, gen_before);
+        assert!(app.viewport_mut().oldest_stale_index().is_none());
+        assert_eq!(app.viewport().layout_generation, gen_before);
     }
 
     #[test]
@@ -3369,16 +3484,16 @@ mod tests {
         let mut app = make_test_app();
         // Need enough messages so all indices are non-tail for consistent behavior.
         for _ in 0..10 {
-            app.messages.push(user_text_message("x"));
+            app.messages_mut().push(user_text_message("x"));
         }
-        app.viewport.sync_message_count(10);
-        app.viewport.mark_heights_valid();
+        app.viewport_mut().sync_message_count(10);
+        app.viewport_mut().mark_heights_valid();
 
         app.invalidate_layout(InvalidationLevel::MessageChanged(5));
         app.invalidate_layout(InvalidationLevel::MessageChanged(2));
         app.invalidate_layout(InvalidationLevel::MessageChanged(7));
 
-        assert_eq!(app.viewport.oldest_stale_index(), Some(2));
+        assert_eq!(app.viewport_mut().oldest_stale_index(), Some(2));
     }
 
     #[test]

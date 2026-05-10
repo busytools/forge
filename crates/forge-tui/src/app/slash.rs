@@ -88,7 +88,7 @@ fn push_system_message(app: &mut App, text: impl Into<String>) {
         None,
     ));
     app.enforce_history_retention_tracked();
-    app.viewport.engage_auto_scroll();
+    app.viewport_mut().engage_auto_scroll();
 }
 
 fn push_user_message(app: &mut App, text: impl Into<String>) {
@@ -99,7 +99,7 @@ fn push_user_message(app: &mut App, text: impl Into<String>) {
         None,
     ));
     app.enforce_history_retention_tracked();
-    app.viewport.engage_auto_scroll();
+    app.viewport_mut().engage_auto_scroll();
 }
 
 fn require_connection(
@@ -161,7 +161,7 @@ mod tests {
         let mut app = App::test_default();
         let consumed = try_handle_submit(&mut app, "/definitely-unknown");
         assert!(consumed);
-        let Some(last) = app.messages.last() else {
+        let Some(last) = app.messages().last() else {
             panic!("expected system message");
         };
         assert!(matches!(last.role, MessageRole::System(_)));
@@ -210,7 +210,7 @@ mod tests {
         let consumed = try_handle_submit(&mut app, "/config extra");
 
         assert!(consumed);
-        let Some(last) = app.messages.last() else {
+        let Some(last) = app.messages().last() else {
             panic!("expected usage message");
         };
         let Some(MessageBlock::Text(block)) = last.blocks.first() else {
@@ -252,7 +252,7 @@ mod tests {
         let consumed = try_handle_submit(&mut app, "/mcp extra");
 
         assert!(consumed);
-        let Some(last) = app.messages.last() else {
+        let Some(last) = app.messages().last() else {
             panic!("expected usage message");
         };
         let Some(MessageBlock::Text(block)) = last.blocks.first() else {
@@ -442,7 +442,7 @@ mod tests {
         let mut app = App::test_default();
         let consumed = try_handle_submit(&mut app, "/resume");
         assert!(consumed);
-        let Some(last) = app.messages.last() else {
+        let Some(last) = app.messages().last() else {
             panic!("expected usage message");
         };
         let Some(MessageBlock::Text(block)) = last.blocks.first() else {
@@ -456,7 +456,7 @@ mod tests {
         let mut app = App::test_default();
         let consumed = try_handle_submit(&mut app, "/resume abc-123 extra");
         assert!(consumed);
-        let Some(last) = app.messages.last() else {
+        let Some(last) = app.messages().last() else {
             panic!("expected usage message");
         };
         let Some(MessageBlock::Text(block)) = last.blocks.first() else {
@@ -471,9 +471,9 @@ mod tests {
 
         let consumed = try_handle_submit(&mut app, "/resume abc-123");
         assert!(consumed);
-        assert!(app.messages.len() >= 2);
+        assert!(app.messages().len() >= 2);
 
-        let Some(first) = app.messages.first() else {
+        let Some(first) = app.messages().first() else {
             panic!("expected user message");
         };
         assert!(matches!(first.role, MessageRole::User));
@@ -589,7 +589,7 @@ mod tests {
         let consumed = try_handle_submit(&mut app, "/compact");
         assert!(consumed);
         assert!(!app.pending_compact_clear);
-        let Some(last) = app.messages.last() else {
+        let Some(last) = app.messages().last() else {
             panic!("expected system message");
         };
         assert!(matches!(last.role, MessageRole::System(_)));
@@ -615,7 +615,7 @@ mod tests {
     #[test]
     fn compact_with_args_returns_usage_message() {
         let mut app = App::test_default();
-        app.messages.push(ChatMessage::new(
+        app.messages_mut().push(ChatMessage::new(
             MessageRole::User,
             vec![MessageBlock::Text(TextBlock::from_complete("keep"))],
             None,
@@ -623,8 +623,8 @@ mod tests {
 
         let consumed = try_handle_submit(&mut app, "/compact now");
         assert!(consumed);
-        assert!(app.messages.len() >= 2);
-        let Some(last) = app.messages.last() else {
+        assert!(app.messages().len() >= 2);
+        let Some(last) = app.messages().last() else {
             panic!("expected system usage message");
         };
         assert!(matches!(last.role, MessageRole::System(_)));
@@ -640,7 +640,7 @@ mod tests {
 
         let consumed = try_handle_submit(&mut app, "/mode plan extra");
         assert!(consumed);
-        let Some(last) = app.messages.last() else {
+        let Some(last) = app.messages().last() else {
             panic!("expected system usage message");
         };
         assert!(matches!(last.role, MessageRole::System(_)));
@@ -656,7 +656,7 @@ mod tests {
 
         let consumed = try_handle_submit(&mut app, "/model");
         assert!(consumed);
-        let Some(last) = app.messages.last() else {
+        let Some(last) = app.messages().last() else {
             panic!("expected system usage message");
         };
         let Some(MessageBlock::Text(block)) = last.blocks.first() else {
@@ -671,7 +671,7 @@ mod tests {
 
         let consumed = try_handle_submit(&mut app, "/model sonnet extra");
         assert!(consumed);
-        let Some(last) = app.messages.last() else {
+        let Some(last) = app.messages().last() else {
             panic!("expected system usage message");
         };
         let Some(MessageBlock::Text(block)) = last.blocks.first() else {
@@ -735,7 +735,7 @@ mod tests {
         let consumed = try_handle_submit(&mut app, "/status extra");
 
         assert!(consumed);
-        let Some(last) = app.messages.last() else {
+        let Some(last) = app.messages().last() else {
             panic!("expected usage message");
         };
         let Some(MessageBlock::Text(block)) = last.blocks.first() else {
@@ -751,7 +751,7 @@ mod tests {
         let consumed = try_handle_submit(&mut app, "/usage extra");
 
         assert!(consumed);
-        let Some(last) = app.messages.last() else {
+        let Some(last) = app.messages().last() else {
             panic!("expected usage message");
         };
         let Some(MessageBlock::Text(block)) = last.blocks.first() else {

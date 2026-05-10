@@ -18,7 +18,7 @@ use crate::message_helpers::{
 
 fn tool_call_block<'a>(app: &'a App, id: &str) -> &'a ToolCallInfo {
     let (message_index, block_index) = app.tool_call_index[id];
-    app.messages
+    app.messages()
         .get(message_index)
         .and_then(|message| message.blocks.get(block_index))
         .and_then(|block| match block {
@@ -376,7 +376,7 @@ async fn tool_call_update_via_meta_sets_sdk_tool_name() {
     );
 
     let (mi, bi) = app.tool_call_index["tc-meta"];
-    if let MessageBlock::ToolCall(tc) = &app.messages[mi].blocks[bi] {
+    if let MessageBlock::ToolCall(tc) = &app.messages()[mi].blocks[bi] {
         assert_eq!(tc.sdk_tool_name, "WebSearch");
     } else {
         panic!("expected ToolCall block");
@@ -415,7 +415,7 @@ async fn title_shortened_relative_to_cwd() {
     );
 
     let (mi, bi) = app.tool_call_index["tc-shorten"];
-    if let MessageBlock::ToolCall(tc) = &app.messages[mi].blocks[bi] {
+    if let MessageBlock::ToolCall(tc) = &app.messages()[mi].blocks[bi] {
         assert_eq!(tc.title, "Read src/main.rs", "absolute path shortened to relative");
     } else {
         panic!("expected ToolCall block");

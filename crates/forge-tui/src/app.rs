@@ -229,7 +229,7 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
         // converts to f32 for sub-pixel scroll comparison; loss is bounded
         // by terminal height so precision is irrelevant here.
         #[allow(clippy::cast_precision_loss)]
-        let scroll_delta = (app.viewport.scroll_target as f32 - app.viewport.scroll_pos).abs();
+        let scroll_delta = (app.viewport().scroll_target as f32 - app.viewport().scroll_pos).abs();
         if scroll_delta >= 0.01 {
             app.needs_redraw = true;
         }
@@ -271,7 +271,7 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
     for tool_id in std::mem::take(&mut app.pending_interaction_ids) {
         if let Some((mi, bi)) = app.tool_call_index.get(&tool_id).copied()
             && let Some(MessageBlock::ToolCall(tc)) =
-                app.messages.get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
+                app.messages_mut().get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
         {
             let tc = tc.as_mut();
             if let Some(pending) = tc.pending_permission.take()
@@ -692,10 +692,10 @@ mod tests {
 
         assert!(app.pending_submit.is_none());
         assert!(app.input.text().is_empty());
-        assert_eq!(app.messages.len(), 2);
-        assert!(matches!(app.messages[0].role, MessageRole::User));
+        assert_eq!(app.messages().len(), 2);
+        assert!(matches!(app.messages()[0].role, MessageRole::User));
         assert!(matches!(
-            app.messages[0].blocks.as_slice(),
+            app.messages()[0].blocks.as_slice(),
             [MessageBlock::Text(block)] if block.text == "hello world"
         ));
         let envelope = rx.try_recv().expect("prompt command should be sent");
@@ -724,7 +724,7 @@ mod tests {
 
         assert!(app.pending_submit.is_none());
         assert!(matches!(
-            app.messages[0].blocks.as_slice(),
+            app.messages()[0].blocks.as_slice(),
             [MessageBlock::Text(block)] if block.text == "alpha beta\ngamma"
         ));
         let envelope = rx.try_recv().expect("prompt command should be sent");
@@ -758,7 +758,7 @@ mod tests {
         assert!(app.input.text().is_empty());
         assert!(!app.is_help_active());
         assert!(matches!(
-            app.messages[0].blocks.as_slice(),
+            app.messages()[0].blocks.as_slice(),
             [MessageBlock::Text(block)] if block.text == "?"
         ));
         let envelope = rx.try_recv().expect("prompt command should be sent");
@@ -899,7 +899,7 @@ mod tests {
         assert!(app.pending_submit.is_none());
         finalize_deferred_submit(&mut app);
         assert_eq!(app.input.text(), "draft");
-        assert!(app.messages.is_empty());
+        assert!(app.messages().is_empty());
         assert!(rx.try_recv().is_err(), "Esc should prevent deferred submit dispatch");
     }
 

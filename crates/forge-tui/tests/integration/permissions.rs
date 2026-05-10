@@ -57,7 +57,7 @@ async fn permission_request_attaches_to_tool_call() {
 
     // The tool call should have a pending_permission
     let (mi, bi) = app.tool_call_index["tc-perm-1"];
-    if let MessageBlock::ToolCall(tc) = &app.messages[mi].blocks[bi] {
+    if let MessageBlock::ToolCall(tc) = &app.messages()[mi].blocks[bi] {
         assert!(tc.pending_permission.is_some());
         let perm = tc.pending_permission.as_ref().unwrap();
         assert_eq!(perm.options.len(), 2);
@@ -71,9 +71,9 @@ async fn permission_request_attaches_to_tool_call() {
 #[tokio::test]
 async fn permission_request_enables_auto_scroll() {
     let mut app = test_app();
-    app.viewport.auto_scroll = false;
+    app.viewport_mut().auto_scroll = false;
     let _rx = setup_permission(&mut app, "tc-scroll", allow_deny_options());
-    assert!(app.viewport.auto_scroll, "permission request should enable auto_scroll");
+    assert!(app.viewport().auto_scroll, "permission request should enable auto_scroll");
 }
 
 // --- Permission for unknown tool call auto-rejects ---
@@ -118,11 +118,11 @@ async fn multiple_permissions_queue_in_order() {
 
     // First should be focused, second should not
     let (mi1, bi1) = app.tool_call_index["tc-q1"];
-    if let MessageBlock::ToolCall(tc) = &app.messages[mi1].blocks[bi1] {
+    if let MessageBlock::ToolCall(tc) = &app.messages()[mi1].blocks[bi1] {
         assert!(tc.pending_permission.as_ref().unwrap().focused);
     }
     let (mi2, bi2) = app.tool_call_index["tc-q2"];
-    if let MessageBlock::ToolCall(tc) = &app.messages[mi2].blocks[bi2] {
+    if let MessageBlock::ToolCall(tc) = &app.messages()[mi2].blocks[bi2] {
         assert!(!tc.pending_permission.as_ref().unwrap().focused);
     }
 }
@@ -157,21 +157,21 @@ async fn duplicate_permission_request_is_rejected_without_duplicate_queue_entry(
 #[tokio::test]
 async fn scroll_target_preserved_across_text_chunks() {
     let mut app = test_app();
-    app.viewport.scroll_target = 42;
-    app.viewport.auto_scroll = false;
+    app.viewport_mut().scroll_target = 42;
+    app.viewport_mut().auto_scroll = false;
 
     send_msg(&mut app, assistant_message(vec![text_block("Some text")]));
 
     // Text chunks should NOT reset scroll when auto_scroll is off
-    assert_eq!(app.viewport.scroll_target, 42, "scroll_target should be preserved");
-    assert!(!app.viewport.auto_scroll, "auto_scroll should stay off");
+    assert_eq!(app.viewport().scroll_target, 42, "scroll_target should be preserved");
+    assert!(!app.viewport().auto_scroll, "auto_scroll should stay off");
 }
 
 #[tokio::test]
 async fn tool_call_does_not_change_scroll_when_auto_scroll_off() {
     let mut app = test_app();
-    app.viewport.scroll_target = 10;
-    app.viewport.auto_scroll = false;
+    app.viewport_mut().scroll_target = 10;
+    app.viewport_mut().auto_scroll = false;
 
     send_msg(
         &mut app,
@@ -182,8 +182,8 @@ async fn tool_call_does_not_change_scroll_when_auto_scroll_off() {
         )]),
     );
 
-    assert_eq!(app.viewport.scroll_target, 10, "tool calls shouldn't touch scroll_target");
-    assert!(!app.viewport.auto_scroll);
+    assert_eq!(app.viewport().scroll_target, 10, "tool calls shouldn't touch scroll_target");
+    assert!(!app.viewport().auto_scroll);
 }
 
 // --- TurnComplete transient state reset ---
@@ -209,11 +209,11 @@ async fn turn_complete_does_not_clear_messages() {
     let mut app = test_app();
 
     send_msg(&mut app, assistant_message(vec![text_block("hello")]));
-    assert_eq!(app.messages.len(), 1);
+    assert_eq!(app.messages().len(), 1);
 
     send_client_event(&mut app, ClientEvent::TurnComplete { terminal_reason: None });
 
-    assert_eq!(app.messages.len(), 1, "messages should persist across turns");
+    assert_eq!(app.messages().len(), 1, "messages should persist across turns");
 }
 
 #[tokio::test]

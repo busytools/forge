@@ -32,14 +32,21 @@ pub(super) fn handle_connected_client_event(
     }
     let prev_session_id = app.session_id().map(ToString::to_string);
     // Phase 2a foundation: register this session in the multi-session
-    // map. Bucket-migration commits will move per-session fields off
-    // App into this entry; for now the bucket is empty, but having
-    // the entry + active pointer in place lets later commits route
-    // events to it.
+    // map. Bucket-migration commits move per-session fields off App
+    // into this entry; if a pre-Connect synthetic bucket exists
+    // (welcome message buffer, viewport state, etc.) migrate it onto
+    // the real session key so the user-visible state survives the
+    // Connect transition.
     let session_key = forge_workspace::SessionKey::from_session_id(session_id.to_string());
-    app.sessions
-        .entry(session_key.clone())
-        .or_insert_with(|| crate::app::session::Session::new(session_key.clone()));
+    let pre_connect_key = forge_workspace::SessionKey::from_session_id(App::PRE_CONNECT_KEY);
+    if let Some(mut existing) = app.sessions.remove(&pre_connect_key) {
+        existing.key = Some(session_key.clone());
+        app.sessions.insert(session_key.clone(), existing);
+    } else {
+        app.sessions
+            .entry(session_key.clone())
+            .or_insert_with(|| crate::app::session::Session::new(session_key.clone()));
+    }
     app.active_session_key = Some(session_key);
     apply_session_cwd(app, cwd);
     reset_for_new_session(app, session_id, current_model, mode, true);
@@ -204,7 +211,7 @@ pub(super) fn handle_slash_command_error_event(app: &mut App, msg: &str) {
         None,
     ));
     app.enforce_history_retention_tracked();
-    app.viewport.engage_auto_scroll();
+    app.viewport_mut().engage_auto_scroll();
     clear_pending_command(app);
     app.resuming_session_id = None;
 }
