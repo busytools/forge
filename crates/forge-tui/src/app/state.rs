@@ -289,6 +289,27 @@ impl App {
         self.sessions.get_mut(key)
     }
 
+    /// Switch which session the renderer reads from. State on both
+    /// sides is preserved (in-memory buckets in `sessions`); the
+    /// next paint reflects the new active session. No-op if `key`
+    /// is already active or unknown.
+    pub fn switch_active_session(&mut self, key: forge_workspace::SessionKey) {
+        if self.active_session_key.as_ref() == Some(&key) {
+            return;
+        }
+        if !self.sessions.contains_key(&key) {
+            tracing::warn!(
+                target: crate::logging::targets::APP_SESSION,
+                event_name = "switch_active_session_unknown_key",
+                key = ?key,
+                "switch_active_session called with unknown key"
+            );
+            return;
+        }
+        self.active_session_key = Some(key);
+        self.needs_redraw = true;
+    }
+
     /// Borrow the active session's chat buffer.
     ///
     /// Production startup and `App::test_default()` both seed a
