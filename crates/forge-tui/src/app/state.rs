@@ -429,11 +429,32 @@ impl App {
             Some(id) => {
                 let key = forge_workspace::SessionKey::from_session_id(id.to_string());
                 // Migrate any synthetic-keyed bucket onto the real key.
+                // Guard against the case where BOTH a synthetic bucket
+                // and the real-key bucket already exist: in that case
+                // the real bucket is authoritative, and we must NOT
+                // overwrite it with the synthetic. Stamp the real
+                // bucket's session_id and drop the synthetic.
                 let pending = forge_workspace::SessionKey::from_session_id(Self::PRE_CONNECT_KEY);
                 if let Some(mut existing) = self.sessions.remove(&pending) {
-                    existing.key = Some(key.clone());
-                    existing.session_id = Some(id);
-                    self.sessions.insert(key.clone(), existing);
+                    if self.sessions.contains_key(&key) {
+                        tracing::warn!(
+                            target: crate::logging::targets::APP_SESSION,
+                            event_name = "set_session_id_synthetic_dropped",
+                            message = "synthetic pre-Connect bucket dropped because the real-key bucket already existed",
+                            outcome = "dropped",
+                            session_id = %id,
+                            reason = "real_bucket_present",
+                        );
+                        if let Some(real_bucket) = self.sessions.get_mut(&key) {
+                            real_bucket.session_id = Some(id);
+                        }
+                        // existing (synthetic) is dropped at end of branch.
+                        let _ = existing;
+                    } else {
+                        existing.key = Some(key.clone());
+                        existing.session_id = Some(id);
+                        self.sessions.insert(key.clone(), existing);
+                    }
                 } else {
                     let entry = self
                         .sessions

@@ -889,10 +889,20 @@ fn apply_result_finalize(
     errors_array: Vec<String>,
     terminal_reason: Option<forge_primitives::TerminalReason>,
 ) {
+    // `apply_result_finalize` only runs on the active session — the
+    // SDK message dispatcher in `super::client` adopts the message's
+    // session_id onto the active bucket before firing the sub-
+    // handlers. Cloning the active session_key here threads it
+    // through to the lifecycle handlers without leaking the
+    // multiplexer's routing concern into every sub-handler.
+    let active_key = app
+        .active_session_key
+        .clone()
+        .unwrap_or_else(|| forge_workspace::SessionKey::from_session_id(App::PRE_CONNECT_KEY));
     if !is_error && subtype == "success" {
         app.turn_state_mut().last_assistant_error = None;
         finalize_open_tool_calls(app, "completed");
-        super::turn::handle_turn_complete_event(app, terminal_reason);
+        super::turn::handle_turn_complete_event(app, &active_key, terminal_reason);
         return;
     }
 
@@ -912,7 +922,7 @@ fn apply_result_finalize(
         String::new()
     };
     let class = classify_turn_error_kind(subtype, &errors_array, assistant_error.as_deref());
-    super::turn::handle_turn_error_event(app, &message, Some(class), terminal_reason);
+    super::turn::handle_turn_error_event(app, &active_key, &message, Some(class), terminal_reason);
     app.turn_state_mut().last_assistant_error = None;
 }
 

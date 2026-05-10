@@ -10,6 +10,7 @@ use super::session_reset::{load_resume_history, reset_for_new_session};
 use crate::agent::events::ServiceStatusSeverity;
 use crate::agent::model;
 use crate::error::AppError;
+use forge_workspace::SessionKey;
 use std::sync::Arc;
 
 const TURN_ERROR_INPUT_LOCK_HINT: &str =
@@ -27,9 +28,6 @@ pub(super) fn handle_connected_client_event(
     let session_id_for_log = session_id.to_string();
     let history_message_count = history_messages.len();
     let available_model_count = available_models.len();
-    if let Some(slot) = take_connection_slot() {
-        app.set_conn(Some(slot.conn));
-    }
     let prev_session_id = app.session_id().map(ToString::to_string);
     // Phase 2a foundation: register this session in the multi-session
     // map. Bucket-migration commits move per-session fields off App
@@ -37,17 +35,42 @@ pub(super) fn handle_connected_client_event(
     // (welcome message buffer, viewport state, etc.) migrate it onto
     // the real session key so the user-visible state survives the
     // Connect transition.
+    //
+    // Migrate FIRST, then activate, then write conn into the target
+    // bucket directly. This ordering guards against the multi-bridge
+    // case (Phase 2b): if `set_conn` were called before activation,
+    // the conn would land in the previous active bucket — a silent
+    // routing bug. Resolving the target bucket first ensures the
+    // conn slot lands in the correct bucket regardless of which
+    // session was active before this event fired.
     let session_key = forge_workspace::SessionKey::from_session_id(session_id.to_string());
     let pre_connect_key = forge_workspace::SessionKey::from_session_id(App::PRE_CONNECT_KEY);
     if let Some(mut existing) = app.sessions.remove(&pre_connect_key) {
-        existing.key = Some(session_key.clone());
-        app.sessions.insert(session_key.clone(), existing);
+        if app.sessions.contains_key(&session_key) {
+            tracing::warn!(
+                target: crate::logging::targets::APP_SESSION,
+                event_name = "connected_synthetic_dropped",
+                message = "synthetic pre-Connect bucket dropped because the real-key bucket already existed",
+                outcome = "dropped",
+                session_id = %session_id_for_log,
+                reason = "real_bucket_present",
+            );
+            let _ = existing;
+        } else {
+            existing.key = Some(session_key.clone());
+            app.sessions.insert(session_key.clone(), existing);
+        }
     } else {
         app.sessions
             .entry(session_key.clone())
             .or_insert_with(|| crate::app::session::Session::new(session_key.clone()));
     }
-    app.active_session_key = Some(session_key);
+    app.active_session_key = Some(session_key.clone());
+    if let Some(slot) = take_connection_slot()
+        && let Some(bucket) = app.sessions.get_mut(&session_key)
+    {
+        bucket.conn = Some(slot.conn);
+    }
     apply_session_cwd(app, cwd);
     reset_for_new_session(app, session_id, current_model, mode, true);
     refresh_session_git_watcher(app, prev_session_id);
@@ -137,9 +160,51 @@ pub(super) fn handle_sessions_listed_event(
 
 pub(super) fn handle_auth_required_event(
     app: &mut App,
+    session_key: &SessionKey,
     method_name: String,
     method_description: String,
 ) {
+    if app.active_session_key.as_ref() != Some(session_key) {
+        let Some(session) = app.session_mut(session_key) else {
+            tracing::warn!(
+                target: crate::logging::targets::APP_AUTH,
+                event_name = "auth_required_dropped",
+                message = "auth required dropped for an unknown session",
+                outcome = "dropped",
+                session_key = %session_key.as_str(),
+                reason = "unknown_session",
+            );
+            return;
+        };
+        // Background-session auth-required: clear the bucket's
+        // session identity / auth state. Don't touch App-global UI
+        // (login_hint, status_message, pending_command). The bucket
+        // becomes "needs auth"; if/when the user switches to it we
+        // surface the hint then.
+        session.session_id = None;
+        session.current_model = None;
+        session.mode = None;
+        session.fast_mode_state = model::FastModeState::Off;
+        session.session_usage = crate::app::state::SessionUsageState::default();
+        session.last_rate_limit_update = None;
+        session.cancelled_turn_pending_hint = false;
+        session.pending_cancel_origin = None;
+        session.account_info = None;
+        session.mcp = super::super::McpState::default();
+        super::turn::finalize_background_tool_calls(session, model::ToolCallStatus::Failed);
+        session.active_turn_assistant_message_idx = None;
+        session.turn_notice_refs.clear();
+        session.session_scope_epoch = session.session_scope_epoch.saturating_add(1);
+        tracing::warn!(
+            target: crate::logging::targets::APP_AUTH,
+            event_name = "auth_required_background",
+            message = "auth required cleared background session state",
+            outcome = "blocked",
+            session_key = %session_key.as_str(),
+            method_name = %method_name,
+        );
+        return;
+    }
     let method_name_for_log = method_name.clone();
     clear_pending_command(app);
     app.resuming_session_id = None;
@@ -167,7 +232,48 @@ pub(super) fn handle_auth_required_event(
     );
 }
 
-pub(super) fn handle_connection_failed_event(app: &mut App, msg: &str) {
+pub(super) fn handle_connection_failed_event(app: &mut App, session_key: &SessionKey, msg: &str) {
+    if app.active_session_key.as_ref() != Some(session_key) {
+        let Some(session) = app.session_mut(session_key) else {
+            tracing::warn!(
+                target: crate::logging::targets::APP_SESSION,
+                event_name = "connection_failed_dropped",
+                message = "connection failure dropped for an unknown session",
+                outcome = "dropped",
+                session_key = %session_key.as_str(),
+                reason = "unknown_session",
+            );
+            return;
+        };
+        // Background-session connection failure: clear the bucket's
+        // identity/auth/turn state. Skip App-global UI (input,
+        // pending_submit, push_message, status). Status surface for
+        // a background bucket is the bucket itself; the active
+        // session's status stays as-is.
+        session.session_id = None;
+        session.current_model = None;
+        session.mode = None;
+        session.fast_mode_state = model::FastModeState::Off;
+        session.session_usage = crate::app::state::SessionUsageState::default();
+        session.cancelled_turn_pending_hint = false;
+        session.pending_cancel_origin = None;
+        session.last_rate_limit_update = None;
+        session.account_info = None;
+        session.mcp = super::super::McpState::default();
+        super::turn::finalize_background_tool_calls(session, model::ToolCallStatus::Failed);
+        session.active_turn_assistant_message_idx = None;
+        session.turn_notice_refs.clear();
+        session.session_scope_epoch = session.session_scope_epoch.saturating_add(1);
+        tracing::error!(
+            target: crate::logging::targets::APP_SESSION,
+            event_name = "session_connection_failed_background",
+            message = "background session connection failure applied",
+            outcome = "failure",
+            session_key = %session_key.as_str(),
+            error_message = %msg,
+        );
+        return;
+    }
     app.bump_session_scope_epoch();
     app.clear_session_runtime_identity();
     super::clear_compaction_state(app, false);
@@ -198,7 +304,43 @@ pub(super) fn handle_connection_failed_event(app: &mut App, msg: &str) {
     );
 }
 
-pub(super) fn handle_slash_command_error_event(app: &mut App, msg: &str) {
+pub(super) fn handle_slash_command_error_event(app: &mut App, session_key: &SessionKey, msg: &str) {
+    if app.active_session_key.as_ref() != Some(session_key) {
+        let Some(session) = app.session_mut(session_key) else {
+            tracing::warn!(
+                target: crate::logging::targets::APP_SESSION,
+                event_name = "slash_command_error_dropped",
+                message = "slash command error dropped for an unknown session",
+                outcome = "dropped",
+                session_key = %session_key.as_str(),
+                reason = "unknown_session",
+            );
+            return;
+        };
+        // Background slash command error: append a system message to
+        // the bucket's chat buffer (so a future switch shows it).
+        // Skip retention enforcement / viewport auto-scroll because
+        // the bucket isn't being rendered. Skip the title-change
+        // overlay reconciliation (App-global config UI).
+        session.messages.push(ChatMessage::new(
+            MessageRole::System(None),
+            vec![MessageBlock::Text(TextBlock::from_complete(msg))],
+            None,
+        ));
+        // Append a 0 to the parallel retained-bytes vec so the
+        // history-retention bookkeeping stays consistent next time
+        // the bucket runs through the active path.
+        session.message_retained_bytes.push(0);
+        tracing::warn!(
+            target: crate::logging::targets::APP_SESSION,
+            event_name = "slash_command_error_background",
+            message = "slash command error appended to background session chat",
+            outcome = "info",
+            session_key = %session_key.as_str(),
+            error_message = %msg,
+        );
+        return;
+    }
     if app.config.pending_session_title_change.take().is_some() {
         app.config.last_error = Some(msg.to_owned());
         app.config.status_message = None;
@@ -216,7 +358,28 @@ pub(super) fn handle_slash_command_error_event(app: &mut App, msg: &str) {
     app.resuming_session_id = None;
 }
 
-pub(super) fn handle_auth_completed_event(app: &mut App, conn: &Arc<forge_agent::AgentHandle>) {
+pub(super) fn handle_auth_completed_event(
+    app: &mut App,
+    session_key: &SessionKey,
+    conn: &Arc<forge_agent::AgentHandle>,
+) {
+    if app.active_session_key.as_ref() != Some(session_key) {
+        // Auth completed for a non-active session is a degenerate case
+        // — the user must have triggered /login from a session that's
+        // since been backgrounded. Restarting a session targets the
+        // active bucket by definition; the safest thing is to log and
+        // drop. Once Phase 2b ships proper multi-bridge auth flows the
+        // bridge will deliver this only to the active path.
+        tracing::warn!(
+            target: crate::logging::targets::APP_AUTH,
+            event_name = "auth_completed_background_dropped",
+            message = "auth-completed event ignored for a non-active session",
+            outcome = "dropped",
+            session_key = %session_key.as_str(),
+            reason = "non_active_session",
+        );
+        return;
+    }
     app.login_hint = None;
     app.pending_command_label = Some("Starting session...".to_owned());
     app.pending_command_ack = None;
@@ -250,7 +413,41 @@ pub(super) fn handle_auth_completed_event(app: &mut App, conn: &Arc<forge_agent:
     }
 }
 
-pub(super) fn handle_logout_completed_event(app: &mut App) {
+pub(super) fn handle_logout_completed_event(app: &mut App, session_key: &SessionKey) {
+    if app.active_session_key.as_ref() != Some(session_key) {
+        let Some(session) = app.session_mut(session_key) else {
+            tracing::warn!(
+                target: crate::logging::targets::APP_AUTH,
+                event_name = "logout_completed_dropped",
+                message = "logout completed dropped for an unknown session",
+                outcome = "dropped",
+                session_key = %session_key.as_str(),
+                reason = "unknown_session",
+            );
+            return;
+        };
+        // Background-session logout: clear the bucket's auth +
+        // identity state. Skip App-global UI restart (force_redraw,
+        // pending_command). Foreground switching to that bucket
+        // will surface the auth-required hint via AuthRequired.
+        session.session_id = None;
+        session.current_model = None;
+        session.mode = None;
+        session.fast_mode_state = model::FastModeState::Off;
+        session.session_usage = crate::app::state::SessionUsageState::default();
+        session.account_info = None;
+        session.oauth_credentials = None;
+        session.mcp = super::super::McpState::default();
+        session.session_scope_epoch = session.session_scope_epoch.saturating_add(1);
+        tracing::info!(
+            target: crate::logging::targets::APP_AUTH,
+            event_name = "logout_completed_background",
+            message = "logout cleared background session state",
+            outcome = "success",
+            session_key = %session_key.as_str(),
+        );
+        return;
+    }
     // Clear the session and start a new one. The bridge now checks auth
     // during initialization and will fire AuthRequired immediately.
     app.bump_session_scope_epoch();

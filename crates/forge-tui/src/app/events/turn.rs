@@ -6,6 +6,7 @@ use super::clear_compaction_state;
 use super::rate_limit::{format_rate_limit_summary, rate_limit_notice_key};
 use crate::agent::error_handling::{TurnErrorClass, classify_turn_error, summarize_internal_error};
 use crate::agent::model;
+use forge_workspace::SessionKey;
 use std::collections::BTreeSet;
 
 const CONVERSATION_INTERRUPTED_HINT: &str =
@@ -234,15 +235,63 @@ fn reject_permission_request(
     }
 }
 
-pub(super) fn handle_turn_cancelled_event(app: &mut App) {
-    if app.pending_cancel_origin().is_none() {
-        app.set_pending_cancel_origin(Some(CancelOrigin::Manual));
+pub(super) fn handle_turn_cancelled_event(app: &mut App, session_key: &SessionKey) {
+    if app.active_session_key.as_ref() == Some(session_key) {
+        if app.pending_cancel_origin().is_none() {
+            app.set_pending_cancel_origin(Some(CancelOrigin::Manual));
+        }
+        app.set_cancelled_turn_pending_hint(matches!(
+            app.pending_cancel_origin(),
+            Some(CancelOrigin::Manual)
+        ));
+        let _ = app.finalize_in_progress_tool_calls(model::ToolCallStatus::Failed);
+        return;
     }
-    app.set_cancelled_turn_pending_hint(matches!(
-        app.pending_cancel_origin(),
-        Some(CancelOrigin::Manual)
-    ));
-    let _ = app.finalize_in_progress_tool_calls(model::ToolCallStatus::Failed);
+    let Some(session) = app.session_mut(session_key) else {
+        tracing::warn!(
+            target: crate::logging::targets::APP_SESSION,
+            event_name = "turn_cancelled_dropped",
+            message = "turn cancelled dropped for an unknown session",
+            outcome = "dropped",
+            session_key = %session_key.as_str(),
+            reason = "unknown_session",
+        );
+        return;
+    };
+    if session.pending_cancel_origin.is_none() {
+        session.pending_cancel_origin = Some(CancelOrigin::Manual);
+    }
+    session.cancelled_turn_pending_hint =
+        matches!(session.pending_cancel_origin, Some(CancelOrigin::Manual));
+    finalize_background_tool_calls(session, model::ToolCallStatus::Failed);
+}
+
+/// Background-session version of [`App::finalize_in_progress_tool_calls`].
+/// Walks the bucket's `messages` directly and flips InProgress /
+/// Pending tool calls to `new_status`, dropping pending interactions.
+/// No layout invalidation, no terminal detach handling — the bucket
+/// will rebuild its layout state when it next becomes active.
+pub(super) fn finalize_background_tool_calls(
+    session: &mut crate::app::session::Session,
+    new_status: model::ToolCallStatus,
+) {
+    for msg in &mut session.messages {
+        for block in &mut msg.blocks {
+            if let MessageBlock::ToolCall(tc) = block {
+                let tc = tc.as_mut();
+                if matches!(
+                    tc.status,
+                    model::ToolCallStatus::InProgress | model::ToolCallStatus::Pending
+                ) {
+                    tc.status = new_status;
+                    let _ = tc.pending_permission.take();
+                    let _ = tc.pending_question.take();
+                    let _ = tc.terminal_id.take();
+                }
+            }
+        }
+    }
+    session.pending_interaction_ids.clear();
 }
 
 fn begin_turn_exit(app: &mut App, emit_manual_compaction_success: bool) -> TurnExitState {
@@ -281,8 +330,44 @@ fn finish_ready_turn_exit(app: &mut App, exit: TurnExitState, tool_status: model
 
 pub(super) fn handle_turn_complete_event(
     app: &mut App,
+    session_key: &SessionKey,
     terminal_reason: Option<forge_primitives::TerminalReason>,
 ) {
+    if app.active_session_key.as_ref() != Some(session_key) {
+        let Some(session) = app.session_mut(session_key) else {
+            tracing::warn!(
+                target: crate::logging::targets::APP_SESSION,
+                event_name = "turn_complete_dropped",
+                message = "turn complete dropped for an unknown session",
+                outcome = "dropped",
+                session_key = %session_key.as_str(),
+                reason = "unknown_session",
+            );
+            return;
+        };
+        let cancelled_requested = session.pending_cancel_origin;
+        let tool_status = if cancelled_requested.is_some() {
+            model::ToolCallStatus::Failed
+        } else {
+            model::ToolCallStatus::Completed
+        };
+        finalize_background_tool_calls(session, tool_status);
+        session.pending_cancel_origin = None;
+        session.cancelled_turn_pending_hint = false;
+        session.active_turn_assistant_message_idx = None;
+        session.turn_notice_refs.clear();
+        if let Some(reason) = terminal_reason {
+            tracing::debug!(
+                target: crate::logging::targets::APP_SESSION,
+                event_name = "turn_complete_terminal_reason_background",
+                message = "background turn completed with SDK terminal reason",
+                outcome = "success",
+                session_key = %session_key.as_str(),
+                terminal_reason = reason.as_stored(),
+            );
+        }
+        return;
+    }
     let exit = begin_turn_exit(app, true);
     let turn_was_active = exit.turn_was_active;
     if let Some(reason) = terminal_reason {
@@ -314,10 +399,59 @@ pub(super) fn handle_turn_complete_event(
 
 pub(super) fn handle_turn_error_event(
     app: &mut App,
+    session_key: &SessionKey,
     msg: &str,
     classified: Option<TurnErrorClass>,
     terminal_reason: Option<forge_primitives::TerminalReason>,
 ) {
+    if app.active_session_key.as_ref() != Some(session_key) {
+        let Some(session) = app.session_mut(session_key) else {
+            tracing::warn!(
+                target: crate::logging::targets::APP_SESSION,
+                event_name = "turn_error_dropped",
+                message = "turn error dropped for an unknown session",
+                outcome = "dropped",
+                session_key = %session_key.as_str(),
+                reason = "unknown_session",
+            );
+            return;
+        };
+        // Background-session turn error: clear the bucket's
+        // turn-tracking flags and finalize tool calls; skip all
+        // user-visible UI side effects (notifications, exit_error,
+        // chat message inserts). The bucket is logically failed.
+        let cancelled_requested = session.pending_cancel_origin;
+        finalize_background_tool_calls(session, model::ToolCallStatus::Failed);
+        session.pending_cancel_origin = None;
+        session.cancelled_turn_pending_hint = false;
+        session.active_turn_assistant_message_idx = None;
+        session.turn_notice_refs.clear();
+        let summary = summarize_internal_error(msg);
+        if cancelled_requested.is_some() {
+            tracing::warn!(
+                target: crate::logging::targets::APP_SESSION,
+                event_name = "turn_error_suppressed_background",
+                message = "background turn error suppressed after cancellation request",
+                outcome = "cancelled",
+                session_key = %session_key.as_str(),
+                error_preview = %summary,
+                terminal_reason = terminal_reason.map_or("", forge_primitives::TerminalReason::as_stored),
+            );
+        } else {
+            let error_class = classified.unwrap_or_else(|| classify_turn_error(msg));
+            tracing::error!(
+                target: crate::logging::targets::APP_SESSION,
+                event_name = "turn_error_received_background",
+                message = "background turn error received",
+                outcome = "failure",
+                session_key = %session_key.as_str(),
+                error_class = ?error_class,
+                error_preview = %summary,
+                terminal_reason = terminal_reason.map_or("", forge_primitives::TerminalReason::as_stored),
+            );
+        }
+        return;
+    }
     let exit = begin_turn_exit(app, true);
 
     if exit.cancelled_requested.is_some() {
@@ -517,6 +651,10 @@ mod tests {
         )
     }
 
+    fn active_session_key(app: &App) -> SessionKey {
+        app.active_session_key.clone().expect("active session key seeded by App::test_default")
+    }
+
     #[test]
     fn turn_complete_removes_empty_tail_assistant() {
         let mut app = App::test_default();
@@ -524,7 +662,8 @@ mod tests {
         app.messages_mut().push(user_message("hello"));
         app.messages_mut().push(empty_assistant_message());
 
-        handle_turn_complete_event(&mut app, None);
+        let key = active_session_key(&app);
+        handle_turn_complete_event(&mut app, &key, None);
 
         assert_eq!(app.messages().len(), 1);
         assert!(matches!(app.messages()[0].role, MessageRole::User));
@@ -538,7 +677,8 @@ mod tests {
         app.messages_mut().push(user_message("hello"));
         app.messages_mut().push(empty_assistant_message());
 
-        handle_turn_error_event(&mut app, "cancelled", None, None);
+        let key = active_session_key(&app);
+        handle_turn_error_event(&mut app, &key, "cancelled", None, None);
 
         assert_eq!(app.messages().len(), 2);
         assert!(matches!(app.messages()[0].role, MessageRole::User));
@@ -552,10 +692,82 @@ mod tests {
         app.messages_mut().push(user_message("hello"));
         app.messages_mut().push(empty_assistant_message());
 
-        handle_turn_error_event(&mut app, "boom", None, None);
+        let key = active_session_key(&app);
+        handle_turn_error_event(&mut app, &key, "boom", None, None);
 
         assert_eq!(app.messages().len(), 2);
         assert!(matches!(app.messages()[0].role, MessageRole::User));
         assert!(matches!(app.messages()[1].role, MessageRole::System(None)));
+    }
+
+    #[test]
+    fn turn_complete_for_background_session_does_not_touch_active_messages() {
+        use crate::app::session::Session;
+        let mut app = App::test_default();
+        app.status = AppStatus::Thinking;
+        app.messages_mut().push(user_message("active hello"));
+        app.messages_mut().push(empty_assistant_message());
+        let active_messages_before = app.messages().len();
+
+        let bg_key = SessionKey::from_str_for_test("background-session");
+        let mut bg_session = Session::new(bg_key.clone());
+        bg_session.messages.push(user_message("bg hello"));
+        bg_session.messages.push(empty_assistant_message());
+        app.sessions.insert(bg_key.clone(), bg_session);
+
+        handle_turn_complete_event(&mut app, &bg_key, None);
+
+        // Active session messages untouched.
+        assert_eq!(app.messages().len(), active_messages_before);
+        // Active app status unchanged (still Thinking) — background
+        // turn-complete must not flip the active session to Ready.
+        assert!(matches!(app.status, AppStatus::Thinking));
+        // Background bucket's active_turn_assistant_message_idx cleared.
+        let bg = app.sessions.get(&bg_key).expect("bg present");
+        assert!(bg.active_turn_assistant_message_idx.is_none());
+    }
+
+    #[test]
+    fn turn_cancelled_for_background_session_marks_only_target_bucket() {
+        use crate::app::session::Session;
+        let mut app = App::test_default();
+        let bg_key = SessionKey::from_str_for_test("background-session");
+        let bg_session = Session::new(bg_key.clone());
+        app.sessions.insert(bg_key.clone(), bg_session);
+
+        // Active session has no pending cancel origin set.
+        assert!(app.pending_cancel_origin().is_none());
+
+        handle_turn_cancelled_event(&mut app, &bg_key);
+
+        // Background bucket got the cancel marker.
+        let bg = app.sessions.get(&bg_key).expect("bg present");
+        assert!(matches!(bg.pending_cancel_origin, Some(CancelOrigin::Manual)));
+        assert!(bg.cancelled_turn_pending_hint);
+        // Active session's cancel state untouched.
+        assert!(app.pending_cancel_origin().is_none());
+    }
+
+    #[test]
+    fn turn_error_for_background_session_does_not_set_should_quit() {
+        use crate::app::session::Session;
+        let mut app = App::test_default();
+        let bg_key = SessionKey::from_str_for_test("background-session");
+        let bg_session = Session::new(bg_key.clone());
+        app.sessions.insert(bg_key.clone(), bg_session);
+
+        // Auth-required class would normally set should_quit=true when
+        // applied to the active session; for a background session it
+        // must not.
+        handle_turn_error_event(
+            &mut app,
+            &bg_key,
+            "auth required",
+            Some(TurnErrorClass::AuthRequired),
+            None,
+        );
+
+        assert!(!app.should_quit);
+        assert!(app.exit_error.is_none());
     }
 }
