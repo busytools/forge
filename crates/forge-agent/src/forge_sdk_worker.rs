@@ -107,8 +107,16 @@ pub(crate) async fn spawn_session(
     // sees Connected first on its mpsc — otherwise the reader can
     // race and push an SdkMessage before Connected, leaving
     // `app.session_id` = None when the SdkMessage arrives.
-    emit_connected(bridge.event_tx(), &client, &session_id, &cwd_owned, launch_settings, resume_id)
-        .await;
+    emit_connected(
+        bridge.event_tx(),
+        &client,
+        &session_id,
+        &cwd_owned,
+        launch_settings,
+        resume_id,
+        extra_env,
+    )
+    .await;
 
     // Reader subtask — owns the events receiver. Client is the writer-side
     // handle (Arc-backed, Clone) and stays on the bridge.
@@ -127,6 +135,7 @@ async fn emit_connected(
     cwd: &str,
     launch_settings: &crate::client::SessionLaunchSettings,
     resume_id: Option<&str>,
+    extra_env: &HashMap<String, String>,
 ) {
     let server_info = client.get_server_info().cloned();
     let init_data = client.initial_session_data().cloned();
@@ -201,9 +210,10 @@ async fn emit_connected(
         history_updates,
     });
 
-    if let Some(account) =
-        client.account_info_from_init().or_else(crate::cloud::auth_status::account_info_from_shell)
-    {
+    let config_dir_override = extra_env.get("CLAUDE_CONFIG_DIR").map(std::path::PathBuf::from);
+    if let Some(account) = client.account_info_from_init().or_else(|| {
+        crate::cloud::auth_status::account_info_from_shell_for_dir(config_dir_override.as_deref())
+    }) {
         let _ = event_tx
             .send(AgentEvent::StatusSnapshot { session_id: session_id.to_owned(), account });
     }

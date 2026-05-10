@@ -21,6 +21,8 @@
 //! succeeds, mapping `claude auth status`'s camelCase JSON into the
 //! `snake_case` struct.
 
+use std::path::Path;
+
 use serde::Deserialize;
 
 use forge_primitives::AccountInfo;
@@ -79,7 +81,23 @@ fn map_auth_method_to_api_key_source(auth_method: &str) -> &str {
 /// thereafter (claude warms up its keychain reads in-process).
 #[must_use]
 pub fn account_info_from_shell() -> Option<AccountInfo> {
-    let output = std::process::Command::new("claude").args(["auth", "status"]).output().ok()?;
+    account_info_from_shell_for_dir(None)
+}
+
+/// Same as [`account_info_from_shell`] but with an explicit
+/// `config_dir` override, applied to the subprocess env as
+/// `CLAUDE_CONFIG_DIR`. Phase 1b's per-spawn account binding uses
+/// this so the auth_status subprocess honours the bound account
+/// rather than whatever `$CLAUDE_CONFIG_DIR` the parent forge-tui
+/// process happens to have. Pass `None` to inherit the parent env.
+#[must_use]
+pub fn account_info_from_shell_for_dir(config_dir: Option<&Path>) -> Option<AccountInfo> {
+    let mut cmd = std::process::Command::new("claude");
+    cmd.args(["auth", "status"]);
+    if let Some(dir) = config_dir {
+        cmd.env("CLAUDE_CONFIG_DIR", dir);
+    }
+    let output = cmd.output().ok()?;
     if !output.status.success() {
         return None;
     }
