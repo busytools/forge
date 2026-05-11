@@ -66,11 +66,12 @@ pub(super) fn activate_setting(app: &mut App, spec: &SettingSpec) {
             .value
             {
                 ResolvedSettingValue::Choice(ResolvedChoice::Stored(value)) => {
-                    DefaultPermissionMode::from_stored(&value).unwrap_or_default()
+                    DefaultPermissionMode::from_stored(&value)
+                        .unwrap_or(DefaultPermissionMode::Auto)
                 }
                 ResolvedSettingValue::Bool(_)
                 | ResolvedSettingValue::Choice(ResolvedChoice::Automatic)
-                | ResolvedSettingValue::Text(_) => DefaultPermissionMode::Default,
+                | ResolvedSettingValue::Text(_) => DefaultPermissionMode::Auto,
             };
             let next = current.next();
             persist_setting_change(app, spec, |document| {
@@ -106,11 +107,12 @@ pub(super) fn step_setting(app: &mut App, spec: &SettingSpec, delta: isize) {
             .value
             {
                 ResolvedSettingValue::Choice(ResolvedChoice::Stored(value)) => {
-                    DefaultPermissionMode::from_stored(&value).unwrap_or_default()
+                    DefaultPermissionMode::from_stored(&value)
+                        .unwrap_or(DefaultPermissionMode::Auto)
                 }
                 ResolvedSettingValue::Bool(_)
                 | ResolvedSettingValue::Choice(ResolvedChoice::Automatic)
-                | ResolvedSettingValue::Text(_) => DefaultPermissionMode::Default,
+                | ResolvedSettingValue::Text(_) => DefaultPermissionMode::Auto,
             };
             let next = if delta.is_negative() { current.prev() } else { current.next() };
             persist_setting_change(app, spec, |document| {

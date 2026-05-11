@@ -266,10 +266,16 @@ pub fn model(document: &Value) -> Result<Option<String>, ()> {
     }
 }
 
-#[cfg(test)]
 pub fn default_permission_mode(document: &Value) -> Result<DefaultPermissionMode, ()> {
     match read_persisted_setting(document, setting_spec(SettingId::DefaultPermissionMode))? {
-        PersistedSettingValue::Missing => Ok(DefaultPermissionMode::Default),
+        // Forge defaults to `Auto` permission mode when the user
+        // hasn't set an explicit value — mirrors `thinking_effort_level`'s
+        // PR #91 default of `Max`. The CLI itself defaults to
+        // `default`; the override happens here so every site that
+        // reads the persisted setting picks up the forge-flavoured
+        // default consistently (launch settings, settings UI cycle,
+        // resolve layer for picker rendering).
+        PersistedSettingValue::Missing => Ok(DefaultPermissionMode::Auto),
         PersistedSettingValue::Bool(_) => Err(()),
         PersistedSettingValue::String(value) => {
             DefaultPermissionMode::from_stored(&value).ok_or(())
@@ -538,7 +544,9 @@ mod tests {
     fn persisted_setting_readers_apply_defaults() {
         let document = Value::Object(Map::new());
 
-        assert_eq!(default_permission_mode(&document), Ok(DefaultPermissionMode::Default));
+        // Forge defaults `defaultMode` to `Auto` when missing (mirrors
+        // the effort=Max default landed in PR #91).
+        assert_eq!(default_permission_mode(&document), Ok(DefaultPermissionMode::Auto));
         assert_eq!(respect_gitignore(&document), Ok(true));
         assert_eq!(terminal_progress_bar_enabled(&document), Ok(true));
         assert_eq!(output_style(&document), Ok(OutputStyle::Default));

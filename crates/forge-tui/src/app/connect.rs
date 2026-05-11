@@ -22,7 +22,6 @@ use crate::Cli;
 use crate::agent::client::SessionLaunchSettings;
 use crate::agent::events::ClientEvent;
 use std::rc::Rc;
-use std::sync::Arc;
 use tokio::sync::mpsc;
 
 pub(crate) struct StartConnectionParams {
@@ -284,36 +283,9 @@ pub fn start_connection(app: &mut App) {
         pre_connect_key: forge_workspace::SessionKey::from_session_id(App::PRE_CONNECT_KEY),
         is_fatal_on_failure: true,
     };
-    let conn_slot: Rc<std::cell::RefCell<Option<ConnectionSlot>>> =
-        Rc::new(std::cell::RefCell::new(None));
-    let conn_slot_writer = Rc::clone(&conn_slot);
-
     tokio::task::spawn_local(async move {
-        bridge_lifecycle::run_connection_task(params, conn_slot_writer).await;
+        bridge_lifecycle::run_connection_task(params).await;
     });
-
-    CONN_SLOT.with(|slot| {
-        debug_assert!(
-            slot.borrow().is_none(),
-            "CONN_SLOT already populated -- start_connection() called twice?"
-        );
-        *slot.borrow_mut() = Some(conn_slot);
-    });
-}
-
-/// Shared slot for passing `Arc<forge_agent::AgentHandle>` from the background task to the event loop.
-pub struct ConnectionSlot {
-    pub conn: Arc<forge_agent::AgentHandle>,
-}
-
-thread_local! {
-    pub static CONN_SLOT: std::cell::RefCell<Option<Rc<std::cell::RefCell<Option<ConnectionSlot>>>>> =
-        const { std::cell::RefCell::new(None) };
-}
-
-/// Take the connection data from the thread-local slot.
-pub(super) fn take_connection_slot() -> Option<ConnectionSlot> {
-    CONN_SLOT.with(|slot| slot.borrow().as_ref().and_then(|inner| inner.borrow_mut().take()))
 }
 
 #[cfg(test)]

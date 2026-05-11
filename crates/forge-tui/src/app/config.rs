@@ -875,20 +875,14 @@ impl ConfigState {
 
     #[must_use]
     pub fn default_permission_mode_effective(&self) -> DefaultPermissionMode {
-        match resolve_setting_document(
-            &self.committed_settings_document,
-            SettingId::DefaultPermissionMode,
-            &[],
-        )
-        .value
-        {
-            ResolvedSettingValue::Choice(ResolvedChoice::Stored(value)) => {
-                DefaultPermissionMode::from_stored(&value).unwrap_or_default()
-            }
-            ResolvedSettingValue::Bool(_)
-            | ResolvedSettingValue::Choice(ResolvedChoice::Automatic)
-            | ResolvedSettingValue::Text(_) => DefaultPermissionMode::Default,
-        }
+        // Forge defaults to `Auto` permission mode when the user
+        // hasn't set an explicit value — mirrors the effort=max
+        // default landed in PR #91. The CLI itself defaults to
+        // `default`, so without this override every fresh forge
+        // session would ship `permissions.defaultMode = "default"`
+        // even though the personal-use scope wants auto.
+        store::default_permission_mode(&self.committed_settings_document)
+            .unwrap_or(DefaultPermissionMode::Auto)
     }
 
     #[must_use]
