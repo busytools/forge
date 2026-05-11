@@ -44,9 +44,10 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, projects: &[ProjectV
 
     let mut lines: Vec<Line<'static>> = Vec::new();
 
-    // Pane name banner: PROJECTS at row 0 (no leading blank — the
-    // terminal frame above is breathing room enough), dim rule, then
-    // one blank before the first section.
+    // Pane name banner: PROJECTS at row 0, dim rule, then straight
+    // into the first section header. The blank-between-section-header-
+    // and-first-row is per section (in `append_project_rows`) so the
+    // banner sits flush against the first section.
     lines.push(Line::from(Span::styled(
         "  PROJECTS".to_owned(),
         Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
@@ -56,7 +57,6 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, projects: &[ProjectV
         Span::raw(" "),
         Span::styled("─".repeat(rule_width), Style::default().fg(theme::DIM)),
     ]));
-    lines.push(Line::default());
 
     append_project_rows(&mut lines, area, app, projects);
 
@@ -169,6 +169,9 @@ fn append_project_rows(
             "  ACTIVE".to_owned(),
             Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD),
         )));
+        // Blank between section header and the first row — gives the
+        // header breathing room from the rows it labels.
+        lines.push(Line::default());
         let name_budget = name_budget_active(area.width);
         let active_count = active.len();
         for (idx, (project, lifecycle, is_focused, session_key)) in active.iter().enumerate() {
@@ -196,12 +199,14 @@ fn append_project_rows(
                 // rather than a stray multiplication sign, and the
                 // wider visual footprint matches the wider click band
                 // stamped below. Bold so it pops against the DIM
-                // metadata column to its left.
+                // metadata column to its left. 2-col gutter mirrors
+                // the inactive row's time-column gutter so `[×]` and
+                // the date sit in the same x column visually.
                 Span::styled(
                     "[×]".to_owned(),
                     Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD),
                 ),
-                Span::raw(" "),
+                Span::raw("  "),
             ]));
             app.pane_hit_targets.push(PaneHitTarget::ProjectHeader {
                 project_name: project.key.as_str().to_owned(),
@@ -242,6 +247,8 @@ fn append_project_rows(
             "  INACTIVE".to_owned(),
             Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD),
         )));
+        // Same blank-after-header rhythm as ACTIVE.
+        lines.push(Line::default());
         let name_budget = name_budget_inactive(area.width);
         let inactive_count = inactive.len();
         for (idx, project) in inactive.iter().enumerate() {
@@ -276,19 +283,20 @@ fn append_project_rows(
 }
 
 /// Active-row layout:
-/// `<2 indent><1 glyph><1 sp><name><1 sp><3 [×]><1 right gutter>`
-/// = 9 chrome chars. No time column — the lifecycle glyph already
-/// indicates the session is alive, and the .jsonl mtime for a
-/// running session is always `now`-ish, adding no signal.
+/// `<2 indent><1 glyph><1 sp><name><1 sp><3 [×]><2 right gutter>`
+/// = 10 chrome chars. 2-col gutter mirrors the inactive row so the
+/// trailing `[×]` lands in the same x column as the inactive time
+/// column.
 fn name_budget_active(area_width: u16) -> usize {
-    usize::from(area_width.saturating_sub(9))
+    usize::from(area_width.saturating_sub(10))
 }
 
 /// Inactive-row layout:
 /// `<2 indent><1 glyph><1 sp><name><1 sp><3 time><2 right gutter>`
-/// = 9 chrome chars. No close column; same 2-col gutter.
+/// = 10 chrome chars. Same budget as active so the trailing column
+/// (`[×]` vs time) aligns at the same x.
 fn name_budget_inactive(area_width: u16) -> usize {
-    usize::from(area_width.saturating_sub(9))
+    usize::from(area_width.saturating_sub(10))
 }
 
 /// Format `activity` as a short relative-time string anchored at
@@ -452,17 +460,17 @@ mod tests {
 
     #[test]
     fn name_budget_active_matches_chrome() {
-        // Wide tier (26): 26 - 9 chrome chars = 17.
-        // Medium tier (20): 20 - 9 = 11.
-        assert_eq!(name_budget_active(20), 11);
-        assert_eq!(name_budget_active(26), 17);
+        // Wide tier (26): 26 - 10 chrome chars = 16.
+        // Medium tier (20): 20 - 10 = 10.
+        assert_eq!(name_budget_active(20), 10);
+        assert_eq!(name_budget_active(26), 16);
     }
 
     #[test]
     fn name_budget_inactive_matches_chrome() {
-        // Wide tier (26): 26 - 9 chrome chars = 17.
-        // Medium tier (20): 20 - 9 = 11.
-        assert_eq!(name_budget_inactive(20), 11);
-        assert_eq!(name_budget_inactive(26), 17);
+        // Wide tier (26): 26 - 10 chrome chars = 16.
+        // Medium tier (20): 20 - 10 = 10.
+        assert_eq!(name_budget_inactive(20), 10);
+        assert_eq!(name_budget_inactive(26), 16);
     }
 }

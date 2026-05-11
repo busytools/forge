@@ -165,6 +165,18 @@ pub(super) fn handle_connected_client_event(
         app.rebuild_chat_focus_from_state();
         crate::app::config::refresh_runtime_tabs_for_session_change(app);
         maybe_open_startup_session_picker(app);
+        // Push the terminal tab title to reflect the now-active
+        // session's cwd. `active_session_key` was mutated directly
+        // above (not via `switch_active_session`), so the render
+        // loop's title-refresh wouldn't fire on its own until the
+        // next animating frame — meaning the tab title visibly lags
+        // a session switch by one frame at best and not at all when
+        // the destination is fully idle (no spinner ticking).
+        crate::app::tab_title::update_tab_title(
+            &app.status,
+            app.spinner_frame,
+            app.cwd(),
+        );
     } else {
         // Background path: the user switched to a different session
         // while this one was spawning. Park the connection in the
