@@ -785,6 +785,17 @@ fn sync_welcome_cwd(app: &mut App) {
 }
 
 pub(super) fn apply_session_cwd(app: &mut App, cwd_raw: String) {
+    // `resume_session` paths (startup + Projects-pane lead-resume +
+    // in-session `/resume`) emit `Connected` with an empty cwd — the
+    // resumed session's cwd isn't re-derived by `forge-sdk-worker`.
+    // The spawn-side path always pre-seeds the bucket's `cwd_raw`
+    // before Connected can fire, so when Connected delivers an empty
+    // value we keep what's there rather than blanking the welcome
+    // card to `"-"` and triggering a spurious trust re-check against
+    // an empty path.
+    if cwd_raw.is_empty() {
+        return;
+    }
     let display = shorten_cwd_display(&cwd_raw);
     app.set_cwd_raw(cwd_raw);
     app.set_cwd(display);
