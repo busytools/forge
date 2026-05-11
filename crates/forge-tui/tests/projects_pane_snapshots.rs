@@ -56,13 +56,13 @@ fn session_view(id: &str, label: &str) -> SessionView {
 }
 
 #[test]
-fn renders_banner_and_active_project_with_drilldown() {
+fn renders_banner_and_active_project_row() {
     let mut app = App::test_default();
     let session_a = session_view("session-a", "main");
     let projects = vec![project_view("forge", vec![session_a.clone()])];
 
-    // Insert a Session bucket for the lead and mark it active so the
-    // pane treats `forge` as the active project.
+    // Insert a Session bucket for the lead so the pane treats `forge`
+    // as an active project (lands in the ACTIVE section).
     let lead_key = SessionKey::from_str_for_test("session-a");
     let mut lead_session = Session::new(lead_key.clone());
     lead_session.lifecycle_state = SessionLifecycleState::Idle;
@@ -71,70 +71,26 @@ fn renders_banner_and_active_project_with_drilldown() {
 
     let lines = render_to_lines(&mut app, &projects, 26, 10);
 
-    // Row 0: PROJECTS banner.
-    assert!(
-        lines[0].starts_with("PROJECTS"),
-        "banner row should lead with PROJECTS, got: {:?}",
-        lines[0]
-    );
-    // Row 1: dim rule. We can't assert color through TestBackend's
-    // symbol-only buffer, so just verify the rule character is there.
-    assert!(
-        lines[1].contains('─'),
-        "rule row should contain box-drawing char, got: {:?}",
-        lines[1]
-    );
-    // Row 2: blank.
-    assert!(lines[2].is_empty(), "row 2 should be blank, got: {:?}", lines[2]);
-    // Row 3: project name "forge".
-    assert!(
-        lines[3].contains("forge"),
-        "project header should show project name, got: {:?}",
-        lines[3]
-    );
-    // Row 4: drilldown — lead marker (◆), active marker (•), label "main".
-    assert!(lines[4].contains('◆'), "lead marker should appear in drilldown, got: {:?}", lines[4]);
-    assert!(
-        lines[4].contains('•'),
-        "current-session marker should appear in drilldown, got: {:?}",
-        lines[4]
-    );
-    assert!(
-        lines[4].contains("main"),
-        "session label should appear in drilldown, got: {:?}",
-        lines[4]
-    );
+    assert!(lines[0].starts_with("PROJECTS"), "banner: {:?}", lines[0]);
+    assert!(lines[1].contains('─'), "rule: {:?}", lines[1]);
+    assert!(lines[2].is_empty(), "blank: {:?}", lines[2]);
+    assert!(lines[3].contains("ACTIVE"), "ACTIVE section header: {:?}", lines[3]);
+    assert!(lines[4].contains("forge"), "active project row: {:?}", lines[4]);
 
-    // Hit-targets: one project header + one session row.
-    assert_eq!(
-        app.pane_hit_targets.len(),
-        2,
-        "should stamp 2 hit-targets, got: {:?}",
-        app.pane_hit_targets
-    );
+    // One hit target — the project header — and it carries the key.
+    assert_eq!(app.pane_hit_targets.len(), 1, "exactly one project hit target");
     match &app.pane_hit_targets[0] {
-        PaneHitTarget::ProjectHeader { project_name, y, height } => {
-            assert_eq!(project_name, "forge");
-            assert_eq!(*y, 3, "project header sits on row 3 (after banner + rule + blank)");
-            assert_eq!(*height, 1);
-        }
-        other => panic!("first hit-target should be ProjectHeader, got {other:?}"),
-    }
-    match &app.pane_hit_targets[1] {
-        PaneHitTarget::SessionRow { session_key, y, height } => {
-            assert_eq!(session_key, &lead_key);
-            assert_eq!(*y, 4, "drilldown session row sits immediately under its project");
-            assert_eq!(*height, 1);
-        }
-        other => panic!("second hit-target should be SessionRow, got {other:?}"),
+        PaneHitTarget::ProjectHeader { project_name, .. } => assert_eq!(project_name, "forge"),
+        other => panic!("expected ProjectHeader, got {other:?}"),
     }
 }
 
 #[test]
-fn inactive_project_drilldown_collapsed_and_one_hit_target_per_row() {
+fn inactive_project_lands_in_inactive_section() {
     let mut app = App::test_default();
 
-    // Two projects: alpha + bravo. alpha is active.
+    // alpha has a live bucket; bravo doesn't. alpha → ACTIVE,
+    // bravo → INACTIVE.
     let alpha_session = session_view("alpha-1", "lead");
     let bravo_session = session_view("bravo-1", "main");
     let projects = vec![
@@ -146,68 +102,36 @@ fn inactive_project_drilldown_collapsed_and_one_hit_target_per_row() {
     app.sessions.insert(alpha_key.clone(), Session::new(alpha_key.clone()));
     app.active_session_key = Some(alpha_key.clone());
 
-    let lines = render_to_lines(&mut app, &projects, 26, 12);
+    let lines = render_to_lines(&mut app, &projects, 26, 14);
 
-    // alpha is the active project so it gets a drilldown row; bravo
-    // is inactive and collapses to its header. Sort order with no
-    // last_activity is alphabetical, so alpha comes first.
+    let active_header = lines.iter().position(|l| l.contains("ACTIVE")).expect("ACTIVE");
+    let inactive_header = lines.iter().position(|l| l.contains("INACTIVE")).expect("INACTIVE");
     let alpha_row = lines.iter().position(|l| l.contains("alpha")).expect("alpha row");
     let bravo_row = lines.iter().position(|l| l.contains("bravo")).expect("bravo row");
-    assert!(alpha_row < bravo_row, "alpha should sort before bravo");
 
-    // alpha has a drilldown row immediately after it (◆ marker).
-    let alpha_drilldown = &lines[alpha_row + 1];
-    assert!(
-        alpha_drilldown.contains('◆'),
-        "alpha's drilldown row should show lead marker, got: {alpha_drilldown:?}"
-    );
+    assert!(active_header < alpha_row, "alpha sits under ACTIVE");
+    assert!(alpha_row < inactive_header, "ACTIVE section ends before INACTIVE header");
+    assert!(inactive_header < bravo_row, "bravo sits under INACTIVE");
 
-    // bravo's row (the row after alpha's drilldown) should NOT contain ◆ —
-    // bravo is inactive, so no drilldown.
-    let bravo_drilldown_check = &lines[bravo_row];
-    assert!(bravo_drilldown_check.contains("bravo"));
-    assert!(
-        !bravo_drilldown_check.contains('◆'),
-        "inactive project shows no drilldown, got: {bravo_drilldown_check:?}"
-    );
-
-    // Hit-targets: alpha header + alpha drilldown session + bravo header = 3.
-    assert_eq!(
-        app.pane_hit_targets.len(),
-        3,
-        "stamps: alpha header + alpha session + bravo header, got: {:?}",
-        app.pane_hit_targets
-    );
-
-    // First stamp is alpha's project header.
-    match &app.pane_hit_targets[0] {
-        PaneHitTarget::ProjectHeader { project_name, .. } => {
-            assert_eq!(project_name, "alpha");
-        }
-        other => panic!("expected ProjectHeader for alpha, got {other:?}"),
-    }
-    // Second stamp is alpha's session row.
-    match &app.pane_hit_targets[1] {
-        PaneHitTarget::SessionRow { session_key, .. } => {
-            assert_eq!(session_key, &alpha_key);
-        }
-        other => panic!("expected SessionRow for alpha drilldown, got {other:?}"),
-    }
-    // Third stamp is bravo's project header (no drilldown for inactive).
-    match &app.pane_hit_targets[2] {
-        PaneHitTarget::ProjectHeader { project_name, .. } => {
-            assert_eq!(project_name, "bravo");
-        }
-        other => panic!("expected ProjectHeader for bravo, got {other:?}"),
-    }
+    // Two ProjectHeader stamps; no SessionRow stamps anywhere.
+    let header_count = app
+        .pane_hit_targets
+        .iter()
+        .filter(|t| matches!(t, PaneHitTarget::ProjectHeader { .. }))
+        .count();
+    assert_eq!(header_count, 2, "two project headers, got: {:?}", app.pane_hit_targets);
+    let session_row_count = app
+        .pane_hit_targets
+        .iter()
+        .filter(|t| matches!(t, PaneHitTarget::SessionRow { .. }))
+        .count();
+    assert_eq!(session_row_count, 0, "no session-row stamps in the simplified pane");
 }
 
 #[test]
-fn medium_tier_truncates_long_project_and_session_labels() {
+fn medium_tier_truncates_long_project_labels() {
     let mut app = App::test_default();
 
-    // Lead session — long label so the drilldown row will overflow
-    // the 12-char Medium session budget (20 - 8 chrome = 12).
     let long_session = session_view("really-long-session-id", "really-long-feature-branch");
     // Project name ("subspace-chain-pulse" = 20 chars) overflows the
     // 18-char Medium project budget (20 - 2 indent = 18).
@@ -220,11 +144,12 @@ fn medium_tier_truncates_long_project_and_session_labels() {
     // Medium tier renders in a 20ch-wide pane.
     let lines = render_to_lines(&mut app, &projects, 20, 20);
 
-    // Project header truncated: name had 20 chars, budget is 18, so
-    // we expect 17 chars of the name + `…`. The 17-char prefix of
-    // "subspace-chain-pulse" is "subspace-chain-pu".
+    // Project header truncated: pane is 20 chars, indent + glyph
+    // column = 4, so the project budget is 16. 15-char prefix +
+    // ellipsis = "subspace-chain-…". The longest substring of the
+    // original we expect to still see is "subspace-chain-".
     let any_truncated_project =
-        lines.iter().any(|l| l.contains('…') && l.contains("subspace-chain-pu"));
+        lines.iter().any(|l| l.contains('…') && l.contains("subspace-chain-"));
     assert!(
         any_truncated_project,
         "expected truncated project label in pane output, got: {lines:?}"
@@ -233,34 +158,17 @@ fn medium_tier_truncates_long_project_and_session_labels() {
     // Session label truncated: "really-long-feature-branch" is 26
     // chars, Medium budget is 8 (20 - 8 left chrome - 4 right time
     // column), so we expect 7 chars + `…` = "really-…".
-    let any_truncated_session = lines.iter().any(|l| l.contains('…') && l.contains("really-"));
-    assert!(
-        any_truncated_session,
-        "expected truncated session label in pane output, got: {lines:?}"
-    );
-
-    // Hit-target stamps must still carry the un-truncated project
-    // name + session key so click routing works.
+    // Hit-target stamps must still carry the un-truncated project key.
     let project_target_full = app.pane_hit_targets.iter().any(|t| match t {
         PaneHitTarget::ProjectHeader { project_name, .. } => project_name == "subspace-chain-pulse",
         _ => false,
     });
     assert!(
         project_target_full,
-        "project hit-target should retain full un-truncated name, got: {:?}",
+        "project hit-target should retain full un-truncated key, got: {:?}",
         app.pane_hit_targets
     );
-    let session_target_full = app.pane_hit_targets.iter().any(|t| match t {
-        PaneHitTarget::SessionRow { session_key, .. } => {
-            session_key == &SessionKey::from_str_for_test("really-long-session-id")
-        }
-        _ => false,
-    });
-    assert!(
-        session_target_full,
-        "session hit-target should retain full un-truncated key, got: {:?}",
-        app.pane_hit_targets
-    );
+    let _ = long_session;
 }
 
 fn render_overlay_to_lines(
@@ -368,10 +276,9 @@ fn narrow_overlay_banner_includes_close_glyph_and_target() {
 }
 
 #[test]
-fn narrow_overlay_keeps_full_unmodified_session_key_in_targets() {
-    // Same invariant the inline pane upholds: hit-target stamps
-    // carry the full identifier even if the rendered label was
-    // truncated.
+fn narrow_overlay_keeps_full_unmodified_project_key_in_targets() {
+    // Hit-target stamps carry the full identifier even if the
+    // rendered label was head-truncated.
     let mut app = App::test_default();
     let projects = vec![project_view(
         "really-long-project-name",
@@ -379,20 +286,9 @@ fn narrow_overlay_keeps_full_unmodified_session_key_in_targets() {
     )];
     let lead_key = SessionKey::from_str_for_test("really-long-session-id");
     app.sessions.insert(lead_key.clone(), Session::new(lead_key.clone()));
-    app.active_session_key = Some(lead_key.clone());
+    app.active_session_key = Some(lead_key);
 
-    // Render at narrow width so labels likely overflow.
     let _lines = render_overlay_to_lines(&mut app, &projects, 60, 20);
-
-    let session_target_full = app.pane_hit_targets.iter().any(|t| match t {
-        PaneHitTarget::SessionRow { session_key, .. } => session_key == &lead_key,
-        _ => false,
-    });
-    assert!(
-        session_target_full,
-        "session hit-target must retain full key, got: {:?}",
-        app.pane_hit_targets
-    );
 
     let project_target_full = app.pane_hit_targets.iter().any(|t| match t {
         PaneHitTarget::ProjectHeader { project_name, .. } => {
@@ -404,30 +300,6 @@ fn narrow_overlay_keeps_full_unmodified_session_key_in_targets() {
         project_target_full,
         "project hit-target must retain full name, got: {:?}",
         app.pane_hit_targets
-    );
-}
-
-#[test]
-fn sleeping_lead_shows_dot_glyph() {
-    let mut app = App::test_default();
-
-    // Project's lead is in `app.sessions` but stays in the default
-    // Sleeping lifecycle state. The drilldown row should pick up
-    // the sleeping `·` glyph.
-    let projects = vec![project_view("forge", vec![session_view("session-z", "lead")])];
-
-    let lead_key = SessionKey::from_str_for_test("session-z");
-    let lead_session = Session::new(lead_key.clone()); // default is Sleeping
-    app.sessions.insert(lead_key.clone(), lead_session);
-    app.active_session_key = Some(lead_key);
-
-    let lines = render_to_lines(&mut app, &projects, 26, 10);
-
-    // Find the drilldown row (the one with ◆).
-    let drilldown = lines.iter().find(|l| l.contains('◆')).expect("drilldown row");
-    assert!(
-        drilldown.contains('·'),
-        "sleeping lifecycle should render with · glyph, got: {drilldown:?}"
     );
 }
 
@@ -506,57 +378,4 @@ fn wide_tier_attention_session_glyph_uses_warning_color() {
         ratatui::style::Color::Yellow,
         "Attention glyph must use STATUS_WARNING (Yellow), got: {fg:?}"
     );
-}
-
-#[test]
-fn wide_tier_lead_plus_extras_renders_diamond_only_on_lead() {
-    let mut app = App::test_default();
-
-    // Three sessions on the active project; the ◆ marker must only
-    // appear on row 0 (the lead). Subsequent rows just blank-pad
-    // the lead column.
-    let session_lead = session_view("s-lead", "main");
-    let session_b = session_view("s-b", "feat");
-    let session_c = session_view("s-c", "fix");
-    let projects = vec![project_view(
-        "forge",
-        vec![session_lead.clone(), session_b.clone(), session_c.clone()],
-    )];
-
-    let lead_key = SessionKey::from_str_for_test("s-lead");
-    app.sessions.insert(lead_key.clone(), Session::new(lead_key.clone()));
-    let key_b = SessionKey::from_str_for_test("s-b");
-    app.sessions.insert(key_b.clone(), Session::new(key_b));
-    let key_c = SessionKey::from_str_for_test("s-c");
-    app.sessions.insert(key_c.clone(), Session::new(key_c));
-    app.active_session_key = Some(lead_key);
-
-    let lines = render_to_lines(&mut app, &projects, 26, 12);
-
-    // Header row + 3 drilldown rows; only the first drilldown carries
-    // the ◆ marker. Find every row that mentions a session label and
-    // count diamonds.
-    let drilldown_rows: Vec<&String> = lines
-        .iter()
-        .filter(|l| l.contains("main") || l.contains("feat") || l.contains("fix"))
-        .collect();
-    assert_eq!(drilldown_rows.len(), 3, "expected 3 drilldown rows, got: {drilldown_rows:?}");
-
-    let main_row = drilldown_rows
-        .iter()
-        .find(|l| l.contains("main"))
-        .expect("lead row containing 'main' label");
-    assert!(main_row.contains('◆'), "lead drilldown row should carry ◆, got: {main_row:?}");
-
-    let feat_row = drilldown_rows
-        .iter()
-        .find(|l| l.contains("feat"))
-        .expect("non-lead row containing 'feat' label");
-    assert!(!feat_row.contains('◆'), "non-lead drilldown row must not carry ◆, got: {feat_row:?}");
-
-    let fix_row = drilldown_rows
-        .iter()
-        .find(|l| l.contains("fix"))
-        .expect("non-lead row containing 'fix' label");
-    assert!(!fix_row.contains('◆'), "non-lead drilldown row must not carry ◆, got: {fix_row:?}");
 }

@@ -208,11 +208,8 @@ pub(super) fn handle_connected_client_event(
     // are both moved by the if/else above, so we read off the bucket
     // we just migrated into.
     {
-        let cwd_for_record = app
-            .sessions
-            .get(&session_key)
-            .map(|b| b.cwd_raw.clone())
-            .unwrap_or_default();
+        let cwd_for_record =
+            app.sessions.get(&session_key).map(|b| b.cwd_raw.clone()).unwrap_or_default();
         if !cwd_for_record.is_empty()
             && let Some(workspace) = app.workspace.as_ref()
         {

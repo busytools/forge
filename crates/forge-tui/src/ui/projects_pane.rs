@@ -18,8 +18,6 @@
 //! `~/.claude-subspace/plans/2026-05-10-forge-tui-projects-pane-wide-design.md`
 //! and `~/.claude-subspace/plans/2026-05-10-forge-tui-projects-pane-medium-design.md`.
 
-use std::time::SystemTime;
-
 use forge_workspace::ProjectView;
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -107,153 +105,107 @@ pub fn render_overlay(frame: &mut Frame, area: Rect, app: &mut App, projects: &[
     frame.render_widget(Paragraph::new(lines), area);
 }
 
-/// Shared row-building helper used by [`render`] and [`render_overlay`].
-/// Pushes one styled `Line` per project (header + drilldown sessions
-/// for the active project) into `lines` and stamps the matching
-/// hit-targets into `app.pane_hit_targets`. Hit-target y-positions
-/// are computed from `area.y + lines.len()` as each row is appended.
+/// Two-section project list: ACTIVE (projects with an in-process
+/// session — running/idle/attention) and INACTIVE (sleeping, click
+/// to wake). The active section carries the lifecycle glyph; the
+/// inactive section is name-only in `DIM`. The previously-shown
+/// per-session drilldown was dropped — the pane is a project
+/// navigator, not a session log. Per-session detail (and any "switch
+/// between sessions within a project" UX) moves to the in-session
+/// `/resume` picker.
 fn append_project_rows(
     lines: &mut Vec<Line<'static>>,
     area: Rect,
     app: &mut App,
     projects: &[ProjectView],
 ) {
-    // Sort: most-recently-active first; alphabetical tie-break on
-    // project key. `sessions[0]` is the lead by `list_projects`
-    // contract, so its `last_activity` carries the project-level
-    // activity timestamp.
-    let mut sorted: Vec<&ProjectView> = projects.iter().collect();
-    sorted.sort_by(|a, b| {
-        let a_act = a.sessions.first().and_then(|s| s.last_activity);
-        let b_act = b.sessions.first().and_then(|s| s.last_activity);
-        b_act.cmp(&a_act).then_with(|| a.key.as_str().cmp(b.key.as_str()))
-    });
-
     let active_session_key = app.active_session_key.clone();
-    let active_project_name: Option<String> = active_session_key
-        .as_ref()
-        .and_then(|key| resolve_active_project_view(key, &sorted))
-        .map(|p| p.key.as_str().to_owned());
 
-    let project_budget = project_max_chars(area.width);
-    let session_budget = session_max_chars(area.width);
+    // Partition into active / inactive. A project is active iff at
+    // least one of its catalog session ids is in `app.sessions`, OR
+    // a synthetic `__spawn_<name>__` bucket is in flight for it.
+    let spinner_frame = app.spinner_frame;
+    let mut active: Vec<(&ProjectView, SessionLifecycleState, bool)> = Vec::new();
+    let mut inactive: Vec<&ProjectView> = Vec::new();
+    for project in projects {
+        let spawn_synthetic =
+            forge_workspace::SessionKey::from_session_id(format!("__spawn_{}__", project.name));
+        let live_session = project.sessions.iter().find_map(|s| {
+            app.sessions.get(&s.session).map(|bucket| (s.session.clone(), bucket.lifecycle_state))
+        });
+        let synthetic = app
+            .sessions
+            .get(&spawn_synthetic)
+            .map(|bucket| (spawn_synthetic.clone(), bucket.lifecycle_state));
+        if let Some((key, lifecycle)) = live_session.or(synthetic) {
+            let is_focused = Some(&key) == active_session_key.as_ref();
+            active.push((project, lifecycle, is_focused));
+        } else {
+            inactive.push(project);
+        }
+    }
 
-    for project in &sorted {
-        // `project.key` is the sanitised filesystem path (e.g.
-        // `-Users-vedhavyas-Projects-dotfiles`) used as the catalog
-        // index and the click-routing identifier. `project.name` is
-        // the user-facing `name` from `forge.toml` (e.g. `dotfiles`).
-        // Render the friendly name; stamp the key on the hit target
-        // so `switch_to_project_lead` keeps finding it via
-        // `workspace.list_projects().find(|p| p.key == project_name)`.
-        let project_key = project.key.as_str().to_owned();
-        let is_active = active_project_name.as_deref() == Some(project.key.as_str());
+    // Active first, sorted by most-recent activity.
+    active.sort_by(|a, b| {
+        let a_act = a.0.sessions.first().and_then(|s| s.last_activity);
+        let b_act = b.0.sessions.first().and_then(|s| s.last_activity);
+        b_act.cmp(&a_act).then_with(|| a.0.key.as_str().cmp(b.0.key.as_str()))
+    });
+    inactive.sort_by(|a, b| a.name.cmp(&b.name));
 
-        // Project row. Hit-target stamps the un-truncated name so
-        // click routing keeps working when the rendered label has
-        // been head-truncated. Per
-        // `~/.claude-subspace/plans/2026-05-08-forge-tui-side-panes-design.md`
-        // §3.1 the project row is *name only* — no count, no time,
-        // no aggregate state glyph. Per-session detail (state, time,
-        // unread) lives on the drilldown rows below.
-        let row_y = area.y + line_count_as_u16(lines);
-        let project_label = truncate_with_ellipsis(project.name.as_str(), project_budget);
+    let project_budget = project_max_chars(area.width).saturating_sub(2); // -2 for glyph col
+
+    if !active.is_empty() {
         lines.push(Line::from(Span::styled(
-            format!("  {project_label}"),
-            if is_active {
+            "  ACTIVE".to_owned(),
+            Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD),
+        )));
+        for (project, lifecycle, is_focused) in &active {
+            let row_y = area.y + line_count_as_u16(lines);
+            let (glyph, glyph_color) = glyph_for_lifecycle(*lifecycle, *is_focused, spinner_frame);
+            let label = truncate_with_ellipsis(project.name.as_str(), project_budget);
+            let name_style = if *is_focused {
                 Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD)
             } else {
                 Style::default().add_modifier(Modifier::BOLD)
-            },
-        )));
-        app.pane_hit_targets.push(PaneHitTarget::ProjectHeader {
-            project_name: project_key,
-            y: row_y,
-            height: 1,
-        });
+            };
+            lines.push(Line::from(vec![
+                Span::raw("  "),
+                Span::styled(glyph, Style::default().fg(glyph_color)),
+                Span::raw(" "),
+                Span::styled(label, name_style),
+            ]));
+            app.pane_hit_targets.push(PaneHitTarget::ProjectHeader {
+                project_name: project.key.as_str().to_owned(),
+                y: row_y,
+                height: 1,
+            });
+        }
+    }
 
-        // Drilldown rows: only the active project shows its sessions
-        // at this fidelity. Background projects collapse to the
-        // header row alone.
-        //
-        // last_activity rendering: the routed-event handler in
-        // `app::events::client::handle_client_event` stamps
-        // `last_activity_at` on every wire event applied to a session
-        // bucket. The "2m / 1h / 5d" relative-time column called for
-        // by the spec is intentionally deferred to a follow-up commit
-        // — wiring it here would require shrinking `session_budget`
-        // by ~4 chars and resnapshotting every Wide+Medium pane test.
-        // Field is current; rendering is the only piece left.
-        if is_active {
-            // Cap the drilldown at DRILLDOWN_CAP sessions to keep the
-            // pane usable for projects with long catalogs. The hidden
-            // remainder is summarised inline as `+ N more`; the user
-            // can still resume any session via the in-session
-            // `/resume` picker if they need to reach back further.
-            let total = project.sessions.len();
-            let visible = total.min(DRILLDOWN_CAP);
-            let now = SystemTime::now();
-            let spinner_frame = app.spinner_frame;
-            for (idx, session) in project.sessions.iter().take(visible).enumerate() {
-                let row_y = area.y + line_count_as_u16(lines);
-                let lifecycle = app
-                    .sessions
-                    .get(&session.session)
-                    .map_or(SessionLifecycleState::Sleeping, |s| s.lifecycle_state);
-                let session_is_active = Some(&session.session) == active_session_key.as_ref();
-                let (glyph, glyph_color) =
-                    glyph_for_lifecycle(lifecycle, session_is_active, spinner_frame);
-                let lead_marker = if idx == 0 { "◆" } else { " " };
-                let current_marker = if session_is_active { "•" } else { " " };
-                let label = if session.label.is_empty() {
-                    "main".to_owned()
-                } else {
-                    session.label.clone()
-                };
-                let session_label = truncate_with_ellipsis(&label, session_budget);
-                // Pad the label out to its budget so the trailing
-                // time column lands at a stable column for every row.
-                let label_char_count = session_label.chars().count();
-                let label_padding = session_budget.saturating_sub(label_char_count);
-                let padded_label = format!("{session_label}{}", " ".repeat(label_padding));
-                let time = format_relative_time(session.last_activity, now);
-                lines.push(Line::from(vec![
-                    Span::raw("  "),
-                    Span::styled(glyph, Style::default().fg(glyph_color)),
-                    Span::raw(" "),
-                    Span::styled(lead_marker.to_owned(), Style::default().fg(theme::DIM)),
-                    Span::raw(" "),
-                    Span::styled(
-                        current_marker.to_owned(),
-                        Style::default().fg(theme::RUST_ORANGE),
-                    ),
-                    Span::raw(" "),
-                    Span::raw(padded_label),
-                    Span::raw(" "),
-                    Span::styled(time, Style::default().fg(theme::DIM)),
-                ]));
-                app.pane_hit_targets.push(PaneHitTarget::SessionRow {
-                    session_key: session.session.clone(),
-                    y: row_y,
-                    height: 1,
-                });
-            }
-            if total > visible {
-                let remainder = total - visible;
-                lines.push(Line::from(Span::styled(
-                    format!("      + {remainder} more"),
-                    Style::default().fg(theme::DIM),
-                )));
-            }
+    if !inactive.is_empty() {
+        if !active.is_empty() {
+            lines.push(Line::default());
+        }
+        lines.push(Line::from(Span::styled(
+            "  INACTIVE".to_owned(),
+            Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD),
+        )));
+        for project in &inactive {
+            let row_y = area.y + line_count_as_u16(lines);
+            let label = truncate_with_ellipsis(project.name.as_str(), project_budget);
+            lines.push(Line::from(vec![
+                Span::raw("    "),
+                Span::styled(label, Style::default().fg(theme::DIM)),
+            ]));
+            app.pane_hit_targets.push(PaneHitTarget::ProjectHeader {
+                project_name: project.key.as_str().to_owned(),
+                y: row_y,
+                height: 1,
+            });
         }
     }
 }
-
-/// Active-project drilldown is capped at this many session rows. The
-/// rest collapses to a `+ N more` indicator. Tuned so that a typical
-/// 13-project `forge.toml` fits in one pane height alongside the
-/// active project's recent context.
-const DRILLDOWN_CAP: usize = 3;
 
 /// Saturating cast of `lines.len()` to `u16`. The pane area's height
 /// is `u16` and projects tall enough to overflow `u16::MAX` rows
@@ -361,52 +313,6 @@ fn project_max_chars(area_width: u16) -> usize {
     usize::from(area_width.saturating_sub(2))
 }
 
-/// Max characters available for a session label in the active-project
-/// drilldown. Leading chrome: 2 indent + 1 lifecycle glyph + 1 sp + 1
-/// lead marker (◆) + 1 sp + 1 current marker (•) + 1 sp = 8. Trailing
-/// time column: 1 sp + 3 chars (`12m` / `1h` / `2d` / `1w`,
-/// right-aligned) = 4. Label fits in the middle.
-fn session_max_chars(area_width: u16) -> usize {
-    usize::from(area_width.saturating_sub(8 + 4))
-}
-
-/// Width of the relative-time digits column on a session row (3
-/// chars: `12m`, `1h`, `2d`, `1w`). Leading space and the row's right
-/// edge bracket the column so it sits flush at every tier.
-const TIME_DIGITS_WIDTH: usize = 3;
-
-/// Format `activity` as a short relative-time string anchored at
-/// `now`: `now`, `Xm`, `Xh`, `Xd`, or `Xw`, capped at 3 visible chars.
-/// Anything older than 99 weeks clamps to `99w`. Returns 3 spaces
-/// when activity is `None` so column alignment stays stable.
-fn format_relative_time(activity: Option<SystemTime>, now: SystemTime) -> String {
-    let Some(activity) = activity else {
-        return " ".repeat(TIME_DIGITS_WIDTH);
-    };
-    let elapsed = now.duration_since(activity).unwrap_or_default();
-    let secs = elapsed.as_secs();
-    let formatted = if secs < 60 {
-        "now".to_owned()
-    } else if secs < 3600 {
-        format!("{}m", secs / 60)
-    } else if secs < 86_400 {
-        format!("{}h", secs / 3600)
-    } else if secs < 604_800 {
-        format!("{}d", secs / 86_400)
-    } else {
-        let weeks = (secs / 604_800).min(99);
-        format!("{weeks}w")
-    };
-    if formatted.chars().count() > TIME_DIGITS_WIDTH {
-        // Shouldn't happen with the caps above, but truncate defensively.
-        formatted.chars().take(TIME_DIGITS_WIDTH).collect()
-    } else {
-        // Right-align so the unit suffix sits flush against the row's
-        // right edge regardless of digit count.
-        format!("{formatted:>TIME_DIGITS_WIDTH$}")
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -440,13 +346,5 @@ mod tests {
     fn project_max_chars_matches_indent() {
         assert_eq!(project_max_chars(20), 18);
         assert_eq!(project_max_chars(26), 24);
-    }
-
-    #[test]
-    fn session_max_chars_accounts_for_chrome() {
-        // Wide tier (26): 26 - 8 (left chrome) - 4 (time column) = 14.
-        // Medium tier (20): 20 - 8 - 4 = 8.
-        assert_eq!(session_max_chars(20), 8);
-        assert_eq!(session_max_chars(26), 14);
     }
 }
