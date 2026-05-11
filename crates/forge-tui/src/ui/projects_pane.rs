@@ -195,6 +195,7 @@ fn append_project_rows(
                 Span::styled(time, Style::default().fg(theme::DIM)),
                 Span::raw(" "),
                 Span::styled("×".to_owned(), Style::default().fg(theme::DIM)),
+                Span::raw(" "),
             ]));
             app.pane_hit_targets.push(PaneHitTarget::ProjectHeader {
                 project_name: project.key.as_str().to_owned(),
@@ -236,6 +237,7 @@ fn append_project_rows(
                 Span::raw(" ".repeat(label_pad)),
                 Span::raw(" "),
                 Span::styled(time, Style::default().fg(theme::DIM)),
+                Span::raw(" "),
             ]));
             app.pane_hit_targets.push(PaneHitTarget::ProjectHeader {
                 project_name: project.key.as_str().to_owned(),
@@ -246,16 +248,19 @@ fn append_project_rows(
     }
 }
 
-/// Active-row layout: `<2 indent><1 glyph><1 sp><name><1 sp><3 time><1 sp><1 ×>`
-/// = 9 chrome chars. Name fills the middle.
+/// Active-row layout:
+/// `<2 indent><1 glyph><1 sp><name><1 sp><3 time><1 sp><1 ×><1 right gutter>`
+/// = 10 chrome chars. The trailing gutter keeps content off the
+/// separator column.
 fn name_budget_active(area_width: u16) -> usize {
-    usize::from(area_width.saturating_sub(9))
+    usize::from(area_width.saturating_sub(10))
 }
 
-/// Inactive-row layout: `<2 indent><1 glyph><1 sp><name><1 sp><3 time>`
-/// = 7 chrome chars. No close column.
+/// Inactive-row layout:
+/// `<2 indent><1 glyph><1 sp><name><1 sp><3 time><1 right gutter>`
+/// = 8 chrome chars. No close column; same trailing gutter.
 fn name_budget_inactive(area_width: u16) -> usize {
-    usize::from(area_width.saturating_sub(7))
+    usize::from(area_width.saturating_sub(8))
 }
 
 /// Format `activity` as a short relative-time string anchored at
@@ -423,17 +428,17 @@ mod tests {
 
     #[test]
     fn name_budget_active_matches_chrome() {
-        // Wide tier (26): 26 - 9 chrome chars = 17.
-        // Medium tier (20): 20 - 9 = 11.
-        assert_eq!(name_budget_active(20), 11);
-        assert_eq!(name_budget_active(26), 17);
+        // Wide tier (26): 26 - 10 chrome chars = 16.
+        // Medium tier (20): 20 - 10 = 10.
+        assert_eq!(name_budget_active(20), 10);
+        assert_eq!(name_budget_active(26), 16);
     }
 
     #[test]
     fn name_budget_inactive_matches_chrome() {
-        // Wide tier (26): 26 - 7 chrome chars = 19.
-        // Medium tier (20): 20 - 7 = 13.
-        assert_eq!(name_budget_inactive(20), 13);
-        assert_eq!(name_budget_inactive(26), 19);
+        // Wide tier (26): 26 - 8 chrome chars = 18.
+        // Medium tier (20): 20 - 8 = 12.
+        assert_eq!(name_budget_inactive(20), 12);
+        assert_eq!(name_budget_inactive(26), 18);
     }
 }

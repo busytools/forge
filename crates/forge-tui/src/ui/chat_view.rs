@@ -2,6 +2,7 @@ use super::{autocomplete, chat, footer, help, input, layout, projects_pane, them
 use crate::app::App;
 use ratatui::Frame;
 use ratatui::layout::Rect;
+#[cfg(feature = "perf")]
 use ratatui::style::Color;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
@@ -125,16 +126,14 @@ fn render_separator(frame: &mut Frame, area: Rect) {
 }
 
 /// Render the full-height `│` column between the Projects pane and
-/// the chat column. Drawn in `Color::Gray` (one step brighter than
-/// DIM/DarkGray) so the rule reads as structural chrome on a dark
-/// terminal background without competing with content on either
-/// side.
+/// the chat column in DIM (DarkGray) — matches the rest of the
+/// pane's structural chrome (the underline rule + section headers).
 fn render_pane_separator(frame: &mut Frame, area: Rect) {
     if area.width == 0 || area.height == 0 {
         return;
     }
     let lines: Vec<Line<'static>> = (0..area.height)
-        .map(|_| Line::from(Span::styled("│".to_owned(), Style::default().fg(Color::Gray))))
+        .map(|_| Line::from(Span::styled("│".to_owned(), Style::default().fg(theme::DIM))))
         .collect();
     frame.render_widget(Paragraph::new(lines), area);
 }
