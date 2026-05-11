@@ -35,9 +35,15 @@ pub struct Workspace {
     /// per-account config-dir binding can re-resolve from here.
     config_dir: PathBuf,
     config: LoadedConfig,
-    /// Catalog snapshot from `userdata::catalog::scan::list_sessions`,
-    /// grouped by project key. Read-only after `new` returns.
-    catalog: HashMap<ProjectKey, Vec<SDKSessionInfo>>,
+    /// Catalog of sessions per project. Seeded from
+    /// `userdata::catalog::scan::list_sessions` at `new`; mutated
+    /// in-place by [`Workspace::record_connected_session`] each time a
+    /// freshly spawned session reaches `Connected`, so the Projects
+    /// pane's drilldown stays current without forcing a full disk
+    /// re-scan. Held under a Mutex because multiple in-process tasks
+    /// (the pane render, the connect-flow event handler) reach for it
+    /// across `await` points.
+    catalog: Mutex<HashMap<ProjectKey, Vec<SDKSessionInfo>>>,
     /// Live Agents keyed by session id. `parking_lot::Mutex` so the
     /// public methods can take `&self`.
     pool: Mutex<HashMap<SessionKey, PooledAgent>>,
@@ -129,7 +135,7 @@ impl Workspace {
         Ok(Self {
             config_dir,
             config,
-            catalog,
+            catalog: Mutex::new(catalog),
             pool: Mutex::new(HashMap::new()),
             accounts: Mutex::new(accounts),
             persisted_ui: Mutex::new(persisted.ui),
@@ -152,8 +158,8 @@ impl Workspace {
                     Some(&project.path.to_string_lossy()),
                 ));
 
-            let sessions: Vec<SessionView> = self
-                .catalog
+            let catalog = self.catalog.lock();
+            let sessions: Vec<SessionView> = catalog
                 .get(&key)
                 .map(|entries| {
                     entries
@@ -172,6 +178,7 @@ impl Workspace {
                         .collect()
                 })
                 .unwrap_or_default();
+            drop(catalog);
 
             views.push(ProjectView {
                 key,
@@ -416,7 +423,8 @@ impl Workspace {
         let key = ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(
             Some(&project.path.to_string_lossy()),
         ));
-        let entries = self.catalog.get(&key)?;
+        let catalog = self.catalog.lock();
+        let entries = catalog.get(&key)?;
         let lead = entries.first()?;
         Some(SessionKey::new(lead.session_id.clone()))
     }
@@ -431,10 +439,43 @@ impl Workspace {
     #[must_use]
     pub fn session_cwd_for(&self, session_id: &SessionKey) -> Option<String> {
         self.catalog
+            .lock()
             .values()
             .flatten()
             .find(|info| info.session_id == session_id.as_str())
             .and_then(|info| info.cwd.clone())
+    }
+
+    /// Insert (or update) a session entry under the project that
+    /// owns `cwd`. Called by the forge-tui connect-flow after every
+    /// `Connected` migration so newly spawned sessions surface in the
+    /// Projects-pane drilldown immediately, without forcing a full
+    /// disk re-scan. The entry is placed at the head of the
+    /// project's session list to match the most-recent-first ordering
+    /// the scan produces.
+    pub fn record_connected_session(&self, cwd: &str, session_id: &str, summary: Option<String>) {
+        let key = ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(
+            Some(cwd),
+        ));
+        let now_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX));
+        let entry = SDKSessionInfo {
+            session_id: session_id.to_owned(),
+            summary: summary.unwrap_or_else(|| "new session".to_owned()),
+            last_modified: now_ms,
+            file_size: None,
+            custom_title: None,
+            first_prompt: None,
+            git_branch: None,
+            cwd: Some(cwd.to_owned()),
+            tag: None,
+            created_at: None,
+        };
+        let mut catalog = self.catalog.lock();
+        let entries = catalog.entry(key).or_default();
+        entries.retain(|e| e.session_id != session_id);
+        entries.insert(0, entry);
     }
 
     /// Graceful shutdown of every pooled Agent. Drains the pool, then

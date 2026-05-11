@@ -196,6 +196,29 @@ pub(super) fn handle_connected_client_event(
             }
         }
     }
+    // Surface the freshly-connected session in the Projects pane's
+    // drilldown immediately. Without this the workspace catalog
+    // would only reflect what existed on disk at startup, leaving
+    // newly-spawned sessions invisible to the pane and to the
+    // active-project resolver — the user clicks a project, watches
+    // the bucket spawn, but the pane drilldown stays empty and the
+    // top bar can't resolve the project from the new session's
+    // UUID. Source cwd from the bucket (which the spawn-side path
+    // pre-seeds before Connected can fire); `cwd` and `session_id`
+    // are both moved by the if/else above, so we read off the bucket
+    // we just migrated into.
+    {
+        let cwd_for_record = app
+            .sessions
+            .get(&session_key)
+            .map(|b| b.cwd_raw.clone())
+            .unwrap_or_default();
+        if !cwd_for_record.is_empty()
+            && let Some(workspace) = app.workspace.as_ref()
+        {
+            workspace.record_connected_session(&cwd_for_record, &session_id_for_log, None);
+        }
+    }
     tracing::info!(
         target: crate::logging::targets::APP_SESSION,
         event_name = "session_connected",
