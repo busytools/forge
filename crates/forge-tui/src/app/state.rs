@@ -118,6 +118,17 @@ pub enum PaneHitTarget {
     /// Click on the `✕` glyph in the overlay banner → close the
     /// overlay without switching sessions.
     OverlayClose { y: u16, height: u16, x_start: u16, x_end: u16 },
+    /// Click on the `×` glyph at the right edge of an active project
+    /// row → close that project's session (drop the bucket + tell
+    /// the workspace to release its pool entry so the underlying
+    /// `claude` subprocess can exit).
+    CloseSession {
+        session_key: forge_workspace::SessionKey,
+        y: u16,
+        height: u16,
+        x_start: u16,
+        x_end: u16,
+    },
 }
 
 impl PaneHitTarget {
@@ -133,14 +144,16 @@ impl PaneHitTarget {
             Self::ProjectHeader { y, height, .. }
             | Self::SessionRow { y, height, .. }
             | Self::TopBarIcon { y, height, .. }
-            | Self::OverlayClose { y, height, .. } => (*y, *height),
+            | Self::OverlayClose { y, height, .. }
+            | Self::CloseSession { y, height, .. } => (*y, *height),
         };
         (start..start.saturating_add(height)).contains(&y)
     }
 
     /// Full hit-test (x + y). For full-width row targets the x
-    /// component is unconstrained; for top-bar/✕ glyph targets the
-    /// click must fall within the recorded `[x_start, x_end)` range.
+    /// component is unconstrained; for x+y-bounded targets (top-bar
+    /// icon, overlay close, per-row close) the click must fall within
+    /// the recorded `[x_start, x_end)` range.
     #[must_use]
     pub fn contains(&self, x: u16, y: u16) -> bool {
         if !self.contains_y(y) {
@@ -148,9 +161,9 @@ impl PaneHitTarget {
         }
         match self {
             Self::ProjectHeader { .. } | Self::SessionRow { .. } => true,
-            Self::TopBarIcon { x_start, x_end, .. } | Self::OverlayClose { x_start, x_end, .. } => {
-                (*x_start..*x_end).contains(&x)
-            }
+            Self::TopBarIcon { x_start, x_end, .. }
+            | Self::OverlayClose { x_start, x_end, .. }
+            | Self::CloseSession { x_start, x_end, .. } => (*x_start..*x_end).contains(&x),
         }
     }
 }

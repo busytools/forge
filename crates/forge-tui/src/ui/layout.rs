@@ -73,19 +73,24 @@ pub fn compute(
     //   Narrow (<  120) → no inline pane; top bar lands in chat
     //                     column below
     // `pane_visible == false` collapses Wide/Medium to no pane.
+    // 1-col gutter between the separator and the chat column so
+    // chat content doesn't visually collide with the `│` rule.
+    const CHAT_LEFT_PADDING: u16 = 1;
     let (pane_rect, pane_separator_rect, chat_area) =
         if pane_visible && area.width >= WIDE_TIER_MIN_WIDTH {
-            let [pane, sep, chat] = Layout::horizontal([
+            let [pane, sep, _pad, chat] = Layout::horizontal([
                 Constraint::Length(PANE_WIDTH_WIDE),
                 Constraint::Length(PANE_SEPARATOR_WIDTH),
+                Constraint::Length(CHAT_LEFT_PADDING),
                 Constraint::Min(1),
             ])
             .areas(area);
             (Some(pane), Some(sep), chat)
         } else if pane_visible && area.width >= MEDIUM_TIER_MIN_WIDTH {
-            let [pane, sep, chat] = Layout::horizontal([
+            let [pane, sep, _pad, chat] = Layout::horizontal([
                 Constraint::Length(PANE_WIDTH_MEDIUM),
                 Constraint::Length(PANE_SEPARATOR_WIDTH),
+                Constraint::Length(CHAT_LEFT_PADDING),
                 Constraint::Min(1),
             ])
             .areas(area);

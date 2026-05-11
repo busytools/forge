@@ -502,6 +502,16 @@ impl Workspace {
         // and fast in 1a.
         drop(entries);
     }
+
+    /// Release a single session's pool entry. Drops the workspace's
+    /// `Arc<AgentHandle>` for that key so the underlying `claude`
+    /// subprocess exits once the consumer (forge-tui's bucket) also
+    /// drops its reference. No-op when the key isn't in the pool.
+    /// Called from forge-tui's per-row "close" action.
+    pub fn release_session(&self, session_key: &SessionKey) {
+        let removed = self.pool.lock().remove(session_key);
+        drop(removed);
+    }
 }
 
 #[cfg(test)]

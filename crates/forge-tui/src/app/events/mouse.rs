@@ -394,8 +394,12 @@ fn handle_pane_click(app: &mut App, mouse: MouseEvent) -> bool {
         .pane_hit_targets
         .iter()
         .find(|t| {
-            matches!(t, PaneHitTarget::TopBarIcon { .. } | PaneHitTarget::OverlayClose { .. })
-                && t.contains(mouse.column, mouse.row)
+            matches!(
+                t,
+                PaneHitTarget::TopBarIcon { .. }
+                    | PaneHitTarget::OverlayClose { .. }
+                    | PaneHitTarget::CloseSession { .. }
+            ) && t.contains(mouse.column, mouse.row)
         })
         .cloned();
     if let Some(target) = xy_target {
@@ -407,6 +411,11 @@ fn handle_pane_click(app: &mut App, mouse: MouseEvent) -> bool {
             }
             PaneHitTarget::OverlayClose { .. } => {
                 app.projects_pane_overlay_open = false;
+                app.needs_redraw = true;
+                return true;
+            }
+            PaneHitTarget::CloseSession { session_key, .. } => {
+                close_session(app, &session_key);
                 app.needs_redraw = true;
                 return true;
             }
@@ -443,7 +452,9 @@ fn handle_pane_click(app: &mut App, mouse: MouseEvent) -> bool {
             // the same band as the glyph but the click missed the
             // glyph's x range — treat as "in-overlay no-op" so we
             // still consume.
-            PaneHitTarget::TopBarIcon { .. } | PaneHitTarget::OverlayClose { .. } => true,
+            PaneHitTarget::TopBarIcon { .. }
+            | PaneHitTarget::OverlayClose { .. }
+            | PaneHitTarget::CloseSession { .. } => true,
         };
     }
 
@@ -473,7 +484,31 @@ fn handle_pane_click(app: &mut App, mouse: MouseEvent) -> bool {
         }
         // x+y-bounded glyphs are checked first; here for exhaustive
         // matching only.
-        PaneHitTarget::TopBarIcon { .. } | PaneHitTarget::OverlayClose { .. } => true,
+        PaneHitTarget::TopBarIcon { .. }
+        | PaneHitTarget::OverlayClose { .. }
+        | PaneHitTarget::CloseSession { .. } => true,
+    }
+}
+
+/// Close an active session: drop the bucket from `app.sessions` and
+/// release its pool entry on the workspace so the underlying
+/// `claude` subprocess exits when the last `Arc<AgentHandle>` is
+/// dropped. The project moves back to the INACTIVE list on the next
+/// render (no real catalog entry change is needed — `list_projects`
+/// re-partitions based on whether any of the project's sessions are
+/// in `app.sessions`).
+fn close_session(app: &mut App, session_key: &forge_workspace::SessionKey) {
+    if let Some(workspace) = app.workspace.as_ref() {
+        workspace.release_session(session_key);
+    }
+    app.sessions.remove(session_key);
+    if app.active_session_key.as_ref() == Some(session_key) {
+        let fallback = app.sessions.keys().next().cloned();
+        if let Some(new_active) = fallback {
+            app.switch_active_session(new_active);
+        } else {
+            app.active_session_key = None;
+        }
     }
 }
 

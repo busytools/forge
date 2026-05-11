@@ -18,6 +18,8 @@
 //! `~/.claude-subspace/plans/2026-05-10-forge-tui-projects-pane-wide-design.md`
 //! and `~/.claude-subspace/plans/2026-05-10-forge-tui-projects-pane-medium-design.md`.
 
+use std::time::SystemTime;
+
 use forge_workspace::ProjectView;
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -131,7 +133,8 @@ fn append_project_rows(
     // least one of its catalog session ids is in `app.sessions`, OR
     // a synthetic `__spawn_<name>__` bucket is in flight for it.
     let spinner_frame = app.spinner_frame;
-    let mut active: Vec<(&ProjectView, SessionLifecycleState, bool)> = Vec::new();
+    let mut active: Vec<(&ProjectView, SessionLifecycleState, bool, forge_workspace::SessionKey)> =
+        Vec::new();
     let mut inactive: Vec<&ProjectView> = Vec::new();
     for project in projects {
         let spawn_synthetic =
@@ -145,7 +148,7 @@ fn append_project_rows(
             .map(|bucket| (spawn_synthetic.clone(), bucket.lifecycle_state));
         if let Some((key, lifecycle)) = live_session.or(synthetic) {
             let is_focused = Some(&key) == active_session_key.as_ref();
-            active.push((project, lifecycle, is_focused));
+            active.push((project, lifecycle, is_focused, key));
         } else {
             inactive.push(project);
         }
@@ -159,27 +162,80 @@ fn append_project_rows(
     });
     inactive.sort_by(|a, b| a.name.cmp(&b.name));
 
-    let project_budget = project_max_chars(area.width).saturating_sub(2); // -2 for glyph col
+    let now = SystemTime::now();
+    // Row chrome budget — see name_budget_active / name_budget_inactive helpers.
 
     if !active.is_empty() {
+        lines.push(Line::default());
         lines.push(Line::from(Span::styled(
             "  ACTIVE".to_owned(),
             Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD),
         )));
-        for (project, lifecycle, is_focused) in &active {
+        let name_budget = name_budget_active(area.width);
+        for (project, lifecycle, is_focused, session_key) in &active {
             let row_y = area.y + line_count_as_u16(lines);
             let (glyph, glyph_color) = glyph_for_lifecycle(*lifecycle, *is_focused, spinner_frame);
-            let label = truncate_with_ellipsis(project.name.as_str(), project_budget);
+            let label = truncate_with_ellipsis(project.name.as_str(), name_budget);
+            let label_pad =
+                name_budget.saturating_sub(label.chars().count());
             let name_style = if *is_focused {
                 Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD)
             } else {
                 Style::default().add_modifier(Modifier::BOLD)
             };
+            let time =
+                format_relative_time(project.sessions.first().and_then(|s| s.last_activity), now);
             lines.push(Line::from(vec![
                 Span::raw("  "),
                 Span::styled(glyph, Style::default().fg(glyph_color)),
                 Span::raw(" "),
                 Span::styled(label, name_style),
+                Span::raw(" ".repeat(label_pad)),
+                Span::raw(" "),
+                Span::styled(time, Style::default().fg(theme::DIM)),
+                Span::raw(" "),
+                Span::styled("×".to_owned(), Style::default().fg(theme::DIM)),
+            ]));
+            app.pane_hit_targets.push(PaneHitTarget::ProjectHeader {
+                project_name: project.key.as_str().to_owned(),
+                y: row_y,
+                height: 1,
+            });
+            // Close-glyph hit target — last visible column on the row.
+            let close_x =
+                area.x.saturating_add(area.width).saturating_sub(1);
+            app.pane_hit_targets.push(PaneHitTarget::CloseSession {
+                session_key: session_key.clone(),
+                y: row_y,
+                height: 1,
+                x_start: close_x,
+                x_end: close_x.saturating_add(1),
+            });
+        }
+    }
+
+    if !inactive.is_empty() {
+        lines.push(Line::default());
+        lines.push(Line::from(Span::styled(
+            "  INACTIVE".to_owned(),
+            Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD),
+        )));
+        let name_budget = name_budget_inactive(area.width);
+        for project in &inactive {
+            let row_y = area.y + line_count_as_u16(lines);
+            let label = truncate_with_ellipsis(project.name.as_str(), name_budget);
+            let label_pad =
+                name_budget.saturating_sub(label.chars().count());
+            let time =
+                format_relative_time(project.sessions.first().and_then(|s| s.last_activity), now);
+            lines.push(Line::from(vec![
+                Span::raw("  "),
+                Span::styled("○".to_owned(), Style::default().fg(theme::DIM)),
+                Span::raw(" "),
+                Span::styled(label, Style::default().fg(theme::DIM)),
+                Span::raw(" ".repeat(label_pad)),
+                Span::raw(" "),
+                Span::styled(time, Style::default().fg(theme::DIM)),
             ]));
             app.pane_hit_targets.push(PaneHitTarget::ProjectHeader {
                 project_name: project.key.as_str().to_owned(),
@@ -188,28 +244,44 @@ fn append_project_rows(
             });
         }
     }
+}
 
-    if !inactive.is_empty() {
-        if !active.is_empty() {
-            lines.push(Line::default());
-        }
-        lines.push(Line::from(Span::styled(
-            "  INACTIVE".to_owned(),
-            Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD),
-        )));
-        for project in &inactive {
-            let row_y = area.y + line_count_as_u16(lines);
-            let label = truncate_with_ellipsis(project.name.as_str(), project_budget);
-            lines.push(Line::from(vec![
-                Span::raw("    "),
-                Span::styled(label, Style::default().fg(theme::DIM)),
-            ]));
-            app.pane_hit_targets.push(PaneHitTarget::ProjectHeader {
-                project_name: project.key.as_str().to_owned(),
-                y: row_y,
-                height: 1,
-            });
-        }
+/// Active-row layout: `<2 indent><1 glyph><1 sp><name><1 sp><3 time><1 sp><1 ×>`
+/// = 9 chrome chars. Name fills the middle.
+fn name_budget_active(area_width: u16) -> usize {
+    usize::from(area_width.saturating_sub(9))
+}
+
+/// Inactive-row layout: `<2 indent><1 glyph><1 sp><name><1 sp><3 time>`
+/// = 7 chrome chars. No close column.
+fn name_budget_inactive(area_width: u16) -> usize {
+    usize::from(area_width.saturating_sub(7))
+}
+
+/// Format `activity` as a short relative-time string anchored at
+/// `now` (`now` / `Xm` / `Xh` / `Xd` / `Xw`), padded/truncated to a
+/// stable 3-char column.
+fn format_relative_time(activity: Option<SystemTime>, now: SystemTime) -> String {
+    let Some(activity) = activity else {
+        return "   ".to_owned();
+    };
+    let elapsed = now.duration_since(activity).unwrap_or_default();
+    let secs = elapsed.as_secs();
+    let raw = if secs < 60 {
+        "now".to_owned()
+    } else if secs < 3600 {
+        format!("{}m", secs / 60)
+    } else if secs < 86_400 {
+        format!("{}h", secs / 3600)
+    } else if secs < 604_800 {
+        format!("{}d", secs / 86_400)
+    } else {
+        format!("{}w", (secs / 604_800).min(99))
+    };
+    if raw.chars().count() > 3 {
+        raw.chars().take(3).collect()
+    } else {
+        format!("{raw:>3}")
     }
 }
 
@@ -320,13 +392,6 @@ pub(super) fn truncate_with_ellipsis(s: &str, max_chars: usize) -> String {
     out
 }
 
-/// Max characters available for a project name on a single row.
-/// Project rows have a 2-char indent before the name; the rest of
-/// the row width is the budget.
-fn project_max_chars(area_width: u16) -> usize {
-    usize::from(area_width.saturating_sub(2))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -357,8 +422,18 @@ mod tests {
     }
 
     #[test]
-    fn project_max_chars_matches_indent() {
-        assert_eq!(project_max_chars(20), 18);
-        assert_eq!(project_max_chars(26), 24);
+    fn name_budget_active_matches_chrome() {
+        // Wide tier (26): 26 - 9 chrome chars = 17.
+        // Medium tier (20): 20 - 9 = 11.
+        assert_eq!(name_budget_active(20), 11);
+        assert_eq!(name_budget_active(26), 17);
+    }
+
+    #[test]
+    fn name_budget_inactive_matches_chrome() {
+        // Wide tier (26): 26 - 7 chrome chars = 19.
+        // Medium tier (20): 20 - 7 = 13.
+        assert_eq!(name_budget_inactive(20), 13);
+        assert_eq!(name_budget_inactive(26), 19);
     }
 }
