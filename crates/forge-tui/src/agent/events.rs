@@ -1,4 +1,3 @@
-use crate::agent::error_handling::TurnErrorClass;
 use crate::agent::model;
 use crate::app::plugins::{PluginsCliActionSuccess, PluginsInventorySnapshot};
 use crate::app::{UsageSnapshot, UsageSourceKind};
@@ -25,27 +24,6 @@ use std::sync::{Arc, Mutex};
 /// `ServiceStatus`) carry no `session_key` field and update App-
 /// level state directly.
 pub enum ClientEvent {
-    /// Permission request that needs user input.
-    ///
-    /// Phase 1+: `response_tx` no longer rides on this envelope —
-    /// workspace owns the oneshot. `session_key` carries the routing
-    /// key and `tool_id` indexes into
-    /// `DomainSession.pending_interactions` for the matching reply.
-    PermissionRequest {
-        session_key: SessionKey,
-        tool_id: String,
-        request: model::RequestPermissionRequest,
-    },
-    /// Question request from `AskUserQuestion` that needs structured user input.
-    ///
-    /// Same shape change as [`Self::PermissionRequest`].
-    QuestionRequest {
-        session_key: SessionKey,
-        tool_id: String,
-        request: model::RequestQuestionRequest,
-    },
-    /// MCP elicitation request that needs auth or other MCP input.
-    McpElicitationRequest { session_key: SessionKey, request: forge_primitives::ElicitationRequest },
     /// MCP elicitation completed in the SDK.
     McpElicitationCompleted {
         session_key: SessionKey,
@@ -56,26 +34,6 @@ pub enum ClientEvent {
     McpAuthRedirect { session_key: SessionKey, redirect: forge_primitives::McpAuthRedirect },
     /// MCP operation failed and should be surfaced in the MCP config UI.
     McpOperationError { session_key: SessionKey, error: forge_primitives::McpOperationError },
-    /// A prompt turn completed successfully.
-    TurnComplete {
-        session_key: SessionKey,
-        terminal_reason: Option<forge_primitives::TerminalReason>,
-    },
-    /// `cancel` notification was accepted by the bridge.
-    TurnCancelled { session_key: SessionKey },
-    /// A prompt turn failed with an error.
-    TurnError {
-        session_key: SessionKey,
-        message: String,
-        terminal_reason: Option<forge_primitives::TerminalReason>,
-    },
-    /// A prompt turn failed with bridge-provided classification metadata.
-    TurnErrorClassified {
-        session_key: SessionKey,
-        message: String,
-        class: TurnErrorClass,
-        terminal_reason: Option<forge_primitives::TerminalReason>,
-    },
     /// Background connection completed successfully.
     ///
     /// `session_id` is the claude-issued session UUID; the
@@ -173,16 +131,9 @@ impl ClientEvent {
     #[must_use]
     pub fn session_key(&self) -> Option<SessionKey> {
         match self {
-            Self::PermissionRequest { session_key, .. }
-            | Self::QuestionRequest { session_key, .. }
-            | Self::McpElicitationRequest { session_key, .. }
-            | Self::McpElicitationCompleted { session_key, .. }
+            Self::McpElicitationCompleted { session_key, .. }
             | Self::McpAuthRedirect { session_key, .. }
             | Self::McpOperationError { session_key, .. }
-            | Self::TurnComplete { session_key, .. }
-            | Self::TurnCancelled { session_key }
-            | Self::TurnError { session_key, .. }
-            | Self::TurnErrorClassified { session_key, .. }
             | Self::ConnectionFailed { session_key, .. }
             | Self::AuthRequired { session_key, .. }
             | Self::SlashCommandError { session_key, .. }

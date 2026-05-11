@@ -150,7 +150,7 @@ pub(crate) fn convert_current_model(current_model: types::CurrentModel) -> model
     mapped
 }
 
-pub(super) fn map_permission_request(
+pub(crate) fn map_permission_request(
     session_id: &str,
     request: types::PermissionRequest,
 ) -> (model::RequestPermissionRequest, String) {
@@ -199,7 +199,7 @@ pub(super) fn map_permission_request(
     )
 }
 
-pub(super) fn map_question_request(
+pub(crate) fn map_question_request(
     session_id: &str,
     request: types::QuestionRequest,
 ) -> (model::RequestQuestionRequest, String) {

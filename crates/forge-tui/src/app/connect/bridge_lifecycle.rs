@@ -241,21 +241,21 @@ fn handle_agent_event(
             );
         }
         AgentEvent::PermissionRequest { session_id, request } => {
-            handle_permission_request_event(
-                event_tx, &update_tx, agent, workspace, session_id, request,
-            );
+            handle_permission_request_event(&update_tx, agent, workspace, session_id, request);
         }
         AgentEvent::QuestionRequest { session_id, request } => {
-            handle_question_request_event(
-                event_tx, &update_tx, agent, workspace, session_id, request,
-            );
+            handle_question_request_event(&update_tx, agent, workspace, session_id, request);
         }
         AgentEvent::ElicitationRequest { session_id, request } => {
             let elicitation_id = request.elicitation_id.clone().unwrap_or_default();
-            if event_tx
-                .send(ClientEvent::McpElicitationRequest {
-                    session_key: session_key.clone(),
-                    request: request.clone(),
+            // Phase 3c: ClientEvent emit removed. The TUI's
+            // `apply_session_update_mcp_elicitation_request` consumes
+            // the SessionUpdate envelope below.
+            if update_tx
+                .send(forge_workspace::SessionUpdate::McpElicitationRequest {
+                    key: session_key,
+                    elicitation_id,
+                    request,
                 })
                 .is_err()
             {
@@ -267,11 +267,6 @@ fn handle_agent_event(
                     session_id = %session_id,
                 );
             }
-            let _ = update_tx.send(forge_workspace::SessionUpdate::McpElicitationRequest {
-                key: session_key,
-                elicitation_id,
-                request,
-            });
         }
         AgentEvent::ElicitationComplete { elicitation_id, server_name, .. } => {
             let _ = event_tx.send(ClientEvent::McpElicitationCompleted {
@@ -500,7 +495,6 @@ fn handle_connected_event(
 }
 
 fn handle_permission_request_event(
-    event_tx: &mpsc::UnboundedSender<ClientEvent>,
     update_tx: &mpsc::UnboundedSender<forge_workspace::SessionUpdate>,
     agent: &Arc<forge_agent::AgentHandle>,
     workspace: &std::rc::Rc<forge_workspace::Workspace>,
@@ -508,7 +502,7 @@ fn handle_permission_request_event(
     request: types::PermissionRequest,
 ) {
     let wire_request = request.clone();
-    let (request, tool_call_id) = map_permission_request(&session_id, request);
+    let (_legacy_request, tool_call_id) = map_permission_request(&session_id, request);
     let session_key = SessionKey::from_session_id(session_id.clone());
     // Single workspace-owned oneshot. The bridge keeps the receiver
     // and forwards the outcome to the agent's pending response when
@@ -519,19 +513,19 @@ fn handle_permission_request_event(
         tool_call_id.clone(),
         forge_workspace::PendingInteractionSlot::Permission(response_tx),
     );
-    if event_tx
-        .send(ClientEvent::PermissionRequest {
-            session_key: session_key.clone(),
-            tool_id: tool_call_id.clone(),
-            request,
-        })
-        .is_ok()
-    {
-        let _ = update_tx.send(forge_workspace::SessionUpdate::PermissionRequest {
+    // Phase 3c: ClientEvent emit removed. The TUI's
+    // `apply_session_update_permission_request` consumes the
+    // SessionUpdate envelope and re-runs the
+    // `map_permission_request` conversion against the wire-side
+    // payload below.
+    if update_tx
+        .send(forge_workspace::SessionUpdate::PermissionRequest {
             key: session_key,
             tool_id: tool_call_id.clone(),
             request: wire_request,
-        });
+        })
+        .is_ok()
+    {
         spawn_permission_response_forwarder(
             Arc::clone(agent),
             response_rx,
@@ -551,7 +545,6 @@ fn handle_permission_request_event(
 }
 
 fn handle_question_request_event(
-    event_tx: &mpsc::UnboundedSender<ClientEvent>,
     update_tx: &mpsc::UnboundedSender<forge_workspace::SessionUpdate>,
     agent: &Arc<forge_agent::AgentHandle>,
     workspace: &std::rc::Rc<forge_workspace::Workspace>,
@@ -559,7 +552,7 @@ fn handle_question_request_event(
     request: types::QuestionRequest,
 ) {
     let wire_request = request.clone();
-    let (request, tool_call_id) = map_question_request(&session_id, request);
+    let (_legacy_request, tool_call_id) = map_question_request(&session_id, request);
     let session_key = SessionKey::from_session_id(session_id.clone());
     let (response_tx, response_rx) = tokio::sync::oneshot::channel::<types::QuestionOutcome>();
     workspace.store_pending_interaction(
@@ -567,19 +560,15 @@ fn handle_question_request_event(
         tool_call_id.clone(),
         forge_workspace::PendingInteractionSlot::Question(response_tx),
     );
-    if event_tx
-        .send(ClientEvent::QuestionRequest {
-            session_key: session_key.clone(),
-            tool_id: tool_call_id.clone(),
-            request,
-        })
-        .is_ok()
-    {
-        let _ = update_tx.send(forge_workspace::SessionUpdate::QuestionRequest {
+    // Phase 3c: ClientEvent emit removed. See `handle_permission_request_event` above.
+    if update_tx
+        .send(forge_workspace::SessionUpdate::QuestionRequest {
             key: session_key,
             tool_id: tool_call_id.clone(),
             request: wire_request,
-        });
+        })
+        .is_ok()
+    {
         spawn_question_response_forwarder(Arc::clone(agent), response_rx, session_id, tool_call_id);
     } else {
         tracing::error!(

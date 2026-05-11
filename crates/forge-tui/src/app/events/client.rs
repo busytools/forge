@@ -39,19 +39,6 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
         session.last_activity_at = std::time::Instant::now();
     }
     match event {
-        ClientEvent::PermissionRequest { session_key, tool_id, request } => {
-            turn::handle_permission_request_event(app, session_key, tool_id, request);
-        }
-        ClientEvent::QuestionRequest { session_key, tool_id, request } => {
-            turn::handle_question_request_event(app, session_key, tool_id, request);
-        }
-        ClientEvent::McpElicitationRequest { request, .. } => {
-            // App-global UI overlay; only meaningful for the active
-            // session. Drop for background sessions.
-            if is_active_or_global {
-                crate::app::config::present_mcp_elicitation_request(app, request);
-            }
-        }
         ClientEvent::McpAuthRedirect { redirect, .. } => {
             if is_active_or_global {
                 crate::app::config::present_mcp_auth_redirect(app, redirect);
@@ -70,24 +57,6 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
                     server_name,
                 );
             }
-        }
-        ClientEvent::TurnCancelled { session_key } => {
-            turn::handle_turn_cancelled_event(app, &session_key);
-        }
-        ClientEvent::TurnComplete { session_key, terminal_reason } => {
-            turn::handle_turn_complete_event(app, &session_key, terminal_reason);
-        }
-        ClientEvent::TurnError { session_key, message, terminal_reason } => {
-            turn::handle_turn_error_event(app, &session_key, &message, None, terminal_reason);
-        }
-        ClientEvent::TurnErrorClassified { session_key, message, class, terminal_reason } => {
-            turn::handle_turn_error_event(
-                app,
-                &session_key,
-                &message,
-                Some(class),
-                terminal_reason,
-            );
         }
         ClientEvent::Connected {
             session_id,
@@ -1003,15 +972,33 @@ fn apply_workspace_update(app: &mut App, update: forge_workspace::SessionUpdate)
         SessionUpdate::RuntimeReloadFailed { session_id, message } => {
             apply_session_update_runtime_reload_failed(app, session_id, message);
         }
-        // Remaining variants (Spawning, permission/question/elicitation,
-        // turn lifecycle, plugins, usage, etc.) are wired by Phases
-        // 3c/3d. For now they continue to flow through the legacy
-        // ClientEvent path.
+        SessionUpdate::PermissionRequest { key, tool_id, request } => {
+            turn::apply_session_update_permission_request(app, key, tool_id, request);
+        }
+        SessionUpdate::QuestionRequest { key, tool_id, request } => {
+            turn::apply_session_update_question_request(app, key, tool_id, request);
+        }
+        SessionUpdate::McpElicitationRequest { key, elicitation_id, request } => {
+            turn::apply_session_update_mcp_elicitation_request(app, key, elicitation_id, request);
+        }
+        SessionUpdate::TurnComplete { key, terminal_reason } => {
+            turn::apply_session_update_turn_complete(app, key, terminal_reason);
+        }
+        SessionUpdate::TurnCancelled { key } => {
+            turn::apply_session_update_turn_cancelled(app, &key);
+        }
+        SessionUpdate::TurnError { key, message, class, terminal_reason } => {
+            turn::apply_session_update_turn_error(app, key, message, class, terminal_reason);
+        }
+        // Remaining variants (Spawning, McpElicitationCompleted,
+        // McpAuthRedirect, McpOperationError, plugins, usage, etc.)
+        // are wired by Phase 3d. For now they continue to flow
+        // through the legacy ClientEvent path.
         other => {
             tracing::trace!(
                 target: crate::logging::targets::APP_SESSION,
                 update = ?other,
-                "SessionUpdate variant not wired for Phase 3b; legacy ClientEvent path is authoritative",
+                "SessionUpdate variant not wired for Phase 3c; legacy ClientEvent path is authoritative",
             );
         }
     }

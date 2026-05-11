@@ -24,6 +24,8 @@ use crossterm::event::KeyEvent;
 use crossterm::event::{Event, KeyEventKind};
 
 pub use client::handle_client_event;
+#[cfg(feature = "testing")]
+pub use turn::{handle_permission_request_event, handle_question_request_event};
 
 pub fn handle_terminal_event(app: &mut App, event: Event) {
     let changed = match event {
@@ -340,7 +342,6 @@ mod tests {
     // =====
 
     use super::*;
-    use crate::agent::error_handling::TurnErrorClass;
     use crate::agent::events::ClientEvent;
     use crate::agent::events::ServiceStatusSeverity;
     use crate::app::slash::{SlashCandidate, SlashContext, SlashState};
@@ -513,11 +514,19 @@ mod tests {
 
         // User cancels then TurnComplete finalizes the turn
         let session_key = active_session_key(&app);
-        handle_client_event(&mut app, ClientEvent::TurnCancelled { session_key });
+        handle_client_event(
+            &mut app,
+            ClientEvent::WorkspaceUpdate(forge_workspace::SessionUpdate::TurnCancelled {
+                key: session_key,
+            }),
+        );
         let session_key = active_session_key(&app);
         handle_client_event(
             &mut app,
-            ClientEvent::TurnComplete { session_key, terminal_reason: None },
+            ClientEvent::WorkspaceUpdate(forge_workspace::SessionUpdate::TurnComplete {
+                key: session_key,
+                terminal_reason: None,
+            }),
         );
 
         // Stale task ID must be gone after turn boundary
@@ -1405,13 +1414,21 @@ mod tests {
         let mut app = make_test_app();
 
         let session_key = active_session_key(&app);
-        handle_client_event(&mut app, ClientEvent::TurnCancelled { session_key });
+        handle_client_event(
+            &mut app,
+            ClientEvent::WorkspaceUpdate(forge_workspace::SessionUpdate::TurnCancelled {
+                key: session_key,
+            }),
+        );
         assert!(app.cancelled_turn_pending_hint());
 
         let session_key = active_session_key(&app);
         handle_client_event(
             &mut app,
-            ClientEvent::TurnComplete { session_key, terminal_reason: None },
+            ClientEvent::WorkspaceUpdate(forge_workspace::SessionUpdate::TurnComplete {
+                key: session_key,
+                terminal_reason: None,
+            }),
         );
 
         assert!(!app.cancelled_turn_pending_hint());
@@ -1436,7 +1453,10 @@ mod tests {
         let session_key = active_session_key(&app);
         handle_client_event(
             &mut app,
-            ClientEvent::TurnComplete { session_key, terminal_reason: None },
+            ClientEvent::WorkspaceUpdate(forge_workspace::SessionUpdate::TurnComplete {
+                key: session_key,
+                terminal_reason: None,
+            }),
         );
 
         assert!(matches!(app.status, AppStatus::Ready));
@@ -1460,7 +1480,10 @@ mod tests {
         let session_key = active_session_key(&app);
         handle_client_event(
             &mut app,
-            ClientEvent::TurnComplete { session_key, terminal_reason: None },
+            ClientEvent::WorkspaceUpdate(forge_workspace::SessionUpdate::TurnComplete {
+                key: session_key,
+                terminal_reason: None,
+            }),
         );
 
         assert!(matches!(app.status, AppStatus::Ready));
@@ -2684,7 +2707,10 @@ mod tests {
         let session_key = active_session_key(&app);
         handle_client_event(
             &mut app,
-            ClientEvent::TurnComplete { session_key, terminal_reason: None },
+            ClientEvent::WorkspaceUpdate(forge_workspace::SessionUpdate::TurnComplete {
+                key: session_key,
+                terminal_reason: None,
+            }),
         );
         assert!(app.messages().is_empty());
     }
@@ -2710,7 +2736,10 @@ mod tests {
         let session_key = active_session_key(&app);
         handle_client_event(
             &mut app,
-            ClientEvent::TurnComplete { session_key, terminal_reason: None },
+            ClientEvent::WorkspaceUpdate(forge_workspace::SessionUpdate::TurnComplete {
+                key: session_key,
+                terminal_reason: None,
+            }),
         );
 
         assert!(!app.pending_compact_clear());
@@ -2768,11 +2797,12 @@ mod tests {
         let session_key = active_session_key(&app);
         handle_client_event(
             &mut app,
-            ClientEvent::TurnError {
-                session_key,
+            ClientEvent::WorkspaceUpdate(forge_workspace::SessionUpdate::TurnError {
+                key: session_key,
                 message: "adapter failed".into(),
+                class: None,
                 terminal_reason: None,
-            },
+            }),
         );
 
         assert!(!app.pending_compact_clear());
@@ -2807,7 +2837,12 @@ mod tests {
         app.set_is_compacting(true);
 
         let session_key = active_session_key(&app);
-        handle_client_event(&mut app, ClientEvent::TurnCancelled { session_key });
+        handle_client_event(
+            &mut app,
+            ClientEvent::WorkspaceUpdate(forge_workspace::SessionUpdate::TurnCancelled {
+                key: session_key,
+            }),
+        );
 
         assert!(app.pending_compact_clear());
         assert!(app.is_compacting());
@@ -2821,15 +2856,21 @@ mod tests {
         app.set_is_compacting(true);
 
         let session_key = active_session_key(&app);
-        handle_client_event(&mut app, ClientEvent::TurnCancelled { session_key });
+        handle_client_event(
+            &mut app,
+            ClientEvent::WorkspaceUpdate(forge_workspace::SessionUpdate::TurnCancelled {
+                key: session_key,
+            }),
+        );
         let session_key = active_session_key(&app);
         handle_client_event(
             &mut app,
-            ClientEvent::TurnError {
-                session_key,
+            ClientEvent::WorkspaceUpdate(forge_workspace::SessionUpdate::TurnError {
+                key: session_key,
                 message: "cancelled".into(),
+                class: None,
                 terminal_reason: None,
-            },
+            }),
         );
 
         assert_eq!(app.messages().len(), 3);
@@ -2851,11 +2892,12 @@ mod tests {
         let session_key = active_session_key(&app);
         handle_client_event(
             &mut app,
-            ClientEvent::TurnError {
-                session_key,
+            ClientEvent::WorkspaceUpdate(forge_workspace::SessionUpdate::TurnError {
+                key: session_key,
                 message: "HTTP 429 Too Many Requests: max turns exceeded".into(),
+                class: None,
                 terminal_reason: None,
-            },
+            }),
         );
 
         assert!(matches!(app.status, AppStatus::Error));
@@ -2877,12 +2919,12 @@ mod tests {
         let session_key = active_session_key(&app);
         handle_client_event(
             &mut app,
-            ClientEvent::TurnErrorClassified {
-                session_key,
+            ClientEvent::WorkspaceUpdate(forge_workspace::SessionUpdate::TurnError {
+                key: session_key,
                 message: "turn failed".into(),
-                class: TurnErrorClass::PlanLimit,
+                class: Some(forge_workspace::TurnErrorClass::PlanLimit),
                 terminal_reason: None,
-            },
+            }),
         );
 
         assert!(matches!(app.status, AppStatus::Error));
@@ -2903,12 +2945,12 @@ mod tests {
         let session_key = active_session_key(&app);
         handle_client_event(
             &mut app,
-            ClientEvent::TurnErrorClassified {
-                session_key,
+            ClientEvent::WorkspaceUpdate(forge_workspace::SessionUpdate::TurnError {
+                key: session_key,
                 message: "auth required".into(),
-                class: TurnErrorClass::AuthRequired,
+                class: Some(forge_workspace::TurnErrorClass::AuthRequired),
                 terminal_reason: None,
-            },
+            }),
         );
 
         assert!(matches!(app.status, AppStatus::Error));
@@ -2929,7 +2971,12 @@ mod tests {
         let session_key = active_session_key(&app);
         handle_client_event(
             &mut app,
-            ClientEvent::TurnError { session_key, message: "boom".into(), terminal_reason: None },
+            ClientEvent::WorkspaceUpdate(forge_workspace::SessionUpdate::TurnError {
+                key: session_key,
+                message: "boom".into(),
+                class: None,
+                terminal_reason: None,
+            }),
         );
 
         assert!(app.active_task_ids().is_empty());
@@ -3196,12 +3243,12 @@ mod tests {
         let session_key = active_session_key(&app);
         handle_client_event(
             &mut app,
-            ClientEvent::TurnErrorClassified {
-                session_key,
+            ClientEvent::WorkspaceUpdate(forge_workspace::SessionUpdate::TurnError {
+                key: session_key,
                 message: "HTTP 429 Too Many Requests".to_owned(),
-                class: TurnErrorClass::PlanLimit,
+                class: Some(forge_workspace::TurnErrorClass::PlanLimit),
                 terminal_reason: None,
-            },
+            }),
         );
 
         assert!(matches!(app.status, AppStatus::Error));
@@ -3238,12 +3285,12 @@ mod tests {
         let session_key = active_session_key(&app);
         handle_client_event(
             &mut app,
-            ClientEvent::TurnErrorClassified {
-                session_key,
+            ClientEvent::WorkspaceUpdate(forge_workspace::SessionUpdate::TurnError {
+                key: session_key,
                 message: "HTTP 429 Too Many Requests".to_owned(),
-                class: TurnErrorClass::PlanLimit,
+                class: Some(forge_workspace::TurnErrorClass::PlanLimit),
                 terminal_reason: None,
-            },
+            }),
         );
 
         assert_eq!(app.messages().len(), 2);
@@ -3305,7 +3352,10 @@ mod tests {
         let session_key = active_session_key(&app);
         handle_client_event(
             &mut app,
-            ClientEvent::TurnComplete { session_key, terminal_reason: None },
+            ClientEvent::WorkspaceUpdate(forge_workspace::SessionUpdate::TurnComplete {
+                key: session_key,
+                terminal_reason: None,
+            }),
         );
         assert!(app.turn_notice_refs().is_empty());
 
@@ -3348,17 +3398,23 @@ mod tests {
         app.messages_mut().push(user_msg("build app"));
 
         let session_key = active_session_key(&app);
-        handle_client_event(&mut app, ClientEvent::TurnCancelled { session_key });
+        handle_client_event(
+            &mut app,
+            ClientEvent::WorkspaceUpdate(forge_workspace::SessionUpdate::TurnCancelled {
+                key: session_key,
+            }),
+        );
         assert!(app.cancelled_turn_pending_hint());
 
         let session_key = active_session_key(&app);
         handle_client_event(
             &mut app,
-            ClientEvent::TurnError {
-                session_key,
+            ClientEvent::WorkspaceUpdate(forge_workspace::SessionUpdate::TurnError {
+                key: session_key,
                 message: "Error: Request was aborted.\n    at stack line".into(),
+                class: None,
                 terminal_reason: None,
-            },
+            }),
         );
 
         assert!(!app.cancelled_turn_pending_hint());
@@ -3387,11 +3443,12 @@ mod tests {
         let session_key = active_session_key(&app);
         handle_client_event(
             &mut app,
-            ClientEvent::TurnError {
-                session_key,
+            ClientEvent::WorkspaceUpdate(forge_workspace::SessionUpdate::TurnError {
+                key: session_key,
                 message: "Error: Request was aborted.\n    at stack line".into(),
+                class: None,
                 terminal_reason: None,
-            },
+            }),
         );
 
         assert!(matches!(app.status, AppStatus::Ready));
@@ -3413,7 +3470,12 @@ mod tests {
         ]));
 
         let session_key = active_session_key(&app);
-        handle_client_event(&mut app, ClientEvent::TurnCancelled { session_key });
+        handle_client_event(
+            &mut app,
+            ClientEvent::WorkspaceUpdate(forge_workspace::SessionUpdate::TurnCancelled {
+                key: session_key,
+            }),
+        );
 
         let Some(last) = app.messages().last() else {
             panic!("missing assistant message");
@@ -3447,7 +3509,10 @@ mod tests {
         let session_key = active_session_key(&app);
         handle_client_event(
             &mut app,
-            ClientEvent::TurnComplete { session_key, terminal_reason: None },
+            ClientEvent::WorkspaceUpdate(forge_workspace::SessionUpdate::TurnComplete {
+                key: session_key,
+                terminal_reason: None,
+            }),
         );
 
         let Some(last) = app.messages().last() else {

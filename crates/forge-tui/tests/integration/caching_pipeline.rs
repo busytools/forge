@@ -17,6 +17,7 @@ use forge_tui::app::{
     DEFAULT_CACHE_SPLIT_SOFT_LIMIT_BYTES, MessageBlock, MessageRole, TextBlock, TextBlockSpacing,
 };
 use forge_tui::ui::{SpinnerState, measure_message_height_cached};
+use forge_workspace::SessionUpdate;
 use ratatui::text::{Line, Span};
 use std::fmt::Write as _;
 
@@ -43,7 +44,13 @@ fn stream_text(app: &mut App, text: &str) {
 
 fn complete_turn(app: &mut App) {
     let session_key = active_session_key(app);
-    send_client_event(app, ClientEvent::TurnComplete { session_key, terminal_reason: None });
+    send_client_event(
+        app,
+        ClientEvent::WorkspaceUpdate(SessionUpdate::TurnComplete {
+            key: session_key,
+            terminal_reason: None,
+        }),
+    );
 }
 
 /// Build a `ChatMessage` with a single text block for direct insertion.

@@ -6,6 +6,7 @@
 use forge_tui::agent::events::ClientEvent;
 use forge_tui::agent::model;
 use forge_tui::app::{AppStatus, MessageBlock};
+use forge_workspace::SessionUpdate;
 use pretty_assertions::assert_eq;
 
 use crate::helpers::{active_session_key, send_client_event, test_app};
@@ -33,10 +34,7 @@ fn setup_permission(
         model::ToolCallUpdate::new(tool_id.to_owned(), model::ToolCallUpdateFields::new());
     let request =
         model::RequestPermissionRequest::new("test-session", tool_call_update, options, None);
-    send_client_event(
-        app,
-        ClientEvent::PermissionRequest { session_key, tool_id: tool_id.to_owned(), request },
-    );
+    forge_tui::app::handle_permission_request_event(app, session_key, tool_id.to_owned(), request);
 }
 
 fn allow_deny_options() -> Vec<model::PermissionOption> {
@@ -90,9 +88,11 @@ async fn permission_for_unknown_tool_call_auto_rejects() {
     let options = allow_deny_options();
     let request =
         model::RequestPermissionRequest::new("test-session", tool_call_update, options, None);
-    send_client_event(
+    forge_tui::app::handle_permission_request_event(
         &mut app,
-        ClientEvent::PermissionRequest { session_key, tool_id: tool_id.clone(), request },
+        session_key,
+        tool_id.clone(),
+        request,
     );
 
     // Should NOT be in pending queue
@@ -148,9 +148,11 @@ async fn duplicate_permission_request_is_rejected_without_duplicate_queue_entry(
         allow_deny_options(),
         None,
     );
-    send_client_event(
+    forge_tui::app::handle_permission_request_event(
         &mut app,
-        ClientEvent::PermissionRequest { session_key, tool_id: "tc-dup".to_owned(), request },
+        session_key,
+        "tc-dup".to_owned(),
+        request,
     );
 
     assert_eq!(app.pending_interaction_ids(), vec!["tc-dup"]);
@@ -211,7 +213,13 @@ async fn turn_complete_resets_transient_state() {
     app.spinner_frame = 42;
 
     let session_key = active_session_key(&app);
-    send_client_event(&mut app, ClientEvent::TurnComplete { session_key, terminal_reason: None });
+    send_client_event(
+        &mut app,
+        ClientEvent::WorkspaceUpdate(SessionUpdate::TurnComplete {
+            key: session_key,
+            terminal_reason: None,
+        }),
+    );
 
     assert!(matches!(app.status, AppStatus::Ready));
     assert_eq!(app.files_accessed(), 0, "files_accessed should reset");
@@ -228,7 +236,13 @@ async fn turn_complete_does_not_clear_messages() {
     assert_eq!(app.messages().len(), 1);
 
     let session_key = active_session_key(&app);
-    send_client_event(&mut app, ClientEvent::TurnComplete { session_key, terminal_reason: None });
+    send_client_event(
+        &mut app,
+        ClientEvent::WorkspaceUpdate(SessionUpdate::TurnComplete {
+            key: session_key,
+            terminal_reason: None,
+        }),
+    );
 
     assert_eq!(app.messages().len(), 1, "messages should persist across turns");
 }
@@ -248,7 +262,13 @@ async fn turn_complete_does_not_clear_tool_call_index() {
     assert!(app.tool_call_index().contains_key("tc-persist"));
 
     let session_key = active_session_key(&app);
-    send_client_event(&mut app, ClientEvent::TurnComplete { session_key, terminal_reason: None });
+    send_client_event(
+        &mut app,
+        ClientEvent::WorkspaceUpdate(SessionUpdate::TurnComplete {
+            key: session_key,
+            terminal_reason: None,
+        }),
+    );
 
     assert!(
         app.tool_call_index().contains_key("tc-persist"),
@@ -269,7 +289,13 @@ async fn turn_complete_does_not_clear_todos() {
     app.set_show_todo_panel(true);
 
     let session_key = active_session_key(&app);
-    send_client_event(&mut app, ClientEvent::TurnComplete { session_key, terminal_reason: None });
+    send_client_event(
+        &mut app,
+        ClientEvent::WorkspaceUpdate(SessionUpdate::TurnComplete {
+            key: session_key,
+            terminal_reason: None,
+        }),
+    );
 
     assert_eq!(app.todos().len(), 1, "todos should persist across turns");
     assert!(app.show_todo_panel(), "todo panel state should persist");
@@ -286,7 +312,13 @@ async fn turn_complete_does_not_affect_mode() {
     }));
 
     let session_key = active_session_key(&app);
-    send_client_event(&mut app, ClientEvent::TurnComplete { session_key, terminal_reason: None });
+    send_client_event(
+        &mut app,
+        ClientEvent::WorkspaceUpdate(SessionUpdate::TurnComplete {
+            key: session_key,
+            terminal_reason: None,
+        }),
+    );
 
     assert!(app.mode().is_some(), "mode should persist across turns");
 }

@@ -16,7 +16,9 @@ use crate::account::{AccountKey, AccountStateMap};
 use crate::config::{LoadedConfig, LoadedProject, load_from_dir};
 use crate::domain_session::DomainSession;
 use crate::error::WorkspaceError;
-use crate::protocol::{Command, DispatchError, PendingInteractionSlot, SessionUpdate};
+use crate::protocol::{
+    Command, DispatchError, PendingInteractionSlot, SessionUpdate, TurnFinalizeStatus,
+};
 use crate::session_task::SessionTask;
 use crate::state::{
     self, PersistedAccountState, PersistedSelectionState, PersistedState, PersistedUiState,
@@ -668,6 +670,28 @@ impl Workspace {
         };
         let mut guard = domain.lock();
         guard.active_account_display_name = Some(display_name);
+    }
+
+    /// Finalize the workspace-side view of a session's turn. Resets
+    /// the domain bucket's `lifecycle_state` to `Idle` and zeroes the
+    /// `turn_state` so the workspace's projection mirrors what the
+    /// TUI does on its own `Session` bucket at the end of every
+    /// turn. Called from `events/turn.rs`'s `handle_turn_*_event`
+    /// handlers (active-session path) and from the SessionUpdate
+    /// reducers (background path).
+    ///
+    /// `status` differentiates Complete/Error/Cancelled so a future
+    /// caller can branch on it without changing the public signature;
+    /// the body itself does not branch yet — every terminal status
+    /// produces the same Idle/default reset.
+    pub fn finalize_turn_in_domain(&self, key: &SessionKey, status: TurnFinalizeStatus) {
+        let Some(domain) = self.domain_handles.lock().get(key).cloned() else {
+            return;
+        };
+        let mut guard = domain.lock();
+        guard.lifecycle_state = forge_primitives::runtime::SessionLifecycleState::Idle;
+        guard.turn_state = forge_primitives::runtime::SessionTurnState::default();
+        let _ = status;
     }
 
     /// Graceful shutdown of every pooled Agent. Drains the pool, then

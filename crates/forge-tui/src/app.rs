@@ -43,6 +43,8 @@ pub use connect::{
     create_app, spawn_for_sleeping_project, spawn_for_sleeping_session, start_connection,
 };
 pub use events::{handle_client_event, handle_terminal_event};
+#[cfg(feature = "testing")]
+pub use events::{handle_permission_request_event, handle_question_request_event};
 pub use focus::{FocusManager, FocusOwner, FocusTarget};
 pub use input::InputState;
 pub(crate) use selection::normalize_selection;
