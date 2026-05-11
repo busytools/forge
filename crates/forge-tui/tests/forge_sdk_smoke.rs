@@ -366,7 +366,11 @@ async fn forge_sdk_e2e_resume_session() {
     let agent: Arc<forge_agent::AgentHandle> = Arc::new(agent_handle);
 
     agent
-        .resume_session(session_id, SessionLaunchSettings::default())
+        .resume_session(
+            session_id,
+            std::env::current_dir().unwrap().to_string_lossy().into_owned(),
+            SessionLaunchSettings::default(),
+        )
         .expect("resume_session queued");
     // The CLI may issue a brand-new session id when resuming; what we
     // care about is that we receive a Connected event without a

@@ -167,7 +167,12 @@ pub(crate) fn resume_session(
 ) -> anyhow::Result<()> {
     let launch_settings = session_launch_settings_for_reason(app, SessionStartReason::Resume);
     log_session_request(app, SessionStartReason::Resume, &launch_settings, Some(&session_id));
-    conn.resume_session(session_id, launch_settings)
+    // `claude --resume` keys sessions off the subprocess's working
+    // directory; pass the current bucket's cwd so claude looks in the
+    // right project subdir. Empty cwd would inherit forge's `$PWD`,
+    // which for an in-session resume usually does not match the
+    // target project.
+    conn.resume_session(session_id, app.cwd_raw().to_owned(), launch_settings)
 }
 
 /// Begin a session resume by marking the target session and sending the command.

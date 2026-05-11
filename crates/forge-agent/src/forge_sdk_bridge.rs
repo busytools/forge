@@ -719,12 +719,13 @@ impl ForgeSdkBridge {
     pub(crate) fn resume_session(
         &self,
         session_id: String,
+        cwd: String,
         launch_settings: SessionLaunchSettings,
     ) -> anyhow::Result<()> {
         let bridge = self.clone();
         tokio::spawn(async move {
             if let Err(err) =
-                forge_sdk_worker::spawn_session(&bridge, "", Some(&session_id), &launch_settings)
+                forge_sdk_worker::spawn_session(&bridge, &cwd, Some(&session_id), &launch_settings)
                     .await
             {
                 let msg = format!("forge-sdk session resume failed: {err}");
@@ -751,6 +752,13 @@ impl ForgeSdkBridge {
     /// file, schema drift). See
     /// [`forge_primitives::Command::ResumeOrNewSession`] for the
     /// motivation.
+    ///
+    /// `cwd` is also passed to the resume attempt, not just the
+    /// fresh-fallback. `claude --resume <id>` indexes sessions by the
+    /// project key derived from its own working directory, so
+    /// inheriting forge's `$PWD` (the default when cwd is empty) makes
+    /// every cross-directory resume fail with "No conversation found
+    /// with session ID …" even when the `.jsonl` exists.
     pub(crate) fn resume_or_new_session(
         &self,
         session_id: String,
@@ -760,7 +768,7 @@ impl ForgeSdkBridge {
         let bridge = self.clone();
         tokio::spawn(async move {
             if let Err(resume_err) =
-                forge_sdk_worker::spawn_session(&bridge, "", Some(&session_id), &launch_settings)
+                forge_sdk_worker::spawn_session(&bridge, &cwd, Some(&session_id), &launch_settings)
                     .await
             {
                 tracing::warn!(

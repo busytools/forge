@@ -276,7 +276,14 @@ impl Workspace {
                 }
             }
             SessionTarget::Session(key) => {
-                handle.resume_session(key.as_str().to_owned(), settings)?;
+                // `claude --resume` indexes by project key derived from
+                // the subprocess cwd, so we must spawn in the session's
+                // original cwd. Source it from the catalog; if the
+                // catalog has no record (or no cwd) the session can't
+                // be resumed cleanly anyway — pass through and let the
+                // bridge surface ConnectionFailed.
+                let cwd = self.session_cwd_for(key).unwrap_or_default();
+                handle.resume_session(key.as_str().to_owned(), cwd, settings)?;
             }
         }
 
@@ -412,6 +419,22 @@ impl Workspace {
         let entries = self.catalog.get(&key)?;
         let lead = entries.first()?;
         Some(SessionKey::new(lead.session_id.clone()))
+    }
+
+    /// Look up a session's recorded cwd by id. `claude --resume`
+    /// indexes by the project key derived from the subprocess's
+    /// working directory, so every explicit-resume code path must
+    /// spawn the subprocess in the session's original cwd or the
+    /// resume hits "No conversation found with session ID …" even
+    /// when the `.jsonl` exists. Returns `None` when the catalog has
+    /// no entry for `session_id` or the entry lacks a cwd.
+    #[must_use]
+    pub fn session_cwd_for(&self, session_id: &SessionKey) -> Option<String> {
+        self.catalog
+            .values()
+            .flatten()
+            .find(|info| info.session_id == session_id.as_str())
+            .and_then(|info| info.cwd.clone())
     }
 
     /// Graceful shutdown of every pooled Agent. Drains the pool, then

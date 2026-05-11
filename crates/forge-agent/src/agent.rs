@@ -138,11 +138,12 @@ impl AgentHandle {
     pub fn resume_session(
         &self,
         session_id: String,
+        cwd: String,
         launch_settings: crate::client::SessionLaunchSettings,
     ) -> anyhow::Result<()> {
         let launch_settings = serde_json::to_value(launch_settings)
             .map_err(|e| anyhow::anyhow!("failed to encode launch settings: {e}"))?;
-        self.send(Command::ResumeSession { session_id: session_id.into(), launch_settings })
+        self.send(Command::ResumeSession { session_id: session_id.into(), cwd, launch_settings })
     }
 
     /// Resume the recorded `session_id`; if resume fails (stale
@@ -425,7 +426,7 @@ fn dispatch(cmd: Command, bridge: &ForgeSdkBridge) -> anyhow::Result<()> {
             });
             bridge.new_session(cwd, launch)
         }
-        C::ResumeSession { session_id, launch_settings } => {
+        C::ResumeSession { session_id, cwd, launch_settings } => {
             let launch = serde_json::from_value(launch_settings).unwrap_or_else(|e| {
                 tracing::error!(
                     target: crate::logging::targets::BRIDGE_LIFECYCLE,
@@ -434,7 +435,7 @@ fn dispatch(cmd: Command, bridge: &ForgeSdkBridge) -> anyhow::Result<()> {
                 );
                 crate::client::SessionLaunchSettings::default()
             });
-            bridge.resume_session(session_id.into_string(), launch)
+            bridge.resume_session(session_id.into_string(), cwd, launch)
         }
         C::ResumeOrNewSession { session_id, cwd, launch_settings } => {
             let launch = serde_json::from_value(launch_settings).unwrap_or_else(|e| {

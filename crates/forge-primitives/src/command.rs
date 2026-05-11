@@ -25,6 +25,15 @@ pub enum Command {
     },
     ResumeSession {
         session_id: SessionId,
+        /// Working directory for the spawned `claude` subprocess.
+        /// `claude --resume <id>` indexes sessions by the project key
+        /// derived from this directory; an empty value makes the
+        /// subprocess inherit forge's `$PWD` which usually does not
+        /// match the resumed session's project, causing "No
+        /// conversation found with session ID …" even when the
+        /// `.jsonl` exists. Source from the catalog when picking a
+        /// session by id.
+        cwd: String,
         launch_settings: serde_json::Value,
     },
     /// Resume `session_id`; if the resume fails at the transport level
