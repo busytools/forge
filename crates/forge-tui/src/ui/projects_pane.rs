@@ -44,10 +44,9 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, projects: &[ProjectV
 
     let mut lines: Vec<Line<'static>> = Vec::new();
 
-    // Pane name banner: a blank top row for breathing room, then
-    // "PROJECTS" with the same 2-char indent the project rows use,
-    // a dim rule, and one more blank row before the first section.
-    lines.push(Line::default());
+    // Pane name banner: PROJECTS at row 0 (no leading blank — the
+    // terminal frame above is breathing room enough), dim rule, then
+    // one blank before the first section.
     lines.push(Line::from(Span::styled(
         "  PROJECTS".to_owned(),
         Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
@@ -166,7 +165,6 @@ fn append_project_rows(
     // Row chrome budget — see name_budget_active / name_budget_inactive helpers.
 
     if !active.is_empty() {
-        lines.push(Line::default());
         lines.push(Line::from(Span::styled(
             "  ACTIVE".to_owned(),
             Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD),
@@ -195,22 +193,29 @@ fn append_project_rows(
                 Span::styled(time, Style::default().fg(theme::DIM)),
                 Span::raw(" "),
                 Span::styled("×".to_owned(), Style::default().fg(theme::DIM)),
-                Span::raw(" "),
+                Span::raw("  "),
             ]));
             app.pane_hit_targets.push(PaneHitTarget::ProjectHeader {
                 project_name: project.key.as_str().to_owned(),
                 y: row_y,
                 height: 1,
             });
-            // Close-glyph hit target — last visible column on the row.
-            let close_x =
-                area.x.saturating_add(area.width).saturating_sub(1);
+            // Close-glyph hit target — 3-col band covering the space
+            // before × (col area.right-4), the × itself
+            // (area.right-3), and the first gutter col (area.right-2).
+            // Wider than the literal glyph so accidental clicks one
+            // column off still register; clicks on the rightmost
+            // gutter col are reserved as "row click" (focus/switch)
+            // to keep the visual gutter inert.
+            let row_right = area.x.saturating_add(area.width);
+            let close_x_start = row_right.saturating_sub(4);
+            let close_x_end = row_right.saturating_sub(1);
             app.pane_hit_targets.push(PaneHitTarget::CloseSession {
                 session_key: session_key.clone(),
                 y: row_y,
                 height: 1,
-                x_start: close_x,
-                x_end: close_x.saturating_add(1),
+                x_start: close_x_start,
+                x_end: close_x_end,
             });
         }
     }
@@ -237,7 +242,7 @@ fn append_project_rows(
                 Span::raw(" ".repeat(label_pad)),
                 Span::raw(" "),
                 Span::styled(time, Style::default().fg(theme::DIM)),
-                Span::raw(" "),
+                Span::raw("  "),
             ]));
             app.pane_hit_targets.push(PaneHitTarget::ProjectHeader {
                 project_name: project.key.as_str().to_owned(),
@@ -249,18 +254,19 @@ fn append_project_rows(
 }
 
 /// Active-row layout:
-/// `<2 indent><1 glyph><1 sp><name><1 sp><3 time><1 sp><1 ×><1 right gutter>`
-/// = 10 chrome chars. The trailing gutter keeps content off the
-/// separator column.
+/// `<2 indent><1 glyph><1 sp><name><1 sp><3 time><1 sp><1 ×><2 right gutter>`
+/// = 11 chrome chars. The 2-col trailing gutter mirrors the chat
+/// column's left gutter so the pane content reads as inset from
+/// the separator on both sides.
 fn name_budget_active(area_width: u16) -> usize {
-    usize::from(area_width.saturating_sub(10))
+    usize::from(area_width.saturating_sub(11))
 }
 
 /// Inactive-row layout:
-/// `<2 indent><1 glyph><1 sp><name><1 sp><3 time><1 right gutter>`
-/// = 8 chrome chars. No close column; same trailing gutter.
+/// `<2 indent><1 glyph><1 sp><name><1 sp><3 time><2 right gutter>`
+/// = 9 chrome chars. No close column; same 2-col gutter.
 fn name_budget_inactive(area_width: u16) -> usize {
-    usize::from(area_width.saturating_sub(8))
+    usize::from(area_width.saturating_sub(9))
 }
 
 /// Format `activity` as a short relative-time string anchored at
@@ -428,17 +434,17 @@ mod tests {
 
     #[test]
     fn name_budget_active_matches_chrome() {
-        // Wide tier (26): 26 - 10 chrome chars = 16.
-        // Medium tier (20): 20 - 10 = 10.
-        assert_eq!(name_budget_active(20), 10);
-        assert_eq!(name_budget_active(26), 16);
+        // Wide tier (26): 26 - 11 chrome chars = 15.
+        // Medium tier (20): 20 - 11 = 9.
+        assert_eq!(name_budget_active(20), 9);
+        assert_eq!(name_budget_active(26), 15);
     }
 
     #[test]
     fn name_budget_inactive_matches_chrome() {
-        // Wide tier (26): 26 - 8 chrome chars = 18.
-        // Medium tier (20): 20 - 8 = 12.
-        assert_eq!(name_budget_inactive(20), 12);
-        assert_eq!(name_budget_inactive(26), 18);
+        // Wide tier (26): 26 - 9 chrome chars = 17.
+        // Medium tier (20): 20 - 9 = 11.
+        assert_eq!(name_budget_inactive(20), 11);
+        assert_eq!(name_budget_inactive(26), 17);
     }
 }
