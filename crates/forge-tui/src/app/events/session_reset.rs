@@ -194,6 +194,23 @@ pub(super) fn load_resume_history(app: &mut App, history_messages: &[forge_primi
                     if text.is_empty() {
                         continue;
                     }
+                    // Drop Claude Code's local-command scaffolding —
+                    // `<local-command-caveat>…</local-command-caveat>`,
+                    // `<command-name>/x</command-name>…`, and the
+                    // matching `<local-command-stdout>` wrappers. These
+                    // are metadata the LLM uses to distinguish "this is
+                    // a slash-command invocation, not user input"; they
+                    // were never meant for chat-buffer rendering. The
+                    // live-session input handler never produces them
+                    // (slash commands take a different path), so replay
+                    // is the only surface that surfaces them.
+                    let trimmed = text.trim_start();
+                    if trimmed.starts_with("<local-command-caveat>")
+                        || trimmed.starts_with("<command-name>")
+                        || trimmed.starts_with("<local-command-stdout>")
+                    {
+                        continue;
+                    }
                     if !rendered_user_text {
                         app.clear_active_turn_assistant();
                         tracing::debug!(
