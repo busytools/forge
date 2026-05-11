@@ -175,8 +175,7 @@ fn append_project_rows(
             let row_y = area.y + line_count_as_u16(lines);
             let (glyph, glyph_color) = glyph_for_lifecycle(*lifecycle, *is_focused, spinner_frame);
             let label = truncate_with_ellipsis(project.name.as_str(), name_budget);
-            let label_pad =
-                name_budget.saturating_sub(label.chars().count());
+            let label_pad = name_budget.saturating_sub(label.chars().count());
             let name_style = if *is_focused {
                 Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD)
             } else {
@@ -248,8 +247,7 @@ fn append_project_rows(
         for (idx, project) in inactive.iter().enumerate() {
             let row_y = area.y + line_count_as_u16(lines);
             let label = truncate_with_ellipsis(project.name.as_str(), name_budget);
-            let label_pad =
-                name_budget.saturating_sub(label.chars().count());
+            let label_pad = name_budget.saturating_sub(label.chars().count());
             let time =
                 format_relative_time(project.sessions.first().and_then(|s| s.last_activity), now);
             lines.push(Line::from(vec![
@@ -313,11 +311,7 @@ fn format_relative_time(activity: Option<SystemTime>, now: SystemTime) -> String
     } else {
         format!("{}w", (secs / 604_800).min(99))
     };
-    if raw.chars().count() > 3 {
-        raw.chars().take(3).collect()
-    } else {
-        format!("{raw:>3}")
-    }
+    if raw.chars().count() > 3 { raw.chars().take(3).collect() } else { format!("{raw:>3}") }
 }
 
 /// Saturating cast of `lines.len()` to `u16`. The pane area's height

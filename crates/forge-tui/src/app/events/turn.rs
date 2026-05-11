@@ -49,7 +49,50 @@ pub(super) fn handle_permission_request_event(
         session.lifecycle_state = crate::app::session::SessionLifecycleState::Attention;
     }
 
-    let Some((mi, bi)) = app.lookup_tool_call(&tool_id) else {
+    // Same temp-swap trick as `handle_question_request_event`: a
+    // permission prompt landing on a background bucket needs to look
+    // up `tool_call_id` in THAT bucket's `tool_call_index`, not the
+    // active session's. Without the swap, background permission
+    // prompts auto-`reject_permission_request` on lookup miss and
+    // the user finds the prompt already gone when they switch in.
+    let saved_active = app.active_session_key.clone();
+    let saved_input = app.input.text();
+    let saved_status = app.status.clone();
+    let needs_temp_swap = app.active_session_key.as_ref() != Some(&request_key)
+        && app.sessions.contains_key(&request_key);
+    if needs_temp_swap {
+        app.active_session_key = Some(request_key.clone());
+    }
+
+    apply_permission_request_to_active_bucket(
+        app,
+        request,
+        response_tx,
+        &session_id,
+        &tool_id,
+        &options,
+    );
+
+    if needs_temp_swap {
+        app.active_session_key = saved_active;
+        app.input.clear();
+        if !saved_input.is_empty() {
+            app.input.set_text(&saved_input);
+        }
+        app.status = saved_status;
+        app.needs_redraw = true;
+    }
+}
+
+fn apply_permission_request_to_active_bucket(
+    app: &mut App,
+    request: model::RequestPermissionRequest,
+    response_tx: tokio::sync::oneshot::Sender<model::RequestPermissionResponse>,
+    session_id: &str,
+    tool_id: &str,
+    options: &[model::PermissionOption],
+) {
+    let Some((mi, bi)) = app.lookup_tool_call(tool_id) else {
         tracing::warn!(
             target: crate::logging::targets::APP_PERMISSION,
             event_name = "permission_request_rejected",
@@ -59,11 +102,11 @@ pub(super) fn handle_permission_request_event(
             tool_call_id = %tool_id,
             reason = "unknown_tool_call",
         );
-        reject_permission_request(response_tx, &options);
+        reject_permission_request(response_tx, options);
         return;
     };
 
-    if app.pending_interaction_ids().iter().any(|id| id == &tool_id) {
+    if app.pending_interaction_ids().iter().any(|id| id == tool_id) {
         tracing::warn!(
             target: crate::logging::targets::APP_PERMISSION,
             event_name = "permission_request_rejected",
@@ -73,7 +116,7 @@ pub(super) fn handle_permission_request_event(
             tool_call_id = %tool_id,
             reason = "duplicate_pending_interaction",
         );
-        reject_permission_request(response_tx, &options);
+        reject_permission_request(response_tx, options);
         return;
     }
 
@@ -92,7 +135,7 @@ pub(super) fn handle_permission_request_event(
         });
         tc.mark_tool_call_layout_dirty();
         layout_dirty = true;
-        app.pending_interaction_ids_mut().push(tool_id.clone());
+        app.pending_interaction_ids_mut().push(tool_id.to_owned());
         if auto_focus {
             app.claim_focus_target(FocusTarget::Permission);
         }
@@ -121,7 +164,7 @@ pub(super) fn handle_permission_request_event(
             tool_call_id = %tool_id,
             reason = "non_tool_block",
         );
-        reject_permission_request(response_tx, &options);
+        reject_permission_request(response_tx, options);
     }
 
     if layout_dirty {
@@ -151,7 +194,61 @@ pub(super) fn handle_question_request_event(
         session.lifecycle_state = crate::app::session::SessionLifecycleState::Attention;
     }
 
-    let Some((mi, bi)) = app.lookup_tool_call(&tool_id) else {
+    // Route the question into the right bucket. When the request
+    // targets a background session, temp-swap the active key so the
+    // App-level accessors (`lookup_tool_call`, `messages_mut`,
+    // `pending_interaction_ids_mut`, `viewport_mut`) operate on the
+    // request's bucket rather than the user's current view. Without
+    // this swap, a background question landed on the active session's
+    // `tool_call_index` lookup, found nothing, and auto-`Cancelled`
+    // the response_tx — the user clicked the △ attention glyph only
+    // to find the prompt had already been rejected before they got
+    // there. Active-bucket UI state (input draft, status) is saved
+    // across the swap so the routing leaves no trace on the session
+    // the user is currently looking at.
+    let saved_active = app.active_session_key.clone();
+    let saved_input = app.input.text();
+    let saved_status = app.status.clone();
+    let needs_temp_swap = app.active_session_key.as_ref() != Some(&request_key)
+        && app.sessions.contains_key(&request_key);
+    if needs_temp_swap {
+        app.active_session_key = Some(request_key.clone());
+    }
+
+    apply_question_request_to_active_bucket(
+        app,
+        request,
+        response_tx,
+        &session_id,
+        &tool_id,
+        option_count,
+        question_index,
+        total_questions,
+    );
+
+    if needs_temp_swap {
+        app.active_session_key = saved_active;
+        app.input.clear();
+        if !saved_input.is_empty() {
+            app.input.set_text(&saved_input);
+        }
+        app.status = saved_status;
+        app.needs_redraw = true;
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn apply_question_request_to_active_bucket(
+    app: &mut App,
+    request: model::RequestQuestionRequest,
+    response_tx: tokio::sync::oneshot::Sender<model::RequestQuestionResponse>,
+    session_id: &str,
+    tool_id: &str,
+    option_count: usize,
+    question_index: usize,
+    total_questions: usize,
+) {
+    let Some((mi, bi)) = app.lookup_tool_call(tool_id) else {
         tracing::warn!(
             target: crate::logging::targets::APP_PERMISSION,
             event_name = "question_request_rejected",
@@ -166,7 +263,7 @@ pub(super) fn handle_question_request_event(
         return;
     };
 
-    if app.pending_interaction_ids().iter().any(|id| id == &tool_id) {
+    if app.pending_interaction_ids().iter().any(|id| id == tool_id) {
         tracing::warn!(
             target: crate::logging::targets::APP_PERMISSION,
             event_name = "question_request_rejected",
@@ -201,7 +298,7 @@ pub(super) fn handle_question_request_event(
         });
         tc.mark_tool_call_layout_dirty();
         layout_dirty = true;
-        app.pending_interaction_ids_mut().push(tool_id.clone());
+        app.pending_interaction_ids_mut().push(tool_id.to_owned());
         if auto_focus {
             app.claim_focus_target(FocusTarget::Permission);
         }
