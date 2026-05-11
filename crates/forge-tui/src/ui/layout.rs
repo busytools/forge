@@ -19,6 +19,10 @@ pub const PANE_WIDTH_WIDE: u16 = 26;
 /// Width (columns) of the Projects pane at Medium tier.
 pub const PANE_WIDTH_MEDIUM: u16 = 20;
 
+/// Width (columns) of the vertical separator column between the
+/// Projects pane and the chat column when the pane is visible.
+pub const PANE_SEPARATOR_WIDTH: u16 = 1;
+
 #[derive(Clone, Default)]
 pub struct AppLayout {
     /// Single-line top bar rect, allocated only at Narrow tier
@@ -28,11 +32,17 @@ pub struct AppLayout {
     pub top_bar: Option<Rect>,
     /// Left-side Projects pane rect when the user has the pane
     /// visible AND the terminal is at Wide tier (>= 160 cols).
-    /// `None` whenever the pane should not be rendered.
+    /// `None` whenever the pane should not be rendered. Spans the
+    /// full terminal height when allocated so the pane and its
+    /// bottom-anchored content stay confined to the left column.
     pub pane: Option<Rect>,
-    /// Chat body. When the pane is allocated this is the rect
-    /// remaining to the right of the pane; otherwise it spans the
-    /// full body width.
+    /// Single-column vertical-rule rect between the pane and the
+    /// chat column. Allocated only when `pane` is also allocated.
+    /// Rendered as a column of `│` glyphs by the chat draw path.
+    pub pane_separator: Option<Rect>,
+    /// Chat body. When the pane is allocated this rect lives inside
+    /// the chat column (right of the pane separator); otherwise it
+    /// spans the full body width.
     pub body: Rect,
     pub input_sep: Rect,
     /// Area for the todo panel (zero-height when hidden or no todos).
@@ -53,7 +63,38 @@ pub fn compute(
 ) -> AppLayout {
     let input_height = input_lines.max(1);
 
-    let mut layout = if area.height < 8 {
+    // Horizontal split first so the pane (when present) spans the
+    // full terminal height, and the chat column (body + input +
+    // status + footer) is confined to the right of the pane. This
+    // is what prevents the input box from spilling over the pane's
+    // x range. Tier ladder:
+    //   Wide   (>= 160) → 26ch pane + 1ch separator + chat column
+    //   Medium (>= 120) → 20ch pane + 1ch separator + chat column
+    //   Narrow (<  120) → no inline pane; top bar lands in chat
+    //                     column below
+    // `pane_visible == false` collapses Wide/Medium to no pane.
+    let (pane_rect, pane_separator_rect, chat_area) =
+        if pane_visible && area.width >= WIDE_TIER_MIN_WIDTH {
+            let [pane, sep, chat] = Layout::horizontal([
+                Constraint::Length(PANE_WIDTH_WIDE),
+                Constraint::Length(PANE_SEPARATOR_WIDTH),
+                Constraint::Min(1),
+            ])
+            .areas(area);
+            (Some(pane), Some(sep), chat)
+        } else if pane_visible && area.width >= MEDIUM_TIER_MIN_WIDTH {
+            let [pane, sep, chat] = Layout::horizontal([
+                Constraint::Length(PANE_WIDTH_MEDIUM),
+                Constraint::Length(PANE_SEPARATOR_WIDTH),
+                Constraint::Min(1),
+            ])
+            .areas(area);
+            (Some(pane), Some(sep), chat)
+        } else {
+            (None, None, area)
+        };
+
+    let mut layout = if chat_area.height < 8 {
         // Ultra-compact: no footer, no todo
         let [body, input, input_bottom_sep, help] = Layout::vertical([
             Constraint::Min(1),
@@ -61,13 +102,14 @@ pub fn compute(
             Constraint::Length(1),
             Constraint::Length(help_height),
         ])
-        .areas(area);
+        .areas(chat_area);
         AppLayout {
             top_bar: None,
-            pane: None,
+            pane: pane_rect,
+            pane_separator: pane_separator_rect,
             body,
-            todo: Rect::new(area.x, input.y, area.width, 0),
-            input_sep: Rect::new(area.x, input.y, area.width, 0),
+            todo: Rect::new(chat_area.x, input.y, chat_area.width, 0),
+            input_sep: Rect::new(chat_area.x, input.y, chat_area.width, 0),
             input,
             input_bottom_sep,
             help,
@@ -83,10 +125,11 @@ pub fn compute(
             Constraint::Length(help_height),
             Constraint::Length(2),
         ])
-        .areas(area);
+        .areas(chat_area);
         AppLayout {
             top_bar: None,
-            pane: None,
+            pane: pane_rect,
+            pane_separator: pane_separator_rect,
             body,
             input_sep,
             todo,
@@ -97,12 +140,10 @@ pub fn compute(
         }
     };
 
-    // At Narrow tier (<120), peel a single row off the top of the body
-    // for the top bar. Allocates regardless of `pane_visible` — the
-    // top bar is the Narrow tier's permanent stand-in for the inline
-    // pane, and clicking its `▤` icon (or Ctrl+B) is what opens the
-    // overlay. Only allocate when the body has at least 2 rows so we
-    // keep at least one row of chat behind the top bar.
+    // At Narrow tier (<120), no inline pane: peel a single row off
+    // the top of the body for the top bar. Only allocate when the
+    // body has at least 2 rows so we keep at least one row of chat
+    // behind the top bar.
     if area.width < MEDIUM_TIER_MIN_WIDTH && layout.body.height >= 2 {
         let [top, rest] =
             Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).areas(layout.body);
@@ -110,31 +151,7 @@ pub fn compute(
         layout.body = rest;
     }
 
-    // Tier ladder for the Projects pane (Phase 2b-α + 2b-β + 2b-γ):
-    //   Wide   (>= 160) → 26ch inline pane
-    //   Medium (>= 120) → 20ch inline pane (label truncation in renderer)
-    //   Narrow (<  120) → top bar + on-demand overlay; no inline pane
-    // When the user has hidden the pane via Ctrl+B (Wide/Medium only),
-    // those tiers collapse to "no pane". Narrow tier is unaffected by
-    // `pane_visible` — overlay open/close is a separate transient flag
-    // (`App.projects_pane_overlay_open`).
-    if pane_visible {
-        if area.width >= WIDE_TIER_MIN_WIDTH {
-            let [pane_rect, chat_rect] =
-                Layout::horizontal([Constraint::Length(PANE_WIDTH_WIDE), Constraint::Min(1)])
-                    .areas(layout.body);
-            AppLayout { pane: Some(pane_rect), body: chat_rect, ..layout }
-        } else if area.width >= MEDIUM_TIER_MIN_WIDTH {
-            let [pane_rect, chat_rect] =
-                Layout::horizontal([Constraint::Length(PANE_WIDTH_MEDIUM), Constraint::Min(1)])
-                    .areas(layout.body);
-            AppLayout { pane: Some(pane_rect), body: chat_rect, ..layout }
-        } else {
-            layout
-        }
-    } else {
-        layout
-    }
+    layout
 }
 
 #[cfg(test)]

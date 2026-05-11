@@ -63,6 +63,12 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         let _t = app.perf.as_ref().map(|p| p.start("ui::projects_pane"));
         let projects = app.workspace.as_ref().map(|ws| ws.list_projects()).unwrap_or_default();
         projects_pane::render(frame, pane_area, app, &projects);
+        // Vertical separator column between the pane and the chat
+        // column — full-height `│` glyphs in DIM so the eye picks up
+        // the boundary without competing with content on either side.
+        if let Some(sep_area) = areas.pane_separator {
+            render_pane_separator(frame, sep_area);
+        }
     } else {
         // No pane and no overlay this frame; clear stamps so a stale
         // set from the previous (visible) frame can't be hit-tested.
@@ -117,6 +123,19 @@ fn render_separator(frame: &mut Frame, area: Rect) {
     let sep_str = theme::SEPARATOR_CHAR.repeat(area.width as usize);
     let line = Line::from(Span::styled(sep_str, Style::default().fg(theme::DIM)));
     frame.render_widget(Paragraph::new(line), area);
+}
+
+/// Render the full-height `│` column between the Projects pane and
+/// the chat column. Drawn in `DIM` so it reads as structural chrome
+/// without pulling attention from either side's content.
+fn render_pane_separator(frame: &mut Frame, area: Rect) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    let lines: Vec<Line<'static>> = (0..area.height)
+        .map(|_| Line::from(Span::styled("│".to_owned(), Style::default().fg(theme::DIM))))
+        .collect();
+    frame.render_widget(Paragraph::new(lines), area);
 }
 
 #[cfg(feature = "perf")]

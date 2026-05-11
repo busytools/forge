@@ -42,13 +42,19 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, projects: &[ProjectV
 
     let mut lines: Vec<Line<'static>> = Vec::new();
 
-    // Pane name banner: "PROJECTS" in accent bold + dim rule + blank.
+    // Pane name banner: a blank top row for breathing room, then
+    // "PROJECTS" with the same 2-char indent the project rows use,
+    // a dim rule, and one more blank row before the first section.
+    lines.push(Line::default());
     lines.push(Line::from(Span::styled(
-        "PROJECTS".to_owned(),
+        "  PROJECTS".to_owned(),
         Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
     )));
     let rule_width = usize::from(area.width.saturating_sub(2));
-    lines.push(Line::from(Span::styled("─".repeat(rule_width), Style::default().fg(theme::DIM))));
+    lines.push(Line::from(vec![
+        Span::raw(" "),
+        Span::styled("─".repeat(rule_width), Style::default().fg(theme::DIM)),
+    ]));
     lines.push(Line::default());
 
     append_project_rows(&mut lines, area, app, projects);
