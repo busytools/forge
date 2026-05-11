@@ -277,26 +277,16 @@ pub fn start_connection(app: &mut App) {
         // iteration, and without this guard we'd pile up duplicate fatal
         // events forever.
         app.connection_started = true;
-        // Surface the broken invariant as a fatal connection failure so
-        // the event loop exits cleanly instead of spinning in Connecting.
-        let session_key = app
-            .active_session_key
-            .clone()
-            .unwrap_or_else(|| forge_workspace::SessionKey::from_session_id(App::PRE_CONNECT_KEY));
-        // No workspace means no `update_sender` to dual-emit through;
-        // use a throwaway channel so the helper's signature stays
-        // unchanged. The discarded receiver simply drops every
-        // SessionUpdate.
-        let (dummy_update_tx, _dummy_update_rx) =
-            tokio::sync::mpsc::unbounded_channel::<forge_workspace::SessionUpdate>();
-        bridge_lifecycle::emit_connection_failed(
-            &app.event_tx,
-            &dummy_update_tx,
-            &session_key,
-            "internal: workspace not initialised in App; cannot spawn bridge".to_owned(),
-            crate::error::AppError::ConnectionFailed,
-            true,
-        );
+        // Surface the broken invariant as a fatal connection failure
+        // so the event loop exits cleanly instead of spinning in
+        // Connecting. Post Phase 3a, `emit_connection_failed` flows
+        // through workspace's SessionUpdate channel — which doesn't
+        // exist here because the workspace itself is missing — so
+        // emit `ClientEvent::FatalError` directly. The existing
+        // dispatcher still routes it through
+        // `handle_fatal_error_event`.
+        let _ =
+            app.event_tx.send(ClientEvent::FatalError(crate::error::AppError::ConnectionFailed));
         return;
     };
 

@@ -211,6 +211,16 @@ pub enum SessionLifecycleState {
     /// Background session is paused on a permission prompt and
     /// needs user input to continue.
     Attention,
+    /// Bridge is waiting on `/login` to complete before the session
+    /// can be spawned.
+    AuthRequired,
+    /// Setup (or running) hit a fatal error — `ConnectionFailed`
+    /// drove this. Bucket is dead but kept in `app.sessions` so the
+    /// user can see the error banner.
+    Failed,
+    /// User triggered `/logout`. The bridge is down; user can start
+    /// a new session via /new or by clicking another project.
+    LoggedOut,
 }
 
 /// Per-session SDK turn state — model-resolution cache, mode

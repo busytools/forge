@@ -633,6 +633,18 @@ impl Workspace {
         key: &SessionKey,
         event: &forge_agent::client::AgentEvent,
     ) {
+        // Record the session in the project catalog so the Projects
+        // pane's drilldown reflects freshly-spawned sessions without
+        // forcing a full disk re-scan. Runs alongside (but
+        // independent of) the per-domain projection below — the
+        // catalog mutation must happen even when no domain handle is
+        // registered for the synthetic pre-connect key.
+        if let forge_agent::client::AgentEvent::Connected { session_id, cwd, .. }
+        | forge_agent::client::AgentEvent::SessionReplaced { session_id, cwd, .. } = event
+            && !cwd.is_empty()
+        {
+            self.record_connected_session(cwd, session_id, None);
+        }
         let Some(domain) = self.domain_handles.lock().get(key).cloned() else {
             return;
         };

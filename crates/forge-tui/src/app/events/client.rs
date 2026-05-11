@@ -305,11 +305,9 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
             crate::app::plugins::apply_cli_action_failure(app, message);
         }
         ClientEvent::FatalError(error) => session::handle_fatal_error_event(app, error),
-        ClientEvent::WorkspaceUpdate(_update) => {
-            // Phase 1: counter-only smoke test (see `App::workspace_update_count`).
-            // Phase 3a wires the dispatcher that routes each
-            // `SessionUpdate` variant to the matching reducer.
+        ClientEvent::WorkspaceUpdate(update) => {
             app.workspace_update_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            apply_workspace_update(app, update);
         }
     }
     if is_active_or_global {
@@ -771,6 +769,150 @@ fn apply_runtime_reload_failed(app: &mut App, session_id: &str, message: &str) {
             session_id = %session_id,
             reason = "unknown_session",
         );
+    }
+}
+
+/// Phase 3a — migrate the bucket at `from` over to `to` when the
+/// workspace renames a synthetic spawn key onto the real claude
+/// session UUID. Updates `active_session_key` only when it
+/// currently points at `from` (background-spawn case must NOT
+/// hijack the user's deliberate session pick).
+fn apply_session_update_key_renamed(app: &mut App, from: &SessionKey, to: SessionKey) {
+    let already_under_to = app.sessions.contains_key(&to);
+    if let Some(mut bucket) = app.sessions.remove(from) {
+        if already_under_to {
+            // `to` already exists (e.g. a Connected for the same
+            // session UUID raced ahead and seeded the bucket); the
+            // synthetic at `from` is now redundant. Drop it to match
+            // the legacy `handle_connected_client_event` migration
+            // semantics.
+            tracing::warn!(
+                target: crate::logging::targets::APP_SESSION,
+                event_name = "key_renamed_synthetic_dropped",
+                message = "synthetic bucket dropped because real-key bucket already existed",
+                outcome = "dropped",
+                from = %from.as_str(),
+                to = %to.as_str(),
+                reason = "real_bucket_present",
+            );
+            let _ = bucket;
+        } else {
+            bucket.key = Some(to.clone());
+            bucket.lifecycle_state = crate::app::session::SessionLifecycleState::Idle;
+            app.sessions.insert(to.clone(), bucket);
+        }
+    } else if !already_under_to {
+        // Neither `from` nor `to` exists. Seed a fresh idle bucket
+        // at `to` so the subsequent Connected reducer can populate it.
+        let mut bucket = crate::app::session::Session::new(to.clone());
+        bucket.lifecycle_state = crate::app::session::SessionLifecycleState::Idle;
+        app.sessions.insert(to.clone(), bucket);
+    }
+    if app.active_session_key.as_ref() == Some(from) {
+        app.active_session_key = Some(to);
+    }
+    app.needs_redraw = true;
+}
+
+/// Phase 3a — dispatch a single `forge_workspace::SessionUpdate`
+/// onto the matching `apply_session_update_*` reducer. Variants
+/// whose reducer is wired in later sub-phases (3b/3c/3d) fall
+/// through to a trace-only branch; the ClientEvent multiplexer
+/// still drives them via their legacy paths until those phases
+/// land.
+fn apply_workspace_update(app: &mut App, update: forge_workspace::SessionUpdate) {
+    use forge_workspace::SessionUpdate;
+    match update {
+        SessionUpdate::KeyRenamed { from, to } => {
+            apply_session_update_key_renamed(app, &from, to);
+        }
+        SessionUpdate::Connected {
+            key,
+            session_id,
+            cwd,
+            current_model,
+            available_models,
+            mode,
+            history,
+            conn,
+        } => {
+            session::apply_session_update_connected(
+                app,
+                key,
+                session_id,
+                cwd,
+                current_model,
+                available_models,
+                mode,
+                history,
+                conn,
+            );
+            crate::app::config::refresh_mcp_snapshot(app);
+            crate::app::session_runtime::request_status_snapshot_refresh(app);
+            crate::app::session_runtime::request_oauth_credentials_snapshot_refresh(app);
+            crate::app::session_runtime::request_context_usage_refresh(app);
+        }
+        SessionUpdate::SessionReplaced {
+            key,
+            session_id,
+            cwd,
+            current_model,
+            available_models,
+            mode,
+            history,
+            conn,
+        } => {
+            session::apply_session_update_session_replaced(
+                app,
+                key,
+                session_id,
+                cwd,
+                current_model,
+                available_models,
+                mode,
+                history,
+                conn,
+            );
+            crate::app::config::refresh_mcp_snapshot(app);
+            crate::app::session_runtime::request_status_snapshot_refresh(app);
+            crate::app::session_runtime::request_oauth_credentials_snapshot_refresh(app);
+            crate::app::session_runtime::request_context_usage_refresh(app);
+        }
+        SessionUpdate::SessionsListed { sessions } => {
+            session::apply_session_update_sessions_listed(app, sessions);
+        }
+        SessionUpdate::AuthRequired { key, method_name, method_description } => {
+            session::apply_session_update_auth_required(app, key, method_name, method_description);
+        }
+        SessionUpdate::ConnectionFailed { key, message, fatal } => {
+            session::apply_session_update_connection_failed(app, key, message, fatal);
+        }
+        SessionUpdate::SlashCommandError { key, message } => {
+            session::apply_session_update_slash_command_error(app, key, message);
+        }
+        SessionUpdate::AuthCompleted { key, conn } => {
+            session::apply_session_update_auth_completed(app, key, conn);
+        }
+        SessionUpdate::LogoutCompleted { key } => {
+            session::apply_session_update_logout_completed(app, key);
+        }
+        SessionUpdate::ServiceStatus { severity, message } => {
+            session::apply_session_update_service_status(app, severity, message);
+        }
+        SessionUpdate::FatalError(error) => {
+            session::apply_session_update_fatal_error(app, error);
+        }
+        // Remaining variants (Spawning, KeyRenamed, permission/question/
+        // elicitation, turn lifecycle, chat append, snapshots, plugins,
+        // usage, etc.) are wired by Phases 3b/3c/3d. For now they
+        // continue to flow through the legacy ClientEvent path.
+        other => {
+            tracing::trace!(
+                target: crate::logging::targets::APP_SESSION,
+                update = ?other,
+                "SessionUpdate variant not wired for Phase 3a; legacy ClientEvent path is authoritative",
+            );
+        }
     }
 }
 

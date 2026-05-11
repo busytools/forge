@@ -203,10 +203,15 @@ pub(crate) fn apply_event_to_domain(domain: &mut DomainSession, event: &AgentEve
             domain.active_account_display_name =
                 forge_account.as_ref().map(|fa| fa.display_name.clone());
         }
-        // Other events: no DomainSession update in Phase 2. Phase 3
-        // sub-phases add per-event projections as TUI handlers
-        // migrate. Failures (`ConnectionFailed`, `AuthRequired`) keep
-        // their existing TUI-side behavior; Phase 3 inverts.
+        AgentEvent::AuthRequired { .. } => {
+            domain.lifecycle_state = SessionLifecycleState::AuthRequired;
+        }
+        AgentEvent::ConnectionFailed { .. } => {
+            domain.lifecycle_state = SessionLifecycleState::Failed;
+        }
+        // Other events: no DomainSession update in Phase 2/3a. Phase
+        // 3 sub-phases add per-event projections as TUI handlers
+        // migrate.
         _ => {}
     }
 }

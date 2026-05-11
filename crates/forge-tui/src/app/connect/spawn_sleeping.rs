@@ -135,11 +135,10 @@ pub fn spawn_for_sleeping_project(app: &mut App, project_key: &str) {
     // tagged with the spawn synthetic key so the visible spawning
     // bucket gets the connection-failed message.
     //
-    // Clone `event_tx` + `spawn_key` for the panic-recovery path
+    // Clone `update_tx` + `spawn_key` for the panic-recovery path
     // before moving them into `params`: if `run_connection_task`
     // panics the bucket would otherwise stay stuck in `Spawning`
     // forever, with no user-visible diagnostic.
-    let panic_event_tx = app.event_tx.clone();
     let panic_update_tx = workspace.update_sender();
     let panic_session_key = spawn_key.clone();
     let params = StartConnectionParams {
@@ -156,13 +155,7 @@ pub fn spawn_for_sleeping_project(app: &mut App, project_key: &str) {
     };
 
     let project_for_log = project_name.clone();
-    spawn_connection_task(
-        params,
-        panic_event_tx,
-        panic_update_tx,
-        panic_session_key,
-        project_for_log,
-    );
+    spawn_connection_task(params, panic_update_tx, panic_session_key, project_for_log);
 
     tracing::info!(
         target: crate::logging::targets::APP_SESSION,
@@ -263,7 +256,6 @@ pub fn spawn_for_sleeping_session(app: &mut App, session_key: &forge_workspace::
     app.sessions.insert(synthetic_key.clone(), bucket);
     app.switch_active_session(synthetic_key.clone());
 
-    let panic_event_tx = app.event_tx.clone();
     let panic_update_tx = workspace.update_sender();
     let panic_session_key = synthetic_key.clone();
     let params = StartConnectionParams {
@@ -276,13 +268,7 @@ pub fn spawn_for_sleeping_session(app: &mut App, session_key: &forge_workspace::
     };
 
     let session_id_for_log = session_key.as_str().to_owned();
-    spawn_connection_task(
-        params,
-        panic_event_tx,
-        panic_update_tx,
-        panic_session_key,
-        session_id_for_log.clone(),
-    );
+    spawn_connection_task(params, panic_update_tx, panic_session_key, session_id_for_log.clone());
 
     tracing::info!(
         target: crate::logging::targets::APP_SESSION,
@@ -300,7 +286,6 @@ pub fn spawn_for_sleeping_session(app: &mut App, session_key: &forge_workspace::
 /// and share the panic-recovery contract.
 fn spawn_connection_task(
     params: StartConnectionParams,
-    panic_event_tx: tokio::sync::mpsc::UnboundedSender<crate::agent::events::ClientEvent>,
     panic_update_tx: tokio::sync::mpsc::UnboundedSender<forge_workspace::SessionUpdate>,
     panic_session_key: forge_workspace::SessionKey,
     label_for_log: String,
@@ -317,10 +302,12 @@ fn spawn_connection_task(
                 "spawn task panicked; emitting ConnectionFailed",
             );
             let message = format!("internal error during spawn: {panic:?}");
-            let _ = panic_event_tx.send(crate::agent::events::ClientEvent::ConnectionFailed {
-                session_key: panic_session_key.clone(),
-                message: message.clone(),
-            });
+            // Phase 3a: ClientEvent emit removed; the SessionUpdate
+            // path drives `handle_connection_failed_event` via the
+            // `WorkspaceUpdate` dispatcher. Eliminates the
+            // double-execution that would otherwise fire both the
+            // direct ClientEvent dispatcher AND the new SessionUpdate
+            // reducer on the same panic.
             let _ = panic_update_tx.send(forge_workspace::SessionUpdate::ConnectionFailed {
                 key: panic_session_key,
                 message,

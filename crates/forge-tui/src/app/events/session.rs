@@ -41,10 +41,6 @@ pub(super) fn handle_connected_client_event(
     pre_connect_key: Option<SessionKey>,
     conn: Arc<forge_agent::AgentHandle>,
 ) {
-    let session_id_for_log = session_id.to_string();
-    let history_message_count = history_messages.len();
-    let available_model_count = available_models.len();
-    let prev_session_id = app.session_id().map(ToString::to_string);
     // Phase 2a foundation: register this session in the multi-session
     // map. Bucket-migration commits move per-session fields off App
     // into this entry; if a synthetic-keyed bucket is the active key
@@ -72,6 +68,7 @@ pub(super) fn handle_connected_client_event(
     // conn slot lands in the correct bucket regardless of which
     // session was active before this event fired.
     let session_key = forge_workspace::SessionKey::from_session_id(session_id.to_string());
+    let session_id_for_log = session_id.to_string();
     // Determine which synthetic bucket this Connected event should
     // migrate. Preferred path: the connection task carried the
     // pre_connect_key it was seeded with — migrate THAT specific
@@ -139,6 +136,50 @@ pub(super) fn handle_connected_client_event(
             bucket
         });
     }
+    apply_connected_presentation(
+        app,
+        session_key,
+        session_id,
+        cwd,
+        current_model,
+        available_models,
+        mode,
+        history_messages,
+        conn,
+        was_active,
+    );
+}
+
+/// Phase 3a — post-migration apply chain for `Connected` events.
+///
+/// Runs the welcome/file-index/runtime-tabs/trust/tab-title work that
+/// follows the synthetic-key → real-key migration in
+/// [`handle_connected_client_event`]. Also called directly by
+/// [`apply_session_update_connected`] (which leaves migration to the
+/// workspace-emitted `SessionUpdate::KeyRenamed` reducer in
+/// [`super::client::apply_workspace_update`]).
+///
+/// `session_key` is the real session key the bucket lives under at the
+/// time of the call. `was_active` indicates whether the user is
+/// watching this session (active path: full apply chain) or whether
+/// it completed in the background (background path: temp-swap apply).
+#[allow(clippy::too_many_arguments, clippy::needless_pass_by_value)]
+fn apply_connected_presentation(
+    app: &mut App,
+    session_key: SessionKey,
+    session_id: model::SessionId,
+    cwd: String,
+    current_model: model::CurrentModel,
+    available_models: Vec<model::AvailableModel>,
+    mode: Option<super::super::ModeState>,
+    history_messages: &[forge_primitives::Message],
+    conn: Arc<forge_agent::AgentHandle>,
+    was_active: bool,
+) {
+    let session_id_for_log = session_id.to_string();
+    let history_message_count = history_messages.len();
+    let available_model_count = available_models.len();
+    let prev_session_id = app.session_id().map(ToString::to_string);
     if was_active {
         // Active path: the user has been watching the spawning
         // bucket OR this is the startup connect (where the
@@ -218,26 +259,10 @@ pub(super) fn handle_connected_client_event(
         app.status = saved_status;
         app.needs_redraw = true;
     }
-    // Surface the freshly-connected session in the Projects pane's
-    // drilldown immediately. Without this the workspace catalog
-    // would only reflect what existed on disk at startup, leaving
-    // newly-spawned sessions invisible to the pane and to the
-    // active-project resolver — the user clicks a project, watches
-    // the bucket spawn, but the pane drilldown stays empty and the
-    // top bar can't resolve the project from the new session's
-    // UUID. Source cwd from the bucket (which the spawn-side path
-    // pre-seeds before Connected can fire); `cwd` and `session_id`
-    // are both moved by the if/else above, so we read off the bucket
-    // we just migrated into.
-    {
-        let cwd_for_record =
-            app.sessions.get(&session_key).map(|b| b.cwd_raw.clone()).unwrap_or_default();
-        if !cwd_for_record.is_empty()
-            && let Some(workspace) = app.workspace.as_ref()
-        {
-            workspace.record_connected_session(&cwd_for_record, &session_id_for_log, None);
-        }
-    }
+    // Workspace catalog is now updated by
+    // `Workspace::record_event_for_domain` on the
+    // `AgentEvent::Connected` arm (Phase 3a); no TUI-side write is
+    // needed here.
     tracing::info!(
         target: crate::logging::targets::APP_SESSION,
         event_name = "session_connected",
@@ -786,22 +811,10 @@ pub(super) fn handle_session_replaced_event(
         app.sessions.remove(&prev);
     }
 
-    // Surface the replacement session in the workspace catalog so the
-    // Projects pane finds it on the next render. Without this the
-    // pane keeps showing the previous session_id as the project's
-    // lead — its `live_session` lookup hits `app.sessions` under the
-    // stale id (or fails after the orphan drop above), no project
-    // row matches the active key, and the focus highlight disappears.
-    // Source cwd from the new bucket post-`apply_session_cwd` so the
-    // recorded value matches what the welcome card / pane render
-    // resolved to.
-    let cwd_for_record =
-        app.sessions.get(&session_key).map(|b| b.cwd_raw.clone()).unwrap_or_default();
-    if !cwd_for_record.is_empty()
-        && let Some(workspace) = app.workspace.as_ref()
-    {
-        workspace.record_connected_session(&cwd_for_record, &session_id_for_log, None);
-    }
+    // Workspace catalog is now updated by
+    // `Workspace::record_event_for_domain` on the
+    // `AgentEvent::SessionReplaced` arm (Phase 3a); no TUI-side
+    // write is needed here.
 
     tracing::info!(
         target: crate::logging::targets::APP_SESSION,
@@ -978,6 +991,164 @@ fn maybe_open_startup_session_picker(app: &mut App) {
     app.session_picker.selected = app.session_picker.selected.min(session_count - 1);
     app.session_picker.scroll_offset = 0;
     view::set_active_view(app, ActiveView::SessionPicker);
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Phase 3a — `SessionUpdate` reducers.
+//
+// Each `apply_session_update_*` function consumes the corresponding
+// `forge_workspace::SessionUpdate` variant, converts wire types to
+// TUI runtime model types, and dispatches to the existing
+// presentation handler. Phase 4 retires the `handle_*_client_event`
+// path entirely; for now these reducers replace the
+// `ClientEvent` dispatch for the 11 session-lifecycle events whose
+// dual-emit on `bridge_lifecycle` has been disabled.
+// ─────────────────────────────────────────────────────────────────
+
+// Each reducer below receives owned values from the SessionUpdate
+// destructure in `events::client::apply_workspace_update`. Several
+// of them merely forward references into the underlying handler;
+// `#[allow(clippy::needless_pass_by_value)]` is the standard escape
+// for that "I own this but only pass it by reference" pattern.
+
+#[allow(clippy::too_many_arguments, clippy::needless_pass_by_value)]
+pub(super) fn apply_session_update_connected(
+    app: &mut App,
+    key: SessionKey,
+    session_id: forge_primitives::SessionId,
+    cwd: String,
+    current_model: forge_primitives::CurrentModel,
+    available_models: Vec<forge_primitives::AvailableModel>,
+    mode: Option<forge_primitives::ModeState>,
+    history: Vec<forge_primitives::Message>,
+    conn: Arc<forge_agent::AgentHandle>,
+) {
+    use super::super::connect::type_converters::{
+        convert_current_model, convert_mode_state, map_available_models,
+    };
+    // The synthetic→real key migration is handled upstream by
+    // [`forge_workspace::SessionUpdate::KeyRenamed`] (dispatched in
+    // [`super::client::apply_workspace_update`]); by the time
+    // Connected arrives the bucket already lives under `key`.
+    // Defensively ensure the bucket exists at `key` (covers the
+    // SessionReplaced reset semantics on the single-session path
+    // where no synthetic was outstanding).
+    app.sessions.entry(key.clone()).or_insert_with(|| {
+        let mut bucket = crate::app::session::Session::new(key.clone());
+        bucket.lifecycle_state = crate::app::session::SessionLifecycleState::Idle;
+        bucket
+    });
+    let was_active = app.active_session_key.as_ref() == Some(&key);
+    apply_connected_presentation(
+        app,
+        key,
+        model::SessionId::new(session_id.into_string()),
+        cwd,
+        convert_current_model(current_model),
+        map_available_models(available_models),
+        mode.map(convert_mode_state),
+        &history,
+        conn,
+        was_active,
+    );
+}
+
+#[allow(clippy::too_many_arguments, clippy::needless_pass_by_value)]
+pub(super) fn apply_session_update_session_replaced(
+    app: &mut App,
+    _key: SessionKey,
+    session_id: forge_primitives::SessionId,
+    cwd: String,
+    current_model: forge_primitives::CurrentModel,
+    available_models: Vec<forge_primitives::AvailableModel>,
+    mode: Option<forge_primitives::ModeState>,
+    history: Vec<forge_primitives::Message>,
+    conn: Arc<forge_agent::AgentHandle>,
+) {
+    use super::super::connect::type_converters::{
+        convert_current_model, convert_mode_state, map_available_models,
+    };
+    handle_session_replaced_event(
+        app,
+        model::SessionId::new(session_id.into_string()),
+        cwd,
+        convert_current_model(current_model),
+        map_available_models(available_models),
+        mode.map(convert_mode_state),
+        &history,
+        conn,
+    );
+}
+
+pub(super) fn apply_session_update_sessions_listed(
+    app: &mut App,
+    sessions: Vec<forge_primitives::SessionListEntry>,
+) {
+    handle_sessions_listed_event(app, sessions);
+}
+
+#[allow(clippy::needless_pass_by_value)]
+pub(super) fn apply_session_update_auth_required(
+    app: &mut App,
+    key: SessionKey,
+    method_name: String,
+    method_description: String,
+) {
+    handle_auth_required_event(app, &key, method_name, method_description);
+}
+
+#[allow(clippy::needless_pass_by_value)]
+pub(super) fn apply_session_update_connection_failed(
+    app: &mut App,
+    key: SessionKey,
+    message: String,
+    _fatal: bool,
+) {
+    handle_connection_failed_event(app, &key, &message);
+}
+
+#[allow(clippy::needless_pass_by_value)]
+pub(super) fn apply_session_update_slash_command_error(
+    app: &mut App,
+    key: SessionKey,
+    message: String,
+) {
+    handle_slash_command_error_event(app, &key, &message);
+}
+
+#[allow(clippy::needless_pass_by_value)]
+pub(super) fn apply_session_update_auth_completed(
+    app: &mut App,
+    key: SessionKey,
+    conn: Arc<forge_agent::AgentHandle>,
+) {
+    handle_auth_completed_event(app, &key, &conn);
+}
+
+#[allow(clippy::needless_pass_by_value)]
+pub(super) fn apply_session_update_logout_completed(app: &mut App, key: SessionKey) {
+    handle_logout_completed_event(app, &key);
+}
+
+#[allow(clippy::needless_pass_by_value)]
+pub(super) fn apply_session_update_service_status(
+    app: &mut App,
+    severity: forge_primitives::cloud::service_status::ServiceSeverity,
+    message: String,
+) {
+    let ui_severity = match severity {
+        forge_primitives::cloud::service_status::ServiceSeverity::Warning => {
+            ServiceStatusSeverity::Warning
+        }
+        forge_primitives::cloud::service_status::ServiceSeverity::Error => {
+            ServiceStatusSeverity::Error
+        }
+    };
+    handle_service_status_event(app, ui_severity, &message);
+}
+
+pub(super) fn apply_session_update_fatal_error(app: &mut App, error: AppError) {
+    handle_fatal_error_event(app, error);
 }
 
 #[cfg(test)]

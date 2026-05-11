@@ -81,7 +81,7 @@ pub(crate) fn map_available_agents_update(
     )
 }
 
-pub(super) fn map_available_models(
+pub(crate) fn map_available_models(
     models: Vec<types::AvailableModel>,
 ) -> Vec<model::AvailableModel> {
     models

@@ -11,7 +11,6 @@
 
 use crate::agent::client::AgentEvent;
 use crate::agent::events::ClientEvent;
-use crate::agent::model;
 use crate::app::App;
 use crate::error::AppError;
 use forge_primitives as types;
@@ -21,10 +20,7 @@ use tokio::sync::mpsc;
 use tracing::{Instrument as _, info_span};
 
 use super::StartConnectionParams;
-use super::type_converters::{
-    convert_current_model, convert_mode_state, map_available_models, map_permission_request,
-    map_question_request,
-};
+use super::type_converters::{map_permission_request, map_question_request};
 
 /// Resolve the [`SessionKey`] used to tag a translated
 /// [`ClientEvent`]. AgentEvents that already carry a `session_id`
@@ -80,7 +76,6 @@ pub(super) async fn run_connection_task(params: StartConnectionParams) {
                 Ok(handle) => handle,
                 Err(err) => {
                     emit_connection_failed(
-                        &event_tx,
                         &pre_loop_update_tx,
                         &pre_connect_key,
                         format!("workspace.get_agent_handle failed: {err}"),
@@ -114,7 +109,6 @@ pub(super) async fn run_connection_task(params: StartConnectionParams) {
             // double-taps `take_events`. Surface as a connection failure
             // rather than panic.
             emit_connection_failed(
-                &event_tx,
                 &pre_loop_update_tx,
                 &pre_connect_key,
                 "forge-workspace yielded no event receiver".to_owned(),
@@ -199,7 +193,6 @@ fn handle_agent_event(
             history_updates,
         } => {
             handle_connected_event(
-                event_tx,
                 &update_tx,
                 agent,
                 connected_once,
@@ -213,11 +206,9 @@ fn handle_agent_event(
             );
         }
         AgentEvent::AuthRequired { method_name, method_description } => {
-            let _ = event_tx.send(ClientEvent::AuthRequired {
-                session_key: session_key.clone(),
-                method_name: method_name.clone(),
-                method_description: method_description.clone(),
-            });
+            // Phase 3a: ClientEvent emit removed. Workspace's
+            // `SessionUpdate::AuthRequired` drives the TUI reducer
+            // via the `WorkspaceUpdate` dispatcher.
             let _ = update_tx.send(forge_workspace::SessionUpdate::AuthRequired {
                 key: session_key,
                 method_name,
@@ -232,7 +223,6 @@ fn handle_agent_event(
             // path only runs once `forge_sdk_event_loop` is alive,
             // which means startup succeeded.
             emit_connection_failed(
-                event_tx,
                 &update_tx,
                 &session_key,
                 message,
@@ -306,10 +296,9 @@ fn handle_agent_event(
             });
         }
         AgentEvent::SlashError { message, .. } => {
-            let _ = event_tx.send(ClientEvent::SlashCommandError {
-                session_key: session_key.clone(),
-                message: message.clone(),
-            });
+            // Phase 3a: ClientEvent emit removed. Workspace's
+            // `SessionUpdate::SlashCommandError` drives the TUI
+            // reducer via the `WorkspaceUpdate` dispatcher.
             let _ = update_tx.send(forge_workspace::SessionUpdate::SlashCommandError {
                 key: session_key,
                 message,
@@ -337,16 +326,10 @@ fn handle_agent_event(
             mode,
             history_updates,
         } => {
+            // Phase 3a: ClientEvent emit removed. Workspace's
+            // `SessionUpdate::SessionReplaced` drives the TUI reducer
+            // via the `WorkspaceUpdate` dispatcher.
             let history_updates = history_updates.unwrap_or_default();
-            let _ = event_tx.send(ClientEvent::SessionReplaced {
-                session_id: model::SessionId::new(session_id.clone()),
-                cwd: cwd.clone(),
-                current_model: convert_current_model(current_model.clone()),
-                available_models: map_available_models(available_models.clone()),
-                mode: mode.clone().map(convert_mode_state),
-                history_updates: history_updates.clone(),
-                conn: Arc::clone(agent),
-            });
             let _ = update_tx.send(forge_workspace::SessionUpdate::SessionReplaced {
                 key: session_key,
                 session_id: forge_primitives::SessionId::new(session_id),
@@ -359,7 +342,8 @@ fn handle_agent_event(
             });
         }
         AgentEvent::SessionsListed { sessions } => {
-            let _ = event_tx.send(ClientEvent::SessionsListed { sessions: sessions.clone() });
+            // Phase 3a: ClientEvent emit removed; SessionUpdate path
+            // drives `apply_session_update_sessions_listed`.
             let _ = update_tx.send(forge_workspace::SessionUpdate::SessionsListed { sessions });
         }
         AgentEvent::StatusSnapshot { session_id, account, forge_account } => {
@@ -453,7 +437,6 @@ fn handle_agent_event(
 // Connected-event handler — destructured fields from the `AgentEvent::Connected` variant. Packing into a struct just to forward to the App is busywork.
 #[allow(clippy::too_many_arguments)]
 fn handle_connected_event(
-    event_tx: &mpsc::UnboundedSender<ClientEvent>,
     update_tx: &mpsc::UnboundedSender<forge_workspace::SessionUpdate>,
     agent: &Arc<forge_agent::AgentHandle>,
     connected_once: &mut bool,
@@ -465,19 +448,22 @@ fn handle_connected_event(
     mode: Option<types::ModeState>,
     history_updates: Option<Vec<types::Message>>,
 ) {
-    let mode_model = mode.clone().map(convert_mode_state);
+    // Phase 3a: ClientEvent emit removed for both first-Connected
+    // and replacement-Connected paths. Workspace's
+    // `SessionUpdate::Connected` / `SessionUpdate::SessionReplaced`
+    // drive the TUI reducers via the `WorkspaceUpdate` dispatcher.
+    //
+    // On the first-Connected path we also emit
+    // `SessionUpdate::KeyRenamed` so the TUI dispatcher can migrate
+    // the synthetic spawn bucket (`__spawn_<project>__` /
+    // `__conn_pending__`) onto the real claude session UUID BEFORE
+    // the matching `SessionUpdate::Connected` reducer runs. Without
+    // the explicit rename, rapid clicks across sleeping projects
+    // could let one Connected's reducer race the active-key
+    // fallback and pick up the wrong synthetic bucket.
     let history_updates = history_updates.unwrap_or_default();
     let session_key = SessionKey::from_session_id(session_id.clone());
     if *connected_once {
-        let _ = event_tx.send(ClientEvent::SessionReplaced {
-            session_id: model::SessionId::new(session_id.clone()),
-            cwd: cwd.clone(),
-            current_model: convert_current_model(current_model.clone()),
-            available_models: map_available_models(available_models.clone()),
-            mode: mode_model,
-            history_updates: history_updates.clone(),
-            conn: Arc::clone(agent),
-        });
         let _ = update_tx.send(forge_workspace::SessionUpdate::SessionReplaced {
             key: session_key,
             session_id: forge_primitives::SessionId::new(session_id),
@@ -490,16 +476,18 @@ fn handle_connected_event(
         });
     } else {
         *connected_once = true;
-        let _ = event_tx.send(ClientEvent::Connected {
-            session_id: model::SessionId::new(session_id.clone()),
-            cwd: cwd.clone(),
-            current_model: convert_current_model(current_model.clone()),
-            available_models: map_available_models(available_models.clone()),
-            mode: mode_model,
-            history_updates: history_updates.clone(),
-            pre_connect_key: Some(pre_connect_key.clone()),
-            conn: Arc::clone(agent),
-        });
+        // First-Connected: emit `KeyRenamed` from the synthetic
+        // bucket to the real session key so the TUI side sees the
+        // bucket under `session_key` by the time `Connected` is
+        // dispatched. No-op for the TUI dispatcher when the
+        // synthetic bucket doesn't exist (test paths, race-resolved
+        // cases) — that's fine.
+        if pre_connect_key.as_str() != session_key.as_str() {
+            let _ = update_tx.send(forge_workspace::SessionUpdate::KeyRenamed {
+                from: pre_connect_key.clone(),
+                to: session_key.clone(),
+            });
+        }
         let _ = update_tx.send(forge_workspace::SessionUpdate::Connected {
             key: session_key,
             session_id: forge_primitives::SessionId::new(session_id),
@@ -723,24 +711,21 @@ fn spawn_question_response_forwarder(
 /// state must survive a fresh spawn's failure; the failure surfaces
 /// inline in the spawn bucket.
 pub(super) fn emit_connection_failed(
-    event_tx: &mpsc::UnboundedSender<ClientEvent>,
     update_tx: &mpsc::UnboundedSender<forge_workspace::SessionUpdate>,
     session_key: &SessionKey,
     message: String,
     app_error: AppError,
     is_fatal: bool,
 ) {
-    let _ = event_tx.send(ClientEvent::ConnectionFailed {
-        session_key: session_key.clone(),
-        message: message.clone(),
-    });
+    // Phase 3a: ClientEvent emits removed for ConnectionFailed +
+    // FatalError. Workspace's matching SessionUpdate variants drive
+    // the TUI reducers via the `WorkspaceUpdate` dispatcher.
     let _ = update_tx.send(forge_workspace::SessionUpdate::ConnectionFailed {
         key: session_key.clone(),
         message,
         fatal: is_fatal,
     });
     if is_fatal {
-        let _ = event_tx.send(ClientEvent::FatalError(app_error.clone()));
         let _ = update_tx.send(forge_workspace::SessionUpdate::FatalError(app_error));
     }
 }
