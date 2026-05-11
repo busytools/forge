@@ -377,6 +377,20 @@ impl App {
     /// next paint reflects the new active session. No-op if `key`
     /// is already active or unknown.
     pub fn switch_active_session(&mut self, key: forge_workspace::SessionKey) {
+        // Local helper: map a session's lifecycle state to the
+        // App-level status enum so a background turn that completed
+        // while the user was away doesn't leave a stale `Thinking` /
+        // `Running` status on switch-in.
+        fn status_for_lifecycle(
+            lifecycle: crate::app::session::SessionLifecycleState,
+        ) -> AppStatus {
+            use crate::app::session::SessionLifecycleState as L;
+            match lifecycle {
+                L::Spawning => AppStatus::Connecting,
+                L::Running => AppStatus::Running,
+                L::Sleeping | L::Idle | L::Attention => AppStatus::Ready,
+            }
+        }
         if self.active_session_key.as_ref() == Some(&key) {
             return;
         }
@@ -397,25 +411,33 @@ impl App {
         // switching to B leaves A's draft visible in B's input, and
         // A's `Running`/`Thinking` status blocks every submit in B
         // via `is_turn_busy`.
+        // Snapshot the outgoing session's input draft so a future
+        // switch back restores what the user was typing. `app.status`
+        // is derived freshly from the destination bucket's
+        // `lifecycle_state` instead of being snapshotted, so a
+        // background turn that completed while the user was away
+        // doesn't leave a stale `Thinking`/`Running` status on the
+        // incoming bucket.
         let outgoing_draft = self.input.text();
-        let outgoing_status = self.status.clone();
         if let Some(outgoing_key) = self.active_session_key.clone()
             && let Some(outgoing) = self.sessions.get_mut(&outgoing_key)
         {
             outgoing.draft_input = outgoing_draft;
-            outgoing.saved_status = outgoing_status;
         }
 
-        let (incoming_draft, incoming_status) =
-            self.sessions.get(&key).map_or((String::new(), AppStatus::Ready), |s| {
-                (s.draft_input.clone(), s.saved_status.clone())
+        let (incoming_draft, incoming_lifecycle) = self
+            .sessions
+            .get(&key)
+            .map_or((String::new(), crate::app::session::SessionLifecycleState::Idle), |s| {
+                (s.draft_input.clone(), s.lifecycle_state)
             });
         self.active_session_key = Some(key);
         self.input.clear();
         if !incoming_draft.is_empty() {
             self.input.set_text(&incoming_draft);
         }
-        self.status = incoming_status;
+        self.status = status_for_lifecycle(incoming_lifecycle);
+        self.force_redraw = true;
         self.needs_redraw = true;
     }
 
