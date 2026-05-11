@@ -9,26 +9,14 @@
 use serde::Deserialize;
 use std::time::Duration;
 
+pub use forge_primitives::cloud::service_status::{ServiceIssue, ServiceSeverity};
+
 const SERVICE_STATUS_TIMEOUT: Duration = Duration::from_secs(4);
 const STATUSPAGE_SUMMARY_URL: &str = "https://status.claude.com/api/v2/summary.json";
 
 /// Component names we care about. "Claude Code" is the primary
 /// component; "Claude API" is included because Claude Code depends on it.
 const RELEVANT_COMPONENTS: &[&str] = &["Claude Code", "Claude API (api.anthropic.com)"];
-
-/// Severity of a detected service-status issue. Mirrored on the UI
-/// side as `ClientEvent::ServiceStatus { severity, .. }`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ServiceSeverity {
-    Warning,
-    Error,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ServiceIssue {
-    pub severity: ServiceSeverity,
-    pub message: String,
-}
 
 #[derive(Debug, Clone, Deserialize)]
 struct SummaryResponse {

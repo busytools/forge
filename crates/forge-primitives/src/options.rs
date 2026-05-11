@@ -6,53 +6,7 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Which permission flow the `claude` binary should use for tool invocations.
-///
-/// Mirrors the upstream Python SDK's `permission_mode` values (all six).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum PermissionMode {
-    /// Ask for permission on every tool use — the CLI's default behaviour
-    /// and forge-sdk's default variant. In SDK mode this routes the
-    /// question to the `can_use_tool` callback (or the configured
-    /// `permission_prompt_tool_name`). Wire value: `"default"`.
-    #[serde(rename = "default")]
-    Ask,
-    /// Auto-allow edits / writes; prompt on destructive ops.
-    #[serde(rename = "acceptEdits")]
-    AcceptEdits,
-    /// Read-only mode; block tools that would mutate the workspace.
-    #[serde(rename = "plan")]
-    Plan,
-    /// Auto-allow all tools (use with care). Symmetric inverse of
-    /// [`DenyPermissions`](Self::DenyPermissions).
-    #[serde(rename = "bypassPermissions")]
-    BypassPermissions,
-    /// Let the binary decide based on tool + context heuristics
-    /// (the CLI v0.1.57+).
-    #[serde(rename = "auto")]
-    Auto,
-    /// Silently deny any tool invocation that would otherwise require
-    /// approval. Symmetric inverse of
-    /// [`BypassPermissions`](Self::BypassPermissions). Wire value:
-    /// `"dontAsk"` (preserved for CLI compatibility).
-    #[serde(rename = "dontAsk")]
-    DenyPermissions,
-}
-
-impl PermissionMode {
-    /// The string the `claude` binary expects via `--permission-mode`.
-    #[must_use]
-    pub fn as_cli_arg(self) -> &'static str {
-        match self {
-            Self::Ask => "default",
-            Self::AcceptEdits => "acceptEdits",
-            Self::Plan => "plan",
-            Self::BypassPermissions => "bypassPermissions",
-            Self::Auto => "auto",
-            Self::DenyPermissions => "dontAsk",
-        }
-    }
-}
+pub use crate::permission::PermissionMode;
 
 /// System-prompt configuration. Wraps the CLI's discriminated union of
 /// `str | SystemPromptPreset | SystemPromptFile`.

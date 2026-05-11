@@ -27,7 +27,7 @@ async fn main() -> Result<()> {
         std::env::args().nth(1).unwrap_or_else(|| "Read /tmp/README.md and summarise".to_string());
 
     let opts = OptionsBuilder::new()
-        .permission_mode(PermissionMode::Ask)
+        .permission_mode(PermissionMode::Default)
         .can_use_tool(|ctx: ToolPermissionContext| async move {
             if is_read_only(&ctx.tool_name) {
                 eprintln!("ALLOW {} {}", ctx.tool_name, ctx.tool_input);

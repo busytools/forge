@@ -195,7 +195,7 @@ impl Default for Options {
             cwd: None,
             resume: None,
             model: None,
-            permission_mode: PermissionMode::Ask,
+            permission_mode: PermissionMode::Default,
             can_use_tool: None,
             mcp_servers: Vec::new(),
             external_mcp_servers: HashMap::new(),
@@ -881,7 +881,7 @@ mod tests_options_build {
         assert_eq!(opts.binary, "claude");
         assert!(opts.cwd.is_none());
         assert!(opts.resume.is_none());
-        assert_eq!(opts.permission_mode, PermissionMode::Ask);
+        assert_eq!(opts.permission_mode, PermissionMode::Default);
         assert!(opts.model.is_none());
     }
 

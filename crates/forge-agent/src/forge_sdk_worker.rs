@@ -369,12 +369,12 @@ pub(crate) async fn send_prompt(
 
 pub(crate) fn parse_permission_mode(mode: &str) -> anyhow::Result<PermissionMode> {
     match mode {
-        "default" | "ask" => Ok(PermissionMode::Ask),
+        "default" | "ask" => Ok(PermissionMode::Default),
         "acceptEdits" | "accept_edits" => Ok(PermissionMode::AcceptEdits),
         "plan" => Ok(PermissionMode::Plan),
         "bypassPermissions" | "bypass_permissions" => Ok(PermissionMode::BypassPermissions),
         "auto" => Ok(PermissionMode::Auto),
-        "dontAsk" | "dont_ask" | "deny" => Ok(PermissionMode::DenyPermissions),
+        "dontAsk" | "dont_ask" | "deny" => Ok(PermissionMode::DontAsk),
         other => Err(anyhow::anyhow!("forge_sdk: unknown permission mode {other:?}")),
     }
 }

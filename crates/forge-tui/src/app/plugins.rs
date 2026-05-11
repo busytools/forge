@@ -52,12 +52,12 @@ impl PluginsViewTab {
     }
 }
 
-// Plugin registry types lifted to forge-agent::userdata::plugins
-// (2026-05-05). Re-exported here so existing forge-tui imports keep
-// resolving.
-pub use forge_agent::userdata::plugins::{
+// Plugin registry types lifted to forge_primitives::plugins (Phase 0
+// of the MVVM refactor, 2026-05-11). Re-exported here so existing
+// forge-tui imports keep resolving.
+pub use forge_primitives::plugins::{
     InstalledPluginEntry, MarketplaceEntry, MarketplaceSourceEntry, PluginCapability,
-    PluginsInventorySnapshot,
+    PluginsCliActionSuccess, PluginsInventorySnapshot,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -79,13 +79,6 @@ pub struct PluginsState {
     pub claude_path: Option<PathBuf>,
     pub runtime_reload_after_refresh: bool,
     pub pending_runtime_reload_success_message: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PluginsCliActionSuccess {
-    pub snapshot: PluginsInventorySnapshot,
-    pub message: String,
-    pub claude_path: PathBuf,
 }
 
 impl PluginsState {
