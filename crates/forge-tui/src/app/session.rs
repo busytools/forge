@@ -29,6 +29,7 @@ use crate::app::state::types::{
 };
 use crate::app::state::viewport::ChatViewport;
 use crate::app::state::{ChatRenderTraceState, TerminalToolCallRef, TurnNoticeRef};
+pub use forge_primitives::runtime::SessionLifecycleState;
 
 /// Per-session runtime state. Initialised when a session connects;
 /// dropped when the session is closed or forge-tui exits.
@@ -38,10 +39,16 @@ use crate::app::state::{ChatRenderTraceState, TerminalToolCallRef, TurnNoticeRef
 /// derived) because [`Self::last_activity_at`] is an [`Instant`]
 /// which has no `Default` impl. Every other field falls through to
 /// its type's `Default::default()`; if a field needs a non-default
-/// initializer, factor it through [`Session::new`] rather than
+/// initializer, factor it through [`UiSession::new`] rather than
 /// expanding the manual impl.
+///
+/// Renamed from `Session` in Phase 2 of the MVVM refactor (#102) to
+/// signal it's a UI-side projection of the authoritative
+/// [`forge_workspace::DomainSession`]. The `Session` alias below
+/// preserves all ~250 existing call sites; Phase 4 deletes the alias
+/// and migrates call sites to `UiSession` directly.
 #[allow(clippy::struct_excessive_bools)]
-pub struct Session {
+pub struct UiSession {
     /// The claude-issued session UUID, also used as the map key.
     /// Stored here for symmetry; the map lookup uses the same value.
     pub key: Option<SessionKey>,
@@ -258,22 +265,22 @@ pub struct Session {
     pub draft_input: String,
 }
 
-impl Session {
+impl UiSession {
     #[must_use]
     pub fn new(key: SessionKey) -> Self {
         Self { key: Some(key), last_activity_at: Instant::now(), ..Self::default() }
     }
 }
 
-impl Default for Session {
+impl Default for UiSession {
     fn default() -> Self {
         // `Instant` has no `Default` impl, so the derive is replaced
         // with a hand-rolled version that seeds `last_activity_at`
         // to "now" and falls through to `Default::default()` for
         // every other field via destructuring of an internal
         // synthesizer. The shape stays maintainable: any field added
-        // to `Session` whose type does have `Default` lands here for
-        // free without code change.
+        // to `UiSession` whose type does have `Default` lands here
+        // for free without code change.
         Self {
             key: Option::default(),
             session_id: Option::default(),
@@ -342,27 +349,12 @@ impl Default for Session {
     }
 }
 
-/// Lifecycle state of a [`Session`], used by the Projects pane to
-/// render the right state glyph and (in later phases) by the
-/// multiplexer to decide redraw semantics. See
-/// `~/.claude-subspace/plans/2026-05-10-forge-tui-projects-pane-wide-design.md`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum SessionLifecycleState {
-    /// No subprocess yet; lead exists conceptually but has never
-    /// been spawned (or has been freed).
-    #[default]
-    Sleeping,
-    /// Subprocess spawn in flight — between user click and first
-    /// `Connected` event from the bridge.
-    Spawning,
-    /// Subprocess is alive and idle (no turn in progress).
-    Idle,
-    /// Subprocess is mid-turn or actively streaming.
-    Running,
-    /// Background session is paused on a permission prompt and
-    /// needs user input to continue.
-    Attention,
-}
+/// Back-compat alias for [`UiSession`]. The struct was renamed in
+/// Phase 2 of the MVVM refactor (#102) to signal it's a UI-side
+/// projection of the authoritative
+/// [`forge_workspace::DomainSession`]. Phase 4 deletes this alias
+/// and migrates the existing call sites to `UiSession` directly.
+pub type Session = UiSession;
 
 #[cfg(test)]
 mod tests {

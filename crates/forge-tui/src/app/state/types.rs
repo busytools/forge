@@ -116,58 +116,11 @@ pub struct McpState {
     pub pending_elicitation: Option<forge_primitives::ElicitationRequest>,
 }
 
-/// Per-session runtime state. Owns the in-flight `tool_call` store,
-/// the model-resolution cache, the mode-capability state, the MCP
-/// per-server cooldowns, and the auth/error flags that survive
-/// across messages. The App's `handle_sdk_message` walks raw
-/// `forge_primitives::Message` envelopes and reads/writes these
-/// fields directly — they are the authoritative per-session store.
-#[derive(Debug, Default)]
-pub struct SessionTurnState {
-    /// Live tool-call store keyed by `tool_use_id` for cross-message
-    /// `tool_use ↔ tool_result` pairing.
-    pub tool_calls: std::collections::HashMap<String, forge_primitives::ToolCall>,
-    /// Maps task-tool `task_id` → `tool_use_id` so `TaskProgress` /
-    /// `TaskNotification` messages can resolve back to the originating
-    /// tool call for `ToolCallUpdate` emission.
-    pub task_tool_use_ids: std::collections::HashMap<String, String>,
-
-    /// Raw model id from the CLI's session-init payload.
-    pub model_id: String,
-    /// Model id explicitly requested via `/model`.
-    pub requested_model_id: Option<String>,
-    /// Resolved model id after runtime fallback from the requested id.
-    pub resolved_runtime_model_id: Option<String>,
-
-    /// Active permission mode (typed enum, not the wire string).
-    /// Populated from System(init).permissionMode and the `SetMode`
-    /// command path.
-    pub mode: Option<crate::agent::state::PermissionMode>,
-    /// Permission modes the runtime currently supports.
-    pub supported_mode_ids: Vec<crate::agent::state::PermissionMode>,
-    /// Permission modes recognised but currently unavailable.
-    pub runtime_unavailable_mode_ids: Vec<crate::agent::state::PermissionMode>,
-    /// Whether `bypassPermissions` mode is allowed for this session.
-    pub supports_bypass_permissions_mode: bool,
-    /// Current mode resolution alongside the human-readable label.
-    pub mode_state: Option<forge_primitives::ModeState>,
-
-    /// Sha-style fingerprint of the `available_agents` list — used to
-    /// emit `AvailableAgentsUpdate` only when the catalogue changes.
-    pub last_agents_signature: Option<String>,
-
-    /// True once an `AuthRequired` event has been emitted for this
-    /// session; suppresses re-emits on subsequent stream events.
-    pub auth_hint_sent: bool,
-
-    /// Last assistant error subtype seen on the wire — survives
-    /// across messages so a subsequent `Result` can classify the
-    /// turn correctly.
-    pub last_assistant_error: Option<String>,
-
-    /// Per-server cooldown timestamps for MCP status revalidation.
-    pub mcp_status_revalidated_at: std::collections::HashMap<String, std::time::Instant>,
-}
+// Per-session SDK turn state lives in
+// [`forge_primitives::runtime::SessionTurnState`] as of Phase 2 of
+// the MVVM refactor (#102). Re-export keeps existing import paths
+// (`crate::app::state::types::SessionTurnState`) resolving.
+pub use forge_primitives::runtime::SessionTurnState;
 
 pub const DEFAULT_RENDER_CACHE_BUDGET_BYTES: usize = 24 * 1024 * 1024;
 pub const DEFAULT_HISTORY_RETENTION_MAX_BYTES: usize = 64 * 1024 * 1024;

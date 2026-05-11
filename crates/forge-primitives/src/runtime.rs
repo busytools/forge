@@ -188,3 +188,80 @@ impl TerminalReason {
         }
     }
 }
+
+/// Lifecycle state of a session, used by the Projects pane to render
+/// the right state glyph and (in later phases) by the multiplexer to
+/// decide redraw semantics. Promoted from `forge_tui::app::session`
+/// in Phase 2 of the MVVM refactor (#102) so both `forge-tui` and
+/// `forge-workspace` can project this state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub enum SessionLifecycleState {
+    /// No subprocess yet; lead exists conceptually but has never
+    /// been spawned (or has been freed).
+    #[default]
+    Sleeping,
+    /// Subprocess spawn in flight — between user click and first
+    /// `Connected` event from the bridge.
+    Spawning,
+    /// Subprocess is alive and idle (no turn in progress).
+    Idle,
+    /// Subprocess is mid-turn or actively streaming.
+    Running,
+    /// Background session is paused on a permission prompt and
+    /// needs user input to continue.
+    Attention,
+}
+
+/// Per-session SDK turn state — model-resolution cache, mode
+/// capability state, MCP per-server cooldowns, and the auth/error
+/// flags that survive across messages. Promoted from
+/// `forge_tui::app::state::types` in Phase 2 of the MVVM refactor
+/// (#102) so `forge-workspace` can hold an authoritative copy
+/// alongside the existing forge-tui projection.
+#[derive(Debug, Default)]
+pub struct SessionTurnState {
+    /// Live tool-call store keyed by `tool_use_id` for cross-message
+    /// `tool_use ↔ tool_result` pairing.
+    pub tool_calls: std::collections::HashMap<String, crate::session_update::ToolCall>,
+    /// Maps task-tool `task_id` → `tool_use_id` so `TaskProgress` /
+    /// `TaskNotification` messages can resolve back to the originating
+    /// tool call for `ToolCallUpdate` emission.
+    pub task_tool_use_ids: std::collections::HashMap<String, String>,
+
+    /// Raw model id from the CLI's session-init payload.
+    pub model_id: String,
+    /// Model id explicitly requested via `/model`.
+    pub requested_model_id: Option<String>,
+    /// Resolved model id after runtime fallback from the requested id.
+    pub resolved_runtime_model_id: Option<String>,
+
+    /// Active permission mode (typed enum, not the wire string).
+    /// Populated from System(init).permissionMode and the `SetMode`
+    /// command path.
+    pub mode: Option<crate::permission::PermissionMode>,
+    /// Permission modes the runtime currently supports.
+    pub supported_mode_ids: Vec<crate::permission::PermissionMode>,
+    /// Permission modes recognised but currently unavailable.
+    pub runtime_unavailable_mode_ids: Vec<crate::permission::PermissionMode>,
+    /// Whether `bypassPermissions` mode is allowed for this session.
+    pub supports_bypass_permissions_mode: bool,
+    /// Current mode resolution alongside the human-readable label.
+    pub mode_state: Option<ModeState>,
+
+    /// Sha-style fingerprint of the `available_agents` list — used to
+    /// emit `AvailableAgentsUpdate` only when the catalogue changes.
+    pub last_agents_signature: Option<String>,
+
+    /// True once an `AuthRequired` event has been emitted for this
+    /// session; suppresses re-emits on subsequent stream events.
+    pub auth_hint_sent: bool,
+
+    /// Last assistant error subtype seen on the wire — survives
+    /// across messages so a subsequent `Result` can classify the
+    /// turn correctly.
+    pub last_assistant_error: Option<String>,
+
+    /// Per-server cooldown timestamps for MCP status revalidation.
+    pub mcp_status_revalidated_at: std::collections::HashMap<String, std::time::Instant>,
+}

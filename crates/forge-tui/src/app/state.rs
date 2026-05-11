@@ -421,7 +421,10 @@ impl App {
             match lifecycle {
                 L::Spawning => AppStatus::Connecting,
                 L::Running => AppStatus::Running,
-                L::Sleeping | L::Idle | L::Attention => AppStatus::Ready,
+                // `SessionLifecycleState` is `#[non_exhaustive]`;
+                // any future variant defaults to the same Ready
+                // status the existing non-running ones map to.
+                L::Sleeping | L::Idle | L::Attention | _ => AppStatus::Ready,
             }
         }
         if self.active_session_key.as_ref() == Some(&key) {

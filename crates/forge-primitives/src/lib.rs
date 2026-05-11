@@ -116,7 +116,8 @@ pub use question::{
 pub use runtime::{
     ApiRetryError, ApiRetryUpdate, AvailableAgent, AvailableCommand, AvailableModel,
     CompactionTrigger, CurrentModel, EffortLevel, FastModeState, ModeInfo, ModeState,
-    RateLimitUpdate, RuntimeSessionState, SessionStatus, SettingsParseErrorUpdate, TerminalReason,
+    RateLimitUpdate, RuntimeSessionState, SessionLifecycleState, SessionStatus, SessionTurnState,
+    SettingsParseErrorUpdate, TerminalReason,
 };
 pub use session_meta::{PromptChunk, SessionListEntry};
 pub use session_update::{

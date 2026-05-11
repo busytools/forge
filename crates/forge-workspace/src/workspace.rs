@@ -354,7 +354,8 @@ impl Workspace {
             }
         };
         if needs_spawn {
-            let domain = Arc::new(Mutex::new(DomainSession::new(session_key.clone())));
+            let domain =
+                Arc::new(Mutex::new(DomainSession::new(session_key.clone(), Arc::clone(&arc))));
             self.domain_handles.lock().insert(session_key.clone(), Arc::clone(&domain));
             let task = SessionTask {
                 key: session_key,
@@ -614,6 +615,31 @@ impl Workspace {
         guard.pending_interactions.insert(tool_id, slot);
     }
 
+    /// Apply an [`forge_agent::client::AgentEvent`] to the
+    /// workspace-side [`DomainSession`] for the given key. Called by
+    /// `bridge_lifecycle::handle_agent_event` before the dual-emit
+    /// during Phases 2-3 — the workspace task's view of each session
+    /// stays current even though `take_events()` is still owned by
+    /// `bridge_lifecycle`.
+    ///
+    /// No-op when no session task is registered for `key` (e.g. the
+    /// session was just closed). Pre-connect `AgentEvent`s arrive
+    /// keyed by the synthetic pre-connect key; the matching domain
+    /// handle is created lazily on the first `Connected` migration,
+    /// so early events (`AuthRequired`, `ConnectionFailed`) silently
+    /// no-op here and the existing TUI-side projection handles them.
+    pub fn record_event_for_domain(
+        &self,
+        key: &SessionKey,
+        event: &forge_agent::client::AgentEvent,
+    ) {
+        let Some(domain) = self.domain_handles.lock().get(key).cloned() else {
+            return;
+        };
+        let mut guard = domain.lock();
+        crate::session_task::apply_event_to_domain(&mut guard, event);
+    }
+
     /// Graceful shutdown of every pooled Agent. Drains the pool, then
     /// drops each `Arc<AgentHandle>` so the underlying
     /// `forge_sdk::Client` kills its `claude` subprocess via its
@@ -774,9 +800,11 @@ config_dir = "~/.claude-subspace"
 
         // Pool has one entry going in.
         assert_eq!(workspace.pool.lock().len(), 1);
-        // Workspace pool + spawned `SessionTask.handle` + this test
-        // all hold the Arc → strong_count == 3.
-        assert_eq!(Arc::strong_count(&handle), 3);
+        // Workspace pool + spawned `SessionTask.handle` +
+        // `DomainSession.conn` (Phase 2 owned by the workspace's
+        // `domain_handles` map) + this test all hold the Arc →
+        // strong_count == 4.
+        assert_eq!(Arc::strong_count(&handle), 4);
 
         // Shutdown consumes self and must return. Drops `command_senders`,
         // which closes each `SessionTask`'s command channel; the spawned

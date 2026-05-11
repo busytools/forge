@@ -179,6 +179,11 @@ fn handle_agent_event(
     event: AgentEvent,
 ) {
     let session_key = session_key_for(&event);
+    // Phase 2: update the workspace-side DomainSession before the
+    // dual-emit. Synchronous, cheap (parking_lot::Mutex lock); no-op
+    // for keys without a registered SessionTask (e.g. pre-connect
+    // events keyed under the synthetic placeholder).
+    workspace.record_event_for_domain(&session_key, &event);
     // Phase 1-3: dual-emit every translated agent event onto the
     // workspace channel as well as the legacy `ClientEvent` channel.
     // Phase 4 retires the ClientEvent path; `SessionTask` will own

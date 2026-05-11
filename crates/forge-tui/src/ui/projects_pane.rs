@@ -399,7 +399,6 @@ fn glyph_for_lifecycle(
             (ch.to_string(), color)
         }
         SessionLifecycleState::Attention => ("△".to_owned(), theme::STATUS_WARNING),
-        SessionLifecycleState::Sleeping => ("·".to_owned(), theme::DIM),
         // Idle = "alive, no turn in progress". Use a filled bullet so
         // the row reads as occupied (the design spec calls for blank
         // here, but in practice an empty glyph column makes Active /
@@ -409,6 +408,10 @@ fn glyph_for_lifecycle(
             let color = if session_is_active { theme::RUST_ORANGE } else { theme::DIM };
             ("●".to_owned(), color)
         }
+        // `SessionLifecycleState` is `#[non_exhaustive]`; future
+        // variants render as Sleeping until the pane learns about
+        // them explicitly.
+        SessionLifecycleState::Sleeping | _ => ("·".to_owned(), theme::DIM),
     }
 }
 
