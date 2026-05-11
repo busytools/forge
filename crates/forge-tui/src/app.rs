@@ -122,12 +122,14 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
     resume_terminal();
 
     let mut events = EventStream::new();
-    // 8ms tick → ~120 Hz render ceiling. Most modern terminals
-    // (Ghostty / kitty / iTerm2) handle 120 Hz fine; on a 60 Hz
-    // display the extra wakeups are harmless because rendering is
-    // event-driven and skipped when `needs_redraw == false`. Idle
-    // state still costs nothing.
-    let tick_duration = Duration::from_millis(8);
+    // 4ms tick → ~250 Hz nominal sleep ceiling; practical FPS during
+    // animation tops out around 120-150 once render overhead (~3ms
+    // per frame) is included. The previous 8ms tick capped practical
+    // FPS at ~90 because 8ms wait + 3ms render = 11ms ≈ 91 Hz.
+    // Idle state still costs nothing because the render loop skips
+    // when `needs_redraw == false`; only the wakeup cadence increases
+    // (negligible on modern hardware).
+    let tick_duration = Duration::from_millis(4);
     let mut last_render = Instant::now();
 
     loop {
