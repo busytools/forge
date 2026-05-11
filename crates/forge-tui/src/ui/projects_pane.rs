@@ -192,23 +192,32 @@ fn append_project_rows(
                 Span::raw(" "),
                 Span::styled(time, Style::default().fg(theme::DIM)),
                 Span::raw(" "),
-                Span::styled("×".to_owned(), Style::default().fg(theme::DIM)),
-                Span::raw("  "),
+                // 3-char "[×]" close affordance — reads as a button
+                // rather than a stray multiplication sign, and the
+                // wider visual footprint matches the wider click band
+                // stamped below. Bold so it pops against the DIM
+                // metadata column to its left.
+                Span::styled(
+                    "[×]".to_owned(),
+                    Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(" "),
             ]));
             app.pane_hit_targets.push(PaneHitTarget::ProjectHeader {
                 project_name: project.key.as_str().to_owned(),
                 y: row_y,
                 height: 1,
             });
-            // Close-glyph hit target — 3-col band covering the space
-            // before × (col area.right-4), the × itself
-            // (area.right-3), and the first gutter col (area.right-2).
-            // Wider than the literal glyph so accidental clicks one
-            // column off still register; clicks on the rightmost
-            // gutter col are reserved as "row click" (focus/switch)
-            // to keep the visual gutter inert.
+            // Close-glyph hit target — covers `[×]` (3 chars) plus
+            // a one-col tolerance on either side, for a 5-col band.
+            // The rightmost gutter col stays inert so accidental
+            // edge-clicks resolve as row-click (focus/switch).
+            // Layout positions: `... ${time} ${space} [ × ] ${gutter}`
+            // → `[×]` occupies area.right-4..area.right-1; the 5-col
+            // band runs area.right-5..area.right-1 (one space before
+            // `[`, then the 3 chars of the button, then one col after).
             let row_right = area.x.saturating_add(area.width);
-            let close_x_start = row_right.saturating_sub(4);
+            let close_x_start = row_right.saturating_sub(5);
             let close_x_end = row_right.saturating_sub(1);
             app.pane_hit_targets.push(PaneHitTarget::CloseSession {
                 session_key: session_key.clone(),
@@ -254,12 +263,12 @@ fn append_project_rows(
 }
 
 /// Active-row layout:
-/// `<2 indent><1 glyph><1 sp><name><1 sp><3 time><1 sp><1 ×><2 right gutter>`
-/// = 11 chrome chars. The 2-col trailing gutter mirrors the chat
-/// column's left gutter so the pane content reads as inset from
-/// the separator on both sides.
+/// `<2 indent><1 glyph><1 sp><name><1 sp><3 time><1 sp><3 [×]><1 right gutter>`
+/// = 12 chrome chars. `[×]` reads as a button and is easier to
+/// land a click on than a bare `×`; the right gutter shrinks to
+/// 1 col to compensate for the wider button glyph.
 fn name_budget_active(area_width: u16) -> usize {
-    usize::from(area_width.saturating_sub(11))
+    usize::from(area_width.saturating_sub(12))
 }
 
 /// Inactive-row layout:
@@ -434,10 +443,10 @@ mod tests {
 
     #[test]
     fn name_budget_active_matches_chrome() {
-        // Wide tier (26): 26 - 11 chrome chars = 15.
-        // Medium tier (20): 20 - 11 = 9.
-        assert_eq!(name_budget_active(20), 9);
-        assert_eq!(name_budget_active(26), 15);
+        // Wide tier (26): 26 - 12 chrome chars = 14.
+        // Medium tier (20): 20 - 12 = 8.
+        assert_eq!(name_budget_active(20), 8);
+        assert_eq!(name_budget_active(26), 14);
     }
 
     #[test]
