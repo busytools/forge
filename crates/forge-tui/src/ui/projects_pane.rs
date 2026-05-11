@@ -149,9 +149,17 @@ fn append_project_rows(
 
         // Project row. Hit-target stamps the un-truncated name so
         // click routing keeps working when the rendered label has
-        // been head-truncated.
+        // been head-truncated. Render the session count after the
+        // name so the user can see project size at a glance without
+        // expanding the drilldown.
         let row_y = area.y + line_count_as_u16(lines);
-        let project_label = truncate_with_ellipsis(project.name.as_str(), project_budget);
+        let session_count = project.sessions.len();
+        let header_text = if session_count == 0 {
+            project.name.clone()
+        } else {
+            format!("{} ({session_count})", project.name)
+        };
+        let project_label = truncate_with_ellipsis(&header_text, project_budget);
         lines.push(Line::from(Span::styled(
             format!("  {project_label}"),
             if is_active {
@@ -179,7 +187,14 @@ fn append_project_rows(
         // by ~4 chars and resnapshotting every Wide+Medium pane test.
         // Field is current; rendering is the only piece left.
         if is_active {
-            for (idx, session) in project.sessions.iter().enumerate() {
+            // Cap the drilldown at DRILLDOWN_CAP sessions to keep the
+            // pane usable for projects with long catalogs. The hidden
+            // remainder is summarised inline as `+ N more`; the user
+            // can still resume any session via the in-session
+            // `/resume` picker if they need to reach back further.
+            let total = project.sessions.len();
+            let visible = total.min(DRILLDOWN_CAP);
+            for (idx, session) in project.sessions.iter().take(visible).enumerate() {
                 let row_y = area.y + line_count_as_u16(lines);
                 let lifecycle = app
                     .sessions
@@ -214,9 +229,22 @@ fn append_project_rows(
                     height: 1,
                 });
             }
+            if total > visible {
+                let remainder = total - visible;
+                lines.push(Line::from(Span::styled(
+                    format!("      + {remainder} more"),
+                    Style::default().fg(theme::DIM),
+                )));
+            }
         }
     }
 }
+
+/// Active-project drilldown is capped at this many session rows. The
+/// rest collapses to a `+ N more` indicator. Tuned so that a typical
+/// 13-project `forge.toml` fits in one pane height alongside the
+/// active project's recent context.
+const DRILLDOWN_CAP: usize = 3;
 
 /// Saturating cast of `lines.len()` to `u16`. The pane area's height
 /// is `u16` and projects tall enough to overflow `u16::MAX` rows

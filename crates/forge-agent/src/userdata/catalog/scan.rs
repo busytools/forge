@@ -734,11 +734,17 @@ fn parse_session_info_from_lite(
         .or_else(|| extract_last_json_string_field(tail, "aiTitle"))
         .or_else(|| extract_last_json_string_field(head, "aiTitle"));
     let first_prompt = extract_first_prompt_from_head(head);
+    // Bias toward labels that identify what the session is about, not
+    // what was last said in it. customTitle / aiTitle (claude-written
+    // 4-6 word title) is best; first_prompt (the user's opening
+    // prompt) is the next-best identifier; lastPrompt (a mid-session
+    // follow-up that needs context to interpret) is the fallback
+    // because it produces unreadable labels at narrow widths.
     let summary = custom_title
         .clone()
+        .or_else(|| first_prompt.clone())
         .or_else(|| extract_last_json_string_field(tail, "lastPrompt"))
-        .or_else(|| extract_last_json_string_field(tail, "summary"))
-        .or_else(|| first_prompt.clone())?;
+        .or_else(|| extract_last_json_string_field(tail, "summary"))?;
 
     let git_branch = extract_last_json_string_field(tail, "gitBranch")
         .or_else(|| extract_json_string_field(head, "gitBranch"));
