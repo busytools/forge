@@ -999,7 +999,13 @@ mod tests {
         }
         let session_id =
             app.session_id().map_or_else(|| "test-session".to_owned(), ToString::to_string);
-        handle_client_event(app, ClientEvent::SdkMessageReceived { session_id, msg });
+        handle_client_event(
+            app,
+            ClientEvent::WorkspaceUpdate(forge_workspace::SessionUpdate::ChatAppended {
+                session_id,
+                msg,
+            }),
+        );
     }
 
     #[test]
@@ -1962,7 +1968,7 @@ mod tests {
 
         handle_client_event(
             &mut app,
-            ClientEvent::StatusSnapshotReceived {
+            ClientEvent::WorkspaceUpdate(forge_workspace::SessionUpdate::StatusSnapshot {
                 session_id: "old-session".into(),
                 account: forge_primitives::AccountInfo {
                     email: Some("old@example.com".into()),
@@ -1973,7 +1979,7 @@ mod tests {
                     api_provider: None,
                 },
                 forge_account: None,
-            },
+            }),
         );
 
         assert!(app.account_info().is_none());
@@ -1994,7 +2000,10 @@ mod tests {
         let session_key = active_session_key(&app);
         handle_client_event(
             &mut app,
-            ClientEvent::ForgeAccountIdentityReady { session_key, display_name: "Subspace".into() },
+            ClientEvent::WorkspaceUpdate(forge_workspace::SessionUpdate::ForgeAccountIdentity {
+                key: session_key,
+                display_name: "Subspace".into(),
+            }),
         );
 
         // App state stores the name (Status panel needs it).
@@ -2023,7 +2032,7 @@ mod tests {
 
         handle_client_event(
             &mut app,
-            ClientEvent::StatusSnapshotReceived {
+            ClientEvent::WorkspaceUpdate(forge_workspace::SessionUpdate::StatusSnapshot {
                 session_id: "session-1".into(),
                 account: forge_primitives::AccountInfo {
                     email: None,
@@ -2034,7 +2043,7 @@ mod tests {
                     api_provider: None,
                 },
                 forge_account: Some(forge_primitives::ForgeAccountIdentity::new("Subspace".into())),
-            },
+            }),
         );
 
         let Some(MessageBlock::Welcome(welcome)) = app.messages()[0].blocks.first() else {
@@ -2057,7 +2066,7 @@ mod tests {
 
         handle_client_event(
             &mut app,
-            ClientEvent::StatusSnapshotReceived {
+            ClientEvent::WorkspaceUpdate(forge_workspace::SessionUpdate::StatusSnapshot {
                 session_id: "session-1".into(),
                 account: forge_primitives::AccountInfo {
                     email: None,
@@ -2068,7 +2077,7 @@ mod tests {
                     api_provider: None,
                 },
                 forge_account: None,
-            },
+            }),
         );
 
         let Some(MessageBlock::Welcome(welcome)) = app.messages()[0].blocks.first() else {
@@ -2096,7 +2105,7 @@ mod tests {
 
         handle_client_event(
             &mut app,
-            ClientEvent::McpSnapshotReceived {
+            ClientEvent::WorkspaceUpdate(forge_workspace::SessionUpdate::McpSnapshot {
                 session_id: "old-session".into(),
                 servers: vec![forge_primitives::McpServerStatus {
                     name: "stale".into(),
@@ -2110,7 +2119,7 @@ mod tests {
                     sampling_required: None,
                 }],
                 error: None,
-            },
+            }),
         );
 
         assert_eq!(app.mcp().servers.len(), 1);

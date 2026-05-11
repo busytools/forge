@@ -27,7 +27,7 @@ use crate::agent::state_parsing::{
 use crate::app::App;
 
 /// Top-level entry point. Called from `events::client` after the
-/// session-id check on `ClientEvent::SdkMessageReceived`. Dispatches
+/// session-id check on `SessionUpdate::ChatAppended`. Dispatches
 /// to per-variant handlers below.
 pub(super) fn handle_sdk_message(app: &mut App, msg: Message) {
     match msg {

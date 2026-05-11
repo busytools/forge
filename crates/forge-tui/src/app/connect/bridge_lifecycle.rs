@@ -93,10 +93,20 @@ pub(super) async fn run_connection_task(params: StartConnectionParams) {
         // it now so the welcome message renders the right label
         // from the first frame after spawn.
         if let Some(display_name) = agent.display_name() {
-            let _ = event_tx.send(ClientEvent::ForgeAccountIdentityReady {
-                session_key: pre_connect_key.clone(),
-                display_name: display_name.clone(),
-            });
+            // Phase 3b: stamp the workspace-side DomainSession before
+            // emitting the SessionUpdate so the projection stays in
+            // sync. The `record_forge_account_identity_for_domain`
+            // call is a no-op when no domain handle is registered for
+            // `pre_connect_key` (still the synthetic pre-connect key
+            // here — the real domain handle gets created on the first
+            // Connected migration), which matches the existing
+            // `record_event_for_domain` semantics for pre-connect
+            // events.
+            workspace
+                .record_forge_account_identity_for_domain(&pre_connect_key, display_name.clone());
+            // Phase 3b: ClientEvent emit removed. Workspace's
+            // `SessionUpdate::ForgeAccountIdentity` drives the TUI
+            // reducer via the `WorkspaceUpdate` dispatcher.
             let _ = pre_loop_update_tx.send(forge_workspace::SessionUpdate::ForgeAccountIdentity {
                 key: pre_connect_key.clone(),
                 display_name,
@@ -305,16 +315,16 @@ fn handle_agent_event(
             });
         }
         AgentEvent::RuntimeReloadCompleted { session_id } => {
-            let _ = event_tx
-                .send(ClientEvent::RuntimeReloadCompleted { session_id: session_id.clone() });
+            // Phase 3b: ClientEvent emit removed. Workspace's
+            // `SessionUpdate::RuntimeReloadCompleted` drives the TUI
+            // reducer via the `WorkspaceUpdate` dispatcher.
             let _ = update_tx
                 .send(forge_workspace::SessionUpdate::RuntimeReloadCompleted { session_id });
         }
         AgentEvent::RuntimeReloadFailed { session_id, message } => {
-            let _ = event_tx.send(ClientEvent::RuntimeReloadFailed {
-                session_id: session_id.clone(),
-                message: message.clone(),
-            });
+            // Phase 3b: ClientEvent emit removed. Workspace's
+            // `SessionUpdate::RuntimeReloadFailed` drives the TUI
+            // reducer via the `WorkspaceUpdate` dispatcher.
             let _ = update_tx
                 .send(forge_workspace::SessionUpdate::RuntimeReloadFailed { session_id, message });
         }
@@ -347,11 +357,9 @@ fn handle_agent_event(
             let _ = update_tx.send(forge_workspace::SessionUpdate::SessionsListed { sessions });
         }
         AgentEvent::StatusSnapshot { session_id, account, forge_account } => {
-            let _ = event_tx.send(ClientEvent::StatusSnapshotReceived {
-                session_id: session_id.clone(),
-                account: account.clone(),
-                forge_account: forge_account.clone(),
-            });
+            // Phase 3b: ClientEvent emit removed. Workspace's
+            // `SessionUpdate::StatusSnapshot` drives the TUI reducer
+            // via the `WorkspaceUpdate` dispatcher.
             let _ = update_tx.send(forge_workspace::SessionUpdate::StatusSnapshot {
                 session_id,
                 account,
@@ -359,39 +367,34 @@ fn handle_agent_event(
             });
         }
         AgentEvent::OauthCredentialsSnapshot { session_id, credentials } => {
-            let _ = event_tx.send(ClientEvent::OauthCredentialsSnapshotReceived {
-                session_id: session_id.clone(),
-                credentials: credentials.clone(),
-            });
+            // Phase 3b: ClientEvent emit removed. Workspace's
+            // `SessionUpdate::OauthCredentialsSnapshot` drives the
+            // TUI reducer via the `WorkspaceUpdate` dispatcher.
             let _ = update_tx.send(forge_workspace::SessionUpdate::OauthCredentialsSnapshot {
                 session_id,
                 credentials,
             });
         }
         AgentEvent::GitContextSnapshot { session_id, context } => {
-            let _ = event_tx.send(ClientEvent::GitContextSnapshotReceived {
-                session_id: session_id.clone(),
-                context: context.clone(),
-            });
+            // Phase 3b: ClientEvent emit removed. Workspace's
+            // `SessionUpdate::GitContextSnapshot` drives the TUI
+            // reducer via the `WorkspaceUpdate` dispatcher.
             let _ = update_tx
                 .send(forge_workspace::SessionUpdate::GitContextSnapshot { session_id, context });
         }
         AgentEvent::ContextUsage { session_id, percentage } => {
-            let _ = event_tx.send(ClientEvent::ContextUsageReceived {
-                session_id: session_id.clone(),
-                percentage,
-            });
+            // Phase 3b: ClientEvent emit removed. Workspace's
+            // `SessionUpdate::ContextUsageSnapshot` drives the TUI
+            // reducer via the `WorkspaceUpdate` dispatcher.
             let _ = update_tx.send(forge_workspace::SessionUpdate::ContextUsageSnapshot {
                 session_id,
                 percentage,
             });
         }
         AgentEvent::McpSnapshot { session_id, servers, error } => {
-            let _ = event_tx.send(ClientEvent::McpSnapshotReceived {
-                session_id: session_id.clone(),
-                servers: servers.clone(),
-                error: error.clone(),
-            });
+            // Phase 3b: ClientEvent emit removed. Workspace's
+            // `SessionUpdate::McpSnapshot` drives the TUI reducer
+            // via the `WorkspaceUpdate` dispatcher.
             let _ = update_tx.send(forge_workspace::SessionUpdate::McpSnapshot {
                 session_id,
                 servers,
@@ -399,10 +402,10 @@ fn handle_agent_event(
             });
         }
         AgentEvent::SdkMessage { session_id, msg } => {
-            let _ = event_tx.send(ClientEvent::SdkMessageReceived {
-                session_id: session_id.clone(),
-                msg: msg.clone(),
-            });
+            // Phase 3b: ClientEvent emit removed. Workspace's
+            // `SessionUpdate::ChatAppended` drives the TUI reducer
+            // via the `WorkspaceUpdate` dispatcher. The active-bucket
+            // temp-swap inside the reducer is retained for Phase 4.
             let _ =
                 update_tx.send(forge_workspace::SessionUpdate::ChatAppended { session_id, msg });
         }
@@ -414,14 +417,9 @@ fn handle_agent_event(
             agent_id,
             agent_type,
         } => {
-            let _ = event_tx.send(ClientEvent::HookObservation {
-                session_id: session_id.clone(),
-                tool_use_id: tool_use_id.clone(),
-                permission_mode: permission_mode.clone(),
-                effort: effort.clone(),
-                agent_id: agent_id.clone(),
-                agent_type: agent_type.clone(),
-            });
+            // Phase 3b: ClientEvent emit removed. Workspace's
+            // `SessionUpdate::HookObservation` drives the TUI reducer
+            // via the `WorkspaceUpdate` dispatcher.
             let _ = update_tx.send(forge_workspace::SessionUpdate::HookObservation {
                 session_id,
                 tool_use_id,

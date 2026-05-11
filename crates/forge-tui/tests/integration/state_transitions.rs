@@ -8,6 +8,7 @@
 use forge_tui::agent::events::ClientEvent;
 use forge_tui::agent::model;
 use forge_tui::app::{AppStatus, MessageBlock, MessageRole};
+use forge_workspace::SessionUpdate;
 use pretty_assertions::assert_eq;
 
 use crate::helpers::{active_session_key, send_client_event, test_app};
@@ -474,10 +475,10 @@ async fn sdk_message_with_empty_app_session_id_adopts_wire_id() {
 
     send_client_event(
         &mut app,
-        ClientEvent::SdkMessageReceived {
+        ClientEvent::WorkspaceUpdate(SessionUpdate::ChatAppended {
             session_id: "real-session-abc".to_owned(),
             msg: wire_msg,
-        },
+        }),
     );
 
     assert_eq!(
@@ -525,10 +526,10 @@ async fn sdk_message_with_mismatched_real_session_id_is_dropped() {
 
     send_client_event(
         &mut app,
-        ClientEvent::SdkMessageReceived {
+        ClientEvent::WorkspaceUpdate(SessionUpdate::ChatAppended {
             session_id: "stale-session-xyz".to_owned(),
             msg: wire_msg,
-        },
+        }),
     );
 
     assert_eq!(

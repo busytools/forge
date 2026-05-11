@@ -652,6 +652,24 @@ impl Workspace {
         crate::session_task::apply_event_to_domain(&mut guard, event);
     }
 
+    /// Stamp the forge-side display name onto the
+    /// [`DomainSession`] for `key`. Called by
+    /// `bridge_lifecycle::run_connection_task` from the pre-event-loop
+    /// branch that emits the forge-account identity before the
+    /// CLI-side status snapshot lands. The `StatusSnapshot` arm of
+    /// the per-event projection eventually overwrites this with the
+    /// value carried by `forge_account`, but the early stamp keeps the
+    /// workspace-side view current as soon as the workspace's account
+    /// picker has resolved the account. No-op when no session task is
+    /// registered for `key`.
+    pub fn record_forge_account_identity_for_domain(&self, key: &SessionKey, display_name: String) {
+        let Some(domain) = self.domain_handles.lock().get(key).cloned() else {
+            return;
+        };
+        let mut guard = domain.lock();
+        guard.active_account_display_name = Some(display_name);
+    }
+
     /// Graceful shutdown of every pooled Agent. Drains the pool, then
     /// drops each `Arc<AgentHandle>` so the underlying
     /// `forge_sdk::Client` kills its `claude` subprocess via its

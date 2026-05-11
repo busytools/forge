@@ -127,12 +127,6 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
         ClientEvent::SlashCommandError { session_key, message } => {
             session::handle_slash_command_error_event(app, &session_key, &message);
         }
-        ClientEvent::RuntimeReloadCompleted { session_id } => {
-            apply_runtime_reload_completed(app, &session_id);
-        }
-        ClientEvent::RuntimeReloadFailed { session_id, message } => {
-            apply_runtime_reload_failed(app, &session_id, &message);
-        }
         ClientEvent::SessionReplaced {
             session_id,
             cwd,
@@ -165,53 +159,6 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
         }
         ClientEvent::LogoutCompleted { session_key } => {
             session::handle_logout_completed_event(app, &session_key);
-        }
-        ClientEvent::ForgeAccountIdentityReady { session_key, display_name } => {
-            tracing::info!(
-                target: crate::logging::targets::APP_AUTH,
-                event_name = "forge_account_identity_ready",
-                message = "forge-account display_name received pre-status-snapshot",
-                outcome = "info",
-                display_name = %display_name,
-                session_key = %session_key.as_str(),
-            );
-            apply_forge_account_identity(app, &session_key, display_name);
-        }
-        ClientEvent::StatusSnapshotReceived { session_id, account, forge_account } => {
-            apply_status_snapshot(app, &session_id, account, forge_account);
-        }
-        ClientEvent::OauthCredentialsSnapshotReceived { session_id, credentials } => {
-            apply_oauth_credentials_snapshot(app, &session_id, credentials);
-        }
-        ClientEvent::GitContextSnapshotReceived { session_id, context } => {
-            apply_git_context_snapshot_routed(app, &session_id, context);
-        }
-        ClientEvent::ContextUsageReceived { session_id, percentage } => {
-            apply_context_usage_snapshot_routed(app, &session_id, percentage);
-        }
-        ClientEvent::McpSnapshotReceived { session_id, servers, error } => {
-            apply_mcp_snapshot_routed(app, &session_id, servers, error);
-        }
-        ClientEvent::SdkMessageReceived { session_id, msg } => {
-            apply_sdk_message_routed(app, &session_id, msg);
-        }
-        ClientEvent::HookObservation {
-            session_id,
-            tool_use_id,
-            permission_mode,
-            effort,
-            agent_id,
-            agent_type,
-        } => {
-            apply_hook_observation_routed(
-                app,
-                &session_id,
-                tool_use_id.as_deref(),
-                permission_mode.as_deref(),
-                effort.as_deref(),
-                agent_id.as_deref(),
-                agent_type.as_deref(),
-            );
         }
         ClientEvent::UsageRefreshStarted { epoch } => {
             if app.session_scope_epoch() != epoch {
@@ -315,15 +262,28 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
     }
 }
 
-/// Apply a [`ClientEvent::ForgeAccountIdentityReady`] event to the
-/// session bucket addressed by `session_key`. Active-session
-/// targeting goes through the existing
+/// Phase 3b — `SessionUpdate::ForgeAccountIdentity` reducer for the
+/// session bucket addressed by `key`. Active-session targeting goes
+/// through the existing
 /// [`crate::app::App::set_active_account_display_name`] accessor +
 /// [`crate::app::App::sync_welcome_snapshot`] so welcome rendering
 /// updates promptly. Background-session targeting writes the
 /// display name directly into the bucket without touching the
 /// active-session welcome snapshot.
-fn apply_forge_account_identity(app: &mut App, session_key: &SessionKey, display_name: String) {
+#[allow(clippy::needless_pass_by_value)]
+pub(super) fn apply_session_update_forge_account_identity(
+    app: &mut App,
+    key: SessionKey,
+    display_name: String,
+) {
+    apply_forge_account_identity_presentation(app, &key, display_name);
+}
+
+fn apply_forge_account_identity_presentation(
+    app: &mut App,
+    session_key: &SessionKey,
+    display_name: String,
+) {
     if app.active_session_key.as_ref() == Some(session_key) {
         app.set_active_account_display_name(Some(display_name));
         app.sync_welcome_snapshot();
@@ -343,13 +303,23 @@ fn apply_forge_account_identity(app: &mut App, session_key: &SessionKey, display
     session.active_account_display_name = Some(display_name);
 }
 
-/// Apply a [`ClientEvent::StatusSnapshotReceived`] event to the
+/// Phase 3b — `SessionUpdate::StatusSnapshot` reducer for the
 /// session bucket addressed by `session_id`. Routes through the
 /// active-session accessors when targeting the rendered session
 /// (so welcome + Status panel rerender promptly); writes directly
 /// into the bucket otherwise so background sessions accumulate
 /// state silently.
-fn apply_status_snapshot(
+#[allow(clippy::needless_pass_by_value)]
+pub(super) fn apply_session_update_status_snapshot(
+    app: &mut App,
+    session_id: String,
+    account: forge_primitives::AccountInfo,
+    forge_account: Option<forge_primitives::ForgeAccountIdentity>,
+) {
+    apply_status_snapshot_presentation(app, &session_id, account, forge_account);
+}
+
+fn apply_status_snapshot_presentation(
     app: &mut App,
     session_id: &str,
     account: forge_primitives::AccountInfo,
@@ -399,11 +369,20 @@ fn apply_status_snapshot(
     );
 }
 
-/// Apply a [`ClientEvent::OauthCredentialsSnapshotReceived`] event
-/// to the session bucket addressed by `session_id`. Active-session
+/// Phase 3b — `SessionUpdate::OauthCredentialsSnapshot` reducer for
+/// the session bucket addressed by `session_id`. Active-session
 /// targeting goes through [`crate::app::App::set_oauth_credentials`];
 /// background-session targeting writes directly into the bucket.
-fn apply_oauth_credentials_snapshot(
+#[allow(clippy::needless_pass_by_value)]
+pub(super) fn apply_session_update_oauth_credentials_snapshot(
+    app: &mut App,
+    session_id: String,
+    credentials: Option<forge_agent::cloud::oauth_credentials::OauthCredentials>,
+) {
+    apply_oauth_credentials_snapshot_presentation(app, &session_id, credentials);
+}
+
+fn apply_oauth_credentials_snapshot_presentation(
     app: &mut App,
     session_id: &str,
     credentials: Option<forge_agent::cloud::oauth_credentials::OauthCredentials>,
@@ -439,12 +418,21 @@ fn apply_oauth_credentials_snapshot(
     );
 }
 
-/// Apply a [`ClientEvent::GitContextSnapshotReceived`] event to the
+/// Phase 3b — `SessionUpdate::GitContextSnapshot` reducer for the
 /// session bucket addressed by `session_id`. Active-session
 /// targeting goes through [`crate::app::App::apply_git_context_snapshot`]
 /// (which can flip `needs_redraw`); background-session targeting
 /// writes directly into the bucket without flipping redraw.
-fn apply_git_context_snapshot_routed(
+#[allow(clippy::needless_pass_by_value)]
+pub(super) fn apply_session_update_git_context_snapshot(
+    app: &mut App,
+    session_id: String,
+    context: forge_agent::env::git::GitContext,
+) {
+    apply_git_context_snapshot_presentation(app, &session_id, context);
+}
+
+fn apply_git_context_snapshot_presentation(
     app: &mut App,
     session_id: &str,
     context: forge_agent::env::git::GitContext,
@@ -470,14 +458,27 @@ fn apply_git_context_snapshot_routed(
     }
 }
 
-/// Apply a [`ClientEvent::ContextUsageReceived`] event to the
+/// Phase 3b — `SessionUpdate::ContextUsageSnapshot` reducer for the
 /// session bucket addressed by `session_id`. Active-session
 /// targeting goes through
 /// [`crate::app::session_runtime::apply_context_usage_snapshot`] so
 /// the in-flight refresh chaining still kicks in. Background-session
 /// targeting writes directly into the bucket and skips the refresh
 /// chain (a background session re-requests on next active switch).
-fn apply_context_usage_snapshot_routed(app: &mut App, session_id: &str, percentage: Option<u8>) {
+#[allow(clippy::needless_pass_by_value)]
+pub(super) fn apply_session_update_context_usage_snapshot(
+    app: &mut App,
+    session_id: String,
+    percentage: Option<u8>,
+) {
+    apply_context_usage_snapshot_presentation(app, &session_id, percentage);
+}
+
+fn apply_context_usage_snapshot_presentation(
+    app: &mut App,
+    session_id: &str,
+    percentage: Option<u8>,
+) {
     let session_key = SessionKey::from_session_id(session_id.to_owned());
     let is_active = app.active_session_key.as_ref() == Some(&session_key);
     if is_active {
@@ -501,13 +502,23 @@ fn apply_context_usage_snapshot_routed(app: &mut App, session_id: &str, percenta
     }
 }
 
-/// Apply a [`ClientEvent::McpSnapshotReceived`] event to the session
+/// Phase 3b — `SessionUpdate::McpSnapshot` reducer for the session
 /// bucket addressed by `session_id`. Active-session targeting also
 /// reconciles the App-global MCP auth-redirect overlay and selection
 /// index. Background-session targeting only writes the per-session
 /// MCP state into the bucket — the overlay reconciliation is
 /// inherently active-session UI.
-fn apply_mcp_snapshot_routed(
+#[allow(clippy::needless_pass_by_value)]
+pub(super) fn apply_session_update_mcp_snapshot(
+    app: &mut App,
+    session_id: String,
+    servers: Vec<forge_primitives::McpServerStatus>,
+    error: Option<String>,
+) {
+    apply_mcp_snapshot_presentation(app, &session_id, servers, error);
+}
+
+fn apply_mcp_snapshot_presentation(
     app: &mut App,
     session_id: &str,
     servers: Vec<forge_primitives::McpServerStatus>,
@@ -570,14 +581,22 @@ fn apply_mcp_snapshot_routed(
     );
 }
 
-/// Apply a [`ClientEvent::SdkMessageReceived`] event to the session
+/// Phase 3b — `SessionUpdate::ChatAppended` reducer for the session
 /// bucket addressed by `session_id`. The SDK message dispatcher is
 /// deeply intertwined with active-session UI accessors (chat buffer,
-/// tool-call indices, viewport) so background-session SDK messages
-/// are dropped in this Phase 2a slice. The drop is logged so a
-/// future single-bridge multi-session expansion can detect missed
-/// frames.
-fn apply_sdk_message_routed(app: &mut App, session_id: &str, msg: forge_primitives::Message) {
+/// tool-call indices, viewport) so the active-session temp-swap
+/// inside [`apply_sdk_message_presentation`] is the Phase 4 cleanup
+/// target, not this phase's.
+#[allow(clippy::needless_pass_by_value)]
+pub(super) fn apply_session_update_chat_appended(
+    app: &mut App,
+    session_id: String,
+    msg: forge_primitives::Message,
+) {
+    apply_sdk_message_presentation(app, &session_id, msg);
+}
+
+fn apply_sdk_message_presentation(app: &mut App, session_id: &str, msg: forge_primitives::Message) {
     // For new sessions the CLI doesn't emit `system/init` until AFTER
     // the first user message lands (per `spawn_inner` docs), so
     // `Client::session_id()` is empty at spawn time and that empty
@@ -639,12 +658,36 @@ fn apply_sdk_message_routed(app: &mut App, session_id: &str, msg: forge_primitiv
     super::sdk_message::handle_sdk_message(app, msg);
 }
 
-/// Apply a [`ClientEvent::HookObservation`] event to the session
-/// bucket addressed by `session_id`. Active-session targeting goes
-/// through the App accessors so the mode/effort chips update
-/// promptly. Background-session targeting writes directly into the
-/// bucket so its observed values stay current for a future switch.
-fn apply_hook_observation_routed(
+/// Phase 3b — `SessionUpdate::HookObservation` reducer for the
+/// session bucket addressed by `session_id`. Active-session
+/// targeting goes through the App accessors so the mode/effort
+/// chips update promptly. Background-session targeting writes
+/// directly into the bucket so its observed values stay current
+/// for a future switch. Wraps the `String` fields from the
+/// workspace payload into `&str` borrows before delegating to the
+/// shared presentation helper.
+#[allow(clippy::needless_pass_by_value)]
+pub(super) fn apply_session_update_hook_observation(
+    app: &mut App,
+    session_id: String,
+    tool_use_id: Option<String>,
+    permission_mode: Option<String>,
+    effort: Option<String>,
+    agent_id: Option<String>,
+    agent_type: Option<String>,
+) {
+    apply_hook_observation_presentation(
+        app,
+        &session_id,
+        tool_use_id.as_deref(),
+        permission_mode.as_deref(),
+        effort.as_deref(),
+        agent_id.as_deref(),
+        agent_type.as_deref(),
+    );
+}
+
+fn apply_hook_observation_presentation(
     app: &mut App,
     session_id: &str,
     tool_use_id: Option<&str>,
@@ -712,13 +755,18 @@ fn apply_hook_observation_routed(
     }
 }
 
-/// Apply a [`ClientEvent::RuntimeReloadCompleted`] event for the
+/// Phase 3b — `SessionUpdate::RuntimeReloadCompleted` reducer for the
 /// session bucket addressed by `session_id`. The plugins config tab
 /// is App-global UI scoped to the active session — a background
 /// reload that completes silently is a no-op on the UI but logged
 /// so the operator can confirm the bridge dispatched it. Unknown-
 /// session events log a warn-level breadcrumb.
-fn apply_runtime_reload_completed(app: &mut App, session_id: &str) {
+#[allow(clippy::needless_pass_by_value)]
+pub(super) fn apply_session_update_runtime_reload_completed(app: &mut App, session_id: String) {
+    apply_runtime_reload_completed_presentation(app, &session_id);
+}
+
+fn apply_runtime_reload_completed_presentation(app: &mut App, session_id: &str) {
     let session_key = SessionKey::from_session_id(session_id.to_owned());
     let is_active = app.active_session_key.as_ref() == Some(&session_key);
     if is_active {
@@ -743,10 +791,19 @@ fn apply_runtime_reload_completed(app: &mut App, session_id: &str) {
     }
 }
 
-/// Apply a [`ClientEvent::RuntimeReloadFailed`] event for the
+/// Phase 3b — `SessionUpdate::RuntimeReloadFailed` reducer for the
 /// session bucket addressed by `session_id`. Same routing shape as
-/// [`apply_runtime_reload_completed`].
-fn apply_runtime_reload_failed(app: &mut App, session_id: &str, message: &str) {
+/// [`apply_session_update_runtime_reload_completed`].
+#[allow(clippy::needless_pass_by_value)]
+pub(super) fn apply_session_update_runtime_reload_failed(
+    app: &mut App,
+    session_id: String,
+    message: String,
+) {
+    apply_runtime_reload_failed_presentation(app, &session_id, &message);
+}
+
+fn apply_runtime_reload_failed_presentation(app: &mut App, session_id: &str, message: &str) {
     let session_key = SessionKey::from_session_id(session_id.to_owned());
     let is_active = app.active_session_key.as_ref() == Some(&session_key);
     if is_active {
@@ -814,12 +871,11 @@ fn apply_session_update_key_renamed(app: &mut App, from: &SessionKey, to: Sessio
     app.needs_redraw = true;
 }
 
-/// Phase 3a — dispatch a single `forge_workspace::SessionUpdate`
-/// onto the matching `apply_session_update_*` reducer. Variants
-/// whose reducer is wired in later sub-phases (3b/3c/3d) fall
-/// through to a trace-only branch; the ClientEvent multiplexer
-/// still drives them via their legacy paths until those phases
-/// land.
+/// Phases 3a/3b — dispatch a single `forge_workspace::SessionUpdate`
+/// onto the matching `apply_session_update_*` reducer. Variants whose
+/// reducer is wired in later sub-phases (3c/3d) fall through to a
+/// trace-only branch; the ClientEvent multiplexer still drives those
+/// via their legacy paths until those phases land.
 fn apply_workspace_update(app: &mut App, update: forge_workspace::SessionUpdate) {
     use forge_workspace::SessionUpdate;
     match update {
@@ -902,15 +958,60 @@ fn apply_workspace_update(app: &mut App, update: forge_workspace::SessionUpdate)
         SessionUpdate::FatalError(error) => {
             session::apply_session_update_fatal_error(app, error);
         }
-        // Remaining variants (Spawning, KeyRenamed, permission/question/
-        // elicitation, turn lifecycle, chat append, snapshots, plugins,
-        // usage, etc.) are wired by Phases 3b/3c/3d. For now they
-        // continue to flow through the legacy ClientEvent path.
+        SessionUpdate::ForgeAccountIdentity { key, display_name } => {
+            apply_session_update_forge_account_identity(app, key, display_name);
+        }
+        SessionUpdate::StatusSnapshot { session_id, account, forge_account } => {
+            apply_session_update_status_snapshot(app, session_id, account, forge_account);
+        }
+        SessionUpdate::OauthCredentialsSnapshot { session_id, credentials } => {
+            apply_session_update_oauth_credentials_snapshot(app, session_id, credentials);
+        }
+        SessionUpdate::GitContextSnapshot { session_id, context } => {
+            apply_session_update_git_context_snapshot(app, session_id, context);
+        }
+        SessionUpdate::ContextUsageSnapshot { session_id, percentage } => {
+            apply_session_update_context_usage_snapshot(app, session_id, percentage);
+        }
+        SessionUpdate::McpSnapshot { session_id, servers, error } => {
+            apply_session_update_mcp_snapshot(app, session_id, servers, error);
+        }
+        SessionUpdate::ChatAppended { session_id, msg } => {
+            apply_session_update_chat_appended(app, session_id, msg);
+        }
+        SessionUpdate::HookObservation {
+            session_id,
+            tool_use_id,
+            permission_mode,
+            effort,
+            agent_id,
+            agent_type,
+        } => {
+            apply_session_update_hook_observation(
+                app,
+                session_id,
+                tool_use_id,
+                permission_mode,
+                effort,
+                agent_id,
+                agent_type,
+            );
+        }
+        SessionUpdate::RuntimeReloadCompleted { session_id } => {
+            apply_session_update_runtime_reload_completed(app, session_id);
+        }
+        SessionUpdate::RuntimeReloadFailed { session_id, message } => {
+            apply_session_update_runtime_reload_failed(app, session_id, message);
+        }
+        // Remaining variants (Spawning, permission/question/elicitation,
+        // turn lifecycle, plugins, usage, etc.) are wired by Phases
+        // 3c/3d. For now they continue to flow through the legacy
+        // ClientEvent path.
         other => {
             tracing::trace!(
                 target: crate::logging::targets::APP_SESSION,
                 update = ?other,
-                "SessionUpdate variant not wired for Phase 3a; legacy ClientEvent path is authoritative",
+                "SessionUpdate variant not wired for Phase 3b; legacy ClientEvent path is authoritative",
             );
         }
     }
@@ -959,11 +1060,11 @@ mod tests {
         };
         handle_client_event(
             &mut app,
-            ClientEvent::StatusSnapshotReceived {
+            ClientEvent::WorkspaceUpdate(forge_workspace::SessionUpdate::StatusSnapshot {
                 session_id: key_b.as_str().to_owned(),
                 account,
                 forge_account: None,
-            },
+            }),
         );
 
         // B's bucket reflects the change.
@@ -989,11 +1090,11 @@ mod tests {
         };
         handle_client_event(
             &mut app,
-            ClientEvent::StatusSnapshotReceived {
+            ClientEvent::WorkspaceUpdate(forge_workspace::SessionUpdate::StatusSnapshot {
                 session_id: key_a.as_str().to_owned(),
                 account,
                 forge_account: None,
-            },
+            }),
         );
         assert_eq!(
             app.sessions
@@ -1026,11 +1127,11 @@ mod tests {
 
         handle_client_event(
             &mut app,
-            ClientEvent::StatusSnapshotReceived {
+            ClientEvent::WorkspaceUpdate(forge_workspace::SessionUpdate::StatusSnapshot {
                 session_id: "a".to_owned(),
                 account: forge_primitives::AccountInfo::default(),
                 forge_account: None,
-            },
+            }),
         );
 
         assert!(app.needs_redraw, "active-session events must flip needs_redraw");
@@ -1053,10 +1154,12 @@ mod tests {
         let (key_a, key_b) = seed_two_sessions(&mut app);
         handle_client_event(
             &mut app,
-            ClientEvent::OauthCredentialsSnapshotReceived {
-                session_id: key_b.as_str().to_owned(),
-                credentials: Some(make_creds()),
-            },
+            ClientEvent::WorkspaceUpdate(
+                forge_workspace::SessionUpdate::OauthCredentialsSnapshot {
+                    session_id: key_b.as_str().to_owned(),
+                    credentials: Some(make_creds()),
+                },
+            ),
         );
         assert!(app.sessions.get(&key_b).expect("b").oauth_credentials.is_some());
         assert!(app.sessions.get(&key_a).expect("a").oauth_credentials.is_none());
@@ -1069,10 +1172,12 @@ mod tests {
         let (key_a, _key_b) = seed_two_sessions(&mut app);
         handle_client_event(
             &mut app,
-            ClientEvent::OauthCredentialsSnapshotReceived {
-                session_id: key_a.as_str().to_owned(),
-                credentials: Some(make_creds()),
-            },
+            ClientEvent::WorkspaceUpdate(
+                forge_workspace::SessionUpdate::OauthCredentialsSnapshot {
+                    session_id: key_a.as_str().to_owned(),
+                    credentials: Some(make_creds()),
+                },
+            ),
         );
         assert!(app.sessions.get(&key_a).expect("a").oauth_credentials.is_some());
         assert!(app.needs_redraw);
@@ -1084,10 +1189,10 @@ mod tests {
         let (key_a, key_b) = seed_two_sessions(&mut app);
         handle_client_event(
             &mut app,
-            ClientEvent::ContextUsageReceived {
+            ClientEvent::WorkspaceUpdate(forge_workspace::SessionUpdate::ContextUsageSnapshot {
                 session_id: key_b.as_str().to_owned(),
                 percentage: Some(42),
-            },
+            }),
         );
         assert_eq!(
             app.sessions.get(&key_b).expect("b").session_usage.context_usage_percent,
@@ -1103,10 +1208,10 @@ mod tests {
         let (key_a, _key_b) = seed_two_sessions(&mut app);
         handle_client_event(
             &mut app,
-            ClientEvent::ContextUsageReceived {
+            ClientEvent::WorkspaceUpdate(forge_workspace::SessionUpdate::ContextUsageSnapshot {
                 session_id: key_a.as_str().to_owned(),
                 percentage: Some(7),
-            },
+            }),
         );
         assert_eq!(
             app.sessions.get(&key_a).expect("a").session_usage.context_usage_percent,
@@ -1132,11 +1237,11 @@ mod tests {
         }];
         handle_client_event(
             &mut app,
-            ClientEvent::McpSnapshotReceived {
+            ClientEvent::WorkspaceUpdate(forge_workspace::SessionUpdate::McpSnapshot {
                 session_id: key_b.as_str().to_owned(),
                 servers,
                 error: None,
-            },
+            }),
         );
         assert_eq!(app.sessions.get(&key_b).expect("b").mcp.servers.len(), 1);
         assert!(app.sessions.get(&key_a).expect("a").mcp.servers.is_empty());
@@ -1160,11 +1265,11 @@ mod tests {
         }];
         handle_client_event(
             &mut app,
-            ClientEvent::McpSnapshotReceived {
+            ClientEvent::WorkspaceUpdate(forge_workspace::SessionUpdate::McpSnapshot {
                 session_id: key_a.as_str().to_owned(),
                 servers,
                 error: None,
-            },
+            }),
         );
         assert_eq!(app.sessions.get(&key_a).expect("a").mcp.servers.len(), 1);
         assert!(app.needs_redraw);
@@ -1176,14 +1281,14 @@ mod tests {
         let (key_a, key_b) = seed_two_sessions(&mut app);
         handle_client_event(
             &mut app,
-            ClientEvent::HookObservation {
+            ClientEvent::WorkspaceUpdate(forge_workspace::SessionUpdate::HookObservation {
                 session_id: key_b.as_str().to_owned(),
                 tool_use_id: Some("tool-1".into()),
                 permission_mode: Some("acceptEdits".into()),
                 effort: Some("max".into()),
                 agent_id: Some("agent-1".into()),
                 agent_type: Some("general-purpose".into()),
-            },
+            }),
         );
         let b = app.sessions.get(&key_b).expect("b");
         assert!(b.observed_permission_mode.is_some());
@@ -1205,14 +1310,14 @@ mod tests {
         let (key_a, _key_b) = seed_two_sessions(&mut app);
         handle_client_event(
             &mut app,
-            ClientEvent::HookObservation {
+            ClientEvent::WorkspaceUpdate(forge_workspace::SessionUpdate::HookObservation {
                 session_id: key_a.as_str().to_owned(),
                 tool_use_id: None,
                 permission_mode: Some("plan".into()),
                 effort: None,
                 agent_id: None,
                 agent_type: None,
-            },
+            }),
         );
         assert!(app.sessions.get(&key_a).expect("a").observed_permission_mode.is_some());
         assert!(app.needs_redraw);
@@ -1229,11 +1334,11 @@ mod tests {
         };
         handle_client_event(
             &mut app,
-            ClientEvent::StatusSnapshotReceived {
+            ClientEvent::WorkspaceUpdate(forge_workspace::SessionUpdate::StatusSnapshot {
                 session_id: unknown.as_str().to_owned(),
                 account,
                 forge_account: None,
-            },
+            }),
         );
         // Sessions A and B both unaffected; redraw flag stays false;
         // the unknown key must NOT have been silently inserted.

@@ -454,6 +454,58 @@ pub enum SessionUpdate {
     FatalError(AppError),
 }
 
+impl SessionUpdate {
+    /// The [`SessionKey`] this update routes to, or `None` for
+    /// updates that target App-level state (`SessionsListed`,
+    /// `ServiceStatus`, usage, plugin, key-rename, fatal-error).
+    /// Variants carrying a raw `session_id` synthesize a key from it.
+    #[must_use]
+    pub fn session_key(&self) -> Option<SessionKey> {
+        match self {
+            Self::Spawning { key, .. }
+            | Self::Connected { key, .. }
+            | Self::SessionReplaced { key, .. }
+            | Self::ConnectionFailed { key, .. }
+            | Self::AuthRequired { key, .. }
+            | Self::AuthCompleted { key, .. }
+            | Self::LogoutCompleted { key }
+            | Self::SlashCommandError { key, .. }
+            | Self::PermissionRequest { key, .. }
+            | Self::QuestionRequest { key, .. }
+            | Self::McpElicitationRequest { key, .. }
+            | Self::McpElicitationCompleted { key, .. }
+            | Self::McpAuthRedirect { key, .. }
+            | Self::McpOperationError { key, .. }
+            | Self::TurnComplete { key, .. }
+            | Self::TurnCancelled { key }
+            | Self::TurnError { key, .. }
+            | Self::ForgeAccountIdentity { key, .. } => Some(key.clone()),
+            Self::RuntimeReloadCompleted { session_id }
+            | Self::RuntimeReloadFailed { session_id, .. }
+            | Self::ChatAppended { session_id, .. }
+            | Self::HookObservation { session_id, .. }
+            | Self::StatusSnapshot { session_id, .. }
+            | Self::OauthCredentialsSnapshot { session_id, .. }
+            | Self::GitContextSnapshot { session_id, .. }
+            | Self::ContextUsageSnapshot { session_id, .. }
+            | Self::McpSnapshot { session_id, .. } => {
+                Some(SessionKey::from_session_id(session_id.clone()))
+            }
+            Self::KeyRenamed { .. }
+            | Self::SessionsListed { .. }
+            | Self::ServiceStatus { .. }
+            | Self::UsageRefreshStarted { .. }
+            | Self::UsageSnapshotReceived { .. }
+            | Self::UsageRefreshFailed { .. }
+            | Self::PluginsInventoryUpdated { .. }
+            | Self::PluginsInventoryRefreshFailed { .. }
+            | Self::PluginsCliActionSucceeded { .. }
+            | Self::PluginsCliActionFailed { .. }
+            | Self::FatalError(..) => None,
+        }
+    }
+}
+
 impl std::fmt::Debug for SessionUpdate {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // Custom Debug — discriminant + key/session_id only.

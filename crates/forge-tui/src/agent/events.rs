@@ -112,10 +112,6 @@ pub enum ClientEvent {
     AuthRequired { session_key: SessionKey, method_name: String, method_description: String },
     /// Slash-command execution failed with a user-facing error.
     SlashCommandError { session_key: SessionKey, message: String },
-    /// Session runtime plugin reload completed successfully.
-    RuntimeReloadCompleted { session_id: String },
-    /// Session runtime plugin reload failed after dispatch.
-    RuntimeReloadFailed { session_id: String, message: String },
     /// Custom slash command replaced the active session.
     SessionReplaced {
         session_id: model::SessionId,
@@ -139,53 +135,6 @@ pub enum ClientEvent {
     AuthCompleted { session_key: SessionKey, conn: Arc<forge_agent::AgentHandle> },
     /// /logout completed via `claude auth logout`.
     LogoutCompleted { session_key: SessionKey },
-    /// Status snapshot received from bridge (account info).
-    StatusSnapshotReceived {
-        session_id: String,
-        account: forge_primitives::AccountInfo,
-        forge_account: Option<forge_primitives::ForgeAccountIdentity>,
-    },
-    /// Forge-side account identity is known the moment
-    /// `Workspace::get_agent_handle` returns — much earlier than
-    /// the CLI-side `StatusSnapshot`. Emitted once per connection
-    /// so the welcome message can render `Account: <name>` as soon
-    /// as the workspace picks the account, rather than waiting for
-    /// the CLI subprocess to boot.
-    ForgeAccountIdentityReady { session_key: SessionKey, display_name: String },
-    /// OAuth credentials snapshot received from bridge. `credentials` is
-    /// `None` when no credentials file exists or it's empty/malformed.
-    OauthCredentialsSnapshotReceived {
-        session_id: String,
-        credentials: Option<forge_agent::cloud::oauth_credentials::OauthCredentials>,
-    },
-    /// Git introspection snapshot pushed by the bridge whenever the
-    /// repo's branch resolution changes (initial state included).
-    GitContextSnapshotReceived { session_id: String, context: forge_agent::env::git::GitContext },
-    /// Session context window usage received from bridge.
-    ContextUsageReceived { session_id: String, percentage: Option<u8> },
-    /// MCP server snapshot received from bridge.
-    McpSnapshotReceived {
-        session_id: String,
-        servers: Vec<forge_primitives::McpServerStatus>,
-        error: Option<String>,
-    },
-    /// Raw `forge_primitives::Message` envelope received from the
-    /// bridge worker. The App's `events::sdk_message::handle_sdk_message`
-    /// dispatches per-variant handlers that mutate App state directly.
-    SdkMessageReceived { session_id: String, msg: forge_primitives::Message },
-    /// CLI runtime state observed from a hook input as it passed
-    /// through the SDK's hook-callback dispatch. Higher-fidelity than
-    /// `system/status` events for mode / effort drift detection. The
-    /// App prefers these values for the mode and effort chips and uses
-    /// `agent_id` + `agent_type` to attribute sub-agent tool calls.
-    HookObservation {
-        session_id: String,
-        tool_use_id: Option<String>,
-        permission_mode: Option<String>,
-        effort: Option<String>,
-        agent_id: Option<String>,
-        agent_type: Option<String>,
-    },
     /// Usage refresh task started.
     UsageRefreshStarted { epoch: u64 },
     /// Usage refresh completed successfully.
@@ -238,21 +187,9 @@ impl ClientEvent {
             | Self::AuthRequired { session_key, .. }
             | Self::SlashCommandError { session_key, .. }
             | Self::AuthCompleted { session_key, .. }
-            | Self::LogoutCompleted { session_key }
-            | Self::ForgeAccountIdentityReady { session_key, .. } => Some(session_key.clone()),
+            | Self::LogoutCompleted { session_key } => Some(session_key.clone()),
             Self::Connected { session_id, .. } | Self::SessionReplaced { session_id, .. } => {
                 Some(SessionKey::from_session_id(session_id.to_string()))
-            }
-            Self::RuntimeReloadCompleted { session_id }
-            | Self::RuntimeReloadFailed { session_id, .. }
-            | Self::StatusSnapshotReceived { session_id, .. }
-            | Self::OauthCredentialsSnapshotReceived { session_id, .. }
-            | Self::GitContextSnapshotReceived { session_id, .. }
-            | Self::ContextUsageReceived { session_id, .. }
-            | Self::McpSnapshotReceived { session_id, .. }
-            | Self::SdkMessageReceived { session_id, .. }
-            | Self::HookObservation { session_id, .. } => {
-                Some(SessionKey::from_session_id(session_id.clone()))
             }
             Self::SessionsListed { .. }
             | Self::ServiceStatus { .. }
@@ -263,8 +200,8 @@ impl ClientEvent {
             | Self::PluginsInventoryRefreshFailed { .. }
             | Self::PluginsCliActionSucceeded { .. }
             | Self::PluginsCliActionFailed { .. }
-            | Self::FatalError(..)
-            | Self::WorkspaceUpdate(_) => None,
+            | Self::FatalError(..) => None,
+            Self::WorkspaceUpdate(update) => update.session_key(),
         }
     }
 }

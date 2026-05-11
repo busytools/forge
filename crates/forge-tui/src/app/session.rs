@@ -179,7 +179,7 @@ pub struct UiSession {
     /// `forge.toml` the workspace picked for this bridge. `None`
     /// when forge wasn't launched via the workspace (direct
     /// `Agent::spawn` from tests / smoke). Surfaced via
-    /// [`crate::agent::events::ClientEvent::StatusSnapshotReceived`]'s
+    /// `forge_workspace::SessionUpdate::StatusSnapshot`'s
     /// `forge_account` and rendered in the welcome message + Status
     /// panel.
     pub active_account_display_name: Option<String>,
