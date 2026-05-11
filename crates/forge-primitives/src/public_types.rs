@@ -69,6 +69,32 @@ pub struct AccountInfo {
     pub api_provider: Option<String>,
 }
 
+/// Forge's view of the active account — the picker-side identity
+/// from `forge.toml`'s `[[accounts]]`, peer to the CLI-side
+/// [`AccountInfo`].
+///
+/// `AccountInfo` mirrors the `claude` CLI's wire payload (email,
+/// org, subscription_type). This struct is forge-internal: it
+/// names the active account from `forge.toml`. Surfaced when
+/// forge-workspace picks an account; absent when `Agent::spawn`
+/// is called directly with `display_name = None` (tests, smoke).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[non_exhaustive]
+pub struct ForgeAccountIdentity {
+    pub display_name: String,
+}
+
+impl ForgeAccountIdentity {
+    /// Convenience constructor — needed because the struct is
+    /// `#[non_exhaustive]`, which blocks struct-literal
+    /// construction outside this crate.
+    #[must_use]
+    pub fn new(display_name: String) -> Self {
+        Self { display_name }
+    }
+}
+
 /// Streaming partial-message event surfaced when
 /// `Options.include_partial_messages` is set. Wire shape:
 /// `StreamEvent`.
@@ -422,4 +448,24 @@ pub struct SandboxIgnoreViolations {
     /// Network hosts for which violations should be ignored.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub network: Option<Vec<String>>,
+}
+
+#[cfg(test)]
+mod forge_account_identity_tests {
+    use super::ForgeAccountIdentity;
+
+    #[test]
+    fn default_is_empty_display_name() {
+        let identity = ForgeAccountIdentity::default();
+        assert_eq!(identity.display_name, "");
+    }
+
+    #[test]
+    fn equality_compares_display_name() {
+        let a = ForgeAccountIdentity { display_name: "Stargate".into() };
+        let b = ForgeAccountIdentity { display_name: "Stargate".into() };
+        let c = ForgeAccountIdentity { display_name: "Gateway".into() };
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+    }
 }

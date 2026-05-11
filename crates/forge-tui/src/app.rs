@@ -19,6 +19,7 @@ pub(crate) mod plugins;
 mod questions;
 mod selection;
 mod service_status_check;
+pub mod session;
 pub(crate) mod session_picker;
 mod session_runtime;
 pub(crate) mod slash;
@@ -38,7 +39,9 @@ pub use cache_policy::{
     find_text_split, find_text_split_index,
 };
 pub use config::{ConfigState, ConfigTab};
-pub use connect::{create_app, start_connection};
+pub use connect::{
+    create_app, spawn_for_sleeping_project, spawn_for_sleeping_session, start_connection,
+};
 pub use events::{handle_client_event, handle_terminal_event};
 pub use focus::{FocusManager, FocusOwner, FocusTarget};
 pub use input::InputState;
@@ -51,13 +54,14 @@ pub use state::{
     ChatRenderTraceState, ChatViewport, ExtraUsage, HelpView, IncrementalMarkdown,
     InlinePermission, InlineQuestion, InvalidationLevel, LayoutInvalidation, LoginHint, McpState,
     MessageBlock, MessageRenderCache, MessageRenderCacheKey, MessageRenderSignature, MessageRole,
-    MessageUsage, ModeInfo, ModeState, NoticeBlock, NoticeDedupKey, NoticeStage, PasteSessionState,
-    PendingCommandAck, RateLimitIncidentKey, RecentSessionInfo, ScrollbarGeometry, SelectionKind,
-    SelectionPoint, SelectionState, SessionPickerState, SessionTurnState, SessionUsageState,
-    SystemSeverity, TerminalSnapshotMode, TextBlock, TextBlockSpacing, TodoItem, TodoStatus,
-    ToolCallInfo, ToolCallScope, TurnNoticeLocation, TurnNoticeRef, UsageSnapshot, UsageSourceKind,
-    UsageSourceMode, UsageState, UsageWindow, WelcomeBlock, compute_scrollbar_geometry,
-    hash_text_block_content, hash_welcome_block_content, is_execute_tool_name,
+    MessageUsage, ModeInfo, ModeState, NoticeBlock, NoticeDedupKey, NoticeStage, PaneHitTarget,
+    PasteSessionState, PendingCommandAck, RateLimitIncidentKey, RecentSessionInfo,
+    ScrollbarGeometry, SelectionKind, SelectionPoint, SelectionState, SessionPickerState,
+    SessionTurnState, SessionUsageState, SystemSeverity, TerminalSnapshotMode, TextBlock,
+    TextBlockSpacing, TodoItem, TodoStatus, ToolCallInfo, ToolCallScope, TurnNoticeLocation,
+    TurnNoticeRef, UsageSnapshot, UsageSourceKind, UsageSourceMode, UsageState, UsageWindow,
+    WelcomeBlock, compute_scrollbar_geometry, hash_text_block_content, hash_welcome_block_content,
+    is_execute_tool_name,
 };
 pub use trust::TrustSelection;
 pub use view::ActiveView;
@@ -118,7 +122,14 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
     resume_terminal();
 
     let mut events = EventStream::new();
-    let tick_duration = Duration::from_millis(16);
+    // 4ms tick → ~250 Hz nominal sleep ceiling; practical FPS during
+    // animation tops out around 120-150 once render overhead (~3ms
+    // per frame) is included. The previous 8ms tick capped practical
+    // FPS at ~90 because 8ms wait + 3ms render = 11ms ≈ 91 Hz.
+    // Idle state still costs nothing because the render loop skips
+    // when `needs_redraw == false`; only the wakeup cadence increases
+    // (negligible on modern hardware).
+    let tick_duration = Duration::from_millis(4);
     let mut last_render = Instant::now();
 
     loop {
@@ -206,29 +217,42 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
         }
 
         // Phase 3: render once (only when something changed)
+        //
+        // Extra is_animating clause: any background session in
+        // Running / Spawning keeps the spinner ticking so the Projects
+        // pane's per-row spinners actually animate (the active session
+        // already drives ticks via `app.status` above).
+        let any_background_running = app.sessions.values().any(|s| {
+            matches!(
+                s.lifecycle_state,
+                crate::app::session::SessionLifecycleState::Running
+                    | crate::app::session::SessionLifecycleState::Spawning
+            )
+        });
         let is_animating = matches!(
             app.status,
             AppStatus::Connecting
                 | AppStatus::CommandPending
                 | AppStatus::Thinking
                 | AppStatus::Running
-        ) || app.is_compacting;
+        ) || app.is_compacting()
+            || any_background_running;
         if is_animating {
             advance_spinner_frame(app, Instant::now());
-            tab_title::update_tab_title(&app.status, app.spinner_frame, &app.cwd);
+            tab_title::update_tab_title(&app.status, app.spinner_frame, app.cwd());
             app.needs_redraw = true;
         } else {
             app.spinner_last_advance_at = None;
         }
         // Update tab title on non-animating state transitions (Ready, Error).
         if !is_animating && app.needs_redraw {
-            tab_title::update_tab_title(&app.status, app.spinner_frame, &app.cwd);
+            tab_title::update_tab_title(&app.status, app.spinner_frame, app.cwd());
         }
         // Smooth scroll still settling — viewport row index (usize)
         // converts to f32 for sub-pixel scroll comparison; loss is bounded
         // by terminal height so precision is irrelevant here.
         #[allow(clippy::cast_precision_loss)]
-        let scroll_delta = (app.viewport.scroll_target as f32 - app.viewport.scroll_pos).abs();
+        let scroll_delta = (app.viewport().scroll_target as f32 - app.viewport().scroll_pos).abs();
         if scroll_delta >= 0.01 {
             app.needs_redraw = true;
         }
@@ -244,9 +268,12 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
             if let Some(ref mut perf) = app.perf {
                 perf.next_frame();
             }
-            if app.perf.is_some() {
-                app.mark_frame_presented(Instant::now());
-            }
+            // FPS is computed unconditionally now — the on-screen
+            // overlay is always-on (see `chat_view::render_perf_fps_overlay`),
+            // not gated on the `perf` Cargo feature. Calling
+            // `mark_frame_presented` always keeps the EMA fresh so
+            // the overlay shows real numbers in any build.
+            app.mark_frame_presented(Instant::now());
             // `Timer` is `Drop`-implementing under `feature = "perf"` and a
             // unit struct otherwise. Explicit `drop()` enforces the desired
             // lifetime in both feature paths; clippy can't see the cfg
@@ -267,10 +294,10 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
     // --- Graceful shutdown ---
 
     // Dismiss all pending inline permissions (reject via last option)
-    for tool_id in std::mem::take(&mut app.pending_interaction_ids) {
-        if let Some((mi, bi)) = app.tool_call_index.get(&tool_id).copied()
+    for tool_id in std::mem::take(app.pending_interaction_ids_mut()) {
+        if let Some((mi, bi)) = app.lookup_tool_call(&tool_id)
             && let Some(MessageBlock::ToolCall(tc)) =
-                app.messages.get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
+                app.messages_mut().get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
         {
             let tc = tc.as_mut();
             if let Some(pending) = tc.pending_permission.take()
@@ -292,14 +319,14 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
 
     // Cancel any active turn and give the adapter a moment to clean up
     if matches!(app.status, AppStatus::Thinking | AppStatus::Running)
-        && let Some(ref conn) = app.conn
-        && let Some(sid) = app.session_id.clone()
+        && let Some(conn) = app.conn()
+        && let Some(sid) = app.session_id().cloned()
     {
         let _ = conn.cancel(sid.to_string());
     }
 
     // Restore terminal
-    tab_title::restore_tab_title(&app.cwd);
+    tab_title::restore_tab_title(app.cwd());
     suspend_terminal();
     ratatui::restore();
 
@@ -522,8 +549,8 @@ mod tests {
     -> (App, tokio::sync::mpsc::UnboundedReceiver<forge_primitives::Command>) {
         let mut app = App::test_default();
         let (handle, rx) = forge_agent::Agent::testing_stub();
-        app.conn = Some(std::rc::Rc::new(handle));
-        app.session_id = Some(model::SessionId::new("session-1"));
+        app.set_conn(Some(std::sync::Arc::new(handle)));
+        app.set_session_id(Some(model::SessionId::new("session-1")));
         (app, rx)
     }
 
@@ -691,10 +718,10 @@ mod tests {
 
         assert!(app.pending_submit.is_none());
         assert!(app.input.text().is_empty());
-        assert_eq!(app.messages.len(), 2);
-        assert!(matches!(app.messages[0].role, MessageRole::User));
+        assert_eq!(app.messages().len(), 2);
+        assert!(matches!(app.messages()[0].role, MessageRole::User));
         assert!(matches!(
-            app.messages[0].blocks.as_slice(),
+            app.messages()[0].blocks.as_slice(),
             [MessageBlock::Text(block)] if block.text == "hello world"
         ));
         let envelope = rx.try_recv().expect("prompt command should be sent");
@@ -723,7 +750,7 @@ mod tests {
 
         assert!(app.pending_submit.is_none());
         assert!(matches!(
-            app.messages[0].blocks.as_slice(),
+            app.messages()[0].blocks.as_slice(),
             [MessageBlock::Text(block)] if block.text == "alpha beta\ngamma"
         ));
         let envelope = rx.try_recv().expect("prompt command should be sent");
@@ -757,7 +784,7 @@ mod tests {
         assert!(app.input.text().is_empty());
         assert!(!app.is_help_active());
         assert!(matches!(
-            app.messages[0].blocks.as_slice(),
+            app.messages()[0].blocks.as_slice(),
             [MessageBlock::Text(block)] if block.text == "?"
         ));
         let envelope = rx.try_recv().expect("prompt command should be sent");
@@ -770,14 +797,14 @@ mod tests {
     #[test]
     fn mode_selection_then_second_enter_arms_submit() {
         let mut app = App::test_default();
-        app.mode = Some(ModeState {
+        app.set_mode(Some(ModeState {
             current_mode_id: "code".to_owned(),
             current_mode_name: "Code".to_owned(),
             available_modes: vec![
                 ModeInfo { id: "plan".to_owned(), name: "Plan".to_owned() },
                 ModeInfo { id: "code".to_owned(), name: "Code".to_owned() },
             ],
-        });
+        }));
         app.input.set_text("/mode pl");
         let _ = app.input.set_cursor(0, "/mode pl".chars().count());
         crate::app::slash::sync_with_cursor(&mut app);
@@ -802,7 +829,7 @@ mod tests {
     #[test]
     fn model_selection_then_second_enter_arms_submit() {
         let mut app = App::test_default();
-        app.available_models = vec![
+        app.active_session_mut().unwrap().available_models = vec![
             model::AvailableModel::new("sonnet", "Claude Sonnet"),
             model::AvailableModel::new("haiku", "Claude Haiku"),
         ];
@@ -898,7 +925,7 @@ mod tests {
         assert!(app.pending_submit.is_none());
         finalize_deferred_submit(&mut app);
         assert_eq!(app.input.text(), "draft");
-        assert!(app.messages.is_empty());
+        assert!(app.messages().is_empty());
         assert!(rx.try_recv().is_err(), "Esc should prevent deferred submit dispatch");
     }
 

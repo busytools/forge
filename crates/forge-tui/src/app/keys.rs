@@ -15,7 +15,7 @@ use crate::app::{mention, questions, slash, subagent};
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 #[cfg(test)]
 use std::cell::Cell;
-use std::rc::Rc;
+use std::sync::Arc;
 use std::time::Instant;
 
 const HELP_TAB_PREV_KEY: KeyCode = KeyCode::Left;
@@ -223,7 +223,7 @@ pub(super) fn dispatch_key_by_focus(app: &mut App, key: KeyEvent) -> bool {
     }
 
     if matches!(app.status, AppStatus::Connecting | AppStatus::CommandPending | AppStatus::Error)
-        || app.is_compacting
+        || app.is_compacting()
     {
         return handle_blocked_input_shortcuts(app, key);
     }
@@ -280,11 +280,11 @@ fn handle_blocked_input_shortcuts(app: &mut App, key: KeyEvent) -> bool {
             true
         }
         (KeyCode::Up, m) if m == KeyModifiers::NONE || m == KeyModifiers::CONTROL => {
-            app.viewport.scroll_up(1);
+            app.viewport_mut().scroll_up(1);
             true
         }
         (KeyCode::Down, m) if m == KeyModifiers::NONE || m == KeyModifiers::CONTROL => {
-            app.viewport.scroll_down(1);
+            app.viewport_mut().scroll_down(1);
             true
         }
         _ => false,
@@ -297,7 +297,7 @@ fn handle_blocked_input_shortcuts(app: &mut App, key: KeyEvent) -> bool {
 /// Handle shortcuts that should work regardless of current focus owner.
 fn handle_global_shortcuts(app: &mut App, key: KeyEvent) -> bool {
     // Permission quick shortcuts are global when permissions are pending.
-    if !app.pending_interaction_ids.is_empty() && is_permission_ctrl_shortcut(key) {
+    if !app.pending_interaction_ids().is_empty() && is_permission_ctrl_shortcut(key) {
         return handle_inline_interaction_key(app, key);
     }
 
@@ -310,16 +310,20 @@ fn handle_global_shortcuts(app: &mut App, key: KeyEvent) -> bool {
             toggle_all_tool_calls(app);
             true
         }
+        (KeyCode::Char('b'), m) if m == KeyModifiers::CONTROL => {
+            toggle_projects_pane(app);
+            true
+        }
         (KeyCode::Char('l'), m) if m == KeyModifiers::CONTROL => {
             app.force_redraw = true;
             true
         }
         (KeyCode::Up, m) if m == KeyModifiers::CONTROL => {
-            app.viewport.scroll_up(1);
+            app.viewport_mut().scroll_up(1);
             true
         }
         (KeyCode::Down, m) if m == KeyModifiers::CONTROL => {
-            app.viewport.scroll_down(1);
+            app.viewport_mut().scroll_down(1);
             true
         }
         _ => false,
@@ -414,6 +418,14 @@ fn handle_normal_key_actions(app: &mut App, key: KeyEvent) -> bool {
 fn handle_turn_control_key(app: &mut App, key: KeyEvent) -> bool {
     if !matches!(key.code, KeyCode::Esc) {
         return false;
+    }
+    // Narrow-tier Projects overlay is the most foreground UI when
+    // open — Esc closes it before any other Esc semantics fire.
+    if app.projects_pane_overlay_open {
+        app.projects_pane_overlay_open = false;
+        app.invalidate_layout(InvalidationLevel::Global);
+        app.needs_redraw = true;
+        return true;
     }
     app.pending_submit = None;
     // Clear any pending image attachments on Escape.
@@ -551,13 +563,13 @@ fn handle_navigation_key(app: &mut App, key: KeyEvent) -> bool {
         }
         (KeyCode::Up, _) => {
             if !try_move_input_cursor_up(app) {
-                app.viewport.scroll_up(1);
+                app.viewport_mut().scroll_up(1);
             }
             true
         }
         (KeyCode::Down, _) => {
             if !try_move_input_cursor_down(app) {
-                app.viewport.scroll_down(1);
+                app.viewport_mut().scroll_down(1);
             }
             true
         }
@@ -578,7 +590,7 @@ fn handle_focus_toggle_key(app: &mut App, key: KeyEvent) -> bool {
                 && !m.contains(KeyModifiers::CONTROL)
                 && !m.contains(KeyModifiers::ALT) =>
         {
-            if !app.pending_interaction_ids.is_empty() {
+            if !app.pending_interaction_ids().is_empty() {
                 match app.focus_owner() {
                     FocusOwner::Permission => {
                         clear_inline_interaction_focus(app);
@@ -590,7 +602,7 @@ fn handle_focus_toggle_key(app: &mut App, key: KeyEvent) -> bool {
                     }
                     _ => false,
                 }
-            } else if app.show_todo_panel && !app.todos.is_empty() {
+            } else if app.show_todo_panel() && !app.todos().is_empty() {
                 if app.focus_owner() == FocusOwner::TodoList {
                     app.release_focus_target(FocusTarget::TodoList);
                 } else {
@@ -614,12 +626,13 @@ fn handle_prompt_suggestion_key(app: &mut App, key: KeyEvent) -> bool {
         return false;
     }
 
-    let Some(suggestion) = app.prompt_suggestion.take() else {
+    let Some(suggestion) = app.prompt_suggestion().map(str::to_owned) else {
         return false;
     };
     if suggestion.trim().is_empty() {
         return false;
     }
+    app.set_prompt_suggestion(None);
     app.input.set_text(&suggestion);
     app.sync_help_open_with_input();
     true
@@ -629,7 +642,7 @@ fn handle_mode_cycle_key(app: &mut App, key: KeyEvent) -> bool {
     if !matches!(key.code, KeyCode::BackTab) {
         return false;
     }
-    let Some(ref mode) = app.mode else {
+    let Some(mode) = app.mode() else {
         return true;
     };
     if mode.available_modes.len() <= 1 {
@@ -640,12 +653,19 @@ fn handle_mode_cycle_key(app: &mut App, key: KeyEvent) -> bool {
         mode.available_modes.iter().position(|m| m.id == mode.current_mode_id).unwrap_or(0);
     let next_idx = (current_idx + 1) % mode.available_modes.len();
     let next = &mode.available_modes[next_idx];
+    let next_id = next.id.clone();
+    let next_name = next.name.clone();
+    let modes = mode
+        .available_modes
+        .iter()
+        .map(|m| ModeInfo { id: m.id.clone(), name: m.name.clone() })
+        .collect();
 
-    if let Some(ref conn) = app.conn
-        && let Some(sid) = app.session_id.clone()
+    if let Some(conn) = app.conn()
+        && let Some(sid) = app.session_id().cloned()
     {
-        let mode_id = next.id.clone();
-        let conn = Rc::clone(conn);
+        let mode_id = next_id.clone();
+        let conn = Arc::clone(conn);
         tokio::task::spawn_local(async move {
             if let Err(e) = conn.set_mode(sid.to_string(), mode_id) {
                 tracing::error!(
@@ -659,18 +679,11 @@ fn handle_mode_cycle_key(app: &mut App, key: KeyEvent) -> bool {
         });
     }
 
-    let next_id = next.id.clone();
-    let next_name = next.name.clone();
-    let modes = mode
-        .available_modes
-        .iter()
-        .map(|m| ModeInfo { id: m.id.clone(), name: m.name.clone() })
-        .collect();
-    app.mode = Some(ModeState {
+    app.set_mode(Some(ModeState {
         current_mode_id: next_id,
         current_mode_name: next_name,
         available_modes: modes,
-    });
+    }));
     app.invalidate_layout(InvalidationLevel::Global);
     true
 }
@@ -696,7 +709,7 @@ fn handle_clipboard_paste_key(app: &mut App, key: KeyEvent) -> bool {
                 Some(SystemSeverity::Warning),
                 "Failed to access the system clipboard.",
             );
-            app.viewport.engage_auto_scroll();
+            app.viewport_mut().engage_auto_scroll();
             app.needs_redraw = true;
             tracing::warn!("clipboard_paste: failed to access system clipboard");
             return true;
@@ -725,7 +738,7 @@ fn handle_clipboard_paste_key(app: &mut App, key: KeyEvent) -> bool {
                         Some(SystemSeverity::Warning),
                         error.user_message(),
                     );
-                    app.viewport.engage_auto_scroll();
+                    app.viewport_mut().engage_auto_scroll();
                     app.needs_redraw = true;
                     tracing::warn!("clipboard_paste: image attachment failed: {error:?}");
                     return true;
@@ -911,19 +924,20 @@ fn should_sync_autocomplete_after_key(app: &App, key: KeyEvent) -> bool {
 }
 
 pub(super) fn toggle_todo_panel_focus(app: &mut App) {
-    if app.todos.is_empty() {
-        app.show_todo_panel = false;
+    if app.todos().is_empty() {
+        app.set_show_todo_panel(false);
         app.release_focus_target(FocusTarget::TodoList);
-        app.todo_scroll = 0;
-        app.todo_selected = 0;
+        app.set_todo_scroll(0);
+        app.set_todo_selected(0);
         return;
     }
 
-    app.show_todo_panel = !app.show_todo_panel;
-    if app.show_todo_panel {
+    app.set_show_todo_panel(!app.show_todo_panel());
+    if app.show_todo_panel() {
         // Start at in-progress todo when available; fallback to first item.
-        app.todo_selected =
-            app.todos.iter().position(|t| t.status == super::TodoStatus::InProgress).unwrap_or(0);
+        let next =
+            app.todos().iter().position(|t| t.status == super::TodoStatus::InProgress).unwrap_or(0);
+        app.set_todo_selected(next);
         app.claim_focus_target(FocusTarget::TodoList);
     } else {
         app.release_focus_target(FocusTarget::TodoList);
@@ -931,21 +945,21 @@ pub(super) fn toggle_todo_panel_focus(app: &mut App) {
 }
 
 pub(super) fn move_todo_selection_up(app: &mut App) {
-    if app.todos.is_empty() || !app.show_todo_panel {
+    if app.todos().is_empty() || !app.show_todo_panel() {
         app.release_focus_target(FocusTarget::TodoList);
         return;
     }
-    app.todo_selected = app.todo_selected.saturating_sub(1);
+    app.set_todo_selected(app.todo_selected().saturating_sub(1));
 }
 
 pub(super) fn move_todo_selection_down(app: &mut App) {
-    if app.todos.is_empty() || !app.show_todo_panel {
+    if app.todos().is_empty() || !app.show_todo_panel() {
         app.release_focus_target(FocusTarget::TodoList);
         return;
     }
-    let max = app.todos.len().saturating_sub(1);
-    if app.todo_selected < max {
-        app.todo_selected += 1;
+    let max = app.todos().len().saturating_sub(1);
+    if app.todo_selected() < max {
+        app.set_todo_selected(app.todo_selected().saturating_add(1));
     }
 }
 
@@ -1013,7 +1027,7 @@ fn set_help_view(app: &mut App, next: HelpView) {
 
 fn sync_help_focus(app: &mut App) {
     if app.is_help_active()
-        && app.pending_interaction_ids.is_empty()
+        && app.pending_interaction_ids().is_empty()
         && !app.autocomplete_focus_available()
     {
         app.claim_focus_target(FocusTarget::Help);
@@ -1141,6 +1155,32 @@ pub(super) fn toggle_all_tool_calls(app: &mut App) {
     app.invalidate_layout(InvalidationLevel::Global);
 }
 
+/// Tier-aware Ctrl+B handler.
+///
+/// At Wide / Medium tiers (terminal width ≥ `MEDIUM_TIER_MIN_WIDTH`)
+/// this toggles the inline pane's persisted visibility — same
+/// behaviour as Phases 2b-α / 2b-β. At Narrow tier it toggles the
+/// transient `projects_pane_overlay_open` flag, opening or closing
+/// the full-screen overlay rendered by
+/// [`crate::ui::projects_pane::render_overlay`]. The overlay flag
+/// is intentionally NOT persisted — each launch starts closed.
+///
+/// Test-only `App::test_default` paths have no workspace, so the
+/// persistence step is skipped silently.
+pub(super) fn toggle_projects_pane(app: &mut App) {
+    let area_width = app.cached_frame_area.width;
+    if area_width < crate::ui::layout::MEDIUM_TIER_MIN_WIDTH {
+        app.projects_pane_overlay_open = !app.projects_pane_overlay_open;
+    } else {
+        app.projects_pane_visible = !app.projects_pane_visible;
+        if let Some(workspace) = app.workspace.as_ref() {
+            workspace.set_projects_pane_visible(app.projects_pane_visible);
+        }
+    }
+    app.invalidate_layout(InvalidationLevel::Global);
+    app.needs_redraw = true;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1205,7 +1245,7 @@ mod tests {
     fn selection_text_for_copy_refreshes_chat_snapshot_before_redraw() {
         let mut app = App::test_default();
         app.status = AppStatus::Running;
-        app.messages.push(ChatMessage::new(
+        app.messages_mut().push(ChatMessage::new(
             MessageRole::Assistant,
             vec![MessageBlock::Text(TextBlock::from_complete("hello"))],
             None,
@@ -1221,7 +1261,7 @@ mod tests {
         });
 
         if let Some(MessageBlock::Text(block)) =
-            app.messages.get_mut(0).and_then(|message| message.blocks.get_mut(0))
+            app.messages_mut().get_mut(0).and_then(|message| message.blocks.get_mut(0))
         {
             block.text.push_str(" world");
             block.markdown.append(" world");
@@ -1249,5 +1289,95 @@ mod tests {
         app.input.set_text("hello world");
 
         assert_eq!(selection_text_for_copy(&mut app), Some("hello world".to_owned()));
+    }
+
+    /// Helper: build a tempdir-backed Workspace + plant it on the app
+    /// so the Wide/Medium-tier `toggle_projects_pane` branches have
+    /// somewhere to persist the new visibility flag.
+    fn with_workspace(app: &mut App) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join("forge.toml"),
+            r#"
+[[projects]]
+name = "test-proj"
+path = "/tmp/test-proj"
+default = true
+
+[[accounts]]
+display_name = "Test"
+config_dir = "/tmp/test-account"
+"#,
+        )
+        .expect("write forge.toml");
+        let runtime =
+            tokio::runtime::Builder::new_current_thread().enable_all().build().expect("runtime");
+        let workspace = runtime.block_on(async {
+            forge_workspace::Workspace::new(dir.path().to_owned()).await.expect("workspace")
+        });
+        app.workspace = Some(std::rc::Rc::new(workspace));
+        dir
+    }
+
+    #[test]
+    fn ctrl_b_at_wide_tier_flips_visibility_and_persists() {
+        let mut app = App::test_default();
+        let _guard = with_workspace(&mut app);
+        app.cached_frame_area = Rect::new(0, 0, crate::ui::layout::WIDE_TIER_MIN_WIDTH, 40);
+        app.projects_pane_visible = true;
+        app.projects_pane_overlay_open = false;
+
+        toggle_projects_pane(&mut app);
+
+        assert!(!app.projects_pane_visible, "Wide tier flips persistent visibility");
+        assert!(!app.projects_pane_overlay_open, "Wide tier leaves overlay flag alone");
+        let workspace = app.workspace.as_ref().expect("workspace");
+        assert!(
+            !workspace.projects_pane_visible(),
+            "new visibility persists through forge-state.toml",
+        );
+    }
+
+    #[test]
+    fn ctrl_b_at_medium_tier_flips_visibility_and_persists() {
+        let mut app = App::test_default();
+        let _guard = with_workspace(&mut app);
+        app.cached_frame_area = Rect::new(0, 0, crate::ui::layout::MEDIUM_TIER_MIN_WIDTH, 40);
+        app.projects_pane_visible = false;
+        app.projects_pane_overlay_open = false;
+
+        toggle_projects_pane(&mut app);
+
+        assert!(app.projects_pane_visible, "Medium tier flips persistent visibility");
+        assert!(!app.projects_pane_overlay_open, "Medium tier leaves overlay flag alone");
+        let workspace = app.workspace.as_ref().expect("workspace");
+        assert!(workspace.projects_pane_visible());
+    }
+
+    #[test]
+    fn ctrl_b_at_narrow_tier_toggles_overlay_only() {
+        // Narrow tier: width < MEDIUM_TIER_MIN_WIDTH. No workspace
+        // needed — the narrow branch never persists.
+        let mut app = App::test_default();
+        app.cached_frame_area = Rect::new(0, 0, crate::ui::layout::MEDIUM_TIER_MIN_WIDTH - 1, 40);
+        let initial_visible = app.projects_pane_visible;
+        app.projects_pane_overlay_open = false;
+
+        toggle_projects_pane(&mut app);
+
+        assert!(app.projects_pane_overlay_open, "Narrow tier opens overlay");
+        assert_eq!(
+            app.projects_pane_visible, initial_visible,
+            "Narrow tier must not flip the persistent visibility flag",
+        );
+
+        // Second invocation closes it back up — confirms the
+        // toggle isn't sticky.
+        toggle_projects_pane(&mut app);
+        assert!(!app.projects_pane_overlay_open, "second Narrow toggle closes the overlay");
+        assert_eq!(
+            app.projects_pane_visible, initial_visible,
+            "persistent visibility still untouched after a second narrow toggle",
+        );
     }
 }

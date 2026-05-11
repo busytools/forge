@@ -151,7 +151,7 @@ fn search_field_line(app: &App) -> Line<'static> {
 }
 
 fn installed_list(app: &App, viewport_width: u16, viewport_height: u16) -> RenderedList {
-    let entries = ordered_installed(&app.plugins, &app.cwd_raw);
+    let entries = ordered_installed(&app.plugins, app.cwd_raw());
     if entries.is_empty() {
         return RenderedList::single(
             if app.plugins.loading {
@@ -192,7 +192,7 @@ fn installed_list(app: &App, viewport_width: u16, viewport_height: u16) -> Rende
             lines
         })
         .collect::<Vec<_>>();
-    let relevant_count = relevant_installed_count(&app.plugins, &app.cwd_raw);
+    let relevant_count = relevant_installed_count(&app.plugins, app.cwd_raw());
     let divider_after = if relevant_count > 0 && relevant_count < blocks.len() {
         Some(relevant_count.saturating_sub(1))
     } else {

@@ -28,6 +28,7 @@ impl ChatMessage {
             MessageRole::Welcome,
             vec![MessageBlock::Welcome(WelcomeBlock {
                 version: version.to_owned(),
+                account_label: "Subscription".to_owned(),
                 subscription: subscription.to_owned(),
                 cwd: cwd.to_owned(),
                 session_id: session_id.to_owned(),
@@ -178,6 +179,7 @@ pub fn hash_text_block_content(text: &str, trailing_spacing: TextBlockSpacing) -
 pub fn hash_welcome_block_content(block: &WelcomeBlock) -> u64 {
     let mut hasher = DefaultHasher::new();
     block.version.hash(&mut hasher);
+    block.account_label.hash(&mut hasher);
     block.subscription.hash(&mut hasher);
     block.cwd.hash(&mut hasher);
     block.session_id.hash(&mut hasher);
@@ -519,6 +521,10 @@ pub enum SystemSeverity {
 
 pub struct WelcomeBlock {
     pub version: String,
+    /// Label rendered before the account/subscription value, e.g.
+    /// `"Account"` (when forge-workspace picked an account) or
+    /// `"Subscription"` (fallback for direct Agent::spawn callers).
+    pub account_label: String,
     pub subscription: String,
     pub cwd: String,
     pub session_id: String,

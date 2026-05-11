@@ -88,7 +88,7 @@ pub fn reset(app: &mut App) {
 
 pub fn restart(app: &mut App) {
     reset(app);
-    let root = PathBuf::from(&app.cwd_raw);
+    let root = PathBuf::from(app.cwd_raw());
     let generation = app.file_index.generation;
     let respect_gitignore = app.config.respect_gitignore_effective();
     app.file_index.root = Some(root.clone());
@@ -108,7 +108,7 @@ pub fn restart(app: &mut App) {
 
 pub fn ensure_started(app: &mut App) {
     let respect_gitignore = app.config.respect_gitignore_effective();
-    let current_root = PathBuf::from(&app.cwd_raw);
+    let current_root = PathBuf::from(app.cwd_raw());
     let needs_restart = app.file_index.root.as_ref() != Some(&current_root)
         || app.file_index.respect_gitignore != respect_gitignore
         || (app.file_index.root.is_none())
@@ -628,7 +628,7 @@ mod tests {
             std::fs::write(&path, "").expect("write file");
         }
         let mut app = App::test_default();
-        app.cwd_raw = canonical.to_string_lossy().into_owned();
+        app.set_cwd_raw(canonical.to_string_lossy().into_owned());
         (app, tmp)
     }
 

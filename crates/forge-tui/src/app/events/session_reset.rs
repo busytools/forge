@@ -11,7 +11,9 @@ pub(super) fn reset_for_new_session(
     mode: Option<super::super::ModeState>,
     preserve_current_welcome_tip: bool,
 ) {
-    crate::agent::events::kill_all_terminals(&app.terminals);
+    if let Some(terminals) = app.terminals() {
+        crate::agent::events::kill_all_terminals(terminals);
+    }
 
     reset_session_identity_state(app, session_id, current_model, mode);
     reset_messages_for_new_session(app, preserve_current_welcome_tip);
@@ -28,40 +30,41 @@ fn reset_session_identity_state(
     mode: Option<super::super::ModeState>,
 ) {
     app.bump_session_scope_epoch();
-    app.session_id = Some(session_id);
-    app.current_model = Some(current_model.clone());
-    app.mode = mode;
-    app.config_options.clear();
+    app.set_session_id(Some(session_id));
+    app.set_current_model(Some(current_model.clone()));
+    app.set_mode(mode);
+    app.config_options_mut().clear();
     if let Some(requested_id) = current_model.requested_id {
-        app.config_options.insert("model".to_owned(), serde_json::Value::String(requested_id));
+        app.config_options_mut()
+            .insert("model".to_owned(), serde_json::Value::String(requested_id));
     }
     app.login_hint = None;
     super::clear_compaction_state(app, false);
-    app.session_usage = super::super::SessionUsageState::default();
-    app.fast_mode_state = model::FastModeState::Off;
-    app.runtime_session_state = None;
-    app.prompt_suggestion = None;
-    app.last_rate_limit_update = None;
+    *app.session_usage_mut() = super::super::SessionUsageState::default();
+    app.set_fast_mode_state(model::FastModeState::Off);
+    app.set_runtime_session_state(None);
+    app.set_prompt_suggestion(None);
+    app.set_last_rate_limit_update(None);
     app.should_quit = false;
-    app.files_accessed = 0;
-    app.cancelled_turn_pending_hint = false;
-    app.pending_cancel_origin = None;
+    app.set_files_accessed(0);
+    app.set_cancelled_turn_pending_hint(false);
+    app.set_pending_cancel_origin(None);
     app.pending_auto_submit_after_cancel = false;
-    app.account_info = None;
+    app.set_account_info(None);
 }
 
 fn reset_messages_for_new_session(app: &mut App, preserve_current_welcome_tip: bool) {
     let preserved_tip_seed =
         preserve_current_welcome_tip.then(|| app.current_welcome_tip_seed()).flatten();
     app.clear_messages_tracked();
-    app.history_retention_stats = super::super::state::HistoryRetentionStats::default();
+    *app.history_retention_stats_mut() = super::super::state::HistoryRetentionStats::default();
     let mut welcome = app.build_welcome_message();
     if let Some(tip_seed) = preserved_tip_seed {
         App::apply_welcome_tip_seed(&mut welcome, tip_seed);
     }
     app.push_message_tracked(welcome);
     app.sync_welcome_snapshot();
-    app.viewport = super::super::ChatViewport::new();
+    *app.viewport_mut() = super::super::ChatViewport::new();
 }
 
 fn reset_input_state_for_new_session(app: &mut App) {
@@ -75,16 +78,16 @@ fn reset_input_state_for_new_session(app: &mut App) {
 }
 
 fn reset_interaction_state_for_new_session(app: &mut App) {
-    app.pending_interaction_ids.clear();
+    app.pending_interaction_ids_mut().clear();
     app.clear_tool_scope_tracking();
-    app.tool_call_index.clear();
-    app.todos.clear();
-    app.show_todo_panel = false;
-    app.todo_scroll = 0;
-    app.todo_selected = 0;
+    app.tool_call_index_mut().clear();
+    app.todos_mut().clear();
+    app.set_show_todo_panel(false);
+    app.set_todo_scroll(0);
+    app.set_todo_selected(0);
     app.focus = super::super::FocusManager::default();
-    app.available_commands.clear();
-    app.available_agents.clear();
+    app.available_commands_mut().clear();
+    app.available_agents_mut().clear();
     app.config.overlay = None;
     app.config.pending_session_title_change = None;
 }
@@ -106,9 +109,9 @@ fn reset_render_state_for_new_session(app: &mut App) {
 }
 
 fn reset_cache_and_footer_state_for_new_session(app: &mut App) {
-    app.cached_todo_compact = None;
+    app.set_cached_todo_compact(None);
     app.clear_terminal_tool_call_tracking();
-    app.mcp = super::super::McpState::default();
+    *app.mcp_mut() = super::super::McpState::default();
     crate::app::usage::reset_for_session_change(app);
     crate::app::plugins::reset_for_session_change(app);
     app.force_redraw = true;
@@ -123,7 +126,7 @@ fn append_resume_user_message_chunk(app: &mut App, chunk: &model::ContentChunk) 
         return;
     }
 
-    if let Some(last) = app.messages.last_mut()
+    if let Some(last) = app.messages_mut().last_mut()
         && matches!(last.role, MessageRole::User)
     {
         if let Some(MessageBlock::Text(block)) = last.blocks.last_mut() {
@@ -140,7 +143,7 @@ fn append_resume_user_message_chunk(app: &mut App, chunk: &model::ContentChunk) 
                 trailing_spacing: TextBlockSpacing::default(),
             }));
         }
-        let last_idx = app.messages.len().saturating_sub(1);
+        let last_idx = app.messages().len().saturating_sub(1);
         app.sync_after_message_blocks_changed(last_idx);
         return;
     }
@@ -162,7 +165,7 @@ fn append_resume_user_message_chunk(app: &mut App, chunk: &model::ContentChunk) 
 pub(super) fn load_resume_history(app: &mut App, history_messages: &[forge_primitives::Message]) {
     let preserved_tip_seed = app.current_welcome_tip_seed();
     app.clear_messages_tracked();
-    app.history_retention_stats = super::super::state::HistoryRetentionStats::default();
+    *app.history_retention_stats_mut() = super::super::state::HistoryRetentionStats::default();
     let mut welcome = app.build_welcome_message();
     if let Some(tip_seed) = preserved_tip_seed {
         App::apply_welcome_tip_seed(&mut welcome, tip_seed);
@@ -191,6 +194,23 @@ pub(super) fn load_resume_history(app: &mut App, history_messages: &[forge_primi
                     if text.is_empty() {
                         continue;
                     }
+                    // Drop Claude Code's local-command scaffolding —
+                    // `<local-command-caveat>…</local-command-caveat>`,
+                    // `<command-name>/x</command-name>…`, and the
+                    // matching `<local-command-stdout>` wrappers. These
+                    // are metadata the LLM uses to distinguish "this is
+                    // a slash-command invocation, not user input"; they
+                    // were never meant for chat-buffer rendering. The
+                    // live-session input handler never produces them
+                    // (slash commands take a different path), so replay
+                    // is the only surface that surfaces them.
+                    let trimmed = text.trim_start();
+                    if trimmed.starts_with("<local-command-caveat>")
+                        || trimmed.starts_with("<command-name>")
+                        || trimmed.starts_with("<local-command-stdout>")
+                    {
+                        continue;
+                    }
                     if !rendered_user_text {
                         app.clear_active_turn_assistant();
                         tracing::debug!(
@@ -213,6 +233,6 @@ pub(super) fn load_resume_history(app: &mut App, history_messages: &[forge_primi
     app.finalize_turn_runtime_artifacts(model::ToolCallStatus::Failed);
     app.clear_active_turn_assistant();
     app.enforce_history_retention_tracked();
-    app.viewport = super::super::ChatViewport::new();
-    app.viewport.engage_auto_scroll();
+    *app.viewport_mut() = super::super::ChatViewport::new();
+    app.viewport_mut().engage_auto_scroll();
 }

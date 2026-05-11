@@ -137,7 +137,7 @@ mod tests {
     fn trusted_view_shows_selection_at_top_without_storage_details() {
         let mut app = App::test_default();
         app.trust.selection = TrustSelection::Yes;
-        app.cwd_raw = r"C:\work\project".to_owned();
+        app.set_cwd_raw(r"C:\work\project");
 
         let text = draw_text(&mut app);
 

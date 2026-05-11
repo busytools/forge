@@ -96,8 +96,8 @@ async fn failed_tool_call_with_plain_command_error_keeps_normal_rendering() {
 }
 
 fn tool_call_text_payload(app: &forge_tui::app::App, tool_id: &str) -> Option<String> {
-    let (mi, bi) = app.tool_call_index.get(tool_id).copied()?;
-    let MessageBlock::ToolCall(tc) = &app.messages.get(mi)?.blocks.get(bi)? else {
+    let (mi, bi) = app.lookup_tool_call(tool_id)?;
+    let MessageBlock::ToolCall(tc) = &app.messages().get(mi)?.blocks.get(bi)? else {
         return None;
     };
     tc.content.iter().find_map(|content| match content {

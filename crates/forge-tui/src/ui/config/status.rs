@@ -22,13 +22,11 @@ pub(crate) fn status_lines(app: &App) -> Vec<Line<'static>> {
     kv_line(&mut lines, "Version", env!("CARGO_PKG_VERSION"));
     kv_line(&mut lines, "Session name", &derive_session_name(app));
 
-    let session_id_str = app
-        .session_id
-        .as_ref()
-        .map_or_else(|| "(none)".to_owned(), std::string::ToString::to_string);
+    let session_id_str =
+        app.session_id().map_or_else(|| "(none)".to_owned(), std::string::ToString::to_string);
     kv_line(&mut lines, "Session ID", &session_id_str);
 
-    kv_line(&mut lines, "cwd", &app.cwd);
+    kv_line(&mut lines, "cwd", app.cwd());
 
     if let Some(chip) = app.git_branch_chip() {
         let branch_text = match chip {
@@ -41,7 +39,7 @@ pub(crate) fn status_lines(app: &App) -> Vec<Line<'static>> {
     lines.push(Line::default());
 
     // ---- Account ----
-    if let Some(ref account) = app.account_info {
+    if let Some(account) = app.account_info() {
         section_header(&mut lines, "Account");
         kv_line(&mut lines, "Login method", &login_method_label(account));
         if let Some(ref provider) = account.api_provider
@@ -59,6 +57,11 @@ pub(crate) fn status_lines(app: &App) -> Vec<Line<'static>> {
         {
             kv_line(&mut lines, "Email", email);
         }
+        if let Some(name) = app.active_account_display_name()
+            && !name.trim().is_empty()
+        {
+            kv_line(&mut lines, "Profile", name);
+        }
         if let Some(ref sub) = account.subscription_type
             && !sub.is_empty()
         {
@@ -70,7 +73,7 @@ pub(crate) fn status_lines(app: &App) -> Vec<Line<'static>> {
     // ---- Model ----
     section_header(&mut lines, "Model");
     kv_line(&mut lines, "Model", &model_display(app));
-    if let Some(current_model) = app.current_model.as_ref() {
+    if let Some(current_model) = app.current_model() {
         kv_line(&mut lines, "Resolved model ID", &current_model.resolved_id);
         if let Some(requested_id) = current_model.requested_id.as_deref()
             && requested_id != current_model.resolved_id
@@ -79,7 +82,7 @@ pub(crate) fn status_lines(app: &App) -> Vec<Line<'static>> {
         }
     }
 
-    if let Some(ref mode) = app.mode {
+    if let Some(mode) = app.mode() {
         kv_line(&mut lines, "Mode", &mode.current_mode_name);
     }
 
@@ -112,7 +115,7 @@ fn kv_line(lines: &mut Vec<Line<'static>>, key: &str, value: &str) {
 }
 
 fn derive_session_name(app: &App) -> String {
-    if let Some(ref sid) = app.session_id {
+    if let Some(sid) = app.session_id() {
         let sid_str = sid.to_string();
         if let Some(session) = app.recent_sessions.iter().find(|s| s.session_id == sid_str) {
             if let Some(ref title) = session.custom_title
@@ -143,7 +146,7 @@ fn derive_session_name(app: &App) -> String {
 }
 
 fn model_display(app: &App) -> String {
-    let Some(current_model) = app.current_model.as_ref() else {
+    let Some(current_model) = app.current_model() else {
         return "(not set)".to_owned();
     };
     current_model.display_name_long.clone()
@@ -188,10 +191,10 @@ fn api_provider_label(provider: &str) -> String {
 }
 
 fn resolve_memory_path(app: &App) -> String {
-    let Some(conn) = app.conn.as_ref() else {
+    let Some(conn) = app.conn().cloned() else {
         return "(no connection)".to_owned();
     };
-    let memory_md = conn.project_memory_path(std::path::Path::new(&app.cwd_raw));
+    let memory_md = conn.project_memory_path(std::path::Path::new(app.cwd_raw()));
     if memory_md.exists() {
         format!("auto memory ({})", memory_md.display())
     } else {
@@ -227,7 +230,7 @@ mod tests {
     #[test]
     fn status_lines_shows_cwd() {
         let mut app = App::test_default();
-        app.cwd = "/test/project".to_owned();
+        app.set_cwd("/test/project");
         let text = lines_to_string(&status_lines(&app));
         assert!(text.contains("/test/project"));
     }
@@ -235,10 +238,10 @@ mod tests {
     #[test]
     fn status_lines_shows_model() {
         let mut app = App::test_default();
-        app.current_model = Some(
+        app.set_current_model(Some(
             crate::agent::model::CurrentModel::new("claude-sonnet-4-7", "Sonnet", "Sonnet 4.7")
                 .authoritative(true),
-        );
+        ));
         let text = lines_to_string(&status_lines(&app));
         assert!(text.contains("Sonnet 4.7"));
     }
@@ -253,7 +256,7 @@ mod tests {
     #[test]
     fn status_lines_uses_custom_title() {
         let mut app = App::test_default();
-        app.session_id = Some(crate::agent::model::SessionId::new("test-sess-1"));
+        app.set_session_id(Some(crate::agent::model::SessionId::new("test-sess-1")));
         app.recent_sessions = vec![crate::app::RecentSessionInfo {
             session_id: "test-sess-1".to_owned(),
             summary: String::new(),
@@ -307,10 +310,10 @@ mod tests {
     #[test]
     fn status_lines_render_api_provider() {
         let mut app = App::test_default();
-        app.account_info = Some(forge_primitives::AccountInfo {
+        app.set_account_info(Some(forge_primitives::AccountInfo {
             api_provider: Some("mantle".to_owned()),
             ..Default::default()
-        });
+        }));
 
         let text = lines_to_string(&status_lines(&app));
 
@@ -322,6 +325,54 @@ mod tests {
     fn login_method_falls_back_to_unknown() {
         let account = forge_primitives::AccountInfo::default();
         assert_eq!(login_method_label(&account), "Unknown");
+    }
+
+    #[test]
+    fn account_section_renders_profile_when_display_name_set() {
+        let mut app = App::test_default();
+        app.set_account_info(Some(forge_primitives::AccountInfo {
+            email: Some("dev@example.com".to_owned()),
+            organization: Some("Autonomys".to_owned()),
+            subscription_type: Some("team".to_owned()),
+            token_source: Some("claude.ai".to_owned()),
+            api_key_source: Some("oauth".to_owned()),
+            api_provider: Some("firstParty".to_owned()),
+        }));
+        app.set_active_account_display_name(Some("Stargate".to_owned()));
+
+        let text = lines_to_string(&status_lines(&app));
+        assert!(
+            text.contains("Profile") && text.contains("Stargate"),
+            "expected Profile: Stargate line, got:\n{text}"
+        );
+        assert!(
+            text.contains("Subscription") && text.contains("team"),
+            "expected Subscription: team line, got:\n{text}"
+        );
+    }
+
+    #[test]
+    fn account_section_omits_profile_when_display_name_absent() {
+        let mut app = App::test_default();
+        app.set_account_info(Some(forge_primitives::AccountInfo {
+            email: Some("ved@example.com".to_owned()),
+            organization: None,
+            subscription_type: Some("pro".to_owned()),
+            token_source: None,
+            api_key_source: None,
+            api_provider: None,
+        }));
+        app.set_active_account_display_name(None);
+
+        let text = lines_to_string(&status_lines(&app));
+        assert!(
+            !text.contains("Profile"),
+            "Profile line must not render when display_name is None, got:\n{text}"
+        );
+        assert!(
+            text.contains("Subscription") && text.contains("pro"),
+            "expected Subscription: pro line, got:\n{text}"
+        );
     }
 
     fn lines_to_string(lines: &[Line<'_>]) -> String {

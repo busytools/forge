@@ -30,7 +30,7 @@ pub(super) fn render(frame: &mut Frame, area: Rect, app: &App) {
         .split(content_area);
     frame.render_widget(Paragraph::new(summary).wrap(Wrap { trim: false }), sections[0]);
 
-    if app.session_id.is_none() {
+    if app.session_id().is_none() {
         render_message(
             frame,
             sections[1],
@@ -40,7 +40,7 @@ pub(super) fn render(frame: &mut Frame, area: Rect, app: &App) {
         return;
     }
 
-    if app.mcp.in_flight && app.mcp.servers.is_empty() {
+    if app.mcp().in_flight && app.mcp().servers.is_empty() {
         render_message(
             frame,
             sections[1],
@@ -50,8 +50,8 @@ pub(super) fn render(frame: &mut Frame, area: Rect, app: &App) {
         return;
     }
 
-    if app.mcp.servers.is_empty() {
-        let body = app.mcp.last_error.as_deref().unwrap_or(
+    if app.mcp().servers.is_empty() {
+        let body = app.mcp().last_error.as_deref().unwrap_or(
             "The current session did not report any MCP servers. This view only shows live session-backed MCP state.",
         );
         render_message(frame, sections[1], "No MCP servers", body);
@@ -66,7 +66,7 @@ pub(super) fn render_details_overlay(frame: &mut Frame, area: Rect, app: &App) {
         return;
     };
 
-    let server = app.mcp.servers.iter().find(|server| server.name == overlay.server_name);
+    let server = app.mcp().servers.iter().find(|server| server.name == overlay.server_name);
     let action_lines = server.map_or_else(Vec::new, |server| mcp_action_lines(server, overlay));
     let rendered = render_overlay_shell(
         frame,
@@ -239,7 +239,7 @@ pub(super) fn render_auth_redirect_overlay(frame: &mut Frame, area: Rect, app: &
 }
 
 fn render_server_list(frame: &mut Frame, area: Rect, app: &App) {
-    let items = app.mcp.servers.iter().enumerate().map(|(index, server)| {
+    let items = app.mcp().servers.iter().enumerate().map(|(index, server)| {
         let selected = index == app.config.mcp_selected_server_index;
         ListItem::new(server_list_lines(server, selected)).style(server_row_style(selected))
     });
@@ -251,7 +251,7 @@ fn render_server_list(frame: &mut Frame, area: Rect, app: &App) {
 fn summary_lines(app: &App) -> Vec<Line<'static>> {
     let counts = status_counts(app);
     let mut stats_spans = vec![
-        badge_span(&format!("total {}", app.mcp.servers.len()), Color::Black, Color::White),
+        badge_span(&format!("total {}", app.mcp().servers.len()), Color::Black, Color::White),
         Span::styled(" ", Style::default()),
         badge_span(&format!("connected {}", counts.connected), Color::Black, theme::RUST_ORANGE),
         Span::styled(" ", Style::default()),
@@ -267,14 +267,14 @@ fn summary_lines(app: &App) -> Vec<Line<'static>> {
         Span::styled(" ", Style::default()),
         badge_span(&format!("failed {}", counts.failed), Color::White, theme::STATUS_ERROR),
     ];
-    if app.mcp.in_flight {
+    if app.mcp().in_flight {
         stats_spans.push(Span::styled(" ", Style::default()));
         stats_spans.push(badge_span("refreshing", Color::Black, Color::Cyan));
     }
 
     let mut lines = vec![Line::default(), Line::from(stats_spans), Line::default()];
 
-    if let Some(error) = app.mcp.last_error.as_deref() {
+    if let Some(error) = app.mcp().last_error.as_deref() {
         lines.push(Line::from(Span::styled(
             format!("Last MCP error: {error}"),
             Style::default().fg(theme::STATUS_ERROR),
@@ -691,7 +691,7 @@ fn transport_label(config: Option<&Value>) -> &'static str {
 }
 
 fn status_counts(app: &App) -> StatusCounts {
-    app.mcp.servers.iter().fold(StatusCounts::default(), |mut counts, server| {
+    app.mcp().servers.iter().fold(StatusCounts::default(), |mut counts, server| {
         match server.status {
             McpServerConnectionStatus::Connected => counts.connected += 1,
             McpServerConnectionStatus::NeedsAuth => counts.needs_auth += 1,
@@ -771,8 +771,8 @@ mod tests {
     #[test]
     fn renders_live_server_snapshot_as_list_only() {
         let mut app = App::test_default();
-        app.session_id = Some(crate::agent::model::SessionId::new("session-1"));
-        app.mcp.servers = vec![
+        app.set_session_id(Some(crate::agent::model::SessionId::new("session-1")));
+        app.mcp_mut().servers = vec![
             McpServerStatus {
                 name: "notion".to_owned(),
                 status: McpServerConnectionStatus::NeedsAuth,

@@ -13,7 +13,7 @@ use super::{
     App, AppStatus, ChatMessage, MessageBlock, MessageRole, TextBlock, dialog::DialogState,
 };
 use crate::agent::model;
-use std::rc::Rc;
+use std::sync::Arc;
 
 pub const MAX_VISIBLE: usize = 8;
 const MAX_CANDIDATES: usize = 50;
@@ -88,7 +88,7 @@ fn push_system_message(app: &mut App, text: impl Into<String>) {
         None,
     ));
     app.enforce_history_retention_tracked();
-    app.viewport.engage_auto_scroll();
+    app.viewport_mut().engage_auto_scroll();
 }
 
 fn push_user_message(app: &mut App, text: impl Into<String>) {
@@ -99,27 +99,27 @@ fn push_user_message(app: &mut App, text: impl Into<String>) {
         None,
     ));
     app.enforce_history_retention_tracked();
-    app.viewport.engage_auto_scroll();
+    app.viewport_mut().engage_auto_scroll();
 }
 
 fn require_connection(
     app: &mut App,
     not_connected_msg: &'static str,
-) -> Option<Rc<forge_agent::AgentHandle>> {
-    let Some(conn) = app.conn.as_ref() else {
+) -> Option<Arc<forge_agent::AgentHandle>> {
+    let Some(conn) = app.conn().cloned() else {
         push_system_message(app, not_connected_msg);
         return None;
     };
-    Some(Rc::clone(conn))
+    Some(conn)
 }
 
 fn require_active_session(
     app: &mut App,
     not_connected_msg: &'static str,
     no_session_msg: &'static str,
-) -> Option<(Rc<forge_agent::AgentHandle>, model::SessionId)> {
+) -> Option<(Arc<forge_agent::AgentHandle>, model::SessionId)> {
     let conn = require_connection(app, not_connected_msg)?;
-    let Some(session_id) = app.session_id.clone() else {
+    let Some(session_id) = app.session_id().cloned() else {
         push_system_message(app, no_session_msg);
         return None;
     };
@@ -161,7 +161,7 @@ mod tests {
         let mut app = App::test_default();
         let consumed = try_handle_submit(&mut app, "/definitely-unknown");
         assert!(consumed);
-        let Some(last) = app.messages.last() else {
+        let Some(last) = app.messages().last() else {
             panic!("expected system message");
         };
         assert!(matches!(last.role, MessageRole::System(_)));
@@ -170,7 +170,8 @@ mod tests {
     #[test]
     fn advertised_command_is_forwarded() {
         let mut app = App::test_default();
-        app.available_commands = vec![model::AvailableCommand::new("/help", "Help")];
+        app.active_session_mut().unwrap().available_commands =
+            vec![model::AvailableCommand::new("/help", "Help")];
         let consumed = try_handle_submit(&mut app, "/help");
         assert!(!consumed);
     }
@@ -210,7 +211,7 @@ mod tests {
         let consumed = try_handle_submit(&mut app, "/config extra");
 
         assert!(consumed);
-        let Some(last) = app.messages.last() else {
+        let Some(last) = app.messages().last() else {
             panic!("expected usage message");
         };
         let Some(MessageBlock::Text(block)) = last.blocks.first() else {
@@ -252,7 +253,7 @@ mod tests {
         let consumed = try_handle_submit(&mut app, "/mcp extra");
 
         assert!(consumed);
-        let Some(last) = app.messages.last() else {
+        let Some(last) = app.messages().last() else {
             panic!("expected usage message");
         };
         let Some(MessageBlock::Text(block)) = last.blocks.first() else {
@@ -294,14 +295,14 @@ mod tests {
     #[test]
     fn mode_argument_candidates_are_dynamic() {
         let mut app = App::test_default();
-        app.mode = Some(super::super::ModeState {
+        app.set_mode(Some(super::super::ModeState {
             current_mode_id: "plan".to_owned(),
             current_mode_name: "Plan".to_owned(),
             available_modes: vec![
                 super::super::ModeInfo { id: "plan".to_owned(), name: "Plan".to_owned() },
                 super::super::ModeInfo { id: "code".to_owned(), name: "Code".to_owned() },
             ],
-        });
+        }));
 
         let candidates = argument_candidates(&app, "/mode", 0);
         assert!(candidates.iter().any(|c| c.insert_value == "plan"));
@@ -313,7 +314,7 @@ mod tests {
     #[test]
     fn model_argument_candidates_are_dynamic() {
         let mut app = App::test_default();
-        app.available_models = vec![
+        app.active_session_mut().unwrap().available_models = vec![
             crate::agent::model::AvailableModel::new("sonnet", "Claude Sonnet")
                 .description("Balanced coding model"),
             crate::agent::model::AvailableModel::new("opus", "Claude Opus"),
@@ -328,7 +329,7 @@ mod tests {
     #[test]
     fn model_argument_candidates_hide_sdk_default_option() {
         let mut app = App::test_default();
-        app.available_models = vec![
+        app.active_session_mut().unwrap().available_models = vec![
             crate::agent::model::AvailableModel::new("default", "Default")
                 .description("Default (recommended)"),
             crate::agent::model::AvailableModel::new("sonnet", "Claude Sonnet"),
@@ -351,7 +352,7 @@ mod tests {
                 "ANTHROPIC_DEFAULT_OPUS_MODEL": "claude-opus-4-5-20251101"
             }
         });
-        app.available_models = vec![
+        app.active_session_mut().unwrap().available_models = vec![
             crate::agent::model::AvailableModel::new("opus", "Opus")
                 .description("Opus 4.7 · Most capable for complex work"),
         ];
@@ -369,7 +370,7 @@ mod tests {
     #[test]
     fn model_argument_candidates_keep_sdk_opus_description_when_unpinned() {
         let mut app = App::test_default();
-        app.available_models = vec![
+        app.active_session_mut().unwrap().available_models = vec![
             crate::agent::model::AvailableModel::new("opus", "Opus")
                 .description("Opus 4.7 · Most capable for complex work"),
         ];
@@ -396,14 +397,14 @@ mod tests {
     #[test]
     fn variable_command_argument_mode_deactivates_when_no_match() {
         let mut app = App::test_default();
-        app.mode = Some(super::super::ModeState {
+        app.set_mode(Some(super::super::ModeState {
             current_mode_id: "plan".to_owned(),
             current_mode_name: "Plan".to_owned(),
             available_modes: vec![super::super::ModeInfo {
                 id: "plan".to_owned(),
                 name: "Plan".to_owned(),
             }],
-        });
+        }));
         app.input.set_text("/mode xyz");
         let _ = app.input.set_cursor(0, "/mode xyz".chars().count());
         sync_with_cursor(&mut app);
@@ -442,7 +443,7 @@ mod tests {
         let mut app = App::test_default();
         let consumed = try_handle_submit(&mut app, "/resume");
         assert!(consumed);
-        let Some(last) = app.messages.last() else {
+        let Some(last) = app.messages().last() else {
             panic!("expected usage message");
         };
         let Some(MessageBlock::Text(block)) = last.blocks.first() else {
@@ -456,7 +457,7 @@ mod tests {
         let mut app = App::test_default();
         let consumed = try_handle_submit(&mut app, "/resume abc-123 extra");
         assert!(consumed);
-        let Some(last) = app.messages.last() else {
+        let Some(last) = app.messages().last() else {
             panic!("expected usage message");
         };
         let Some(MessageBlock::Text(block)) = last.blocks.first() else {
@@ -471,9 +472,9 @@ mod tests {
 
         let consumed = try_handle_submit(&mut app, "/resume abc-123");
         assert!(consumed);
-        assert!(app.messages.len() >= 2);
+        assert!(app.messages().len() >= 2);
 
-        let Some(first) = app.messages.first() else {
+        let Some(first) = app.messages().first() else {
             panic!("expected user message");
         };
         assert!(matches!(first.role, MessageRole::User));
@@ -489,7 +490,7 @@ mod tests {
             .run_until(async {
                 let mut app = App::test_default();
                 let (handle, mut rx) = forge_agent::Agent::testing_stub();
-                app.conn = Some(std::rc::Rc::new(handle));
+                app.set_conn(Some(std::sync::Arc::new(handle)));
 
                 let consumed = try_handle_submit(&mut app, "/resume abc-123");
                 assert!(consumed);
@@ -511,21 +512,21 @@ mod tests {
             .run_until(async {
                 let mut app = App::test_default();
                 let (handle, _rx) = forge_agent::Agent::testing_stub();
-                app.conn = Some(std::rc::Rc::new(handle));
-                app.session_id = Some("sess-1".into());
-                app.mode = Some(super::super::ModeState {
+                app.set_conn(Some(std::sync::Arc::new(handle)));
+                app.set_session_id(Some("sess-1".into()));
+                app.set_mode(Some(super::super::ModeState {
                     current_mode_id: "code".to_owned(),
                     current_mode_name: "Code".to_owned(),
                     available_modes: vec![
                         super::super::ModeInfo { id: "plan".to_owned(), name: "Plan".to_owned() },
                         super::super::ModeInfo { id: "code".to_owned(), name: "Code".to_owned() },
                     ],
-                });
+                }));
 
                 let consumed = try_handle_submit(&mut app, "/mode plan");
                 assert!(consumed);
                 assert_eq!(
-                    app.mode.as_ref().map(|m| m.current_mode_id.as_str()),
+                    app.mode().map(|m| m.current_mode_id.as_str()),
                     Some("plan"),
                     "expected mode applied synchronously to plan"
                 );
@@ -543,17 +544,17 @@ mod tests {
             .run_until(async {
                 let mut app = App::test_default();
                 let (handle, _rx) = forge_agent::Agent::testing_stub();
-                app.conn = Some(std::rc::Rc::new(handle));
-                app.session_id = Some("sess-1".into());
-                app.current_model = Some(
+                app.set_conn(Some(std::sync::Arc::new(handle)));
+                app.set_session_id(Some("sess-1".into()));
+                app.set_current_model(Some(
                     crate::agent::model::CurrentModel::new("old-model", "old-model", "old-model")
                         .authoritative(true),
-                );
+                ));
 
                 let consumed = try_handle_submit(&mut app, "/model sonnet");
                 assert!(consumed);
                 assert_eq!(
-                    app.current_model.as_ref().map(|m| m.resolved_id.as_str()),
+                    app.current_model().map(|m| m.resolved_id.as_str()),
                     Some("sonnet"),
                     "expected current_model applied synchronously to sonnet"
                 );
@@ -568,7 +569,7 @@ mod tests {
             .run_until(async {
                 let mut app = App::test_default();
                 let (handle, _rx) = forge_agent::Agent::testing_stub();
-                app.conn = Some(std::rc::Rc::new(handle));
+                app.set_conn(Some(std::sync::Arc::new(handle)));
 
                 let consumed = try_handle_submit(&mut app, "/new");
                 assert!(consumed);
@@ -588,8 +589,8 @@ mod tests {
 
         let consumed = try_handle_submit(&mut app, "/compact");
         assert!(consumed);
-        assert!(!app.pending_compact_clear);
-        let Some(last) = app.messages.last() else {
+        assert!(!app.pending_compact_clear());
+        let Some(last) = app.messages().last() else {
             panic!("expected system message");
         };
         assert!(matches!(last.role, MessageRole::System(_)));
@@ -603,19 +604,19 @@ mod tests {
     fn compact_with_active_session_sets_compacting_without_success_pending() {
         let mut app = App::test_default();
         let (handle, _rx) = forge_agent::Agent::testing_stub();
-        app.conn = Some(std::rc::Rc::new(handle));
-        app.session_id = Some(model::SessionId::new("session-1"));
+        app.set_conn(Some(std::sync::Arc::new(handle)));
+        app.set_session_id(Some(model::SessionId::new("session-1")));
 
         let consumed = try_handle_submit(&mut app, "/compact");
         assert!(!consumed);
-        assert!(!app.pending_compact_clear);
-        assert!(app.is_compacting);
+        assert!(!app.pending_compact_clear());
+        assert!(app.is_compacting());
     }
 
     #[test]
     fn compact_with_args_returns_usage_message() {
         let mut app = App::test_default();
-        app.messages.push(ChatMessage::new(
+        app.messages_mut().push(ChatMessage::new(
             MessageRole::User,
             vec![MessageBlock::Text(TextBlock::from_complete("keep"))],
             None,
@@ -623,8 +624,8 @@ mod tests {
 
         let consumed = try_handle_submit(&mut app, "/compact now");
         assert!(consumed);
-        assert!(app.messages.len() >= 2);
-        let Some(last) = app.messages.last() else {
+        assert!(app.messages().len() >= 2);
+        let Some(last) = app.messages().last() else {
             panic!("expected system usage message");
         };
         assert!(matches!(last.role, MessageRole::System(_)));
@@ -640,7 +641,7 @@ mod tests {
 
         let consumed = try_handle_submit(&mut app, "/mode plan extra");
         assert!(consumed);
-        let Some(last) = app.messages.last() else {
+        let Some(last) = app.messages().last() else {
             panic!("expected system usage message");
         };
         assert!(matches!(last.role, MessageRole::System(_)));
@@ -656,7 +657,7 @@ mod tests {
 
         let consumed = try_handle_submit(&mut app, "/model");
         assert!(consumed);
-        let Some(last) = app.messages.last() else {
+        let Some(last) = app.messages().last() else {
             panic!("expected system usage message");
         };
         let Some(MessageBlock::Text(block)) = last.blocks.first() else {
@@ -671,7 +672,7 @@ mod tests {
 
         let consumed = try_handle_submit(&mut app, "/model sonnet extra");
         assert!(consumed);
-        let Some(last) = app.messages.last() else {
+        let Some(last) = app.messages().last() else {
             panic!("expected system usage message");
         };
         let Some(MessageBlock::Text(block)) = last.blocks.first() else {
@@ -735,7 +736,7 @@ mod tests {
         let consumed = try_handle_submit(&mut app, "/status extra");
 
         assert!(consumed);
-        let Some(last) = app.messages.last() else {
+        let Some(last) = app.messages().last() else {
             panic!("expected usage message");
         };
         let Some(MessageBlock::Text(block)) = last.blocks.first() else {
@@ -751,7 +752,7 @@ mod tests {
         let consumed = try_handle_submit(&mut app, "/usage extra");
 
         assert!(consumed);
-        let Some(last) = app.messages.last() else {
+        let Some(last) = app.messages().last() else {
             panic!("expected usage message");
         };
         let Some(MessageBlock::Text(block)) = last.blocks.first() else {

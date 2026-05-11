@@ -73,7 +73,7 @@ fn footer_mcp_auth_hint(app: &App) -> FooterItem {
 }
 
 fn footer_context_usage_hint(app: &App) -> FooterItem {
-    app.session_usage
+    app.session_usage()
         .context_usage_percent
         .map(|percentage| (format!("{percentage}%"), FOOTER_CONTEXT_VALUE))
 }
@@ -146,15 +146,13 @@ fn build_primary_line(app: &App) -> Line<'static> {
     // `permission_mode` on every hook input but doesn't always re-emit
     // `system/status` after mode changes (#88).
     let effective_mode_id_name: Option<(String, String)> = app
-        .observed_permission_mode
+        .observed_permission_mode()
         .map(|m| (m.as_wire().to_owned(), m.display_name().to_owned()))
-        .or_else(|| {
-            app.mode.as_ref().map(|m| (m.current_mode_id.clone(), m.current_mode_name.clone()))
-        });
+        .or_else(|| app.mode().map(|m| (m.current_mode_id.clone(), m.current_mode_name.clone())));
 
     if let Some((mode_id, mode_name)) = effective_mode_id_name {
         let color = mode_color(&mode_id);
-        let (fast_mode_text, fast_mode_color) = fast_mode_badge(app.fast_mode_state);
+        let (fast_mode_text, fast_mode_color) = fast_mode_badge(app.fast_mode_state());
         let mut spans = Vec::new();
         push_badge(&mut spans, mode_name, color);
         if let Some(model_badge) = footer_model_badge(app) {
@@ -182,7 +180,7 @@ fn push_badge(spans: &mut Vec<Span<'static>>, text: String, color: Color) {
 }
 
 fn footer_model_badge(app: &App) -> Option<String> {
-    let current_model = app.current_model.as_ref()?;
+    let current_model = app.current_model()?;
     let mut badge = current_model.display_name_short.clone();
     if current_model.supports_effort {
         // Effective effort prefers hook-observed values (high-fidelity
@@ -191,7 +189,7 @@ fn footer_model_badge(app: &App) -> Option<String> {
         // the CLI changes effort without updating the file (e.g.
         // mid-session `/effort` change). #87, #89.
         let effective_effort =
-            app.observed_effort.unwrap_or_else(|| app.config.thinking_effort_effective());
+            app.observed_effort().unwrap_or_else(|| app.config.thinking_effort_effective());
         badge.push('/');
         badge.push_str(footer_effort_label(effective_effort));
     }
@@ -324,13 +322,13 @@ fn context_values(app: &App, max_width: usize) -> Option<(String, Option<BranchV
             let branch_display_width =
                 branch_value.as_ref().map_or(0, |value| UnicodeWidthStr::width(value.text()));
             let location_width = available_values.saturating_sub(branch_display_width);
-            if let Some(location_value) = fit_location_value(&app.cwd, location_width) {
+            if let Some(location_value) = fit_location_value(app.cwd(), location_width) {
                 return Some((location_value, branch_value));
             }
         }
     }
 
-    fit_location_value(&app.cwd, location_only_width).map(|location_value| (location_value, None))
+    fit_location_value(app.cwd(), location_only_width).map(|location_value| (location_value, None))
 }
 
 fn fit_location_value(cwd: &str, max_width: usize) -> Option<String> {
@@ -409,14 +407,14 @@ fn fit_footer_suffix_text(text: &str, max_width: usize) -> Option<String> {
 }
 
 fn pending_permission_request_count(app: &App) -> usize {
-    app.pending_interaction_ids
+    app.pending_interaction_ids()
         .iter()
         .filter(|tool_id| {
             let Some((mi, bi)) = app.lookup_tool_call(tool_id) else {
                 return false;
             };
             matches!(
-                app.messages.get(mi).and_then(|msg| msg.blocks.get(bi)),
+                app.messages().get(mi).and_then(|msg| msg.blocks.get(bi)),
                 Some(MessageBlock::ToolCall(tc)) if tc.pending_permission.is_some()
             )
         })
@@ -424,7 +422,7 @@ fn pending_permission_request_count(app: &App) -> usize {
 }
 
 fn mcp_needs_auth_count(app: &App) -> usize {
-    app.mcp
+    app.mcp()
         .servers
         .iter()
         .filter(|server| {
@@ -434,7 +432,7 @@ fn mcp_needs_auth_count(app: &App) -> usize {
 }
 
 fn should_show_startup_mcp_hint(app: &App) -> bool {
-    !app.messages
+    !app.messages()
         .iter()
         .any(|message| matches!(message.role, MessageRole::User | MessageRole::Assistant))
 }
@@ -538,7 +536,7 @@ mod tests {
     fn footer_primary_hint_shows_pending_permission_count() {
         let mut app = App::test_default();
         let (response_tx, _response_rx) = oneshot::channel();
-        app.messages.push(ChatMessage::new(
+        app.messages_mut().push(ChatMessage::new(
             MessageRole::Assistant,
             vec![MessageBlock::ToolCall(Box::new(ToolCallInfo {
                 id: "perm-1".into(),
@@ -578,7 +576,7 @@ mod tests {
             None,
         ));
         app.index_tool_call("perm-1".into(), 0, 0);
-        app.pending_interaction_ids.push("perm-1".into());
+        app.pending_interaction_ids_mut().push("perm-1".into());
 
         assert_eq!(footer_primary_hint(&app), Some(("1 PEND. PERM.".to_owned(), Color::Yellow)));
     }
@@ -597,7 +595,7 @@ mod tests {
     #[test]
     fn footer_model_badge_uses_resolved_model_and_effort() {
         let mut app = App::test_default();
-        app.current_model = Some(
+        app.set_current_model(Some(
             model::CurrentModel::new("claude-sonnet-4-7", "Sonnet 4.7", "Sonnet 4.7")
                 .supports_effort(true)
                 .supported_effort_levels(vec![
@@ -606,18 +604,18 @@ mod tests {
                     model::EffortLevel::High,
                 ])
                 .authoritative(true),
-        );
+        ));
 
-        assert_eq!(footer_model_badge(&app), Some("Sonnet 4.7/Med".to_owned()));
+        assert_eq!(footer_model_badge(&app), Some("Sonnet 4.7/Max".to_owned()));
     }
 
     #[test]
     fn footer_model_badge_hides_effort_for_models_without_support() {
         let mut app = App::test_default();
-        app.current_model = Some(
+        app.set_current_model(Some(
             model::CurrentModel::new("claude-haiku-4-5", "Haiku 4.5", "Haiku 4.5")
                 .authoritative(true),
-        );
+        ));
 
         assert_eq!(footer_model_badge(&app), Some("Haiku 4.5".to_owned()));
     }
@@ -625,20 +623,20 @@ mod tests {
     #[test]
     fn footer_model_badge_falls_back_to_runtime_name_for_unknown_model() {
         let mut app = App::test_default();
-        app.current_model = None;
+        app.set_current_model(None);
         assert_eq!(footer_model_badge(&app), None);
 
-        app.current_model = Some(
+        app.set_current_model(Some(
             model::CurrentModel::new("unknown-model", "unknown-model", "unknown-model")
                 .authoritative(true),
-        );
+        ));
         assert_eq!(footer_model_badge(&app), Some("unknown-model".to_owned()));
     }
 
     #[test]
     fn context_line_includes_loc_only_without_branch() {
         let mut app = App::test_default();
-        app.cwd = "~/repo".into();
+        app.set_cwd("~/repo");
 
         let text: String =
             build_context_line(&app, 80).spans.iter().map(|span| span.content.as_ref()).collect();
@@ -648,7 +646,7 @@ mod tests {
     #[test]
     fn context_line_includes_branch_when_present() {
         let mut app = App::test_default();
-        app.cwd = "~/repo".into();
+        app.set_cwd("~/repo");
         app.set_git_branch_for_test(Some("main"));
 
         let text: String =
@@ -659,7 +657,7 @@ mod tests {
     #[test]
     fn context_line_shortens_location_before_dropping_branch() {
         let mut app = App::test_default();
-        app.cwd = "~/work/company/claude_rust".into();
+        app.set_cwd("~/work/company/claude_rust");
         app.set_git_branch_for_test(Some("feature/footer"));
 
         let text: String =
@@ -672,7 +670,7 @@ mod tests {
     #[test]
     fn context_line_drops_branch_when_width_is_too_tight() {
         let mut app = App::test_default();
-        app.cwd = "~/work/company/claude_rust".into();
+        app.set_cwd("~/work/company/claude_rust");
         app.set_git_branch_for_test(Some("feature/footer"));
 
         let text: String =
@@ -684,7 +682,7 @@ mod tests {
     #[test]
     fn context_line_shows_detached_label_for_detached_head() {
         let mut app = App::test_default();
-        app.cwd = "~/repo".into();
+        app.set_cwd("~/repo");
         app.set_git_detached_for_test();
 
         let line = build_context_line(&app, 80);
@@ -704,7 +702,7 @@ mod tests {
     #[test]
     fn context_line_named_branch_keeps_default_color() {
         let mut app = App::test_default();
-        app.cwd = "~/repo".into();
+        app.set_cwd("~/repo");
         app.set_git_branch_for_test(Some("main"));
 
         let line = build_context_line(&app, 80);
@@ -719,12 +717,12 @@ mod tests {
     #[test]
     fn mcp_auth_hint_shows_needs_auth_count_before_real_chat() {
         let mut app = App::test_default();
-        app.messages.push(ChatMessage::new(
+        app.messages_mut().push(ChatMessage::new(
             MessageRole::Welcome,
             vec![MessageBlock::Text(TextBlock::from_complete("welcome"))],
             None,
         ));
-        app.mcp.servers.push(McpServerStatus {
+        app.mcp_mut().servers.push(McpServerStatus {
             name: "calendar".into(),
             status: McpServerConnectionStatus::NeedsAuth,
             server_info: None,
@@ -745,12 +743,12 @@ mod tests {
     #[test]
     fn mcp_auth_hint_hides_after_assistant_message() {
         let mut app = App::test_default();
-        app.messages.push(ChatMessage::new(
+        app.messages_mut().push(ChatMessage::new(
             MessageRole::Assistant,
             vec![MessageBlock::Text(TextBlock::from_complete("hello"))],
             None,
         ));
-        app.mcp.servers.push(McpServerStatus {
+        app.mcp_mut().servers.push(McpServerStatus {
             name: "calendar".into(),
             status: McpServerConnectionStatus::NeedsAuth,
             server_info: None,
@@ -768,7 +766,7 @@ mod tests {
     #[test]
     fn footer_context_usage_hint_renders_used_percentage() {
         let mut app = App::test_default();
-        app.session_usage.context_usage_percent = Some(62);
+        app.session_usage_mut().context_usage_percent = Some(62);
 
         assert_eq!(footer_context_usage_hint(&app), Some(("62%".to_owned(), FOOTER_CONTEXT_VALUE)));
     }
@@ -776,13 +774,13 @@ mod tests {
     #[test]
     fn footer_secondary_hint_prefers_mcp_auth_over_context_usage() {
         let mut app = App::test_default();
-        app.session_usage.context_usage_percent = Some(62);
-        app.messages.push(ChatMessage::new(
+        app.session_usage_mut().context_usage_percent = Some(62);
+        app.messages_mut().push(ChatMessage::new(
             MessageRole::Welcome,
             vec![MessageBlock::Text(TextBlock::from_complete("welcome"))],
             None,
         ));
-        app.mcp.servers.push(McpServerStatus {
+        app.mcp_mut().servers.push(McpServerStatus {
             name: "calendar".into(),
             status: McpServerConnectionStatus::NeedsAuth,
             server_info: None,

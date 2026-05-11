@@ -364,7 +364,7 @@
 <h2 class="section-title" id="layout">Layout</h2>
 
 <p class="intro">
-  forge-tui has <strong>one screen layout</strong>. No responsive width modes, no side panels, no split panes. The frame is a strict vertical stack composed by <code>layout::compute</code>. <strong>This stack only renders in <code>ActiveView::Chat</code>.</strong> When the user opens <code>/config</code>, the resume picker, or hits the trust gate, forge swaps the entire frame to a single full-screen overlay (<code>ActiveView::Config</code>, <code>ActiveView::SessionPicker</code>, <code>ActiveView::Trusted</code>) — chat / input / todo panel / footer all disappear during those views.
+  forge-tui's main frame is a strict vertical stack composed by <code>layout::compute</code>. <strong>This stack only renders in <code>ActiveView::Chat</code>.</strong> When the user opens <code>/config</code>, the resume picker, or hits the trust gate, forge swaps the entire frame to a single full-screen overlay (<code>ActiveView::Config</code>, <code>ActiveView::SessionPicker</code>, <code>ActiveView::Trusted</code>) — chat / input / todo panel / footer all disappear during those views. At terminal widths ≥160 cols the chat frame docks to the right of a 26ch <a href="#projects-pane">Projects pane</a>; between 120–159 cols the pane shrinks to a compact 20ch with label truncation; below 120 cols a single-row top bar replaces the inline pane and tapping its <code>▤</code> icon (or <kbd>Ctrl+B</kbd>) opens a full-screen Projects overlay.
 </p>
 
 <p class="intro">
@@ -412,6 +412,59 @@
 </div>
 
 <p class="caption">Left padding is 2 cols across the chat body and footer. Two horizontal <code>─</code> separators in DIM frame the input + (optional) todo panel — one above, one below. The todo panel slot is between <code>input_sep</code> and <code>input</code>; here shown in compact mode showing "<code>[2/5] Adding tests…</code>". Footer is the bottom 2 rows.</p>
+
+<div class="surface" id="projects-pane">
+  <div class="surface-head">
+    <h4>Projects pane (Wide / Medium / Narrow tiers)</h4>
+    <div class="when">visible: at all terminal widths — Wide (≥160) renders a 26ch inline pane, Medium (120–159) a 20ch inline pane, Narrow (&lt;120) a single-line top bar with on-demand full-screen overlay</div>
+  </div>
+  <div class="surface-body">
+    <p>Left-side pane, 26ch wide, docked to the left of the chat frame. Lists projects from <code>forge.toml</code>'s <code>[[projects]]</code>. Each project renders as a single bold row; the active project is in <code>RUST_ORANGE</code> bold, background projects use the terminal's default fg + bold. The active project's drilldown (only) renders its sessions immediately beneath: lead first (<code>◆</code>), extras after, with the currently-viewed session marked <code>•</code>. Sort is most-recently-active first; alphabetical tie-break.</p>
+    <p>Project rows are mouse-only; chat input keeps keyboard focus. Click any project header to switch the active session to that project's lead — if the lead is already in-process, the swap is instant; if the project is sleeping (no in-process session yet), the click hands off to <code>workspace.get_agent_handle(SessionTarget::Named(name))</code> and a synthetic <code>__spawn_&lt;project&gt;__</code> bucket fronts a "Waking…" placeholder welcome until <code>Connected</code> arrives and migrates the bucket onto the real session UUID. Click any session row in the active project's drilldown to switch directly to that session.</p>
+    <div class="term">
+      <pre class="indent">
+  <span class="accent-bold">PROJECTS</span>
+  <span class="dim">─────────────────────────</span>
+
+  <span class="accent-bold">  forge</span>
+  <span class="dim">  ⠋ ◆</span> <span class="accent">•</span> main
+  <span class="dim">  ⠋  </span>   review-loop
+  <span class="bold">  stargate</span>
+  <span class="bold">  gateway</span>
+  <span class="bold">  data-modules</span>
+  <span class="bold">  dotfiles</span>
+</pre>
+    </div>
+    <p>At Narrow tier (&lt;120 cols), the inline pane is replaced by a single-line top bar showing <code>▤  &lt;active-project&gt;·&lt;active-session&gt;</code>. Tap <code>▤</code> (or <kbd>Ctrl+B</kbd>) to expand the overlay — full-screen list of projects with the active project's drilldown and a <code>✕</code> glyph in the banner to dismiss. Picking a project / session row in the overlay switches active session AND closes the overlay in one action. <kbd>Esc</kbd> also closes. Aggregate unread badge on <code>▤</code> is deferred to a follow-up issue.</p>
+    <div class="term">
+      <pre class="indent">
+<span class="dim">▤</span>  forge·main
+<span class="dim">─────────────────────────────────────────────────</span>
+chat continues here…
+</pre>
+    </div>
+    <p>Once the overlay is open, the body is replaced by the full project list (same drilldown semantics as the inline pane, just full-width):</p>
+    <div class="term">
+      <pre class="indent">
+<span class="accent-bold">▤ PROJECTS</span>                                        <span class="dim">✕</span>
+<span class="dim">─────────────────────────────────────────────────</span>
+
+<span class="accent-bold">  forge</span>
+<span class="dim">  ⠋ ◆</span> <span class="accent">•</span> main
+<span class="bold">  stargate</span>
+<span class="bold">  gateway</span>
+</pre>
+    </div>
+    <dl>
+      <dt>code</dt><dd><code>crates/forge-tui/src/ui/projects_pane.rs::render</code> (inline) · <code>::render_overlay</code> (Narrow overlay) · <code>crates/forge-tui/src/ui/top_bar.rs::render</code> (Narrow top bar) · click handling in <code>crates/forge-tui/src/app/events/mouse.rs</code> · sleeping-project spawn in <code>crates/forge-tui/src/app/connect.rs::spawn_for_sleeping_project</code></dd>
+      <dt>color</dt><dd>banner (<code>PROJECTS</code> / <code>▤ PROJECTS</code>): <code>RUST_ORANGE</code> bold · rule: <code>DIM</code> · active project: <code>RUST_ORANGE</code> bold · background project: default fg + bold · session-row state glyph + lead marker (<code>◆</code>): <code>DIM</code> · current marker (<code>•</code>): <code>RUST_ORANGE</code> · session label: default fg · top-bar <code>▤</code> icon: <code>DIM</code> when overlay closed, <code>RUST_ORANGE</code> bold when open · overlay <code>✕</code>: <code>DIM</code></dd>
+      <dt>state glyphs</dt><dd>session lifecycle prefix in the active project's drilldown — <code>⠋</code> Running / Spawning · <code>△</code> Attention (background paused on a permission prompt) · <code>·</code> Sleeping · <code> </code> (space) Idle. Background-project rows render no state glyph; only the active project's sessions show one.</dd>
+      <dt>click</dt><dd>project header → <code>switch_to_project_lead</code>: in-process lead → instant <code>switch_active_session</code>; sleeping lead → <code>spawn_for_sleeping_project</code> (synthetic bucket + async <code>get_agent_handle</code>). Active-project session row → direct <code>switch_active_session</code> on that session. At Narrow tier, both also close the overlay; the <code>▤</code> top-bar icon toggles overlay open/close, and the overlay <code>✕</code> glyph dismisses without switching.</dd>
+      <dt>toggle</dt><dd><code>Ctrl+B</code> at Wide / Medium tiers hides / restores the inline pane (persisted to <code>forge-state.toml</code> <code>[ui].projects_pane_visible</code>, default <code>true</code>). At Narrow tier <code>Ctrl+B</code> toggles the transient overlay flag (NOT persisted — each launch starts closed). <kbd>Esc</kbd> also closes the overlay.</dd>
+      <dt>scope</dt><dd>All three tiers ship: Wide (≥160) inline 26ch · Medium (120–159) inline 20ch with truncation · Narrow (&lt;120) top-bar + overlay. Click + toggle behaviour tier-agnostic for the inline pane; Narrow uses overlay + <code>✕</code> semantics. Mouse-only interaction in v1 (plus <kbd>Ctrl+B</kbd> / <kbd>Esc</kbd>) — chat input always has keyboard focus.</dd>
+    </dl>
+  </div>
+</div>
 
 <!-- ============================================================== -->
 <h2 class="section-title" id="chat">Chat — message types</h2>
@@ -905,7 +958,7 @@
     <div class="when">visible: appears as the first message in a fresh chat (first turn before any user input)</div>
   </div>
   <div class="surface-body">
-    <p>Banner is the literal text "<strong>Overview</strong>" in RUST_ORANGE bold. Body is a Ferris-says ASCII art block (in RUST_ORANGE) plus a metadata block (Version, Subscription, cwd, Session ID) and a single rotating tip. Rendered as a regular message in the scrollback (role <code>MessageRole::Welcome</code>) — not a screen overlay. Tip is selected from <code>WELCOME_TIPS</code> by <code>tip_seed % WELCOME_TIPS.len()</code>.</p>
+    <p>Banner is the literal text "<strong>Overview</strong>" in RUST_ORANGE bold. Body is a Ferris-says ASCII art block (in RUST_ORANGE) plus a metadata block (Version, Account, cwd, Session ID) and a single rotating tip. Rendered as a regular message in the scrollback (role <code>MessageRole::Welcome</code>) — not a screen overlay. Tip is selected from <code>WELCOME_TIPS</code> by <code>tip_seed % WELCOME_TIPS.len()</code>. The second metadata line shows <code>Account: &lt;display_name&gt; · &lt;tier&gt;</code> when forge-workspace picked the active account from <code>forge.toml</code>'s <code>[[accounts]]</code>; falls back to <code>Subscription: &lt;tier&gt;</code> when forge wasn't launched via the workspace (direct <code>Agent::spawn</code> from tests / smoke).</p>
     <div class="term">
       <pre class="indent">
   <span class="accent-bold">Overview</span>
@@ -922,7 +975,7 @@
 
 
   <span class="dim">Version:      </span><span class="dim">0.14.2</span>
-  <span class="dim">Subscription: </span><span class="accent bold">Pro</span>
+  <span class="dim">Account:      </span><span class="accent bold">Stargate · team</span>
   <span class="dim">cwd:          ~/Projects/forge</span>
   <span class="dim">Session ID:   550e8400-e29b-41d4-a716-446655440000</span>
 
@@ -931,7 +984,7 @@
     </div>
     <dl>
       <dt>code</dt><dd><code>crates/forge-tui/src/ui/message.rs::welcome_lines</code> · ASCII in <code>FERRIS_SAYS</code> · tips in <code>WELCOME_TIPS</code> (~21 entries)</dd>
-      <dt>color</dt><dd>art: RUST_ORANGE · field labels: DIM · subscription value: RUST_ORANGE bold · field values + tip: DIM</dd>
+      <dt>color</dt><dd>art: RUST_ORANGE · field labels: DIM · account/subscription value: RUST_ORANGE bold · field values + tip: DIM</dd>
     </dl>
   </div>
 </div>
@@ -1060,7 +1113,7 @@
     <div class="when">visible: when the Status tab is active</div>
   </div>
   <div class="surface-body">
-    <p>Plain key-value layout in the body area (no nested boxes). Section headers are RUST_ORANGE bold; key labels are DIM (with 2-space indent + trailing colon); values are white. Sections that appear in order: <strong>Session</strong> (Version, Session name, Session ID, cwd, Git branch when known), <strong>Account</strong> (Login method, API provider, Organization, Email, Subscription — only the fields that are non-empty), <strong>Model</strong> (Model display, Resolved model ID, Requested model when different), then more downstream (rate limits, etc.), ending with <strong>Settings</strong> (Memory path, Setting sources).</p>
+    <p>Plain key-value layout in the body area (no nested boxes). Section headers are RUST_ORANGE bold; key labels are DIM (with 2-space indent + trailing colon); values are white. Sections that appear in order: <strong>Session</strong> (Version, Session name, Session ID, cwd, Git branch when known), <strong>Account</strong> (Login method, API provider, Organization, Email, Profile, Subscription — only the fields that are non-empty; Profile is the forge-side <code>display_name</code> from <code>forge.toml</code>'s <code>[[accounts]]</code>, present only when forge-workspace picked an account), <strong>Model</strong> (Model display, Resolved model ID, Requested model when different), then more downstream (rate limits, etc.), ending with <strong>Settings</strong> (Memory path, Setting sources).</p>
     <div class="term">
       <pre class="indent">
   <span class="accent-bold">Session</span>
@@ -1071,8 +1124,12 @@
     <span class="dim">Git branch: </span>main
 
   <span class="accent-bold">Account</span>
-    <span class="dim">Login method: </span>OAuth (Pro)
-    <span class="dim">Subscription: </span>Pro
+    <span class="dim">Login method: </span>Claude Max Account
+    <span class="dim">API provider: </span>First party
+    <span class="dim">Organization: </span>Autonomys
+    <span class="dim">Email: </span>dev@example.com
+    <span class="dim">Profile: </span>Stargate
+    <span class="dim">Subscription: </span>team
 
   <span class="accent-bold">Model</span>
     <span class="dim">Model: </span>Claude Sonnet 4.5
@@ -1358,18 +1415,22 @@
     <tr><td class="glyph">✓</td><td class="codepoint">U+2713</td><td>completed status · permission Allow icon · todo Completed</td><td><code>theme::ICON_COMPLETED</code></td></tr>
     <tr><td class="glyph">✗</td><td class="codepoint">U+2717</td><td>failed status · permission Reject icon</td><td><code>theme::ICON_FAILED</code></td></tr>
     <tr><td class="glyph">❯</td><td class="codepoint">U+276F</td><td>input prompt</td><td><code>theme::PROMPT_CHAR</code></td></tr>
-    <tr><td class="glyph">·</td><td class="codepoint">U+00B7</td><td>permission-prompt option separator</td><td>middle dot — used to space the inline options in <code>render_permission_lines</code> (<code>"  ·  "</code>, DIM)</td></tr>
-    <tr><td class="glyph">•</td><td class="codepoint">U+2022</td><td>plan-approval pre-approved actions list</td><td>bullet — used in plan-approval prompt's optional pre-approved actions block (DIM)</td></tr>
+    <tr><td class="glyph">·</td><td class="codepoint">U+00B7</td><td>permission-prompt option separator · Projects pane Sleeping session-state glyph</td><td>middle dot — used to space the inline options in <code>render_permission_lines</code> (<code>"  ·  "</code>, DIM); also the per-session lifecycle glyph for sleeping sessions in the Projects pane drilldown (DIM)</td></tr>
+    <tr><td class="glyph">•</td><td class="codepoint">U+2022</td><td>plan-approval pre-approved actions list · Projects pane current-session marker</td><td>bullet — used in plan-approval prompt's optional pre-approved actions block (DIM); also the marker for the currently-viewed session in the active project's drilldown (RUST_ORANGE)</td></tr>
+    <tr><td class="glyph">◆</td><td class="codepoint">U+25C6</td><td>Projects pane lead-session marker</td><td>black diamond — marks the lead session within the active project's drilldown (DIM); always rendered on the first session row of that project</td></tr>
+    <tr><td class="glyph">△</td><td class="codepoint">U+25B3</td><td>Projects pane Attention session-state glyph</td><td>white up-pointing triangle — session-row lifecycle glyph for a background session paused on a permission prompt (DIM)</td></tr>
+    <tr><td class="glyph">▤</td><td class="codepoint">U+25A4</td><td>Narrow-tier Projects top-bar icon</td><td>square with horizontal fill — single-cell pane icon at the top of the chat area; toggles the Projects overlay on click (DIM when closed, RUST_ORANGE bold when open)</td></tr>
+    <tr><td class="glyph">✕</td><td class="codepoint">U+2715</td><td>Narrow-tier overlay close glyph</td><td>multiplication x — sits at the right edge of the overlay banner; click dismisses the overlay without switching session (DIM)</td></tr>
     <tr><td class="glyph">?</td><td class="codepoint">U+003F</td><td>question-prompt header marker · help toggle key</td><td>RUST_ORANGE in question header; same key activates help</td></tr>
     <tr class="outlier"><td class="glyph">|</td><td class="codepoint">U+007C</td><td>question-prompt horizontal-options separator</td><td>ASCII pipe used between options in the horizontal question layout (<code>"  |  "</code>, DIM) — sits next to box-drawing <code>│</code>; flagged in #40 for replacement</td></tr>
     <tr><td class="glyph">[ ]</td><td class="codepoint">U+005B / U+005D</td><td>footer mode/model badges · multi-select checkbox</td><td>ASCII brackets wrap each footer badge; the multi-select checkbox in question prompt uses <code>[x]</code> / <code>[ ]</code></td></tr>
-    <tr><td class="glyph">⠋ ⠙ ⠹</td><td class="codepoint">U+280B…</td><td>spinner frames</td><td>Braille spinner during in-progress states (10 frames in <code>SPINNER_FRAMES</code>)</td></tr>
+    <tr><td class="glyph">⠋ ⠙ ⠹</td><td class="codepoint">U+280B…</td><td>spinner frames · Projects pane Running / Spawning session-state glyph</td><td>Braille spinner during in-progress states (10 frames in <code>SPINNER_FRAMES</code>); also the static <code>⠋</code> session-row prefix for Running and Spawning sessions in the active project's drilldown (DIM)</td></tr>
     <tr><td class="glyph">▸</td><td class="codepoint">U+25B8</td><td>selection indicator</td><td>permission / question / plan-approval options · todo InProgress · autocomplete selected row</td></tr>
     <tr><td class="glyph">&gt;</td><td class="codepoint">U+003E</td><td>trust prompt selected action · MCP server-list selected marker</td><td>ASCII greater-than (white-on-RUST_ORANGE bold for selected, leading space for unselected)</td></tr>
   </tbody>
 </table>
 
-<p class="footnote">forge · TUI map · 2026-05-07 · open in any modern browser · prefers Berkeley Mono / JetBrains Mono / IBM Plex Mono / SF Mono · scope: <strong>current state only</strong> — anything new lands here in the same PR that lands the code</p>
+<p class="footnote">forge · TUI map · 2026-05-10 · open in any modern browser · prefers Berkeley Mono / JetBrains Mono / IBM Plex Mono / SF Mono · scope: <strong>current state only</strong> — anything new lands here in the same PR that lands the code</p>
 
 </main>
 </body>

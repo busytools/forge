@@ -221,7 +221,7 @@ pub struct CacheBudgetEnforceStats {
     pub protected_bytes: usize,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AppStatus {
     /// Waiting for bridge adapter connection (TUI shown, input disabled).
     Connecting,

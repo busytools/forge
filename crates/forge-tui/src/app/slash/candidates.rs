@@ -150,14 +150,14 @@ pub(super) fn detect_slash_at_cursor(
 }
 
 fn advertised_commands(app: &App) -> Vec<String> {
-    app.available_commands.iter().map(|cmd| normalize_slash_name(&cmd.name)).collect()
+    app.available_commands().iter().map(|cmd| normalize_slash_name(&cmd.name)).collect()
 }
 
 pub(super) fn find_advertised_command<'a>(
     app: &'a App,
     command_name: &str,
 ) -> Option<&'a crate::agent::model::AvailableCommand> {
-    app.available_commands.iter().find(|cmd| normalize_slash_name(&cmd.name) == command_name)
+    app.available_commands().iter().find(|cmd| normalize_slash_name(&cmd.name) == command_name)
 }
 
 fn is_builtin_variable_input_command(command_name: &str) -> bool {
@@ -193,7 +193,7 @@ pub(super) fn supported_command_candidates(app: &App) -> Vec<SlashCandidate> {
     by_name.insert("/status".into(), "Show session status".into());
     by_name.insert("/usage".into(), "Open usage".into());
 
-    for cmd in &app.available_commands {
+    for cmd in app.available_commands() {
         let name = normalize_slash_name(&cmd.name);
         by_name.entry(name).or_insert_with(|| cmd.description.clone());
     }
@@ -321,8 +321,7 @@ pub(super) fn argument_candidates(
             })
             .collect(),
         "/mode" => app
-            .mode
-            .as_ref()
+            .mode()
             .map(|mode| {
                 mode.available_modes
                     .iter()
@@ -335,7 +334,7 @@ pub(super) fn argument_candidates(
             })
             .unwrap_or_default(),
         "/model" => app
-            .available_models
+            .available_models()
             .iter()
             .filter(|model| !is_sdk_default_model_option(model))
             .map(|model| SlashCandidate {

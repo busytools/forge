@@ -59,7 +59,7 @@ fn move_mcp_details_overlay_selection(app: &mut App, delta: isize) {
     let Some(overlay) = app.config.mcp_details_overlay().cloned() else {
         return;
     };
-    let Some(server) = app.mcp.servers.iter().find(|server| server.name == overlay.server_name)
+    let Some(server) = app.mcp().servers.iter().find(|server| server.name == overlay.server_name)
     else {
         return;
     };
@@ -78,7 +78,7 @@ fn execute_selected_mcp_overlay_action(app: &mut App) {
     let Some(overlay) = app.config.mcp_details_overlay().cloned() else {
         return;
     };
-    let Some(server) = app.mcp.servers.iter().find(|server| server.name == overlay.server_name)
+    let Some(server) = app.mcp().servers.iter().find(|server| server.name == overlay.server_name)
     else {
         app.config.overlay = None;
         return;

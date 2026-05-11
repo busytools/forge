@@ -2,9 +2,24 @@
 //!
 //! Uses OSC 2 escape sequences to update the terminal tab title with a simple
 //! busy toggle during active agent turns and a static idle icon otherwise.
+//!
+//! Emits an OSC 2 only when the computed title actually changes — the render
+//! loop calls `update_tab_title` every frame (~120 Hz during animation), and
+//! sending an identical sequence that often causes Ghostty (and likely other
+//! terminals) to coalesce or throttle title updates after a while, leaving the
+//! visible title stuck on a stale value. Caching the last-emitted title and
+//! short-circuiting on equality keeps OSC 2 traffic to actual transitions.
 
 use super::state::AppStatus;
+use std::cell::RefCell;
 use std::io::Write;
+
+thread_local! {
+    /// Last OSC 2 title actually sent. `update_tab_title` short-circuits
+    /// when the recomputed title matches; we only write to stdout on
+    /// actual change. Thread-local because the TUI runs on a single thread.
+    static LAST_TITLE: RefCell<Option<String>> = const { RefCell::new(None) };
+}
 
 const ACTIVE_CHARS: &[char] = &['\u{25C7}', '\u{25C6}'];
 const IDLE_CHAR: char = '\u{25CB}';
@@ -43,7 +58,17 @@ pub fn update_tab_title(status: &AppStatus, spinner_frame: usize, cwd: &str) {
         AppStatus::Ready | AppStatus::Error => format!("{IDLE_CHAR} {name}"),
     };
 
-    write_osc2_title(&title);
+    let changed = LAST_TITLE.with(|last| {
+        let mut last = last.borrow_mut();
+        if last.as_deref() == Some(title.as_str()) {
+            return false;
+        }
+        *last = Some(title.clone());
+        true
+    });
+    if changed {
+        write_osc2_title(&title);
+    }
 }
 
 fn pulse_char(spinner_frame: usize) -> char {

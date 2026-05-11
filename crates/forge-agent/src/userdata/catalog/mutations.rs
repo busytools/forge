@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-use forge_sdk::{Error, projects_dir};
+use forge_sdk::{Error, projects_dir_for};
 
 /// Outcome of a [`fork_session`] call.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -35,7 +35,12 @@ pub struct ForkSessionResult {
 ///   `title` is empty after trimming.
 /// - [`Error::Io`] when the session file can't be found or the append
 ///   fails.
-pub fn rename_session(session_id: &str, title: &str, directory: Option<&str>) -> Result<(), Error> {
+pub fn rename_session(
+    config_dir: &Path,
+    session_id: &str,
+    title: &str,
+    directory: Option<&str>,
+) -> Result<(), Error> {
     validate_uuid(session_id)?;
     let stripped = title.trim();
     if stripped.is_empty() {
@@ -46,7 +51,7 @@ pub fn rename_session(session_id: &str, title: &str, directory: Option<&str>) ->
         "customTitle": stripped,
         "sessionId": session_id,
     });
-    append_to_session(session_id, directory, &payload)
+    append_to_session(config_dir, session_id, directory, &payload)
 }
 
 /// Tag a session. Pass `None` to clear the tag (appends an empty-string
@@ -59,6 +64,7 @@ pub fn rename_session(session_id: &str, title: &str, directory: Option<&str>) ->
 /// - [`Error::Io`] when the session file can't be found or the append
 ///   fails.
 pub fn tag_session(
+    config_dir: &Path,
     session_id: &str,
     tag: Option<&str>,
     directory: Option<&str>,
@@ -79,7 +85,7 @@ pub fn tag_session(
         "tag": stored,
         "sessionId": session_id,
     });
-    append_to_session(session_id, directory, &payload)
+    append_to_session(config_dir, session_id, directory, &payload)
 }
 
 /// Delete a session — removes the `<session_id>.jsonl` file and any
@@ -89,9 +95,13 @@ pub fn tag_session(
 ///
 /// - [`Error::MessageParse`] when `session_id` is not a valid UUID.
 /// - [`Error::Io`] when the session file can't be found or removal fails.
-pub fn delete_session(session_id: &str, directory: Option<&str>) -> Result<(), Error> {
+pub fn delete_session(
+    config_dir: &Path,
+    session_id: &str,
+    directory: Option<&str>,
+) -> Result<(), Error> {
     validate_uuid(session_id)?;
-    let path = find_session_file(session_id, directory).ok_or_else(|| {
+    let path = find_session_file(config_dir, session_id, directory).ok_or_else(|| {
         Error::Io(std::io::Error::new(
             std::io::ErrorKind::NotFound,
             format!("session {session_id} not found"),
@@ -128,6 +138,7 @@ pub fn delete_session(session_id: &str, directory: Option<&str>) -> Result<(), E
 /// - [`Error::Io`] when the source file can't be found, is empty, or
 ///   the write fails.
 pub fn fork_session(
+    config_dir: &Path,
     session_id: &str,
     directory: Option<&str>,
     up_to_message_id: Option<&str>,
@@ -137,7 +148,7 @@ pub fn fork_session(
     if let Some(m) = up_to_message_id {
         validate_uuid(m)?;
     }
-    let source = find_session_file(session_id, directory).ok_or_else(|| {
+    let source = find_session_file(config_dir, session_id, directory).ok_or_else(|| {
         Error::Io(std::io::Error::new(
             std::io::ErrorKind::NotFound,
             format!("session {session_id} not found"),
@@ -277,29 +288,34 @@ fn validate_uuid(s: &str) -> Result<(), Error> {
     }
 }
 
-fn find_session_file(session_id: &str, directory: Option<&str>) -> Option<PathBuf> {
+fn find_session_file(
+    config_dir: &Path,
+    session_id: &str,
+    directory: Option<&str>,
+) -> Option<PathBuf> {
     let file_name = format!("{session_id}.jsonl");
     if let Some(dir) = directory {
         let canonical = match fs::canonicalize(dir) {
             Ok(p) => p.to_string_lossy().into_owned(),
             Err(_) => dir.to_string(),
         };
-        let project_dir =
-            projects_dir().join(crate::userdata::catalog::scan::sanitize_path_public(&canonical));
+        let project_dir = projects_dir_for(config_dir)
+            .join(crate::userdata::catalog::scan::sanitize_path_public(&canonical));
         let candidate = project_dir.join(&file_name);
         return candidate.is_file().then_some(candidate);
     }
-    fs::read_dir(projects_dir())
+    fs::read_dir(projects_dir_for(config_dir))
         .ok()
         .and_then(|iter| iter.flatten().map(|e| e.path().join(&file_name)).find(|p| p.is_file()))
 }
 
 fn append_to_session(
+    config_dir: &Path,
     session_id: &str,
     directory: Option<&str>,
     payload: &serde_json::Value,
 ) -> Result<(), Error> {
-    let path = find_session_file(session_id, directory).ok_or_else(|| {
+    let path = find_session_file(config_dir, session_id, directory).ok_or_else(|| {
         Error::Io(std::io::Error::new(
             std::io::ErrorKind::NotFound,
             format!("session {session_id} not found"),
@@ -413,29 +429,33 @@ mod tests {
 
     use super::*;
 
+    fn fake_config_dir() -> PathBuf {
+        PathBuf::from("/tmp/forge_mutations_test_cfg")
+    }
+
     #[test]
     fn invalid_uuid_is_rejected_on_rename() {
-        let r = rename_session("not-a-uuid", "title", None);
+        let r = rename_session(&fake_config_dir(), "not-a-uuid", "title", None);
         assert!(matches!(r, Err(Error::MessageParse { .. })));
     }
 
     #[test]
     fn empty_title_is_rejected() {
         let session_id = "550e8400-e29b-41d4-a716-446655440000";
-        let r = rename_session(session_id, "   ", None);
+        let r = rename_session(&fake_config_dir(), session_id, "   ", None);
         assert!(matches!(r, Err(Error::MessageParse { .. })));
     }
 
     #[test]
     fn empty_tag_is_rejected() {
         let session_id = "550e8400-e29b-41d4-a716-446655440001";
-        let r = tag_session(session_id, Some("   "), None);
+        let r = tag_session(&fake_config_dir(), session_id, Some("   "), None);
         assert!(matches!(r, Err(Error::MessageParse { .. })));
     }
 
     #[test]
     fn invalid_uuid_is_rejected_on_delete() {
-        let r = delete_session("not-a-uuid", None);
+        let r = delete_session(&fake_config_dir(), "not-a-uuid", None);
         assert!(matches!(r, Err(Error::MessageParse { .. })));
     }
 }

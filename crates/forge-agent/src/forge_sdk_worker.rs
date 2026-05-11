@@ -8,7 +8,7 @@
 //! The bridge owns the resulting `Client`; this module exposes the
 //! helpers it calls.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use forge_sdk::{
@@ -54,6 +54,8 @@ pub(crate) async fn spawn_session(
         );
     }
 
+    let config_dir = bridge.config_dir();
+    let display_name = bridge.display_name();
     let options = build_options_with_callback(
         cwd,
         resume_id,
@@ -62,6 +64,7 @@ pub(crate) async fn spawn_session(
         Arc::clone(bridge.inner_pending()),
         Arc::clone(bridge.inner_pending_questions()),
         Arc::clone(bridge.session_id_slot_arc()),
+        &config_dir,
     );
     let (client, events) = Client::spawn(options).await?;
     // For resume sessions the CLI flag carried the real session id —
@@ -77,24 +80,19 @@ pub(crate) async fn spawn_session(
     };
     bridge.session_id_slot_arc().lock().clone_from(&session_id);
 
-    let cwd_owned = match std::env::current_dir() {
-        Ok(p) => p.into_os_string().into_string().unwrap_or_else(|os| {
-            tracing::warn!(
-                target: crate::logging::targets::BRIDGE_LIFECYCLE,
-                cwd_lossy = %os.to_string_lossy(),
-                "cwd is not valid UTF-8; falling back to global session scope",
-            );
-            String::new()
-        }),
-        Err(e) => {
-            tracing::warn!(
-                target: crate::logging::targets::BRIDGE_LIFECYCLE,
-                error = %e,
-                "current_dir unavailable; falling back to global session scope",
-            );
-            String::new()
-        }
-    };
+    // Source of truth for the session's cwd is the caller. Phase 1a
+    // workspace flow always passes the forge.toml-derived project
+    // path; the in-session /resume flow (out of scope for 1a) needs
+    // to source the cwd from the session's transcript before calling
+    // here. An empty cwd is a caller-side bug; log it and pass through
+    // — no `current_dir()` fallback, because that would mask the bug.
+    if cwd.is_empty() {
+        tracing::warn!(
+            target: crate::logging::targets::BRIDGE_LIFECYCLE,
+            "spawn_session received empty cwd; session will lack working-directory scope (caller should pass forge.toml-derived path or session-recorded cwd)",
+        );
+    }
+    let cwd_owned = cwd.to_owned();
 
     // Install the client into the bridge BEFORE emitting Connected.
     // The TUI's Connected handler immediately fires command-channel
@@ -109,8 +107,17 @@ pub(crate) async fn spawn_session(
     // sees Connected first on its mpsc — otherwise the reader can
     // race and push an SdkMessage before Connected, leaving
     // `app.session_id` = None when the SdkMessage arrives.
-    emit_connected(bridge.event_tx(), &client, &session_id, &cwd_owned, launch_settings, resume_id)
-        .await;
+    emit_connected(
+        bridge.event_tx(),
+        &client,
+        &session_id,
+        &cwd_owned,
+        launch_settings,
+        resume_id,
+        &config_dir,
+        display_name.as_deref(),
+    )
+    .await;
 
     // Reader subtask — owns the events receiver. Client is the writer-side
     // handle (Arc-backed, Clone) and stays on the bridge.
@@ -122,6 +129,7 @@ pub(crate) async fn spawn_session(
 
 /// Build the typed `Connected` envelope from the SDK's cached init data
 /// + the initialize `control_response`, and emit it onto `event_tx`.
+#[allow(clippy::too_many_arguments)]
 async fn emit_connected(
     event_tx: &mpsc::UnboundedSender<AgentEvent>,
     client: &Client,
@@ -129,6 +137,8 @@ async fn emit_connected(
     cwd: &str,
     launch_settings: &crate::client::SessionLaunchSettings,
     resume_id: Option<&str>,
+    config_dir: &Path,
+    display_name: Option<&str>,
 ) {
     let server_info = client.get_server_info().cloned();
     let init_data = client.initial_session_data().cloned();
@@ -190,7 +200,7 @@ async fn emit_connected(
     });
 
     let history_updates = resume_id.and_then(|prev_session_id| {
-        let messages = load_history_messages(prev_session_id, cwd, session_id);
+        let messages = load_history_messages(config_dir, prev_session_id, cwd, session_id);
         if messages.is_empty() { None } else { Some(messages) }
     });
 
@@ -203,23 +213,32 @@ async fn emit_connected(
         history_updates,
     });
 
-    if let Some(account) =
-        client.account_info_from_init().or_else(crate::cloud::auth_status::account_info_from_shell)
+    if let Some(account) = client
+        .account_info_from_init()
+        .or_else(|| crate::cloud::auth_status::account_info_from_shell(config_dir))
     {
-        let _ = event_tx
-            .send(AgentEvent::StatusSnapshot { session_id: session_id.to_owned(), account });
+        let forge_account =
+            display_name.map(|d| forge_primitives::ForgeAccountIdentity::new(d.to_owned()));
+        let _ = event_tx.send(AgentEvent::StatusSnapshot {
+            session_id: session_id.to_owned(),
+            account,
+            forge_account,
+        });
     }
 
-    let _ = event_tx.send(AgentEvent::SessionsListed { sessions: list_recent_sessions(cwd).await });
+    let _ = event_tx
+        .send(AgentEvent::SessionsListed { sessions: list_recent_sessions(config_dir, cwd).await });
 }
 
 fn load_history_messages(
+    config_dir: &Path,
     prev_session_id: &str,
     cwd: &str,
     session_id: &str,
 ) -> Vec<forge_primitives::Message> {
     let dir = if cwd.is_empty() { None } else { Some(cwd.to_owned()) };
-    let messages = crate::userdata::catalog::scan::get_session_messages(prev_session_id, dir);
+    let messages =
+        crate::userdata::catalog::scan::get_session_messages(config_dir, prev_session_id, dir);
     let raw: Vec<serde_json::Value> = messages
         .into_iter()
         .map(|m| {
@@ -249,11 +268,14 @@ fn load_history_messages(
     synthesized
 }
 
-async fn list_recent_sessions(cwd: &str) -> Vec<forge_primitives::SessionListEntry> {
+async fn list_recent_sessions(
+    config_dir: &Path,
+    cwd: &str,
+) -> Vec<forge_primitives::SessionListEntry> {
     use forge_primitives::SessionListEntry;
     const MAX_RECENT: usize = 50;
     let dir = if cwd.is_empty() { None } else { Some(cwd.to_owned()) };
-    crate::userdata::catalog::scan::list_sessions(dir, Some(MAX_RECENT), 0)
+    crate::userdata::catalog::scan::list_sessions(config_dir, dir, Some(MAX_RECENT), 0)
         .await
         .into_iter()
         .map(|info| SessionListEntry {
@@ -371,6 +393,7 @@ fn build_options_with_callback(
     pending: PendingResponses,
     pending_questions: PendingQuestions,
     session_id_slot: Arc<parking_lot::Mutex<String>>,
+    config_dir: &Path,
 ) -> Options {
     // Observation hooks: passthrough callbacks that read CLI runtime
     // state out of every PreToolUse and UserPromptSubmit hook input
@@ -502,6 +525,13 @@ fn build_options_with_callback(
         }
     };
 
+    // Per-spawn `CLAUDE_CONFIG_DIR` — workspace-driven so each
+    // `claude` subprocess reads/writes the bound account's
+    // user-data tree (oauth tokens, projects history, settings).
+    // Threaded through as a typed `Path` from the bridge; no
+    // free-form HashMap of env vars at this layer.
+    b = b.env("CLAUDE_CONFIG_DIR", config_dir.to_string_lossy().to_string());
+
     tracing::info!(
         target: crate::logging::targets::BRIDGE_LIFECYCLE,
         event_name = "forge_sdk_options_built",
@@ -514,6 +544,7 @@ fn build_options_with_callback(
         effort_source,
         cwd_present = !cwd.is_empty(),
         resume_present = resume.is_some(),
+        config_dir = %config_dir.display(),
     );
     b.build()
 }

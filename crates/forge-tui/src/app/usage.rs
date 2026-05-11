@@ -29,14 +29,14 @@ pub(crate) fn request_refresh(app: &mut App) {
     apply_refresh_started(app);
 
     let event_tx = app.event_tx.clone();
-    let epoch = app.session_scope_epoch;
+    let epoch = app.session_scope_epoch();
     let source_mode = app.usage.active_source;
-    let cwd_raw = app.cwd_raw.clone();
+    let cwd_raw = app.cwd_raw().to_owned();
     // Optional — the CLI fallback path doesn't need a connection,
     // and tests sometimes drive the lifecycle without a bridge. The
     // OAuth path bails with a clear "no connection" error when conn
     // is None.
-    let conn = app.conn.clone();
+    let conn = app.conn().cloned();
 
     tokio::task::spawn_local(async move {
         let _ = event_tx.send(ClientEvent::UsageRefreshStarted { epoch });

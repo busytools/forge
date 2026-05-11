@@ -21,6 +21,8 @@
 //! succeeds, mapping `claude auth status`'s camelCase JSON into the
 //! `snake_case` struct.
 
+use std::path::Path;
+
 use serde::Deserialize;
 
 use forge_primitives::AccountInfo;
@@ -60,7 +62,12 @@ fn map_auth_method_to_api_key_source(auth_method: &str) -> &str {
 }
 
 /// Shell out to `claude auth status` and parse its JSON output into
-/// [`AccountInfo`]. Returns `None` when:
+/// [`AccountInfo`]. The `config_dir` is exported to the subprocess as
+/// `CLAUDE_CONFIG_DIR` so the spawned `claude` reads the bound
+/// account; the caller is the source of truth for which account this
+/// is.
+///
+/// Returns `None` when:
 ///
 /// - the `claude` binary is not on `$PATH`,
 /// - the subprocess exits non-zero,
@@ -78,8 +85,11 @@ fn map_auth_method_to_api_key_source(auth_method: &str) -> &str {
 /// Synchronous; runs the subprocess inline. ~50ms first call, faster
 /// thereafter (claude warms up its keychain reads in-process).
 #[must_use]
-pub fn account_info_from_shell() -> Option<AccountInfo> {
-    let output = std::process::Command::new("claude").args(["auth", "status"]).output().ok()?;
+pub fn account_info_from_shell(config_dir: &Path) -> Option<AccountInfo> {
+    let mut cmd = std::process::Command::new("claude");
+    cmd.args(["auth", "status"]);
+    cmd.env("CLAUDE_CONFIG_DIR", config_dir);
+    let output = cmd.output().ok()?;
     if !output.status.success() {
         return None;
     }

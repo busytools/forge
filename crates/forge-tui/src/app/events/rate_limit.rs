@@ -160,7 +160,7 @@ fn reset_bucket_from_epoch_secs(value: f64) -> Option<u64> {
 }
 
 pub(super) fn handle_rate_limit_update(app: &mut App, update: &model::RateLimitUpdate) {
-    app.last_rate_limit_update = Some(update.clone());
+    app.set_last_rate_limit_update(Some(update.clone()));
     tracing::debug!(
         target: crate::logging::targets::APP_SESSION,
         event_name = "rate_limit_update_applied",
@@ -213,13 +213,14 @@ pub(crate) fn maybe_recover_from_rate_limit_lock(app: &mut App) {
     if !matches!(app.status, AppStatus::Error) {
         return;
     }
-    let Some(update) = app.last_rate_limit_update.as_ref() else {
-        return;
+    let (status, resets_at) = match app.last_rate_limit_update() {
+        Some(update) => (update.status, update.resets_at),
+        None => return,
     };
-    if !matches!(update.status, model::RateLimitStatus::Rejected) {
+    if !matches!(status, model::RateLimitStatus::Rejected) {
         return;
     }
-    let Some(resets_at) = update.resets_at else {
+    let Some(resets_at) = resets_at else {
         return;
     };
     if !resets_at.is_finite() || resets_at <= 0.0 {
@@ -230,7 +231,7 @@ pub(crate) fn maybe_recover_from_rate_limit_lock(app: &mut App) {
         return;
     }
     // Window has passed — recover.
-    app.last_rate_limit_update = None;
+    app.set_last_rate_limit_update(None);
     app.status = AppStatus::Ready;
     app.exit_error = None;
     super::notices::clear_turn_notice_tracking(app);
@@ -252,12 +253,13 @@ pub(crate) fn handle_compaction_boundary_update(
     app: &mut App,
     boundary: model::CompactionBoundary,
 ) {
-    app.is_compacting = true;
+    app.set_is_compacting(true);
     if matches!(boundary.trigger, model::CompactionTrigger::Manual) {
-        app.pending_compact_clear = true;
+        app.set_pending_compact_clear(true);
     }
-    app.session_usage.last_compaction_trigger = Some(boundary.trigger);
-    app.session_usage.last_compaction_pre_tokens = Some(boundary.pre_tokens);
+    let usage = app.session_usage_mut();
+    usage.last_compaction_trigger = Some(boundary.trigger);
+    usage.last_compaction_pre_tokens = Some(boundary.pre_tokens);
     tracing::debug!(
         "CompactionBoundary: trigger={:?} pre_tokens={}",
         boundary.trigger,

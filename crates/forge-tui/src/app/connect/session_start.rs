@@ -130,7 +130,7 @@ fn log_session_request(
             outcome = "start",
             reason = reason.as_str(),
             session_id = %session_id,
-            cwd = %app.cwd_raw,
+            cwd = %app.cwd_raw(),
             has_language,
             has_settings,
             agent_progress_summaries_enabled,
@@ -142,7 +142,7 @@ fn log_session_request(
             message = "session request queued",
             outcome = "start",
             reason = reason.as_str(),
-            cwd = %app.cwd_raw,
+            cwd = %app.cwd_raw(),
             has_language,
             has_settings,
             agent_progress_summaries_enabled,
@@ -157,7 +157,7 @@ pub(crate) fn start_new_session(
 ) -> anyhow::Result<()> {
     let launch_settings = session_launch_settings_for_reason(app, reason);
     log_session_request(app, reason, &launch_settings, None);
-    conn.new_session(app.cwd_raw.clone(), launch_settings)
+    conn.new_session(app.cwd_raw().to_owned(), launch_settings)
 }
 
 pub(crate) fn resume_session(
@@ -167,7 +167,12 @@ pub(crate) fn resume_session(
 ) -> anyhow::Result<()> {
     let launch_settings = session_launch_settings_for_reason(app, SessionStartReason::Resume);
     log_session_request(app, SessionStartReason::Resume, &launch_settings, Some(&session_id));
-    conn.resume_session(session_id, launch_settings)
+    // `claude --resume` keys sessions off the subprocess's working
+    // directory; pass the current bucket's cwd so claude looks in the
+    // right project subdir. Empty cwd would inherit forge's `$PWD`,
+    // which for an in-session resume usually does not match the
+    // target project.
+    conn.resume_session(session_id, app.cwd_raw().to_owned(), launch_settings)
 }
 
 /// Begin a session resume by marking the target session and sending the command.
@@ -301,7 +306,7 @@ mod tests {
         assert_setting_value(&launch_settings, "alwaysThinkingEnabled", &Value::Bool(false));
         assert_permission_mode(&launch_settings, "default");
         assert_setting_value(&launch_settings, "fastMode", &Value::Bool(false));
-        assert_setting_value(&launch_settings, "effortLevel", &Value::String("medium".to_owned()));
+        assert_setting_value(&launch_settings, "effortLevel", &Value::String("max".to_owned()));
         assert_setting_value(&launch_settings, "outputStyle", &Value::String("Default".to_owned()));
         assert_setting_value(&launch_settings, "spinnerTipsEnabled", &Value::Bool(true));
         assert_setting_value(&launch_settings, "terminalProgressBarEnabled", &Value::Bool(true));

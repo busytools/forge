@@ -17,6 +17,7 @@
 //! because the field is documented inconsistently (sometimes ISO-8601,
 //! sometimes a numeric epoch).
 
+use std::path::Path;
 use std::time::Duration;
 
 use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue, USER_AGENT};
@@ -128,12 +129,16 @@ impl OauthUsageError {
 /// [`super::oauth_credentials::load_oauth_credentials`] for the
 /// resolution order).
 ///
+/// The caller (typically a `ForgeSdkBridge`) is the source of truth
+/// for `config_dir`; there is no fallback to a process-env-derived
+/// path.
+///
 /// # Errors
 ///
 /// Returns [`OauthUsageError`] when credentials are missing/expired,
 /// the HTTPS request fails, or the response can't be decoded.
-pub async fn oauth_usage() -> Result<OauthUsage, OauthUsageError> {
-    let credentials = load_oauth_credentials().ok_or(OauthUsageError::NoCredentials)?;
+pub async fn oauth_usage(config_dir: &Path) -> Result<OauthUsage, OauthUsageError> {
+    let credentials = load_oauth_credentials(config_dir).ok_or(OauthUsageError::NoCredentials)?;
 
     if credentials.expires_at.is_some_and(|expires_at| expires_at <= std::time::SystemTime::now()) {
         return Err(OauthUsageError::Expired);

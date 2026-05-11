@@ -84,8 +84,8 @@ pub fn system_message(subtype: &str, data: serde_json::Value) -> forge_primitive
 /// session-id guard accepts the envelope (`test_app()` defaults
 /// `session_id` to `None`).
 pub fn send_msg(app: &mut forge_tui::app::App, msg: forge_primitives::Message) {
-    if app.session_id.is_none() {
-        app.session_id = Some(model::SessionId::new("test-session"));
+    if app.session_id().is_none() {
+        app.set_session_id(Some(model::SessionId::new("test-session")));
     }
     send_client_event(
         app,

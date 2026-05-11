@@ -17,8 +17,8 @@ use crate::message_helpers::{
 };
 
 fn tool_call_block<'a>(app: &'a App, id: &str) -> &'a ToolCallInfo {
-    let (message_index, block_index) = app.tool_call_index[id];
-    app.messages
+    let (message_index, block_index) = app.lookup_tool_call(id).expect("missing tool index");
+    app.messages()
         .get(message_index)
         .and_then(|message| message.blocks.get(block_index))
         .and_then(|block| match block {
@@ -153,7 +153,7 @@ async fn task_tool_calls_leave_active_set_only_on_terminal_statuses() {
             serde_json::json!({"description": "Running subtask"}),
         )]),
     );
-    assert!(app.active_task_ids.contains("task-pend"), "new Task should be tracked");
+    assert!(app.active_task_ids().contains("task-pend"), "new Task should be tracked");
 
     // The wire path has no equivalent of the SessionUpdate-only
     // intermediate "Pending" status; resending an open tool_use keeps
@@ -166,10 +166,10 @@ async fn task_tool_calls_leave_active_set_only_on_terminal_statuses() {
             serde_json::json!({"description": "Running subtask"}),
         )]),
     );
-    assert!(app.active_task_ids.contains("task-pend"), "still in-progress should stay active");
+    assert!(app.active_task_ids().contains("task-pend"), "still in-progress should stay active");
 
     send_msg(&mut app, user_message(vec![tool_result_block("task-pend", serde_json::json!("ok"))]));
-    assert!(!app.active_task_ids.contains("task-pend"), "completed Task should be removed");
+    assert!(!app.active_task_ids().contains("task-pend"), "completed Task should be removed");
 
     send_msg(
         &mut app,
@@ -179,13 +179,13 @@ async fn task_tool_calls_leave_active_set_only_on_terminal_statuses() {
             serde_json::json!({"description": "Subtask"}),
         )]),
     );
-    assert!(app.active_task_ids.contains("task-fail"));
+    assert!(app.active_task_ids().contains("task-fail"));
 
     send_msg(
         &mut app,
         user_message(vec![tool_result_error_block("task-fail", serde_json::json!("bang"))]),
     );
-    assert!(!app.active_task_ids.contains("task-fail"), "failed Task should also be removed");
+    assert!(!app.active_task_ids().contains("task-fail"), "failed Task should also be removed");
 }
 
 #[tokio::test]
@@ -349,10 +349,10 @@ async fn multiple_tool_calls_independently_indexed() {
         );
     }
 
-    assert_eq!(app.tool_call_index.len(), 5);
+    assert_eq!(app.tool_call_index().len(), 5);
     for i in 0..5 {
         let key = format!("tc-{i}");
-        assert!(app.tool_call_index.contains_key(&key), "missing {key}");
+        assert!(app.tool_call_index().contains_key(&key), "missing {key}");
     }
 }
 
@@ -375,8 +375,8 @@ async fn tool_call_update_via_meta_sets_sdk_tool_name() {
         )]),
     );
 
-    let (mi, bi) = app.tool_call_index["tc-meta"];
-    if let MessageBlock::ToolCall(tc) = &app.messages[mi].blocks[bi] {
+    let (mi, bi) = app.lookup_tool_call("tc-meta").expect("missing tool index");
+    if let MessageBlock::ToolCall(tc) = &app.messages()[mi].blocks[bi] {
         assert_eq!(tc.sdk_tool_name, "WebSearch");
     } else {
         panic!("expected ToolCall block");
@@ -396,14 +396,14 @@ async fn todowrite_via_update_raw_input_parses_todos() {
     ]});
     send_msg(&mut app, assistant_message(vec![tool_use_block("tc-todo-up", "TodoWrite", raw)]));
 
-    assert_eq!(app.todos.len(), 1);
-    assert_eq!(app.todos[0].content, "Step 1");
+    assert_eq!(app.todos().len(), 1);
+    assert_eq!(app.todos()[0].content, "Step 1");
 }
 
 #[tokio::test]
 async fn title_shortened_relative_to_cwd() {
     let mut app = test_app();
-    app.cwd_raw = "/home/user/project".into();
+    app.set_cwd_raw("/home/user/project");
 
     send_msg(
         &mut app,
@@ -414,8 +414,8 @@ async fn title_shortened_relative_to_cwd() {
         )]),
     );
 
-    let (mi, bi) = app.tool_call_index["tc-shorten"];
-    if let MessageBlock::ToolCall(tc) = &app.messages[mi].blocks[bi] {
+    let (mi, bi) = app.lookup_tool_call("tc-shorten").expect("missing tool index");
+    if let MessageBlock::ToolCall(tc) = &app.messages()[mi].blocks[bi] {
         assert_eq!(tc.title, "Read src/main.rs", "absolute path shortened to relative");
     } else {
         panic!("expected ToolCall block");

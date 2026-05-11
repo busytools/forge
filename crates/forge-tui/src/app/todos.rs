@@ -31,29 +31,29 @@ pub(super) fn parse_todos_if_present(raw_input: &serde_json::Value) -> Option<Ve
 }
 
 pub(super) fn set_todos(app: &mut App, todos: Vec<TodoItem>) {
-    app.cached_todo_compact = None;
+    app.set_cached_todo_compact(None);
     if todos.is_empty() {
-        app.todos.clear();
-        app.show_todo_panel = false;
-        app.todo_scroll = 0;
-        app.todo_selected = 0;
+        app.todos_mut().clear();
+        app.set_show_todo_panel(false);
+        app.set_todo_scroll(0);
+        app.set_todo_selected(0);
         app.release_focus_target(FocusTarget::TodoList);
         return;
     }
 
     let all_done = todos.iter().all(|t| t.status == TodoStatus::Completed);
     if all_done {
-        app.todos.clear();
-        app.show_todo_panel = false;
-        app.todo_scroll = 0;
-        app.todo_selected = 0;
+        app.todos_mut().clear();
+        app.set_show_todo_panel(false);
+        app.set_todo_scroll(0);
+        app.set_todo_selected(0);
         app.release_focus_target(FocusTarget::TodoList);
     } else {
-        app.todos = todos;
-        if app.todo_selected >= app.todos.len() {
-            app.todo_selected = app.todos.len().saturating_sub(1);
+        *app.todos_mut() = todos;
+        if app.todo_selected() >= app.todos().len() {
+            app.set_todo_selected(app.todos().len().saturating_sub(1));
         }
-        if !app.show_todo_panel {
+        if !app.show_todo_panel() {
             app.release_focus_target(FocusTarget::TodoList);
         }
     }
@@ -61,7 +61,7 @@ pub(super) fn set_todos(app: &mut App, todos: Vec<TodoItem>) {
 
 /// Convert bridge plan entries into the local todo list.
 pub(super) fn apply_plan_todos(app: &mut App, plan: &model::Plan) {
-    app.cached_todo_compact = None;
+    app.set_cached_todo_compact(None);
     let mut todos = Vec::with_capacity(plan.entries.len());
     for entry in &plan.entries {
         let status_str = format!("{:?}", entry.status);
@@ -187,17 +187,17 @@ mod tests {
             vec![todo("done", TodoStatus::Completed), todo("done too", TodoStatus::Completed)],
         ] {
             let mut app = App::test_default();
-            app.show_todo_panel = true;
-            app.todo_scroll = 4;
-            app.todo_selected = 3;
+            app.set_show_todo_panel(true);
+            app.set_todo_scroll(4);
+            app.set_todo_selected(3);
             app.claim_focus_target(FocusTarget::TodoList);
 
             set_todos(&mut app, todos);
 
-            assert!(app.todos.is_empty());
-            assert!(!app.show_todo_panel);
-            assert_eq!(app.todo_scroll, 0);
-            assert_eq!(app.todo_selected, 0);
+            assert!(app.todos().is_empty());
+            assert!(!app.show_todo_panel());
+            assert_eq!(app.todo_scroll(), 0);
+            assert_eq!(app.todo_selected(), 0);
             assert_eq!(app.focus_owner(), crate::app::focus::FocusOwner::Input);
         }
     }
@@ -205,20 +205,21 @@ mod tests {
     #[test]
     fn set_todos_retains_visible_items_and_clamps_selection() {
         let mut app = App::test_default();
-        app.todos = vec![todo("old", TodoStatus::Pending), todo("old-2", TodoStatus::Pending)];
-        app.show_todo_panel = true;
-        app.todo_selected = 5;
+        *app.todos_mut() =
+            vec![todo("old", TodoStatus::Pending), todo("old-2", TodoStatus::Pending)];
+        app.set_show_todo_panel(true);
+        app.set_todo_selected(5);
 
         set_todos(
             &mut app,
             vec![todo("new-a", TodoStatus::Pending), todo("new-b", TodoStatus::InProgress)],
         );
 
-        assert_eq!(app.todos.len(), 2);
-        assert!(app.show_todo_panel);
-        assert_eq!(app.todo_selected, 1);
-        assert_eq!(app.todos[0].content, "new-a");
-        assert_eq!(app.todos[1].status, TodoStatus::InProgress);
+        assert_eq!(app.todos().len(), 2);
+        assert!(app.show_todo_panel());
+        assert_eq!(app.todo_selected(), 1);
+        assert_eq!(app.todos()[0].content, "new-a");
+        assert_eq!(app.todos()[1].status, TodoStatus::InProgress);
     }
 
     #[test]
@@ -239,9 +240,9 @@ mod tests {
 
         apply_plan_todos(&mut app, &active_plan);
 
-        assert_eq!(app.todos.len(), 2);
-        assert_eq!(app.todos[0].status, TodoStatus::Pending);
-        assert_eq!(app.todos[1].status, TodoStatus::InProgress);
+        assert_eq!(app.todos().len(), 2);
+        assert_eq!(app.todos()[0].status, TodoStatus::Pending);
+        assert_eq!(app.todos()[1].status, TodoStatus::InProgress);
 
         let completed_plan = model::Plan::new(vec![model::PlanEntry::new(
             "done",
@@ -251,7 +252,7 @@ mod tests {
 
         apply_plan_todos(&mut app, &completed_plan);
 
-        assert!(app.todos.is_empty());
-        assert!(!app.show_todo_panel);
+        assert!(app.todos().is_empty());
+        assert!(!app.show_todo_panel());
     }
 }

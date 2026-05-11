@@ -9,7 +9,7 @@ use forge_tui::app::{AppStatus, MessageBlock};
 use pretty_assertions::assert_eq;
 use tokio::sync::oneshot;
 
-use crate::helpers::{send_client_event, test_app};
+use crate::helpers::{active_session_key, send_client_event, test_app};
 use crate::message_helpers::{assistant_message, send_msg, text_block, tool_use_block};
 
 /// Helper: create a tool call, send it, then send a permission request for it.
@@ -52,12 +52,12 @@ async fn permission_request_attaches_to_tool_call() {
     let mut app = test_app();
     let _rx = setup_permission(&mut app, "tc-perm-1", allow_deny_options());
 
-    assert_eq!(app.pending_interaction_ids.len(), 1);
-    assert_eq!(app.pending_interaction_ids[0], "tc-perm-1");
+    assert_eq!(app.pending_interaction_ids().len(), 1);
+    assert_eq!(app.pending_interaction_ids()[0], "tc-perm-1");
 
     // The tool call should have a pending_permission
-    let (mi, bi) = app.tool_call_index["tc-perm-1"];
-    if let MessageBlock::ToolCall(tc) = &app.messages[mi].blocks[bi] {
+    let (mi, bi) = app.lookup_tool_call("tc-perm-1").expect("missing tool index");
+    if let MessageBlock::ToolCall(tc) = &app.messages()[mi].blocks[bi] {
         assert!(tc.pending_permission.is_some());
         let perm = tc.pending_permission.as_ref().unwrap();
         assert_eq!(perm.options.len(), 2);
@@ -71,9 +71,9 @@ async fn permission_request_attaches_to_tool_call() {
 #[tokio::test]
 async fn permission_request_enables_auto_scroll() {
     let mut app = test_app();
-    app.viewport.auto_scroll = false;
+    app.viewport_mut().auto_scroll = false;
     let _rx = setup_permission(&mut app, "tc-scroll", allow_deny_options());
-    assert!(app.viewport.auto_scroll, "permission request should enable auto_scroll");
+    assert!(app.viewport().auto_scroll, "permission request should enable auto_scroll");
 }
 
 // --- Permission for unknown tool call auto-rejects ---
@@ -91,7 +91,7 @@ async fn permission_for_unknown_tool_call_auto_rejects() {
     send_client_event(&mut app, ClientEvent::PermissionRequest { request, response_tx });
 
     // Should NOT be in pending queue
-    assert!(app.pending_interaction_ids.is_empty());
+    assert!(app.pending_interaction_ids().is_empty());
 
     // The response should have been sent (auto-reject with last option = "deny")
     let response = response_rx.try_recv();
@@ -112,17 +112,17 @@ async fn multiple_permissions_queue_in_order() {
     let _rx1 = setup_permission(&mut app, "tc-q1", allow_deny_options());
     let _rx2 = setup_permission(&mut app, "tc-q2", allow_deny_options());
 
-    assert_eq!(app.pending_interaction_ids.len(), 2);
-    assert_eq!(app.pending_interaction_ids[0], "tc-q1");
-    assert_eq!(app.pending_interaction_ids[1], "tc-q2");
+    assert_eq!(app.pending_interaction_ids().len(), 2);
+    assert_eq!(app.pending_interaction_ids()[0], "tc-q1");
+    assert_eq!(app.pending_interaction_ids()[1], "tc-q2");
 
     // First should be focused, second should not
-    let (mi1, bi1) = app.tool_call_index["tc-q1"];
-    if let MessageBlock::ToolCall(tc) = &app.messages[mi1].blocks[bi1] {
+    let (mi1, bi1) = app.lookup_tool_call("tc-q1").expect("missing tool index");
+    if let MessageBlock::ToolCall(tc) = &app.messages()[mi1].blocks[bi1] {
         assert!(tc.pending_permission.as_ref().unwrap().focused);
     }
-    let (mi2, bi2) = app.tool_call_index["tc-q2"];
-    if let MessageBlock::ToolCall(tc) = &app.messages[mi2].blocks[bi2] {
+    let (mi2, bi2) = app.lookup_tool_call("tc-q2").expect("missing tool index");
+    if let MessageBlock::ToolCall(tc) = &app.messages()[mi2].blocks[bi2] {
         assert!(!tc.pending_permission.as_ref().unwrap().focused);
     }
 }
@@ -142,7 +142,7 @@ async fn duplicate_permission_request_is_rejected_without_duplicate_queue_entry(
     );
     send_client_event(&mut app, ClientEvent::PermissionRequest { request, response_tx });
 
-    assert_eq!(app.pending_interaction_ids, vec!["tc-dup"]);
+    assert_eq!(app.pending_interaction_ids(), vec!["tc-dup"]);
     assert!(matches!(first_rx.try_recv(), Err(tokio::sync::oneshot::error::TryRecvError::Empty)));
 
     let resp = duplicate_rx.try_recv().expect("duplicate permission should be auto-rejected");
@@ -157,21 +157,21 @@ async fn duplicate_permission_request_is_rejected_without_duplicate_queue_entry(
 #[tokio::test]
 async fn scroll_target_preserved_across_text_chunks() {
     let mut app = test_app();
-    app.viewport.scroll_target = 42;
-    app.viewport.auto_scroll = false;
+    app.viewport_mut().scroll_target = 42;
+    app.viewport_mut().auto_scroll = false;
 
     send_msg(&mut app, assistant_message(vec![text_block("Some text")]));
 
     // Text chunks should NOT reset scroll when auto_scroll is off
-    assert_eq!(app.viewport.scroll_target, 42, "scroll_target should be preserved");
-    assert!(!app.viewport.auto_scroll, "auto_scroll should stay off");
+    assert_eq!(app.viewport().scroll_target, 42, "scroll_target should be preserved");
+    assert!(!app.viewport().auto_scroll, "auto_scroll should stay off");
 }
 
 #[tokio::test]
 async fn tool_call_does_not_change_scroll_when_auto_scroll_off() {
     let mut app = test_app();
-    app.viewport.scroll_target = 10;
-    app.viewport.auto_scroll = false;
+    app.viewport_mut().scroll_target = 10;
+    app.viewport_mut().auto_scroll = false;
 
     send_msg(
         &mut app,
@@ -182,8 +182,8 @@ async fn tool_call_does_not_change_scroll_when_auto_scroll_off() {
         )]),
     );
 
-    assert_eq!(app.viewport.scroll_target, 10, "tool calls shouldn't touch scroll_target");
-    assert!(!app.viewport.auto_scroll);
+    assert_eq!(app.viewport().scroll_target, 10, "tool calls shouldn't touch scroll_target");
+    assert!(!app.viewport().auto_scroll);
 }
 
 // --- TurnComplete transient state reset ---
@@ -192,16 +192,17 @@ async fn tool_call_does_not_change_scroll_when_auto_scroll_off() {
 async fn turn_complete_resets_transient_state() {
     let mut app = test_app();
     app.status = AppStatus::Running;
-    app.files_accessed = 5;
+    app.set_files_accessed(5);
     app.spinner_frame = 42;
 
-    send_client_event(&mut app, ClientEvent::TurnComplete { terminal_reason: None });
+    let session_key = active_session_key(&app);
+    send_client_event(&mut app, ClientEvent::TurnComplete { session_key, terminal_reason: None });
 
     assert!(matches!(app.status, AppStatus::Ready));
-    assert_eq!(app.files_accessed, 0, "files_accessed should reset");
+    assert_eq!(app.files_accessed(), 0, "files_accessed should reset");
     // spinner_frame is a UI detail, not reset by TurnComplete (it's driven by tick)
     // pending_interaction_ids should be empty (no permissions were pending)
-    assert!(app.pending_interaction_ids.is_empty());
+    assert!(app.pending_interaction_ids().is_empty());
 }
 
 #[tokio::test]
@@ -209,11 +210,12 @@ async fn turn_complete_does_not_clear_messages() {
     let mut app = test_app();
 
     send_msg(&mut app, assistant_message(vec![text_block("hello")]));
-    assert_eq!(app.messages.len(), 1);
+    assert_eq!(app.messages().len(), 1);
 
-    send_client_event(&mut app, ClientEvent::TurnComplete { terminal_reason: None });
+    let session_key = active_session_key(&app);
+    send_client_event(&mut app, ClientEvent::TurnComplete { session_key, terminal_reason: None });
 
-    assert_eq!(app.messages.len(), 1, "messages should persist across turns");
+    assert_eq!(app.messages().len(), 1, "messages should persist across turns");
 }
 
 #[tokio::test]
@@ -228,12 +230,13 @@ async fn turn_complete_does_not_clear_tool_call_index() {
             serde_json::json!({"file_path": "file"}),
         )]),
     );
-    assert!(app.tool_call_index.contains_key("tc-persist"));
+    assert!(app.tool_call_index().contains_key("tc-persist"));
 
-    send_client_event(&mut app, ClientEvent::TurnComplete { terminal_reason: None });
+    let session_key = active_session_key(&app);
+    send_client_event(&mut app, ClientEvent::TurnComplete { session_key, terminal_reason: None });
 
     assert!(
-        app.tool_call_index.contains_key("tc-persist"),
+        app.tool_call_index().contains_key("tc-persist"),
         "tool_call_index should persist across turns"
     );
 }
@@ -243,30 +246,32 @@ async fn turn_complete_does_not_clear_todos() {
     let mut app = test_app();
 
     // Simulate a TodoWrite by directly setting todos
-    app.todos = vec![forge_tui::app::TodoItem {
+    *app.todos_mut() = vec![forge_tui::app::TodoItem {
         content: "Test task".into(),
         status: forge_tui::app::TodoStatus::InProgress,
         active_form: "Testing".into(),
     }];
-    app.show_todo_panel = true;
+    app.set_show_todo_panel(true);
 
-    send_client_event(&mut app, ClientEvent::TurnComplete { terminal_reason: None });
+    let session_key = active_session_key(&app);
+    send_client_event(&mut app, ClientEvent::TurnComplete { session_key, terminal_reason: None });
 
-    assert_eq!(app.todos.len(), 1, "todos should persist across turns");
-    assert!(app.show_todo_panel, "todo panel state should persist");
+    assert_eq!(app.todos().len(), 1, "todos should persist across turns");
+    assert!(app.show_todo_panel(), "todo panel state should persist");
 }
 
 #[tokio::test]
 async fn turn_complete_does_not_affect_mode() {
     let mut app = test_app();
 
-    app.mode = Some(forge_tui::app::ModeState {
+    app.set_mode(Some(forge_tui::app::ModeState {
         current_mode_id: "plan".into(),
         current_mode_name: "Plan".into(),
         available_modes: vec![forge_tui::app::ModeInfo { id: "plan".into(), name: "Plan".into() }],
-    });
+    }));
 
-    send_client_event(&mut app, ClientEvent::TurnComplete { terminal_reason: None });
+    let session_key = active_session_key(&app);
+    send_client_event(&mut app, ClientEvent::TurnComplete { session_key, terminal_reason: None });
 
-    assert!(app.mode.is_some(), "mode should persist across turns");
+    assert!(app.mode().is_some(), "mode should persist across turns");
 }

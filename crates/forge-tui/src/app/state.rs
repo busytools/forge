@@ -2,7 +2,7 @@ pub mod block_cache;
 pub mod cache_metrics;
 mod history_retention;
 pub mod messages;
-mod render_budget;
+pub(crate) mod render_budget;
 pub mod tool_call_info;
 pub mod types;
 pub mod viewport;
@@ -45,7 +45,6 @@ use super::config::ConfigState;
 use super::dialog;
 use super::file_index;
 use super::focus::{FocusContext, FocusManager, FocusOwner, FocusTarget};
-use super::git_context::GitContextState;
 use super::inline_interactions::{clear_inline_interaction_focus, focus_next_inline_interaction};
 use super::input::{InputSnapshot, InputState, parse_paste_placeholder_before_cursor};
 use super::mention;
@@ -96,6 +95,79 @@ pub struct TurnNoticeRef {
     pub location: TurnNoticeLocation,
 }
 
+/// A click-targetable row in the Projects pane, stamped by
+/// [`crate::ui::projects_pane::render`] during paint and read by the
+/// mouse handler on click. Render-time-stamp pattern from PR #83
+/// (the same approach the per-tool-call expand/collapse uses).
+///
+/// `ProjectHeader` and `SessionRow` are y-only — they span the full
+/// pane width, so an x-coord doesn't add information. `TopBarIcon`
+/// and `OverlayClose` are x+y bounded — they target a specific glyph
+/// position on a one-row band shared with other content.
+#[derive(Debug, Clone)]
+pub enum PaneHitTarget {
+    /// Click on a project name row → switch active session to its
+    /// lead.
+    ProjectHeader { project_name: String, y: u16, height: u16 },
+    /// Click on a session row in the active project's drilldown →
+    /// switch active session to that specific session.
+    SessionRow { session_key: forge_workspace::SessionKey, y: u16, height: u16 },
+    /// Click on the `▤` icon in the Narrow-tier top bar → toggle
+    /// the projects overlay.
+    TopBarIcon { y: u16, height: u16, x_start: u16, x_end: u16 },
+    /// Click on the `✕` glyph in the overlay banner → close the
+    /// overlay without switching sessions.
+    OverlayClose { y: u16, height: u16, x_start: u16, x_end: u16 },
+    /// Click on the `×` glyph at the right edge of an active project
+    /// row → close that project's session (drop the bucket + tell
+    /// the workspace to release its pool entry so the underlying
+    /// `claude` subprocess can exit).
+    CloseSession {
+        session_key: forge_workspace::SessionKey,
+        y: u16,
+        height: u16,
+        x_start: u16,
+        x_end: u16,
+    },
+}
+
+impl PaneHitTarget {
+    /// Whether the target's row range covers `y` (inclusive of `y`,
+    /// exclusive of `y + height`). For full-width row targets
+    /// (`ProjectHeader`, `SessionRow`) this is the only check the
+    /// hit-tester needs; for x+y-bounded targets (`TopBarIcon`,
+    /// `OverlayClose`) call [`Self::contains`] instead so the column
+    /// constraint also applies.
+    #[must_use]
+    pub fn contains_y(&self, y: u16) -> bool {
+        let (start, height) = match self {
+            Self::ProjectHeader { y, height, .. }
+            | Self::SessionRow { y, height, .. }
+            | Self::TopBarIcon { y, height, .. }
+            | Self::OverlayClose { y, height, .. }
+            | Self::CloseSession { y, height, .. } => (*y, *height),
+        };
+        (start..start.saturating_add(height)).contains(&y)
+    }
+
+    /// Full hit-test (x + y). For full-width row targets the x
+    /// component is unconstrained; for x+y-bounded targets (top-bar
+    /// icon, overlay close, per-row close) the click must fall within
+    /// the recorded `[x_start, x_end)` range.
+    #[must_use]
+    pub fn contains(&self, x: u16, y: u16) -> bool {
+        if !self.contains_y(y) {
+            return false;
+        }
+        match self {
+            Self::ProjectHeader { .. } | Self::SessionRow { .. } => true,
+            Self::TopBarIcon { x_start, x_end, .. }
+            | Self::OverlayClose { x_start, x_end, .. }
+            | Self::CloseSession { x_start, x_end, .. } => (*x_start..*x_end).contains(&x),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ChatRenderTraceState {
     pub width: u16,
@@ -124,13 +196,6 @@ pub struct App {
     pub config: ConfigState,
     pub trust: TrustState,
     pub settings_home_override: Option<PathBuf>,
-    pub messages: Vec<ChatMessage>,
-    /// Cached approximate retained bytes for each message, parallel to `messages`.
-    pub message_retained_bytes: Vec<usize>,
-    /// Rolling total of `message_retained_bytes`.
-    pub retained_history_bytes: usize,
-    /// Single owner of all chat layout state: scroll, per-message heights, prefix sums.
-    pub viewport: ChatViewport,
     pub input: InputState,
     pub status: AppStatus,
     /// Session id currently being resumed via `/resume`.
@@ -142,23 +207,21 @@ pub struct App {
     pub should_quit: bool,
     /// Optional fatal app error that should be surfaced at CLI boundary.
     pub exit_error: Option<crate::error::AppError>,
-    pub session_id: Option<model::SessionId>,
-    /// Agent connection handle. `None` while connecting (before bridge is ready).
-    pub conn: Option<Rc<forge_agent::AgentHandle>>,
-    /// Monotonic session authority epoch used to ignore stale async view data.
-    pub session_scope_epoch: u64,
-    pub current_model: Option<model::CurrentModel>,
-    pub cwd: String,
-    pub cwd_raw: String,
-    pub files_accessed: usize,
-    pub mode: Option<ModeState>,
-    /// Latest config options observed from bridge `config_option_update` events.
-    pub config_options: BTreeMap<String, serde_json::Value>,
+    /// Multi-session orchestrator. Hands out `AgentHandle`s via
+    /// `get_agent_handle(SessionTarget::Default, ...)` at startup.
+    /// `None` only in test contexts (`App::test_default`); production
+    /// startup always populates this before construction.
+    pub workspace: Option<Rc<forge_workspace::Workspace>>,
+    /// Per-session state buckets, keyed by claude session UUID.
+    /// Phase 2a moves per-session fields off `App` into the
+    /// [`super::session::Session`] value type one bucket at a time.
+    pub sessions: std::collections::HashMap<forge_workspace::SessionKey, super::session::Session>,
+    /// Which entry of [`Self::sessions`] the renderer reads from.
+    /// `None` only in the brief pre-Connect window where no session
+    /// has landed in the map yet.
+    pub active_session_key: Option<forge_workspace::SessionKey>,
     /// Login hint shown when authentication is required. Rendered above the input field.
     pub login_hint: Option<LoginHint>,
-    /// When true, the current/next turn completion should clear local conversation history.
-    /// Set by `/compact` once the command is accepted for bridge forwarding.
-    pub pending_compact_clear: bool,
     /// Active help overlay view when `?` help is open.
     pub help_view: HelpView,
     /// Whether the help overlay is explicitly open.
@@ -168,15 +231,6 @@ pub struct App {
     /// Number of items that currently fit in the help viewport (updated each render).
     /// Used by key handlers for accurate scroll step size.
     pub help_visible_count: usize,
-    /// Tool call IDs with pending inline interactions, ordered by arrival.
-    /// The first entry is the focused interaction that receives keyboard input.
-    /// Up / Down arrow keys cycle focus through the list.
-    pub pending_interaction_ids: Vec<String>,
-    /// Set when a cancel notification succeeds; consumed on `TurnComplete`
-    /// to render a red interruption hint in chat.
-    pub cancelled_turn_pending_hint: bool,
-    /// Origin of the in-flight cancellation request, if any.
-    pub pending_cancel_origin: Option<CancelOrigin>,
     /// Auto-submit the current input draft once cancellation transitions the app
     /// back to `Ready`.
     pub pending_auto_submit_after_cancel: bool,
@@ -186,43 +240,38 @@ pub struct App {
     pub file_index_event_rx: std_mpsc::Receiver<file_index::FileIndexEvent>,
     pub spinner_frame: usize,
     pub spinner_last_advance_at: Option<Instant>,
-    /// Message index that owns the current main-assistant turn indicators.
-    pub active_turn_assistant_message_idx: Option<usize>,
     /// Session-level preference for collapsing non-Execute tool call bodies.
     /// Toggled by Ctrl+X and applied at render/layout time.
     pub tools_collapsed: bool,
-    /// IDs of root Task/Agent tool calls currently `InProgress`.
-    /// Use `insert_active_task()`, `remove_active_task()`.
-    pub active_task_ids: HashSet<String>,
-    /// Tool scope keyed by tool call ID; used to distinguish main-agent, subagent roots,
-    /// and explicitly owned subagent child tools.
-    pub tool_call_scopes: HashMap<String, ToolCallScope>,
-    /// Shared terminal process map - used to snapshot output on completion.
-    pub terminals: crate::agent::events::TerminalMap,
+    /// Whether the Wide-tier Projects pane is currently visible.
+    /// Toggled by Ctrl+B at Wide / Medium tiers; persisted to
+    /// `forge-state.toml`. Default `true`. Has no effect at Narrow
+    /// tier — that tier renders the top bar unconditionally and
+    /// uses [`Self::projects_pane_overlay_open`] for the on-demand
+    /// overlay.
+    pub projects_pane_visible: bool,
+    /// Whether the Narrow-tier Projects overlay is currently open.
+    /// Transient — NOT persisted; each launch starts closed. Toggled
+    /// by Ctrl+B at Narrow tier or by clicking the `▤` icon in the
+    /// top bar; closed by clicking the overlay's `✕` glyph, by Esc,
+    /// or by switching to a project / session row inside the overlay.
+    pub projects_pane_overlay_open: bool,
+    /// Click hit-targets stamped by
+    /// [`crate::ui::projects_pane::render`]. Cleared on each render
+    /// and refilled. The mouse handler iterates this to find what
+    /// was clicked. Render-time-stamp pattern from PR #83.
+    pub pane_hit_targets: Vec<PaneHitTarget>,
+    /// Last computed `AppLayout`, captured each frame so the mouse
+    /// handler has rect coordinates available for click math. The
+    /// Projects pane click path uses `layout.pane.contains(...)` to
+    /// gate the pane-aware hit-test.
+    pub layout: crate::ui::layout::AppLayout,
     /// Force a full terminal clear on next render frame.
     pub force_redraw: bool,
-    /// O(1) lookup: `tool_call_id` -> `(message_index, block_index)`.
-    /// Use `lookup_tool_call()`, `index_tool_call()`.
-    pub tool_call_index: HashMap<String, (usize, usize)>,
-    /// Current todo list from Claude's `TodoWrite` tool calls.
-    pub todos: Vec<TodoItem>,
-    /// Whether the todo panel is expanded (true) or shows compact status line (false).
-    /// Toggled by Ctrl+T.
-    pub show_todo_panel: bool,
-    /// Scroll offset for the expanded todo panel (capped at 5 visible lines).
-    pub todo_scroll: usize,
-    /// Selected todo index used for keyboard navigation in the open todo panel.
-    pub todo_selected: usize,
     /// Focus manager for directional/navigation key ownership.
     pub focus: FocusManager,
-    /// Commands advertised by the agent via `AvailableCommandsUpdate`.
-    pub available_commands: Vec<model::AvailableCommand>,
     /// Plugin inventory and UI state for the Config > Plugins view.
     pub plugins: PluginsState,
-    /// Subagents advertised by the agent via `AvailableAgentsUpdate`.
-    pub available_agents: Vec<model::AvailableAgent>,
-    /// Models advertised by the agent SDK for the active session.
-    pub available_models: Vec<model::AvailableModel>,
     /// Recently persisted session IDs discovered at startup.
     pub recent_sessions: Vec<RecentSessionInfo>,
     /// Selection state for the startup session picker screen.
@@ -273,64 +322,8 @@ pub struct App {
     /// consumed on submit. No cap on count — this is a developer tool, so
     /// users are trusted to attach as many images as they need.
     pub pending_images: Vec<crate::app::clipboard_image::ImageAttachment>,
-    /// Cached todo compact line (invalidated on `set_todos()`).
-    pub cached_todo_compact: Option<ratatui::text::Line<'static>>,
-    /// Git repo context used by footer/status rendering and live branch tracking.
-    pub(crate) git_context: GitContextState,
-    /// Session-wide usage and cost telemetry from the bridge.
-    pub session_usage: SessionUsageState,
     /// Config > Usage snapshot and refresh lifecycle.
     pub usage: UsageState,
-    /// Config > MCP live server snapshot and refresh lifecycle.
-    pub mcp: McpState,
-    /// Fast mode state telemetry from the SDK.
-    pub fast_mode_state: model::FastModeState,
-    /// Hook-observed permission mode. Updated from every PreToolUse /
-    /// UserPromptSubmit hook input — higher fidelity than the
-    /// `system/status` event-driven `mode` field, which goes stale when
-    /// the CLI changes mode without re-emitting status (#88). Mode chip
-    /// prefers this value when set.
-    pub observed_permission_mode: Option<crate::agent::state::PermissionMode>,
-    /// Hook-observed effort level. Same pattern as
-    /// `observed_permission_mode` — populated from hook inputs on CLI
-    /// 2.1.133+. Effort chip prefers this value when set.
-    pub observed_effort: Option<model::EffortLevel>,
-    /// Hook-observed sub-agent attribution: maps `tool_use_id` to the
-    /// sub-agent's typed identifier (e.g. `"general-purpose"`). Used
-    /// to label tool-call rows fired by sub-agents (#84 partial).
-    pub subagent_attribution: std::collections::HashMap<String, String>,
-    /// Most recent model id observed on a `Message::Assistant`
-    /// envelope. Higher-fidelity than `current_model.resolved_id` for
-    /// per-turn model verification.
-    pub observed_assistant_model: Option<String>,
-    /// Latest SDK runtime liveness state.
-    pub runtime_session_state: Option<model::RuntimeSessionState>,
-    /// Latest prompt suggestion from the SDK, shown in the input hint band.
-    pub prompt_suggestion: Option<String>,
-    /// Latest rate-limit telemetry from the SDK.
-    pub last_rate_limit_update: Option<model::RateLimitUpdate>,
-    /// Turn-local inline/system notices that may upgrade in place during the active turn.
-    pub turn_notice_refs: Vec<TurnNoticeRef>,
-    /// True while the SDK reports active compaction.
-    pub is_compacting: bool,
-    /// Account info from the bridge status snapshot (email, org, subscription).
-    pub account_info: Option<forge_primitives::AccountInfo>,
-    /// OAuth credentials snapshot from the bridge — populated at
-    /// session connect, refreshed after `/login` and `/logout` so
-    /// callers can ask "is the user authenticated?" without doing
-    /// their own filesystem walk to `<config_dir>/.credentials.json`.
-    pub oauth_credentials: Option<forge_agent::cloud::oauth_credentials::OauthCredentials>,
-
-    /// Per-session runtime state. The per-variant SDK message
-    /// handlers (`events::sdk_message::*`) populate + read these
-    /// fields. See `app/state/types.rs::SessionTurnState`.
-    pub turn_state: SessionTurnState,
-
-    /// Indexed terminal tool calls for per-frame terminal snapshot updates.
-    /// Avoids O(n*m) scan of all messages/blocks every frame.
-    pub terminal_tool_calls: Vec<TerminalToolCallRef>,
-    /// Membership index for `terminal_tool_calls`, used to avoid linear duplicate checks.
-    pub terminal_tool_call_membership: HashSet<TerminalToolCallRef>,
     /// Dirty flag: skip `terminal.draw()` when nothing changed since last frame.
     pub needs_redraw: bool,
     /// Central notification manager (bell + desktop toast when unfocused).
@@ -341,31 +334,10 @@ pub struct App {
     pub perf: Option<crate::perf::PerfLogger>,
     /// Global in-memory budget for rendered block and message caches.
     pub render_cache_budget: RenderCacheBudget,
-    /// Cached render-cache slot metadata parallel to `messages[*].blocks[*]`
-    /// plus one synthetic per-message slot at the tail of each row.
-    pub(crate) render_cache_slots: Vec<Vec<render_budget::RenderCacheSlotState>>,
-    /// Rolling total of cached render bytes across blocks and message-level caches.
-    pub(crate) render_cache_total_bytes: usize,
-    /// Rolling total of cached render bytes currently excluded from the budget.
-    pub(crate) render_cache_protected_bytes: usize,
-    /// Evictable cached blocks ordered by LRU and size tie-breaker.
-    pub(crate) render_cache_evictable: BTreeSet<render_budget::RenderCacheEvictionKey>,
-    /// Last message index currently protected as the streaming tail, if any.
-    pub(crate) render_cache_tail_msg_idx: Option<usize>,
-    /// Byte budget for source conversation history retained in memory.
-    pub history_retention: HistoryRetentionPolicy,
-    /// Last history-retention enforcement statistics.
-    pub history_retention_stats: HistoryRetentionStats,
-    /// Cross-cutting cache metrics accumulator (enforcement counts, watermarks, rate limits).
-    pub cache_metrics: CacheMetrics,
     /// Smoothed frames-per-second (EMA of presented frame cadence).
     pub fps_ema: Option<f32>,
     /// Timestamp of the previous presented frame.
     pub last_frame_at: Option<Instant>,
-    /// Last emitted chat render trace snapshot to suppress identical per-frame summaries.
-    pub last_chat_render_trace_state: Option<ChatRenderTraceState>,
-    /// Height-affecting active assistant indicator state from the previous frame.
-    pub(crate) last_active_turn_height_state: Option<(usize, bool, bool)>,
     pub startup_connection_requested: bool,
     pub connection_started: bool,
     pub startup_resume_id: Option<String>,
@@ -373,9 +345,1063 @@ pub struct App {
     pub startup_session_picker_requested: bool,
     pub startup_recent_sessions_loaded: bool,
     pub startup_session_picker_resolved: bool,
+    /// Project name from the CLI's positional `<PROJECT>` argument, if
+    /// any. `None` means open the `default = true` project.
+    /// Forwarded to [`forge_workspace::SessionTarget::Named`] when the
+    /// connection task spins up.
+    pub startup_project: Option<String>,
 }
 
 impl App {
+    // ---- Multi-session accessors (Phase 2a) ----
+
+    /// Synthetic session key used during the pre-Connect window
+    /// (test contexts and the brief startup interval before the
+    /// first `Connected` event lands). [`Self::set_session_id`]
+    /// migrates the bucket onto the real session key when the
+    /// claude-issued id arrives.
+    pub(crate) const PRE_CONNECT_KEY: &'static str = "__conn_pending__";
+
+    /// Returns a reference to the currently-active session bucket,
+    /// or `None` in the brief pre-Connect window before any session
+    /// has landed in [`Self::sessions`].
+    #[must_use]
+    pub fn active_session(&self) -> Option<&super::session::Session> {
+        self.active_session_key.as_ref().and_then(|key| self.sessions.get(key))
+    }
+
+    /// Mutable accessor for the active session bucket.
+    pub fn active_session_mut(&mut self) -> Option<&mut super::session::Session> {
+        let key = self.active_session_key.clone()?;
+        self.sessions.get_mut(&key)
+    }
+
+    /// Lookup a session by key (used by the event multiplexer to
+    /// route background-session events to their bucket).
+    pub fn session_mut(
+        &mut self,
+        key: &forge_workspace::SessionKey,
+    ) -> Option<&mut super::session::Session> {
+        self.sessions.get_mut(key)
+    }
+
+    /// Switch which session the renderer reads from. State on both
+    /// sides is preserved (in-memory buckets in `sessions`); the
+    /// next paint reflects the new active session. No-op if `key`
+    /// is already active or unknown.
+    pub fn switch_active_session(&mut self, key: forge_workspace::SessionKey) {
+        // Local helper: map a session's lifecycle state to the
+        // App-level status enum so a background turn that completed
+        // while the user was away doesn't leave a stale `Thinking` /
+        // `Running` status on switch-in.
+        fn status_for_lifecycle(
+            lifecycle: crate::app::session::SessionLifecycleState,
+        ) -> AppStatus {
+            use crate::app::session::SessionLifecycleState as L;
+            match lifecycle {
+                L::Spawning => AppStatus::Connecting,
+                L::Running => AppStatus::Running,
+                L::Sleeping | L::Idle | L::Attention => AppStatus::Ready,
+            }
+        }
+        if self.active_session_key.as_ref() == Some(&key) {
+            return;
+        }
+        if !self.sessions.contains_key(&key) {
+            tracing::warn!(
+                target: crate::logging::targets::APP_SESSION,
+                event_name = "switch_active_session_unknown_key",
+                key = ?key,
+                "switch_active_session called with unknown key"
+            );
+            return;
+        }
+
+        // Snapshot the outgoing session's per-session UI state into
+        // its bucket so a future switch back restores it. Without
+        // this, `app.input` and `app.status` persist across switches
+        // and bleed into the destination session — typing in A then
+        // switching to B leaves A's draft visible in B's input, and
+        // A's `Running`/`Thinking` status blocks every submit in B
+        // via `is_turn_busy`.
+        // Snapshot the outgoing session's input draft so a future
+        // switch back restores what the user was typing. `app.status`
+        // is derived freshly from the destination bucket's
+        // `lifecycle_state` instead of being snapshotted, so a
+        // background turn that completed while the user was away
+        // doesn't leave a stale `Thinking`/`Running` status on the
+        // incoming bucket.
+        let outgoing_draft = self.input.text();
+        if let Some(outgoing_key) = self.active_session_key.clone()
+            && let Some(outgoing) = self.sessions.get_mut(&outgoing_key)
+        {
+            outgoing.draft_input = outgoing_draft;
+        }
+
+        let (incoming_draft, incoming_lifecycle) = self
+            .sessions
+            .get(&key)
+            .map_or((String::new(), crate::app::session::SessionLifecycleState::Idle), |s| {
+                (s.draft_input.clone(), s.lifecycle_state)
+            });
+        self.active_session_key = Some(key);
+        self.input.clear();
+        if !incoming_draft.is_empty() {
+            self.input.set_text(&incoming_draft);
+        }
+        self.status = status_for_lifecycle(incoming_lifecycle);
+        // Update terminal/tab title immediately on switch so the host
+        // terminal reflects the project the user just selected. The
+        // render-loop's tab-title call (in `app::run`) only fires
+        // every animating frame or on explicit `needs_redraw`
+        // transitions; some terminals coalesce/debounce OSC 2 titles
+        // when fired close together, so calling here directly with
+        // the incoming bucket's cwd guarantees one canonical update
+        // per switch.
+        crate::app::tab_title::update_tab_title(&self.status, self.spinner_frame, self.cwd());
+        self.force_redraw = true;
+        self.needs_redraw = true;
+    }
+
+    /// Borrow the active session's chat buffer.
+    ///
+    /// Production startup and `App::test_default()` both seed a
+    /// pre-Connect bucket so the active session is always populated.
+    /// On the off chance the invariant is violated we log and return
+    /// a static empty slice so call sites stay infallible.
+    #[must_use]
+    pub fn messages(&self) -> &[ChatMessage] {
+        self.active_session().map_or(&[], |s| s.messages.as_slice())
+    }
+
+    /// Mutable borrow of the active session's chat buffer.
+    ///
+    /// Returns a mutable reference to the active bucket's `messages`
+    /// vector. Auto-creates the pre-Connect bucket if the active
+    /// session is missing, so call sites don't need to guard.
+    #[must_use]
+    pub fn messages_mut(&mut self) -> &mut Vec<ChatMessage> {
+        &mut self.active_or_synthetic_mut().messages
+    }
+
+    /// Borrow the parallel `message_retained_bytes` cache.
+    #[must_use]
+    pub fn message_retained_bytes(&self) -> &[usize] {
+        self.active_session().map_or(&[], |s| s.message_retained_bytes.as_slice())
+    }
+
+    /// Mutable borrow of the `message_retained_bytes` cache.
+    #[must_use]
+    pub fn message_retained_bytes_mut(&mut self) -> &mut Vec<usize> {
+        &mut self.active_or_synthetic_mut().message_retained_bytes
+    }
+
+    /// Active session's rolling retained-history byte total.
+    #[must_use]
+    pub fn retained_history_bytes(&self) -> usize {
+        self.active_session().map_or(0, |s| s.retained_history_bytes)
+    }
+
+    /// Mutable accessor for the rolling retained-history byte total.
+    #[must_use]
+    pub fn retained_history_bytes_mut(&mut self) -> &mut usize {
+        &mut self.active_or_synthetic_mut().retained_history_bytes
+    }
+
+    /// Borrow the active session's chat viewport.
+    ///
+    /// Falls back to a leaked default viewport if the active bucket
+    /// is missing — the production startup path always seeds one,
+    /// so the fallback is a safety net rather than a hot path.
+    #[must_use]
+    pub fn viewport(&self) -> &ChatViewport {
+        static FALLBACK: std::sync::OnceLock<ChatViewport> = std::sync::OnceLock::new();
+        match self.active_session() {
+            Some(s) => &s.viewport,
+            None => FALLBACK.get_or_init(ChatViewport::new),
+        }
+    }
+
+    /// Mutable accessor for the active session's chat viewport.
+    /// Auto-creates the pre-Connect bucket if missing.
+    #[must_use]
+    pub fn viewport_mut(&mut self) -> &mut ChatViewport {
+        &mut self.active_or_synthetic_mut().viewport
+    }
+
+    /// Active session's main-assistant turn message index.
+    #[must_use]
+    pub fn active_turn_assistant_message_idx(&self) -> Option<usize> {
+        self.active_session().and_then(|s| s.active_turn_assistant_message_idx)
+    }
+
+    /// Set the active session's main-assistant turn message index.
+    pub fn set_active_turn_assistant_message_idx(&mut self, idx: Option<usize>) {
+        self.active_or_synthetic_mut().active_turn_assistant_message_idx = idx;
+    }
+
+    /// Internal helper: yield a `&mut Session` for the active bucket,
+    /// auto-creating a pre-Connect synthetic bucket if no active
+    /// session exists. Used by the `_mut` accessors so call sites
+    /// can stay infallible.
+    ///
+    /// Hot path: chat render and ~50 other `_mut` accessors hit this
+    /// per frame. Uses the `HashMap::entry` API to avoid the extra
+    /// `SessionKey` clone an `if !contains { insert }` shape would
+    /// need.
+    fn active_or_synthetic_mut(&mut self) -> &mut super::session::Session {
+        use std::collections::hash_map::Entry;
+        // The active key is normally already set; the synthetic
+        // fallback is the cold first-touch path.
+        let key = if let Some(key) = self.active_session_key.clone() {
+            key
+        } else {
+            let synthetic = forge_workspace::SessionKey::from_session_id(Self::PRE_CONNECT_KEY);
+            self.active_session_key = Some(synthetic.clone());
+            synthetic
+        };
+        match self.sessions.entry(key) {
+            Entry::Occupied(e) => e.into_mut(),
+            Entry::Vacant(e) => {
+                let new = super::session::Session::new(e.key().clone());
+                e.insert(new)
+            }
+        }
+    }
+
+    /// Active session's claude session id, or `None` in the
+    /// pre-Connect window.
+    #[must_use]
+    pub fn session_id(&self) -> Option<&model::SessionId> {
+        self.active_session().and_then(|s| s.session_id.as_ref())
+    }
+
+    /// Set the active session's session_id. Ensures the sessions
+    /// map has an entry keyed by the id; sets `active_session_key`
+    /// to that entry.
+    ///
+    /// `id = None` clears the active bucket's `session_id` and
+    /// `key` fields but leaves the bucket attached to
+    /// `active_session_key`. The active-path event handlers
+    /// (`auth_required`, `connection_failed`) call this from inside
+    /// a longer cleanup sequence that still needs to write into the
+    /// active bucket — finalizing in-flight tool calls to Failed,
+    /// pushing system messages — so the user can see what happened.
+    /// Removing the bucket here would orphan that work into a
+    /// freshly-minted pre-Connect bucket.
+    ///
+    /// If a synthetic-keyed bucket exists (from an earlier
+    /// `set_conn` before `set_session_id` — test ordering),
+    /// migrates that bucket's contents to the real key so the conn
+    /// + session_id end up on the same bucket.
+    ///
+    /// Phase 1b leak guard: when `active_session_key` was previously
+    /// `None` (Connect-after-failure path), sweeps stale buckets
+    /// from earlier disconnect cycles. The SessionReplaced and other
+    /// end-of-life paths still leak their previous bucket — Phase
+    /// 2b will tighten those once background-session reachability
+    /// rules are nailed down.
+    pub fn set_session_id(&mut self, id: Option<model::SessionId>) {
+        match id {
+            Some(id) => {
+                let prev_active_was_none = self.active_session_key.is_none();
+                let key = forge_workspace::SessionKey::from_session_id(id.to_string());
+                // Migrate any synthetic-keyed bucket onto the real key.
+                // Guard against the case where BOTH a synthetic bucket
+                // and the real-key bucket already exist: in that case
+                // the real bucket is authoritative, and we must NOT
+                // overwrite it with the synthetic. Stamp the real
+                // bucket's session_id and drop the synthetic.
+                let pending = forge_workspace::SessionKey::from_session_id(Self::PRE_CONNECT_KEY);
+                if let Some(mut existing) = self.sessions.remove(&pending) {
+                    if self.sessions.contains_key(&key) {
+                        tracing::warn!(
+                            target: crate::logging::targets::APP_SESSION,
+                            event_name = "set_session_id_synthetic_dropped",
+                            message = "synthetic pre-Connect bucket dropped because the real-key bucket already existed",
+                            outcome = "dropped",
+                            session_id = %id,
+                            reason = "real_bucket_present",
+                        );
+                        if let Some(real_bucket) = self.sessions.get_mut(&key) {
+                            real_bucket.session_id = Some(id);
+                        }
+                        // existing (synthetic) is dropped at end of branch.
+                        let _ = existing;
+                    } else {
+                        existing.key = Some(key.clone());
+                        existing.session_id = Some(id);
+                        self.sessions.insert(key.clone(), existing);
+                    }
+                } else {
+                    let entry = self
+                        .sessions
+                        .entry(key.clone())
+                        .or_insert_with(|| super::session::Session::new(key.clone()));
+                    entry.session_id = Some(id);
+                }
+                self.active_session_key = Some(key.clone());
+                // Connect-after-failure cleanup: when no session was
+                // active before this call, sweep stale buckets that
+                // accumulated across earlier disconnect cycles.
+                if prev_active_was_none {
+                    self.sessions.retain(|k, _| *k == key);
+                }
+            }
+            None => {
+                // Clear the bucket's session-id slot AND the bucket's
+                // own `key` field so it stops advertising the
+                // now-stale id (the next `set_session_id(Some(...))`
+                // re-stamps both). Keep the bucket attached to
+                // `active_session_key` so the active-path handler
+                // can keep writing into it (failed tool calls,
+                // system messages — see doc comment above).
+                if let Some(s) = self.active_session_mut() {
+                    s.session_id = None;
+                    s.key = None;
+                }
+            }
+        }
+    }
+
+    /// Active session's agent connection handle.
+    #[must_use]
+    pub fn conn(&self) -> Option<&std::sync::Arc<forge_agent::AgentHandle>> {
+        self.active_session().and_then(|s| s.conn.as_ref())
+    }
+
+    /// Set the active session's connection handle. Auto-creates
+    /// a session bucket with a synthetic key if no active session
+    /// exists yet — needed for tests that wire `set_conn` before
+    /// `set_session_id`. Production code calls these in
+    /// chronological order (Connected event fires both with the
+    /// real session_id), so the synthetic-key path is test-only.
+    pub fn set_conn(&mut self, conn: Option<std::sync::Arc<forge_agent::AgentHandle>>) {
+        if self.active_session_key.is_none() && conn.is_some() {
+            let key = forge_workspace::SessionKey::from_session_id(Self::PRE_CONNECT_KEY);
+            self.sessions
+                .entry(key.clone())
+                .or_insert_with(|| super::session::Session::new(key.clone()));
+            self.active_session_key = Some(key);
+        }
+        if let Some(s) = self.active_session_mut() {
+            s.conn = conn;
+        }
+    }
+
+    /// Active session's monotonic scope epoch.
+    #[must_use]
+    pub fn session_scope_epoch(&self) -> u64 {
+        self.active_session().map_or(0, |s| s.session_scope_epoch)
+    }
+
+    /// Increment the active session's scope epoch.
+    pub fn bump_session_scope_epoch(&mut self) {
+        if let Some(s) = self.active_session_mut() {
+            s.session_scope_epoch = s.session_scope_epoch.saturating_add(1);
+        }
+    }
+
+    // ---- Turn lifecycle accessors ----
+
+    /// Borrow the active session's turn state.
+    ///
+    /// Falls back to a leaked default for the brief pre-Connect
+    /// window. Production startup seeds a synthetic bucket up front,
+    /// so the fallback is a safety net rather than a hot path.
+    #[must_use]
+    pub fn turn_state(&self) -> &SessionTurnState {
+        static FALLBACK: std::sync::OnceLock<SessionTurnState> = std::sync::OnceLock::new();
+        match self.active_session() {
+            Some(s) => &s.turn_state,
+            None => FALLBACK.get_or_init(SessionTurnState::default),
+        }
+    }
+
+    /// Mutable borrow of the active session's turn state.
+    /// Auto-creates the pre-Connect bucket if missing.
+    #[must_use]
+    pub fn turn_state_mut(&mut self) -> &mut SessionTurnState {
+        &mut self.active_or_synthetic_mut().turn_state
+    }
+
+    /// Active session's `is_compacting` flag.
+    #[must_use]
+    pub fn is_compacting(&self) -> bool {
+        self.active_session().is_some_and(|s| s.is_compacting)
+    }
+
+    /// Set the active session's `is_compacting` flag.
+    pub fn set_is_compacting(&mut self, value: bool) {
+        self.active_or_synthetic_mut().is_compacting = value;
+    }
+
+    /// Active session's `pending_compact_clear` flag.
+    #[must_use]
+    pub fn pending_compact_clear(&self) -> bool {
+        self.active_session().is_some_and(|s| s.pending_compact_clear)
+    }
+
+    /// Set the active session's `pending_compact_clear` flag.
+    pub fn set_pending_compact_clear(&mut self, value: bool) {
+        self.active_or_synthetic_mut().pending_compact_clear = value;
+    }
+
+    /// Borrow the active session's pending interaction id list.
+    #[must_use]
+    pub fn pending_interaction_ids(&self) -> &[String] {
+        self.active_session().map_or(&[], |s| s.pending_interaction_ids.as_slice())
+    }
+
+    /// Mutable borrow of the pending interaction id list.
+    #[must_use]
+    pub fn pending_interaction_ids_mut(&mut self) -> &mut Vec<String> {
+        &mut self.active_or_synthetic_mut().pending_interaction_ids
+    }
+
+    /// Active session's cancelled-turn pending hint flag.
+    #[must_use]
+    pub fn cancelled_turn_pending_hint(&self) -> bool {
+        self.active_session().is_some_and(|s| s.cancelled_turn_pending_hint)
+    }
+
+    /// Set the active session's cancelled-turn pending hint flag.
+    pub fn set_cancelled_turn_pending_hint(&mut self, value: bool) {
+        self.active_or_synthetic_mut().cancelled_turn_pending_hint = value;
+    }
+
+    /// Active session's pending cancel origin.
+    #[must_use]
+    pub fn pending_cancel_origin(&self) -> Option<CancelOrigin> {
+        self.active_session().and_then(|s| s.pending_cancel_origin)
+    }
+
+    /// Set the active session's pending cancel origin.
+    pub fn set_pending_cancel_origin(&mut self, value: Option<CancelOrigin>) {
+        self.active_or_synthetic_mut().pending_cancel_origin = value;
+    }
+
+    /// Borrow the active session's prompt suggestion.
+    #[must_use]
+    pub fn prompt_suggestion(&self) -> Option<&str> {
+        self.active_session().and_then(|s| s.prompt_suggestion.as_deref())
+    }
+
+    /// Set the active session's prompt suggestion.
+    pub fn set_prompt_suggestion(&mut self, value: Option<String>) {
+        self.active_or_synthetic_mut().prompt_suggestion = value;
+    }
+
+    /// Borrow the active session's last rate-limit update.
+    #[must_use]
+    pub fn last_rate_limit_update(&self) -> Option<&model::RateLimitUpdate> {
+        self.active_session().and_then(|s| s.last_rate_limit_update.as_ref())
+    }
+
+    /// Set the active session's last rate-limit update.
+    pub fn set_last_rate_limit_update(&mut self, value: Option<model::RateLimitUpdate>) {
+        self.active_or_synthetic_mut().last_rate_limit_update = value;
+    }
+
+    /// Borrow the active session's turn notice ref list.
+    #[must_use]
+    pub fn turn_notice_refs(&self) -> &[TurnNoticeRef] {
+        self.active_session().map_or(&[], |s| s.turn_notice_refs.as_slice())
+    }
+
+    /// Mutable borrow of the turn notice ref list.
+    #[must_use]
+    pub fn turn_notice_refs_mut(&mut self) -> &mut Vec<TurnNoticeRef> {
+        &mut self.active_or_synthetic_mut().turn_notice_refs
+    }
+
+    // ---- Tool tracking accessors ----
+
+    /// Borrow the active session's active task id set.
+    ///
+    /// Falls back to a leaked empty set when the active bucket is
+    /// missing — matches the existing infallible-reader pattern
+    /// (`viewport()`, `turn_state()`, …).
+    #[must_use]
+    pub fn active_task_ids(&self) -> &HashSet<String> {
+        static FALLBACK: std::sync::OnceLock<HashSet<String>> = std::sync::OnceLock::new();
+        match self.active_session() {
+            Some(s) => &s.active_task_ids,
+            None => FALLBACK.get_or_init(HashSet::new),
+        }
+    }
+
+    /// Mutable borrow of the active task id set.
+    #[must_use]
+    pub fn active_task_ids_mut(&mut self) -> &mut HashSet<String> {
+        &mut self.active_or_synthetic_mut().active_task_ids
+    }
+
+    /// Borrow the active session's tool call scope map.
+    #[must_use]
+    pub fn tool_call_scopes(&self) -> &HashMap<String, ToolCallScope> {
+        static FALLBACK: std::sync::OnceLock<HashMap<String, ToolCallScope>> =
+            std::sync::OnceLock::new();
+        match self.active_session() {
+            Some(s) => &s.tool_call_scopes,
+            None => FALLBACK.get_or_init(HashMap::new),
+        }
+    }
+
+    /// Mutable borrow of the tool call scope map.
+    #[must_use]
+    pub fn tool_call_scopes_mut(&mut self) -> &mut HashMap<String, ToolCallScope> {
+        &mut self.active_or_synthetic_mut().tool_call_scopes
+    }
+
+    /// Borrow the active session's tool call index.
+    #[must_use]
+    pub fn tool_call_index(&self) -> &HashMap<String, (usize, usize)> {
+        static FALLBACK: std::sync::OnceLock<HashMap<String, (usize, usize)>> =
+            std::sync::OnceLock::new();
+        match self.active_session() {
+            Some(s) => &s.tool_call_index,
+            None => FALLBACK.get_or_init(HashMap::new),
+        }
+    }
+
+    /// Mutable borrow of the tool call index.
+    #[must_use]
+    pub fn tool_call_index_mut(&mut self) -> &mut HashMap<String, (usize, usize)> {
+        &mut self.active_or_synthetic_mut().tool_call_index
+    }
+
+    /// Borrow the active session's terminal map (a shared
+    /// `Rc<RefCell<...>>`).
+    ///
+    /// Returns `None` only in the brief pre-Connect window where no
+    /// session bucket exists. Stays fallible because `TerminalMap`
+    /// (`Rc<RefCell<...>>`) is `!Send + !Sync`, so a `OnceLock`
+    /// fallback (the pattern used by the other infallible readers)
+    /// won't compile. Both `App::test_default()` and `connect()`
+    /// seed a bucket up front so production callers can treat this
+    /// as effectively always-`Some`.
+    #[must_use]
+    pub fn terminals(&self) -> Option<&crate::agent::events::TerminalMap> {
+        self.active_session().map(|s| &s.terminals)
+    }
+
+    /// Mutable borrow of the active session's terminal map.
+    /// Auto-creates the pre-Connect bucket if missing.
+    #[must_use]
+    pub fn terminals_mut(&mut self) -> &mut crate::agent::events::TerminalMap {
+        &mut self.active_or_synthetic_mut().terminals
+    }
+
+    /// Borrow the active session's terminal tool call list.
+    #[must_use]
+    pub fn terminal_tool_calls(&self) -> &[TerminalToolCallRef] {
+        self.active_session().map_or(&[], |s| s.terminal_tool_calls.as_slice())
+    }
+
+    /// Mutable borrow of the terminal tool call list.
+    #[must_use]
+    pub fn terminal_tool_calls_mut(&mut self) -> &mut Vec<TerminalToolCallRef> {
+        &mut self.active_or_synthetic_mut().terminal_tool_calls
+    }
+
+    /// Borrow the active session's terminal tool call membership
+    /// set.
+    #[must_use]
+    pub fn terminal_tool_call_membership(&self) -> &HashSet<TerminalToolCallRef> {
+        static FALLBACK: std::sync::OnceLock<HashSet<TerminalToolCallRef>> =
+            std::sync::OnceLock::new();
+        match self.active_session() {
+            Some(s) => &s.terminal_tool_call_membership,
+            None => FALLBACK.get_or_init(HashSet::new),
+        }
+    }
+
+    /// Mutable borrow of the terminal tool call membership set.
+    #[must_use]
+    pub fn terminal_tool_call_membership_mut(&mut self) -> &mut HashSet<TerminalToolCallRef> {
+        &mut self.active_or_synthetic_mut().terminal_tool_call_membership
+    }
+
+    /// Borrow the active session's subagent attribution map.
+    #[must_use]
+    pub fn subagent_attribution(&self) -> &HashMap<String, String> {
+        static FALLBACK: std::sync::OnceLock<HashMap<String, String>> = std::sync::OnceLock::new();
+        match self.active_session() {
+            Some(s) => &s.subagent_attribution,
+            None => FALLBACK.get_or_init(HashMap::new),
+        }
+    }
+
+    /// Mutable borrow of the subagent attribution map.
+    #[must_use]
+    pub fn subagent_attribution_mut(&mut self) -> &mut HashMap<String, String> {
+        &mut self.active_or_synthetic_mut().subagent_attribution
+    }
+
+    // ---- Runtime + model accessors ----
+
+    /// Borrow the active session's current model resolution.
+    #[must_use]
+    pub fn current_model(&self) -> Option<&model::CurrentModel> {
+        self.active_session().and_then(|s| s.current_model.as_ref())
+    }
+
+    /// Set the active session's current model resolution.
+    pub fn set_current_model(&mut self, value: Option<model::CurrentModel>) {
+        self.active_or_synthetic_mut().current_model = value;
+    }
+
+    /// Mutable borrow of the active session's current model.
+    #[must_use]
+    pub fn current_model_mut(&mut self) -> Option<&mut model::CurrentModel> {
+        self.active_or_synthetic_mut().current_model.as_mut()
+    }
+
+    /// Borrow the active session's available-models list.
+    #[must_use]
+    pub fn available_models(&self) -> &[model::AvailableModel] {
+        self.active_session().map_or(&[], |s| s.available_models.as_slice())
+    }
+
+    /// Mutable borrow of the available-models list.
+    #[must_use]
+    pub fn available_models_mut(&mut self) -> &mut Vec<model::AvailableModel> {
+        &mut self.active_or_synthetic_mut().available_models
+    }
+
+    /// Borrow the active session's available-commands list.
+    #[must_use]
+    pub fn available_commands(&self) -> &[model::AvailableCommand] {
+        self.active_session().map_or(&[], |s| s.available_commands.as_slice())
+    }
+
+    /// Mutable borrow of the available-commands list.
+    #[must_use]
+    pub fn available_commands_mut(&mut self) -> &mut Vec<model::AvailableCommand> {
+        &mut self.active_or_synthetic_mut().available_commands
+    }
+
+    /// Borrow the active session's available-agents list.
+    #[must_use]
+    pub fn available_agents(&self) -> &[model::AvailableAgent] {
+        self.active_session().map_or(&[], |s| s.available_agents.as_slice())
+    }
+
+    /// Mutable borrow of the available-agents list.
+    #[must_use]
+    pub fn available_agents_mut(&mut self) -> &mut Vec<model::AvailableAgent> {
+        &mut self.active_or_synthetic_mut().available_agents
+    }
+
+    /// Borrow the active session's mode snapshot.
+    #[must_use]
+    pub fn mode(&self) -> Option<&ModeState> {
+        self.active_session().and_then(|s| s.mode.as_ref())
+    }
+
+    /// Set the active session's mode snapshot.
+    pub fn set_mode(&mut self, value: Option<ModeState>) {
+        self.active_or_synthetic_mut().mode = value;
+    }
+
+    /// Mutable borrow of the active session's mode snapshot.
+    #[must_use]
+    pub fn mode_mut(&mut self) -> Option<&mut ModeState> {
+        self.active_or_synthetic_mut().mode.as_mut()
+    }
+
+    /// Active session's hook-observed permission mode.
+    #[must_use]
+    pub fn observed_permission_mode(&self) -> Option<crate::agent::state::PermissionMode> {
+        self.active_session().and_then(|s| s.observed_permission_mode)
+    }
+
+    /// Set the active session's hook-observed permission mode.
+    pub fn set_observed_permission_mode(
+        &mut self,
+        value: Option<crate::agent::state::PermissionMode>,
+    ) {
+        self.active_or_synthetic_mut().observed_permission_mode = value;
+    }
+
+    /// Active session's hook-observed effort level.
+    #[must_use]
+    pub fn observed_effort(&self) -> Option<model::EffortLevel> {
+        self.active_session().and_then(|s| s.observed_effort)
+    }
+
+    /// Set the active session's hook-observed effort level.
+    pub fn set_observed_effort(&mut self, value: Option<model::EffortLevel>) {
+        self.active_or_synthetic_mut().observed_effort = value;
+    }
+
+    /// Borrow the active session's observed assistant model id.
+    #[must_use]
+    pub fn observed_assistant_model(&self) -> Option<&str> {
+        self.active_session().and_then(|s| s.observed_assistant_model.as_deref())
+    }
+
+    /// Set the active session's observed assistant model id.
+    pub fn set_observed_assistant_model(&mut self, value: Option<String>) {
+        self.active_or_synthetic_mut().observed_assistant_model = value;
+    }
+
+    /// Active session's runtime session state.
+    #[must_use]
+    pub fn runtime_session_state(&self) -> Option<model::RuntimeSessionState> {
+        self.active_session().and_then(|s| s.runtime_session_state)
+    }
+
+    /// Set the active session's runtime session state.
+    pub fn set_runtime_session_state(&mut self, value: Option<model::RuntimeSessionState>) {
+        self.active_or_synthetic_mut().runtime_session_state = value;
+    }
+
+    /// Active session's fast-mode state.
+    #[must_use]
+    pub fn fast_mode_state(&self) -> model::FastModeState {
+        self.active_session().map_or(model::FastModeState::Off, |s| s.fast_mode_state)
+    }
+
+    /// Set the active session's fast-mode state.
+    pub fn set_fast_mode_state(&mut self, value: model::FastModeState) {
+        self.active_or_synthetic_mut().fast_mode_state = value;
+    }
+
+    /// Borrow the active session's config-options map.
+    #[must_use]
+    pub fn config_options(&self) -> &BTreeMap<String, serde_json::Value> {
+        static FALLBACK: std::sync::OnceLock<BTreeMap<String, serde_json::Value>> =
+            std::sync::OnceLock::new();
+        match self.active_session() {
+            Some(s) => &s.config_options,
+            None => FALLBACK.get_or_init(BTreeMap::new),
+        }
+    }
+
+    /// Mutable borrow of the config-options map.
+    #[must_use]
+    pub fn config_options_mut(&mut self) -> &mut BTreeMap<String, serde_json::Value> {
+        &mut self.active_or_synthetic_mut().config_options
+    }
+
+    /// Borrow the active session's session-usage telemetry.
+    #[must_use]
+    pub fn session_usage(&self) -> &SessionUsageState {
+        static FALLBACK: std::sync::OnceLock<SessionUsageState> = std::sync::OnceLock::new();
+        match self.active_session() {
+            Some(s) => &s.session_usage,
+            None => FALLBACK.get_or_init(SessionUsageState::default),
+        }
+    }
+
+    /// Mutable borrow of the session-usage telemetry.
+    #[must_use]
+    pub fn session_usage_mut(&mut self) -> &mut SessionUsageState {
+        &mut self.active_or_synthetic_mut().session_usage
+    }
+
+    // ---- Account / auth accessors ----
+
+    /// Borrow the active session's account-info snapshot.
+    #[must_use]
+    pub fn account_info(&self) -> Option<&forge_primitives::AccountInfo> {
+        self.active_session().and_then(|s| s.account_info.as_ref())
+    }
+
+    /// Set the active session's account-info snapshot.
+    pub fn set_account_info(&mut self, value: Option<forge_primitives::AccountInfo>) {
+        self.active_or_synthetic_mut().account_info = value;
+    }
+
+    /// Borrow the active session's forge-side account display name.
+    #[must_use]
+    pub fn active_account_display_name(&self) -> Option<&str> {
+        self.active_session().and_then(|s| s.active_account_display_name.as_deref())
+    }
+
+    /// Set the active session's forge-side account display name.
+    pub fn set_active_account_display_name(&mut self, value: Option<String>) {
+        self.active_or_synthetic_mut().active_account_display_name = value;
+    }
+
+    /// Borrow the active session's OAuth credentials snapshot.
+    #[must_use]
+    pub fn oauth_credentials(
+        &self,
+    ) -> Option<&forge_agent::cloud::oauth_credentials::OauthCredentials> {
+        self.active_session().and_then(|s| s.oauth_credentials.as_ref())
+    }
+
+    /// Set the active session's OAuth credentials snapshot.
+    pub fn set_oauth_credentials(
+        &mut self,
+        value: Option<forge_agent::cloud::oauth_credentials::OauthCredentials>,
+    ) {
+        self.active_or_synthetic_mut().oauth_credentials = value;
+    }
+
+    // ---- Filesystem accessors ----
+
+    /// Borrow the active session's display-friendly cwd.
+    ///
+    /// Returns an empty string only in the brief pre-Connect window
+    /// before any session bucket exists; production startup and
+    /// `App::test_default()` both seed a bucket up front.
+    #[must_use]
+    pub fn cwd(&self) -> &str {
+        self.active_session().map_or("", |s| s.cwd.as_str())
+    }
+
+    /// Set the active session's display-friendly cwd.
+    pub fn set_cwd(&mut self, value: impl Into<String>) {
+        self.active_or_synthetic_mut().cwd = value.into();
+    }
+
+    /// Borrow the active session's raw filesystem cwd.
+    #[must_use]
+    pub fn cwd_raw(&self) -> &str {
+        self.active_session().map_or("", |s| s.cwd_raw.as_str())
+    }
+
+    /// Set the active session's raw filesystem cwd.
+    pub fn set_cwd_raw(&mut self, value: impl Into<String>) {
+        self.active_or_synthetic_mut().cwd_raw = value.into();
+    }
+
+    /// Active session's files-accessed counter.
+    #[must_use]
+    pub fn files_accessed(&self) -> usize {
+        self.active_session().map_or(0, |s| s.files_accessed)
+    }
+
+    /// Set the active session's files-accessed counter.
+    pub fn set_files_accessed(&mut self, value: usize) {
+        self.active_or_synthetic_mut().files_accessed = value;
+    }
+
+    /// Increment the active session's files-accessed counter by one.
+    pub fn increment_files_accessed(&mut self) {
+        let s = self.active_or_synthetic_mut();
+        s.files_accessed = s.files_accessed.saturating_add(1);
+    }
+
+    /// Borrow the active session's MCP state snapshot.
+    ///
+    /// Falls back to a leaked default for the brief pre-Connect
+    /// window. Production startup seeds a synthetic bucket up front,
+    /// so the fallback is a safety net rather than a hot path.
+    #[must_use]
+    pub fn mcp(&self) -> &McpState {
+        static FALLBACK: std::sync::OnceLock<McpState> = std::sync::OnceLock::new();
+        match self.active_session() {
+            Some(s) => &s.mcp,
+            None => FALLBACK.get_or_init(McpState::default),
+        }
+    }
+
+    /// Mutable borrow of the active session's MCP state snapshot.
+    /// Auto-creates the pre-Connect bucket if missing.
+    #[must_use]
+    pub fn mcp_mut(&mut self) -> &mut McpState {
+        &mut self.active_or_synthetic_mut().mcp
+    }
+
+    // ---- Todos accessors ----
+
+    /// Borrow the active session's todo list.
+    #[must_use]
+    pub fn todos(&self) -> &[TodoItem] {
+        self.active_session().map_or(&[], |s| s.todos.as_slice())
+    }
+
+    /// Mutable borrow of the active session's todo list.
+    #[must_use]
+    pub fn todos_mut(&mut self) -> &mut Vec<TodoItem> {
+        &mut self.active_or_synthetic_mut().todos
+    }
+
+    /// Active session's todo-panel-expanded flag.
+    #[must_use]
+    pub fn show_todo_panel(&self) -> bool {
+        self.active_session().is_some_and(|s| s.show_todo_panel)
+    }
+
+    /// Set the active session's todo-panel-expanded flag.
+    pub fn set_show_todo_panel(&mut self, value: bool) {
+        self.active_or_synthetic_mut().show_todo_panel = value;
+    }
+
+    /// Active session's todo-panel scroll offset.
+    #[must_use]
+    pub fn todo_scroll(&self) -> usize {
+        self.active_session().map_or(0, |s| s.todo_scroll)
+    }
+
+    /// Set the active session's todo-panel scroll offset.
+    pub fn set_todo_scroll(&mut self, value: usize) {
+        self.active_or_synthetic_mut().todo_scroll = value;
+    }
+
+    /// Active session's selected-todo index.
+    #[must_use]
+    pub fn todo_selected(&self) -> usize {
+        self.active_session().map_or(0, |s| s.todo_selected)
+    }
+
+    /// Set the active session's selected-todo index.
+    pub fn set_todo_selected(&mut self, value: usize) {
+        self.active_or_synthetic_mut().todo_selected = value;
+    }
+
+    /// Borrow the active session's cached compact todo line.
+    #[must_use]
+    pub fn cached_todo_compact(&self) -> Option<&ratatui::text::Line<'static>> {
+        self.active_session().and_then(|s| s.cached_todo_compact.as_ref())
+    }
+
+    /// Set the active session's cached compact todo line.
+    pub fn set_cached_todo_compact(&mut self, value: Option<ratatui::text::Line<'static>>) {
+        self.active_or_synthetic_mut().cached_todo_compact = value;
+    }
+
+    // ---- Render cache + history retention accessors ----
+
+    /// Borrow the active session's render-cache slot grid.
+    #[must_use]
+    pub(crate) fn render_cache_slots(&self) -> &[Vec<render_budget::RenderCacheSlotState>] {
+        self.active_session().map_or(&[], |s| s.render_cache_slots.as_slice())
+    }
+
+    /// Mutable borrow of the active session's render-cache slot grid.
+    /// Auto-creates the pre-Connect bucket if missing.
+    #[must_use]
+    pub(crate) fn render_cache_slots_mut(
+        &mut self,
+    ) -> &mut Vec<Vec<render_budget::RenderCacheSlotState>> {
+        &mut self.active_or_synthetic_mut().render_cache_slots
+    }
+
+    /// Active session's rolling render-cache total bytes.
+    #[must_use]
+    pub(crate) fn render_cache_total_bytes(&self) -> usize {
+        self.active_session().map_or(0, |s| s.render_cache_total_bytes)
+    }
+
+    /// Mutable accessor for the rolling render-cache total bytes.
+    #[must_use]
+    pub(crate) fn render_cache_total_bytes_mut(&mut self) -> &mut usize {
+        &mut self.active_or_synthetic_mut().render_cache_total_bytes
+    }
+
+    /// Active session's rolling render-cache protected bytes.
+    #[must_use]
+    pub(crate) fn render_cache_protected_bytes(&self) -> usize {
+        self.active_session().map_or(0, |s| s.render_cache_protected_bytes)
+    }
+
+    /// Mutable accessor for the rolling render-cache protected bytes.
+    #[must_use]
+    pub(crate) fn render_cache_protected_bytes_mut(&mut self) -> &mut usize {
+        &mut self.active_or_synthetic_mut().render_cache_protected_bytes
+    }
+
+    /// Borrow the active session's evictable render-cache key set.
+    #[must_use]
+    pub(crate) fn render_cache_evictable(
+        &self,
+    ) -> Option<&BTreeSet<render_budget::RenderCacheEvictionKey>> {
+        self.active_session().map(|s| &s.render_cache_evictable)
+    }
+
+    /// Mutable borrow of the evictable render-cache key set.
+    #[must_use]
+    pub(crate) fn render_cache_evictable_mut(
+        &mut self,
+    ) -> &mut BTreeSet<render_budget::RenderCacheEvictionKey> {
+        &mut self.active_or_synthetic_mut().render_cache_evictable
+    }
+
+    /// Active session's protected streaming-tail message index, if any.
+    #[must_use]
+    pub(crate) fn render_cache_tail_msg_idx(&self) -> Option<usize> {
+        self.active_session().and_then(|s| s.render_cache_tail_msg_idx)
+    }
+
+    /// Set the active session's protected streaming-tail message index.
+    pub(crate) fn set_render_cache_tail_msg_idx(&mut self, value: Option<usize>) {
+        self.active_or_synthetic_mut().render_cache_tail_msg_idx = value;
+    }
+
+    /// Borrow the active session's history-retention policy.
+    #[must_use]
+    pub fn history_retention(&self) -> HistoryRetentionPolicy {
+        self.active_session().map_or_else(HistoryRetentionPolicy::default, |s| s.history_retention)
+    }
+
+    /// Mutable accessor for the history-retention policy.
+    #[must_use]
+    pub fn history_retention_mut(&mut self) -> &mut HistoryRetentionPolicy {
+        &mut self.active_or_synthetic_mut().history_retention
+    }
+
+    /// Borrow the active session's history-retention enforcement
+    /// statistics.
+    #[must_use]
+    pub fn history_retention_stats(&self) -> &HistoryRetentionStats {
+        static FALLBACK: std::sync::OnceLock<HistoryRetentionStats> = std::sync::OnceLock::new();
+        match self.active_session() {
+            Some(s) => &s.history_retention_stats,
+            None => FALLBACK.get_or_init(HistoryRetentionStats::default),
+        }
+    }
+
+    /// Mutable accessor for the history-retention enforcement
+    /// statistics.
+    #[must_use]
+    pub fn history_retention_stats_mut(&mut self) -> &mut HistoryRetentionStats {
+        &mut self.active_or_synthetic_mut().history_retention_stats
+    }
+
+    /// Borrow the active session's cache-metrics accumulator.
+    #[must_use]
+    pub fn cache_metrics(&self) -> &CacheMetrics {
+        static FALLBACK: std::sync::OnceLock<CacheMetrics> = std::sync::OnceLock::new();
+        match self.active_session() {
+            Some(s) => &s.cache_metrics,
+            None => FALLBACK.get_or_init(CacheMetrics::default),
+        }
+    }
+
+    /// Mutable accessor for the cache-metrics accumulator.
+    #[must_use]
+    pub fn cache_metrics_mut(&mut self) -> &mut CacheMetrics {
+        &mut self.active_or_synthetic_mut().cache_metrics
+    }
+
+    /// Active session's previous-frame active-turn height state.
+    #[must_use]
+    pub(crate) fn last_active_turn_height_state(&self) -> Option<(usize, bool, bool)> {
+        self.active_session().and_then(|s| s.last_active_turn_height_state)
+    }
+
+    /// Set the active session's previous-frame active-turn height state.
+    pub(crate) fn set_last_active_turn_height_state(&mut self, value: Option<(usize, bool, bool)>) {
+        self.active_or_synthetic_mut().last_active_turn_height_state = value;
+    }
+
+    /// Borrow the active session's last chat-render trace snapshot.
+    #[must_use]
+    pub fn last_chat_render_trace_state(&self) -> Option<ChatRenderTraceState> {
+        self.active_session().and_then(|s| s.last_chat_render_trace_state)
+    }
+
+    /// Set the active session's last chat-render trace snapshot.
+    pub fn set_last_chat_render_trace_state(&mut self, value: Option<ChatRenderTraceState>) {
+        self.active_or_synthetic_mut().last_chat_render_trace_state = value;
+    }
+
     /// Queue a paste payload for drain-cycle finalization.
     ///
     /// This is fed by paste payloads captured from terminal events.
@@ -460,32 +1486,52 @@ impl App {
 
     /// Ensure the synthetic welcome message exists at index 0.
     pub fn ensure_welcome_message(&mut self) {
-        if self.messages.first().is_some_and(|m| matches!(m.role, MessageRole::Welcome)) {
+        if self.messages().first().is_some_and(|m| matches!(m.role, MessageRole::Welcome)) {
             return;
         }
         self.insert_message_tracked(0, self.build_welcome_message());
     }
 
+    /// Returns `(label, value)` for the welcome message's account
+    /// line. The line's *layout slot* is reserved from the first
+    /// frame in workspace mode — `Account: …` shows immediately,
+    /// then the value fills in once data lands. Avoids the
+    /// alternative options (line pops in late, or flickers
+    /// `Gateway` → `Gateway · team`) that surface as stale UI.
+    ///
+    /// Resolution table:
+    /// - Workspace mode + both pieces → `"Account: name · tier"`.
+    /// - Workspace mode + partial/no data → `"Account: …"` skeleton.
+    /// - Legacy mode (no workspace) + tier only → `"Subscription: tier"`.
+    /// - Legacy mode + no data → empty (renderer hides line).
     #[must_use]
-    fn welcome_subscription_display(&self) -> &str {
-        self.account_info
-            .as_ref()
-            .and_then(|account| account.subscription_type.as_deref())
+    fn welcome_account_display(&self) -> (String, String) {
+        let display_name =
+            self.active_account_display_name().map(str::trim).filter(|s| !s.is_empty());
+        let subscription = self
+            .account_info()
+            .and_then(|a| a.subscription_type.as_deref())
             .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .unwrap_or("-")
+            .filter(|s| !s.is_empty());
+        let workspace_mode = self.workspace.is_some();
+
+        match (workspace_mode, display_name, subscription) {
+            (_, Some(name), Some(tier)) => ("Account".to_owned(), format!("{name} · {tier}")),
+            (true, _, _) => ("Account".to_owned(), "…".to_owned()),
+            (false, _, Some(tier)) => ("Subscription".to_owned(), tier.to_owned()),
+            (false, _, None) => (String::new(), String::new()),
+        }
     }
 
     #[must_use]
     fn welcome_cwd_display(&self) -> &str {
-        let cwd = self.cwd.trim();
+        let cwd = self.cwd().trim();
         if cwd.is_empty() { "-" } else { cwd }
     }
 
     #[must_use]
     fn welcome_session_id_display(&self) -> String {
-        self.session_id
-            .as_ref()
+        self.session_id()
             .map(std::string::ToString::to_string)
             .map(|value| value.trim().to_owned())
             .filter(|value| !value.is_empty())
@@ -494,19 +1540,25 @@ impl App {
 
     #[must_use]
     pub(crate) fn build_welcome_message(&self) -> ChatMessage {
-        let subscription = self.welcome_subscription_display();
+        let (label, value) = self.welcome_account_display();
         let session_id = self.welcome_session_id_display();
-        ChatMessage::welcome(
+        let mut message = ChatMessage::welcome(
             env!("CARGO_PKG_VERSION"),
-            subscription,
+            &value,
             self.welcome_cwd_display(),
             &session_id,
-        )
+        );
+        // Override the constructor's default "Subscription" label
+        // with the dynamic one chosen by `welcome_account_display`.
+        if let Some(MessageBlock::Welcome(welcome)) = message.blocks.first_mut() {
+            welcome.account_label = label;
+        }
+        message
     }
 
     #[must_use]
     pub(crate) fn current_welcome_tip_seed(&self) -> Option<u64> {
-        let first = self.messages.first()?;
+        let first = self.messages().first()?;
         let MessageBlock::Welcome(welcome) = first.blocks.first()? else {
             return None;
         };
@@ -523,10 +1575,10 @@ impl App {
     /// Update the welcome message with the latest session/account snapshot.
     pub fn sync_welcome_snapshot(&mut self) {
         let version = env!("CARGO_PKG_VERSION");
-        let subscription = self.welcome_subscription_display().to_owned();
+        let (label, value) = self.welcome_account_display();
         let cwd = self.welcome_cwd_display().to_owned();
         let session_id = self.welcome_session_id_display();
-        let Some(first) = self.messages.first_mut() else {
+        let Some(first) = self.messages_mut().first_mut() else {
             return;
         };
         if !matches!(first.role, MessageRole::Welcome) {
@@ -536,12 +1588,14 @@ impl App {
             return;
         };
         if welcome.version != version
-            || welcome.subscription != subscription
+            || welcome.account_label != label
+            || welcome.subscription != value
             || welcome.cwd != cwd
             || welcome.session_id != session_id
         {
             version.clone_into(&mut welcome.version);
-            welcome.subscription = subscription;
+            welcome.account_label = label;
+            welcome.subscription = value;
             welcome.cwd = cwd;
             welcome.session_id = session_id;
             welcome.cache.invalidate();
@@ -553,21 +1607,21 @@ impl App {
 
     /// Track a Task/Agent tool call as active (in-progress subagent).
     pub fn insert_active_task(&mut self, id: String) {
-        self.active_task_ids.insert(id);
+        self.active_task_ids_mut().insert(id);
     }
 
     /// Remove a Task/Agent tool call from the active set (completed/failed).
     pub fn remove_active_task(&mut self, id: &str) {
-        self.active_task_ids.remove(id);
+        self.active_task_ids_mut().remove(id);
     }
 
     pub fn register_tool_call_scope(&mut self, id: String, scope: ToolCallScope) {
-        self.tool_call_scopes.insert(id, scope);
+        self.tool_call_scopes_mut().insert(id, scope);
     }
 
     #[must_use]
     pub fn tool_call_scope(&self, id: &str) -> Option<ToolCallScope> {
-        self.tool_call_scopes.get(id).cloned()
+        self.tool_call_scopes().get(id).cloned()
     }
 
     #[must_use]
@@ -582,19 +1636,19 @@ impl App {
     }
 
     pub fn clear_tool_scope_tracking(&mut self) {
-        self.tool_call_scopes.clear();
-        self.active_task_ids.clear();
+        self.tool_call_scopes_mut().clear();
+        self.active_task_ids_mut().clear();
     }
 
     /// Look up the (`message_index`, `block_index`) for a tool call ID.
     #[must_use]
     pub fn lookup_tool_call(&self, id: &str) -> Option<(usize, usize)> {
-        self.tool_call_index.get(id).copied()
+        self.tool_call_index().get(id).copied()
     }
 
     /// Register a tool call's position in the message/block arrays.
     pub fn index_tool_call(&mut self, id: String, msg_idx: usize, block_idx: usize) {
-        self.tool_call_index.insert(id, (msg_idx, block_idx));
+        self.tool_call_index_mut().insert(id, (msg_idx, block_idx));
     }
 
     pub(crate) fn sync_terminal_tool_call(
@@ -604,17 +1658,17 @@ impl App {
         block_idx: usize,
     ) {
         let desired = TerminalToolCallRef::new(terminal_id, msg_idx, block_idx);
-        if self.terminal_tool_call_membership.contains(&desired) {
+        if self.terminal_tool_call_membership().contains(&desired) {
             return;
         }
         self.untrack_terminal_tool_call(msg_idx, block_idx);
-        self.terminal_tool_call_membership.insert(desired.clone());
-        self.terminal_tool_calls.push(desired);
+        self.terminal_tool_call_membership_mut().insert(desired.clone());
+        self.terminal_tool_calls_mut().push(desired);
     }
 
     pub(crate) fn untrack_terminal_tool_call(&mut self, msg_idx: usize, block_idx: usize) {
         let removed: Vec<_> = self
-            .terminal_tool_calls
+            .terminal_tool_calls()
             .iter()
             .filter(|entry| entry.msg_idx == msg_idx && entry.block_idx == block_idx)
             .cloned()
@@ -622,21 +1676,21 @@ impl App {
         if removed.is_empty() {
             return;
         }
-        self.terminal_tool_calls
+        self.terminal_tool_calls_mut()
             .retain(|entry| entry.msg_idx != msg_idx || entry.block_idx != block_idx);
         for entry in removed {
-            self.terminal_tool_call_membership.remove(&entry);
+            self.terminal_tool_call_membership_mut().remove(&entry);
         }
     }
 
     pub(crate) fn clear_terminal_tool_call_tracking(&mut self) {
-        self.terminal_tool_calls.clear();
-        self.terminal_tool_call_membership.clear();
+        self.terminal_tool_calls_mut().clear();
+        self.terminal_tool_call_membership_mut().clear();
     }
 
     pub(crate) fn sync_after_message_blocks_changed(&mut self, msg_idx: usize) {
         self.note_render_cache_structure_changed();
-        if let Some(message) = self.messages.get_mut(msg_idx) {
+        if let Some(message) = self.messages_mut().get_mut(msg_idx) {
             message.invalidate_render_cache();
         }
         self.sync_render_cache_message(msg_idx);
@@ -651,17 +1705,17 @@ impl App {
     pub fn invalidate_layout(&mut self, level: LayoutInvalidation) {
         match level {
             LayoutInvalidation::MessageChanged(idx) => {
-                self.viewport.invalidate_message(idx);
+                self.viewport_mut().invalidate_message(idx);
             }
             LayoutInvalidation::MessagesFrom(idx) => {
-                self.viewport.invalidate_messages_from(idx);
+                self.viewport_mut().invalidate_messages_from(idx);
             }
             LayoutInvalidation::Global => {
-                if self.messages.is_empty() {
+                if self.messages().is_empty() {
                     return;
                 }
-                self.viewport.invalidate_all_messages(LayoutRemeasureReason::Global);
-                self.viewport.bump_layout_generation();
+                self.viewport_mut().invalidate_all_messages(LayoutRemeasureReason::Global);
+                self.viewport_mut().bump_layout_generation();
             }
             LayoutInvalidation::Resize => {
                 // Resize is handled by viewport.on_frame(). This arm exists
@@ -676,9 +1730,9 @@ impl App {
         I: IntoIterator<Item = usize>,
     {
         let unique: BTreeSet<_> =
-            indices.into_iter().filter(|&idx| idx < self.messages.len()).collect();
+            indices.into_iter().filter(|&idx| idx < self.messages().len()).collect();
         for idx in unique {
-            self.viewport.invalidate_message(idx);
+            self.viewport_mut().invalidate_message(idx);
         }
     }
 
@@ -689,15 +1743,15 @@ impl App {
     /// instead of `enforce_history_retention()` at all non-test call sites.
     pub fn enforce_history_retention_tracked(&mut self) {
         let stats = self.enforce_history_retention();
-        let should_log =
-            self.cache_metrics.record_history_enforcement(&stats, self.history_retention);
+        let policy = self.history_retention();
+        let should_log = self.cache_metrics_mut().record_history_enforcement(&stats, policy);
         if should_log {
             let snap = cache_metrics::build_snapshot(
                 &self.render_cache_budget,
-                &self.history_retention_stats,
-                self.history_retention,
-                &self.cache_metrics,
-                &self.viewport,
+                self.history_retention_stats(),
+                policy,
+                self.cache_metrics(),
+                self.viewport(),
                 0, // entry_count not needed for history-only log
                 0,
                 stats.dropped_messages,
@@ -716,7 +1770,7 @@ impl App {
         let mut changed_slots = Vec::new();
         let mut detached_terminal = false;
 
-        for (msg_idx, msg) in self.messages.iter_mut().enumerate() {
+        for (msg_idx, msg) in self.messages_mut().iter_mut().enumerate() {
             for (block_idx, block) in msg.blocks.iter_mut().enumerate() {
                 if let MessageBlock::ToolCall(tc) = block {
                     let tc = tc.as_mut();
@@ -759,7 +1813,7 @@ impl App {
 
         if changed > 0 || cleared_interaction {
             self.invalidate_message_set(changed_message_indices.iter().copied());
-            self.pending_interaction_ids.clear();
+            self.pending_interaction_ids_mut().clear();
             self.release_focus_target(FocusTarget::Permission);
         }
 
@@ -773,7 +1827,7 @@ impl App {
         let mut changed_message_indices = Vec::new();
         let mut changed_slots = Vec::new();
 
-        for (msg_idx, msg) in self.messages.iter_mut().enumerate() {
+        for (msg_idx, msg) in self.messages_mut().iter_mut().enumerate() {
             for (block_idx, block) in msg.blocks.iter_mut().enumerate() {
                 let MessageBlock::ToolCall(tc) = block else {
                     continue;
@@ -810,8 +1864,8 @@ impl App {
             self.invalidate_message_set(changed_message_indices.iter().copied());
         }
 
-        if changed > 0 || !self.pending_interaction_ids.is_empty() {
-            self.pending_interaction_ids.clear();
+        if changed > 0 || !self.pending_interaction_ids().is_empty() {
+            self.pending_interaction_ids_mut().clear();
             self.release_focus_target(FocusTarget::Permission);
         }
 
@@ -832,15 +1886,25 @@ impl App {
     pub fn test_default() -> Self {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         let (file_index_tx, file_index_rx) = std_mpsc::channel();
+        let pending_key = forge_workspace::SessionKey::from_session_id(Self::PRE_CONNECT_KEY);
+        let mut pending_session = super::session::Session::new(pending_key.clone());
+        // Seed a synthetic `current_model` so tests that depend on
+        // model-resolution UI paths see a stable value.
+        pending_session.current_model = Some(
+            model::CurrentModel::new("test-model", "test-model", "test-model").authoritative(true),
+        );
+        // Seed cwd / cwd_raw so legacy tests that read these via the
+        // accessors observe stable values without first having to
+        // touch the active session.
+        pending_session.cwd = "/test".into();
+        pending_session.cwd_raw = "/test".into();
+        let mut sessions = std::collections::HashMap::new();
+        sessions.insert(pending_key.clone(), pending_session);
         Self {
             active_view: ActiveView::Chat,
             config: ConfigState::default(),
             trust: TrustState::default(),
             settings_home_override: None,
-            messages: Vec::new(),
-            message_retained_bytes: Vec::new(),
-            retained_history_bytes: 0,
-            viewport: ChatViewport::new(),
             input: InputState::new(),
             status: AppStatus::Ready,
             resuming_session_id: None,
@@ -848,27 +1912,14 @@ impl App {
             pending_command_ack: None,
             should_quit: false,
             exit_error: None,
-            session_id: None,
-            conn: None,
-            session_scope_epoch: 0,
-            current_model: Some(
-                model::CurrentModel::new("test-model", "test-model", "test-model")
-                    .authoritative(true),
-            ),
-            cwd: "/test".into(),
-            cwd_raw: "/test".into(),
-            files_accessed: 0,
-            mode: None,
-            config_options: BTreeMap::new(),
+            workspace: None,
+            sessions,
+            active_session_key: Some(pending_key),
             login_hint: None,
-            pending_compact_clear: false,
             help_view: HelpView::Keys,
             help_open: false,
             help_dialog: dialog::DialogState::default(),
             help_visible_count: 0,
-            pending_interaction_ids: Vec::new(),
-            cancelled_turn_pending_hint: false,
-            pending_cancel_origin: None,
             pending_auto_submit_after_cancel: false,
             event_tx: tx,
             event_rx: rx,
@@ -876,22 +1927,14 @@ impl App {
             file_index_event_rx: file_index_rx,
             spinner_frame: 0,
             spinner_last_advance_at: None,
-            active_turn_assistant_message_idx: None,
             tools_collapsed: false,
-            active_task_ids: HashSet::default(),
-            tool_call_scopes: HashMap::default(),
-            terminals: std::rc::Rc::default(),
+            projects_pane_visible: true,
+            projects_pane_overlay_open: false,
+            pane_hit_targets: Vec::new(),
+            layout: crate::ui::layout::AppLayout::default(),
             force_redraw: false,
-            tool_call_index: HashMap::default(),
-            todos: Vec::new(),
-            show_todo_panel: false,
-            todo_scroll: 0,
-            todo_selected: 0,
             focus: FocusManager::default(),
-            available_commands: Vec::new(),
             plugins: PluginsState::default(),
-            available_agents: Vec::new(),
-            available_models: Vec::new(),
             recent_sessions: Vec::new(),
             session_picker: SessionPickerState::default(),
             cached_frame_area: ratatui::layout::Rect::default(),
@@ -912,42 +1955,13 @@ impl App {
             active_paste_session: None,
             next_paste_session_id: 1,
             pending_images: Vec::new(),
-            cached_todo_compact: None,
-            git_context: GitContextState::default(),
-            session_usage: SessionUsageState::default(),
             usage: UsageState::default(),
-            mcp: McpState::default(),
-            fast_mode_state: model::FastModeState::Off,
-            observed_permission_mode: None,
-            observed_effort: None,
-            subagent_attribution: std::collections::HashMap::new(),
-            observed_assistant_model: None,
-            runtime_session_state: None,
-            prompt_suggestion: None,
-            last_rate_limit_update: None,
-            turn_notice_refs: Vec::new(),
-            is_compacting: false,
-            account_info: None,
-            oauth_credentials: None,
-            turn_state: SessionTurnState::default(),
-            terminal_tool_calls: Vec::new(),
-            terminal_tool_call_membership: HashSet::new(),
             needs_redraw: true,
             notifications: super::notify::NotificationManager::new(),
             perf: None,
             render_cache_budget: RenderCacheBudget::default(),
-            render_cache_slots: Vec::new(),
-            render_cache_total_bytes: 0,
-            render_cache_protected_bytes: 0,
-            render_cache_evictable: BTreeSet::new(),
-            render_cache_tail_msg_idx: None,
-            history_retention: HistoryRetentionPolicy::default(),
-            history_retention_stats: HistoryRetentionStats::default(),
-            cache_metrics: CacheMetrics::default(),
             fps_ema: None,
             last_frame_at: None,
-            last_chat_render_trace_state: None,
-            last_active_turn_height_state: None,
             startup_connection_requested: false,
             connection_started: false,
             startup_resume_id: None,
@@ -955,12 +1969,13 @@ impl App {
             startup_session_picker_requested: false,
             startup_recent_sessions_loaded: false,
             startup_session_picker_resolved: false,
+            startup_project: None,
         }
     }
 
     #[must_use]
     pub fn git_branch(&self) -> Option<&str> {
-        self.git_context.branch_name()
+        self.active_session().and_then(|s| s.git_context.branch_name())
     }
 
     /// Structured form of `git_branch()` that distinguishes named
@@ -969,23 +1984,24 @@ impl App {
     /// nothing to show in the chip.
     #[must_use]
     pub(crate) fn git_branch_chip(&self) -> Option<crate::app::git_context::BranchChip<'_>> {
-        self.git_context.branch_chip()
+        self.active_session().and_then(|s| s.git_context.branch_chip())
     }
 
     /// Apply a bridge-pushed git context snapshot to the local
     /// cache. Marks `needs_redraw` when the resolved branch changes.
     pub fn apply_git_context_snapshot(&mut self, info: forge_agent::env::git::GitContext) {
-        self.needs_redraw |= self.git_context.apply_snapshot(info);
+        let changed = self.active_or_synthetic_mut().git_context.apply_snapshot(info);
+        self.needs_redraw |= changed;
     }
 
     #[cfg(test)]
     pub fn set_git_detached_for_test(&mut self) {
-        self.git_context.set_detached_for_test();
+        self.active_or_synthetic_mut().git_context.set_detached_for_test();
     }
 
     #[cfg(test)]
     pub fn set_git_branch_for_test(&mut self, branch: Option<&str>) {
-        self.git_context.set_branch_for_test(branch);
+        self.active_or_synthetic_mut().git_context.set_branch_for_test(branch);
     }
 
     /// Resolve the effective focus owner for Up/Down and other directional keys.
@@ -996,21 +2012,22 @@ impl App {
 
     #[must_use]
     pub fn active_turn_assistant_idx(&self) -> Option<usize> {
-        self.active_turn_assistant_message_idx.filter(|&idx| {
-            self.messages.get(idx).is_some_and(|msg| matches!(msg.role, MessageRole::Assistant))
+        self.active_turn_assistant_message_idx().filter(|&idx| {
+            self.messages().get(idx).is_some_and(|msg| matches!(msg.role, MessageRole::Assistant))
         })
     }
 
     pub fn bind_active_turn_assistant(&mut self, idx: usize) {
-        self.active_turn_assistant_message_idx = self
-            .messages
+        let next = self
+            .messages()
             .get(idx)
             .is_some_and(|msg| matches!(msg.role, MessageRole::Assistant))
             .then_some(idx);
+        self.set_active_turn_assistant_message_idx(next);
     }
 
     pub fn bind_active_turn_assistant_to_tail(&mut self) {
-        if let Some(idx) = self.messages.len().checked_sub(1) {
+        if let Some(idx) = self.messages().len().checked_sub(1) {
             self.bind_active_turn_assistant(idx);
         } else {
             self.clear_active_turn_assistant();
@@ -1018,15 +2035,15 @@ impl App {
     }
 
     pub fn clear_active_turn_assistant(&mut self) {
-        self.active_turn_assistant_message_idx = None;
+        self.set_active_turn_assistant_message_idx(None);
     }
 
     pub(crate) fn clear_turn_notice_refs(&mut self) {
-        self.turn_notice_refs.clear();
+        self.turn_notice_refs_mut().clear();
     }
 
     pub(crate) fn shift_turn_notice_refs_for_insert(&mut self, idx: usize) {
-        for notice_ref in &mut self.turn_notice_refs {
+        for notice_ref in self.turn_notice_refs_mut() {
             match &mut notice_ref.location {
                 TurnNoticeLocation::Inline { msg_idx, .. }
                 | TurnNoticeLocation::Standalone { msg_idx }
@@ -1040,7 +2057,7 @@ impl App {
     }
 
     pub(crate) fn shift_turn_notice_refs_for_remove(&mut self, idx: usize) {
-        self.turn_notice_refs.retain_mut(|notice_ref| match &mut notice_ref.location {
+        self.turn_notice_refs_mut().retain_mut(|notice_ref| match &mut notice_ref.location {
             TurnNoticeLocation::Inline { msg_idx, .. }
             | TurnNoticeLocation::Standalone { msg_idx } => match idx.cmp(msg_idx) {
                 std::cmp::Ordering::Less => {
@@ -1057,7 +2074,7 @@ impl App {
         &mut self,
         old_to_new: &[Option<usize>],
     ) {
-        self.turn_notice_refs.retain_mut(|notice_ref| match &mut notice_ref.location {
+        self.turn_notice_refs_mut().retain_mut(|notice_ref| match &mut notice_ref.location {
             TurnNoticeLocation::Inline { msg_idx, .. }
             | TurnNoticeLocation::Standalone { msg_idx } => {
                 let Some(new_idx) = old_to_new.get(*msg_idx).copied().flatten() else {
@@ -1069,22 +2086,18 @@ impl App {
         });
     }
 
-    pub fn bump_session_scope_epoch(&mut self) {
-        self.session_scope_epoch = self.session_scope_epoch.saturating_add(1);
-    }
-
     pub fn clear_session_runtime_identity(&mut self) {
-        self.session_id = None;
-        self.current_model = None;
-        self.mode = None;
-        self.fast_mode_state = model::FastModeState::Off;
-        self.session_usage = SessionUsageState::default();
+        self.set_session_id(None);
+        self.set_current_model(None);
+        self.set_mode(None);
+        self.set_fast_mode_state(model::FastModeState::Off);
+        *self.session_usage_mut() = SessionUsageState::default();
     }
 
     pub fn reconcile_trust_state_from_preferences_and_cwd(&mut self) {
         let lookup = crate::app::trust::store::read_status(
             &self.config.committed_preferences_document,
-            Path::new(&self.cwd_raw),
+            Path::new(self.cwd_raw()),
         );
         self.trust.project_key = lookup.project_key;
         self.trust.status = if lookup.trusted {
@@ -1105,22 +2118,23 @@ impl App {
     }
 
     pub(crate) fn shift_active_turn_assistant_for_insert(&mut self, idx: usize) {
-        if let Some(owner_idx) = self.active_turn_assistant_message_idx
+        if let Some(owner_idx) = self.active_turn_assistant_message_idx()
             && idx <= owner_idx
         {
-            self.active_turn_assistant_message_idx = Some(owner_idx.saturating_add(1));
+            self.set_active_turn_assistant_message_idx(Some(owner_idx.saturating_add(1)));
         }
     }
 
     pub(crate) fn shift_active_turn_assistant_for_remove(&mut self, idx: usize) {
-        let Some(owner_idx) = self.active_turn_assistant_message_idx else {
+        let Some(owner_idx) = self.active_turn_assistant_message_idx() else {
             return;
         };
-        self.active_turn_assistant_message_idx = match idx.cmp(&owner_idx) {
+        let next = match idx.cmp(&owner_idx) {
             std::cmp::Ordering::Less => Some(owner_idx.saturating_sub(1)),
             std::cmp::Ordering::Equal => None,
             std::cmp::Ordering::Greater => Some(owner_idx),
         };
+        self.set_active_turn_assistant_message_idx(next);
     }
 
     #[must_use]
@@ -1167,7 +2181,7 @@ impl App {
 
         self.normalize_focus_stack();
 
-        if self.pending_interaction_ids.is_empty() {
+        if self.pending_interaction_ids().is_empty() {
             clear_inline_interaction_focus(self);
         } else if self.focus_owner() == FocusOwner::Permission || !self.has_draft_input_for_focus()
         {
@@ -1183,7 +2197,7 @@ impl App {
         }
 
         if self.is_help_active()
-            && self.pending_interaction_ids.is_empty()
+            && self.pending_interaction_ids().is_empty()
             && !self.autocomplete_focus_available()
         {
             self.claim_focus_target(FocusTarget::Help);
@@ -1216,9 +2230,9 @@ impl App {
     #[must_use]
     fn focus_context(&self) -> FocusContext {
         FocusContext::new(
-            self.show_todo_panel && !self.todos.is_empty(),
+            self.show_todo_panel() && !self.todos().is_empty(),
             self.autocomplete_focus_available(),
-            !self.pending_interaction_ids.is_empty(),
+            !self.pending_interaction_ids().is_empty(),
         )
         .with_help(self.is_help_active())
     }
@@ -1236,6 +2250,37 @@ mod tests {
     use pretty_assertions::assert_eq;
     use ratatui::style::{Color, Style};
     use ratatui::text::{Line, Span};
+
+    // Phase 2a foundation
+
+    #[test]
+    fn test_default_seeds_pre_connect_bucket_so_accessors_are_infallible() {
+        let app = App::test_default();
+        // Task 3 onwards: per-session field accessors (messages, viewport,
+        // …) need an active session to read/write. test_default seeds a
+        // synthetic pre-Connect bucket so call sites stay infallible
+        // before Connect lands.
+        assert_eq!(app.sessions.len(), 1);
+        let pre_connect_key = forge_workspace::SessionKey::from_session_id(App::PRE_CONNECT_KEY);
+        assert_eq!(app.active_session_key.as_ref(), Some(&pre_connect_key));
+        assert!(app.active_session().is_some());
+    }
+
+    #[test]
+    fn inserting_a_session_makes_it_active_via_accessors() {
+        let mut app = App::test_default();
+        let key = forge_workspace::SessionKey::from_str_for_test("abc-123");
+        app.sessions
+            .entry(key.clone())
+            .or_insert_with(|| crate::app::session::Session::new(key.clone()));
+        app.active_session_key = Some(key.clone());
+
+        assert_eq!(app.active_session_key.as_ref(), Some(&key));
+        assert!(app.active_session().is_some());
+        assert_eq!(app.active_session().and_then(|s| s.key.as_ref()), Some(&key));
+        assert!(app.active_session_mut().is_some());
+        assert!(app.session_mut(&key).is_some());
+    }
 
     // BlockCache
 
@@ -1404,27 +2449,28 @@ mod tests {
     #[test]
     fn clear_session_runtime_identity_resets_session_usage() {
         let mut app = App::test_default();
-        app.session_id = Some(crate::agent::model::SessionId::new("session-1"));
-        app.current_model = Some(
+        app.set_session_id(Some(crate::agent::model::SessionId::new("session-1")));
+        app.set_current_model(Some(
             crate::agent::model::CurrentModel::new("sonnet", "Claude Sonnet", "Claude Sonnet")
                 .authoritative(true),
-        );
-        app.mode = Some(crate::app::ModeState {
+        ));
+        app.set_mode(Some(crate::app::ModeState {
             current_mode_id: "plan".to_owned(),
             current_mode_name: "Plan".to_owned(),
             available_modes: Vec::new(),
-        });
-        app.session_usage.context_usage_percent = Some(62);
-        app.session_usage.context_usage_in_flight = true;
-        app.session_usage.context_usage_refresh_pending = true;
-        app.session_usage.last_compaction_pre_tokens = Some(123_456);
+        }));
+        let usage = app.session_usage_mut();
+        usage.context_usage_percent = Some(62);
+        usage.context_usage_in_flight = true;
+        usage.context_usage_refresh_pending = true;
+        usage.last_compaction_pre_tokens = Some(123_456);
 
         app.clear_session_runtime_identity();
 
-        assert!(app.session_id.is_none());
-        assert!(app.current_model.is_none());
-        assert!(app.mode.is_none());
-        assert_eq!(app.session_usage, SessionUsageState::default());
+        assert!(app.session_id().is_none());
+        assert!(app.current_model().is_none());
+        assert!(app.mode().is_none());
+        assert_eq!(*app.session_usage(), SessionUsageState::default());
     }
 
     #[test]
@@ -1668,18 +2714,18 @@ mod tests {
     #[test]
     fn enforce_render_cache_budget_evicts_lru_block() {
         let mut app = make_test_app();
-        app.messages = vec![
+        *app.messages_mut() = vec![
             ChatMessage::new(MessageRole::Assistant, vec![assistant_text_block("a")], None),
             ChatMessage::new(MessageRole::Assistant, vec![assistant_text_block("b")], None),
         ];
 
-        let bytes_a = if let MessageBlock::Text(block) = &mut app.messages[0].blocks[0] {
+        let bytes_a = if let MessageBlock::Text(block) = &mut app.messages_mut()[0].blocks[0] {
             block.cache.store(vec![Line::from("x".repeat(2200))]);
             block.cache.cached_bytes()
         } else {
             0
         };
-        let bytes_b = if let MessageBlock::Text(block) = &mut app.messages[1].blocks[0] {
+        let bytes_b = if let MessageBlock::Text(block) = &mut app.messages_mut()[1].blocks[0] {
             block.cache.store(vec![Line::from("y".repeat(2200))]);
             let _ = block.cache.get();
             block.cache.cached_bytes()
@@ -1694,12 +2740,12 @@ mod tests {
         assert!(stats.total_after_bytes <= app.render_cache_budget.max_bytes);
         assert_eq!(stats.protected_bytes, 0);
 
-        if let MessageBlock::Text(block) = &app.messages[0].blocks[0] {
+        if let MessageBlock::Text(block) = &app.messages()[0].blocks[0] {
             assert_eq!(block.cache.cached_bytes(), 0);
         } else {
             panic!("expected text block");
         }
-        if let MessageBlock::Text(block) = &app.messages[1].blocks[0] {
+        if let MessageBlock::Text(block) = &app.messages()[1].blocks[0] {
             assert_eq!(block.cache.cached_bytes(), bytes_b);
         } else {
             panic!("expected text block");
@@ -1710,13 +2756,13 @@ mod tests {
     fn enforce_render_cache_budget_protects_streaming_tail_message() {
         let mut app = make_test_app();
         app.status = AppStatus::Thinking;
-        app.messages = vec![ChatMessage::new(
+        *app.messages_mut() = vec![ChatMessage::new(
             MessageRole::Assistant,
             vec![assistant_text_block("streaming tail")],
             None,
         )];
 
-        let before = if let MessageBlock::Text(block) = &mut app.messages[0].blocks[0] {
+        let before = if let MessageBlock::Text(block) = &mut app.messages_mut()[0].blocks[0] {
             block.cache.store(vec![Line::from("z".repeat(4096))]);
             block.cache.cached_bytes()
         } else {
@@ -1728,7 +2774,7 @@ mod tests {
         assert_eq!(stats.evicted_bytes, 0);
         assert_eq!(stats.protected_bytes, before);
 
-        if let MessageBlock::Text(block) = &app.messages[0].blocks[0] {
+        if let MessageBlock::Text(block) = &app.messages()[0].blocks[0] {
             assert_eq!(block.cache.cached_bytes(), before);
         } else {
             panic!("expected text block");
@@ -1739,7 +2785,7 @@ mod tests {
     fn enforce_render_cache_budget_excludes_protected_from_budget() {
         let mut app = make_test_app();
         app.status = AppStatus::Running;
-        app.messages = vec![
+        *app.messages_mut() = vec![
             ChatMessage::new(
                 MessageRole::Assistant,
                 vec![assistant_text_block("old message")],
@@ -1752,13 +2798,13 @@ mod tests {
             ),
         ];
 
-        let bytes_a = if let MessageBlock::Text(block) = &mut app.messages[0].blocks[0] {
+        let bytes_a = if let MessageBlock::Text(block) = &mut app.messages_mut()[0].blocks[0] {
             block.cache.store(vec![Line::from("x".repeat(2200))]);
             block.cache.cached_bytes()
         } else {
             0
         };
-        let bytes_b = if let MessageBlock::Text(block) = &mut app.messages[1].blocks[0] {
+        let bytes_b = if let MessageBlock::Text(block) = &mut app.messages_mut()[1].blocks[0] {
             block.cache.store(vec![Line::from("y".repeat(5000))]);
             block.cache.cached_bytes()
         } else {
@@ -1777,7 +2823,7 @@ mod tests {
         assert_eq!(stats.evicted_blocks, 0);
         assert_eq!(stats.evicted_bytes, 0);
         // Old message cache intact.
-        if let MessageBlock::Text(block) = &app.messages[0].blocks[0] {
+        if let MessageBlock::Text(block) = &app.messages()[0].blocks[0] {
             assert_eq!(block.cache.cached_bytes(), bytes_a);
         } else {
             panic!("expected text block");
@@ -1788,7 +2834,7 @@ mod tests {
     fn enforce_render_cache_budget_protects_active_streaming_owner_not_physical_tail() {
         let mut app = make_test_app();
         app.status = AppStatus::Running;
-        app.messages = vec![
+        *app.messages_mut() = vec![
             ChatMessage::new(
                 MessageRole::Assistant,
                 vec![assistant_text_block("old message")],
@@ -1807,16 +2853,17 @@ mod tests {
         ];
         app.bind_active_turn_assistant(1);
 
-        if let MessageBlock::Text(block) = &mut app.messages[0].blocks[0] {
+        if let MessageBlock::Text(block) = &mut app.messages_mut()[0].blocks[0] {
             block.cache.store(vec![Line::from("x".repeat(2000))]);
         }
-        let protected_bytes = if let MessageBlock::Text(block) = &mut app.messages[1].blocks[0] {
-            block.cache.store(vec![Line::from("y".repeat(4000))]);
-            block.cache.cached_bytes()
-        } else {
-            0
-        };
-        if let MessageBlock::Text(block) = &mut app.messages[2].blocks[0] {
+        let protected_bytes =
+            if let MessageBlock::Text(block) = &mut app.messages_mut()[1].blocks[0] {
+                block.cache.store(vec![Line::from("y".repeat(4000))]);
+                block.cache.cached_bytes()
+            } else {
+                0
+            };
+        if let MessageBlock::Text(block) = &mut app.messages_mut()[2].blocks[0] {
             block.cache.store(vec![Line::from("z".repeat(5000))]);
         }
 
@@ -1830,24 +2877,24 @@ mod tests {
     fn enforce_render_cache_budget_evicts_when_budgeted_over_limit() {
         let mut app = make_test_app();
         app.status = AppStatus::Running;
-        app.messages = vec![
+        *app.messages_mut() = vec![
             ChatMessage::new(MessageRole::Assistant, vec![assistant_text_block("old-a")], None),
             ChatMessage::new(MessageRole::Assistant, vec![assistant_text_block("old-b")], None),
             ChatMessage::new(MessageRole::Assistant, vec![assistant_text_block("streaming")], None),
         ];
 
         // Populate caches: messages 0 and 1 evictable, message 2 protected.
-        if let MessageBlock::Text(block) = &mut app.messages[0].blocks[0] {
+        if let MessageBlock::Text(block) = &mut app.messages_mut()[0].blocks[0] {
             block.cache.store(vec![Line::from("x".repeat(3000))]);
         }
-        let bytes_b = if let MessageBlock::Text(block) = &mut app.messages[1].blocks[0] {
+        let bytes_b = if let MessageBlock::Text(block) = &mut app.messages_mut()[1].blocks[0] {
             block.cache.store(vec![Line::from("y".repeat(3000))]);
             let _ = block.cache.get(); // touch to make more recently accessed
             block.cache.cached_bytes()
         } else {
             0
         };
-        let bytes_c = if let MessageBlock::Text(block) = &mut app.messages[2].blocks[0] {
+        let bytes_c = if let MessageBlock::Text(block) = &mut app.messages_mut()[2].blocks[0] {
             block.cache.store(vec![Line::from("z".repeat(5000))]);
             block.cache.cached_bytes()
         } else {
@@ -1862,7 +2909,7 @@ mod tests {
         assert_eq!(stats.protected_bytes, bytes_c);
         assert!(stats.evicted_blocks >= 1); // message A evicted (older access)
         // Message B should survive (more recent access).
-        if let MessageBlock::Text(block) = &app.messages[1].blocks[0] {
+        if let MessageBlock::Text(block) = &app.messages()[1].blocks[0] {
             assert_eq!(block.cache.cached_bytes(), bytes_b);
         } else {
             panic!("expected text block");
@@ -1873,13 +2920,13 @@ mod tests {
     fn enforce_render_cache_budget_protected_bytes_zero_when_not_streaming() {
         let mut app = make_test_app();
         app.status = AppStatus::Ready;
-        app.messages = vec![ChatMessage::new(
+        *app.messages_mut() = vec![ChatMessage::new(
             MessageRole::Assistant,
             vec![assistant_text_block("done")],
             None,
         )];
 
-        if let MessageBlock::Text(block) = &mut app.messages[0].blocks[0] {
+        if let MessageBlock::Text(block) = &mut app.messages_mut()[0].blocks[0] {
             block.cache.store(vec![Line::from("x".repeat(2000))]);
         }
         app.render_cache_budget.max_bytes = usize::MAX;
@@ -1891,7 +2938,7 @@ mod tests {
     #[test]
     fn enforce_render_cache_budget_accounts_for_message_render_cache() {
         let mut app = make_test_app();
-        app.messages = vec![
+        *app.messages_mut() = vec![
             ChatMessage::new(
                 MessageRole::Assistant,
                 vec![assistant_text_block(&"a".repeat(4000))],
@@ -1912,11 +2959,13 @@ mod tests {
             show_compacting: false,
         };
 
-        let _ = crate::ui::measure_message_height_cached(&mut app.messages[0], &spinner, 80, 1);
-        let _ = crate::ui::measure_message_height_cached(&mut app.messages[1], &spinner, 80, 1);
+        let _ =
+            crate::ui::measure_message_height_cached(&mut app.messages_mut()[0], &spinner, 80, 1);
+        let _ =
+            crate::ui::measure_message_height_cached(&mut app.messages_mut()[1], &spinner, 80, 1);
 
-        let bytes_a = app.messages[0].render_cache.cached_bytes();
-        let bytes_b = app.messages[1].render_cache.cached_bytes();
+        let bytes_a = app.messages()[0].render_cache.cached_bytes();
+        let bytes_b = app.messages()[1].render_cache.cached_bytes();
         assert!(bytes_a > 0);
         assert!(bytes_b > 0);
 
@@ -1926,58 +2975,58 @@ mod tests {
 
         assert!(stats.evicted_bytes >= bytes_a);
         assert!(
-            app.messages[0].render_cache.cached_bytes() == 0
-                || app.messages[1].render_cache.cached_bytes() == 0
+            app.messages()[0].render_cache.cached_bytes() == 0
+                || app.messages()[1].render_cache.cached_bytes() == 0
         );
     }
 
     #[test]
     fn enforce_history_retention_noop_under_budget() {
         let mut app = make_test_app();
-        app.messages = vec![
+        *app.messages_mut() = vec![
             ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "-", "/cwd", "-"),
             user_text_message("small message"),
             user_text_message("another message"),
         ];
-        app.history_retention.max_bytes = usize::MAX / 4;
+        app.history_retention_mut().max_bytes = usize::MAX / 4;
 
         let stats = app.enforce_history_retention();
         assert_eq!(stats.dropped_messages, 0);
         assert_eq!(stats.total_dropped_messages, 0);
-        assert!(!app.messages.iter().any(App::is_history_hidden_marker_message));
+        assert!(!app.messages().iter().any(App::is_history_hidden_marker_message));
     }
 
     #[test]
     fn enforce_history_retention_drops_oldest_and_adds_marker() {
         let mut app = make_test_app();
-        app.messages = vec![
+        *app.messages_mut() = vec![
             ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "-", "/cwd", "-"),
             user_text_message("first old message"),
             user_text_message("second old message"),
             user_text_message("third old message"),
         ];
-        app.history_retention.max_bytes = 1;
+        app.history_retention_mut().max_bytes = 1;
 
         let stats = app.enforce_history_retention();
         assert_eq!(stats.dropped_messages, 3);
-        assert!(matches!(app.messages[0].role, MessageRole::Welcome));
-        assert!(app.messages.iter().any(App::is_history_hidden_marker_message));
-        assert_eq!(app.messages.len(), 2);
+        assert!(matches!(app.messages()[0].role, MessageRole::Welcome));
+        assert!(app.messages().iter().any(App::is_history_hidden_marker_message));
+        assert_eq!(app.messages().len(), 2);
     }
 
     #[test]
     fn enforce_history_retention_preserves_in_progress_tool_message() {
         let mut app = make_test_app();
-        app.messages = vec![
+        *app.messages_mut() = vec![
             ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "-", "/cwd", "-"),
             user_text_message("droppable"),
             assistant_tool_message("tool-keep", model::ToolCallStatus::InProgress),
         ];
-        app.history_retention.max_bytes = 1;
+        app.history_retention_mut().max_bytes = 1;
 
         let stats = app.enforce_history_retention();
         assert_eq!(stats.dropped_messages, 1);
-        assert!(app.messages.iter().any(|msg| {
+        assert!(app.messages().iter().any(|msg| {
             msg.blocks.iter().any(|block| {
                 matches!(
                     block,
@@ -1991,16 +3040,16 @@ mod tests {
     #[test]
     fn enforce_history_retention_preserves_pending_tool_message() {
         let mut app = make_test_app();
-        app.messages = vec![
+        *app.messages_mut() = vec![
             ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "-", "/cwd", "-"),
             user_text_message("droppable"),
             assistant_tool_message("tool-pending", model::ToolCallStatus::Pending),
         ];
-        app.history_retention.max_bytes = 1;
+        app.history_retention_mut().max_bytes = 1;
 
         let stats = app.enforce_history_retention();
         assert_eq!(stats.dropped_messages, 1);
-        assert!(app.messages.iter().any(|msg| {
+        assert!(app.messages().iter().any(|msg| {
             msg.blocks
                 .iter()
                 .any(|block| matches!(block, MessageBlock::ToolCall(tc) if tc.id == "tool-pending"))
@@ -2010,16 +3059,16 @@ mod tests {
     #[test]
     fn enforce_history_retention_preserves_permission_tool_message() {
         let mut app = make_test_app();
-        app.messages = vec![
+        *app.messages_mut() = vec![
             ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "-", "/cwd", "-"),
             user_text_message("droppable"),
             assistant_tool_message_with_pending_permission("tool-perm"),
         ];
-        app.history_retention.max_bytes = 1;
+        app.history_retention_mut().max_bytes = 1;
 
         let stats = app.enforce_history_retention();
         assert_eq!(stats.dropped_messages, 1);
-        assert!(app.messages.iter().any(|msg| {
+        assert!(app.messages().iter().any(|msg| {
             msg.blocks
                 .iter()
                 .any(|block| matches!(block, MessageBlock::ToolCall(tc) if tc.id == "tool-perm"))
@@ -2029,48 +3078,48 @@ mod tests {
     #[test]
     fn enforce_history_retention_rebuilds_tool_index_after_prune() {
         let mut app = make_test_app();
-        app.messages = vec![
+        *app.messages_mut() = vec![
             ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "-", "/cwd", "-"),
             user_text_message("drop this"),
             assistant_bash_tool_message("tool-idx", model::ToolCallStatus::InProgress, "term-1"),
         ];
         app.index_tool_call("tool-idx".to_owned(), 99, 99);
         app.sync_terminal_tool_call("stale-term".to_owned(), 99, 99);
-        app.history_retention.max_bytes = 1;
+        app.history_retention_mut().max_bytes = 1;
 
         let _ = app.enforce_history_retention();
         assert_eq!(app.lookup_tool_call("tool-idx"), Some((2, 0)));
-        assert_eq!(app.terminal_tool_calls.len(), 1);
-        assert_eq!(app.terminal_tool_call_membership.len(), 1);
-        assert_eq!(app.terminal_tool_calls[0].terminal_id, "term-1");
-        assert_eq!(app.terminal_tool_calls[0].msg_idx, 2);
-        assert_eq!(app.terminal_tool_calls[0].block_idx, 0);
+        assert_eq!(app.terminal_tool_calls().len(), 1);
+        assert_eq!(app.terminal_tool_call_membership().len(), 1);
+        assert_eq!(app.terminal_tool_calls()[0].terminal_id, "term-1");
+        assert_eq!(app.terminal_tool_calls()[0].msg_idx, 2);
+        assert_eq!(app.terminal_tool_calls()[0].block_idx, 0);
     }
 
     #[test]
     fn enforce_history_retention_preserves_active_turn_assistant_message() {
         let mut app = make_test_app();
         app.status = AppStatus::Thinking;
-        app.messages = vec![
+        *app.messages_mut() = vec![
             ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "-", "/cwd", "-"),
             user_text_message("drop this"),
             ChatMessage::new(MessageRole::Assistant, Vec::new(), None),
         ];
         app.bind_active_turn_assistant(2);
-        app.history_retention.max_bytes = 1;
+        app.history_retention_mut().max_bytes = 1;
 
         let stats = app.enforce_history_retention();
 
         assert_eq!(stats.dropped_messages, 1);
         assert_eq!(app.active_turn_assistant_idx(), Some(2));
-        assert!(matches!(app.messages[2].role, MessageRole::Assistant));
+        assert!(matches!(app.messages()[2].role, MessageRole::Assistant));
     }
 
     #[test]
     fn enforce_history_retention_remaps_active_turn_assistant_after_prune() {
         let mut app = make_test_app();
         app.status = AppStatus::Thinking;
-        app.messages = vec![
+        *app.messages_mut() = vec![
             user_text_message("drop this"),
             ChatMessage::new(
                 MessageRole::Assistant,
@@ -2079,29 +3128,29 @@ mod tests {
             ),
         ];
         app.bind_active_turn_assistant(1);
-        app.history_retention.max_bytes = App::measure_message_bytes(&app.messages[1]);
+        app.history_retention_mut().max_bytes = App::measure_message_bytes(&app.messages()[1]);
 
         let stats = app.enforce_history_retention();
 
         assert_eq!(stats.dropped_messages, 1);
         assert_eq!(app.active_turn_assistant_idx(), Some(1));
-        assert!(App::is_history_hidden_marker_message(&app.messages[0]));
-        assert!(matches!(app.messages[1].role, MessageRole::Assistant));
+        assert!(App::is_history_hidden_marker_message(&app.messages()[0]));
+        assert!(matches!(app.messages()[1].role, MessageRole::Assistant));
     }
 
     #[test]
     fn enforce_history_retention_keeps_single_marker_on_repeat() {
         let mut app = make_test_app();
-        app.messages = vec![
+        *app.messages_mut() = vec![
             ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "-", "/cwd", "-"),
             user_text_message("drop me"),
         ];
-        app.history_retention.max_bytes = 1;
+        app.history_retention_mut().max_bytes = 1;
 
         let first = app.enforce_history_retention();
         let second = app.enforce_history_retention();
         let marker_count =
-            app.messages.iter().filter(|msg| App::is_history_hidden_marker_message(msg)).count();
+            app.messages().iter().filter(|msg| App::is_history_hidden_marker_message(msg)).count();
 
         assert_eq!(first.dropped_messages, 1);
         assert_eq!(second.dropped_messages, 0);
@@ -2111,32 +3160,35 @@ mod tests {
     #[test]
     fn enforce_history_retention_preserves_manual_scroll_anchor_across_drop_and_marker_insert() {
         let mut app = make_test_app();
-        app.messages = vec![
+        *app.messages_mut() = vec![
             ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "-", "/cwd", "-"),
             user_text_message("drop me first"),
             user_text_message("keep this anchored"),
             user_text_message("tail"),
         ];
-        let _ = app.viewport.on_frame(40, 12);
-        app.viewport.sync_message_count(app.messages.len());
-        for idx in 0..app.messages.len() {
-            app.viewport.set_message_height(idx, 4);
+        let _ = app.viewport_mut().on_frame(40, 12);
+        {
+            let n = app.messages().len();
+            app.viewport_mut().sync_message_count(n);
+        };
+        for idx in 0..app.messages().len() {
+            app.viewport_mut().set_message_height(idx, 4);
         }
-        app.viewport.mark_heights_valid();
-        app.viewport.rebuild_prefix_sums();
+        app.viewport_mut().mark_heights_valid();
+        app.viewport_mut().rebuild_prefix_sums();
 
-        app.viewport.auto_scroll = false;
-        app.viewport.scroll_offset = 9;
-        app.viewport.scroll_target = 9;
-        app.viewport.scroll_pos = 9.0;
-        app.history_retention.max_bytes = app
+        app.viewport_mut().auto_scroll = false;
+        app.viewport_mut().scroll_offset = 9;
+        app.viewport_mut().scroll_target = 9;
+        app.viewport_mut().scroll_pos = 9.0;
+        app.history_retention_mut().max_bytes = app
             .measure_history_bytes()
-            .saturating_sub(App::measure_message_bytes(&app.messages[1]));
+            .saturating_sub(App::measure_message_bytes(&app.messages()[1]));
 
         let _ = app.enforce_history_retention();
 
-        assert!(app.messages.iter().any(App::is_history_hidden_marker_message));
-        assert_eq!(app.viewport.scroll_anchor_to_restore(), Some((2, 1)));
+        assert!(app.messages().iter().any(App::is_history_hidden_marker_message));
+        assert_eq!(app.viewport_mut().scroll_anchor_to_restore(), Some((2, 1)));
     }
 
     #[test]
@@ -2200,16 +3252,16 @@ mod tests {
     fn active_task_insert_remove() {
         let mut app = make_test_app();
         app.insert_active_task("task-1".into());
-        assert!(app.active_task_ids.contains("task-1"));
+        assert!(app.active_task_ids().contains("task-1"));
         app.remove_active_task("task-1");
-        assert!(!app.active_task_ids.contains("task-1"));
+        assert!(!app.active_task_ids().contains("task-1"));
     }
 
     #[test]
     fn remove_nonexistent_task_is_noop() {
         let mut app = make_test_app();
         app.remove_active_task("does-not-exist");
-        assert!(app.active_task_ids.is_empty());
+        assert!(app.active_task_ids().is_empty());
     }
 
     // active_task_ids
@@ -2220,9 +3272,9 @@ mod tests {
         let mut app = make_test_app();
         app.insert_active_task("task-1".into());
         app.insert_active_task("task-1".into());
-        assert_eq!(app.active_task_ids.len(), 1);
+        assert_eq!(app.active_task_ids().len(), 1);
         app.remove_active_task("task-1");
-        assert!(app.active_task_ids.is_empty());
+        assert!(app.active_task_ids().is_empty());
     }
 
     /// Insert many tasks, remove in different order.
@@ -2232,12 +3284,12 @@ mod tests {
         for i in 0..100 {
             app.insert_active_task(format!("task-{i}"));
         }
-        assert_eq!(app.active_task_ids.len(), 100);
+        assert_eq!(app.active_task_ids().len(), 100);
         // Remove in reverse order
         for i in (0..100).rev() {
             app.remove_active_task(&format!("task-{i}"));
         }
-        assert!(app.active_task_ids.is_empty());
+        assert!(app.active_task_ids().is_empty());
     }
 
     /// Mixed insert/remove interleaving.
@@ -2248,10 +3300,10 @@ mod tests {
         app.insert_active_task("b".into());
         app.remove_active_task("a");
         app.insert_active_task("c".into());
-        assert!(!app.active_task_ids.contains("a"));
-        assert!(app.active_task_ids.contains("b"));
-        assert!(app.active_task_ids.contains("c"));
-        assert_eq!(app.active_task_ids.len(), 2);
+        assert!(!app.active_task_ids().contains("a"));
+        assert!(app.active_task_ids().contains("b"));
+        assert!(app.active_task_ids().contains("c"));
+        assert_eq!(app.active_task_ids().len(), 2);
     }
 
     /// Remove from empty set multiple times - no panic.
@@ -2261,7 +3313,7 @@ mod tests {
         for i in 0..100 {
             app.remove_active_task(&format!("ghost-{i}"));
         }
-        assert!(app.active_task_ids.is_empty());
+        assert!(app.active_task_ids().is_empty());
     }
 
     /// `clear_tool_scope_tracking` must also clear `active_task_ids`.
@@ -2271,15 +3323,15 @@ mod tests {
     fn clear_tool_scope_tracking_also_clears_active_task_ids() {
         let mut app = make_test_app();
         app.insert_active_task("task-leaked".into());
-        assert!(!app.active_task_ids.is_empty());
+        assert!(!app.active_task_ids().is_empty());
         app.clear_tool_scope_tracking();
-        assert!(app.active_task_ids.is_empty(), "active_task_ids must be cleared at turn end");
+        assert!(app.active_task_ids().is_empty(), "active_task_ids must be cleared at turn end");
     }
 
     #[test]
     fn finalize_in_progress_tool_calls_detaches_execute_terminal_refs() {
         let mut app = make_test_app();
-        app.messages.push(assistant_bash_tool_message(
+        app.messages_mut().push(assistant_bash_tool_message(
             "bash-1",
             model::ToolCallStatus::InProgress,
             "term-1",
@@ -2290,9 +3342,9 @@ mod tests {
         let changed = app.finalize_in_progress_tool_calls(model::ToolCallStatus::Completed);
 
         assert_eq!(changed, 1);
-        assert!(app.terminal_tool_calls.is_empty());
-        assert!(app.terminal_tool_call_membership.is_empty());
-        let MessageBlock::ToolCall(tc) = &app.messages[0].blocks[0] else {
+        assert!(app.terminal_tool_calls().is_empty());
+        assert!(app.terminal_tool_call_membership().is_empty());
+        let MessageBlock::ToolCall(tc) = &app.messages()[0].blocks[0] else {
             panic!("expected tool call");
         };
         assert_eq!(tc.status, model::ToolCallStatus::Completed);
@@ -2302,51 +3354,57 @@ mod tests {
     #[test]
     fn insert_message_tracked_nontail_rebuilds_tool_indices_and_invalidates_suffix() {
         let mut app = make_test_app();
-        app.messages.push(user_text_message("before"));
-        app.messages.push(assistant_tool_message("tool-1", model::ToolCallStatus::Completed));
-        app.messages.push(user_text_message("after"));
+        app.messages_mut().push(user_text_message("before"));
+        app.messages_mut().push(assistant_tool_message("tool-1", model::ToolCallStatus::Completed));
+        app.messages_mut().push(user_text_message("after"));
         app.index_tool_call("tool-1".to_owned(), 1, 0);
 
-        let _ = app.viewport.on_frame(80, 24);
-        app.viewport.sync_message_count(3);
-        app.viewport.mark_heights_valid();
-        app.viewport.rebuild_prefix_sums();
+        let _ = app.viewport_mut().on_frame(80, 24);
+        app.viewport_mut().sync_message_count(3);
+        app.viewport_mut().mark_heights_valid();
+        app.viewport_mut().rebuild_prefix_sums();
 
         app.insert_message_tracked(1, user_text_message("inserted"));
-        app.viewport.sync_message_count(app.messages.len());
+        {
+            let n = app.messages().len();
+            app.viewport_mut().sync_message_count(n);
+        };
 
         assert_eq!(app.lookup_tool_call("tool-1"), Some((2, 0)));
-        assert_eq!(app.viewport.oldest_stale_index(), Some(1));
-        assert_eq!(app.viewport.prefix_dirty_from(), Some(1));
+        assert_eq!(app.viewport_mut().oldest_stale_index(), Some(1));
+        assert_eq!(app.viewport_mut().prefix_dirty_from(), Some(1));
     }
 
     #[test]
     fn remove_message_tracked_nontail_rebuilds_tool_indices_and_invalidates_suffix() {
         let mut app = make_test_app();
-        app.messages.push(user_text_message("before"));
-        app.messages.push(assistant_tool_message("tool-1", model::ToolCallStatus::Completed));
-        app.messages.push(user_text_message("after"));
+        app.messages_mut().push(user_text_message("before"));
+        app.messages_mut().push(assistant_tool_message("tool-1", model::ToolCallStatus::Completed));
+        app.messages_mut().push(user_text_message("after"));
         app.index_tool_call("tool-1".to_owned(), 1, 0);
 
-        let _ = app.viewport.on_frame(80, 24);
-        app.viewport.sync_message_count(3);
-        app.viewport.mark_heights_valid();
-        app.viewport.rebuild_prefix_sums();
+        let _ = app.viewport_mut().on_frame(80, 24);
+        app.viewport_mut().sync_message_count(3);
+        app.viewport_mut().mark_heights_valid();
+        app.viewport_mut().rebuild_prefix_sums();
 
         let removed = app.remove_message_tracked(0);
-        app.viewport.sync_message_count(app.messages.len());
+        {
+            let n = app.messages().len();
+            app.viewport_mut().sync_message_count(n);
+        };
 
         assert!(removed.is_some());
         assert_eq!(app.lookup_tool_call("tool-1"), Some((0, 0)));
-        assert_eq!(app.viewport.oldest_stale_index(), Some(0));
-        assert_eq!(app.viewport.prefix_dirty_from(), Some(0));
+        assert_eq!(app.viewport_mut().oldest_stale_index(), Some(0));
+        assert_eq!(app.viewport_mut().prefix_dirty_from(), Some(0));
     }
 
     #[test]
     fn remove_message_tracked_tail_removes_orphaned_tool_indices() {
         let mut app = make_test_app();
-        app.messages.push(user_text_message("before"));
-        app.messages.push(assistant_tool_message("tool-1", model::ToolCallStatus::Completed));
+        app.messages_mut().push(user_text_message("before"));
+        app.messages_mut().push(assistant_tool_message("tool-1", model::ToolCallStatus::Completed));
         app.index_tool_call("tool-1".to_owned(), 1, 0);
 
         let removed = app.remove_message_tracked(1);
@@ -2358,7 +3416,7 @@ mod tests {
     #[test]
     fn remove_message_tracked_prunes_tool_scope_entries() {
         let mut app = make_test_app();
-        app.messages.push(assistant_tool_message("tool-1", model::ToolCallStatus::Completed));
+        app.messages_mut().push(assistant_tool_message("tool-1", model::ToolCallStatus::Completed));
         app.index_tool_call("tool-1".to_owned(), 0, 0);
         app.register_tool_call_scope(
             "tool-1".to_owned(),
@@ -2374,28 +3432,28 @@ mod tests {
     #[test]
     fn clear_messages_tracked_clears_tool_and_terminal_tracking() {
         let mut app = make_test_app();
-        app.messages.push(assistant_bash_tool_message(
+        app.messages_mut().push(assistant_bash_tool_message(
             "bash-1",
             model::ToolCallStatus::InProgress,
             "term-1",
         ));
         app.index_tool_call("bash-1".to_owned(), 0, 0);
         app.sync_terminal_tool_call("term-1".to_owned(), 0, 0);
-        app.pending_interaction_ids.push("bash-1".into());
+        app.pending_interaction_ids_mut().push("bash-1".into());
 
         app.clear_messages_tracked();
 
-        assert!(app.messages.is_empty());
-        assert!(app.tool_call_index.is_empty());
-        assert!(app.terminal_tool_calls.is_empty());
-        assert!(app.terminal_tool_call_membership.is_empty());
-        assert!(app.pending_interaction_ids.is_empty());
+        assert!(app.messages().is_empty());
+        assert!(app.tool_call_index().is_empty());
+        assert!(app.terminal_tool_calls().is_empty());
+        assert!(app.terminal_tool_call_membership().is_empty());
+        assert!(app.pending_interaction_ids().is_empty());
     }
 
     #[test]
     fn rebuild_tool_indices_skips_completed_terminal_refs() {
         let mut app = make_test_app();
-        app.messages.push(assistant_bash_tool_message(
+        app.messages_mut().push(assistant_bash_tool_message(
             "bash-1",
             model::ToolCallStatus::Completed,
             "term-1",
@@ -2405,29 +3463,31 @@ mod tests {
 
         app.rebuild_tool_indices_and_terminal_refs();
 
-        assert!(app.terminal_tool_calls.is_empty());
-        assert!(app.terminal_tool_call_membership.is_empty());
+        assert!(app.terminal_tool_calls().is_empty());
+        assert!(app.terminal_tool_call_membership().is_empty());
     }
 
     #[test]
     fn finalize_in_progress_tool_calls_invalidates_all_changed_messages() {
         let mut app = make_test_app();
-        app.messages.push(assistant_tool_message("tool-1", model::ToolCallStatus::InProgress));
-        app.messages.push(user_text_message("gap"));
-        app.messages.push(assistant_tool_message("tool-2", model::ToolCallStatus::InProgress));
+        app.messages_mut()
+            .push(assistant_tool_message("tool-1", model::ToolCallStatus::InProgress));
+        app.messages_mut().push(user_text_message("gap"));
+        app.messages_mut()
+            .push(assistant_tool_message("tool-2", model::ToolCallStatus::InProgress));
 
-        let _ = app.viewport.on_frame(80, 24);
-        app.viewport.sync_message_count(3);
-        app.viewport.mark_heights_valid();
-        app.viewport.rebuild_prefix_sums();
+        let _ = app.viewport_mut().on_frame(80, 24);
+        app.viewport_mut().sync_message_count(3);
+        app.viewport_mut().mark_heights_valid();
+        app.viewport_mut().rebuild_prefix_sums();
 
         let changed = app.finalize_in_progress_tool_calls(model::ToolCallStatus::Completed);
 
         assert_eq!(changed, 2);
-        assert!(!app.viewport.message_height_is_current(0));
-        assert!(app.viewport.message_height_is_current(1));
-        assert!(!app.viewport.message_height_is_current(2));
-        assert_eq!(app.viewport.oldest_stale_index(), Some(0));
+        assert!(!app.viewport_mut().message_height_is_current(0));
+        assert!(app.viewport_mut().message_height_is_current(1));
+        assert!(!app.viewport_mut().message_height_is_current(2));
+        assert_eq!(app.viewport_mut().oldest_stale_index(), Some(0));
     }
 
     // IncrementalMarkdown
@@ -3014,13 +4074,13 @@ mod tests {
 
     fn focus_test_app_with_available_targets() -> App {
         let mut app = make_test_app();
-        app.todos.push(TodoItem {
+        app.todos_mut().push(TodoItem {
             content: "Task".into(),
             status: TodoStatus::Pending,
             active_form: String::new(),
         });
-        app.show_todo_panel = true;
-        app.pending_interaction_ids.push("perm-1".into());
+        app.set_show_todo_panel(true);
+        app.pending_interaction_ids_mut().push("perm-1".into());
         app.slash = Some(SlashState {
             trigger_row: 0,
             trigger_col: 0,
@@ -3073,115 +4133,115 @@ mod tests {
     #[test]
     fn invalidate_single_tail_preserves_prefix_sums() {
         let mut app = make_test_app();
-        app.messages.push(user_text_message("a"));
-        app.messages.push(user_text_message("b"));
-        app.messages.push(user_text_message("c"));
-        let _ = app.viewport.on_frame(80, 24);
-        app.viewport.set_message_height(0, 5);
-        app.viewport.set_message_height(1, 10);
-        app.viewport.set_message_height(2, 3);
-        app.viewport.mark_heights_valid();
-        app.viewport.rebuild_prefix_sums();
+        app.messages_mut().push(user_text_message("a"));
+        app.messages_mut().push(user_text_message("b"));
+        app.messages_mut().push(user_text_message("c"));
+        let _ = app.viewport_mut().on_frame(80, 24);
+        app.viewport_mut().set_message_height(0, 5);
+        app.viewport_mut().set_message_height(1, 10);
+        app.viewport_mut().set_message_height(2, 3);
+        app.viewport_mut().mark_heights_valid();
+        app.viewport_mut().rebuild_prefix_sums();
 
         app.invalidate_layout(InvalidationLevel::MessageChanged(2)); // tail
 
-        assert_eq!(app.viewport.oldest_stale_index(), Some(2));
-        assert_eq!(app.viewport.prefix_dirty_from(), Some(2));
-        assert_eq!(app.viewport.prefix_sums_width, 0);
+        assert_eq!(app.viewport_mut().oldest_stale_index(), Some(2));
+        assert_eq!(app.viewport_mut().prefix_dirty_from(), Some(2));
+        assert_eq!(app.viewport().prefix_sums_width, 0);
     }
 
     #[test]
     fn invalidate_single_nontail_invalidates_prefix_sums() {
         let mut app = make_test_app();
-        app.messages.push(user_text_message("a"));
-        app.messages.push(user_text_message("b"));
-        app.messages.push(user_text_message("c"));
-        let _ = app.viewport.on_frame(80, 24);
-        app.viewport.set_message_height(0, 5);
-        app.viewport.set_message_height(1, 10);
-        app.viewport.set_message_height(2, 3);
-        app.viewport.mark_heights_valid();
-        app.viewport.rebuild_prefix_sums();
+        app.messages_mut().push(user_text_message("a"));
+        app.messages_mut().push(user_text_message("b"));
+        app.messages_mut().push(user_text_message("c"));
+        let _ = app.viewport_mut().on_frame(80, 24);
+        app.viewport_mut().set_message_height(0, 5);
+        app.viewport_mut().set_message_height(1, 10);
+        app.viewport_mut().set_message_height(2, 3);
+        app.viewport_mut().mark_heights_valid();
+        app.viewport_mut().rebuild_prefix_sums();
 
         app.invalidate_layout(InvalidationLevel::MessageChanged(1)); // non-tail
 
-        assert_eq!(app.viewport.oldest_stale_index(), Some(1));
-        assert_eq!(app.viewport.prefix_dirty_from(), Some(1));
-        assert_eq!(app.viewport.prefix_sums_width, 0);
+        assert_eq!(app.viewport_mut().oldest_stale_index(), Some(1));
+        assert_eq!(app.viewport_mut().prefix_dirty_from(), Some(1));
+        assert_eq!(app.viewport().prefix_sums_width, 0);
     }
 
     #[test]
     fn invalidate_from_always_invalidates_prefix_sums() {
         let mut app = make_test_app();
-        app.messages.push(user_text_message("a"));
-        app.messages.push(user_text_message("b"));
-        app.messages.push(user_text_message("c"));
-        let _ = app.viewport.on_frame(80, 24);
-        app.viewport.set_message_height(0, 5);
-        app.viewport.set_message_height(1, 10);
-        app.viewport.set_message_height(2, 3);
-        app.viewport.mark_heights_valid();
-        app.viewport.rebuild_prefix_sums();
-        assert_ne!(app.viewport.prefix_sums_width, 0);
+        app.messages_mut().push(user_text_message("a"));
+        app.messages_mut().push(user_text_message("b"));
+        app.messages_mut().push(user_text_message("c"));
+        let _ = app.viewport_mut().on_frame(80, 24);
+        app.viewport_mut().set_message_height(0, 5);
+        app.viewport_mut().set_message_height(1, 10);
+        app.viewport_mut().set_message_height(2, 3);
+        app.viewport_mut().mark_heights_valid();
+        app.viewport_mut().rebuild_prefix_sums();
+        assert_ne!(app.viewport().prefix_sums_width, 0);
 
         // From at tail index still invalidates prefix sums (unlike Single).
         app.invalidate_layout(InvalidationLevel::MessagesFrom(2));
 
-        assert_eq!(app.viewport.oldest_stale_index(), Some(2));
-        assert_eq!(app.viewport.prefix_dirty_from(), Some(2));
-        assert_eq!(app.viewport.prefix_sums_width, 0);
+        assert_eq!(app.viewport_mut().oldest_stale_index(), Some(2));
+        assert_eq!(app.viewport_mut().prefix_dirty_from(), Some(2));
+        assert_eq!(app.viewport().prefix_sums_width, 0);
     }
 
     #[test]
     fn invalidate_from_zero_matches_old_mark_all() {
         let mut app = make_test_app();
-        app.messages.push(user_text_message("a"));
-        app.messages.push(user_text_message("b"));
-        app.messages.push(user_text_message("c"));
-        let _ = app.viewport.on_frame(80, 24);
-        app.viewport.set_message_height(0, 5);
-        app.viewport.set_message_height(1, 10);
-        app.viewport.set_message_height(2, 3);
-        app.viewport.mark_heights_valid();
-        app.viewport.rebuild_prefix_sums();
+        app.messages_mut().push(user_text_message("a"));
+        app.messages_mut().push(user_text_message("b"));
+        app.messages_mut().push(user_text_message("c"));
+        let _ = app.viewport_mut().on_frame(80, 24);
+        app.viewport_mut().set_message_height(0, 5);
+        app.viewport_mut().set_message_height(1, 10);
+        app.viewport_mut().set_message_height(2, 3);
+        app.viewport_mut().mark_heights_valid();
+        app.viewport_mut().rebuild_prefix_sums();
 
         app.invalidate_layout(InvalidationLevel::MessagesFrom(0));
 
-        assert_eq!(app.viewport.oldest_stale_index(), Some(0));
-        assert_eq!(app.viewport.prefix_dirty_from(), Some(0));
-        assert_eq!(app.viewport.prefix_sums_width, 0);
+        assert_eq!(app.viewport_mut().oldest_stale_index(), Some(0));
+        assert_eq!(app.viewport_mut().prefix_dirty_from(), Some(0));
+        assert_eq!(app.viewport().prefix_sums_width, 0);
     }
 
     #[test]
     fn invalidate_global_bumps_generation() {
         let mut app = make_test_app();
-        app.messages.push(user_text_message("a"));
-        app.messages.push(user_text_message("b"));
-        app.messages.push(user_text_message("c"));
-        let _ = app.viewport.on_frame(80, 24);
-        app.viewport.sync_message_count(3);
-        app.viewport.mark_heights_valid();
-        app.viewport.rebuild_prefix_sums();
-        let gen_before = app.viewport.layout_generation;
+        app.messages_mut().push(user_text_message("a"));
+        app.messages_mut().push(user_text_message("b"));
+        app.messages_mut().push(user_text_message("c"));
+        let _ = app.viewport_mut().on_frame(80, 24);
+        app.viewport_mut().sync_message_count(3);
+        app.viewport_mut().mark_heights_valid();
+        app.viewport_mut().rebuild_prefix_sums();
+        let gen_before = app.viewport().layout_generation;
 
         app.invalidate_layout(InvalidationLevel::Global);
 
-        assert_eq!(app.viewport.oldest_stale_index(), Some(0));
-        assert_eq!(app.viewport.prefix_dirty_from(), Some(0));
-        assert_eq!(app.viewport.prefix_sums_width, 0);
-        assert_eq!(app.viewport.layout_generation, gen_before + 1);
+        assert_eq!(app.viewport_mut().oldest_stale_index(), Some(0));
+        assert_eq!(app.viewport_mut().prefix_dirty_from(), Some(0));
+        assert_eq!(app.viewport().prefix_sums_width, 0);
+        assert_eq!(app.viewport().layout_generation, gen_before + 1);
     }
 
     #[test]
     fn invalidate_global_noop_on_empty() {
         let mut app = make_test_app();
-        assert!(app.messages.is_empty());
-        let gen_before = app.viewport.layout_generation;
+        assert!(app.messages().is_empty());
+        let gen_before = app.viewport().layout_generation;
 
         app.invalidate_layout(InvalidationLevel::Global);
 
-        assert!(app.viewport.oldest_stale_index().is_none());
-        assert_eq!(app.viewport.layout_generation, gen_before);
+        assert!(app.viewport_mut().oldest_stale_index().is_none());
+        assert_eq!(app.viewport().layout_generation, gen_before);
     }
 
     #[test]
@@ -3189,16 +4249,16 @@ mod tests {
         let mut app = make_test_app();
         // Need enough messages so all indices are non-tail for consistent behavior.
         for _ in 0..10 {
-            app.messages.push(user_text_message("x"));
+            app.messages_mut().push(user_text_message("x"));
         }
-        app.viewport.sync_message_count(10);
-        app.viewport.mark_heights_valid();
+        app.viewport_mut().sync_message_count(10);
+        app.viewport_mut().mark_heights_valid();
 
         app.invalidate_layout(InvalidationLevel::MessageChanged(5));
         app.invalidate_layout(InvalidationLevel::MessageChanged(2));
         app.invalidate_layout(InvalidationLevel::MessageChanged(7));
 
-        assert_eq!(app.viewport.oldest_stale_index(), Some(2));
+        assert_eq!(app.viewport_mut().oldest_stale_index(), Some(2));
     }
 
     #[test]
