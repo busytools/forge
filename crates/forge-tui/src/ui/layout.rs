@@ -23,6 +23,10 @@ pub const PANE_WIDTH_MEDIUM: u16 = 20;
 /// Projects pane and the chat column when the pane is visible.
 pub const PANE_SEPARATOR_WIDTH: u16 = 1;
 
+/// 1-col gutter between the separator and the chat column so chat
+/// content doesn't visually collide with the `│` rule.
+const CHAT_LEFT_PADDING: u16 = 1;
+
 #[derive(Clone, Default)]
 pub struct AppLayout {
     /// Single-line top bar rect, allocated only at Narrow tier
@@ -73,9 +77,6 @@ pub fn compute(
     //   Narrow (<  120) → no inline pane; top bar lands in chat
     //                     column below
     // `pane_visible == false` collapses Wide/Medium to no pane.
-    // 1-col gutter between the separator and the chat column so
-    // chat content doesn't visually collide with the `│` rule.
-    const CHAT_LEFT_PADDING: u16 = 1;
     let (pane_rect, pane_separator_rect, chat_area) =
         if pane_visible && area.width >= WIDE_TIER_MIN_WIDTH {
             let [pane, sep, _pad, chat] = Layout::horizontal([
@@ -344,7 +345,8 @@ mod tests {
         assert_eq!(pane.width, 26);
         assert!(layout.body.width >= 1);
         assert_eq!(pane.x, 0, "pane sits on the left");
-        assert_eq!(layout.body.x, pane.x + pane.width);
+        // body sits past pane + separator + chat-left-padding.
+        assert_eq!(layout.body.x, pane.x + pane.width + PANE_SEPARATOR_WIDTH + CHAT_LEFT_PADDING);
     }
 
     #[test]
@@ -361,7 +363,7 @@ mod tests {
         assert_eq!(pane.width, 20);
         assert!(layout.body.width >= 1);
         assert_eq!(pane.x, 0);
-        assert_eq!(layout.body.x, pane.x + pane.width);
+        assert_eq!(layout.body.x, pane.x + pane.width + PANE_SEPARATOR_WIDTH + CHAT_LEFT_PADDING);
     }
 
     #[test]

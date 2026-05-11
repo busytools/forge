@@ -71,18 +71,25 @@ fn renders_banner_and_active_project_row() {
 
     let lines = render_to_lines(&mut app, &projects, 26, 10);
 
-    assert!(lines[0].starts_with("PROJECTS"), "banner: {:?}", lines[0]);
+    // Row layout (after the section-rhythm tightening): banner, rule,
+    // ACTIVE header, blank, project row.
+    assert!(lines[0].contains("PROJECTS"), "banner: {:?}", lines[0]);
     assert!(lines[1].contains('─'), "rule: {:?}", lines[1]);
-    assert!(lines[2].is_empty(), "blank: {:?}", lines[2]);
-    assert!(lines[3].contains("ACTIVE"), "ACTIVE section header: {:?}", lines[3]);
+    assert!(lines[2].contains("ACTIVE"), "ACTIVE header: {:?}", lines[2]);
+    assert!(lines[3].is_empty(), "blank after header: {:?}", lines[3]);
     assert!(lines[4].contains("forge"), "active project row: {:?}", lines[4]);
 
-    // One hit target — the project header — and it carries the key.
-    assert_eq!(app.pane_hit_targets.len(), 1, "exactly one project hit target");
-    match &app.pane_hit_targets[0] {
-        PaneHitTarget::ProjectHeader { project_name, .. } => assert_eq!(project_name, "forge"),
-        other => panic!("expected ProjectHeader, got {other:?}"),
-    }
+    // Two hit targets for an active row: the project header (full-row
+    // click → focus/switch) and the close `[×]` glyph (right-edge
+    // band → kill session).
+    let project_header = app.pane_hit_targets.iter().find_map(|t| match t {
+        PaneHitTarget::ProjectHeader { project_name, .. } => Some(project_name.clone()),
+        _ => None,
+    });
+    assert_eq!(project_header.as_deref(), Some("forge"), "project header hit target");
+    let close_present =
+        app.pane_hit_targets.iter().any(|t| matches!(t, PaneHitTarget::CloseSession { .. }));
+    assert!(close_present, "active row stamps a CloseSession hit target");
 }
 
 #[test]
@@ -144,12 +151,12 @@ fn medium_tier_truncates_long_project_labels() {
     // Medium tier renders in a 20ch-wide pane.
     let lines = render_to_lines(&mut app, &projects, 20, 20);
 
-    // Project header truncated: pane is 20 chars, indent + glyph
-    // column = 4, so the project budget is 16. 15-char prefix +
-    // ellipsis = "subspace-chain-…". The longest substring of the
-    // original we expect to still see is "subspace-chain-".
-    let any_truncated_project =
-        lines.iter().any(|l| l.contains('…') && l.contains("subspace-chain-"));
+    // Project header truncated. Medium-tier active-row chrome is 10
+    // chars (`<2 indent><1 glyph><1 sp><name><1 sp><3 [×]><2 gutter>`),
+    // so at width 20 the name budget is 10. 9-char prefix + ellipsis
+    // = "subspace-…". The longest substring of the original we expect
+    // to still see is "subspace".
+    let any_truncated_project = lines.iter().any(|l| l.contains('…') && l.contains("subspace"));
     assert!(
         any_truncated_project,
         "expected truncated project label in pane output, got: {lines:?}"

@@ -172,11 +172,7 @@ pub(super) fn handle_connected_client_event(
         // next animating frame — meaning the tab title visibly lags
         // a session switch by one frame at best and not at all when
         // the destination is fully idle (no spinner ticking).
-        crate::app::tab_title::update_tab_title(
-            &app.status,
-            app.spinner_frame,
-            app.cwd(),
-        );
+        crate::app::tab_title::update_tab_title(&app.status, app.spinner_frame, app.cwd());
     } else {
         // Background path: the user switched to a different session
         // while this one was spawning. Park the connection in the
