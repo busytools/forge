@@ -93,6 +93,13 @@ pub enum ClientEvent {
         mode: Option<crate::app::ModeState>,
         history_updates: Vec<forge_primitives::Message>,
         pre_connect_key: Option<SessionKey>,
+        /// AgentHandle for the freshly-spawned session, routed
+        /// alongside its identifying envelope so the App can install
+        /// the conn onto the right bucket without consulting a
+        /// thread-local CONN_SLOT (which races under rapid spawn-
+        /// sleeping clicks — second click's slot pointer replaces
+        /// the first's before either Connected lands).
+        conn: Arc<forge_agent::AgentHandle>,
     },
     /// Background connection failed.
     ConnectionFailed { session_key: SessionKey, message: String },
@@ -112,6 +119,12 @@ pub enum ClientEvent {
         available_models: Vec<model::AvailableModel>,
         mode: Option<crate::app::ModeState>,
         history_updates: Vec<forge_primitives::Message>,
+        /// AgentHandle for the replacement session (`/new`, login,
+        /// logout). Same Arc identity as the bridge's previous
+        /// AgentHandle — the bridge swapped its internal Client to
+        /// the new CLI subprocess but the handle is unchanged — so
+        /// installing it on the new bucket carries the conn forward.
+        conn: Arc<forge_agent::AgentHandle>,
     },
     /// Recent sessions discovered via SDK session listing.
     SessionsListed { sessions: Vec<forge_primitives::SessionListEntry> },

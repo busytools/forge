@@ -16,16 +16,15 @@ use crate::app::App;
 use crate::error::AppError;
 use forge_primitives as types;
 use forge_workspace::SessionKey;
-use std::rc::Rc;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing::{Instrument as _, info_span};
 
+use super::StartConnectionParams;
 use super::type_converters::{
     convert_current_model, convert_mode_state, map_available_models, map_permission_request,
     map_question_request,
 };
-use super::{ConnectionSlot, StartConnectionParams};
 
 /// Resolve the [`SessionKey`] used to tag a translated
 /// [`ClientEvent`]. AgentEvents that already carry a `session_id`
@@ -42,10 +41,7 @@ fn session_key_for(event: &AgentEvent) -> SessionKey {
     }
 }
 
-pub(super) async fn run_connection_task(
-    params: StartConnectionParams,
-    conn_slot_writer: Rc<std::cell::RefCell<Option<ConnectionSlot>>>,
-) {
+pub(super) async fn run_connection_task(params: StartConnectionParams) {
     let connection_span = info_span!(
         target: crate::logging::targets::BRIDGE_LIFECYCLE,
         "bridge_connection",
@@ -118,8 +114,6 @@ pub(super) async fn run_connection_task(
             return;
         };
 
-        *conn_slot_writer.borrow_mut() = Some(ConnectionSlot { conn: Arc::clone(&agent) });
-
         forge_sdk_event_loop(
             &event_tx,
             &mut event_rx,
@@ -174,6 +168,7 @@ fn handle_agent_event(
         } => {
             handle_connected_event(
                 event_tx,
+                agent,
                 connected_once,
                 pre_connect_key,
                 session_id,
@@ -261,6 +256,7 @@ fn handle_agent_event(
                 available_models: map_available_models(available_models),
                 mode: mode.map(convert_mode_state),
                 history_updates,
+                conn: Arc::clone(agent),
             });
         }
         AgentEvent::SessionsListed { sessions } => {
@@ -313,6 +309,7 @@ fn handle_agent_event(
 #[allow(clippy::too_many_arguments)]
 fn handle_connected_event(
     event_tx: &mpsc::UnboundedSender<ClientEvent>,
+    agent: &Arc<forge_agent::AgentHandle>,
     connected_once: &mut bool,
     pre_connect_key: &SessionKey,
     session_id: String,
@@ -332,6 +329,7 @@ fn handle_connected_event(
             available_models: map_available_models(available_models),
             mode,
             history_updates,
+            conn: Arc::clone(agent),
         });
     } else {
         *connected_once = true;
@@ -343,6 +341,7 @@ fn handle_connected_event(
             mode,
             history_updates,
             pre_connect_key: Some(pre_connect_key.clone()),
+            conn: Arc::clone(agent),
         });
     }
 }
