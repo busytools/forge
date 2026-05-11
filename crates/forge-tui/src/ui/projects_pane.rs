@@ -170,7 +170,8 @@ fn append_project_rows(
             Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD),
         )));
         let name_budget = name_budget_active(area.width);
-        for (project, lifecycle, is_focused, session_key) in &active {
+        let active_count = active.len();
+        for (idx, (project, lifecycle, is_focused, session_key)) in active.iter().enumerate() {
             let row_y = area.y + line_count_as_u16(lines);
             let (glyph, glyph_color) = glyph_for_lifecycle(*lifecycle, *is_focused, spinner_frame);
             let label = truncate_with_ellipsis(project.name.as_str(), name_budget);
@@ -226,6 +227,13 @@ fn append_project_rows(
                 x_start: close_x_start,
                 x_end: close_x_end,
             });
+            // Deadzone gap row between adjacent projects so a tap
+            // that lands between rows fires nothing rather than the
+            // wrong row. No hit target is stamped for the blank, so
+            // the gap is a true no-op band.
+            if idx + 1 < active_count {
+                lines.push(Line::default());
+            }
         }
     }
 
@@ -236,7 +244,8 @@ fn append_project_rows(
             Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD),
         )));
         let name_budget = name_budget_inactive(area.width);
-        for project in &inactive {
+        let inactive_count = inactive.len();
+        for (idx, project) in inactive.iter().enumerate() {
             let row_y = area.y + line_count_as_u16(lines);
             let label = truncate_with_ellipsis(project.name.as_str(), name_budget);
             let label_pad =
@@ -258,6 +267,12 @@ fn append_project_rows(
                 y: row_y,
                 height: 1,
             });
+            // Deadzone gap between inactive rows — same rationale
+            // as the active section. Tap on the blank row → nothing
+            // fires; tap on the content row → focus/wake fires.
+            if idx + 1 < inactive_count {
+                lines.push(Line::default());
+            }
         }
     }
 }
