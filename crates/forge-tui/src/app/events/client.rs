@@ -990,15 +990,17 @@ fn apply_workspace_update(app: &mut App, update: forge_workspace::SessionUpdate)
         SessionUpdate::TurnError { key, message, class, terminal_reason } => {
             turn::apply_session_update_turn_error(app, key, message, class, terminal_reason);
         }
-        // Remaining variants (Spawning, McpElicitationCompleted,
-        // McpAuthRedirect, McpOperationError, plugins, usage, etc.)
-        // are wired by Phase 3d. For now they continue to flow
-        // through the legacy ClientEvent path.
+        // PHASE-4-CLEANUP: remaining variants (Spawning,
+        // McpElicitationCompleted, McpAuthRedirect, McpOperationError,
+        // plugins, usage, etc.) still flow through the legacy
+        // `ClientEvent` arms in `handle_client_event` above. Phase 4
+        // (the wholesale `ClientEvent` cleanup) wires these and
+        // collapses the dual-dispatch.
         other => {
             tracing::trace!(
                 target: crate::logging::targets::APP_SESSION,
                 update = ?other,
-                "SessionUpdate variant not wired for Phase 3c; legacy ClientEvent path is authoritative",
+                "SessionUpdate variant routed through legacy ClientEvent path; Phase 4 cleanup target",
             );
         }
     }
