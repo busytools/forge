@@ -714,15 +714,43 @@ pub(super) fn handle_session_replaced_event(
     history_messages: &[forge_primitives::Message],
 ) {
     let session_id_for_log = session_id.to_string();
+    let session_key = SessionKey::from_session_id(session_id.to_string());
     let history_message_count = history_messages.len();
     let available_model_count = available_models.len();
     super::clear_compaction_state(app, false);
     app.set_pending_cancel_origin(None);
     app.pending_auto_submit_after_cancel = false;
     let prev_session_id = app.session_id().map(ToString::to_string);
-    apply_session_cwd(app, cwd);
+
+    // Capture the outgoing bucket's key + its conn handle BEFORE
+    // `reset_for_new_session` runs. That call goes through
+    // `set_session_id`, which inserts a fresh bucket under the new
+    // session_id and flips `active_session_key` to it — leaving the
+    // outgoing bucket orphaned and disconnected from any conn. Both
+    // pieces of context are unrecoverable after the swap.
+    let prev_active_key = app.active_session_key.clone();
+    let prev_conn =
+        prev_active_key.as_ref().and_then(|k| app.sessions.get(k)).and_then(|b| b.conn.clone());
+
     *app.available_models_mut() = available_models;
     reset_for_new_session(app, session_id, current_model, mode, false);
+
+    // Re-attach the AgentHandle onto the freshly-inserted bucket. The
+    // underlying bridge swapped its Client to the new CLI session
+    // (see `forge_sdk_worker::spawn_session`), so the same handle is
+    // the right one to keep — without this re-attachment the new
+    // bucket has `conn = None` and every subsequent slash command /
+    // submit short-circuits on `require_active_session`.
+    if let Some(conn) = prev_conn
+        && let Some(new_bucket) = app.session_mut(&session_key)
+    {
+        new_bucket.conn = Some(conn);
+    }
+
+    // Apply cwd AFTER the bucket swap so it lands on the new bucket.
+    // Pre-swap it would write to the now-abandoned outgoing bucket
+    // and the new welcome card would render an empty path.
+    apply_session_cwd(app, cwd);
     refresh_session_git_watcher(app, prev_session_id);
     app.sync_welcome_snapshot();
     if !history_messages.is_empty() {
@@ -732,6 +760,37 @@ pub(super) fn handle_session_replaced_event(
     app.resuming_session_id = None;
     crate::app::file_index::restart(app);
     crate::app::config::refresh_runtime_tabs_for_session_change(app);
+
+    // Drop the now-orphaned outgoing bucket. The CLI replaced the
+    // underlying session (the previous subprocess is gone), and the
+    // user explicitly asked for a fresh start, so its chat history /
+    // tool-call indices / viewport scroll are not reachable from
+    // anywhere in the UI. Leaving it behind would have the Projects
+    // pane resolve "click forge" through the orphan instead of the
+    // new bucket, which is exactly the bug this whole sequence fixes.
+    if let Some(prev) = prev_active_key
+        && prev != session_key
+    {
+        app.sessions.remove(&prev);
+    }
+
+    // Surface the replacement session in the workspace catalog so the
+    // Projects pane finds it on the next render. Without this the
+    // pane keeps showing the previous session_id as the project's
+    // lead — its `live_session` lookup hits `app.sessions` under the
+    // stale id (or fails after the orphan drop above), no project
+    // row matches the active key, and the focus highlight disappears.
+    // Source cwd from the new bucket post-`apply_session_cwd` so the
+    // recorded value matches what the welcome card / pane render
+    // resolved to.
+    let cwd_for_record =
+        app.sessions.get(&session_key).map(|b| b.cwd_raw.clone()).unwrap_or_default();
+    if !cwd_for_record.is_empty()
+        && let Some(workspace) = app.workspace.as_ref()
+    {
+        workspace.record_connected_session(&cwd_for_record, &session_id_for_log, None);
+    }
+
     tracing::info!(
         target: crate::logging::targets::APP_SESSION,
         event_name = "session_replaced",
@@ -1107,5 +1166,58 @@ mod tests {
         assert!(!app.sessions.contains_key(&pre), "pre-connect synthetic bucket removed");
         assert!(app.sessions.contains_key(&real_key));
         assert_eq!(app.active_session_key.as_ref(), Some(&real_key));
+    }
+
+    /// `/new` (and login / logout — anything that fires SessionReplaced
+    /// after the first Connected on a bridge) must insert a fresh
+    /// bucket under the new session UUID, drop the outgoing bucket,
+    /// switch the active key, and land the new cwd on the new bucket.
+    /// Regression guard for the v0.15.0 bug where the outgoing bucket
+    /// stayed in `app.sessions`, the Projects pane resolved the
+    /// project's lead through the orphan, and `click forge` jumped
+    /// back to the previous session.
+    #[test]
+    fn session_replaced_inserts_new_bucket_and_drops_outgoing() {
+        let mut app = App::test_default();
+        let old_key = forge_workspace::SessionKey::from_session_id("old-uuid".to_owned());
+        let mut bucket = crate::app::session::Session::new(old_key.clone());
+        bucket.cwd_raw = "/tmp/old".to_owned();
+        bucket.cwd = "/tmp/old".to_owned();
+        bucket.session_id = Some(model::SessionId::new("old-uuid"));
+        app.sessions.clear();
+        app.sessions.insert(old_key.clone(), bucket);
+        app.active_session_key = Some(old_key.clone());
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        handle_session_replaced_event(
+            &mut app,
+            model::SessionId::new("new-uuid"),
+            dir.path().to_string_lossy().into_owned(),
+            model::CurrentModel::new("model", "model", "model").authoritative(true),
+            Vec::new(),
+            None,
+            &[],
+        );
+
+        let new_key = forge_workspace::SessionKey::from_session_id("new-uuid".to_owned());
+        assert!(
+            !app.sessions.contains_key(&old_key),
+            "outgoing bucket dropped after session replacement",
+        );
+        assert!(
+            app.sessions.contains_key(&new_key),
+            "new bucket inserted under the new session id",
+        );
+        assert_eq!(
+            app.active_session_key.as_ref(),
+            Some(&new_key),
+            "active_session_key switched to the new key",
+        );
+        let new_bucket = app.sessions.get(&new_key).expect("new bucket present");
+        assert_eq!(
+            new_bucket.cwd_raw,
+            dir.path().to_string_lossy().into_owned(),
+            "cwd written to the new bucket after the swap",
+        );
     }
 }
