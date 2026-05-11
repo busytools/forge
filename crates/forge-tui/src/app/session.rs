@@ -349,12 +349,11 @@ impl Default for UiSession {
     }
 }
 
-/// Back-compat alias for [`UiSession`]. The struct was renamed in
-/// Phase 2 of the MVVM refactor (#102) to signal it's a UI-side
-/// projection of the authoritative
-/// [`forge_workspace::DomainSession`]. Phase 4 deletes this alias
-/// and migrates the existing call sites to `UiSession` directly.
-pub type Session = UiSession;
+// Phase 4 deleted the `pub type Session = UiSession;` back-compat
+// alias; the ~250 call sites that used `UiSession::new(...)` etc.
+// were migrated to `UiSession::new(...)`. The new name signals the
+// UI-side projection role; the authoritative state is
+// `forge_workspace::DomainSession`.
 
 #[cfg(test)]
 mod tests {

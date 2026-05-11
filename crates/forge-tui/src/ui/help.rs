@@ -636,7 +636,7 @@ mod tests {
     fn slash_tab_shows_advertised_commands_with_description() {
         let mut app = App::test_default();
         app.help_view = HelpView::SlashCommands;
-        app.active_session_mut().unwrap().available_commands = vec![
+        app.try_active_bucket_mut().unwrap().available_commands = vec![
             crate::agent::model::AvailableCommand::new("/help", "Open help"),
             crate::agent::model::AvailableCommand::new("memory", ""),
         ];
@@ -710,7 +710,7 @@ mod tests {
     fn subagent_tab_shows_advertised_subagents() {
         let mut app = App::test_default();
         app.help_view = HelpView::Subagents;
-        app.active_session_mut().unwrap().available_agents = vec![
+        app.try_active_bucket_mut().unwrap().available_agents = vec![
             crate::agent::model::AvailableAgent::new("reviewer", "Review code").model("haiku"),
             crate::agent::model::AvailableAgent::new("explore", ""),
         ];

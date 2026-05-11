@@ -268,7 +268,7 @@ fn respond_question(app: &mut App) {
         return;
     };
     let Some(MessageBlock::ToolCall(tc)) =
-        app.messages_mut().get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
+        app.active_messages_mut().get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
     else {
         return;
     };
@@ -338,7 +338,7 @@ fn respond_question_cancel(app: &mut App) {
         return;
     };
     let Some(MessageBlock::ToolCall(tc)) =
-        app.messages_mut().get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
+        app.active_messages_mut().get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
     else {
         return;
     };
@@ -548,11 +548,11 @@ mod tests {
         focused: bool,
     ) -> TestQuestionRx {
         let msg_idx = app.messages().len();
-        app.messages_mut().push(assistant_tool_msg(test_tool_call(tool_id)));
+        app.active_messages_mut().push(assistant_tool_msg(test_tool_call(tool_id)));
         app.index_tool_call(tool_id.to_owned(), msg_idx, 0);
 
         if let Some(MessageBlock::ToolCall(tc)) =
-            app.messages_mut().get_mut(msg_idx).and_then(|m| m.blocks.get_mut(0))
+            app.active_messages_mut().get_mut(msg_idx).and_then(|m| m.blocks.get_mut(0))
         {
             tc.pending_question = Some(InlineQuestion {
                 prompt,

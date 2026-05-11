@@ -19,7 +19,7 @@ pub(super) fn handle_tool_call(app: &mut App, tc: model::ToolCall) {
     log_command_started(app, &tool_info);
     log_terminal_spawned(app, &tool_info, "initial");
     if should_jump_on_large_write(&tool_info) {
-        app.viewport_mut().engage_auto_scroll();
+        app.active_viewport_mut().engage_auto_scroll();
     }
     upsert_tool_call_into_assistant_message(app, tool_info);
 
@@ -214,7 +214,7 @@ pub(super) fn upsert_tool_call_into_assistant_message(app: &mut App, tool_info: 
     }
 
     if let Some(msg_idx) = app.active_turn_assistant_idx()
-        && let Some(owner) = app.messages_mut().get_mut(msg_idx)
+        && let Some(owner) = app.active_messages_mut().get_mut(msg_idx)
     {
         let block_idx = owner.blocks.len();
         let tc_id = tool_info.id.clone();
@@ -228,7 +228,7 @@ pub(super) fn upsert_tool_call_into_assistant_message(app: &mut App, tool_info: 
 
     let msg_idx = app.messages().len().saturating_sub(1);
     if app.messages().last().is_some_and(|m| matches!(m.role, MessageRole::Assistant)) {
-        if let Some(last) = app.messages_mut().last_mut() {
+        if let Some(last) = app.active_messages_mut().last_mut() {
             let block_idx = last.blocks.len();
             let tc_id = tool_info.id.clone();
             let terminal_id = App::tracked_terminal_id_for_tool(&tool_info);
@@ -257,7 +257,7 @@ fn update_existing_tool_call(app: &mut App, mi: usize, bi: usize, tool_info: &To
     let mut layout_dirty = false;
     let mut terminal_tracking = None;
     if let Some(MessageBlock::ToolCall(existing)) =
-        app.messages_mut().get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
+        app.active_messages_mut().get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
     {
         let existing = existing.as_mut();
         let mut changed = false;

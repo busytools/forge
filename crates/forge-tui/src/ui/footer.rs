@@ -534,7 +534,7 @@ mod tests {
     #[test]
     fn footer_primary_hint_shows_pending_permission_count() {
         let mut app = App::test_default();
-        app.messages_mut().push(ChatMessage::new(
+        app.active_messages_mut().push(ChatMessage::new(
             MessageRole::Assistant,
             vec![MessageBlock::ToolCall(Box::new(ToolCallInfo {
                 id: "perm-1".into(),
@@ -715,7 +715,7 @@ mod tests {
     #[test]
     fn mcp_auth_hint_shows_needs_auth_count_before_real_chat() {
         let mut app = App::test_default();
-        app.messages_mut().push(ChatMessage::new(
+        app.active_messages_mut().push(ChatMessage::new(
             MessageRole::Welcome,
             vec![MessageBlock::Text(TextBlock::from_complete("welcome"))],
             None,
@@ -741,7 +741,7 @@ mod tests {
     #[test]
     fn mcp_auth_hint_hides_after_assistant_message() {
         let mut app = App::test_default();
-        app.messages_mut().push(ChatMessage::new(
+        app.active_messages_mut().push(ChatMessage::new(
             MessageRole::Assistant,
             vec![MessageBlock::Text(TextBlock::from_complete("hello"))],
             None,
@@ -773,7 +773,7 @@ mod tests {
     fn footer_secondary_hint_prefers_mcp_auth_over_context_usage() {
         let mut app = App::test_default();
         app.session_usage_mut().context_usage_percent = Some(62);
-        app.messages_mut().push(ChatMessage::new(
+        app.active_messages_mut().push(ChatMessage::new(
             MessageRole::Welcome,
             vec![MessageBlock::Text(TextBlock::from_complete("welcome"))],
             None,

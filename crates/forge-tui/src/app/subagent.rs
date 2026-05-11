@@ -313,7 +313,7 @@ mod tests {
     #[test]
     fn sync_with_cursor_activates_when_subagent_token_is_valid() {
         let mut app = App::test_default();
-        app.active_session_mut().unwrap().available_agents = vec![
+        app.try_active_bucket_mut().unwrap().available_agents = vec![
             crate::agent::model::AvailableAgent::new("reviewer", "Review code"),
             crate::agent::model::AvailableAgent::new("explore", "Explore codebase"),
         ];
@@ -330,7 +330,7 @@ mod tests {
     #[test]
     fn sync_with_cursor_activates_on_bare_ampersand_at_line_end() {
         let mut app = App::test_default();
-        app.active_session_mut().unwrap().available_agents =
+        app.try_active_bucket_mut().unwrap().available_agents =
             vec![crate::agent::model::AvailableAgent::new("reviewer", "Review code")];
         app.input.set_text("&");
 

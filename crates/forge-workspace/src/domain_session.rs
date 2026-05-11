@@ -22,8 +22,10 @@ use crate::protocol::PendingInteractionSlot;
 /// Workspace's owned per-session state. One `DomainSession` per
 /// active `SessionTask`. Single writer (the `SessionTask`); accessed
 /// via `Arc<parking_lot::Mutex<DomainSession>>` for `Workspace`-side
-/// helpers (`store_pending_interaction`, `record_event_for_domain`)
-/// to also write under the lock.
+/// helpers (`store_pending_interaction`,
+/// `record_forge_account_identity_for_domain`,
+/// `finalize_turn_in_domain`) to also write under the lock. TUI
+/// readers borrow via `Workspace::domain_session_for(key)`.
 #[non_exhaustive]
 pub struct DomainSession {
     pub key: SessionKey,
@@ -33,8 +35,8 @@ pub struct DomainSession {
     /// Agent connection handle bound to this session at spawn time.
     pub conn: Arc<AgentHandle>,
     /// Lifecycle state for the Projects pane glyph. Updated by
-    /// `Workspace::record_event_for_domain` as each `AgentEvent`
-    /// arrives.
+    /// the per-session `SessionTask::translate_event` as each
+    /// `AgentEvent` arrives.
     pub lifecycle_state: SessionLifecycleState,
     /// Raw cwd as a filesystem path. Used for trust lookups, file
     /// indexing, project-key derivation, and `claude --resume` re-spawn

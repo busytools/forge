@@ -11,7 +11,7 @@
 
 use forge_tui::app::App;
 use forge_tui::app::PaneHitTarget;
-use forge_tui::app::session::{Session, SessionLifecycleState};
+use forge_tui::app::session::{SessionLifecycleState, UiSession};
 use forge_tui::ui::{projects_pane, top_bar};
 use forge_workspace::{ProjectKey, ProjectView, SessionKey, SessionView};
 use ratatui::Terminal;
@@ -64,7 +64,7 @@ fn renders_banner_and_active_project_row() {
     // Insert a Session bucket for the lead so the pane treats `forge`
     // as an active project (lands in the ACTIVE section).
     let lead_key = SessionKey::from_str_for_test("session-a");
-    let mut lead_session = Session::new(lead_key.clone());
+    let mut lead_session = UiSession::new(lead_key.clone());
     lead_session.lifecycle_state = SessionLifecycleState::Idle;
     app.sessions.insert(lead_key.clone(), lead_session);
     app.active_session_key = Some(lead_key.clone());
@@ -106,7 +106,7 @@ fn inactive_project_lands_in_inactive_section() {
     ];
 
     let alpha_key = SessionKey::from_str_for_test("alpha-1");
-    app.sessions.insert(alpha_key.clone(), Session::new(alpha_key.clone()));
+    app.sessions.insert(alpha_key.clone(), UiSession::new(alpha_key.clone()));
     app.active_session_key = Some(alpha_key.clone());
 
     let lines = render_to_lines(&mut app, &projects, 26, 14);
@@ -145,7 +145,7 @@ fn medium_tier_truncates_long_project_labels() {
     let projects = vec![project_view("subspace-chain-pulse", vec![long_session.clone()])];
 
     let lead_key = SessionKey::from_str_for_test("really-long-session-id");
-    app.sessions.insert(lead_key.clone(), Session::new(lead_key.clone()));
+    app.sessions.insert(lead_key.clone(), UiSession::new(lead_key.clone()));
     app.active_session_key = Some(lead_key);
 
     // Medium tier renders in a 20ch-wide pane.
@@ -225,7 +225,7 @@ fn render_top_bar_to_lines(app: &mut App, width: u16) -> Vec<String> {
 fn narrow_top_bar_renders_icon_and_stamps_target() {
     let mut app = App::test_default();
     let key_a = SessionKey::from_str_for_test("session-a");
-    app.sessions.insert(key_a.clone(), Session::new(key_a.clone()));
+    app.sessions.insert(key_a.clone(), UiSession::new(key_a.clone()));
     app.active_session_key = Some(key_a);
 
     let lines = render_top_bar_to_lines(&mut app, 100);
@@ -250,7 +250,7 @@ fn narrow_overlay_banner_includes_close_glyph_and_target() {
     let mut app = App::test_default();
     let projects = vec![project_view("forge", vec![session_view("session-a", "main")])];
     let lead_key = SessionKey::from_str_for_test("session-a");
-    app.sessions.insert(lead_key.clone(), Session::new(lead_key.clone()));
+    app.sessions.insert(lead_key.clone(), UiSession::new(lead_key.clone()));
     app.active_session_key = Some(lead_key);
 
     let lines = render_overlay_to_lines(&mut app, &projects, 100, 12);
@@ -292,7 +292,7 @@ fn narrow_overlay_keeps_full_unmodified_project_key_in_targets() {
         vec![session_view("really-long-session-id", "lead")],
     )];
     let lead_key = SessionKey::from_str_for_test("really-long-session-id");
-    app.sessions.insert(lead_key.clone(), Session::new(lead_key.clone()));
+    app.sessions.insert(lead_key.clone(), UiSession::new(lead_key.clone()));
     app.active_session_key = Some(lead_key);
 
     let _lines = render_overlay_to_lines(&mut app, &projects, 60, 20);
@@ -339,7 +339,7 @@ fn wide_tier_running_session_glyph_uses_accent_color() {
     let projects = vec![project_view("forge", vec![session_view("session-r", "lead")])];
 
     let lead_key = SessionKey::from_str_for_test("session-r");
-    let mut lead_session = Session::new(lead_key.clone());
+    let mut lead_session = UiSession::new(lead_key.clone());
     lead_session.lifecycle_state = SessionLifecycleState::Running;
     app.sessions.insert(lead_key.clone(), lead_session);
     app.active_session_key = Some(lead_key);
@@ -368,7 +368,7 @@ fn wide_tier_attention_session_glyph_uses_warning_color() {
     let projects = vec![project_view("forge", vec![session_view("session-a", "lead")])];
 
     let lead_key = SessionKey::from_str_for_test("session-a");
-    let mut lead_session = Session::new(lead_key.clone());
+    let mut lead_session = UiSession::new(lead_key.clone());
     lead_session.lifecycle_state = SessionLifecycleState::Attention;
     app.sessions.insert(lead_key.clone(), lead_session);
     app.active_session_key = Some(lead_key);

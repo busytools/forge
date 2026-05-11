@@ -4,9 +4,9 @@ use super::{
     parse, push_system_message, push_user_message, require_active_session, require_connection,
     set_command_pending,
 };
-use crate::agent::events::ClientEvent;
 use crate::app::App;
 use crate::app::connect::{SessionStartReason, begin_resume_session, start_new_session};
+use forge_workspace::SessionUpdate;
 
 /// Handle slash command submission.
 ///
@@ -148,15 +148,15 @@ fn handle_mode_submit(app: &mut App, args: &[&str]) -> bool {
     // state is needed — the UI never sees a stale pending phase.
     apply_optimistic_mode_change(app, requested_mode);
 
-    let tx = app.event_tx.clone();
+    let tx = app.update_tx.clone();
     let requested_mode_owned = requested_mode.to_owned();
     let session_key = forge_workspace::SessionKey::from_session_id(sid.to_string());
     tokio::task::spawn_local(async move {
         match conn.set_mode(sid.to_string(), requested_mode_owned) {
             Ok(()) => {}
             Err(e) => {
-                let _ = tx.send(ClientEvent::SlashCommandError {
-                    session_key,
+                let _ = tx.send(SessionUpdate::SlashCommandError {
+                    key: session_key,
                     message: format!("Failed to run /mode: {e}"),
                 });
             }
@@ -221,15 +221,15 @@ fn handle_model_submit(app: &mut App, args: &[&str]) -> bool {
     // is synchronous so no `CommandPending` state is needed.
     apply_optimistic_model_change(app, model_name);
 
-    let tx = app.event_tx.clone();
+    let tx = app.update_tx.clone();
     let model_name = model_name.to_owned();
     let session_key = forge_workspace::SessionKey::from_session_id(sid.to_string());
     tokio::task::spawn_local(async move {
         match conn.set_model(sid.to_string(), model_name) {
             Ok(()) => {}
             Err(e) => {
-                let _ = tx.send(ClientEvent::SlashCommandError {
-                    session_key,
+                let _ = tx.send(SessionUpdate::SlashCommandError {
+                    key: session_key,
                     message: format!("Failed to run /model: {e}"),
                 });
             }
@@ -289,8 +289,8 @@ fn handle_new_session_submit(app: &mut App, args: &[&str]) -> bool {
             .active_session_key
             .clone()
             .unwrap_or_else(|| forge_workspace::SessionKey::from_session_id(App::PRE_CONNECT_KEY));
-        let _ = app.event_tx.send(ClientEvent::SlashCommandError {
-            session_key,
+        let _ = app.update_tx.send(SessionUpdate::SlashCommandError {
+            key: session_key,
             message: format!("Failed to run /new: {e}"),
         });
     }
@@ -320,8 +320,8 @@ fn handle_resume_submit(app: &mut App, args: &[&str]) -> bool {
             .active_session_key
             .clone()
             .unwrap_or_else(|| forge_workspace::SessionKey::from_session_id(App::PRE_CONNECT_KEY));
-        let _ = app.event_tx.send(ClientEvent::SlashCommandError {
-            session_key,
+        let _ = app.update_tx.send(SessionUpdate::SlashCommandError {
+            key: session_key,
             message: format!("Failed to run /resume: {e}"),
         });
     }

@@ -31,7 +31,7 @@ pub(super) fn upsert_turn_notice(
         TurnNoticeLocation::Inline { msg_idx, block_idx } => {
             if update_inline_notice(app, msg_idx, block_idx, &dedup_key, severity, message) {
                 app.turn_notice_refs_mut()[existing_ref_idx].stage = stage;
-                app.viewport_mut().engage_auto_scroll();
+                app.active_viewport_mut().engage_auto_scroll();
                 return;
             }
             app.turn_notice_refs_mut().remove(existing_ref_idx);
@@ -49,7 +49,7 @@ pub(super) fn upsert_turn_notice(
 
             if update_standalone_notice(app, msg_idx, &dedup_key, severity, message) {
                 app.turn_notice_refs_mut()[existing_ref_idx].stage = stage;
-                app.viewport_mut().engage_auto_scroll();
+                app.active_viewport_mut().engage_auto_scroll();
                 return;
             }
 
@@ -81,7 +81,7 @@ fn insert_inline_notice(
     severity: SystemSeverity,
     message: &str,
 ) {
-    let Some(owner) = app.messages_mut().get_mut(owner_idx) else {
+    let Some(owner) = app.active_messages_mut().get_mut(owner_idx) else {
         insert_standalone_notice(app, dedup_key, stage, severity, message);
         return;
     };
@@ -96,7 +96,7 @@ fn insert_inline_notice(
         stage,
         location: TurnNoticeLocation::Inline { msg_idx: owner_idx, block_idx },
     });
-    app.viewport_mut().engage_auto_scroll();
+    app.active_viewport_mut().engage_auto_scroll();
 }
 
 fn insert_standalone_notice(
@@ -120,7 +120,7 @@ fn insert_standalone_notice(
         stage,
         location: TurnNoticeLocation::Standalone { msg_idx },
     });
-    app.viewport_mut().engage_auto_scroll();
+    app.active_viewport_mut().engage_auto_scroll();
 }
 
 fn update_inline_notice(
@@ -132,7 +132,7 @@ fn update_inline_notice(
     message: &str,
 ) -> bool {
     let Some(MessageBlock::Notice(notice)) =
-        app.messages_mut().get_mut(msg_idx).and_then(|msg| msg.blocks.get_mut(block_idx))
+        app.active_messages_mut().get_mut(msg_idx).and_then(|msg| msg.blocks.get_mut(block_idx))
     else {
         return false;
     };
@@ -154,7 +154,7 @@ fn update_standalone_notice(
     severity: SystemSeverity,
     message: &str,
 ) -> bool {
-    let Some(msg) = app.messages_mut().get_mut(msg_idx) else {
+    let Some(msg) = app.active_messages_mut().get_mut(msg_idx) else {
         return false;
     };
     if !matches!(msg.role, MessageRole::System(_)) {

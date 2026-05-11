@@ -899,12 +899,12 @@ fn apply_result_finalize(
         .active_session_key
         .clone()
         .unwrap_or_else(|| forge_workspace::SessionKey::from_session_id(App::PRE_CONNECT_KEY));
-    // Clone the `Rc<Workspace>` so the turn-lifecycle handlers can
+    // Clone the `Arc<Workspace>` so the turn-lifecycle handlers can
     // run the workspace-side `finalize_turn_in_domain` operational
     // hook without holding an immutable borrow of `app` across the
     // `&mut App` calls below. Falls back silently when no workspace
     // is wired (test fixtures).
-    let workspace = app.workspace.as_ref().map(std::rc::Rc::clone);
+    let workspace = app.workspace.as_ref().map(std::sync::Arc::clone);
     if !is_error && subtype == "success" {
         app.turn_state_mut().last_assistant_error = None;
         finalize_open_tool_calls(app, "completed");

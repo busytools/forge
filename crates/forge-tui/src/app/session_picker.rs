@@ -130,7 +130,7 @@ mod tests {
         let mut app = picker_app();
         app.startup_session_picker_requested = true;
         app.startup_recent_sessions_loaded = false;
-        app.set_conn(None);
+        app.set_active_conn(None);
 
         handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
 
@@ -153,7 +153,7 @@ mod tests {
     fn enter_triggers_resume() {
         let mut app = picker_app();
         let (handle, mut rx) = forge_agent::Agent::testing_stub();
-        app.set_conn(Some(std::sync::Arc::new(handle)));
+        app.set_active_conn(Some(std::sync::Arc::new(handle)));
 
         handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
@@ -183,7 +183,7 @@ mod tests {
         let mut app = picker_app();
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<forge_primitives::Command>();
         drop(rx);
-        app.set_conn(Some(std::sync::Arc::new({
+        app.set_active_conn(Some(std::sync::Arc::new({
             let _ = tx;
             let (h, _) = forge_agent::Agent::testing_stub();
             h

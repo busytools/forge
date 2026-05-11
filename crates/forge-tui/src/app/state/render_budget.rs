@@ -398,7 +398,7 @@ impl super::App {
     }
 
     fn evict_cache_slot(&mut self, msg_idx: usize, block_idx: usize) -> usize {
-        let Some(msg) = self.messages_mut().get_mut(msg_idx) else {
+        let Some(msg) = self.active_messages_mut().get_mut(msg_idx) else {
             return 0;
         };
         if block_idx == msg.blocks.len() {

@@ -1,6 +1,5 @@
-use forge_tui::agent::events::ClientEvent;
 use forge_tui::app::App;
-use forge_workspace::SessionKey;
+use forge_workspace::{SessionKey, SessionUpdate};
 
 /// Build a minimal `App` for in-process integration-style testing.
 /// This exercises app state and event handling directly, without a real bridge or TUI boundary.
@@ -8,13 +7,13 @@ pub fn test_app() -> App {
     App::test_default()
 }
 
-/// Send a client event through the app's in-process event handling pipeline.
-pub fn send_client_event(app: &mut App, event: ClientEvent) {
-    forge_tui::app::handle_client_event(app, event);
+/// Send a `SessionUpdate` through the app's in-process event handling pipeline.
+pub fn send_client_event(app: &mut App, event: SessionUpdate) {
+    forge_tui::app::apply_session_update(app, event);
 }
 
 /// Borrow the currently-active [`SessionKey`] from the app, for
-/// tagging synthetic [`ClientEvent`]s emitted by integration tests.
+/// tagging synthetic [`SessionUpdate`]s emitted by integration tests.
 /// Falls back to a deterministic test sentinel when the test app
 /// hasn't seeded an active session yet.
 pub fn active_session_key(app: &App) -> SessionKey {

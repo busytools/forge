@@ -5,7 +5,6 @@
 // State transition integration tests.
 // Validates multi-event sequences and App state consistency.
 
-use forge_tui::agent::events::ClientEvent;
 use forge_tui::agent::model;
 use forge_tui::app::{AppStatus, MessageBlock, MessageRole};
 use forge_workspace::SessionUpdate;
@@ -42,10 +41,7 @@ async fn full_turn_lifecycle_text_only() {
     let session_key = active_session_key(&app);
     send_client_event(
         &mut app,
-        ClientEvent::WorkspaceUpdate(SessionUpdate::TurnComplete {
-            key: session_key,
-            terminal_reason: None,
-        }),
+        SessionUpdate::TurnComplete { key: session_key, terminal_reason: None },
     );
     assert!(matches!(app.status, AppStatus::Ready));
     assert_eq!(app.messages().len(), 1);
@@ -79,10 +75,7 @@ async fn full_turn_lifecycle_with_tool_calls() {
     let session_key = active_session_key(&app);
     send_client_event(
         &mut app,
-        ClientEvent::WorkspaceUpdate(SessionUpdate::TurnComplete {
-            key: session_key,
-            terminal_reason: None,
-        }),
+        SessionUpdate::TurnComplete { key: session_key, terminal_reason: None },
     );
     assert!(matches!(app.status, AppStatus::Ready));
 }
@@ -151,12 +144,12 @@ async fn error_then_new_turn_recovers() {
     let session_key = active_session_key(&app);
     send_client_event(
         &mut app,
-        ClientEvent::WorkspaceUpdate(SessionUpdate::TurnError {
+        SessionUpdate::TurnError {
             key: session_key,
             message: "timeout".into(),
             class: None,
             terminal_reason: None,
-        }),
+        },
     );
     assert!(matches!(app.status, AppStatus::Error));
 
@@ -183,10 +176,7 @@ async fn chunks_across_turns_open_a_new_assistant_message() {
     let session_key = active_session_key(&app);
     send_client_event(
         &mut app,
-        ClientEvent::WorkspaceUpdate(SessionUpdate::TurnComplete {
-            key: session_key,
-            terminal_reason: None,
-        }),
+        SessionUpdate::TurnComplete { key: session_key, terminal_reason: None },
     );
     assert_eq!(app.messages().len(), 1);
 
@@ -358,10 +348,7 @@ async fn rapid_turn_complete_then_new_streaming() {
     let session_key = active_session_key(&app);
     send_client_event(
         &mut app,
-        ClientEvent::WorkspaceUpdate(SessionUpdate::TurnComplete {
-            key: session_key,
-            terminal_reason: None,
-        }),
+        SessionUpdate::TurnComplete { key: session_key, terminal_reason: None },
     );
     assert!(matches!(app.status, AppStatus::Ready));
     assert_eq!(app.files_accessed(), 0);
@@ -383,10 +370,7 @@ async fn rapid_turn_complete_then_new_streaming() {
     let session_key = active_session_key(&app);
     send_client_event(
         &mut app,
-        ClientEvent::WorkspaceUpdate(SessionUpdate::TurnComplete {
-            key: session_key,
-            terminal_reason: None,
-        }),
+        SessionUpdate::TurnComplete { key: session_key, terminal_reason: None },
     );
     assert!(matches!(app.status, AppStatus::Ready));
     assert_eq!(app.files_accessed(), 0, "reset again on second TurnComplete");
@@ -428,12 +412,12 @@ async fn error_during_tool_calls_leaves_tool_calls_intact() {
     let session_key = active_session_key(&app);
     send_client_event(
         &mut app,
-        ClientEvent::WorkspaceUpdate(SessionUpdate::TurnError {
+        SessionUpdate::TurnError {
             key: session_key,
             message: "crashed".into(),
             class: None,
             terminal_reason: None,
-        }),
+        },
     );
 
     assert!(matches!(app.status, AppStatus::Error));
@@ -474,10 +458,7 @@ async fn files_accessed_accumulates_across_tool_calls_in_one_turn() {
     let session_key = active_session_key(&app);
     send_client_event(
         &mut app,
-        ClientEvent::WorkspaceUpdate(SessionUpdate::TurnComplete {
-            key: session_key,
-            terminal_reason: None,
-        }),
+        SessionUpdate::TurnComplete { key: session_key, terminal_reason: None },
     );
     assert_eq!(app.files_accessed(), 0, "reset on turn complete");
 }
@@ -498,7 +479,7 @@ async fn sdk_message_with_empty_app_session_id_adopts_wire_id() {
     app.status = AppStatus::Thinking;
     // Empty assistant message slot, mimicking what `submit_input`
     // creates right before the first chunk arrives.
-    app.messages_mut().push(forge_tui::app::ChatMessage::new(
+    app.active_messages_mut().push(forge_tui::app::ChatMessage::new(
         MessageRole::Assistant,
         Vec::new(),
         None,
@@ -521,10 +502,7 @@ async fn sdk_message_with_empty_app_session_id_adopts_wire_id() {
 
     send_client_event(
         &mut app,
-        ClientEvent::WorkspaceUpdate(SessionUpdate::ChatAppended {
-            session_id: "real-session-abc".to_owned(),
-            msg: wire_msg,
-        }),
+        SessionUpdate::ChatAppended { session_id: "real-session-abc".to_owned(), msg: wire_msg },
     );
 
     assert_eq!(
@@ -572,10 +550,7 @@ async fn sdk_message_with_mismatched_real_session_id_is_dropped() {
 
     send_client_event(
         &mut app,
-        ClientEvent::WorkspaceUpdate(SessionUpdate::ChatAppended {
-            session_id: "stale-session-xyz".to_owned(),
-            msg: wire_msg,
-        }),
+        SessionUpdate::ChatAppended { session_id: "stale-session-xyz".to_owned(), msg: wire_msg },
     );
 
     assert_eq!(

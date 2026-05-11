@@ -1,3 +1,4 @@
+pub(crate) mod active_bucket_scope;
 mod cache_policy;
 pub(crate) mod clipboard_image;
 pub(crate) mod config;
@@ -39,10 +40,8 @@ pub use cache_policy::{
     find_text_split, find_text_split_index,
 };
 pub use config::{ConfigState, ConfigTab};
-pub use connect::{
-    create_app, spawn_for_sleeping_project, spawn_for_sleeping_session, start_connection,
-};
-pub use events::{handle_client_event, handle_terminal_event};
+pub use connect::{create_app, start_connection};
+pub use events::{apply_session_update, handle_terminal_event};
 #[cfg(feature = "testing")]
 pub use events::{handle_permission_request_event, handle_question_request_event};
 pub use focus::{FocusManager, FocusOwner, FocusTarget};
@@ -142,8 +141,8 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
             Some(Ok(event)) = events.next() => {
                 events::handle_terminal_event(app, event);
             }
-            Some(event) = app.event_rx.recv() => {
-                events::handle_client_event(app, event);
+            Some(update) = app.update_rx.recv() => {
+                events::apply_session_update(app, update);
             }
             shutdown = &mut os_shutdown => {
                 if let Err(err) = shutdown {
@@ -167,10 +166,10 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
                 events::handle_terminal_event(app, event);
                 continue;
             }
-            // Then client events
-            match app.event_rx.try_recv() {
-                Ok(event) => {
-                    events::handle_client_event(app, event);
+            // Then SessionUpdates from workspace
+            match app.update_rx.try_recv() {
+                Ok(update) => {
+                    events::apply_session_update(app, update);
                 }
                 Err(_) => break,
             }
@@ -304,7 +303,7 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
         let (perm_last_option_id, question_was_pending) = if let Some((mi, bi)) =
             app.lookup_tool_call(&tool_id)
             && let Some(MessageBlock::ToolCall(tc)) =
-                app.messages_mut().get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
+                app.active_messages_mut().get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
         {
             let tc = tc.as_mut();
             let perm_last = tc
@@ -569,7 +568,7 @@ mod tests {
     -> (App, tokio::sync::mpsc::UnboundedReceiver<forge_primitives::Command>) {
         let mut app = App::test_default();
         let (handle, rx) = forge_agent::Agent::testing_stub();
-        app.set_conn(Some(std::sync::Arc::new(handle)));
+        app.set_active_conn(Some(std::sync::Arc::new(handle)));
         app.set_session_id(Some(model::SessionId::new("session-1")));
         (app, rx)
     }
@@ -849,7 +848,7 @@ mod tests {
     #[test]
     fn model_selection_then_second_enter_arms_submit() {
         let mut app = App::test_default();
-        app.active_session_mut().unwrap().available_models = vec![
+        app.try_active_bucket_mut().unwrap().available_models = vec![
             model::AvailableModel::new("sonnet", "Claude Sonnet"),
             model::AvailableModel::new("haiku", "Claude Haiku"),
         ];

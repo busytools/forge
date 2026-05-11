@@ -170,7 +170,7 @@ mod tests {
     -> (App, tokio::sync::mpsc::UnboundedReceiver<forge_primitives::Command>) {
         let mut app = App::test_default();
         let (handle, rx) = forge_agent::Agent::testing_stub();
-        app.set_conn(Some(std::sync::Arc::new(handle)));
+        app.set_active_conn(Some(std::sync::Arc::new(handle)));
         app.set_session_id(Some(model::SessionId::new("session-1")));
         (app, rx)
     }

@@ -23,7 +23,7 @@ use crate::app::keys::{CMD_MOD, WORD_NAV_MOD};
 use crossterm::event::KeyEvent;
 use crossterm::event::{Event, KeyEventKind};
 
-pub use client::handle_client_event;
+pub use client::apply_session_update;
 #[cfg(feature = "testing")]
 pub use turn::{handle_permission_request_event, handle_question_request_event};
 
@@ -301,7 +301,7 @@ pub(crate) fn push_system_message_with_severity(
         None,
     ));
     app.enforce_history_retention_tracked();
-    app.viewport_mut().engage_auto_scroll();
+    app.active_viewport_mut().engage_auto_scroll();
 }
 
 pub(super) fn clear_compaction_state(app: &mut App, emit_manual_success: bool) {
@@ -342,8 +342,6 @@ mod tests {
     // =====
 
     use super::*;
-    use crate::agent::events::ClientEvent;
-    use crate::agent::events::ServiceStatusSeverity;
     use crate::app::slash::{SlashCandidate, SlashContext, SlashState};
     use crate::app::{
         ActiveView, BlockCache, CancelOrigin, FocusOwner, FocusTarget, HelpView, InlinePermission,
@@ -351,6 +349,8 @@ mod tests {
         TodoStatus, ToolCallInfo, ToolCallScope, UsageSnapshot, UsageSourceKind, mention,
     };
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
+    use forge_primitives::cloud::service_status::ServiceSeverity;
+    use forge_workspace::SessionUpdate;
     use pretty_assertions::assert_eq;
     use ratatui::layout::Rect;
 
@@ -358,7 +358,7 @@ mod tests {
     use std::time::{Duration, Instant};
 
     /// Helper: a no-op `Arc<AgentHandle>` for tests that construct
-    /// `ClientEvent::Connected` / `ClientEvent::SessionReplaced`
+    /// `SessionUpdate::Connected` / `SessionUpdate::SessionReplaced`
     /// envelopes without driving a real bridge. The handle is wired
     /// to a sender whose receiver is dropped immediately, so any
     /// command the test code sends through it is silently swallowed.
@@ -422,10 +422,9 @@ mod tests {
     }
 
     fn append_tool_call_block(app: &mut App, tool_id: &str) -> (usize, usize) {
-        app.messages_mut().push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(tool_call(
-            tool_id,
-            model::ToolCallStatus::InProgress,
-        )))]));
+        app.active_messages_mut().push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(
+            tool_call(tool_id, model::ToolCallStatus::InProgress),
+        ))]));
         let msg_idx = app.messages().len().saturating_sub(1);
         app.index_tool_call(tool_id.into(), msg_idx, 0);
         (msg_idx, 0)
@@ -514,19 +513,17 @@ mod tests {
 
         // User cancels then TurnComplete finalizes the turn
         let session_key = active_session_key(&app);
-        handle_client_event(
+        apply_session_update(
             &mut app,
-            ClientEvent::WorkspaceUpdate(forge_workspace::SessionUpdate::TurnCancelled {
-                key: session_key,
-            }),
+            forge_workspace::SessionUpdate::TurnCancelled { key: session_key },
         );
         let session_key = active_session_key(&app);
-        handle_client_event(
+        apply_session_update(
             &mut app,
-            ClientEvent::WorkspaceUpdate(forge_workspace::SessionUpdate::TurnComplete {
+            forge_workspace::SessionUpdate::TurnComplete {
                 key: session_key,
                 terminal_reason: None,
-            }),
+            },
         );
 
         // Stale task ID must be gone after turn boundary
@@ -779,23 +776,39 @@ mod tests {
         model::CurrentModel::new(model_name, model_name, model_name).authoritative(true)
     }
 
-    fn connected_event(model_name: &str) -> ClientEvent {
+    fn connected_event(model_name: &str) -> SessionUpdate {
         connected_event_with_conn(model_name, stub_conn())
     }
 
     fn connected_event_with_conn(
         model_name: &str,
         conn: Arc<forge_agent::AgentHandle>,
-    ) -> ClientEvent {
-        ClientEvent::Connected {
-            session_id: model::SessionId::new("test-session"),
+    ) -> SessionUpdate {
+        SessionUpdate::Connected {
+            key: forge_workspace::SessionKey::from_session_id("test-session".to_owned()),
+            session_id: forge_primitives::SessionId::new("test-session"),
             cwd: "/test".into(),
-            current_model: test_current_model(model_name),
+            current_model: test_current_model_primitives(model_name),
             available_models: Vec::new(),
             mode: None,
-            history_updates: Vec::new(),
-            pre_connect_key: None,
+            history: Vec::new(),
             conn,
+        }
+    }
+
+    fn test_current_model_primitives(model_name: &str) -> forge_primitives::CurrentModel {
+        forge_primitives::CurrentModel {
+            resolved_id: model_name.to_owned(),
+            display_name_short: model_name.to_owned(),
+            display_name_long: model_name.to_owned(),
+            requested_id: None,
+            catalog_id: None,
+            supports_effort: false,
+            supported_effort_levels: Vec::new(),
+            supports_fast_mode: None,
+            supports_auto_mode: None,
+            supports_adaptive_thinking: None,
+            is_authoritative: true,
         }
     }
 
@@ -864,7 +877,7 @@ mod tests {
         let mut app = make_test_app();
         let (handle, rx) = forge_agent::Agent::testing_stub();
         let arc = Arc::new(handle);
-        app.set_conn(Some(Arc::clone(&arc)));
+        app.set_active_conn(Some(Arc::clone(&arc)));
         (app, rx, arc)
     }
 
@@ -1008,13 +1021,7 @@ mod tests {
         }
         let session_id =
             app.session_id().map_or_else(|| "test-session".to_owned(), ToString::to_string);
-        handle_client_event(
-            app,
-            ClientEvent::WorkspaceUpdate(forge_workspace::SessionUpdate::ChatAppended {
-                session_id,
-                msg,
-            }),
-        );
+        apply_session_update(app, forge_workspace::SessionUpdate::ChatAppended { session_id, msg });
     }
 
     #[test]
@@ -1081,10 +1088,9 @@ mod tests {
     fn late_tool_update_for_removed_tool_does_not_corrupt_active_task_set() {
         let mut app = make_test_app();
         app.set_session_id(Some(model::SessionId::new("test-session")));
-        app.messages_mut().push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(tool_call(
-            "tool-stale",
-            model::ToolCallStatus::Completed,
-        )))]));
+        app.active_messages_mut().push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(
+            tool_call("tool-stale", model::ToolCallStatus::Completed),
+        ))]));
         app.index_tool_call("tool-stale".into(), 0, 0);
         app.register_tool_call_scope(
             "tool-stale".into(),
@@ -1128,7 +1134,7 @@ mod tests {
             let MessageBlock::ToolCall(tc) = &app.messages()[mi].blocks[bi] else {
                 panic!("tool call block missing");
             };
-            (tc.render_epoch, tc.layout_epoch, app.viewport_mut().oldest_stale_index())
+            (tc.render_epoch, tc.layout_epoch, app.active_viewport_mut().oldest_stale_index())
         };
 
         // Re-send the same tool_use envelope. The wire path keeps the
@@ -1148,7 +1154,7 @@ mod tests {
         };
         assert_eq!(tc.render_epoch, before_render);
         assert_eq!(tc.layout_epoch, before_layout);
-        assert_eq!(app.viewport_mut().oldest_stale_index(), before_oldest_stale);
+        assert_eq!(app.active_viewport_mut().oldest_stale_index(), before_oldest_stale);
     }
 
     #[test]
@@ -1219,7 +1225,7 @@ mod tests {
     #[test]
     fn has_in_progress_no_tool_calls() {
         let mut app = make_test_app();
-        app.messages_mut()
+        app.active_messages_mut()
             .push(assistant_msg(vec![MessageBlock::Text(TextBlock::from_complete("hello"))]));
         assert!(!tool_calls::has_in_progress_tool_calls(&app));
     }
@@ -1227,10 +1233,9 @@ mod tests {
     #[test]
     fn has_in_progress_with_pending_tool() {
         let mut app = make_test_app();
-        app.messages_mut().push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(tool_call(
-            "tc1",
-            model::ToolCallStatus::Pending,
-        )))]));
+        app.active_messages_mut().push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(
+            tool_call("tc1", model::ToolCallStatus::Pending),
+        ))]));
         app.bind_active_turn_assistant_to_tail();
         assert!(tool_calls::has_in_progress_tool_calls(&app));
     }
@@ -1238,10 +1243,9 @@ mod tests {
     #[test]
     fn has_in_progress_with_in_progress_tool() {
         let mut app = make_test_app();
-        app.messages_mut().push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(tool_call(
-            "tc1",
-            model::ToolCallStatus::InProgress,
-        )))]));
+        app.active_messages_mut().push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(
+            tool_call("tc1", model::ToolCallStatus::InProgress),
+        ))]));
         app.bind_active_turn_assistant_to_tail();
         assert!(tool_calls::has_in_progress_tool_calls(&app));
     }
@@ -1249,20 +1253,18 @@ mod tests {
     #[test]
     fn has_in_progress_all_completed() {
         let mut app = make_test_app();
-        app.messages_mut().push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(tool_call(
-            "tc1",
-            model::ToolCallStatus::Completed,
-        )))]));
+        app.active_messages_mut().push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(
+            tool_call("tc1", model::ToolCallStatus::Completed),
+        ))]));
         assert!(!tool_calls::has_in_progress_tool_calls(&app));
     }
 
     #[test]
     fn has_in_progress_all_failed() {
         let mut app = make_test_app();
-        app.messages_mut().push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(tool_call(
-            "tc1",
-            model::ToolCallStatus::Failed,
-        )))]));
+        app.active_messages_mut().push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(
+            tool_call("tc1", model::ToolCallStatus::Failed),
+        ))]));
         assert!(!tool_calls::has_in_progress_tool_calls(&app));
     }
 
@@ -1271,7 +1273,7 @@ mod tests {
     #[test]
     fn has_in_progress_user_message_last() {
         let mut app = make_test_app();
-        app.messages_mut().push(user_msg("hi"));
+        app.active_messages_mut().push(user_msg("hi"));
         assert!(!tool_calls::has_in_progress_tool_calls(&app));
     }
 
@@ -1279,11 +1281,10 @@ mod tests {
     #[test]
     fn has_in_progress_requires_explicit_owner() {
         let mut app = make_test_app();
-        app.messages_mut().push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(tool_call(
-            "tc1",
-            model::ToolCallStatus::InProgress,
-        )))]));
-        app.messages_mut().push(user_msg("thanks"));
+        app.active_messages_mut().push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(
+            tool_call("tc1", model::ToolCallStatus::InProgress),
+        ))]));
+        app.active_messages_mut().push(user_msg("thanks"));
         assert!(!tool_calls::has_in_progress_tool_calls(&app));
     }
 
@@ -1291,15 +1292,13 @@ mod tests {
     #[test]
     fn has_in_progress_uses_owned_assistant_not_latest_assistant() {
         let mut app = make_test_app();
-        app.messages_mut().push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(tool_call(
-            "tc1",
-            model::ToolCallStatus::InProgress,
-        )))]));
-        app.messages_mut().push(user_msg("ok"));
-        app.messages_mut().push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(tool_call(
-            "tc2",
-            model::ToolCallStatus::Completed,
-        )))]));
+        app.active_messages_mut().push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(
+            tool_call("tc1", model::ToolCallStatus::InProgress),
+        ))]));
+        app.active_messages_mut().push(user_msg("ok"));
+        app.active_messages_mut().push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(
+            tool_call("tc2", model::ToolCallStatus::Completed),
+        ))]));
         app.bind_active_turn_assistant(0);
         assert!(tool_calls::has_in_progress_tool_calls(&app));
     }
@@ -1307,7 +1306,7 @@ mod tests {
     #[test]
     fn has_in_progress_mixed_completed_and_pending() {
         let mut app = make_test_app();
-        app.messages_mut().push(assistant_msg(vec![
+        app.active_messages_mut().push(assistant_msg(vec![
             MessageBlock::ToolCall(Box::new(tool_call("tc1", model::ToolCallStatus::Completed))),
             MessageBlock::ToolCall(Box::new(tool_call("tc2", model::ToolCallStatus::InProgress))),
         ]));
@@ -1319,7 +1318,7 @@ mod tests {
     #[test]
     fn has_in_progress_text_and_tools_mixed() {
         let mut app = make_test_app();
-        app.messages_mut().push(assistant_msg(vec![
+        app.active_messages_mut().push(assistant_msg(vec![
             MessageBlock::Text(TextBlock::from_complete("thinking...")),
             MessageBlock::ToolCall(Box::new(tool_call("tc1", model::ToolCallStatus::Completed))),
             MessageBlock::Text(TextBlock::from_complete("done")),
@@ -1343,7 +1342,7 @@ mod tests {
             "tc_pending",
             model::ToolCallStatus::Pending,
         ))));
-        app.messages_mut().push(assistant_msg(blocks));
+        app.active_messages_mut().push(assistant_msg(blocks));
         app.bind_active_turn_assistant_to_tail();
         assert!(tool_calls::has_in_progress_tool_calls(&app));
     }
@@ -1360,7 +1359,7 @@ mod tests {
                 )))
             })
             .collect();
-        app.messages_mut().push(assistant_msg(blocks));
+        app.active_messages_mut().push(assistant_msg(blocks));
         assert!(!tool_calls::has_in_progress_tool_calls(&app));
     }
 
@@ -1368,7 +1367,7 @@ mod tests {
     #[test]
     fn has_in_progress_failed_and_completed_mix() {
         let mut app = make_test_app();
-        app.messages_mut().push(assistant_msg(vec![
+        app.active_messages_mut().push(assistant_msg(vec![
             MessageBlock::ToolCall(Box::new(tool_call("tc1", model::ToolCallStatus::Completed))),
             MessageBlock::ToolCall(Box::new(tool_call("tc2", model::ToolCallStatus::Failed))),
             MessageBlock::ToolCall(Box::new(tool_call("tc3", model::ToolCallStatus::Completed))),
@@ -1380,7 +1379,7 @@ mod tests {
     #[test]
     fn has_in_progress_empty_assistant_blocks() {
         let mut app = make_test_app();
-        app.messages_mut().push(assistant_msg(vec![]));
+        app.active_messages_mut().push(assistant_msg(vec![]));
         assert!(!tool_calls::has_in_progress_tool_calls(&app));
     }
 
@@ -1414,21 +1413,19 @@ mod tests {
         let mut app = make_test_app();
 
         let session_key = active_session_key(&app);
-        handle_client_event(
+        apply_session_update(
             &mut app,
-            ClientEvent::WorkspaceUpdate(forge_workspace::SessionUpdate::TurnCancelled {
-                key: session_key,
-            }),
+            forge_workspace::SessionUpdate::TurnCancelled { key: session_key },
         );
         assert!(app.cancelled_turn_pending_hint());
 
         let session_key = active_session_key(&app);
-        handle_client_event(
+        apply_session_update(
             &mut app,
-            ClientEvent::WorkspaceUpdate(forge_workspace::SessionUpdate::TurnComplete {
+            forge_workspace::SessionUpdate::TurnComplete {
                 key: session_key,
                 terminal_reason: None,
-            }),
+            },
         );
 
         assert!(!app.cancelled_turn_pending_hint());
@@ -1444,23 +1441,23 @@ mod tests {
     fn turn_complete_after_manual_cancel_marks_tail_assistant_layout_dirty() {
         let mut app = make_test_app();
         app.status = AppStatus::Thinking;
-        app.messages_mut().push(user_msg("build app"));
-        app.messages_mut().push(assistant_msg(vec![MessageBlock::Text(TextBlock::from_complete(
-            "partial output",
-        ))]));
+        app.active_messages_mut().push(user_msg("build app"));
+        app.active_messages_mut().push(assistant_msg(vec![MessageBlock::Text(
+            TextBlock::from_complete("partial output"),
+        )]));
         app.set_pending_cancel_origin(Some(CancelOrigin::Manual));
 
         let session_key = active_session_key(&app);
-        handle_client_event(
+        apply_session_update(
             &mut app,
-            ClientEvent::WorkspaceUpdate(forge_workspace::SessionUpdate::TurnComplete {
+            forge_workspace::SessionUpdate::TurnComplete {
                 key: session_key,
                 terminal_reason: None,
-            }),
+            },
         );
 
         assert!(matches!(app.status, AppStatus::Ready));
-        assert!(!app.viewport_mut().message_height_is_current(1));
+        assert!(!app.active_viewport_mut().message_height_is_current(1));
         let Some(last) = app.messages().last() else {
             panic!("expected interruption hint message");
         };
@@ -1471,23 +1468,23 @@ mod tests {
     fn turn_complete_after_auto_cancel_marks_tail_assistant_layout_dirty() {
         let mut app = make_test_app();
         app.status = AppStatus::Running;
-        app.messages_mut().push(user_msg("build app"));
-        app.messages_mut().push(assistant_msg(vec![MessageBlock::Text(TextBlock::from_complete(
-            "partial output",
-        ))]));
+        app.active_messages_mut().push(user_msg("build app"));
+        app.active_messages_mut().push(assistant_msg(vec![MessageBlock::Text(
+            TextBlock::from_complete("partial output"),
+        )]));
         app.set_pending_cancel_origin(Some(CancelOrigin::AutoQueue));
 
         let session_key = active_session_key(&app);
-        handle_client_event(
+        apply_session_update(
             &mut app,
-            ClientEvent::WorkspaceUpdate(forge_workspace::SessionUpdate::TurnComplete {
+            forge_workspace::SessionUpdate::TurnComplete {
                 key: session_key,
                 terminal_reason: None,
-            }),
+            },
         );
 
         assert!(matches!(app.status, AppStatus::Ready));
-        assert!(!app.viewport_mut().message_height_is_current(1));
+        assert!(!app.active_viewport_mut().message_height_is_current(1));
         let Some(last) = app.messages().last() else {
             panic!("expected assistant message");
         };
@@ -1497,13 +1494,19 @@ mod tests {
     #[test]
     fn connected_updates_welcome_session_id_while_pristine() {
         let mut app = make_test_app();
-        app.messages_mut().push(ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "-", "/test", "-"));
-        let Some(MessageBlock::Welcome(welcome)) = app.messages_mut()[0].blocks.first_mut() else {
+        app.active_messages_mut().push(ChatMessage::welcome(
+            env!("CARGO_PKG_VERSION"),
+            "-",
+            "/test",
+            "-",
+        ));
+        let Some(MessageBlock::Welcome(welcome)) = app.active_messages_mut()[0].blocks.first_mut()
+        else {
             panic!("expected welcome block");
         };
         welcome.tip_seed = 7;
 
-        handle_client_event(&mut app, connected_event("claude-updated"));
+        apply_session_update(&mut app, connected_event("claude-updated"));
 
         let Some(first) = app.messages().first() else {
             panic!("missing welcome message");
@@ -1518,14 +1521,14 @@ mod tests {
     #[test]
     fn connected_leaves_account_line_empty_until_data_arrives() {
         let mut app = make_test_app();
-        app.messages_mut().push(ChatMessage::welcome(
+        app.active_messages_mut().push(ChatMessage::welcome(
             env!("CARGO_PKG_VERSION"),
             "old",
             "/test",
             "old",
         ));
 
-        handle_client_event(&mut app, connected_event("opus"));
+        apply_session_update(&mut app, connected_event("opus"));
 
         let Some(first) = app.messages().first() else {
             panic!("missing welcome message");
@@ -1555,7 +1558,7 @@ mod tests {
             sampling_required: None,
         });
 
-        handle_client_event(&mut app, connected_event_with_conn("claude-updated", conn));
+        apply_session_update(&mut app, connected_event_with_conn("claude-updated", conn));
 
         // First command is the per-session git watcher start. Drain it
         // so the snapshot-command assertion still works.
@@ -1574,19 +1577,24 @@ mod tests {
     #[test]
     fn connected_updates_cwd_and_clears_resuming_marker() {
         let mut app = make_test_app();
-        app.messages_mut().push(ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "-", "/test", "-"));
+        app.active_messages_mut().push(ChatMessage::welcome(
+            env!("CARGO_PKG_VERSION"),
+            "-",
+            "/test",
+            "-",
+        ));
         app.resuming_session_id = Some("resume-123".into());
 
-        handle_client_event(
+        apply_session_update(
             &mut app,
-            ClientEvent::Connected {
-                session_id: model::SessionId::new("session-cwd"),
+            SessionUpdate::Connected {
+                key: forge_workspace::SessionKey::from_session_id("session-cwd".to_owned()),
+                session_id: forge_primitives::SessionId::new("session-cwd"),
                 cwd: "/changed".into(),
-                current_model: test_current_model("claude-updated"),
+                current_model: test_current_model_primitives("claude-updated"),
                 available_models: Vec::new(),
                 mode: None,
-                history_updates: Vec::new(),
-                pre_connect_key: None,
+                history: Vec::new(),
                 conn: stub_conn(),
             },
         );
@@ -1611,16 +1619,16 @@ mod tests {
             "projects": {}
         });
 
-        handle_client_event(
+        apply_session_update(
             &mut app,
-            ClientEvent::Connected {
-                session_id: model::SessionId::new("session-trust"),
+            SessionUpdate::Connected {
+                key: forge_workspace::SessionKey::from_session_id("session-trust".to_owned()),
+                session_id: forge_primitives::SessionId::new("session-trust"),
                 cwd: "/untrusted".into(),
-                current_model: test_current_model("claude-updated"),
+                current_model: test_current_model_primitives("claude-updated"),
                 available_models: Vec::new(),
                 mode: None,
-                history_updates: Vec::new(),
-                pre_connect_key: None,
+                history: Vec::new(),
                 conn: stub_conn(),
             },
         );
@@ -1635,14 +1643,20 @@ mod tests {
     #[test]
     fn connected_updates_welcome_once_even_after_chat_started() {
         let mut app = make_test_app();
-        app.messages_mut().push(ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "-", "/test", "-"));
-        let Some(MessageBlock::Welcome(welcome)) = app.messages_mut()[0].blocks.first_mut() else {
+        app.active_messages_mut().push(ChatMessage::welcome(
+            env!("CARGO_PKG_VERSION"),
+            "-",
+            "/test",
+            "-",
+        ));
+        let Some(MessageBlock::Welcome(welcome)) = app.active_messages_mut()[0].blocks.first_mut()
+        else {
             panic!("expected welcome block");
         };
         welcome.tip_seed = 11;
-        app.messages_mut().push(user_msg("hello"));
+        app.active_messages_mut().push(user_msg("hello"));
 
-        handle_client_event(&mut app, connected_event("claude-updated"));
+        apply_session_update(&mut app, connected_event("claude-updated"));
 
         let Some(first) = app.messages().first() else {
             panic!("missing first message");
@@ -1659,7 +1673,7 @@ mod tests {
         let mut app = make_test_app();
         app.set_session_id(Some(model::SessionId::new("session-1")));
         app.set_current_model(Some(test_current_model("opus")));
-        *app.messages_mut() =
+        *app.active_messages_mut() =
             vec![ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "-", "/test", "session-1")];
         crate::app::config::store::set_model(
             &mut app.config.committed_settings_document,
@@ -1689,7 +1703,7 @@ mod tests {
     #[test]
     fn connected_resets_session_scoped_view_data() {
         let mut app = make_test_app();
-        app.messages_mut().push(user_msg("hello"));
+        app.active_messages_mut().push(user_msg("hello"));
         app.status = AppStatus::Running;
         app.set_files_accessed(9);
         app.usage.snapshot = Some(UsageSnapshot {
@@ -1726,7 +1740,7 @@ mod tests {
                 kind: crate::app::config::PendingSessionTitleChangeKind::Generate,
             });
 
-        handle_client_event(&mut app, connected_event("claude-updated"));
+        apply_session_update(&mut app, connected_event("claude-updated"));
 
         assert!(matches!(app.status, AppStatus::Ready));
         assert_eq!(app.messages().len(), 1);
@@ -1743,8 +1757,13 @@ mod tests {
     fn current_model_update_leaves_existing_welcome_snapshot_unchanged() {
         let mut app = make_test_app();
         app.set_current_model(Some(test_current_model("opus")));
-        app.messages_mut().push(ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "-", "/test", "-"));
-        app.messages_mut().push(user_msg("hello"));
+        app.active_messages_mut().push(ChatMessage::welcome(
+            env!("CARGO_PKG_VERSION"),
+            "-",
+            "/test",
+            "-",
+        ));
+        app.active_messages_mut().push(user_msg("hello"));
 
         send_msg(&mut app, system_message("init", serde_json::json!({"model": "claude-opus-4-7"})));
 
@@ -1776,10 +1795,10 @@ mod tests {
         app.input.set_text("keep me");
 
         let session_key = active_session_key(&app);
-        handle_client_event(
+        apply_session_update(
             &mut app,
-            ClientEvent::AuthRequired {
-                session_key,
+            SessionUpdate::AuthRequired {
+                key: session_key,
                 method_name: "oauth".into(),
                 method_description: "Open browser".into(),
             },
@@ -1798,10 +1817,10 @@ mod tests {
     fn service_status_warning_pushes_system_warning_without_locking_input() {
         let mut app = make_test_app();
 
-        handle_client_event(
+        apply_session_update(
             &mut app,
-            ClientEvent::ServiceStatus {
-                severity: ServiceStatusSeverity::Warning,
+            SessionUpdate::ServiceStatus {
+                severity: ServiceSeverity::Warning,
                 message: "Claude Code status: Partial Outage (indicator: minor).".into(),
             },
         );
@@ -1818,10 +1837,10 @@ mod tests {
         let mut app = make_test_app();
         app.input.set_text("draft stays");
 
-        handle_client_event(
+        apply_session_update(
             &mut app,
-            ClientEvent::ServiceStatus {
-                severity: ServiceStatusSeverity::Error,
+            SessionUpdate::ServiceStatus {
+                severity: ServiceSeverity::Error,
                 message: "Claude Code status: Major Outage (indicator: major).".into(),
             },
         );
@@ -1837,13 +1856,19 @@ mod tests {
     #[test]
     fn session_replaced_resets_chat_and_transient_state() {
         let mut app = make_test_app();
-        app.messages_mut().push(ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "-", "/test", "-"));
-        let Some(MessageBlock::Welcome(welcome)) = app.messages_mut()[0].blocks.first_mut() else {
+        app.active_messages_mut().push(ChatMessage::welcome(
+            env!("CARGO_PKG_VERSION"),
+            "-",
+            "/test",
+            "-",
+        ));
+        let Some(MessageBlock::Welcome(welcome)) = app.active_messages_mut()[0].blocks.first_mut()
+        else {
             panic!("expected welcome block");
         };
         welcome.tip_seed = 5;
-        app.messages_mut().push(user_msg("hello"));
-        app.messages_mut()
+        app.active_messages_mut().push(user_msg("hello"));
+        app.active_messages_mut()
             .push(assistant_msg(vec![MessageBlock::Text(TextBlock::from_complete("world"))]));
         app.status = AppStatus::Running;
         app.set_files_accessed(9);
@@ -1868,15 +1893,16 @@ mod tests {
             sampling_required: None,
         });
 
-        handle_client_event(
+        apply_session_update(
             &mut app,
-            ClientEvent::SessionReplaced {
-                session_id: model::SessionId::new("replacement"),
+            SessionUpdate::SessionReplaced {
+                key: forge_workspace::SessionKey::from_session_id("replacement".to_owned()),
+                session_id: forge_primitives::SessionId::new("replacement"),
                 cwd: "/replacement".into(),
-                current_model: test_current_model("new-model"),
+                current_model: test_current_model_primitives("new-model"),
                 available_models: Vec::new(),
                 mode: None,
-                history_updates: Vec::new(),
+                history: Vec::new(),
                 conn: stub_conn(),
             },
         );
@@ -1917,15 +1943,16 @@ mod tests {
             sampling_required: None,
         });
 
-        handle_client_event(
+        apply_session_update(
             &mut app,
-            ClientEvent::SessionReplaced {
-                session_id: model::SessionId::new("replacement"),
+            SessionUpdate::SessionReplaced {
+                key: forge_workspace::SessionKey::from_session_id("replacement".to_owned()),
+                session_id: forge_primitives::SessionId::new("replacement"),
                 cwd: "/replacement".into(),
-                current_model: test_current_model("new-model"),
+                current_model: test_current_model_primitives("new-model"),
                 available_models: Vec::new(),
                 mode: None,
-                history_updates: Vec::new(),
+                history: Vec::new(),
                 conn,
             },
         );
@@ -1948,7 +1975,7 @@ mod tests {
     fn connected_requests_status_snapshot_on_connect() {
         let (mut app, mut rx, conn) = app_with_bridge_connection();
 
-        handle_client_event(&mut app, connected_event_with_conn("claude-updated", conn));
+        apply_session_update(&mut app, connected_event_with_conn("claude-updated", conn));
 
         // First command is the per-session git watcher start. Drain it
         // so the snapshot-command assertions still work.
@@ -1977,7 +2004,7 @@ mod tests {
                 app.active_view = ActiveView::Config;
                 app.config.active_tab = crate::app::ConfigTab::Usage;
 
-                handle_client_event(&mut app, connected_event("claude-updated"));
+                apply_session_update(&mut app, connected_event("claude-updated"));
 
                 assert!(app.usage.in_flight);
             })
@@ -1989,9 +2016,9 @@ mod tests {
         let mut app = make_test_app();
         app.set_session_id(Some(model::SessionId::new("current-session")));
 
-        handle_client_event(
+        apply_session_update(
             &mut app,
-            ClientEvent::WorkspaceUpdate(forge_workspace::SessionUpdate::StatusSnapshot {
+            forge_workspace::SessionUpdate::StatusSnapshot {
                 session_id: "old-session".into(),
                 account: forge_primitives::AccountInfo {
                     email: Some("old@example.com".into()),
@@ -2002,7 +2029,7 @@ mod tests {
                     api_provider: None,
                 },
                 forge_account: None,
-            }),
+            },
         );
 
         assert!(app.account_info().is_none());
@@ -2011,7 +2038,7 @@ mod tests {
     #[test]
     fn forge_account_identity_ready_stores_name_but_keeps_welcome_hidden_until_tier_arrives() {
         let mut app = make_test_app();
-        app.messages_mut().push(ChatMessage::welcome(
+        app.active_messages_mut().push(ChatMessage::welcome(
             env!("CARGO_PKG_VERSION"),
             "",
             "/test",
@@ -2021,12 +2048,12 @@ mod tests {
 
         // Pre-snapshot: bridge tells us which account got picked.
         let session_key = active_session_key(&app);
-        handle_client_event(
+        apply_session_update(
             &mut app,
-            ClientEvent::WorkspaceUpdate(forge_workspace::SessionUpdate::ForgeAccountIdentity {
+            forge_workspace::SessionUpdate::ForgeAccountIdentity {
                 key: session_key,
                 display_name: "Subspace".into(),
-            }),
+            },
         );
 
         // App state stores the name (Status panel needs it).
@@ -2045,7 +2072,7 @@ mod tests {
     #[test]
     fn status_snapshot_with_forge_account_renders_account_label() {
         let mut app = make_test_app();
-        app.messages_mut().push(ChatMessage::welcome(
+        app.active_messages_mut().push(ChatMessage::welcome(
             env!("CARGO_PKG_VERSION"),
             "-",
             "/test",
@@ -2053,9 +2080,9 @@ mod tests {
         ));
         app.set_session_id(Some(model::SessionId::new("session-1")));
 
-        handle_client_event(
+        apply_session_update(
             &mut app,
-            ClientEvent::WorkspaceUpdate(forge_workspace::SessionUpdate::StatusSnapshot {
+            forge_workspace::SessionUpdate::StatusSnapshot {
                 session_id: "session-1".into(),
                 account: forge_primitives::AccountInfo {
                     email: None,
@@ -2066,7 +2093,7 @@ mod tests {
                     api_provider: None,
                 },
                 forge_account: Some(forge_primitives::ForgeAccountIdentity::new("Subspace".into())),
-            }),
+            },
         );
 
         let Some(MessageBlock::Welcome(welcome)) = app.messages()[0].blocks.first() else {
@@ -2079,7 +2106,7 @@ mod tests {
     #[test]
     fn status_snapshot_without_forge_account_keeps_subscription_label() {
         let mut app = make_test_app();
-        app.messages_mut().push(ChatMessage::welcome(
+        app.active_messages_mut().push(ChatMessage::welcome(
             env!("CARGO_PKG_VERSION"),
             "-",
             "/test",
@@ -2087,9 +2114,9 @@ mod tests {
         ));
         app.set_session_id(Some(model::SessionId::new("session-1")));
 
-        handle_client_event(
+        apply_session_update(
             &mut app,
-            ClientEvent::WorkspaceUpdate(forge_workspace::SessionUpdate::StatusSnapshot {
+            forge_workspace::SessionUpdate::StatusSnapshot {
                 session_id: "session-1".into(),
                 account: forge_primitives::AccountInfo {
                     email: None,
@@ -2100,7 +2127,7 @@ mod tests {
                     api_provider: None,
                 },
                 forge_account: None,
-            }),
+            },
         );
 
         let Some(MessageBlock::Welcome(welcome)) = app.messages()[0].blocks.first() else {
@@ -2126,9 +2153,9 @@ mod tests {
             sampling_required: None,
         });
 
-        handle_client_event(
+        apply_session_update(
             &mut app,
-            ClientEvent::WorkspaceUpdate(forge_workspace::SessionUpdate::McpSnapshot {
+            forge_workspace::SessionUpdate::McpSnapshot {
                 session_id: "old-session".into(),
                 servers: vec![forge_primitives::McpServerStatus {
                     name: "stale".into(),
@@ -2142,7 +2169,7 @@ mod tests {
                     sampling_required: None,
                 }],
                 error: None,
-            }),
+            },
         );
 
         assert_eq!(app.mcp().servers.len(), 1);
@@ -2156,13 +2183,13 @@ mod tests {
         // path returns a non-zero value. Direct field manipulation
         // is fine here — we're inside the same module's test code.
         app.set_session_id(Some(model::SessionId::new("scope-epoch-test")));
-        if let Some(s) = app.active_session_mut() {
+        if let Some(s) = app.try_active_bucket_mut() {
             s.session_scope_epoch = 5;
         }
 
-        handle_client_event(
+        apply_session_update(
             &mut app,
-            ClientEvent::UsageSnapshotReceived {
+            SessionUpdate::UsageSnapshotReceived {
                 epoch: 4,
                 snapshot: UsageSnapshot {
                     source: UsageSourceKind::Oauth,
@@ -2184,9 +2211,9 @@ mod tests {
         let mut app = make_test_app();
         app.set_cwd_raw("/current");
 
-        handle_client_event(
+        apply_session_update(
             &mut app,
-            ClientEvent::PluginsInventoryUpdated {
+            SessionUpdate::PluginsInventoryUpdated {
                 cwd_raw: "/old".into(),
                 snapshot: crate::app::plugins::PluginsInventorySnapshot {
                     installed: vec![crate::app::plugins::InstalledPluginEntry {
@@ -2216,9 +2243,9 @@ mod tests {
         app.resuming_session_id = Some("resume-123".into());
 
         let session_key = active_session_key(&app);
-        handle_client_event(
+        apply_session_update(
             &mut app,
-            ClientEvent::SlashCommandError { session_key, message: "resume failed".into() },
+            SessionUpdate::SlashCommandError { key: session_key, message: "resume failed".into() },
         );
 
         assert!(matches!(app.status, AppStatus::Ready));
@@ -2236,9 +2263,9 @@ mod tests {
                 },
             });
 
-        handle_client_event(
+        apply_session_update(
             &mut app,
-            ClientEvent::SessionsListed {
+            SessionUpdate::SessionsListed {
                 sessions: vec![forge_primitives::SessionListEntry {
                     session_id: "session-1".to_owned(),
                     summary: "Renamed session".to_owned(),
@@ -2273,10 +2300,10 @@ mod tests {
             });
 
         let session_key = active_session_key(&app);
-        handle_client_event(
+        apply_session_update(
             &mut app,
-            ClientEvent::SlashCommandError {
-                session_key,
+            SessionUpdate::SlashCommandError {
+                key: session_key,
                 message: "failed to rename session: boom".into(),
             },
         );
@@ -2296,10 +2323,10 @@ mod tests {
         app.mcp_mut().in_flight = true;
 
         let session_key = active_session_key(&app);
-        handle_client_event(
+        apply_session_update(
             &mut app,
-            ClientEvent::McpOperationError {
-                session_key,
+            SessionUpdate::McpOperationError {
+                key: session_key,
                 error: forge_primitives::McpOperationError {
                     server_name: Some("claude.ai Google Calendar".into()),
                     operation: "authenticate".into(),
@@ -2330,9 +2357,9 @@ mod tests {
                 kind: crate::app::config::PendingSessionTitleChangeKind::Generate,
             });
 
-        handle_client_event(
+        apply_session_update(
             &mut app,
-            ClientEvent::SessionsListed {
+            SessionUpdate::SessionsListed {
                 sessions: vec![forge_primitives::SessionListEntry {
                     session_id: "session-1".to_owned(),
                     summary: "Generated session".to_owned(),
@@ -2356,9 +2383,9 @@ mod tests {
         let mut app = make_test_app();
         app.startup_session_picker_requested = true;
 
-        handle_client_event(
+        apply_session_update(
             &mut app,
-            ClientEvent::SessionsListed {
+            SessionUpdate::SessionsListed {
                 sessions: vec![listed_session("session-1", "First Session")],
             },
         );
@@ -2368,8 +2395,8 @@ mod tests {
         assert!(!app.startup_session_picker_resolved);
 
         let (handle, _rx) = forge_agent::Agent::testing_stub();
-        app.set_conn(Some(std::sync::Arc::new(handle)));
-        handle_client_event(&mut app, connected_event("claude-updated"));
+        app.set_active_conn(Some(std::sync::Arc::new(handle)));
+        apply_session_update(&mut app, connected_event("claude-updated"));
 
         assert_eq!(app.active_view, ActiveView::SessionPicker);
         assert!(app.startup_session_picker_resolved);
@@ -2380,13 +2407,13 @@ mod tests {
         let mut app = make_test_app();
         app.startup_session_picker_requested = true;
         let (handle, _rx) = forge_agent::Agent::testing_stub();
-        app.set_conn(Some(std::sync::Arc::new(handle)));
+        app.set_active_conn(Some(std::sync::Arc::new(handle)));
 
-        handle_client_event(&mut app, connected_event("claude-updated"));
+        apply_session_update(&mut app, connected_event("claude-updated"));
         assert_eq!(app.active_view, ActiveView::Chat);
         assert!(!app.startup_session_picker_resolved);
 
-        handle_client_event(&mut app, ClientEvent::SessionsListed { sessions: Vec::new() });
+        apply_session_update(&mut app, SessionUpdate::SessionsListed { sessions: Vec::new() });
 
         assert_eq!(app.active_view, ActiveView::Chat);
         assert!(app.startup_session_picker_resolved);
@@ -2427,9 +2454,9 @@ mod tests {
         app.session_picker.selected = 1;
         app.session_picker.scroll_offset = 1;
 
-        handle_client_event(
+        apply_session_update(
             &mut app,
-            ClientEvent::SessionsListed {
+            SessionUpdate::SessionsListed {
                 sessions: vec![
                     listed_session("session-2", "Second"),
                     listed_session("session-3", "Third"),
@@ -2456,7 +2483,7 @@ mod tests {
                 crate::app::ModeInfo { id: "plan".to_owned(), name: "Plan".to_owned() },
             ],
         }));
-        app.messages_mut().push(user_msg("seed"));
+        app.active_messages_mut().push(user_msg("seed"));
         let layout_generation_before = app.viewport().layout_generation;
 
         // Wire path: server-side mode switches arrive via System("status")
@@ -2484,7 +2511,7 @@ mod tests {
                 crate::app::ModeInfo { id: "plan".to_owned(), name: "Plan".to_owned() },
             ],
         }));
-        app.messages_mut().push(user_msg("seed"));
+        app.active_messages_mut().push(user_msg("seed"));
         let layout_generation_before = app.viewport().layout_generation;
 
         // Wire path: System("init") with permissionMode rebuilds the
@@ -2523,15 +2550,16 @@ mod tests {
         let mut app = make_test_app();
         app.resuming_session_id = Some("requested-123".into());
 
-        handle_client_event(
+        apply_session_update(
             &mut app,
-            ClientEvent::SessionReplaced {
-                session_id: model::SessionId::new("active-456"),
+            SessionUpdate::SessionReplaced {
+                key: forge_workspace::SessionKey::from_session_id("active-456".to_owned()),
+                session_id: forge_primitives::SessionId::new("active-456"),
                 cwd: "/replacement".into(),
-                current_model: test_current_model("new-model"),
+                current_model: test_current_model_primitives("new-model"),
                 available_models: Vec::new(),
                 mode: None,
-                history_updates: Vec::new(),
+                history: Vec::new(),
                 conn: stub_conn(),
             },
         );
@@ -2548,15 +2576,16 @@ mod tests {
         let history_updates =
             vec![user_text_message("first user line"), assistant_text_message("assistant reply")];
 
-        handle_client_event(
+        apply_session_update(
             &mut app,
-            ClientEvent::SessionReplaced {
-                session_id: model::SessionId::new("active-456"),
+            SessionUpdate::SessionReplaced {
+                key: forge_workspace::SessionKey::from_session_id("active-456".to_owned()),
+                session_id: forge_primitives::SessionId::new("active-456"),
                 cwd: "/replacement".into(),
-                current_model: test_current_model("new-model"),
+                current_model: test_current_model_primitives("new-model"),
                 available_models: Vec::new(),
                 mode: None,
-                history_updates,
+                history: history_updates,
                 conn: stub_conn(),
             },
         );
@@ -2582,15 +2611,16 @@ mod tests {
             assistant_text_message("second assistant"),
         ];
 
-        handle_client_event(
+        apply_session_update(
             &mut app,
-            ClientEvent::SessionReplaced {
-                session_id: model::SessionId::new("active-457"),
+            SessionUpdate::SessionReplaced {
+                key: forge_workspace::SessionKey::from_session_id("active-457".to_owned()),
+                session_id: forge_primitives::SessionId::new("active-457"),
                 cwd: "/replacement".into(),
-                current_model: test_current_model("new-model"),
+                current_model: test_current_model_primitives("new-model"),
                 available_models: Vec::new(),
                 mode: None,
-                history_updates,
+                history: history_updates,
                 conn: stub_conn(),
             },
         );
@@ -2629,15 +2659,16 @@ mod tests {
             serde_json::json!({"command": "Execute command"}),
         );
 
-        handle_client_event(
+        apply_session_update(
             &mut app,
-            ClientEvent::SessionReplaced {
-                session_id: model::SessionId::new("active-789"),
+            SessionUpdate::SessionReplaced {
+                key: forge_workspace::SessionKey::from_session_id("active-789".to_owned()),
+                session_id: forge_primitives::SessionId::new("active-789"),
                 cwd: "/replacement".into(),
-                current_model: test_current_model("new-model"),
+                current_model: test_current_model_primitives("new-model"),
                 available_models: Vec::new(),
                 mode: None,
-                history_updates: vec![open_tool],
+                history: vec![open_tool],
                 conn: stub_conn(),
             },
         );
@@ -2657,15 +2688,16 @@ mod tests {
     fn resume_history_clears_active_turn_owner_after_replay() {
         let mut app = make_test_app();
 
-        handle_client_event(
+        apply_session_update(
             &mut app,
-            ClientEvent::SessionReplaced {
-                session_id: model::SessionId::new("active-790"),
+            SessionUpdate::SessionReplaced {
+                key: forge_workspace::SessionKey::from_session_id("active-790".to_owned()),
+                session_id: forge_primitives::SessionId::new("active-790"),
                 cwd: "/replacement".into(),
-                current_model: test_current_model("new-model"),
+                current_model: test_current_model_primitives("new-model"),
                 available_models: Vec::new(),
                 mode: None,
-                history_updates: vec![assistant_text_message("assistant reply")],
+                history: vec![assistant_text_message("assistant reply")],
                 conn: stub_conn(),
             },
         );
@@ -2684,15 +2716,16 @@ mod tests {
             serde_json::json!({"description": "Run subagent"}),
         );
 
-        handle_client_event(
+        apply_session_update(
             &mut app,
-            ClientEvent::SessionReplaced {
-                session_id: model::SessionId::new("active-791"),
+            SessionUpdate::SessionReplaced {
+                key: forge_workspace::SessionKey::from_session_id("active-791".to_owned()),
+                session_id: forge_primitives::SessionId::new("active-791"),
                 cwd: "/replacement".into(),
-                current_model: test_current_model("new-model"),
+                current_model: test_current_model_primitives("new-model"),
                 available_models: Vec::new(),
                 mode: None,
-                history_updates: vec![task_tool],
+                history: vec![task_tool],
                 conn: stub_conn(),
             },
         );
@@ -2705,12 +2738,12 @@ mod tests {
     fn turn_complete_without_cancel_does_not_render_interrupted_hint() {
         let mut app = make_test_app();
         let session_key = active_session_key(&app);
-        handle_client_event(
+        apply_session_update(
             &mut app,
-            ClientEvent::WorkspaceUpdate(forge_workspace::SessionUpdate::TurnComplete {
+            forge_workspace::SessionUpdate::TurnComplete {
                 key: session_key,
                 terminal_reason: None,
-            }),
+            },
         );
         assert!(app.messages().is_empty());
     }
@@ -2719,8 +2752,8 @@ mod tests {
     fn turn_complete_keeps_history_and_adds_compaction_success_after_manual_boundary() {
         let mut app = make_test_app();
         app.set_session_id(Some(model::SessionId::new("session-x")));
-        app.messages_mut().push(user_msg("/compact"));
-        app.messages_mut()
+        app.active_messages_mut().push(user_msg("/compact"));
+        app.active_messages_mut()
             .push(assistant_msg(vec![MessageBlock::Text(TextBlock::from_complete("compacted"))]));
         send_msg(
             &mut app,
@@ -2734,12 +2767,12 @@ mod tests {
         assert!(app.pending_compact_clear());
 
         let session_key = active_session_key(&app);
-        handle_client_event(
+        apply_session_update(
             &mut app,
-            ClientEvent::WorkspaceUpdate(forge_workspace::SessionUpdate::TurnComplete {
+            forge_workspace::SessionUpdate::TurnComplete {
                 key: session_key,
                 terminal_reason: None,
-            }),
+            },
         );
 
         assert!(!app.pending_compact_clear());
@@ -2792,17 +2825,17 @@ mod tests {
     fn turn_error_keeps_history_when_compact_pending() {
         let mut app = make_test_app();
         app.set_pending_compact_clear(true);
-        app.messages_mut().push(user_msg("/compact"));
+        app.active_messages_mut().push(user_msg("/compact"));
 
         let session_key = active_session_key(&app);
-        handle_client_event(
+        apply_session_update(
             &mut app,
-            ClientEvent::WorkspaceUpdate(forge_workspace::SessionUpdate::TurnError {
+            forge_workspace::SessionUpdate::TurnError {
                 key: session_key,
                 message: "adapter failed".into(),
                 class: None,
                 terminal_reason: None,
-            }),
+            },
         );
 
         assert!(!app.pending_compact_clear());
@@ -2837,11 +2870,9 @@ mod tests {
         app.set_is_compacting(true);
 
         let session_key = active_session_key(&app);
-        handle_client_event(
+        apply_session_update(
             &mut app,
-            ClientEvent::WorkspaceUpdate(forge_workspace::SessionUpdate::TurnCancelled {
-                key: session_key,
-            }),
+            forge_workspace::SessionUpdate::TurnCancelled { key: session_key },
         );
 
         assert!(app.pending_compact_clear());
@@ -2851,26 +2882,24 @@ mod tests {
     #[test]
     fn turn_error_after_cancel_keeps_compaction_success_before_interrupted_hint() {
         let mut app = make_test_app();
-        app.messages_mut().push(user_msg("/compact"));
+        app.active_messages_mut().push(user_msg("/compact"));
         app.set_pending_compact_clear(true);
         app.set_is_compacting(true);
 
         let session_key = active_session_key(&app);
-        handle_client_event(
+        apply_session_update(
             &mut app,
-            ClientEvent::WorkspaceUpdate(forge_workspace::SessionUpdate::TurnCancelled {
-                key: session_key,
-            }),
+            forge_workspace::SessionUpdate::TurnCancelled { key: session_key },
         );
         let session_key = active_session_key(&app);
-        handle_client_event(
+        apply_session_update(
             &mut app,
-            ClientEvent::WorkspaceUpdate(forge_workspace::SessionUpdate::TurnError {
+            forge_workspace::SessionUpdate::TurnError {
                 key: session_key,
                 message: "cancelled".into(),
                 class: None,
                 terminal_reason: None,
-            }),
+            },
         );
 
         assert_eq!(app.messages().len(), 3);
@@ -2890,14 +2919,14 @@ mod tests {
         let mut app = make_test_app();
 
         let session_key = active_session_key(&app);
-        handle_client_event(
+        apply_session_update(
             &mut app,
-            ClientEvent::WorkspaceUpdate(forge_workspace::SessionUpdate::TurnError {
+            forge_workspace::SessionUpdate::TurnError {
                 key: session_key,
                 message: "HTTP 429 Too Many Requests: max turns exceeded".into(),
                 class: None,
                 terminal_reason: None,
-            }),
+            },
         );
 
         assert!(matches!(app.status, AppStatus::Error));
@@ -2917,14 +2946,14 @@ mod tests {
         let mut app = make_test_app();
 
         let session_key = active_session_key(&app);
-        handle_client_event(
+        apply_session_update(
             &mut app,
-            ClientEvent::WorkspaceUpdate(forge_workspace::SessionUpdate::TurnError {
+            forge_workspace::SessionUpdate::TurnError {
                 key: session_key,
                 message: "turn failed".into(),
                 class: Some(forge_workspace::TurnErrorClass::PlanLimit),
                 terminal_reason: None,
-            }),
+            },
         );
 
         assert!(matches!(app.status, AppStatus::Error));
@@ -2943,14 +2972,14 @@ mod tests {
         let mut app = make_test_app();
 
         let session_key = active_session_key(&app);
-        handle_client_event(
+        apply_session_update(
             &mut app,
-            ClientEvent::WorkspaceUpdate(forge_workspace::SessionUpdate::TurnError {
+            forge_workspace::SessionUpdate::TurnError {
                 key: session_key,
                 message: "auth required".into(),
                 class: Some(forge_workspace::TurnErrorClass::AuthRequired),
                 terminal_reason: None,
-            }),
+            },
         );
 
         assert!(matches!(app.status, AppStatus::Error));
@@ -2961,22 +2990,21 @@ mod tests {
     #[test]
     fn turn_error_clears_tool_scope_tracking() {
         let mut app = make_test_app();
-        app.messages_mut().push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(tool_call(
-            "task-1",
-            model::ToolCallStatus::InProgress,
-        )))]));
+        app.active_messages_mut().push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(
+            tool_call("task-1", model::ToolCallStatus::InProgress),
+        ))]));
         app.register_tool_call_scope("task-1".into(), ToolCallScope::SubagentRoot);
         app.insert_active_task("task-1".into());
 
         let session_key = active_session_key(&app);
-        handle_client_event(
+        apply_session_update(
             &mut app,
-            ClientEvent::WorkspaceUpdate(forge_workspace::SessionUpdate::TurnError {
+            forge_workspace::SessionUpdate::TurnError {
                 key: session_key,
                 message: "boom".into(),
                 class: None,
                 terminal_reason: None,
-            }),
+            },
         );
 
         assert!(app.active_task_ids().is_empty());
@@ -2995,10 +3023,9 @@ mod tests {
             available_modes: vec![crate::app::ModeInfo { id: "plan".into(), name: "Plan".into() }],
         }));
         app.set_fast_mode_state(model::FastModeState::On);
-        app.messages_mut().push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(tool_call(
-            "task-1",
-            model::ToolCallStatus::InProgress,
-        )))]));
+        app.active_messages_mut().push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(
+            tool_call("task-1", model::ToolCallStatus::InProgress),
+        ))]));
         app.bind_active_turn_assistant(0);
         app.register_tool_call_scope("task-1".into(), ToolCallScope::SubagentRoot);
         app.insert_active_task("task-1".into());
@@ -3006,10 +3033,10 @@ mod tests {
         app.claim_focus_target(FocusTarget::Permission);
 
         let session_key = active_session_key(&app);
-        handle_client_event(
+        apply_session_update(
             &mut app,
-            ClientEvent::AuthRequired {
-                session_key,
+            SessionUpdate::AuthRequired {
+                key: session_key,
                 method_name: "oauth".into(),
                 method_description: "Open browser".into(),
             },
@@ -3042,7 +3069,7 @@ mod tests {
         app.set_fast_mode_state(model::FastModeState::On);
 
         let session_key = active_session_key(&app);
-        handle_client_event(&mut app, ClientEvent::LogoutCompleted { session_key });
+        apply_session_update(&mut app, SessionUpdate::LogoutCompleted { key: session_key });
 
         assert!(app.session_id().is_none());
         assert!(app.current_model().is_none());
@@ -3054,9 +3081,9 @@ mod tests {
     fn fatal_event_sets_exit_error_and_quits() {
         let mut app = make_test_app();
 
-        handle_client_event(
+        apply_session_update(
             &mut app,
-            ClientEvent::FatalError(crate::error::AppError::ConnectionFailed),
+            SessionUpdate::FatalError(crate::error::AppError::ConnectionFailed),
         );
 
         assert!(matches!(app.status, AppStatus::Error));
@@ -3068,18 +3095,21 @@ mod tests {
     fn connection_failed_clears_active_turn_runtime_tracking() {
         let mut app = make_test_app();
         app.status = AppStatus::Running;
-        app.messages_mut().push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(tool_call(
-            "task-1",
-            model::ToolCallStatus::InProgress,
-        )))]));
+        app.active_messages_mut().push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(
+            tool_call("task-1", model::ToolCallStatus::InProgress),
+        ))]));
         app.bind_active_turn_assistant(0);
         app.register_tool_call_scope("task-1".into(), ToolCallScope::SubagentRoot);
         app.insert_active_task("task-1".into());
 
         let session_key = active_session_key(&app);
-        handle_client_event(
+        apply_session_update(
             &mut app,
-            ClientEvent::ConnectionFailed { session_key, message: "bridge down".into() },
+            SessionUpdate::ConnectionFailed {
+                key: session_key,
+                message: "bridge down".into(),
+                fatal: false,
+            },
         );
 
         assert_eq!(app.active_turn_assistant_idx(), None);
@@ -3094,17 +3124,16 @@ mod tests {
     fn fatal_event_clears_active_turn_runtime_tracking() {
         let mut app = make_test_app();
         app.status = AppStatus::Running;
-        app.messages_mut().push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(tool_call(
-            "task-1",
-            model::ToolCallStatus::InProgress,
-        )))]));
+        app.active_messages_mut().push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(
+            tool_call("task-1", model::ToolCallStatus::InProgress),
+        ))]));
         app.bind_active_turn_assistant(0);
         app.register_tool_call_scope("task-1".into(), ToolCallScope::SubagentRoot);
         app.insert_active_task("task-1".into());
 
-        handle_client_event(
+        apply_session_update(
             &mut app,
-            ClientEvent::FatalError(crate::error::AppError::ConnectionFailed),
+            SessionUpdate::FatalError(crate::error::AppError::ConnectionFailed),
         );
 
         assert_eq!(app.active_turn_assistant_idx(), None);
@@ -3218,10 +3247,10 @@ mod tests {
     fn plan_limit_turn_error_upgrades_inline_notice_in_active_assistant() {
         let mut app = make_test_app();
         app.status = AppStatus::Thinking;
-        app.messages_mut().push(user_msg("hello"));
-        app.messages_mut().push(assistant_msg(vec![MessageBlock::Text(TextBlock::from_complete(
-            "partial response",
-        ))]));
+        app.active_messages_mut().push(user_msg("hello"));
+        app.active_messages_mut().push(assistant_msg(vec![MessageBlock::Text(
+            TextBlock::from_complete("partial response"),
+        )]));
         app.bind_active_turn_assistant(1);
 
         send_msg(
@@ -3241,14 +3270,14 @@ mod tests {
         assert_eq!(app.turn_notice_refs().len(), 1);
 
         let session_key = active_session_key(&app);
-        handle_client_event(
+        apply_session_update(
             &mut app,
-            ClientEvent::WorkspaceUpdate(forge_workspace::SessionUpdate::TurnError {
+            forge_workspace::SessionUpdate::TurnError {
                 key: session_key,
                 message: "HTTP 429 Too Many Requests".to_owned(),
                 class: Some(forge_workspace::TurnErrorClass::PlanLimit),
                 terminal_reason: None,
-            }),
+            },
         );
 
         assert!(matches!(app.status, AppStatus::Error));
@@ -3278,19 +3307,19 @@ mod tests {
             surpassed_threshold: None,
         }));
         app.status = AppStatus::Thinking;
-        app.messages_mut().push(user_msg("first"));
-        app.messages_mut().push(assistant_msg(vec![]));
+        app.active_messages_mut().push(user_msg("first"));
+        app.active_messages_mut().push(assistant_msg(vec![]));
         app.bind_active_turn_assistant(1);
 
         let session_key = active_session_key(&app);
-        handle_client_event(
+        apply_session_update(
             &mut app,
-            ClientEvent::WorkspaceUpdate(forge_workspace::SessionUpdate::TurnError {
+            forge_workspace::SessionUpdate::TurnError {
                 key: session_key,
                 message: "HTTP 429 Too Many Requests".to_owned(),
                 class: Some(forge_workspace::TurnErrorClass::PlanLimit),
                 terminal_reason: None,
-            }),
+            },
         );
 
         assert_eq!(app.messages().len(), 2);
@@ -3301,8 +3330,8 @@ mod tests {
         assert!(first_notice_text.contains("Approaching rate limit"));
 
         app.status = AppStatus::Thinking;
-        app.messages_mut().push(user_msg("second"));
-        app.messages_mut().push(assistant_msg(vec![]));
+        app.active_messages_mut().push(user_msg("second"));
+        app.active_messages_mut().push(assistant_msg(vec![]));
         app.bind_active_turn_assistant(3);
         send_msg(
             &mut app,
@@ -3332,8 +3361,8 @@ mod tests {
     fn turn_notice_tracking_clears_on_turn_complete_and_session_reset() {
         let mut app = make_test_app();
         app.status = AppStatus::Thinking;
-        app.messages_mut().push(user_msg("hello"));
-        app.messages_mut().push(assistant_msg(vec![]));
+        app.active_messages_mut().push(user_msg("hello"));
+        app.active_messages_mut().push(assistant_msg(vec![]));
         app.bind_active_turn_assistant(1);
 
         send_msg(
@@ -3350,18 +3379,18 @@ mod tests {
 
         assert_eq!(app.turn_notice_refs().len(), 1);
         let session_key = active_session_key(&app);
-        handle_client_event(
+        apply_session_update(
             &mut app,
-            ClientEvent::WorkspaceUpdate(forge_workspace::SessionUpdate::TurnComplete {
+            forge_workspace::SessionUpdate::TurnComplete {
                 key: session_key,
                 terminal_reason: None,
-            }),
+            },
         );
         assert!(app.turn_notice_refs().is_empty());
 
         app.status = AppStatus::Thinking;
-        app.messages_mut().push(user_msg("again"));
-        app.messages_mut().push(assistant_msg(vec![]));
+        app.active_messages_mut().push(user_msg("again"));
+        app.active_messages_mut().push(assistant_msg(vec![]));
         app.bind_active_turn_assistant(app.messages().len() - 1);
         send_msg(
             &mut app,
@@ -3376,16 +3405,16 @@ mod tests {
         );
         assert_eq!(app.turn_notice_refs().len(), 1);
 
-        handle_client_event(
+        apply_session_update(
             &mut app,
-            ClientEvent::Connected {
-                session_id: model::SessionId::new("new-session"),
+            SessionUpdate::Connected {
+                key: forge_workspace::SessionKey::from_session_id("new-session".to_owned()),
+                session_id: forge_primitives::SessionId::new("new-session"),
                 cwd: "/test".into(),
-                current_model: test_current_model("claude"),
+                current_model: test_current_model_primitives("claude"),
                 available_models: Vec::new(),
                 mode: None,
-                history_updates: Vec::new(),
-                pre_connect_key: None,
+                history: Vec::new(),
                 conn: stub_conn(),
             },
         );
@@ -3395,26 +3424,24 @@ mod tests {
     #[test]
     fn turn_error_after_cancel_shows_interrupted_hint_instead_of_error_block() {
         let mut app = make_test_app();
-        app.messages_mut().push(user_msg("build app"));
+        app.active_messages_mut().push(user_msg("build app"));
 
         let session_key = active_session_key(&app);
-        handle_client_event(
+        apply_session_update(
             &mut app,
-            ClientEvent::WorkspaceUpdate(forge_workspace::SessionUpdate::TurnCancelled {
-                key: session_key,
-            }),
+            forge_workspace::SessionUpdate::TurnCancelled { key: session_key },
         );
         assert!(app.cancelled_turn_pending_hint());
 
         let session_key = active_session_key(&app);
-        handle_client_event(
+        apply_session_update(
             &mut app,
-            ClientEvent::WorkspaceUpdate(forge_workspace::SessionUpdate::TurnError {
+            forge_workspace::SessionUpdate::TurnError {
                 key: session_key,
                 message: "Error: Request was aborted.\n    at stack line".into(),
                 class: None,
                 terminal_reason: None,
-            }),
+            },
         );
 
         assert!(!app.cancelled_turn_pending_hint());
@@ -3434,25 +3461,25 @@ mod tests {
     fn turn_error_after_auto_cancel_marks_tail_assistant_layout_dirty() {
         let mut app = make_test_app();
         app.status = AppStatus::Running;
-        app.messages_mut().push(user_msg("build app"));
-        app.messages_mut().push(assistant_msg(vec![MessageBlock::Text(TextBlock::from_complete(
-            "partial output",
-        ))]));
+        app.active_messages_mut().push(user_msg("build app"));
+        app.active_messages_mut().push(assistant_msg(vec![MessageBlock::Text(
+            TextBlock::from_complete("partial output"),
+        )]));
         app.set_pending_cancel_origin(Some(CancelOrigin::AutoQueue));
 
         let session_key = active_session_key(&app);
-        handle_client_event(
+        apply_session_update(
             &mut app,
-            ClientEvent::WorkspaceUpdate(forge_workspace::SessionUpdate::TurnError {
+            forge_workspace::SessionUpdate::TurnError {
                 key: session_key,
                 message: "Error: Request was aborted.\n    at stack line".into(),
                 class: None,
                 terminal_reason: None,
-            }),
+            },
         );
 
         assert!(matches!(app.status, AppStatus::Ready));
-        assert!(!app.viewport_mut().message_height_is_current(1));
+        assert!(!app.active_viewport_mut().message_height_is_current(1));
         assert_eq!(app.messages().len(), 2);
         let Some(last) = app.messages().last() else {
             panic!("expected assistant message");
@@ -3463,18 +3490,16 @@ mod tests {
     #[test]
     fn turn_cancel_marks_active_tools_failed() {
         let mut app = make_test_app();
-        app.messages_mut().push(assistant_msg(vec![
+        app.active_messages_mut().push(assistant_msg(vec![
             MessageBlock::ToolCall(Box::new(tool_call("tc1", model::ToolCallStatus::InProgress))),
             MessageBlock::ToolCall(Box::new(tool_call("tc2", model::ToolCallStatus::Pending))),
             MessageBlock::ToolCall(Box::new(tool_call("tc3", model::ToolCallStatus::Completed))),
         ]));
 
         let session_key = active_session_key(&app);
-        handle_client_event(
+        apply_session_update(
             &mut app,
-            ClientEvent::WorkspaceUpdate(forge_workspace::SessionUpdate::TurnCancelled {
-                key: session_key,
-            }),
+            forge_workspace::SessionUpdate::TurnCancelled { key: session_key },
         );
 
         let Some(last) = app.messages().last() else {
@@ -3501,18 +3526,18 @@ mod tests {
     #[test]
     fn turn_complete_marks_lingering_tools_completed() {
         let mut app = make_test_app();
-        app.messages_mut().push(assistant_msg(vec![
+        app.active_messages_mut().push(assistant_msg(vec![
             MessageBlock::ToolCall(Box::new(tool_call("tc1", model::ToolCallStatus::InProgress))),
             MessageBlock::ToolCall(Box::new(tool_call("tc2", model::ToolCallStatus::Pending))),
         ]));
 
         let session_key = active_session_key(&app);
-        handle_client_event(
+        apply_session_update(
             &mut app,
-            ClientEvent::WorkspaceUpdate(forge_workspace::SessionUpdate::TurnComplete {
+            forge_workspace::SessionUpdate::TurnComplete {
                 key: session_key,
                 terminal_reason: None,
-            }),
+            },
         );
 
         let Some(last) = app.messages().last() else {
@@ -4223,7 +4248,7 @@ mod tests {
             selected_index: 0,
             focused,
         });
-        app.messages_mut().push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(tc))]));
+        app.active_messages_mut().push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(tc))]));
         let msg_idx = app.messages().len().saturating_sub(1);
         app.index_tool_call(tool_id.into(), msg_idx, 0);
         app.pending_interaction_ids_mut().push(tool_id.into());
@@ -4250,7 +4275,7 @@ mod tests {
             question_index: 0,
             total_questions: 1,
         });
-        app.messages_mut().push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(tc))]));
+        app.active_messages_mut().push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(tc))]));
         let msg_idx = app.messages().len().saturating_sub(1);
         app.index_tool_call(tool_id.into(), msg_idx, 0);
         app.pending_interaction_ids_mut().push(tool_id.into());
@@ -4527,7 +4552,7 @@ mod tests {
         let mut app = make_test_app();
         app.status = AppStatus::Connecting;
         app.help_view = HelpView::Keys;
-        app.viewport_mut().scroll_target = 2;
+        app.active_viewport_mut().scroll_target = 2;
 
         // Chat navigation remains available during startup.
         handle_terminal_event(&mut app, Event::Key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE)));
@@ -4795,7 +4820,7 @@ mod tests {
     #[test]
     fn mouse_scroll_clears_selection_before_scrolling() {
         let mut app = make_test_app();
-        app.viewport_mut().scroll_target = 2;
+        app.active_viewport_mut().scroll_target = 2;
         app.selection = Some(crate::app::SelectionState {
             kind: crate::app::SelectionKind::Chat,
             start: crate::app::SelectionPoint { row: 0, col: 0 },
@@ -4821,9 +4846,9 @@ mod tests {
     fn mouse_down_on_scrollbar_rail_starts_drag_and_scrolls() {
         let mut app = make_test_app();
         app.rendered_chat_area = Rect::new(0, 0, 19, 10);
-        app.viewport_mut().height_prefix_sums = vec![30];
-        app.viewport_mut().scrollbar_thumb_top = 0.0;
-        app.viewport_mut().scrollbar_thumb_size = 3.0;
+        app.active_viewport_mut().height_prefix_sums = vec![30];
+        app.active_viewport_mut().scrollbar_thumb_top = 0.0;
+        app.active_viewport_mut().scrollbar_thumb_size = 3.0;
         app.selection = Some(crate::app::SelectionState {
             kind: crate::app::SelectionKind::Chat,
             start: crate::app::SelectionPoint { row: 0, col: 0 },
@@ -4851,9 +4876,9 @@ mod tests {
     fn dragging_scrollbar_thumb_can_reach_bottom_and_top() {
         let mut app = make_test_app();
         app.rendered_chat_area = Rect::new(0, 0, 19, 10);
-        app.viewport_mut().height_prefix_sums = vec![30];
-        app.viewport_mut().scrollbar_thumb_top = 0.0;
-        app.viewport_mut().scrollbar_thumb_size = 3.0;
+        app.active_viewport_mut().height_prefix_sums = vec![30];
+        app.active_viewport_mut().scrollbar_thumb_top = 0.0;
+        app.active_viewport_mut().scrollbar_thumb_size = 3.0;
 
         handle_terminal_event(
             &mut app,
@@ -4908,7 +4933,9 @@ mod tests {
         let chat_width: u16 = 40;
         let tool_height: usize = 4;
         let layout_generation = app.viewport().layout_generation;
-        if let MessageBlock::ToolCall(tc) = &mut app.messages_mut()[msg_idx].blocks[block_idx] {
+        if let MessageBlock::ToolCall(tc) =
+            &mut app.active_messages_mut()[msg_idx].blocks[block_idx]
+        {
             tc.last_measured_width = chat_width;
             tc.last_measured_height = tool_height;
             tc.last_measured_y_in_msg = 0;
@@ -4917,8 +4944,8 @@ mod tests {
         } else {
             panic!("seeded tool-call block not found");
         }
-        app.viewport_mut().height_prefix_sums = vec![tool_height];
-        app.viewport_mut().scroll_offset = 0;
+        app.active_viewport_mut().height_prefix_sums = vec![tool_height];
+        app.active_viewport_mut().scroll_offset = 0;
         app.rendered_chat_area = Rect::new(0, 0, chat_width, 10);
         app.tools_collapsed = false;
 
@@ -4943,7 +4970,9 @@ mod tests {
         // real re-render would re-fill it. The test doesn't run the
         // render pass, so re-prime manually before the second click.
         let layout_generation = app.viewport().layout_generation;
-        if let MessageBlock::ToolCall(tc) = &mut app.messages_mut()[msg_idx].blocks[block_idx] {
+        if let MessageBlock::ToolCall(tc) =
+            &mut app.active_messages_mut()[msg_idx].blocks[block_idx]
+        {
             tc.last_measured_width = chat_width;
             tc.last_measured_height = tool_height;
             tc.last_measured_y_in_msg = 0;
@@ -4983,13 +5012,13 @@ mod tests {
         tool.last_measured_height = 3;
         tool.last_measured_y_in_msg = 2; // sits after the 2-row text block
 
-        app.messages_mut().push(assistant_msg(vec![
+        app.active_messages_mut().push(assistant_msg(vec![
             MessageBlock::Text(text_block),
             MessageBlock::ToolCall(Box::new(tool)),
         ]));
         app.index_tool_call("tool-x".into(), 0, 1);
-        app.viewport_mut().height_prefix_sums = vec![5]; // text(2) + tool(3)
-        app.viewport_mut().scroll_offset = 0;
+        app.active_viewport_mut().height_prefix_sums = vec![5]; // text(2) + tool(3)
+        app.active_viewport_mut().scroll_offset = 0;
         app.rendered_chat_area = Rect::new(0, 0, chat_width, 10);
 
         // Click on the text portion (row 0) inside the chat area.
@@ -5014,9 +5043,9 @@ mod tests {
     fn dragging_uses_displayed_thumb_track_when_scrollbar_is_smoothed() {
         let mut app = make_test_app();
         app.rendered_chat_area = Rect::new(0, 0, 19, 10);
-        app.viewport_mut().height_prefix_sums = vec![30];
-        app.viewport_mut().scrollbar_thumb_top = 2.0;
-        app.viewport_mut().scrollbar_thumb_size = 6.0;
+        app.active_viewport_mut().height_prefix_sums = vec![30];
+        app.active_viewport_mut().scrollbar_thumb_top = 2.0;
+        app.active_viewport_mut().scrollbar_thumb_size = 6.0;
 
         handle_terminal_event(
             &mut app,
@@ -5076,8 +5105,8 @@ mod tests {
     #[test]
     fn up_down_without_focus_scrolls_chat() {
         let mut app = make_test_app();
-        app.viewport_mut().scroll_target = 5;
-        app.viewport_mut().auto_scroll = true;
+        app.active_viewport_mut().scroll_target = 5;
+        app.active_viewport_mut().auto_scroll = true;
 
         handle_normal_key(&mut app, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
         assert_eq!(app.viewport().scroll_target, 4);
@@ -5092,7 +5121,7 @@ mod tests {
         let mut app = make_test_app();
         app.input.set_text("line1\nline2\nline3");
         let _ = app.input.set_cursor(1, 3);
-        app.viewport_mut().scroll_target = 7;
+        app.active_viewport_mut().scroll_target = 7;
 
         handle_normal_key(&mut app, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
         assert_eq!(app.input.cursor_row(), 0);
@@ -5108,7 +5137,7 @@ mod tests {
         let mut app = make_test_app();
         app.input.set_text("line1\nline2");
         let _ = app.input.set_cursor(1, 0);
-        app.viewport_mut().scroll_target = 2;
+        app.active_viewport_mut().scroll_target = 2;
 
         handle_normal_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
 
@@ -5198,7 +5227,7 @@ mod tests {
     fn settings_view_ignores_mouse_events() {
         let mut app = make_test_app();
         app.active_view = ActiveView::Config;
-        app.viewport_mut().scroll_target = 4;
+        app.active_viewport_mut().scroll_target = 4;
         app.selection = Some(SelectionState {
             kind: SelectionKind::Chat,
             start: SelectionPoint { row: 0, col: 0 },
@@ -5300,7 +5329,7 @@ mod tests {
     fn trusted_view_ignores_mouse_events() {
         let mut app = make_test_app();
         app.active_view = ActiveView::Trusted;
-        app.viewport_mut().scroll_target = 4;
+        app.active_viewport_mut().scroll_target = 4;
         app.selection = Some(SelectionState {
             kind: SelectionKind::Chat,
             start: SelectionPoint { row: 0, col: 0 },
@@ -5326,7 +5355,7 @@ mod tests {
     fn session_picker_ignores_mouse_events() {
         let mut app = make_test_app();
         app.active_view = ActiveView::SessionPicker;
-        app.viewport_mut().scroll_target = 4;
+        app.active_viewport_mut().scroll_target = 4;
         app.selection = Some(SelectionState {
             kind: SelectionKind::Chat,
             start: SelectionPoint { row: 0, col: 0 },

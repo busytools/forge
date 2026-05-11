@@ -3,7 +3,6 @@
 // that the pending_interaction_ids queue is maintained, and that responses
 // flow through the workspace dispatch path.
 
-use forge_tui::agent::events::ClientEvent;
 use forge_tui::agent::model;
 use forge_tui::app::{AppStatus, MessageBlock};
 use forge_workspace::SessionUpdate;
@@ -70,7 +69,7 @@ async fn permission_request_attaches_to_tool_call() {
 #[tokio::test]
 async fn permission_request_enables_auto_scroll() {
     let mut app = test_app();
-    app.viewport_mut().auto_scroll = false;
+    app.active_viewport_mut().auto_scroll = false;
     setup_permission(&mut app, "tc-scroll", allow_deny_options());
     assert!(app.viewport().auto_scroll, "permission request should enable auto_scroll");
 }
@@ -174,8 +173,8 @@ async fn duplicate_permission_request_is_rejected_without_duplicate_queue_entry(
 #[tokio::test]
 async fn scroll_target_preserved_across_text_chunks() {
     let mut app = test_app();
-    app.viewport_mut().scroll_target = 42;
-    app.viewport_mut().auto_scroll = false;
+    app.active_viewport_mut().scroll_target = 42;
+    app.active_viewport_mut().auto_scroll = false;
 
     send_msg(&mut app, assistant_message(vec![text_block("Some text")]));
 
@@ -187,8 +186,8 @@ async fn scroll_target_preserved_across_text_chunks() {
 #[tokio::test]
 async fn tool_call_does_not_change_scroll_when_auto_scroll_off() {
     let mut app = test_app();
-    app.viewport_mut().scroll_target = 10;
-    app.viewport_mut().auto_scroll = false;
+    app.active_viewport_mut().scroll_target = 10;
+    app.active_viewport_mut().auto_scroll = false;
 
     send_msg(
         &mut app,
@@ -215,10 +214,7 @@ async fn turn_complete_resets_transient_state() {
     let session_key = active_session_key(&app);
     send_client_event(
         &mut app,
-        ClientEvent::WorkspaceUpdate(SessionUpdate::TurnComplete {
-            key: session_key,
-            terminal_reason: None,
-        }),
+        SessionUpdate::TurnComplete { key: session_key, terminal_reason: None },
     );
 
     assert!(matches!(app.status, AppStatus::Ready));
@@ -238,10 +234,7 @@ async fn turn_complete_does_not_clear_messages() {
     let session_key = active_session_key(&app);
     send_client_event(
         &mut app,
-        ClientEvent::WorkspaceUpdate(SessionUpdate::TurnComplete {
-            key: session_key,
-            terminal_reason: None,
-        }),
+        SessionUpdate::TurnComplete { key: session_key, terminal_reason: None },
     );
 
     assert_eq!(app.messages().len(), 1, "messages should persist across turns");
@@ -264,10 +257,7 @@ async fn turn_complete_does_not_clear_tool_call_index() {
     let session_key = active_session_key(&app);
     send_client_event(
         &mut app,
-        ClientEvent::WorkspaceUpdate(SessionUpdate::TurnComplete {
-            key: session_key,
-            terminal_reason: None,
-        }),
+        SessionUpdate::TurnComplete { key: session_key, terminal_reason: None },
     );
 
     assert!(
@@ -291,10 +281,7 @@ async fn turn_complete_does_not_clear_todos() {
     let session_key = active_session_key(&app);
     send_client_event(
         &mut app,
-        ClientEvent::WorkspaceUpdate(SessionUpdate::TurnComplete {
-            key: session_key,
-            terminal_reason: None,
-        }),
+        SessionUpdate::TurnComplete { key: session_key, terminal_reason: None },
     );
 
     assert_eq!(app.todos().len(), 1, "todos should persist across turns");
@@ -314,10 +301,7 @@ async fn turn_complete_does_not_affect_mode() {
     let session_key = active_session_key(&app);
     send_client_event(
         &mut app,
-        ClientEvent::WorkspaceUpdate(SessionUpdate::TurnComplete {
-            key: session_key,
-            terminal_reason: None,
-        }),
+        SessionUpdate::TurnComplete { key: session_key, terminal_reason: None },
     );
 
     assert!(app.mode().is_some(), "mode should persist across turns");

@@ -20,6 +20,7 @@ use crate::protocol::{
     Command, DispatchError, PendingInteractionSlot, SessionUpdate, TurnFinalizeStatus,
 };
 use crate::session_task::SessionTask;
+use crate::spawn;
 use crate::state::{
     self, PersistedAccountState, PersistedSelectionState, PersistedState, PersistedUiState,
 };
@@ -247,11 +248,27 @@ impl Workspace {
     /// (live-account refresh, oauth probing) will need to await
     /// before the picker decision lands. Phase 1b's body is
     /// synchronous; the `unused_async` allow keeps the contract.
-    #[allow(clippy::unused_async)]
     pub async fn get_agent_handle(
-        &self,
+        self: &Arc<Self>,
         target: SessionTarget,
         settings: SessionLaunchSettings,
+    ) -> Result<Arc<AgentHandle>> {
+        self.get_agent_handle_with_spawn_key(target, settings, None).await
+    }
+
+    /// Like [`Self::get_agent_handle`] but threads a synthetic
+    /// `spawn_key` onto the spawned `SessionTask`. The first
+    /// `AgentEvent::Connected` arriving on the task drives a
+    /// `SessionUpdate::KeyRenamed { from: spawn_key, to: real_key }`
+    /// emit before the matching `Connected` so TUI re-keys its
+    /// `UiSession` map atomically. `None` for re-entrant callers (the
+    /// pooled handle path) where no key migration is needed.
+    #[allow(clippy::unused_async)]
+    pub async fn get_agent_handle_with_spawn_key(
+        self: &Arc<Self>,
+        target: SessionTarget,
+        settings: SessionLaunchSettings,
+        spawn_key: Option<SessionKey>,
     ) -> Result<Arc<AgentHandle>> {
         let session_key = self.resolve_target(&target)?;
 
@@ -364,6 +381,10 @@ impl Workspace {
                 handle: Arc::clone(&arc),
                 command_rx: cmd_rx,
                 domain,
+                update_tx: self.update_tx.clone(),
+                spawn_key,
+                connected_once: false,
+                workspace: Arc::downgrade(self),
             };
             tokio::spawn(task.run());
         }
@@ -485,6 +506,50 @@ impl Workspace {
         Some(SessionKey::new(lead.session_id.clone()))
     }
 
+    /// Locate a `ProjectView`-like (`LoadedProject`) by `name` from
+    /// `forge.toml`. Returns `None` when no project carries that name.
+    /// Used by the spawn handlers to resolve the project's path / cwd
+    /// before emitting `SessionUpdate::Spawning`.
+    pub(crate) fn find_project_view_by_name(&self, name: &str) -> Option<LoadedProject> {
+        self.config.projects.iter().find(|p| p.name == name).cloned()
+    }
+
+    /// Locate the parent project of a given `session_id` by walking
+    /// the catalog. Used by `Command::SpawnSession` to seed the
+    /// spawning bucket's cwd from the session's owning project before
+    /// the agent boots.
+    pub(crate) fn find_project_for_session(
+        &self,
+        session_key: &SessionKey,
+    ) -> Option<LoadedProject> {
+        let catalog = self.catalog.lock();
+        let owning_project_key = catalog.iter().find_map(|(project_key, entries)| {
+            if entries.iter().any(|e| e.session_id == session_key.as_str()) {
+                Some(project_key.clone())
+            } else {
+                None
+            }
+        })?;
+        drop(catalog);
+        for project in &self.config.projects {
+            let key =
+                ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(
+                    Some(&project.path.to_string_lossy()),
+                ));
+            if key == owning_project_key {
+                return Some(project.clone());
+            }
+        }
+        None
+    }
+
+    /// Internal accessor for the SessionUpdate fan-in sender. Used
+    /// by `spawn.rs` to emit `Spawning` / `ConnectionFailed` /
+    /// `FatalError` from the App-level handlers.
+    pub(crate) fn update_tx(&self) -> &mpsc::UnboundedSender<SessionUpdate> {
+        &self.update_tx
+    }
+
     /// Look up a session's recorded cwd by id. `claude --resume`
     /// indexes by the project key derived from the subprocess's
     /// working directory, so every explicit-resume code path must
@@ -535,22 +600,38 @@ impl Workspace {
     }
 
     /// Single-take fan-in receiver for [`SessionUpdate`]s. Returns
-    /// `None` on subsequent calls — forge-tui calls this once at
-    /// startup and forwards every received update onto its own
-    /// `ClientEvent` channel for unified dispatch through the
-    /// existing event multiplexer.
+    /// `None` on subsequent calls. forge-tui's main event loop owns
+    /// the returned `mpsc::UnboundedReceiver` and reads `SessionUpdate`
+    /// envelopes directly (Phase 4 retired the legacy `ClientEvent`
+    /// channel; this is now the only event source the App consumes).
     pub fn subscribe(&self) -> Option<mpsc::UnboundedReceiver<SessionUpdate>> {
         self.update_rx_slot.lock().take()
     }
 
-    /// Clone the [`SessionUpdate`] sender. Used by
-    /// `forge_tui::app::connect::bridge_lifecycle` for dual-emit
-    /// during Phases 1-3 (one `ClientEvent`, one `SessionUpdate`,
-    /// per AgentEvent). Phase 4 retires the dual-emit pattern when
-    /// `SessionTask` owns the AgentHandle event drain.
+    /// Clone the [`SessionUpdate`] sender. TUI-side async tasks
+    /// (plugin inventory refresh, usage refresh, slash executors,
+    /// service-status check, the input-submit cancel-emit path) hold
+    /// a clone so they can forward state into the App's event loop
+    /// the same way the workspace's `SessionTask`s do. Cloned at App
+    /// construction time and stored on `App.update_tx`.
     #[must_use]
     pub fn update_sender(&self) -> mpsc::UnboundedSender<SessionUpdate> {
         self.update_tx.clone()
+    }
+
+    /// Borrow the workspace-side [`DomainSession`] for `key`.
+    ///
+    /// Returns the [`Arc`]-cloned mutex protecting the domain bucket.
+    /// Callers `.lock()` to read or mutate. `None` when no
+    /// `SessionTask` is registered for `key` (e.g., the session was
+    /// closed or hasn't been spawned yet).
+    ///
+    /// Callers should hold the lock for the shortest scope possible
+    /// — concurrent reducers and the per-session `SessionTask`
+    /// share this mutex.
+    #[must_use]
+    pub fn domain_session_for(&self, key: &SessionKey) -> Option<Arc<Mutex<DomainSession>>> {
+        self.domain_handles.lock().get(key).cloned()
     }
 
     /// Route a [`Command`]. Per-session commands (`cmd.key() ==
@@ -567,7 +648,7 @@ impl Workspace {
     /// is registered for the requested key (e.g., the session was
     /// just closed), or [`DispatchError::SessionClosed`] when the
     /// task's command receiver has been dropped.
-    pub fn dispatch(&self, cmd: Command) -> Result<(), DispatchError> {
+    pub fn dispatch(self: &Arc<Self>, cmd: Command) -> Result<(), DispatchError> {
         if let Some(key) = cmd.key() {
             let key = key.clone();
             let senders = self.command_senders.lock();
@@ -576,14 +657,41 @@ impl Workspace {
             };
             sender.send(cmd).map_err(|_| DispatchError::SessionClosed(key))
         } else {
-            // Phase 1 stub. Phase 4 wires real spawn handlers in
-            // `forge_workspace::spawn::{handle_spawn_project,
-            // handle_spawn_session, handle_start_default}`.
-            tracing::warn!(
-                target: "forge_workspace",
-                command = ?cmd,
-                "App-level command dispatched but Phase 4 spawn handlers not yet wired; ignored",
-            );
+            // App-level commands: route into `spawn::*` handlers. The
+            // spawn handlers run on a tokio task because they await
+            // `get_agent_handle_with_spawn_key` (which blocks the
+            // sender if we ran it inline).
+            let workspace = Arc::clone(self);
+            match cmd {
+                Command::SpawnProject { project_name, launch_settings } => {
+                    tokio::spawn(spawn::handle_spawn_project(
+                        workspace,
+                        project_name,
+                        launch_settings,
+                    ));
+                }
+                Command::SpawnSession { session_id, launch_settings } => {
+                    tokio::spawn(spawn::handle_spawn_session(
+                        workspace,
+                        session_id,
+                        launch_settings,
+                    ));
+                }
+                Command::StartDefault { project_name, launch_settings } => {
+                    tokio::spawn(spawn::handle_start_default(
+                        workspace,
+                        project_name,
+                        launch_settings,
+                    ));
+                }
+                other => {
+                    tracing::warn!(
+                        target: "forge_workspace",
+                        command = ?other,
+                        "unexpected App-level command (no key but not a spawn variant); ignored",
+                    );
+                }
+            }
             Ok(())
         }
     }
@@ -615,43 +723,6 @@ impl Workspace {
         };
         let mut guard = domain.lock();
         guard.pending_interactions.insert(tool_id, slot);
-    }
-
-    /// Apply an [`forge_agent::client::AgentEvent`] to the
-    /// workspace-side [`DomainSession`] for the given key. Called by
-    /// `bridge_lifecycle::handle_agent_event` before the dual-emit
-    /// during Phases 2-3 — the workspace task's view of each session
-    /// stays current even though `take_events()` is still owned by
-    /// `bridge_lifecycle`.
-    ///
-    /// No-op when no session task is registered for `key` (e.g. the
-    /// session was just closed). Pre-connect `AgentEvent`s arrive
-    /// keyed by the synthetic pre-connect key; the matching domain
-    /// handle is created lazily on the first `Connected` migration,
-    /// so early events (`AuthRequired`, `ConnectionFailed`) silently
-    /// no-op here and the existing TUI-side projection handles them.
-    pub fn record_event_for_domain(
-        &self,
-        key: &SessionKey,
-        event: &forge_agent::client::AgentEvent,
-    ) {
-        // Record the session in the project catalog so the Projects
-        // pane's drilldown reflects freshly-spawned sessions without
-        // forcing a full disk re-scan. Runs alongside (but
-        // independent of) the per-domain projection below — the
-        // catalog mutation must happen even when no domain handle is
-        // registered for the synthetic pre-connect key.
-        if let forge_agent::client::AgentEvent::Connected { session_id, cwd, .. }
-        | forge_agent::client::AgentEvent::SessionReplaced { session_id, cwd, .. } = event
-            && !cwd.is_empty()
-        {
-            self.record_connected_session(cwd, session_id, None);
-        }
-        let Some(domain) = self.domain_handles.lock().get(key).cloned() else {
-            return;
-        };
-        let mut guard = domain.lock();
-        crate::session_task::apply_event_to_domain(&mut guard, event);
     }
 
     /// Stamp the forge-side display name onto the
@@ -710,7 +781,7 @@ impl Workspace {
     /// await acknowledgement" body can slot in without restructuring
     /// the call sites.
     #[allow(clippy::unused_async)]
-    pub async fn shutdown(self) {
+    pub async fn shutdown(&self) {
         // Drop command senders first so every SessionTask sees its
         // command channel close and exits cleanly.
         let _ = self.command_senders.lock().drain().collect::<Vec<_>>();
@@ -805,7 +876,7 @@ config_dir = "~/.claude-subspace"
     #[tokio::test]
     async fn get_agent_handle_default_is_idempotent() {
         let dir = make_workspace_dir();
-        let workspace = Workspace::new(dir.path().to_owned()).await.expect("new");
+        let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
         let settings = SessionLaunchSettings::default();
 
         let handle1 = workspace
@@ -822,7 +893,7 @@ config_dir = "~/.claude-subspace"
     #[tokio::test]
     async fn distinct_targets_pool_distinct_entries() {
         let dir = make_workspace_dir();
-        let workspace = Workspace::new(dir.path().to_owned()).await.expect("new");
+        let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
         let settings = SessionLaunchSettings::default();
 
         let _ = workspace
@@ -846,7 +917,7 @@ config_dir = "~/.claude-subspace"
     #[tokio::test]
     async fn shutdown_drains_pool() {
         let dir = make_workspace_dir();
-        let workspace = Workspace::new(dir.path().to_owned()).await.expect("new");
+        let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
         let handle = workspace
             .get_agent_handle(SessionTarget::Default, SessionLaunchSettings::default())
             .await
@@ -899,7 +970,7 @@ config_dir = "~/.claude-subspace"
         )
         .expect("write forge.toml");
 
-        let workspace = Workspace::new(dir.path().to_owned()).await.expect("new");
+        let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
         let _ = workspace
             .get_agent_handle(SessionTarget::Default, SessionLaunchSettings::default())
             .await
@@ -932,7 +1003,7 @@ config_dir = "~/.claude-subspace"
         )
         .expect("write forge.toml");
 
-        let workspace = Workspace::new(dir.path().to_owned()).await.expect("new");
+        let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
         let result = workspace
             .get_agent_handle(
                 SessionTarget::Named("nonexistent".to_owned()),
@@ -973,7 +1044,7 @@ config_dir = "~/.claude-granite"
     #[tokio::test]
     async fn pool_records_picked_account() {
         let dir = make_workspace_dir_with_two_accounts();
-        let workspace = Workspace::new(dir.path().to_owned()).await.expect("new");
+        let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
         let _ = workspace
             .get_agent_handle(SessionTarget::Default, SessionLaunchSettings::default())
             .await
@@ -987,7 +1058,7 @@ config_dir = "~/.claude-granite"
     #[tokio::test]
     async fn second_spawn_picks_other_account_under_lru() {
         let dir = make_workspace_dir_with_two_accounts();
-        let workspace = Workspace::new(dir.path().to_owned()).await.expect("new");
+        let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
 
         // First spawn → Granite (alphabetical tie-break).
         let _ = workspace
@@ -1012,7 +1083,7 @@ config_dir = "~/.claude-granite"
     #[tokio::test]
     async fn forge_state_toml_persists_after_spawn() {
         let dir = make_workspace_dir_with_two_accounts();
-        let workspace = Workspace::new(dir.path().to_owned()).await.expect("new");
+        let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
         let _ = workspace
             .get_agent_handle(SessionTarget::Default, SessionLaunchSettings::default())
             .await

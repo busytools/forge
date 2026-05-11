@@ -158,7 +158,7 @@ fn apply_permission_request_to_active_bucket(
     let mut layout_dirty = false;
     let auto_focus = app.pending_interaction_ids().is_empty() && !app.has_draft_input_for_focus();
     if let Some(MessageBlock::ToolCall(tc)) =
-        app.messages_mut().get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
+        app.active_messages_mut().get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
     {
         let tc = tc.as_mut();
         tc.pending_permission = Some(InlinePermission {
@@ -174,7 +174,7 @@ fn apply_permission_request_to_active_bucket(
         if auto_focus {
             app.claim_focus_target(FocusTarget::Permission);
         }
-        app.viewport_mut().engage_auto_scroll();
+        app.active_viewport_mut().engage_auto_scroll();
         app.notifications.notify(
             app.config.preferred_notification_channel_effective(),
             super::super::notify::NotifyEvent::PermissionRequired,
@@ -472,7 +472,7 @@ fn apply_question_request_to_active_bucket(
     let mut layout_dirty = false;
     let auto_focus = app.pending_interaction_ids().is_empty() && !app.has_draft_input_for_focus();
     if let Some(MessageBlock::ToolCall(tc)) =
-        app.messages_mut().get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
+        app.active_messages_mut().get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
     {
         let tc = tc.as_mut();
         tc.pending_question = Some(InlineQuestion {
@@ -493,7 +493,7 @@ fn apply_question_request_to_active_bucket(
         if auto_focus {
             app.claim_focus_target(FocusTarget::Permission);
         }
-        app.viewport_mut().engage_auto_scroll();
+        app.active_viewport_mut().engage_auto_scroll();
         app.notifications.notify(
             app.config.preferred_notification_channel_effective(),
             super::super::notify::NotifyEvent::QuestionRequired,
@@ -726,7 +726,10 @@ pub(crate) fn dispatch_permission_outcome(
 /// Behind the `testing` Cargo feature so this surface never leaks
 /// into production builds. Holds the `try_take_dispatched_*`
 /// getters used by unit + integration tests to assert outcomes.
+/// `allow(dead_code)` because the production tree never calls these;
+/// `#[cfg(feature = "testing")]` gates them out of production builds.
 #[cfg(feature = "testing")]
+#[allow(dead_code)]
 pub mod test_capture {
     use super::App;
 
@@ -739,7 +742,6 @@ pub mod test_capture {
     /// Returns the captured outcome on hit; returns
     /// `Err(TryRecvError::Empty)` on miss so tests can still match
     /// on the oneshot error shape.
-    #[allow(dead_code)] // Consumed by integration tests in `crates/forge-tui/tests/`.
     pub fn try_take_dispatched_permission_outcome(
         app: &App,
         tool_id: &str,
@@ -756,7 +758,6 @@ pub mod test_capture {
 
     /// Test-only: same as [`try_take_dispatched_permission_outcome`]
     /// but for question outcomes.
-    #[allow(dead_code)]
     pub fn try_take_dispatched_question_outcome(
         app: &App,
         tool_id: &str,
@@ -804,12 +805,6 @@ pub(crate) fn dispatch_question_outcome(
     }
 }
 
-#[allow(dead_code)] // Phase 3c: kept for the legacy ClientEvent multiplexer test paths until Phase
-// 4 deletes the variant. Production callers route via apply_session_update_turn_cancelled.
-pub(super) fn handle_turn_cancelled_event(app: &mut App, session_key: &SessionKey) {
-    apply_turn_cancelled_presentation(app, session_key);
-}
-
 /// Phase 3c — `SessionUpdate::TurnCancelled` reducer. The workspace
 /// already finalized the DomainSession via the synthesized turn event
 /// in the SDK message flow upstream; this reducer is the TUI-side
@@ -832,7 +827,7 @@ fn apply_turn_cancelled_presentation(app: &mut App, session_key: &SessionKey) {
         // Lifecycle: cancellation accepted — return active session
         // to Idle. (Steady-state TurnComplete fires shortly after,
         // also setting Idle — this is a defensive idempotent set.)
-        if let Some(session) = app.active_session_mut() {
+        if let Some(session) = app.try_active_bucket_mut() {
             session.lifecycle_state = crate::app::session::SessionLifecycleState::Idle;
         }
         return;
@@ -864,7 +859,7 @@ fn apply_turn_cancelled_presentation(app: &mut App, session_key: &SessionKey) {
 /// No layout invalidation, no terminal detach handling — the bucket
 /// will rebuild its layout state when it next becomes active.
 pub(super) fn finalize_background_tool_calls(
-    session: &mut crate::app::session::Session,
+    session: &mut crate::app::session::UiSession,
     new_status: model::ToolCallStatus,
 ) {
     for msg in &mut session.messages {
@@ -1013,7 +1008,7 @@ fn apply_turn_complete_presentation(
     // Lifecycle: turn done, active session returns to Idle. The
     // Projects pane drops the spinner glyph back to the default
     // foreground color.
-    if let Some(session) = app.active_session_mut() {
+    if let Some(session) = app.try_active_bucket_mut() {
         session.lifecycle_state = crate::app::session::SessionLifecycleState::Idle;
     }
     crate::app::session_runtime::request_context_usage_refresh(app);
@@ -1148,7 +1143,7 @@ fn apply_turn_error_presentation(
         app.pending_submit = None;
         finish_ready_turn_exit(app, exit, model::ToolCallStatus::Failed);
         // Lifecycle: cancelled turn — back to Idle.
-        if let Some(session) = app.active_session_mut() {
+        if let Some(session) = app.try_active_bucket_mut() {
             session.lifecycle_state = crate::app::session::SessionLifecycleState::Idle;
         }
         crate::app::session_runtime::request_context_usage_refresh(app);
@@ -1227,7 +1222,7 @@ fn apply_turn_error_presentation(
     // status itself is already AppStatus::Error (set above) so the
     // input remains locked; lifecycle is the per-session pane glyph,
     // independent of the App-global input lock.
-    if let Some(session) = app.active_session_mut() {
+    if let Some(session) = app.try_active_bucket_mut() {
         session.lifecycle_state = crate::app::session::SessionLifecycleState::Idle;
     }
     crate::app::session_runtime::request_context_usage_refresh(app);
@@ -1240,7 +1235,7 @@ fn push_interrupted_hint(app: &mut App) {
         None,
     ));
     app.enforce_history_retention_tracked();
-    app.viewport_mut().engage_auto_scroll();
+    app.active_viewport_mut().engage_auto_scroll();
 }
 
 fn remove_empty_tail_assistant(app: &mut App, idx: Option<usize>) -> Option<usize> {
@@ -1351,8 +1346,8 @@ mod tests {
     fn turn_complete_removes_empty_tail_assistant() {
         let mut app = App::test_default();
         app.status = AppStatus::Thinking;
-        app.messages_mut().push(user_message("hello"));
-        app.messages_mut().push(empty_assistant_message());
+        app.active_messages_mut().push(user_message("hello"));
+        app.active_messages_mut().push(empty_assistant_message());
 
         let key = active_session_key(&app);
         apply_session_update_turn_complete(&mut app, key, None);
@@ -1366,8 +1361,8 @@ mod tests {
         let mut app = App::test_default();
         app.status = AppStatus::Thinking;
         app.set_pending_cancel_origin(Some(CancelOrigin::Manual));
-        app.messages_mut().push(user_message("hello"));
-        app.messages_mut().push(empty_assistant_message());
+        app.active_messages_mut().push(user_message("hello"));
+        app.active_messages_mut().push(empty_assistant_message());
 
         let key = active_session_key(&app);
         apply_session_update_turn_error(&mut app, key, "cancelled".to_owned(), None, None);
@@ -1381,8 +1376,8 @@ mod tests {
     fn turn_error_removes_empty_tail_assistant_before_error_message() {
         let mut app = App::test_default();
         app.status = AppStatus::Thinking;
-        app.messages_mut().push(user_message("hello"));
-        app.messages_mut().push(empty_assistant_message());
+        app.active_messages_mut().push(user_message("hello"));
+        app.active_messages_mut().push(empty_assistant_message());
 
         let key = active_session_key(&app);
         apply_session_update_turn_error(&mut app, key, "boom".to_owned(), None, None);
@@ -1394,15 +1389,15 @@ mod tests {
 
     #[test]
     fn turn_complete_for_background_session_does_not_touch_active_messages() {
-        use crate::app::session::Session;
+        use crate::app::session::UiSession;
         let mut app = App::test_default();
         app.status = AppStatus::Thinking;
-        app.messages_mut().push(user_message("active hello"));
-        app.messages_mut().push(empty_assistant_message());
+        app.active_messages_mut().push(user_message("active hello"));
+        app.active_messages_mut().push(empty_assistant_message());
         let active_messages_before = app.messages().len();
 
         let bg_key = SessionKey::from_str_for_test("background-session");
-        let mut bg_session = Session::new(bg_key.clone());
+        let mut bg_session = UiSession::new(bg_key.clone());
         bg_session.messages.push(user_message("bg hello"));
         bg_session.messages.push(empty_assistant_message());
         app.sessions.insert(bg_key.clone(), bg_session);
@@ -1421,10 +1416,10 @@ mod tests {
 
     #[test]
     fn turn_cancelled_for_background_session_marks_only_target_bucket() {
-        use crate::app::session::Session;
+        use crate::app::session::UiSession;
         let mut app = App::test_default();
         let bg_key = SessionKey::from_str_for_test("background-session");
-        let bg_session = Session::new(bg_key.clone());
+        let bg_session = UiSession::new(bg_key.clone());
         app.sessions.insert(bg_key.clone(), bg_session);
 
         // Active session has no pending cancel origin set.
@@ -1442,10 +1437,10 @@ mod tests {
 
     #[test]
     fn turn_error_for_background_session_does_not_set_should_quit() {
-        use crate::app::session::Session;
+        use crate::app::session::UiSession;
         let mut app = App::test_default();
         let bg_key = SessionKey::from_str_for_test("background-session");
-        let bg_session = Session::new(bg_key.clone());
+        let bg_session = UiSession::new(bg_key.clone());
         app.sessions.insert(bg_key.clone(), bg_session);
 
         // Auth-required class would normally set should_quit=true when

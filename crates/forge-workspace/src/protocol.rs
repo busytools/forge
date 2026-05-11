@@ -195,18 +195,26 @@ pub enum Command {
     /// real key. This is an App-level Command, not per-session.
     SpawnProject {
         project_name: String,
+        launch_settings: SessionLaunchSettings,
     },
     /// User clicked a non-lead session row. Workspace spawns an
     /// agent for the specific session_id, synthesizing a key, and
     /// emits `Spawning` then `Connected` with the real key.
     SpawnSession {
         session_id: String,
+        launch_settings: SessionLaunchSettings,
     },
     /// App start. Workspace spawns the default project (or the
     /// project passed on CLI argv) and emits the spawning + connected
-    /// updates. TUI calls this once at startup.
+    /// updates. TUI calls this once at startup. `is_fatal_on_failure`
+    /// flags whether a pre-Connected failure should emit
+    /// `SessionUpdate::FatalError` alongside the `ConnectionFailed`;
+    /// startup is fatal (nothing to render), the sleeping-spawn flows
+    /// are not (the user has an active session whose state must
+    /// survive a spawn failure).
     StartDefault {
         project_name: Option<String>,
+        launch_settings: SessionLaunchSettings,
     },
 }
 

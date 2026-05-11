@@ -84,7 +84,7 @@ pub(super) fn update_terminal_outputs(app: &mut App) -> bool {
     // Use the indexed terminal tool calls instead of scanning all messages/blocks.
     for (terminal_ref, output_buffer) in pending_updates {
         let Some(MessageBlock::ToolCall(tc)) = app
-            .messages_mut()
+            .active_messages_mut()
             .get_mut(terminal_ref.msg_idx)
             .and_then(|m| m.blocks.get_mut(terminal_ref.block_idx))
         else {
@@ -215,9 +215,9 @@ mod tests {
     #[test]
     fn terminal_updates_invalidate_all_dirty_messages() {
         let mut app = App::test_default();
-        app.messages_mut().push(bash_tool_message("bash-1", "term-1"));
-        app.messages_mut().push(user_message("gap"));
-        app.messages_mut().push(bash_tool_message("bash-2", "term-2"));
+        app.active_messages_mut().push(bash_tool_message("bash-1", "term-1"));
+        app.active_messages_mut().push(user_message("gap"));
+        app.active_messages_mut().push(bash_tool_message("bash-2", "term-2"));
         app.index_tool_call("bash-1".to_owned(), 0, 0);
         app.index_tool_call("bash-2".to_owned(), 2, 0);
         app.sync_terminal_tool_call("term-1".to_owned(), 0, 0);
@@ -239,15 +239,15 @@ mod tests {
             },
         );
 
-        let _ = app.viewport_mut().on_frame(80, 24);
-        app.viewport_mut().sync_message_count(3);
-        app.viewport_mut().mark_heights_valid();
-        app.viewport_mut().rebuild_prefix_sums();
+        let _ = app.active_viewport_mut().on_frame(80, 24);
+        app.active_viewport_mut().sync_message_count(3);
+        app.active_viewport_mut().mark_heights_valid();
+        app.active_viewport_mut().rebuild_prefix_sums();
 
         assert!(update_terminal_outputs(&mut app));
-        assert!(!app.viewport_mut().message_height_is_current(0));
-        assert!(app.viewport_mut().message_height_is_current(1));
-        assert!(!app.viewport_mut().message_height_is_current(2));
-        assert_eq!(app.viewport_mut().oldest_stale_index(), Some(0));
+        assert!(!app.active_viewport_mut().message_height_is_current(0));
+        assert!(app.active_viewport_mut().message_height_is_current(1));
+        assert!(!app.active_viewport_mut().message_height_is_current(2));
+        assert_eq!(app.active_viewport_mut().oldest_stale_index(), Some(0));
     }
 }

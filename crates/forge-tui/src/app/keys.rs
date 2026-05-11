@@ -280,11 +280,11 @@ fn handle_blocked_input_shortcuts(app: &mut App, key: KeyEvent) -> bool {
             true
         }
         (KeyCode::Up, m) if m == KeyModifiers::NONE || m == KeyModifiers::CONTROL => {
-            app.viewport_mut().scroll_up(1);
+            app.active_viewport_mut().scroll_up(1);
             true
         }
         (KeyCode::Down, m) if m == KeyModifiers::NONE || m == KeyModifiers::CONTROL => {
-            app.viewport_mut().scroll_down(1);
+            app.active_viewport_mut().scroll_down(1);
             true
         }
         _ => false,
@@ -319,11 +319,11 @@ fn handle_global_shortcuts(app: &mut App, key: KeyEvent) -> bool {
             true
         }
         (KeyCode::Up, m) if m == KeyModifiers::CONTROL => {
-            app.viewport_mut().scroll_up(1);
+            app.active_viewport_mut().scroll_up(1);
             true
         }
         (KeyCode::Down, m) if m == KeyModifiers::CONTROL => {
-            app.viewport_mut().scroll_down(1);
+            app.active_viewport_mut().scroll_down(1);
             true
         }
         _ => false,
@@ -563,13 +563,13 @@ fn handle_navigation_key(app: &mut App, key: KeyEvent) -> bool {
         }
         (KeyCode::Up, _) => {
             if !try_move_input_cursor_up(app) {
-                app.viewport_mut().scroll_up(1);
+                app.active_viewport_mut().scroll_up(1);
             }
             true
         }
         (KeyCode::Down, _) => {
             if !try_move_input_cursor_down(app) {
-                app.viewport_mut().scroll_down(1);
+                app.active_viewport_mut().scroll_down(1);
             }
             true
         }
@@ -709,7 +709,7 @@ fn handle_clipboard_paste_key(app: &mut App, key: KeyEvent) -> bool {
                 Some(SystemSeverity::Warning),
                 "Failed to access the system clipboard.",
             );
-            app.viewport_mut().engage_auto_scroll();
+            app.active_viewport_mut().engage_auto_scroll();
             app.needs_redraw = true;
             tracing::warn!("clipboard_paste: failed to access system clipboard");
             return true;
@@ -738,7 +738,7 @@ fn handle_clipboard_paste_key(app: &mut App, key: KeyEvent) -> bool {
                         Some(SystemSeverity::Warning),
                         error.user_message(),
                     );
-                    app.viewport_mut().engage_auto_scroll();
+                    app.active_viewport_mut().engage_auto_scroll();
                     app.needs_redraw = true;
                     tracing::warn!("clipboard_paste: image attachment failed: {error:?}");
                     return true;
@@ -1245,7 +1245,7 @@ mod tests {
     fn selection_text_for_copy_refreshes_chat_snapshot_before_redraw() {
         let mut app = App::test_default();
         app.status = AppStatus::Running;
-        app.messages_mut().push(ChatMessage::new(
+        app.active_messages_mut().push(ChatMessage::new(
             MessageRole::Assistant,
             vec![MessageBlock::Text(TextBlock::from_complete("hello"))],
             None,
@@ -1261,7 +1261,7 @@ mod tests {
         });
 
         if let Some(MessageBlock::Text(block)) =
-            app.messages_mut().get_mut(0).and_then(|message| message.blocks.get_mut(0))
+            app.active_messages_mut().get_mut(0).and_then(|message| message.blocks.get_mut(0))
         {
             block.text.push_str(" world");
             block.markdown.append(" world");
@@ -1315,7 +1315,7 @@ config_dir = "/tmp/test-account"
         let workspace = runtime.block_on(async {
             forge_workspace::Workspace::new(dir.path().to_owned()).await.expect("workspace")
         });
-        app.workspace = Some(std::rc::Rc::new(workspace));
+        app.workspace = Some(std::sync::Arc::new(workspace));
         dir
     }
 

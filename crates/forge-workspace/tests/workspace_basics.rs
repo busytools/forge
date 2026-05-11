@@ -3,6 +3,7 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
 use std::fs;
+use std::sync::Arc;
 
 use forge_workspace::Workspace;
 use tempfile::tempdir;
@@ -29,7 +30,7 @@ async fn new_loads_config_and_lists_projects() {
     let dir = tempdir().expect("tempdir");
     write_default_config(dir.path());
 
-    let workspace = Workspace::new(dir.path().to_owned()).await.expect("new");
+    let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
     let projects = workspace.list_projects();
     assert_eq!(projects.len(), 1, "one [[projects]] entry should yield one ProjectView");
     let project = &projects[0];
@@ -54,7 +55,7 @@ async fn list_projects_includes_projects_with_no_catalog_entries() {
     let dir = tempdir().expect("tempdir");
     write_default_config(dir.path());
 
-    let workspace = Workspace::new(dir.path().to_owned()).await.expect("new");
+    let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
     let projects = workspace.list_projects();
     assert_eq!(projects.len(), 1, "forge.toml lists exactly one project");
 

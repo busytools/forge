@@ -32,11 +32,10 @@ pub use viewport::{
     LayoutRemeasureReason, ScrollbarGeometry, compute_scrollbar_geometry,
 };
 
-use crate::agent::events::ClientEvent;
 use crate::agent::model;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::rc::Rc;
+use std::sync::Arc;
 use std::sync::mpsc as std_mpsc;
 use std::time::Instant;
 use tokio::sync::mpsc;
@@ -211,7 +210,7 @@ pub struct App {
     /// `get_agent_handle(SessionTarget::Default, ...)` at startup.
     /// `None` only in test contexts (`App::test_default`); production
     /// startup always populates this before construction.
-    pub workspace: Option<Rc<forge_workspace::Workspace>>,
+    pub workspace: Option<Arc<forge_workspace::Workspace>>,
     /// Phase 1 smoke counter — incremented every time the dispatcher
     /// observes a `ClientEvent::WorkspaceUpdate`. Real per-variant
     /// reducers land in Phase 3a; this counter exists purely to
@@ -234,8 +233,8 @@ pub struct App {
     #[rustfmt::skip] #[cfg(feature = "testing")] pub test_dispatched_question_outcomes: std::cell::RefCell<Vec<(String, forge_primitives::QuestionOutcome)>>,
     /// Per-session state buckets, keyed by claude session UUID.
     /// Phase 2a moves per-session fields off `App` into the
-    /// [`super::session::Session`] value type one bucket at a time.
-    pub sessions: std::collections::HashMap<forge_workspace::SessionKey, super::session::Session>,
+    /// [`super::session::UiSession`] value type one bucket at a time.
+    pub sessions: std::collections::HashMap<forge_workspace::SessionKey, super::session::UiSession>,
     /// Which entry of [`Self::sessions`] the renderer reads from.
     /// `None` only in the brief pre-Connect window where no session
     /// has landed in the map yet.
@@ -254,8 +253,18 @@ pub struct App {
     /// Auto-submit the current input draft once cancellation transitions the app
     /// back to `Ready`.
     pub pending_auto_submit_after_cancel: bool,
-    pub event_tx: mpsc::UnboundedSender<ClientEvent>,
-    pub event_rx: mpsc::UnboundedReceiver<ClientEvent>,
+    /// Receiver for `SessionUpdate`s emitted by the workspace. The
+    /// main event loop reads from here and dispatches via
+    /// `events::apply_session_update`. Replaces the legacy
+    /// `event_tx`/`event_rx` `ClientEvent` channel — user actions
+    /// flow out via `workspace.dispatch(Command::...)`.
+    pub update_rx: mpsc::UnboundedReceiver<forge_workspace::SessionUpdate>,
+    /// Sender shared with TUI-internal async tasks (plugin inventory,
+    /// usage refresh, slash command executors) that need to emit
+    /// `SessionUpdate` envelopes back to the App event loop. Cloned
+    /// from `workspace.update_sender()` at App construction; falls
+    /// back to a no-op sender in test contexts.
+    pub update_tx: mpsc::UnboundedSender<forge_workspace::SessionUpdate>,
     pub file_index_event_tx: std_mpsc::Sender<file_index::FileIndexEvent>,
     pub file_index_event_rx: std_mpsc::Receiver<file_index::FileIndexEvent>,
     pub spinner_frame: usize,
@@ -386,12 +395,12 @@ impl App {
     /// or `None` in the brief pre-Connect window before any session
     /// has landed in [`Self::sessions`].
     #[must_use]
-    pub fn active_session(&self) -> Option<&super::session::Session> {
+    pub fn active_session(&self) -> Option<&super::session::UiSession> {
         self.active_session_key.as_ref().and_then(|key| self.sessions.get(key))
     }
 
     /// Mutable accessor for the active session bucket.
-    pub fn active_session_mut(&mut self) -> Option<&mut super::session::Session> {
+    pub fn try_active_bucket_mut(&mut self) -> Option<&mut super::session::UiSession> {
         let key = self.active_session_key.clone()?;
         self.sessions.get_mut(&key)
     }
@@ -401,7 +410,7 @@ impl App {
     pub fn session_mut(
         &mut self,
         key: &forge_workspace::SessionKey,
-    ) -> Option<&mut super::session::Session> {
+    ) -> Option<&mut super::session::UiSession> {
         self.sessions.get_mut(key)
     }
 
@@ -503,8 +512,8 @@ impl App {
     /// vector. Auto-creates the pre-Connect bucket if the active
     /// session is missing, so call sites don't need to guard.
     #[must_use]
-    pub fn messages_mut(&mut self) -> &mut Vec<ChatMessage> {
-        &mut self.active_or_synthetic_mut().messages
+    pub fn active_messages_mut(&mut self) -> &mut Vec<ChatMessage> {
+        &mut self.active_bucket_mut().messages
     }
 
     /// Borrow the parallel `message_retained_bytes` cache.
@@ -516,7 +525,7 @@ impl App {
     /// Mutable borrow of the `message_retained_bytes` cache.
     #[must_use]
     pub fn message_retained_bytes_mut(&mut self) -> &mut Vec<usize> {
-        &mut self.active_or_synthetic_mut().message_retained_bytes
+        &mut self.active_bucket_mut().message_retained_bytes
     }
 
     /// Active session's rolling retained-history byte total.
@@ -528,7 +537,7 @@ impl App {
     /// Mutable accessor for the rolling retained-history byte total.
     #[must_use]
     pub fn retained_history_bytes_mut(&mut self) -> &mut usize {
-        &mut self.active_or_synthetic_mut().retained_history_bytes
+        &mut self.active_bucket_mut().retained_history_bytes
     }
 
     /// Borrow the active session's chat viewport.
@@ -548,8 +557,8 @@ impl App {
     /// Mutable accessor for the active session's chat viewport.
     /// Auto-creates the pre-Connect bucket if missing.
     #[must_use]
-    pub fn viewport_mut(&mut self) -> &mut ChatViewport {
-        &mut self.active_or_synthetic_mut().viewport
+    pub fn active_viewport_mut(&mut self) -> &mut ChatViewport {
+        &mut self.active_bucket_mut().viewport
     }
 
     /// Active session's main-assistant turn message index.
@@ -560,7 +569,7 @@ impl App {
 
     /// Set the active session's main-assistant turn message index.
     pub fn set_active_turn_assistant_message_idx(&mut self, idx: Option<usize>) {
-        self.active_or_synthetic_mut().active_turn_assistant_message_idx = idx;
+        self.active_bucket_mut().active_turn_assistant_message_idx = idx;
     }
 
     /// Internal helper: yield a `&mut Session` for the active bucket,
@@ -572,7 +581,7 @@ impl App {
     /// per frame. Uses the `HashMap::entry` API to avoid the extra
     /// `SessionKey` clone an `if !contains { insert }` shape would
     /// need.
-    fn active_or_synthetic_mut(&mut self) -> &mut super::session::Session {
+    fn active_bucket_mut(&mut self) -> &mut super::session::UiSession {
         use std::collections::hash_map::Entry;
         // The active key is normally already set; the synthetic
         // fallback is the cold first-touch path.
@@ -586,7 +595,7 @@ impl App {
         match self.sessions.entry(key) {
             Entry::Occupied(e) => e.into_mut(),
             Entry::Vacant(e) => {
-                let new = super::session::Session::new(e.key().clone());
+                let new = super::session::UiSession::new(e.key().clone());
                 e.insert(new)
             }
         }
@@ -614,7 +623,7 @@ impl App {
     /// freshly-minted pre-Connect bucket.
     ///
     /// If a synthetic-keyed bucket exists (from an earlier
-    /// `set_conn` before `set_session_id` — test ordering),
+    /// `set_active_conn` before `set_session_id` — test ordering),
     /// migrates that bucket's contents to the real key so the conn
     /// + session_id end up on the same bucket.
     ///
@@ -660,7 +669,7 @@ impl App {
                     let entry = self
                         .sessions
                         .entry(key.clone())
-                        .or_insert_with(|| super::session::Session::new(key.clone()));
+                        .or_insert_with(|| super::session::UiSession::new(key.clone()));
                     entry.session_id = Some(id);
                 }
                 self.active_session_key = Some(key.clone());
@@ -679,7 +688,7 @@ impl App {
                 // `active_session_key` so the active-path handler
                 // can keep writing into it (failed tool calls,
                 // system messages — see doc comment above).
-                if let Some(s) = self.active_session_mut() {
+                if let Some(s) = self.try_active_bucket_mut() {
                     s.session_id = None;
                     s.key = None;
                 }
@@ -695,19 +704,19 @@ impl App {
 
     /// Set the active session's connection handle. Auto-creates
     /// a session bucket with a synthetic key if no active session
-    /// exists yet — needed for tests that wire `set_conn` before
+    /// exists yet — needed for tests that wire `set_active_conn` before
     /// `set_session_id`. Production code calls these in
     /// chronological order (Connected event fires both with the
     /// real session_id), so the synthetic-key path is test-only.
-    pub fn set_conn(&mut self, conn: Option<std::sync::Arc<forge_agent::AgentHandle>>) {
+    pub fn set_active_conn(&mut self, conn: Option<std::sync::Arc<forge_agent::AgentHandle>>) {
         if self.active_session_key.is_none() && conn.is_some() {
             let key = forge_workspace::SessionKey::from_session_id(Self::PRE_CONNECT_KEY);
             self.sessions
                 .entry(key.clone())
-                .or_insert_with(|| super::session::Session::new(key.clone()));
+                .or_insert_with(|| super::session::UiSession::new(key.clone()));
             self.active_session_key = Some(key);
         }
-        if let Some(s) = self.active_session_mut() {
+        if let Some(s) = self.try_active_bucket_mut() {
             s.conn = conn;
         }
     }
@@ -720,7 +729,7 @@ impl App {
 
     /// Increment the active session's scope epoch.
     pub fn bump_session_scope_epoch(&mut self) {
-        if let Some(s) = self.active_session_mut() {
+        if let Some(s) = self.try_active_bucket_mut() {
             s.session_scope_epoch = s.session_scope_epoch.saturating_add(1);
         }
     }
@@ -745,7 +754,7 @@ impl App {
     /// Auto-creates the pre-Connect bucket if missing.
     #[must_use]
     pub fn turn_state_mut(&mut self) -> &mut SessionTurnState {
-        &mut self.active_or_synthetic_mut().turn_state
+        &mut self.active_bucket_mut().turn_state
     }
 
     /// Active session's `is_compacting` flag.
@@ -756,7 +765,7 @@ impl App {
 
     /// Set the active session's `is_compacting` flag.
     pub fn set_is_compacting(&mut self, value: bool) {
-        self.active_or_synthetic_mut().is_compacting = value;
+        self.active_bucket_mut().is_compacting = value;
     }
 
     /// Active session's `pending_compact_clear` flag.
@@ -767,7 +776,7 @@ impl App {
 
     /// Set the active session's `pending_compact_clear` flag.
     pub fn set_pending_compact_clear(&mut self, value: bool) {
-        self.active_or_synthetic_mut().pending_compact_clear = value;
+        self.active_bucket_mut().pending_compact_clear = value;
     }
 
     /// Borrow the active session's pending interaction id list.
@@ -779,7 +788,7 @@ impl App {
     /// Mutable borrow of the pending interaction id list.
     #[must_use]
     pub fn pending_interaction_ids_mut(&mut self) -> &mut Vec<String> {
-        &mut self.active_or_synthetic_mut().pending_interaction_ids
+        &mut self.active_bucket_mut().pending_interaction_ids
     }
 
     /// Active session's cancelled-turn pending hint flag.
@@ -790,7 +799,7 @@ impl App {
 
     /// Set the active session's cancelled-turn pending hint flag.
     pub fn set_cancelled_turn_pending_hint(&mut self, value: bool) {
-        self.active_or_synthetic_mut().cancelled_turn_pending_hint = value;
+        self.active_bucket_mut().cancelled_turn_pending_hint = value;
     }
 
     /// Active session's pending cancel origin.
@@ -801,7 +810,7 @@ impl App {
 
     /// Set the active session's pending cancel origin.
     pub fn set_pending_cancel_origin(&mut self, value: Option<CancelOrigin>) {
-        self.active_or_synthetic_mut().pending_cancel_origin = value;
+        self.active_bucket_mut().pending_cancel_origin = value;
     }
 
     /// Borrow the active session's prompt suggestion.
@@ -812,7 +821,7 @@ impl App {
 
     /// Set the active session's prompt suggestion.
     pub fn set_prompt_suggestion(&mut self, value: Option<String>) {
-        self.active_or_synthetic_mut().prompt_suggestion = value;
+        self.active_bucket_mut().prompt_suggestion = value;
     }
 
     /// Borrow the active session's last rate-limit update.
@@ -823,7 +832,7 @@ impl App {
 
     /// Set the active session's last rate-limit update.
     pub fn set_last_rate_limit_update(&mut self, value: Option<model::RateLimitUpdate>) {
-        self.active_or_synthetic_mut().last_rate_limit_update = value;
+        self.active_bucket_mut().last_rate_limit_update = value;
     }
 
     /// Borrow the active session's turn notice ref list.
@@ -835,7 +844,7 @@ impl App {
     /// Mutable borrow of the turn notice ref list.
     #[must_use]
     pub fn turn_notice_refs_mut(&mut self) -> &mut Vec<TurnNoticeRef> {
-        &mut self.active_or_synthetic_mut().turn_notice_refs
+        &mut self.active_bucket_mut().turn_notice_refs
     }
 
     // ---- Tool tracking accessors ----
@@ -857,7 +866,7 @@ impl App {
     /// Mutable borrow of the active task id set.
     #[must_use]
     pub fn active_task_ids_mut(&mut self) -> &mut HashSet<String> {
-        &mut self.active_or_synthetic_mut().active_task_ids
+        &mut self.active_bucket_mut().active_task_ids
     }
 
     /// Borrow the active session's tool call scope map.
@@ -874,7 +883,7 @@ impl App {
     /// Mutable borrow of the tool call scope map.
     #[must_use]
     pub fn tool_call_scopes_mut(&mut self) -> &mut HashMap<String, ToolCallScope> {
-        &mut self.active_or_synthetic_mut().tool_call_scopes
+        &mut self.active_bucket_mut().tool_call_scopes
     }
 
     /// Borrow the active session's tool call index.
@@ -890,8 +899,8 @@ impl App {
 
     /// Mutable borrow of the tool call index.
     #[must_use]
-    pub fn tool_call_index_mut(&mut self) -> &mut HashMap<String, (usize, usize)> {
-        &mut self.active_or_synthetic_mut().tool_call_index
+    pub fn active_tool_call_index_mut(&mut self) -> &mut HashMap<String, (usize, usize)> {
+        &mut self.active_bucket_mut().tool_call_index
     }
 
     /// Borrow the active session's terminal map (a shared
@@ -913,7 +922,7 @@ impl App {
     /// Auto-creates the pre-Connect bucket if missing.
     #[must_use]
     pub fn terminals_mut(&mut self) -> &mut crate::agent::events::TerminalMap {
-        &mut self.active_or_synthetic_mut().terminals
+        &mut self.active_bucket_mut().terminals
     }
 
     /// Borrow the active session's terminal tool call list.
@@ -925,7 +934,7 @@ impl App {
     /// Mutable borrow of the terminal tool call list.
     #[must_use]
     pub fn terminal_tool_calls_mut(&mut self) -> &mut Vec<TerminalToolCallRef> {
-        &mut self.active_or_synthetic_mut().terminal_tool_calls
+        &mut self.active_bucket_mut().terminal_tool_calls
     }
 
     /// Borrow the active session's terminal tool call membership
@@ -943,7 +952,7 @@ impl App {
     /// Mutable borrow of the terminal tool call membership set.
     #[must_use]
     pub fn terminal_tool_call_membership_mut(&mut self) -> &mut HashSet<TerminalToolCallRef> {
-        &mut self.active_or_synthetic_mut().terminal_tool_call_membership
+        &mut self.active_bucket_mut().terminal_tool_call_membership
     }
 
     /// Borrow the active session's subagent attribution map.
@@ -959,7 +968,7 @@ impl App {
     /// Mutable borrow of the subagent attribution map.
     #[must_use]
     pub fn subagent_attribution_mut(&mut self) -> &mut HashMap<String, String> {
-        &mut self.active_or_synthetic_mut().subagent_attribution
+        &mut self.active_bucket_mut().subagent_attribution
     }
 
     // ---- Runtime + model accessors ----
@@ -972,13 +981,13 @@ impl App {
 
     /// Set the active session's current model resolution.
     pub fn set_current_model(&mut self, value: Option<model::CurrentModel>) {
-        self.active_or_synthetic_mut().current_model = value;
+        self.active_bucket_mut().current_model = value;
     }
 
     /// Mutable borrow of the active session's current model.
     #[must_use]
     pub fn current_model_mut(&mut self) -> Option<&mut model::CurrentModel> {
-        self.active_or_synthetic_mut().current_model.as_mut()
+        self.active_bucket_mut().current_model.as_mut()
     }
 
     /// Borrow the active session's available-models list.
@@ -990,7 +999,7 @@ impl App {
     /// Mutable borrow of the available-models list.
     #[must_use]
     pub fn available_models_mut(&mut self) -> &mut Vec<model::AvailableModel> {
-        &mut self.active_or_synthetic_mut().available_models
+        &mut self.active_bucket_mut().available_models
     }
 
     /// Borrow the active session's available-commands list.
@@ -1002,7 +1011,7 @@ impl App {
     /// Mutable borrow of the available-commands list.
     #[must_use]
     pub fn available_commands_mut(&mut self) -> &mut Vec<model::AvailableCommand> {
-        &mut self.active_or_synthetic_mut().available_commands
+        &mut self.active_bucket_mut().available_commands
     }
 
     /// Borrow the active session's available-agents list.
@@ -1014,7 +1023,7 @@ impl App {
     /// Mutable borrow of the available-agents list.
     #[must_use]
     pub fn available_agents_mut(&mut self) -> &mut Vec<model::AvailableAgent> {
-        &mut self.active_or_synthetic_mut().available_agents
+        &mut self.active_bucket_mut().available_agents
     }
 
     /// Borrow the active session's mode snapshot.
@@ -1025,13 +1034,13 @@ impl App {
 
     /// Set the active session's mode snapshot.
     pub fn set_mode(&mut self, value: Option<ModeState>) {
-        self.active_or_synthetic_mut().mode = value;
+        self.active_bucket_mut().mode = value;
     }
 
     /// Mutable borrow of the active session's mode snapshot.
     #[must_use]
     pub fn mode_mut(&mut self) -> Option<&mut ModeState> {
-        self.active_or_synthetic_mut().mode.as_mut()
+        self.active_bucket_mut().mode.as_mut()
     }
 
     /// Active session's hook-observed permission mode.
@@ -1045,7 +1054,7 @@ impl App {
         &mut self,
         value: Option<crate::agent::state::PermissionMode>,
     ) {
-        self.active_or_synthetic_mut().observed_permission_mode = value;
+        self.active_bucket_mut().observed_permission_mode = value;
     }
 
     /// Active session's hook-observed effort level.
@@ -1056,7 +1065,7 @@ impl App {
 
     /// Set the active session's hook-observed effort level.
     pub fn set_observed_effort(&mut self, value: Option<model::EffortLevel>) {
-        self.active_or_synthetic_mut().observed_effort = value;
+        self.active_bucket_mut().observed_effort = value;
     }
 
     /// Borrow the active session's observed assistant model id.
@@ -1067,7 +1076,7 @@ impl App {
 
     /// Set the active session's observed assistant model id.
     pub fn set_observed_assistant_model(&mut self, value: Option<String>) {
-        self.active_or_synthetic_mut().observed_assistant_model = value;
+        self.active_bucket_mut().observed_assistant_model = value;
     }
 
     /// Active session's runtime session state.
@@ -1078,7 +1087,7 @@ impl App {
 
     /// Set the active session's runtime session state.
     pub fn set_runtime_session_state(&mut self, value: Option<model::RuntimeSessionState>) {
-        self.active_or_synthetic_mut().runtime_session_state = value;
+        self.active_bucket_mut().runtime_session_state = value;
     }
 
     /// Active session's fast-mode state.
@@ -1089,7 +1098,7 @@ impl App {
 
     /// Set the active session's fast-mode state.
     pub fn set_fast_mode_state(&mut self, value: model::FastModeState) {
-        self.active_or_synthetic_mut().fast_mode_state = value;
+        self.active_bucket_mut().fast_mode_state = value;
     }
 
     /// Borrow the active session's config-options map.
@@ -1106,7 +1115,7 @@ impl App {
     /// Mutable borrow of the config-options map.
     #[must_use]
     pub fn config_options_mut(&mut self) -> &mut BTreeMap<String, serde_json::Value> {
-        &mut self.active_or_synthetic_mut().config_options
+        &mut self.active_bucket_mut().config_options
     }
 
     /// Borrow the active session's session-usage telemetry.
@@ -1122,7 +1131,7 @@ impl App {
     /// Mutable borrow of the session-usage telemetry.
     #[must_use]
     pub fn session_usage_mut(&mut self) -> &mut SessionUsageState {
-        &mut self.active_or_synthetic_mut().session_usage
+        &mut self.active_bucket_mut().session_usage
     }
 
     // ---- Account / auth accessors ----
@@ -1135,7 +1144,7 @@ impl App {
 
     /// Set the active session's account-info snapshot.
     pub fn set_account_info(&mut self, value: Option<forge_primitives::AccountInfo>) {
-        self.active_or_synthetic_mut().account_info = value;
+        self.active_bucket_mut().account_info = value;
     }
 
     /// Borrow the active session's forge-side account display name.
@@ -1146,7 +1155,7 @@ impl App {
 
     /// Set the active session's forge-side account display name.
     pub fn set_active_account_display_name(&mut self, value: Option<String>) {
-        self.active_or_synthetic_mut().active_account_display_name = value;
+        self.active_bucket_mut().active_account_display_name = value;
     }
 
     /// Borrow the active session's OAuth credentials snapshot.
@@ -1162,7 +1171,7 @@ impl App {
         &mut self,
         value: Option<forge_agent::cloud::oauth_credentials::OauthCredentials>,
     ) {
-        self.active_or_synthetic_mut().oauth_credentials = value;
+        self.active_bucket_mut().oauth_credentials = value;
     }
 
     // ---- Filesystem accessors ----
@@ -1179,7 +1188,7 @@ impl App {
 
     /// Set the active session's display-friendly cwd.
     pub fn set_cwd(&mut self, value: impl Into<String>) {
-        self.active_or_synthetic_mut().cwd = value.into();
+        self.active_bucket_mut().cwd = value.into();
     }
 
     /// Borrow the active session's raw filesystem cwd.
@@ -1190,7 +1199,7 @@ impl App {
 
     /// Set the active session's raw filesystem cwd.
     pub fn set_cwd_raw(&mut self, value: impl Into<String>) {
-        self.active_or_synthetic_mut().cwd_raw = value.into();
+        self.active_bucket_mut().cwd_raw = value.into();
     }
 
     /// Active session's files-accessed counter.
@@ -1201,12 +1210,12 @@ impl App {
 
     /// Set the active session's files-accessed counter.
     pub fn set_files_accessed(&mut self, value: usize) {
-        self.active_or_synthetic_mut().files_accessed = value;
+        self.active_bucket_mut().files_accessed = value;
     }
 
     /// Increment the active session's files-accessed counter by one.
     pub fn increment_files_accessed(&mut self) {
-        let s = self.active_or_synthetic_mut();
+        let s = self.active_bucket_mut();
         s.files_accessed = s.files_accessed.saturating_add(1);
     }
 
@@ -1228,7 +1237,7 @@ impl App {
     /// Auto-creates the pre-Connect bucket if missing.
     #[must_use]
     pub fn mcp_mut(&mut self) -> &mut McpState {
-        &mut self.active_or_synthetic_mut().mcp
+        &mut self.active_bucket_mut().mcp
     }
 
     // ---- Todos accessors ----
@@ -1242,7 +1251,7 @@ impl App {
     /// Mutable borrow of the active session's todo list.
     #[must_use]
     pub fn todos_mut(&mut self) -> &mut Vec<TodoItem> {
-        &mut self.active_or_synthetic_mut().todos
+        &mut self.active_bucket_mut().todos
     }
 
     /// Active session's todo-panel-expanded flag.
@@ -1253,7 +1262,7 @@ impl App {
 
     /// Set the active session's todo-panel-expanded flag.
     pub fn set_show_todo_panel(&mut self, value: bool) {
-        self.active_or_synthetic_mut().show_todo_panel = value;
+        self.active_bucket_mut().show_todo_panel = value;
     }
 
     /// Active session's todo-panel scroll offset.
@@ -1264,7 +1273,7 @@ impl App {
 
     /// Set the active session's todo-panel scroll offset.
     pub fn set_todo_scroll(&mut self, value: usize) {
-        self.active_or_synthetic_mut().todo_scroll = value;
+        self.active_bucket_mut().todo_scroll = value;
     }
 
     /// Active session's selected-todo index.
@@ -1275,7 +1284,7 @@ impl App {
 
     /// Set the active session's selected-todo index.
     pub fn set_todo_selected(&mut self, value: usize) {
-        self.active_or_synthetic_mut().todo_selected = value;
+        self.active_bucket_mut().todo_selected = value;
     }
 
     /// Borrow the active session's cached compact todo line.
@@ -1286,7 +1295,7 @@ impl App {
 
     /// Set the active session's cached compact todo line.
     pub fn set_cached_todo_compact(&mut self, value: Option<ratatui::text::Line<'static>>) {
-        self.active_or_synthetic_mut().cached_todo_compact = value;
+        self.active_bucket_mut().cached_todo_compact = value;
     }
 
     // ---- Render cache + history retention accessors ----
@@ -1303,7 +1312,7 @@ impl App {
     pub(crate) fn render_cache_slots_mut(
         &mut self,
     ) -> &mut Vec<Vec<render_budget::RenderCacheSlotState>> {
-        &mut self.active_or_synthetic_mut().render_cache_slots
+        &mut self.active_bucket_mut().render_cache_slots
     }
 
     /// Active session's rolling render-cache total bytes.
@@ -1315,7 +1324,7 @@ impl App {
     /// Mutable accessor for the rolling render-cache total bytes.
     #[must_use]
     pub(crate) fn render_cache_total_bytes_mut(&mut self) -> &mut usize {
-        &mut self.active_or_synthetic_mut().render_cache_total_bytes
+        &mut self.active_bucket_mut().render_cache_total_bytes
     }
 
     /// Active session's rolling render-cache protected bytes.
@@ -1327,7 +1336,7 @@ impl App {
     /// Mutable accessor for the rolling render-cache protected bytes.
     #[must_use]
     pub(crate) fn render_cache_protected_bytes_mut(&mut self) -> &mut usize {
-        &mut self.active_or_synthetic_mut().render_cache_protected_bytes
+        &mut self.active_bucket_mut().render_cache_protected_bytes
     }
 
     /// Borrow the active session's evictable render-cache key set.
@@ -1343,7 +1352,7 @@ impl App {
     pub(crate) fn render_cache_evictable_mut(
         &mut self,
     ) -> &mut BTreeSet<render_budget::RenderCacheEvictionKey> {
-        &mut self.active_or_synthetic_mut().render_cache_evictable
+        &mut self.active_bucket_mut().render_cache_evictable
     }
 
     /// Active session's protected streaming-tail message index, if any.
@@ -1354,7 +1363,7 @@ impl App {
 
     /// Set the active session's protected streaming-tail message index.
     pub(crate) fn set_render_cache_tail_msg_idx(&mut self, value: Option<usize>) {
-        self.active_or_synthetic_mut().render_cache_tail_msg_idx = value;
+        self.active_bucket_mut().render_cache_tail_msg_idx = value;
     }
 
     /// Borrow the active session's history-retention policy.
@@ -1366,7 +1375,7 @@ impl App {
     /// Mutable accessor for the history-retention policy.
     #[must_use]
     pub fn history_retention_mut(&mut self) -> &mut HistoryRetentionPolicy {
-        &mut self.active_or_synthetic_mut().history_retention
+        &mut self.active_bucket_mut().history_retention
     }
 
     /// Borrow the active session's history-retention enforcement
@@ -1384,7 +1393,7 @@ impl App {
     /// statistics.
     #[must_use]
     pub fn history_retention_stats_mut(&mut self) -> &mut HistoryRetentionStats {
-        &mut self.active_or_synthetic_mut().history_retention_stats
+        &mut self.active_bucket_mut().history_retention_stats
     }
 
     /// Borrow the active session's cache-metrics accumulator.
@@ -1400,7 +1409,7 @@ impl App {
     /// Mutable accessor for the cache-metrics accumulator.
     #[must_use]
     pub fn cache_metrics_mut(&mut self) -> &mut CacheMetrics {
-        &mut self.active_or_synthetic_mut().cache_metrics
+        &mut self.active_bucket_mut().cache_metrics
     }
 
     /// Active session's previous-frame active-turn height state.
@@ -1411,7 +1420,7 @@ impl App {
 
     /// Set the active session's previous-frame active-turn height state.
     pub(crate) fn set_last_active_turn_height_state(&mut self, value: Option<(usize, bool, bool)>) {
-        self.active_or_synthetic_mut().last_active_turn_height_state = value;
+        self.active_bucket_mut().last_active_turn_height_state = value;
     }
 
     /// Borrow the active session's last chat-render trace snapshot.
@@ -1422,7 +1431,7 @@ impl App {
 
     /// Set the active session's last chat-render trace snapshot.
     pub fn set_last_chat_render_trace_state(&mut self, value: Option<ChatRenderTraceState>) {
-        self.active_or_synthetic_mut().last_chat_render_trace_state = value;
+        self.active_bucket_mut().last_chat_render_trace_state = value;
     }
 
     /// Queue a paste payload for drain-cycle finalization.
@@ -1601,7 +1610,7 @@ impl App {
         let (label, value) = self.welcome_account_display();
         let cwd = self.welcome_cwd_display().to_owned();
         let session_id = self.welcome_session_id_display();
-        let Some(first) = self.messages_mut().first_mut() else {
+        let Some(first) = self.active_messages_mut().first_mut() else {
             return;
         };
         if !matches!(first.role, MessageRole::Welcome) {
@@ -1671,7 +1680,7 @@ impl App {
 
     /// Register a tool call's position in the message/block arrays.
     pub fn index_tool_call(&mut self, id: String, msg_idx: usize, block_idx: usize) {
-        self.tool_call_index_mut().insert(id, (msg_idx, block_idx));
+        self.active_tool_call_index_mut().insert(id, (msg_idx, block_idx));
     }
 
     pub(crate) fn sync_terminal_tool_call(
@@ -1713,7 +1722,7 @@ impl App {
 
     pub(crate) fn sync_after_message_blocks_changed(&mut self, msg_idx: usize) {
         self.note_render_cache_structure_changed();
-        if let Some(message) = self.messages_mut().get_mut(msg_idx) {
+        if let Some(message) = self.active_messages_mut().get_mut(msg_idx) {
             message.invalidate_render_cache();
         }
         self.sync_render_cache_message(msg_idx);
@@ -1728,17 +1737,17 @@ impl App {
     pub fn invalidate_layout(&mut self, level: LayoutInvalidation) {
         match level {
             LayoutInvalidation::MessageChanged(idx) => {
-                self.viewport_mut().invalidate_message(idx);
+                self.active_viewport_mut().invalidate_message(idx);
             }
             LayoutInvalidation::MessagesFrom(idx) => {
-                self.viewport_mut().invalidate_messages_from(idx);
+                self.active_viewport_mut().invalidate_messages_from(idx);
             }
             LayoutInvalidation::Global => {
                 if self.messages().is_empty() {
                     return;
                 }
-                self.viewport_mut().invalidate_all_messages(LayoutRemeasureReason::Global);
-                self.viewport_mut().bump_layout_generation();
+                self.active_viewport_mut().invalidate_all_messages(LayoutRemeasureReason::Global);
+                self.active_viewport_mut().bump_layout_generation();
             }
             LayoutInvalidation::Resize => {
                 // Resize is handled by viewport.on_frame(). This arm exists
@@ -1755,7 +1764,7 @@ impl App {
         let unique: BTreeSet<_> =
             indices.into_iter().filter(|&idx| idx < self.messages().len()).collect();
         for idx in unique {
-            self.viewport_mut().invalidate_message(idx);
+            self.active_viewport_mut().invalidate_message(idx);
         }
     }
 
@@ -1793,7 +1802,7 @@ impl App {
         let mut changed_slots = Vec::new();
         let mut detached_terminal = false;
 
-        for (msg_idx, msg) in self.messages_mut().iter_mut().enumerate() {
+        for (msg_idx, msg) in self.active_messages_mut().iter_mut().enumerate() {
             for (block_idx, block) in msg.blocks.iter_mut().enumerate() {
                 if let MessageBlock::ToolCall(tc) = block {
                     let tc = tc.as_mut();
@@ -1850,7 +1859,7 @@ impl App {
         let mut changed_message_indices = Vec::new();
         let mut changed_slots = Vec::new();
 
-        for (msg_idx, msg) in self.messages_mut().iter_mut().enumerate() {
+        for (msg_idx, msg) in self.active_messages_mut().iter_mut().enumerate() {
             for (block_idx, block) in msg.blocks.iter_mut().enumerate() {
                 let MessageBlock::ToolCall(tc) = block else {
                     continue;
@@ -1907,10 +1916,10 @@ impl App {
     #[doc(hidden)]
     #[must_use]
     pub fn test_default() -> Self {
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<forge_workspace::SessionUpdate>();
         let (file_index_tx, file_index_rx) = std_mpsc::channel();
         let pending_key = forge_workspace::SessionKey::from_session_id(Self::PRE_CONNECT_KEY);
-        let mut pending_session = super::session::Session::new(pending_key.clone());
+        let mut pending_session = super::session::UiSession::new(pending_key.clone());
         // Seed a synthetic `current_model` so tests that depend on
         // model-resolution UI paths see a stable value.
         pending_session.current_model = Some(
@@ -1947,8 +1956,8 @@ impl App {
             help_dialog: dialog::DialogState::default(),
             help_visible_count: 0,
             pending_auto_submit_after_cancel: false,
-            event_tx: tx,
-            event_rx: rx,
+            update_rx: rx,
+            update_tx: tx,
             file_index_event_tx: file_index_tx,
             file_index_event_rx: file_index_rx,
             spinner_frame: 0,
@@ -2016,18 +2025,18 @@ impl App {
     /// Apply a bridge-pushed git context snapshot to the local
     /// cache. Marks `needs_redraw` when the resolved branch changes.
     pub fn apply_git_context_snapshot(&mut self, info: forge_agent::env::git::GitContext) {
-        let changed = self.active_or_synthetic_mut().git_context.apply_snapshot(info);
+        let changed = self.active_bucket_mut().git_context.apply_snapshot(info);
         self.needs_redraw |= changed;
     }
 
     #[cfg(test)]
     pub fn set_git_detached_for_test(&mut self) {
-        self.active_or_synthetic_mut().git_context.set_detached_for_test();
+        self.active_bucket_mut().git_context.set_detached_for_test();
     }
 
     #[cfg(test)]
     pub fn set_git_branch_for_test(&mut self, branch: Option<&str>) {
-        self.active_or_synthetic_mut().git_context.set_branch_for_test(branch);
+        self.active_bucket_mut().git_context.set_branch_for_test(branch);
     }
 
     /// Resolve the effective focus owner for Up/Down and other directional keys.
@@ -2298,13 +2307,13 @@ mod tests {
         let key = forge_workspace::SessionKey::from_str_for_test("abc-123");
         app.sessions
             .entry(key.clone())
-            .or_insert_with(|| crate::app::session::Session::new(key.clone()));
+            .or_insert_with(|| crate::app::session::UiSession::new(key.clone()));
         app.active_session_key = Some(key.clone());
 
         assert_eq!(app.active_session_key.as_ref(), Some(&key));
         assert!(app.active_session().is_some());
         assert_eq!(app.active_session().and_then(|s| s.key.as_ref()), Some(&key));
-        assert!(app.active_session_mut().is_some());
+        assert!(app.try_active_bucket_mut().is_some());
         assert!(app.session_mut(&key).is_some());
     }
 
@@ -2739,18 +2748,20 @@ mod tests {
     #[test]
     fn enforce_render_cache_budget_evicts_lru_block() {
         let mut app = make_test_app();
-        *app.messages_mut() = vec![
+        *app.active_messages_mut() = vec![
             ChatMessage::new(MessageRole::Assistant, vec![assistant_text_block("a")], None),
             ChatMessage::new(MessageRole::Assistant, vec![assistant_text_block("b")], None),
         ];
 
-        let bytes_a = if let MessageBlock::Text(block) = &mut app.messages_mut()[0].blocks[0] {
+        let bytes_a = if let MessageBlock::Text(block) = &mut app.active_messages_mut()[0].blocks[0]
+        {
             block.cache.store(vec![Line::from("x".repeat(2200))]);
             block.cache.cached_bytes()
         } else {
             0
         };
-        let bytes_b = if let MessageBlock::Text(block) = &mut app.messages_mut()[1].blocks[0] {
+        let bytes_b = if let MessageBlock::Text(block) = &mut app.active_messages_mut()[1].blocks[0]
+        {
             block.cache.store(vec![Line::from("y".repeat(2200))]);
             let _ = block.cache.get();
             block.cache.cached_bytes()
@@ -2781,13 +2792,14 @@ mod tests {
     fn enforce_render_cache_budget_protects_streaming_tail_message() {
         let mut app = make_test_app();
         app.status = AppStatus::Thinking;
-        *app.messages_mut() = vec![ChatMessage::new(
+        *app.active_messages_mut() = vec![ChatMessage::new(
             MessageRole::Assistant,
             vec![assistant_text_block("streaming tail")],
             None,
         )];
 
-        let before = if let MessageBlock::Text(block) = &mut app.messages_mut()[0].blocks[0] {
+        let before = if let MessageBlock::Text(block) = &mut app.active_messages_mut()[0].blocks[0]
+        {
             block.cache.store(vec![Line::from("z".repeat(4096))]);
             block.cache.cached_bytes()
         } else {
@@ -2810,7 +2822,7 @@ mod tests {
     fn enforce_render_cache_budget_excludes_protected_from_budget() {
         let mut app = make_test_app();
         app.status = AppStatus::Running;
-        *app.messages_mut() = vec![
+        *app.active_messages_mut() = vec![
             ChatMessage::new(
                 MessageRole::Assistant,
                 vec![assistant_text_block("old message")],
@@ -2823,13 +2835,15 @@ mod tests {
             ),
         ];
 
-        let bytes_a = if let MessageBlock::Text(block) = &mut app.messages_mut()[0].blocks[0] {
+        let bytes_a = if let MessageBlock::Text(block) = &mut app.active_messages_mut()[0].blocks[0]
+        {
             block.cache.store(vec![Line::from("x".repeat(2200))]);
             block.cache.cached_bytes()
         } else {
             0
         };
-        let bytes_b = if let MessageBlock::Text(block) = &mut app.messages_mut()[1].blocks[0] {
+        let bytes_b = if let MessageBlock::Text(block) = &mut app.active_messages_mut()[1].blocks[0]
+        {
             block.cache.store(vec![Line::from("y".repeat(5000))]);
             block.cache.cached_bytes()
         } else {
@@ -2859,7 +2873,7 @@ mod tests {
     fn enforce_render_cache_budget_protects_active_streaming_owner_not_physical_tail() {
         let mut app = make_test_app();
         app.status = AppStatus::Running;
-        *app.messages_mut() = vec![
+        *app.active_messages_mut() = vec![
             ChatMessage::new(
                 MessageRole::Assistant,
                 vec![assistant_text_block("old message")],
@@ -2878,17 +2892,17 @@ mod tests {
         ];
         app.bind_active_turn_assistant(1);
 
-        if let MessageBlock::Text(block) = &mut app.messages_mut()[0].blocks[0] {
+        if let MessageBlock::Text(block) = &mut app.active_messages_mut()[0].blocks[0] {
             block.cache.store(vec![Line::from("x".repeat(2000))]);
         }
         let protected_bytes =
-            if let MessageBlock::Text(block) = &mut app.messages_mut()[1].blocks[0] {
+            if let MessageBlock::Text(block) = &mut app.active_messages_mut()[1].blocks[0] {
                 block.cache.store(vec![Line::from("y".repeat(4000))]);
                 block.cache.cached_bytes()
             } else {
                 0
             };
-        if let MessageBlock::Text(block) = &mut app.messages_mut()[2].blocks[0] {
+        if let MessageBlock::Text(block) = &mut app.active_messages_mut()[2].blocks[0] {
             block.cache.store(vec![Line::from("z".repeat(5000))]);
         }
 
@@ -2902,24 +2916,26 @@ mod tests {
     fn enforce_render_cache_budget_evicts_when_budgeted_over_limit() {
         let mut app = make_test_app();
         app.status = AppStatus::Running;
-        *app.messages_mut() = vec![
+        *app.active_messages_mut() = vec![
             ChatMessage::new(MessageRole::Assistant, vec![assistant_text_block("old-a")], None),
             ChatMessage::new(MessageRole::Assistant, vec![assistant_text_block("old-b")], None),
             ChatMessage::new(MessageRole::Assistant, vec![assistant_text_block("streaming")], None),
         ];
 
         // Populate caches: messages 0 and 1 evictable, message 2 protected.
-        if let MessageBlock::Text(block) = &mut app.messages_mut()[0].blocks[0] {
+        if let MessageBlock::Text(block) = &mut app.active_messages_mut()[0].blocks[0] {
             block.cache.store(vec![Line::from("x".repeat(3000))]);
         }
-        let bytes_b = if let MessageBlock::Text(block) = &mut app.messages_mut()[1].blocks[0] {
+        let bytes_b = if let MessageBlock::Text(block) = &mut app.active_messages_mut()[1].blocks[0]
+        {
             block.cache.store(vec![Line::from("y".repeat(3000))]);
             let _ = block.cache.get(); // touch to make more recently accessed
             block.cache.cached_bytes()
         } else {
             0
         };
-        let bytes_c = if let MessageBlock::Text(block) = &mut app.messages_mut()[2].blocks[0] {
+        let bytes_c = if let MessageBlock::Text(block) = &mut app.active_messages_mut()[2].blocks[0]
+        {
             block.cache.store(vec![Line::from("z".repeat(5000))]);
             block.cache.cached_bytes()
         } else {
@@ -2945,13 +2961,13 @@ mod tests {
     fn enforce_render_cache_budget_protected_bytes_zero_when_not_streaming() {
         let mut app = make_test_app();
         app.status = AppStatus::Ready;
-        *app.messages_mut() = vec![ChatMessage::new(
+        *app.active_messages_mut() = vec![ChatMessage::new(
             MessageRole::Assistant,
             vec![assistant_text_block("done")],
             None,
         )];
 
-        if let MessageBlock::Text(block) = &mut app.messages_mut()[0].blocks[0] {
+        if let MessageBlock::Text(block) = &mut app.active_messages_mut()[0].blocks[0] {
             block.cache.store(vec![Line::from("x".repeat(2000))]);
         }
         app.render_cache_budget.max_bytes = usize::MAX;
@@ -2963,7 +2979,7 @@ mod tests {
     #[test]
     fn enforce_render_cache_budget_accounts_for_message_render_cache() {
         let mut app = make_test_app();
-        *app.messages_mut() = vec![
+        *app.active_messages_mut() = vec![
             ChatMessage::new(
                 MessageRole::Assistant,
                 vec![assistant_text_block(&"a".repeat(4000))],
@@ -2984,10 +3000,18 @@ mod tests {
             show_compacting: false,
         };
 
-        let _ =
-            crate::ui::measure_message_height_cached(&mut app.messages_mut()[0], &spinner, 80, 1);
-        let _ =
-            crate::ui::measure_message_height_cached(&mut app.messages_mut()[1], &spinner, 80, 1);
+        let _ = crate::ui::measure_message_height_cached(
+            &mut app.active_messages_mut()[0],
+            &spinner,
+            80,
+            1,
+        );
+        let _ = crate::ui::measure_message_height_cached(
+            &mut app.active_messages_mut()[1],
+            &spinner,
+            80,
+            1,
+        );
 
         let bytes_a = app.messages()[0].render_cache.cached_bytes();
         let bytes_b = app.messages()[1].render_cache.cached_bytes();
@@ -3008,7 +3032,7 @@ mod tests {
     #[test]
     fn enforce_history_retention_noop_under_budget() {
         let mut app = make_test_app();
-        *app.messages_mut() = vec![
+        *app.active_messages_mut() = vec![
             ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "-", "/cwd", "-"),
             user_text_message("small message"),
             user_text_message("another message"),
@@ -3024,7 +3048,7 @@ mod tests {
     #[test]
     fn enforce_history_retention_drops_oldest_and_adds_marker() {
         let mut app = make_test_app();
-        *app.messages_mut() = vec![
+        *app.active_messages_mut() = vec![
             ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "-", "/cwd", "-"),
             user_text_message("first old message"),
             user_text_message("second old message"),
@@ -3042,7 +3066,7 @@ mod tests {
     #[test]
     fn enforce_history_retention_preserves_in_progress_tool_message() {
         let mut app = make_test_app();
-        *app.messages_mut() = vec![
+        *app.active_messages_mut() = vec![
             ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "-", "/cwd", "-"),
             user_text_message("droppable"),
             assistant_tool_message("tool-keep", model::ToolCallStatus::InProgress),
@@ -3065,7 +3089,7 @@ mod tests {
     #[test]
     fn enforce_history_retention_preserves_pending_tool_message() {
         let mut app = make_test_app();
-        *app.messages_mut() = vec![
+        *app.active_messages_mut() = vec![
             ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "-", "/cwd", "-"),
             user_text_message("droppable"),
             assistant_tool_message("tool-pending", model::ToolCallStatus::Pending),
@@ -3084,7 +3108,7 @@ mod tests {
     #[test]
     fn enforce_history_retention_preserves_permission_tool_message() {
         let mut app = make_test_app();
-        *app.messages_mut() = vec![
+        *app.active_messages_mut() = vec![
             ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "-", "/cwd", "-"),
             user_text_message("droppable"),
             assistant_tool_message_with_pending_permission("tool-perm"),
@@ -3103,7 +3127,7 @@ mod tests {
     #[test]
     fn enforce_history_retention_rebuilds_tool_index_after_prune() {
         let mut app = make_test_app();
-        *app.messages_mut() = vec![
+        *app.active_messages_mut() = vec![
             ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "-", "/cwd", "-"),
             user_text_message("drop this"),
             assistant_bash_tool_message("tool-idx", model::ToolCallStatus::InProgress, "term-1"),
@@ -3125,7 +3149,7 @@ mod tests {
     fn enforce_history_retention_preserves_active_turn_assistant_message() {
         let mut app = make_test_app();
         app.status = AppStatus::Thinking;
-        *app.messages_mut() = vec![
+        *app.active_messages_mut() = vec![
             ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "-", "/cwd", "-"),
             user_text_message("drop this"),
             ChatMessage::new(MessageRole::Assistant, Vec::new(), None),
@@ -3144,7 +3168,7 @@ mod tests {
     fn enforce_history_retention_remaps_active_turn_assistant_after_prune() {
         let mut app = make_test_app();
         app.status = AppStatus::Thinking;
-        *app.messages_mut() = vec![
+        *app.active_messages_mut() = vec![
             user_text_message("drop this"),
             ChatMessage::new(
                 MessageRole::Assistant,
@@ -3166,7 +3190,7 @@ mod tests {
     #[test]
     fn enforce_history_retention_keeps_single_marker_on_repeat() {
         let mut app = make_test_app();
-        *app.messages_mut() = vec![
+        *app.active_messages_mut() = vec![
             ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "-", "/cwd", "-"),
             user_text_message("drop me"),
         ];
@@ -3185,27 +3209,27 @@ mod tests {
     #[test]
     fn enforce_history_retention_preserves_manual_scroll_anchor_across_drop_and_marker_insert() {
         let mut app = make_test_app();
-        *app.messages_mut() = vec![
+        *app.active_messages_mut() = vec![
             ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "-", "/cwd", "-"),
             user_text_message("drop me first"),
             user_text_message("keep this anchored"),
             user_text_message("tail"),
         ];
-        let _ = app.viewport_mut().on_frame(40, 12);
+        let _ = app.active_viewport_mut().on_frame(40, 12);
         {
             let n = app.messages().len();
-            app.viewport_mut().sync_message_count(n);
+            app.active_viewport_mut().sync_message_count(n);
         };
         for idx in 0..app.messages().len() {
-            app.viewport_mut().set_message_height(idx, 4);
+            app.active_viewport_mut().set_message_height(idx, 4);
         }
-        app.viewport_mut().mark_heights_valid();
-        app.viewport_mut().rebuild_prefix_sums();
+        app.active_viewport_mut().mark_heights_valid();
+        app.active_viewport_mut().rebuild_prefix_sums();
 
-        app.viewport_mut().auto_scroll = false;
-        app.viewport_mut().scroll_offset = 9;
-        app.viewport_mut().scroll_target = 9;
-        app.viewport_mut().scroll_pos = 9.0;
+        app.active_viewport_mut().auto_scroll = false;
+        app.active_viewport_mut().scroll_offset = 9;
+        app.active_viewport_mut().scroll_target = 9;
+        app.active_viewport_mut().scroll_pos = 9.0;
         app.history_retention_mut().max_bytes = app
             .measure_history_bytes()
             .saturating_sub(App::measure_message_bytes(&app.messages()[1]));
@@ -3213,7 +3237,7 @@ mod tests {
         let _ = app.enforce_history_retention();
 
         assert!(app.messages().iter().any(App::is_history_hidden_marker_message));
-        assert_eq!(app.viewport_mut().scroll_anchor_to_restore(), Some((2, 1)));
+        assert_eq!(app.active_viewport_mut().scroll_anchor_to_restore(), Some((2, 1)));
     }
 
     #[test]
@@ -3356,7 +3380,7 @@ mod tests {
     #[test]
     fn finalize_in_progress_tool_calls_detaches_execute_terminal_refs() {
         let mut app = make_test_app();
-        app.messages_mut().push(assistant_bash_tool_message(
+        app.active_messages_mut().push(assistant_bash_tool_message(
             "bash-1",
             model::ToolCallStatus::InProgress,
             "term-1",
@@ -3379,57 +3403,60 @@ mod tests {
     #[test]
     fn insert_message_tracked_nontail_rebuilds_tool_indices_and_invalidates_suffix() {
         let mut app = make_test_app();
-        app.messages_mut().push(user_text_message("before"));
-        app.messages_mut().push(assistant_tool_message("tool-1", model::ToolCallStatus::Completed));
-        app.messages_mut().push(user_text_message("after"));
+        app.active_messages_mut().push(user_text_message("before"));
+        app.active_messages_mut()
+            .push(assistant_tool_message("tool-1", model::ToolCallStatus::Completed));
+        app.active_messages_mut().push(user_text_message("after"));
         app.index_tool_call("tool-1".to_owned(), 1, 0);
 
-        let _ = app.viewport_mut().on_frame(80, 24);
-        app.viewport_mut().sync_message_count(3);
-        app.viewport_mut().mark_heights_valid();
-        app.viewport_mut().rebuild_prefix_sums();
+        let _ = app.active_viewport_mut().on_frame(80, 24);
+        app.active_viewport_mut().sync_message_count(3);
+        app.active_viewport_mut().mark_heights_valid();
+        app.active_viewport_mut().rebuild_prefix_sums();
 
         app.insert_message_tracked(1, user_text_message("inserted"));
         {
             let n = app.messages().len();
-            app.viewport_mut().sync_message_count(n);
+            app.active_viewport_mut().sync_message_count(n);
         };
 
         assert_eq!(app.lookup_tool_call("tool-1"), Some((2, 0)));
-        assert_eq!(app.viewport_mut().oldest_stale_index(), Some(1));
-        assert_eq!(app.viewport_mut().prefix_dirty_from(), Some(1));
+        assert_eq!(app.active_viewport_mut().oldest_stale_index(), Some(1));
+        assert_eq!(app.active_viewport_mut().prefix_dirty_from(), Some(1));
     }
 
     #[test]
     fn remove_message_tracked_nontail_rebuilds_tool_indices_and_invalidates_suffix() {
         let mut app = make_test_app();
-        app.messages_mut().push(user_text_message("before"));
-        app.messages_mut().push(assistant_tool_message("tool-1", model::ToolCallStatus::Completed));
-        app.messages_mut().push(user_text_message("after"));
+        app.active_messages_mut().push(user_text_message("before"));
+        app.active_messages_mut()
+            .push(assistant_tool_message("tool-1", model::ToolCallStatus::Completed));
+        app.active_messages_mut().push(user_text_message("after"));
         app.index_tool_call("tool-1".to_owned(), 1, 0);
 
-        let _ = app.viewport_mut().on_frame(80, 24);
-        app.viewport_mut().sync_message_count(3);
-        app.viewport_mut().mark_heights_valid();
-        app.viewport_mut().rebuild_prefix_sums();
+        let _ = app.active_viewport_mut().on_frame(80, 24);
+        app.active_viewport_mut().sync_message_count(3);
+        app.active_viewport_mut().mark_heights_valid();
+        app.active_viewport_mut().rebuild_prefix_sums();
 
         let removed = app.remove_message_tracked(0);
         {
             let n = app.messages().len();
-            app.viewport_mut().sync_message_count(n);
+            app.active_viewport_mut().sync_message_count(n);
         };
 
         assert!(removed.is_some());
         assert_eq!(app.lookup_tool_call("tool-1"), Some((0, 0)));
-        assert_eq!(app.viewport_mut().oldest_stale_index(), Some(0));
-        assert_eq!(app.viewport_mut().prefix_dirty_from(), Some(0));
+        assert_eq!(app.active_viewport_mut().oldest_stale_index(), Some(0));
+        assert_eq!(app.active_viewport_mut().prefix_dirty_from(), Some(0));
     }
 
     #[test]
     fn remove_message_tracked_tail_removes_orphaned_tool_indices() {
         let mut app = make_test_app();
-        app.messages_mut().push(user_text_message("before"));
-        app.messages_mut().push(assistant_tool_message("tool-1", model::ToolCallStatus::Completed));
+        app.active_messages_mut().push(user_text_message("before"));
+        app.active_messages_mut()
+            .push(assistant_tool_message("tool-1", model::ToolCallStatus::Completed));
         app.index_tool_call("tool-1".to_owned(), 1, 0);
 
         let removed = app.remove_message_tracked(1);
@@ -3441,7 +3468,8 @@ mod tests {
     #[test]
     fn remove_message_tracked_prunes_tool_scope_entries() {
         let mut app = make_test_app();
-        app.messages_mut().push(assistant_tool_message("tool-1", model::ToolCallStatus::Completed));
+        app.active_messages_mut()
+            .push(assistant_tool_message("tool-1", model::ToolCallStatus::Completed));
         app.index_tool_call("tool-1".to_owned(), 0, 0);
         app.register_tool_call_scope(
             "tool-1".to_owned(),
@@ -3457,7 +3485,7 @@ mod tests {
     #[test]
     fn clear_messages_tracked_clears_tool_and_terminal_tracking() {
         let mut app = make_test_app();
-        app.messages_mut().push(assistant_bash_tool_message(
+        app.active_messages_mut().push(assistant_bash_tool_message(
             "bash-1",
             model::ToolCallStatus::InProgress,
             "term-1",
@@ -3478,7 +3506,7 @@ mod tests {
     #[test]
     fn rebuild_tool_indices_skips_completed_terminal_refs() {
         let mut app = make_test_app();
-        app.messages_mut().push(assistant_bash_tool_message(
+        app.active_messages_mut().push(assistant_bash_tool_message(
             "bash-1",
             model::ToolCallStatus::Completed,
             "term-1",
@@ -3495,24 +3523,24 @@ mod tests {
     #[test]
     fn finalize_in_progress_tool_calls_invalidates_all_changed_messages() {
         let mut app = make_test_app();
-        app.messages_mut()
+        app.active_messages_mut()
             .push(assistant_tool_message("tool-1", model::ToolCallStatus::InProgress));
-        app.messages_mut().push(user_text_message("gap"));
-        app.messages_mut()
+        app.active_messages_mut().push(user_text_message("gap"));
+        app.active_messages_mut()
             .push(assistant_tool_message("tool-2", model::ToolCallStatus::InProgress));
 
-        let _ = app.viewport_mut().on_frame(80, 24);
-        app.viewport_mut().sync_message_count(3);
-        app.viewport_mut().mark_heights_valid();
-        app.viewport_mut().rebuild_prefix_sums();
+        let _ = app.active_viewport_mut().on_frame(80, 24);
+        app.active_viewport_mut().sync_message_count(3);
+        app.active_viewport_mut().mark_heights_valid();
+        app.active_viewport_mut().rebuild_prefix_sums();
 
         let changed = app.finalize_in_progress_tool_calls(model::ToolCallStatus::Completed);
 
         assert_eq!(changed, 2);
-        assert!(!app.viewport_mut().message_height_is_current(0));
-        assert!(app.viewport_mut().message_height_is_current(1));
-        assert!(!app.viewport_mut().message_height_is_current(2));
-        assert_eq!(app.viewport_mut().oldest_stale_index(), Some(0));
+        assert!(!app.active_viewport_mut().message_height_is_current(0));
+        assert!(app.active_viewport_mut().message_height_is_current(1));
+        assert!(!app.active_viewport_mut().message_height_is_current(2));
+        assert_eq!(app.active_viewport_mut().oldest_stale_index(), Some(0));
     }
 
     // IncrementalMarkdown
@@ -4158,101 +4186,101 @@ mod tests {
     #[test]
     fn invalidate_single_tail_preserves_prefix_sums() {
         let mut app = make_test_app();
-        app.messages_mut().push(user_text_message("a"));
-        app.messages_mut().push(user_text_message("b"));
-        app.messages_mut().push(user_text_message("c"));
-        let _ = app.viewport_mut().on_frame(80, 24);
-        app.viewport_mut().set_message_height(0, 5);
-        app.viewport_mut().set_message_height(1, 10);
-        app.viewport_mut().set_message_height(2, 3);
-        app.viewport_mut().mark_heights_valid();
-        app.viewport_mut().rebuild_prefix_sums();
+        app.active_messages_mut().push(user_text_message("a"));
+        app.active_messages_mut().push(user_text_message("b"));
+        app.active_messages_mut().push(user_text_message("c"));
+        let _ = app.active_viewport_mut().on_frame(80, 24);
+        app.active_viewport_mut().set_message_height(0, 5);
+        app.active_viewport_mut().set_message_height(1, 10);
+        app.active_viewport_mut().set_message_height(2, 3);
+        app.active_viewport_mut().mark_heights_valid();
+        app.active_viewport_mut().rebuild_prefix_sums();
 
         app.invalidate_layout(InvalidationLevel::MessageChanged(2)); // tail
 
-        assert_eq!(app.viewport_mut().oldest_stale_index(), Some(2));
-        assert_eq!(app.viewport_mut().prefix_dirty_from(), Some(2));
+        assert_eq!(app.active_viewport_mut().oldest_stale_index(), Some(2));
+        assert_eq!(app.active_viewport_mut().prefix_dirty_from(), Some(2));
         assert_eq!(app.viewport().prefix_sums_width, 0);
     }
 
     #[test]
     fn invalidate_single_nontail_invalidates_prefix_sums() {
         let mut app = make_test_app();
-        app.messages_mut().push(user_text_message("a"));
-        app.messages_mut().push(user_text_message("b"));
-        app.messages_mut().push(user_text_message("c"));
-        let _ = app.viewport_mut().on_frame(80, 24);
-        app.viewport_mut().set_message_height(0, 5);
-        app.viewport_mut().set_message_height(1, 10);
-        app.viewport_mut().set_message_height(2, 3);
-        app.viewport_mut().mark_heights_valid();
-        app.viewport_mut().rebuild_prefix_sums();
+        app.active_messages_mut().push(user_text_message("a"));
+        app.active_messages_mut().push(user_text_message("b"));
+        app.active_messages_mut().push(user_text_message("c"));
+        let _ = app.active_viewport_mut().on_frame(80, 24);
+        app.active_viewport_mut().set_message_height(0, 5);
+        app.active_viewport_mut().set_message_height(1, 10);
+        app.active_viewport_mut().set_message_height(2, 3);
+        app.active_viewport_mut().mark_heights_valid();
+        app.active_viewport_mut().rebuild_prefix_sums();
 
         app.invalidate_layout(InvalidationLevel::MessageChanged(1)); // non-tail
 
-        assert_eq!(app.viewport_mut().oldest_stale_index(), Some(1));
-        assert_eq!(app.viewport_mut().prefix_dirty_from(), Some(1));
+        assert_eq!(app.active_viewport_mut().oldest_stale_index(), Some(1));
+        assert_eq!(app.active_viewport_mut().prefix_dirty_from(), Some(1));
         assert_eq!(app.viewport().prefix_sums_width, 0);
     }
 
     #[test]
     fn invalidate_from_always_invalidates_prefix_sums() {
         let mut app = make_test_app();
-        app.messages_mut().push(user_text_message("a"));
-        app.messages_mut().push(user_text_message("b"));
-        app.messages_mut().push(user_text_message("c"));
-        let _ = app.viewport_mut().on_frame(80, 24);
-        app.viewport_mut().set_message_height(0, 5);
-        app.viewport_mut().set_message_height(1, 10);
-        app.viewport_mut().set_message_height(2, 3);
-        app.viewport_mut().mark_heights_valid();
-        app.viewport_mut().rebuild_prefix_sums();
+        app.active_messages_mut().push(user_text_message("a"));
+        app.active_messages_mut().push(user_text_message("b"));
+        app.active_messages_mut().push(user_text_message("c"));
+        let _ = app.active_viewport_mut().on_frame(80, 24);
+        app.active_viewport_mut().set_message_height(0, 5);
+        app.active_viewport_mut().set_message_height(1, 10);
+        app.active_viewport_mut().set_message_height(2, 3);
+        app.active_viewport_mut().mark_heights_valid();
+        app.active_viewport_mut().rebuild_prefix_sums();
         assert_ne!(app.viewport().prefix_sums_width, 0);
 
         // From at tail index still invalidates prefix sums (unlike Single).
         app.invalidate_layout(InvalidationLevel::MessagesFrom(2));
 
-        assert_eq!(app.viewport_mut().oldest_stale_index(), Some(2));
-        assert_eq!(app.viewport_mut().prefix_dirty_from(), Some(2));
+        assert_eq!(app.active_viewport_mut().oldest_stale_index(), Some(2));
+        assert_eq!(app.active_viewport_mut().prefix_dirty_from(), Some(2));
         assert_eq!(app.viewport().prefix_sums_width, 0);
     }
 
     #[test]
     fn invalidate_from_zero_matches_old_mark_all() {
         let mut app = make_test_app();
-        app.messages_mut().push(user_text_message("a"));
-        app.messages_mut().push(user_text_message("b"));
-        app.messages_mut().push(user_text_message("c"));
-        let _ = app.viewport_mut().on_frame(80, 24);
-        app.viewport_mut().set_message_height(0, 5);
-        app.viewport_mut().set_message_height(1, 10);
-        app.viewport_mut().set_message_height(2, 3);
-        app.viewport_mut().mark_heights_valid();
-        app.viewport_mut().rebuild_prefix_sums();
+        app.active_messages_mut().push(user_text_message("a"));
+        app.active_messages_mut().push(user_text_message("b"));
+        app.active_messages_mut().push(user_text_message("c"));
+        let _ = app.active_viewport_mut().on_frame(80, 24);
+        app.active_viewport_mut().set_message_height(0, 5);
+        app.active_viewport_mut().set_message_height(1, 10);
+        app.active_viewport_mut().set_message_height(2, 3);
+        app.active_viewport_mut().mark_heights_valid();
+        app.active_viewport_mut().rebuild_prefix_sums();
 
         app.invalidate_layout(InvalidationLevel::MessagesFrom(0));
 
-        assert_eq!(app.viewport_mut().oldest_stale_index(), Some(0));
-        assert_eq!(app.viewport_mut().prefix_dirty_from(), Some(0));
+        assert_eq!(app.active_viewport_mut().oldest_stale_index(), Some(0));
+        assert_eq!(app.active_viewport_mut().prefix_dirty_from(), Some(0));
         assert_eq!(app.viewport().prefix_sums_width, 0);
     }
 
     #[test]
     fn invalidate_global_bumps_generation() {
         let mut app = make_test_app();
-        app.messages_mut().push(user_text_message("a"));
-        app.messages_mut().push(user_text_message("b"));
-        app.messages_mut().push(user_text_message("c"));
-        let _ = app.viewport_mut().on_frame(80, 24);
-        app.viewport_mut().sync_message_count(3);
-        app.viewport_mut().mark_heights_valid();
-        app.viewport_mut().rebuild_prefix_sums();
+        app.active_messages_mut().push(user_text_message("a"));
+        app.active_messages_mut().push(user_text_message("b"));
+        app.active_messages_mut().push(user_text_message("c"));
+        let _ = app.active_viewport_mut().on_frame(80, 24);
+        app.active_viewport_mut().sync_message_count(3);
+        app.active_viewport_mut().mark_heights_valid();
+        app.active_viewport_mut().rebuild_prefix_sums();
         let gen_before = app.viewport().layout_generation;
 
         app.invalidate_layout(InvalidationLevel::Global);
 
-        assert_eq!(app.viewport_mut().oldest_stale_index(), Some(0));
-        assert_eq!(app.viewport_mut().prefix_dirty_from(), Some(0));
+        assert_eq!(app.active_viewport_mut().oldest_stale_index(), Some(0));
+        assert_eq!(app.active_viewport_mut().prefix_dirty_from(), Some(0));
         assert_eq!(app.viewport().prefix_sums_width, 0);
         assert_eq!(app.viewport().layout_generation, gen_before + 1);
     }
@@ -4265,7 +4293,7 @@ mod tests {
 
         app.invalidate_layout(InvalidationLevel::Global);
 
-        assert!(app.viewport_mut().oldest_stale_index().is_none());
+        assert!(app.active_viewport_mut().oldest_stale_index().is_none());
         assert_eq!(app.viewport().layout_generation, gen_before);
     }
 
@@ -4274,16 +4302,16 @@ mod tests {
         let mut app = make_test_app();
         // Need enough messages so all indices are non-tail for consistent behavior.
         for _ in 0..10 {
-            app.messages_mut().push(user_text_message("x"));
+            app.active_messages_mut().push(user_text_message("x"));
         }
-        app.viewport_mut().sync_message_count(10);
-        app.viewport_mut().mark_heights_valid();
+        app.active_viewport_mut().sync_message_count(10);
+        app.active_viewport_mut().mark_heights_valid();
 
         app.invalidate_layout(InvalidationLevel::MessageChanged(5));
         app.invalidate_layout(InvalidationLevel::MessageChanged(2));
         app.invalidate_layout(InvalidationLevel::MessageChanged(7));
 
-        assert_eq!(app.viewport_mut().oldest_stale_index(), Some(2));
+        assert_eq!(app.active_viewport_mut().oldest_stale_index(), Some(2));
     }
 
     #[test]

@@ -88,7 +88,7 @@ fn push_system_message(app: &mut App, text: impl Into<String>) {
         None,
     ));
     app.enforce_history_retention_tracked();
-    app.viewport_mut().engage_auto_scroll();
+    app.active_viewport_mut().engage_auto_scroll();
 }
 
 fn push_user_message(app: &mut App, text: impl Into<String>) {
@@ -99,7 +99,7 @@ fn push_user_message(app: &mut App, text: impl Into<String>) {
         None,
     ));
     app.enforce_history_retention_tracked();
-    app.viewport_mut().engage_auto_scroll();
+    app.active_viewport_mut().engage_auto_scroll();
 }
 
 fn require_connection(
@@ -170,7 +170,7 @@ mod tests {
     #[test]
     fn advertised_command_is_forwarded() {
         let mut app = App::test_default();
-        app.active_session_mut().unwrap().available_commands =
+        app.try_active_bucket_mut().unwrap().available_commands =
             vec![model::AvailableCommand::new("/help", "Help")];
         let consumed = try_handle_submit(&mut app, "/help");
         assert!(!consumed);
@@ -314,7 +314,7 @@ mod tests {
     #[test]
     fn model_argument_candidates_are_dynamic() {
         let mut app = App::test_default();
-        app.active_session_mut().unwrap().available_models = vec![
+        app.try_active_bucket_mut().unwrap().available_models = vec![
             crate::agent::model::AvailableModel::new("sonnet", "Claude Sonnet")
                 .description("Balanced coding model"),
             crate::agent::model::AvailableModel::new("opus", "Claude Opus"),
@@ -329,7 +329,7 @@ mod tests {
     #[test]
     fn model_argument_candidates_hide_sdk_default_option() {
         let mut app = App::test_default();
-        app.active_session_mut().unwrap().available_models = vec![
+        app.try_active_bucket_mut().unwrap().available_models = vec![
             crate::agent::model::AvailableModel::new("default", "Default")
                 .description("Default (recommended)"),
             crate::agent::model::AvailableModel::new("sonnet", "Claude Sonnet"),
@@ -352,7 +352,7 @@ mod tests {
                 "ANTHROPIC_DEFAULT_OPUS_MODEL": "claude-opus-4-5-20251101"
             }
         });
-        app.active_session_mut().unwrap().available_models = vec![
+        app.try_active_bucket_mut().unwrap().available_models = vec![
             crate::agent::model::AvailableModel::new("opus", "Opus")
                 .description("Opus 4.7 · Most capable for complex work"),
         ];
@@ -370,7 +370,7 @@ mod tests {
     #[test]
     fn model_argument_candidates_keep_sdk_opus_description_when_unpinned() {
         let mut app = App::test_default();
-        app.active_session_mut().unwrap().available_models = vec![
+        app.try_active_bucket_mut().unwrap().available_models = vec![
             crate::agent::model::AvailableModel::new("opus", "Opus")
                 .description("Opus 4.7 · Most capable for complex work"),
         ];
@@ -490,7 +490,7 @@ mod tests {
             .run_until(async {
                 let mut app = App::test_default();
                 let (handle, mut rx) = forge_agent::Agent::testing_stub();
-                app.set_conn(Some(std::sync::Arc::new(handle)));
+                app.set_active_conn(Some(std::sync::Arc::new(handle)));
 
                 let consumed = try_handle_submit(&mut app, "/resume abc-123");
                 assert!(consumed);
@@ -512,7 +512,7 @@ mod tests {
             .run_until(async {
                 let mut app = App::test_default();
                 let (handle, _rx) = forge_agent::Agent::testing_stub();
-                app.set_conn(Some(std::sync::Arc::new(handle)));
+                app.set_active_conn(Some(std::sync::Arc::new(handle)));
                 app.set_session_id(Some("sess-1".into()));
                 app.set_mode(Some(super::super::ModeState {
                     current_mode_id: "code".to_owned(),
@@ -544,7 +544,7 @@ mod tests {
             .run_until(async {
                 let mut app = App::test_default();
                 let (handle, _rx) = forge_agent::Agent::testing_stub();
-                app.set_conn(Some(std::sync::Arc::new(handle)));
+                app.set_active_conn(Some(std::sync::Arc::new(handle)));
                 app.set_session_id(Some("sess-1".into()));
                 app.set_current_model(Some(
                     crate::agent::model::CurrentModel::new("old-model", "old-model", "old-model")
@@ -569,7 +569,7 @@ mod tests {
             .run_until(async {
                 let mut app = App::test_default();
                 let (handle, _rx) = forge_agent::Agent::testing_stub();
-                app.set_conn(Some(std::sync::Arc::new(handle)));
+                app.set_active_conn(Some(std::sync::Arc::new(handle)));
 
                 let consumed = try_handle_submit(&mut app, "/new");
                 assert!(consumed);
@@ -604,7 +604,7 @@ mod tests {
     fn compact_with_active_session_sets_compacting_without_success_pending() {
         let mut app = App::test_default();
         let (handle, _rx) = forge_agent::Agent::testing_stub();
-        app.set_conn(Some(std::sync::Arc::new(handle)));
+        app.set_active_conn(Some(std::sync::Arc::new(handle)));
         app.set_session_id(Some(model::SessionId::new("session-1")));
 
         let consumed = try_handle_submit(&mut app, "/compact");
@@ -616,7 +616,7 @@ mod tests {
     #[test]
     fn compact_with_args_returns_usage_message() {
         let mut app = App::test_default();
-        app.messages_mut().push(ChatMessage::new(
+        app.active_messages_mut().push(ChatMessage::new(
             MessageRole::User,
             vec![MessageBlock::Text(TextBlock::from_complete("keep"))],
             None,

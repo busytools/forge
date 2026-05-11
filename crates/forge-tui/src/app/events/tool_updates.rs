@@ -110,7 +110,7 @@ fn apply_tool_call_update_to_indexed_block(
         None => std::rc::Rc::new(std::cell::RefCell::new(std::collections::HashMap::new())),
     };
     let session_id = current_session_id(app);
-    // Snapshot upfront so the per-tool mutable-borrow of `app.messages_mut()`
+    // Snapshot upfront so the per-tool mutable-borrow of `app.active_messages_mut()`
     // doesn't conflict with `&app.cwd_raw`.
     let cwd_raw = app.cwd_raw().to_owned();
     let mut terminal_subscription: Option<String> = None;
@@ -118,7 +118,7 @@ fn apply_tool_call_update_to_indexed_block(
     let mut should_engage_auto_scroll = false;
 
     if let Some(MessageBlock::ToolCall(tc)) =
-        app.messages_mut().get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
+        app.active_messages_mut().get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
     {
         let tc = tc.as_mut();
         let mut changed = false;
@@ -154,7 +154,7 @@ fn apply_tool_call_update_to_indexed_block(
         }
     }
     if should_engage_auto_scroll {
-        app.viewport_mut().engage_auto_scroll();
+        app.active_viewport_mut().engage_auto_scroll();
     }
     if out.changed {
         app.sync_render_cache_slot(mi, bi);
@@ -772,7 +772,7 @@ mod tests {
     fn completed_execute_update_detaches_terminal_subscription() {
         let mut app = App::test_default();
         let tool_id = "tool-1";
-        app.messages_mut().push(ChatMessage::new(
+        app.active_messages_mut().push(ChatMessage::new(
             MessageRole::Assistant,
             vec![MessageBlock::ToolCall(Box::new(make_bash_tool_call(
                 tool_id,
@@ -807,7 +807,7 @@ mod tests {
     fn repeated_terminal_updates_do_not_duplicate_subscription() {
         let mut app = App::test_default();
         let tool_id = "tool-1";
-        app.messages_mut().push(ChatMessage::new(
+        app.active_messages_mut().push(ChatMessage::new(
             MessageRole::Assistant,
             vec![MessageBlock::ToolCall(Box::new(make_bash_tool_call(
                 tool_id,
@@ -835,7 +835,7 @@ mod tests {
     fn terminal_update_replaces_stale_subscription_for_same_tool_call() {
         let mut app = App::test_default();
         let tool_id = "tool-1";
-        app.messages_mut().push(ChatMessage::new(
+        app.active_messages_mut().push(ChatMessage::new(
             MessageRole::Assistant,
             vec![MessageBlock::ToolCall(Box::new(make_bash_tool_call(
                 tool_id,
@@ -894,7 +894,7 @@ mod tests {
     fn task_metadata_update_is_applied_to_tool_call() {
         let mut app = App::test_default();
         let tool_id = "task-1";
-        app.messages_mut().push(ChatMessage::new(
+        app.active_messages_mut().push(ChatMessage::new(
             MessageRole::Assistant,
             vec![MessageBlock::ToolCall(Box::new(make_task_tool_call(
                 tool_id,
@@ -932,7 +932,7 @@ mod tests {
     fn task_metadata_update_merges_partial_patches() {
         let mut app = App::test_default();
         let tool_id = "task-1";
-        app.messages_mut().push(ChatMessage::new(
+        app.active_messages_mut().push(ChatMessage::new(
             MessageRole::Assistant,
             vec![MessageBlock::ToolCall(Box::new(make_task_tool_call(
                 tool_id,
@@ -979,7 +979,7 @@ mod tests {
     fn killed_task_update_clears_active_task_scope() {
         let mut app = App::test_default();
         let tool_id = "task-1";
-        app.messages_mut().push(ChatMessage::new(
+        app.active_messages_mut().push(ChatMessage::new(
             MessageRole::Assistant,
             vec![MessageBlock::ToolCall(Box::new(make_task_tool_call(
                 tool_id,

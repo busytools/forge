@@ -1,5 +1,4 @@
 use super::{App, AppStatus, CancelOrigin, ChatMessage, MessageBlock, MessageRole, TextBlock};
-use crate::agent::events::ClientEvent;
 use crate::agent::model;
 use crate::app::slash;
 
@@ -90,9 +89,7 @@ pub(super) fn request_cancel(app: &mut App, origin: CancelOrigin) -> Result<(), 
     app.set_pending_cancel_origin(Some(origin));
     app.set_cancelled_turn_pending_hint(matches!(origin, CancelOrigin::Manual));
     let session_key = forge_workspace::SessionKey::from_session_id(session_id.clone());
-    let _ = app.event_tx.send(ClientEvent::WorkspaceUpdate(
-        forge_workspace::SessionUpdate::TurnCancelled { key: session_key },
-    ));
+    let _ = app.update_tx.send(forge_workspace::SessionUpdate::TurnCancelled { key: session_key });
     tracing::info!(
         target: crate::logging::targets::APP_INPUT,
         event_name = "turn_cancel_requested",
@@ -152,12 +149,12 @@ fn dispatch_prompt_turn(app: &mut App, text: String) {
     // Lifecycle: turn started, the active session moves into Running.
     // The Projects pane reads this so the spinner glyph picks up the
     // accent color while the turn is in flight.
-    if let Some(session) = app.active_session_mut() {
+    if let Some(session) = app.try_active_bucket_mut() {
         session.lifecycle_state = crate::app::session::SessionLifecycleState::Running;
     }
-    app.viewport_mut().engage_auto_scroll();
+    app.active_viewport_mut().engage_auto_scroll();
 
-    let tx = app.event_tx.clone();
+    let tx = app.update_tx.clone();
     // The text already contains [Image #N] badges from the textarea,
     // so the model can correlate user references with image attachments.
     match conn.prompt_with_images(sid.to_string(), text, images) {
@@ -174,13 +171,12 @@ fn dispatch_prompt_turn(app: &mut App, text: String) {
         }
         Err(e) => {
             let session_key = forge_workspace::SessionKey::from_session_id(session_id);
-            let _ =
-                tx.send(ClientEvent::WorkspaceUpdate(forge_workspace::SessionUpdate::TurnError {
-                    key: session_key,
-                    message: e.to_string(),
-                    class: None,
-                    terminal_reason: None,
-                }));
+            let _ = tx.send(forge_workspace::SessionUpdate::TurnError {
+                key: session_key,
+                message: e.to_string(),
+                class: None,
+                terminal_reason: None,
+            });
         }
     }
 }
@@ -195,7 +191,7 @@ mod tests {
     -> (App, tokio::sync::mpsc::UnboundedReceiver<forge_primitives::Command>) {
         let mut app = App::test_default();
         let (handle, rx) = forge_agent::Agent::testing_stub();
-        app.set_conn(Some(std::sync::Arc::new(handle)));
+        app.set_active_conn(Some(std::sync::Arc::new(handle)));
         app.set_session_id(Some(model::SessionId::new("session-1")));
         (app, rx)
     }
@@ -350,7 +346,7 @@ mod tests {
     fn dispatch_prompt_turn_without_session_id_leaves_state_unchanged() {
         let mut app = App::test_default();
         let (handle, _rx) = forge_agent::Agent::testing_stub();
-        app.set_conn(Some(std::sync::Arc::new(handle)));
+        app.set_active_conn(Some(std::sync::Arc::new(handle)));
         app.status = AppStatus::Ready;
 
         dispatch_prompt_turn(&mut app, "hello".into());

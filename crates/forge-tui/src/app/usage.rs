@@ -1,7 +1,7 @@
 use forge_agent::cloud::{cli, oauth};
 
-use crate::agent::events::ClientEvent;
 use crate::app::{App, UsageSnapshot, UsageSourceKind, UsageSourceMode, UsageWindow};
+use forge_workspace::SessionUpdate;
 use std::time::{Duration, SystemTime};
 
 const USAGE_REFRESH_TTL: Duration = Duration::from_secs(30);
@@ -28,7 +28,7 @@ pub(crate) fn request_refresh(app: &mut App) {
 
     apply_refresh_started(app);
 
-    let event_tx = app.event_tx.clone();
+    let event_tx = app.update_tx.clone();
     let epoch = app.session_scope_epoch();
     let source_mode = app.usage.active_source;
     let cwd_raw = app.cwd_raw().to_owned();
@@ -39,13 +39,13 @@ pub(crate) fn request_refresh(app: &mut App) {
     let conn = app.conn().cloned();
 
     tokio::task::spawn_local(async move {
-        let _ = event_tx.send(ClientEvent::UsageRefreshStarted { epoch });
+        let _ = event_tx.send(SessionUpdate::UsageRefreshStarted { epoch });
         match refresh_snapshot(source_mode, cwd_raw, conn.as_deref()).await {
             Ok(snapshot) => {
-                let _ = event_tx.send(ClientEvent::UsageSnapshotReceived { epoch, snapshot });
+                let _ = event_tx.send(SessionUpdate::UsageSnapshotReceived { epoch, snapshot });
             }
             Err(error) => {
-                let _ = event_tx.send(ClientEvent::UsageRefreshFailed {
+                let _ = event_tx.send(SessionUpdate::UsageRefreshFailed {
                     epoch,
                     message: error.message,
                     source: error.source,

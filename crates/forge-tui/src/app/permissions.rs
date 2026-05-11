@@ -248,7 +248,7 @@ fn respond_permission(app: &mut App, override_index: Option<usize>) {
         return;
     };
     let Some(MessageBlock::ToolCall(tc)) =
-        app.messages_mut().get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
+        app.active_messages_mut().get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
     else {
         return;
     };
@@ -310,7 +310,7 @@ fn respond_permission_cancel(app: &mut App) {
         return;
     };
     let Some(MessageBlock::ToolCall(tc)) =
-        app.messages_mut().get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
+        app.active_messages_mut().get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
     else {
         return;
     };
@@ -444,11 +444,11 @@ mod tests {
         focused: bool,
     ) -> TestPermissionRx {
         let msg_idx = app.messages().len();
-        app.messages_mut().push(assistant_tool_msg(test_tool_call(tool_id)));
+        app.active_messages_mut().push(assistant_tool_msg(test_tool_call(tool_id)));
         app.index_tool_call(tool_id.to_owned(), msg_idx, 0);
 
         if let Some(MessageBlock::ToolCall(tc)) =
-            app.messages_mut().get_mut(msg_idx).and_then(|m| m.blocks.get_mut(0))
+            app.active_messages_mut().get_mut(msg_idx).and_then(|m| m.blocks.get_mut(0))
         {
             tc.pending_permission = Some(InlinePermission {
                 options,
@@ -900,7 +900,7 @@ mod tests {
     fn single_focused_permission_consumes_up_down_without_rotation() {
         let mut app = App::test_default();
         let mut rx = add_permission(&mut app, "perm-1", allow_options(), true);
-        app.viewport_mut().scroll_target = 7;
+        app.active_viewport_mut().scroll_target = 7;
 
         let consumed_up = crate::app::inline_interactions::handle_interaction_focus_cycle(
             &mut app,

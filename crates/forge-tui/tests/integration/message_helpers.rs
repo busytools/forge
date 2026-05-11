@@ -5,7 +5,6 @@
 //! collapse refactor; issue #67) so subsequent migration commits
 //! (`tool_lifecycle.rs` etc.) can share the same envelope builders.
 
-use forge_tui::agent::events::ClientEvent;
 use forge_tui::agent::model;
 use forge_workspace::SessionUpdate;
 
@@ -90,10 +89,7 @@ pub fn send_msg(app: &mut forge_tui::app::App, msg: forge_primitives::Message) {
     }
     send_client_event(
         app,
-        ClientEvent::WorkspaceUpdate(SessionUpdate::ChatAppended {
-            session_id: "test-session".to_owned(),
-            msg,
-        }),
+        SessionUpdate::ChatAppended { session_id: "test-session".to_owned(), msg },
     );
 }
 
