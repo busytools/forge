@@ -122,7 +122,12 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
     resume_terminal();
 
     let mut events = EventStream::new();
-    let tick_duration = Duration::from_millis(16);
+    // 8ms tick → ~120 Hz render ceiling. Most modern terminals
+    // (Ghostty / kitty / iTerm2) handle 120 Hz fine; on a 60 Hz
+    // display the extra wakeups are harmless because rendering is
+    // event-driven and skipped when `needs_redraw == false`. Idle
+    // state still costs nothing.
+    let tick_duration = Duration::from_millis(8);
     let mut last_render = Instant::now();
 
     loop {

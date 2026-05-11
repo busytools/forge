@@ -2,7 +2,6 @@ use super::{autocomplete, chat, footer, help, input, layout, projects_pane, them
 use crate::app::App;
 use ratatui::Frame;
 use ratatui::layout::Rect;
-#[cfg(feature = "perf")]
 use ratatui::style::Color;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
@@ -138,9 +137,15 @@ fn render_pane_separator(frame: &mut Frame, area: Rect) {
     frame.render_widget(Paragraph::new(lines), area);
 }
 
-#[cfg(feature = "perf")]
+/// Render the live FPS indicator at the top-right of `frame_area`.
+/// Always on in default builds — the FPS counter itself is computed
+/// unconditionally (`App::mark_frame_presented` / `App::frame_fps`)
+/// and the overlay is cheap (one styled `Line`, one rect). The
+/// `#[cfg(feature = "perf")]` gate that used to guard this was
+/// dropped so the user can see render rate live without a special
+/// build.
 fn render_perf_fps_overlay(frame: &mut Frame, frame_area: Rect, y: u16, app: &App) {
-    if app.perf.is_none() || frame_area.height == 0 || y >= frame_area.y + frame_area.height {
+    if frame_area.height == 0 || y >= frame_area.y + frame_area.height {
         return;
     }
     let Some(fps) = app.frame_fps() else {
@@ -164,6 +169,3 @@ fn render_perf_fps_overlay(frame: &mut Frame, frame_area: Rect, y: u16, app: &Ap
     ));
     frame.render_widget(Paragraph::new(line), area);
 }
-
-#[cfg(not(feature = "perf"))]
-fn render_perf_fps_overlay(_frame: &mut Frame, _frame_area: Rect, _y: u16, _app: &App) {}
