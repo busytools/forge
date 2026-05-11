@@ -145,6 +145,25 @@ impl AgentHandle {
         self.send(Command::ResumeSession { session_id: session_id.into(), launch_settings })
     }
 
+    /// Resume the recorded `session_id`; if resume fails (stale
+    /// catalog entry, cross-account scan, deleted `.jsonl`), retry as
+    /// a fresh session in `cwd`. The user only sees a
+    /// `ConnectionFailed` event when both attempts fail.
+    pub fn resume_or_new_session(
+        &self,
+        session_id: String,
+        cwd: String,
+        launch_settings: crate::client::SessionLaunchSettings,
+    ) -> anyhow::Result<()> {
+        let launch_settings = serde_json::to_value(launch_settings)
+            .map_err(|e| anyhow::anyhow!("failed to encode launch settings: {e}"))?;
+        self.send(Command::ResumeOrNewSession {
+            session_id: session_id.into(),
+            cwd,
+            launch_settings,
+        })
+    }
+
     pub fn prompt_text(&self, session_id: String, text: String) -> anyhow::Result<()> {
         self.send(Command::Prompt { session_id: session_id.into(), text })
     }
@@ -416,6 +435,17 @@ fn dispatch(cmd: Command, bridge: &ForgeSdkBridge) -> anyhow::Result<()> {
                 crate::client::SessionLaunchSettings::default()
             });
             bridge.resume_session(session_id.into_string(), launch)
+        }
+        C::ResumeOrNewSession { session_id, cwd, launch_settings } => {
+            let launch = serde_json::from_value(launch_settings).unwrap_or_else(|e| {
+                tracing::error!(
+                    target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                    error = %e,
+                    "failed to decode launch_settings on dispatcher receive; falling back to default",
+                );
+                crate::client::SessionLaunchSettings::default()
+            });
+            bridge.resume_or_new_session(session_id.into_string(), cwd, launch)
         }
         C::Prompt { session_id, text } => bridge.prompt_text(session_id.into_string(), text),
         C::PromptWithImages { session_id, text, images } => {

@@ -744,6 +744,54 @@ impl ForgeSdkBridge {
         Ok(())
     }
 
+    /// Try resume; on failure transparently retry as new_session(cwd).
+    /// Surfaces `ConnectionFailed` only when both attempts fail. Used
+    /// by project-rooted spawns (Default / Named) where the catalog's
+    /// recorded lead may be stale (e.g. cross-account scan, deleted
+    /// file, schema drift). See
+    /// [`forge_primitives::Command::ResumeOrNewSession`] for the
+    /// motivation.
+    pub(crate) fn resume_or_new_session(
+        &self,
+        session_id: String,
+        cwd: String,
+        launch_settings: SessionLaunchSettings,
+    ) -> anyhow::Result<()> {
+        let bridge = self.clone();
+        tokio::spawn(async move {
+            if let Err(resume_err) =
+                forge_sdk_worker::spawn_session(&bridge, "", Some(&session_id), &launch_settings)
+                    .await
+            {
+                tracing::warn!(
+                    target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                    error = %resume_err,
+                    session_id = %session_id,
+                    "session resume failed; falling back to fresh session",
+                );
+                if let Err(new_err) =
+                    forge_sdk_worker::spawn_session(&bridge, &cwd, None, &launch_settings).await
+                {
+                    let msg = format!(
+                        "forge-sdk session spawn failed after resume fallback (resume err: {resume_err}; new err: {new_err})",
+                    );
+                    if bridge
+                        .event_tx()
+                        .send(AgentEvent::ConnectionFailed { message: msg.clone() })
+                        .is_err()
+                    {
+                        tracing::warn!(
+                            target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                            error = %msg,
+                            "event channel closed; ConnectionFailed dropped",
+                        );
+                    }
+                }
+            }
+        });
+        Ok(())
+    }
+
     // The two response handlers below are intentionally exempt from
     // `check_session_id` — staleness is detected via the pending map
     // (an unknown `tool_call_id` already logs warn in

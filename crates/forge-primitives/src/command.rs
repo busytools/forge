@@ -27,6 +27,18 @@ pub enum Command {
         session_id: SessionId,
         launch_settings: serde_json::Value,
     },
+    /// Resume `session_id`; if the resume fails at the transport level
+    /// (e.g. the underlying `.jsonl` is missing, locked, or otherwise
+    /// unreadable by the `claude` subprocess), automatically retry as
+    /// `NewSession { cwd, … }`. Used by every project-rooted entry
+    /// path (`forge`, `forge <project>`, Projects-pane project-header
+    /// click) so a stale or cross-account catalog entry can't strand
+    /// the user with no recoverable session.
+    ResumeOrNewSession {
+        session_id: SessionId,
+        cwd: String,
+        launch_settings: serde_json::Value,
+    },
 
     // --- Conversation ---
     Prompt {

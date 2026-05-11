@@ -259,19 +259,19 @@ impl Workspace {
         match &target {
             SessionTarget::Default => {
                 let project = self.config.default_project();
+                let cwd = project.path.to_string_lossy().to_string();
                 if let Some(lead) = self.try_lead_session_id_for(project) {
-                    handle.resume_session(lead.as_str().to_owned(), settings)?;
+                    handle.resume_or_new_session(lead.as_str().to_owned(), cwd, settings)?;
                 } else {
-                    let cwd = project.path.to_string_lossy().to_string();
                     handle.new_session(cwd, settings)?;
                 }
             }
             SessionTarget::Named(name) => {
                 let project = self.find_project_by_name(name)?;
+                let cwd = project.path.to_string_lossy().to_string();
                 if let Some(lead) = self.try_lead_session_id_for(project) {
-                    handle.resume_session(lead.as_str().to_owned(), settings)?;
+                    handle.resume_or_new_session(lead.as_str().to_owned(), cwd, settings)?;
                 } else {
-                    let cwd = project.path.to_string_lossy().to_string();
                     handle.new_session(cwd, settings)?;
                 }
             }
