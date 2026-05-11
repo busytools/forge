@@ -587,13 +587,21 @@ fn apply_sdk_message_routed(app: &mut App, session_id: &str, msg: forge_primitiv
         // canonical id so subsequent dispatch resolves correctly.
         app.set_session_id(Some(crate::agent::model::SessionId::new(session_id.to_owned())));
     } else if !active_session_id_str.is_empty() && active_session_id_str != session_id {
-        // SDK message for a non-active session. The current sub-
-        // handler dispatch in `super::sdk_message::handle_sdk_message`
-        // assumes the active bucket; routing it would require either
-        // switching active state or refactoring every sub-handler to
-        // take a `&mut Session`. Drop with a breadcrumb instead and
-        // keep the active bucket clean. Phase 2b's multi-bridge
-        // delivery will revisit this.
+        // SDK message for a non-active session. The handlers in
+        // `super::sdk_message::handle_sdk_message` reach for the
+        // active bucket via the App-level accessors (chat buffer,
+        // tool-call indices, viewport, …). Temporarily promote the
+        // target bucket to active so those accessors land on the
+        // right session, then dispatch and restore. The active
+        // session's `App.input` and `App.status` are snapshotted +
+        // restored across the swap so background routing doesn't
+        // touch user-visible UI for the session the user is actually
+        // looking at. Without this routing, background turns produce
+        // events that update lifecycle state (via routed handlers in
+        // `events/turn.rs`) but never land their `Message::Assistant`
+        // payloads in the bucket — the user switches back to a
+        // bucket whose pane glyph says Attention but whose chat
+        // buffer still only shows what was on screen at switch-out.
         let session_key = SessionKey::from_session_id(session_id.to_owned());
         if app.session_mut(&session_key).is_none() {
             tracing::warn!(
@@ -604,16 +612,20 @@ fn apply_sdk_message_routed(app: &mut App, session_id: &str, msg: forge_primitiv
                 session_id = %session_id,
                 reason = "unknown_session",
             );
-        } else {
-            tracing::debug!(
-                target: crate::logging::targets::APP_SESSION,
-                event_name = "sdk_message_dropped",
-                message = "SDK message dropped for a non-active session",
-                outcome = "dropped",
-                session_id = %session_id,
-                reason = "non_active_session",
-            );
+            return;
         }
+        let saved_active = app.active_session_key.clone();
+        let saved_input = app.input.text();
+        let saved_status = app.status.clone();
+        app.active_session_key = Some(session_key);
+        super::sdk_message::handle_sdk_message(app, msg);
+        app.active_session_key = saved_active;
+        app.input.clear();
+        if !saved_input.is_empty() {
+            app.input.set_text(&saved_input);
+        }
+        app.status = saved_status;
+        app.needs_redraw = true;
         return;
     }
     super::sdk_message::handle_sdk_message(app, msg);
