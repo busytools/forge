@@ -779,11 +779,14 @@ fn handle_key_cycles_default_permission_mode() {
     let (_dir, mut app) = open_settings_test_app();
     select_setting(&mut app, SettingId::DefaultPermissionMode);
 
+    // Forge's missing-value default for permission mode is `Auto`
+    // (see `Config::default_permission_mode_effective`), so the first
+    // space-press cycles from Auto to the next variant.
     handle_key(&mut app, KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
 
     assert_eq!(
         store::default_permission_mode(&app.config.committed_settings_document),
-        Ok(DefaultPermissionMode::Auto)
+        Ok(DefaultPermissionMode::AcceptEdits)
     );
 }
 

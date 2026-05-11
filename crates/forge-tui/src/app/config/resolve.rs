@@ -18,7 +18,11 @@ pub(super) fn resolve_setting_document(
             resolve_bool_setting(document, spec, false)
         }
         SettingId::DefaultPermissionMode => {
-            resolve_string_setting(document, spec, DefaultPermissionMode::Default.as_stored())
+            // Forge's documented default for permission mode is `auto`
+            // (see `store::default_permission_mode`); cycle / picker
+            // rendering surfaces that as the resolved value when
+            // nothing is persisted.
+            resolve_string_setting(document, spec, DefaultPermissionMode::Auto.as_stored())
         }
         SettingId::Language => resolve_language_setting(document, spec),
         SettingId::ShowTips | SettingId::RespectGitignore | SettingId::TerminalProgressBar => {

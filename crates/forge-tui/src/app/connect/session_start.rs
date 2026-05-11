@@ -304,7 +304,9 @@ mod tests {
         assert_eq!(launch_settings.language, None);
         assert_setting_value(&launch_settings, "model", &Value::String("opus".to_owned()));
         assert_setting_value(&launch_settings, "alwaysThinkingEnabled", &Value::Bool(false));
-        assert_permission_mode(&launch_settings, "default");
+        // Forge defaults to `auto` permission mode when the user has
+        // not stored an explicit value (mirrors `effortLevel = "max"`).
+        assert_permission_mode(&launch_settings, "auto");
         assert_setting_value(&launch_settings, "fastMode", &Value::Bool(false));
         assert_setting_value(&launch_settings, "effortLevel", &Value::String("max".to_owned()));
         assert_setting_value(&launch_settings, "outputStyle", &Value::String("Default".to_owned()));
@@ -337,7 +339,8 @@ mod tests {
         assert_eq!(launch_settings.language, None);
         assert_setting_value(&launch_settings, "model", &Value::String("opus".to_owned()));
         assert_setting_value(&launch_settings, "alwaysThinkingEnabled", &Value::Bool(true));
-        assert_permission_mode(&launch_settings, "default");
+        // Forge defaults to `auto` permission mode when unset.
+        assert_permission_mode(&launch_settings, "auto");
         assert_setting_value(&launch_settings, "fastMode", &Value::Bool(true));
         assert_setting_value(&launch_settings, "effortLevel", &Value::String("high".to_owned()));
         assert_setting_value(
