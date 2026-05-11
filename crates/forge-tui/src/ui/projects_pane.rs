@@ -18,6 +18,8 @@
 //! `~/.claude-subspace/plans/2026-05-10-forge-tui-projects-pane-wide-design.md`
 //! and `~/.claude-subspace/plans/2026-05-10-forge-tui-projects-pane-medium-design.md`.
 
+use std::time::SystemTime;
+
 use forge_workspace::ProjectView;
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -149,17 +151,13 @@ fn append_project_rows(
 
         // Project row. Hit-target stamps the un-truncated name so
         // click routing keeps working when the rendered label has
-        // been head-truncated. Render the session count after the
-        // name so the user can see project size at a glance without
-        // expanding the drilldown.
+        // been head-truncated. Per
+        // `~/.claude-subspace/plans/2026-05-08-forge-tui-side-panes-design.md`
+        // §3.1 the project row is *name only* — no count, no time,
+        // no aggregate state glyph. Per-session detail (state, time,
+        // unread) lives on the drilldown rows below.
         let row_y = area.y + line_count_as_u16(lines);
-        let session_count = project.sessions.len();
-        let header_text = if session_count == 0 {
-            project.name.clone()
-        } else {
-            format!("{} ({session_count})", project.name)
-        };
-        let project_label = truncate_with_ellipsis(&header_text, project_budget);
+        let project_label = truncate_with_ellipsis(project.name.as_str(), project_budget);
         lines.push(Line::from(Span::styled(
             format!("  {project_label}"),
             if is_active {
@@ -194,6 +192,8 @@ fn append_project_rows(
             // `/resume` picker if they need to reach back further.
             let total = project.sessions.len();
             let visible = total.min(DRILLDOWN_CAP);
+            let now = SystemTime::now();
+            let spinner_frame = app.spinner_frame;
             for (idx, session) in project.sessions.iter().take(visible).enumerate() {
                 let row_y = area.y + line_count_as_u16(lines);
                 let lifecycle = app
@@ -201,7 +201,8 @@ fn append_project_rows(
                     .get(&session.session)
                     .map_or(SessionLifecycleState::Sleeping, |s| s.lifecycle_state);
                 let session_is_active = Some(&session.session) == active_session_key.as_ref();
-                let (glyph, glyph_color) = glyph_for_lifecycle(lifecycle, session_is_active);
+                let (glyph, glyph_color) =
+                    glyph_for_lifecycle(lifecycle, session_is_active, spinner_frame);
                 let lead_marker = if idx == 0 { "◆" } else { " " };
                 let current_marker = if session_is_active { "•" } else { " " };
                 let label = if session.label.is_empty() {
@@ -210,9 +211,15 @@ fn append_project_rows(
                     session.label.clone()
                 };
                 let session_label = truncate_with_ellipsis(&label, session_budget);
+                // Pad the label out to its budget so the trailing
+                // time column lands at a stable column for every row.
+                let label_char_count = session_label.chars().count();
+                let label_padding = session_budget.saturating_sub(label_char_count);
+                let padded_label = format!("{session_label}{}", " ".repeat(label_padding));
+                let time = format_relative_time(session.last_activity, now);
                 lines.push(Line::from(vec![
                     Span::raw("  "),
-                    Span::styled(glyph.to_owned(), Style::default().fg(glyph_color)),
+                    Span::styled(glyph, Style::default().fg(glyph_color)),
                     Span::raw(" "),
                     Span::styled(lead_marker.to_owned(), Style::default().fg(theme::DIM)),
                     Span::raw(" "),
@@ -221,7 +228,9 @@ fn append_project_rows(
                         Style::default().fg(theme::RUST_ORANGE),
                     ),
                     Span::raw(" "),
-                    Span::raw(session_label),
+                    Span::raw(padded_label),
+                    Span::raw(" "),
+                    Span::styled(time, Style::default().fg(theme::DIM)),
                 ]));
                 app.pane_hit_targets.push(PaneHitTarget::SessionRow {
                     session_key: session.session.clone(),
@@ -255,23 +264,36 @@ fn line_count_as_u16(lines: &[Line<'_>]) -> u16 {
     u16::try_from(lines.len()).unwrap_or(u16::MAX)
 }
 
+/// Braille spinner frames — same sequence used by `ui::input` and
+/// `ui::message`, kept in sync so every running indicator in the TUI
+/// turns at the same pace. `app.spinner_frame` advances every
+/// `SPINNER_FRAME_INTERVAL_NORMAL` per the render tick in `app.rs`.
+const SPINNER_FRAMES: &[char] = &[
+    '\u{280B}', '\u{2819}', '\u{2839}', '\u{2838}', '\u{283C}', '\u{2834}', '\u{2826}', '\u{2827}',
+    '\u{2807}', '\u{280F}',
+];
+
 /// Glyph + foreground color for a session row based on its lifecycle
 /// state. The session-is-active flag drives whether the
 /// Running/Spawning spinner picks up the accent color (active +
 /// running = `RUST_ORANGE`, background + running = terminal default).
+/// `spinner_frame` indexes into `SPINNER_FRAMES` so the spinner
+/// actually animates instead of sitting on `⠋`.
 /// See `~/.claude-subspace/plans/2026-05-10-forge-tui-projects-pane-wide-design.md`.
 fn glyph_for_lifecycle(
     lifecycle: SessionLifecycleState,
     session_is_active: bool,
-) -> (&'static str, Color) {
+    spinner_frame: usize,
+) -> (String, Color) {
     match lifecycle {
         SessionLifecycleState::Running | SessionLifecycleState::Spawning => {
             let color = if session_is_active { theme::RUST_ORANGE } else { Color::Reset };
-            ("⠋", color)
+            let ch = SPINNER_FRAMES[spinner_frame % SPINNER_FRAMES.len()];
+            (ch.to_string(), color)
         }
-        SessionLifecycleState::Attention => ("△", theme::STATUS_WARNING),
-        SessionLifecycleState::Sleeping => ("·", theme::DIM),
-        SessionLifecycleState::Idle => (" ", Color::Reset),
+        SessionLifecycleState::Attention => ("△".to_owned(), theme::STATUS_WARNING),
+        SessionLifecycleState::Sleeping => ("·".to_owned(), theme::DIM),
+        SessionLifecycleState::Idle => (" ".to_owned(), Color::Reset),
     }
 }
 
@@ -308,11 +330,49 @@ fn project_max_chars(area_width: u16) -> usize {
 }
 
 /// Max characters available for a session label in the active-project
-/// drilldown. The leading chrome before the label is 8 chars: 2
-/// indent + 1 lifecycle glyph + 1 sp + 1 lead marker (◆) + 1 sp + 1
-/// current marker (•) + 1 sp.
+/// drilldown. Leading chrome: 2 indent + 1 lifecycle glyph + 1 sp + 1
+/// lead marker (◆) + 1 sp + 1 current marker (•) + 1 sp = 8. Trailing
+/// time column: 1 sp + 3 chars (`12m` / `1h` / `2d` / `1w`,
+/// right-aligned) = 4. Label fits in the middle.
 fn session_max_chars(area_width: u16) -> usize {
-    usize::from(area_width.saturating_sub(8))
+    usize::from(area_width.saturating_sub(8 + 4))
+}
+
+/// Width of the relative-time digits column on a session row (3
+/// chars: `12m`, `1h`, `2d`, `1w`). Leading space and the row's right
+/// edge bracket the column so it sits flush at every tier.
+const TIME_DIGITS_WIDTH: usize = 3;
+
+/// Format `activity` as a short relative-time string anchored at
+/// `now`: `now`, `Xm`, `Xh`, `Xd`, or `Xw`, capped at 3 visible chars.
+/// Anything older than 99 weeks clamps to `99w`. Returns 3 spaces
+/// when activity is `None` so column alignment stays stable.
+fn format_relative_time(activity: Option<SystemTime>, now: SystemTime) -> String {
+    let Some(activity) = activity else {
+        return " ".repeat(TIME_DIGITS_WIDTH);
+    };
+    let elapsed = now.duration_since(activity).unwrap_or_default();
+    let secs = elapsed.as_secs();
+    let formatted = if secs < 60 {
+        "now".to_owned()
+    } else if secs < 3600 {
+        format!("{}m", secs / 60)
+    } else if secs < 86_400 {
+        format!("{}h", secs / 3600)
+    } else if secs < 604_800 {
+        format!("{}d", secs / 86_400)
+    } else {
+        let weeks = (secs / 604_800).min(99);
+        format!("{weeks}w")
+    };
+    if formatted.chars().count() > TIME_DIGITS_WIDTH {
+        // Shouldn't happen with the caps above, but truncate defensively.
+        formatted.chars().take(TIME_DIGITS_WIDTH).collect()
+    } else {
+        // Right-align so the unit suffix sits flush against the row's
+        // right edge regardless of digit count.
+        format!("{formatted:>TIME_DIGITS_WIDTH$}")
+    }
 }
 
 #[cfg(test)]
@@ -352,7 +412,9 @@ mod tests {
 
     #[test]
     fn session_max_chars_accounts_for_chrome() {
-        assert_eq!(session_max_chars(20), 12);
-        assert_eq!(session_max_chars(26), 18);
+        // Wide tier (26): 26 - 8 (left chrome) - 4 (time column) = 14.
+        // Medium tier (20): 20 - 8 - 4 = 8.
+        assert_eq!(session_max_chars(20), 8);
+        assert_eq!(session_max_chars(26), 14);
     }
 }

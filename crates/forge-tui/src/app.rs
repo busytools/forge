@@ -210,13 +210,26 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
         }
 
         // Phase 3: render once (only when something changed)
+        //
+        // Extra is_animating clause: any background session in
+        // Running / Spawning keeps the spinner ticking so the Projects
+        // pane's per-row spinners actually animate (the active session
+        // already drives ticks via `app.status` above).
+        let any_background_running = app.sessions.values().any(|s| {
+            matches!(
+                s.lifecycle_state,
+                crate::app::session::SessionLifecycleState::Running
+                    | crate::app::session::SessionLifecycleState::Spawning
+            )
+        });
         let is_animating = matches!(
             app.status,
             AppStatus::Connecting
                 | AppStatus::CommandPending
                 | AppStatus::Thinking
                 | AppStatus::Running
-        ) || app.is_compacting();
+        ) || app.is_compacting()
+            || any_background_running;
         if is_animating {
             advance_spinner_frame(app, Instant::now());
             tab_title::update_tab_title(&app.status, app.spinner_frame, app.cwd());

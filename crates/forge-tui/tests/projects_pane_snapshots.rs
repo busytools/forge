@@ -231,8 +231,9 @@ fn medium_tier_truncates_long_project_and_session_labels() {
     );
 
     // Session label truncated: "really-long-feature-branch" is 26
-    // chars, budget is 12, so we expect 11 chars + `…` = "really-long…".
-    let any_truncated_session = lines.iter().any(|l| l.contains('…') && l.contains("really-long"));
+    // chars, Medium budget is 8 (20 - 8 left chrome - 4 right time
+    // column), so we expect 7 chars + `…` = "really-…".
+    let any_truncated_session = lines.iter().any(|l| l.contains('…') && l.contains("really-"));
     assert!(
         any_truncated_session,
         "expected truncated session label in pane output, got: {lines:?}"
