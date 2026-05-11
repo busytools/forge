@@ -137,14 +137,21 @@ fn append_project_rows(
     let session_budget = session_max_chars(area.width);
 
     for project in &sorted {
-        let project_name = project.key.as_str().to_owned();
+        // `project.key` is the sanitised filesystem path (e.g.
+        // `-Users-vedhavyas-Projects-dotfiles`) used as the catalog
+        // index and the click-routing identifier. `project.name` is
+        // the user-facing `name` from `forge.toml` (e.g. `dotfiles`).
+        // Render the friendly name; stamp the key on the hit target
+        // so `switch_to_project_lead` keeps finding it via
+        // `workspace.list_projects().find(|p| p.key == project_name)`.
+        let project_key = project.key.as_str().to_owned();
         let is_active = active_project_name.as_deref() == Some(project.key.as_str());
 
         // Project row. Hit-target stamps the un-truncated name so
         // click routing keeps working when the rendered label has
         // been head-truncated.
         let row_y = area.y + line_count_as_u16(lines);
-        let project_label = truncate_with_ellipsis(project_name.as_str(), project_budget);
+        let project_label = truncate_with_ellipsis(project.name.as_str(), project_budget);
         lines.push(Line::from(Span::styled(
             format!("  {project_label}"),
             if is_active {
@@ -154,7 +161,7 @@ fn append_project_rows(
             },
         )));
         app.pane_hit_targets.push(PaneHitTarget::ProjectHeader {
-            project_name: project_name.clone(),
+            project_name: project_key,
             y: row_y,
             height: 1,
         });
