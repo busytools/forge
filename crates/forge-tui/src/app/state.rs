@@ -437,6 +437,15 @@ impl App {
             self.input.set_text(&incoming_draft);
         }
         self.status = status_for_lifecycle(incoming_lifecycle);
+        // Update terminal/tab title immediately on switch so the host
+        // terminal reflects the project the user just selected. The
+        // render-loop's tab-title call (in `app::run`) only fires
+        // every animating frame or on explicit `needs_redraw`
+        // transitions; some terminals coalesce/debounce OSC 2 titles
+        // when fired close together, so calling here directly with
+        // the incoming bucket's cwd guarantees one canonical update
+        // per switch.
+        crate::app::tab_title::update_tab_title(&self.status, self.spinner_frame, self.cwd());
         self.force_redraw = true;
         self.needs_redraw = true;
     }

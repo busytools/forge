@@ -361,11 +361,19 @@ fn measure_message_height(
 }
 
 fn build_base_spinner(app: &App) -> SpinnerState {
+    // `show_thinking` fires on both `Thinking` (no body streamed yet)
+    // and `Running` (mid-stream / tool execution) so the spinner keeps
+    // ticking visibly across the whole turn — not just the pre-body
+    // window. Without this, switching back into a still-running
+    // session whose assistant placeholder has already streamed some
+    // content shows the content frozen with no indicator that more is
+    // coming.
+    let turn_in_flight = matches!(app.status, AppStatus::Thinking | AppStatus::Running);
     SpinnerState {
         frame: app.spinner_frame,
         is_active_turn_assistant: false,
-        show_empty_thinking: matches!(app.status, AppStatus::Thinking | AppStatus::Running),
-        show_thinking: matches!(app.status, AppStatus::Thinking),
+        show_empty_thinking: turn_in_flight,
+        show_thinking: turn_in_flight,
         show_compacting: app.is_compacting(),
     }
 }
