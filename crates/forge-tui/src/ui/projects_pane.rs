@@ -181,16 +181,16 @@ fn append_project_rows(
             } else {
                 Style::default().add_modifier(Modifier::BOLD)
             };
-            let time =
-                format_relative_time(project.sessions.first().and_then(|s| s.last_activity), now);
+            // No time column on active rows — the lifecycle glyph
+            // already says "alive", and the .jsonl mtime for a
+            // running session tracks every wire event so it's
+            // always `now`/`1m`/`2m` and adds no new signal.
             lines.push(Line::from(vec![
                 Span::raw("  "),
                 Span::styled(glyph, Style::default().fg(glyph_color)),
                 Span::raw(" "),
                 Span::styled(label, name_style),
                 Span::raw(" ".repeat(label_pad)),
-                Span::raw(" "),
-                Span::styled(time, Style::default().fg(theme::DIM)),
                 Span::raw(" "),
                 // 3-char "[×]" close affordance — reads as a button
                 // rather than a stray multiplication sign, and the
@@ -263,12 +263,12 @@ fn append_project_rows(
 }
 
 /// Active-row layout:
-/// `<2 indent><1 glyph><1 sp><name><1 sp><3 time><1 sp><3 [×]><1 right gutter>`
-/// = 12 chrome chars. `[×]` reads as a button and is easier to
-/// land a click on than a bare `×`; the right gutter shrinks to
-/// 1 col to compensate for the wider button glyph.
+/// `<2 indent><1 glyph><1 sp><name><1 sp><3 [×]><1 right gutter>`
+/// = 9 chrome chars. No time column — the lifecycle glyph already
+/// indicates the session is alive, and the .jsonl mtime for a
+/// running session is always `now`-ish, adding no signal.
 fn name_budget_active(area_width: u16) -> usize {
-    usize::from(area_width.saturating_sub(12))
+    usize::from(area_width.saturating_sub(9))
 }
 
 /// Inactive-row layout:
@@ -443,10 +443,10 @@ mod tests {
 
     #[test]
     fn name_budget_active_matches_chrome() {
-        // Wide tier (26): 26 - 12 chrome chars = 14.
-        // Medium tier (20): 20 - 12 = 8.
-        assert_eq!(name_budget_active(20), 8);
-        assert_eq!(name_budget_active(26), 14);
+        // Wide tier (26): 26 - 9 chrome chars = 17.
+        // Medium tier (20): 20 - 9 = 11.
+        assert_eq!(name_budget_active(20), 11);
+        assert_eq!(name_budget_active(26), 17);
     }
 
     #[test]
