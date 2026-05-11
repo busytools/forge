@@ -266,9 +266,12 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
             if let Some(ref mut perf) = app.perf {
                 perf.next_frame();
             }
-            if app.perf.is_some() {
-                app.mark_frame_presented(Instant::now());
-            }
+            // FPS is computed unconditionally now — the on-screen
+            // overlay is always-on (see `chat_view::render_perf_fps_overlay`),
+            // not gated on the `perf` Cargo feature. Calling
+            // `mark_frame_presented` always keeps the EMA fresh so
+            // the overlay shows real numbers in any build.
+            app.mark_frame_presented(Instant::now());
             // `Timer` is `Drop`-implementing under `feature = "perf"` and a
             // unit struct otherwise. Explicit `drop()` enforces the desired
             // lifetime in both feature paths; clippy can't see the cfg

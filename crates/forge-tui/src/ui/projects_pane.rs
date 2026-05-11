@@ -242,7 +242,15 @@ fn append_project_rows(
     }
 
     if !inactive.is_empty() {
-        lines.push(Line::default());
+        // Two blanks between the last active row and the INACTIVE
+        // header so the section transition reads as a clear break
+        // rather than a tight stack. Per-section blank-after-header
+        // below keeps the header off the first row inside the
+        // section.
+        if !active.is_empty() {
+            lines.push(Line::default());
+            lines.push(Line::default());
+        }
         lines.push(Line::from(Span::styled(
             "  INACTIVE".to_owned(),
             Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD),
