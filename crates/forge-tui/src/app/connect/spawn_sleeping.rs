@@ -13,16 +13,10 @@
 //! placeholder welcome, the cwd, and the spawning lifecycle state
 //! survive the migration.
 //!
-//! Reuses the same `CONN_SLOT` plumbing the startup flow uses:
-//! the spawned task writes the freshly-built `Arc<AgentHandle>`
-//! into the slot, and the Connected event handler picks it up via
-//! `take_connection_slot`.
-//!
-//! Single-flight assumption inherited from the startup flow: each
-//! spawn overwrites the previous slot pointer in `CONN_SLOT`, so
-//! two clicks in rapid succession (before the first Connected
-//! event lands) can race. Acceptable for Phase 2b-α; Phase 2b
-//! tightens this.
+//! The AgentHandle for the freshly-spawned session is routed
+//! through the `ClientEvent::Connected` envelope itself, so no
+//! thread-local sidecar is needed and rapid spawn-sleeping clicks
+//! no longer race over a shared CONN_SLOT pointer.
 
 use std::panic::AssertUnwindSafe;
 use std::rc::Rc;
@@ -32,8 +26,8 @@ use futures::FutureExt as _;
 use crate::agent::client::SessionLaunchSettings;
 use crate::app::App;
 
+use super::StartConnectionParams;
 use super::bridge_lifecycle;
-use super::{CONN_SLOT, ConnectionSlot, StartConnectionParams};
 
 /// Public entry point invoked by the Projects-pane click handler
 /// when the user clicks a sleeping project's header.
@@ -160,25 +154,8 @@ pub fn spawn_for_sleeping_project(app: &mut App, project_key: &str) {
         is_fatal_on_failure: false,
     };
 
-    // Allocate a fresh slot pointer, install it as the latest
-    // CONN_SLOT writer, and hand the writer to the connection task.
-    // Single-flight: subsequent spawns overwrite this; see module
-    // doc-comment for the trade-off.
-    let conn_slot: Rc<std::cell::RefCell<Option<ConnectionSlot>>> =
-        Rc::new(std::cell::RefCell::new(None));
-    let conn_slot_writer = Rc::clone(&conn_slot);
-    CONN_SLOT.with(|slot| {
-        *slot.borrow_mut() = Some(conn_slot);
-    });
-
     let project_for_log = project_name.clone();
-    spawn_connection_task(
-        params,
-        conn_slot_writer,
-        panic_event_tx,
-        panic_session_key,
-        project_for_log,
-    );
+    spawn_connection_task(params, panic_event_tx, panic_session_key, project_for_log);
 
     tracing::info!(
         target: crate::logging::targets::APP_SESSION,
@@ -290,21 +267,8 @@ pub fn spawn_for_sleeping_session(app: &mut App, session_key: &forge_workspace::
         is_fatal_on_failure: false,
     };
 
-    let conn_slot: Rc<std::cell::RefCell<Option<ConnectionSlot>>> =
-        Rc::new(std::cell::RefCell::new(None));
-    let conn_slot_writer = Rc::clone(&conn_slot);
-    CONN_SLOT.with(|slot| {
-        *slot.borrow_mut() = Some(conn_slot);
-    });
-
     let session_id_for_log = session_key.as_str().to_owned();
-    spawn_connection_task(
-        params,
-        conn_slot_writer,
-        panic_event_tx,
-        panic_session_key,
-        session_id_for_log.clone(),
-    );
+    spawn_connection_task(params, panic_event_tx, panic_session_key, session_id_for_log.clone());
 
     tracing::info!(
         target: crate::logging::targets::APP_SESSION,
@@ -322,16 +286,13 @@ pub fn spawn_for_sleeping_session(app: &mut App, session_key: &forge_workspace::
 /// and share the panic-recovery contract.
 fn spawn_connection_task(
     params: StartConnectionParams,
-    conn_slot_writer: Rc<std::cell::RefCell<Option<ConnectionSlot>>>,
     panic_event_tx: tokio::sync::mpsc::UnboundedSender<crate::agent::events::ClientEvent>,
     panic_session_key: forge_workspace::SessionKey,
     label_for_log: String,
 ) {
     tokio::task::spawn_local(async move {
         let result =
-            AssertUnwindSafe(bridge_lifecycle::run_connection_task(params, conn_slot_writer))
-                .catch_unwind()
-                .await;
+            AssertUnwindSafe(bridge_lifecycle::run_connection_task(params)).catch_unwind().await;
         if let Err(panic) = result {
             tracing::error!(
                 target: crate::logging::targets::APP_SESSION,

@@ -11,6 +11,7 @@
 
 use std::fs;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use crossterm::event::{Event, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use forge_tui::agent::events::ClientEvent;
@@ -21,6 +22,11 @@ use forge_tui::app::{
 };
 use forge_workspace::{SessionKey, Workspace};
 use tempfile::tempdir;
+
+fn stub_conn() -> Arc<forge_agent::AgentHandle> {
+    let (handle, _rx) = forge_agent::Agent::testing_stub();
+    Arc::new(handle)
+}
 
 fn down_left(column: u16, row: u16) -> Event {
     Event::Mouse(MouseEvent {
@@ -487,6 +493,7 @@ fn connected_event_for(
         mode: None,
         history_updates: Vec::new(),
         pre_connect_key,
+        conn: stub_conn(),
     }
 }
 

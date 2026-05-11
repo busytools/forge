@@ -1,4 +1,3 @@
-use super::super::connect::take_connection_slot;
 use super::super::connect::{SessionStartReason, start_new_session};
 use super::super::state::RecentSessionInfo;
 use super::super::view::{self, ActiveView};
@@ -40,6 +39,7 @@ pub(super) fn handle_connected_client_event(
     mode: Option<super::super::ModeState>,
     history_messages: &[forge_primitives::Message],
     pre_connect_key: Option<SessionKey>,
+    conn: Arc<forge_agent::AgentHandle>,
 ) {
     let session_id_for_log = session_id.to_string();
     let history_message_count = history_messages.len();
@@ -146,10 +146,8 @@ pub(super) fn handle_connected_client_event(
         // construction). Run the full active-session apply chain
         // below so welcome / file-index / runtime-tabs all sync.
         app.active_session_key = Some(session_key.clone());
-        if let Some(slot) = take_connection_slot()
-            && let Some(bucket) = app.sessions.get_mut(&session_key)
-        {
-            bucket.conn = Some(slot.conn);
+        if let Some(bucket) = app.sessions.get_mut(&session_key) {
+            bucket.conn = Some(conn);
         }
         apply_session_cwd(app, cwd);
         reset_for_new_session(app, session_id, current_model, mode, true);
@@ -175,19 +173,11 @@ pub(super) fn handle_connected_client_event(
         crate::app::tab_title::update_tab_title(&app.status, app.spinner_frame, app.cwd());
     } else {
         // Background path: the user switched to a different session
-        // while this one was spawning. Park the connection in the
-        // newly-migrated bucket but don't yank the active session.
-        if let Some(slot) = take_connection_slot()
-            && let Some(bucket) = app.sessions.get_mut(&session_key)
-        {
-            bucket.conn = Some(slot.conn);
-        }
-        // Apply per-bucket cwd and identity directly rather than
-        // running the full active-session apply chain (which would
-        // touch app-global UI). The bucket already has cwd from its
-        // Spawning state seed; apply the Connected-supplied value
-        // without rewriting App-level fields.
+        // while this one was spawning. Park the connection + per-
+        // session identity onto the migrated bucket directly; the
+        // welcome card and history replay come next via temp-swap.
         if let Some(bucket) = app.sessions.get_mut(&session_key) {
+            bucket.conn = Some(conn);
             let display = shorten_cwd_display(&cwd);
             bucket.cwd_raw = cwd;
             bucket.cwd = display;
@@ -195,14 +185,38 @@ pub(super) fn handle_connected_client_event(
             bucket.current_model = Some(current_model);
             bucket.mode = mode;
             bucket.available_models = available_models;
-            // Best-effort load of resume history into the bucket's
-            // own message buffer — keep the bucket internally
-            // consistent for a future switch.
-            if !history_messages.is_empty() {
-                bucket.messages.clear();
-                bucket.message_retained_bytes.clear();
-            }
         }
+
+        // Temp-swap `active_session_key` to the migrated bucket so
+        // App-level message + viewport accessors land on the right
+        // bucket. Without this the bucket keeps its pre-Connect
+        // "Waking <project>…" placeholder as its only message —
+        // and when the user later switches in, they see what reads
+        // as a stuck/empty session. Active-session UI state (input
+        // draft, status) is snapshotted across the swap so the
+        // focused session the user is currently looking at is never
+        // touched.
+        let saved_active = app.active_session_key.clone();
+        let saved_input = app.input.text();
+        let saved_status = app.status.clone();
+        app.active_session_key = Some(session_key.clone());
+
+        app.clear_messages_tracked();
+        let welcome = app.build_welcome_message();
+        app.push_message_tracked(welcome);
+        app.sync_welcome_snapshot();
+        *app.viewport_mut() = super::super::ChatViewport::new();
+        if !history_messages.is_empty() {
+            load_resume_history(app, history_messages);
+        }
+
+        app.active_session_key = saved_active;
+        app.input.clear();
+        if !saved_input.is_empty() {
+            app.input.set_text(&saved_input);
+        }
+        app.status = saved_status;
+        app.needs_redraw = true;
     }
     // Surface the freshly-connected session in the Projects pane's
     // drilldown immediately. Without this the workspace catalog
@@ -704,6 +718,7 @@ pub(super) fn handle_logout_completed_event(app: &mut App, session_key: &Session
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn handle_session_replaced_event(
     app: &mut App,
     session_id: model::SessionId,
@@ -712,17 +727,42 @@ pub(super) fn handle_session_replaced_event(
     available_models: Vec<model::AvailableModel>,
     mode: Option<super::super::ModeState>,
     history_messages: &[forge_primitives::Message],
+    conn: Arc<forge_agent::AgentHandle>,
 ) {
     let session_id_for_log = session_id.to_string();
+    let session_key = SessionKey::from_session_id(session_id.to_string());
     let history_message_count = history_messages.len();
     let available_model_count = available_models.len();
     super::clear_compaction_state(app, false);
     app.set_pending_cancel_origin(None);
     app.pending_auto_submit_after_cancel = false;
     let prev_session_id = app.session_id().map(ToString::to_string);
-    apply_session_cwd(app, cwd);
+
+    // Capture the outgoing bucket's key BEFORE `reset_for_new_session`
+    // runs — that call goes through `set_session_id`, which inserts a
+    // fresh bucket under the new session_id and flips
+    // `active_session_key` to it. The outgoing bucket is then orphaned
+    // in `app.sessions` and needs to be removed; without the capture
+    // we'd lose track of which key to drop.
+    let prev_active_key = app.active_session_key.clone();
+
     *app.available_models_mut() = available_models;
     reset_for_new_session(app, session_id, current_model, mode, false);
+
+    // Install the AgentHandle that the bridge routed alongside this
+    // event onto the freshly-inserted bucket. The bridge swapped its
+    // Client to the new CLI session (see
+    // `forge_sdk_worker::spawn_session`); the Arc identity is the
+    // same as before but we don't have to dig it out of the outgoing
+    // bucket — the event carries it directly.
+    if let Some(new_bucket) = app.session_mut(&session_key) {
+        new_bucket.conn = Some(conn);
+    }
+
+    // Apply cwd AFTER the bucket swap so it lands on the new bucket.
+    // Pre-swap it would write to the now-abandoned outgoing bucket
+    // and the new welcome card would render an empty path.
+    apply_session_cwd(app, cwd);
     refresh_session_git_watcher(app, prev_session_id);
     app.sync_welcome_snapshot();
     if !history_messages.is_empty() {
@@ -732,6 +772,37 @@ pub(super) fn handle_session_replaced_event(
     app.resuming_session_id = None;
     crate::app::file_index::restart(app);
     crate::app::config::refresh_runtime_tabs_for_session_change(app);
+
+    // Drop the now-orphaned outgoing bucket. The CLI replaced the
+    // underlying session (the previous subprocess is gone), and the
+    // user explicitly asked for a fresh start, so its chat history /
+    // tool-call indices / viewport scroll are not reachable from
+    // anywhere in the UI. Leaving it behind would have the Projects
+    // pane resolve "click forge" through the orphan instead of the
+    // new bucket, which is exactly the bug this whole sequence fixes.
+    if let Some(prev) = prev_active_key
+        && prev != session_key
+    {
+        app.sessions.remove(&prev);
+    }
+
+    // Surface the replacement session in the workspace catalog so the
+    // Projects pane finds it on the next render. Without this the
+    // pane keeps showing the previous session_id as the project's
+    // lead — its `live_session` lookup hits `app.sessions` under the
+    // stale id (or fails after the orphan drop above), no project
+    // row matches the active key, and the focus highlight disappears.
+    // Source cwd from the new bucket post-`apply_session_cwd` so the
+    // recorded value matches what the welcome card / pane render
+    // resolved to.
+    let cwd_for_record =
+        app.sessions.get(&session_key).map(|b| b.cwd_raw.clone()).unwrap_or_default();
+    if !cwd_for_record.is_empty()
+        && let Some(workspace) = app.workspace.as_ref()
+    {
+        workspace.record_connected_session(&cwd_for_record, &session_id_for_log, None);
+    }
+
     tracing::info!(
         target: crate::logging::targets::APP_SESSION,
         event_name = "session_replaced",
@@ -916,6 +987,16 @@ mod tests {
     use crate::app::file_index::FileCandidate;
     use std::time::{Duration, Instant, SystemTime};
 
+    /// Helper: a no-op `Arc<AgentHandle>` for tests that need to
+    /// drive `handle_connected_client_event` /
+    /// `handle_session_replaced_event` without spinning up a real
+    /// bridge. The handle's command channel is wired to a dropped
+    /// receiver, so any command sent through it is silently swallowed.
+    fn stub_conn() -> Arc<forge_agent::AgentHandle> {
+        let (handle, _rx) = forge_agent::Agent::testing_stub();
+        Arc::new(handle)
+    }
+
     fn wait_for(app: &mut App, timeout: Duration, mut predicate: impl FnMut(&App) -> bool) {
         let start = Instant::now();
         while start.elapsed() < timeout {
@@ -958,6 +1039,7 @@ mod tests {
             None,
             &[],
             None,
+            stub_conn(),
         );
 
         assert_eq!(app.file_index.root.as_deref(), Some(dir.path()));
@@ -992,6 +1074,7 @@ mod tests {
             Vec::new(),
             None,
             &[],
+            stub_conn(),
         );
 
         assert_eq!(app.file_index.root.as_deref(), Some(dir.path()));
@@ -1058,6 +1141,7 @@ mod tests {
             None,
             &[],
             Some(spawn_key.clone()),
+            stub_conn(),
         );
 
         let real_key = forge_workspace::SessionKey::from_session_id("real-uuid-9000".to_owned());
@@ -1101,11 +1185,66 @@ mod tests {
             None,
             &[],
             None,
+            stub_conn(),
         );
 
         let real_key = forge_workspace::SessionKey::from_session_id("real-uuid-legacy".to_owned());
         assert!(!app.sessions.contains_key(&pre), "pre-connect synthetic bucket removed");
         assert!(app.sessions.contains_key(&real_key));
         assert_eq!(app.active_session_key.as_ref(), Some(&real_key));
+    }
+
+    /// `/new` (and login / logout — anything that fires SessionReplaced
+    /// after the first Connected on a bridge) must insert a fresh
+    /// bucket under the new session UUID, drop the outgoing bucket,
+    /// switch the active key, and land the new cwd on the new bucket.
+    /// Regression guard for the v0.15.0 bug where the outgoing bucket
+    /// stayed in `app.sessions`, the Projects pane resolved the
+    /// project's lead through the orphan, and `click forge` jumped
+    /// back to the previous session.
+    #[test]
+    fn session_replaced_inserts_new_bucket_and_drops_outgoing() {
+        let mut app = App::test_default();
+        let old_key = forge_workspace::SessionKey::from_session_id("old-uuid".to_owned());
+        let mut bucket = crate::app::session::Session::new(old_key.clone());
+        bucket.cwd_raw = "/tmp/old".to_owned();
+        bucket.cwd = "/tmp/old".to_owned();
+        bucket.session_id = Some(model::SessionId::new("old-uuid"));
+        app.sessions.clear();
+        app.sessions.insert(old_key.clone(), bucket);
+        app.active_session_key = Some(old_key.clone());
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        handle_session_replaced_event(
+            &mut app,
+            model::SessionId::new("new-uuid"),
+            dir.path().to_string_lossy().into_owned(),
+            model::CurrentModel::new("model", "model", "model").authoritative(true),
+            Vec::new(),
+            None,
+            &[],
+            stub_conn(),
+        );
+
+        let new_key = forge_workspace::SessionKey::from_session_id("new-uuid".to_owned());
+        assert!(
+            !app.sessions.contains_key(&old_key),
+            "outgoing bucket dropped after session replacement",
+        );
+        assert!(
+            app.sessions.contains_key(&new_key),
+            "new bucket inserted under the new session id",
+        );
+        assert_eq!(
+            app.active_session_key.as_ref(),
+            Some(&new_key),
+            "active_session_key switched to the new key",
+        );
+        let new_bucket = app.sessions.get(&new_key).expect("new bucket present");
+        assert_eq!(
+            new_bucket.cwd_raw,
+            dir.path().to_string_lossy().into_owned(),
+            "cwd written to the new bucket after the swap",
+        );
     }
 }
