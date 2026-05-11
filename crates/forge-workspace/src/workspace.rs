@@ -249,15 +249,31 @@ impl Workspace {
         // inherits it as `CLAUDE_CONFIG_DIR` so each session reads/
         // writes the right account's user-data tree.
         let handle = forge_agent::Agent::spawn(account_dir.clone(), Some(account_key.0.clone()));
+        // Project-rooted targets (`Default` / `Named`) resume the
+        // project's lead session when the on-disk catalog has one,
+        // and fall back to a fresh session in that project's cwd
+        // otherwise. Keeps the pool key (lead's session id from the
+        // catalog) consistent with the running session id when a
+        // resume happens — no more stale lead-id pool entries for a
+        // freshly spawned session.
         match &target {
             SessionTarget::Default => {
-                let cwd = self.config.default_project().path.to_string_lossy().to_string();
-                handle.new_session(cwd, settings)?;
+                let project = self.config.default_project();
+                if let Some(lead) = self.try_lead_session_id_for(project) {
+                    handle.resume_session(lead.as_str().to_owned(), settings)?;
+                } else {
+                    let cwd = project.path.to_string_lossy().to_string();
+                    handle.new_session(cwd, settings)?;
+                }
             }
             SessionTarget::Named(name) => {
                 let project = self.find_project_by_name(name)?;
-                let cwd = project.path.to_string_lossy().to_string();
-                handle.new_session(cwd, settings)?;
+                if let Some(lead) = self.try_lead_session_id_for(project) {
+                    handle.resume_session(lead.as_str().to_owned(), settings)?;
+                } else {
+                    let cwd = project.path.to_string_lossy().to_string();
+                    handle.new_session(cwd, settings)?;
+                }
             }
             SessionTarget::Session(key) => {
                 handle.resume_session(key.as_str().to_owned(), settings)?;
@@ -376,15 +392,26 @@ impl Workspace {
     /// session, or to a `__fresh__:<project_key>` placeholder when the
     /// project has nothing on disk yet.
     fn lead_session_key_for(&self, project: &LoadedProject) -> SessionKey {
+        let project_key =
+            ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(Some(
+                &project.path.to_string_lossy(),
+            )));
+        self.try_lead_session_id_for(project)
+            .unwrap_or_else(|| SessionKey::new(format!("__fresh__:{}", project_key.as_str())))
+    }
+
+    /// Return the project's lead (most-recent) session id when the
+    /// on-disk catalog has one, else `None`. Drives the resume-first
+    /// behaviour in [`Self::get_agent_handle`]: project-rooted targets
+    /// (`Default` / `Named`) resume the lead when it exists and fall
+    /// back to a fresh session otherwise.
+    fn try_lead_session_id_for(&self, project: &LoadedProject) -> Option<SessionKey> {
         let key = ProjectKey::new(forge_agent::userdata::catalog::scan::project_key_for_directory(
             Some(&project.path.to_string_lossy()),
         ));
-        if let Some(entries) = self.catalog.get(&key)
-            && let Some(lead) = entries.first()
-        {
-            return SessionKey::new(lead.session_id.clone());
-        }
-        SessionKey::new(format!("__fresh__:{}", key.as_str()))
+        let entries = self.catalog.get(&key)?;
+        let lead = entries.first()?;
+        Some(SessionKey::new(lead.session_id.clone()))
     }
 
     /// Graceful shutdown of every pooled Agent. Drains the pool, then
