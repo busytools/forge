@@ -132,7 +132,7 @@ fn append_project_rows(
     let active_session_key = app.active_session_key.clone();
     let active_project_name: Option<String> = active_session_key
         .as_ref()
-        .and_then(|key| sorted.iter().find(|p| p.sessions.iter().any(|s| &s.session == key)))
+        .and_then(|key| resolve_active_project_view(key, &sorted))
         .map(|p| p.key.as_str().to_owned());
 
     let project_budget = project_max_chars(area.width);
@@ -262,6 +262,38 @@ const DRILLDOWN_CAP: usize = 3;
 /// rather than aborting the renderer.
 fn line_count_as_u16(lines: &[Line<'_>]) -> u16 {
     u16::try_from(lines.len()).unwrap_or(u16::MAX)
+}
+
+/// Find the `ProjectView` that owns `active_key` — handling the three
+/// synthetic-key sentinels (`__conn_pending__`, `__spawn_<name>__`,
+/// `__resume_<id>__`) in addition to real claude UUIDs. Without this,
+/// every pane reader that does `sessions.iter().any(|s| &s.session
+/// == key)` returns `None` during the Spawning window — leaving the
+/// pane and top bar with no project highlighted while the user
+/// stares at a "Waking …" placeholder.
+///
+/// Resolution order:
+/// 1. `__spawn_<name>__` → find by `p.name == name`.
+/// 2. `__resume_<session_id>__` → find by any session matching id.
+/// 3. `__conn_pending__` → fall through to default-project lookup;
+///    pane callers can supply their own fallback (the default lead is
+///    in the catalog so step 4 generally still finds it on startup).
+/// 4. Real UUID → existing catalog scan.
+pub(crate) fn resolve_active_project_view<'p>(
+    active_key: &forge_workspace::SessionKey,
+    projects: &'p [&ProjectView],
+) -> Option<&'p ProjectView> {
+    let s = active_key.as_str();
+    if let Some(name) = s.strip_prefix("__spawn_").and_then(|r| r.strip_suffix("__")) {
+        return projects.iter().copied().find(|p| p.name == name);
+    }
+    if let Some(id) = s.strip_prefix("__resume_").and_then(|r| r.strip_suffix("__")) {
+        return projects
+            .iter()
+            .copied()
+            .find(|p| p.sessions.iter().any(|sess| sess.session.as_str() == id));
+    }
+    projects.iter().copied().find(|p| p.sessions.iter().any(|sess| &sess.session == active_key))
 }
 
 /// Braille spinner frames — same sequence used by `ui::input` and

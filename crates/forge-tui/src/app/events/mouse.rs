@@ -513,6 +513,28 @@ fn rect_contains(rect: Rect, x: u16, y: u16) -> bool {
 /// synthesizes a spawning bucket and kicks off the async lookup of
 /// the project's lead AgentHandle.
 fn switch_to_project_lead(app: &mut App, project_name: &str) {
+    // Idempotency: if the active session is already the synthetic
+    // spawn bucket for this project, the user is mid-wake — a second
+    // click would queue a duplicate background connection task that
+    // races `CONN_SLOT` and scrambles bucket state. Return early.
+    let resolved_name = app
+        .workspace
+        .as_ref()
+        .and_then(|w| {
+            w.list_projects()
+                .into_iter()
+                .find(|p| p.key.as_str() == project_name)
+                .map(|p| p.name.clone())
+        })
+        .unwrap_or_else(|| project_name.to_owned());
+    let spawn_synthetic =
+        forge_workspace::SessionKey::from_session_id(format!("__spawn_{resolved_name}__"));
+    if app.active_session_key.as_ref() == Some(&spawn_synthetic)
+        && app.sessions.contains_key(&spawn_synthetic)
+    {
+        return;
+    }
+
     let lead_session_key = app.workspace.as_ref().and_then(|workspace| {
         workspace
             .list_projects()

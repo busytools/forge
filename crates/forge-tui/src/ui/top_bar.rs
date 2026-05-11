@@ -75,17 +75,17 @@ fn build_active_context(app: &App, max_chars: usize) -> String {
     projects_pane::truncate_with_ellipsis(&raw, max_chars)
 }
 
-/// Active project's `key.as_str()` — matches the identifier the
-/// pane and click router use. Returns `None` when no workspace is
-/// attached (test contexts) or no project owns the active session.
+/// Active project's user-facing `name` (from `forge.toml`). Handles
+/// the synthetic-key sentinels (`__spawn_<name>__`, `__resume_<id>__`,
+/// `__conn_pending__`) so the top bar reflects the project the user
+/// just clicked even during the Spawning window — before `Connected`
+/// arrives and the bucket migrates to its real session id.
 fn active_project_label(app: &App) -> Option<String> {
     let workspace = app.workspace.as_ref()?;
     let active_key = app.active_session_key.as_ref()?;
-    workspace
-        .list_projects()
-        .into_iter()
-        .find(|p: &ProjectView| p.sessions.iter().any(|s| &s.session == active_key))
-        .map(|p| p.key.as_str().to_owned())
+    let projects = workspace.list_projects();
+    let refs: Vec<&ProjectView> = projects.iter().collect();
+    projects_pane::resolve_active_project_view(active_key, &refs).map(|p| p.name.clone())
 }
 
 /// Compact representation of the active session for the top-bar
@@ -93,14 +93,32 @@ fn active_project_label(app: &App) -> Option<String> {
 /// falls back to a short-form session UUID; finally `None` for the
 /// pre-Connect bucket.
 fn active_session_label(app: &App) -> Option<String> {
-    if let Some(workspace) = app.workspace.as_ref()
-        && let Some(active_key) = app.active_session_key.as_ref()
-    {
-        for project in workspace.list_projects() {
-            if let Some(view) = project.sessions.iter().find(|s| &s.session == active_key)
-                && !view.label.is_empty()
-            {
-                return Some(view.label.clone());
+    if let Some(active_key) = app.active_session_key.as_ref() {
+        let s = active_key.as_str();
+        // Synthetic keys: surface a short status word rather than the
+        // raw sentinel string. Lets the user see *what's happening*
+        // (waking / resuming) instead of `__spawn_dotfiles__`.
+        if s.starts_with("__spawn_") && s.ends_with("__") {
+            return Some("waking".to_owned());
+        }
+        if let Some(id) = s.strip_prefix("__resume_").and_then(|r| r.strip_suffix("__"))
+            && let Some(workspace) = app.workspace.as_ref()
+        {
+            for project in workspace.list_projects() {
+                if let Some(view) = project.sessions.iter().find(|sv| sv.session.as_str() == id)
+                    && !view.label.is_empty()
+                {
+                    return Some(view.label.clone());
+                }
+            }
+        }
+        if let Some(workspace) = app.workspace.as_ref() {
+            for project in workspace.list_projects() {
+                if let Some(view) = project.sessions.iter().find(|sv| &sv.session == active_key)
+                    && !view.label.is_empty()
+                {
+                    return Some(view.label.clone());
+                }
             }
         }
     }
