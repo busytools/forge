@@ -7,13 +7,13 @@ pub(crate) enum RuntimeReloadRequestOutcome {
 }
 
 pub(crate) fn request_runtime_reload(app: &mut App) -> RuntimeReloadRequestOutcome {
-    let Some(conn) = app.conn.as_ref() else {
+    let Some(conn) = app.conn().cloned() else {
         return RuntimeReloadRequestOutcome::Unavailable;
     };
-    let Some(ref sid) = app.session_id else {
+    let Some(session_id) = app.session_id().cloned() else {
         return RuntimeReloadRequestOutcome::Unavailable;
     };
-    let session_id = sid.to_string();
+    let session_id = session_id.to_string();
     match conn.reload_plugins(session_id.clone()) {
         Ok(()) => {
             tracing::debug!(
@@ -40,23 +40,26 @@ pub(crate) fn request_runtime_reload(app: &mut App) -> RuntimeReloadRequestOutco
 }
 
 pub(crate) fn request_context_usage_refresh(app: &mut App) {
-    if app.session_usage.context_usage_in_flight {
-        app.session_usage.context_usage_refresh_pending = true;
+    if app.session_usage().context_usage_in_flight {
+        app.session_usage_mut().context_usage_refresh_pending = true;
         return;
     }
 
-    let Some(conn) = app.conn.as_ref() else {
+    let Some(conn) = app.conn().cloned() else {
         clear_context_usage_refresh_state(app);
         return;
     };
-    let Some(ref sid) = app.session_id else {
+    let Some(session_id) = app.session_id().cloned() else {
         clear_context_usage_refresh_state(app);
         return;
     };
 
-    let session_id = sid.to_string();
-    app.session_usage.context_usage_in_flight = true;
-    app.session_usage.context_usage_refresh_pending = false;
+    let session_id = session_id.to_string();
+    {
+        let usage = app.session_usage_mut();
+        usage.context_usage_in_flight = true;
+        usage.context_usage_refresh_pending = false;
+    }
     match conn.get_context_usage(session_id.clone()) {
         Ok(()) => tracing::debug!(
             target: crate::logging::targets::APP_SESSION,
@@ -66,7 +69,7 @@ pub(crate) fn request_context_usage_refresh(app: &mut App) {
             session_id = %session_id,
         ),
         Err(error) => {
-            app.session_usage.context_usage_in_flight = false;
+            app.session_usage_mut().context_usage_in_flight = false;
             tracing::warn!(
                 target: crate::logging::targets::APP_SESSION,
                 event_name = "context_usage_request_failed",
@@ -80,14 +83,14 @@ pub(crate) fn request_context_usage_refresh(app: &mut App) {
 }
 
 pub(crate) fn request_status_snapshot_refresh(app: &mut App) {
-    let Some(conn) = app.conn.as_ref() else {
+    let Some(conn) = app.conn().cloned() else {
         return;
     };
-    let Some(ref sid) = app.session_id else {
+    let Some(session_id) = app.session_id().cloned() else {
         return;
     };
 
-    let session_id = sid.to_string();
+    let session_id = session_id.to_string();
     match conn.get_status_snapshot(session_id.clone()) {
         Ok(()) => tracing::debug!(
             target: crate::logging::targets::APP_AUTH,
@@ -108,14 +111,14 @@ pub(crate) fn request_status_snapshot_refresh(app: &mut App) {
 }
 
 pub(crate) fn request_oauth_credentials_snapshot_refresh(app: &mut App) {
-    let Some(conn) = app.conn.as_ref() else {
+    let Some(conn) = app.conn().cloned() else {
         return;
     };
-    let Some(ref sid) = app.session_id else {
+    let Some(session_id) = app.session_id().cloned() else {
         return;
     };
 
-    let session_id = sid.to_string();
+    let session_id = session_id.to_string();
     match conn.get_oauth_credentials_snapshot(session_id.clone()) {
         Ok(()) => tracing::debug!(
             target: crate::logging::targets::APP_AUTH,
@@ -136,17 +139,21 @@ pub(crate) fn request_oauth_credentials_snapshot_refresh(app: &mut App) {
 }
 
 pub(crate) fn apply_context_usage_snapshot(app: &mut App, percentage: Option<u8>) {
-    app.session_usage.context_usage_percent = percentage;
-    app.session_usage.context_usage_in_flight = false;
-    let refresh_pending = std::mem::take(&mut app.session_usage.context_usage_refresh_pending);
+    let refresh_pending = {
+        let usage = app.session_usage_mut();
+        usage.context_usage_percent = percentage;
+        usage.context_usage_in_flight = false;
+        std::mem::take(&mut usage.context_usage_refresh_pending)
+    };
     if refresh_pending {
         request_context_usage_refresh(app);
     }
 }
 
 fn clear_context_usage_refresh_state(app: &mut App) {
-    app.session_usage.context_usage_in_flight = false;
-    app.session_usage.context_usage_refresh_pending = false;
+    let usage = app.session_usage_mut();
+    usage.context_usage_in_flight = false;
+    usage.context_usage_refresh_pending = false;
 }
 
 #[cfg(test)]
@@ -163,8 +170,8 @@ mod tests {
     -> (App, tokio::sync::mpsc::UnboundedReceiver<forge_primitives::Command>) {
         let mut app = App::test_default();
         let (handle, rx) = forge_agent::Agent::testing_stub();
-        app.conn = Some(std::rc::Rc::new(handle));
-        app.session_id = Some(model::SessionId::new("session-1"));
+        app.set_conn(Some(std::sync::Arc::new(handle)));
+        app.set_session_id(Some(model::SessionId::new("session-1")));
         (app, rx)
     }
 
@@ -198,8 +205,8 @@ mod tests {
         request_context_usage_refresh(&mut app);
         request_context_usage_refresh(&mut app);
 
-        assert!(app.session_usage.context_usage_in_flight);
-        assert!(app.session_usage.context_usage_refresh_pending);
+        assert!(app.session_usage().context_usage_in_flight);
+        assert!(app.session_usage().context_usage_refresh_pending);
         let envelope = rx.try_recv().expect("context usage command");
         assert!(matches!(
             envelope,
@@ -217,9 +224,9 @@ mod tests {
 
         apply_context_usage_snapshot(&mut app, Some(62));
 
-        assert_eq!(app.session_usage.context_usage_percent, Some(62));
-        assert!(app.session_usage.context_usage_in_flight);
-        assert!(!app.session_usage.context_usage_refresh_pending);
+        assert_eq!(app.session_usage().context_usage_percent, Some(62));
+        assert!(app.session_usage().context_usage_in_flight);
+        assert!(!app.session_usage().context_usage_refresh_pending);
         let envelope = rx.try_recv().expect("replayed context usage command");
         assert!(matches!(
             envelope,

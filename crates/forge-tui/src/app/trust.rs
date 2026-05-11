@@ -36,7 +36,7 @@ impl TrustState {
 pub fn initialize(app: &mut App) {
     let lookup = store::read_status(
         &app.config.committed_preferences_document,
-        std::path::Path::new(&app.cwd_raw),
+        std::path::Path::new(app.cwd_raw()),
     );
     app.trust.project_key = lookup.project_key;
     app.trust.status = if lookup.trusted { TrustStatus::Trusted } else { TrustStatus::Untrusted };
@@ -89,7 +89,7 @@ pub fn accept(app: &mut App) -> Result<(), String> {
 
     let mut next_document = app.config.committed_preferences_document.clone();
     app.trust.project_key =
-        store::set_trusted(&mut next_document, std::path::Path::new(&app.cwd_raw));
+        store::set_trusted(&mut next_document, std::path::Path::new(app.cwd_raw()));
     crate::app::config::store::save(&path, &next_document)?;
 
     app.config.committed_preferences_document = next_document;
@@ -133,11 +133,7 @@ mod tests {
     #[test]
     fn initialize_routes_untrusted_projects_to_trusted_view() {
         let mut app = App::test_default();
-        app.cwd_raw = if cfg!(windows) {
-            r"C:\work\project".to_owned()
-        } else {
-            "/home/user/work/project".to_owned()
-        };
+        app.set_cwd_raw(if cfg!(windows) { r"C:\work\project" } else { "/home/user/work/project" });
         app.config.preferences_path = Some(std::path::PathBuf::from("prefs.json"));
         app.config.committed_preferences_document = json!({
             "projects": {}
@@ -157,7 +153,7 @@ mod tests {
             if cfg!(windows) { "C:/work/project" } else { "/home/user/work/project" };
 
         let mut app = App::test_default();
-        app.cwd_raw = project_path.to_owned();
+        app.set_cwd_raw(project_path);
         app.config.preferences_path = Some(std::path::PathBuf::from("prefs.json"));
         let mut prefs = json!({ "projects": {} });
         prefs["projects"][project_path] = json!({
@@ -180,10 +176,10 @@ mod tests {
 
         let mut app = App::test_default();
         app.active_view = ActiveView::Trusted;
-        app.cwd_raw = dir.path().join("project").to_string_lossy().to_string();
+        app.set_cwd_raw(dir.path().join("project").to_string_lossy().to_string());
         app.config.preferences_path = Some(path.clone());
         app.trust.status = TrustStatus::Untrusted;
-        app.trust.project_key = store::normalize_project_key(std::path::Path::new(&app.cwd_raw));
+        app.trust.project_key = store::normalize_project_key(std::path::Path::new(app.cwd_raw()));
 
         accept(&mut app).expect("accept");
 
@@ -200,7 +196,7 @@ mod tests {
             if cfg!(windows) { "C:/work/project" } else { "/home/user/work/project" };
 
         let mut app = App::test_default();
-        app.cwd_raw = project_path.to_owned();
+        app.set_cwd_raw(project_path);
         app.startup_session_picker_requested = true;
         app.config.preferences_path = Some(std::path::PathBuf::from("prefs.json"));
         let mut prefs = json!({ "projects": {} });
@@ -224,10 +220,10 @@ mod tests {
         let mut app = App::test_default();
         app.active_view = ActiveView::Trusted;
         app.startup_session_picker_requested = true;
-        app.cwd_raw = dir.path().join("project").to_string_lossy().to_string();
+        app.set_cwd_raw(dir.path().join("project").to_string_lossy().to_string());
         app.config.preferences_path = Some(path);
         app.trust.status = TrustStatus::Untrusted;
-        app.trust.project_key = store::normalize_project_key(std::path::Path::new(&app.cwd_raw));
+        app.trust.project_key = store::normalize_project_key(std::path::Path::new(app.cwd_raw()));
 
         accept(&mut app).expect("accept");
 

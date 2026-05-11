@@ -32,6 +32,12 @@ use crate::client::{AgentEvent, SessionLaunchSettings};
 use crate::forge_sdk_worker;
 use forge_primitives::{ElicitationAction, McpServerConfig, PermissionOutcome, QuestionOutcome};
 
+/// Sentinel `config_dir` for `ForgeSdkBridge` test stubs that never
+/// exercise the path. Production code constructs the bridge with a
+/// real account `config_dir`; tests that don't drive a session use
+/// this path so the typed field stays non-optional.
+const TESTING_STUB_CONFIG_DIR: &str = "/tmp/forge-testing-stub";
+
 /// Pending permission responses keyed by `tool_use_id`. The
 /// `can_use_tool` callback parks a oneshot here when the CLI asks;
 /// dispatch drains it when the matching `permission_response` arrives
@@ -74,14 +80,34 @@ pub(crate) struct BridgeInner {
     /// Current session id, shared with the `can_use_tool` callback so
     /// permission/question events carry the right `session_id`.
     pub(crate) session_id_slot: Arc<Mutex<String>>,
+    /// `<config_dir>` this bridge was bound to at construction time
+    /// (workspace-driven — typically the picked account's
+    /// `config_dir`). Threaded into the spawned `claude`
+    /// subprocess as `CLAUDE_CONFIG_DIR` and consulted by every
+    /// in-process accessor (oauth, settings, catalog) so they
+    /// honour the bound account, not whatever `$CLAUDE_CONFIG_DIR`
+    /// the parent shell happened to have.
+    config_dir: PathBuf,
+    /// Forge-internal account display name from `forge.toml`'s
+    /// `[[accounts]]`, set by the workspace picker. `None` when
+    /// `Agent::spawn` is called directly (tests, smoke). When
+    /// present, surfaced via [`AgentEvent::StatusSnapshot`] so the
+    /// TUI can render which forge-account the bridge is bound to.
+    display_name: Option<String>,
 }
 
 impl ForgeSdkBridge {
-    /// Construct a fresh bridge. The internal event channel is created
-    /// here; consumers grab the receiver once via
+    /// Construct a fresh bridge bound to `config_dir` with an
+    /// optional forge-account `display_name`. Both are stored as
+    /// typed fields. `config_dir` is consulted by every in-process
+    /// accessor (oauth, settings, catalog scans) and exported to
+    /// the spawned `claude` subprocess as `CLAUDE_CONFIG_DIR`.
+    /// `display_name`, when present, is surfaced via
+    /// [`AgentEvent::StatusSnapshot`]. The internal event channel
+    /// is created here; consumers grab the receiver once via
     /// [`ForgeSdkBridge::take_events`].
     #[must_use]
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(config_dir: PathBuf, display_name: Option<String>) -> Self {
         let (event_tx, events_rx) = mpsc::unbounded_channel();
         Self {
             inner: Arc::new(BridgeInner {
@@ -92,6 +118,8 @@ impl ForgeSdkBridge {
                 pending_questions: Arc::new(Mutex::new(HashMap::new())),
                 git_watchers: Mutex::new(HashMap::new()),
                 session_id_slot: Arc::new(Mutex::new(String::new())),
+                config_dir,
+                display_name,
             }),
         }
     }
@@ -237,7 +265,7 @@ impl ForgeSdkBridge {
 
 impl Default for ForgeSdkBridge {
     fn default() -> Self {
-        Self::new()
+        Self::new(PathBuf::from(TESTING_STUB_CONFIG_DIR), None)
     }
 }
 
@@ -400,26 +428,36 @@ impl ForgeSdkBridge {
 
     pub(crate) fn rename_session(&self, session_id: String, title: String) -> anyhow::Result<()> {
         // Offline disk mutation — no Client required.
-        crate::userdata::catalog::mutations::rename_session(&session_id, &title, None)?;
+        crate::userdata::catalog::mutations::rename_session(
+            &self.inner.config_dir,
+            &session_id,
+            &title,
+            None,
+        )?;
         Ok(())
     }
 
     pub(crate) fn get_status_snapshot(&self, session_id: String) -> anyhow::Result<()> {
         let event_tx = self.inner.event_tx.clone();
+        let config_dir = self.inner.config_dir.clone();
+        let display_name = self.inner.display_name.clone();
         self.dispatch("get_status_snapshot", move |client| async move {
             let account = client
                 .account_info_from_init()
-                .or_else(crate::cloud::auth_status::account_info_from_shell)
+                .or_else(|| crate::cloud::auth_status::account_info_from_shell(&config_dir))
                 .unwrap_or_default();
-            let _ = event_tx.send(AgentEvent::StatusSnapshot { session_id, account });
+            let forge_account = display_name.map(forge_primitives::ForgeAccountIdentity::new);
+            let _ =
+                event_tx.send(AgentEvent::StatusSnapshot { session_id, account, forge_account });
             Ok(())
         })
     }
 
     pub(crate) fn get_oauth_credentials_snapshot(&self, session_id: String) -> anyhow::Result<()> {
         let event_tx = self.inner.event_tx.clone();
+        let config_dir = self.inner.config_dir.clone();
         self.dispatch("get_oauth_credentials_snapshot", move |_client| async move {
-            let credentials = crate::cloud::oauth_credentials::load_oauth_credentials();
+            let credentials = crate::cloud::oauth_credentials::load_oauth_credentials(&config_dir);
             let _ = event_tx.send(AgentEvent::OauthCredentialsSnapshot { session_id, credentials });
             Ok(())
         })
@@ -681,12 +719,13 @@ impl ForgeSdkBridge {
     pub(crate) fn resume_session(
         &self,
         session_id: String,
+        cwd: String,
         launch_settings: SessionLaunchSettings,
     ) -> anyhow::Result<()> {
         let bridge = self.clone();
         tokio::spawn(async move {
             if let Err(err) =
-                forge_sdk_worker::spawn_session(&bridge, "", Some(&session_id), &launch_settings)
+                forge_sdk_worker::spawn_session(&bridge, &cwd, Some(&session_id), &launch_settings)
                     .await
             {
                 let msg = format!("forge-sdk session resume failed: {err}");
@@ -700,6 +739,61 @@ impl ForgeSdkBridge {
                         error = %msg,
                         "event channel closed; ConnectionFailed dropped",
                     );
+                }
+            }
+        });
+        Ok(())
+    }
+
+    /// Try resume; on failure transparently retry as new_session(cwd).
+    /// Surfaces `ConnectionFailed` only when both attempts fail. Used
+    /// by project-rooted spawns (Default / Named) where the catalog's
+    /// recorded lead may be stale (e.g. cross-account scan, deleted
+    /// file, schema drift). See
+    /// [`forge_primitives::Command::ResumeOrNewSession`] for the
+    /// motivation.
+    ///
+    /// `cwd` is also passed to the resume attempt, not just the
+    /// fresh-fallback. `claude --resume <id>` indexes sessions by the
+    /// project key derived from its own working directory, so
+    /// inheriting forge's `$PWD` (the default when cwd is empty) makes
+    /// every cross-directory resume fail with "No conversation found
+    /// with session ID …" even when the `.jsonl` exists.
+    pub(crate) fn resume_or_new_session(
+        &self,
+        session_id: String,
+        cwd: String,
+        launch_settings: SessionLaunchSettings,
+    ) -> anyhow::Result<()> {
+        let bridge = self.clone();
+        tokio::spawn(async move {
+            if let Err(resume_err) =
+                forge_sdk_worker::spawn_session(&bridge, &cwd, Some(&session_id), &launch_settings)
+                    .await
+            {
+                tracing::warn!(
+                    target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                    error = %resume_err,
+                    session_id = %session_id,
+                    "session resume failed; falling back to fresh session",
+                );
+                if let Err(new_err) =
+                    forge_sdk_worker::spawn_session(&bridge, &cwd, None, &launch_settings).await
+                {
+                    let msg = format!(
+                        "forge-sdk session spawn failed after resume fallback (resume err: {resume_err}; new err: {new_err})",
+                    );
+                    if bridge
+                        .event_tx()
+                        .send(AgentEvent::ConnectionFailed { message: msg.clone() })
+                        .is_err()
+                    {
+                        tracing::warn!(
+                            target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                            error = %msg,
+                            "event channel closed; ConnectionFailed dropped",
+                        );
+                    }
                 }
             }
         });
@@ -753,25 +847,36 @@ impl ForgeSdkBridge {
 
     // ---- Direct-return accessors (delegate to forge_sdk::*) ----
 
+    /// Cheap clone of the bridge's bound `config_dir`. Used by the
+    /// session worker to thread `CLAUDE_CONFIG_DIR` into the spawned
+    /// `claude` subprocess and by direct-return accessors.
     pub(crate) fn config_dir(&self) -> PathBuf {
-        forge_sdk::claude_config_dir()
+        self.inner.config_dir.clone()
+    }
+
+    /// Cheap clone of the bridge's bound forge-account
+    /// `display_name`, when forge-workspace picked one. Used by the
+    /// session worker to attach `forge_account` to the initial
+    /// `StatusSnapshot` emit alongside the CLI-side `account`.
+    pub(crate) fn display_name(&self) -> Option<String> {
+        self.inner.display_name.clone()
     }
 
     pub(crate) fn project_memory_path(&self, cwd: &Path) -> PathBuf {
-        crate::userdata::memory::project_memory_path(cwd)
+        crate::userdata::memory::project_memory_path(&self.inner.config_dir, cwd)
     }
 
     pub(crate) fn oauth_credentials(
         &self,
     ) -> Option<crate::cloud::oauth_credentials::OauthCredentials> {
-        crate::cloud::oauth_credentials::load_oauth_credentials()
+        crate::cloud::oauth_credentials::load_oauth_credentials(&self.inner.config_dir)
     }
 
     pub(crate) fn settings_documents(
         &self,
         cwd: &Path,
     ) -> crate::userdata::settings::SettingsDocuments {
-        crate::userdata::settings::settings_documents(cwd)
+        crate::userdata::settings::settings_documents(&self.inner.config_dir, cwd)
     }
 
     pub(crate) fn write_settings_document(
@@ -779,14 +884,14 @@ impl ForgeSdkBridge {
         target: &crate::userdata::settings::SettingsTarget,
         document: &Value,
     ) -> Result<(), forge_sdk::Error> {
-        crate::userdata::settings::write_settings_document(target, document)
+        crate::userdata::settings::write_settings_document(&self.inner.config_dir, target, document)
     }
 
     pub(crate) async fn oauth_usage(
         &self,
     ) -> Result<crate::cloud::oauth_usage::OauthUsage, crate::cloud::oauth_usage::OauthUsageError>
     {
-        crate::cloud::oauth_usage::oauth_usage().await
+        crate::cloud::oauth_usage::oauth_usage(&self.inner.config_dir).await
     }
 }
 
@@ -794,23 +899,27 @@ impl ForgeSdkBridge {
 mod tests {
     use super::*;
 
+    fn test_bridge() -> ForgeSdkBridge {
+        ForgeSdkBridge::new(PathBuf::from(TESTING_STUB_CONFIG_DIR), None)
+    }
+
     #[test]
     fn take_events_returns_some_once_then_none() {
-        let bridge = ForgeSdkBridge::new();
+        let bridge = test_bridge();
         assert!(bridge.take_events().is_some());
         assert!(bridge.take_events().is_none());
     }
 
     #[test]
     fn dispatch_without_client_returns_error() {
-        let bridge = ForgeSdkBridge::new();
+        let bridge = test_bridge();
         let err = bridge.cancel("session-1".to_owned()).unwrap_err();
         assert!(err.to_string().contains("before active session"));
     }
 
     #[test]
     fn rename_session_runs_offline_without_client() {
-        let bridge = ForgeSdkBridge::new();
+        let bridge = test_bridge();
         // Bogus session id — `rename_session` propagates the disk
         // error rather than the "no active session" guard. The point
         // of this test is to confirm we do NOT take the dispatch path.

@@ -2,13 +2,22 @@
 //! receiver into the App's [`ClientEvent`] channel, and own the
 //! permission/question response forwarders. The `AgentEvent` →
 //! `ClientEvent` translation lives here as private helpers.
+//!
+//! Each connection task is the per-session forwarder: it consumes
+//! [`AgentEvent`]s emitted by one [`forge_agent::AgentHandle`] and
+//! tags each translated [`ClientEvent`] with the [`SessionKey`] the
+//! App's multiplexer uses to route to the right
+//! [`crate::app::session::Session`] bucket.
 
 use crate::agent::client::AgentEvent;
 use crate::agent::events::ClientEvent;
 use crate::agent::model;
+use crate::app::App;
 use crate::error::AppError;
 use forge_primitives as types;
+use forge_workspace::SessionKey;
 use std::rc::Rc;
+use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing::{Instrument as _, info_span};
 
@@ -18,19 +27,29 @@ use super::type_converters::{
 };
 use super::{ConnectionSlot, StartConnectionParams};
 
+/// Resolve the [`SessionKey`] used to tag a translated
+/// [`ClientEvent`]. AgentEvents that already carry a `session_id`
+/// derive directly from it (this is the post-Connected steady
+/// state). The few AgentEvents that lack a session id
+/// (`AuthRequired`, `ConnectionFailed`, `SessionsListed`) fall back
+/// to the pre-Connected synthetic key — the App's bucket map keeps
+/// an entry under that key until the first `Connected` event
+/// migrates the bucket onto the real session UUID.
+fn session_key_for(event: &AgentEvent) -> SessionKey {
+    match event.session_id() {
+        Some(id) => SessionKey::from_session_id(id.to_owned()),
+        None => SessionKey::from_session_id(App::PRE_CONNECT_KEY),
+    }
+}
+
 pub(super) async fn run_connection_task(
     params: StartConnectionParams,
     conn_slot_writer: Rc<std::cell::RefCell<Option<ConnectionSlot>>>,
 ) {
-    let request_kind = if params.resume_id.is_some() { "resume" } else { "create" };
-    let session_id = params.resume_id.clone().unwrap_or_default();
     let connection_span = info_span!(
         target: crate::logging::targets::BRIDGE_LIFECYCLE,
         "bridge_connection",
-        request_kind,
-        resume_requested = params.resume_requested,
-        session_id = %session_id,
-        cwd = %params.cwd_raw,
+        request_kind = "create",
     );
 
     async move {
@@ -39,43 +58,76 @@ pub(super) async fn run_connection_task(
             event_name = "bridge_connection_task_started",
             message = "bridge connection task started",
             outcome = "start",
-            request_kind,
-            resume_requested = params.resume_requested,
-            session_id = %session_id,
+            request_kind = "create",
         );
 
+        // Destructure so `workspace` can drop the moment we're done with
+        // it. The spawned event loop only needs `event_tx`, so dropping
+        // `workspace` here lets `Rc::try_unwrap` succeed at clean exit.
+        let StartConnectionParams {
+            event_tx,
+            workspace,
+            session_launch_settings,
+            target,
+            pre_connect_key,
+            is_fatal_on_failure,
+        } = params;
+
         let mut connected_once = false;
-        let agent_handle = forge_agent::Agent::spawn();
-        let Some(mut event_rx) = agent_handle.take_events() else {
-            // `Agent::spawn()` seeds a fresh receiver, so this is only
-            // reachable if a future refactor double-taps `take_events`.
-            // Surface as a connection failure rather than panic.
-            emit_connection_failed(
-                &params.event_tx,
-                "forge-agent yielded no event receiver".to_owned(),
-                AppError::ConnectionFailed,
-            );
-            return;
-        };
+        let agent: Arc<forge_agent::AgentHandle> =
+            match workspace.get_agent_handle(target, session_launch_settings).await {
+                Ok(handle) => handle,
+                Err(err) => {
+                    emit_connection_failed(
+                        &event_tx,
+                        &pre_connect_key,
+                        format!("workspace.get_agent_handle failed: {err}"),
+                        AppError::ConnectionFailed,
+                        is_fatal_on_failure,
+                    );
+                    return;
+                }
+            };
+        drop(workspace);
 
-        let agent: Rc<forge_agent::AgentHandle> = Rc::new(agent_handle);
-        *conn_slot_writer.borrow_mut() = Some(ConnectionSlot { conn: Rc::clone(&agent) });
-
-        let send_result = if let Some(resume_id) = params.resume_id.clone() {
-            agent.resume_session(resume_id, params.session_launch_settings.clone())
-        } else {
-            agent.new_session(params.cwd_raw.clone(), params.session_launch_settings.clone())
-        };
-        if let Err(err) = send_result {
-            emit_connection_failed(
-                &params.event_tx,
-                format!("Failed to start forge-sdk session: {err}"),
-                AppError::ConnectionFailed,
-            );
-            return;
+        // Forge-side display_name is known the instant the
+        // workspace picks an account — much earlier than the CLI-
+        // side status snapshot (which has to wait for the claude
+        // subprocess to boot, init, and emit `system/init`). Emit
+        // it now so the welcome message renders the right label
+        // from the first frame after spawn.
+        if let Some(display_name) = agent.display_name() {
+            let _ = event_tx.send(ClientEvent::ForgeAccountIdentityReady {
+                session_key: pre_connect_key.clone(),
+                display_name,
+            });
         }
 
-        forge_sdk_event_loop(&params, &mut event_rx, &agent, &mut connected_once).await;
+        let Some(mut event_rx) = agent.take_events() else {
+            // The Agent the workspace just spawned for us seeds a fresh
+            // receiver, so this is only reachable if a future refactor
+            // double-taps `take_events`. Surface as a connection failure
+            // rather than panic.
+            emit_connection_failed(
+                &event_tx,
+                &pre_connect_key,
+                "forge-workspace yielded no event receiver".to_owned(),
+                AppError::ConnectionFailed,
+                is_fatal_on_failure,
+            );
+            return;
+        };
+
+        *conn_slot_writer.borrow_mut() = Some(ConnectionSlot { conn: Arc::clone(&agent) });
+
+        forge_sdk_event_loop(
+            &event_tx,
+            &mut event_rx,
+            &agent,
+            &mut connected_once,
+            &pre_connect_key,
+        )
+        .await;
     }
     .instrument(connection_span)
     .await;
@@ -86,13 +138,14 @@ pub(super) async fn run_connection_task(
 /// requests are forwarded with a oneshot reply channel and a
 /// dedicated forwarder task drains the reply.
 async fn forge_sdk_event_loop(
-    params: &StartConnectionParams,
+    event_tx: &mpsc::UnboundedSender<ClientEvent>,
     event_rx: &mut mpsc::UnboundedReceiver<AgentEvent>,
-    agent: &Rc<forge_agent::AgentHandle>,
+    agent: &Arc<forge_agent::AgentHandle>,
     connected_once: &mut bool,
+    pre_connect_key: &SessionKey,
 ) {
     while let Some(event) = event_rx.recv().await {
-        handle_agent_event(&params.event_tx, agent, connected_once, params.resume_requested, event);
+        handle_agent_event(event_tx, agent, connected_once, pre_connect_key, event);
     }
     tracing::info!(
         target: crate::logging::targets::BRIDGE_LIFECYCLE,
@@ -104,11 +157,12 @@ async fn forge_sdk_event_loop(
 
 fn handle_agent_event(
     event_tx: &mpsc::UnboundedSender<ClientEvent>,
-    agent: &Rc<forge_agent::AgentHandle>,
+    agent: &Arc<forge_agent::AgentHandle>,
     connected_once: &mut bool,
-    resume_requested: bool,
+    pre_connect_key: &SessionKey,
     event: AgentEvent,
 ) {
+    let session_key = session_key_for(&event);
     match event {
         AgentEvent::Connected {
             session_id,
@@ -121,6 +175,7 @@ fn handle_agent_event(
             handle_connected_event(
                 event_tx,
                 connected_once,
+                pre_connect_key,
                 session_id,
                 cwd,
                 current_model,
@@ -130,10 +185,26 @@ fn handle_agent_event(
             );
         }
         AgentEvent::AuthRequired { method_name, method_description } => {
-            let _ = event_tx.send(ClientEvent::AuthRequired { method_name, method_description });
+            let _ = event_tx.send(ClientEvent::AuthRequired {
+                session_key,
+                method_name,
+                method_description,
+            });
         }
         AgentEvent::ConnectionFailed { message } => {
-            emit_connection_failed(event_tx, message, AppError::ConnectionFailed);
+            // After the first Connected event, an in-flight session
+            // failure must not also kill the app even on the startup
+            // path — the user has working state to preserve. Setting
+            // `is_fatal_on_failure: false` here is correct: this code
+            // path only runs once `forge_sdk_event_loop` is alive,
+            // which means startup succeeded.
+            emit_connection_failed(
+                event_tx,
+                &session_key,
+                message,
+                AppError::ConnectionFailed,
+                false,
+            );
         }
         AgentEvent::PermissionRequest { session_id, request } => {
             handle_permission_request_event(event_tx, agent, session_id, request);
@@ -142,7 +213,7 @@ fn handle_agent_event(
             handle_question_request_event(event_tx, agent, session_id, request);
         }
         AgentEvent::ElicitationRequest { session_id, request } => {
-            if event_tx.send(ClientEvent::McpElicitationRequest { request }).is_err() {
+            if event_tx.send(ClientEvent::McpElicitationRequest { session_key, request }).is_err() {
                 tracing::error!(
                     target: crate::logging::targets::APP_PERMISSION,
                     event_name = "elicitation_request_dispatch_failed",
@@ -153,24 +224,20 @@ fn handle_agent_event(
             }
         }
         AgentEvent::ElicitationComplete { elicitation_id, server_name, .. } => {
-            let _ =
-                event_tx.send(ClientEvent::McpElicitationCompleted { elicitation_id, server_name });
+            let _ = event_tx.send(ClientEvent::McpElicitationCompleted {
+                session_key,
+                elicitation_id,
+                server_name,
+            });
         }
         AgentEvent::McpAuthRedirect { redirect, .. } => {
-            let _ = event_tx.send(ClientEvent::McpAuthRedirect { redirect });
+            let _ = event_tx.send(ClientEvent::McpAuthRedirect { session_key, redirect });
         }
         AgentEvent::McpOperationError { error, .. } => {
-            let _ = event_tx.send(ClientEvent::McpOperationError { error });
+            let _ = event_tx.send(ClientEvent::McpOperationError { session_key, error });
         }
         AgentEvent::SlashError { message, .. } => {
-            if resume_requested
-                && !*connected_once
-                && message.to_ascii_lowercase().contains("unknown session")
-            {
-                let _ = event_tx.send(ClientEvent::FatalError(AppError::SessionNotFound));
-                return;
-            }
-            let _ = event_tx.send(ClientEvent::SlashCommandError(message));
+            let _ = event_tx.send(ClientEvent::SlashCommandError { session_key, message });
         }
         AgentEvent::RuntimeReloadCompleted { session_id } => {
             let _ = event_tx.send(ClientEvent::RuntimeReloadCompleted { session_id });
@@ -199,8 +266,12 @@ fn handle_agent_event(
         AgentEvent::SessionsListed { sessions } => {
             let _ = event_tx.send(ClientEvent::SessionsListed { sessions });
         }
-        AgentEvent::StatusSnapshot { session_id, account } => {
-            let _ = event_tx.send(ClientEvent::StatusSnapshotReceived { session_id, account });
+        AgentEvent::StatusSnapshot { session_id, account, forge_account } => {
+            let _ = event_tx.send(ClientEvent::StatusSnapshotReceived {
+                session_id,
+                account,
+                forge_account,
+            });
         }
         AgentEvent::OauthCredentialsSnapshot { session_id, credentials } => {
             let _ = event_tx
@@ -243,6 +314,7 @@ fn handle_agent_event(
 fn handle_connected_event(
     event_tx: &mpsc::UnboundedSender<ClientEvent>,
     connected_once: &mut bool,
+    pre_connect_key: &SessionKey,
     session_id: String,
     cwd: String,
     current_model: types::CurrentModel,
@@ -270,13 +342,14 @@ fn handle_connected_event(
             available_models: map_available_models(available_models),
             mode,
             history_updates,
+            pre_connect_key: Some(pre_connect_key.clone()),
         });
     }
 }
 
 fn handle_permission_request_event(
     event_tx: &mpsc::UnboundedSender<ClientEvent>,
-    agent: &Rc<forge_agent::AgentHandle>,
+    agent: &Arc<forge_agent::AgentHandle>,
     session_id: String,
     request: types::PermissionRequest,
 ) {
@@ -284,7 +357,7 @@ fn handle_permission_request_event(
     let (response_tx, response_rx) = tokio::sync::oneshot::channel();
     if event_tx.send(ClientEvent::PermissionRequest { request, response_tx }).is_ok() {
         spawn_permission_response_forwarder(
-            Rc::clone(agent),
+            Arc::clone(agent),
             response_rx,
             session_id,
             tool_call_id,
@@ -303,14 +376,14 @@ fn handle_permission_request_event(
 
 fn handle_question_request_event(
     event_tx: &mpsc::UnboundedSender<ClientEvent>,
-    agent: &Rc<forge_agent::AgentHandle>,
+    agent: &Arc<forge_agent::AgentHandle>,
     session_id: String,
     request: types::QuestionRequest,
 ) {
     let (request, tool_call_id) = map_question_request(&session_id, request);
     let (response_tx, response_rx) = tokio::sync::oneshot::channel();
     if event_tx.send(ClientEvent::QuestionRequest { request, response_tx }).is_ok() {
-        spawn_question_response_forwarder(Rc::clone(agent), response_rx, session_id, tool_call_id);
+        spawn_question_response_forwarder(Arc::clone(agent), response_rx, session_id, tool_call_id);
     } else {
         tracing::error!(
             target: crate::logging::targets::APP_PERMISSION,
@@ -324,7 +397,7 @@ fn handle_question_request_event(
 }
 
 fn spawn_permission_response_forwarder(
-    agent: Rc<forge_agent::AgentHandle>,
+    agent: Arc<forge_agent::AgentHandle>,
     response_rx: tokio::sync::oneshot::Receiver<model::RequestPermissionResponse>,
     session_id: String,
     tool_call_id: String,
@@ -382,7 +455,7 @@ fn spawn_permission_response_forwarder(
 }
 
 fn spawn_question_response_forwarder(
-    agent: Rc<forge_agent::AgentHandle>,
+    agent: Arc<forge_agent::AgentHandle>,
     response_rx: tokio::sync::oneshot::Receiver<model::RequestQuestionResponse>,
     session_id: String,
     tool_call_id: String,
@@ -445,11 +518,25 @@ fn spawn_question_response_forwarder(
     });
 }
 
+/// Emit a connection failure for the bucket addressed by `session_key`.
+///
+/// `is_fatal` controls whether forge-tui should also exit. The
+/// startup connection task sets this `true` — if the very first
+/// bridge fails before any session exists, there's nothing to
+/// render and the app should terminate. The sleeping-project spawn
+/// flow sets this `false` — the user has an active session whose
+/// state must survive a fresh spawn's failure; the failure surfaces
+/// inline in the spawn bucket.
 pub(super) fn emit_connection_failed(
     event_tx: &mpsc::UnboundedSender<ClientEvent>,
+    session_key: &SessionKey,
     message: String,
     app_error: AppError,
+    is_fatal: bool,
 ) {
-    let _ = event_tx.send(ClientEvent::ConnectionFailed(message));
-    let _ = event_tx.send(ClientEvent::FatalError(app_error));
+    let _ =
+        event_tx.send(ClientEvent::ConnectionFailed { session_key: session_key.clone(), message });
+    if is_fatal {
+        let _ = event_tx.send(ClientEvent::FatalError(app_error));
+    }
 }

@@ -10,7 +10,7 @@ use forge_tui::agent::model;
 use forge_tui::app::{AppStatus, MessageBlock, MessageRole};
 use pretty_assertions::assert_eq;
 
-use crate::helpers::{send_client_event, test_app};
+use crate::helpers::{active_session_key, send_client_event, test_app};
 use crate::message_helpers::{
     assistant_message, send_msg, system_message, text_block, tool_result_block, tool_use_block,
     user_message,
@@ -38,9 +38,10 @@ async fn full_turn_lifecycle_text_only() {
     assert!(matches!(app.status, AppStatus::Running));
 
     // Turn completes
-    send_client_event(&mut app, ClientEvent::TurnComplete { terminal_reason: None });
+    let session_key = active_session_key(&app);
+    send_client_event(&mut app, ClientEvent::TurnComplete { session_key, terminal_reason: None });
     assert!(matches!(app.status, AppStatus::Ready));
-    assert_eq!(app.messages.len(), 1);
+    assert_eq!(app.messages().len(), 1);
 }
 
 #[tokio::test]
@@ -68,7 +69,8 @@ async fn full_turn_lifecycle_with_tool_calls() {
     send_msg(&mut app, assistant_message(vec![text_block(" The file looks good.")]));
 
     // Turn completes
-    send_client_event(&mut app, ClientEvent::TurnComplete { terminal_reason: None });
+    let session_key = active_session_key(&app);
+    send_client_event(&mut app, ClientEvent::TurnComplete { session_key, terminal_reason: None });
     assert!(matches!(app.status, AppStatus::Ready));
 }
 
@@ -87,11 +89,11 @@ async fn todowrite_tool_call_updates_todo_list() {
 
     send_msg(&mut app, assistant_message(vec![tool_use_block("todo-1", "TodoWrite", raw_input)]));
 
-    assert_eq!(app.todos.len(), 2);
-    assert_eq!(app.todos[0].content, "Fix bug");
-    assert_eq!(app.todos[1].content, "Write tests");
+    assert_eq!(app.todos().len(), 2);
+    assert_eq!(app.todos()[0].content, "Fix bug");
+    assert_eq!(app.todos()[1].content, "Write tests");
     // show_todo_panel is user-toggled (Ctrl+T), not auto-shown on TodoWrite
-    assert!(!app.show_todo_panel);
+    assert!(!app.show_todo_panel());
 }
 
 #[tokio::test]
@@ -103,7 +105,7 @@ async fn todowrite_replaces_previous_items_and_clears_for_terminal_payloads() {
         {"content": "Task B", "status": "pending", "activeForm": "Doing B"},
     ]});
     send_msg(&mut app, assistant_message(vec![tool_use_block("todo-r1", "TodoWrite", first)]));
-    assert_eq!(app.todos.len(), 2);
+    assert_eq!(app.todos().len(), 2);
 
     let replacement = serde_json::json!({"todos": [
         {"content": "Task C", "status": "pending", "activeForm": "Doing C"},
@@ -112,8 +114,8 @@ async fn todowrite_replaces_previous_items_and_clears_for_terminal_payloads() {
         &mut app,
         assistant_message(vec![tool_use_block("todo-r2", "TodoWrite", replacement)]),
     );
-    assert_eq!(app.todos.len(), 1, "second TodoWrite replaces first");
-    assert_eq!(app.todos[0].content, "Task C");
+    assert_eq!(app.todos().len(), 1, "second TodoWrite replaces first");
+    assert_eq!(app.todos()[0].content, "Task C");
 
     let completed = serde_json::json!({"todos": [
         {"content": "Done task", "status": "completed", "activeForm": "Done"},
@@ -123,8 +125,8 @@ async fn todowrite_replaces_previous_items_and_clears_for_terminal_payloads() {
         assistant_message(vec![tool_use_block("todo-done", "TodoWrite", completed)]),
     );
 
-    assert!(app.todos.is_empty(), "all-completed clears the list");
-    assert!(!app.show_todo_panel, "panel hidden when all done");
+    assert!(app.todos().is_empty(), "all-completed clears the list");
+    assert!(!app.show_todo_panel(), "panel hidden when all done");
 }
 
 // --- Error recovery ---
@@ -133,9 +135,10 @@ async fn todowrite_replaces_previous_items_and_clears_for_terminal_payloads() {
 async fn error_then_new_turn_recovers() {
     let mut app = test_app();
 
+    let session_key = active_session_key(&app);
     send_client_event(
         &mut app,
-        ClientEvent::TurnError { message: "timeout".into(), terminal_reason: None },
+        ClientEvent::TurnError { session_key, message: "timeout".into(), terminal_reason: None },
     );
     assert!(matches!(app.status, AppStatus::Error));
 
@@ -159,22 +162,23 @@ async fn chunks_across_turns_open_a_new_assistant_message() {
 
     // First turn.
     send_msg(&mut app, assistant_message(vec![text_block("Turn 1")]));
-    send_client_event(&mut app, ClientEvent::TurnComplete { terminal_reason: None });
-    assert_eq!(app.messages.len(), 1);
+    let session_key = active_session_key(&app);
+    send_client_event(&mut app, ClientEvent::TurnComplete { session_key, terminal_reason: None });
+    assert_eq!(app.messages().len(), 1);
 
     // Second turn (no user message between turns). Should open a
     // fresh assistant ChatMessage rather than appending to "Turn 1".
     send_msg(&mut app, assistant_message(vec![text_block("Turn 2")]));
 
-    assert_eq!(app.messages.len(), 2, "second turn must NOT merge into the first");
-    let first = app.messages.first().expect("first turn message");
+    assert_eq!(app.messages().len(), 2, "second turn must NOT merge into the first");
+    let first = app.messages().first().expect("first turn message");
     let MessageBlock::Text(first_block) = first.blocks.last().expect("first block") else {
         panic!("expected first turn text block");
     };
     assert!(first_block.text.contains("Turn 1"));
     assert!(!first_block.text.contains("Turn 2"), "Turn 2 must not have been merged in");
 
-    let second = app.messages.last().expect("second turn message");
+    let second = app.messages().last().expect("second turn message");
     assert!(matches!(second.role, MessageRole::Assistant));
     let MessageBlock::Text(second_block) = second.blocks.last().expect("second block") else {
         panic!("expected second turn text block");
@@ -204,8 +208,8 @@ async fn tool_call_content_update() {
         )]),
     );
 
-    let (mi, bi) = app.tool_call_index["tc-content"];
-    if let MessageBlock::ToolCall(tc) = &app.messages[mi].blocks[bi] {
+    let (mi, bi) = app.lookup_tool_call("tc-content").expect("missing tool index");
+    if let MessageBlock::ToolCall(tc) = &app.messages()[mi].blocks[bi] {
         assert!(!tc.content.is_empty(), "content should be set");
     } else {
         panic!("expected ToolCall block");
@@ -217,13 +221,13 @@ async fn tool_call_content_update() {
 #[tokio::test]
 async fn auto_scroll_maintained_during_streaming() {
     let mut app = test_app();
-    assert!(app.viewport.auto_scroll);
+    assert!(app.viewport().auto_scroll);
 
     for _ in 0..20 {
         send_msg(&mut app, assistant_message(vec![text_block("More text. ")]));
     }
 
-    assert!(app.viewport.auto_scroll, "auto_scroll should stay true during streaming");
+    assert!(app.viewport().auto_scroll, "auto_scroll should stay true during streaming");
 }
 
 // --- Stress: many tool calls in one turn ---
@@ -244,7 +248,7 @@ async fn stress_many_tool_calls_in_one_turn() {
         );
     }
 
-    assert_eq!(app.tool_call_index.len(), 50);
+    assert_eq!(app.tool_call_index().len(), 50);
 
     // Complete all (tool result envelopes finalise each tool_use_id).
     for i in 0..50 {
@@ -263,17 +267,17 @@ async fn stress_many_tool_calls_in_one_turn() {
 async fn mode_updates_switch_known_modes_fall_back_for_unknown_ids_and_noop_without_state() {
     let mut app = test_app();
 
-    app.mode = Some(forge_tui::app::ModeState {
+    app.set_mode(Some(forge_tui::app::ModeState {
         current_mode_id: "code".into(),
         current_mode_name: "Code".into(),
         available_modes: vec![
             forge_tui::app::ModeInfo { id: "code".into(), name: "Code".into() },
             forge_tui::app::ModeInfo { id: "plan".into(), name: "Plan".into() },
         ],
-    });
+    }));
 
     send_msg(&mut app, system_message("status", serde_json::json!({"permissionMode": "plan"})));
-    let mode = app.mode.as_ref().expect("mode should still exist");
+    let mode = app.mode().expect("mode should still exist");
     assert_eq!(mode.current_mode_id, "plan");
     assert_eq!(mode.current_mode_name, "Plan");
 
@@ -281,7 +285,7 @@ async fn mode_updates_switch_known_modes_fall_back_for_unknown_ids_and_noop_with
         &mut app,
         system_message("status", serde_json::json!({"permissionMode": "unknown-mode"})),
     );
-    let mode = app.mode.as_ref().expect("mode should still exist");
+    let mode = app.mode().expect("mode should still exist");
     assert_eq!(mode.current_mode_id, "unknown-mode");
     assert_eq!(mode.current_mode_name, "unknown-mode");
 
@@ -290,7 +294,7 @@ async fn mode_updates_switch_known_modes_fall_back_for_unknown_ids_and_noop_with
         &mut no_mode_app,
         system_message("status", serde_json::json!({"permissionMode": "plan-mode"})),
     );
-    assert!(no_mode_app.mode.is_none(), "update without existing mode state is a no-op");
+    assert!(no_mode_app.mode().is_none(), "update without existing mode state is a no-op");
 }
 
 // --- Edge cases: interleaved events ---
@@ -312,13 +316,13 @@ async fn text_between_tool_calls_creates_separate_blocks() {
     send_msg(&mut app, assistant_message(vec![text_block("Final text")]));
 
     // Should be: Text, ToolCall, Text, ToolCall, Text = 5 blocks
-    assert_eq!(app.messages.len(), 1);
-    assert_eq!(app.messages[0].blocks.len(), 5);
-    assert!(matches!(app.messages[0].blocks[0], MessageBlock::Text(..)));
-    assert!(matches!(app.messages[0].blocks[1], MessageBlock::ToolCall(_)));
-    assert!(matches!(app.messages[0].blocks[2], MessageBlock::Text(..)));
-    assert!(matches!(app.messages[0].blocks[3], MessageBlock::ToolCall(_)));
-    assert!(matches!(app.messages[0].blocks[4], MessageBlock::Text(..)));
+    assert_eq!(app.messages().len(), 1);
+    assert_eq!(app.messages()[0].blocks.len(), 5);
+    assert!(matches!(app.messages()[0].blocks[0], MessageBlock::Text(..)));
+    assert!(matches!(app.messages()[0].blocks[1], MessageBlock::ToolCall(_)));
+    assert!(matches!(app.messages()[0].blocks[2], MessageBlock::Text(..)));
+    assert!(matches!(app.messages()[0].blocks[3], MessageBlock::ToolCall(_)));
+    assert!(matches!(app.messages()[0].blocks[4], MessageBlock::Text(..)));
 }
 
 #[tokio::test]
@@ -327,9 +331,10 @@ async fn rapid_turn_complete_then_new_streaming() {
 
     // First turn
     send_msg(&mut app, assistant_message(vec![text_block("Turn 1")]));
-    send_client_event(&mut app, ClientEvent::TurnComplete { terminal_reason: None });
+    let session_key = active_session_key(&app);
+    send_client_event(&mut app, ClientEvent::TurnComplete { session_key, terminal_reason: None });
     assert!(matches!(app.status, AppStatus::Ready));
-    assert_eq!(app.files_accessed, 0);
+    assert_eq!(app.files_accessed(), 0);
 
     // Immediately start second turn
     send_msg(&mut app, assistant_message(vec![text_block("Turn 2")]));
@@ -343,11 +348,12 @@ async fn rapid_turn_complete_then_new_streaming() {
             serde_json::json!({"file_path": "file"}),
         )]),
     );
-    assert_eq!(app.files_accessed, 1);
+    assert_eq!(app.files_accessed(), 1);
 
-    send_client_event(&mut app, ClientEvent::TurnComplete { terminal_reason: None });
+    let session_key = active_session_key(&app);
+    send_client_event(&mut app, ClientEvent::TurnComplete { session_key, terminal_reason: None });
     assert!(matches!(app.status, AppStatus::Ready));
-    assert_eq!(app.files_accessed, 0, "reset again on second TurnComplete");
+    assert_eq!(app.files_accessed(), 0, "reset again on second TurnComplete");
 }
 
 #[tokio::test]
@@ -361,11 +367,11 @@ async fn available_commands_update_replaces_previous() {
         &mut app,
         system_message("init", serde_json::json!({"slash_commands": ["/help", "/clear"]})),
     );
-    assert_eq!(app.available_commands.len(), 2);
+    assert_eq!(app.available_commands().len(), 2);
 
     // New update replaces, not appends
     send_msg(&mut app, system_message("init", serde_json::json!({"slash_commands": ["/commit"]})));
-    assert_eq!(app.available_commands.len(), 1, "replaced, not appended");
+    assert_eq!(app.available_commands().len(), 1, "replaced, not appended");
 }
 
 #[tokio::test]
@@ -383,25 +389,26 @@ async fn error_during_tool_calls_leaves_tool_calls_intact() {
         )]),
     );
 
+    let session_key = active_session_key(&app);
     send_client_event(
         &mut app,
-        ClientEvent::TurnError { message: "crashed".into(), terminal_reason: None },
+        ClientEvent::TurnError { session_key, message: "crashed".into(), terminal_reason: None },
     );
 
     assert!(matches!(app.status, AppStatus::Error));
     // Tool call should remain indexed and preserved in the original assistant message.
-    assert!(app.tool_call_index.contains_key("tc-err"));
-    assert_eq!(app.messages.len(), 2, "assistant message + system error message");
-    assert!(matches!(app.messages[0].role, MessageRole::Assistant));
-    assert_eq!(app.messages[0].blocks.len(), 2, "text + tool call preserved");
-    let Some(MessageBlock::ToolCall(tc)) = app.messages[0].blocks.get(1) else {
+    assert!(app.tool_call_index().contains_key("tc-err"));
+    assert_eq!(app.messages().len(), 2, "assistant message + system error message");
+    assert!(matches!(app.messages()[0].role, MessageRole::Assistant));
+    assert_eq!(app.messages()[0].blocks.len(), 2, "text + tool call preserved");
+    let Some(MessageBlock::ToolCall(tc)) = app.messages()[0].blocks.get(1) else {
         panic!("expected preserved tool call block");
     };
     assert_eq!(tc.id, "tc-err");
     assert_eq!(tc.status, model::ToolCallStatus::Failed, "in-progress tool should be failed");
 
-    assert!(matches!(app.messages[1].role, MessageRole::System(_)));
-    let Some(MessageBlock::Text(block)) = app.messages[1].blocks.first() else {
+    assert!(matches!(app.messages()[1].role, MessageRole::System(_)));
+    let Some(MessageBlock::Text(block)) = app.messages()[1].blocks.first() else {
         panic!("expected system error text block");
     };
     assert!(block.text.contains("Turn failed: crashed"));
@@ -422,9 +429,10 @@ async fn files_accessed_accumulates_across_tool_calls_in_one_turn() {
         );
     }
 
-    assert_eq!(app.files_accessed, 3, "one per tool call");
-    send_client_event(&mut app, ClientEvent::TurnComplete { terminal_reason: None });
-    assert_eq!(app.files_accessed, 0, "reset on turn complete");
+    assert_eq!(app.files_accessed(), 3, "one per tool call");
+    let session_key = active_session_key(&app);
+    send_client_event(&mut app, ClientEvent::TurnComplete { session_key, terminal_reason: None });
+    assert_eq!(app.files_accessed(), 0, "reset on turn complete");
 }
 
 // --- SdkMessageReceived session_id handling ---
@@ -439,11 +447,15 @@ async fn files_accessed_accumulates_across_tool_calls_in_one_turn() {
 #[tokio::test]
 async fn sdk_message_with_empty_app_session_id_adopts_wire_id() {
     let mut app = test_app();
-    app.session_id = Some(model::SessionId::new(""));
+    app.set_session_id(Some(model::SessionId::new("")));
     app.status = AppStatus::Thinking;
     // Empty assistant message slot, mimicking what `submit_input`
     // creates right before the first chunk arrives.
-    app.messages.push(forge_tui::app::ChatMessage::new(MessageRole::Assistant, Vec::new(), None));
+    app.messages_mut().push(forge_tui::app::ChatMessage::new(
+        MessageRole::Assistant,
+        Vec::new(),
+        None,
+    ));
     app.bind_active_turn_assistant_to_tail();
 
     let wire_msg: forge_primitives::Message = serde_json::from_value(serde_json::json!({
@@ -469,12 +481,12 @@ async fn sdk_message_with_empty_app_session_id_adopts_wire_id() {
     );
 
     assert_eq!(
-        app.session_id.as_ref().map(ToString::to_string).as_deref(),
+        app.session_id().map(ToString::to_string).as_deref(),
         Some("real-session-abc"),
         "App should have adopted the wire session id",
     );
     let assistant = app
-        .messages
+        .messages()
         .iter()
         .rfind(|m| matches!(m.role, MessageRole::Assistant))
         .expect("assistant message present");
@@ -494,8 +506,8 @@ async fn sdk_message_with_empty_app_session_id_adopts_wire_id() {
 #[tokio::test]
 async fn sdk_message_with_mismatched_real_session_id_is_dropped() {
     let mut app = test_app();
-    app.session_id = Some(model::SessionId::new("real-session-abc"));
-    let initial_message_count = app.messages.len();
+    app.set_session_id(Some(model::SessionId::new("real-session-abc")));
+    let initial_message_count = app.messages().len();
 
     let wire_msg: forge_primitives::Message = serde_json::from_value(serde_json::json!({
         "type": "assistant",
@@ -520,9 +532,13 @@ async fn sdk_message_with_mismatched_real_session_id_is_dropped() {
     );
 
     assert_eq!(
-        app.session_id.as_ref().map(ToString::to_string).as_deref(),
+        app.session_id().map(ToString::to_string).as_deref(),
         Some("real-session-abc"),
         "session id must not change on stale envelope",
     );
-    assert_eq!(app.messages.len(), initial_message_count, "stale envelope must not append to chat",);
+    assert_eq!(
+        app.messages().len(),
+        initial_message_count,
+        "stale envelope must not append to chat",
+    );
 }

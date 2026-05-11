@@ -169,7 +169,10 @@ pub fn set_always_thinking_enabled(document: &mut Value, enabled: bool) {
 
 pub fn thinking_effort_level(document: &Value) -> Result<EffortLevel, ()> {
     match read_persisted_setting(document, setting_spec(SettingId::ThinkingEffort))? {
-        PersistedSettingValue::Missing => Ok(EffortLevel::Medium),
+        // Forge defaults to `max` effort when the user hasn't set an
+        // explicit value — matches PR #91's "default forge to --effort
+        // max" intent.
+        PersistedSettingValue::Missing => Ok(EffortLevel::Max),
         PersistedSettingValue::Bool(_) => Err(()),
         PersistedSettingValue::String(value) => EffortLevel::from_stored(&value).ok_or(()),
     }

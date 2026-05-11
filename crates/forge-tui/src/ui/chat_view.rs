@@ -1,8 +1,7 @@
-use super::{autocomplete, chat, footer, help, input, layout, theme, todo};
+use super::{autocomplete, chat, footer, help, input, layout, projects_pane, theme, todo, top_bar};
 use crate::app::App;
 use ratatui::Frame;
 use ratatui::layout::Rect;
-#[cfg(feature = "perf")]
 use ratatui::style::Color;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
@@ -30,12 +29,58 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     };
     let areas = {
         let _t = app.perf.as_ref().map(|p| p.start("ui::layout"));
-        layout::compute(frame_area, input_visual_lines, todo_height, help_height)
+        layout::compute(
+            frame_area,
+            input_visual_lines,
+            todo_height,
+            help_height,
+            app.projects_pane_visible,
+        )
     };
+    // Cache for the mouse handler: pane click math reads
+    // `app.layout.pane` to decide whether a click landed inside the
+    // Projects pane before consulting `pane_hit_targets`.
+    app.layout = areas.clone();
 
-    {
+    // Narrow tier with the overlay open replaces the chat body with
+    // the Projects overlay. Wide / Medium tiers and Narrow-with-
+    // overlay-closed render the chat normally.
+    let overlay_active = app.projects_pane_overlay_open && areas.top_bar.is_some();
+
+    if !overlay_active {
         let _t = app.perf.as_ref().map(|p| p.start("ui::chat"));
         chat::render(frame, areas.body, app);
+    }
+
+    if overlay_active {
+        // Overlay path: the projects_pane::render_overlay clears
+        // `pane_hit_targets` itself before stamping new ones.
+        let _t = app.perf.as_ref().map(|p| p.start("ui::projects_overlay"));
+        let projects = app.workspace.as_ref().map(|ws| ws.list_projects()).unwrap_or_default();
+        projects_pane::render_overlay(frame, areas.body, app, &projects);
+    } else if let Some(pane_area) = areas.pane {
+        let _t = app.perf.as_ref().map(|p| p.start("ui::projects_pane"));
+        let projects = app.workspace.as_ref().map(|ws| ws.list_projects()).unwrap_or_default();
+        projects_pane::render(frame, pane_area, app, &projects);
+        // Vertical separator column between the pane and the chat
+        // column — full-height `│` glyphs in DIM so the eye picks up
+        // the boundary without competing with content on either side.
+        if let Some(sep_area) = areas.pane_separator {
+            render_pane_separator(frame, sep_area);
+        }
+    } else {
+        // No pane and no overlay this frame; clear stamps so a stale
+        // set from the previous (visible) frame can't be hit-tested.
+        // The top-bar render below will re-stamp the icon target.
+        app.pane_hit_targets.clear();
+    }
+
+    // Narrow-tier top bar. Always last so its `▤` icon hit-target
+    // sits at the end of `pane_hit_targets` and doesn't get stomped
+    // by the inline-pane / overlay clearing above.
+    if let Some(top_bar_area) = areas.top_bar {
+        let _t = app.perf.as_ref().map(|p| p.start("ui::top_bar"));
+        top_bar::render(frame, top_bar_area, app);
     }
 
     render_separator(frame, areas.input_sep);
@@ -79,9 +124,28 @@ fn render_separator(frame: &mut Frame, area: Rect) {
     frame.render_widget(Paragraph::new(line), area);
 }
 
-#[cfg(feature = "perf")]
+/// Render the full-height `│` column between the Projects pane and
+/// the chat column in DIM (DarkGray) — matches the rest of the
+/// pane's structural chrome (the underline rule + section headers).
+fn render_pane_separator(frame: &mut Frame, area: Rect) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    let lines: Vec<Line<'static>> = (0..area.height)
+        .map(|_| Line::from(Span::styled("│".to_owned(), Style::default().fg(theme::DIM))))
+        .collect();
+    frame.render_widget(Paragraph::new(lines), area);
+}
+
+/// Render the live FPS indicator at the top-right of `frame_area`.
+/// Always on in default builds — the FPS counter itself is computed
+/// unconditionally (`App::mark_frame_presented` / `App::frame_fps`)
+/// and the overlay is cheap (one styled `Line`, one rect). The
+/// `#[cfg(feature = "perf")]` gate that used to guard this was
+/// dropped so the user can see render rate live without a special
+/// build.
 fn render_perf_fps_overlay(frame: &mut Frame, frame_area: Rect, y: u16, app: &App) {
-    if app.perf.is_none() || frame_area.height == 0 || y >= frame_area.y + frame_area.height {
+    if frame_area.height == 0 || y >= frame_area.y + frame_area.height {
         return;
     }
     let Some(fps) = app.frame_fps() else {
@@ -105,6 +169,3 @@ fn render_perf_fps_overlay(frame: &mut Frame, frame_area: Rect, y: u16, app: &Ap
     ));
     frame.render_widget(Paragraph::new(line), area);
 }
-
-#[cfg(not(feature = "perf"))]
-fn render_perf_fps_overlay(_frame: &mut Frame, _frame_area: Rect, _y: u16, _app: &App) {}

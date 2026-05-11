@@ -230,16 +230,17 @@ fn build_key_help_items(app: &App) -> Vec<(String, String)> {
         ("Ctrl+Up/Down".to_owned(), "Scroll chat".to_owned()),
         ("Mouse wheel".to_owned(), "Scroll chat".to_owned()),
     ];
-    if app.is_compacting {
+    if app.is_compacting() {
         items.push(("Status".to_owned(), "Compacting context".to_owned()));
     }
     let focus_owner = app.focus_owner();
 
-    if app.show_todo_panel && !app.todos.is_empty() && app.pending_interaction_ids.is_empty() {
+    if app.show_todo_panel() && !app.todos().is_empty() && app.pending_interaction_ids().is_empty()
+    {
         items.push(("Tab".to_owned(), "Toggle todo focus".to_owned()));
     }
 
-    if !app.pending_interaction_ids.is_empty() {
+    if !app.pending_interaction_ids().is_empty() {
         match focus_owner {
             FocusOwner::Input => {
                 items.push(("Tab".to_owned(), "Focus pending prompt".to_owned()));
@@ -280,8 +281,8 @@ fn build_key_help_items(app: &App) -> Vec<(String, String)> {
     }
 
     // Inline interactions (permissions or questions)
-    if !app.pending_interaction_ids.is_empty() && focus_owner == FocusOwner::Permission {
-        if app.pending_interaction_ids.len() > 1 {
+    if !app.pending_interaction_ids().is_empty() && focus_owner == FocusOwner::Permission {
+        if app.pending_interaction_ids().len() > 1 {
             items.push(("Up/Down".to_owned(), "Switch prompt focus".to_owned()));
         }
         if focused_question_prompt(app) {
@@ -304,14 +305,14 @@ fn build_key_help_items(app: &App) -> Vec<(String, String)> {
 }
 
 fn focused_question_prompt(app: &App) -> bool {
-    let Some(tool_id) = app.pending_interaction_ids.first() else {
+    let Some(tool_id) = app.pending_interaction_ids().first() else {
         return false;
     };
     let Some((mi, bi)) = app.lookup_tool_call(tool_id) else {
         return false;
     };
     let Some(crate::app::MessageBlock::ToolCall(tc)) =
-        app.messages.get(mi).and_then(|message| message.blocks.get(bi))
+        app.messages().get(mi).and_then(|message| message.blocks.get(bi))
     else {
         return false;
     };
@@ -364,7 +365,7 @@ fn build_slash_command_items(
         .map(|(name, description)| ((*name).to_owned(), (*description).to_owned()))
         .collect();
 
-    for cmd in &app.available_commands {
+    for cmd in app.available_commands() {
         let name =
             if cmd.name.starts_with('/') { cmd.name.clone() } else { format!("/{}", cmd.name) };
         match commands.get_mut(&name) {
@@ -407,7 +408,7 @@ fn build_subagent_help_items(app: &App) -> Vec<(String, String)> {
     }
 
     let mut agents: Vec<(String, String)> = app
-        .available_agents
+        .available_agents()
         .iter()
         .filter(|agent| !agent.name.trim().is_empty())
         .map(|agent| {
@@ -600,8 +601,8 @@ mod tests {
         let items = build_help_items(&app);
         assert!(!has_item(&items, "Tab", "Toggle todo focus"));
 
-        app.show_todo_panel = true;
-        app.todos.push(TodoItem {
+        app.set_show_todo_panel(true);
+        app.todos_mut().push(TodoItem {
             content: "Task".into(),
             status: TodoStatus::Pending,
             active_form: String::new(),
@@ -613,7 +614,7 @@ mod tests {
     #[test]
     fn permission_navigation_only_shown_when_permission_has_focus() {
         let mut app = App::test_default();
-        app.pending_interaction_ids = vec!["perm-1".into(), "perm-2".into()];
+        *app.pending_interaction_ids_mut() = vec!["perm-1".into(), "perm-2".into()];
 
         // Without permission focus claim, do not show permission-only arrows.
         let items = build_help_items(&app);
@@ -635,7 +636,7 @@ mod tests {
     fn slash_tab_shows_advertised_commands_with_description() {
         let mut app = App::test_default();
         app.help_view = HelpView::SlashCommands;
-        app.available_commands = vec![
+        app.active_session_mut().unwrap().available_commands = vec![
             crate::agent::model::AvailableCommand::new("/help", "Open help"),
             crate::agent::model::AvailableCommand::new("memory", ""),
         ];
@@ -709,7 +710,7 @@ mod tests {
     fn subagent_tab_shows_advertised_subagents() {
         let mut app = App::test_default();
         app.help_view = HelpView::Subagents;
-        app.available_agents = vec![
+        app.active_session_mut().unwrap().available_agents = vec![
             crate::agent::model::AvailableAgent::new("reviewer", "Review code").model("haiku"),
             crate::agent::model::AvailableAgent::new("explore", ""),
         ];

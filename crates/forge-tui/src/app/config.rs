@@ -864,8 +864,13 @@ impl ConfigState {
 
     #[must_use]
     pub fn thinking_effort_effective(&self) -> EffortLevel {
-        store::thinking_effort_level(&self.committed_settings_document)
-            .unwrap_or(EffortLevel::Medium)
+        // Forge defaults to `max` effort when the user hasn't set an
+        // explicit value — matches the "default forge to --effort max"
+        // intent landed in PR #91. The worker's `default_max` fallback
+        // covered the case where launch_settings carries no effort,
+        // but forge-tui always populates effortLevel from this method,
+        // so the default has to live here too.
+        store::thinking_effort_level(&self.committed_settings_document).unwrap_or(EffortLevel::Max)
     }
 
     #[must_use]
@@ -1302,7 +1307,7 @@ pub fn setting_spec(id: SettingId) -> &'static SettingSpec {
 #[must_use]
 pub fn resolved_setting(app: &App, spec: &SettingSpec) -> ResolvedSetting {
     let document = app.config.document_for(spec.file);
-    resolve_setting_document(document, spec.id, &app.available_models)
+    resolve_setting_document(document, spec.id, app.available_models())
 }
 
 #[must_use]
@@ -1366,7 +1371,7 @@ pub fn setting_detail_options(app: &App, spec: &SettingSpec) -> Vec<String> {
                 options.iter().map(|option| option.label.to_owned()).collect()
             }
             SettingOptions::RuntimeCatalog(RuntimeCatalogKind::Models) => {
-                if app.available_models.is_empty() {
+                if app.available_models().is_empty() {
                     vec![
                         OPUS_MODEL_ALIAS_LABEL.to_owned(),
                         "Connect to load available models".to_owned(),
@@ -1389,7 +1394,7 @@ pub fn initialize_shared_state(app: &mut App) -> Result<(), String> {
     let loaded = store::load(
         app.settings_home_override.as_deref(),
         Some(project_root(app)),
-        app.conn.as_deref(),
+        app.conn().map(std::sync::Arc::as_ref),
     )?;
     app.config.apply_loaded(loaded, false);
     app.reconcile_runtime_from_persisted_settings_change();
@@ -1404,7 +1409,7 @@ pub fn open(app: &mut App) -> Result<(), String> {
     let loaded = store::load(
         app.settings_home_override.as_deref(),
         Some(project_root(app)),
-        app.conn.as_deref(),
+        app.conn().map(std::sync::Arc::as_ref),
     )?;
     app.config.apply_loaded(loaded, false);
     app.reconcile_runtime_from_persisted_settings_change();
@@ -1546,13 +1551,13 @@ pub fn request_status_snapshot_if_needed(app: &App) {
     if app.config.active_tab != ConfigTab::Status {
         return;
     }
-    let Some(conn) = app.conn.as_ref() else {
+    let Some(conn) = app.conn().cloned() else {
         return;
     };
-    let Some(ref sid) = app.session_id else {
+    let Some(session_id) = app.session_id().cloned() else {
         return;
     };
-    let session_id = sid.to_string();
+    let session_id = session_id.to_string();
     match conn.get_status_snapshot(session_id.clone()) {
         Ok(()) => tracing::debug!(
             target: crate::logging::targets::APP_AUTH,
@@ -1596,7 +1601,7 @@ fn effort_level_label(value: &str) -> Option<String> {
 }
 
 fn project_root(app: &App) -> &std::path::Path {
-    std::path::Path::new(&app.cwd_raw)
+    std::path::Path::new(app.cwd_raw())
 }
 
 fn option_label(spec: &SettingSpec, value: &str) -> Option<String> {

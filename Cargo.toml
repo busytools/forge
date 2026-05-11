@@ -1,9 +1,9 @@
 [workspace]
 resolver = "3"
-members = ["crates/forge-sdk", "crates/forge-primitives", "crates/forge-agent", "crates/forge-tui", "crates/forge-test-harness"]
+members = ["crates/forge-sdk", "crates/forge-primitives", "crates/forge-agent", "crates/forge-workspace", "crates/forge-tui", "crates/forge-test-harness"]
 
 [workspace.package]
-version = "0.14.2"
+version = "0.15.0"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/busytools/forge"
@@ -29,9 +29,11 @@ tokio-stream = "0.1"
 regex = "1"
 parking_lot = "0.12"
 clap = { version = "4", features = ["derive"] }
+clap_complete = "4"
 tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 toml = "0.8"
+dirs = "6"
 ratatui = { version = "0.30", features = ["unstable-rendered-line-info"] }
 crossterm = "0.29"
 
@@ -50,8 +52,9 @@ unicode-width = "0.2"
 base64 = "0.22"
 
 # Workspace-internal crates
-forge-primitives = { path = "crates/forge-primitives", version = "=0.14.2" }
-forge-agent = { path = "crates/forge-agent", version = "=0.14.2" }
+forge-primitives = { path = "crates/forge-primitives", version = "=0.15.0" }
+forge-agent = { path = "crates/forge-agent", version = "=0.15.0" }
+forge-workspace = { path = "crates/forge-workspace", version = "=0.15.0" }
 
 # Dev-only
 proptest = "1"

@@ -18,7 +18,7 @@ fn open_settings_app_in_dir(dir: &TempDir) -> App {
     .expect("write trust prefs");
     let mut app = App::test_default();
     app.settings_home_override = Some(dir.path().to_path_buf());
-    app.cwd_raw = dir.path().to_string_lossy().to_string();
+    app.set_cwd_raw(dir.path().to_string_lossy().to_string());
     open(&mut app).expect("open");
     app
 }
@@ -38,8 +38,8 @@ fn app_with_status_connection()
 -> (App, tokio::sync::mpsc::UnboundedReceiver<forge_primitives::Command>) {
     let mut app = App::test_default();
     let (handle, rx) = forge_agent::Agent::testing_stub();
-    app.conn = Some(std::rc::Rc::new(handle));
-    app.session_id = Some(crate::agent::model::SessionId::new("session-1"));
+    app.set_conn(Some(std::sync::Arc::new(handle)));
+    app.set_session_id(Some(crate::agent::model::SessionId::new("session-1")));
     app.config.active_tab = ConfigTab::Status;
     app.recent_sessions = vec![crate::app::RecentSessionInfo {
         session_id: "session-1".to_owned(),
@@ -74,7 +74,7 @@ fn open_loads_document_and_switches_view() {
     std::fs::write(&path, r#"{"fastMode":true}"#).expect("write");
     let mut app = App::test_default();
     app.settings_home_override = Some(dir.path().to_path_buf());
-    app.cwd_raw = dir.path().to_string_lossy().to_string();
+    app.set_cwd_raw(dir.path().to_string_lossy().to_string());
 
     open(&mut app).expect("open");
 
@@ -94,14 +94,14 @@ fn open_does_not_force_stop_active_turn() {
     let dir = tempfile::tempdir().expect("tempdir");
     let mut app = App::test_default();
     app.settings_home_override = Some(dir.path().to_path_buf());
-    app.cwd_raw = dir.path().to_string_lossy().to_string();
+    app.set_cwd_raw(dir.path().to_string_lossy().to_string());
     app.status = AppStatus::Running;
 
     open(&mut app).expect("open");
 
     assert_eq!(app.active_view, ActiveView::Config);
     assert!(matches!(app.status, AppStatus::Running));
-    assert!(app.pending_cancel_origin.is_none());
+    assert!(app.pending_cancel_origin().is_none());
 }
 
 #[test]
@@ -112,7 +112,7 @@ fn initialize_shared_state_reconciles_trust_from_preferences() {
 
     let mut app = App::test_default();
     app.settings_home_override = Some(dir.path().to_path_buf());
-    app.cwd_raw = dir.path().join("project").to_string_lossy().to_string();
+    app.set_cwd_raw(dir.path().join("project").to_string_lossy().to_string());
     app.trust.status = crate::app::trust::TrustStatus::Trusted;
 
     initialize_shared_state(&mut app).expect("initialize");
@@ -120,7 +120,7 @@ fn initialize_shared_state_reconciles_trust_from_preferences() {
     assert_eq!(app.trust.status, crate::app::trust::TrustStatus::Untrusted);
     assert_eq!(
         app.trust.project_key,
-        crate::app::trust::store::normalize_project_key(std::path::Path::new(&app.cwd_raw))
+        crate::app::trust::store::normalize_project_key(std::path::Path::new(app.cwd_raw()))
     );
 }
 
@@ -152,7 +152,7 @@ fn reopen_reload_picks_up_external_settings_changes() {
     .expect("write trust prefs");
     let mut app = App::test_default();
     app.settings_home_override = Some(dir.path().to_path_buf());
-    app.cwd_raw = dir.path().to_string_lossy().to_string();
+    app.set_cwd_raw(dir.path().to_string_lossy().to_string());
 
     open(&mut app).expect("open");
     assert!(!app.config.fast_mode_effective());
@@ -231,7 +231,7 @@ fn open_rejects_untrusted_projects() {
     let dir = tempfile::tempdir().expect("tempdir");
     let mut app = App::test_default();
     app.settings_home_override = Some(dir.path().to_path_buf());
-    app.cwd_raw = dir.path().to_string_lossy().to_string();
+    app.set_cwd_raw(dir.path().to_string_lossy().to_string());
     app.trust.status = crate::app::trust::TrustStatus::Untrusted;
 
     let err = open(&mut app).expect_err("open should be blocked");
@@ -815,7 +815,7 @@ fn immediate_save_respect_gitignore_invalidates_active_mention_session_cache() {
     let dir = tempfile::tempdir().expect("tempdir");
     let mut app = App::test_default();
     app.settings_home_override = Some(dir.path().to_path_buf());
-    app.cwd_raw = dir.path().to_string_lossy().to_string();
+    app.set_cwd_raw(dir.path().to_string_lossy().to_string());
 
     open(&mut app).expect("open");
     app.mention = Some(crate::app::mention::MentionState::new(0, 0, "rs".to_owned(), vec![]));
@@ -837,7 +837,7 @@ fn save_preserves_invalid_unedited_values() {
         .expect("write");
     let mut app = App::test_default();
     app.settings_home_override = Some(dir.path().to_path_buf());
-    app.cwd_raw = dir.path().to_string_lossy().to_string();
+    app.set_cwd_raw(dir.path().to_string_lossy().to_string());
 
     open(&mut app).expect("open");
     select_setting(&mut app, SettingId::FastMode);
@@ -851,7 +851,8 @@ fn save_preserves_invalid_unedited_values() {
 #[test]
 fn resolved_model_uses_runtime_fallback_when_catalog_rejects_value() {
     let mut app = App::test_default();
-    app.available_models = vec![AvailableModel::new("sonnet", "Claude Sonnet")];
+    app.active_session_mut().unwrap().available_models =
+        vec![AvailableModel::new("sonnet", "Claude Sonnet")];
     store::set_model(&mut app.config.committed_settings_document, Some("unknown"));
 
     let resolved = resolved_setting(&app, setting_spec(SettingId::Model));
@@ -863,7 +864,7 @@ fn resolved_model_uses_runtime_fallback_when_catalog_rejects_value() {
 #[test]
 fn model_overlay_options_are_sorted_alphabetically() {
     let mut app = App::test_default();
-    app.available_models = vec![
+    app.active_session_mut().unwrap().available_models = vec![
         AvailableModel::new("sonnet", "Sonnet"),
         AvailableModel::new("haiku", "Haiku"),
         AvailableModel::new("opus", "Opus"),
@@ -1045,7 +1046,7 @@ fn space_persists_local_project_settings_immediately() {
     let path = dir.path().join(".claude").join("settings.local.json");
     let mut app = App::test_default();
     app.settings_home_override = Some(dir.path().to_path_buf());
-    app.cwd_raw = dir.path().to_string_lossy().to_string();
+    app.set_cwd_raw(dir.path().to_string_lossy().to_string());
 
     open(&mut app).expect("open");
     select_setting(&mut app, SettingId::ReduceMotion);
@@ -1064,7 +1065,7 @@ fn output_style_overlay_confirm_persists_local_setting() {
     let path = dir.path().join(".claude").join("settings.local.json");
     let mut app = App::test_default();
     app.settings_home_override = Some(dir.path().to_path_buf());
-    app.cwd_raw = dir.path().to_string_lossy().to_string();
+    app.set_cwd_raw(dir.path().to_string_lossy().to_string());
 
     open(&mut app).expect("open");
     select_setting(&mut app, SettingId::OutputStyle);
@@ -1088,7 +1089,7 @@ fn output_style_overlay_escape_cancels_without_persisting() {
     let path = dir.path().join(".claude").join("settings.local.json");
     let mut app = App::test_default();
     app.settings_home_override = Some(dir.path().to_path_buf());
-    app.cwd_raw = dir.path().to_string_lossy().to_string();
+    app.set_cwd_raw(dir.path().to_string_lossy().to_string());
 
     open(&mut app).expect("open");
     select_setting(&mut app, SettingId::OutputStyle);
@@ -1134,7 +1135,7 @@ fn language_overlay_empty_confirm_clears_existing_setting() {
     let path = dir.path().join(".claude").join("settings.json");
     let mut app = App::test_default();
     app.settings_home_override = Some(dir.path().to_path_buf());
-    app.cwd_raw = dir.path().to_string_lossy().to_string();
+    app.set_cwd_raw(dir.path().to_string_lossy().to_string());
     std::fs::create_dir_all(path.parent().expect("settings parent")).expect("create dir");
     std::fs::write(&path, r#"{"language":"German"}"#).expect("write");
 
@@ -1158,7 +1159,7 @@ fn language_overlay_escape_cancels_without_persisting() {
     let path = dir.path().join(".claude").join("settings.json");
     let mut app = App::test_default();
     app.settings_home_override = Some(dir.path().to_path_buf());
-    app.cwd_raw = dir.path().to_string_lossy().to_string();
+    app.set_cwd_raw(dir.path().to_string_lossy().to_string());
 
     open(&mut app).expect("open");
     select_setting(&mut app, SettingId::Language);
@@ -1177,7 +1178,7 @@ fn language_overlay_blocks_too_short_input() {
     let path = dir.path().join(".claude").join("settings.json");
     let mut app = App::test_default();
     app.settings_home_override = Some(dir.path().to_path_buf());
-    app.cwd_raw = dir.path().to_string_lossy().to_string();
+    app.set_cwd_raw(dir.path().to_string_lossy().to_string());
 
     open(&mut app).expect("open");
     select_setting(&mut app, SettingId::Language);
@@ -1196,7 +1197,7 @@ fn language_overlay_blocks_too_long_input() {
     let path = dir.path().join(".claude").join("settings.json");
     let mut app = App::test_default();
     app.settings_home_override = Some(dir.path().to_path_buf());
-    app.cwd_raw = dir.path().to_string_lossy().to_string();
+    app.set_cwd_raw(dir.path().to_string_lossy().to_string());
 
     open(&mut app).expect("open");
     select_setting(&mut app, SettingId::Language);
@@ -1217,7 +1218,7 @@ fn language_overlay_supports_cursor_aware_editing() {
     let path = dir.path().join(".claude").join("settings.json");
     let mut app = App::test_default();
     app.settings_home_override = Some(dir.path().to_path_buf());
-    app.cwd_raw = dir.path().to_string_lossy().to_string();
+    app.set_cwd_raw(dir.path().to_string_lossy().to_string());
     std::fs::create_dir_all(path.parent().expect("settings parent")).expect("create dir");
     std::fs::write(&path, r#"{"language":"German"}"#).expect("write");
 
@@ -1253,8 +1254,8 @@ fn enter_closes_settings_without_editing_selected_row() {
 fn mcp_enter_opens_details_overlay_instead_of_closing_config() {
     let (_dir, mut app) = open_settings_test_app();
     app.config.active_tab = ConfigTab::Mcp;
-    app.session_id = Some(crate::agent::model::SessionId::new("session-1"));
-    app.mcp.servers = vec![forge_primitives::McpServerStatus {
+    app.set_session_id(Some(crate::agent::model::SessionId::new("session-1")));
+    app.mcp_mut().servers = vec![forge_primitives::McpServerStatus {
         name: "filesystem".to_owned(),
         status: forge_primitives::McpServerConnectionStatus::Connected,
         server_info: None,
@@ -1299,10 +1300,10 @@ fn mcp_details_overlay_enter_closes_overlay() {
 fn mcp_tab_refresh_key_requests_snapshot() {
     let (_dir, mut app) = open_settings_test_app();
     let (handle, mut rx) = forge_agent::Agent::testing_stub();
-    app.conn = Some(std::rc::Rc::new(handle));
-    app.session_id = Some(crate::agent::model::SessionId::new("session-1"));
+    app.set_conn(Some(std::sync::Arc::new(handle)));
+    app.set_session_id(Some(crate::agent::model::SessionId::new("session-1")));
     app.config.active_tab = ConfigTab::Mcp;
-    app.mcp.servers.push(forge_primitives::McpServerStatus {
+    app.mcp_mut().servers.push(forge_primitives::McpServerStatus {
         name: "stale".to_owned(),
         status: forge_primitives::McpServerConnectionStatus::NeedsAuth,
         server_info: None,
@@ -1330,16 +1331,16 @@ fn mcp_tab_refresh_key_requests_snapshot() {
             session_id: forge_primitives::SessionId::new("session-1".to_owned())
         }
     );
-    assert!(app.mcp.in_flight);
-    assert!(app.mcp.servers.is_empty());
+    assert!(app.mcp().in_flight);
+    assert!(app.mcp().servers.is_empty());
 }
 
 #[test]
 fn request_mcp_snapshot_sends_outside_mcp_tab() {
     let (_dir, mut app) = open_settings_test_app();
     let (handle, mut rx) = forge_agent::Agent::testing_stub();
-    app.conn = Some(std::rc::Rc::new(handle));
-    app.session_id = Some(crate::agent::model::SessionId::new("session-1"));
+    app.set_conn(Some(std::sync::Arc::new(handle)));
+    app.set_session_id(Some(crate::agent::model::SessionId::new("session-1")));
     app.config.active_tab = ConfigTab::Status;
 
     super::mcp::request_mcp_snapshot(&mut app);
@@ -1351,16 +1352,16 @@ fn request_mcp_snapshot_sends_outside_mcp_tab() {
             session_id: forge_primitives::SessionId::new("session-1".to_owned())
         }
     );
-    assert!(app.mcp.in_flight);
+    assert!(app.mcp().in_flight);
 }
 
 #[test]
 fn refresh_mcp_snapshot_clears_existing_servers_before_request() {
     let (_dir, mut app) = open_settings_test_app();
     let (handle, mut rx) = forge_agent::Agent::testing_stub();
-    app.conn = Some(std::rc::Rc::new(handle));
-    app.session_id = Some(crate::agent::model::SessionId::new("session-1"));
-    app.mcp.servers.push(forge_primitives::McpServerStatus {
+    app.set_conn(Some(std::sync::Arc::new(handle)));
+    app.set_session_id(Some(crate::agent::model::SessionId::new("session-1")));
+    app.mcp_mut().servers.push(forge_primitives::McpServerStatus {
         name: "stale".to_owned(),
         status: forge_primitives::McpServerConnectionStatus::Connected,
         server_info: None,
@@ -1381,22 +1382,22 @@ fn refresh_mcp_snapshot_clears_existing_servers_before_request() {
             session_id: forge_primitives::SessionId::new("session-1".to_owned())
         }
     );
-    assert!(app.mcp.servers.is_empty());
-    assert!(app.mcp.in_flight);
+    assert!(app.mcp().servers.is_empty());
+    assert!(app.mcp().in_flight);
 }
 
 #[test]
 fn refresh_mcp_snapshot_if_needed_skips_outside_mcp_tab() {
     let (_dir, mut app) = open_settings_test_app();
     let (handle, mut rx) = forge_agent::Agent::testing_stub();
-    app.conn = Some(std::rc::Rc::new(handle));
-    app.session_id = Some(crate::agent::model::SessionId::new("session-1"));
+    app.set_conn(Some(std::sync::Arc::new(handle)));
+    app.set_session_id(Some(crate::agent::model::SessionId::new("session-1")));
     app.config.active_tab = ConfigTab::Status;
 
     super::mcp::refresh_mcp_snapshot_if_needed(&mut app);
 
     assert!(rx.try_recv().is_err());
-    assert!(!app.mcp.in_flight);
+    assert!(!app.mcp().in_flight);
 }
 
 #[test]
@@ -1445,7 +1446,7 @@ fn save_failure_keeps_previous_value_and_surfaces_error() {
     let dir = tempfile::tempdir().expect("tempdir");
     let mut app = App::test_default();
     app.settings_home_override = Some(dir.path().to_path_buf());
-    app.cwd_raw = dir.path().to_string_lossy().to_string();
+    app.set_cwd_raw(dir.path().to_string_lossy().to_string());
 
     open(&mut app).expect("open");
     app.config.settings_path = Some(PathBuf::new());

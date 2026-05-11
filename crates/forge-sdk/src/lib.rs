@@ -64,7 +64,7 @@ pub mod transport;
 pub use crate::mcp::macros::__private;
 pub use client::{Client, ClientEvents};
 pub use error::Error;
-pub use paths::{claude_config_dir, projects_dir};
+pub use paths::{claude_config_dir_from_env, projects_dir_for};
 // Wire-shape types live in forge-primitives now. Re-exported here so
 // pre-restructure imports (`use forge_sdk::Message`, `use forge_sdk::AccountInfo`,
 // …) keep resolving. New code should reach for `forge_primitives::*` directly —

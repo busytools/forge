@@ -8,17 +8,16 @@
 //! Resolution rules match the `claude` CLI as of 2.1.117:
 //!
 //! - **User settings** at `<config_dir>/settings.json`. `<config_dir>`
-//!   is `$CLAUDE_CONFIG_DIR` (when set + non-empty) else
-//!   `$HOME/.claude` — resolved via `forge_sdk::claude_config_dir`.
+//!   is the path the caller passes — typically the per-spawn account
+//!   binding stored on the `ForgeSdkBridge`.
 //! - **Project-local settings** at
 //!   `<cwd>/.claude/settings.local.json`. Tied to the project's
-//!   working directory; `$CLAUDE_CONFIG_DIR` does not affect this
-//!   path.
+//!   working directory; `<config_dir>` does not affect this path.
 //! - **User preferences** at `$HOME/.claude.json` (note the leading
 //!   dot — this is a *file* at the home root, not a directory under
 //!   it). Per-user preferences (notification channel, gitignore
-//!   respect, terminal-progress-bar, etc.); `$CLAUDE_CONFIG_DIR`
-//!   does not affect this either.
+//!   respect, terminal-progress-bar, etc.); `<config_dir>` does not
+//!   affect this either.
 
 use std::fs::OpenOptions;
 use std::io::{self, Write};
@@ -27,7 +26,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{Map, Value};
 
-use forge_sdk::{Error, claude_config_dir};
+use forge_sdk::Error;
 
 /// Three raw settings documents, each `None` when the underlying
 /// file is absent or unreadable. Malformed JSON also yields `None` —
@@ -46,8 +45,8 @@ pub struct SettingsDocuments {
 
 /// Which settings document a write should target. Mirrors the
 /// read-side resolution in [`settings_documents`] — `User` honours
-/// `$CLAUDE_CONFIG_DIR`, `ProjectLocal` is project-relative, and
-/// `Preferences` is `$HOME`-pinned.
+/// the `config_dir` argument, `ProjectLocal` is project-relative,
+/// and `Preferences` is `$HOME`-pinned.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum SettingsTarget {
@@ -64,13 +63,15 @@ pub enum SettingsTarget {
 
 /// Read the three Claude Code settings documents from disk.
 ///
+/// `config_dir` is the user-scope config directory the caller has
+/// bound this read to (typically the per-spawn account binding).
 /// `cwd` is the project root used to locate
 /// `<cwd>/.claude/settings.local.json`. Pass `std::env::current_dir()`
-/// to match the CLI's default behaviour.
+/// to match the CLI's default behaviour for the project-local path.
 #[must_use]
-pub fn settings_documents(cwd: &Path) -> SettingsDocuments {
+pub fn settings_documents(config_dir: &Path, cwd: &Path) -> SettingsDocuments {
     SettingsDocuments {
-        user: read_json_file(&claude_config_dir().join("settings.json")),
+        user: read_json_file(&config_dir.join("settings.json")),
         project_local: read_json_file(&cwd.join(".claude").join("settings.local.json")),
         preferences: read_json_file(&home_dir().join(".claude.json")),
     }
@@ -89,19 +90,26 @@ pub fn settings_documents(cwd: &Path) -> SettingsDocuments {
 /// - Trailing newline appended after the pretty-printed JSON to
 ///   match the CLI's own write style.
 ///
+/// `config_dir` is consulted only for [`SettingsTarget::User`]; the
+/// other variants ignore it.
+///
 /// # Errors
 ///
 /// [`Error::Io`] for any underlying filesystem failure — open,
 /// write, fsync, rename, or `create_dir_all`. JSON serialisation
 /// failures are wrapped as `Io` with a descriptive message.
-pub fn write_settings_document(target: &SettingsTarget, document: &Value) -> Result<(), Error> {
-    let path = target_path(target);
+pub fn write_settings_document(
+    config_dir: &Path,
+    target: &SettingsTarget,
+    document: &Value,
+) -> Result<(), Error> {
+    let path = target_path(config_dir, target);
     write_json_atomic(&path, document)
 }
 
-fn target_path(target: &SettingsTarget) -> PathBuf {
+fn target_path(config_dir: &Path, target: &SettingsTarget) -> PathBuf {
     match target {
-        SettingsTarget::User => claude_config_dir().join("settings.json"),
+        SettingsTarget::User => config_dir.join("settings.json"),
         SettingsTarget::ProjectLocal { cwd } => cwd.join(".claude").join("settings.local.json"),
         SettingsTarget::Preferences => home_dir().join(".claude.json"),
     }
@@ -278,23 +286,24 @@ mod tests {
     // ---- write_settings_document / write_json_atomic ----
 
     #[test]
-    fn target_path_user_uses_claude_config_dir() {
-        // Just sanity-check the join shape — we don't pin the
-        // env-derived prefix because that's racy across parallel tests.
-        let path = target_path(&SettingsTarget::User);
-        assert!(path.ends_with("settings.json"));
+    fn target_path_user_uses_supplied_config_dir() {
+        let config_dir = PathBuf::from("/tmp/forge_test_user_settings_dir");
+        let path = target_path(&config_dir, &SettingsTarget::User);
+        assert_eq!(path, config_dir.join("settings.json"));
     }
 
     #[test]
     fn target_path_project_local_uses_cwd() {
+        let config_dir = PathBuf::from("/tmp/ignored");
         let cwd = PathBuf::from("/tmp/forge_sdk_test_proj");
-        let path = target_path(&SettingsTarget::ProjectLocal { cwd: cwd.clone() });
+        let path = target_path(&config_dir, &SettingsTarget::ProjectLocal { cwd: cwd.clone() });
         assert_eq!(path, cwd.join(".claude").join("settings.local.json"));
     }
 
     #[test]
     fn target_path_preferences_uses_home_root() {
-        let path = target_path(&SettingsTarget::Preferences);
+        let config_dir = PathBuf::from("/tmp/ignored");
+        let path = target_path(&config_dir, &SettingsTarget::Preferences);
         assert!(path.ends_with(".claude.json"));
         // The leading dot makes it a hidden file at $HOME, not a
         // file under $HOME/.claude — sanity-check we didn't drift.
@@ -360,15 +369,27 @@ mod tests {
 
     #[test]
     fn write_settings_document_project_local_round_trips() {
-        // ProjectLocal is the only scope safely testable end-to-end
-        // because cwd is a function arg — User and Preferences would
-        // race on $CLAUDE_CONFIG_DIR / $HOME across parallel tests.
+        // ProjectLocal is the safest scope to test end-to-end because
+        // its path is fully derived from the `cwd` arg and ignores
+        // both `config_dir` and `$HOME`.
         let dir = tempfile::tempdir().expect("tempdir");
+        let config_dir = PathBuf::from("/tmp/ignored");
         let target = SettingsTarget::ProjectLocal { cwd: dir.path().to_path_buf() };
         let doc = serde_json::json!({"outputStyle": "verbose"});
-        write_settings_document(&target, &doc).expect("write");
-        let docs = settings_documents(dir.path());
+        write_settings_document(&config_dir, &target, &doc).expect("write");
+        let docs = settings_documents(&config_dir, dir.path());
         let project_local = docs.project_local.expect("present");
         assert_eq!(project_local.get("outputStyle"), Some(&serde_json::json!("verbose")));
+    }
+
+    #[test]
+    fn write_settings_document_user_writes_to_supplied_config_dir() {
+        // Verify the User scope honours the explicit config_dir.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let target = SettingsTarget::User;
+        let doc = serde_json::json!({"theme": "neon"});
+        write_settings_document(dir.path(), &target, &doc).expect("write");
+        let written = read_json_file(&dir.path().join("settings.json")).expect("read");
+        assert_eq!(written.get("theme"), Some(&serde_json::json!("neon")));
     }
 }

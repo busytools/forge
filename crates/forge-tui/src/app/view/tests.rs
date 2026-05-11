@@ -48,14 +48,14 @@ fn busy_view_test_app() -> App {
         candidates: vec![],
         dialog: DialogState::default(),
     });
-    app.show_todo_panel = true;
-    app.todos = vec![TodoItem {
+    app.set_show_todo_panel(true);
+    *app.todos_mut() = vec![TodoItem {
         content: "todo".to_owned(),
         status: TodoStatus::Pending,
         active_form: "todo".to_owned(),
     }];
     app.claim_focus_target(FocusTarget::TodoList);
-    app.pending_interaction_ids.push("perm-1".to_owned());
+    app.pending_interaction_ids_mut().push("perm-1".to_owned());
     app.claim_focus_target(FocusTarget::Permission);
     app
 }

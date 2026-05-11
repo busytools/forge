@@ -84,6 +84,30 @@ impl AgentHandle {
         self.bridge.oauth_usage().await
     }
 
+    /// Test-only accessor returning a clone of the bridge's bound
+    /// `config_dir`. Hidden from public docs; production code reads
+    /// the path via the spawn path or via [`AgentHandle::config_dir`].
+    /// `#[doc(hidden)] pub` rather than `#[cfg(test)]` so integration
+    /// tests in sibling crates' `tests/` directories can reach it
+    /// (Rust's `#[cfg(test)]` items aren't visible across crate
+    /// boundaries).
+    #[doc(hidden)]
+    #[must_use]
+    pub fn config_dir_for_test(&self) -> PathBuf {
+        self.bridge.config_dir()
+    }
+
+    /// Returns a clone of the bridge's bound forge-account
+    /// `display_name` (when forge-workspace picked one). Used by
+    /// the connect-flow to emit a `ForgeAccountIdentityReady`
+    /// event right after spawn — eliminates the welcome-message
+    /// flicker that would otherwise wait for the slow status
+    /// snapshot to arrive from the CLI.
+    #[must_use]
+    pub fn display_name(&self) -> Option<String> {
+        self.bridge.display_name()
+    }
+
     // ---- Fire-and-forget Command shorthands ----
     //
     // Each method builds the matching `Command` variant and pushes it
@@ -114,11 +138,31 @@ impl AgentHandle {
     pub fn resume_session(
         &self,
         session_id: String,
+        cwd: String,
         launch_settings: crate::client::SessionLaunchSettings,
     ) -> anyhow::Result<()> {
         let launch_settings = serde_json::to_value(launch_settings)
             .map_err(|e| anyhow::anyhow!("failed to encode launch settings: {e}"))?;
-        self.send(Command::ResumeSession { session_id: session_id.into(), launch_settings })
+        self.send(Command::ResumeSession { session_id: session_id.into(), cwd, launch_settings })
+    }
+
+    /// Resume the recorded `session_id`; if resume fails (stale
+    /// catalog entry, cross-account scan, deleted `.jsonl`), retry as
+    /// a fresh session in `cwd`. The user only sees a
+    /// `ConnectionFailed` event when both attempts fail.
+    pub fn resume_or_new_session(
+        &self,
+        session_id: String,
+        cwd: String,
+        launch_settings: crate::client::SessionLaunchSettings,
+    ) -> anyhow::Result<()> {
+        let launch_settings = serde_json::to_value(launch_settings)
+            .map_err(|e| anyhow::anyhow!("failed to encode launch settings: {e}"))?;
+        self.send(Command::ResumeOrNewSession {
+            session_id: session_id.into(),
+            cwd,
+            launch_settings,
+        })
     }
 
     pub fn prompt_text(&self, session_id: String, text: String) -> anyhow::Result<()> {
@@ -289,10 +333,12 @@ impl Agent {
     ///
     /// Safe to call outside a Tokio runtime — no tasks are spawned.
     /// The bridge's events stream is dropped on the floor; tests that
-    /// don't drive sessions never see events anyway.
+    /// don't drive sessions never see events anyway. The bridge is
+    /// bound to a synthetic `/tmp/forge-testing-stub` config_dir;
+    /// since no session is driven, no I/O hits this path.
     #[must_use]
     pub fn testing_stub() -> (AgentHandle, mpsc::UnboundedReceiver<Command>) {
-        let bridge = ForgeSdkBridge::new();
+        let bridge = ForgeSdkBridge::default();
         // Drop the bridge's events receiver immediately — tests don't
         // run a real session so nothing is producing.
         let _ = bridge.take_events();
@@ -312,11 +358,19 @@ impl Agent {
         (handle, commands_rx)
     }
 
-    /// Spawn a new agent runtime. Returns a handle holding the
-    /// command sender + events receiver + direct-accessor passthroughs.
+    /// Spawn a new agent runtime bound to `config_dir` with an
+    /// optional forge-account `display_name`. Both are stored on
+    /// the bridge as typed fields. `config_dir` is consulted by
+    /// every in-process accessor (oauth, settings, catalog scans)
+    /// and exported to the spawned `claude` subprocess as
+    /// `CLAUDE_CONFIG_DIR`. `display_name`, when set, is surfaced
+    /// via [`crate::client::AgentEvent::StatusSnapshot`] so the TUI
+    /// renders which forge-account the bridge is bound to. Returns a handle
+    /// holding the command sender + events receiver + direct-
+    /// accessor passthroughs.
     #[must_use]
-    pub fn spawn() -> AgentHandle {
-        let bridge = ForgeSdkBridge::new();
+    pub fn spawn(config_dir: PathBuf, display_name: Option<String>) -> AgentHandle {
+        let bridge = ForgeSdkBridge::new(config_dir, display_name);
         let agent_event_rx = bridge.take_events().unwrap_or_else(|| mpsc::unbounded_channel().1);
 
         let (commands_tx, commands_rx) = mpsc::unbounded_channel::<Command>();
@@ -372,7 +426,7 @@ fn dispatch(cmd: Command, bridge: &ForgeSdkBridge) -> anyhow::Result<()> {
             });
             bridge.new_session(cwd, launch)
         }
-        C::ResumeSession { session_id, launch_settings } => {
+        C::ResumeSession { session_id, cwd, launch_settings } => {
             let launch = serde_json::from_value(launch_settings).unwrap_or_else(|e| {
                 tracing::error!(
                     target: crate::logging::targets::BRIDGE_LIFECYCLE,
@@ -381,7 +435,18 @@ fn dispatch(cmd: Command, bridge: &ForgeSdkBridge) -> anyhow::Result<()> {
                 );
                 crate::client::SessionLaunchSettings::default()
             });
-            bridge.resume_session(session_id.into_string(), launch)
+            bridge.resume_session(session_id.into_string(), cwd, launch)
+        }
+        C::ResumeOrNewSession { session_id, cwd, launch_settings } => {
+            let launch = serde_json::from_value(launch_settings).unwrap_or_else(|e| {
+                tracing::error!(
+                    target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                    error = %e,
+                    "failed to decode launch_settings on dispatcher receive; falling back to default",
+                );
+                crate::client::SessionLaunchSettings::default()
+            });
+            bridge.resume_or_new_session(session_id.into_string(), cwd, launch)
         }
         C::Prompt { session_id, text } => bridge.prompt_text(session_id.into_string(), text),
         C::PromptWithImages { session_id, text, images } => {

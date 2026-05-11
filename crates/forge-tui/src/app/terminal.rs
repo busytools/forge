@@ -51,22 +51,40 @@ fn apply_terminal_payload(tc: &mut ToolCallInfo, payload: TerminalUpdatePayload)
 /// invariants are broken (truncate/reset/replace mode).
 pub(super) fn update_terminal_outputs(app: &mut App) -> bool {
     let _t = app.perf.as_ref().map(|p| p.start("terminal::update"));
-    let terminals = app.terminals.borrow();
-    if terminals.is_empty() {
-        return false;
-    }
+    // Snapshot terminal refs + per-id Arc<Mutex<...>> output buffer handle
+    // so we can release the terminals borrow before mutating `app.messages`
+    // (the messages accessor borrows the whole App, which would conflict
+    // with the live `app.terminals` borrow).
+    let log_session_id = app.session_id().map_or_else(String::new, ToString::to_string);
+    let pending_updates: Vec<(
+        super::state::TerminalToolCallRef,
+        std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
+    )> = {
+        let Some(terminals_rc) = app.terminals() else {
+            return false;
+        };
+        let terminals = terminals_rc.borrow();
+        if terminals.is_empty() {
+            return false;
+        }
+        app.terminal_tool_calls()
+            .iter()
+            .filter_map(|tref| {
+                terminals
+                    .get(tref.terminal_id.as_str())
+                    .map(|term| (tref.clone(), term.output_buffer.clone()))
+            })
+            .collect()
+    };
 
     let mut changed = false;
     let mut dirty_messages = Vec::new();
     let mut dirty_slots = Vec::new();
 
     // Use the indexed terminal tool calls instead of scanning all messages/blocks.
-    for terminal_ref in &app.terminal_tool_calls {
-        let Some(terminal) = terminals.get(terminal_ref.terminal_id.as_str()) else {
-            continue;
-        };
+    for (terminal_ref, output_buffer) in pending_updates {
         let Some(MessageBlock::ToolCall(tc)) = app
-            .messages
+            .messages_mut()
             .get_mut(terminal_ref.msg_idx)
             .and_then(|m| m.blocks.get_mut(terminal_ref.block_idx))
         else {
@@ -84,7 +102,7 @@ pub(super) fn update_terminal_outputs(app: &mut App) -> bool {
         // Copy only the required bytes under lock, then decode outside the
         // critical section to avoid blocking output writers.
         let payload = {
-            let Ok(buf) = terminal.output_buffer.lock() else {
+            let Ok(buf) = output_buffer.lock() else {
                 continue;
             };
             let current_len = buf.len();
@@ -110,7 +128,7 @@ pub(super) fn update_terminal_outputs(app: &mut App) -> bool {
                 event_name = "terminal_output_summary",
                 message = "terminal output updated",
                 outcome = "success",
-                session_id = %app.session_id.as_ref().map_or_else(String::new, ToString::to_string),
+                session_id = %log_session_id,
                 tool_call_id = %tc.id,
                 terminal_id = %terminal_ref.terminal_id,
                 terminal_update_mode = update_mode,
@@ -127,8 +145,6 @@ pub(super) fn update_terminal_outputs(app: &mut App) -> bool {
             changed = true;
         }
     }
-
-    drop(terminals);
 
     for (mi, bi) in dirty_slots {
         app.sync_render_cache_slot(mi, bi);
@@ -199,14 +215,14 @@ mod tests {
     #[test]
     fn terminal_updates_invalidate_all_dirty_messages() {
         let mut app = App::test_default();
-        app.messages.push(bash_tool_message("bash-1", "term-1"));
-        app.messages.push(user_message("gap"));
-        app.messages.push(bash_tool_message("bash-2", "term-2"));
+        app.messages_mut().push(bash_tool_message("bash-1", "term-1"));
+        app.messages_mut().push(user_message("gap"));
+        app.messages_mut().push(bash_tool_message("bash-2", "term-2"));
         app.index_tool_call("bash-1".to_owned(), 0, 0);
         app.index_tool_call("bash-2".to_owned(), 2, 0);
         app.sync_terminal_tool_call("term-1".to_owned(), 0, 0);
         app.sync_terminal_tool_call("term-2".to_owned(), 2, 0);
-        app.terminals.borrow_mut().insert(
+        app.terminals_mut().borrow_mut().insert(
             "term-1".to_owned(),
             TerminalProcess {
                 child: None,
@@ -214,7 +230,7 @@ mod tests {
                 command: "echo alpha".to_owned(),
             },
         );
-        app.terminals.borrow_mut().insert(
+        app.terminals_mut().borrow_mut().insert(
             "term-2".to_owned(),
             TerminalProcess {
                 child: None,
@@ -223,15 +239,15 @@ mod tests {
             },
         );
 
-        let _ = app.viewport.on_frame(80, 24);
-        app.viewport.sync_message_count(3);
-        app.viewport.mark_heights_valid();
-        app.viewport.rebuild_prefix_sums();
+        let _ = app.viewport_mut().on_frame(80, 24);
+        app.viewport_mut().sync_message_count(3);
+        app.viewport_mut().mark_heights_valid();
+        app.viewport_mut().rebuild_prefix_sums();
 
         assert!(update_terminal_outputs(&mut app));
-        assert!(!app.viewport.message_height_is_current(0));
-        assert!(app.viewport.message_height_is_current(1));
-        assert!(!app.viewport.message_height_is_current(2));
-        assert_eq!(app.viewport.oldest_stale_index(), Some(0));
+        assert!(!app.viewport_mut().message_height_is_current(0));
+        assert!(app.viewport_mut().message_height_is_current(1));
+        assert!(!app.viewport_mut().message_height_is_current(2));
+        assert_eq!(app.viewport_mut().oldest_stale_index(), Some(0));
     }
 }

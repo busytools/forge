@@ -16,13 +16,13 @@ pub(super) fn upsert_turn_notice(
 ) {
     prune_invalid_turn_notice_refs(app);
     let Some(existing_ref_idx) =
-        app.turn_notice_refs.iter().position(|notice_ref| notice_ref.dedup_key == dedup_key)
+        app.turn_notice_refs().iter().position(|notice_ref| notice_ref.dedup_key == dedup_key)
     else {
         insert_new_notice(app, dedup_key, stage, severity, message);
         return;
     };
 
-    let existing = app.turn_notice_refs[existing_ref_idx].clone();
+    let existing = app.turn_notice_refs()[existing_ref_idx].clone();
     if stage < existing.stage {
         return;
     }
@@ -30,11 +30,11 @@ pub(super) fn upsert_turn_notice(
     match existing.location {
         TurnNoticeLocation::Inline { msg_idx, block_idx } => {
             if update_inline_notice(app, msg_idx, block_idx, &dedup_key, severity, message) {
-                app.turn_notice_refs[existing_ref_idx].stage = stage;
-                app.viewport.engage_auto_scroll();
+                app.turn_notice_refs_mut()[existing_ref_idx].stage = stage;
+                app.viewport_mut().engage_auto_scroll();
                 return;
             }
-            app.turn_notice_refs.remove(existing_ref_idx);
+            app.turn_notice_refs_mut().remove(existing_ref_idx);
             insert_new_notice(app, dedup_key, stage, severity, message);
         }
         TurnNoticeLocation::Standalone { msg_idx } => {
@@ -42,18 +42,18 @@ pub(super) fn upsert_turn_notice(
                 && remove_standalone_notice(app, msg_idx)
                 && let Some(owner_idx) = app.active_turn_assistant_idx()
             {
-                app.turn_notice_refs.remove(existing_ref_idx);
+                app.turn_notice_refs_mut().remove(existing_ref_idx);
                 insert_inline_notice(app, owner_idx, dedup_key, stage, severity, message);
                 return;
             }
 
             if update_standalone_notice(app, msg_idx, &dedup_key, severity, message) {
-                app.turn_notice_refs[existing_ref_idx].stage = stage;
-                app.viewport.engage_auto_scroll();
+                app.turn_notice_refs_mut()[existing_ref_idx].stage = stage;
+                app.viewport_mut().engage_auto_scroll();
                 return;
             }
 
-            app.turn_notice_refs.remove(existing_ref_idx);
+            app.turn_notice_refs_mut().remove(existing_ref_idx);
             insert_new_notice(app, dedup_key, stage, severity, message);
         }
     }
@@ -81,7 +81,7 @@ fn insert_inline_notice(
     severity: SystemSeverity,
     message: &str,
 ) {
-    let Some(owner) = app.messages.get_mut(owner_idx) else {
+    let Some(owner) = app.messages_mut().get_mut(owner_idx) else {
         insert_standalone_notice(app, dedup_key, stage, severity, message);
         return;
     };
@@ -91,12 +91,12 @@ fn insert_inline_notice(
     ));
     app.sync_after_message_blocks_changed(owner_idx);
     app.invalidate_layout(InvalidationLevel::MessageChanged(owner_idx));
-    app.turn_notice_refs.push(TurnNoticeRef {
+    app.turn_notice_refs_mut().push(TurnNoticeRef {
         dedup_key,
         stage,
         location: TurnNoticeLocation::Inline { msg_idx: owner_idx, block_idx },
     });
-    app.viewport.engage_auto_scroll();
+    app.viewport_mut().engage_auto_scroll();
 }
 
 fn insert_standalone_notice(
@@ -106,7 +106,7 @@ fn insert_standalone_notice(
     severity: SystemSeverity,
     message: &str,
 ) {
-    let msg_idx = app.messages.len();
+    let msg_idx = app.messages().len();
     app.push_message_tracked(ChatMessage::new(
         MessageRole::System(Some(severity)),
         vec![MessageBlock::Notice(
@@ -115,12 +115,12 @@ fn insert_standalone_notice(
         None,
     ));
     app.enforce_history_retention_tracked();
-    app.turn_notice_refs.push(TurnNoticeRef {
+    app.turn_notice_refs_mut().push(TurnNoticeRef {
         dedup_key,
         stage,
         location: TurnNoticeLocation::Standalone { msg_idx },
     });
-    app.viewport.engage_auto_scroll();
+    app.viewport_mut().engage_auto_scroll();
 }
 
 fn update_inline_notice(
@@ -132,7 +132,7 @@ fn update_inline_notice(
     message: &str,
 ) -> bool {
     let Some(MessageBlock::Notice(notice)) =
-        app.messages.get_mut(msg_idx).and_then(|msg| msg.blocks.get_mut(block_idx))
+        app.messages_mut().get_mut(msg_idx).and_then(|msg| msg.blocks.get_mut(block_idx))
     else {
         return false;
     };
@@ -154,7 +154,7 @@ fn update_standalone_notice(
     severity: SystemSeverity,
     message: &str,
 ) -> bool {
-    let Some(msg) = app.messages.get_mut(msg_idx) else {
+    let Some(msg) = app.messages_mut().get_mut(msg_idx) else {
         return false;
     };
     if !matches!(msg.role, MessageRole::System(_)) {
@@ -176,7 +176,7 @@ fn update_standalone_notice(
 }
 
 fn remove_standalone_notice(app: &mut App, msg_idx: usize) -> bool {
-    let Some(msg) = app.messages.get(msg_idx) else {
+    let Some(msg) = app.messages().get(msg_idx) else {
         return false;
     };
     let has_notice = matches!(msg.role, MessageRole::System(_))
@@ -188,23 +188,34 @@ fn remove_standalone_notice(app: &mut App, msg_idx: usize) -> bool {
 }
 
 fn prune_invalid_turn_notice_refs(app: &mut App) {
-    app.turn_notice_refs.retain(|notice_ref| match &notice_ref.location {
-        TurnNoticeLocation::Inline { msg_idx, block_idx } => matches!(
-            app.messages.get(*msg_idx).and_then(|msg| msg.blocks.get(*block_idx)),
-            Some(MessageBlock::Notice(notice))
-                if notice.dedup_key.as_ref() == Some(&notice_ref.dedup_key)
-        ),
-        TurnNoticeLocation::Standalone { msg_idx } => matches!(
-            app.messages.get(*msg_idx),
-            Some(ChatMessage {
-                role: MessageRole::System(_),
-                blocks,
-                ..
-            }) if matches!(
-                blocks.as_slice(),
-                [MessageBlock::Notice(notice)]
+    // Collect retain decisions first so the closure body doesn't need to
+    // re-borrow `app` while the retain mutator holds the
+    // `app.turn_notice_refs` borrow. (Pre-bucket-migration the borrow
+    // checker split per-field; with messages on Session via accessors the
+    // call to `app.messages()` is now a whole-app borrow that conflicts.)
+    let keep_flags: Vec<bool> = app
+        .turn_notice_refs()
+        .iter()
+        .map(|notice_ref| match &notice_ref.location {
+            TurnNoticeLocation::Inline { msg_idx, block_idx } => matches!(
+                app.messages().get(*msg_idx).and_then(|msg| msg.blocks.get(*block_idx)),
+                Some(MessageBlock::Notice(notice))
                     if notice.dedup_key.as_ref() == Some(&notice_ref.dedup_key)
-            )
-        ),
-    });
+            ),
+            TurnNoticeLocation::Standalone { msg_idx } => matches!(
+                app.messages().get(*msg_idx),
+                Some(ChatMessage {
+                    role: MessageRole::System(_),
+                    blocks,
+                    ..
+                }) if matches!(
+                    blocks.as_slice(),
+                    [MessageBlock::Notice(notice)]
+                        if notice.dedup_key.as_ref() == Some(&notice_ref.dedup_key)
+                )
+            ),
+        })
+        .collect();
+    let mut iter = keep_flags.into_iter();
+    app.turn_notice_refs_mut().retain(|_| iter.next().unwrap_or(true));
 }

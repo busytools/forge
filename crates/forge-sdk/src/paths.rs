@@ -1,48 +1,42 @@
-//! Shared path resolution for the `claude` CLI's on-disk state, plus
-//! typed accessors for files inside `<config_dir>` that consumers need
-//! a structured view of (currently OAuth credentials).
+//! Path helpers around the `claude` CLI's on-disk config layout.
 //!
-//! Every accessor that reads a file under the user's config directory
-//! goes through `claude_config_dir()` so `$CLAUDE_CONFIG_DIR` is
-//! honoured in exactly one place. Empty-string env values are treated
-//! as unset to match the CLI's own behaviour.
+//! After the strict-config-dir refactor, forge-sdk no longer falls
+//! back to `~/.claude` on its own. Resolution lives in
+//! `forge-agent` / `forge-workspace` — those layers read
+//! `$CLAUDE_CONFIG_DIR` (typically via [`claude_config_dir_from_env`])
+//! at orchestration boundaries and thread the resulting `PathBuf`
+//! into every accessor that needs it. forge-sdk only exposes a
+//! `<config_dir> + "projects"` join helper for callers that already
+//! hold a config_dir.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-/// Resolve the Claude config directory. Honours `$CLAUDE_CONFIG_DIR`
-/// (ignoring empty-string values), else falls back to
-/// `$HOME/.claude`. Shared across `client`, the agent-side session
-/// catalog, and any accessor that needs a typed view of an on-disk
-/// CLI artefact.
+/// Read `$CLAUDE_CONFIG_DIR` from the process environment. Returns
+/// `None` when the variable is unset, empty, or contains only a
+/// trailing slash. Callers handle the `None` case explicitly — there
+/// is no silent fallback to `~/.claude` at this layer.
+///
+/// Trailing slashes are stripped to match the `claude` CLI's own
+/// canonicalisation; a value of `/`, `//`, … resolves to `None`
+/// because the CLI treats those as effectively unset.
 #[must_use]
-pub fn claude_config_dir() -> PathBuf {
-    let custom = std::env::var("CLAUDE_CONFIG_DIR").ok();
-    let home = std::env::var("HOME").ok();
-    claude_config_dir_from(custom.as_deref(), home.as_deref())
+pub fn claude_config_dir_from_env() -> Option<PathBuf> {
+    let raw = std::env::var("CLAUDE_CONFIG_DIR").ok()?;
+    claude_config_dir_from_env_value(raw.as_str())
 }
 
-/// Pure variant of [`claude_config_dir`] that takes `CLAUDE_CONFIG_DIR`
-/// and `HOME` as arguments instead of reading the process environment.
-/// Used internally so the env-resolution branches are unit-testable
-/// without mutating shared process state during parallel test runs.
-fn claude_config_dir_from(custom: Option<&str>, home: Option<&str>) -> PathBuf {
-    if let Some(value) = custom {
-        let trimmed = value.trim_end_matches('/');
-        if !trimmed.is_empty() {
-            return PathBuf::from(trimmed);
-        }
-    }
-    PathBuf::from(home.unwrap_or(".")).join(".claude")
+/// Pure variant of [`claude_config_dir_from_env`] for unit tests.
+fn claude_config_dir_from_env_value(value: &str) -> Option<PathBuf> {
+    let trimmed = value.trim_end_matches('/');
+    if trimmed.is_empty() { None } else { Some(PathBuf::from(trimmed)) }
 }
 
-/// Resolve the Claude projects directory. Honours `$CLAUDE_CONFIG_DIR`
-/// (ignoring empty-string values), else falls back to
-/// `$HOME/.claude/projects`. Public so the agent's session-catalog
-/// readers (lifted out of forge-sdk in 2026-05-05) can resolve the
-/// same on-disk layout.
+/// Path to a config_dir's `projects/` subdirectory. Caller passes
+/// the resolved `config_dir` explicitly; this helper just performs
+/// the join so the layout convention lives in one place.
 #[must_use]
-pub fn projects_dir() -> PathBuf {
-    claude_config_dir().join("projects")
+pub fn projects_dir_for(config_dir: &Path) -> PathBuf {
+    config_dir.join("projects")
 }
 
 #[cfg(test)]
@@ -51,32 +45,33 @@ mod tests {
     use super::*;
 
     #[test]
-    fn config_dir_honours_claude_config_dir_when_set() {
-        let resolved = claude_config_dir_from(Some("/tmp/custom-config"), Some("/home/ignored"));
-        assert_eq!(resolved, PathBuf::from("/tmp/custom-config"));
+    fn env_helper_returns_some_for_non_empty_value() {
+        assert_eq!(
+            claude_config_dir_from_env_value("/tmp/custom-config"),
+            Some(PathBuf::from("/tmp/custom-config")),
+        );
     }
 
     #[test]
-    fn config_dir_strips_trailing_slash_from_claude_config_dir() {
-        let resolved = claude_config_dir_from(Some("/tmp/custom/"), Some("/home/ignored"));
-        assert_eq!(resolved, PathBuf::from("/tmp/custom"));
+    fn env_helper_strips_trailing_slash() {
+        assert_eq!(
+            claude_config_dir_from_env_value("/tmp/custom/"),
+            Some(PathBuf::from("/tmp/custom")),
+        );
     }
 
     #[test]
-    fn config_dir_falls_back_to_home_when_claude_config_dir_empty() {
-        let resolved = claude_config_dir_from(Some(""), Some("/home/me"));
-        assert_eq!(resolved, PathBuf::from("/home/me/.claude"));
+    fn env_helper_returns_none_for_empty_value() {
+        assert_eq!(claude_config_dir_from_env_value(""), None);
     }
 
     #[test]
-    fn config_dir_falls_back_to_home_when_claude_config_dir_unset() {
-        let resolved = claude_config_dir_from(None, Some("/home/me"));
-        assert_eq!(resolved, PathBuf::from("/home/me/.claude"));
+    fn env_helper_returns_none_for_only_slashes() {
+        assert_eq!(claude_config_dir_from_env_value("///"), None);
     }
 
     #[test]
-    fn config_dir_falls_back_to_dot_when_home_unset() {
-        let resolved = claude_config_dir_from(None, None);
-        assert_eq!(resolved, PathBuf::from("./.claude"));
+    fn projects_dir_for_appends_projects_subdir() {
+        assert_eq!(projects_dir_for(Path::new("/tmp/cfg")), PathBuf::from("/tmp/cfg/projects"),);
     }
 }

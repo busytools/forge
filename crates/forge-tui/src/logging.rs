@@ -541,8 +541,8 @@ mod tests {
     #[test]
     fn resolve_log_path_uses_explicit_path_when_provided() {
         let cli = Cli {
-            command: None,
-            dir: None,
+            project: None,
+            generate_completion: None,
             enable_logs: false,
             diagnostics_preset: None,
             log_file: Some(PathBuf::from("custom.log")),
@@ -561,8 +561,8 @@ mod tests {
     #[test]
     fn resolve_log_path_uses_default_when_filter_enables_logging() {
         let cli = Cli {
-            command: None,
-            dir: None,
+            project: None,
+            generate_completion: None,
             enable_logs: false,
             diagnostics_preset: None,
             log_file: None,
@@ -582,8 +582,8 @@ mod tests {
     #[test]
     fn resolve_log_path_uses_default_when_enable_logs_is_set() {
         let cli = Cli {
-            command: None,
-            dir: None,
+            project: None,
+            generate_completion: None,
             enable_logs: true,
             diagnostics_preset: None,
             log_file: None,
@@ -601,8 +601,8 @@ mod tests {
     #[test]
     fn resolve_log_path_uses_default_when_preset_is_set() {
         let cli = Cli {
-            command: None,
-            dir: None,
+            project: None,
+            generate_completion: None,
             enable_logs: false,
             diagnostics_preset: Some(DiagnosticsPreset::Session),
             log_file: None,
@@ -620,8 +620,8 @@ mod tests {
     #[test]
     fn resolve_perf_path_uses_default_when_enable_perf_is_set() {
         let cli = Cli {
-            command: None,
-            dir: None,
+            project: None,
+            generate_completion: None,
             enable_logs: false,
             diagnostics_preset: None,
             log_file: None,

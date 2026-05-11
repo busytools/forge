@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 use serde_json::Value;
 use unicode_normalization::UnicodeNormalization;
 
-use forge_sdk::{SDKSessionInfo, SessionMessage, SessionMessageKind, projects_dir};
+use forge_sdk::{SDKSessionInfo, SessionMessage, SessionMessageKind, projects_dir_for};
 
 use crate::userdata::catalog::mutations::is_valid_uuid;
 
@@ -75,13 +75,19 @@ fn canonicalize_path(path: &str) -> String {
 /// session has no subagents directory, or no `agent-*.jsonl` files are
 /// present.
 #[must_use]
-// Owned `String` matches the call-site shape (config_dir / cwd args from std::env). Switching to `&str` would force every caller to materialise a temporary.
+// Owned `String` matches the call-site shape (cwd arg from std::env).
+// Switching to `&str` would force every caller to materialise a temporary.
 #[allow(clippy::needless_pass_by_value)]
-pub fn list_subagents(session_id: &str, directory: Option<String>) -> Vec<String> {
+pub fn list_subagents(
+    config_dir: &Path,
+    session_id: &str,
+    directory: Option<String>,
+) -> Vec<String> {
     if !is_valid_uuid(session_id) {
         return Vec::new();
     }
-    let Some(subagents_dir) = resolve_subagents_dir(session_id, directory.as_deref()) else {
+    let Some(subagents_dir) = resolve_subagents_dir(config_dir, session_id, directory.as_deref())
+    else {
         return Vec::new();
     };
     collect_agent_files(&subagents_dir).into_iter().map(|(agent_id, _)| agent_id).collect()
@@ -97,9 +103,11 @@ pub fn list_subagents(session_id: &str, directory: Option<String>) -> Vec<String
 /// `agent_id` is empty, the transcript can't be found, or the file
 /// contains no user/assistant entries.
 #[must_use]
-// Owned `String` matches the call-site shape (config_dir / cwd args from std::env). Switching to `&str` would force every caller to materialise a temporary.
+// Owned `String` matches the call-site shape (cwd arg from std::env).
+// Switching to `&str` would force every caller to materialise a temporary.
 #[allow(clippy::needless_pass_by_value)]
 pub fn get_subagent_messages(
+    config_dir: &Path,
     session_id: &str,
     agent_id: &str,
     directory: Option<String>,
@@ -109,7 +117,8 @@ pub fn get_subagent_messages(
     if !is_valid_uuid(session_id) || agent_id.is_empty() {
         return Vec::new();
     }
-    let Some(subagents_dir) = resolve_subagents_dir(session_id, directory.as_deref()) else {
+    let Some(subagents_dir) = resolve_subagents_dir(config_dir, session_id, directory.as_deref())
+    else {
         return Vec::new();
     };
     // Walk the tree — the file may live directly under subagents/ or
@@ -167,11 +176,15 @@ fn apply_limit_offset(
     messages.into_iter().skip(offset).take(end.saturating_sub(offset)).collect()
 }
 
-fn resolve_subagents_dir(session_id: &str, directory: Option<&str>) -> Option<PathBuf> {
+fn resolve_subagents_dir(
+    config_dir: &Path,
+    session_id: &str,
+    directory: Option<&str>,
+) -> Option<PathBuf> {
     let project_dir = if let Some(dir) = directory {
-        project_dir_for(dir)
+        project_dir_for(config_dir, dir)
     } else {
-        let iter = fs::read_dir(projects_dir()).ok()?;
+        let iter = fs::read_dir(projects_dir_for(config_dir)).ok()?;
         iter.flatten()
             .map(|e| e.path())
             .find(|p| p.join(format!("{session_id}.jsonl")).is_file())?
@@ -270,8 +283,8 @@ fn simple_hash(s: &str) -> String {
     String::from_utf8(out).unwrap_or_default()
 }
 
-fn project_dir_for(project_path: &str) -> PathBuf {
-    projects_dir().join(sanitize_path(&canonicalize_path(project_path)))
+fn project_dir_for(config_dir: &Path, project_path: &str) -> PathBuf {
+    projects_dir_for(config_dir).join(sanitize_path(&canonicalize_path(project_path)))
 }
 
 /// Bounded-concurrency cap for [`list_sessions`] per-file lite reads.
@@ -283,26 +296,29 @@ fn project_dir_for(project_path: &str) -> PathBuf {
 const LIST_SESSIONS_MAX_CONCURRENT: usize = 16;
 
 /// List sessions. When `directory` is `Some`, scans that project dir;
-/// when `None`, scans every project directory. Per-file lite reads
-/// run on the tokio blocking pool with bounded concurrency (capped
-/// at 16 concurrent reads); results are sorted by `last_modified`
-/// descending and pagination applies at the end.
+/// when `None`, scans every project directory under `config_dir`'s
+/// `projects/` tree. Per-file lite reads run on the tokio blocking
+/// pool with bounded concurrency (capped at 16 concurrent reads);
+/// results are sorted by `last_modified` descending and pagination
+/// applies at the end.
 ///
 /// # Panics
 ///
 /// Never — filesystem errors fall through and produce an empty Vec.
 #[must_use]
-// Owned `String` matches the call-site shape (config_dir / cwd args from std::env). Switching to `&str` would force every caller to materialise a temporary.
+// Owned `String` matches the call-site shape (cwd arg from std::env).
+// Switching to `&str` would force every caller to materialise a temporary.
 #[allow(clippy::needless_pass_by_value)]
 pub async fn list_sessions(
+    config_dir: &Path,
     directory: Option<String>,
     limit: Option<usize>,
     offset: usize,
 ) -> Vec<SDKSessionInfo> {
     let search_dirs: Vec<PathBuf> = if let Some(dir) = directory {
-        vec![project_dir_for(&dir)]
+        vec![project_dir_for(config_dir, &dir)]
     } else {
-        fs::read_dir(projects_dir())
+        fs::read_dir(projects_dir_for(config_dir))
             .map(|iter| {
                 iter.flatten()
                     .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
@@ -357,19 +373,25 @@ pub async fn list_sessions(
 }
 
 /// Read metadata for one session. When `directory` is `None`, every
-/// project directory is searched for a matching `<session_id>.jsonl`.
+/// project directory under `<config_dir>/projects/` is searched for
+/// a matching `<session_id>.jsonl`.
 #[must_use]
-// Owned `String` matches the call-site shape (config_dir / cwd args from std::env). Switching to `&str` would force every caller to materialise a temporary.
+// Owned `String` matches the call-site shape (cwd arg from std::env).
+// Switching to `&str` would force every caller to materialise a temporary.
 #[allow(clippy::needless_pass_by_value)]
-pub fn get_session_info(session_id: &str, directory: Option<String>) -> Option<SDKSessionInfo> {
+pub fn get_session_info(
+    config_dir: &Path,
+    session_id: &str,
+    directory: Option<String>,
+) -> Option<SDKSessionInfo> {
     if !is_valid_uuid(session_id) {
         return None;
     }
     let file_name = format!("{session_id}.jsonl");
     if let Some(dir) = directory {
-        return read_session_info(&project_dir_for(&dir).join(&file_name));
+        return read_session_info(&project_dir_for(config_dir, &dir).join(&file_name));
     }
-    let projects = projects_dir();
+    let projects = projects_dir_for(config_dir);
     let iter = fs::read_dir(projects).ok()?;
     for entry in iter.flatten() {
         let candidate = entry.path().join(&file_name);
@@ -383,17 +405,22 @@ pub fn get_session_info(session_id: &str, directory: Option<String>) -> Option<S
 /// Read the full transcript for one session. Returns an empty Vec when
 /// the session file can't be found or parsed.
 #[must_use]
-// Owned `String` matches the call-site shape (config_dir / cwd args from std::env). Switching to `&str` would force every caller to materialise a temporary.
+// Owned `String` matches the call-site shape (cwd arg from std::env).
+// Switching to `&str` would force every caller to materialise a temporary.
 #[allow(clippy::needless_pass_by_value)]
-pub fn get_session_messages(session_id: &str, directory: Option<String>) -> Vec<SessionMessage> {
+pub fn get_session_messages(
+    config_dir: &Path,
+    session_id: &str,
+    directory: Option<String>,
+) -> Vec<SessionMessage> {
     if !is_valid_uuid(session_id) {
         return Vec::new();
     }
     let file_name = format!("{session_id}.jsonl");
     let candidate = if let Some(dir) = directory {
-        Some(project_dir_for(&dir).join(&file_name))
+        Some(project_dir_for(config_dir, &dir).join(&file_name))
     } else {
-        fs::read_dir(projects_dir()).ok().and_then(|iter| {
+        fs::read_dir(projects_dir_for(config_dir)).ok().and_then(|iter| {
             iter.flatten().map(|e| e.path().join(&file_name)).find(|p| p.is_file())
         })
     };
@@ -707,11 +734,17 @@ fn parse_session_info_from_lite(
         .or_else(|| extract_last_json_string_field(tail, "aiTitle"))
         .or_else(|| extract_last_json_string_field(head, "aiTitle"));
     let first_prompt = extract_first_prompt_from_head(head);
+    // Bias toward labels that identify what the session is about, not
+    // what was last said in it. customTitle / aiTitle (claude-written
+    // 4-6 word title) is best; first_prompt (the user's opening
+    // prompt) is the next-best identifier; lastPrompt (a mid-session
+    // follow-up that needs context to interpret) is the fallback
+    // because it produces unreadable labels at narrow widths.
     let summary = custom_title
         .clone()
+        .or_else(|| first_prompt.clone())
         .or_else(|| extract_last_json_string_field(tail, "lastPrompt"))
-        .or_else(|| extract_last_json_string_field(tail, "summary"))
-        .or_else(|| first_prompt.clone())?;
+        .or_else(|| extract_last_json_string_field(tail, "summary"))?;
 
     let git_branch = extract_last_json_string_field(tail, "gitBranch")
         .or_else(|| extract_json_string_field(head, "gitBranch"));
