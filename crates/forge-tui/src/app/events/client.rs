@@ -39,11 +39,11 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
         session.last_activity_at = std::time::Instant::now();
     }
     match event {
-        ClientEvent::PermissionRequest { request, response_tx } => {
-            turn::handle_permission_request_event(app, request, response_tx);
+        ClientEvent::PermissionRequest { session_key, tool_id, request } => {
+            turn::handle_permission_request_event(app, session_key, tool_id, request);
         }
-        ClientEvent::QuestionRequest { request, response_tx } => {
-            turn::handle_question_request_event(app, request, response_tx);
+        ClientEvent::QuestionRequest { session_key, tool_id, request } => {
+            turn::handle_question_request_event(app, session_key, tool_id, request);
         }
         ClientEvent::McpElicitationRequest { request, .. } => {
             // App-global UI overlay; only meaningful for the active
@@ -305,6 +305,12 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
             crate::app::plugins::apply_cli_action_failure(app, message);
         }
         ClientEvent::FatalError(error) => session::handle_fatal_error_event(app, error),
+        ClientEvent::WorkspaceUpdate(_update) => {
+            // Phase 1: counter-only smoke test (see `App::workspace_update_count`).
+            // Phase 3a wires the dispatcher that routes each
+            // `SessionUpdate` variant to the matching reducer.
+            app.workspace_update_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
     }
     if is_active_or_global {
         app.needs_redraw = true;

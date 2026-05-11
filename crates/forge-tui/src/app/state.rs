@@ -212,6 +212,26 @@ pub struct App {
     /// `None` only in test contexts (`App::test_default`); production
     /// startup always populates this before construction.
     pub workspace: Option<Rc<forge_workspace::Workspace>>,
+    /// Phase 1 smoke counter — incremented every time the dispatcher
+    /// observes a `ClientEvent::WorkspaceUpdate`. Real per-variant
+    /// reducers land in Phase 3a; this counter exists purely to
+    /// verify the forwarder task wired by `connect::create_app` is
+    /// actually delivering updates.
+    pub workspace_update_count: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    /// Test-only capture for dispatched permission/question outcomes
+    /// while the App has no `workspace`. Lets the legacy permission
+    /// / question unit + integration tests assert "the user-pick
+    /// handler fired outcome X for tool_id Y" without spinning up a
+    /// real workspace in every test. Populated when
+    /// `dispatch_permission_outcome` or `dispatch_question_outcome`
+    /// is called on an App whose `workspace` is `None`.
+    ///
+    /// Behind the `testing` Cargo feature so the production API
+    /// surface never carries these fields. Cross-crate integration
+    /// tests enable the feature via this crate's
+    /// `[dev-dependencies]` self-ref in `Cargo.toml`.
+    #[rustfmt::skip] #[cfg(feature = "testing")] pub test_dispatched_permission_outcomes: std::cell::RefCell<Vec<(String, forge_primitives::PermissionOutcome)>>,
+    #[rustfmt::skip] #[cfg(feature = "testing")] pub test_dispatched_question_outcomes: std::cell::RefCell<Vec<(String, forge_primitives::QuestionOutcome)>>,
     /// Per-session state buckets, keyed by claude session UUID.
     /// Phase 2a moves per-session fields off `App` into the
     /// [`super::session::Session`] value type one bucket at a time.
@@ -1913,6 +1933,9 @@ impl App {
             should_quit: false,
             exit_error: None,
             workspace: None,
+            workspace_update_count: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            #[rustfmt::skip] #[cfg(feature = "testing")] test_dispatched_permission_outcomes: std::cell::RefCell::new(Vec::new()),
+            #[rustfmt::skip] #[cfg(feature = "testing")] test_dispatched_question_outcomes: std::cell::RefCell::new(Vec::new()),
             sessions,
             active_session_key: Some(pending_key),
             login_hint: None,
@@ -2665,7 +2688,6 @@ mod tests {
     }
 
     fn assistant_tool_message_with_pending_permission(id: &str) -> ChatMessage {
-        let (tx, _rx) = tokio::sync::oneshot::channel();
         ChatMessage::new(
             MessageRole::Assistant,
             vec![MessageBlock::ToolCall(Box::new(ToolCallInfo {
@@ -2699,7 +2721,7 @@ mod tests {
                         model::PermissionOptionKind::AllowOnce,
                     )],
                     display: None,
-                    response_tx: tx,
+                    tool_id: id.to_owned(),
                     selected_index: 0,
                     focused: false,
                 }),

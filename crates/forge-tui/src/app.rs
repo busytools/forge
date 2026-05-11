@@ -66,7 +66,6 @@ pub use state::{
 pub use trust::TrustSelection;
 pub use view::ActiveView;
 
-use crate::agent::model;
 use crossterm::event::{
     EventStream, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
     PushKeyboardEnhancementFlags,
@@ -293,27 +292,46 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
 
     // --- Graceful shutdown ---
 
-    // Dismiss all pending inline permissions (reject via last option)
+    // Dismiss all pending inline permissions / questions (reject via
+    // last option / cancelled). Phase 1+: route the outcome through
+    // `Workspace::dispatch` instead of an inline oneshot; the
+    // workspace-side `SessionTask` pops the matching slot and the
+    // bridge forwards it to the agent.
+    let active_session_key = app.active_session_key.clone();
     for tool_id in std::mem::take(app.pending_interaction_ids_mut()) {
-        if let Some((mi, bi)) = app.lookup_tool_call(&tool_id)
+        let (perm_last_option_id, question_was_pending) = if let Some((mi, bi)) =
+            app.lookup_tool_call(&tool_id)
             && let Some(MessageBlock::ToolCall(tc)) =
                 app.messages_mut().get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
         {
             let tc = tc.as_mut();
-            if let Some(pending) = tc.pending_permission.take()
-                && let Some(last_opt) = pending.options.last()
-            {
-                let _ = pending.response_tx.send(model::RequestPermissionResponse::new(
-                    model::RequestPermissionOutcome::Selected(
-                        model::SelectedPermissionOutcome::new(last_opt.option_id.clone()),
-                    ),
-                ));
-            }
-            if let Some(pending) = tc.pending_question.take() {
-                let _ = pending.response_tx.send(model::RequestQuestionResponse::new(
-                    model::RequestQuestionOutcome::Cancelled,
-                ));
-            }
+            let perm_last = tc
+                .pending_permission
+                .take()
+                .and_then(|p| p.options.last().map(|opt| opt.option_id.clone()));
+            let question_taken = tc.pending_question.take().is_some();
+            (perm_last, question_taken)
+        } else {
+            (None, false)
+        };
+        let Some(session_key) = active_session_key.as_ref() else {
+            continue;
+        };
+        if let Some(option_id) = perm_last_option_id {
+            crate::app::events::turn::dispatch_permission_outcome(
+                app,
+                session_key,
+                &tool_id,
+                forge_primitives::PermissionOutcome::Selected { option_id },
+            );
+        }
+        if question_was_pending {
+            crate::app::events::turn::dispatch_question_outcome(
+                app,
+                session_key,
+                &tool_id,
+                forge_primitives::QuestionOutcome::Cancelled,
+            );
         }
     }
 

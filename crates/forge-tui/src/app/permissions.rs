@@ -254,6 +254,7 @@ fn respond_permission(app: &mut App, override_index: Option<usize>) {
     };
     let tc = tc.as_mut();
     let mut invalidated = false;
+    let mut selected_outcome: Option<forge_primitives::PermissionOutcome> = None;
     if let Some(pending) = tc.pending_permission.take() {
         let idx = override_index.unwrap_or(pending.selected_index);
         if let Some(opt) = pending.options.get(idx) {
@@ -268,11 +269,9 @@ fn respond_permission(app: &mut App, override_index: Option<usize>) {
                 option_name = %opt.name,
                 option_kind = ?opt.kind,
             );
-            let _ = pending.response_tx.send(model::RequestPermissionResponse::new(
-                model::RequestPermissionOutcome::Selected(model::SelectedPermissionOutcome::new(
-                    opt.option_id.clone(),
-                )),
-            ));
+            selected_outcome = Some(forge_primitives::PermissionOutcome::Selected {
+                option_id: opt.option_id.clone(),
+            });
         } else {
             tracing::warn!(
                 target: crate::logging::targets::APP_PERMISSION,
@@ -291,6 +290,11 @@ fn respond_permission(app: &mut App, override_index: Option<usize>) {
         app.sync_render_cache_slot(mi, bi);
         app.recompute_message_retained_bytes(mi);
         app.invalidate_layout(InvalidationLevel::MessageChanged(mi));
+    }
+    if let Some(outcome) = selected_outcome
+        && let Some(session_key) = app.active_session_key.clone()
+    {
+        crate::app::events::turn::dispatch_permission_outcome(app, &session_key, &tool_id, outcome);
     }
 
     focus_next_inline_interaction(app);
@@ -311,14 +315,20 @@ fn respond_permission_cancel(app: &mut App) {
         return;
     };
     let tc = tc.as_mut();
-    if let Some(pending) = tc.pending_permission.take() {
-        let _ = pending.response_tx.send(model::RequestPermissionResponse::new(
-            model::RequestPermissionOutcome::Cancelled,
-        ));
+    let cancelled = tc.pending_permission.take().is_some();
+    if cancelled {
         tc.mark_tool_call_layout_dirty();
         app.sync_render_cache_slot(mi, bi);
         app.recompute_message_retained_bytes(mi);
         app.invalidate_layout(InvalidationLevel::MessageChanged(mi));
+        if let Some(session_key) = app.active_session_key.clone() {
+            crate::app::events::turn::dispatch_permission_outcome(
+                app,
+                &session_key,
+                &tool_id,
+                forge_primitives::PermissionOutcome::Cancelled,
+            );
+        }
     }
 
     focus_next_inline_interaction(app);
@@ -333,7 +343,6 @@ mod tests {
     };
     use crossterm::event::KeyModifiers;
     use pretty_assertions::assert_eq;
-    use tokio::sync::oneshot;
 
     fn test_tool_call(id: &str) -> ToolCallInfo {
         ToolCallInfo {
@@ -387,30 +396,70 @@ mod tests {
         ]
     }
 
+    /// Test-only wrapper that mimics `oneshot::Receiver` shape for
+    /// permission outcomes. Phase 1+: the workspace owns the real
+    /// oneshot; tests read the dispatched outcome via the test
+    /// capture surface exposed under the `testing` Cargo feature.
+    /// Keeps the legacy `rx.try_recv(&app)` assertion shape working
+    /// with minimal per-site diff.
+    pub(super) struct TestPermissionRx {
+        pub tool_id: String,
+    }
+
+    impl TestPermissionRx {
+        /// Pop the captured outcome for `self.tool_id` (if any). Returns
+        /// a wrapping `RequestPermissionResponse` shaped like the
+        /// legacy oneshot reply so test assertions keep matching on
+        /// `model::RequestPermissionOutcome` variants.
+        pub fn try_recv(
+            &mut self,
+            app: &App,
+        ) -> Result<model::RequestPermissionResponse, tokio::sync::oneshot::error::TryRecvError>
+        {
+            match crate::app::events::turn::test_capture::try_take_dispatched_permission_outcome(
+                app,
+                &self.tool_id,
+            ) {
+                Ok(forge_primitives::PermissionOutcome::Selected { option_id }) => {
+                    Ok(model::RequestPermissionResponse::new(
+                        model::RequestPermissionOutcome::Selected(
+                            model::SelectedPermissionOutcome::new(option_id),
+                        ),
+                    ))
+                }
+                Ok(forge_primitives::PermissionOutcome::Cancelled) => {
+                    Ok(model::RequestPermissionResponse::new(
+                        model::RequestPermissionOutcome::Cancelled,
+                    ))
+                }
+                Err(err) => Err(err),
+            }
+        }
+    }
+
     fn add_permission(
         app: &mut App,
         tool_id: &str,
         options: Vec<model::PermissionOption>,
         focused: bool,
-    ) -> oneshot::Receiver<model::RequestPermissionResponse> {
+    ) -> TestPermissionRx {
         let msg_idx = app.messages().len();
         app.messages_mut().push(assistant_tool_msg(test_tool_call(tool_id)));
         app.index_tool_call(tool_id.to_owned(), msg_idx, 0);
 
-        let (tx, rx) = oneshot::channel();
         if let Some(MessageBlock::ToolCall(tc)) =
             app.messages_mut().get_mut(msg_idx).and_then(|m| m.blocks.get_mut(0))
         {
             tc.pending_permission = Some(InlinePermission {
                 options,
                 display: None,
-                response_tx: tx,
+                tool_id: tool_id.to_owned(),
                 selected_index: 0,
                 focused,
             });
         }
         app.pending_interaction_ids_mut().push(tool_id.to_owned());
-        rx
+        TestPermissionRx { tool_id: tool_id.to_owned() }
     }
 
     fn permission_focused(app: &App, tool_id: &str) -> bool {
@@ -454,12 +503,15 @@ mod tests {
         );
         assert!(consumed);
 
-        let resp2 = rx2.try_recv().expect("focused permission should receive response");
+        let resp2 = rx2.try_recv(&app).expect("focused permission should receive response");
         let model::RequestPermissionOutcome::Selected(sel2) = resp2.outcome else {
             panic!("expected selected permission response");
         };
         assert_eq!(sel2.option_id.clone(), "allow-once");
-        assert!(matches!(rx1.try_recv(), Err(tokio::sync::oneshot::error::TryRecvError::Empty)));
+        assert!(matches!(
+            rx1.try_recv(&app),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+        ));
         assert_eq!(app.pending_interaction_ids(), vec!["perm-1"]);
     }
 
@@ -476,7 +528,7 @@ mod tests {
 
         assert!(!consumed, "lowercase 'a' should flow to normal typing");
         assert_eq!(app.pending_interaction_ids(), vec!["perm-1"]);
-        assert!(matches!(rx.try_recv(), Err(tokio::sync::oneshot::error::TryRecvError::Empty)));
+        assert!(matches!(rx.try_recv(&app), Err(tokio::sync::oneshot::error::TryRecvError::Empty)));
     }
 
     #[test]
@@ -513,13 +565,16 @@ mod tests {
         );
         assert!(consumed);
 
-        let resp1 = rx1.try_recv().expect("first permission should be answered");
+        let resp1 = rx1.try_recv(&app).expect("first permission should be answered");
         let model::RequestPermissionOutcome::Selected(sel1) = resp1.outcome else {
             panic!("expected selected permission response");
         };
         assert_eq!(sel1.option_id.clone(), "allow-once");
         assert_eq!(app.pending_interaction_ids(), vec!["perm-2"]);
-        assert!(matches!(rx2.try_recv(), Err(tokio::sync::oneshot::error::TryRecvError::Empty)));
+        assert!(matches!(
+            rx2.try_recv(&app),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+        ));
     }
 
     #[test]
@@ -541,7 +596,7 @@ mod tests {
         assert!(!consumed_y);
         assert!(!consumed_n);
         assert_eq!(app.pending_interaction_ids(), vec!["perm-1"]);
-        assert!(matches!(rx.try_recv(), Err(tokio::sync::oneshot::error::TryRecvError::Empty)));
+        assert!(matches!(rx.try_recv(&app), Err(tokio::sync::oneshot::error::TryRecvError::Empty)));
     }
 
     #[test]
@@ -572,7 +627,7 @@ mod tests {
         );
         assert!(consumed);
 
-        let resp = rx.try_recv().expect("plan permission should be answered by ctrl+y");
+        let resp = rx.try_recv(&app).expect("plan permission should be answered by ctrl+y");
         let model::RequestPermissionOutcome::Selected(sel) = resp.outcome else {
             panic!("expected selected permission response");
         };
@@ -607,7 +662,7 @@ mod tests {
         );
         assert!(consumed);
 
-        let resp = rx.try_recv().expect("plan permission should be answered by raw ctrl+y");
+        let resp = rx.try_recv(&app).expect("plan permission should be answered by raw ctrl+y");
         let model::RequestPermissionOutcome::Selected(sel) = resp.outcome else {
             panic!("expected selected permission response");
         };
@@ -642,7 +697,7 @@ mod tests {
         );
         assert!(consumed);
 
-        let resp = rx.try_recv().expect("plan permission should be answered by ctrl+n");
+        let resp = rx.try_recv(&app).expect("plan permission should be answered by ctrl+n");
         let model::RequestPermissionOutcome::Selected(sel) = resp.outcome else {
             panic!("expected selected permission response");
         };
@@ -684,7 +739,7 @@ mod tests {
         assert!(!consumed_y);
         assert!(!consumed_n);
         assert_eq!(app.pending_interaction_ids(), vec!["perm-1"]);
-        assert!(matches!(rx.try_recv(), Err(tokio::sync::oneshot::error::TryRecvError::Empty)));
+        assert!(matches!(rx.try_recv(&app), Err(tokio::sync::oneshot::error::TryRecvError::Empty)));
     }
 
     #[test]
@@ -700,7 +755,7 @@ mod tests {
         assert!(consumed);
         assert!(app.pending_interaction_ids().is_empty());
 
-        let resp = rx.try_recv().expect("permission should be answered by ctrl+n");
+        let resp = rx.try_recv(&app).expect("permission should be answered by ctrl+n");
         let model::RequestPermissionOutcome::Selected(sel) = resp.outcome else {
             panic!("expected selected permission response");
         };
@@ -735,7 +790,7 @@ mod tests {
         );
         assert!(!consumed);
         assert_eq!(app.pending_interaction_ids(), vec!["perm-1"]);
-        assert!(matches!(rx.try_recv(), Err(tokio::sync::oneshot::error::TryRecvError::Empty)));
+        assert!(matches!(rx.try_recv(&app), Err(tokio::sync::oneshot::error::TryRecvError::Empty)));
     }
 
     #[test]
@@ -771,7 +826,7 @@ mod tests {
         );
         assert!(consumed);
 
-        let resp = rx.try_recv().expect("permission should be answered by ctrl+a fallback");
+        let resp = rx.try_recv(&app).expect("permission should be answered by ctrl+a fallback");
         let model::RequestPermissionOutcome::Selected(sel) = resp.outcome else {
             panic!("expected selected permission response");
         };
@@ -790,7 +845,7 @@ mod tests {
         );
         assert!(consumed);
 
-        let resp = rx.try_recv().expect("permission should be answered by uppercase ctrl+a");
+        let resp = rx.try_recv(&app).expect("permission should be answered by uppercase ctrl+a");
         let model::RequestPermissionOutcome::Selected(sel) = resp.outcome else {
             panic!("expected selected permission response");
         };
@@ -815,7 +870,7 @@ mod tests {
 
         assert!(!consumed_left);
         assert!(!consumed_right);
-        assert!(matches!(rx.try_recv(), Err(tokio::sync::oneshot::error::TryRecvError::Empty)));
+        assert!(matches!(rx.try_recv(&app), Err(tokio::sync::oneshot::error::TryRecvError::Empty)));
     }
 
     #[test]
@@ -831,7 +886,7 @@ mod tests {
 
         assert!(!consumed);
         assert_eq!(app.pending_interaction_ids(), vec!["perm-1"]);
-        assert!(matches!(rx.try_recv(), Err(tokio::sync::oneshot::error::TryRecvError::Empty)));
+        assert!(matches!(rx.try_recv(&app), Err(tokio::sync::oneshot::error::TryRecvError::Empty)));
     }
 
     #[test]
@@ -864,7 +919,7 @@ mod tests {
         assert_eq!(consumed_down, Some(true));
         assert_eq!(app.pending_interaction_ids(), vec!["perm-1"]);
         assert_eq!(app.viewport().scroll_target, 7);
-        assert!(matches!(rx.try_recv(), Err(tokio::sync::oneshot::error::TryRecvError::Empty)));
+        assert!(matches!(rx.try_recv(&app), Err(tokio::sync::oneshot::error::TryRecvError::Empty)));
     }
 
     #[test]
@@ -883,7 +938,7 @@ mod tests {
 
         respond_permission_cancel(&mut app);
 
-        let resp = rx.try_recv().expect("permission should be cancelled");
+        let resp = rx.try_recv(&app).expect("permission should be cancelled");
         assert!(matches!(resp.outcome, model::RequestPermissionOutcome::Cancelled));
     }
 }

@@ -57,9 +57,11 @@ pub(super) async fn run_connection_task(params: StartConnectionParams) {
             request_kind = "create",
         );
 
-        // Destructure so `workspace` can drop the moment we're done with
-        // it. The spawned event loop only needs `event_tx`, so dropping
-        // `workspace` here lets `Rc::try_unwrap` succeed at clean exit.
+        // Phase 1: workspace stays alive through the event loop so
+        // bridge_lifecycle can store interaction oneshots via
+        // `Workspace::store_pending_interaction` for each
+        // permission/question/elicitation request. Phase 4 retires
+        // this when SessionTask owns the AgentHandle event drain.
         let StartConnectionParams {
             event_tx,
             workspace,
@@ -70,12 +72,16 @@ pub(super) async fn run_connection_task(params: StartConnectionParams) {
         } = params;
 
         let mut connected_once = false;
+        // Workspace update sender cloned up-front so failure paths
+        // below can dual-emit alongside the legacy ClientEvent stream.
+        let pre_loop_update_tx = workspace.update_sender();
         let agent: Arc<forge_agent::AgentHandle> =
             match workspace.get_agent_handle(target, session_launch_settings).await {
                 Ok(handle) => handle,
                 Err(err) => {
                     emit_connection_failed(
                         &event_tx,
+                        &pre_loop_update_tx,
                         &pre_connect_key,
                         format!("workspace.get_agent_handle failed: {err}"),
                         AppError::ConnectionFailed,
@@ -84,7 +90,6 @@ pub(super) async fn run_connection_task(params: StartConnectionParams) {
                     return;
                 }
             };
-        drop(workspace);
 
         // Forge-side display_name is known the instant the
         // workspace picks an account — much earlier than the CLI-
@@ -95,6 +100,10 @@ pub(super) async fn run_connection_task(params: StartConnectionParams) {
         if let Some(display_name) = agent.display_name() {
             let _ = event_tx.send(ClientEvent::ForgeAccountIdentityReady {
                 session_key: pre_connect_key.clone(),
+                display_name: display_name.clone(),
+            });
+            let _ = pre_loop_update_tx.send(forge_workspace::SessionUpdate::ForgeAccountIdentity {
+                key: pre_connect_key.clone(),
                 display_name,
             });
         }
@@ -106,6 +115,7 @@ pub(super) async fn run_connection_task(params: StartConnectionParams) {
             // rather than panic.
             emit_connection_failed(
                 &event_tx,
+                &pre_loop_update_tx,
                 &pre_connect_key,
                 "forge-workspace yielded no event receiver".to_owned(),
                 AppError::ConnectionFailed,
@@ -118,10 +128,15 @@ pub(super) async fn run_connection_task(params: StartConnectionParams) {
             &event_tx,
             &mut event_rx,
             &agent,
+            &workspace,
             &mut connected_once,
             &pre_connect_key,
         )
         .await;
+        // Drop workspace here so `Rc::try_unwrap` can succeed at
+        // clean exit (no parallel SessionUpdate forwarder task to
+        // keep it alive past the event loop).
+        drop(workspace);
     }
     .instrument(connection_span)
     .await;
@@ -129,17 +144,23 @@ pub(super) async fn run_connection_task(params: StartConnectionParams) {
 
 /// Drain [`AgentEvent`]s emitted by the bridge and translate each
 /// into the corresponding [`ClientEvent`]. Permission and question
-/// requests are forwarded with a oneshot reply channel and a
-/// dedicated forwarder task drains the reply.
+/// requests park a single oneshot on
+/// `DomainSession.pending_interactions` via
+/// [`forge_workspace::Workspace::store_pending_interaction`] and
+/// emit a `tool_id` keyed envelope; the forwarder task drains the
+/// reply when [`forge_workspace::SessionTask`] handles the
+/// corresponding `Command::RespondPermission` /
+/// `Command::RespondQuestion`.
 async fn forge_sdk_event_loop(
     event_tx: &mpsc::UnboundedSender<ClientEvent>,
     event_rx: &mut mpsc::UnboundedReceiver<AgentEvent>,
     agent: &Arc<forge_agent::AgentHandle>,
+    workspace: &std::rc::Rc<forge_workspace::Workspace>,
     connected_once: &mut bool,
     pre_connect_key: &SessionKey,
 ) {
     while let Some(event) = event_rx.recv().await {
-        handle_agent_event(event_tx, agent, connected_once, pre_connect_key, event);
+        handle_agent_event(event_tx, agent, workspace, connected_once, pre_connect_key, event);
     }
     tracing::info!(
         target: crate::logging::targets::BRIDGE_LIFECYCLE,
@@ -152,11 +173,17 @@ async fn forge_sdk_event_loop(
 fn handle_agent_event(
     event_tx: &mpsc::UnboundedSender<ClientEvent>,
     agent: &Arc<forge_agent::AgentHandle>,
+    workspace: &std::rc::Rc<forge_workspace::Workspace>,
     connected_once: &mut bool,
     pre_connect_key: &SessionKey,
     event: AgentEvent,
 ) {
     let session_key = session_key_for(&event);
+    // Phase 1-3: dual-emit every translated agent event onto the
+    // workspace channel as well as the legacy `ClientEvent` channel.
+    // Phase 4 retires the ClientEvent path; `SessionTask` will own
+    // the AgentHandle event drain and emit `SessionUpdate` directly.
+    let update_tx = workspace.update_sender();
     match event {
         AgentEvent::Connected {
             session_id,
@@ -168,6 +195,7 @@ fn handle_agent_event(
         } => {
             handle_connected_event(
                 event_tx,
+                &update_tx,
                 agent,
                 connected_once,
                 pre_connect_key,
@@ -181,7 +209,12 @@ fn handle_agent_event(
         }
         AgentEvent::AuthRequired { method_name, method_description } => {
             let _ = event_tx.send(ClientEvent::AuthRequired {
-                session_key,
+                session_key: session_key.clone(),
+                method_name: method_name.clone(),
+                method_description: method_description.clone(),
+            });
+            let _ = update_tx.send(forge_workspace::SessionUpdate::AuthRequired {
+                key: session_key,
                 method_name,
                 method_description,
             });
@@ -195,6 +228,7 @@ fn handle_agent_event(
             // which means startup succeeded.
             emit_connection_failed(
                 event_tx,
+                &update_tx,
                 &session_key,
                 message,
                 AppError::ConnectionFailed,
@@ -202,13 +236,24 @@ fn handle_agent_event(
             );
         }
         AgentEvent::PermissionRequest { session_id, request } => {
-            handle_permission_request_event(event_tx, agent, session_id, request);
+            handle_permission_request_event(
+                event_tx, &update_tx, agent, workspace, session_id, request,
+            );
         }
         AgentEvent::QuestionRequest { session_id, request } => {
-            handle_question_request_event(event_tx, agent, session_id, request);
+            handle_question_request_event(
+                event_tx, &update_tx, agent, workspace, session_id, request,
+            );
         }
         AgentEvent::ElicitationRequest { session_id, request } => {
-            if event_tx.send(ClientEvent::McpElicitationRequest { session_key, request }).is_err() {
+            let elicitation_id = request.elicitation_id.clone().unwrap_or_default();
+            if event_tx
+                .send(ClientEvent::McpElicitationRequest {
+                    session_key: session_key.clone(),
+                    request: request.clone(),
+                })
+                .is_err()
+            {
                 tracing::error!(
                     target: crate::logging::targets::APP_PERMISSION,
                     event_name = "elicitation_request_dispatch_failed",
@@ -217,28 +262,67 @@ fn handle_agent_event(
                     session_id = %session_id,
                 );
             }
+            let _ = update_tx.send(forge_workspace::SessionUpdate::McpElicitationRequest {
+                key: session_key,
+                elicitation_id,
+                request,
+            });
         }
         AgentEvent::ElicitationComplete { elicitation_id, server_name, .. } => {
             let _ = event_tx.send(ClientEvent::McpElicitationCompleted {
-                session_key,
+                session_key: session_key.clone(),
+                elicitation_id: elicitation_id.clone(),
+                server_name: server_name.clone(),
+            });
+            let _ = update_tx.send(forge_workspace::SessionUpdate::McpElicitationCompleted {
+                key: session_key,
                 elicitation_id,
                 server_name,
             });
         }
         AgentEvent::McpAuthRedirect { redirect, .. } => {
-            let _ = event_tx.send(ClientEvent::McpAuthRedirect { session_key, redirect });
+            let _ = event_tx.send(ClientEvent::McpAuthRedirect {
+                session_key: session_key.clone(),
+                redirect: redirect.clone(),
+            });
+            let _ = update_tx.send(forge_workspace::SessionUpdate::McpAuthRedirect {
+                key: session_key,
+                redirect,
+            });
         }
         AgentEvent::McpOperationError { error, .. } => {
-            let _ = event_tx.send(ClientEvent::McpOperationError { session_key, error });
+            let _ = event_tx.send(ClientEvent::McpOperationError {
+                session_key: session_key.clone(),
+                error: error.clone(),
+            });
+            let _ = update_tx.send(forge_workspace::SessionUpdate::McpOperationError {
+                key: session_key,
+                error,
+            });
         }
         AgentEvent::SlashError { message, .. } => {
-            let _ = event_tx.send(ClientEvent::SlashCommandError { session_key, message });
+            let _ = event_tx.send(ClientEvent::SlashCommandError {
+                session_key: session_key.clone(),
+                message: message.clone(),
+            });
+            let _ = update_tx.send(forge_workspace::SessionUpdate::SlashCommandError {
+                key: session_key,
+                message,
+            });
         }
         AgentEvent::RuntimeReloadCompleted { session_id } => {
-            let _ = event_tx.send(ClientEvent::RuntimeReloadCompleted { session_id });
+            let _ = event_tx
+                .send(ClientEvent::RuntimeReloadCompleted { session_id: session_id.clone() });
+            let _ = update_tx
+                .send(forge_workspace::SessionUpdate::RuntimeReloadCompleted { session_id });
         }
         AgentEvent::RuntimeReloadFailed { session_id, message } => {
-            let _ = event_tx.send(ClientEvent::RuntimeReloadFailed { session_id, message });
+            let _ = event_tx.send(ClientEvent::RuntimeReloadFailed {
+                session_id: session_id.clone(),
+                message: message.clone(),
+            });
+            let _ = update_tx
+                .send(forge_workspace::SessionUpdate::RuntimeReloadFailed { session_id, message });
         }
         AgentEvent::SessionReplaced {
             session_id,
@@ -250,40 +334,88 @@ fn handle_agent_event(
         } => {
             let history_updates = history_updates.unwrap_or_default();
             let _ = event_tx.send(ClientEvent::SessionReplaced {
-                session_id: model::SessionId::new(session_id),
+                session_id: model::SessionId::new(session_id.clone()),
+                cwd: cwd.clone(),
+                current_model: convert_current_model(current_model.clone()),
+                available_models: map_available_models(available_models.clone()),
+                mode: mode.clone().map(convert_mode_state),
+                history_updates: history_updates.clone(),
+                conn: Arc::clone(agent),
+            });
+            let _ = update_tx.send(forge_workspace::SessionUpdate::SessionReplaced {
+                key: session_key,
+                session_id: forge_primitives::SessionId::new(session_id),
                 cwd,
-                current_model: convert_current_model(current_model),
-                available_models: map_available_models(available_models),
-                mode: mode.map(convert_mode_state),
-                history_updates,
+                current_model,
+                available_models,
+                mode,
+                history: history_updates,
                 conn: Arc::clone(agent),
             });
         }
         AgentEvent::SessionsListed { sessions } => {
-            let _ = event_tx.send(ClientEvent::SessionsListed { sessions });
+            let _ = event_tx.send(ClientEvent::SessionsListed { sessions: sessions.clone() });
+            let _ = update_tx.send(forge_workspace::SessionUpdate::SessionsListed { sessions });
         }
         AgentEvent::StatusSnapshot { session_id, account, forge_account } => {
             let _ = event_tx.send(ClientEvent::StatusSnapshotReceived {
+                session_id: session_id.clone(),
+                account: account.clone(),
+                forge_account: forge_account.clone(),
+            });
+            let _ = update_tx.send(forge_workspace::SessionUpdate::StatusSnapshot {
                 session_id,
                 account,
                 forge_account,
             });
         }
         AgentEvent::OauthCredentialsSnapshot { session_id, credentials } => {
-            let _ = event_tx
-                .send(ClientEvent::OauthCredentialsSnapshotReceived { session_id, credentials });
+            let _ = event_tx.send(ClientEvent::OauthCredentialsSnapshotReceived {
+                session_id: session_id.clone(),
+                credentials: credentials.clone(),
+            });
+            let _ = update_tx.send(forge_workspace::SessionUpdate::OauthCredentialsSnapshot {
+                session_id,
+                credentials,
+            });
         }
         AgentEvent::GitContextSnapshot { session_id, context } => {
-            let _ = event_tx.send(ClientEvent::GitContextSnapshotReceived { session_id, context });
+            let _ = event_tx.send(ClientEvent::GitContextSnapshotReceived {
+                session_id: session_id.clone(),
+                context: context.clone(),
+            });
+            let _ = update_tx
+                .send(forge_workspace::SessionUpdate::GitContextSnapshot { session_id, context });
         }
         AgentEvent::ContextUsage { session_id, percentage } => {
-            let _ = event_tx.send(ClientEvent::ContextUsageReceived { session_id, percentage });
+            let _ = event_tx.send(ClientEvent::ContextUsageReceived {
+                session_id: session_id.clone(),
+                percentage,
+            });
+            let _ = update_tx.send(forge_workspace::SessionUpdate::ContextUsageSnapshot {
+                session_id,
+                percentage,
+            });
         }
         AgentEvent::McpSnapshot { session_id, servers, error } => {
-            let _ = event_tx.send(ClientEvent::McpSnapshotReceived { session_id, servers, error });
+            let _ = event_tx.send(ClientEvent::McpSnapshotReceived {
+                session_id: session_id.clone(),
+                servers: servers.clone(),
+                error: error.clone(),
+            });
+            let _ = update_tx.send(forge_workspace::SessionUpdate::McpSnapshot {
+                session_id,
+                servers,
+                error,
+            });
         }
         AgentEvent::SdkMessage { session_id, msg } => {
-            let _ = event_tx.send(ClientEvent::SdkMessageReceived { session_id, msg });
+            let _ = event_tx.send(ClientEvent::SdkMessageReceived {
+                session_id: session_id.clone(),
+                msg: msg.clone(),
+            });
+            let _ =
+                update_tx.send(forge_workspace::SessionUpdate::ChatAppended { session_id, msg });
         }
         AgentEvent::HookObservation {
             session_id,
@@ -294,6 +426,14 @@ fn handle_agent_event(
             agent_type,
         } => {
             let _ = event_tx.send(ClientEvent::HookObservation {
+                session_id: session_id.clone(),
+                tool_use_id: tool_use_id.clone(),
+                permission_mode: permission_mode.clone(),
+                effort: effort.clone(),
+                agent_id: agent_id.clone(),
+                agent_type: agent_type.clone(),
+            });
+            let _ = update_tx.send(forge_workspace::SessionUpdate::HookObservation {
                 session_id,
                 tool_use_id,
                 permission_mode,
@@ -309,6 +449,7 @@ fn handle_agent_event(
 #[allow(clippy::too_many_arguments)]
 fn handle_connected_event(
     event_tx: &mpsc::UnboundedSender<ClientEvent>,
+    update_tx: &mpsc::UnboundedSender<forge_workspace::SessionUpdate>,
     agent: &Arc<forge_agent::AgentHandle>,
     connected_once: &mut bool,
     pre_connect_key: &SessionKey,
@@ -319,28 +460,49 @@ fn handle_connected_event(
     mode: Option<types::ModeState>,
     history_updates: Option<Vec<types::Message>>,
 ) {
-    let mode = mode.map(convert_mode_state);
+    let mode_model = mode.clone().map(convert_mode_state);
     let history_updates = history_updates.unwrap_or_default();
+    let session_key = SessionKey::from_session_id(session_id.clone());
     if *connected_once {
         let _ = event_tx.send(ClientEvent::SessionReplaced {
-            session_id: model::SessionId::new(session_id),
+            session_id: model::SessionId::new(session_id.clone()),
+            cwd: cwd.clone(),
+            current_model: convert_current_model(current_model.clone()),
+            available_models: map_available_models(available_models.clone()),
+            mode: mode_model,
+            history_updates: history_updates.clone(),
+            conn: Arc::clone(agent),
+        });
+        let _ = update_tx.send(forge_workspace::SessionUpdate::SessionReplaced {
+            key: session_key,
+            session_id: forge_primitives::SessionId::new(session_id),
             cwd,
-            current_model: convert_current_model(current_model),
-            available_models: map_available_models(available_models),
+            current_model,
+            available_models,
             mode,
-            history_updates,
+            history: history_updates,
             conn: Arc::clone(agent),
         });
     } else {
         *connected_once = true;
         let _ = event_tx.send(ClientEvent::Connected {
-            session_id: model::SessionId::new(session_id),
-            cwd,
-            current_model: convert_current_model(current_model),
-            available_models: map_available_models(available_models),
-            mode,
-            history_updates,
+            session_id: model::SessionId::new(session_id.clone()),
+            cwd: cwd.clone(),
+            current_model: convert_current_model(current_model.clone()),
+            available_models: map_available_models(available_models.clone()),
+            mode: mode_model,
+            history_updates: history_updates.clone(),
             pre_connect_key: Some(pre_connect_key.clone()),
+            conn: Arc::clone(agent),
+        });
+        let _ = update_tx.send(forge_workspace::SessionUpdate::Connected {
+            key: session_key,
+            session_id: forge_primitives::SessionId::new(session_id),
+            cwd,
+            current_model,
+            available_models,
+            mode,
+            history: history_updates,
             conn: Arc::clone(agent),
         });
     }
@@ -348,13 +510,37 @@ fn handle_connected_event(
 
 fn handle_permission_request_event(
     event_tx: &mpsc::UnboundedSender<ClientEvent>,
+    update_tx: &mpsc::UnboundedSender<forge_workspace::SessionUpdate>,
     agent: &Arc<forge_agent::AgentHandle>,
+    workspace: &std::rc::Rc<forge_workspace::Workspace>,
     session_id: String,
     request: types::PermissionRequest,
 ) {
+    let wire_request = request.clone();
     let (request, tool_call_id) = map_permission_request(&session_id, request);
-    let (response_tx, response_rx) = tokio::sync::oneshot::channel();
-    if event_tx.send(ClientEvent::PermissionRequest { request, response_tx }).is_ok() {
+    let session_key = SessionKey::from_session_id(session_id.clone());
+    // Single workspace-owned oneshot. The bridge keeps the receiver
+    // and forwards the outcome to the agent's pending response when
+    // `SessionTask` handles `Command::RespondPermission`.
+    let (response_tx, response_rx) = tokio::sync::oneshot::channel::<types::PermissionOutcome>();
+    workspace.store_pending_interaction(
+        &session_key,
+        tool_call_id.clone(),
+        forge_workspace::PendingInteractionSlot::Permission(response_tx),
+    );
+    if event_tx
+        .send(ClientEvent::PermissionRequest {
+            session_key: session_key.clone(),
+            tool_id: tool_call_id.clone(),
+            request,
+        })
+        .is_ok()
+    {
+        let _ = update_tx.send(forge_workspace::SessionUpdate::PermissionRequest {
+            key: session_key,
+            tool_id: tool_call_id.clone(),
+            request: wire_request,
+        });
         spawn_permission_response_forwarder(
             Arc::clone(agent),
             response_rx,
@@ -375,13 +561,34 @@ fn handle_permission_request_event(
 
 fn handle_question_request_event(
     event_tx: &mpsc::UnboundedSender<ClientEvent>,
+    update_tx: &mpsc::UnboundedSender<forge_workspace::SessionUpdate>,
     agent: &Arc<forge_agent::AgentHandle>,
+    workspace: &std::rc::Rc<forge_workspace::Workspace>,
     session_id: String,
     request: types::QuestionRequest,
 ) {
+    let wire_request = request.clone();
     let (request, tool_call_id) = map_question_request(&session_id, request);
-    let (response_tx, response_rx) = tokio::sync::oneshot::channel();
-    if event_tx.send(ClientEvent::QuestionRequest { request, response_tx }).is_ok() {
+    let session_key = SessionKey::from_session_id(session_id.clone());
+    let (response_tx, response_rx) = tokio::sync::oneshot::channel::<types::QuestionOutcome>();
+    workspace.store_pending_interaction(
+        &session_key,
+        tool_call_id.clone(),
+        forge_workspace::PendingInteractionSlot::Question(response_tx),
+    );
+    if event_tx
+        .send(ClientEvent::QuestionRequest {
+            session_key: session_key.clone(),
+            tool_id: tool_call_id.clone(),
+            request,
+        })
+        .is_ok()
+    {
+        let _ = update_tx.send(forge_workspace::SessionUpdate::QuestionRequest {
+            key: session_key,
+            tool_id: tool_call_id.clone(),
+            request: wire_request,
+        });
         spawn_question_response_forwarder(Arc::clone(agent), response_rx, session_id, tool_call_id);
     } else {
         tracing::error!(
@@ -397,12 +604,12 @@ fn handle_question_request_event(
 
 fn spawn_permission_response_forwarder(
     agent: Arc<forge_agent::AgentHandle>,
-    response_rx: tokio::sync::oneshot::Receiver<model::RequestPermissionResponse>,
+    response_rx: tokio::sync::oneshot::Receiver<types::PermissionOutcome>,
     session_id: String,
     tool_call_id: String,
 ) {
     tokio::task::spawn_local(async move {
-        let Ok(response) = response_rx.await else {
+        let Ok(outcome) = response_rx.await else {
             tracing::warn!(
                 target: crate::logging::targets::APP_PERMISSION,
                 event_name = "permission_response_abandoned",
@@ -412,12 +619,6 @@ fn spawn_permission_response_forwarder(
                 tool_call_id = %tool_call_id,
             );
             return;
-        };
-        let outcome = match response.outcome {
-            model::RequestPermissionOutcome::Selected(selected) => {
-                types::PermissionOutcome::Selected { option_id: selected.option_id.clone() }
-            }
-            model::RequestPermissionOutcome::Cancelled => types::PermissionOutcome::Cancelled,
         };
         let selected_option = match &outcome {
             types::PermissionOutcome::Selected { option_id } => option_id.clone(),
@@ -455,12 +656,12 @@ fn spawn_permission_response_forwarder(
 
 fn spawn_question_response_forwarder(
     agent: Arc<forge_agent::AgentHandle>,
-    response_rx: tokio::sync::oneshot::Receiver<model::RequestQuestionResponse>,
+    response_rx: tokio::sync::oneshot::Receiver<types::QuestionOutcome>,
     session_id: String,
     tool_call_id: String,
 ) {
     tokio::task::spawn_local(async move {
-        let Ok(response) = response_rx.await else {
+        let Ok(outcome) = response_rx.await else {
             tracing::warn!(
                 target: crate::logging::targets::APP_PERMISSION,
                 event_name = "question_response_abandoned",
@@ -470,16 +671,6 @@ fn spawn_question_response_forwarder(
                 tool_call_id = %tool_call_id,
             );
             return;
-        };
-        let outcome = match response.outcome {
-            model::RequestQuestionOutcome::Answered(answered) => types::QuestionOutcome::Answered {
-                selected_option_ids: answered.selected_option_ids,
-                annotation: answered.annotation.map(|annotation| types::QuestionAnnotation {
-                    preview: annotation.preview,
-                    notes: annotation.notes,
-                }),
-            },
-            model::RequestQuestionOutcome::Cancelled => types::QuestionOutcome::Cancelled,
         };
         let selected_option_count = match &outcome {
             types::QuestionOutcome::Answered { selected_option_ids, .. } => {
@@ -528,14 +719,23 @@ fn spawn_question_response_forwarder(
 /// inline in the spawn bucket.
 pub(super) fn emit_connection_failed(
     event_tx: &mpsc::UnboundedSender<ClientEvent>,
+    update_tx: &mpsc::UnboundedSender<forge_workspace::SessionUpdate>,
     session_key: &SessionKey,
     message: String,
     app_error: AppError,
     is_fatal: bool,
 ) {
-    let _ =
-        event_tx.send(ClientEvent::ConnectionFailed { session_key: session_key.clone(), message });
+    let _ = event_tx.send(ClientEvent::ConnectionFailed {
+        session_key: session_key.clone(),
+        message: message.clone(),
+    });
+    let _ = update_tx.send(forge_workspace::SessionUpdate::ConnectionFailed {
+        key: session_key.clone(),
+        message,
+        fatal: is_fatal,
+    });
     if is_fatal {
-        let _ = event_tx.send(ClientEvent::FatalError(app_error));
+        let _ = event_tx.send(ClientEvent::FatalError(app_error.clone()));
+        let _ = update_tx.send(forge_workspace::SessionUpdate::FatalError(app_error));
     }
 }

@@ -140,6 +140,7 @@ pub fn spawn_for_sleeping_project(app: &mut App, project_key: &str) {
     // panics the bucket would otherwise stay stuck in `Spawning`
     // forever, with no user-visible diagnostic.
     let panic_event_tx = app.event_tx.clone();
+    let panic_update_tx = workspace.update_sender();
     let panic_session_key = spawn_key.clone();
     let params = StartConnectionParams {
         event_tx: app.event_tx.clone(),
@@ -155,7 +156,13 @@ pub fn spawn_for_sleeping_project(app: &mut App, project_key: &str) {
     };
 
     let project_for_log = project_name.clone();
-    spawn_connection_task(params, panic_event_tx, panic_session_key, project_for_log);
+    spawn_connection_task(
+        params,
+        panic_event_tx,
+        panic_update_tx,
+        panic_session_key,
+        project_for_log,
+    );
 
     tracing::info!(
         target: crate::logging::targets::APP_SESSION,
@@ -257,6 +264,7 @@ pub fn spawn_for_sleeping_session(app: &mut App, session_key: &forge_workspace::
     app.switch_active_session(synthetic_key.clone());
 
     let panic_event_tx = app.event_tx.clone();
+    let panic_update_tx = workspace.update_sender();
     let panic_session_key = synthetic_key.clone();
     let params = StartConnectionParams {
         event_tx: app.event_tx.clone(),
@@ -268,7 +276,13 @@ pub fn spawn_for_sleeping_session(app: &mut App, session_key: &forge_workspace::
     };
 
     let session_id_for_log = session_key.as_str().to_owned();
-    spawn_connection_task(params, panic_event_tx, panic_session_key, session_id_for_log.clone());
+    spawn_connection_task(
+        params,
+        panic_event_tx,
+        panic_update_tx,
+        panic_session_key,
+        session_id_for_log.clone(),
+    );
 
     tracing::info!(
         target: crate::logging::targets::APP_SESSION,
@@ -287,6 +301,7 @@ pub fn spawn_for_sleeping_session(app: &mut App, session_key: &forge_workspace::
 fn spawn_connection_task(
     params: StartConnectionParams,
     panic_event_tx: tokio::sync::mpsc::UnboundedSender<crate::agent::events::ClientEvent>,
+    panic_update_tx: tokio::sync::mpsc::UnboundedSender<forge_workspace::SessionUpdate>,
     panic_session_key: forge_workspace::SessionKey,
     label_for_log: String,
 ) {
@@ -301,9 +316,15 @@ fn spawn_connection_task(
                 session_key = %panic_session_key.as_str(),
                 "spawn task panicked; emitting ConnectionFailed",
             );
+            let message = format!("internal error during spawn: {panic:?}");
             let _ = panic_event_tx.send(crate::agent::events::ClientEvent::ConnectionFailed {
-                session_key: panic_session_key,
-                message: format!("internal error during spawn: {panic:?}"),
+                session_key: panic_session_key.clone(),
+                message: message.clone(),
+            });
+            let _ = panic_update_tx.send(forge_workspace::SessionUpdate::ConnectionFailed {
+                key: panic_session_key,
+                message,
+                fatal: false,
             });
         }
         tracing::debug!(

@@ -151,6 +151,9 @@ pub fn create_app(cli: &Cli, workspace: Rc<forge_workspace::Workspace>) -> App {
         should_quit: false,
         exit_error: None,
         workspace: Some(workspace),
+        workspace_update_count: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        #[rustfmt::skip] #[cfg(feature = "testing")] test_dispatched_permission_outcomes: std::cell::RefCell::new(Vec::new()),
+        #[rustfmt::skip] #[cfg(feature = "testing")] test_dispatched_question_outcomes: std::cell::RefCell::new(Vec::new()),
         sessions,
         active_session_key: Some(pre_connect_key),
         login_hint: None,
@@ -230,7 +233,30 @@ pub fn create_app(cli: &Cli, workspace: Rc<forge_workspace::Workspace>) -> App {
     app.sync_welcome_snapshot();
     trust::initialize(&mut app);
     super::file_index::restart(&mut app);
+    spawn_workspace_update_forwarder(&app);
     app
+}
+
+/// Phase 1: subscribe to `workspace.update_sender` once and forward
+/// every emitted [`forge_workspace::SessionUpdate`] onto the App's
+/// `ClientEvent::WorkspaceUpdate` channel so the existing event
+/// multiplexer can drive Phase 3a reducers later.
+fn spawn_workspace_update_forwarder(app: &App) {
+    let Some(workspace) = app.workspace.as_ref() else {
+        return;
+    };
+    let Some(mut update_rx) = workspace.subscribe() else {
+        // subscribe() returns None on the second call. Don't double-spawn.
+        return;
+    };
+    let app_event_tx = app.event_tx.clone();
+    tokio::task::spawn_local(async move {
+        while let Some(update) = update_rx.recv().await {
+            if app_event_tx.send(ClientEvent::WorkspaceUpdate(update)).is_err() {
+                break;
+            }
+        }
+    });
 }
 
 /// Spawn the background bridge task.
@@ -257,8 +283,15 @@ pub fn start_connection(app: &mut App) {
             .active_session_key
             .clone()
             .unwrap_or_else(|| forge_workspace::SessionKey::from_session_id(App::PRE_CONNECT_KEY));
+        // No workspace means no `update_sender` to dual-emit through;
+        // use a throwaway channel so the helper's signature stays
+        // unchanged. The discarded receiver simply drops every
+        // SessionUpdate.
+        let (dummy_update_tx, _dummy_update_rx) =
+            tokio::sync::mpsc::unbounded_channel::<forge_workspace::SessionUpdate>();
         bridge_lifecycle::emit_connection_failed(
             &app.event_tx,
+            &dummy_update_tx,
             &session_key,
             "internal: workspace not initialised in App; cannot spawn bridge".to_owned(),
             crate::error::AppError::ConnectionFailed,
@@ -328,7 +361,11 @@ mod tests {
             perf_append: false,
         };
 
-        let app = super::create_app(&cli, Rc::new(workspace));
+        // `create_app` spawns the workspace-update forwarder via
+        // `tokio::task::spawn_local`, which requires a `LocalSet`.
+        // Production `main` runs inside one; the test must do the same.
+        let local = tokio::task::LocalSet::new();
+        let app = local.run_until(async { super::create_app(&cli, Rc::new(workspace)) }).await;
 
         // cwd is seeded from the process; the Connected event later
         // overwrites it with the agent's reported value.

@@ -28,13 +28,14 @@ struct TurnExitState {
     show_interrupted_hint: bool,
 }
 
+#[allow(clippy::needless_pass_by_value)] // owned args come from the client dispatcher's match arm.
 pub(super) fn handle_permission_request_event(
     app: &mut App,
+    session_key: SessionKey,
+    tool_id: String,
     request: model::RequestPermissionRequest,
-    response_tx: tokio::sync::oneshot::Sender<model::RequestPermissionResponse>,
 ) {
     let session_id = request.session_id.to_string();
-    let tool_id = request.tool_call.tool_call_id.clone();
     let options = request.options.clone();
 
     // Lifecycle: a permission prompt landing on a non-active session
@@ -42,9 +43,8 @@ pub(super) fn handle_permission_request_event(
     // Attention so the Projects pane shows the △ glyph. Active
     // sessions don't need this — the inline permission card itself
     // surfaces the prompt to the user.
-    let request_key = SessionKey::from_session_id(session_id.clone());
-    if app.active_session_key.as_ref() != Some(&request_key)
-        && let Some(session) = app.session_mut(&request_key)
+    if app.active_session_key.as_ref() != Some(&session_key)
+        && let Some(session) = app.session_mut(&session_key)
     {
         session.lifecycle_state = crate::app::session::SessionLifecycleState::Attention;
     }
@@ -53,21 +53,21 @@ pub(super) fn handle_permission_request_event(
     // permission prompt landing on a background bucket needs to look
     // up `tool_call_id` in THAT bucket's `tool_call_index`, not the
     // active session's. Without the swap, background permission
-    // prompts auto-`reject_permission_request` on lookup miss and
-    // the user finds the prompt already gone when they switch in.
+    // prompts auto-reject on lookup miss and the user finds the
+    // prompt already gone when they switch in.
     let saved_active = app.active_session_key.clone();
     let saved_input = app.input.text();
     let saved_status = app.status.clone();
-    let needs_temp_swap = app.active_session_key.as_ref() != Some(&request_key)
-        && app.sessions.contains_key(&request_key);
+    let needs_temp_swap = app.active_session_key.as_ref() != Some(&session_key)
+        && app.sessions.contains_key(&session_key);
     if needs_temp_swap {
-        app.active_session_key = Some(request_key.clone());
+        app.active_session_key = Some(session_key.clone());
     }
 
     apply_permission_request_to_active_bucket(
         app,
+        &session_key,
         request,
-        response_tx,
         &session_id,
         &tool_id,
         &options,
@@ -86,8 +86,8 @@ pub(super) fn handle_permission_request_event(
 
 fn apply_permission_request_to_active_bucket(
     app: &mut App,
+    session_key: &SessionKey,
     request: model::RequestPermissionRequest,
-    response_tx: tokio::sync::oneshot::Sender<model::RequestPermissionResponse>,
     session_id: &str,
     tool_id: &str,
     options: &[model::PermissionOption],
@@ -102,7 +102,7 @@ fn apply_permission_request_to_active_bucket(
             tool_call_id = %tool_id,
             reason = "unknown_tool_call",
         );
-        reject_permission_request(response_tx, options);
+        auto_reject_permission_via_workspace(app, session_key, tool_id, options);
         return;
     };
 
@@ -116,7 +116,7 @@ fn apply_permission_request_to_active_bucket(
             tool_call_id = %tool_id,
             reason = "duplicate_pending_interaction",
         );
-        reject_permission_request(response_tx, options);
+        auto_reject_permission_via_workspace(app, session_key, tool_id, options);
         return;
     }
 
@@ -129,7 +129,7 @@ fn apply_permission_request_to_active_bucket(
         tc.pending_permission = Some(InlinePermission {
             options: request.options,
             display: request.display,
-            response_tx,
+            tool_id: tool_id.to_owned(),
             selected_index: 0,
             focused: auto_focus,
         });
@@ -164,7 +164,7 @@ fn apply_permission_request_to_active_bucket(
             tool_call_id = %tool_id,
             reason = "non_tool_block",
         );
-        reject_permission_request(response_tx, options);
+        auto_reject_permission_via_workspace(app, session_key, tool_id, options);
     }
 
     if layout_dirty {
@@ -174,22 +174,22 @@ fn apply_permission_request_to_active_bucket(
     }
 }
 
+#[allow(clippy::needless_pass_by_value)] // owned args come from the client dispatcher's match arm.
 pub(super) fn handle_question_request_event(
     app: &mut App,
+    session_key: SessionKey,
+    tool_id: String,
     request: model::RequestQuestionRequest,
-    response_tx: tokio::sync::oneshot::Sender<model::RequestQuestionResponse>,
 ) {
     let session_id = request.session_id.to_string();
-    let tool_id = request.tool_call.tool_call_id.clone();
     let option_count = request.prompt.options.len();
     let question_index = request.question_index;
     let total_questions = request.total_questions;
 
     // Lifecycle: as with permission prompts — a question landing on a
     // non-active session flips that bucket to Attention.
-    let request_key = SessionKey::from_session_id(session_id.clone());
-    if app.active_session_key.as_ref() != Some(&request_key)
-        && let Some(session) = app.session_mut(&request_key)
+    if app.active_session_key.as_ref() != Some(&session_key)
+        && let Some(session) = app.session_mut(&session_key)
     {
         session.lifecycle_state = crate::app::session::SessionLifecycleState::Attention;
     }
@@ -201,24 +201,24 @@ pub(super) fn handle_question_request_event(
     // request's bucket rather than the user's current view. Without
     // this swap, a background question landed on the active session's
     // `tool_call_index` lookup, found nothing, and auto-`Cancelled`
-    // the response_tx — the user clicked the △ attention glyph only
-    // to find the prompt had already been rejected before they got
-    // there. Active-bucket UI state (input draft, status) is saved
+    // the response oneshot — the user clicked the △ attention glyph
+    // only to find the prompt had already been rejected before they
+    // got there. Active-bucket UI state (input draft, status) is saved
     // across the swap so the routing leaves no trace on the session
     // the user is currently looking at.
     let saved_active = app.active_session_key.clone();
     let saved_input = app.input.text();
     let saved_status = app.status.clone();
-    let needs_temp_swap = app.active_session_key.as_ref() != Some(&request_key)
-        && app.sessions.contains_key(&request_key);
+    let needs_temp_swap = app.active_session_key.as_ref() != Some(&session_key)
+        && app.sessions.contains_key(&session_key);
     if needs_temp_swap {
-        app.active_session_key = Some(request_key.clone());
+        app.active_session_key = Some(session_key.clone());
     }
 
     apply_question_request_to_active_bucket(
         app,
+        &session_key,
         request,
-        response_tx,
         &session_id,
         &tool_id,
         option_count,
@@ -240,8 +240,8 @@ pub(super) fn handle_question_request_event(
 #[allow(clippy::too_many_arguments)]
 fn apply_question_request_to_active_bucket(
     app: &mut App,
+    session_key: &SessionKey,
     request: model::RequestQuestionRequest,
-    response_tx: tokio::sync::oneshot::Sender<model::RequestQuestionResponse>,
     session_id: &str,
     tool_id: &str,
     option_count: usize,
@@ -258,8 +258,7 @@ fn apply_question_request_to_active_bucket(
             tool_call_id = %tool_id,
             reason = "unknown_tool_call",
         );
-        let _ = response_tx
-            .send(model::RequestQuestionResponse::new(model::RequestQuestionOutcome::Cancelled));
+        cancel_question_via_workspace(app, session_key, tool_id);
         return;
     };
 
@@ -273,8 +272,7 @@ fn apply_question_request_to_active_bucket(
             tool_call_id = %tool_id,
             reason = "duplicate_pending_interaction",
         );
-        let _ = response_tx
-            .send(model::RequestQuestionResponse::new(model::RequestQuestionOutcome::Cancelled));
+        cancel_question_via_workspace(app, session_key, tool_id);
         return;
     }
 
@@ -286,7 +284,7 @@ fn apply_question_request_to_active_bucket(
         let tc = tc.as_mut();
         tc.pending_question = Some(InlineQuestion {
             prompt: request.prompt,
-            response_tx,
+            tool_id: tool_id.to_owned(),
             focused_option_index: 0,
             selected_option_indices: BTreeSet::new(),
             notes: String::new(),
@@ -329,8 +327,7 @@ fn apply_question_request_to_active_bucket(
             tool_call_id = %tool_id,
             reason = "non_tool_block",
         );
-        let _ = response_tx
-            .send(model::RequestQuestionResponse::new(model::RequestQuestionOutcome::Cancelled));
+        cancel_question_via_workspace(app, session_key, tool_id);
     }
 
     if layout_dirty {
@@ -340,16 +337,172 @@ fn apply_question_request_to_active_bucket(
     }
 }
 
-fn reject_permission_request(
-    response_tx: tokio::sync::oneshot::Sender<model::RequestPermissionResponse>,
+/// Auto-reject a permission via the workspace channel. The chosen
+/// option mirrors the pre-Phase-1 inline behaviour: pick the last
+/// option (typically "reject_once"). The workspace pops the
+/// matching oneshot and the bridge forwards the response.
+fn auto_reject_permission_via_workspace(
+    app: &App,
+    session_key: &SessionKey,
+    tool_id: &str,
     options: &[model::PermissionOption],
 ) {
-    if let Some(last_opt) = options.last() {
-        let _ = response_tx.send(model::RequestPermissionResponse::new(
-            model::RequestPermissionOutcome::Selected(model::SelectedPermissionOutcome::new(
-                last_opt.option_id.clone(),
-            )),
-        ));
+    let Some(last_opt) = options.last() else {
+        return;
+    };
+    dispatch_permission_outcome(
+        app,
+        session_key,
+        tool_id,
+        forge_primitives::PermissionOutcome::Selected { option_id: last_opt.option_id.clone() },
+    );
+}
+
+/// Cancel a pending question via the workspace channel. The bridge
+/// forwards `QuestionOutcome::Cancelled` to the agent.
+fn cancel_question_via_workspace(app: &App, session_key: &SessionKey, tool_id: &str) {
+    let Some(workspace) = app.workspace.as_ref() else {
+        return;
+    };
+    let cmd = forge_workspace::Command::RespondQuestion {
+        key: session_key.clone(),
+        tool_id: tool_id.to_owned(),
+        outcome: forge_primitives::QuestionOutcome::Cancelled,
+    };
+    if let Err(err) = workspace.dispatch(cmd) {
+        tracing::warn!(
+            target: crate::logging::targets::APP_PERMISSION,
+            event_name = "question_auto_cancel_dispatch_failed",
+            session_key = %session_key.as_str(),
+            tool_id = %tool_id,
+            error = %err,
+            "failed to dispatch auto-cancel for unrecognised question request",
+        );
+    }
+}
+
+/// Dispatch a [`forge_primitives::PermissionOutcome`] for `tool_id`
+/// via the workspace's [`forge_workspace::Workspace::dispatch`] path.
+/// Used by both the user-pick handler (`app::permissions`) and the
+/// auto-reject paths in this module.
+///
+/// Under the `testing` Cargo feature, when `app.workspace` is `None`
+/// (the `App::test_default` fixture used by every legacy permission
+/// / question unit test), the outcome is captured into the App's
+/// per-feature test-capture field so tests can assert "the user-pick
+/// handler fired outcome X for tool_id Y" without spinning up a real
+/// workspace.
+pub(crate) fn dispatch_permission_outcome(
+    app: &App,
+    session_key: &SessionKey,
+    tool_id: &str,
+    outcome: forge_primitives::PermissionOutcome,
+) {
+    let Some(workspace) = app.workspace.as_ref() else {
+        // No workspace: capture into the App's test-capture field so
+        // tests can assert outcomes without spinning up a real
+        // workspace. Production builds set the workspace on every
+        // App, so this branch never fires in production.
+        #[rustfmt::skip] #[cfg(feature = "testing")] app.test_dispatched_permission_outcomes.borrow_mut().push((tool_id.to_owned(), outcome));
+        #[cfg(not(feature = "testing"))]
+        let _ = (tool_id, outcome);
+        return;
+    };
+    let cmd = forge_workspace::Command::RespondPermission {
+        key: session_key.clone(),
+        tool_id: tool_id.to_owned(),
+        outcome,
+    };
+    if let Err(err) = workspace.dispatch(cmd) {
+        tracing::warn!(
+            target: crate::logging::targets::APP_PERMISSION,
+            event_name = "permission_dispatch_failed",
+            session_key = %session_key.as_str(),
+            tool_id = %tool_id,
+            error = %err,
+            "failed to dispatch permission response",
+        );
+    }
+}
+
+/// Behind the `testing` Cargo feature so this surface never leaks
+/// into production builds. Holds the `try_take_dispatched_*`
+/// getters used by unit + integration tests to assert outcomes.
+#[cfg(feature = "testing")]
+pub mod test_capture {
+    use super::App;
+
+    /// Test-only: pop the first captured permission outcome whose
+    /// `tool_id` matches. Mirrors the legacy
+    /// `oneshot::Receiver::try_recv()` shape that the pre-Phase-1
+    /// permission tests used to assert "the user-pick handler fired
+    /// outcome X for tool_id Y" without needing a live workspace.
+    ///
+    /// Returns the captured outcome on hit; returns
+    /// `Err(TryRecvError::Empty)` on miss so tests can still match
+    /// on the oneshot error shape.
+    #[allow(dead_code)] // Consumed by integration tests in `crates/forge-tui/tests/`.
+    pub fn try_take_dispatched_permission_outcome(
+        app: &App,
+        tool_id: &str,
+    ) -> Result<forge_primitives::PermissionOutcome, tokio::sync::oneshot::error::TryRecvError>
+    {
+        #[rustfmt::skip] #[cfg(feature = "testing")] let mut guard = app.test_dispatched_permission_outcomes.borrow_mut();
+        if let Some(pos) = guard.iter().position(|(tid, _)| tid == tool_id) {
+            let (_, outcome) = guard.remove(pos);
+            Ok(outcome)
+        } else {
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+        }
+    }
+
+    /// Test-only: same as [`try_take_dispatched_permission_outcome`]
+    /// but for question outcomes.
+    #[allow(dead_code)]
+    pub fn try_take_dispatched_question_outcome(
+        app: &App,
+        tool_id: &str,
+    ) -> Result<forge_primitives::QuestionOutcome, tokio::sync::oneshot::error::TryRecvError> {
+        #[rustfmt::skip] #[cfg(feature = "testing")] let mut guard = app.test_dispatched_question_outcomes.borrow_mut();
+        if let Some(pos) = guard.iter().position(|(tid, _)| tid == tool_id) {
+            let (_, outcome) = guard.remove(pos);
+            Ok(outcome)
+        } else {
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+        }
+    }
+}
+
+/// Dispatch a [`forge_primitives::QuestionOutcome`] for `tool_id`
+/// via the workspace. Used by `app::questions` when the user picks
+/// an option. Under the `testing` Cargo feature, see
+/// [`dispatch_permission_outcome`] — same test-capture rule applies.
+pub(crate) fn dispatch_question_outcome(
+    app: &App,
+    session_key: &SessionKey,
+    tool_id: &str,
+    outcome: forge_primitives::QuestionOutcome,
+) {
+    let Some(workspace) = app.workspace.as_ref() else {
+        #[rustfmt::skip] #[cfg(feature = "testing")] app.test_dispatched_question_outcomes.borrow_mut().push((tool_id.to_owned(), outcome));
+        #[cfg(not(feature = "testing"))]
+        let _ = (tool_id, outcome);
+        return;
+    };
+    let cmd = forge_workspace::Command::RespondQuestion {
+        key: session_key.clone(),
+        tool_id: tool_id.to_owned(),
+        outcome,
+    };
+    if let Err(err) = workspace.dispatch(cmd) {
+        tracing::warn!(
+            target: crate::logging::targets::APP_PERMISSION,
+            event_name = "question_dispatch_failed",
+            session_key = %session_key.as_str(),
+            tool_id = %tool_id,
+            error = %err,
+            "failed to dispatch question response",
+        );
     }
 }
 

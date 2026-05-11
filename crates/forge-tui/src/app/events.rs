@@ -9,7 +9,7 @@ mod session_reset;
 mod streaming;
 mod tool_calls;
 mod tool_updates;
-mod turn;
+pub(crate) mod turn;
 
 use super::{
     ActiveView, App, AppStatus, ChatMessage, InvalidationLevel, MessageBlock, MessageRole,
@@ -355,7 +355,6 @@ mod tests {
 
     use std::sync::Arc;
     use std::time::{Duration, Instant};
-    use tokio::sync::oneshot;
 
     /// Helper: a no-op `Arc<AgentHandle>` for tests that construct
     /// `ClientEvent::Connected` / `ClientEvent::SessionReplaced`
@@ -3688,9 +3687,11 @@ mod tests {
         append_tool_call_block(&mut app, tool_id);
         app.input.set_text("draft in progress");
 
-        let (response_tx, _response_rx) = oneshot::channel();
+        let session_key = app.active_session_key.clone().expect("active key");
         turn::handle_permission_request_event(
             &mut app,
+            session_key,
+            tool_id.to_owned(),
             model::RequestPermissionRequest::new(
                 "session-1",
                 model::ToolCallUpdate::new(tool_id, model::ToolCallUpdateFields::new()),
@@ -3708,7 +3709,6 @@ mod tests {
                 ],
                 None,
             ),
-            response_tx,
         );
 
         assert_eq!(app.focus_owner(), FocusOwner::Input);
@@ -3723,9 +3723,11 @@ mod tests {
         append_tool_call_block(&mut app, tool_id);
         app.input.set_text("draft in progress");
 
-        let (response_tx, _response_rx) = oneshot::channel();
+        let session_key = app.active_session_key.clone().expect("active key");
         turn::handle_question_request_event(
             &mut app,
+            session_key,
+            tool_id.to_owned(),
             model::RequestQuestionRequest::new(
                 "session-1",
                 model::ToolCallUpdate::new(tool_id, model::ToolCallUpdateFields::new()),
@@ -3741,7 +3743,6 @@ mod tests {
                 0,
                 1,
             ),
-            response_tx,
         );
 
         assert_eq!(app.focus_owner(), FocusOwner::Input);
@@ -3757,9 +3758,12 @@ mod tests {
         app.set_session_id(Some(model::SessionId::new("session-1")));
         app.input.set_text("ship the fix");
 
-        let (response_tx, mut response_rx) = oneshot::channel();
+        let session_key = app.active_session_key.clone().expect("active key");
+        let mut response_rx = TestPermissionRxLocal { tool_id: tool_id.to_owned() };
         turn::handle_permission_request_event(
             &mut app,
+            session_key,
+            tool_id.to_owned(),
             model::RequestPermissionRequest::new(
                 "session-1",
                 model::ToolCallUpdate::new(tool_id, model::ToolCallUpdateFields::new()),
@@ -3777,7 +3781,6 @@ mod tests {
                 ],
                 None,
             ),
-            response_tx,
         );
 
         handle_terminal_event(
@@ -3787,7 +3790,7 @@ mod tests {
 
         assert!(app.pending_submit.is_some());
         assert!(matches!(
-            response_rx.try_recv(),
+            response_rx.try_recv(&app),
             Err(tokio::sync::oneshot::error::TryRecvError::Empty)
         ));
 
@@ -3796,7 +3799,7 @@ mod tests {
         assert!(app.pending_submit.is_none());
         assert!(app.pending_interaction_ids().is_empty());
         assert!(bridge_rx.try_recv().is_ok());
-        assert!(response_rx.try_recv().is_err());
+        assert!(response_rx.try_recv(&app).is_err());
     }
 
     #[test]
@@ -3893,7 +3896,7 @@ mod tests {
         );
         assert!(app.pending_submit.is_some());
         assert!(matches!(
-            response_rx.try_recv(),
+            response_rx.try_recv(&app),
             Err(tokio::sync::oneshot::error::TryRecvError::Empty)
         ));
 
@@ -3908,7 +3911,8 @@ mod tests {
             &mut app,
             Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
         );
-        let response = response_rx.try_recv().expect("question should be answered after Tab focus");
+        let response =
+            response_rx.try_recv(&app).expect("question should be answered after Tab focus");
         assert!(matches!(response.outcome, model::RequestQuestionOutcome::Answered(_)));
     }
 
@@ -4021,7 +4025,7 @@ mod tests {
             Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
         );
 
-        let response = response_rx.try_recv().expect("permission response");
+        let response = response_rx.try_recv(&app).expect("permission response");
         assert!(matches!(response.outcome, model::RequestPermissionOutcome::Selected(_)));
         assert!(app.pending_interaction_ids().is_empty());
     }
@@ -4061,18 +4065,87 @@ mod tests {
         assert_eq!(app.focus_owner(), FocusOwner::Input);
     }
 
+    /// Phase 1+ test fixture: legacy `oneshot::Receiver` shape was
+    /// retired when workspace took ownership of pending interaction
+    /// oneshots. Tests now read outcomes from `App`'s test-capture
+    /// fields via `try_recv(&app)`.
+    pub(super) struct TestPermissionRxLocal {
+        pub tool_id: String,
+    }
+
+    impl TestPermissionRxLocal {
+        pub fn try_recv(
+            &mut self,
+            app: &App,
+        ) -> Result<model::RequestPermissionResponse, tokio::sync::oneshot::error::TryRecvError>
+        {
+            match crate::app::events::turn::test_capture::try_take_dispatched_permission_outcome(
+                app,
+                &self.tool_id,
+            ) {
+                Ok(forge_primitives::PermissionOutcome::Selected { option_id }) => {
+                    Ok(model::RequestPermissionResponse::new(
+                        model::RequestPermissionOutcome::Selected(
+                            model::SelectedPermissionOutcome::new(option_id),
+                        ),
+                    ))
+                }
+                Ok(forge_primitives::PermissionOutcome::Cancelled) => {
+                    Ok(model::RequestPermissionResponse::new(
+                        model::RequestPermissionOutcome::Cancelled,
+                    ))
+                }
+                Err(err) => Err(err),
+            }
+        }
+    }
+
+    pub(super) struct TestQuestionRxLocal {
+        pub tool_id: String,
+    }
+
+    impl TestQuestionRxLocal {
+        pub fn try_recv(
+            &mut self,
+            app: &App,
+        ) -> Result<model::RequestQuestionResponse, tokio::sync::oneshot::error::TryRecvError>
+        {
+            match crate::app::events::turn::test_capture::try_take_dispatched_question_outcome(
+                app,
+                &self.tool_id,
+            ) {
+                Ok(forge_primitives::QuestionOutcome::Answered {
+                    selected_option_ids,
+                    annotation,
+                }) => Ok(model::RequestQuestionResponse::new(
+                    model::RequestQuestionOutcome::Answered(
+                        model::AnsweredQuestionOutcome::new(selected_option_ids).annotation(
+                            annotation.map(|a| model::QuestionAnnotation {
+                                preview: a.preview,
+                                notes: a.notes,
+                            }),
+                        ),
+                    ),
+                )),
+                Ok(forge_primitives::QuestionOutcome::Cancelled) => Ok(
+                    model::RequestQuestionResponse::new(model::RequestQuestionOutcome::Cancelled),
+                ),
+                Err(err) => Err(err),
+            }
+        }
+    }
+
     fn attach_pending_permission(
         app: &mut App,
         tool_id: &str,
         options: Vec<model::PermissionOption>,
         focused: bool,
-    ) -> oneshot::Receiver<model::RequestPermissionResponse> {
-        let (response_tx, response_rx) = oneshot::channel();
+    ) -> TestPermissionRxLocal {
         let mut tc = tool_call(tool_id, model::ToolCallStatus::InProgress);
         tc.pending_permission = Some(InlinePermission {
             options,
             display: None,
-            response_tx,
+            tool_id: tool_id.to_owned(),
             selected_index: 0,
             focused,
         });
@@ -4081,7 +4154,7 @@ mod tests {
         app.index_tool_call(tool_id.into(), msg_idx, 0);
         app.pending_interaction_ids_mut().push(tool_id.into());
         app.claim_focus_target(FocusTarget::Permission);
-        response_rx
+        TestPermissionRxLocal { tool_id: tool_id.to_owned() }
     }
 
     fn attach_pending_question(
@@ -4089,12 +4162,11 @@ mod tests {
         tool_id: &str,
         prompt: model::QuestionPrompt,
         focused: bool,
-    ) -> oneshot::Receiver<model::RequestQuestionResponse> {
-        let (response_tx, response_rx) = oneshot::channel();
+    ) -> TestQuestionRxLocal {
         let mut tc = tool_call(tool_id, model::ToolCallStatus::InProgress);
         tc.pending_question = Some(InlineQuestion {
             prompt,
-            response_tx,
+            tool_id: tool_id.to_owned(),
             focused_option_index: 0,
             selected_option_indices: std::collections::BTreeSet::new(),
             notes: String::new(),
@@ -4111,7 +4183,7 @@ mod tests {
         if focused {
             app.claim_focus_target(FocusTarget::Permission);
         }
-        response_rx
+        TestQuestionRxLocal { tool_id: tool_id.to_owned() }
     }
 
     fn permission_focus_state(app: &App, tool_id: &str) -> Option<bool> {
@@ -4170,7 +4242,7 @@ mod tests {
             Event::Key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::CONTROL)),
         );
 
-        let resp = response_rx.try_recv().expect("ctrl+y should resolve pending permission");
+        let resp = response_rx.try_recv(&app).expect("ctrl+y should resolve pending permission");
         let model::RequestPermissionOutcome::Selected(selected) = resp.outcome else {
             panic!("expected selected permission response");
         };
@@ -4210,7 +4282,7 @@ mod tests {
             Event::Key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL)),
         );
 
-        let resp = response_rx.try_recv().expect("ctrl+a should resolve pending permission");
+        let resp = response_rx.try_recv(&app).expect("ctrl+a should resolve pending permission");
         let model::RequestPermissionOutcome::Selected(selected) = resp.outcome else {
             panic!("expected selected permission response");
         };
@@ -4259,7 +4331,7 @@ mod tests {
             Event::Key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL)),
         );
 
-        let resp = response_rx.try_recv().expect("ctrl+n should resolve pending permission");
+        let resp = response_rx.try_recv(&app).expect("ctrl+n should resolve pending permission");
         let model::RequestPermissionOutcome::Selected(selected) = resp.outcome else {
             panic!("expected selected permission response");
         };
@@ -4294,7 +4366,7 @@ mod tests {
             Event::Key(KeyEvent::new(KeyCode::Char('\u{19}'), KeyModifiers::NONE)),
         );
 
-        let resp = response_rx.try_recv().expect("raw ctrl+y should resolve plan approval");
+        let resp = response_rx.try_recv(&app).expect("raw ctrl+y should resolve plan approval");
         let model::RequestPermissionOutcome::Selected(selected) = resp.outcome else {
             panic!("expected selected permission response");
         };
@@ -4354,7 +4426,7 @@ mod tests {
             Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
         );
 
-        let response = response_rx.try_recv().expect("first Esc should answer permission");
+        let response = response_rx.try_recv(&app).expect("first Esc should answer permission");
         let model::RequestPermissionOutcome::Selected(selected) = response.outcome else {
             panic!("expected selected permission response");
         };

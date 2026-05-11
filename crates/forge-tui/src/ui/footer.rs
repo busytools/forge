@@ -464,7 +464,6 @@ mod tests {
         TerminalSnapshotMode, TextBlock, ToolCallInfo,
     };
     use forge_primitives::{McpServerConnectionStatus, McpServerStatus};
-    use tokio::sync::oneshot;
 
     #[test]
     fn split_footer_columns_hint_left_gets_its_minimum() {
@@ -535,7 +534,6 @@ mod tests {
     #[test]
     fn footer_primary_hint_shows_pending_permission_count() {
         let mut app = App::test_default();
-        let (response_tx, _response_rx) = oneshot::channel();
         app.messages_mut().push(ChatMessage::new(
             MessageRole::Assistant,
             vec![MessageBlock::ToolCall(Box::new(ToolCallInfo {
@@ -565,7 +563,7 @@ mod tests {
                 pending_permission: Some(InlinePermission {
                     options: vec![],
                     display: None,
-                    response_tx,
+                    tool_id: "perm-1".to_owned(),
                     selected_index: 0,
                     focused: true,
                 }),

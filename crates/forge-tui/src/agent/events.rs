@@ -27,17 +27,22 @@ use std::sync::{Arc, Mutex};
 pub enum ClientEvent {
     /// Permission request that needs user input.
     ///
-    /// `request.session_id` carries the routing key.
+    /// Phase 1+: `response_tx` no longer rides on this envelope —
+    /// workspace owns the oneshot. `session_key` carries the routing
+    /// key and `tool_id` indexes into
+    /// `DomainSession.pending_interactions` for the matching reply.
     PermissionRequest {
+        session_key: SessionKey,
+        tool_id: String,
         request: model::RequestPermissionRequest,
-        response_tx: tokio::sync::oneshot::Sender<model::RequestPermissionResponse>,
     },
     /// Question request from `AskUserQuestion` that needs structured user input.
     ///
-    /// `request.session_id` carries the routing key.
+    /// Same shape change as [`Self::PermissionRequest`].
     QuestionRequest {
+        session_key: SessionKey,
+        tool_id: String,
         request: model::RequestQuestionRequest,
-        response_tx: tokio::sync::oneshot::Sender<model::RequestQuestionResponse>,
     },
     /// MCP elicitation request that needs auth or other MCP input.
     McpElicitationRequest { session_key: SessionKey, request: forge_primitives::ElicitationRequest },
@@ -201,6 +206,11 @@ pub enum ClientEvent {
     PluginsCliActionFailed { cwd_raw: String, message: String },
     /// Fatal app error that should terminate and map to an exit code.
     FatalError(AppError),
+    /// Transitional Phase 1-4: [`forge_workspace::SessionUpdate`]
+    /// routed through the `ClientEvent` channel for unified dispatch
+    /// in the main app event loop. Phase 4 deletes this variant when
+    /// `SessionUpdate` becomes the primary channel.
+    WorkspaceUpdate(forge_workspace::SessionUpdate),
 }
 
 impl ClientEvent {
@@ -214,13 +224,9 @@ impl ClientEvent {
     #[must_use]
     pub fn session_key(&self) -> Option<SessionKey> {
         match self {
-            Self::PermissionRequest { request, .. } => {
-                Some(SessionKey::from_session_id(request.session_id.to_string()))
-            }
-            Self::QuestionRequest { request, .. } => {
-                Some(SessionKey::from_session_id(request.session_id.to_string()))
-            }
-            Self::McpElicitationRequest { session_key, .. }
+            Self::PermissionRequest { session_key, .. }
+            | Self::QuestionRequest { session_key, .. }
+            | Self::McpElicitationRequest { session_key, .. }
             | Self::McpElicitationCompleted { session_key, .. }
             | Self::McpAuthRedirect { session_key, .. }
             | Self::McpOperationError { session_key, .. }
@@ -257,7 +263,8 @@ impl ClientEvent {
             | Self::PluginsInventoryRefreshFailed { .. }
             | Self::PluginsCliActionSucceeded { .. }
             | Self::PluginsCliActionFailed { .. }
-            | Self::FatalError(..) => None,
+            | Self::FatalError(..)
+            | Self::WorkspaceUpdate(_) => None,
         }
     }
 }

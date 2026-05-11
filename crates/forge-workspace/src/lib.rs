@@ -6,13 +6,21 @@
 
 mod account;
 mod config;
+mod domain_session;
 mod error;
+pub mod protocol;
+mod session_task;
 mod state;
 mod target;
 mod views;
 mod workspace;
 
+pub use domain_session::DomainSession;
 pub use error::WorkspaceError;
+pub use protocol::{
+    Command, DispatchError, PendingInteractionSlot, SessionUpdate, TurnErrorClass,
+    TurnFinalizeStatus,
+};
 pub use target::{ProjectKey, SessionKey, SessionTarget};
 pub use views::{ProjectView, SessionView};
 pub use workspace::Workspace;

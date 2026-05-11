@@ -10,10 +10,14 @@ use forge_agent::AgentHandle;
 use forge_agent::client::SessionLaunchSettings;
 use forge_primitives::SDKSessionInfo;
 use parking_lot::Mutex;
+use tokio::sync::mpsc;
 
 use crate::account::{AccountKey, AccountStateMap};
 use crate::config::{LoadedConfig, LoadedProject, load_from_dir};
+use crate::domain_session::DomainSession;
 use crate::error::WorkspaceError;
+use crate::protocol::{Command, DispatchError, PendingInteractionSlot, SessionUpdate};
+use crate::session_task::SessionTask;
 use crate::state::{
     self, PersistedAccountState, PersistedSelectionState, PersistedState, PersistedUiState,
 };
@@ -56,6 +60,23 @@ pub struct Workspace {
     /// the same `state::save` path the account picker uses, so
     /// `[accounts]` / `[selection]` survive UI-only writes.
     persisted_ui: Mutex<PersistedUiState>,
+    /// Fan-in [`SessionUpdate`] sender. Cloned and handed to
+    /// `bridge_lifecycle` via [`Self::update_sender`] so the existing
+    /// AgentEvent translator can dual-emit `ClientEvent` + `SessionUpdate`
+    /// during Phases 1-3. Phase 4 retires the dual-emit pattern when
+    /// `SessionTask` owns the AgentHandle event drain.
+    update_tx: mpsc::UnboundedSender<SessionUpdate>,
+    /// Single-take slot holding the matching receiver. [`Self::subscribe`]
+    /// pops it on first call; subsequent calls return `None`.
+    update_rx_slot: Mutex<Option<mpsc::UnboundedReceiver<SessionUpdate>>>,
+    /// Per-session [`Command`] sender map. Populated when
+    /// [`Self::get_agent_handle`] spawns the first `SessionTask` for a
+    /// key; cleared on [`Self::release_session`] and [`Self::shutdown`].
+    command_senders: Mutex<HashMap<SessionKey, mpsc::UnboundedSender<Command>>>,
+    /// Shared [`DomainSession`] handles, one per active `SessionTask`.
+    /// [`Self::store_pending_interaction`] writes under the same lock
+    /// the `SessionTask` actor uses to read+remove.
+    domain_handles: Mutex<HashMap<SessionKey, Arc<Mutex<DomainSession>>>>,
 }
 
 /// Pool entry wrapping the live `Arc<AgentHandle>` together with
@@ -132,6 +153,7 @@ impl Workspace {
             &persisted_last_used,
         );
 
+        let (update_tx, update_rx) = mpsc::unbounded_channel::<SessionUpdate>();
         Ok(Self {
             config_dir,
             config,
@@ -139,6 +161,10 @@ impl Workspace {
             pool: Mutex::new(HashMap::new()),
             accounts: Mutex::new(accounts),
             persisted_ui: Mutex::new(persisted.ui),
+            update_tx,
+            update_rx_slot: Mutex::new(Some(update_rx)),
+            command_senders: Mutex::new(HashMap::new()),
+            domain_handles: Mutex::new(HashMap::new()),
         })
     }
 
@@ -307,9 +333,36 @@ impl Workspace {
                 return Ok(Arc::clone(&existing.handle));
             }
             pool.insert(
-                session_key,
+                session_key.clone(),
                 PooledAgent { handle: Arc::clone(&arc), account: account_key },
             );
+        }
+
+        // Phase 1: spawn the per-session `SessionTask` actor. Idempotent
+        // — a second `get_agent_handle` call for the same key reuses the
+        // existing task. Insert under the command_senders lock so a
+        // concurrent caller that lost the pool race also loses this
+        // race (and drops its `cmd_tx` at end-of-scope).
+        let (cmd_tx, cmd_rx) = mpsc::unbounded_channel::<Command>();
+        let needs_spawn = {
+            let mut senders = self.command_senders.lock();
+            if senders.contains_key(&session_key) {
+                false
+            } else {
+                senders.insert(session_key.clone(), cmd_tx);
+                true
+            }
+        };
+        if needs_spawn {
+            let domain = Arc::new(Mutex::new(DomainSession::new(session_key.clone())));
+            self.domain_handles.lock().insert(session_key.clone(), Arc::clone(&domain));
+            let task = SessionTask {
+                key: session_key,
+                handle: Arc::clone(&arc),
+                command_rx: cmd_rx,
+                domain,
+            };
+            tokio::spawn(task.run());
         }
 
         Ok(arc)
@@ -478,6 +531,89 @@ impl Workspace {
         entries.insert(0, entry);
     }
 
+    /// Single-take fan-in receiver for [`SessionUpdate`]s. Returns
+    /// `None` on subsequent calls — forge-tui calls this once at
+    /// startup and forwards every received update onto its own
+    /// `ClientEvent` channel for unified dispatch through the
+    /// existing event multiplexer.
+    pub fn subscribe(&self) -> Option<mpsc::UnboundedReceiver<SessionUpdate>> {
+        self.update_rx_slot.lock().take()
+    }
+
+    /// Clone the [`SessionUpdate`] sender. Used by
+    /// `forge_tui::app::connect::bridge_lifecycle` for dual-emit
+    /// during Phases 1-3 (one `ClientEvent`, one `SessionUpdate`,
+    /// per AgentEvent). Phase 4 retires the dual-emit pattern when
+    /// `SessionTask` owns the AgentHandle event drain.
+    #[must_use]
+    pub fn update_sender(&self) -> mpsc::UnboundedSender<SessionUpdate> {
+        self.update_tx.clone()
+    }
+
+    /// Route a [`Command`]. Per-session commands (`cmd.key() ==
+    /// Some(key)`) fan out to the matching `SessionTask`. App-level
+    /// commands (`cmd.key() == None` — `SpawnProject`,
+    /// `SpawnSession`, `StartDefault`) route to the workspace's own
+    /// handler. Phase 1 implements per-session routing fully;
+    /// app-level routing is stubbed (logs + drops) until Phase 4
+    /// wires the spawn handlers.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DispatchError::UnknownSession`] when no `SessionTask`
+    /// is registered for the requested key (e.g., the session was
+    /// just closed), or [`DispatchError::SessionClosed`] when the
+    /// task's command receiver has been dropped.
+    pub fn dispatch(&self, cmd: Command) -> Result<(), DispatchError> {
+        if let Some(key) = cmd.key() {
+            let key = key.clone();
+            let senders = self.command_senders.lock();
+            let Some(sender) = senders.get(&key) else {
+                return Err(DispatchError::UnknownSession(key));
+            };
+            sender.send(cmd).map_err(|_| DispatchError::SessionClosed(key))
+        } else {
+            // Phase 1 stub. Phase 4 wires real spawn handlers in
+            // `forge_workspace::spawn::{handle_spawn_project,
+            // handle_spawn_session, handle_start_default}`.
+            tracing::warn!(
+                target: "forge_workspace",
+                command = ?cmd,
+                "App-level command dispatched but Phase 4 spawn handlers not yet wired; ignored",
+            );
+            Ok(())
+        }
+    }
+
+    /// Park an oneshot in
+    /// `DomainSession.pending_interactions[tool_id]`. Called from
+    /// `bridge_lifecycle` when an `AgentEvent::PermissionRequest` /
+    /// `QuestionRequest` / `ElicitationRequest` arrives.
+    ///
+    /// No-op when no `SessionTask` is registered for `key` (e.g.,
+    /// the session was just closed) — the oneshot is dropped and the
+    /// caller's forwarder task observes a closed receiver, which
+    /// surfaces as an `oneshot::Recv` error in the existing
+    /// permission/question response forwarder paths.
+    pub fn store_pending_interaction(
+        &self,
+        key: &SessionKey,
+        tool_id: String,
+        slot: PendingInteractionSlot,
+    ) {
+        let Some(domain) = self.domain_handles.lock().get(key).cloned() else {
+            tracing::warn!(
+                target: "forge_workspace",
+                key = %key.as_str(),
+                tool_id = %tool_id,
+                "store_pending_interaction: no domain handle for key (session may be closed)",
+            );
+            return;
+        };
+        let mut guard = domain.lock();
+        guard.pending_interactions.insert(tool_id, slot);
+    }
+
     /// Graceful shutdown of every pooled Agent. Drains the pool, then
     /// drops each `Arc<AgentHandle>` so the underlying
     /// `forge_sdk::Client` kills its `claude` subprocess via its
@@ -495,6 +631,10 @@ impl Workspace {
     /// the call sites.
     #[allow(clippy::unused_async)]
     pub async fn shutdown(self) {
+        // Drop command senders first so every SessionTask sees its
+        // command channel close and exits cleanly.
+        let _ = self.command_senders.lock().drain().collect::<Vec<_>>();
+        let _ = self.domain_handles.lock().drain().collect::<Vec<_>>();
         let entries: Vec<_> = self.pool.lock().drain().collect();
         // Each (SessionKey, PooledAgent) drops here; the
         // subprocess teardown chain (sender drop -> dispatcher exit
@@ -511,6 +651,8 @@ impl Workspace {
     pub fn release_session(&self, session_key: &SessionKey) {
         let removed = self.pool.lock().remove(session_key);
         drop(removed);
+        let _ = self.command_senders.lock().remove(session_key);
+        let _ = self.domain_handles.lock().remove(session_key);
     }
 }
 
@@ -632,14 +774,24 @@ config_dir = "~/.claude-subspace"
 
         // Pool has one entry going in.
         assert_eq!(workspace.pool.lock().len(), 1);
-        // Workspace + this test both hold the Arc → strong_count == 2.
-        assert_eq!(Arc::strong_count(&handle), 2);
+        // Workspace pool + spawned `SessionTask.handle` + this test
+        // all hold the Arc → strong_count == 3.
+        assert_eq!(Arc::strong_count(&handle), 3);
 
-        // Shutdown consumes self and must return.
+        // Shutdown consumes self and must return. Drops `command_senders`,
+        // which closes each `SessionTask`'s command channel; the spawned
+        // task then exits and drops its `handle` clone.
         workspace.shutdown().await;
 
-        // After shutdown, only our local clone remains. If shutdown
-        // didn't actually release Workspace's reference, this fails.
+        // The spawned `SessionTask` exits asynchronously after its
+        // command channel closes; yield to let it run to completion
+        // so the final `handle` drop is observable in `strong_count`.
+        for _ in 0..16 {
+            tokio::task::yield_now().await;
+            if Arc::strong_count(&handle) == 1 {
+                break;
+            }
+        }
         assert_eq!(Arc::strong_count(&handle), 1);
     }
 
