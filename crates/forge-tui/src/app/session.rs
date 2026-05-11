@@ -244,6 +244,21 @@ pub struct Session {
     /// Last emitted chat render trace snapshot to suppress identical
     /// per-frame summaries.
     pub last_chat_render_trace_state: Option<ChatRenderTraceState>,
+
+    /// Input draft saved when this session was last the active one.
+    /// `App::switch_active_session` snapshots the live `app.input.text()`
+    /// into here on outgoing-session swap and restores it on
+    /// incoming-session swap. Without this, the input textarea
+    /// persists across switches — typing in tracker-cc and then
+    /// switching to dotfiles shows tracker-cc's draft in dotfiles's
+    /// input.
+    pub draft_input: String,
+    /// `AppStatus` saved when this session was last active. Switching
+    /// restores it so `is_turn_busy` (which gates input submission)
+    /// reflects the destination session's state. Without this, a
+    /// running turn in tracker-cc blocks every submit in dotfiles
+    /// with a phantom "turn still active" rejection.
+    pub saved_status: crate::app::state::AppStatus,
 }
 
 impl Session {
@@ -325,6 +340,8 @@ impl Default for Session {
             cache_metrics: CacheMetrics::default(),
             last_active_turn_height_state: Option::default(),
             last_chat_render_trace_state: Option::default(),
+            draft_input: String::default(),
+            saved_status: crate::app::state::AppStatus::Ready,
         }
     }
 }

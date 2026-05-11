@@ -389,7 +389,33 @@ impl App {
             );
             return;
         }
+
+        // Snapshot the outgoing session's per-session UI state into
+        // its bucket so a future switch back restores it. Without
+        // this, `app.input` and `app.status` persist across switches
+        // and bleed into the destination session — typing in A then
+        // switching to B leaves A's draft visible in B's input, and
+        // A's `Running`/`Thinking` status blocks every submit in B
+        // via `is_turn_busy`.
+        let outgoing_draft = self.input.text();
+        let outgoing_status = self.status.clone();
+        if let Some(outgoing_key) = self.active_session_key.clone()
+            && let Some(outgoing) = self.sessions.get_mut(&outgoing_key)
+        {
+            outgoing.draft_input = outgoing_draft;
+            outgoing.saved_status = outgoing_status;
+        }
+
+        let (incoming_draft, incoming_status) =
+            self.sessions.get(&key).map_or((String::new(), AppStatus::Ready), |s| {
+                (s.draft_input.clone(), s.saved_status.clone())
+            });
         self.active_session_key = Some(key);
+        self.input.clear();
+        if !incoming_draft.is_empty() {
+            self.input.set_text(&incoming_draft);
+        }
+        self.status = incoming_status;
         self.needs_redraw = true;
     }
 
