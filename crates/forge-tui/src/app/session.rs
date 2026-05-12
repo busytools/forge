@@ -25,7 +25,7 @@ use crate::app::state::messages::ChatMessage;
 use crate::app::state::render_budget::{RenderCacheEvictionKey, RenderCacheSlotState};
 use crate::app::state::types::{
     CancelOrigin, HistoryRetentionPolicy, HistoryRetentionStats, McpState, ModeState,
-    SessionUsageState, TodoItem, ToolCallScope,
+    SessionUsageState, TodoItem, ToolCallScope, UsageState,
 };
 use crate::app::state::viewport::ChatViewport;
 use crate::app::state::{ChatRenderTraceState, TerminalToolCallRef, TurnNoticeRef};
@@ -202,6 +202,15 @@ pub struct UiSession {
     pub(crate) git_context: GitContextState,
     /// Config > MCP live server snapshot and refresh lifecycle.
     pub mcp: McpState,
+    /// Anthropic plan usage snapshot and refresh lifecycle. Per-session
+    /// rather than per-account: each session fetches independently
+    /// (idempotent + TTL-gated; redundant fetches across same-account
+    /// sessions are cheap). Read by the Projects-pane account/status
+    /// panel and the `/usage` config tab. Routed by `SessionKey` in
+    /// the `Usage*` `SessionUpdate` envelopes so an in-flight fetch
+    /// that lands after the user has switched sessions still writes
+    /// to the bucket that requested it.
+    pub usage: UsageState,
 
     // ---- Todos ----
     /// Current todo list from Claude's `TodoWrite` tool calls.
@@ -320,6 +329,7 @@ impl Default for UiSession {
             files_accessed: usize::default(),
             git_context: GitContextState::default(),
             mcp: McpState::default(),
+            usage: UsageState::default(),
             todos: Vec::default(),
             show_todo_panel: bool::default(),
             todo_scroll: usize::default(),

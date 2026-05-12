@@ -223,44 +223,14 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
         SessionUpdate::TurnError { key, message, class, terminal_reason } => {
             turn::apply_session_update_turn_error(app, key, message, class, terminal_reason);
         }
-        SessionUpdate::UsageRefreshStarted { epoch } => {
-            if app.session_scope_epoch() != epoch {
-                tracing::debug!(
-                    target: crate::logging::targets::APP_CONFIG,
-                    event_name = "usage_refresh_started_dropped",
-                    expected_epoch = app.session_scope_epoch(),
-                    received_epoch = epoch,
-                    "stale usage refresh start dropped"
-                );
-            } else {
-                crate::app::usage::apply_refresh_started(app);
-            }
+        SessionUpdate::UsageRefreshStarted { key } => {
+            crate::app::usage::apply_refresh_started_for(app, &key);
         }
-        SessionUpdate::UsageSnapshotReceived { epoch, snapshot } => {
-            if app.session_scope_epoch() != epoch {
-                tracing::debug!(
-                    target: crate::logging::targets::APP_CONFIG,
-                    event_name = "usage_snapshot_dropped",
-                    expected_epoch = app.session_scope_epoch(),
-                    received_epoch = epoch,
-                    "stale usage snapshot dropped"
-                );
-            } else {
-                crate::app::usage::apply_refresh_success(app, snapshot);
-            }
+        SessionUpdate::UsageSnapshotReceived { key, snapshot } => {
+            crate::app::usage::apply_refresh_success_for(app, &key, snapshot);
         }
-        SessionUpdate::UsageRefreshFailed { epoch, message, source } => {
-            if app.session_scope_epoch() != epoch {
-                tracing::debug!(
-                    target: crate::logging::targets::APP_CONFIG,
-                    event_name = "usage_refresh_failure_dropped",
-                    expected_epoch = app.session_scope_epoch(),
-                    received_epoch = epoch,
-                    "stale usage refresh failure dropped"
-                );
-            } else {
-                crate::app::usage::apply_refresh_failure(app, message, source);
-            }
+        SessionUpdate::UsageRefreshFailed { key, message, source } => {
+            crate::app::usage::apply_refresh_failure_for(app, &key, message, source);
         }
         SessionUpdate::PluginsInventoryUpdated { cwd_raw, snapshot, claude_path } => {
             if app.cwd_raw() != cwd_raw {

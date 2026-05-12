@@ -1699,7 +1699,7 @@ mod tests {
         app.active_messages_mut().push(user_msg("hello"));
         app.status = AppStatus::Running;
         app.set_files_accessed(9);
-        app.usage.snapshot = Some(UsageSnapshot {
+        app.usage_mut().snapshot = Some(UsageSnapshot {
             source: UsageSourceKind::Oauth,
             fetched_at: std::time::SystemTime::now(),
             five_hour: None,
@@ -1739,7 +1739,7 @@ mod tests {
         assert_eq!(app.messages().len(), 1);
         assert!(matches!(app.messages()[0].role, MessageRole::Welcome));
         assert_eq!(app.files_accessed(), 0);
-        assert!(app.usage.snapshot.is_none());
+        assert!(app.usage().snapshot.is_none());
         assert!(app.account_info().is_none());
         assert!(app.plugins.installed.is_empty());
         assert!(app.plugins.last_inventory_refresh_at.is_none());
@@ -1997,7 +1997,7 @@ mod tests {
 
                 apply_session_update(&mut app, connected_event("claude-updated"));
 
-                assert!(app.usage.in_flight);
+                assert!(app.usage().in_flight);
             })
             .await;
     }
@@ -2173,20 +2173,59 @@ mod tests {
     }
 
     #[test]
-    fn stale_usage_refresh_result_for_old_epoch_is_ignored() {
+    fn usage_routes_to_targeted_bucket_not_active_bucket() {
+        // Regression for the wrong-account-bars bug: each `UiSession`
+        // bucket owns its own `UsageState`. A snapshot delivered for
+        // bucket B must NOT overwrite bucket A's snapshot, even if
+        // A is the currently active session at delivery time.
         let mut app = make_test_app();
-        // Set up an active session bucket so the scope-epoch read
-        // path returns a non-zero value. `session_scope_epoch` lives
-        // on `UiSession`; bump it 5x via the App accessor.
-        app.set_session_id(Some(model::SessionId::new("scope-epoch-test")));
-        for _ in 0..5 {
-            app.bump_session_scope_epoch();
-        }
+        let key_a = forge_workspace::SessionKey::from_str_for_test("sess-a");
+        let key_b = forge_workspace::SessionKey::from_str_for_test("sess-b");
+        app.sessions.insert(key_a.clone(), crate::app::session::UiSession::new(key_a.clone()));
+        app.sessions.insert(key_b.clone(), crate::app::session::UiSession::new(key_b.clone()));
+        app.active_session_key = Some(key_a.clone());
+
+        // Snapshot targets B. The active bucket is A.
+        let snapshot_for_b = UsageSnapshot {
+            source: UsageSourceKind::Oauth,
+            fetched_at: std::time::SystemTime::now(),
+            five_hour: None,
+            seven_day: None,
+            seven_day_opus: None,
+            seven_day_sonnet: None,
+            extra_usage: None,
+        };
+        apply_session_update(
+            &mut app,
+            SessionUpdate::UsageSnapshotReceived {
+                key: key_b.clone(),
+                snapshot: snapshot_for_b.clone(),
+            },
+        );
+
+        // A (active) untouched, B got the data.
+        assert!(
+            app.usage().snapshot.is_none(),
+            "active bucket A must not be touched by a snapshot targeted at B"
+        );
+        let bucket_b = app.sessions.get(&key_b).expect("bucket b");
+        assert!(bucket_b.usage.snapshot.is_some(), "bucket B received its snapshot");
+    }
+
+    #[test]
+    fn usage_refresh_result_for_unknown_session_key_is_dropped() {
+        // Replaces the old scope-epoch guard. After moving `usage`
+        // onto `UiSession` (per-session bucket), the routing key is
+        // the bucket's `SessionKey`. A result targeting a key that
+        // no longer exists in `app.sessions` (session closed before
+        // the fetch landed) drops silently — no slot to write to.
+        let mut app = make_test_app();
+        app.set_session_id(Some(model::SessionId::new("active-session")));
 
         apply_session_update(
             &mut app,
             SessionUpdate::UsageSnapshotReceived {
-                epoch: 4,
+                key: forge_workspace::SessionKey::from_session_id("unknown-bucket"),
                 snapshot: UsageSnapshot {
                     source: UsageSourceKind::Oauth,
                     fetched_at: std::time::SystemTime::now(),
@@ -2199,7 +2238,8 @@ mod tests {
             },
         );
 
-        assert!(app.usage.snapshot.is_none());
+        // Active bucket untouched — the result targeted a different key.
+        assert!(app.usage().snapshot.is_none());
     }
 
     #[test]

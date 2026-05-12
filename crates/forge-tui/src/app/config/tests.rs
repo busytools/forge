@@ -582,7 +582,7 @@ async fn activating_usage_tab_starts_refresh_lifecycle() {
             activate_tab(&mut app, ConfigTab::Usage);
 
             assert_eq!(app.config.active_tab, ConfigTab::Usage);
-            assert!(app.usage.in_flight);
+            assert!(app.usage().in_flight);
         })
         .await;
 }
@@ -596,7 +596,7 @@ async fn usage_tab_r_triggers_manual_refresh() {
 
             handle_key(&mut app, KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE));
 
-            assert!(app.usage.in_flight);
+            assert!(app.usage().in_flight);
         })
         .await;
 }

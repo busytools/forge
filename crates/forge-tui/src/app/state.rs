@@ -350,8 +350,10 @@ pub struct App {
     /// consumed on submit. No cap on count — this is a developer tool, so
     /// users are trusted to attach as many images as they need.
     pub pending_images: Vec<crate::app::clipboard_image::ImageAttachment>,
-    /// Config > Usage snapshot and refresh lifecycle.
-    pub usage: UsageState,
+    // `usage: UsageState` moved to `UiSession.usage` (per-session
+    // bucket). Each forge session fetches Anthropic plan utilisation
+    // independently; the Projects-pane account panel reads via the
+    // active bucket. See `App::usage` / `App::usage_mut`.
     /// Dirty flag: skip `terminal.draw()` when nothing changed since last frame.
     pub needs_redraw: bool,
     /// Central notification manager (bell + desktop toast when unfocused).
@@ -1217,6 +1219,41 @@ impl App {
     #[must_use]
     pub fn session_usage_mut(&mut self) -> &mut SessionUsageState {
         &mut self.active_bucket_mut().session_usage
+    }
+
+    /// Borrow the active session's Anthropic-plan usage state. The
+    /// pane footer's `5h` / `7d` bars read this. Returns a static
+    /// empty state during the brief pre-Connect window where no
+    /// session bucket exists yet.
+    #[must_use]
+    pub fn usage(&self) -> &UsageState {
+        static FALLBACK: std::sync::OnceLock<UsageState> = std::sync::OnceLock::new();
+        match self.active_session() {
+            Some(s) => &s.usage,
+            None => FALLBACK.get_or_init(UsageState::default),
+        }
+    }
+
+    /// Mutable borrow of the active session's usage state. Used by
+    /// `app::usage::request_refresh` to flip the in-flight flag
+    /// before spawning the fetch task.
+    #[must_use]
+    pub fn usage_mut(&mut self) -> &mut UsageState {
+        &mut self.active_bucket_mut().usage
+    }
+
+    /// Mutable borrow of a specific session's usage state by key.
+    /// Used by the `Usage*` reducers in `events/client.rs` to route
+    /// a fetch result onto the bucket that requested it, even if
+    /// the user has switched active session mid-fetch. Returns
+    /// `None` when the target bucket no longer exists (session
+    /// closed before the result landed — drop the result silently).
+    #[must_use]
+    pub fn usage_mut_for(
+        &mut self,
+        key: &forge_workspace::SessionKey,
+    ) -> Option<&mut UsageState> {
+        self.sessions.get_mut(key).map(|s| &mut s.usage)
     }
 
     // ---- Account / auth accessors ----
@@ -2099,7 +2136,6 @@ impl App {
             active_paste_session: None,
             next_paste_session_id: 1,
             pending_images: Vec::new(),
-            usage: UsageState::default(),
             needs_redraw: true,
             notifications: super::notify::NotificationManager::new(),
             perf: None,

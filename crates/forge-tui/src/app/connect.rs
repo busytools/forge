@@ -205,7 +205,6 @@ pub fn create_app(cli: &Cli, workspace: Arc<forge_workspace::Workspace>) -> App 
         active_paste_session: None,
         next_paste_session_id: 1,
         pending_images: Vec::new(),
-        usage: super::UsageState::default(),
         needs_redraw: true,
         notifications: super::notify::NotificationManager::new(),
         perf,

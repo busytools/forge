@@ -466,14 +466,19 @@ pub enum SessionUpdate {
         message: String,
     },
     UsageRefreshStarted {
-        epoch: u64,
+        /// Bucket the in-flight fetch belongs to. Used by the TUI
+        /// reducer to route lifecycle flags onto the right
+        /// `UiSession.usage` slot even if the user switched sessions
+        /// mid-fetch. Dropped silently when the bucket no longer
+        /// exists (rare; session closed before the fetch landed).
+        key: SessionKey,
     },
     UsageSnapshotReceived {
-        epoch: u64,
+        key: SessionKey,
         snapshot: UsageSnapshot,
     },
     UsageRefreshFailed {
-        epoch: u64,
+        key: SessionKey,
         message: String,
         source: UsageSourceKind,
     },
@@ -522,7 +527,10 @@ impl SessionUpdate {
             | Self::TurnComplete { key, .. }
             | Self::TurnCancelled { key }
             | Self::TurnError { key, .. }
-            | Self::ForgeAccountIdentity { key, .. } => Some(key.clone()),
+            | Self::ForgeAccountIdentity { key, .. }
+            | Self::UsageRefreshStarted { key, .. }
+            | Self::UsageSnapshotReceived { key, .. }
+            | Self::UsageRefreshFailed { key, .. } => Some(key.clone()),
             Self::RuntimeReloadCompleted { session_id }
             | Self::RuntimeReloadFailed { session_id, .. }
             | Self::ChatAppended { session_id, .. }
@@ -537,9 +545,6 @@ impl SessionUpdate {
             Self::KeyRenamed { .. }
             | Self::SessionsListed { .. }
             | Self::ServiceStatus { .. }
-            | Self::UsageRefreshStarted { .. }
-            | Self::UsageSnapshotReceived { .. }
-            | Self::UsageRefreshFailed { .. }
             | Self::PluginsInventoryUpdated { .. }
             | Self::PluginsInventoryRefreshFailed { .. }
             | Self::PluginsCliActionSucceeded { .. }
@@ -661,15 +666,15 @@ impl std::fmt::Debug for SessionUpdate {
                 f.debug_struct("SessionsListed").field("count", &sessions.len()).finish()
             }
             Self::ServiceStatus { .. } => f.debug_struct("ServiceStatus").finish_non_exhaustive(),
-            Self::UsageRefreshStarted { epoch } => {
-                f.debug_struct("UsageRefreshStarted").field("epoch", epoch).finish()
+            Self::UsageRefreshStarted { key } => {
+                f.debug_struct("UsageRefreshStarted").field("key", key).finish()
             }
-            Self::UsageSnapshotReceived { epoch, .. } => f
+            Self::UsageSnapshotReceived { key, .. } => f
                 .debug_struct("UsageSnapshotReceived")
-                .field("epoch", epoch)
+                .field("key", key)
                 .finish_non_exhaustive(),
-            Self::UsageRefreshFailed { epoch, .. } => {
-                f.debug_struct("UsageRefreshFailed").field("epoch", epoch).finish_non_exhaustive()
+            Self::UsageRefreshFailed { key, .. } => {
+                f.debug_struct("UsageRefreshFailed").field("key", key).finish_non_exhaustive()
             }
             Self::PluginsInventoryUpdated { cwd_raw, .. } => f
                 .debug_struct("PluginsInventoryUpdated")
