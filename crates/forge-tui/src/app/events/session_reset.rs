@@ -38,7 +38,7 @@ fn reset_session_identity_state(
         app.config_options_mut()
             .insert("model".to_owned(), serde_json::Value::String(requested_id));
     }
-    app.login_hint = None;
+    *app.login_hint_mut() = None;
     super::clear_compaction_state(app, false);
     *app.session_usage_mut() = super::super::SessionUsageState::default();
     app.set_fast_mode_state(model::FastModeState::Off);
@@ -49,7 +49,7 @@ fn reset_session_identity_state(
     app.set_files_accessed(0);
     app.set_cancelled_turn_pending_hint(false);
     app.set_pending_cancel_origin(None);
-    app.pending_auto_submit_after_cancel = false;
+    app.set_pending_auto_submit_after_cancel(false);
     app.set_account_info(None);
 }
 
@@ -70,11 +70,11 @@ fn reset_messages_for_new_session(app: &mut App, preserve_current_welcome_tip: b
 fn reset_input_state_for_new_session(app: &mut App) {
     app.input_mut().clear();
     app.help_open = false;
-    app.pending_submit = None;
-    app.pending_paste_text.clear();
-    app.pending_paste_session = None;
-    app.active_paste_session = None;
-    app.pending_images.clear();
+    *app.pending_submit_mut() = None;
+    app.pending_paste_text_mut().clear();
+    *app.pending_paste_session_mut() = None;
+    *app.active_paste_session_mut() = None;
+    app.pending_images_mut().clear();
 }
 
 fn reset_interaction_state_for_new_session(app: &mut App) {
@@ -93,7 +93,7 @@ fn reset_interaction_state_for_new_session(app: &mut App) {
 }
 
 fn reset_render_state_for_new_session(app: &mut App) {
-    app.selection = None;
+    *app.selection_mut() = None;
     app.scrollbar_drag = None;
     app.rendered_chat_lines.clear();
     app.rendered_chat_area = ratatui::layout::Rect::default();

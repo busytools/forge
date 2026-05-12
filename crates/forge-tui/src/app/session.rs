@@ -20,13 +20,15 @@ use crate::agent::events::TerminalMap;
 use crate::agent::model;
 use crate::app::file_index::FileIndexState;
 use crate::app::git_context::GitContextState;
+use crate::app::input::InputSnapshot;
 use crate::app::input::InputState;
 use crate::app::state::cache_metrics::CacheMetrics;
 use crate::app::state::messages::ChatMessage;
 use crate::app::state::render_budget::{RenderCacheEvictionKey, RenderCacheSlotState};
 use crate::app::state::types::{
-    CancelOrigin, HistoryRetentionPolicy, HistoryRetentionStats, McpState, ModeState,
-    RecentSessionInfo, SessionUsageState, TodoItem, ToolCallScope, UsageState,
+    CancelOrigin, HistoryRetentionPolicy, HistoryRetentionStats, LoginHint, McpState, ModeState,
+    PasteSessionState, PendingCommandAck, RecentSessionInfo, SelectionState, SessionUsageState,
+    TodoItem, ToolCallScope, UsageState,
 };
 use crate::app::state::viewport::ChatViewport;
 use crate::app::state::{ChatRenderTraceState, TerminalToolCallRef, TurnNoticeRef};
@@ -227,6 +229,46 @@ pub struct UiSession {
     /// project's files, not the previous project's.
     pub file_index: FileIndexState,
 
+    // ---- Latent smells migrated to per-session in the same pass ----
+    /// Pending `/login` hint shown above the input. Per-session so
+    /// an auth-required prompt in one session doesn't leak into
+    /// another session's input area when the user switches.
+    pub login_hint: Option<LoginHint>,
+    /// Session id currently being resumed via `/resume`. Per-session
+    /// so the resume marker doesn't follow the user across switches.
+    pub resuming_session_id: Option<String>,
+    /// Spinner label shown while a slash command is in flight
+    /// (`CommandPending` status). Per-session.
+    pub pending_command_label: Option<String>,
+    /// Ack marker required to clear `CommandPending` for strict
+    /// completion semantics. Per-session.
+    pub pending_command_ack: Option<PendingCommandAck>,
+    /// Auto-submit the current input draft once cancellation
+    /// transitions the app back to `Ready`. Per-session.
+    pub pending_auto_submit_after_cancel: bool,
+    /// Active text selection (mouse-driven). Per-session so a
+    /// selection started in one session doesn't render in another
+    /// after a switch.
+    pub selection: Option<SelectionState>,
+    /// Deferred plain-Enter submit state for the current input.
+    /// Per-session.
+    pub pending_submit: Option<InputSnapshot>,
+    /// Buffered `Event::Paste` payload for this drain cycle.
+    /// Per-session because pastes belong to the editor that
+    /// received them.
+    pub pending_paste_text: String,
+    /// Pending paste session metadata for the currently queued
+    /// paste payload. Per-session.
+    pub pending_paste_session: Option<PasteSessionState>,
+    /// Most recent active placeholder paste session. Per-session.
+    pub active_paste_session: Option<PasteSessionState>,
+    /// Monotonic counter for paste session identifiers. Per-session.
+    pub next_paste_session_id: u64,
+    /// Pending image attachments queued via Ctrl+V and consumed on
+    /// submit. Per-session because they belong to the editor that
+    /// received the paste.
+    pub pending_images: Vec<crate::app::clipboard_image::ImageAttachment>,
+
     // ---- Todos ----
     /// Current todo list from Claude's `TodoWrite` tool calls.
     pub todos: Vec<TodoItem>,
@@ -347,6 +389,18 @@ impl Default for UiSession {
             usage: UsageState::default(),
             recent_sessions: Vec::default(),
             file_index: FileIndexState::default(),
+            login_hint: Option::default(),
+            resuming_session_id: Option::default(),
+            pending_command_label: Option::default(),
+            pending_command_ack: Option::default(),
+            pending_auto_submit_after_cancel: bool::default(),
+            selection: Option::default(),
+            pending_submit: Option::default(),
+            pending_paste_text: String::default(),
+            pending_paste_session: Option::default(),
+            active_paste_session: Option::default(),
+            next_paste_session_id: 1, // Match the legacy App-level seed.
+            pending_images: Vec::default(),
             todos: Vec::default(),
             show_todo_panel: bool::default(),
             todo_scroll: usize::default(),

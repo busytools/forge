@@ -68,7 +68,7 @@ fn apply_connected_presentation(
             load_resume_history(app, history_messages);
         }
         clear_pending_command(app);
-        app.resuming_session_id = None;
+        *app.resuming_session_id_mut() = None;
         crate::app::file_index::restart(app);
         app.rebuild_chat_focus_from_state();
         crate::app::config::refresh_runtime_tabs_for_session_change(app);
@@ -277,15 +277,15 @@ pub(super) fn handle_auth_required_event(
     }
     let method_name_for_log = method_name.clone();
     clear_pending_command(app);
-    app.resuming_session_id = None;
-    app.login_hint = Some(LoginHint { method_name, method_description });
+    *app.resuming_session_id_mut() = None;
+    *app.login_hint_mut() = Some(LoginHint { method_name, method_description });
     app.bump_session_scope_epoch();
     app.clear_session_runtime_identity();
     super::clear_compaction_state(app, false);
     app.set_last_rate_limit_update(None);
     app.set_cancelled_turn_pending_hint(false);
     app.set_pending_cancel_origin(None);
-    app.pending_auto_submit_after_cancel = false;
+    app.set_pending_auto_submit_after_cancel(false);
     app.set_account_info(None);
     *app.mcp_mut() = super::super::McpState::default();
     app.config.pending_session_title_change = None;
@@ -393,18 +393,18 @@ pub(super) fn handle_connection_failed_event(app: &mut App, session_key: &Sessio
     super::clear_compaction_state(app, false);
     app.set_cancelled_turn_pending_hint(false);
     app.set_pending_cancel_origin(None);
-    app.pending_auto_submit_after_cancel = false;
+    app.set_pending_auto_submit_after_cancel(false);
     app.set_last_rate_limit_update(None);
     app.set_account_info(None);
     *app.mcp_mut() = super::super::McpState::default();
     app.config.pending_session_title_change = None;
     crate::app::usage::reset_for_session_change(app);
-    app.resuming_session_id = None;
-    app.pending_command_label = None;
-    app.pending_command_ack = None;
+    *app.resuming_session_id_mut() = None;
+    *app.pending_command_label_mut() = None;
+    *app.pending_command_ack_mut() = None;
     app.finalize_turn_runtime_artifacts(model::ToolCallStatus::Failed);
     app.input_mut().clear();
-    app.pending_submit = None;
+    *app.pending_submit_mut() = None;
     app.status = AppStatus::Error;
     app.clear_active_turn_assistant();
     super::notices::clear_turn_notice_tracking(app);
@@ -506,7 +506,7 @@ pub(super) fn handle_slash_command_error_event(app: &mut App, session_key: &Sess
     app.enforce_history_retention_tracked();
     app.active_viewport_mut().engage_auto_scroll();
     clear_pending_command(app);
-    app.resuming_session_id = None;
+    *app.resuming_session_id_mut() = None;
 }
 
 pub(super) fn handle_auth_completed_event(app: &mut App, session_key: &SessionKey) {
@@ -527,9 +527,9 @@ pub(super) fn handle_auth_completed_event(app: &mut App, session_key: &SessionKe
         );
         return;
     }
-    app.login_hint = None;
-    app.pending_command_label = Some("Starting session...".to_owned());
-    app.pending_command_ack = None;
+    *app.login_hint_mut() = None;
+    *app.pending_command_label_mut() = Some("Starting session...".to_owned());
+    *app.pending_command_ack_mut() = None;
     push_system_message_with_severity(
         app,
         Some(SystemSeverity::Info),
@@ -621,8 +621,8 @@ pub(super) fn handle_logout_completed_event(app: &mut App, session_key: &Session
     );
 
     if app.has_active_agent() {
-        app.pending_command_label = Some("Starting session...".to_owned());
-        app.pending_command_ack = None;
+        *app.pending_command_label_mut() = Some("Starting session...".to_owned());
+        *app.pending_command_ack_mut() = None;
         if let Err(e) = start_new_session(app, SessionStartReason::Logout) {
             tracing::error!(
                 target: crate::logging::targets::APP_AUTH,
@@ -671,7 +671,7 @@ pub(super) fn handle_session_replaced_event(
     let available_model_count = available_models.len();
     super::clear_compaction_state(app, false);
     app.set_pending_cancel_origin(None);
-    app.pending_auto_submit_after_cancel = false;
+    app.set_pending_auto_submit_after_cancel(false);
     let prev_session_id = app.session_id().map(|s| s.to_string());
 
     // Capture the outgoing bucket's key BEFORE `reset_for_new_session`
@@ -701,7 +701,7 @@ pub(super) fn handle_session_replaced_event(
         load_resume_history(app, history_messages);
     }
     clear_pending_command(app);
-    app.resuming_session_id = None;
+    *app.resuming_session_id_mut() = None;
     crate::app::file_index::restart(app);
     crate::app::config::refresh_runtime_tabs_for_session_change(app);
 
@@ -782,15 +782,15 @@ pub(super) fn handle_fatal_error_event(app: &mut App, error: AppError) {
     app.exit_error = Some(error);
     app.should_quit = true;
     app.status = AppStatus::Error;
-    app.pending_submit = None;
-    app.pending_command_label = None;
-    app.pending_command_ack = None;
+    *app.pending_submit_mut() = None;
+    *app.pending_command_label_mut() = None;
+    *app.pending_command_ack_mut() = None;
 }
 
 /// Clear the `CommandPending` state and restore `Ready`.
 pub(super) fn clear_pending_command(app: &mut App) {
-    app.pending_command_label = None;
-    app.pending_command_ack = None;
+    *app.pending_command_label_mut() = None;
+    *app.pending_command_ack_mut() = None;
     app.status = AppStatus::Ready;
 }
 

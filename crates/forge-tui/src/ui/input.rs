@@ -56,7 +56,7 @@ pub(crate) struct InputRenderGeometry {
 
 /// Whether a login hint banner is active.
 fn has_login_hint(app: &App) -> bool {
-    app.login_hint.is_some()
+    app.login_hint().is_some()
 }
 
 fn has_cancel_hint(app: &App) -> bool {
@@ -111,7 +111,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     if let Some(hint_pad) = geometry.hint_pad {
         let mut hint_y = hint_pad.y;
 
-        if let Some(hint) = &app.login_hint {
+        if let Some(hint) = &app.login_hint() {
             let lines = vec![
                 Line::from(Span::styled(
                     format!(
@@ -177,7 +177,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
 
     if app.status == AppStatus::CommandPending {
         let spinner_ch = SPINNER_FRAMES[app.spinner_frame % SPINNER_FRAMES.len()];
-        let label = app.pending_command_label.as_deref().unwrap_or("Processing command...");
+        let label = app.pending_command_label().unwrap_or("Processing command...");
         let line = Line::from(vec![
             Span::styled(format!("{spinner_ch} "), Style::default().fg(theme::DIM)),
             Span::styled(label.to_owned(), Style::default().fg(theme::DIM)),
@@ -214,12 +214,12 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
 
     configure_input_textarea(app);
     app.rendered_input_area = geometry.text;
-    if app.selection.is_some_and(|selection| selection.kind == crate::app::SelectionKind::Input) {
+    if app.selection().is_some_and(|selection| selection.kind == crate::app::SelectionKind::Input) {
         refresh_selection_snapshot(app);
     }
     frame.render_widget(app.input().editor(), geometry.text);
 
-    if let Some(sel) = app.selection
+    if let Some(sel) = app.selection().copied()
         && sel.kind == crate::app::SelectionKind::Input
     {
         frame.render_widget(SelectionOverlay { selection: sel }, geometry.text);
@@ -227,7 +227,8 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
 }
 
 pub(super) fn refresh_selection_snapshot(app: &mut App) {
-    if !app.selection.is_some_and(|selection| selection.kind == crate::app::SelectionKind::Input) {
+    if !app.selection().is_some_and(|selection| selection.kind == crate::app::SelectionKind::Input)
+    {
         return;
     }
 
@@ -425,7 +426,7 @@ mod tests {
     #[test]
     fn visual_line_count_includes_login_hint_rows() {
         let mut app = App::test_default();
-        app.login_hint = Some(LoginHint {
+        *app.login_hint_mut() = Some(LoginHint {
             method_name: "oauth".to_owned(),
             method_description: "Sign in".to_owned(),
         });

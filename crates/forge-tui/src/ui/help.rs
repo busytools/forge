@@ -333,7 +333,7 @@ fn blocked_input_help_items(input_line: &str) -> Vec<(String, String)> {
 }
 
 fn pending_command_help_label(app: &App) -> String {
-    app.pending_command_label.clone().unwrap_or_else(|| "Processing command...".to_owned())
+    app.pending_command_label().map_or_else(|| "Processing command...".to_owned(), str::to_owned)
 }
 
 pub(crate) fn slash_help_items(app: &App) -> Vec<(String, String)> {

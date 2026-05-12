@@ -17,7 +17,7 @@ use super::plugins::PluginsState;
 use super::state::{RenderCacheBudget, SessionPickerState};
 use super::trust;
 use super::view::ActiveView;
-use super::{App, AppStatus, FocusManager, HelpView, SelectionState};
+use super::{App, AppStatus, FocusManager, HelpView};
 use crate::Cli;
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -154,9 +154,6 @@ pub fn create_app(cli: &Cli, workspace: Arc<forge_workspace::Workspace>) -> App 
         trust: trust::TrustState::default(),
         settings_home_override: None,
         status: AppStatus::Connecting,
-        resuming_session_id: None,
-        pending_command_label: None,
-        pending_command_ack: None,
         should_quit: false,
         exit_error: None,
         workspace: Some(workspace),
@@ -165,12 +162,10 @@ pub fn create_app(cli: &Cli, workspace: Arc<forge_workspace::Workspace>) -> App 
         #[rustfmt::skip] #[cfg(feature = "testing")] test_dispatched_question_outcomes: std::cell::RefCell::new(Vec::new()),
         sessions,
         active_session_key: Some(pre_connect_key),
-        login_hint: None,
         help_view: HelpView::Keys,
         help_open: false,
         help_dialog: DialogState::default(),
         help_visible_count: 0,
-        pending_auto_submit_after_cancel: false,
         update_rx,
         update_tx,
         file_index_event_tx,
@@ -187,7 +182,6 @@ pub fn create_app(cli: &Cli, workspace: Arc<forge_workspace::Workspace>) -> App 
         plugins: PluginsState::default(),
         session_picker: SessionPickerState::default(),
         cached_frame_area: ratatui::layout::Rect::new(0, 0, 0, 0),
-        selection: Option::<SelectionState>::None,
         scrollbar_drag: None,
         rendered_chat_lines: Vec::new(),
         rendered_chat_area: ratatui::layout::Rect::new(0, 0, 0, 0),
@@ -196,13 +190,7 @@ pub fn create_app(cli: &Cli, workspace: Arc<forge_workspace::Workspace>) -> App 
         mention: None,
         slash: None,
         subagent: None,
-        pending_submit: None,
         paste_burst: super::paste_burst::PasteBurstDetector::new(),
-        pending_paste_text: String::new(),
-        pending_paste_session: None,
-        active_paste_session: None,
-        next_paste_session_id: 1,
-        pending_images: Vec::new(),
         needs_redraw: true,
         notifications: super::notify::NotificationManager::new(),
         perf,

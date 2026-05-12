@@ -522,7 +522,7 @@ fn render_scrolled(
 }
 
 pub(super) fn refresh_selection_snapshot(app: &mut App) {
-    if !chat_selection_snapshot_needed(app.selection) {
+    if !chat_selection_snapshot_needed(app.selection().copied()) {
         return;
     }
 
@@ -794,7 +794,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
 
     render_scrolled(frame, content_area, app, base_spinner, width, content_height, viewport_height);
 
-    if let Some(sel) = app.selection
+    if let Some(sel) = app.selection().copied()
         && sel.kind == SelectionKind::Chat
     {
         frame.render_widget(SelectionOverlay { selection: sel }, app.rendered_chat_area);
@@ -843,7 +843,7 @@ fn emit_render_summary(
         rendered_line_count: render_data.stats.rendered_line_count,
         last_message_idx,
         last_message_height,
-        selection_snapshot_active: chat_selection_snapshot_needed(app.selection),
+        selection_snapshot_active: chat_selection_snapshot_needed(app.selection().copied()),
     };
     if !remember_render_trace_state(app, trace_state) {
         return;
@@ -1539,7 +1539,7 @@ mod tests {
         app.status = AppStatus::Running;
         *app.active_messages_mut() = vec![assistant_text_message("hello")];
         app.bind_active_turn_assistant(0);
-        app.selection = Some(SelectionState {
+        *app.selection_mut() = Some(SelectionState {
             kind: SelectionKind::Chat,
             start: SelectionPoint { row: 0, col: 0 },
             end: SelectionPoint { row: 0, col: 5 },

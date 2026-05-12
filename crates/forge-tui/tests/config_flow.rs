@@ -11,7 +11,7 @@ fn config_enter_closes_and_preserves_chat_draft() {
 
     assert_eq!(app.active_view, ActiveView::Chat);
     assert_eq!(app.input().text(), "seed");
-    assert!(app.pending_submit.is_none());
+    assert!(app.pending_submit().is_none());
 }
 
 #[test]
@@ -24,7 +24,7 @@ fn config_escape_closes_and_preserves_chat_draft() {
 
     assert_eq!(app.active_view, ActiveView::Chat);
     assert_eq!(app.input().text(), "seed");
-    assert!(app.pending_submit.is_none());
+    assert!(app.pending_submit().is_none());
 }
 
 #[test]
@@ -53,14 +53,14 @@ fn config_ignores_paste_until_returning_to_chat() {
 
     handle_terminal_event(&mut app, Event::Paste("blocked".into()));
 
-    assert!(app.pending_paste_text.is_empty());
+    assert!(app.pending_paste_text().is_empty());
     assert!(app.input().is_empty());
 
     handle_terminal_event(&mut app, Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)));
     handle_terminal_event(&mut app, Event::Paste("allowed".into()));
 
     assert_eq!(app.active_view, ActiveView::Chat);
-    assert_eq!(app.pending_paste_text, "allowed");
+    assert_eq!(app.pending_paste_text(), "allowed");
 }
 
 #[test]

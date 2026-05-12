@@ -127,8 +127,8 @@ fn require_active_session(
 /// Block the input field while a slash command is in flight.
 fn set_command_pending(app: &mut App, label: &str, ack: Option<super::PendingCommandAck>) {
     app.status = AppStatus::CommandPending;
-    app.pending_command_label = Some(label.to_owned());
-    app.pending_command_ack = ack;
+    *app.pending_command_label_mut() = Some(label.to_owned());
+    *app.pending_command_ack_mut() = ack;
 }
 
 #[cfg(test)]
@@ -492,7 +492,7 @@ mod tests {
                 let consumed = try_handle_submit(&mut app, "/resume abc-123");
                 assert!(consumed);
                 assert!(matches!(app.status, AppStatus::CommandPending));
-                assert_eq!(app.resuming_session_id.as_deref(), Some("abc-123"));
+                assert_eq!(app.resuming_session_id(), Some("abc-123"));
 
                 tokio::task::yield_now().await;
                 assert!(rx.try_recv().is_ok());
@@ -526,7 +526,7 @@ mod tests {
                     Some("plan"),
                     "expected mode applied synchronously to plan"
                 );
-                assert!(app.pending_command_label.is_none());
+                assert!(app.pending_command_label().is_none());
             })
             .await;
     }
@@ -553,7 +553,7 @@ mod tests {
                     Some("sonnet"),
                     "expected current_model applied synchronously to sonnet"
                 );
-                assert!(app.pending_command_label.is_none());
+                assert!(app.pending_command_label().is_none());
             })
             .await;
     }
@@ -572,7 +572,7 @@ mod tests {
                     "expected CommandPending, got {:?}",
                     app.status
                 );
-                assert_eq!(app.pending_command_label.as_deref(), Some("Starting new session..."));
+                assert_eq!(app.pending_command_label(), Some("Starting new session..."));
             })
             .await;
     }

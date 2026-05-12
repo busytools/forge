@@ -1198,7 +1198,7 @@ fn apply_turn_error_presentation(
             error_preview = %summary,
             terminal_reason = terminal_reason.map_or("", forge_primitives::TerminalReason::as_stored),
         );
-        app.pending_submit = None;
+        *app.pending_submit_mut() = None;
         finish_ready_turn_exit(app, exit, model::ToolCallStatus::Failed);
         // Lifecycle: cancelled turn — back to Idle, reset turn_state.
         if let Some(key) = app.active_session_key.clone() {
@@ -1265,9 +1265,9 @@ fn apply_turn_error_presentation(
         TurnErrorClass::Other => {}
     }
     app.finalize_turn_runtime_artifacts(model::ToolCallStatus::Failed);
-    app.pending_auto_submit_after_cancel = false;
+    app.set_pending_auto_submit_after_cancel(false);
     app.input_mut().clear();
-    app.pending_submit = None;
+    *app.pending_submit_mut() = None;
     app.status = AppStatus::Error;
     let rate_limit_context = if matches!(error_class, TurnErrorClass::PlanLimit) {
         app.last_rate_limit_update()
