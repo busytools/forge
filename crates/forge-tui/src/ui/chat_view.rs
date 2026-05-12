@@ -1,4 +1,4 @@
-use super::{autocomplete, chat, footer, help, input, layout, projects_pane, theme, todo, top_bar};
+use super::{autocomplete, chat, help, input, layout, projects_pane, theme, todo, top_bar};
 use crate::app::App;
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -107,10 +107,9 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         help::render(frame, areas.help, app);
     }
 
-    if let Some(footer_area) = areas.footer {
-        let _t = app.perf.as_ref().map(|p| p.start("ui::footer"));
-        footer::render(frame, footer_area, app);
-    }
+    // Chat footer (mode/model/fast/cwd/branch/usage) used to render
+    // here; it moved to the bottom of the Projects pane in this PR.
+    // See `projects_pane::render_account_status_footer`.
 
     render_perf_fps_overlay(frame, frame_area, frame_area.y, app);
 }

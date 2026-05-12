@@ -55,7 +55,6 @@ pub struct AppLayout {
     pub input: Rect,
     pub input_bottom_sep: Rect,
     pub help: Rect,
-    pub footer: Option<Rect>,
 }
 
 pub fn compute(
@@ -68,10 +67,11 @@ pub fn compute(
     let input_height = input_lines.max(1);
 
     // Horizontal split first so the pane (when present) spans the
-    // full terminal height, and the chat column (body + input +
-    // status + footer) is confined to the right of the pane. This
-    // is what prevents the input box from spilling over the pane's
-    // x range. Tier ladder:
+    // full terminal height, and the chat column (body + input) is
+    // confined to the right of the pane. This is what prevents the
+    // input box from spilling over the pane's x range. The chat
+    // footer (mode/model/fast/cwd/branch/usage) is gone — that data
+    // now lives in the Projects pane's bottom panel. Tier ladder:
     //   Wide   (>= 160) → 26ch pane + 1ch separator + chat column
     //   Medium (>= 120) → 20ch pane + 1ch separator + chat column
     //   Narrow (<  120) → no inline pane; top bar lands in chat
@@ -101,7 +101,7 @@ pub fn compute(
         };
 
     let mut layout = if chat_area.height < 8 {
-        // Ultra-compact: no footer, no todo
+        // Ultra-compact: no todo
         let [body, input, input_bottom_sep, help] = Layout::vertical([
             Constraint::Min(1),
             Constraint::Length(input_height),
@@ -119,17 +119,15 @@ pub fn compute(
             input,
             input_bottom_sep,
             help,
-            footer: None,
         }
     } else {
-        let [body, input_sep, todo, input, input_bottom_sep, help, footer] = Layout::vertical([
+        let [body, input_sep, todo, input, input_bottom_sep, help] = Layout::vertical([
             Constraint::Min(3),
             Constraint::Length(1),
             Constraint::Length(todo_height),
             Constraint::Length(input_height),
             Constraint::Length(1),
             Constraint::Length(help_height),
-            Constraint::Length(2),
         ])
         .areas(chat_area);
         AppLayout {
@@ -142,7 +140,6 @@ pub fn compute(
             input,
             input_bottom_sep,
             help,
-            footer: Some(footer),
         }
     };
 
@@ -168,7 +165,7 @@ mod tests {
         Rect::new(0, 0, w, h)
     }
 
-    /// Sum all layout area heights (handles optional footer + top bar).
+    /// Sum all layout area heights (handles optional top bar).
     fn total_height(layout: &AppLayout) -> u16 {
         layout.top_bar.map_or(0, |t| t.height)
             + layout.body.height
@@ -177,7 +174,6 @@ mod tests {
             + layout.input.height
             + layout.input_bottom_sep.height
             + layout.help.height
-            + layout.footer.map_or(0, |f| f.height)
     }
 
     /// Collect all non-zero-height areas in top-to-bottom order.
@@ -194,9 +190,6 @@ mod tests {
             layout.input_bottom_sep,
             layout.help,
         ]);
-        if let Some(f) = layout.footer {
-            areas.push(f);
-        }
         areas.into_iter().filter(|r| r.height > 0).collect()
     }
 
@@ -214,26 +207,25 @@ mod tests {
     }
 
     #[test]
-    fn normal_layout_respects_requested_sections_and_footer_contract() {
+    fn normal_layout_respects_requested_sections() {
         let layout = compute(area(80, 24), 5, 3, 2, false);
-        let footer = layout.footer.expect("normal layout should include a footer");
 
         assert_eq!(layout.input_sep.height, 1);
         assert_eq!(layout.todo.height, 3);
         assert_eq!(layout.input.height, 5);
         assert_eq!(layout.input_bottom_sep.height, 1);
         assert_eq!(layout.help.height, 2);
-        assert_eq!(footer.height, 2);
         assert!(layout.body.height >= 3);
         assert_eq!(total_height(&layout), 24);
-        assert_eq!(footer.y + footer.height, 24);
+        // The chat column flush-fills the area now that the footer
+        // is gone (it moved to the Projects pane).
+        assert_eq!(layout.help.y + layout.help.height, 24);
     }
 
     #[test]
-    fn compact_layout_omits_footer_and_todo_and_allocates_remaining_space_to_input_and_help() {
+    fn compact_layout_omits_todo_and_allocates_remaining_space_to_input_and_help() {
         let layout = compute(area(80, 6), 3, 4, 2, false);
 
-        assert!(layout.footer.is_none());
         assert_eq!(layout.todo.height, 0);
         assert_eq!(layout.input_sep.height, 0);
         assert_eq!(layout.help.height, 2);
@@ -246,8 +238,11 @@ mod tests {
         let compact = compute(area(80, 7), 1, 0, 0, false);
         let normal = compute(area(80, 8), 1, 0, 1, false);
 
-        assert!(compact.footer.is_none());
-        assert!(normal.footer.is_some());
+        // Compact path skips the input_sep + todo allocations.
+        assert_eq!(compact.input_sep.height, 0);
+        assert_eq!(compact.todo.height, 0);
+        // Normal path allocates an input_sep.
+        assert_eq!(normal.input_sep.height, 1);
         assert_eq!(normal.help.height, 1);
     }
 
@@ -278,7 +273,6 @@ mod tests {
         let width_one = compute(Rect::new(0, 0, 1, 24), 0, 0, 0, false);
         let width_zero = compute(area(0, 24), 1, 0, 0, false);
 
-        assert!(zero_height.footer.is_none());
         assert_eq!(total_height(&zero_height), 0);
         assert_eq!(total_height(&height_one), 1);
         assert_eq!(width_one.input.height, 1);
