@@ -719,11 +719,19 @@ fn build_account_panel_lines(app: &App, width: u16) -> Vec<Line<'static>> {
 /// `width` is the full pane width so the ETA can be right-justified
 /// against the right edge (matches the percent column of the bar row
 /// above it).
+/// Right-edge column of the bar row in the bottom panel. The row
+/// shape is `2 indent + 3 label + 2 gap + 12 bar + 2 gap + 4 pct`
+/// — the ETA on the next line right-justifies to this column so it
+/// visually sits directly below the percent text instead of floating
+/// off at the pane's outer edge (which leaves a sparse gap when the
+/// pane is wider than 25 cols).
+const BAR_ROW_WIDTH: usize = 2 + 3 + 2 + ACCOUNT_PANEL_BAR_CELLS + 2 + 4;
+
 fn push_usage_window_lines(
     lines: &mut Vec<Line<'static>>,
     label: &'static str,
     window: Option<&crate::app::UsageWindow>,
-    width: u16,
+    _width: u16,
 ) {
     let pct_value = window.map_or(0.0, |w| w.utilization);
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
@@ -736,12 +744,11 @@ fn push_usage_window_lines(
     lines.push(Line::from(row));
 
     // ETA — duration only (no "resets in " prose), DIM, right-justified
-    // to the pane's right edge so it visually sits below the percent
-    // column of the bar row.
+    // to the percent column's right edge (see [`BAR_ROW_WIDTH`]).
     let eta_text =
         window.and_then(format_window_reset_duration_only).unwrap_or_else(|| "—".to_owned());
     let eta_chars = eta_text.chars().count();
-    let pad = usize::from(width).saturating_sub(eta_chars);
+    let pad = BAR_ROW_WIDTH.saturating_sub(eta_chars);
     lines.push(Line::from(vec![
         Span::raw(" ".repeat(pad)),
         Span::styled(eta_text, Style::default().fg(theme::DIM)),

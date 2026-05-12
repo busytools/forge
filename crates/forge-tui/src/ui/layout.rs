@@ -14,10 +14,10 @@ pub const WIDE_TIER_MIN_WIDTH: u16 = 160;
 pub const MEDIUM_TIER_MIN_WIDTH: u16 = 120;
 
 /// Width (columns) of the left Projects pane at Wide tier.
-pub const PANE_WIDTH_WIDE: u16 = 35;
+pub const PANE_WIDTH_WIDE: u16 = 32;
 
 /// Width (columns) of the left Projects pane at Medium tier.
-pub const PANE_WIDTH_MEDIUM: u16 = 26;
+pub const PANE_WIDTH_MEDIUM: u16 = 24;
 
 /// Width (columns) of the right Inspector pane at Wide tier.
 /// Slightly wider than the Projects pane so `TASKS` items render
