@@ -152,17 +152,17 @@ fn log_session_request(
 
 pub(crate) fn start_new_session(
     app: &App,
-    conn: &forge_agent::AgentHandle,
+    conn: &forge_workspace::AgentHandle,
     reason: SessionStartReason,
 ) -> anyhow::Result<()> {
     let launch_settings = session_launch_settings_for_reason(app, reason);
     log_session_request(app, reason, &launch_settings, None);
-    conn.new_session(app.cwd_raw().to_owned(), launch_settings)
+    conn.new_session(app.cwd_raw(), launch_settings)
 }
 
 pub(crate) fn resume_session(
     app: &App,
-    conn: &forge_agent::AgentHandle,
+    conn: &forge_workspace::AgentHandle,
     session_id: String,
 ) -> anyhow::Result<()> {
     let launch_settings = session_launch_settings_for_reason(app, SessionStartReason::Resume);
@@ -172,7 +172,7 @@ pub(crate) fn resume_session(
     // right project subdir. Empty cwd would inherit forge's `$PWD`,
     // which for an in-session resume usually does not match the
     // target project.
-    conn.resume_session(session_id, app.cwd_raw().to_owned(), launch_settings)
+    conn.resume_session(session_id, app.cwd_raw(), launch_settings)
 }
 
 /// Begin a session resume by marking the target session and sending the command.
@@ -181,7 +181,7 @@ pub(crate) fn resume_session(
 /// synchronous errors.
 pub(crate) fn begin_resume_session(
     app: &mut App,
-    conn: &forge_agent::AgentHandle,
+    conn: &forge_workspace::AgentHandle,
     session_id: String,
 ) -> anyhow::Result<()> {
     app.resuming_session_id = Some(session_id.clone());

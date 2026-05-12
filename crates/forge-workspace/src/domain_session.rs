@@ -33,7 +33,11 @@ pub struct DomainSession {
     /// event from this session's bridge.
     pub session_id: Option<SessionId>,
     /// Agent connection handle bound to this session at spawn time.
-    pub conn: Arc<AgentHandle>,
+    /// `None` for pre-spawn / pre-Connect domains (forge-tui's
+    /// `connect::create_app` registers a placeholder handle-less
+    /// domain so its projection accessors have a domain to read from
+    /// before the first spawn completes).
+    pub conn: Option<Arc<AgentHandle>>,
     /// Lifecycle state for the Projects pane glyph. Updated by
     /// the per-session `SessionTask::translate_event` as each
     /// `AgentEvent` arrives.
@@ -68,10 +72,13 @@ pub struct DomainSession {
 
 impl DomainSession {
     /// Construct a fresh `DomainSession` bound to `key` with the
-    /// given `conn`. Operational fields take their `Default` values
-    /// or `None`; `Workspace::record_event_for_domain` writes them
-    /// as events arrive.
-    pub fn new(key: SessionKey, conn: Arc<AgentHandle>) -> Self {
+    /// given `conn`. Pre-spawn / pre-Connect callers pass `None` to
+    /// register a placeholder domain whose handle slot fills in once
+    /// the spawn handler runs. Operational fields take their
+    /// `Default` values or `None`; `SessionTask::translate_event`
+    /// (and the per-field `Workspace::set_*_in_domain` helpers) write
+    /// them as events arrive.
+    pub fn new(key: SessionKey, conn: Option<Arc<AgentHandle>>) -> Self {
         Self {
             key,
             session_id: None,

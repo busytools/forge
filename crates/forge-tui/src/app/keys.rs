@@ -662,7 +662,7 @@ fn handle_mode_cycle_key(app: &mut App, key: KeyEvent) -> bool {
         .collect();
 
     if let Some(conn) = app.conn()
-        && let Some(sid) = app.session_id().cloned()
+        && let Some(sid) = app.session_id()
     {
         let mode_id = next_id.clone();
         let conn = Arc::clone(conn);

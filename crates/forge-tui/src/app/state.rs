@@ -470,12 +470,15 @@ impl App {
             outgoing.draft_input = outgoing_draft;
         }
 
-        let (incoming_draft, incoming_lifecycle) = self
-            .sessions
-            .get(&key)
-            .map_or((String::new(), crate::app::session::SessionLifecycleState::Idle), |s| {
-                (s.draft_input.clone(), s.lifecycle_state)
-            });
+        let incoming_draft =
+            self.sessions.get(&key).map_or(String::new(), |s| s.draft_input.clone());
+        // Reads through the workspace's DomainSession (post-Phase 5
+        // authoritative source).
+        let incoming_lifecycle = self
+            .workspace
+            .as_ref()
+            .and_then(|ws| ws.domain_session_for(&key))
+            .map_or(crate::app::session::SessionLifecycleState::Idle, |d| d.lock().lifecycle_state);
         self.active_session_key = Some(key);
         self.input.clear();
         if !incoming_draft.is_empty() {
@@ -603,9 +606,19 @@ impl App {
 
     /// Active session's claude session id, or `None` in the
     /// pre-Connect window.
+    ///
+    /// Returns an owned `SessionId` cloned from the workspace's
+    /// `DomainSession` (post-Phase 5 authoritative source). Callers
+    /// that previously used `app.session_id()` can drop the
+    /// `.cloned()` — the value is already owned.
     #[must_use]
-    pub fn session_id(&self) -> Option<&model::SessionId> {
-        self.active_session().and_then(|s| s.session_id.as_ref())
+    pub fn session_id(&self) -> Option<model::SessionId> {
+        let workspace = self.workspace.as_ref()?;
+        let key = self.active_session_key.as_ref()?;
+        workspace
+            .domain_session_for(key)
+            .and_then(|d| d.lock().session_id.clone())
+            .map(|sid| model::SessionId::new(sid.into_string()))
     }
 
     /// Set the active session's session_id. Ensures the sessions
@@ -634,8 +647,8 @@ impl App {
     /// 2b will tighten those once background-session reachability
     /// rules are nailed down.
     pub fn set_session_id(&mut self, id: Option<model::SessionId>) {
-        match id {
-            Some(id) => {
+        if let Some(id) = id {
+            {
                 let prev_active_was_none = self.active_session_key.is_none();
                 let key = forge_workspace::SessionKey::from_session_id(id.to_string());
                 // Migrate any synthetic-keyed bucket onto the real key.
@@ -655,24 +668,40 @@ impl App {
                             session_id = %id,
                             reason = "real_bucket_present",
                         );
-                        if let Some(real_bucket) = self.sessions.get_mut(&key) {
-                            real_bucket.session_id = Some(id);
-                        }
                         // existing (synthetic) is dropped at end of branch.
                         let _ = existing;
                     } else {
                         existing.key = Some(key.clone());
-                        existing.session_id = Some(id);
                         self.sessions.insert(key.clone(), existing);
+                        // Mirror the bucket re-key onto the workspace's
+                        // `DomainSession` handle map so the workspace's
+                        // `domain_session_for(real_key)` lookup keeps
+                        // resolving after the synthetic→real migration.
+                        if let Some(ws) = self.workspace.as_ref() {
+                            ws.rekey_domain_session(&pending, key.clone());
+                        }
                     }
                 } else {
-                    let entry = self
-                        .sessions
+                    self.sessions
                         .entry(key.clone())
                         .or_insert_with(|| super::session::UiSession::new(key.clone()));
-                    entry.session_id = Some(id);
                 }
                 self.active_session_key = Some(key.clone());
+                // Stamp `session_id` onto the workspace's
+                // DomainSession (post-Phase 5 authoritative source).
+                // Auto-create a handle-less domain when the workspace
+                // doesn't yet have one for `key` — covers the rare
+                // test path that calls `set_session_id` before any
+                // domain is registered.
+                if let Some(ws) = self.workspace.as_ref() {
+                    if ws.domain_session_for(&key).is_none() {
+                        ws.register_domain_session(key.clone(), None);
+                    }
+                    ws.set_session_id_in_domain(
+                        &key,
+                        Some(forge_primitives::SessionId::new(id.to_string())),
+                    );
+                }
                 // Connect-after-failure cleanup: when no session was
                 // active before this call, sweep stale buckets that
                 // accumulated across earlier disconnect cycles.
@@ -680,25 +709,29 @@ impl App {
                     self.sessions.retain(|k, _| *k == key);
                 }
             }
-            None => {
-                // Clear the bucket's session-id slot AND the bucket's
-                // own `key` field so it stops advertising the
-                // now-stale id (the next `set_session_id(Some(...))`
-                // re-stamps both). Keep the bucket attached to
-                // `active_session_key` so the active-path handler
-                // can keep writing into it (failed tool calls,
-                // system messages — see doc comment above).
-                if let Some(s) = self.try_active_bucket_mut() {
-                    s.session_id = None;
-                    s.key = None;
-                }
+        } else {
+            // Clear the bucket's `key` field so it stops
+            // advertising the now-stale id (the next
+            // `set_session_id(Some(...))` re-stamps it). Keep
+            // the bucket attached to `active_session_key` so
+            // the active-path handler can keep writing into it
+            // (failed tool calls, system messages — see doc
+            // comment above). Also clear the workspace's
+            // DomainSession session_id so readers observe `None`.
+            if let Some(s) = self.try_active_bucket_mut() {
+                s.key = None;
+            }
+            if let Some(ws) = self.workspace.as_ref()
+                && let Some(key) = self.active_session_key.as_ref()
+            {
+                ws.set_session_id_in_domain(key, None);
             }
         }
     }
 
     /// Active session's agent connection handle.
     #[must_use]
-    pub fn conn(&self) -> Option<&std::sync::Arc<forge_agent::AgentHandle>> {
+    pub fn conn(&self) -> Option<&std::sync::Arc<forge_workspace::AgentHandle>> {
         self.active_session().and_then(|s| s.conn.as_ref())
     }
 
@@ -708,7 +741,7 @@ impl App {
     /// `set_session_id`. Production code calls these in
     /// chronological order (Connected event fires both with the
     /// real session_id), so the synthetic-key path is test-only.
-    pub fn set_active_conn(&mut self, conn: Option<std::sync::Arc<forge_agent::AgentHandle>>) {
+    pub fn set_active_conn(&mut self, conn: Option<std::sync::Arc<forge_workspace::AgentHandle>>) {
         if self.active_session_key.is_none() && conn.is_some() {
             let key = forge_workspace::SessionKey::from_session_id(Self::PRE_CONNECT_KEY);
             self.sessions
@@ -722,39 +755,62 @@ impl App {
     }
 
     /// Active session's monotonic scope epoch.
+    ///
+    /// Post-Phase 5: reads from the workspace's
+    /// [`forge_workspace::DomainSession`]. Returns `0` when the
+    /// workspace is unbound (test path).
     #[must_use]
     pub fn session_scope_epoch(&self) -> u64 {
-        self.active_session().map_or(0, |s| s.session_scope_epoch)
+        let Some(workspace) = self.workspace.as_ref() else { return 0 };
+        let Some(key) = self.active_session_key.as_ref() else { return 0 };
+        workspace.domain_session_for(key).map_or(0, |d| d.lock().session_scope_epoch)
     }
 
-    /// Increment the active session's scope epoch.
+    /// Increment the active session's scope epoch. Writes through
+    /// the workspace's `DomainSession`.
     pub fn bump_session_scope_epoch(&mut self) {
-        if let Some(s) = self.try_active_bucket_mut() {
-            s.session_scope_epoch = s.session_scope_epoch.saturating_add(1);
+        let Some(workspace) = self.workspace.as_ref() else { return };
+        let Some(key) = self.active_session_key.as_ref() else { return };
+        if let Some(domain) = workspace.domain_session_for(key) {
+            let mut guard = domain.lock();
+            guard.session_scope_epoch = guard.session_scope_epoch.saturating_add(1);
         }
     }
 
     // ---- Turn lifecycle accessors ----
 
-    /// Borrow the active session's turn state.
+    /// Run `f` with read-only access to the active session's
+    /// turn state.
     ///
-    /// Falls back to a leaked default for the brief pre-Connect
-    /// window. Production startup seeds a synthetic bucket up front,
-    /// so the fallback is a safety net rather than a hot path.
+    /// Post-Phase 5: routes through the workspace's `DomainSession`
+    /// (the authoritative `SessionTurnState` store). The lock is
+    /// held for the duration of `f`. When no workspace or no
+    /// domain handle is registered for the active session, `f`
+    /// runs against a fresh `SessionTurnState::default()` — keeps
+    /// the legacy "fallback to default" semantics callers rely on
+    /// during the brief pre-Connect window.
     #[must_use]
-    pub fn turn_state(&self) -> &SessionTurnState {
-        static FALLBACK: std::sync::OnceLock<SessionTurnState> = std::sync::OnceLock::new();
-        match self.active_session() {
-            Some(s) => &s.turn_state,
-            None => FALLBACK.get_or_init(SessionTurnState::default),
+    pub fn with_turn_state<R>(&self, f: impl FnOnce(&SessionTurnState) -> R) -> R {
+        if let Some(workspace) = self.workspace.as_ref()
+            && let Some(key) = self.active_session_key.as_ref()
+            && let Some(domain) = workspace.domain_session_for(key)
+        {
+            return f(&domain.lock().turn_state);
         }
+        f(&SessionTurnState::default())
     }
 
-    /// Mutable borrow of the active session's turn state.
-    /// Auto-creates the pre-Connect bucket if missing.
-    #[must_use]
-    pub fn turn_state_mut(&mut self) -> &mut SessionTurnState {
-        &mut self.active_bucket_mut().turn_state
+    /// Run `f` with mutable access to the active session's turn
+    /// state. The lock is held for the duration of `f`. No-op (and
+    /// returns the default for `R`) when no workspace or no domain
+    /// handle is registered for the active session.
+    pub fn with_turn_state_mut<R: Default>(
+        &mut self,
+        f: impl FnOnce(&mut SessionTurnState) -> R,
+    ) -> R {
+        let Some(workspace) = self.workspace.as_ref() else { return R::default() };
+        let Some(key) = self.active_session_key.as_ref() else { return R::default() };
+        workspace.with_turn_state_mut(key, f).unwrap_or_default()
     }
 
     /// Active session's `is_compacting` flag.
@@ -1080,14 +1136,31 @@ impl App {
     }
 
     /// Active session's runtime session state.
+    ///
+    /// Reads from the workspace's [`forge_workspace::DomainSession`]
+    /// post-Phase 5 — the authoritative source. Returns `None` when
+    /// the workspace is unbound or no domain handle is registered
+    /// for the active session (production always has both; tests
+    /// route through `App::test_default` which wires a stub).
     #[must_use]
     pub fn runtime_session_state(&self) -> Option<model::RuntimeSessionState> {
-        self.active_session().and_then(|s| s.runtime_session_state)
+        let workspace = self.workspace.as_ref()?;
+        let key = self.active_session_key.as_ref()?;
+        let raw = workspace.domain_session_for(key).and_then(|d| d.lock().runtime_session_state)?;
+        Some(convert_runtime_session_state_from_primitives(raw))
     }
 
-    /// Set the active session's runtime session state.
+    /// Set the active session's runtime session state. Writes
+    /// through the workspace's `DomainSession`. No-op when no
+    /// workspace is bound or no domain handle is registered for the
+    /// active session.
     pub fn set_runtime_session_state(&mut self, value: Option<model::RuntimeSessionState>) {
-        self.active_bucket_mut().runtime_session_state = value;
+        let Some(workspace) = self.workspace.as_ref() else { return };
+        let Some(key) = self.active_session_key.as_ref() else { return };
+        if let Some(domain) = workspace.domain_session_for(key) {
+            domain.lock().runtime_session_state =
+                value.map(convert_runtime_session_state_to_primitives);
+        }
     }
 
     /// Active session's fast-mode state.
@@ -1136,40 +1209,64 @@ impl App {
 
     // ---- Account / auth accessors ----
 
-    /// Borrow the active session's account-info snapshot.
+    /// Active session's account-info snapshot.
+    ///
+    /// Returns an owned `AccountInfo` cloned from the workspace's
+    /// `DomainSession` (post-Phase 5 authoritative source). Returns
+    /// `None` when no workspace is bound or no domain handle is
+    /// registered for the active session.
     #[must_use]
-    pub fn account_info(&self) -> Option<&forge_primitives::AccountInfo> {
-        self.active_session().and_then(|s| s.account_info.as_ref())
+    pub fn account_info(&self) -> Option<forge_primitives::AccountInfo> {
+        let workspace = self.workspace.as_ref()?;
+        let key = self.active_session_key.as_ref()?;
+        workspace.domain_session_for(key).and_then(|d| d.lock().account_info.clone())
     }
 
-    /// Set the active session's account-info snapshot.
+    /// Set the active session's account-info snapshot on the
+    /// workspace's `DomainSession`.
     pub fn set_account_info(&mut self, value: Option<forge_primitives::AccountInfo>) {
-        self.active_bucket_mut().account_info = value;
+        let Some(workspace) = self.workspace.as_ref() else { return };
+        let Some(key) = self.active_session_key.as_ref() else { return };
+        if let Some(domain) = workspace.domain_session_for(key) {
+            domain.lock().account_info = value;
+        }
     }
 
-    /// Borrow the active session's forge-side account display name.
+    /// Active session's forge-side account display name.
+    ///
+    /// Returns an owned `String` cloned from the workspace's
+    /// `DomainSession` (post-Phase 5 authoritative source). Returns
+    /// `None` when no workspace is bound, no domain handle is
+    /// registered for the active session, or the name slot is empty.
     #[must_use]
-    pub fn active_account_display_name(&self) -> Option<&str> {
-        self.active_session().and_then(|s| s.active_account_display_name.as_deref())
+    pub fn active_account_display_name(&self) -> Option<String> {
+        let workspace = self.workspace.as_ref()?;
+        let key = self.active_session_key.as_ref()?;
+        workspace.domain_session_for(key).and_then(|d| d.lock().active_account_display_name.clone())
     }
 
-    /// Set the active session's forge-side account display name.
+    /// Set the active session's forge-side account display name on
+    /// the workspace's `DomainSession`.
     pub fn set_active_account_display_name(&mut self, value: Option<String>) {
-        self.active_bucket_mut().active_account_display_name = value;
+        let Some(workspace) = self.workspace.as_ref() else { return };
+        let Some(key) = self.active_session_key.as_ref() else { return };
+        if let Some(domain) = workspace.domain_session_for(key) {
+            domain.lock().active_account_display_name = value;
+        }
     }
 
     /// Borrow the active session's OAuth credentials snapshot.
     #[must_use]
     pub fn oauth_credentials(
         &self,
-    ) -> Option<&forge_agent::cloud::oauth_credentials::OauthCredentials> {
+    ) -> Option<&forge_primitives::cloud::oauth_credentials::OauthCredentials> {
         self.active_session().and_then(|s| s.oauth_credentials.as_ref())
     }
 
     /// Set the active session's OAuth credentials snapshot.
     pub fn set_oauth_credentials(
         &mut self,
-        value: Option<forge_agent::cloud::oauth_credentials::OauthCredentials>,
+        value: Option<forge_primitives::cloud::oauth_credentials::OauthCredentials>,
     ) {
         self.active_bucket_mut().oauth_credentials = value;
     }
@@ -1191,15 +1288,27 @@ impl App {
         self.active_bucket_mut().cwd = value.into();
     }
 
-    /// Borrow the active session's raw filesystem cwd.
+    /// Active session's raw filesystem cwd.
+    ///
+    /// Returns an owned `String` cloned from the workspace's
+    /// `DomainSession` (post-Phase 5 authoritative source). Returns
+    /// the empty string when no workspace is bound or no domain
+    /// handle is registered for the active session.
     #[must_use]
-    pub fn cwd_raw(&self) -> &str {
-        self.active_session().map_or("", |s| s.cwd_raw.as_str())
+    pub fn cwd_raw(&self) -> String {
+        let Some(workspace) = self.workspace.as_ref() else { return String::new() };
+        let Some(key) = self.active_session_key.as_ref() else { return String::new() };
+        workspace.domain_session_for(key).map_or_else(String::new, |d| d.lock().cwd_raw.clone())
     }
 
-    /// Set the active session's raw filesystem cwd.
+    /// Set the active session's raw filesystem cwd on the workspace's
+    /// `DomainSession`.
     pub fn set_cwd_raw(&mut self, value: impl Into<String>) {
-        self.active_bucket_mut().cwd_raw = value.into();
+        let Some(workspace) = self.workspace.as_ref() else { return };
+        let Some(key) = self.active_session_key.as_ref() else { return };
+        if let Some(domain) = workspace.domain_session_for(key) {
+            domain.lock().cwd_raw = value.into();
+        }
     }
 
     /// Active session's files-accessed counter.
@@ -1538,19 +1647,24 @@ impl App {
     /// - Legacy mode + no data → empty (renderer hides line).
     #[must_use]
     fn welcome_account_display(&self) -> (String, String) {
-        let display_name =
-            self.active_account_display_name().map(str::trim).filter(|s| !s.is_empty());
+        // Both accessors now return owned values from the workspace's
+        // `DomainSession` (post-Phase 5); trim + clone into owned
+        // form to avoid binding to temporaries.
+        let display_name = self
+            .active_account_display_name()
+            .map(|n| n.trim().to_owned())
+            .filter(|s| !s.is_empty());
         let subscription = self
             .account_info()
-            .and_then(|a| a.subscription_type.as_deref())
-            .map(str::trim)
+            .and_then(|a| a.subscription_type)
+            .map(|t| t.trim().to_owned())
             .filter(|s| !s.is_empty());
         let workspace_mode = self.workspace.is_some();
 
         match (workspace_mode, display_name, subscription) {
             (_, Some(name), Some(tier)) => ("Account".to_owned(), format!("{name} · {tier}")),
             (true, _, _) => ("Account".to_owned(), "…".to_owned()),
-            (false, _, Some(tier)) => ("Subscription".to_owned(), tier.to_owned()),
+            (false, _, Some(tier)) => ("Subscription".to_owned(), tier),
             (false, _, None) => (String::new(), String::new()),
         }
     }
@@ -1564,7 +1678,7 @@ impl App {
     #[must_use]
     fn welcome_session_id_display(&self) -> String {
         self.session_id()
-            .map(std::string::ToString::to_string)
+            .map(|s| s.to_string())
             .map(|value| value.trim().to_owned())
             .filter(|value| !value.is_empty())
             .unwrap_or_else(|| "-".to_owned())
@@ -1913,6 +2027,16 @@ impl App {
 
     /// Build a minimal `App` for unit/integration tests.
     /// All fields get sensible defaults; the `mpsc` channel is wired up internally.
+    ///
+    /// Phase 5 wires this fixture to a `Workspace::testing_stub()` so
+    /// App-level accessors that delegate to
+    /// `workspace.domain_session_for(...)` observe a real
+    /// [`forge_workspace::DomainSession`] keyed by
+    /// [`Self::PRE_CONNECT_KEY`]. The underlying `AgentHandle` is the
+    /// `Agent::testing_stub` no-op bridge; commands sent through it
+    /// are silently dropped. Behind the `testing` Cargo feature so
+    /// production builds don't pull in the stub helpers.
+    #[cfg(feature = "testing")]
     #[doc(hidden)]
     #[must_use]
     pub fn test_default() -> Self {
@@ -1925,13 +2049,27 @@ impl App {
         pending_session.current_model = Some(
             model::CurrentModel::new("test-model", "test-model", "test-model").authoritative(true),
         );
-        // Seed cwd / cwd_raw so legacy tests that read these via the
-        // accessors observe stable values without first having to
-        // touch the active session.
+        // Seed display-friendly cwd on the bucket; `cwd_raw` lives on
+        // `DomainSession` post-Phase 5 (seeded via the workspace stub
+        // below).
         pending_session.cwd = "/test".into();
-        pending_session.cwd_raw = "/test".into();
         let mut sessions = std::collections::HashMap::new();
         sessions.insert(pending_key.clone(), pending_session);
+
+        // Build a Workspace stub and register a DomainSession for the
+        // pre-Connect key. App accessors (`cwd_raw`, `session_id`,
+        // `lifecycle_state`, etc.) read from this DomainSession; tests
+        // that previously seeded bucket fields now seed via the App
+        // setters that route to the DomainSession.
+        let (workspace, _update_rx) = forge_workspace::Workspace::testing_stub();
+        let (stub_handle, _stub_cmd_rx) = forge_workspace::Workspace::testing_stub_handle();
+        let stub_handle_arc = std::sync::Arc::new(stub_handle);
+        let domain = workspace.register_domain_session_for_test(
+            pending_key.clone(),
+            std::sync::Arc::clone(&stub_handle_arc),
+        );
+        domain.lock().cwd_raw = "/test".into();
+
         Self {
             active_view: ActiveView::Chat,
             config: ConfigState::default(),
@@ -1944,7 +2082,7 @@ impl App {
             pending_command_ack: None,
             should_quit: false,
             exit_error: None,
-            workspace: None,
+            workspace: Some(workspace),
             workspace_update_count: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
             #[rustfmt::skip] #[cfg(feature = "testing")] test_dispatched_permission_outcomes: std::cell::RefCell::new(Vec::new()),
             #[rustfmt::skip] #[cfg(feature = "testing")] test_dispatched_question_outcomes: std::cell::RefCell::new(Vec::new()),
@@ -2024,7 +2162,7 @@ impl App {
 
     /// Apply a bridge-pushed git context snapshot to the local
     /// cache. Marks `needs_redraw` when the resolved branch changes.
-    pub fn apply_git_context_snapshot(&mut self, info: forge_agent::env::git::GitContext) {
+    pub fn apply_git_context_snapshot(&mut self, info: forge_primitives::git::GitContext) {
         let changed = self.active_bucket_mut().git_context.apply_snapshot(info);
         self.needs_redraw |= changed;
     }
@@ -2130,9 +2268,10 @@ impl App {
     }
 
     pub fn reconcile_trust_state_from_preferences_and_cwd(&mut self) {
+        let cwd = self.cwd_raw();
         let lookup = crate::app::trust::store::read_status(
             &self.config.committed_preferences_document,
-            Path::new(self.cwd_raw()),
+            Path::new(&cwd),
         );
         self.trust.project_key = lookup.project_key;
         self.trust.status = if lookup.trusted {
@@ -2270,6 +2409,38 @@ impl App {
             !self.pending_interaction_ids().is_empty(),
         )
         .with_help(self.is_help_active())
+    }
+}
+
+/// Bridge between the workspace-side
+/// [`forge_primitives::RuntimeSessionState`] (what `DomainSession`
+/// stores) and the TUI-side `model::RuntimeSessionState` (what
+/// reducers / renderers expect). The two enums share a shape but
+/// live in different crates — this helper exists because the
+/// `model::*` namespace predates Phase 5's promotion of runtime
+/// shapes to forge-primitives. Future cleanup: collapse the parallel
+/// definition.
+fn convert_runtime_session_state_from_primitives(
+    wire: forge_primitives::RuntimeSessionState,
+) -> model::RuntimeSessionState {
+    use forge_primitives::RuntimeSessionState as Wire;
+    use model::RuntimeSessionState as Model;
+    match wire {
+        Wire::Idle => Model::Idle,
+        Wire::Running => Model::Running,
+        Wire::RequiresAction => Model::RequiresAction,
+    }
+}
+
+fn convert_runtime_session_state_to_primitives(
+    ui: model::RuntimeSessionState,
+) -> forge_primitives::RuntimeSessionState {
+    use forge_primitives::RuntimeSessionState as Wire;
+    use model::RuntimeSessionState as Model;
+    match ui {
+        Model::Idle => Wire::Idle,
+        Model::Running => Wire::Running,
+        Model::RequiresAction => Wire::RequiresAction,
     }
 }
 

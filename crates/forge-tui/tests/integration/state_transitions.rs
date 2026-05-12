@@ -506,7 +506,7 @@ async fn sdk_message_with_empty_app_session_id_adopts_wire_id() {
     );
 
     assert_eq!(
-        app.session_id().map(ToString::to_string).as_deref(),
+        app.session_id().map(|s| s.to_string()).as_deref(),
         Some("real-session-abc"),
         "App should have adopted the wire session id",
     );
@@ -554,7 +554,7 @@ async fn sdk_message_with_mismatched_real_session_id_is_dropped() {
     );
 
     assert_eq!(
-        app.session_id().map(ToString::to_string).as_deref(),
+        app.session_id().map(|s| s.to_string()).as_deref(),
         Some("real-session-abc"),
         "session id must not change on stale envelope",
     );

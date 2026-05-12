@@ -24,6 +24,21 @@ use crossterm::event::KeyEvent;
 use crossterm::event::{Event, KeyEventKind};
 
 pub use client::apply_session_update;
+
+/// Set the workspace's `DomainSession.lifecycle_state` for `key`.
+/// Reducer-side helper used by the per-event handlers in this module
+/// tree (`session`, `client`, `turn`) plus `app::input_submit`. The
+/// 8-field deletion (Phase 5 Task 5) replaces direct
+/// `session.lifecycle_state = …` writes with this helper. No-op when
+/// no workspace is bound or no domain handle is registered for `key`.
+pub(crate) fn set_lifecycle_state_in_workspace(
+    app: &App,
+    key: &forge_workspace::SessionKey,
+    state: crate::app::session::SessionLifecycleState,
+) {
+    let Some(workspace) = app.workspace.as_ref() else { return };
+    workspace.set_lifecycle_state_in_domain(key, state);
+}
 #[cfg(feature = "testing")]
 pub use turn::{handle_permission_request_event, handle_question_request_event};
 
@@ -362,8 +377,8 @@ mod tests {
     /// envelopes without driving a real bridge. The handle is wired
     /// to a sender whose receiver is dropped immediately, so any
     /// command the test code sends through it is silently swallowed.
-    fn stub_conn() -> Arc<forge_agent::AgentHandle> {
-        let (handle, _rx) = forge_agent::Agent::testing_stub();
+    fn stub_conn() -> Arc<forge_workspace::AgentHandle> {
+        let (handle, _rx) = forge_workspace::Workspace::testing_stub_handle();
         Arc::new(handle)
     }
 
@@ -782,7 +797,7 @@ mod tests {
 
     fn connected_event_with_conn(
         model_name: &str,
-        conn: Arc<forge_agent::AgentHandle>,
+        conn: Arc<forge_workspace::AgentHandle>,
     ) -> SessionUpdate {
         SessionUpdate::Connected {
             key: forge_workspace::SessionKey::from_session_id("test-session".to_owned()),
@@ -872,10 +887,10 @@ mod tests {
     fn app_with_bridge_connection() -> (
         App,
         tokio::sync::mpsc::UnboundedReceiver<forge_primitives::Command>,
-        Arc<forge_agent::AgentHandle>,
+        Arc<forge_workspace::AgentHandle>,
     ) {
         let mut app = make_test_app();
-        let (handle, rx) = forge_agent::Agent::testing_stub();
+        let (handle, rx) = forge_workspace::Workspace::testing_stub_handle();
         let arc = Arc::new(handle);
         app.set_active_conn(Some(Arc::clone(&arc)));
         (app, rx, arc)
@@ -1020,7 +1035,7 @@ mod tests {
             app.set_session_id(Some(model::SessionId::new("test-session")));
         }
         let session_id =
-            app.session_id().map_or_else(|| "test-session".to_owned(), ToString::to_string);
+            app.session_id().map_or_else(|| "test-session".to_owned(), |s| s.to_string());
         apply_session_update(app, forge_workspace::SessionUpdate::ChatAppended { session_id, msg });
     }
 
@@ -1519,7 +1534,7 @@ mod tests {
     }
 
     #[test]
-    fn connected_leaves_account_line_empty_until_data_arrives() {
+    fn connected_leaves_account_line_skeleton_until_data_arrives() {
         let mut app = make_test_app();
         app.active_messages_mut().push(ChatMessage::welcome(
             env!("CARGO_PKG_VERSION"),
@@ -1536,10 +1551,12 @@ mod tests {
         let Some(MessageBlock::Welcome(welcome)) = first.blocks.first() else {
             panic!("expected welcome block");
         };
-        // Empty value means the renderer hides the line — no
-        // placeholder while the workspace picker / status snapshot
-        // are still in flight.
-        assert_eq!(welcome.subscription, "");
+        // Workspace mode (post-Phase 5): the renderer shows the
+        // "Account: …" skeleton while the picker / status snapshot
+        // are still in flight, so the user sees a stable placeholder
+        // rather than a brief empty row that fills in.
+        assert_eq!(welcome.account_label, "Account");
+        assert_eq!(welcome.subscription, "…");
     }
 
     #[test]
@@ -1908,7 +1925,7 @@ mod tests {
         );
 
         assert!(matches!(app.status, AppStatus::Ready));
-        assert_eq!(app.session_id().map(ToString::to_string).as_deref(), Some("replacement"));
+        assert_eq!(app.session_id().map(|s| s.to_string()).as_deref(), Some("replacement"));
         assert_eq!(app.current_model().map(|model| model.resolved_id.as_str()), Some("new-model"));
         assert_eq!(app.messages().len(), 1);
         assert!(matches!(app.messages()[0].role, MessageRole::Welcome));
@@ -2036,7 +2053,7 @@ mod tests {
     }
 
     #[test]
-    fn forge_account_identity_ready_stores_name_but_keeps_welcome_hidden_until_tier_arrives() {
+    fn forge_account_identity_ready_stores_name_but_keeps_welcome_skeleton_until_tier_arrives() {
         let mut app = make_test_app();
         app.active_messages_mut().push(ChatMessage::welcome(
             env!("CARGO_PKG_VERSION"),
@@ -2057,16 +2074,17 @@ mod tests {
         );
 
         // App state stores the name (Status panel needs it).
-        assert_eq!(app.active_account_display_name(), Some("Subspace"));
+        assert_eq!(app.active_account_display_name().as_deref(), Some("Subspace"));
 
-        // But the welcome line stays hidden — we have the name
-        // but not the tier yet. Showing "Account: Subspace" now
-        // would flicker into "Account: Subspace · team" once the
-        // status snapshot lands.
+        // Welcome row shows the "Account: …" skeleton because the
+        // tier hasn't arrived yet — committing "Account: Subspace"
+        // now would flicker into "Account: Subspace · team" once
+        // the status snapshot lands. Workspace mode (post-Phase 5).
         let Some(MessageBlock::Welcome(welcome)) = app.messages()[0].blocks.first() else {
             panic!("expected welcome block");
         };
-        assert_eq!(welcome.subscription, "");
+        assert_eq!(welcome.account_label, "Account");
+        assert_eq!(welcome.subscription, "…");
     }
 
     #[test]
@@ -2104,7 +2122,7 @@ mod tests {
     }
 
     #[test]
-    fn status_snapshot_without_forge_account_keeps_subscription_label() {
+    fn status_snapshot_without_forge_account_keeps_workspace_account_skeleton() {
         let mut app = make_test_app();
         app.active_messages_mut().push(ChatMessage::welcome(
             env!("CARGO_PKG_VERSION"),
@@ -2130,11 +2148,15 @@ mod tests {
             },
         );
 
+        // Workspace mode (post-Phase 5): without a forge_account
+        // display name to pair with the subscription tier, the row
+        // stays on the "Account: …" skeleton rather than flipping to
+        // the legacy `Subscription: <tier>` label.
         let Some(MessageBlock::Welcome(welcome)) = app.messages()[0].blocks.first() else {
             panic!("expected welcome block");
         };
-        assert_eq!(welcome.account_label, "Subscription");
-        assert_eq!(welcome.subscription, "Claude Max");
+        assert_eq!(welcome.account_label, "Account");
+        assert_eq!(welcome.subscription, "…");
     }
 
     #[test]
@@ -2180,11 +2202,12 @@ mod tests {
     fn stale_usage_refresh_result_for_old_epoch_is_ignored() {
         let mut app = make_test_app();
         // Set up an active session bucket so the scope-epoch read
-        // path returns a non-zero value. Direct field manipulation
-        // is fine here — we're inside the same module's test code.
+        // path returns a non-zero value. Post-Phase 5,
+        // `session_scope_epoch` lives on the workspace's
+        // `DomainSession`; bump it 5x via the App accessor.
         app.set_session_id(Some(model::SessionId::new("scope-epoch-test")));
-        if let Some(s) = app.try_active_bucket_mut() {
-            s.session_scope_epoch = 5;
+        for _ in 0..5 {
+            app.bump_session_scope_epoch();
         }
 
         apply_session_update(
@@ -2394,7 +2417,7 @@ mod tests {
         assert!(app.startup_recent_sessions_loaded);
         assert!(!app.startup_session_picker_resolved);
 
-        let (handle, _rx) = forge_agent::Agent::testing_stub();
+        let (handle, _rx) = forge_workspace::Workspace::testing_stub_handle();
         app.set_active_conn(Some(std::sync::Arc::new(handle)));
         apply_session_update(&mut app, connected_event("claude-updated"));
 
@@ -2406,7 +2429,7 @@ mod tests {
     fn startup_picker_empty_list_stays_in_chat_with_info_message() {
         let mut app = make_test_app();
         app.startup_session_picker_requested = true;
-        let (handle, _rx) = forge_agent::Agent::testing_stub();
+        let (handle, _rx) = forge_workspace::Workspace::testing_stub_handle();
         app.set_active_conn(Some(std::sync::Arc::new(handle)));
 
         apply_session_update(&mut app, connected_event("claude-updated"));
@@ -2787,7 +2810,7 @@ mod tests {
             panic!("expected text block");
         };
         assert_eq!(block.text, "Session successfully compacted.");
-        assert_eq!(app.session_id().map(ToString::to_string).as_deref(), Some("session-x"));
+        assert_eq!(app.session_id().map(|s| s.to_string()).as_deref(), Some("session-x"));
     }
 
     #[test]
@@ -5262,7 +5285,7 @@ mod tests {
         app.config.preferences_path = Some(path);
         app.trust.status = crate::app::trust::TrustStatus::Untrusted;
         app.trust.project_key =
-            crate::app::trust::store::normalize_project_key(std::path::Path::new(app.cwd_raw()));
+            crate::app::trust::store::normalize_project_key(std::path::Path::new(&app.cwd_raw()));
 
         handle_terminal_event(
             &mut app,

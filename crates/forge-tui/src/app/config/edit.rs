@@ -436,7 +436,7 @@ pub(super) fn open_session_rename_overlay(app: &mut App) {
 }
 
 pub(super) fn generate_session_title(app: &mut App) {
-    let Some(session_id) = app.session_id().map(std::string::ToString::to_string) else {
+    let Some(session_id) = app.session_id().map(|s| s.to_string()) else {
         return;
     };
     let Some(conn) = app.conn().cloned() else {
@@ -634,7 +634,7 @@ fn handle_session_rename_overlay_key(app: &mut App, key: KeyEvent) {
 }
 
 fn confirm_session_rename_overlay(app: &mut App) {
-    let Some(session_id) = app.session_id().map(std::string::ToString::to_string) else {
+    let Some(session_id) = app.session_id().map(|s| s.to_string()) else {
         app.config.overlay = None;
         return;
     };

@@ -10,7 +10,7 @@ pub(crate) fn request_runtime_reload(app: &mut App) -> RuntimeReloadRequestOutco
     let Some(conn) = app.conn().cloned() else {
         return RuntimeReloadRequestOutcome::Unavailable;
     };
-    let Some(session_id) = app.session_id().cloned() else {
+    let Some(session_id) = app.session_id() else {
         return RuntimeReloadRequestOutcome::Unavailable;
     };
     let session_id = session_id.to_string();
@@ -49,7 +49,7 @@ pub(crate) fn request_context_usage_refresh(app: &mut App) {
         clear_context_usage_refresh_state(app);
         return;
     };
-    let Some(session_id) = app.session_id().cloned() else {
+    let Some(session_id) = app.session_id() else {
         clear_context_usage_refresh_state(app);
         return;
     };
@@ -86,7 +86,7 @@ pub(crate) fn request_status_snapshot_refresh(app: &mut App) {
     let Some(conn) = app.conn().cloned() else {
         return;
     };
-    let Some(session_id) = app.session_id().cloned() else {
+    let Some(session_id) = app.session_id() else {
         return;
     };
 
@@ -114,7 +114,7 @@ pub(crate) fn request_oauth_credentials_snapshot_refresh(app: &mut App) {
     let Some(conn) = app.conn().cloned() else {
         return;
     };
-    let Some(session_id) = app.session_id().cloned() else {
+    let Some(session_id) = app.session_id() else {
         return;
     };
 
@@ -169,7 +169,7 @@ mod tests {
     fn app_with_connection()
     -> (App, tokio::sync::mpsc::UnboundedReceiver<forge_primitives::Command>) {
         let mut app = App::test_default();
-        let (handle, rx) = forge_agent::Agent::testing_stub();
+        let (handle, rx) = forge_workspace::Workspace::testing_stub_handle();
         app.set_active_conn(Some(std::sync::Arc::new(handle)));
         app.set_session_id(Some(model::SessionId::new("session-1")));
         (app, rx)

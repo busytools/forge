@@ -22,7 +22,6 @@ path = "src/main.rs"
 # Workspace-shared deps. Versions + features come from the workspace
 # unless overridden here.
 forge-primitives = { workspace = true }
-forge-agent = { workspace = true }
 forge-workspace = { workspace = true }
 anyhow = { workspace = true }
 clap = { workspace = true }
@@ -70,7 +69,7 @@ testing = []
 
 [dev-dependencies]
 forge-tui = { path = ".", features = ["testing"] }
-forge-workspace = { workspace = true, features = ["test-helpers"] }
+forge-workspace = { workspace = true, features = ["test-helpers", "testing"] }
 pretty_assertions = { workspace = true }
 tempfile = { workspace = true }
 

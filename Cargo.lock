@@ -1085,7 +1085,6 @@ dependencies = [
  "clap_complete",
  "crossterm",
  "dirs",
- "forge-agent",
  "forge-primitives",
  "forge-tui",
  "forge-workspace",

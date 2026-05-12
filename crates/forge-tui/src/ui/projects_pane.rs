@@ -135,16 +135,27 @@ fn append_project_rows(
     let mut active: Vec<(&ProjectView, SessionLifecycleState, bool, forge_workspace::SessionKey)> =
         Vec::new();
     let mut inactive: Vec<&ProjectView> = Vec::new();
+    // Helper: read `lifecycle_state` for `key` via the workspace's
+    // `DomainSession`. Falls back to `Idle` when the workspace has
+    // no domain handle for the key (post-Phase 5: the field lives on
+    // DomainSession; pre-Phase 5 it was a bucket field).
+    let lifecycle_for = |key: &forge_workspace::SessionKey| -> SessionLifecycleState {
+        app.workspace
+            .as_ref()
+            .and_then(|ws| ws.domain_session_for(key))
+            .map_or(SessionLifecycleState::default(), |d| d.lock().lifecycle_state)
+    };
+
     for project in projects {
         let spawn_synthetic =
             forge_workspace::SessionKey::from_session_id(format!("__spawn_{}__", project.name));
         let live_session = project.sessions.iter().find_map(|s| {
-            app.sessions.get(&s.session).map(|bucket| (s.session.clone(), bucket.lifecycle_state))
+            app.sessions.get(&s.session).map(|_| (s.session.clone(), lifecycle_for(&s.session)))
         });
         let synthetic = app
             .sessions
             .get(&spawn_synthetic)
-            .map(|bucket| (spawn_synthetic.clone(), bucket.lifecycle_state));
+            .map(|_| (spawn_synthetic.clone(), lifecycle_for(&spawn_synthetic)));
         if let Some((key, lifecycle)) = live_session.or(synthetic) {
             let is_focused = Some(&key) == active_session_key.as_ref();
             active.push((project, lifecycle, is_focused, key));

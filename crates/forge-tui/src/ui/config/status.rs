@@ -22,8 +22,7 @@ pub(crate) fn status_lines(app: &App) -> Vec<Line<'static>> {
     kv_line(&mut lines, "Version", env!("CARGO_PKG_VERSION"));
     kv_line(&mut lines, "Session name", &derive_session_name(app));
 
-    let session_id_str =
-        app.session_id().map_or_else(|| "(none)".to_owned(), std::string::ToString::to_string);
+    let session_id_str = app.session_id().map_or_else(|| "(none)".to_owned(), |s| s.to_string());
     kv_line(&mut lines, "Session ID", &session_id_str);
 
     kv_line(&mut lines, "cwd", app.cwd());
@@ -41,7 +40,7 @@ pub(crate) fn status_lines(app: &App) -> Vec<Line<'static>> {
     // ---- Account ----
     if let Some(account) = app.account_info() {
         section_header(&mut lines, "Account");
-        kv_line(&mut lines, "Login method", &login_method_label(account));
+        kv_line(&mut lines, "Login method", &login_method_label(&account));
         if let Some(ref provider) = account.api_provider
             && !provider.trim().is_empty()
         {
@@ -60,7 +59,7 @@ pub(crate) fn status_lines(app: &App) -> Vec<Line<'static>> {
         if let Some(name) = app.active_account_display_name()
             && !name.trim().is_empty()
         {
-            kv_line(&mut lines, "Profile", name);
+            kv_line(&mut lines, "Profile", &name);
         }
         if let Some(ref sub) = account.subscription_type
             && !sub.is_empty()
@@ -194,7 +193,7 @@ fn resolve_memory_path(app: &App) -> String {
     let Some(conn) = app.conn().cloned() else {
         return "(no connection)".to_owned();
     };
-    let memory_md = conn.project_memory_path(std::path::Path::new(app.cwd_raw()));
+    let memory_md = conn.project_memory_path(std::path::Path::new(&app.cwd_raw()));
     if memory_md.exists() {
         format!("auto memory ({})", memory_md.display())
     } else {

@@ -632,7 +632,7 @@ mod tests {
 
     fn empty_domain() -> DomainSession {
         let (handle, _rx) = Agent::testing_stub();
-        DomainSession::new(SessionKey::from_str_for_test("test"), Arc::new(handle))
+        DomainSession::new(SessionKey::from_str_for_test("test"), Some(Arc::new(handle)))
     }
 
     /// `apply_event_to_domain` on `AgentEvent::Connected` stamps

@@ -40,7 +40,7 @@ pub struct LoadedSettingsDocuments {
 pub fn load(
     home_override: Option<&Path>,
     project_root_override: Option<&Path>,
-    bridge: Option<&forge_agent::AgentHandle>,
+    bridge: Option<&forge_workspace::AgentHandle>,
 ) -> Result<LoadedSettingsDocuments, String> {
     let paths = resolve_paths(home_override, project_root_override, bridge)?;
 
@@ -354,7 +354,7 @@ pub fn set_preferred_notification_channel(document: &mut Value, channel: Preferr
 fn resolve_paths(
     home_override: Option<&Path>,
     project_root_override: Option<&Path>,
-    bridge: Option<&forge_agent::AgentHandle>,
+    bridge: Option<&forge_workspace::AgentHandle>,
 ) -> Result<SettingsPaths, String> {
     let home = if let Some(path) = home_override {
         path.to_path_buf()
@@ -392,8 +392,8 @@ fn resolve_paths(
 pub fn settings_target_for(
     file: super::SettingFile,
     cwd: PathBuf,
-) -> forge_agent::userdata::settings::SettingsTarget {
-    use forge_agent::userdata::settings::SettingsTarget;
+) -> forge_workspace::userdata::settings::SettingsTarget {
+    use forge_workspace::userdata::settings::SettingsTarget;
     match file {
         super::SettingFile::Settings => SettingsTarget::User,
         super::SettingFile::LocalSettings => SettingsTarget::ProjectLocal { cwd },

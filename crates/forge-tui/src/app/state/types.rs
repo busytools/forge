@@ -85,10 +85,10 @@ pub enum UsageSourceMode {
     Cli,
 }
 
-// Wire-shape usage types lifted to forge-agent::cloud (2026-05-05
-// restructure). Re-exported here so existing import paths
-// (`crate::app::UsageSnapshot`, etc.) keep resolving.
-pub use forge_agent::cloud::{ExtraUsage, UsageSnapshot, UsageSourceKind, UsageWindow};
+// Wire-shape usage types live in forge-primitives::usage; re-exported
+// here so existing import paths (`crate::app::UsageSnapshot`, etc.)
+// keep resolving.
+pub use forge_primitives::usage::{ExtraUsage, UsageSnapshot, UsageSourceKind, UsageWindow};
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct UsageState {

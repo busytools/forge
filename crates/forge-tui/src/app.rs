@@ -221,13 +221,18 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
         // Extra is_animating clause: any background session in
         // Running / Spawning keeps the spinner ticking so the Projects
         // pane's per-row spinners actually animate (the active session
-        // already drives ticks via `app.status` above).
-        let any_background_running = app.sessions.values().any(|s| {
-            matches!(
-                s.lifecycle_state,
-                crate::app::session::SessionLifecycleState::Running
-                    | crate::app::session::SessionLifecycleState::Spawning
-            )
+        // already drives ticks via `app.status` above). Reads through
+        // the workspace's DomainSession (post-Phase 5 authoritative).
+        let any_background_running = app.workspace.as_ref().is_some_and(|ws| {
+            app.sessions.keys().any(|key| {
+                ws.domain_session_for(key).is_some_and(|d| {
+                    matches!(
+                        d.lock().lifecycle_state,
+                        crate::app::session::SessionLifecycleState::Running
+                            | crate::app::session::SessionLifecycleState::Spawning
+                    )
+                })
+            })
         });
         let is_animating = matches!(
             app.status,
@@ -339,7 +344,7 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
     // Cancel any active turn and give the adapter a moment to clean up
     if matches!(app.status, AppStatus::Thinking | AppStatus::Running)
         && let Some(conn) = app.conn()
-        && let Some(sid) = app.session_id().cloned()
+        && let Some(sid) = app.session_id()
     {
         let _ = conn.cancel(sid.to_string());
     }
@@ -567,7 +572,7 @@ mod tests {
     fn app_with_connection()
     -> (App, tokio::sync::mpsc::UnboundedReceiver<forge_primitives::Command>) {
         let mut app = App::test_default();
-        let (handle, rx) = forge_agent::Agent::testing_stub();
+        let (handle, rx) = forge_workspace::Workspace::testing_stub_handle();
         app.set_active_conn(Some(std::sync::Arc::new(handle)));
         app.set_session_id(Some(model::SessionId::new("session-1")));
         (app, rx)

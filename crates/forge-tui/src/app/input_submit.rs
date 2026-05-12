@@ -80,7 +80,7 @@ pub(super) fn request_cancel(app: &mut App, origin: CancelOrigin) -> Result<(), 
     let Some(conn) = app.conn().cloned() else {
         return Err("not connected yet".to_owned());
     };
-    let Some(sid) = app.session_id().cloned() else {
+    let Some(sid) = app.session_id() else {
         return Err("no active session".to_owned());
     };
 
@@ -129,7 +129,7 @@ fn dispatch_prompt_turn(app: &mut App, text: String) {
     let _ = app.finalize_in_progress_tool_calls(model::ToolCallStatus::Failed);
 
     let Some(conn) = app.conn().cloned() else { return };
-    let Some(sid) = app.session_id().cloned() else {
+    let Some(sid) = app.session_id() else {
         return;
     };
     let input_chars = text.chars().count();
@@ -149,8 +149,12 @@ fn dispatch_prompt_turn(app: &mut App, text: String) {
     // Lifecycle: turn started, the active session moves into Running.
     // The Projects pane reads this so the spinner glyph picks up the
     // accent color while the turn is in flight.
-    if let Some(session) = app.try_active_bucket_mut() {
-        session.lifecycle_state = crate::app::session::SessionLifecycleState::Running;
+    if let Some(key) = app.active_session_key.clone() {
+        crate::app::events::set_lifecycle_state_in_workspace(
+            app,
+            &key,
+            crate::app::session::SessionLifecycleState::Running,
+        );
     }
     app.active_viewport_mut().engage_auto_scroll();
 
@@ -190,7 +194,7 @@ mod tests {
     fn app_with_connection()
     -> (App, tokio::sync::mpsc::UnboundedReceiver<forge_primitives::Command>) {
         let mut app = App::test_default();
-        let (handle, rx) = forge_agent::Agent::testing_stub();
+        let (handle, rx) = forge_workspace::Workspace::testing_stub_handle();
         app.set_active_conn(Some(std::sync::Arc::new(handle)));
         app.set_session_id(Some(model::SessionId::new("session-1")));
         (app, rx)
@@ -345,7 +349,7 @@ mod tests {
     #[test]
     fn dispatch_prompt_turn_without_session_id_leaves_state_unchanged() {
         let mut app = App::test_default();
-        let (handle, _rx) = forge_agent::Agent::testing_stub();
+        let (handle, _rx) = forge_workspace::Workspace::testing_stub_handle();
         app.set_active_conn(Some(std::sync::Arc::new(handle)));
         app.status = AppStatus::Ready;
 

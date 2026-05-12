@@ -78,12 +78,16 @@ fn apply_permission_request_presentation(
     // sessions don't need this — the inline permission card itself
     // surfaces the prompt to the user. (Workspace's
     // `apply_event_to_domain` already flipped DomainSession's
-    // lifecycle_state when the AgentEvent fired; this updates the
-    // TUI projection for parity.)
-    if app.active_session_key.as_ref() != Some(session_key)
-        && let Some(session) = app.session_mut(session_key)
-    {
-        session.lifecycle_state = crate::app::session::SessionLifecycleState::Attention;
+    // lifecycle_state when the AgentEvent fired; this is a
+    // belt-and-braces second-write for parity with the legacy reducer
+    // semantics in case the event arrived without an upstream
+    // workspace projection.)
+    if app.active_session_key.as_ref() != Some(session_key) {
+        super::set_lifecycle_state_in_workspace(
+            app,
+            session_key,
+            crate::app::session::SessionLifecycleState::Attention,
+        );
     }
 
     apply_permission_request_to_bucket(app, session_key, request, &session_id, tool_id, &options);
@@ -375,10 +379,12 @@ fn apply_question_request_presentation(
 
     // Lifecycle: as with permission prompts — a question landing on a
     // non-active session flips that bucket to Attention.
-    if app.active_session_key.as_ref() != Some(session_key)
-        && let Some(session) = app.session_mut(session_key)
-    {
-        session.lifecycle_state = crate::app::session::SessionLifecycleState::Attention;
+    if app.active_session_key.as_ref() != Some(session_key) {
+        super::set_lifecycle_state_in_workspace(
+            app,
+            session_key,
+            crate::app::session::SessionLifecycleState::Attention,
+        );
     }
 
     apply_question_request_to_bucket(
@@ -696,13 +702,20 @@ pub(crate) fn dispatch_permission_outcome(
     tool_id: &str,
     outcome: forge_primitives::PermissionOutcome,
 ) {
+    // Under the `testing` Cargo feature we always capture the outcome
+    // into the App's test-capture field, regardless of whether the
+    // workspace is set. The legacy permission unit tests assert via
+    // this capture; Phase 5 wired `App::test_default()` to a workspace
+    // stub, so the workspace path now also fires but produces no
+    // observable side-effect (no `SessionTask` registered for the test
+    // key — the dispatch returns an `UnknownSession` error which we
+    // silence below). Production builds always set the workspace and
+    // never compile this capture branch in.
+    #[cfg(feature = "testing")]
+    app.test_dispatched_permission_outcomes
+        .borrow_mut()
+        .push((tool_id.to_owned(), outcome.clone()));
     let Some(workspace) = app.workspace.as_ref() else {
-        // No workspace: capture into the App's test-capture field so
-        // tests can assert outcomes without spinning up a real
-        // workspace. Production builds set the workspace on every
-        // App, so this branch never fires in production.
-        #[rustfmt::skip] #[cfg(feature = "testing")] app.test_dispatched_permission_outcomes.borrow_mut().push((tool_id.to_owned(), outcome));
-        #[cfg(not(feature = "testing"))]
         let _ = (tool_id, outcome);
         return;
     };
@@ -712,6 +725,21 @@ pub(crate) fn dispatch_permission_outcome(
         outcome,
     };
     if let Err(err) = workspace.dispatch(cmd) {
+        // Under `testing`, the workspace stub has no `SessionTask`
+        // registered for the test key — `UnknownSession` is the
+        // expected outcome and the test-capture above already
+        // observed the dispatch intent. Downgrade to debug.
+        #[cfg(feature = "testing")]
+        if matches!(err, forge_workspace::DispatchError::UnknownSession(_)) {
+            tracing::debug!(
+                target: crate::logging::targets::APP_PERMISSION,
+                event_name = "permission_dispatch_skipped_in_test",
+                session_key = %session_key.as_str(),
+                tool_id = %tool_id,
+                "permission dispatch skipped: no session task in test stub",
+            );
+            return;
+        }
         tracing::warn!(
             target: crate::logging::targets::APP_PERMISSION,
             event_name = "permission_dispatch_failed",
@@ -782,9 +810,10 @@ pub(crate) fn dispatch_question_outcome(
     tool_id: &str,
     outcome: forge_primitives::QuestionOutcome,
 ) {
+    // Mirror of [`dispatch_permission_outcome`] — see its docs.
+    #[cfg(feature = "testing")]
+    app.test_dispatched_question_outcomes.borrow_mut().push((tool_id.to_owned(), outcome.clone()));
     let Some(workspace) = app.workspace.as_ref() else {
-        #[rustfmt::skip] #[cfg(feature = "testing")] app.test_dispatched_question_outcomes.borrow_mut().push((tool_id.to_owned(), outcome));
-        #[cfg(not(feature = "testing"))]
         let _ = (tool_id, outcome);
         return;
     };
@@ -794,6 +823,17 @@ pub(crate) fn dispatch_question_outcome(
         outcome,
     };
     if let Err(err) = workspace.dispatch(cmd) {
+        #[cfg(feature = "testing")]
+        if matches!(err, forge_workspace::DispatchError::UnknownSession(_)) {
+            tracing::debug!(
+                target: crate::logging::targets::APP_PERMISSION,
+                event_name = "question_dispatch_skipped_in_test",
+                session_key = %session_key.as_str(),
+                tool_id = %tool_id,
+                "question dispatch skipped: no session task in test stub",
+            );
+            return;
+        }
         tracing::warn!(
             target: crate::logging::targets::APP_PERMISSION,
             event_name = "question_dispatch_failed",
@@ -827,9 +867,11 @@ fn apply_turn_cancelled_presentation(app: &mut App, session_key: &SessionKey) {
         // Lifecycle: cancellation accepted — return active session
         // to Idle. (Steady-state TurnComplete fires shortly after,
         // also setting Idle — this is a defensive idempotent set.)
-        if let Some(session) = app.try_active_bucket_mut() {
-            session.lifecycle_state = crate::app::session::SessionLifecycleState::Idle;
-        }
+        super::set_lifecycle_state_in_workspace(
+            app,
+            session_key,
+            crate::app::session::SessionLifecycleState::Idle,
+        );
         return;
     }
     let Some(session) = app.session_mut(session_key) else {
@@ -849,8 +891,14 @@ fn apply_turn_cancelled_presentation(app: &mut App, session_key: &SessionKey) {
     session.cancelled_turn_pending_hint =
         matches!(session.pending_cancel_origin, Some(CancelOrigin::Manual));
     finalize_background_tool_calls(session, model::ToolCallStatus::Failed);
+    // Drop the `session` mut borrow before reaching for the workspace.
+    let _ = session;
     // Lifecycle: background cancel accepted — same Idle target.
-    session.lifecycle_state = crate::app::session::SessionLifecycleState::Idle;
+    super::set_lifecycle_state_in_workspace(
+        app,
+        session_key,
+        crate::app::session::SessionLifecycleState::Idle,
+    );
 }
 
 /// Background-session version of [`App::finalize_in_progress_tool_calls`].
@@ -973,9 +1021,14 @@ fn apply_turn_complete_presentation(
         session.cancelled_turn_pending_hint = false;
         session.active_turn_assistant_message_idx = None;
         session.turn_notice_refs.clear();
+        let _ = session;
         // Lifecycle: background bucket's turn has wrapped — return
         // it to Idle so the Projects pane drops the spinner glyph.
-        session.lifecycle_state = crate::app::session::SessionLifecycleState::Idle;
+        super::set_lifecycle_state_in_workspace(
+            app,
+            session_key,
+            crate::app::session::SessionLifecycleState::Idle,
+        );
         if let Some(reason) = terminal_reason {
             tracing::debug!(
                 target: crate::logging::targets::APP_SESSION,
@@ -1008,8 +1061,12 @@ fn apply_turn_complete_presentation(
     // Lifecycle: turn done, active session returns to Idle. The
     // Projects pane drops the spinner glyph back to the default
     // foreground color.
-    if let Some(session) = app.try_active_bucket_mut() {
-        session.lifecycle_state = crate::app::session::SessionLifecycleState::Idle;
+    if let Some(key) = app.active_session_key.clone() {
+        super::set_lifecycle_state_in_workspace(
+            app,
+            &key,
+            crate::app::session::SessionLifecycleState::Idle,
+        );
     }
     crate::app::session_runtime::request_context_usage_refresh(app);
     if turn_was_active {
@@ -1099,9 +1156,14 @@ fn apply_turn_error_presentation(
         session.cancelled_turn_pending_hint = false;
         session.active_turn_assistant_message_idx = None;
         session.turn_notice_refs.clear();
+        let _ = session;
         // Lifecycle: turn ended (with error) — return the background
         // bucket to Idle so the Projects pane drops the spinner glyph.
-        session.lifecycle_state = crate::app::session::SessionLifecycleState::Idle;
+        super::set_lifecycle_state_in_workspace(
+            app,
+            session_key,
+            crate::app::session::SessionLifecycleState::Idle,
+        );
         let summary = summarize_internal_error(msg);
         if cancelled_requested.is_some() {
             tracing::warn!(
@@ -1143,8 +1205,12 @@ fn apply_turn_error_presentation(
         app.pending_submit = None;
         finish_ready_turn_exit(app, exit, model::ToolCallStatus::Failed);
         // Lifecycle: cancelled turn — back to Idle.
-        if let Some(session) = app.try_active_bucket_mut() {
-            session.lifecycle_state = crate::app::session::SessionLifecycleState::Idle;
+        if let Some(key) = app.active_session_key.clone() {
+            super::set_lifecycle_state_in_workspace(
+                app,
+                &key,
+                crate::app::session::SessionLifecycleState::Idle,
+            );
         }
         crate::app::session_runtime::request_context_usage_refresh(app);
         if app.active_view == super::super::ActiveView::Chat {
@@ -1222,8 +1288,12 @@ fn apply_turn_error_presentation(
     // status itself is already AppStatus::Error (set above) so the
     // input remains locked; lifecycle is the per-session pane glyph,
     // independent of the App-global input lock.
-    if let Some(session) = app.try_active_bucket_mut() {
-        session.lifecycle_state = crate::app::session::SessionLifecycleState::Idle;
+    if let Some(key) = app.active_session_key.clone() {
+        super::set_lifecycle_state_in_workspace(
+            app,
+            &key,
+            crate::app::session::SessionLifecycleState::Idle,
+        );
     }
     crate::app::session_runtime::request_context_usage_refresh(app);
 }

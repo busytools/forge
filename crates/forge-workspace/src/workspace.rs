@@ -373,9 +373,28 @@ impl Workspace {
             }
         };
         if needs_spawn {
-            let domain =
-                Arc::new(Mutex::new(DomainSession::new(session_key.clone(), Arc::clone(&arc))));
-            self.domain_handles.lock().insert(session_key.clone(), Arc::clone(&domain));
+            // If the workspace already holds a pre-spawn domain
+            // handle for this key (e.g. registered by
+            // `connect::create_app` for the pre-Connect bucket), reuse
+            // it and stamp the live `Arc<AgentHandle>` onto its `conn`
+            // slot rather than overwriting the entry. The TUI's
+            // accessors keep reading from the same `Arc<Mutex<…>>`
+            // they were given pre-spawn — no second `domain_session_for`
+            // round-trip after the spawn lands.
+            let domain = {
+                let mut handles = self.domain_handles.lock();
+                if let Some(existing) = handles.get(&session_key).cloned() {
+                    existing.lock().conn = Some(Arc::clone(&arc));
+                    existing
+                } else {
+                    let fresh = Arc::new(Mutex::new(DomainSession::new(
+                        session_key.clone(),
+                        Some(Arc::clone(&arc)),
+                    )));
+                    handles.insert(session_key.clone(), Arc::clone(&fresh));
+                    fresh
+                }
+            };
             let task = SessionTask {
                 key: session_key,
                 handle: Arc::clone(&arc),
@@ -743,6 +762,113 @@ impl Workspace {
         guard.active_account_display_name = Some(display_name);
     }
 
+    /// Set the `lifecycle_state` field on the workspace's
+    /// `DomainSession` for `key`. No-op when no domain handle is
+    /// registered for `key`. TUI-side reducers use this when applying
+    /// `SessionUpdate` variants that need to flip lifecycle (Spawning
+    /// on Spawning, Attention on PermissionRequest / QuestionRequest,
+    /// Idle on TurnComplete, Sleeping / Attention on
+    /// ConnectionFailed, …).
+    pub fn set_lifecycle_state_in_domain(
+        &self,
+        key: &SessionKey,
+        state: forge_primitives::runtime::SessionLifecycleState,
+    ) {
+        let Some(domain) = self.domain_handles.lock().get(key).cloned() else {
+            return;
+        };
+        domain.lock().lifecycle_state = state;
+    }
+
+    /// Set the `account_info` field on the workspace's
+    /// `DomainSession` for `key`. No-op when no domain handle is
+    /// registered for `key`.
+    pub fn set_account_info_in_domain(
+        &self,
+        key: &SessionKey,
+        value: Option<forge_primitives::AccountInfo>,
+    ) {
+        let Some(domain) = self.domain_handles.lock().get(key).cloned() else {
+            return;
+        };
+        domain.lock().account_info = value;
+    }
+
+    /// Set the `active_account_display_name` field on the workspace's
+    /// `DomainSession` for `key`. No-op when no domain handle is
+    /// registered for `key`.
+    pub fn set_active_account_display_name_in_domain(
+        &self,
+        key: &SessionKey,
+        value: Option<String>,
+    ) {
+        let Some(domain) = self.domain_handles.lock().get(key).cloned() else {
+            return;
+        };
+        domain.lock().active_account_display_name = value;
+    }
+
+    /// Set the `cwd_raw` field on the workspace's `DomainSession`
+    /// for `key`. No-op when no domain handle is registered for
+    /// `key`. Background-session reducers + spawn / connect paths
+    /// write this when stamping a session's cwd onto the domain.
+    pub fn set_cwd_raw_in_domain(&self, key: &SessionKey, value: String) {
+        let Some(domain) = self.domain_handles.lock().get(key).cloned() else {
+            return;
+        };
+        domain.lock().cwd_raw = value;
+    }
+
+    /// Set the `session_id` field on the workspace's `DomainSession`
+    /// for `key`. No-op when no domain handle is registered for
+    /// `key`. Used by `App::set_session_id` to stamp the
+    /// claude-issued UUID once the first `Connected` event fires.
+    pub fn set_session_id_in_domain(
+        &self,
+        key: &SessionKey,
+        value: Option<forge_primitives::SessionId>,
+    ) {
+        let Some(domain) = self.domain_handles.lock().get(key).cloned() else {
+            return;
+        };
+        domain.lock().session_id = value;
+    }
+
+    /// Run `f` with mutable access to the `turn_state` field on the
+    /// workspace's `DomainSession` for `key`. The lock is held for
+    /// the duration of the closure. Returns `None` when no domain
+    /// handle is registered for `key`; otherwise returns the
+    /// closure's value wrapped in `Some`. Used by TUI reducers in
+    /// `events/sdk_message.rs` + `events/turn.rs` + `app/config/*`
+    /// to mutate the per-session SDK turn state that previously
+    /// lived inline on `UiSession`.
+    ///
+    /// # Errors
+    ///
+    /// No errors — `None` signals the absence of a domain handle.
+    pub fn with_turn_state_mut<R>(
+        &self,
+        key: &SessionKey,
+        f: impl FnOnce(&mut forge_primitives::runtime::SessionTurnState) -> R,
+    ) -> Option<R> {
+        let domain = self.domain_handles.lock().get(key).cloned()?;
+        let mut guard = domain.lock();
+        Some(f(&mut guard.turn_state))
+    }
+
+    /// Run `f` with read-only access to the `turn_state` field on
+    /// the workspace's `DomainSession` for `key`. Returns `None`
+    /// when no domain handle is registered.
+    pub fn with_turn_state<R>(
+        &self,
+        key: &SessionKey,
+        f: impl FnOnce(&forge_primitives::runtime::SessionTurnState) -> R,
+    ) -> Option<R> {
+        let domain = self.domain_handles.lock().get(key).cloned()?;
+        let guard = domain.lock();
+        Some(f(&guard.turn_state))
+    }
+
     /// Finalize the workspace-side view of a session's turn. Resets
     /// the domain bucket's `lifecycle_state` to `Idle` and zeroes the
     /// `turn_state` so the workspace's projection mirrors what the
@@ -815,6 +941,115 @@ impl Workspace {
 
     pub fn pool_accounts_for_test(&self) -> Vec<String> {
         self.pool.lock().values().map(|p| p.account.0.clone()).collect()
+    }
+}
+
+impl Workspace {
+    /// Register a fresh `DomainSession` for `key` under this workspace.
+    /// `handle` is `None` for pre-spawn / pre-Connect domains (filled
+    /// in later when the spawn handler runs); `Some` for test fixtures
+    /// that wire a stub handle up front.
+    ///
+    /// Used by:
+    ///
+    /// - `forge-tui::connect::create_app` to seed the pre-Connect
+    ///   domain so the TUI's projection accessors (`cwd_raw`,
+    ///   `session_id`, …) have a domain handle to read from even
+    ///   before the first spawn completes.
+    /// - test fixtures (`App::test_default`) under the `testing`
+    ///   feature for the same reason — replaces direct mutation of
+    ///   the `UiSession` projection fields that were deleted in
+    ///   Phase 5.
+    ///
+    /// Returns the inserted `Arc<Mutex<DomainSession>>` so callers
+    /// can seed fields on the same handle they just registered.
+    pub fn register_domain_session(
+        &self,
+        key: SessionKey,
+        handle: Option<Arc<forge_agent::AgentHandle>>,
+    ) -> Arc<Mutex<DomainSession>> {
+        let domain = Arc::new(Mutex::new(DomainSession::new(key.clone(), handle)));
+        self.domain_handles.lock().insert(key, Arc::clone(&domain));
+        domain
+    }
+
+    /// Migrate an existing `DomainSession` registration from `from` to
+    /// `to`. Used by the TUI's `set_session_id` migration when the
+    /// pre-Connect synthetic key gets replaced with the real
+    /// claude-issued session id. No-op when `from` is not registered.
+    pub fn rekey_domain_session(&self, from: &SessionKey, to: SessionKey) {
+        let mut handles = self.domain_handles.lock();
+        if let Some(domain) = handles.remove(from) {
+            handles.insert(to, domain);
+        }
+    }
+}
+
+#[cfg(feature = "testing")]
+impl Workspace {
+    /// Construct a stub `AgentHandle` plus the matching
+    /// `Receiver<forge_primitives::Command>` that drains every command
+    /// dispatched to it. Tests use this to wire `App.set_active_conn`
+    /// without spinning up a real subprocess; the bridge underneath is
+    /// `forge_agent::Agent::testing_stub` — same shape as before, now
+    /// reachable from forge-tui via `forge_workspace::Workspace::*`
+    /// so the TUI crate no longer needs a direct `forge-agent` dep.
+    ///
+    /// The returned `Receiver` carries `forge_primitives::Command`
+    /// because that's what the bridge's dispatcher accepts; this is
+    /// distinct from [`crate::protocol::Command`] (the workspace's
+    /// outer envelope) that wraps these primitives under a
+    /// `SessionKey`.
+    #[must_use]
+    pub fn testing_stub_handle()
+    -> (forge_agent::AgentHandle, mpsc::UnboundedReceiver<forge_primitives::Command>) {
+        forge_agent::Agent::testing_stub()
+    }
+
+    /// Convenience alias for [`Self::register_domain_session`] used
+    /// by tests that previously named it `_for_test`. Always wraps
+    /// the handle in `Some(...)`; production callers that need
+    /// `None` (pre-spawn) use [`Self::register_domain_session`]
+    /// directly.
+    pub fn register_domain_session_for_test(
+        &self,
+        key: SessionKey,
+        handle: Arc<forge_agent::AgentHandle>,
+    ) -> Arc<Mutex<DomainSession>> {
+        self.register_domain_session(key, Some(handle))
+    }
+
+    /// Convenience alias for [`Self::rekey_domain_session`].
+    pub fn rekey_domain_session_for_test(&self, from: &SessionKey, to: SessionKey) {
+        self.rekey_domain_session(from, to);
+    }
+
+    /// Construct an empty `Workspace` for use in unit tests. Skips
+    /// the on-disk `forge.toml` load + catalog scan that
+    /// [`Workspace::new`] performs; the returned workspace carries an
+    /// empty project list and an empty pool. Tests register a domain
+    /// session via [`Self::register_domain_session_for_test`] before
+    /// exercising any code path that needs one.
+    ///
+    /// Returns the workspace alongside the `SessionUpdate` receiver
+    /// (single-take slot — subsequent `subscribe()` calls on the
+    /// returned workspace will return `None`).
+    #[must_use]
+    pub fn testing_stub() -> (Arc<Self>, mpsc::UnboundedReceiver<SessionUpdate>) {
+        let (update_tx, update_rx) = mpsc::unbounded_channel::<SessionUpdate>();
+        let workspace = Self {
+            config_dir: PathBuf::from("/tmp/forge-testing-stub"),
+            config: LoadedConfig::empty_for_test(),
+            catalog: Mutex::new(HashMap::new()),
+            pool: Mutex::new(HashMap::new()),
+            accounts: Mutex::new(AccountStateMap::empty_for_test()),
+            persisted_ui: Mutex::new(PersistedUiState::default()),
+            update_tx,
+            update_rx_slot: Mutex::new(None),
+            command_senders: Mutex::new(HashMap::new()),
+            domain_handles: Mutex::new(HashMap::new()),
+        };
+        (Arc::new(workspace), update_rx)
     }
 }
 

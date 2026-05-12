@@ -25,7 +25,7 @@ use crate::app::state::messages::ChatMessage;
 use crate::app::state::render_budget::{RenderCacheEvictionKey, RenderCacheSlotState};
 use crate::app::state::types::{
     CancelOrigin, HistoryRetentionPolicy, HistoryRetentionStats, McpState, ModeState,
-    SessionTurnState, SessionUsageState, TodoItem, ToolCallScope,
+    SessionUsageState, TodoItem, ToolCallScope,
 };
 use crate::app::state::viewport::ChatViewport;
 use crate::app::state::{ChatRenderTraceState, TerminalToolCallRef, TurnNoticeRef};
@@ -52,14 +52,6 @@ pub struct UiSession {
     /// The claude-issued session UUID, also used as the map key.
     /// Stored here for symmetry; the map lookup uses the same value.
     pub key: Option<SessionKey>,
-    /// Claude-issued session id (typed wrapper). `None` until the
-    /// first `Connected` event from this session's bridge.
-    pub session_id: Option<model::SessionId>,
-    /// Lifecycle state for the Projects pane (Phase 2b-α). Set on
-    /// bucket creation; transitions wired by event handlers in a
-    /// follow-up task. The pane reads this to pick the per-session
-    /// state glyph.
-    pub lifecycle_state: SessionLifecycleState,
     /// Wall-clock instant of the last wire event applied to this
     /// session. Seeded at bucket creation so the Projects pane's
     /// "2m" / "1h" / "5d" rendering has a stable baseline before
@@ -67,10 +59,7 @@ pub struct UiSession {
     pub last_activity_at: Instant,
     /// Agent connection handle for this session. `None` while the
     /// session's bridge is starting up.
-    pub conn: Option<Arc<forge_agent::AgentHandle>>,
-    /// Monotonic session authority epoch — used to ignore stale
-    /// async view data after a session reset / reconnect.
-    pub session_scope_epoch: u64,
+    pub conn: Option<Arc<forge_workspace::AgentHandle>>,
     /// Chat history buffer for this session. Welcome message at
     /// index 0; user/assistant turns appended.
     pub messages: Vec<ChatMessage>,
@@ -87,9 +76,6 @@ pub struct UiSession {
     pub active_turn_assistant_message_idx: Option<usize>,
 
     // ---- Turn lifecycle ----
-    /// Per-session SDK turn state — model-resolution cache, mode
-    /// capability, MCP cooldowns, auth/error flags.
-    pub turn_state: SessionTurnState,
     /// True while the SDK reports active compaction.
     pub is_compacting: bool,
     /// When true, the current/next turn completion should clear
@@ -163,8 +149,6 @@ pub struct UiSession {
     /// envelope. Higher-fidelity than `current_model.resolved_id` for
     /// per-turn model verification.
     pub observed_assistant_model: Option<String>,
-    /// Latest SDK runtime liveness state.
-    pub runtime_session_state: Option<model::RuntimeSessionState>,
     /// Fast mode state telemetry from the SDK.
     pub fast_mode_state: model::FastModeState,
     /// Latest config options observed from bridge `config_option_update` events.
@@ -173,29 +157,16 @@ pub struct UiSession {
     pub session_usage: SessionUsageState,
 
     // ---- Account / auth ----
-    /// Account info from the bridge status snapshot (email, org, subscription).
-    pub account_info: Option<forge_primitives::AccountInfo>,
-    /// Forge-side account identity: which `[[accounts]]` entry from
-    /// `forge.toml` the workspace picked for this bridge. `None`
-    /// when forge wasn't launched via the workspace (direct
-    /// `Agent::spawn` from tests / smoke). Surfaced via
-    /// `forge_workspace::SessionUpdate::StatusSnapshot`'s
-    /// `forge_account` and rendered in the welcome message + Status
-    /// panel.
-    pub active_account_display_name: Option<String>,
     /// OAuth credentials snapshot from the bridge — populated at
     /// session connect, refreshed after `/login` and `/logout` so
     /// callers can ask "is the user authenticated?" without doing
     /// their own filesystem walk to `<config_dir>/.credentials.json`.
-    pub oauth_credentials: Option<forge_agent::cloud::oauth_credentials::OauthCredentials>,
+    pub oauth_credentials: Option<forge_primitives::cloud::oauth_credentials::OauthCredentials>,
 
     // ---- Filesystem ----
     /// Display-friendly cwd (`~/foo` form) used by status panel /
     /// footer / welcome card.
     pub cwd: String,
-    /// Raw cwd as a filesystem path, used for trust lookups, file
-    /// indexing, and project-key derivation.
-    pub cwd_raw: String,
     /// Number of files accessed during the active turn (incremented
     /// on Read/Edit/Write tool starts, reset on TurnComplete).
     pub files_accessed: usize,
@@ -283,17 +254,13 @@ impl Default for UiSession {
         // for free without code change.
         Self {
             key: Option::default(),
-            session_id: Option::default(),
-            lifecycle_state: SessionLifecycleState::default(),
             last_activity_at: Instant::now(),
             conn: Option::default(),
-            session_scope_epoch: u64::default(),
             messages: Vec::default(),
             message_retained_bytes: Vec::default(),
             retained_history_bytes: usize::default(),
             viewport: ChatViewport::default(),
             active_turn_assistant_message_idx: Option::default(),
-            turn_state: SessionTurnState::default(),
             is_compacting: bool::default(),
             pending_compact_clear: bool::default(),
             pending_interaction_ids: Vec::default(),
@@ -317,15 +284,11 @@ impl Default for UiSession {
             observed_permission_mode: Option::default(),
             observed_effort: Option::default(),
             observed_assistant_model: Option::default(),
-            runtime_session_state: Option::default(),
             fast_mode_state: model::FastModeState::default(),
             config_options: BTreeMap::default(),
             session_usage: SessionUsageState::default(),
-            account_info: Option::default(),
-            active_account_display_name: Option::default(),
             oauth_credentials: Option::default(),
             cwd: String::default(),
-            cwd_raw: String::default(),
             files_accessed: usize::default(),
             git_context: GitContextState::default(),
             mcp: McpState::default(),

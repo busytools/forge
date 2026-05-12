@@ -109,7 +109,8 @@ fn handle_assistant(app: &mut App, msg: Message) {
             forge_primitives::AssistantMessageError::ServerError => "server_error",
             forge_primitives::AssistantMessageError::Unknown => "unknown",
         };
-        app.turn_state_mut().last_assistant_error = Some(err_str.to_owned());
+        let _: () =
+            app.with_turn_state_mut(|ts| ts.last_assistant_error = Some(err_str.to_owned()));
     }
     walk_assistant_content(app, &message.content, parent_tool_use_id.as_deref());
 }
@@ -315,7 +316,7 @@ fn apply_tool_use_block(
     use crate::app::connect::type_converters::convert_tool_call;
     use forge_primitives::ToolCallUpdateFields;
 
-    let existing = app.turn_state().tool_calls.get(tool_use_id).cloned();
+    let existing = app.with_turn_state(|ts| ts.tool_calls.get(tool_use_id).cloned());
     let resolved_parent = parent_tool_use_id
         .map(str::to_owned)
         .or_else(|| parent_tool_use_id_from_meta(existing.as_ref().and_then(|e| e.meta.as_ref())));
@@ -323,7 +324,10 @@ fn apply_tool_use_block(
     "in_progress".clone_into(&mut tool_call.status);
 
     if existing.is_none() {
-        app.turn_state_mut().tool_calls.insert(tool_use_id.to_owned(), tool_call.clone());
+        let tc = tool_call.clone();
+        let _: () = app.with_turn_state_mut(|ts| {
+            ts.tool_calls.insert(tool_use_id.to_owned(), tc);
+        });
         let model_tc = convert_tool_call(tool_call);
         super::tool_calls::handle_tool_call(app, model_tc);
         return;
@@ -357,7 +361,7 @@ fn apply_tool_result_block(
 ) {
     use crate::agent::tooling::build_tool_result_fields;
 
-    let base = app.turn_state().tool_calls.get(tool_use_id).cloned();
+    let base = app.with_turn_state(|ts| ts.tool_calls.get(tool_use_id).cloned());
     let fields = build_tool_result_fields(is_error, raw_content, base.as_ref(), raw_block);
     apply_tool_call_update(app, tool_use_id, fields);
 }
@@ -373,9 +377,12 @@ fn apply_tool_call_update(
     use crate::app::connect::type_converters::convert_tool_call_update;
     use forge_primitives::ToolCallUpdate;
 
-    if let Some(base) = app.turn_state_mut().tool_calls.get_mut(tool_use_id) {
-        base.merge(fields.clone());
-    }
+    let merge_fields = fields.clone();
+    let _: () = app.with_turn_state_mut(|ts| {
+        if let Some(base) = ts.tool_calls.get_mut(tool_use_id) {
+            base.merge(merge_fields);
+        }
+    });
     let wire_update = ToolCallUpdate { tool_call_id: tool_use_id.to_owned(), fields };
     let model_update = convert_tool_call_update(wire_update);
     super::tool_updates::handle_tool_call_update_session(app, &model_update);
@@ -387,13 +394,13 @@ fn apply_tool_call_update(
 fn finalize_open_tool_calls(app: &mut App, status: &str) {
     use forge_primitives::ToolCallUpdateFields;
 
-    let pending: Vec<String> = app
-        .turn_state()
-        .tool_calls
-        .iter()
-        .filter(|(_, t)| matches!(t.status.as_str(), "pending" | "in_progress"))
-        .map(|(id, _)| id.clone())
-        .collect();
+    let pending: Vec<String> = app.with_turn_state(|ts| {
+        ts.tool_calls
+            .iter()
+            .filter(|(_, t)| matches!(t.status.as_str(), "pending" | "in_progress"))
+            .map(|(id, _)| id.clone())
+            .collect()
+    });
     for id in pending {
         apply_tool_call_update(
             app,
@@ -422,16 +429,22 @@ fn handle_system(app: &mut App, msg: Message) {
                 );
                 if let Some(parsed) = crate::agent::state::PermissionMode::from_wire(mode_str) {
                     use crate::agent::commands::supported_mode_ids_filtered;
-                    app.turn_state_mut().mode = Some(parsed);
+                    let _: () = app.with_turn_state_mut(|ts| ts.mode = Some(parsed));
                     let supports_auto_mode =
                         app.current_model().is_some_and(|m| m.supports_auto_mode == Some(true));
+                    let (supports_bypass, unavailable_modes) = app.with_turn_state(|ts| {
+                        (
+                            ts.supports_bypass_permissions_mode,
+                            ts.runtime_unavailable_mode_ids.clone(),
+                        )
+                    });
                     let supported = supported_mode_ids_filtered(
                         supports_auto_mode,
-                        app.turn_state().supports_bypass_permissions_mode,
+                        supports_bypass,
                         Some(parsed),
-                        &app.turn_state().runtime_unavailable_mode_ids,
+                        &unavailable_modes,
                     );
-                    app.turn_state_mut().supported_mode_ids = supported;
+                    let _: () = app.with_turn_state_mut(|ts| ts.supported_mode_ids = supported);
                 }
             }
             // status: "compacting" → Compacting, null → Idle.
@@ -547,7 +560,7 @@ fn apply_available_commands_from_init(app: &mut App, data: &Value) {
 /// last-signature change detection (so identical re-emits are no-ops).
 fn apply_available_agents_from_init(app: &mut App, data: &Value) {
     let Some(record) = data.as_object() else { return };
-    if app.turn_state().last_agents_signature.is_some() {
+    if app.with_turn_state(|ts| ts.last_agents_signature.is_some()) {
         // Only emit on first init — subsequent inits with the same
         // agent set are silent no-ops.
         return;
@@ -555,7 +568,7 @@ fn apply_available_agents_from_init(app: &mut App, data: &Value) {
     let Some(agents_value) = record.get("agents") else { return };
     let agents = crate::agent::agents::map_available_agents_from_names(Some(agents_value));
     let signature = serde_json::to_string(&agents).unwrap_or_default();
-    app.turn_state_mut().last_agents_signature = Some(signature);
+    let _: () = app.with_turn_state_mut(|ts| ts.last_agents_signature = Some(signature));
     let model_update = crate::app::connect::type_converters::map_available_agents_update(agents);
     super::apply_available_agents_update(app, model_update);
 }
@@ -579,10 +592,12 @@ fn apply_current_model_from_init(app: &mut App, data: &Value) {
 
     let Some(record) = data.as_object() else { return };
     let model_id = record.get("model").and_then(Value::as_str).unwrap_or("");
-    let requested = app.turn_state().requested_model_id.clone();
-    let resolved_runtime = app.turn_state().resolved_runtime_model_id.clone();
+    let (requested, resolved_runtime) = app.with_turn_state(|ts| {
+        (ts.requested_model_id.clone(), ts.resolved_runtime_model_id.clone())
+    });
     if !model_id.is_empty() {
-        model_id.clone_into(&mut app.turn_state_mut().model_id);
+        let model_id_owned = model_id.to_owned();
+        let _: () = app.with_turn_state_mut(|ts| ts.model_id = model_id_owned);
     }
     let requested = requested.as_deref();
     let resolved_runtime = resolved_runtime.as_deref();
@@ -639,7 +654,7 @@ fn apply_mode_state_from_init(app: &mut App, data: &Value) {
     let Some(record) = data.as_object() else { return };
     let Some(mode_str) = record.get("permissionMode").and_then(Value::as_str) else { return };
     let Some(mode) = PermissionMode::from_wire(mode_str) else { return };
-    app.turn_state_mut().mode = Some(mode);
+    let _: () = app.with_turn_state_mut(|ts| ts.mode = Some(mode));
 
     // System(init) is the canonical source for `supportsBypassPermissionsMode`.
     // Without this write the bypass chip / `/mode` option stays hidden even
@@ -647,18 +662,22 @@ fn apply_mode_state_from_init(app: &mut App, data: &Value) {
     if let Some(supports_bypass) =
         record.get("supportsBypassPermissionsMode").and_then(Value::as_bool)
     {
-        app.turn_state_mut().supports_bypass_permissions_mode = supports_bypass;
+        let _: () =
+            app.with_turn_state_mut(|ts| ts.supports_bypass_permissions_mode = supports_bypass);
     }
 
     let supports_auto_mode =
         app.current_model().is_some_and(|m| m.supports_auto_mode == Some(true));
+    let (supports_bypass, unavailable_modes) = app.with_turn_state(|ts| {
+        (ts.supports_bypass_permissions_mode, ts.runtime_unavailable_mode_ids.clone())
+    });
     let supported = supported_mode_ids_filtered(
         supports_auto_mode,
-        app.turn_state().supports_bypass_permissions_mode,
+        supports_bypass,
         Some(mode),
-        &app.turn_state().runtime_unavailable_mode_ids,
+        &unavailable_modes,
     );
-    app.turn_state_mut().supported_mode_ids.clone_from(&supported);
+    let _: () = app.with_turn_state_mut(|ts| ts.supported_mode_ids.clone_from(&supported));
 
     let wire_mode_state = build_mode_state_from_supported(mode, &supported);
     let model_mode_state = convert_mode_state(wire_mode_state);
@@ -779,7 +798,10 @@ fn handle_task_started(app: &mut App, msg: Message) {
     }
     apply_tool_progress_update(app, id, "Task");
     if !task_id.is_empty() {
-        app.turn_state_mut().task_tool_use_ids.insert(task_id.clone(), id.to_owned());
+        let id_owned = id.to_owned();
+        let _: () = app.with_turn_state_mut(|ts| {
+            ts.task_tool_use_ids.insert(task_id.clone(), id_owned);
+        });
     }
 }
 
@@ -805,7 +827,7 @@ fn handle_task_notification(app: &mut App, msg: Message) {
 fn apply_tool_progress_update(app: &mut App, tool_use_id: &str, name: &str) {
     use forge_primitives::ToolCallUpdateFields;
 
-    let existing = app.turn_state().tool_calls.get(tool_use_id).cloned();
+    let existing = app.with_turn_state(|ts| ts.tool_calls.get(tool_use_id).cloned());
     let Some(existing) = existing else {
         apply_tool_use_block(app, tool_use_id, name, &Value::Object(serde_json::Map::new()), None);
         return;
@@ -826,7 +848,9 @@ fn apply_tool_progress_update(app: &mut App, tool_use_id: &str, name: &str) {
 fn apply_tool_summary_update(app: &mut App, tool_use_id: &str, summary: &str) {
     use forge_primitives::{ToolCallContent, ToolCallUpdateFields};
 
-    let Some(base) = app.turn_state().tool_calls.get(tool_use_id).cloned() else { return };
+    let Some(base) = app.with_turn_state(|ts| ts.tool_calls.get(tool_use_id).cloned()) else {
+        return;
+    };
     let status = if matches!(base.status.as_str(), "failed" | "killed") {
         base.status
     } else {
@@ -855,7 +879,7 @@ fn handle_rate_limit_event(app: &mut App, msg: Message) {
         outcome = "wire_evidence",
         config_dir = std::env::var("CLAUDE_CONFIG_DIR")
             .unwrap_or_else(|_| "(unset, falls back to ~/.claude)".to_owned()),
-        session_id = app.session_id().map(ToString::to_string).as_deref().unwrap_or(""),
+        session_id = app.session_id().map(|s| s.to_string()).as_deref().unwrap_or(""),
         rate_limit_info = %value,
     );
     let Some(wire) = build_rate_limit_update(Some(&value)) else {
@@ -906,7 +930,7 @@ fn apply_result_finalize(
     // is wired (test fixtures).
     let workspace = app.workspace.as_ref().map(std::sync::Arc::clone);
     if !is_error && subtype == "success" {
-        app.turn_state_mut().last_assistant_error = None;
+        let _: () = app.with_turn_state_mut(|ts| ts.last_assistant_error = None);
         finalize_open_tool_calls(app, "completed");
         if let Some(workspace) = workspace.as_ref() {
             super::turn::handle_turn_complete_event(app, workspace, &active_key, terminal_reason);
@@ -916,7 +940,7 @@ fn apply_result_finalize(
         return;
     }
 
-    let assistant_error = app.turn_state().last_assistant_error.clone();
+    let assistant_error = app.with_turn_state(|ts| ts.last_assistant_error.clone());
     finalize_open_tool_calls(app, "failed");
     // Build a clean detail string for the renderer to use after its
     // canonical "Turn failed: " prefix. Drop the SDK's default
@@ -950,7 +974,7 @@ fn apply_result_finalize(
             terminal_reason,
         );
     }
-    app.turn_state_mut().last_assistant_error = None;
+    let _: () = app.with_turn_state_mut(|ts| ts.last_assistant_error = None);
 }
 
 /// Map the local [`crate::agent::error_handling::TurnErrorClass`] to

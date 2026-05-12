@@ -152,7 +152,7 @@ mod tests {
     #[test]
     fn enter_triggers_resume() {
         let mut app = picker_app();
-        let (handle, mut rx) = forge_agent::Agent::testing_stub();
+        let (handle, mut rx) = forge_workspace::Workspace::testing_stub_handle();
         app.set_active_conn(Some(std::sync::Arc::new(handle)));
 
         handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
@@ -185,7 +185,7 @@ mod tests {
         drop(rx);
         app.set_active_conn(Some(std::sync::Arc::new({
             let _ = tx;
-            let (h, _) = forge_agent::Agent::testing_stub();
+            let (h, _) = forge_workspace::Workspace::testing_stub_handle();
             h
         })));
 

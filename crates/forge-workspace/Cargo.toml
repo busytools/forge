@@ -18,6 +18,12 @@ workspace = true
 # crates' `tests/` directories (e.g. `forge-tui`) can build view
 # fixtures without spinning up a real on-disk catalog.
 test-helpers = []
+# Test fixture helpers (`Workspace::testing_stub`,
+# `Workspace::test_default`). Replaces forge-tui's prior
+# `forge_agent::Agent::testing_stub` so the TUI's unit + integration
+# tests can construct a fully-wired `Workspace` without a real
+# `forge.toml`. Production builds never see this code.
+testing = []
 
 [dependencies]
 forge-primitives = { workspace = true }

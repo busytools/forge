@@ -316,8 +316,6 @@ fn apply_session_update_spawning(
         return;
     }
     let mut bucket = crate::app::session::UiSession::new(key.clone());
-    bucket.lifecycle_state = crate::app::session::SessionLifecycleState::Spawning;
-    cwd.clone_into(&mut bucket.cwd_raw);
     bucket.cwd = shorten_cwd_display_path(cwd);
     bucket.messages.push(crate::app::ChatMessage::new(
         crate::app::MessageRole::System(Some(crate::app::SystemSeverity::Info)),
@@ -328,6 +326,15 @@ fn apply_session_update_spawning(
     ));
     bucket.message_retained_bytes.push(0);
     app.sessions.insert(key.clone(), bucket);
+    // Stamp cwd_raw onto the DomainSession (post-Phase 5 authoritative).
+    if let Some(workspace) = app.workspace.as_ref() {
+        workspace.set_cwd_raw_in_domain(&key, cwd.to_owned());
+    }
+    super::set_lifecycle_state_in_workspace(
+        app,
+        &key,
+        crate::app::session::SessionLifecycleState::Spawning,
+    );
     app.switch_active_session(key);
 }
 
@@ -368,18 +375,25 @@ fn apply_forge_account_identity_presentation(
         app.sync_welcome_snapshot();
         return;
     }
-    let Some(session) = app.session_mut(session_key) else {
-        tracing::warn!(
-            target: crate::logging::targets::APP_AUTH,
-            event_name = "forge_account_identity_dropped",
-            message = "forge-account identity dropped for an unknown session",
-            outcome = "dropped",
-            session_key = %session_key.as_str(),
-            reason = "unknown_session",
-        );
-        return;
-    };
-    session.active_account_display_name = Some(display_name);
+    // Background-session path: write through the workspace's
+    // `DomainSession` directly. `app.session_mut(session_key)` would
+    // also work to confirm the bucket exists but the projection field
+    // is gone post-Phase 5 — the workspace's domain handle is the
+    // authoritative store.
+    if let Some(workspace) = app.workspace.as_ref() {
+        if let Some(domain) = workspace.domain_session_for(session_key) {
+            domain.lock().active_account_display_name = Some(display_name);
+        } else {
+            tracing::warn!(
+                target: crate::logging::targets::APP_AUTH,
+                event_name = "forge_account_identity_dropped",
+                message = "forge-account identity dropped for an unknown session",
+                outcome = "dropped",
+                session_key = %session_key.as_str(),
+                reason = "unknown_session",
+            );
+        }
+    }
 }
 
 /// Phase 3b — `SessionUpdate::StatusSnapshot` reducer for the
@@ -417,18 +431,24 @@ fn apply_status_snapshot_presentation(
         app.set_account_info(Some(account));
         app.set_active_account_display_name(forge_account.map(|f| f.display_name));
         app.sync_welcome_snapshot();
-    } else if let Some(session) = app.session_mut(&session_key) {
-        session.account_info = Some(account);
-        session.active_account_display_name = forge_account.map(|f| f.display_name);
+    } else if let Some(workspace) = app.workspace.as_ref() {
+        // Background-session path: write through DomainSession.
+        if let Some(domain) = workspace.domain_session_for(&session_key) {
+            let mut guard = domain.lock();
+            guard.account_info = Some(account);
+            guard.active_account_display_name = forge_account.map(|f| f.display_name);
+        } else {
+            tracing::warn!(
+                target: crate::logging::targets::APP_AUTH,
+                event_name = "status_snapshot_dropped",
+                message = "status snapshot dropped for an unknown session",
+                outcome = "dropped",
+                session_id = %session_id,
+                reason = "unknown_session",
+            );
+            return;
+        }
     } else {
-        tracing::warn!(
-            target: crate::logging::targets::APP_AUTH,
-            event_name = "status_snapshot_dropped",
-            message = "status snapshot dropped for an unknown session",
-            outcome = "dropped",
-            session_id = %session_id,
-            reason = "unknown_session",
-        );
         return;
     }
     tracing::info!(
@@ -456,7 +476,7 @@ fn apply_status_snapshot_presentation(
 pub(super) fn apply_session_update_oauth_credentials_snapshot(
     app: &mut App,
     session_id: String,
-    credentials: Option<forge_agent::cloud::oauth_credentials::OauthCredentials>,
+    credentials: Option<forge_primitives::cloud::oauth_credentials::OauthCredentials>,
 ) {
     apply_oauth_credentials_snapshot_presentation(app, &session_id, credentials);
 }
@@ -464,7 +484,7 @@ pub(super) fn apply_session_update_oauth_credentials_snapshot(
 fn apply_oauth_credentials_snapshot_presentation(
     app: &mut App,
     session_id: &str,
-    credentials: Option<forge_agent::cloud::oauth_credentials::OauthCredentials>,
+    credentials: Option<forge_primitives::cloud::oauth_credentials::OauthCredentials>,
 ) {
     let session_key = SessionKey::from_session_id(session_id.to_owned());
     let has_credentials = credentials.is_some();
@@ -506,7 +526,7 @@ fn apply_oauth_credentials_snapshot_presentation(
 pub(super) fn apply_session_update_git_context_snapshot(
     app: &mut App,
     session_id: String,
-    context: forge_agent::env::git::GitContext,
+    context: forge_primitives::git::GitContext,
 ) {
     apply_git_context_snapshot_presentation(app, &session_id, context);
 }
@@ -514,7 +534,7 @@ pub(super) fn apply_session_update_git_context_snapshot(
 fn apply_git_context_snapshot_presentation(
     app: &mut App,
     session_id: &str,
-    context: forge_agent::env::git::GitContext,
+    context: forge_primitives::git::GitContext,
 ) {
     let session_key = SessionKey::from_session_id(session_id.to_owned());
     let is_active = app.active_session_key.as_ref() == Some(&session_key);
@@ -686,7 +706,7 @@ fn apply_sdk_message_presentation(app: &mut App, session_id: &str, msg: forge_pr
     // already used the resume_id for Connected, so adoption is a
     // no-op and the strict mismatch check covers stale-Client
     // races during session swap.
-    let active_session_id_string = app.session_id().map(ToString::to_string);
+    let active_session_id_string = app.session_id().map(|s| s.to_string());
     let active_session_id_str = active_session_id_string.as_deref().unwrap_or("");
     if active_session_id_str.is_empty() && !session_id.is_empty() {
         // The active bucket exists but has no id yet — adopt the
@@ -933,15 +953,22 @@ fn apply_session_update_key_renamed(app: &mut App, from: &SessionKey, to: Sessio
             let _ = bucket;
         } else {
             bucket.key = Some(to.clone());
-            bucket.lifecycle_state = crate::app::session::SessionLifecycleState::Idle;
             app.sessions.insert(to.clone(), bucket);
+            super::set_lifecycle_state_in_workspace(
+                app,
+                &to,
+                crate::app::session::SessionLifecycleState::Idle,
+            );
         }
     } else if !already_under_to {
         // Neither `from` nor `to` exists. Seed a fresh idle bucket
         // at `to` so the subsequent Connected reducer can populate it.
-        let mut bucket = crate::app::session::UiSession::new(to.clone());
-        bucket.lifecycle_state = crate::app::session::SessionLifecycleState::Idle;
-        app.sessions.insert(to.clone(), bucket);
+        app.sessions.insert(to.clone(), crate::app::session::UiSession::new(to.clone()));
+        super::set_lifecycle_state_in_workspace(
+            app,
+            &to,
+            crate::app::session::SessionLifecycleState::Idle,
+        );
     }
     if app.active_session_key.as_ref() == Some(from) {
         app.active_session_key = Some(to);
@@ -957,15 +984,34 @@ mod tests {
     fn seed_two_sessions(app: &mut App) -> (SessionKey, SessionKey) {
         let key_a = SessionKey::from_str_for_test("session-a");
         let key_b = SessionKey::from_str_for_test("session-b");
-        let mut session_a = UiSession::new(key_a.clone());
-        session_a.session_id = Some(crate::agent::model::SessionId::new("session-a"));
-        let mut session_b = UiSession::new(key_b.clone());
-        session_b.session_id = Some(crate::agent::model::SessionId::new("session-b"));
-        app.sessions.insert(key_a.clone(), session_a);
-        app.sessions.insert(key_b.clone(), session_b);
+        app.sessions.insert(key_a.clone(), UiSession::new(key_a.clone()));
+        app.sessions.insert(key_b.clone(), UiSession::new(key_b.clone()));
+        // Register a DomainSession for each so post-Phase-5 accessors
+        // (account_info, session_id, …) that route through the
+        // workspace's `domain_session_for(key)` see a live entry.
+        if let Some(ws) = app.workspace.as_ref() {
+            for k in [&key_a, &key_b] {
+                let (h, _) = forge_workspace::Workspace::testing_stub_handle();
+                let dom = ws.register_domain_session_for_test(k.clone(), std::sync::Arc::new(h));
+                dom.lock().session_id = Some(forge_primitives::SessionId::new(k.as_str()));
+            }
+        }
         app.active_session_key = Some(key_a.clone());
         app.needs_redraw = false;
         (key_a, key_b)
+    }
+
+    /// Read the `account_info` field on the workspace's
+    /// `DomainSession` for `key`. Used by tests post-Phase 5; the
+    /// projection field is gone from `UiSession`.
+    fn domain_account_info_for(
+        app: &App,
+        key: &SessionKey,
+    ) -> Option<forge_primitives::AccountInfo> {
+        app.workspace
+            .as_ref()
+            .and_then(|ws| ws.domain_session_for(key))
+            .and_then(|d| d.lock().account_info.clone())
     }
 
     /// Multiplexer-isolation test: a `StatusSnapshotReceived` event
@@ -982,8 +1028,8 @@ mod tests {
         // The pre-Connect synthetic bucket from `App::test_default`
         // stays in the map; we only care that A and B are present.
         let (key_a, key_b) = seed_two_sessions(&mut app);
-        assert!(app.sessions.get(&key_a).expect("a").account_info.is_none());
-        assert!(app.sessions.get(&key_b).expect("b").account_info.is_none());
+        assert!(domain_account_info_for(&app, &key_a).is_none());
+        assert!(domain_account_info_for(&app, &key_b).is_none());
 
         // Fire a state-change event tagged for B.
         let account = forge_primitives::AccountInfo {
@@ -999,13 +1045,15 @@ mod tests {
             },
         );
 
-        // B's bucket reflects the change.
-        let b = app.sessions.get(&key_b).expect("b");
-        assert_eq!(b.account_info.as_ref().and_then(|a| a.email.as_deref()), Some("b@example.com"));
+        // B's domain reflects the change.
+        let b_info = domain_account_info_for(&app, &key_b).expect("b account_info");
+        assert_eq!(b_info.email.as_deref(), Some("b@example.com"));
 
-        // A's bucket is untouched.
-        let a = app.sessions.get(&key_a).expect("a");
-        assert!(a.account_info.is_none(), "session A's account_info must not be set");
+        // A's domain is untouched.
+        assert!(
+            domain_account_info_for(&app, &key_a).is_none(),
+            "session A's account_info must not be set"
+        );
 
         // Active session is A; redraw flag must NOT flip for an event
         // routed to a background bucket.
@@ -1028,16 +1076,9 @@ mod tests {
                 forge_account: None,
             },
         );
-        assert_eq!(
-            app.sessions
-                .get(&key_a)
-                .expect("a")
-                .account_info
-                .as_ref()
-                .and_then(|a| a.email.as_deref()),
-            Some("a@example.com"),
-        );
-        assert!(app.sessions.get(&key_b).expect("b").account_info.is_none());
+        let a_info = domain_account_info_for(&app, &key_a).expect("a account_info");
+        assert_eq!(a_info.email.as_deref(), Some("a@example.com"));
+        assert!(domain_account_info_for(&app, &key_b).is_none());
         assert!(app.needs_redraw);
     }
 
@@ -1051,9 +1092,12 @@ mod tests {
     fn active_session_event_flips_needs_redraw() {
         let mut app = App::test_default();
         let key_a = SessionKey::from_str_for_test("a");
-        let mut session_a = UiSession::new(key_a.clone());
-        session_a.session_id = Some(crate::agent::model::SessionId::new("a"));
-        app.sessions.insert(key_a.clone(), session_a);
+        app.sessions.insert(key_a.clone(), UiSession::new(key_a.clone()));
+        if let Some(ws) = app.workspace.as_ref() {
+            let (h, _) = forge_workspace::Workspace::testing_stub_handle();
+            let dom = ws.register_domain_session_for_test(key_a.clone(), std::sync::Arc::new(h));
+            dom.lock().session_id = Some(forge_primitives::SessionId::new("a"));
+        }
         app.active_session_key = Some(key_a.clone());
         app.needs_redraw = false;
 
@@ -1069,10 +1113,9 @@ mod tests {
         assert!(app.needs_redraw, "active-session events must flip needs_redraw");
     }
 
-    fn make_creds() -> forge_agent::cloud::oauth_credentials::OauthCredentials {
+    fn make_creds() -> forge_primitives::cloud::oauth_credentials::OauthCredentials {
         // Round-trip through serde_json so the non-exhaustive
-        // constructor doesn't trip in tests. The test crate doesn't
-        // own forge_agent's internals so this is the lightest path.
+        // constructor doesn't trip in tests.
         let json = serde_json::json!({
             "access_token": "tok",
             "expires_at": null
@@ -1289,6 +1332,20 @@ mod tests {
         app.active_session_key = None;
 
         let synth_key = SessionKey::from_session_id("__spawn_forge__".to_owned());
+        // Simulate the workspace's spawn-path: it would normally
+        // register a DomainSession under `synth_key` before emitting
+        // the SessionUpdate::Spawning. Tests bypass the workspace
+        // spawn path and synthesize the SessionUpdate directly, so
+        // pre-register the domain handle here to mirror production.
+        {
+            let ws = app.workspace.as_ref().expect("workspace stub present in test_default");
+            let (stub_handle, _) = forge_workspace::Workspace::testing_stub_handle();
+            ws.register_domain_session_for_test(
+                synth_key.clone(),
+                std::sync::Arc::new(stub_handle),
+            );
+        }
+
         apply_session_update(
             &mut app,
             forge_workspace::SessionUpdate::Spawning {
@@ -1299,12 +1356,20 @@ mod tests {
             },
         );
 
-        let bucket = app.sessions.get(&synth_key).expect("spawn bucket created");
+        let ws = app.workspace.as_ref().expect("workspace stub present");
+        let domain = ws.domain_session_for(&synth_key).expect("domain registered for spawn");
+        let domain_snap = domain.lock();
         assert!(
-            matches!(bucket.lifecycle_state, crate::app::session::SessionLifecycleState::Spawning),
-            "lifecycle state set to Spawning"
+            matches!(
+                domain_snap.lifecycle_state,
+                crate::app::session::SessionLifecycleState::Spawning
+            ),
+            "lifecycle state set to Spawning, got {:?}",
+            domain_snap.lifecycle_state,
         );
-        assert_eq!(bucket.cwd_raw, "/Users/v/Projects/forge");
+        assert_eq!(domain_snap.cwd_raw, "/Users/v/Projects/forge");
+        drop(domain_snap);
+        let bucket = app.sessions.get(&synth_key).expect("spawn bucket created");
         assert!(
             bucket.messages.iter().any(|m| matches!(m.role, crate::app::MessageRole::System(_))),
             "spawning placeholder system message present"
@@ -1383,10 +1448,17 @@ mod tests {
         let to = SessionKey::from_session_id("real-uuid-9000".to_owned());
 
         // Seed a placeholder bucket under `from` with some content
-        // so we can verify the migration preserves state.
+        // so we can verify the migration preserves state. Register
+        // a domain handle for `from` and stamp `cwd_raw` on it (the
+        // bucket field is gone post-Phase 5).
+        {
+            let ws = app.workspace.as_ref().expect("workspace stub");
+            let (stub, _) = forge_workspace::Workspace::testing_stub_handle();
+            let domain =
+                ws.register_domain_session_for_test(from.clone(), std::sync::Arc::new(stub));
+            domain.lock().cwd_raw = "/proj".to_owned();
+        }
         let mut bucket = UiSession::new(from.clone());
-        bucket.lifecycle_state = crate::app::session::SessionLifecycleState::Spawning;
-        bucket.cwd_raw = "/proj".to_owned();
         bucket.messages.push(crate::app::ChatMessage::new(
             crate::app::MessageRole::System(Some(crate::app::SystemSeverity::Info)),
             vec![crate::app::MessageBlock::Text(crate::app::TextBlock::from_complete(
@@ -1405,7 +1477,6 @@ mod tests {
         // Old key gone, new key present.
         assert!(!app.sessions.contains_key(&from), "from key removed");
         let migrated = app.sessions.get(&to).expect("bucket migrated to real key");
-        assert_eq!(migrated.cwd_raw, "/proj");
         assert_eq!(migrated.messages.len(), 1);
         // Active follows.
         assert_eq!(app.active_session_key.as_ref(), Some(&to));

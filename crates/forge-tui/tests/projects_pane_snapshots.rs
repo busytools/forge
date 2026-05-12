@@ -18,6 +18,17 @@ use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::layout::Rect;
 
+/// Register a `DomainSession` for `key` on the App's workspace
+/// stub (post-Phase 5: `lifecycle_state` lives there, not on the
+/// bucket) and stamp `state`. Uses the workspace's `testing`-gated
+/// helpers.
+fn register_lifecycle_for_test(app: &mut App, key: &SessionKey, state: SessionLifecycleState) {
+    let ws = app.workspace.as_ref().expect("workspace stub present in App::test_default");
+    let (stub_handle, _) = forge_workspace::Workspace::testing_stub_handle();
+    let domain = ws.register_domain_session_for_test(key.clone(), std::sync::Arc::new(stub_handle));
+    domain.lock().lifecycle_state = state;
+}
+
 fn render_to_lines(
     app: &mut App,
     projects: &[ProjectView],
@@ -64,10 +75,10 @@ fn renders_banner_and_active_project_row() {
     // Insert a Session bucket for the lead so the pane treats `forge`
     // as an active project (lands in the ACTIVE section).
     let lead_key = SessionKey::from_str_for_test("session-a");
-    let mut lead_session = UiSession::new(lead_key.clone());
-    lead_session.lifecycle_state = SessionLifecycleState::Idle;
+    let lead_session = UiSession::new(lead_key.clone());
     app.sessions.insert(lead_key.clone(), lead_session);
     app.active_session_key = Some(lead_key.clone());
+    register_lifecycle_for_test(&mut app, &lead_key, SessionLifecycleState::Idle);
 
     let lines = render_to_lines(&mut app, &projects, 26, 10);
 
@@ -339,10 +350,10 @@ fn wide_tier_running_session_glyph_uses_accent_color() {
     let projects = vec![project_view("forge", vec![session_view("session-r", "lead")])];
 
     let lead_key = SessionKey::from_str_for_test("session-r");
-    let mut lead_session = UiSession::new(lead_key.clone());
-    lead_session.lifecycle_state = SessionLifecycleState::Running;
+    let lead_session = UiSession::new(lead_key.clone());
     app.sessions.insert(lead_key.clone(), lead_session);
-    app.active_session_key = Some(lead_key);
+    app.active_session_key = Some(lead_key.clone());
+    register_lifecycle_for_test(&mut app, &lead_key, SessionLifecycleState::Running);
 
     let backend = TestBackend::new(26, 10);
     let mut terminal = Terminal::new(backend).unwrap();
@@ -368,10 +379,10 @@ fn wide_tier_attention_session_glyph_uses_warning_color() {
     let projects = vec![project_view("forge", vec![session_view("session-a", "lead")])];
 
     let lead_key = SessionKey::from_str_for_test("session-a");
-    let mut lead_session = UiSession::new(lead_key.clone());
-    lead_session.lifecycle_state = SessionLifecycleState::Attention;
+    let lead_session = UiSession::new(lead_key.clone());
     app.sessions.insert(lead_key.clone(), lead_session);
-    app.active_session_key = Some(lead_key);
+    app.active_session_key = Some(lead_key.clone());
+    register_lifecycle_for_test(&mut app, &lead_key, SessionLifecycleState::Attention);
 
     let backend = TestBackend::new(26, 10);
     let mut terminal = Terminal::new(backend).unwrap();

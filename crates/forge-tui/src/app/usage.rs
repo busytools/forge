@@ -1,4 +1,4 @@
-use forge_agent::cloud::{cli, oauth};
+use forge_workspace::cloud::{cli, oauth};
 
 use crate::app::{App, UsageSnapshot, UsageSourceKind, UsageSourceMode, UsageWindow};
 use forge_workspace::SessionUpdate;
@@ -31,7 +31,7 @@ pub(crate) fn request_refresh(app: &mut App) {
     let event_tx = app.update_tx.clone();
     let epoch = app.session_scope_epoch();
     let source_mode = app.usage.active_source;
-    let cwd_raw = app.cwd_raw().to_owned();
+    let cwd_raw = app.cwd_raw();
     // Optional — the CLI fallback path doesn't need a connection,
     // and tests sometimes drive the lifecycle without a bridge. The
     // OAuth path bails with a clear "no connection" error when conn
@@ -140,7 +140,7 @@ fn format_remaining_until(target: SystemTime) -> String {
 async fn refresh_snapshot(
     source_mode: UsageSourceMode,
     cwd_raw: String,
-    conn: Option<&forge_agent::AgentHandle>,
+    conn: Option<&forge_workspace::AgentHandle>,
 ) -> Result<UsageSnapshot, UsageRefreshFailure> {
     match source_mode {
         UsageSourceMode::Oauth => fetch_oauth_via_bridge(conn).await,
@@ -152,7 +152,7 @@ async fn refresh_snapshot(
 }
 
 async fn fetch_oauth_via_bridge(
-    conn: Option<&forge_agent::AgentHandle>,
+    conn: Option<&forge_workspace::AgentHandle>,
 ) -> Result<UsageSnapshot, UsageRefreshFailure> {
     let Some(conn) = conn else {
         return Err(UsageRefreshFailure {
@@ -168,7 +168,7 @@ async fn fetch_oauth_via_bridge(
 
 async fn refresh_snapshot_auto(
     cwd_raw: String,
-    conn: Option<&forge_agent::AgentHandle>,
+    conn: Option<&forge_workspace::AgentHandle>,
 ) -> Result<UsageSnapshot, UsageRefreshFailure> {
     let oauth_result = match conn {
         Some(conn) => oauth::fetch_snapshot(conn).await,

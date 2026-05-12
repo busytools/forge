@@ -55,7 +55,7 @@ pub(super) fn update_terminal_outputs(app: &mut App) -> bool {
     // so we can release the terminals borrow before mutating `app.messages`
     // (the messages accessor borrows the whole App, which would conflict
     // with the live `app.terminals` borrow).
-    let log_session_id = app.session_id().map_or_else(String::new, ToString::to_string);
+    let log_session_id = app.session_id().map_or_else(String::new, |s| s.to_string());
     let pending_updates: Vec<(
         super::state::TerminalToolCallRef,
         std::sync::Arc<std::sync::Mutex<Vec<u8>>>,

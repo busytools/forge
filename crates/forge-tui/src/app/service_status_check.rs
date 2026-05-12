@@ -2,8 +2,8 @@
 //! and translates the result into `SessionUpdate::ServiceStatus`.
 
 use super::App;
-use forge_agent::cloud::service_status::fetch_service_status;
 use forge_workspace::SessionUpdate;
+use forge_workspace::cloud::service_status::fetch_service_status;
 use tracing::{Instrument as _, info_span};
 
 const STATUSPAGE_SUMMARY_URL: &str = "https://status.claude.com/api/v2/summary.json";
@@ -36,7 +36,7 @@ pub fn start_service_status_check(app: &App) {
                 outcome = "success",
                 severity = ?issue.severity,
             );
-            // `forge_agent::cloud::service_status::ServiceSeverity` is
+            // `forge_workspace::cloud::service_status::ServiceSeverity` is
             // the same wire-shape enum as
             // `forge_primitives::cloud::service_status::ServiceSeverity`
             // (re-exported); the `SessionUpdate::ServiceStatus` variant

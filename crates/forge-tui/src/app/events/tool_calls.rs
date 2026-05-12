@@ -167,7 +167,7 @@ fn build_tool_info_from_tool_call(
 
     let mut tool_info = ToolCallInfo {
         id: tc.tool_call_id,
-        title: shorten_tool_title(&tc.title, app.cwd_raw()),
+        title: shorten_tool_title(&tc.title, &app.cwd_raw()),
         sdk_tool_name,
         raw_input: tc.raw_input,
         raw_input_bytes: 0,
@@ -519,7 +519,7 @@ pub(super) fn log_terminal_spawned(app: &App, tc: &ToolCallInfo, source: &str) {
 }
 
 pub(super) fn current_session_id(app: &App) -> String {
-    app.session_id().map_or_else(String::new, ToString::to_string)
+    app.session_id().map_or_else(String::new, |s| s.to_string())
 }
 
 pub(super) fn json_value_size(value: Option<&serde_json::Value>) -> Option<u64> {

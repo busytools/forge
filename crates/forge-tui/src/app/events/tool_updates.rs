@@ -112,7 +112,7 @@ fn apply_tool_call_update_to_indexed_block(
     let session_id = current_session_id(app);
     // Snapshot upfront so the per-tool mutable-borrow of `app.active_messages_mut()`
     // doesn't conflict with `&app.cwd_raw`.
-    let cwd_raw = app.cwd_raw().to_owned();
+    let cwd_raw = app.cwd_raw();
     let mut terminal_subscription: Option<String> = None;
     let mut detach_terminal = false;
     let mut should_engage_auto_scroll = false;
