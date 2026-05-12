@@ -11,6 +11,7 @@
 
 use std::fs;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use forge_workspace::{SessionKey, SessionLaunchSettings, SessionTarget, Workspace};
 use tempfile::tempdir;
@@ -37,7 +38,7 @@ config_dir = "/tmp/forge-test-gateway"
     )
     .expect("write forge.toml");
 
-    let workspace = Workspace::new(dir.path().to_owned()).await.expect("new");
+    let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
 
     // First spawn — LRU picks Gateway (alphabetical tie-break, no
     // usage yet: Gateway < Stargate).
@@ -85,21 +86,21 @@ config_dir = "/tmp/forge-test-pane-vis"
     .expect("write forge.toml");
 
     // Default on first launch is true (no forge-state.toml yet).
-    let workspace = Workspace::new(dir.path().to_owned()).await.expect("new");
+    let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
     assert!(workspace.projects_pane_visible(), "default visibility is true");
 
     // Flip to false, drop, reload — the preference must survive.
     workspace.set_projects_pane_visible(false);
     drop(workspace);
 
-    let workspace2 = Workspace::new(dir.path().to_owned()).await.expect("re-load false");
+    let workspace2 = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("re-load false"));
     assert!(!workspace2.projects_pane_visible(), "false survives round trip");
 
     // Flip back to true, reload — same again.
     workspace2.set_projects_pane_visible(true);
     drop(workspace2);
 
-    let workspace3 = Workspace::new(dir.path().to_owned()).await.expect("re-load true");
+    let workspace3 = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("re-load true"));
     assert!(workspace3.projects_pane_visible(), "true survives round trip");
 }
 
@@ -128,7 +129,7 @@ config_dir = "/tmp/forge-test-ui-toggle-gateway"
     )
     .expect("write forge.toml");
 
-    let workspace = Workspace::new(dir.path().to_owned()).await.expect("new");
+    let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
 
     // Spawn so the picker writes [accounts].last_used_at.
     let _ = workspace
@@ -165,7 +166,7 @@ config_dir = "/tmp/forge-test-picker-preserves-ui"
     )
     .expect("write forge.toml");
 
-    let workspace = Workspace::new(dir.path().to_owned()).await.expect("new");
+    let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
     workspace.set_projects_pane_visible(false);
 
     // Now spawn — picker writes forge-state.toml.
@@ -175,7 +176,7 @@ config_dir = "/tmp/forge-test-picker-preserves-ui"
         .expect("spawn");
 
     drop(workspace);
-    let reloaded = Workspace::new(dir.path().to_owned()).await.expect("re-load");
+    let reloaded = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("re-load"));
     assert!(!reloaded.projects_pane_visible(), "picker write did not clobber UI state");
 }
 
@@ -201,7 +202,7 @@ config_dir = "/tmp/forge-test-display-gateway"
     )
     .expect("write forge.toml");
 
-    let workspace = Workspace::new(dir.path().to_owned()).await.expect("new");
+    let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
 
     // First spawn — LRU picks Gateway (alphabetical tie-break, no
     // usage yet: Gateway < Stargate). Bridge should carry Gateway's

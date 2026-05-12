@@ -135,16 +135,23 @@ fn append_project_rows(
     let mut active: Vec<(&ProjectView, SessionLifecycleState, bool, forge_workspace::SessionKey)> =
         Vec::new();
     let mut inactive: Vec<&ProjectView> = Vec::new();
+    // Helper: read `lifecycle_state` for `key` from the bucket.
+    // Falls back to `Idle` when no bucket is registered (e.g., the
+    // catalog references a session the user has never woken).
+    let lifecycle_for = |key: &forge_workspace::SessionKey| -> SessionLifecycleState {
+        app.sessions.get(key).map_or(SessionLifecycleState::default(), |s| s.lifecycle_state)
+    };
+
     for project in projects {
         let spawn_synthetic =
             forge_workspace::SessionKey::from_session_id(format!("__spawn_{}__", project.name));
         let live_session = project.sessions.iter().find_map(|s| {
-            app.sessions.get(&s.session).map(|bucket| (s.session.clone(), bucket.lifecycle_state))
+            app.sessions.get(&s.session).map(|_| (s.session.clone(), lifecycle_for(&s.session)))
         });
         let synthetic = app
             .sessions
             .get(&spawn_synthetic)
-            .map(|bucket| (spawn_synthetic.clone(), bucket.lifecycle_state));
+            .map(|_| (spawn_synthetic.clone(), lifecycle_for(&spawn_synthetic)));
         if let Some((key, lifecycle)) = live_session.or(synthetic) {
             let is_focused = Some(&key) == active_session_key.as_ref();
             active.push((project, lifecycle, is_focused, key));
@@ -399,7 +406,6 @@ fn glyph_for_lifecycle(
             (ch.to_string(), color)
         }
         SessionLifecycleState::Attention => ("△".to_owned(), theme::STATUS_WARNING),
-        SessionLifecycleState::Sleeping => ("·".to_owned(), theme::DIM),
         // Idle = "alive, no turn in progress". Use a filled bullet so
         // the row reads as occupied (the design spec calls for blank
         // here, but in practice an empty glyph column makes Active /
@@ -409,6 +415,10 @@ fn glyph_for_lifecycle(
             let color = if session_is_active { theme::RUST_ORANGE } else { theme::DIM };
             ("●".to_owned(), color)
         }
+        SessionLifecycleState::Sleeping
+        | SessionLifecycleState::AuthRequired
+        | SessionLifecycleState::Failed
+        | SessionLifecycleState::LoggedOut => ("·".to_owned(), theme::DIM),
     }
 }
 

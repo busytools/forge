@@ -1038,6 +1038,7 @@ dependencies = [
  "base64",
  "serde",
  "serde_json",
+ "thiserror 2.0.18",
  "tracing",
 ]
 
@@ -1084,8 +1085,8 @@ dependencies = [
  "clap_complete",
  "crossterm",
  "dirs",
- "forge-agent",
  "forge-primitives",
+ "forge-tui",
  "forge-workspace",
  "futures",
  "ignore",
@@ -1122,6 +1123,7 @@ dependencies = [
  "forge-primitives",
  "parking_lot",
  "serde",
+ "serde_json",
  "tempfile",
  "thiserror 2.0.18",
  "time",

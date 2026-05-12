@@ -15,38 +15,12 @@
 //! consumer reads them today.
 
 use std::path::Path;
-use std::time::SystemTime;
 
 use crate::cloud::time::parse_timestamp_value;
 
-use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// OAuth bearer credentials persisted by the `claude` CLI at
-/// `<config_dir>/.credentials.json`.
-///
-/// `<config_dir>` resolves to `$CLAUDE_CONFIG_DIR` when set and
-/// non-empty, else `$HOME/.claude`. The file format is
-/// `{ "claudeAiOauth": { "accessToken": "...", "expiresAt": <epoch> } }`
-/// where `expiresAt` is either a numeric epoch (seconds OR
-/// milliseconds) or a numeric string. The struct's
-/// [`std::time::SystemTime`] field handles both shapes during
-/// deserialisation; serialisation emits a `SystemTime` directly,
-/// which is fine for in-memory use but is NOT a stable wire shape —
-/// don't round-trip these through anything but the live in-memory
-/// reader.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[non_exhaustive]
-pub struct OauthCredentials {
-    /// The bearer token to send as `Authorization: Bearer <token>` to
-    /// `api.anthropic.com`.
-    pub access_token: String,
-    /// Optional absolute expiry. Callers typically check
-    /// `expires_at <= SystemTime::now()` before making outbound
-    /// requests; `None` means the file did not include an expiry
-    /// field.
-    pub expires_at: Option<SystemTime>,
-}
+pub use forge_primitives::cloud::oauth_credentials::OauthCredentials;
 
 /// Read + parse the user's OAuth credentials against an explicit
 /// `config_dir`. The caller (typically a `ForgeSdkBridge`) is the
@@ -66,7 +40,7 @@ pub struct OauthCredentials {
 /// Returns `None` when neither source has a parseable, non-empty
 /// `claudeAiOauth.accessToken`. `expires_at` is `None` when the
 /// payload omits an expiry field; otherwise it is the parsed
-/// [`SystemTime`] of the `expiresAt` numeric or stringified-numeric
+/// [`std::time::SystemTime`] of the `expiresAt` numeric or stringified-numeric
 /// epoch.
 #[must_use]
 pub fn load_oauth_credentials(config_dir: &Path) -> Option<OauthCredentials> {
@@ -240,10 +214,8 @@ fn parse_oauth_credentials(json: &Value) -> Option<OauthCredentials> {
         return None;
     }
 
-    Some(OauthCredentials {
-        access_token: access_token.to_owned(),
-        expires_at: oauth.get("expiresAt").and_then(parse_timestamp_value),
-    })
+    let expires_at = oauth.get("expiresAt").and_then(parse_timestamp_value);
+    Some(OauthCredentials { access_token: access_token.to_owned(), expires_at })
 }
 
 #[cfg(test)]

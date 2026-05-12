@@ -6,7 +6,6 @@ use thiserror::Error;
 
 /// Reasons `Workspace::new` may fail.
 #[derive(Debug, Error)]
-#[non_exhaustive]
 pub enum WorkspaceError {
     #[error(
         "forge.toml not found at {}; create it with at least one [[projects]] entry marked default = true",

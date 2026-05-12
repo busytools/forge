@@ -14,8 +14,7 @@ fn mock_binary_path() -> String {
 
 #[tokio::test]
 async fn spawn_reads_init_line() {
-    let mut opts = Options::default();
-    opts.binary = mock_binary_path();
+    let opts = Options { binary: mock_binary_path(), ..Options::default() };
 
     let mut sub = Subprocess::spawn(&opts).await.expect("spawn");
     let line = sub.read_line().await.expect("read").expect("init line present");
@@ -25,8 +24,7 @@ async fn spawn_reads_init_line() {
 
 #[tokio::test]
 async fn send_and_read_roundtrip() {
-    let mut opts = Options::default();
-    opts.binary = mock_binary_path();
+    let opts = Options { binary: mock_binary_path(), ..Options::default() };
 
     let mut sub = Subprocess::spawn(&opts).await.expect("spawn");
     // Drop the init line.
@@ -45,8 +43,7 @@ async fn send_and_read_roundtrip() {
 
 #[tokio::test]
 async fn spawn_rejects_missing_binary() {
-    let mut opts = Options::default();
-    opts.binary = "/definitely/does/not/exist/claude".into();
+    let opts = Options { binary: "/definitely/does/not/exist/claude".into(), ..Options::default() };
     let err = Subprocess::spawn(&opts).await.expect_err("should fail");
     let rendered = format!("{err}");
     assert!(

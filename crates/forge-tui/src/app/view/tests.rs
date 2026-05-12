@@ -11,7 +11,7 @@ use crate::app::{
 
 fn busy_view_test_app() -> App {
     let mut app = App::test_default();
-    app.input.set_text("draft");
+    app.input_mut().set_text("draft");
     app.selection = Some(SelectionState {
         kind: SelectionKind::Chat,
         start: SelectionPoint { row: 0, col: 0 },
@@ -20,7 +20,7 @@ fn busy_view_test_app() -> App {
     });
     app.scrollbar_drag =
         Some(ScrollbarDragState { thumb_grab_offset: 1, track_space: 4, max_scroll: 12 });
-    app.pending_submit = Some(app.input.snapshot());
+    app.pending_submit = Some(app.input().snapshot());
     app.pending_paste_text = "blocked".to_owned();
     app.pending_paste_session = Some(PasteSessionState {
         id: 1,
@@ -67,7 +67,7 @@ fn set_active_view_clears_transient_chat_state_but_keeps_draft() {
     set_active_view(&mut app, ActiveView::Trusted);
 
     assert_eq!(app.active_view, ActiveView::Trusted);
-    assert_eq!(app.input.text(), "draft");
+    assert_eq!(app.input().text(), "draft");
     assert!(app.selection.is_none());
     assert!(app.scrollbar_drag.is_none());
     assert!(app.mention.is_none());
@@ -122,19 +122,19 @@ fn set_active_view_keeps_permission_unfocused_when_returning_to_chat_with_draft(
 #[test]
 fn set_active_view_closes_help_without_clearing_question_mark_draft() {
     let mut app = App::test_default();
-    app.input.set_text("?");
+    app.input_mut().set_text("?");
     app.help_open = true;
     app.help_view = crate::app::HelpView::Subagents;
     app.help_visible_count = 7;
 
     set_active_view(&mut app, ActiveView::Trusted);
-    assert_eq!(app.input.text(), "?");
+    assert_eq!(app.input().text(), "?");
     assert!(!app.is_help_active());
     assert_eq!(app.help_view, crate::app::HelpView::Keys);
     assert_eq!(app.help_visible_count, 0);
 
     set_active_view(&mut app, ActiveView::Chat);
-    assert_eq!(app.input.text(), "?");
+    assert_eq!(app.input().text(), "?");
     assert!(!app.is_help_active());
 }
 

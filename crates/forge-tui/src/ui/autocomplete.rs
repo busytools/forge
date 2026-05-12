@@ -78,7 +78,7 @@ pub fn render(frame: &mut Frame, input_area: Rect, app: &App) {
 
     let (trigger_row, trigger_col) = dropdown_trigger(&dropdown);
     let (anchor_row, anchor_col) =
-        wrapped_visual_pos(app.input.lines(), trigger_row, trigger_col, text_area.width);
+        wrapped_visual_pos(app.input().lines(), trigger_row, trigger_col, text_area.width);
 
     let anchor_x = text_area.x.saturating_add(anchor_col).min(text_area.right().saturating_sub(1));
     let (x, width) = choose_dropdown_x(anchor_x, text_area.x, text_area.right(), text_area.width);
@@ -545,8 +545,8 @@ mod tests {
     #[test]
     fn empty_mention_still_renders_placeholder_dropdown() {
         let mut app = App::test_default();
-        app.input.set_text("@");
-        let _ = app.input.set_cursor(0, 1);
+        app.input_mut().set_text("@");
+        let _ = app.input_mut().set_cursor(0, 1);
         mention::activate(&mut app);
 
         assert!(is_active(&app));

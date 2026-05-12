@@ -15,7 +15,6 @@ use crate::app::{mention, questions, slash, subagent};
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 #[cfg(test)]
 use std::cell::Cell;
-use std::sync::Arc;
 use std::time::Instant;
 
 const HELP_TAB_PREV_KEY: KeyCode = KeyCode::Left;
@@ -264,10 +263,10 @@ fn handle_blocked_input_shortcuts(app: &mut App, key: KeyEvent) -> bool {
         (KeyCode::Char('?'), m) if !m.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) => {
             if app.is_help_active() {
                 app.help_open = false;
-                app.input.clear();
+                app.input_mut().clear();
             } else {
                 app.help_open = true;
-                app.input.set_text("?");
+                app.input_mut().set_text("?");
             }
             true
         }
@@ -280,11 +279,11 @@ fn handle_blocked_input_shortcuts(app: &mut App, key: KeyEvent) -> bool {
             true
         }
         (KeyCode::Up, m) if m == KeyModifiers::NONE || m == KeyModifiers::CONTROL => {
-            app.viewport_mut().scroll_up(1);
+            app.active_viewport_mut().scroll_up(1);
             true
         }
         (KeyCode::Down, m) if m == KeyModifiers::NONE || m == KeyModifiers::CONTROL => {
-            app.viewport_mut().scroll_down(1);
+            app.active_viewport_mut().scroll_down(1);
             true
         }
         _ => false,
@@ -319,11 +318,11 @@ fn handle_global_shortcuts(app: &mut App, key: KeyEvent) -> bool {
             true
         }
         (KeyCode::Up, m) if m == KeyModifiers::CONTROL => {
-            app.viewport_mut().scroll_up(1);
+            app.active_viewport_mut().scroll_up(1);
             true
         }
         (KeyCode::Down, m) if m == KeyModifiers::CONTROL => {
-            app.viewport_mut().scroll_down(1);
+            app.active_viewport_mut().scroll_down(1);
             true
         }
         _ => false,
@@ -339,7 +338,7 @@ pub(super) fn is_printable_text_modifiers(modifiers: KeyModifiers) -> bool {
 
 pub(super) fn handle_normal_key(app: &mut App, key: KeyEvent) -> bool {
     sync_help_focus(app);
-    let input_version_before = app.input.version;
+    let input_version_before = app.input().version;
 
     if should_ignore_key_during_paste(app, key) {
         return false;
@@ -347,11 +346,11 @@ pub(super) fn handle_normal_key(app: &mut App, key: KeyEvent) -> bool {
 
     let changed = handle_normal_key_actions(app, key);
 
-    if app.input.version != input_version_before {
+    if app.input().version != input_version_before {
         app.sync_help_open_with_input();
     }
 
-    if app.input.version != input_version_before && should_sync_autocomplete_after_key(app, key) {
+    if app.input().version != input_version_before && should_sync_autocomplete_after_key(app, key) {
         mention::sync_with_cursor(app);
         slash::sync_with_cursor(app);
         subagent::sync_with_cursor(app);
@@ -473,7 +472,7 @@ fn handle_submit_key(app: &mut App, key: KeyEvent) -> bool {
     if !key.modifiers.contains(KeyModifiers::SHIFT)
         && !key.modifiers.contains(KeyModifiers::CONTROL)
     {
-        app.pending_submit = Some(app.input.snapshot());
+        app.pending_submit = Some(app.input().snapshot());
         tracing::debug!(
             target: crate::logging::targets::APP_INPUT,
             event_name = "deferred_submit_armed",
@@ -489,7 +488,7 @@ fn handle_submit_key(app: &mut App, key: KeyEvent) -> bool {
         message = "explicit newline inserted instead of submit",
         outcome = "success",
     );
-    app.input.textarea_insert_newline()
+    app.input_mut().textarea_insert_newline()
 }
 
 fn handle_history_key(app: &mut App, key: KeyEvent) -> bool {
@@ -498,17 +497,19 @@ fn handle_history_key(app: &mut App, key: KeyEvent) -> bool {
     }
     match (key.code, key.modifiers) {
         // macOS: Cmd+Z undo. Linux/Windows: Ctrl+Z undo.
-        (KeyCode::Char('z'), m) if m == CMD_MOD => app.input.textarea_undo(),
+        (KeyCode::Char('z'), m) if m == CMD_MOD => app.input_mut().textarea_undo(),
         // macOS: Cmd+Shift+Z redo. Ghostty / kitty enhanced keyboard
         // reports this as lowercase 'z' with SUPER | SHIFT bits set;
         // some terminals report uppercase 'Z' with SUPER. Match both.
         #[cfg(target_os = "macos")]
-        (KeyCode::Char('z'), m) if m == CMD_MOD | KeyModifiers::SHIFT => app.input.textarea_redo(),
+        (KeyCode::Char('z'), m) if m == CMD_MOD | KeyModifiers::SHIFT => {
+            app.input_mut().textarea_redo()
+        }
         #[cfg(target_os = "macos")]
-        (KeyCode::Char('Z'), m) if m == CMD_MOD => app.input.textarea_redo(),
+        (KeyCode::Char('Z'), m) if m == CMD_MOD => app.input_mut().textarea_redo(),
         // Linux/Windows: Ctrl+Y redo.
         #[cfg(not(target_os = "macos"))]
-        (KeyCode::Char('y'), m) if m == CMD_MOD => app.input.textarea_redo(),
+        (KeyCode::Char('y'), m) if m == CMD_MOD => app.input_mut().textarea_redo(),
         _ => false,
     }
 }
@@ -521,7 +522,7 @@ fn handle_navigation_key(app: &mut App, key: KeyEvent) -> bool {
                 && m.contains(WORD_NAV_MOD)
                 && !m.intersects(WORD_NAV_MOD_EXCLUDED) =>
         {
-            app.input.textarea_move_word_left()
+            app.input_mut().textarea_move_word_left()
         }
         // Word right: Alt+Right on macOS, Ctrl+Right elsewhere.
         (KeyCode::Right, m)
@@ -529,7 +530,7 @@ fn handle_navigation_key(app: &mut App, key: KeyEvent) -> bool {
                 && m.contains(WORD_NAV_MOD)
                 && !m.intersects(WORD_NAV_MOD_EXCLUDED) =>
         {
-            app.input.textarea_move_word_right()
+            app.input_mut().textarea_move_word_right()
         }
         // macOS readline-style fallbacks: many terminals (Ghostty,
         // iTerm2, Terminal.app) send Option+Left as ESC+b and
@@ -539,19 +540,19 @@ fn handle_navigation_key(app: &mut App, key: KeyEvent) -> bool {
         (KeyCode::Char('b'), m)
             if app.focus_owner() != FocusOwner::TodoList && m == KeyModifiers::ALT =>
         {
-            app.input.textarea_move_word_left()
+            app.input_mut().textarea_move_word_left()
         }
         #[cfg(target_os = "macos")]
         (KeyCode::Char('f'), m)
             if app.focus_owner() != FocusOwner::TodoList && m == KeyModifiers::ALT =>
         {
-            app.input.textarea_move_word_right()
+            app.input_mut().textarea_move_word_right()
         }
         (KeyCode::Left, _) if app.focus_owner() != FocusOwner::TodoList => {
-            app.input.textarea_move_left()
+            app.input_mut().textarea_move_left()
         }
         (KeyCode::Right, _) if app.focus_owner() != FocusOwner::TodoList => {
-            app.input.textarea_move_right()
+            app.input_mut().textarea_move_right()
         }
         (KeyCode::Up, _) if app.focus_owner() == FocusOwner::TodoList => {
             move_todo_selection_up(app);
@@ -563,21 +564,21 @@ fn handle_navigation_key(app: &mut App, key: KeyEvent) -> bool {
         }
         (KeyCode::Up, _) => {
             if !try_move_input_cursor_up(app) {
-                app.viewport_mut().scroll_up(1);
+                app.active_viewport_mut().scroll_up(1);
             }
             true
         }
         (KeyCode::Down, _) => {
             if !try_move_input_cursor_down(app) {
-                app.viewport_mut().scroll_down(1);
+                app.active_viewport_mut().scroll_down(1);
             }
             true
         }
         (KeyCode::Home, _) if app.focus_owner() != FocusOwner::TodoList => {
-            app.input.textarea_move_home()
+            app.input_mut().textarea_move_home()
         }
         (KeyCode::End, _) if app.focus_owner() != FocusOwner::TodoList => {
-            app.input.textarea_move_end()
+            app.input_mut().textarea_move_end()
         }
         _ => false,
     }
@@ -621,7 +622,7 @@ fn handle_prompt_suggestion_key(app: &mut App, key: KeyEvent) -> bool {
     if !matches!(key.code, KeyCode::Tab)
         || !key.modifiers.is_empty()
         || app.focus_owner() != FocusOwner::Input
-        || !app.input.is_empty()
+        || !app.input().is_empty()
     {
         return false;
     }
@@ -633,7 +634,7 @@ fn handle_prompt_suggestion_key(app: &mut App, key: KeyEvent) -> bool {
         return false;
     }
     app.set_prompt_suggestion(None);
-    app.input.set_text(&suggestion);
+    app.input_mut().set_text(&suggestion);
     app.sync_help_open_with_input();
     true
 }
@@ -661,22 +662,19 @@ fn handle_mode_cycle_key(app: &mut App, key: KeyEvent) -> bool {
         .map(|m| ModeInfo { id: m.id.clone(), name: m.name.clone() })
         .collect();
 
-    if let Some(conn) = app.conn()
-        && let Some(sid) = app.session_id().cloned()
+    if app.has_active_agent()
+        && app.session_id().is_some()
+        && let Some(parsed_mode) = forge_primitives::permission::PermissionMode::from_wire(&next_id)
+        && let Err(e) =
+            app.dispatch_command(|key| forge_workspace::Command::SetMode { key, mode: parsed_mode })
     {
-        let mode_id = next_id.clone();
-        let conn = Arc::clone(conn);
-        tokio::task::spawn_local(async move {
-            if let Err(e) = conn.set_mode(sid.to_string(), mode_id) {
-                tracing::error!(
-                    target: crate::logging::targets::APP_INPUT,
-                    event_name = "mode_change_request_failed",
-                    message = "failed to request mode change",
-                    outcome = "failure",
-                    error_message = %e,
-                );
-            }
-        });
+        tracing::error!(
+            target: crate::logging::targets::APP_INPUT,
+            event_name = "mode_change_request_failed",
+            message = "failed to request mode change",
+            outcome = "failure",
+            error_message = %e,
+        );
     }
 
     app.set_mode(Some(ModeState {
@@ -709,7 +707,7 @@ fn handle_clipboard_paste_key(app: &mut App, key: KeyEvent) -> bool {
                 Some(SystemSeverity::Warning),
                 "Failed to access the system clipboard.",
             );
-            app.viewport_mut().engage_auto_scroll();
+            app.active_viewport_mut().engage_auto_scroll();
             app.needs_redraw = true;
             tracing::warn!("clipboard_paste: failed to access system clipboard");
             return true;
@@ -724,7 +722,7 @@ fn handle_clipboard_paste_key(app: &mut App, key: KeyEvent) -> bool {
                     // the model) can see where images are relative to text.
                     let idx = app.pending_images.len();
                     let badge = format!("[Image #{idx}]");
-                    app.input.insert_str(&badge);
+                    app.input_mut().insert_str(&badge);
                     app.needs_redraw = true;
                     tracing::debug!(
                         count = app.pending_images.len(),
@@ -738,7 +736,7 @@ fn handle_clipboard_paste_key(app: &mut App, key: KeyEvent) -> bool {
                         Some(SystemSeverity::Warning),
                         error.user_message(),
                     );
-                    app.viewport_mut().engage_auto_scroll();
+                    app.active_viewport_mut().engage_auto_scroll();
                     app.needs_redraw = true;
                     tracing::warn!("clipboard_paste: image attachment failed: {error:?}");
                     return true;
@@ -772,7 +770,7 @@ fn handle_editing_key(app: &mut App, key: KeyEvent) -> bool {
             if try_delete_image_badge(app, "before") {
                 return true;
             }
-            app.input.textarea_delete_word_before()
+            app.input_mut().textarea_delete_word_before()
         }
         // Delete word forward: Alt+Delete on macOS, Ctrl+Delete elsewhere.
         (KeyCode::Delete, m)
@@ -784,21 +782,21 @@ fn handle_editing_key(app: &mut App, key: KeyEvent) -> bool {
             if try_delete_image_badge(app, "after") {
                 return true;
             }
-            app.input.textarea_delete_word_after()
+            app.input_mut().textarea_delete_word_after()
         }
         (KeyCode::Backspace, _) if app.focus_owner() != FocusOwner::TodoList => {
             reclaim_input_from_inline_prompt_if_needed(app);
             if try_delete_image_badge(app, "before") {
                 return true;
             }
-            app.input.textarea_delete_char_before()
+            app.input_mut().textarea_delete_char_before()
         }
         (KeyCode::Delete, _) if app.focus_owner() != FocusOwner::TodoList => {
             reclaim_input_from_inline_prompt_if_needed(app);
             if try_delete_image_badge(app, "after") {
                 return true;
             }
-            app.input.textarea_delete_char_after()
+            app.input_mut().textarea_delete_char_after()
         }
         _ => false,
     }
@@ -808,14 +806,14 @@ fn handle_editing_key(app: &mut App, key: KeyEvent) -> bool {
 /// entire badge, remove the associated image from `pending_images`, and
 /// renumber remaining badges. Returns `true` if a badge was deleted.
 fn try_delete_image_badge(app: &mut App, direction: &str) -> bool {
-    let Some(one_based_idx) = app.input.delete_image_badge(direction) else {
+    let Some(one_based_idx) = app.input_mut().delete_image_badge(direction) else {
         return false;
     };
     let array_idx = one_based_idx.saturating_sub(1);
     if array_idx < app.pending_images.len() {
         app.pending_images.remove(array_idx);
     }
-    app.input.renumber_image_badges();
+    app.input_mut().renumber_image_badges();
     app.needs_redraw = true;
     true
 }
@@ -843,7 +841,7 @@ fn handle_printable_key(app: &mut App, key: KeyEvent) -> bool {
         CharAction::RetroCapture(delete_count) => {
             // Burst confirmation retro-captured already-inserted leading chars.
             for _ in 0..delete_count {
-                let _ = app.input.textarea_delete_char_before();
+                let _ = app.input_mut().textarea_delete_char_before();
             }
             tracing::debug!(
                 target: crate::logging::targets::APP_PASTE,
@@ -859,15 +857,15 @@ fn handle_printable_key(app: &mut App, key: KeyEvent) -> bool {
             // If `ch == c`, single normal insert. Otherwise the detector
             // emitted a held char; insert it first, then the current char.
             if ch == c {
-                let _ = app.input.textarea_insert_char(c);
+                let _ = app.input_mut().textarea_insert_char(c);
             } else {
-                let _ = app.input.textarea_insert_char(ch);
-                let _ = app.input.textarea_insert_char(c);
+                let _ = app.input_mut().textarea_insert_char(ch);
+                let _ = app.input_mut().textarea_insert_char(c);
             }
         }
     }
 
-    if c == '?' && app.input.text().trim() == "?" {
+    if c == '?' && app.input().text().trim() == "?" {
         app.help_open = true;
     }
 
@@ -882,15 +880,15 @@ fn handle_printable_key(app: &mut App, key: KeyEvent) -> bool {
 }
 
 fn try_move_input_cursor_up(app: &mut App) -> bool {
-    let before = (app.input.cursor_row(), app.input.cursor_col());
-    let _ = app.input.textarea_move_up();
-    (app.input.cursor_row(), app.input.cursor_col()) != before
+    let before = (app.input().cursor_row(), app.input().cursor_col());
+    let _ = app.input_mut().textarea_move_up();
+    (app.input().cursor_row(), app.input().cursor_col()) != before
 }
 
 fn try_move_input_cursor_down(app: &mut App) -> bool {
-    let before = (app.input.cursor_row(), app.input.cursor_col());
-    let _ = app.input.textarea_move_down();
-    (app.input.cursor_row(), app.input.cursor_col()) != before
+    let before = (app.input().cursor_row(), app.input().cursor_col());
+    let _ = app.input_mut().textarea_move_down();
+    (app.input().cursor_row(), app.input().cursor_col()) != before
 }
 
 fn should_sync_autocomplete_after_key(app: &App, key: KeyEvent) -> bool {
@@ -1056,12 +1054,12 @@ pub(super) fn handle_mention_key(app: &mut App, key: KeyEvent) -> bool {
             true
         }
         (KeyCode::Backspace, _) => {
-            let changed = app.input.textarea_delete_char_before();
+            let changed = app.input_mut().textarea_delete_char_before();
             mention::update_query(app);
             changed
         }
         (KeyCode::Char(c), m) if is_printable_text_modifiers(m) => {
-            let changed = app.input.textarea_insert_char(c);
+            let changed = app.input_mut().textarea_insert_char(c);
             if c.is_whitespace() {
                 mention::deactivate(app);
             } else {
@@ -1097,12 +1095,12 @@ fn handle_slash_key(app: &mut App, key: KeyEvent) -> bool {
             true
         }
         (KeyCode::Backspace, _) => {
-            let changed = app.input.textarea_delete_char_before();
+            let changed = app.input_mut().textarea_delete_char_before();
             slash::update_query(app);
             changed
         }
         (KeyCode::Char(c), m) if is_printable_text_modifiers(m) => {
-            let changed = app.input.textarea_insert_char(c);
+            let changed = app.input_mut().textarea_insert_char(c);
             slash::update_query(app);
             changed
         }
@@ -1133,12 +1131,12 @@ fn handle_subagent_key(app: &mut App, key: KeyEvent) -> bool {
             true
         }
         (KeyCode::Backspace, _) => {
-            let changed = app.input.textarea_delete_char_before();
+            let changed = app.input_mut().textarea_delete_char_before();
             subagent::update_query(app);
             changed
         }
         (KeyCode::Char(c), m) if is_printable_text_modifiers(m) => {
-            let changed = app.input.textarea_insert_char(c);
+            let changed = app.input_mut().textarea_insert_char(c);
             subagent::update_query(app);
             changed
         }
@@ -1245,7 +1243,7 @@ mod tests {
     fn selection_text_for_copy_refreshes_chat_snapshot_before_redraw() {
         let mut app = App::test_default();
         app.status = AppStatus::Running;
-        app.messages_mut().push(ChatMessage::new(
+        app.active_messages_mut().push(ChatMessage::new(
             MessageRole::Assistant,
             vec![MessageBlock::Text(TextBlock::from_complete("hello"))],
             None,
@@ -1261,7 +1259,7 @@ mod tests {
         });
 
         if let Some(MessageBlock::Text(block)) =
-            app.messages_mut().get_mut(0).and_then(|message| message.blocks.get_mut(0))
+            app.active_messages_mut().get_mut(0).and_then(|message| message.blocks.get_mut(0))
         {
             block.text.push_str(" world");
             block.markdown.append(" world");
@@ -1276,7 +1274,7 @@ mod tests {
     #[test]
     fn selection_text_for_copy_refreshes_input_snapshot_before_redraw() {
         let mut app = App::test_default();
-        app.input.set_text("hello");
+        app.input_mut().set_text("hello");
         app.rendered_input_area = Rect::new(0, 0, 20, 4);
         app.rendered_input_lines = vec!["hello".to_owned()];
         app.selection = Some(SelectionState {
@@ -1286,7 +1284,7 @@ mod tests {
             dragging: false,
         });
 
-        app.input.set_text("hello world");
+        app.input_mut().set_text("hello world");
 
         assert_eq!(selection_text_for_copy(&mut app), Some("hello world".to_owned()));
     }
@@ -1315,7 +1313,7 @@ config_dir = "/tmp/test-account"
         let workspace = runtime.block_on(async {
             forge_workspace::Workspace::new(dir.path().to_owned()).await.expect("workspace")
         });
-        app.workspace = Some(std::rc::Rc::new(workspace));
+        app.workspace = Some(std::sync::Arc::new(workspace));
         dir
     }
 

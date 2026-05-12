@@ -30,6 +30,19 @@ pub(crate) struct AccountStateMap {
 }
 
 impl AccountStateMap {
+    /// Empty map for the `testing` feature's `Workspace::testing_stub`.
+    /// Production code paths reach this map only via account pickers
+    /// (`pick_next`), which a test fixture should never exercise.
+    #[cfg(feature = "testing")]
+    pub fn empty_for_test() -> Self {
+        Self {
+            ordered_keys: Vec::new(),
+            by_key: std::collections::HashMap::new(),
+            policy: SelectionPolicy::default(),
+            round_robin_next: 0,
+        }
+    }
+
     pub fn new(
         accounts: &[LoadedAccount],
         policy: SelectionPolicy,

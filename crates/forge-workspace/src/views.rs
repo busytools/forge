@@ -9,7 +9,6 @@ use crate::target::{ProjectKey, SessionKey};
 /// activity descending. `sessions[0]` is the lead. Empty `sessions`
 /// means the project has no on-disk history yet.
 #[derive(Clone, Debug)]
-#[non_exhaustive]
 pub struct ProjectView {
     pub key: ProjectKey,
     /// The toml `name` field from `forge.toml`. Distinct from `key`,
@@ -36,8 +35,8 @@ pub struct ProjectView {
 impl ProjectView {
     /// Test-only constructor for cross-crate fixtures (forge-tui's
     /// Projects pane snapshot tests). Behind the `test-helpers`
-    /// Cargo feature so the production API stays
-    /// `#[non_exhaustive]`-locked.
+    /// Cargo feature to keep test-only construction out of the
+    /// production API.
     #[must_use]
     pub fn new_for_test(
         key: ProjectKey,
@@ -52,7 +51,6 @@ impl ProjectView {
 
 /// One session under a project.
 #[derive(Clone, Debug)]
-#[non_exhaustive]
 pub struct SessionView {
     pub session: SessionKey,
     /// Display label for the session — the title set via the

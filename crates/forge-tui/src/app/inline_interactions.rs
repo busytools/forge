@@ -30,7 +30,7 @@ pub(super) fn focused_interaction(app: &App) -> Option<&ToolCallInfo> {
 pub(super) fn get_focused_interaction_tc(app: &mut App) -> Option<&mut ToolCallInfo> {
     let tool_id = focused_interaction_id(app)?;
     let (mi, bi) = app.lookup_tool_call(tool_id)?;
-    match app.messages_mut().get_mut(mi)?.blocks.get_mut(bi)? {
+    match app.active_messages_mut().get_mut(mi)?.blocks.get_mut(bi)? {
         MessageBlock::ToolCall(tc)
             if tc.pending_permission.is_some() || tc.pending_question.is_some() =>
         {
@@ -64,7 +64,7 @@ pub(super) fn set_interaction_focused(app: &mut App, queue_index: usize, focused
         return;
     };
     let mut invalidated = false;
-    if let Some(msg) = app.messages_mut().get_mut(mi)
+    if let Some(msg) = app.active_messages_mut().get_mut(mi)
         && let Some(MessageBlock::ToolCall(tc)) = msg.blocks.get_mut(bi)
     {
         let tc = tc.as_mut();
@@ -105,7 +105,7 @@ pub(super) fn clear_inline_interaction_focus(app: &mut App) {
         let Some((mi, bi)) = app.lookup_tool_call(&tool_id) else {
             continue;
         };
-        if let Some(msg) = app.messages_mut().get_mut(mi)
+        if let Some(msg) = app.active_messages_mut().get_mut(mi)
             && let Some(MessageBlock::ToolCall(tc)) = msg.blocks.get_mut(bi)
         {
             let tc = tc.as_mut();
@@ -215,7 +215,7 @@ pub(super) fn handle_interaction_focus_cycle(
     }
 
     set_interaction_focused(app, 0, true);
-    app.viewport_mut().engage_auto_scroll();
+    app.active_viewport_mut().engage_auto_scroll();
     Some(true)
 }
 

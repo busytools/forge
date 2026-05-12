@@ -1659,7 +1659,6 @@ mod tests {
     }
 
     fn pending_permission(focused: bool) -> InlinePermission {
-        let (response_tx, _response_rx) = tokio::sync::oneshot::channel();
         InlinePermission {
             options: vec![
                 crate::agent::model::PermissionOption::new(
@@ -1674,7 +1673,7 @@ mod tests {
                 ),
             ],
             display: None,
-            response_tx,
+            tool_id: "test-pending-permission".to_owned(),
             selected_index: 0,
             focused,
         }

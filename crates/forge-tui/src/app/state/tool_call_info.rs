@@ -189,10 +189,16 @@ pub fn is_exit_plan_mode_tool_name(tool_name: &str) -> bool {
 
 /// Permission state stored inline on a `ToolCallInfo`, so the permission
 /// controls render inside the tool call block (unified edit/permission UX).
+///
+/// Phase 1+: the `response_tx` field has been replaced by `tool_id`.
+/// Workspace owns the oneshot in `DomainSession.pending_interactions`;
+/// the picker site dispatches `Command::RespondPermission { key,
+/// tool_id, outcome }` via `Workspace::dispatch` instead of fulfilling
+/// a local sender.
 pub struct InlinePermission {
     pub options: Vec<model::PermissionOption>,
     pub display: Option<model::PermissionDisplay>,
-    pub response_tx: tokio::sync::oneshot::Sender<model::RequestPermissionResponse>,
+    pub tool_id: String,
     pub selected_index: usize,
     /// Whether this permission currently has keyboard focus.
     /// When multiple permissions are pending, only the focused one
@@ -202,7 +208,7 @@ pub struct InlinePermission {
 
 pub struct InlineQuestion {
     pub prompt: model::QuestionPrompt,
-    pub response_tx: tokio::sync::oneshot::Sender<model::RequestQuestionResponse>,
+    pub tool_id: String,
     pub focused_option_index: usize,
     pub selected_option_indices: std::collections::BTreeSet<usize>,
     pub notes: String,

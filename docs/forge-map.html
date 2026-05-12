@@ -329,7 +329,7 @@
 <h2 class="section-title" id="workspace">Workspace</h2>
 
 <p class="intro">
-  forge ships as a 4-crate workspace. Only <code>forge-tui</code> renders to the terminal; the other three feed it data through clean boundaries. <code>forge-test-harness</code> is the wire-conformance harness — not in the runtime path.
+  forge ships as a 5-crate runtime workspace. Only <code>forge-tui</code> renders to the terminal; the other four layer underneath through strict acyclic dependencies. <code>forge-test-harness</code> is the wire-conformance harness — not in the runtime path.
 </p>
 
 <div class="crates">
@@ -345,13 +345,18 @@
   </div>
   <div class="crate-card c-agent">
     <h4>forge-agent</h4>
-    <p class="role">Drives one forge-sdk Client behind a channel-based Agent / AgentHandle API. Owns userdata (settings, trust, sessions catalog, memory, plugins), cloud (oauth/usage/account), and env (git context). The brain between SDK and TUI.</p>
+    <p class="role">Drives one forge-sdk Client behind a channel-based Agent / AgentHandle API. Owns userdata (settings, trust, sessions catalog, memory, plugins), cloud (oauth/usage/account), env (git context), translate, and tooling.</p>
     <p class="deps">depends on: forge-primitives, forge-sdk</p>
+  </div>
+  <div class="crate-card c-agent">
+    <h4>forge-workspace</h4>
+    <p class="role">Multi-session orchestrator and TUI-facing facade. Per-session <code>DomainSession</code> holds operational state; per-session <code>SessionTask</code> actors pump <code>AgentHandle::take_events()</code> into <code>SessionUpdate</code>s and route <code>Command</code>s back. The single point of contact between TUI and the agent layer.</p>
+    <p class="deps">depends on: forge-primitives, forge-agent</p>
   </div>
   <div class="crate-card c-tui">
     <h4>forge-tui</h4>
-    <p class="role">Native ratatui terminal interface. Consumes <code>AgentEvent</code>s, emits <code>Command</code>s. <strong>The subject of this map.</strong></p>
-    <p class="deps">depends on: forge-primitives, forge-agent</p>
+    <p class="role">Native ratatui terminal interface. Pure view layer; consumes <code>SessionUpdate</code> and dispatches <code>Command</code> via <code>forge-workspace</code>. Holds per-session <code>UiSession</code> for presentation state (messages, viewport, input editor, hover hints). <strong>The subject of this map.</strong></p>
+    <p class="deps">depends on: forge-primitives, forge-workspace</p>
   </div>
   <div class="crate-card c-test">
     <h4>forge-test-harness</h4>

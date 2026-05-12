@@ -172,17 +172,21 @@ pub(crate) fn refresh_mcp_snapshot(app: &mut App) {
 }
 
 pub(crate) fn request_mcp_snapshot(app: &mut App) {
-    let Some(conn) = app.conn().cloned() else {
+    let Some(workspace) = app.workspace.clone() else {
         app.mcp_mut().in_flight = false;
         return;
     };
-    let Some(session_id) = app.session_id().map(ToString::to_string) else {
+    let Some(key) = app.active_session_key.clone() else {
+        app.mcp_mut().in_flight = false;
+        return;
+    };
+    let Some(session_id) = app.session_id().map(|s| s.to_string()) else {
         app.mcp_mut().in_flight = false;
         return;
     };
     app.mcp_mut().in_flight = true;
     app.mcp_mut().last_error = None;
-    match conn.get_mcp_snapshot(session_id.clone()) {
+    match workspace.refresh_mcp_snapshot(&key) {
         Ok(()) => tracing::debug!(
             target: crate::logging::targets::APP_CONFIG,
             event_name = "mcp_snapshot_requested",
@@ -206,14 +210,18 @@ pub(crate) fn request_mcp_snapshot(app: &mut App) {
 }
 
 pub(crate) fn reconnect_mcp_server(app: &mut App, server_name: &str) {
-    let Some(conn) = app.conn().cloned() else {
+    if !app.has_active_agent() {
         return;
-    };
-    let Some(session_id) = app.session_id().cloned() else {
+    }
+    let Some(session_id) = app.session_id() else {
         return;
     };
     let session_id = session_id.to_string();
-    match conn.reconnect_mcp_server(session_id.clone(), server_name.to_owned()) {
+    let server_name_owned = server_name.to_owned();
+    match app.dispatch_command(|key| forge_workspace::Command::ReconnectMcpServer {
+        key,
+        server_name: server_name_owned,
+    }) {
         Ok(()) => {
             tracing::info!(
                 target: crate::logging::targets::APP_CONFIG,
@@ -238,14 +246,19 @@ pub(crate) fn reconnect_mcp_server(app: &mut App, server_name: &str) {
 }
 
 pub(crate) fn set_mcp_server_enabled(app: &mut App, server_name: &str, enabled: bool) {
-    let Some(conn) = app.conn().cloned() else {
+    if !app.has_active_agent() {
         return;
-    };
-    let Some(session_id) = app.session_id().cloned() else {
+    }
+    let Some(session_id) = app.session_id() else {
         return;
     };
     let session_id = session_id.to_string();
-    match conn.toggle_mcp_server(session_id.clone(), server_name.to_owned(), enabled) {
+    let server_name_owned = server_name.to_owned();
+    match app.dispatch_command(|key| forge_workspace::Command::ToggleMcpServer {
+        key,
+        server_name: server_name_owned,
+        enabled,
+    }) {
         Ok(()) => {
             tracing::info!(
                 target: crate::logging::targets::APP_CONFIG,
@@ -272,14 +285,18 @@ pub(crate) fn set_mcp_server_enabled(app: &mut App, server_name: &str, enabled: 
 }
 
 pub(crate) fn authenticate_mcp_server(app: &mut App, server_name: &str) {
-    let Some(conn) = app.conn().cloned() else {
+    if !app.has_active_agent() {
         return;
-    };
-    let Some(session_id) = app.session_id().cloned() else {
+    }
+    let Some(session_id) = app.session_id() else {
         return;
     };
     let session_id = session_id.to_string();
-    match conn.authenticate_mcp_server(session_id.clone(), server_name.to_owned()) {
+    let server_name_owned = server_name.to_owned();
+    match app.dispatch_command(|key| forge_workspace::Command::AuthenticateMcpServer {
+        key,
+        server_name: server_name_owned,
+    }) {
         Ok(()) => {
             tracing::info!(
                 target: crate::logging::targets::APP_CONFIG,
@@ -306,14 +323,18 @@ pub(crate) fn authenticate_mcp_server(app: &mut App, server_name: &str) {
 }
 
 pub(crate) fn clear_mcp_server_auth(app: &mut App, server_name: &str) {
-    let Some(conn) = app.conn().cloned() else {
+    if !app.has_active_agent() {
         return;
-    };
-    let Some(session_id) = app.session_id().cloned() else {
+    }
+    let Some(session_id) = app.session_id() else {
         return;
     };
     let session_id = session_id.to_string();
-    match conn.clear_mcp_auth(session_id.clone(), server_name.to_owned()) {
+    let server_name_owned = server_name.to_owned();
+    match app.dispatch_command(|key| forge_workspace::Command::ClearMcpAuth {
+        key,
+        server_name: server_name_owned,
+    }) {
         Ok(()) => {
             tracing::info!(
                 target: crate::logging::targets::APP_CONFIG,
@@ -342,19 +363,20 @@ pub(crate) fn submit_mcp_oauth_callback_url(
     server_name: &str,
     callback_url: String,
 ) {
-    let Some(conn) = app.conn().cloned() else {
+    if !app.has_active_agent() {
         return;
-    };
-    let Some(session_id) = app.session_id().cloned() else {
+    }
+    let Some(session_id) = app.session_id() else {
         return;
     };
     let session_id = session_id.to_string();
     let callback_url_chars = callback_url.chars().count();
-    match conn.submit_mcp_oauth_callback_url(
-        session_id.clone(),
-        server_name.to_owned(),
+    let server_name_owned = server_name.to_owned();
+    match app.dispatch_command(|key| forge_workspace::Command::SubmitMcpOauthCallbackUrl {
+        key,
+        server_name: server_name_owned,
         callback_url,
-    ) {
+    }) {
         Ok(()) => {
             tracing::info!(
                 target: crate::logging::targets::APP_CONFIG,
@@ -386,7 +408,7 @@ pub(crate) fn send_mcp_elicitation_response(
     action: forge_primitives::ElicitationAction,
     content: Option<serde_json::Value>,
 ) {
-    let Some(conn) = app.conn().cloned() else {
+    if !app.has_active_agent() {
         tracing::warn!(
             target: crate::logging::targets::APP_PERMISSION,
             event_name = "elicitation_response_blocked",
@@ -397,8 +419,8 @@ pub(crate) fn send_mcp_elicitation_response(
             reason = "missing_connection",
         );
         return;
-    };
-    let Some(session_id) = app.session_id().cloned() else {
+    }
+    let Some(session_id) = app.session_id() else {
         tracing::warn!(
             target: crate::logging::targets::APP_PERMISSION,
             event_name = "elicitation_response_blocked",
@@ -412,8 +434,14 @@ pub(crate) fn send_mcp_elicitation_response(
     };
     let session_id_for_log = session_id.to_string();
     let has_content = content.is_some();
-    if conn
-        .respond_to_elicitation(session_id.to_string(), request_id.to_owned(), action, content)
+    let elicitation_id = request_id.to_owned();
+    if app
+        .dispatch_command(|key| forge_workspace::Command::RespondElicitation {
+            key,
+            elicitation_id,
+            action,
+            content,
+        })
         .is_ok()
     {
         app.mcp_mut().pending_elicitation = None;

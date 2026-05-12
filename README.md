@@ -18,19 +18,22 @@ The workspace is layered, with strictly acyclic dependencies:
 forge-primitives ──── leaf (pure data, no logic)
 forge-sdk        ──→ primitives
 forge-agent      ──→ primitives + sdk
-forge-tui        ──→ primitives + agent
+forge-workspace  ──→ primitives + agent          (the MVVM orchestrator)
+forge-tui        ──→ primitives + workspace      (no direct agent dep)
 ```
 
 | Crate | Description |
 |---|---|
 | [`forge-primitives`](crates/forge-primitives) | Workspace-shared wire-shape types — message envelopes, content blocks, hook/permission/option/subagent data, channel commands, IDs, render-side views. Pure data, no I/O. |
 | [`forge-sdk`](crates/forge-sdk) | Wraps the `claude` CLI subprocess. Owns the stream-json codec, transport, control dispatch, in-process MCP host, and the callback registries (Hooks/HooksBuilder, CanUseToolCallback). |
-| [`forge-agent`](crates/forge-agent) | Drives one `forge-sdk` Client behind a channel-based `Agent`/`AgentHandle` API. Owns userdata (settings, trust, sessions catalog, memory, plugins), cloud (oauth, usage, account, service status), and env (git context). |
-| [`forge-tui`](crates/forge-tui) | Native terminal interface. Consumes `AgentEvent`s, emits `Command`s. No direct dep on `forge-sdk`. |
+| [`forge-agent`](crates/forge-agent) | Drives one `forge-sdk` Client behind a channel-based `Agent`/`AgentHandle` API. Owns userdata (settings, trust, sessions catalog, memory, plugins), cloud (oauth, usage, account, service status), env (git context), translate (event ↔ message conversions), and tooling. |
+| [`forge-workspace`](crates/forge-workspace) | Multi-session orchestrator and TUI-facing facade. Per-session `DomainSession` holds the authoritative operational state; per-session `SessionTask` actors pump `AgentHandle::take_events()` into `SessionUpdate`s and route `Command`s back. TUI's single point of contact with the agent layer. |
+| [`forge-tui`](crates/forge-tui) | Native terminal interface. Pure view layer; consumes `SessionUpdate` and dispatches `Command` via `forge-workspace`. Holds per-session `UiSession` (messages, viewport, input editor, hover hints). No direct `forge-agent` dependency. |
 | [`forge-test-harness`](crates/forge-test-harness) | Wire-conformance harness for `forge-sdk` ↔ `claude` CLI. Replay-based offline tests + opt-in live capture. |
 
-Multiple sessions = multiple `forge` processes (one per tmux/zellij pane).
-No daemon, no shared state.
+Multiple sessions = one `forge` process per tmux/zellij pane, with
+multiple `Workspace`-managed sessions inside it. No daemon, no shared
+state across processes.
 
 ## Development
 

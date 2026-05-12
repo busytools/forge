@@ -77,6 +77,21 @@ impl LoadedConfig {
     pub(crate) fn default_project(&self) -> &LoadedProject {
         &self.projects[self.default_index]
     }
+
+    /// Empty `LoadedConfig` for the `testing` feature's
+    /// `Workspace::testing_stub`. No projects + no accounts: production
+    /// code paths that need a project (e.g. `default_project`) will
+    /// panic when called on this value — tests that only need
+    /// `domain_handles` access never reach those paths.
+    #[cfg(feature = "testing")]
+    pub(crate) fn empty_for_test() -> Self {
+        Self {
+            projects: Vec::new(),
+            default_index: 0,
+            accounts: Vec::new(),
+            selection: SelectionConfig::default(),
+        }
+    }
 }
 
 /// Load + validate `<config_dir>/forge.toml`. Returns the parsed

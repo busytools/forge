@@ -1385,10 +1385,11 @@ pub fn setting_detail_options(app: &App, spec: &SettingSpec) -> Vec<String> {
 }
 
 pub fn initialize_shared_state(app: &mut App) -> Result<(), String> {
+    let pr = project_root(app);
     let loaded = store::load(
         app.settings_home_override.as_deref(),
-        Some(project_root(app)),
-        app.conn().map(std::sync::Arc::as_ref),
+        Some(pr.as_path()),
+        store_workspace_bridge(app).as_ref().copied(),
     )?;
     app.config.apply_loaded(loaded, false);
     app.reconcile_runtime_from_persisted_settings_change();
@@ -1400,10 +1401,11 @@ pub fn open(app: &mut App) -> Result<(), String> {
         return Err("Project trust must be accepted before opening settings".to_owned());
     }
 
+    let pr = project_root(app);
     let loaded = store::load(
         app.settings_home_override.as_deref(),
-        Some(project_root(app)),
-        app.conn().map(std::sync::Arc::as_ref),
+        Some(pr.as_path()),
+        store_workspace_bridge(app).as_ref().copied(),
     )?;
     app.config.apply_loaded(loaded, false);
     app.reconcile_runtime_from_persisted_settings_change();
@@ -1545,14 +1547,13 @@ pub fn request_status_snapshot_if_needed(app: &App) {
     if app.config.active_tab != ConfigTab::Status {
         return;
     }
-    let Some(conn) = app.conn().cloned() else {
-        return;
-    };
-    let Some(session_id) = app.session_id().cloned() else {
+    let Some(workspace) = app.workspace.as_ref() else { return };
+    let Some(key) = app.active_session_key.as_ref() else { return };
+    let Some(session_id) = app.session_id() else {
         return;
     };
     let session_id = session_id.to_string();
-    match conn.get_status_snapshot(session_id.clone()) {
+    match workspace.refresh_status_snapshot(key) {
         Ok(()) => tracing::debug!(
             target: crate::logging::targets::APP_AUTH,
             event_name = "status_snapshot_requested",
@@ -1569,6 +1570,15 @@ pub fn request_status_snapshot_if_needed(app: &App) {
             error_message = %error,
         ),
     }
+}
+
+/// Build a `WorkspaceBridge` for the active session, or `None`
+/// when no workspace / active session is set. Drives the new
+/// `store::load` signature.
+pub(crate) fn store_workspace_bridge(app: &App) -> Option<store::WorkspaceBridge<'_>> {
+    let workspace = app.workspace.as_ref()?;
+    let key = app.active_session_key.as_ref()?;
+    Some(store::WorkspaceBridge { workspace, key })
 }
 
 pub(crate) fn model_status_label(model: Option<&str>, app: &App) -> String {
@@ -1594,8 +1604,8 @@ fn effort_level_label(value: &str) -> Option<String> {
     EffortLevel::from_stored(value).map(|level| level.label().to_owned())
 }
 
-fn project_root(app: &App) -> &std::path::Path {
-    std::path::Path::new(app.cwd_raw())
+fn project_root(app: &App) -> std::path::PathBuf {
+    std::path::PathBuf::from(app.cwd_raw())
 }
 
 fn option_label(spec: &SettingSpec, value: &str) -> Option<String> {

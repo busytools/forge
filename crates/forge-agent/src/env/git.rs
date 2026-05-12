@@ -23,53 +23,15 @@ use std::sync::mpsc::{self, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
 use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
-use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::sync::mpsc as tokio_mpsc;
 
+pub use forge_primitives::git::{GitBranch, GitContext};
+
 const WATCH_DEBOUNCE: Duration = Duration::from_millis(75);
-
-/// A point-in-time snapshot of the git introspection state.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[non_exhaustive]
-pub struct GitContext {
-    /// Current branch resolution. `NoRepo` when `cwd` isn't inside a
-    /// git tree at all.
-    pub branch: GitBranch,
-}
-
-/// Branch resolution states emitted by [`git_context`] and
-/// [`GitContextWatcher`].
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
-#[non_exhaustive]
-pub enum GitBranch {
-    /// Branch is named — `.git/HEAD` resolved to `refs/heads/<name>`.
-    Named(String),
-    /// `.git/HEAD` points at a commit hash directly (detached HEAD).
-    Detached,
-    /// `cwd` isn't inside any git tree.
-    #[default]
-    NoRepo,
-    /// Repo discovered but `.git/HEAD` couldn't be read or parsed.
-    Unknown,
-}
-
-impl GitBranch {
-    /// `Some(name)` for `Named`, `None` for everything else. Useful
-    /// for chip-style display where only named branches surface.
-    #[must_use]
-    pub fn as_deref(&self) -> Option<&str> {
-        match self {
-            Self::Named(name) => Some(name.as_str()),
-            Self::Detached | Self::NoRepo | Self::Unknown => None,
-        }
-    }
-}
 
 /// Failure modes for [`GitContextWatcher::new`].
 #[derive(Debug, Error)]
-#[non_exhaustive]
 pub enum GitError {
     /// `notify` failed to set up its OS-level fs watch.
     #[error("failed to initialise git metadata watcher: {0}")]
@@ -241,7 +203,8 @@ fn run_debounce_loop(
         let new_branch = repo.resolve_branch_state();
         if new_branch != last_branch {
             last_branch = new_branch.clone();
-            if snap_tx.send(GitContext { branch: new_branch }).is_err() {
+            let snap = GitContext { branch: new_branch };
+            if snap_tx.send(snap).is_err() {
                 return; // receiver dropped
             }
         }

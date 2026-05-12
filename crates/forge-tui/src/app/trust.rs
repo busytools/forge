@@ -1,4 +1,4 @@
-pub(crate) use forge_agent::userdata::trust as store;
+pub(crate) use forge_workspace::userdata::trust as store;
 
 use super::App;
 use super::view::{self, ActiveView};
@@ -34,10 +34,9 @@ impl TrustState {
 }
 
 pub fn initialize(app: &mut App) {
-    let lookup = store::read_status(
-        &app.config.committed_preferences_document,
-        std::path::Path::new(app.cwd_raw()),
-    );
+    let cwd = app.cwd_raw();
+    let lookup =
+        store::read_status(&app.config.committed_preferences_document, std::path::Path::new(&cwd));
     app.trust.project_key = lookup.project_key;
     app.trust.status = if lookup.trusted { TrustStatus::Trusted } else { TrustStatus::Untrusted };
     app.trust.selection = TrustSelection::Yes;
@@ -87,9 +86,9 @@ pub fn accept(app: &mut App) -> Result<(), String> {
         return Err("Trust preferences path is not available".to_owned());
     };
 
+    let cwd = app.cwd_raw();
     let mut next_document = app.config.committed_preferences_document.clone();
-    app.trust.project_key =
-        store::set_trusted(&mut next_document, std::path::Path::new(app.cwd_raw()));
+    app.trust.project_key = store::set_trusted(&mut next_document, std::path::Path::new(&cwd));
     crate::app::config::store::save(&path, &next_document)?;
 
     app.config.committed_preferences_document = next_document;
@@ -179,7 +178,7 @@ mod tests {
         app.set_cwd_raw(dir.path().join("project").to_string_lossy().to_string());
         app.config.preferences_path = Some(path.clone());
         app.trust.status = TrustStatus::Untrusted;
-        app.trust.project_key = store::normalize_project_key(std::path::Path::new(app.cwd_raw()));
+        app.trust.project_key = store::normalize_project_key(std::path::Path::new(&app.cwd_raw()));
 
         accept(&mut app).expect("accept");
 
@@ -223,7 +222,7 @@ mod tests {
         app.set_cwd_raw(dir.path().join("project").to_string_lossy().to_string());
         app.config.preferences_path = Some(path);
         app.trust.status = TrustStatus::Untrusted;
-        app.trust.project_key = store::normalize_project_key(std::path::Path::new(app.cwd_raw()));
+        app.trust.project_key = store::normalize_project_key(std::path::Path::new(&app.cwd_raw()));
 
         accept(&mut app).expect("accept");
 

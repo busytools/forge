@@ -411,7 +411,6 @@ mod tests {
     use std::collections::BTreeSet;
 
     fn test_question() -> InlineQuestion {
-        let (response_tx, _response_rx) = tokio::sync::oneshot::channel();
         InlineQuestion {
             prompt: QuestionPrompt::new(
                 "Which mode should we use?",
@@ -422,7 +421,7 @@ mod tests {
                     QuestionOption::new("fast", "Faster path"),
                 ],
             ),
-            response_tx,
+            tool_id: "test-question".to_owned(),
             focused_option_index: 0,
             selected_option_indices: BTreeSet::new(),
             notes: String::new(),
@@ -467,7 +466,6 @@ mod tests {
     }
 
     fn test_permission(kind: PermissionOptionKind) -> InlinePermission {
-        let (response_tx, _response_rx) = tokio::sync::oneshot::channel();
         let reject_kind =
             if matches!(kind, PermissionOptionKind::PlanApprove | PermissionOptionKind::PlanReject)
             {
@@ -481,7 +479,7 @@ mod tests {
                 PermissionOption::new("deny", "Deny", reject_kind),
             ],
             display: None,
-            response_tx,
+            tool_id: "test-permission".to_owned(),
             selected_index: 0,
             focused: true,
         }

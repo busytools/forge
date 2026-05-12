@@ -14,7 +14,6 @@ use serde_json::Value;
 /// A single block inside an assistant turn's `content` array or a user
 /// message's tool-result envelope.
 #[derive(Debug, Clone, PartialEq)]
-#[non_exhaustive]
 pub enum ContentBlock {
     /// Plain text from the assistant.
     Text {

@@ -114,8 +114,11 @@ pub fn detect_mention_at_cursor(
 
 /// Activate mention autocomplete after the user types `@`.
 pub fn activate(app: &mut App) {
-    let detection =
-        detect_mention_at_cursor(app.input.lines(), app.input.cursor_row(), app.input.cursor_col());
+    let detection = detect_mention_at_cursor(
+        app.input().lines(),
+        app.input().cursor_row(),
+        app.input().cursor_col(),
+    );
 
     let Some((trigger_row, trigger_col, query)) = detection else {
         return;
@@ -129,8 +132,11 @@ pub fn activate(app: &mut App) {
 
 /// Update the query and re-filter candidates while mention is active.
 pub fn update_query(app: &mut App) {
-    let detection =
-        detect_mention_at_cursor(app.input.lines(), app.input.cursor_row(), app.input.cursor_col());
+    let detection = detect_mention_at_cursor(
+        app.input().lines(),
+        app.input().cursor_row(),
+        app.input().cursor_col(),
+    );
 
     let Some((trigger_row, trigger_col, query)) = detection else {
         deactivate(app);
@@ -200,9 +206,12 @@ fn sync_focus(app: &mut App) {
 /// - If cursor is inside a valid `@mention` token, activate/update autocomplete.
 /// - Otherwise, deactivate mention autocomplete.
 pub fn sync_with_cursor(app: &mut App) {
-    let in_mention =
-        detect_mention_at_cursor(app.input.lines(), app.input.cursor_row(), app.input.cursor_col())
-            .is_some();
+    let in_mention = detect_mention_at_cursor(
+        app.input().lines(),
+        app.input().cursor_row(),
+        app.input().cursor_col(),
+    )
+    .is_some();
     match (in_mention, app.mention.is_some()) {
         (true, true) => update_query(app),
         (true, false) => activate(app),
@@ -226,7 +235,7 @@ pub fn confirm_selection(app: &mut App) {
     let trigger_row = mention.trigger_row;
     let trigger_col = mention.trigger_col;
 
-    let mut lines = app.input.lines().to_vec();
+    let mut lines = app.input().lines().to_vec();
     let Some(line) = lines.get(trigger_row) else {
         return;
     };
@@ -247,7 +256,7 @@ pub fn confirm_selection(app: &mut App) {
     let new_cursor_col = trigger_col + replacement.chars().count();
 
     lines[trigger_row] = new_line;
-    app.input.replace_lines_and_cursor(lines, trigger_row, new_cursor_col);
+    app.input_mut().replace_lines_and_cursor(lines, trigger_row, new_cursor_col);
 }
 
 /// Deactivate mention autocomplete.
@@ -338,8 +347,8 @@ mod tests {
     #[test]
     fn sync_with_cursor_activates_inside_existing_mention() {
         let (mut app, _tmp) = app_with_temp_files(&["src/main.rs", "tests/integration.rs"]);
-        app.input.set_text("open @src/main.rs now");
-        let _ = app.input.set_cursor(0, "open @src".chars().count());
+        app.input_mut().set_text("open @src/main.rs now");
+        let _ = app.input_mut().set_cursor(0, "open @src".chars().count());
 
         sync_with_cursor(&mut app);
         run_search(&mut app);
@@ -352,35 +361,36 @@ mod tests {
     #[test]
     fn confirm_selection_replaces_full_existing_token_without_double_space() {
         let (mut app, _tmp) = app_with_temp_files(&["src/lib.rs"]);
-        app.input.set_text("open @src/lib.txt now");
-        let _ = app.input.set_cursor(0, "open @src/lib".chars().count());
+        app.input_mut().set_text("open @src/lib.txt now");
+        let _ = app.input_mut().set_cursor(0, "open @src/lib".chars().count());
 
         activate(&mut app);
         run_search(&mut app);
         confirm_selection(&mut app);
 
-        assert_eq!(app.input.lines()[0], "open @src/lib.rs now");
+        assert_eq!(app.input().lines()[0], "open @src/lib.rs now");
         assert!(app.mention.is_none());
     }
 
     #[test]
     fn confirm_selection_at_end_keeps_trailing_space() {
         let (mut app, _tmp) = app_with_temp_files(&["src/main.rs"]);
-        app.input.set_text("@src/mai");
-        let _ = app.input.set_cursor(0, app.input.lines()[0].chars().count());
+        app.input_mut().set_text("@src/mai");
+        let col = app.input().lines()[0].chars().count();
+        let _ = app.input_mut().set_cursor(0, col);
 
         activate(&mut app);
         run_search(&mut app);
         confirm_selection(&mut app);
 
-        assert_eq!(app.input.lines()[0], "@src/main.rs ");
+        assert_eq!(app.input().lines()[0], "@src/main.rs ");
     }
 
     #[test]
     fn activate_with_empty_query_keeps_empty_candidates_until_threshold() {
         let (mut app, _tmp) = app_with_temp_files(&["src/main.rs"]);
-        app.input.set_text("@");
-        let _ = app.input.set_cursor(0, 1);
+        app.input_mut().set_text("@");
+        let _ = app.input_mut().set_cursor(0, 1);
 
         activate(&mut app);
 
@@ -393,13 +403,14 @@ mod tests {
     #[test]
     fn update_query_keeps_active_when_query_becomes_empty() {
         let (mut app, _tmp) = app_with_temp_files(&["src/main.rs"]);
-        app.input.set_text("@src");
-        let _ = app.input.set_cursor(0, app.input.lines()[0].chars().count());
+        app.input_mut().set_text("@src");
+        let col = app.input().lines()[0].chars().count();
+        let _ = app.input_mut().set_cursor(0, col);
         activate(&mut app);
         run_search(&mut app);
         assert!(app.mention.is_some());
 
-        let _ = app.input.set_cursor_col(1);
+        let _ = app.input_mut().set_cursor_col(1);
         update_query(&mut app);
 
         let mention = app.mention.as_ref().expect("mention should stay active");
@@ -412,8 +423,8 @@ mod tests {
         let (mut app, tmp) = app_with_temp_files(&["visible.rs", "ignored.rs"]);
         std::fs::create_dir_all(tmp.path().join(".git")).expect("create .git");
         std::fs::write(tmp.path().join(".gitignore"), "ignored.rs\n").expect("write .gitignore");
-        app.input.set_text("@rs");
-        let _ = app.input.set_cursor(0, 3);
+        app.input_mut().set_text("@rs");
+        let _ = app.input_mut().set_cursor(0, 3);
 
         activate(&mut app);
         run_search(&mut app);
@@ -432,8 +443,8 @@ mod tests {
             &mut app.config.committed_preferences_document,
             false,
         );
-        app.input.set_text("@rs");
-        let _ = app.input.set_cursor(0, 3);
+        app.input_mut().set_text("@rs");
+        let _ = app.input_mut().set_cursor(0, 3);
 
         activate(&mut app);
         run_search(&mut app);
@@ -451,8 +462,8 @@ mod tests {
         std::fs::create_dir_all(root.join(".git")).expect("create .git");
         std::fs::write(root.join("src").join(".gitignore"), "hidden.rs\n")
             .expect("write .gitignore");
-        app.input.set_text("@rs");
-        let _ = app.input.set_cursor(0, 3);
+        app.input_mut().set_text("@rs");
+        let _ = app.input_mut().set_cursor(0, 3);
 
         activate(&mut app);
         run_search(&mut app);
@@ -465,14 +476,14 @@ mod tests {
     #[test]
     fn update_query_loads_candidates_once_threshold_is_reached() {
         let (mut app, _tmp) = app_with_temp_files(&["src/main.rs"]);
-        app.input.set_text("@s");
-        let _ = app.input.set_cursor(0, 2);
+        app.input_mut().set_text("@s");
+        let _ = app.input_mut().set_cursor(0, 2);
 
         activate(&mut app);
         assert!(app.mention.as_ref().is_some_and(|mention| mention.candidates.is_empty()));
 
-        app.input.set_text("@sr");
-        let _ = app.input.set_cursor(0, 3);
+        app.input_mut().set_text("@sr");
+        let _ = app.input_mut().set_cursor(0, 3);
         update_query(&mut app);
         run_search(&mut app);
 
@@ -485,8 +496,8 @@ mod tests {
     fn progressive_search_publishes_shallow_matches_before_deeper_levels() {
         let (mut app, _tmp) =
             app_with_temp_files(&["root.rs", "src/nested/deep.rs", "src/other.txt"]);
-        app.input.set_text("@rs");
-        let _ = app.input.set_cursor(0, 3);
+        app.input_mut().set_text("@rs");
+        let _ = app.input_mut().set_cursor(0, 3);
 
         activate(&mut app);
         run_search(&mut app);
@@ -503,8 +514,8 @@ mod tests {
     fn query_change_refilters_from_cache_without_restarting_walk() {
         let (mut app, _tmp) =
             app_with_temp_files(&["root.rs", "src/nested/needle.rs", "src/nested/other.rs"]);
-        app.input.set_text("@rs");
-        let _ = app.input.set_cursor(0, 3);
+        app.input_mut().set_text("@rs");
+        let _ = app.input_mut().set_cursor(0, 3);
 
         activate(&mut app);
         run_search(&mut app);
@@ -513,8 +524,8 @@ mod tests {
             mention.candidates.iter().any(|candidate| candidate.rel_path == "root.rs")
         }));
 
-        app.input.set_text("@needle");
-        let _ = app.input.set_cursor(0, "@needle".chars().count());
+        app.input_mut().set_text("@needle");
+        let _ = app.input_mut().set_cursor(0, "@needle".chars().count());
         update_query(&mut app);
 
         let mention = app.mention.as_ref().expect("mention should remain active");

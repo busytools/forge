@@ -12,7 +12,6 @@ use serde_json::Value;
 use crate::options::PermissionMode;
 
 #[derive(Debug, Clone)]
-#[non_exhaustive]
 pub struct ToolPermissionContext {
     /// The tool the model wants to invoke (e.g. `"Edit"`, `"Bash"`).
     pub tool_name: String,
@@ -51,9 +50,7 @@ pub struct ToolPermissionContext {
 }
 
 impl ToolPermissionContext {
-    /// Construct a context. Public constructor needed because the struct is
-    /// `#[non_exhaustive]` (struct-literal construction is blocked across
-    /// crate boundaries). `suggestions` defaults to empty; use
+    /// Construct a context. `suggestions` defaults to empty; use
     /// [`with_suggestions`](Self::with_suggestions) to attach parsed
     /// permission-rule hints.
     #[must_use]

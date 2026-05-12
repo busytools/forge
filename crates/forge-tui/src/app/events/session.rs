@@ -6,149 +6,59 @@ use super::super::{
 };
 use super::push_system_message_with_severity;
 use super::session_reset::{load_resume_history, reset_for_new_session};
-use crate::agent::events::ServiceStatusSeverity;
+use super::set_bucket_lifecycle_state;
 use crate::agent::model;
+use crate::app::session::SessionLifecycleState;
 use crate::error::AppError;
+use forge_primitives::cloud::service_status::ServiceSeverity;
 use forge_workspace::SessionKey;
-use std::sync::Arc;
 
 const TURN_ERROR_INPUT_LOCK_HINT: &str =
     "Input disabled after an error. Press Ctrl+Q to quit and try again.";
 
-/// Returns `true` when `key` is a synthetic placeholder (sentinel
-/// pattern `__<name>__`) rather than a real claude-issued session
-/// UUID. The Connected handler uses this to find synthetic-keyed
-/// buckets that it should migrate onto the real session key.
-///
-/// Today's sentinels: `__conn_pending__` (pre-Connect bucket from
-/// startup) and `__spawn_<project>__` (sleeping-project click in
-/// the Projects pane). Real claude session ids are UUIDs, which
-/// never start or end with `__`.
-fn is_synthetic_key(key: &SessionKey) -> bool {
-    let s = key.as_str();
-    s.len() >= 4 && s.starts_with("__") && s.ends_with("__")
+/// Bump the `session_scope_epoch` field on the bucket for `key`.
+/// Background-session paths (auth-required for non-active session,
+/// logout for non-active session, connection failure for non-active
+/// session) use this helper instead of the
+/// `App::bump_session_scope_epoch` accessor, which targets the
+/// *active* session. No-op when no bucket is registered for `key`.
+fn bump_bucket_session_scope_epoch(app: &mut App, key: &SessionKey) {
+    if let Some(bucket) = app.sessions.get_mut(key) {
+        bucket.session_scope_epoch = bucket.session_scope_epoch.saturating_add(1);
+    }
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(super) fn handle_connected_client_event(
+/// Post-migration apply chain for `Connected` events.
+///
+/// Runs the welcome/file-index/runtime-tabs/trust/tab-title work that
+/// follows the synthetic-key → real-key migration. The migration
+/// itself runs via `SessionUpdate::KeyRenamed` (emitted by
+/// `SessionTask::translate_event` ahead of the matching `Connected`).
+///
+/// `was_active` indicates whether the user is watching this session
+/// (active path: full apply chain) or whether it completed in the
+/// background (background path: write into the bucket directly).
+#[allow(clippy::too_many_arguments, clippy::needless_pass_by_value)]
+fn apply_connected_presentation(
     app: &mut App,
+    session_key: SessionKey,
     session_id: model::SessionId,
     cwd: String,
     current_model: model::CurrentModel,
     available_models: Vec<model::AvailableModel>,
     mode: Option<super::super::ModeState>,
     history_messages: &[forge_primitives::Message],
-    pre_connect_key: Option<SessionKey>,
-    conn: Arc<forge_agent::AgentHandle>,
+    was_active: bool,
 ) {
     let session_id_for_log = session_id.to_string();
     let history_message_count = history_messages.len();
     let available_model_count = available_models.len();
-    let prev_session_id = app.session_id().map(ToString::to_string);
-    // Phase 2a foundation: register this session in the multi-session
-    // map. Bucket-migration commits move per-session fields off App
-    // into this entry; if a synthetic-keyed bucket is the active key
-    // when Connected fires, migrate it onto the real session key so
-    // the user-visible state (welcome message, cwd, viewport) survives
-    // the Connect transition.
-    //
-    // The synthetic-key sentinel pattern is `__<name>__`. Two
-    // currently-used variants:
-    //
-    // - `__conn_pending__` — the pre-Connect bucket seeded by
-    //   `create_app`. Latched onto the active key from the moment
-    //   forge-tui boots until the very first Connected event.
-    // - `__spawn_<project>__` — the spawning bucket seeded when the
-    //   user clicks a sleeping project header in the Projects pane
-    //   (Phase 2b-α). Latched onto the active key while
-    //   `workspace.get_agent_handle(SessionTarget::Named(...))` runs
-    //   in the background.
-    //
-    // Migrate FIRST, then activate, then write conn into the target
-    // bucket directly. This ordering guards against the multi-bridge
-    // case (Phase 2b): if `set_conn` were called before activation,
-    // the conn would land in the previous active bucket — a silent
-    // routing bug. Resolving the target bucket first ensures the
-    // conn slot lands in the correct bucket regardless of which
-    // session was active before this event fired.
-    let session_key = forge_workspace::SessionKey::from_session_id(session_id.to_string());
-    // Determine which synthetic bucket this Connected event should
-    // migrate. Preferred path: the connection task carried the
-    // pre_connect_key it was seeded with — migrate THAT specific
-    // bucket. Without this, rapid clicks on different sleeping
-    // projects can race: A's Connected might pick up B's synthetic
-    // bucket from the active key. Fallback chain (for paths that
-    // don't yet thread pre_connect_key through, e.g. tests that
-    // construct ClientEvent::Connected directly): the active
-    // synthetic key, then the legacy `__conn_pending__` sentinel.
-    let synthetic_to_migrate = pre_connect_key
-        .filter(is_synthetic_key)
-        .filter(|k| app.sessions.contains_key(k))
-        .or_else(|| app.active_session_key.as_ref().filter(|k| is_synthetic_key(k)).cloned())
-        .or_else(|| {
-            let pre = forge_workspace::SessionKey::from_session_id(App::PRE_CONNECT_KEY);
-            if app.sessions.contains_key(&pre) { Some(pre) } else { None }
-        });
-    // Decide whether this Connected event corresponds to a session
-    // change the user is watching, or a background spawn that
-    // completed while the user was elsewhere.
-    //
-    // - Synthetic-migration case: was_active is true iff the
-    //   synthetic bucket is the active key. If the user switched
-    //   away during the spawn window, the synthetic exists but is
-    //   no longer active — the migration still happens but we
-    //   don't yank `active_session_key` away from the user's
-    //   deliberate pick.
-    // - No-synthetic case (legacy single-session flow / second
-    //   Connected as session reset): default to active-path
-    //   behaviour. The original handler always ran the apply
-    //   chain in this case; preserve that so `Connected` retains
-    //   its long-standing "session reset" semantics on the
-    //   single-session path.
-    let was_active = match synthetic_to_migrate.as_ref() {
-        Some(_) => synthetic_to_migrate.as_ref() == app.active_session_key.as_ref(),
-        None => true,
-    };
-    if let Some(synth_key) = synthetic_to_migrate.as_ref() {
-        if let Some(mut existing) = app.sessions.remove(synth_key) {
-            if app.sessions.contains_key(&session_key) {
-                tracing::warn!(
-                    target: crate::logging::targets::APP_SESSION,
-                    event_name = "connected_synthetic_dropped",
-                    message = "synthetic bucket dropped because the real-key bucket already existed",
-                    outcome = "dropped",
-                    session_id = %session_id_for_log,
-                    synthetic_key = %synth_key.as_str(),
-                    reason = "real_bucket_present",
-                );
-                let _ = existing;
-            } else {
-                existing.key = Some(session_key.clone());
-                // Lifecycle: the bucket that was just spawned is now
-                // connected and idle. Future Running/Attention
-                // transitions land on turn-start / permission-pending;
-                // Idle on Connect is the right minimum.
-                existing.lifecycle_state = crate::app::session::SessionLifecycleState::Idle;
-                app.sessions.insert(session_key.clone(), existing);
-            }
-        }
-    } else {
-        app.sessions.entry(session_key.clone()).or_insert_with(|| {
-            let mut bucket = crate::app::session::Session::new(session_key.clone());
-            bucket.lifecycle_state = crate::app::session::SessionLifecycleState::Idle;
-            bucket
-        });
-    }
+    let prev_session_id = app.session_id().map(|s| s.to_string());
     if was_active {
-        // Active path: the user has been watching the spawning
-        // bucket OR this is the startup connect (where the
-        // pre-Connect synthetic bucket is the active key by
-        // construction). Run the full active-session apply chain
-        // below so welcome / file-index / runtime-tabs all sync.
+        // Active path: the user is watching this session. Run the
+        // full active-session apply chain so welcome / file-index /
+        // runtime-tabs all sync.
         app.active_session_key = Some(session_key.clone());
-        if let Some(bucket) = app.sessions.get_mut(&session_key) {
-            bucket.conn = Some(conn);
-        }
         apply_session_cwd(app, cwd);
         reset_for_new_session(app, session_id, current_model, mode, true);
         refresh_session_git_watcher(app, prev_session_id);
@@ -163,80 +73,55 @@ pub(super) fn handle_connected_client_event(
         app.rebuild_chat_focus_from_state();
         crate::app::config::refresh_runtime_tabs_for_session_change(app);
         maybe_open_startup_session_picker(app);
-        // Push the terminal tab title to reflect the now-active
-        // session's cwd. `active_session_key` was mutated directly
-        // above (not via `switch_active_session`), so the render
-        // loop's title-refresh wouldn't fire on its own until the
-        // next animating frame — meaning the tab title visibly lags
-        // a session switch by one frame at best and not at all when
-        // the destination is fully idle (no spinner ticking).
         crate::app::tab_title::update_tab_title(&app.status, app.spinner_frame, app.cwd());
     } else {
-        // Background path: the user switched to a different session
-        // while this one was spawning. Park the connection + per-
-        // session identity onto the migrated bucket directly; the
-        // welcome card and history replay come next via temp-swap.
+        // Background path: temp-swap `active_session_key` so the
+        // App-level message + viewport accessors land on the migrated
+        // bucket. Without this the bucket keeps its placeholder
+        // "Waking …" message as its only content. User-visible UI
+        // state (input draft, status) is snapshotted across the
+        // swap.
+        //
+        // Welcome + history replay run via an RAII active-bucket
+        // pivot scope (see `app::active_bucket_scope::Scope`). The
+        // pivot lets `build_welcome_message` / `load_resume_history`
+        // address the migrated bucket via the App-level accessors,
+        // and the guard restores the user's actual `App.input` /
+        // `App.status` / `App.active_session_key` on drop so the
+        // session the user is currently looking at is never visibly
+        // disturbed.
+        let display = shorten_cwd_display(&cwd);
+        let session_id_for_domain = session_id.clone();
         if let Some(bucket) = app.sessions.get_mut(&session_key) {
-            bucket.conn = Some(conn);
-            let display = shorten_cwd_display(&cwd);
-            bucket.cwd_raw = cwd;
             bucket.cwd = display;
-            bucket.session_id = Some(session_id);
+            bucket.cwd_raw = cwd;
+            bucket.session_id =
+                Some(forge_primitives::SessionId::new(session_id_for_domain.to_string()));
             bucket.current_model = Some(current_model);
             bucket.mode = mode;
             bucket.available_models = available_models;
+            bucket.lifecycle_state = SessionLifecycleState::Idle;
         }
-
-        // Temp-swap `active_session_key` to the migrated bucket so
-        // App-level message + viewport accessors land on the right
-        // bucket. Without this the bucket keeps its pre-Connect
-        // "Waking <project>…" placeholder as its only message —
-        // and when the user later switches in, they see what reads
-        // as a stuck/empty session. Active-session UI state (input
-        // draft, status) is snapshotted across the swap so the
-        // focused session the user is currently looking at is never
-        // touched.
-        let saved_active = app.active_session_key.clone();
-        let saved_input = app.input.text();
-        let saved_status = app.status.clone();
-        app.active_session_key = Some(session_key.clone());
-
-        app.clear_messages_tracked();
-        let welcome = app.build_welcome_message();
-        app.push_message_tracked(welcome);
-        app.sync_welcome_snapshot();
-        *app.viewport_mut() = super::super::ChatViewport::new();
-        if !history_messages.is_empty() {
-            load_resume_history(app, history_messages);
+        // Mirror session_id onto the workspace's DomainSession so
+        // AgentHandle dispatch (which routes by claude-issued session
+        // UUID) can resolve this bucket.
+        if let Some(workspace) = app.workspace.as_ref() {
+            workspace.set_session_id_in_domain(
+                &session_key,
+                Some(forge_primitives::SessionId::new(session_id_for_domain.to_string())),
+            );
         }
-
-        app.active_session_key = saved_active;
-        app.input.clear();
-        if !saved_input.is_empty() {
-            app.input.set_text(&saved_input);
-        }
-        app.status = saved_status;
+        crate::app::active_bucket_scope::with_pivoted(app, session_key.clone(), |app| {
+            app.clear_messages_tracked();
+            let welcome = app.build_welcome_message();
+            app.push_message_tracked(welcome);
+            app.sync_welcome_snapshot();
+            *app.active_viewport_mut() = super::super::ChatViewport::new();
+            if !history_messages.is_empty() {
+                load_resume_history(app, history_messages);
+            }
+        });
         app.needs_redraw = true;
-    }
-    // Surface the freshly-connected session in the Projects pane's
-    // drilldown immediately. Without this the workspace catalog
-    // would only reflect what existed on disk at startup, leaving
-    // newly-spawned sessions invisible to the pane and to the
-    // active-project resolver — the user clicks a project, watches
-    // the bucket spawn, but the pane drilldown stays empty and the
-    // top bar can't resolve the project from the new session's
-    // UUID. Source cwd from the bucket (which the spawn-side path
-    // pre-seeds before Connected can fire); `cwd` and `session_id`
-    // are both moved by the if/else above, so we read off the bucket
-    // we just migrated into.
-    {
-        let cwd_for_record =
-            app.sessions.get(&session_key).map(|b| b.cwd_raw.clone()).unwrap_or_default();
-        if !cwd_for_record.is_empty()
-            && let Some(workspace) = app.workspace.as_ref()
-        {
-            workspace.record_connected_session(&cwd_for_record, &session_id_for_log, None);
-        }
     }
     tracing::info!(
         target: crate::logging::targets::APP_SESSION,
@@ -319,6 +204,7 @@ pub(super) fn handle_auth_required_event(
     method_description: String,
 ) {
     if app.active_session_key.as_ref() != Some(session_key) {
+        bump_bucket_session_scope_epoch(app, session_key);
         let Some(session) = app.session_mut(session_key) else {
             tracing::warn!(
                 target: crate::logging::targets::APP_AUTH,
@@ -335,8 +221,9 @@ pub(super) fn handle_auth_required_event(
         // (login_hint, status_message, pending_command). The bucket
         // becomes "needs auth"; if/when the user switches to it we
         // surface the hint then.
-        session.session_id = None;
         session.key = None;
+        session.session_id = None;
+        session.account_info = None;
         session.current_model = None;
         session.mode = None;
         session.fast_mode_state = model::FastModeState::Off;
@@ -344,12 +231,22 @@ pub(super) fn handle_auth_required_event(
         session.last_rate_limit_update = None;
         session.cancelled_turn_pending_hint = false;
         session.pending_cancel_origin = None;
-        session.account_info = None;
         session.mcp = super::super::McpState::default();
         super::turn::finalize_background_tool_calls(session, model::ToolCallStatus::Failed);
         session.active_turn_assistant_message_idx = None;
         session.turn_notice_refs.clear();
-        session.session_scope_epoch = session.session_scope_epoch.saturating_add(1);
+        // Flip the bucket's lifecycle state so the Projects pane glyph
+        // reflects the auth-blocked condition. Pre-Phase-5 the workspace
+        // wrote this; with operational state back on UiSession the
+        // reducer owns it directly.
+        session.lifecycle_state = crate::app::session::SessionLifecycleState::AuthRequired;
+        let _ = session;
+        // Mirror session_id reset onto the workspace's DomainSession
+        // so AgentHandle dispatch stops routing to a no-longer-valid
+        // session id.
+        if let Some(workspace) = app.workspace.as_ref() {
+            workspace.set_session_id_in_domain(session_key, None);
+        }
         tracing::warn!(
             target: crate::logging::targets::APP_AUTH,
             event_name = "auth_required_background",
@@ -378,6 +275,17 @@ pub(super) fn handle_auth_required_event(
     app.finalize_turn_runtime_artifacts(model::ToolCallStatus::Failed);
     app.clear_active_turn_assistant();
     super::notices::clear_turn_notice_tracking(app);
+    // Flip the active bucket's lifecycle state too — if the user
+    // switches away from this session while it's auth-blocked, the
+    // Projects pane glyph picks up the AuthRequired marker without
+    // waiting for a subsequent event.
+    if let Some(key) = app.active_session_key.clone() {
+        super::set_bucket_lifecycle_state(
+            app,
+            &key,
+            crate::app::session::SessionLifecycleState::AuthRequired,
+        );
+    }
     tracing::warn!(
         target: crate::logging::targets::APP_AUTH,
         event_name = "auth_required_detected",
@@ -390,6 +298,10 @@ pub(super) fn handle_auth_required_event(
 pub(super) fn handle_connection_failed_event(app: &mut App, session_key: &SessionKey, msg: &str) {
     let is_rate_limited = is_rate_limited_failure(msg);
     if app.active_session_key.as_ref() != Some(session_key) {
+        // Bump workspace's epoch BEFORE acquiring the session's mut
+        // borrow — the bump needs `&app.workspace` and the mut borrow
+        // would conflict.
+        bump_bucket_session_scope_epoch(app, session_key);
         let Some(session) = app.session_mut(session_key) else {
             tracing::warn!(
                 target: crate::logging::targets::APP_SESSION,
@@ -406,8 +318,9 @@ pub(super) fn handle_connection_failed_event(app: &mut App, session_key: &Sessio
         // pending_submit, push_message, status). Status surface for
         // a background bucket is the bucket itself; the active
         // session's status stays as-is.
-        session.session_id = None;
         session.key = None;
+        session.session_id = None;
+        session.account_info = None;
         session.current_model = None;
         session.mode = None;
         session.fast_mode_state = model::FastModeState::Off;
@@ -415,19 +328,14 @@ pub(super) fn handle_connection_failed_event(app: &mut App, session_key: &Sessio
         session.cancelled_turn_pending_hint = false;
         session.pending_cancel_origin = None;
         session.last_rate_limit_update = None;
-        session.account_info = None;
         session.mcp = super::super::McpState::default();
         super::turn::finalize_background_tool_calls(session, model::ToolCallStatus::Failed);
         session.active_turn_assistant_message_idx = None;
         session.turn_notice_refs.clear();
-        session.session_scope_epoch = session.session_scope_epoch.saturating_add(1);
-        // Lifecycle: rate-limit failure → Attention (drives △ glyph
-        // and signals "waiting for account reset"). Other failures
-        // → Sleeping so the spawn glyph isn't stuck on a spinner.
-        session.lifecycle_state = if is_rate_limited {
-            crate::app::session::SessionLifecycleState::Attention
+        let next_state = if is_rate_limited {
+            SessionLifecycleState::Attention
         } else {
-            crate::app::session::SessionLifecycleState::Sleeping
+            SessionLifecycleState::Sleeping
         };
         // Rate-limit fallback message in the bucket's own chat
         // buffer so a future switch shows the explainer. Other
@@ -441,6 +349,15 @@ pub(super) fn handle_connection_failed_event(app: &mut App, session_key: &Sessio
                 None,
             ));
             session.message_retained_bytes.push(0);
+        }
+        // Drop the `session` mut borrow before reaching for `app.workspace`.
+        let _ = session;
+        set_bucket_lifecycle_state(app, session_key, next_state);
+        // Mirror session_id reset onto the workspace's DomainSession
+        // so AgentHandle dispatch stops routing to a no-longer-valid
+        // session id.
+        if let Some(workspace) = app.workspace.as_ref() {
+            workspace.set_session_id_in_domain(session_key, None);
         }
         tracing::error!(
             target: crate::logging::targets::APP_SESSION,
@@ -468,20 +385,19 @@ pub(super) fn handle_connection_failed_event(app: &mut App, session_key: &Sessio
     app.pending_command_label = None;
     app.pending_command_ack = None;
     app.finalize_turn_runtime_artifacts(model::ToolCallStatus::Failed);
-    app.input.clear();
+    app.input_mut().clear();
     app.pending_submit = None;
     app.status = AppStatus::Error;
     app.clear_active_turn_assistant();
     super::notices::clear_turn_notice_tracking(app);
     // Lifecycle: rate-limit failure → Attention; other failures →
     // Sleeping. Matches the background-bucket branch.
-    if let Some(session) = app.session_mut(session_key) {
-        session.lifecycle_state = if is_rate_limited {
-            crate::app::session::SessionLifecycleState::Attention
-        } else {
-            crate::app::session::SessionLifecycleState::Sleeping
-        };
-    }
+    let next_state = if is_rate_limited {
+        crate::app::session::SessionLifecycleState::Attention
+    } else {
+        crate::app::session::SessionLifecycleState::Sleeping
+    };
+    set_bucket_lifecycle_state(app, session_key, next_state);
     if is_rate_limited {
         push_system_message_with_severity(
             app,
@@ -570,16 +486,12 @@ pub(super) fn handle_slash_command_error_event(app: &mut App, session_key: &Sess
         None,
     ));
     app.enforce_history_retention_tracked();
-    app.viewport_mut().engage_auto_scroll();
+    app.active_viewport_mut().engage_auto_scroll();
     clear_pending_command(app);
     app.resuming_session_id = None;
 }
 
-pub(super) fn handle_auth_completed_event(
-    app: &mut App,
-    session_key: &SessionKey,
-    conn: &Arc<forge_agent::AgentHandle>,
-) {
+pub(super) fn handle_auth_completed_event(app: &mut App, session_key: &SessionKey) {
     if app.active_session_key.as_ref() != Some(session_key) {
         // Auth completed for a non-active session is a degenerate case
         // — the user must have triggered /login from a session that's
@@ -613,7 +525,7 @@ pub(super) fn handle_auth_completed_event(
         outcome = "success",
     );
 
-    if let Err(e) = start_new_session(app, conn.as_ref(), SessionStartReason::Login) {
+    if let Err(e) = start_new_session(app, SessionStartReason::Login) {
         tracing::error!(
             target: crate::logging::targets::APP_AUTH,
             event_name = "login_session_restart_failed",
@@ -632,6 +544,7 @@ pub(super) fn handle_auth_completed_event(
 
 pub(super) fn handle_logout_completed_event(app: &mut App, session_key: &SessionKey) {
     if app.active_session_key.as_ref() != Some(session_key) {
+        bump_bucket_session_scope_epoch(app, session_key);
         let Some(session) = app.session_mut(session_key) else {
             tracing::warn!(
                 target: crate::logging::targets::APP_AUTH,
@@ -647,16 +560,22 @@ pub(super) fn handle_logout_completed_event(app: &mut App, session_key: &Session
         // identity state. Skip App-global UI restart (force_redraw,
         // pending_command). Foreground switching to that bucket
         // will surface the auth-required hint via AuthRequired.
-        session.session_id = None;
         session.key = None;
+        session.session_id = None;
+        session.account_info = None;
         session.current_model = None;
         session.mode = None;
         session.fast_mode_state = model::FastModeState::Off;
         session.session_usage = crate::app::state::SessionUsageState::default();
-        session.account_info = None;
         session.oauth_credentials = None;
         session.mcp = super::super::McpState::default();
-        session.session_scope_epoch = session.session_scope_epoch.saturating_add(1);
+        let _ = session;
+        // Mirror session_id reset onto the workspace's DomainSession
+        // so AgentHandle dispatch stops routing to a no-longer-valid
+        // session id.
+        if let Some(workspace) = app.workspace.as_ref() {
+            workspace.set_session_id_in_domain(session_key, None);
+        }
         tracing::info!(
             target: crate::logging::targets::APP_AUTH,
             event_name = "logout_completed_background",
@@ -683,10 +602,10 @@ pub(super) fn handle_logout_completed_event(app: &mut App, session_key: &Session
         outcome = "success",
     );
 
-    if let Some(conn) = app.conn().cloned() {
+    if app.has_active_agent() {
         app.pending_command_label = Some("Starting session...".to_owned());
         app.pending_command_ack = None;
-        if let Err(e) = start_new_session(app, conn.as_ref(), SessionStartReason::Logout) {
+        if let Err(e) = start_new_session(app, SessionStartReason::Logout) {
             tracing::error!(
                 target: crate::logging::targets::APP_AUTH,
                 event_name = "logout_session_restart_failed",
@@ -727,7 +646,6 @@ pub(super) fn handle_session_replaced_event(
     available_models: Vec<model::AvailableModel>,
     mode: Option<super::super::ModeState>,
     history_messages: &[forge_primitives::Message],
-    conn: Arc<forge_agent::AgentHandle>,
 ) {
     let session_id_for_log = session_id.to_string();
     let session_key = SessionKey::from_session_id(session_id.to_string());
@@ -736,7 +654,7 @@ pub(super) fn handle_session_replaced_event(
     super::clear_compaction_state(app, false);
     app.set_pending_cancel_origin(None);
     app.pending_auto_submit_after_cancel = false;
-    let prev_session_id = app.session_id().map(ToString::to_string);
+    let prev_session_id = app.session_id().map(|s| s.to_string());
 
     // Capture the outgoing bucket's key BEFORE `reset_for_new_session`
     // runs — that call goes through `set_session_id`, which inserts a
@@ -749,15 +667,11 @@ pub(super) fn handle_session_replaced_event(
     *app.available_models_mut() = available_models;
     reset_for_new_session(app, session_id, current_model, mode, false);
 
-    // Install the AgentHandle that the bridge routed alongside this
-    // event onto the freshly-inserted bucket. The bridge swapped its
-    // Client to the new CLI session (see
-    // `forge_sdk_worker::spawn_session`); the Arc identity is the
-    // same as before but we don't have to dig it out of the outgoing
-    // bucket — the event carries it directly.
-    if let Some(new_bucket) = app.session_mut(&session_key) {
-        new_bucket.conn = Some(conn);
-    }
+    // The AgentHandle binding lives on the workspace's `DomainSession`
+    // (post-strict-wiring) — TUI no longer caches it on the bucket.
+    // `SessionTask` re-binds the handle for the replacement session
+    // ahead of emitting `SessionReplaced`, so nothing for TUI to do
+    // here.
 
     // Apply cwd AFTER the bucket swap so it lands on the new bucket.
     // Pre-swap it would write to the now-abandoned outgoing bucket
@@ -786,22 +700,24 @@ pub(super) fn handle_session_replaced_event(
         app.sessions.remove(&prev);
     }
 
-    // Surface the replacement session in the workspace catalog so the
-    // Projects pane finds it on the next render. Without this the
-    // pane keeps showing the previous session_id as the project's
-    // lead — its `live_session` lookup hits `app.sessions` under the
-    // stale id (or fails after the orphan drop above), no project
-    // row matches the active key, and the focus highlight disappears.
-    // Source cwd from the new bucket post-`apply_session_cwd` so the
-    // recorded value matches what the welcome card / pane render
-    // resolved to.
-    let cwd_for_record =
-        app.sessions.get(&session_key).map(|b| b.cwd_raw.clone()).unwrap_or_default();
-    if !cwd_for_record.is_empty()
-        && let Some(workspace) = app.workspace.as_ref()
-    {
-        workspace.record_connected_session(&cwd_for_record, &session_id_for_log, None);
-    }
+    // Reset the DomainSession's `lifecycle_state` to `Idle`. The
+    // replacement session reuses the same `DomainSession` (Phase 5
+    // stamps the new AgentHandle onto it), which means a previously-
+    // set `Attention` from a pending permission on the outgoing
+    // session would otherwise carry forward and leave the Projects
+    // pane glyph stale until the next lifecycle event. The active-
+    // session Connected path does the same reset explicitly; this
+    // mirrors it for the SessionReplaced path.
+    super::set_bucket_lifecycle_state(
+        app,
+        &session_key,
+        crate::app::session::SessionLifecycleState::Idle,
+    );
+
+    // Workspace catalog is now updated by
+    // `Workspace::record_event_for_domain` on the
+    // `AgentEvent::SessionReplaced` arm (Phase 3a); no TUI-side
+    // write is needed here.
 
     tracing::info!(
         target: crate::logging::targets::APP_SESSION,
@@ -816,18 +732,14 @@ pub(super) fn handle_session_replaced_event(
     );
 }
 
-pub(super) fn handle_service_status_event(
-    app: &mut App,
-    severity: ServiceStatusSeverity,
-    message: &str,
-) {
+fn present_service_status(app: &mut App, severity: ServiceSeverity, message: &str) {
     let ui_severity = match severity {
-        ServiceStatusSeverity::Warning => SystemSeverity::Warning,
-        ServiceStatusSeverity::Error => SystemSeverity::Error,
+        ServiceSeverity::Warning => SystemSeverity::Warning,
+        ServiceSeverity::Error => SystemSeverity::Error,
     };
     push_system_message_with_severity(app, Some(ui_severity), message);
     match severity {
-        ServiceStatusSeverity::Warning => tracing::warn!(
+        ServiceSeverity::Warning => tracing::warn!(
             target: crate::logging::targets::APP_NETWORK,
             event_name = "service_status_applied",
             message = "service status warning applied",
@@ -835,7 +747,7 @@ pub(super) fn handle_service_status_event(
             severity = ?severity,
             service_message = %message,
         ),
-        ServiceStatusSeverity::Error => tracing::error!(
+        ServiceSeverity::Error => tracing::error!(
             target: crate::logging::targets::APP_NETWORK,
             event_name = "service_status_applied",
             message = "service status error applied",
@@ -909,11 +821,14 @@ pub(super) fn apply_session_cwd(app: &mut App, cwd_raw: String) {
 /// watcher is stopped first to prevent the bridge worker from
 /// accumulating zombie watchers across replaced sessions.
 pub(super) fn refresh_session_git_watcher(app: &App, prev_session_id: Option<String>) {
-    let Some(conn) = app.conn().cloned() else {
+    if !app.has_active_agent() {
         return;
-    };
+    }
     if let Some(prev) = prev_session_id
-        && let Err(err) = conn.stop_git_context_watch(prev)
+        && let Err(err) = app.dispatch_command(|key| forge_workspace::Command::StopGitWatch {
+            key,
+            session_id: prev,
+        })
     {
         tracing::warn!(
             target: crate::logging::targets::APP_SESSION,
@@ -925,7 +840,12 @@ pub(super) fn refresh_session_git_watcher(app: &App, prev_session_id: Option<Str
         return;
     };
     let cwd = std::path::PathBuf::from(app.cwd_raw());
-    if let Err(err) = conn.start_git_context_watch(session_id.to_string(), cwd) {
+    let session_id_str = session_id.to_string();
+    if let Err(err) = app.dispatch_command(|key| forge_workspace::Command::StartGitWatch {
+        key,
+        session_id: session_id_str,
+        cwd,
+    }) {
         tracing::warn!(
             target: crate::logging::targets::APP_SESSION,
             error = %err,
@@ -960,7 +880,7 @@ fn maybe_open_startup_session_picker(app: &mut App) {
     if !app.startup_session_picker_requested || app.startup_session_picker_resolved {
         return;
     }
-    if app.conn().is_none() || !app.startup_recent_sessions_loaded {
+    if !app.has_active_agent() || !app.startup_recent_sessions_loaded {
         return;
     }
 
@@ -980,271 +900,196 @@ fn maybe_open_startup_session_picker(app: &mut App) {
     view::set_active_view(app, ActiveView::SessionPicker);
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::app::App;
-    use crate::app::file_index::FileCandidate;
-    use std::time::{Duration, Instant, SystemTime};
+// ─────────────────────────────────────────────────────────────────
+// `SessionUpdate` reducers for the 11 session-lifecycle events.
+//
+// Each `apply_session_update_*` function consumes the corresponding
+// `forge_workspace::SessionUpdate` variant, converts wire types to
+// TUI runtime model types, and dispatches to the matching
+// presentation helper.
+// ─────────────────────────────────────────────────────────────────
 
-    /// Helper: a no-op `Arc<AgentHandle>` for tests that need to
-    /// drive `handle_connected_client_event` /
-    /// `handle_session_replaced_event` without spinning up a real
-    /// bridge. The handle's command channel is wired to a dropped
-    /// receiver, so any command sent through it is silently swallowed.
-    fn stub_conn() -> Arc<forge_agent::AgentHandle> {
-        let (handle, _rx) = forge_agent::Agent::testing_stub();
-        Arc::new(handle)
-    }
+// Each reducer below receives owned values from the SessionUpdate
+// destructure in `events::client::apply_workspace_update`. Several
+// of them merely forward references into the underlying handler;
+// `#[allow(clippy::needless_pass_by_value)]` is the standard escape
+// for that "I own this but only pass it by reference" pattern.
 
-    fn wait_for(app: &mut App, timeout: Duration, mut predicate: impl FnMut(&App) -> bool) {
-        let start = Instant::now();
-        while start.elapsed() < timeout {
-            crate::app::file_index::drain_events(app);
-            if predicate(app) {
-                return;
+#[allow(clippy::too_many_arguments, clippy::needless_pass_by_value)]
+pub(super) fn apply_session_update_connected(
+    app: &mut App,
+    key: SessionKey,
+    session_id: forge_primitives::SessionId,
+    cwd: String,
+    current_model: forge_primitives::CurrentModel,
+    available_models: Vec<forge_primitives::AvailableModel>,
+    mode: Option<forge_primitives::ModeState>,
+    history: Vec<forge_primitives::Message>,
+) {
+    use super::super::connect::type_converters::{
+        convert_current_model, convert_mode_state, map_available_models,
+    };
+    // Defensive synthetic→real migration: in production, the
+    // `SessionTask` emits `SessionUpdate::KeyRenamed` ahead of
+    // `Connected` so the bucket already lives at `key`. Tests that
+    // fire `Connected` directly (without the prior KeyRenamed) and
+    // legacy single-session bridges still rely on this reducer to
+    // do the migration when the active key is a synthetic
+    // placeholder.
+    let synthetic_to_migrate = if !app.sessions.contains_key(&key)
+        && let Some(active_key) = app.active_session_key.clone()
+        && is_synthetic_key(&active_key)
+    {
+        Some(active_key)
+    } else {
+        None
+    };
+    if let Some(synth_key) = synthetic_to_migrate.as_ref() {
+        if let Some(mut existing) = app.sessions.remove(synth_key) {
+            existing.key = Some(key.clone());
+            app.sessions.insert(key.clone(), existing);
+            app.active_session_key = Some(key.clone());
+            // Mirror the bucket re-key onto the workspace's
+            // `DomainSession` handle map so the migrated bucket's
+            // accessors (`cwd_raw`, `session_id`, …) keep resolving.
+            if let Some(workspace) = app.workspace.as_ref() {
+                workspace.rekey_domain_session(synth_key, key.clone());
             }
-            std::thread::sleep(Duration::from_millis(10));
         }
-        crate::app::file_index::drain_events(app);
-        assert!(predicate(app), "condition not met before timeout");
-    }
-
-    fn candidate(rel_path: &str) -> FileCandidate {
-        FileCandidate {
-            rel_path: rel_path.to_owned(),
-            rel_path_lower: rel_path.to_lowercase(),
-            basename_lower: rel_path.rsplit('/').next().unwrap_or(rel_path).to_lowercase(),
-            depth: rel_path.matches('/').count(),
-            modified: SystemTime::UNIX_EPOCH,
-            is_dir: rel_path.ends_with('/'),
+    } else {
+        app.sessions
+            .entry(key.clone())
+            .or_insert_with(|| crate::app::session::UiSession::new(key.clone()));
+        // Ensure a workspace-side DomainSession exists for `key`. In
+        // production, `SessionTask` already registered one before
+        // emitting `Connected`; this branch covers tests that
+        // synthesize `SessionUpdate::Connected` directly and the
+        // legacy single-session SessionReplaced shape.
+        if let Some(workspace) = app.workspace.as_ref()
+            && workspace.domain_session_for(&key).is_none()
+        {
+            workspace.register_domain_session(key.clone(), None);
         }
     }
-
-    #[test]
-    fn connected_refreshes_file_index_candidates_for_new_cwd() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        std::fs::write(dir.path().join("new.rs"), "").expect("write file");
-        let mut app = App::test_default();
-        app.file_index.generation = 3;
-        app.file_index.entries.insert("stale.rs".to_owned(), candidate("stale.rs"));
-        app.file_index.scan_finished = true;
-
-        handle_connected_client_event(
-            &mut app,
-            model::SessionId::new("session-1"),
-            dir.path().to_string_lossy().into_owned(),
-            model::CurrentModel::new("model", "model", "model").authoritative(true),
-            Vec::new(),
-            None,
-            &[],
-            None,
-            stub_conn(),
-        );
-
-        assert_eq!(app.file_index.root.as_deref(), Some(dir.path()));
-        assert!(app.file_index.generation > 3);
-        assert!(app.file_index.scan.is_some());
-        assert!(app.file_index.watch.is_some());
-        assert!(app.file_index.entries.is_empty());
-        assert!(app.mention.is_none());
-        wait_for(&mut app, Duration::from_secs(2), |app| {
-            app.file_index.scan_finished && app.file_index.entries.contains_key("new.rs")
-        });
-        assert_eq!(
-            app.file_index.entries.keys().map(String::as_str).collect::<Vec<_>>(),
-            vec!["new.rs"]
-        );
+    set_bucket_lifecycle_state(app, &key, crate::app::session::SessionLifecycleState::Idle);
+    // Match legacy single-session semantics: when there's no
+    // synthetic to migrate (single-session session-reset path /
+    // SessionReplaced semantics arriving as Connected), default to
+    // the active-path apply chain so a fresh Connected resets the
+    // visible session state. When there IS a synthetic migration,
+    // honour whether the user is still on the migrated bucket
+    // (active path) versus already switched away (background path).
+    let was_active = if synthetic_to_migrate.is_some() {
+        app.active_session_key.as_ref() == Some(&key)
+    } else {
+        true
+    };
+    // Ensure active_session_key follows when was_active is true.
+    if was_active && app.active_session_key.as_ref() != Some(&key) {
+        app.active_session_key = Some(key.clone());
     }
+    apply_connected_presentation(
+        app,
+        key,
+        model::SessionId::new(session_id.into_string()),
+        cwd,
+        convert_current_model(current_model),
+        map_available_models(available_models),
+        mode.map(convert_mode_state),
+        &history,
+        was_active,
+    );
+}
 
-    #[test]
-    fn session_replaced_refreshes_file_index_candidates_for_replaced_cwd() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        std::fs::write(dir.path().join("after.rs"), "").expect("write file");
-        let mut app = App::test_default();
-        app.file_index.generation = 8;
-        app.file_index.entries.insert("before.rs".to_owned(), candidate("before.rs"));
-        app.file_index.scan_finished = true;
+/// Sentinel-pattern check: synthetic keys (`__conn_pending__`,
+/// `__spawn_<project>__`, `__resume_<id>__`) all wrap a name in
+/// double underscores. Real claude session UUIDs never look like
+/// this.
+fn is_synthetic_key(key: &SessionKey) -> bool {
+    let s = key.as_str();
+    s.len() >= 4 && s.starts_with("__") && s.ends_with("__")
+}
 
-        handle_session_replaced_event(
-            &mut app,
-            model::SessionId::new("session-2"),
-            dir.path().to_string_lossy().into_owned(),
-            model::CurrentModel::new("model", "model", "model").authoritative(true),
-            Vec::new(),
-            None,
-            &[],
-            stub_conn(),
-        );
+#[allow(clippy::too_many_arguments, clippy::needless_pass_by_value)]
+pub(super) fn apply_session_update_session_replaced(
+    app: &mut App,
+    _key: SessionKey,
+    session_id: forge_primitives::SessionId,
+    cwd: String,
+    current_model: forge_primitives::CurrentModel,
+    available_models: Vec<forge_primitives::AvailableModel>,
+    mode: Option<forge_primitives::ModeState>,
+    history: Vec<forge_primitives::Message>,
+) {
+    use super::super::connect::type_converters::{
+        convert_current_model, convert_mode_state, map_available_models,
+    };
+    handle_session_replaced_event(
+        app,
+        model::SessionId::new(session_id.into_string()),
+        cwd,
+        convert_current_model(current_model),
+        map_available_models(available_models),
+        mode.map(convert_mode_state),
+        &history,
+    );
+}
 
-        assert_eq!(app.file_index.root.as_deref(), Some(dir.path()));
-        assert!(app.file_index.generation > 8);
-        assert!(app.file_index.scan.is_some());
-        assert!(app.file_index.watch.is_some());
-        assert!(app.file_index.entries.is_empty());
-        assert!(app.mention.is_none());
-        wait_for(&mut app, Duration::from_secs(2), |app| {
-            app.file_index.scan_finished && app.file_index.entries.contains_key("after.rs")
-        });
-        assert_eq!(
-            app.file_index.entries.keys().map(String::as_str).collect::<Vec<_>>(),
-            vec!["after.rs"]
-        );
-    }
+pub(super) fn apply_session_update_sessions_listed(
+    app: &mut App,
+    sessions: Vec<forge_primitives::SessionListEntry>,
+) {
+    handle_sessions_listed_event(app, sessions);
+}
 
-    #[test]
-    fn is_synthetic_key_recognises_double_underscore_pattern() {
-        assert!(is_synthetic_key(&forge_workspace::SessionKey::from_session_id(
-            "__conn_pending__"
-        )));
-        assert!(is_synthetic_key(&forge_workspace::SessionKey::from_session_id("__spawn_forge__")));
-        assert!(is_synthetic_key(&forge_workspace::SessionKey::from_session_id("____")));
-        // Real session UUIDs never look like sentinels.
-        assert!(!is_synthetic_key(&forge_workspace::SessionKey::from_session_id(
-            "abc123-def456-uuid-shape"
-        )));
-        // Half-open patterns aren't sentinels.
-        assert!(!is_synthetic_key(&forge_workspace::SessionKey::from_session_id("__notclosed")));
-        assert!(!is_synthetic_key(&forge_workspace::SessionKey::from_session_id("notopen__")));
-        // Empty or shorter-than-`__` prefixes don't qualify.
-        assert!(!is_synthetic_key(&forge_workspace::SessionKey::from_session_id("")));
-        assert!(!is_synthetic_key(&forge_workspace::SessionKey::from_session_id("_")));
-    }
+#[allow(clippy::needless_pass_by_value)]
+pub(super) fn apply_session_update_auth_required(
+    app: &mut App,
+    key: SessionKey,
+    method_name: String,
+    method_description: String,
+) {
+    handle_auth_required_event(app, &key, method_name, method_description);
+}
 
-    /// Connected fired against an active `__spawn_<name>__` synthetic
-    /// bucket must migrate the bucket onto the real session key —
-    /// preserving the cwd, lifecycle state, and any messages the
-    /// pre-Connect path accumulated.
-    #[test]
-    fn connected_migrates_spawn_synthetic_bucket_onto_real_key() {
-        let mut app = App::test_default();
-        // Set up a `__spawn_forge__` bucket as if the user had just
-        // clicked a sleeping project.
-        let spawn_key = forge_workspace::SessionKey::from_session_id("__spawn_forge__".to_owned());
-        let mut bucket = crate::app::session::Session::new(spawn_key.clone());
-        bucket.lifecycle_state = crate::app::session::SessionLifecycleState::Spawning;
-        bucket.cwd_raw = "~/Projects/forge".to_owned();
-        bucket.cwd = "~/Projects/forge".to_owned();
-        // Strip the test_default's pre-Connect bucket out so the
-        // active key points at our spawn bucket and nothing else.
-        app.sessions.clear();
-        app.sessions.insert(spawn_key.clone(), bucket);
-        app.active_session_key = Some(spawn_key.clone());
+#[allow(clippy::needless_pass_by_value)]
+pub(super) fn apply_session_update_connection_failed(
+    app: &mut App,
+    key: SessionKey,
+    message: String,
+    _fatal: bool,
+) {
+    handle_connection_failed_event(app, &key, &message);
+}
 
-        let dir = tempfile::tempdir().expect("tempdir");
-        handle_connected_client_event(
-            &mut app,
-            model::SessionId::new("real-uuid-9000"),
-            dir.path().to_string_lossy().into_owned(),
-            model::CurrentModel::new("model", "model", "model").authoritative(true),
-            Vec::new(),
-            None,
-            &[],
-            Some(spawn_key.clone()),
-            stub_conn(),
-        );
+#[allow(clippy::needless_pass_by_value)]
+pub(super) fn apply_session_update_slash_command_error(
+    app: &mut App,
+    key: SessionKey,
+    message: String,
+) {
+    handle_slash_command_error_event(app, &key, &message);
+}
 
-        let real_key = forge_workspace::SessionKey::from_session_id("real-uuid-9000".to_owned());
-        assert!(
-            !app.sessions.contains_key(&spawn_key),
-            "spawn synthetic bucket removed after migration"
-        );
-        assert!(app.sessions.contains_key(&real_key), "real-key bucket present after migration");
-        assert_eq!(
-            app.active_session_key.as_ref(),
-            Some(&real_key),
-            "active session is the real key after migration"
-        );
-        let migrated = app.sessions.get(&real_key).expect("real-key bucket");
-        assert_eq!(
-            migrated.cwd_raw,
-            dir.path().to_string_lossy().into_owned(),
-            "cwd updated to the Connected-supplied cwd",
-        );
-    }
+#[allow(clippy::needless_pass_by_value)]
+pub(super) fn apply_session_update_auth_completed(app: &mut App, key: SessionKey) {
+    handle_auth_completed_event(app, &key);
+}
 
-    /// Backwards-compat: when the active key is the legacy
-    /// `__conn_pending__` sentinel, Connected still migrates the
-    /// pre-Connect bucket as before.
-    #[test]
-    fn connected_migrates_legacy_pre_connect_sentinel() {
-        let mut app = App::test_default();
-        // test_default already seeds a `__conn_pending__` bucket as
-        // active; just confirm the pre-conditions then drive Connected.
-        let pre = forge_workspace::SessionKey::from_session_id(App::PRE_CONNECT_KEY);
-        assert!(app.sessions.contains_key(&pre));
-        assert_eq!(app.active_session_key.as_ref(), Some(&pre));
+#[allow(clippy::needless_pass_by_value)]
+pub(super) fn apply_session_update_logout_completed(app: &mut App, key: SessionKey) {
+    handle_logout_completed_event(app, &key);
+}
 
-        let dir = tempfile::tempdir().expect("tempdir");
-        handle_connected_client_event(
-            &mut app,
-            model::SessionId::new("real-uuid-legacy"),
-            dir.path().to_string_lossy().into_owned(),
-            model::CurrentModel::new("model", "model", "model").authoritative(true),
-            Vec::new(),
-            None,
-            &[],
-            None,
-            stub_conn(),
-        );
+#[allow(clippy::needless_pass_by_value)]
+pub(super) fn apply_session_update_service_status(
+    app: &mut App,
+    severity: forge_primitives::cloud::service_status::ServiceSeverity,
+    message: String,
+) {
+    present_service_status(app, severity, &message);
+}
 
-        let real_key = forge_workspace::SessionKey::from_session_id("real-uuid-legacy".to_owned());
-        assert!(!app.sessions.contains_key(&pre), "pre-connect synthetic bucket removed");
-        assert!(app.sessions.contains_key(&real_key));
-        assert_eq!(app.active_session_key.as_ref(), Some(&real_key));
-    }
-
-    /// `/new` (and login / logout — anything that fires SessionReplaced
-    /// after the first Connected on a bridge) must insert a fresh
-    /// bucket under the new session UUID, drop the outgoing bucket,
-    /// switch the active key, and land the new cwd on the new bucket.
-    /// Regression guard for the v0.15.0 bug where the outgoing bucket
-    /// stayed in `app.sessions`, the Projects pane resolved the
-    /// project's lead through the orphan, and `click forge` jumped
-    /// back to the previous session.
-    #[test]
-    fn session_replaced_inserts_new_bucket_and_drops_outgoing() {
-        let mut app = App::test_default();
-        let old_key = forge_workspace::SessionKey::from_session_id("old-uuid".to_owned());
-        let mut bucket = crate::app::session::Session::new(old_key.clone());
-        bucket.cwd_raw = "/tmp/old".to_owned();
-        bucket.cwd = "/tmp/old".to_owned();
-        bucket.session_id = Some(model::SessionId::new("old-uuid"));
-        app.sessions.clear();
-        app.sessions.insert(old_key.clone(), bucket);
-        app.active_session_key = Some(old_key.clone());
-
-        let dir = tempfile::tempdir().expect("tempdir");
-        handle_session_replaced_event(
-            &mut app,
-            model::SessionId::new("new-uuid"),
-            dir.path().to_string_lossy().into_owned(),
-            model::CurrentModel::new("model", "model", "model").authoritative(true),
-            Vec::new(),
-            None,
-            &[],
-            stub_conn(),
-        );
-
-        let new_key = forge_workspace::SessionKey::from_session_id("new-uuid".to_owned());
-        assert!(
-            !app.sessions.contains_key(&old_key),
-            "outgoing bucket dropped after session replacement",
-        );
-        assert!(
-            app.sessions.contains_key(&new_key),
-            "new bucket inserted under the new session id",
-        );
-        assert_eq!(
-            app.active_session_key.as_ref(),
-            Some(&new_key),
-            "active_session_key switched to the new key",
-        );
-        let new_bucket = app.sessions.get(&new_key).expect("new bucket present");
-        assert_eq!(
-            new_bucket.cwd_raw,
-            dir.path().to_string_lossy().into_owned(),
-            "cwd written to the new bucket after the swap",
-        );
-    }
+pub(super) fn apply_session_update_fatal_error(app: &mut App, error: AppError) {
+    handle_fatal_error_event(app, error);
 }

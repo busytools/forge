@@ -12,7 +12,6 @@ use crate::options::PermissionMode;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-#[non_exhaustive]
 pub struct SubagentDefinition {
     /// Short description shown to the main agent when it picks a subagent.
     pub description: String,

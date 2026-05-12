@@ -13,7 +13,6 @@ use super::{
     App, AppStatus, ChatMessage, MessageBlock, MessageRole, TextBlock, dialog::DialogState,
 };
 use crate::agent::model;
-use std::sync::Arc;
 
 pub const MAX_VISIBLE: usize = 8;
 const MAX_CANDIDATES: usize = 50;
@@ -88,7 +87,7 @@ fn push_system_message(app: &mut App, text: impl Into<String>) {
         None,
     ));
     app.enforce_history_retention_tracked();
-    app.viewport_mut().engage_auto_scroll();
+    app.active_viewport_mut().engage_auto_scroll();
 }
 
 fn push_user_message(app: &mut App, text: impl Into<String>) {
@@ -99,31 +98,30 @@ fn push_user_message(app: &mut App, text: impl Into<String>) {
         None,
     ));
     app.enforce_history_retention_tracked();
-    app.viewport_mut().engage_auto_scroll();
+    app.active_viewport_mut().engage_auto_scroll();
 }
 
-fn require_connection(
-    app: &mut App,
-    not_connected_msg: &'static str,
-) -> Option<Arc<forge_agent::AgentHandle>> {
-    let Some(conn) = app.conn().cloned() else {
+fn require_connection(app: &mut App, not_connected_msg: &'static str) -> bool {
+    if !app.has_active_agent() {
         push_system_message(app, not_connected_msg);
-        return None;
-    };
-    Some(conn)
+        return false;
+    }
+    true
 }
 
 fn require_active_session(
     app: &mut App,
     not_connected_msg: &'static str,
     no_session_msg: &'static str,
-) -> Option<(Arc<forge_agent::AgentHandle>, model::SessionId)> {
-    let conn = require_connection(app, not_connected_msg)?;
-    let Some(session_id) = app.session_id().cloned() else {
+) -> Option<model::SessionId> {
+    if !require_connection(app, not_connected_msg) {
+        return None;
+    }
+    let Some(session_id) = app.session_id() else {
         push_system_message(app, no_session_msg);
         return None;
     };
-    Some((conn, session_id))
+    Some(session_id)
 }
 
 /// Block the input field while a slash command is in flight.
@@ -170,7 +168,7 @@ mod tests {
     #[test]
     fn advertised_command_is_forwarded() {
         let mut app = App::test_default();
-        app.active_session_mut().unwrap().available_commands =
+        app.try_active_bucket_mut().unwrap().available_commands =
             vec![model::AvailableCommand::new("/help", "Help")];
         let consumed = try_handle_submit(&mut app, "/help");
         assert!(!consumed);
@@ -314,7 +312,7 @@ mod tests {
     #[test]
     fn model_argument_candidates_are_dynamic() {
         let mut app = App::test_default();
-        app.active_session_mut().unwrap().available_models = vec![
+        app.try_active_bucket_mut().unwrap().available_models = vec![
             crate::agent::model::AvailableModel::new("sonnet", "Claude Sonnet")
                 .description("Balanced coding model"),
             crate::agent::model::AvailableModel::new("opus", "Claude Opus"),
@@ -329,7 +327,7 @@ mod tests {
     #[test]
     fn model_argument_candidates_hide_sdk_default_option() {
         let mut app = App::test_default();
-        app.active_session_mut().unwrap().available_models = vec![
+        app.try_active_bucket_mut().unwrap().available_models = vec![
             crate::agent::model::AvailableModel::new("default", "Default")
                 .description("Default (recommended)"),
             crate::agent::model::AvailableModel::new("sonnet", "Claude Sonnet"),
@@ -352,7 +350,7 @@ mod tests {
                 "ANTHROPIC_DEFAULT_OPUS_MODEL": "claude-opus-4-5-20251101"
             }
         });
-        app.active_session_mut().unwrap().available_models = vec![
+        app.try_active_bucket_mut().unwrap().available_models = vec![
             crate::agent::model::AvailableModel::new("opus", "Opus")
                 .description("Opus 4.7 · Most capable for complex work"),
         ];
@@ -370,7 +368,7 @@ mod tests {
     #[test]
     fn model_argument_candidates_keep_sdk_opus_description_when_unpinned() {
         let mut app = App::test_default();
-        app.active_session_mut().unwrap().available_models = vec![
+        app.try_active_bucket_mut().unwrap().available_models = vec![
             crate::agent::model::AvailableModel::new("opus", "Opus")
                 .description("Opus 4.7 · Most capable for complex work"),
         ];
@@ -388,8 +386,8 @@ mod tests {
     #[test]
     fn non_variable_command_argument_mode_is_disabled() {
         let mut app = App::test_default();
-        app.input.set_text("/compact now");
-        let _ = app.input.set_cursor(0, "/compact now".chars().count());
+        app.input_mut().set_text("/compact now");
+        let _ = app.input_mut().set_cursor(0, "/compact now".chars().count());
         sync_with_cursor(&mut app);
         assert!(app.slash.is_none());
     }
@@ -405,8 +403,8 @@ mod tests {
                 name: "Plan".to_owned(),
             }],
         }));
-        app.input.set_text("/mode xyz");
-        let _ = app.input.set_cursor(0, "/mode xyz".chars().count());
+        app.input_mut().set_text("/mode xyz");
+        let _ = app.input_mut().set_cursor(0, "/mode xyz".chars().count());
         sync_with_cursor(&mut app);
         assert!(app.slash.is_none());
     }
@@ -414,8 +412,8 @@ mod tests {
     #[test]
     fn confirm_selection_replaces_only_active_argument_token() {
         let mut app = App::test_default();
-        app.input.set_text("/resume old-id trailing");
-        let _ = app.input.set_cursor(0, "/resume old-id".chars().count());
+        app.input_mut().set_text("/resume old-id trailing");
+        let _ = app.input_mut().set_cursor(0, "/resume old-id".chars().count());
         app.slash = Some(SlashState {
             trigger_row: 0,
             trigger_col: 8,
@@ -435,7 +433,7 @@ mod tests {
 
         confirm_selection(&mut app);
 
-        assert_eq!(app.input.text(), "/resume new-id trailing");
+        assert_eq!(app.input().text(), "/resume new-id trailing");
     }
 
     #[test]
@@ -489,8 +487,7 @@ mod tests {
         tokio::task::LocalSet::new()
             .run_until(async {
                 let mut app = App::test_default();
-                let (handle, mut rx) = forge_agent::Agent::testing_stub();
-                app.set_conn(Some(std::sync::Arc::new(handle)));
+                let mut rx = app.install_testing_stub();
 
                 let consumed = try_handle_submit(&mut app, "/resume abc-123");
                 assert!(consumed);
@@ -511,8 +508,7 @@ mod tests {
         tokio::task::LocalSet::new()
             .run_until(async {
                 let mut app = App::test_default();
-                let (handle, _rx) = forge_agent::Agent::testing_stub();
-                app.set_conn(Some(std::sync::Arc::new(handle)));
+                let _rx = app.install_testing_stub();
                 app.set_session_id(Some("sess-1".into()));
                 app.set_mode(Some(super::super::ModeState {
                     current_mode_id: "code".to_owned(),
@@ -543,8 +539,7 @@ mod tests {
         tokio::task::LocalSet::new()
             .run_until(async {
                 let mut app = App::test_default();
-                let (handle, _rx) = forge_agent::Agent::testing_stub();
-                app.set_conn(Some(std::sync::Arc::new(handle)));
+                let _rx = app.install_testing_stub();
                 app.set_session_id(Some("sess-1".into()));
                 app.set_current_model(Some(
                     crate::agent::model::CurrentModel::new("old-model", "old-model", "old-model")
@@ -568,8 +563,7 @@ mod tests {
         tokio::task::LocalSet::new()
             .run_until(async {
                 let mut app = App::test_default();
-                let (handle, _rx) = forge_agent::Agent::testing_stub();
-                app.set_conn(Some(std::sync::Arc::new(handle)));
+                let _rx = app.install_testing_stub();
 
                 let consumed = try_handle_submit(&mut app, "/new");
                 assert!(consumed);
@@ -601,22 +595,29 @@ mod tests {
     }
 
     #[test]
-    fn compact_with_active_session_sets_compacting_without_success_pending() {
+    fn compact_with_active_session_falls_through_without_touching_state() {
+        // `/compact` is wire-driven: the CLI emits `status:"compacting"`
+        // as the first response frame, which `apply_session_status_update`
+        // translates into `is_compacting = true`. The slash handler
+        // returns `false` so `/compact` flows through as a regular
+        // prompt; it does NOT optimistically set state.
         let mut app = App::test_default();
-        let (handle, _rx) = forge_agent::Agent::testing_stub();
-        app.set_conn(Some(std::sync::Arc::new(handle)));
+        let _rx = app.install_testing_stub();
         app.set_session_id(Some(model::SessionId::new("session-1")));
 
         let consumed = try_handle_submit(&mut app, "/compact");
         assert!(!consumed);
         assert!(!app.pending_compact_clear());
-        assert!(app.is_compacting());
+        assert!(
+            !app.is_compacting(),
+            "slash handler must not optimistically set is_compacting; wire status drives it"
+        );
     }
 
     #[test]
     fn compact_with_args_returns_usage_message() {
         let mut app = App::test_default();
-        app.messages_mut().push(ChatMessage::new(
+        app.active_messages_mut().push(ChatMessage::new(
             MessageRole::User,
             vec![MessageBlock::Text(TextBlock::from_complete("keep"))],
             None,
@@ -684,7 +685,7 @@ mod tests {
     #[test]
     fn confirm_selection_with_invalid_trigger_row_is_noop() {
         let mut app = App::test_default();
-        app.input.set_text("/mode");
+        app.input_mut().set_text("/mode");
         app.slash = Some(SlashState {
             trigger_row: 99,
             trigger_col: 0,
@@ -700,7 +701,7 @@ mod tests {
 
         confirm_selection(&mut app);
 
-        assert_eq!(app.input.text(), "/mode");
+        assert_eq!(app.input().text(), "/mode");
     }
 
     #[test]
