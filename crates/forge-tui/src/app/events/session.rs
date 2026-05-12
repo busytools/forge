@@ -672,6 +672,20 @@ pub(super) fn handle_session_replaced_event(
         app.sessions.remove(&prev);
     }
 
+    // Reset the DomainSession's `lifecycle_state` to `Idle`. The
+    // replacement session reuses the same `DomainSession` (Phase 5
+    // stamps the new AgentHandle onto it), which means a previously-
+    // set `Attention` from a pending permission on the outgoing
+    // session would otherwise carry forward and leave the Projects
+    // pane glyph stale until the next lifecycle event. The active-
+    // session Connected path does the same reset explicitly; this
+    // mirrors it for the SessionReplaced path.
+    super::set_lifecycle_state_in_workspace(
+        app,
+        &session_key,
+        crate::app::session::SessionLifecycleState::Idle,
+    );
+
     // Workspace catalog is now updated by
     // `Workspace::record_event_for_domain` on the
     // `AgentEvent::SessionReplaced` arm (Phase 3a); no TUI-side
