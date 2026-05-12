@@ -46,8 +46,11 @@ fn handle_compact_submit(app: &mut App, args: &[&str]) -> bool {
     {
         return true;
     }
-
-    app.set_is_compacting(true);
+    // The `/compact` text falls through as a normal user message —
+    // the CLI emits `status:"compacting"` as its first response
+    // frame, which `apply_session_status_update` translates into
+    // `is_compacting = true` via the wire path. No optimistic-set
+    // needed; verified reliable against the sdk_compact baseline.
     false
 }
 

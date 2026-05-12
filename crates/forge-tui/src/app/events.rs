@@ -248,8 +248,11 @@ pub fn apply_current_mode_update(app: &mut App, update: &model::CurrentModeUpdat
 }
 
 pub(super) fn apply_session_status_update(app: &mut App, status: model::SessionStatus) {
-    // TODO(runtime-verification): confirm in real SDK sessions that compaction
-    // status updates are emitted consistently; if not, add a fallback indicator.
+    // The CLI emits `status:"compacting"` as the first inbound frame
+    // after a `/compact` user message and `status:null` when
+    // compaction settles — verified against the sdk_compact wire
+    // baseline. `is_compacting` is driven purely from this path; no
+    // optimistic-set in `handle_compact_submit` is needed.
     let was_compacting = app.is_compacting();
     if matches!(status, model::SessionStatus::Compacting) {
         app.set_is_compacting(true);
@@ -2806,6 +2809,21 @@ mod tests {
         assert!(!app.is_compacting());
         assert!(!app.pending_compact_clear());
         assert!(app.messages().is_empty());
+    }
+
+    #[test]
+    fn session_status_compacting_sets_is_compacting_via_wire() {
+        // After dropping the optimistic-set in handle_compact_submit,
+        // `is_compacting` is driven exclusively by the wire status
+        // frame. Verified via the captured sdk_compact baseline: the
+        // CLI emits `status:"compacting"` as the first inbound frame
+        // after `/compact` flows out.
+        let mut app = make_test_app();
+        assert!(!app.is_compacting());
+
+        send_msg(&mut app, system_message("status", serde_json::json!({"status": "compacting"})));
+
+        assert!(app.is_compacting(), "wire status=compacting must flip is_compacting");
     }
 
     #[test]

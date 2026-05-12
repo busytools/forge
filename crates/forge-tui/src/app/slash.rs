@@ -595,7 +595,12 @@ mod tests {
     }
 
     #[test]
-    fn compact_with_active_session_sets_compacting_without_success_pending() {
+    fn compact_with_active_session_falls_through_without_touching_state() {
+        // `/compact` is wire-driven: the CLI emits `status:"compacting"`
+        // as the first response frame, which `apply_session_status_update`
+        // translates into `is_compacting = true`. The slash handler
+        // returns `false` so `/compact` flows through as a regular
+        // prompt; it does NOT optimistically set state.
         let mut app = App::test_default();
         let _rx = app.install_testing_stub();
         app.set_session_id(Some(model::SessionId::new("session-1")));
@@ -603,7 +608,10 @@ mod tests {
         let consumed = try_handle_submit(&mut app, "/compact");
         assert!(!consumed);
         assert!(!app.pending_compact_clear());
-        assert!(app.is_compacting());
+        assert!(
+            !app.is_compacting(),
+            "slash handler must not optimistically set is_compacting; wire status drives it"
+        );
     }
 
     #[test]
