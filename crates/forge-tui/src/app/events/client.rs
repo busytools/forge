@@ -1106,13 +1106,10 @@ mod tests {
     }
 
     fn make_creds() -> forge_primitives::cloud::oauth_credentials::OauthCredentials {
-        // Round-trip through serde_json so the non-exhaustive
-        // constructor doesn't trip in tests.
-        let json = serde_json::json!({
-            "access_token": "tok",
-            "expires_at": null
-        });
-        serde_json::from_value(json).expect("OauthCredentials JSON-deserialise")
+        forge_primitives::cloud::oauth_credentials::OauthCredentials {
+            access_token: "tok".to_owned(),
+            expires_at: None,
+        }
     }
 
     #[test]
