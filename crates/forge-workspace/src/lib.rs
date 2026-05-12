@@ -57,7 +57,7 @@
 //!
 //! Tightening this (specific [`Workspace`] methods in place of each
 //! wildcard re-export) is a "Phase 7 narrow agent surface" follow-up.
-//! Not a current TODO; documented for future reference.
+//! Not on the current roadmap; documented for future reference.
 
 mod account;
 mod config;

@@ -866,15 +866,12 @@ fn maybe_open_startup_session_picker(app: &mut App) {
 }
 
 // ─────────────────────────────────────────────────────────────────
-// Phase 3a — `SessionUpdate` reducers.
+// `SessionUpdate` reducers for the 11 session-lifecycle events.
 //
 // Each `apply_session_update_*` function consumes the corresponding
 // `forge_workspace::SessionUpdate` variant, converts wire types to
-// TUI runtime model types, and dispatches to the existing
-// presentation handler. Phase 4 retires the `handle_*_client_event`
-// path entirely; for now these reducers replace the
-// `ClientEvent` dispatch for the 11 session-lifecycle events whose
-// dual-emit on `bridge_lifecycle` has been disabled.
+// TUI runtime model types, and dispatches to the matching
+// presentation helper.
 // ─────────────────────────────────────────────────────────────────
 
 // Each reducer below receives owned values from the SessionUpdate
