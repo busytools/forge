@@ -49,13 +49,12 @@ fn busy_view_test_app() -> App {
         candidates: vec![],
         dialog: DialogState::default(),
     });
-    app.set_show_todo_panel(true);
     *app.todos_mut() = vec![TodoItem {
         content: "todo".to_owned(),
         status: TodoStatus::Pending,
         active_form: "todo".to_owned(),
     }];
-    app.claim_focus_target(FocusTarget::TodoList);
+    app.set_todo_verification_nudge(true);
     app.pending_interaction_ids_mut().push("perm-1".to_owned());
     app.claim_focus_target(FocusTarget::Permission);
     app
@@ -117,7 +116,12 @@ fn set_active_view_keeps_permission_unfocused_when_returning_to_chat_with_draft(
     set_active_view(&mut app, ActiveView::Chat);
 
     assert_eq!(app.active_view, ActiveView::Chat);
-    assert_eq!(app.focus_owner(), crate::app::FocusOwner::TodoList);
+    // The test's invariant is "Permission isn't auto-claimed on
+    // view-return"; previously the focus dropped to TodoList. With
+    // the TodoList target retired (moved into the Inspector pane,
+    // mouse-only), the fallback is Input — the surviving claim is
+    // released across the view transition.
+    assert_eq!(app.focus_owner(), crate::app::FocusOwner::Input);
 }
 
 #[test]

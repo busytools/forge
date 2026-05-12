@@ -235,11 +235,6 @@ fn build_key_help_items(app: &App) -> Vec<(String, String)> {
     }
     let focus_owner = app.focus_owner();
 
-    if app.show_todo_panel() && !app.todos().is_empty() && app.pending_interaction_ids().is_empty()
-    {
-        items.push(("Tab".to_owned(), "Toggle todo focus".to_owned()));
-    }
-
     if !app.pending_interaction_ids().is_empty() {
         match focus_owner {
             FocusOwner::Input => {
@@ -252,9 +247,8 @@ fn build_key_help_items(app: &App) -> Vec<(String, String)> {
         }
     }
 
-    // Input + navigation (active outside todo-list and mention focus)
-    if focus_owner != FocusOwner::TodoList
-        && focus_owner != FocusOwner::Mention
+    // Input + navigation (active outside mention/help/permission focus)
+    if focus_owner != FocusOwner::Mention
         && focus_owner != FocusOwner::Help
         && focus_owner != FocusOwner::Permission
     {
@@ -274,8 +268,6 @@ fn build_key_help_items(app: &App) -> Vec<(String, String)> {
     // Turn control
     if matches!(app.status, crate::app::AppStatus::Thinking | crate::app::AppStatus::Running) {
         items.push(("Esc".to_owned(), "Cancel current turn".to_owned()));
-    } else if focus_owner == FocusOwner::TodoList {
-        items.push(("Esc".to_owned(), "Exit todo focus".to_owned()));
     } else {
         items.push(("Esc".to_owned(), "No-op (idle)".to_owned()));
     }
@@ -297,10 +289,6 @@ fn build_key_help_items(app: &App) -> Vec<(String, String)> {
             items.push(("Esc".to_owned(), "Reject".to_owned()));
         }
     }
-    if focus_owner == FocusOwner::TodoList {
-        items.push(("Up/Down".to_owned(), "Select todo (todo focus)".to_owned()));
-    }
-
     items
 }
 
@@ -585,7 +573,7 @@ fn build_two_column_items(
 #[cfg(test)]
 mod tests {
     use super::build_help_items;
-    use crate::app::{App, AppStatus, FocusTarget, HelpView, TodoItem, TodoStatus};
+    use crate::app::{App, AppStatus, FocusTarget, HelpView};
 
     fn has_item(items: &[(String, String)], key: &str, desc: &str) -> bool {
         items.iter().any(|(k, d)| k == key && d == desc)
@@ -593,22 +581,6 @@ mod tests {
 
     fn has_key(items: &[(String, String)], key: &str) -> bool {
         items.iter().any(|(k, _)| k == key)
-    }
-
-    #[test]
-    fn tab_toggle_only_shown_when_todos_available() {
-        let mut app = App::test_default();
-        let items = build_help_items(&app);
-        assert!(!has_item(&items, "Tab", "Toggle todo focus"));
-
-        app.set_show_todo_panel(true);
-        app.todos_mut().push(TodoItem {
-            content: "Task".into(),
-            status: TodoStatus::Pending,
-            active_form: String::new(),
-        });
-        let items = build_help_items(&app);
-        assert!(has_item(&items, "Tab", "Toggle todo focus"));
     }
 
     #[test]

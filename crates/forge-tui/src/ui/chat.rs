@@ -640,6 +640,15 @@ fn render_scrollbar_overlay(
     content_height: usize,
     viewport_height: usize,
 ) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+
+    // Thumb only — no rail. The dim `▕` rail looked visually busy
+    // sitting against the Inspector pane to its right; the thumb
+    // alone is enough to indicate scroll position when content
+    // overflows. When the content fits the whole right column is
+    // empty.
     let Some(target) = crate::app::compute_scrollbar_geometry(
         content_height,
         viewport_height,
@@ -649,23 +658,12 @@ fn render_scrollbar_overlay(
         viewport.scrollbar_thumb_size = 0.0;
         return;
     };
-    if area.width == 0 || area.height == 0 {
-        return;
-    }
     let geometry = smooth_scrollbar_geometry(viewport, target, viewport_height, reduced_motion);
-    let rail_style = Style::default().add_modifier(Modifier::DIM);
     let thumb_style = Style::default().fg(theme::ROLE_ASSISTANT);
     let rail_x = area.right().saturating_sub(1);
-    let buf = frame.buffer_mut();
-    for row in 0..area.height as usize {
-        let y = area.y.saturating_add(row as u16);
-        if let Some(cell) = buf.cell_mut((rail_x, y)) {
-            cell.set_symbol("\u{2595}");
-            cell.set_style(rail_style);
-        }
-    }
     let thumb_top = geometry.thumb_top.min(area.height.saturating_sub(1) as usize);
     let thumb_end = thumb_top.saturating_add(geometry.thumb_size).min(area.height as usize);
+    let buf = frame.buffer_mut();
     for row in thumb_top..thumb_end {
         let y = area.y.saturating_add(row as u16);
         if let Some(cell) = buf.cell_mut((rail_x, y)) {

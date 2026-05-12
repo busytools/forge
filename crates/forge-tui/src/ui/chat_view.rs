@@ -1,4 +1,6 @@
-use super::{autocomplete, chat, help, input, layout, projects_pane, theme, todo, top_bar};
+use super::{
+    autocomplete, chat, help, input, inspector_pane, layout, projects_pane, theme, top_bar,
+};
 use crate::app::App;
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -14,10 +16,6 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     crate::perf::mark_with("ui::frame_width", "cols", usize::from(frame_area.width));
     crate::perf::mark_with("ui::frame_height", "rows", usize::from(frame_area.height));
 
-    let todo_height = {
-        let _t = app.perf.as_ref().map(|p| p.start("ui::todo_height"));
-        todo::compute_height(app)
-    };
     help::sync_geometry_state(app, frame_area.width);
     let help_height = {
         let _t = app.perf.as_ref().map(|p| p.start("ui::help_height"));
@@ -32,9 +30,9 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         layout::compute(
             frame_area,
             input_visual_lines,
-            todo_height,
             help_height,
             app.projects_pane_visible,
+            app.inspector_pane_visible,
         )
     };
     // Cache for the mouse handler: pane click math reads
@@ -42,53 +40,58 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     // Projects pane before consulting `pane_hit_targets`.
     app.layout = areas.clone();
 
-    // Narrow tier with the overlay open replaces the chat body with
-    // the Projects overlay. Wide / Medium tiers and Narrow-with-
-    // overlay-closed render the chat normally.
-    let overlay_active = app.projects_pane_overlay_open && areas.top_bar.is_some();
+    // Narrow tier with either overlay open replaces the chat body
+    // with the overlay's full-screen content. Wide / Medium tiers
+    // and Narrow-with-no-overlay render the chat normally.
+    let projects_overlay = app.projects_pane_overlay_open && areas.top_bar.is_some();
+    let inspector_overlay = app.inspector_pane_overlay_open && areas.top_bar.is_some();
 
-    if !overlay_active {
+    if !projects_overlay && !inspector_overlay {
         let _t = app.perf.as_ref().map(|p| p.start("ui::chat"));
         chat::render(frame, areas.body, app);
     }
 
-    if overlay_active {
-        // Overlay path: the projects_pane::render_overlay clears
-        // `pane_hit_targets` itself before stamping new ones.
+    if projects_overlay {
         let _t = app.perf.as_ref().map(|p| p.start("ui::projects_overlay"));
         let projects = app.workspace.as_ref().map(|ws| ws.list_projects()).unwrap_or_default();
         projects_pane::render_overlay(frame, areas.body, app, &projects);
-    } else if let Some(pane_area) = areas.pane {
-        let _t = app.perf.as_ref().map(|p| p.start("ui::projects_pane"));
-        let projects = app.workspace.as_ref().map(|ws| ws.list_projects()).unwrap_or_default();
-        projects_pane::render(frame, pane_area, app, &projects);
-        // Vertical separator column between the pane and the chat
-        // column — full-height `│` glyphs in DIM so the eye picks up
-        // the boundary without competing with content on either side.
-        if let Some(sep_area) = areas.pane_separator {
-            render_pane_separator(frame, sep_area);
-        }
+    } else if inspector_overlay {
+        let _t = app.perf.as_ref().map(|p| p.start("ui::inspector_overlay"));
+        inspector_pane::render_overlay(frame, areas.body, app);
     } else {
-        // No pane and no overlay this frame; clear stamps so a stale
-        // set from the previous (visible) frame can't be hit-tested.
-        // The top-bar render below will re-stamp the icon target.
-        app.pane_hit_targets.clear();
+        // No overlay this frame. Render any visible inline side panes.
+        // Each pane renderer manages its own hit-target stamping.
+        if let Some(pane_area) = areas.pane {
+            let _t = app.perf.as_ref().map(|p| p.start("ui::projects_pane"));
+            let projects = app.workspace.as_ref().map(|ws| ws.list_projects()).unwrap_or_default();
+            projects_pane::render(frame, pane_area, app, &projects);
+            if let Some(sep_area) = areas.pane_separator {
+                render_pane_separator(frame, sep_area);
+            }
+        } else if areas.top_bar.is_none() {
+            // No pane and no overlay this frame; clear stamps so a stale
+            // set from the previous (visible) frame can't be hit-tested.
+            // The top-bar render below will re-stamp the icon target.
+            app.pane_hit_targets.clear();
+        }
+        if let Some(pane_right_area) = areas.pane_right {
+            let _t = app.perf.as_ref().map(|p| p.start("ui::inspector_pane"));
+            inspector_pane::render(frame, pane_right_area, app);
+            if let Some(sep_area) = areas.pane_right_separator {
+                render_pane_separator(frame, sep_area);
+            }
+        }
     }
 
-    // Narrow-tier top bar. Always last so its `▤` icon hit-target
-    // sits at the end of `pane_hit_targets` and doesn't get stomped
-    // by the inline-pane / overlay clearing above.
+    // Narrow-tier top bar. Always last so its icon hit-targets sit at
+    // the end of `pane_hit_targets` and don't get stomped by the
+    // inline-pane / overlay clearing above.
     if let Some(top_bar_area) = areas.top_bar {
         let _t = app.perf.as_ref().map(|p| p.start("ui::top_bar"));
         top_bar::render(frame, top_bar_area, app);
     }
 
     render_separator(frame, areas.input_sep);
-
-    if areas.todo.height > 0 {
-        let _t = app.perf.as_ref().map(|p| p.start("ui::todo"));
-        todo::render(frame, areas.todo, app);
-    }
 
     {
         let _t = app.perf.as_ref().map(|p| p.start("ui::input"));
@@ -108,8 +111,11 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     }
 
     // Chat footer (mode/model/fast/cwd/branch/usage) used to render
-    // here; it moved to the bottom of the Projects pane in this PR.
-    // See `projects_pane::render_account_status_footer`.
+    // here; it moved to the bottom of the Projects pane in PR #108.
+    // See `projects_pane::render_account_status_footer`. The todo
+    // panel that used to sit above the input is gone too — todos
+    // now render in the Inspector pane (right side) via
+    // `inspector_pane::render`.
 
     render_perf_fps_overlay(frame, frame_area, frame_area.y, app);
 }
@@ -123,9 +129,9 @@ fn render_separator(frame: &mut Frame, area: Rect) {
     frame.render_widget(Paragraph::new(line), area);
 }
 
-/// Render the full-height `│` column between the Projects pane and
-/// the chat column in DIM (DarkGray) — matches the rest of the
-/// pane's structural chrome (the underline rule + section headers).
+/// Render the full-height `│` column between a side pane and the
+/// chat column in DIM (DarkGray) — matches the rest of the pane's
+/// structural chrome (the underline rule + section headers).
 fn render_pane_separator(frame: &mut Frame, area: Rect) {
     if area.width == 0 || area.height == 0 {
         return;

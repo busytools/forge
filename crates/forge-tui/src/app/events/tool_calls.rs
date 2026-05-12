@@ -13,6 +13,7 @@ pub(super) fn handle_tool_call(app: &mut App, tc: model::ToolCall) {
     let scope = register_tool_call_scope(app, &id_str, &sdk_tool_name, parent_tool_use_id);
     log_tool_call_received(app, &tc, &scope, &sdk_tool_name);
     maybe_apply_todo_write_from_tool_call(app, &id_str, &sdk_tool_name, tc.raw_input.as_ref());
+    sync_todo_verification_nudge(app, &sdk_tool_name, tc.output_metadata.as_ref());
     update_subagent_scope_state(app, &scope, tc.status, &id_str);
 
     let tool_info = build_tool_info_from_tool_call(app, tc, sdk_tool_name, &scope);
@@ -124,6 +125,25 @@ fn maybe_apply_todo_write_from_tool_call(
     }
 }
 
+/// Update the per-session `todo_verification_nudge` flag from a
+/// `TodoWrite` tool call's output metadata. Called both for the
+/// initial tool call and on tool-update arrivals so the flag tracks
+/// the latest metadata payload. Non-`TodoWrite` calls are no-ops.
+pub(super) fn sync_todo_verification_nudge(
+    app: &mut App,
+    sdk_tool_name: &str,
+    output_metadata: Option<&model::ToolOutputMetadata>,
+) {
+    if sdk_tool_name != "TodoWrite" {
+        return;
+    }
+    let nudge_active = output_metadata
+        .and_then(|meta| meta.todo_write.as_ref())
+        .and_then(|tw| tw.verification_nudge_needed)
+        .unwrap_or(false);
+    app.set_todo_verification_nudge(nudge_active);
+}
+
 pub(super) fn update_subagent_scope_state(
     app: &mut App,
     scope: &ToolCallScope,
@@ -165,6 +185,10 @@ fn build_tool_info_from_tool_call(
         None
     };
 
+    // TodoWrite tool calls are silent in the chat scrollback — the
+    // Inspector pane is the sole surface for the todo list. Marking
+    // the tool call hidden suppresses its row in `ui::message`.
+    let is_todowrite = sdk_tool_name == "TodoWrite";
     let mut tool_info = ToolCallInfo {
         id: tc.tool_call_id,
         title: shorten_tool_title(&tc.title, &app.cwd_raw()),
@@ -175,7 +199,7 @@ fn build_tool_info_from_tool_call(
         task_metadata: tc.task_metadata,
         status: tc.status,
         content: tc.content,
-        hidden: matches!(scope, ToolCallScope::SubagentChild { .. }),
+        hidden: is_todowrite || matches!(scope, ToolCallScope::SubagentChild { .. }),
         terminal_id,
         terminal_command,
         terminal_output: None,
