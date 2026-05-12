@@ -28,13 +28,48 @@ struct TurnExitState {
     show_interrupted_hint: bool,
 }
 
-pub(super) fn handle_permission_request_event(
+/// Test-only entry that drives the presentation pipeline with a
+/// model-side request, skipping the wire-to-model conversion.
+#[cfg(feature = "testing")]
+#[allow(clippy::needless_pass_by_value)]
+pub fn handle_permission_request_event(
     app: &mut App,
+    session_key: SessionKey,
+    tool_id: String,
     request: model::RequestPermissionRequest,
-    response_tx: tokio::sync::oneshot::Sender<model::RequestPermissionResponse>,
+) {
+    apply_permission_request_presentation(app, &session_key, &tool_id, request);
+}
+
+/// Phase 3c — `SessionUpdate::PermissionRequest` reducer. Converts
+/// the workspace's wire-shape `PermissionRequest` into the
+/// model-side `RequestPermissionRequest` and delegates to the
+/// shared presentation helper.
+#[allow(clippy::needless_pass_by_value)]
+pub(super) fn apply_session_update_permission_request(
+    app: &mut App,
+    key: SessionKey,
+    tool_id: String,
+    request: forge_primitives::permission_ui::PermissionRequest,
+) {
+    let session_id = key.as_str().to_owned();
+    let (model_request, _converted_tool_id) =
+        crate::app::connect::type_converters::map_permission_request(&session_id, request);
+    apply_permission_request_presentation(app, &key, &tool_id, model_request);
+}
+
+/// Shared body for the legacy ClientEvent path and the new
+/// SessionUpdate reducer. Looks up the target bucket by `key` and
+/// applies the permission request to it directly — no temp-swap on
+/// `active_session_key`. Active vs background routing happens inside
+/// [`apply_permission_request_to_bucket`].
+fn apply_permission_request_presentation(
+    app: &mut App,
+    session_key: &SessionKey,
+    tool_id: &str,
+    request: model::RequestPermissionRequest,
 ) {
     let session_id = request.session_id.to_string();
-    let tool_id = request.tool_call.tool_call_id.clone();
     let options = request.options.clone();
 
     // Lifecycle: a permission prompt landing on a non-active session
@@ -42,52 +77,51 @@ pub(super) fn handle_permission_request_event(
     // Attention so the Projects pane shows the △ glyph. Active
     // sessions don't need this — the inline permission card itself
     // surfaces the prompt to the user.
-    let request_key = SessionKey::from_session_id(session_id.clone());
-    if app.active_session_key.as_ref() != Some(&request_key)
-        && let Some(session) = app.session_mut(&request_key)
-    {
-        session.lifecycle_state = crate::app::session::SessionLifecycleState::Attention;
+    if app.active_session_key.as_ref() != Some(session_key) {
+        super::set_bucket_lifecycle_state(
+            app,
+            session_key,
+            crate::app::session::SessionLifecycleState::Attention,
+        );
     }
 
-    // Same temp-swap trick as `handle_question_request_event`: a
-    // permission prompt landing on a background bucket needs to look
-    // up `tool_call_id` in THAT bucket's `tool_call_index`, not the
-    // active session's. Without the swap, background permission
-    // prompts auto-`reject_permission_request` on lookup miss and
-    // the user finds the prompt already gone when they switch in.
-    let saved_active = app.active_session_key.clone();
-    let saved_input = app.input.text();
-    let saved_status = app.status.clone();
-    let needs_temp_swap = app.active_session_key.as_ref() != Some(&request_key)
-        && app.sessions.contains_key(&request_key);
-    if needs_temp_swap {
-        app.active_session_key = Some(request_key.clone());
-    }
+    apply_permission_request_to_bucket(app, session_key, request, &session_id, tool_id, &options);
+}
 
-    apply_permission_request_to_active_bucket(
-        app,
-        request,
-        response_tx,
-        &session_id,
-        &tool_id,
-        &options,
-    );
-
-    if needs_temp_swap {
-        app.active_session_key = saved_active;
-        app.input.clear();
-        if !saved_input.is_empty() {
-            app.input.set_text(&saved_input);
-        }
-        app.status = saved_status;
-        app.needs_redraw = true;
+fn apply_permission_request_to_bucket(
+    app: &mut App,
+    session_key: &SessionKey,
+    request: model::RequestPermissionRequest,
+    session_id: &str,
+    tool_id: &str,
+    options: &[model::PermissionOption],
+) {
+    let is_active = app.active_session_key.as_ref() == Some(session_key);
+    if is_active {
+        apply_permission_request_to_active_bucket(
+            app,
+            session_key,
+            request,
+            session_id,
+            tool_id,
+            options,
+        );
+    } else {
+        apply_permission_request_to_background_bucket(
+            app,
+            session_key,
+            request,
+            session_id,
+            tool_id,
+            options,
+        );
     }
 }
 
 fn apply_permission_request_to_active_bucket(
     app: &mut App,
+    session_key: &SessionKey,
     request: model::RequestPermissionRequest,
-    response_tx: tokio::sync::oneshot::Sender<model::RequestPermissionResponse>,
     session_id: &str,
     tool_id: &str,
     options: &[model::PermissionOption],
@@ -102,7 +136,7 @@ fn apply_permission_request_to_active_bucket(
             tool_call_id = %tool_id,
             reason = "unknown_tool_call",
         );
-        reject_permission_request(response_tx, options);
+        auto_reject_permission_via_workspace(app, session_key, tool_id, options);
         return;
     };
 
@@ -116,20 +150,20 @@ fn apply_permission_request_to_active_bucket(
             tool_call_id = %tool_id,
             reason = "duplicate_pending_interaction",
         );
-        reject_permission_request(response_tx, options);
+        auto_reject_permission_via_workspace(app, session_key, tool_id, options);
         return;
     }
 
     let mut layout_dirty = false;
     let auto_focus = app.pending_interaction_ids().is_empty() && !app.has_draft_input_for_focus();
     if let Some(MessageBlock::ToolCall(tc)) =
-        app.messages_mut().get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
+        app.active_messages_mut().get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
     {
         let tc = tc.as_mut();
         tc.pending_permission = Some(InlinePermission {
             options: request.options,
             display: request.display,
-            response_tx,
+            tool_id: tool_id.to_owned(),
             selected_index: 0,
             focused: auto_focus,
         });
@@ -139,7 +173,7 @@ fn apply_permission_request_to_active_bucket(
         if auto_focus {
             app.claim_focus_target(FocusTarget::Permission);
         }
-        app.viewport_mut().engage_auto_scroll();
+        app.active_viewport_mut().engage_auto_scroll();
         app.notifications.notify(
             app.config.preferred_notification_channel_effective(),
             super::super::notify::NotifyEvent::PermissionRequired,
@@ -164,7 +198,7 @@ fn apply_permission_request_to_active_bucket(
             tool_call_id = %tool_id,
             reason = "non_tool_block",
         );
-        reject_permission_request(response_tx, options);
+        auto_reject_permission_via_workspace(app, session_key, tool_id, options);
     }
 
     if layout_dirty {
@@ -174,74 +208,234 @@ fn apply_permission_request_to_active_bucket(
     }
 }
 
-pub(super) fn handle_question_request_event(
+/// Background-session version of
+/// [`apply_permission_request_to_active_bucket`]. Operates on the
+/// bucket directly so no temp-swap on `active_session_key` is needed.
+/// Skips active-session-only side effects (focus claim, viewport
+/// auto-scroll on the active viewport, layout invalidation against the
+/// active viewport). Notifications still fire — the user needs to know
+/// a background session has hit a prompt. Layout state is rebuilt when
+/// the bucket next becomes active, matching the
+/// [`finalize_background_tool_calls`] pattern below.
+fn apply_permission_request_to_background_bucket(
     app: &mut App,
+    session_key: &SessionKey,
+    request: model::RequestPermissionRequest,
+    session_id: &str,
+    tool_id: &str,
+    options: &[model::PermissionOption],
+) {
+    let Some(bucket) = app.sessions.get_mut(session_key) else {
+        tracing::warn!(
+            target: crate::logging::targets::APP_PERMISSION,
+            event_name = "permission_request_rejected",
+            message = "permission request rejected for unknown background bucket",
+            outcome = "dropped",
+            session_id = %session_id,
+            tool_call_id = %tool_id,
+            reason = "unknown_session",
+        );
+        auto_reject_permission_via_workspace(app, session_key, tool_id, options);
+        return;
+    };
+    let Some((mi, bi)) = bucket.tool_call_index.get(tool_id).copied() else {
+        tracing::warn!(
+            target: crate::logging::targets::APP_PERMISSION,
+            event_name = "permission_request_rejected",
+            message = "permission request rejected for unknown tool call",
+            outcome = "dropped",
+            session_id = %session_id,
+            tool_call_id = %tool_id,
+            reason = "unknown_tool_call",
+        );
+        auto_reject_permission_via_workspace(app, session_key, tool_id, options);
+        return;
+    };
+    if bucket.pending_interaction_ids.iter().any(|id| id == tool_id) {
+        tracing::warn!(
+            target: crate::logging::targets::APP_PERMISSION,
+            event_name = "permission_request_rejected",
+            message = "duplicate permission request rejected",
+            outcome = "dropped",
+            session_id = %session_id,
+            tool_call_id = %tool_id,
+            reason = "duplicate_pending_interaction",
+        );
+        auto_reject_permission_via_workspace(app, session_key, tool_id, options);
+        return;
+    }
+    let auto_focus = bucket.pending_interaction_ids.is_empty();
+    let option_count = options.len();
+    if let Some(MessageBlock::ToolCall(tc)) =
+        bucket.messages.get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
+    {
+        let tc = tc.as_mut();
+        tc.pending_permission = Some(InlinePermission {
+            options: request.options,
+            display: request.display,
+            tool_id: tool_id.to_owned(),
+            selected_index: 0,
+            focused: auto_focus,
+        });
+        tc.mark_tool_call_layout_dirty();
+        bucket.pending_interaction_ids.push(tool_id.to_owned());
+        app.notifications.notify(
+            app.config.preferred_notification_channel_effective(),
+            super::super::notify::NotifyEvent::PermissionRequired,
+        );
+        tracing::info!(
+            target: crate::logging::targets::APP_PERMISSION,
+            event_name = "permission_request_applied",
+            message = "permission request applied to background tool call",
+            outcome = "success",
+            session_id = %session_id,
+            tool_call_id = %tool_id,
+            option_count = option_count,
+            focused = auto_focus,
+        );
+    } else {
+        tracing::warn!(
+            target: crate::logging::targets::APP_PERMISSION,
+            event_name = "permission_request_rejected",
+            message = "permission request rejected because target block was not a tool call",
+            outcome = "dropped",
+            session_id = %session_id,
+            tool_call_id = %tool_id,
+            reason = "non_tool_block",
+        );
+        auto_reject_permission_via_workspace(app, session_key, tool_id, options);
+    }
+}
+
+/// Test-only entry. See `handle_permission_request_event`.
+#[cfg(feature = "testing")]
+#[allow(clippy::needless_pass_by_value)]
+pub fn handle_question_request_event(
+    app: &mut App,
+    session_key: SessionKey,
+    tool_id: String,
     request: model::RequestQuestionRequest,
-    response_tx: tokio::sync::oneshot::Sender<model::RequestQuestionResponse>,
+) {
+    apply_question_request_presentation(app, &session_key, &tool_id, request);
+}
+
+/// Phase 3c — `SessionUpdate::QuestionRequest` reducer. Converts the
+/// workspace's wire-shape `QuestionRequest` into the model-side
+/// `RequestQuestionRequest` and delegates to the shared presentation
+/// helper.
+#[allow(clippy::needless_pass_by_value)]
+pub(super) fn apply_session_update_question_request(
+    app: &mut App,
+    key: SessionKey,
+    tool_id: String,
+    request: forge_primitives::question::QuestionRequest,
+) {
+    let session_id = key.as_str().to_owned();
+    let (model_request, _converted_tool_id) =
+        crate::app::connect::type_converters::map_question_request(&session_id, request);
+    apply_question_request_presentation(app, &key, &tool_id, model_request);
+}
+
+/// Phase 3c — `SessionUpdate::McpElicitationRequest` reducer. The
+/// elicitation dialogue is an App-global UI overlay that's only
+/// meaningful for the active session; background-session requests
+/// are dropped at the routing layer (matching the legacy ClientEvent
+/// path's behaviour). `elicitation_id` rides on the envelope for
+/// routing-side correlation but the presentation helper consumes
+/// only `request` — the id is already embedded in
+/// [`forge_primitives::ElicitationRequest`].
+#[allow(clippy::needless_pass_by_value)]
+pub(super) fn apply_session_update_mcp_elicitation_request(
+    app: &mut App,
+    key: SessionKey,
+    elicitation_id: String,
+    request: forge_primitives::ElicitationRequest,
+) {
+    let _ = elicitation_id;
+    if app.active_session_key.as_ref() != Some(&key) {
+        return;
+    }
+    crate::app::config::present_mcp_elicitation_request(app, request);
+}
+
+/// Shared body for the legacy ClientEvent path and the new
+/// SessionUpdate reducer. Looks up the target bucket by `key` and
+/// applies the question request to it directly — no temp-swap.
+fn apply_question_request_presentation(
+    app: &mut App,
+    session_key: &SessionKey,
+    tool_id: &str,
+    request: model::RequestQuestionRequest,
 ) {
     let session_id = request.session_id.to_string();
-    let tool_id = request.tool_call.tool_call_id.clone();
     let option_count = request.prompt.options.len();
     let question_index = request.question_index;
     let total_questions = request.total_questions;
 
     // Lifecycle: as with permission prompts — a question landing on a
     // non-active session flips that bucket to Attention.
-    let request_key = SessionKey::from_session_id(session_id.clone());
-    if app.active_session_key.as_ref() != Some(&request_key)
-        && let Some(session) = app.session_mut(&request_key)
-    {
-        session.lifecycle_state = crate::app::session::SessionLifecycleState::Attention;
+    if app.active_session_key.as_ref() != Some(session_key) {
+        super::set_bucket_lifecycle_state(
+            app,
+            session_key,
+            crate::app::session::SessionLifecycleState::Attention,
+        );
     }
 
-    // Route the question into the right bucket. When the request
-    // targets a background session, temp-swap the active key so the
-    // App-level accessors (`lookup_tool_call`, `messages_mut`,
-    // `pending_interaction_ids_mut`, `viewport_mut`) operate on the
-    // request's bucket rather than the user's current view. Without
-    // this swap, a background question landed on the active session's
-    // `tool_call_index` lookup, found nothing, and auto-`Cancelled`
-    // the response_tx — the user clicked the △ attention glyph only
-    // to find the prompt had already been rejected before they got
-    // there. Active-bucket UI state (input draft, status) is saved
-    // across the swap so the routing leaves no trace on the session
-    // the user is currently looking at.
-    let saved_active = app.active_session_key.clone();
-    let saved_input = app.input.text();
-    let saved_status = app.status.clone();
-    let needs_temp_swap = app.active_session_key.as_ref() != Some(&request_key)
-        && app.sessions.contains_key(&request_key);
-    if needs_temp_swap {
-        app.active_session_key = Some(request_key.clone());
-    }
-
-    apply_question_request_to_active_bucket(
+    apply_question_request_to_bucket(
         app,
+        session_key,
         request,
-        response_tx,
         &session_id,
-        &tool_id,
+        tool_id,
         option_count,
         question_index,
         total_questions,
     );
+}
 
-    if needs_temp_swap {
-        app.active_session_key = saved_active;
-        app.input.clear();
-        if !saved_input.is_empty() {
-            app.input.set_text(&saved_input);
-        }
-        app.status = saved_status;
-        app.needs_redraw = true;
+#[allow(clippy::too_many_arguments)]
+fn apply_question_request_to_bucket(
+    app: &mut App,
+    session_key: &SessionKey,
+    request: model::RequestQuestionRequest,
+    session_id: &str,
+    tool_id: &str,
+    option_count: usize,
+    question_index: usize,
+    total_questions: usize,
+) {
+    let is_active = app.active_session_key.as_ref() == Some(session_key);
+    if is_active {
+        apply_question_request_to_active_bucket(
+            app,
+            session_key,
+            request,
+            session_id,
+            tool_id,
+            option_count,
+            question_index,
+            total_questions,
+        );
+    } else {
+        apply_question_request_to_background_bucket(
+            app,
+            session_key,
+            request,
+            session_id,
+            tool_id,
+            option_count,
+            question_index,
+            total_questions,
+        );
     }
 }
 
 #[allow(clippy::too_many_arguments)]
 fn apply_question_request_to_active_bucket(
     app: &mut App,
+    session_key: &SessionKey,
     request: model::RequestQuestionRequest,
-    response_tx: tokio::sync::oneshot::Sender<model::RequestQuestionResponse>,
     session_id: &str,
     tool_id: &str,
     option_count: usize,
@@ -258,8 +452,7 @@ fn apply_question_request_to_active_bucket(
             tool_call_id = %tool_id,
             reason = "unknown_tool_call",
         );
-        let _ = response_tx
-            .send(model::RequestQuestionResponse::new(model::RequestQuestionOutcome::Cancelled));
+        cancel_question_via_workspace(app, session_key, tool_id);
         return;
     };
 
@@ -273,20 +466,19 @@ fn apply_question_request_to_active_bucket(
             tool_call_id = %tool_id,
             reason = "duplicate_pending_interaction",
         );
-        let _ = response_tx
-            .send(model::RequestQuestionResponse::new(model::RequestQuestionOutcome::Cancelled));
+        cancel_question_via_workspace(app, session_key, tool_id);
         return;
     }
 
     let mut layout_dirty = false;
     let auto_focus = app.pending_interaction_ids().is_empty() && !app.has_draft_input_for_focus();
     if let Some(MessageBlock::ToolCall(tc)) =
-        app.messages_mut().get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
+        app.active_messages_mut().get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
     {
         let tc = tc.as_mut();
         tc.pending_question = Some(InlineQuestion {
             prompt: request.prompt,
-            response_tx,
+            tool_id: tool_id.to_owned(),
             focused_option_index: 0,
             selected_option_indices: BTreeSet::new(),
             notes: String::new(),
@@ -302,7 +494,7 @@ fn apply_question_request_to_active_bucket(
         if auto_focus {
             app.claim_focus_target(FocusTarget::Permission);
         }
-        app.viewport_mut().engage_auto_scroll();
+        app.active_viewport_mut().engage_auto_scroll();
         app.notifications.notify(
             app.config.preferred_notification_channel_effective(),
             super::super::notify::NotifyEvent::QuestionRequired,
@@ -329,8 +521,7 @@ fn apply_question_request_to_active_bucket(
             tool_call_id = %tool_id,
             reason = "non_tool_block",
         );
-        let _ = response_tx
-            .send(model::RequestQuestionResponse::new(model::RequestQuestionOutcome::Cancelled));
+        cancel_question_via_workspace(app, session_key, tool_id);
     }
 
     if layout_dirty {
@@ -340,20 +531,323 @@ fn apply_question_request_to_active_bucket(
     }
 }
 
-fn reject_permission_request(
-    response_tx: tokio::sync::oneshot::Sender<model::RequestPermissionResponse>,
-    options: &[model::PermissionOption],
+/// Background-session version of
+/// [`apply_question_request_to_active_bucket`]. Operates on the bucket
+/// directly so no temp-swap on `active_session_key` is needed. Skips
+/// active-only side effects (focus claim, viewport auto-scroll on the
+/// active viewport, layout invalidation); the bucket rebuilds its
+/// layout when it next becomes active.
+#[allow(clippy::too_many_arguments)]
+fn apply_question_request_to_background_bucket(
+    app: &mut App,
+    session_key: &SessionKey,
+    request: model::RequestQuestionRequest,
+    session_id: &str,
+    tool_id: &str,
+    option_count: usize,
+    question_index: usize,
+    total_questions: usize,
 ) {
-    if let Some(last_opt) = options.last() {
-        let _ = response_tx.send(model::RequestPermissionResponse::new(
-            model::RequestPermissionOutcome::Selected(model::SelectedPermissionOutcome::new(
-                last_opt.option_id.clone(),
-            )),
-        ));
+    let Some(bucket) = app.sessions.get_mut(session_key) else {
+        tracing::warn!(
+            target: crate::logging::targets::APP_PERMISSION,
+            event_name = "question_request_rejected",
+            message = "question request rejected for unknown background bucket",
+            outcome = "dropped",
+            session_id = %session_id,
+            tool_call_id = %tool_id,
+            reason = "unknown_session",
+        );
+        cancel_question_via_workspace(app, session_key, tool_id);
+        return;
+    };
+    let Some((mi, bi)) = bucket.tool_call_index.get(tool_id).copied() else {
+        tracing::warn!(
+            target: crate::logging::targets::APP_PERMISSION,
+            event_name = "question_request_rejected",
+            message = "question request rejected for unknown tool call",
+            outcome = "dropped",
+            session_id = %session_id,
+            tool_call_id = %tool_id,
+            reason = "unknown_tool_call",
+        );
+        cancel_question_via_workspace(app, session_key, tool_id);
+        return;
+    };
+    if bucket.pending_interaction_ids.iter().any(|id| id == tool_id) {
+        tracing::warn!(
+            target: crate::logging::targets::APP_PERMISSION,
+            event_name = "question_request_rejected",
+            message = "duplicate question request rejected",
+            outcome = "dropped",
+            session_id = %session_id,
+            tool_call_id = %tool_id,
+            reason = "duplicate_pending_interaction",
+        );
+        cancel_question_via_workspace(app, session_key, tool_id);
+        return;
+    }
+    let auto_focus = bucket.pending_interaction_ids.is_empty();
+    if let Some(MessageBlock::ToolCall(tc)) =
+        bucket.messages.get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
+    {
+        let tc = tc.as_mut();
+        tc.pending_question = Some(InlineQuestion {
+            prompt: request.prompt,
+            tool_id: tool_id.to_owned(),
+            focused_option_index: 0,
+            selected_option_indices: BTreeSet::new(),
+            notes: String::new(),
+            notes_cursor: 0,
+            editing_notes: false,
+            focused: auto_focus,
+            question_index: request.question_index,
+            total_questions: request.total_questions,
+        });
+        tc.mark_tool_call_layout_dirty();
+        bucket.pending_interaction_ids.push(tool_id.to_owned());
+        app.notifications.notify(
+            app.config.preferred_notification_channel_effective(),
+            super::super::notify::NotifyEvent::QuestionRequired,
+        );
+        tracing::info!(
+            target: crate::logging::targets::APP_PERMISSION,
+            event_name = "question_request_applied",
+            message = "question request applied to background tool call",
+            outcome = "success",
+            session_id = %session_id,
+            tool_call_id = %tool_id,
+            question_index,
+            total_questions,
+            option_count,
+            focused = auto_focus,
+        );
+    } else {
+        tracing::warn!(
+            target: crate::logging::targets::APP_PERMISSION,
+            event_name = "question_request_rejected",
+            message = "question request rejected because target block was not a tool call",
+            outcome = "dropped",
+            session_id = %session_id,
+            tool_call_id = %tool_id,
+            reason = "non_tool_block",
+        );
+        cancel_question_via_workspace(app, session_key, tool_id);
     }
 }
 
-pub(super) fn handle_turn_cancelled_event(app: &mut App, session_key: &SessionKey) {
+/// Auto-reject a permission via the workspace channel. The chosen
+/// option mirrors the pre-Phase-1 inline behaviour: pick the last
+/// option (typically "reject_once"). The workspace pops the
+/// matching oneshot and the bridge forwards the response.
+fn auto_reject_permission_via_workspace(
+    app: &App,
+    session_key: &SessionKey,
+    tool_id: &str,
+    options: &[model::PermissionOption],
+) {
+    let Some(last_opt) = options.last() else {
+        return;
+    };
+    dispatch_permission_outcome(
+        app,
+        session_key,
+        tool_id,
+        forge_primitives::PermissionOutcome::Selected { option_id: last_opt.option_id.clone() },
+    );
+}
+
+/// Cancel a pending question via the workspace channel. The bridge
+/// forwards `QuestionOutcome::Cancelled` to the agent.
+fn cancel_question_via_workspace(app: &App, session_key: &SessionKey, tool_id: &str) {
+    let Some(workspace) = app.workspace.as_ref() else {
+        return;
+    };
+    let cmd = forge_workspace::Command::RespondQuestion {
+        key: session_key.clone(),
+        tool_id: tool_id.to_owned(),
+        outcome: forge_primitives::QuestionOutcome::Cancelled,
+    };
+    if let Err(err) = workspace.dispatch(cmd) {
+        tracing::warn!(
+            target: crate::logging::targets::APP_PERMISSION,
+            event_name = "question_auto_cancel_dispatch_failed",
+            session_key = %session_key.as_str(),
+            tool_id = %tool_id,
+            error = %err,
+            "failed to dispatch auto-cancel for unrecognised question request",
+        );
+    }
+}
+
+/// Dispatch a [`forge_primitives::PermissionOutcome`] for `tool_id`
+/// via the workspace's [`forge_workspace::Workspace::dispatch`] path.
+/// Used by both the user-pick handler (`app::permissions`) and the
+/// auto-reject paths in this module.
+///
+/// Under the `testing` Cargo feature, when `app.workspace` is `None`
+/// (the `App::test_default` fixture used by every legacy permission
+/// / question unit test), the outcome is captured into the App's
+/// per-feature test-capture field so tests can assert "the user-pick
+/// handler fired outcome X for tool_id Y" without spinning up a real
+/// workspace.
+pub(crate) fn dispatch_permission_outcome(
+    app: &App,
+    session_key: &SessionKey,
+    tool_id: &str,
+    outcome: forge_primitives::PermissionOutcome,
+) {
+    // Under the `testing` Cargo feature we always capture the outcome
+    // into the App's test-capture field, regardless of whether the
+    // workspace is set. The legacy permission unit tests assert via
+    // this capture; Phase 5 wired `App::test_default()` to a workspace
+    // stub, so the workspace path now also fires but produces no
+    // observable side-effect (no `SessionTask` registered for the test
+    // key — the dispatch returns an `UnknownSession` error which we
+    // silence below). Production builds always set the workspace and
+    // never compile this capture branch in.
+    #[cfg(feature = "testing")]
+    app.test_dispatched_permission_outcomes
+        .borrow_mut()
+        .push((tool_id.to_owned(), outcome.clone()));
+    let Some(workspace) = app.workspace.as_ref() else {
+        let _ = (tool_id, outcome);
+        return;
+    };
+    let cmd = forge_workspace::Command::RespondPermission {
+        key: session_key.clone(),
+        tool_id: tool_id.to_owned(),
+        outcome,
+    };
+    if let Err(err) = workspace.dispatch(cmd) {
+        // Under `testing`, the workspace stub has no `SessionTask`
+        // registered for the test key — `UnknownSession` is the
+        // expected outcome and the test-capture above already
+        // observed the dispatch intent. Downgrade to debug.
+        #[cfg(feature = "testing")]
+        if matches!(err, forge_workspace::DispatchError::UnknownSession(_)) {
+            tracing::debug!(
+                target: crate::logging::targets::APP_PERMISSION,
+                event_name = "permission_dispatch_skipped_in_test",
+                session_key = %session_key.as_str(),
+                tool_id = %tool_id,
+                "permission dispatch skipped: no session task in test stub",
+            );
+            return;
+        }
+        tracing::warn!(
+            target: crate::logging::targets::APP_PERMISSION,
+            event_name = "permission_dispatch_failed",
+            session_key = %session_key.as_str(),
+            tool_id = %tool_id,
+            error = %err,
+            "failed to dispatch permission response",
+        );
+    }
+}
+
+/// Same-crate test helpers for `dispatch_*_outcome`'s testing-feature
+/// capture vecs. Only `#[cfg(test)]` callers (in the lib's own test
+/// modules) reach these; integration tests read the capture vecs
+/// directly via the `pub` fields.
+#[cfg(test)]
+pub(crate) mod test_capture {
+    use super::App;
+
+    /// Test-only: pop the first captured permission outcome whose
+    /// `tool_id` matches. Mirrors the legacy
+    /// `oneshot::Receiver::try_recv()` shape that the pre-Phase-1
+    /// permission tests used to assert "the user-pick handler fired
+    /// outcome X for tool_id Y" without needing a live workspace.
+    ///
+    /// Returns the captured outcome on hit; returns
+    /// `Err(TryRecvError::Empty)` on miss so tests can still match
+    /// on the oneshot error shape.
+    pub fn try_take_dispatched_permission_outcome(
+        app: &App,
+        tool_id: &str,
+    ) -> Result<forge_primitives::PermissionOutcome, tokio::sync::oneshot::error::TryRecvError>
+    {
+        #[rustfmt::skip] #[cfg(feature = "testing")] let mut guard = app.test_dispatched_permission_outcomes.borrow_mut();
+        if let Some(pos) = guard.iter().position(|(tid, _)| tid == tool_id) {
+            let (_, outcome) = guard.remove(pos);
+            Ok(outcome)
+        } else {
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+        }
+    }
+
+    /// Test-only: same as [`try_take_dispatched_permission_outcome`]
+    /// but for question outcomes.
+    pub fn try_take_dispatched_question_outcome(
+        app: &App,
+        tool_id: &str,
+    ) -> Result<forge_primitives::QuestionOutcome, tokio::sync::oneshot::error::TryRecvError> {
+        #[rustfmt::skip] #[cfg(feature = "testing")] let mut guard = app.test_dispatched_question_outcomes.borrow_mut();
+        if let Some(pos) = guard.iter().position(|(tid, _)| tid == tool_id) {
+            let (_, outcome) = guard.remove(pos);
+            Ok(outcome)
+        } else {
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+        }
+    }
+}
+
+/// Dispatch a [`forge_primitives::QuestionOutcome`] for `tool_id`
+/// via the workspace. Used by `app::questions` when the user picks
+/// an option. Under the `testing` Cargo feature, see
+/// [`dispatch_permission_outcome`] — same test-capture rule applies.
+pub(crate) fn dispatch_question_outcome(
+    app: &App,
+    session_key: &SessionKey,
+    tool_id: &str,
+    outcome: forge_primitives::QuestionOutcome,
+) {
+    // Mirror of [`dispatch_permission_outcome`] — see its docs.
+    #[cfg(feature = "testing")]
+    app.test_dispatched_question_outcomes.borrow_mut().push((tool_id.to_owned(), outcome.clone()));
+    let Some(workspace) = app.workspace.as_ref() else {
+        let _ = (tool_id, outcome);
+        return;
+    };
+    let cmd = forge_workspace::Command::RespondQuestion {
+        key: session_key.clone(),
+        tool_id: tool_id.to_owned(),
+        outcome,
+    };
+    if let Err(err) = workspace.dispatch(cmd) {
+        #[cfg(feature = "testing")]
+        if matches!(err, forge_workspace::DispatchError::UnknownSession(_)) {
+            tracing::debug!(
+                target: crate::logging::targets::APP_PERMISSION,
+                event_name = "question_dispatch_skipped_in_test",
+                session_key = %session_key.as_str(),
+                tool_id = %tool_id,
+                "question dispatch skipped: no session task in test stub",
+            );
+            return;
+        }
+        tracing::warn!(
+            target: crate::logging::targets::APP_PERMISSION,
+            event_name = "question_dispatch_failed",
+            session_key = %session_key.as_str(),
+            tool_id = %tool_id,
+            error = %err,
+            "failed to dispatch question response",
+        );
+    }
+}
+
+/// Phase 3c — `SessionUpdate::TurnCancelled` reducer. The workspace
+/// already finalized the DomainSession via the synthesized turn event
+/// in the SDK message flow upstream; this reducer is the TUI-side
+/// projection. (For the direct call from `sdk_message.rs` the
+/// operational hook is run there.)
+pub(super) fn apply_session_update_turn_cancelled(app: &mut App, key: &SessionKey) {
+    apply_turn_cancelled_presentation(app, key);
+}
+
+fn apply_turn_cancelled_presentation(app: &mut App, session_key: &SessionKey) {
     if app.active_session_key.as_ref() == Some(session_key) {
         if app.pending_cancel_origin().is_none() {
             app.set_pending_cancel_origin(Some(CancelOrigin::Manual));
@@ -366,9 +860,11 @@ pub(super) fn handle_turn_cancelled_event(app: &mut App, session_key: &SessionKe
         // Lifecycle: cancellation accepted — return active session
         // to Idle. (Steady-state TurnComplete fires shortly after,
         // also setting Idle — this is a defensive idempotent set.)
-        if let Some(session) = app.active_session_mut() {
-            session.lifecycle_state = crate::app::session::SessionLifecycleState::Idle;
-        }
+        super::set_bucket_lifecycle_state(
+            app,
+            session_key,
+            crate::app::session::SessionLifecycleState::Idle,
+        );
         return;
     }
     let Some(session) = app.session_mut(session_key) else {
@@ -388,8 +884,14 @@ pub(super) fn handle_turn_cancelled_event(app: &mut App, session_key: &SessionKe
     session.cancelled_turn_pending_hint =
         matches!(session.pending_cancel_origin, Some(CancelOrigin::Manual));
     finalize_background_tool_calls(session, model::ToolCallStatus::Failed);
+    // Drop the `session` mut borrow before reaching for the workspace.
+    let _ = session;
     // Lifecycle: background cancel accepted — same Idle target.
-    session.lifecycle_state = crate::app::session::SessionLifecycleState::Idle;
+    super::set_bucket_lifecycle_state(
+        app,
+        session_key,
+        crate::app::session::SessionLifecycleState::Idle,
+    );
 }
 
 /// Background-session version of [`App::finalize_in_progress_tool_calls`].
@@ -398,7 +900,7 @@ pub(super) fn handle_turn_cancelled_event(app: &mut App, session_key: &SessionKe
 /// No layout invalidation, no terminal detach handling — the bucket
 /// will rebuild its layout state when it next becomes active.
 pub(super) fn finalize_background_tool_calls(
-    session: &mut crate::app::session::Session,
+    session: &mut crate::app::session::UiSession,
     new_status: model::ToolCallStatus,
 ) {
     for msg in &mut session.messages {
@@ -454,7 +956,33 @@ fn finish_ready_turn_exit(app: &mut App, exit: TurnExitState, tool_status: model
     super::notices::clear_turn_notice_tracking(app);
 }
 
+/// Active-path entry point used by `sdk_message::apply_result_finalize`.
+/// Runs the TUI presentation; lifecycle reset to `Idle` happens via
+/// the bucket writes inside `apply_turn_complete_presentation`.
 pub(super) fn handle_turn_complete_event(
+    app: &mut App,
+    session_key: &SessionKey,
+    terminal_reason: Option<forge_primitives::TerminalReason>,
+) {
+    apply_turn_complete_presentation(app, session_key, terminal_reason);
+}
+
+/// Phase 3c — `SessionUpdate::TurnComplete` reducer. The workspace
+/// already updated DomainSession via the synthesized turn event in
+/// the SDK message flow; this reducer is for the dispatcher path
+/// only. (The active-session path from `sdk_message.rs` calls
+/// [`handle_turn_complete_event`] directly to run the operational
+/// hook.)
+#[allow(clippy::needless_pass_by_value)]
+pub(super) fn apply_session_update_turn_complete(
+    app: &mut App,
+    key: SessionKey,
+    terminal_reason: Option<forge_primitives::TerminalReason>,
+) {
+    apply_turn_complete_presentation(app, &key, terminal_reason);
+}
+
+fn apply_turn_complete_presentation(
     app: &mut App,
     session_key: &SessionKey,
     terminal_reason: Option<forge_primitives::TerminalReason>,
@@ -482,9 +1010,14 @@ pub(super) fn handle_turn_complete_event(
         session.cancelled_turn_pending_hint = false;
         session.active_turn_assistant_message_idx = None;
         session.turn_notice_refs.clear();
+        let _ = session;
         // Lifecycle: background bucket's turn has wrapped — return
-        // it to Idle so the Projects pane drops the spinner glyph.
-        session.lifecycle_state = crate::app::session::SessionLifecycleState::Idle;
+        // it to Idle so the Projects pane drops the spinner glyph,
+        // and reset the per-turn SDK state.
+        if let Some(bucket) = app.sessions.get_mut(session_key) {
+            bucket.lifecycle_state = crate::app::session::SessionLifecycleState::Idle;
+            bucket.turn_state = forge_primitives::runtime::SessionTurnState::default();
+        }
         if let Some(reason) = terminal_reason {
             tracing::debug!(
                 target: crate::logging::targets::APP_SESSION,
@@ -514,11 +1047,18 @@ pub(super) fn handle_turn_complete_event(
         model::ToolCallStatus::Completed
     };
     finish_ready_turn_exit(app, exit, tool_status);
-    // Lifecycle: turn done, active session returns to Idle. The
-    // Projects pane drops the spinner glyph back to the default
-    // foreground color.
-    if let Some(session) = app.active_session_mut() {
-        session.lifecycle_state = crate::app::session::SessionLifecycleState::Idle;
+    // Lifecycle: turn done, active session returns to Idle and
+    // turn_state resets. The Projects pane drops the spinner glyph
+    // back to the default foreground color.
+    if let Some(key) = app.active_session_key.clone() {
+        if let Some(bucket) = app.sessions.get_mut(&key) {
+            bucket.turn_state = forge_primitives::runtime::SessionTurnState::default();
+        }
+        super::set_bucket_lifecycle_state(
+            app,
+            &key,
+            crate::app::session::SessionLifecycleState::Idle,
+        );
     }
     crate::app::session_runtime::request_context_usage_refresh(app);
     if turn_was_active {
@@ -532,7 +1072,48 @@ pub(super) fn handle_turn_complete_event(
     }
 }
 
+/// Active-path entry point used by `sdk_message::apply_result_finalize`.
+/// Runs the TUI presentation; lifecycle reset to `Idle` happens via
+/// the bucket writes inside `apply_turn_error_presentation`.
 pub(super) fn handle_turn_error_event(
+    app: &mut App,
+    session_key: &SessionKey,
+    msg: &str,
+    classified: Option<TurnErrorClass>,
+    terminal_reason: Option<forge_primitives::TerminalReason>,
+) {
+    apply_turn_error_presentation(app, session_key, msg, classified, terminal_reason);
+}
+
+/// Phase 3c — `SessionUpdate::TurnError` reducer. The workspace
+/// already updated DomainSession via the synthesized turn event in
+/// the SDK message flow; this reducer is for the dispatcher path
+/// only. Maps the workspace-side
+/// [`forge_workspace::TurnErrorClass`] to the local
+/// [`TurnErrorClass`] so the presentation helper sees the same enum
+/// it has consumed since before the protocol layer existed.
+#[allow(clippy::needless_pass_by_value)]
+pub(super) fn apply_session_update_turn_error(
+    app: &mut App,
+    key: SessionKey,
+    message: String,
+    class: Option<forge_workspace::TurnErrorClass>,
+    terminal_reason: Option<forge_primitives::TerminalReason>,
+) {
+    let local_class = class.map(map_workspace_turn_error_class);
+    apply_turn_error_presentation(app, &key, &message, local_class, terminal_reason);
+}
+
+fn map_workspace_turn_error_class(class: forge_workspace::TurnErrorClass) -> TurnErrorClass {
+    match class {
+        forge_workspace::TurnErrorClass::PlanLimit => TurnErrorClass::PlanLimit,
+        forge_workspace::TurnErrorClass::AuthRequired => TurnErrorClass::AuthRequired,
+        forge_workspace::TurnErrorClass::Internal => TurnErrorClass::Internal,
+        forge_workspace::TurnErrorClass::Other => TurnErrorClass::Other,
+    }
+}
+
+fn apply_turn_error_presentation(
     app: &mut App,
     session_key: &SessionKey,
     msg: &str,
@@ -561,9 +1142,14 @@ pub(super) fn handle_turn_error_event(
         session.cancelled_turn_pending_hint = false;
         session.active_turn_assistant_message_idx = None;
         session.turn_notice_refs.clear();
+        let _ = session;
         // Lifecycle: turn ended (with error) — return the background
-        // bucket to Idle so the Projects pane drops the spinner glyph.
-        session.lifecycle_state = crate::app::session::SessionLifecycleState::Idle;
+        // bucket to Idle so the Projects pane drops the spinner glyph,
+        // and reset the per-turn SDK state.
+        if let Some(bucket) = app.sessions.get_mut(session_key) {
+            bucket.lifecycle_state = crate::app::session::SessionLifecycleState::Idle;
+            bucket.turn_state = forge_primitives::runtime::SessionTurnState::default();
+        }
         let summary = summarize_internal_error(msg);
         if cancelled_requested.is_some() {
             tracing::warn!(
@@ -604,9 +1190,16 @@ pub(super) fn handle_turn_error_event(
         );
         app.pending_submit = None;
         finish_ready_turn_exit(app, exit, model::ToolCallStatus::Failed);
-        // Lifecycle: cancelled turn — back to Idle.
-        if let Some(session) = app.active_session_mut() {
-            session.lifecycle_state = crate::app::session::SessionLifecycleState::Idle;
+        // Lifecycle: cancelled turn — back to Idle, reset turn_state.
+        if let Some(key) = app.active_session_key.clone() {
+            if let Some(bucket) = app.sessions.get_mut(&key) {
+                bucket.turn_state = forge_primitives::runtime::SessionTurnState::default();
+            }
+            super::set_bucket_lifecycle_state(
+                app,
+                &key,
+                crate::app::session::SessionLifecycleState::Idle,
+            );
         }
         crate::app::session_runtime::request_context_usage_refresh(app);
         if app.active_view == super::super::ActiveView::Chat {
@@ -663,7 +1256,7 @@ pub(super) fn handle_turn_error_event(
     }
     app.finalize_turn_runtime_artifacts(model::ToolCallStatus::Failed);
     app.pending_auto_submit_after_cancel = false;
-    app.input.clear();
+    app.input_mut().clear();
     app.pending_submit = None;
     app.status = AppStatus::Error;
     let rate_limit_context = if matches!(error_class, TurnErrorClass::PlanLimit) {
@@ -680,12 +1273,19 @@ pub(super) fn handle_turn_error_event(
     }
     app.clear_active_turn_assistant();
     super::notices::clear_turn_notice_tracking(app);
-    // Lifecycle: errored turn — back to Idle. The active session
-    // status itself is already AppStatus::Error (set above) so the
-    // input remains locked; lifecycle is the per-session pane glyph,
-    // independent of the App-global input lock.
-    if let Some(session) = app.active_session_mut() {
-        session.lifecycle_state = crate::app::session::SessionLifecycleState::Idle;
+    // Lifecycle: errored turn — back to Idle, reset turn_state. The
+    // active session status itself is already AppStatus::Error (set
+    // above) so the input remains locked; lifecycle is the per-session
+    // pane glyph, independent of the App-global input lock.
+    if let Some(key) = app.active_session_key.clone() {
+        if let Some(bucket) = app.sessions.get_mut(&key) {
+            bucket.turn_state = forge_primitives::runtime::SessionTurnState::default();
+        }
+        super::set_bucket_lifecycle_state(
+            app,
+            &key,
+            crate::app::session::SessionLifecycleState::Idle,
+        );
     }
     crate::app::session_runtime::request_context_usage_refresh(app);
 }
@@ -697,7 +1297,7 @@ fn push_interrupted_hint(app: &mut App) {
         None,
     ));
     app.enforce_history_retention_tracked();
-    app.viewport_mut().engage_auto_scroll();
+    app.active_viewport_mut().engage_auto_scroll();
 }
 
 fn remove_empty_tail_assistant(app: &mut App, idx: Option<usize>) -> Option<usize> {
@@ -808,11 +1408,11 @@ mod tests {
     fn turn_complete_removes_empty_tail_assistant() {
         let mut app = App::test_default();
         app.status = AppStatus::Thinking;
-        app.messages_mut().push(user_message("hello"));
-        app.messages_mut().push(empty_assistant_message());
+        app.active_messages_mut().push(user_message("hello"));
+        app.active_messages_mut().push(empty_assistant_message());
 
         let key = active_session_key(&app);
-        handle_turn_complete_event(&mut app, &key, None);
+        apply_session_update_turn_complete(&mut app, key, None);
 
         assert_eq!(app.messages().len(), 1);
         assert!(matches!(app.messages()[0].role, MessageRole::User));
@@ -823,11 +1423,11 @@ mod tests {
         let mut app = App::test_default();
         app.status = AppStatus::Thinking;
         app.set_pending_cancel_origin(Some(CancelOrigin::Manual));
-        app.messages_mut().push(user_message("hello"));
-        app.messages_mut().push(empty_assistant_message());
+        app.active_messages_mut().push(user_message("hello"));
+        app.active_messages_mut().push(empty_assistant_message());
 
         let key = active_session_key(&app);
-        handle_turn_error_event(&mut app, &key, "cancelled", None, None);
+        apply_session_update_turn_error(&mut app, key, "cancelled".to_owned(), None, None);
 
         assert_eq!(app.messages().len(), 2);
         assert!(matches!(app.messages()[0].role, MessageRole::User));
@@ -838,11 +1438,11 @@ mod tests {
     fn turn_error_removes_empty_tail_assistant_before_error_message() {
         let mut app = App::test_default();
         app.status = AppStatus::Thinking;
-        app.messages_mut().push(user_message("hello"));
-        app.messages_mut().push(empty_assistant_message());
+        app.active_messages_mut().push(user_message("hello"));
+        app.active_messages_mut().push(empty_assistant_message());
 
         let key = active_session_key(&app);
-        handle_turn_error_event(&mut app, &key, "boom", None, None);
+        apply_session_update_turn_error(&mut app, key, "boom".to_owned(), None, None);
 
         assert_eq!(app.messages().len(), 2);
         assert!(matches!(app.messages()[0].role, MessageRole::User));
@@ -851,20 +1451,20 @@ mod tests {
 
     #[test]
     fn turn_complete_for_background_session_does_not_touch_active_messages() {
-        use crate::app::session::Session;
+        use crate::app::session::UiSession;
         let mut app = App::test_default();
         app.status = AppStatus::Thinking;
-        app.messages_mut().push(user_message("active hello"));
-        app.messages_mut().push(empty_assistant_message());
+        app.active_messages_mut().push(user_message("active hello"));
+        app.active_messages_mut().push(empty_assistant_message());
         let active_messages_before = app.messages().len();
 
         let bg_key = SessionKey::from_str_for_test("background-session");
-        let mut bg_session = Session::new(bg_key.clone());
+        let mut bg_session = UiSession::new(bg_key.clone());
         bg_session.messages.push(user_message("bg hello"));
         bg_session.messages.push(empty_assistant_message());
         app.sessions.insert(bg_key.clone(), bg_session);
 
-        handle_turn_complete_event(&mut app, &bg_key, None);
+        apply_session_update_turn_complete(&mut app, bg_key.clone(), None);
 
         // Active session messages untouched.
         assert_eq!(app.messages().len(), active_messages_before);
@@ -878,16 +1478,16 @@ mod tests {
 
     #[test]
     fn turn_cancelled_for_background_session_marks_only_target_bucket() {
-        use crate::app::session::Session;
+        use crate::app::session::UiSession;
         let mut app = App::test_default();
         let bg_key = SessionKey::from_str_for_test("background-session");
-        let bg_session = Session::new(bg_key.clone());
+        let bg_session = UiSession::new(bg_key.clone());
         app.sessions.insert(bg_key.clone(), bg_session);
 
         // Active session has no pending cancel origin set.
         assert!(app.pending_cancel_origin().is_none());
 
-        handle_turn_cancelled_event(&mut app, &bg_key);
+        apply_session_update_turn_cancelled(&mut app, &bg_key);
 
         // Background bucket got the cancel marker.
         let bg = app.sessions.get(&bg_key).expect("bg present");
@@ -899,20 +1499,20 @@ mod tests {
 
     #[test]
     fn turn_error_for_background_session_does_not_set_should_quit() {
-        use crate::app::session::Session;
+        use crate::app::session::UiSession;
         let mut app = App::test_default();
         let bg_key = SessionKey::from_str_for_test("background-session");
-        let bg_session = Session::new(bg_key.clone());
+        let bg_session = UiSession::new(bg_key.clone());
         app.sessions.insert(bg_key.clone(), bg_session);
 
         // Auth-required class would normally set should_quit=true when
         // applied to the active session; for a background session it
         // must not.
-        handle_turn_error_event(
+        apply_session_update_turn_error(
             &mut app,
-            &bg_key,
-            "auth required",
-            Some(TurnErrorClass::AuthRequired),
+            bg_key.clone(),
+            "auth required".to_owned(),
+            Some(forge_workspace::TurnErrorClass::AuthRequired),
             None,
         );
 

@@ -4,9 +4,9 @@ use super::{
     parse, push_system_message, push_user_message, require_active_session, require_connection,
     set_command_pending,
 };
-use crate::agent::events::ClientEvent;
 use crate::app::App;
 use crate::app::connect::{SessionStartReason, begin_resume_session, start_new_session};
+use forge_workspace::SessionUpdate;
 
 /// Handle slash command submission.
 ///
@@ -46,8 +46,11 @@ fn handle_compact_submit(app: &mut App, args: &[&str]) -> bool {
     {
         return true;
     }
-
-    app.set_is_compacting(true);
+    // The `/compact` text falls through as a normal user message —
+    // the CLI emits `status:"compacting"` as its first response
+    // frame, which `apply_session_status_update` translates into
+    // `is_compacting = true` via the wire path. No optimistic-set
+    // needed; verified reliable against the sdk_compact baseline.
     false
 }
 
@@ -127,7 +130,7 @@ fn handle_mode_submit(app: &mut App, args: &[&str]) -> bool {
         return true;
     }
 
-    let Some((conn, sid)) = require_active_session(
+    let Some(sid) = require_active_session(
         app,
         "Cannot switch mode: not connected yet.",
         "Cannot switch mode: no active session.",
@@ -141,6 +144,11 @@ fn handle_mode_submit(app: &mut App, args: &[&str]) -> bool {
         push_system_message(app, format!("Unknown mode: {requested_mode}"));
         return true;
     }
+    let Some(parsed_mode) = forge_primitives::permission::PermissionMode::from_wire(requested_mode)
+    else {
+        push_system_message(app, format!("Unknown mode: {requested_mode}"));
+        return true;
+    };
 
     // Apply CurrentModeUpdate + ModeStateUpdate App-side immediately
     // so the footer chip refreshes without waiting for the worker
@@ -148,20 +156,15 @@ fn handle_mode_submit(app: &mut App, args: &[&str]) -> bool {
     // state is needed — the UI never sees a stale pending phase.
     apply_optimistic_mode_change(app, requested_mode);
 
-    let tx = app.event_tx.clone();
-    let requested_mode_owned = requested_mode.to_owned();
     let session_key = forge_workspace::SessionKey::from_session_id(sid.to_string());
-    tokio::task::spawn_local(async move {
-        match conn.set_mode(sid.to_string(), requested_mode_owned) {
-            Ok(()) => {}
-            Err(e) => {
-                let _ = tx.send(ClientEvent::SlashCommandError {
-                    session_key,
-                    message: format!("Failed to run /mode: {e}"),
-                });
-            }
-        }
-    });
+    if let Err(e) =
+        app.dispatch_command(|key| forge_workspace::Command::SetMode { key, mode: parsed_mode })
+    {
+        let _ = app.update_tx.send(SessionUpdate::SlashCommandError {
+            key: session_key,
+            message: format!("Failed to run /mode: {e}"),
+        });
+    }
     true
 }
 
@@ -171,16 +174,19 @@ fn apply_optimistic_mode_change(app: &mut App, requested_mode: &str) {
     use crate::app::connect::type_converters::convert_mode_state;
 
     let Some(parsed) = PermissionMode::from_wire(requested_mode) else { return };
-    app.turn_state_mut().mode = Some(parsed);
+    let _: () = app.with_turn_state_mut(|ts| ts.mode = Some(parsed));
     let supports_auto_mode =
         app.current_model().is_some_and(|m| m.supports_auto_mode == Some(true));
+    let (supports_bypass, unavailable_modes) = app.with_turn_state(|ts| {
+        (ts.supports_bypass_permissions_mode, ts.runtime_unavailable_mode_ids.clone())
+    });
     let supported = supported_mode_ids_filtered(
         supports_auto_mode,
-        app.turn_state().supports_bypass_permissions_mode,
+        supports_bypass,
         Some(parsed),
-        &app.turn_state().runtime_unavailable_mode_ids,
+        &unavailable_modes,
     );
-    app.turn_state_mut().supported_mode_ids.clone_from(&supported);
+    let _: () = app.with_turn_state_mut(|ts| ts.supported_mode_ids.clone_from(&supported));
 
     let current_mode_update = crate::agent::model::CurrentModeUpdate::new(parsed.as_wire());
     crate::app::events::apply_current_mode_update(app, &current_mode_update);
@@ -201,7 +207,7 @@ fn handle_model_submit(app: &mut App, args: &[&str]) -> bool {
         return true;
     }
 
-    let Some((conn, sid)) = require_active_session(
+    let Some(sid) = require_active_session(
         app,
         "Cannot switch model: not connected yet.",
         "Cannot switch model: no active session.",
@@ -221,20 +227,16 @@ fn handle_model_submit(app: &mut App, args: &[&str]) -> bool {
     // is synchronous so no `CommandPending` state is needed.
     apply_optimistic_model_change(app, model_name);
 
-    let tx = app.event_tx.clone();
     let model_name = model_name.to_owned();
     let session_key = forge_workspace::SessionKey::from_session_id(sid.to_string());
-    tokio::task::spawn_local(async move {
-        match conn.set_model(sid.to_string(), model_name) {
-            Ok(()) => {}
-            Err(e) => {
-                let _ = tx.send(ClientEvent::SlashCommandError {
-                    session_key,
-                    message: format!("Failed to run /model: {e}"),
-                });
-            }
-        }
-    });
+    if let Err(e) =
+        app.dispatch_command(|key| forge_workspace::Command::SetModel { key, model: model_name })
+    {
+        let _ = app.update_tx.send(SessionUpdate::SlashCommandError {
+            key: session_key,
+            message: format!("Failed to run /model: {e}"),
+        });
+    }
     true
 }
 
@@ -243,26 +245,32 @@ fn apply_optimistic_model_change(app: &mut App, model_name: &str) {
     use crate::agent::session_lifecycle::resolve_current_model_from_inputs;
     use crate::app::connect::type_converters::{convert_current_model, convert_mode_state};
 
-    app.turn_state_mut().requested_model_id = Some(model_name.to_owned());
+    let _: () = app.with_turn_state_mut(|ts| ts.requested_model_id = Some(model_name.to_owned()));
+    let (model_id, resolved_runtime) =
+        app.with_turn_state(|ts| (ts.model_id.clone(), ts.resolved_runtime_model_id.clone()));
     let next_wire = resolve_current_model_from_inputs(
-        &app.turn_state().model_id,
+        &model_id,
         Some(model_name),
-        app.turn_state().resolved_runtime_model_id.as_deref(),
+        resolved_runtime.as_deref(),
         &[],
     );
     let next_model = convert_current_model(next_wire);
     crate::app::events::apply_current_model_update(app, next_model);
 
-    if let Some(mode) = app.turn_state().mode {
+    let mode_opt = app.with_turn_state(|ts| ts.mode);
+    if let Some(mode) = mode_opt {
         let supports_auto_mode =
             app.current_model().is_some_and(|m| m.supports_auto_mode == Some(true));
+        let (supports_bypass, unavailable_modes) = app.with_turn_state(|ts| {
+            (ts.supports_bypass_permissions_mode, ts.runtime_unavailable_mode_ids.clone())
+        });
         let supported = supported_mode_ids_filtered(
             supports_auto_mode,
-            app.turn_state().supports_bypass_permissions_mode,
+            supports_bypass,
             Some(mode),
-            &app.turn_state().runtime_unavailable_mode_ids,
+            &unavailable_modes,
         );
-        app.turn_state_mut().supported_mode_ids.clone_from(&supported);
+        let _: () = app.with_turn_state_mut(|ts| ts.supported_mode_ids.clone_from(&supported));
         let wire_mode_state = build_mode_state_from_supported(mode, &supported);
         let model_mode_state = convert_mode_state(wire_mode_state);
         crate::app::events::apply_mode_state_update(app, model_mode_state);
@@ -277,20 +285,19 @@ fn handle_new_session_submit(app: &mut App, args: &[&str]) -> bool {
 
     push_user_message(app, "/new");
 
-    let Some(conn) = require_connection(app, "Cannot create new session: not connected yet.")
-    else {
+    if !require_connection(app, "Cannot create new session: not connected yet.") {
         return true;
-    };
+    }
 
     set_command_pending(app, "Starting new session...", None);
 
-    if let Err(e) = start_new_session(app, conn.as_ref(), SessionStartReason::NewSession) {
+    if let Err(e) = start_new_session(app, SessionStartReason::NewSession) {
         let session_key = app
             .active_session_key
             .clone()
             .unwrap_or_else(|| forge_workspace::SessionKey::from_session_id(App::PRE_CONNECT_KEY));
-        let _ = app.event_tx.send(ClientEvent::SlashCommandError {
-            session_key,
+        let _ = app.update_tx.send(SessionUpdate::SlashCommandError {
+            key: session_key,
             message: format!("Failed to run /new: {e}"),
         });
     }
@@ -309,19 +316,19 @@ fn handle_resume_submit(app: &mut App, args: &[&str]) -> bool {
     }
 
     push_user_message(app, format!("/resume {session_id}"));
-    let Some(conn) = require_connection(app, "Cannot resume session: not connected yet.") else {
+    if !require_connection(app, "Cannot resume session: not connected yet.") {
         return true;
-    };
+    }
 
     set_command_pending(app, &format!("Resuming session {session_id}..."), None);
     let session_id = session_id.to_owned();
-    if let Err(e) = begin_resume_session(app, conn.as_ref(), session_id) {
+    if let Err(e) = begin_resume_session(app, session_id) {
         let session_key = app
             .active_session_key
             .clone()
             .unwrap_or_else(|| forge_workspace::SessionKey::from_session_id(App::PRE_CONNECT_KEY));
-        let _ = app.event_tx.send(ClientEvent::SlashCommandError {
-            session_key,
+        let _ = app.update_tx.send(SessionUpdate::SlashCommandError {
+            key: session_key,
             message: format!("Failed to run /resume: {e}"),
         });
     }

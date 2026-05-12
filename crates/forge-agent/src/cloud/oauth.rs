@@ -53,10 +53,14 @@ impl From<super::oauth_usage::OauthUsageError> for OauthFetchError {
 
 pub async fn fetch_snapshot(conn: &crate::AgentHandle) -> Result<UsageSnapshot, OauthFetchError> {
     let payload = conn.oauth_usage().await?;
-    map_usage_payload(payload)
+    snapshot_from_payload(payload)
 }
 
-fn map_usage_payload(
+/// Map a fetched [`OauthUsage`](super::oauth_usage::OauthUsage)
+/// payload into the TUI-facing [`UsageSnapshot`]. Exposed so the
+/// workspace facade can pump the payload through this same mapping
+/// without exposing `AgentHandle` to its caller.
+pub fn snapshot_from_payload(
     payload: super::oauth_usage::OauthUsage,
 ) -> Result<UsageSnapshot, OauthFetchError> {
     let five_hour = map_window(payload.five_hour, "5-hour");
@@ -117,7 +121,7 @@ mod tests {
             }"#,
         )
         .expect("decode");
-        let snapshot = map_usage_payload(payload).expect("snapshot");
+        let snapshot = snapshot_from_payload(payload).expect("snapshot");
         assert_eq!(snapshot.five_hour.as_ref().map(|window| window.utilization), Some(12.5));
         assert_eq!(snapshot.seven_day_sonnet.as_ref().map(|window| window.utilization), Some(5.0));
         assert!(snapshot.seven_day.is_none());
@@ -138,7 +142,7 @@ mod tests {
             }"#,
         )
         .expect("decode");
-        let snapshot = map_usage_payload(payload).expect("snapshot");
+        let snapshot = snapshot_from_payload(payload).expect("snapshot");
         let extra = snapshot.extra_usage.expect("extra usage");
         assert_eq!(extra.monthly_limit, Some(20.0));
         assert_eq!(extra.used_credits, Some(12.4));

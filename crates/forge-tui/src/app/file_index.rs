@@ -659,8 +659,8 @@ mod tests {
     #[test]
     fn reopening_mention_reuses_existing_generation() {
         let (mut app, _tmp) = app_with_temp_files(&["src/main.rs"]);
-        app.input.set_text("@rs");
-        let _ = app.input.set_cursor(0, 3);
+        app.input_mut().set_text("@rs");
+        let _ = app.input_mut().set_cursor(0, 3);
 
         mention::activate(&mut app);
         wait_for(&mut app, Duration::from_secs(2), |app| {
@@ -669,8 +669,8 @@ mod tests {
         let generation = app.file_index.generation;
 
         mention::deactivate(&mut app);
-        app.input.set_text("@src");
-        let _ = app.input.set_cursor(0, 4);
+        app.input_mut().set_text("@src");
+        let _ = app.input_mut().set_cursor(0, 4);
         mention::activate(&mut app);
 
         assert_eq!(app.file_index.generation, generation);

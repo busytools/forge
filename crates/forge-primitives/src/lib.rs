@@ -46,29 +46,36 @@
 //! Add a type here when 2+ forge crates need it. Never reach for
 //! cross-crate `pub use` chains as a substitute.
 
+pub mod cloud;
 pub mod command;
 pub mod content;
 pub mod elicitation;
+pub mod error;
+pub mod git;
 pub mod hooks;
 pub mod ids;
 pub mod image;
 pub mod mcp_view;
 pub mod messages;
 pub mod options;
+pub mod permission;
 pub mod permission_ui;
 pub mod permissions;
+pub mod plugins;
 pub mod public_types;
 pub mod question;
 pub mod runtime;
 pub mod session_meta;
 pub mod session_update;
 pub mod subagents;
+pub mod usage;
 
 pub use command::Command;
 pub use content::ContentBlock;
 pub use elicitation::{
     ElicitationAction, ElicitationMode, ElicitationRequest, ElicitationResponse,
 };
+pub use error::AppError;
 pub use hooks::{
     BaseHookInput, HookContext, HookKind, HookSpecificOutput, NotificationHookSpecificOutput,
     NotificationInput, PermissionRequestHookSpecificOutput, PermissionRequestInput,
@@ -88,7 +95,8 @@ pub use messages::{
     AssistantEnvelope, AssistantMessageError, Message, RateLimitInfo, RateLimitStatus,
     RateLimitType, StopReason, TaskNotificationStatus, TaskUsage, Usage, UserEnvelope,
 };
-pub use options::{PermissionMode, SdkPluginConfig, SystemPromptKind, ThinkingConfig, ToolsPreset};
+pub use options::{SdkPluginConfig, SystemPromptKind, ThinkingConfig, ToolsPreset};
+pub use permission::PermissionMode;
 pub use permission_ui::{
     PermissionDisplay, PermissionOption, PermissionOutcome, PermissionRequest,
 };
@@ -108,7 +116,8 @@ pub use question::{
 pub use runtime::{
     ApiRetryError, ApiRetryUpdate, AvailableAgent, AvailableCommand, AvailableModel,
     CompactionTrigger, CurrentModel, EffortLevel, FastModeState, ModeInfo, ModeState,
-    RateLimitUpdate, RuntimeSessionState, SessionStatus, SettingsParseErrorUpdate, TerminalReason,
+    RateLimitUpdate, RuntimeSessionState, SessionLifecycleState, SessionStatus, SessionTurnState,
+    SettingsParseErrorUpdate, TerminalReason,
 };
 pub use session_meta::{PromptChunk, SessionListEntry};
 pub use session_update::{

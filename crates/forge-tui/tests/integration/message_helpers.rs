@@ -1,12 +1,12 @@
 //! Shared wire-message helpers used by multiple integration test
-//! suites that exercise the `ClientEvent::SdkMessageReceived` path.
+//! suites that exercise the `SessionUpdate::ChatAppended` path.
 //!
 //! Extracted from `state_transitions.rs` (Task 4 of the dispatcher
 //! collapse refactor; issue #67) so subsequent migration commits
 //! (`tool_lifecycle.rs` etc.) can share the same envelope builders.
 
-use forge_tui::agent::events::ClientEvent;
 use forge_tui::agent::model;
+use forge_workspace::SessionUpdate;
 
 use crate::helpers::send_client_event;
 
@@ -80,7 +80,7 @@ pub fn system_message(subtype: &str, data: serde_json::Value) -> forge_primitive
 }
 
 /// Dispatch a wire `Message` envelope. Adopts `"test-session"` as
-/// the app's session id on first use so the `SdkMessageReceived`
+/// the app's session id on first use so the `ChatAppended`
 /// session-id guard accepts the envelope (`test_app()` defaults
 /// `session_id` to `None`).
 pub fn send_msg(app: &mut forge_tui::app::App, msg: forge_primitives::Message) {
@@ -89,7 +89,7 @@ pub fn send_msg(app: &mut forge_tui::app::App, msg: forge_primitives::Message) {
     }
     send_client_event(
         app,
-        ClientEvent::SdkMessageReceived { session_id: "test-session".to_owned(), msg },
+        SessionUpdate::ChatAppended { session_id: "test-session".to_owned(), msg },
     );
 }
 

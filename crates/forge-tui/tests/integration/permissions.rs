@@ -1,24 +1,23 @@
 // Permission grant/deny flow integration tests.
 // Validates that PermissionRequest events are correctly attached to tool calls,
 // that the pending_interaction_ids queue is maintained, and that responses
-// are sent through the oneshot channel.
+// flow through the workspace dispatch path.
 
-use forge_tui::agent::events::ClientEvent;
 use forge_tui::agent::model;
 use forge_tui::app::{AppStatus, MessageBlock};
+use forge_workspace::SessionUpdate;
 use pretty_assertions::assert_eq;
-use tokio::sync::oneshot;
 
 use crate::helpers::{active_session_key, send_client_event, test_app};
 use crate::message_helpers::{assistant_message, send_msg, text_block, tool_use_block};
 
 /// Helper: create a tool call, send it, then send a permission request for it.
-/// Returns the oneshot receiver so the test can verify the response.
+/// Returns the tool_id so tests can inspect outcomes via `App`'s test capture.
 fn setup_permission(
     app: &mut forge_tui::app::App,
     tool_id: &str,
     options: Vec<model::PermissionOption>,
-) -> oneshot::Receiver<model::RequestPermissionResponse> {
+) {
     // First create the tool call so it exists in the index
     send_msg(
         app,
@@ -29,13 +28,12 @@ fn setup_permission(
         )]),
     );
 
-    let (response_tx, response_rx) = oneshot::channel();
+    let session_key = forge_workspace::SessionKey::from_str_for_test("test-session");
     let tool_call_update =
         model::ToolCallUpdate::new(tool_id.to_owned(), model::ToolCallUpdateFields::new());
     let request =
         model::RequestPermissionRequest::new("test-session", tool_call_update, options, None);
-    send_client_event(app, ClientEvent::PermissionRequest { request, response_tx });
-    response_rx
+    forge_tui::app::handle_permission_request_event(app, session_key, tool_id.to_owned(), request);
 }
 
 fn allow_deny_options() -> Vec<model::PermissionOption> {
@@ -50,7 +48,7 @@ fn allow_deny_options() -> Vec<model::PermissionOption> {
 #[tokio::test]
 async fn permission_request_attaches_to_tool_call() {
     let mut app = test_app();
-    let _rx = setup_permission(&mut app, "tc-perm-1", allow_deny_options());
+    setup_permission(&mut app, "tc-perm-1", allow_deny_options());
 
     assert_eq!(app.pending_interaction_ids().len(), 1);
     assert_eq!(app.pending_interaction_ids()[0], "tc-perm-1");
@@ -71,8 +69,8 @@ async fn permission_request_attaches_to_tool_call() {
 #[tokio::test]
 async fn permission_request_enables_auto_scroll() {
     let mut app = test_app();
-    app.viewport_mut().auto_scroll = false;
-    let _rx = setup_permission(&mut app, "tc-scroll", allow_deny_options());
+    app.active_viewport_mut().auto_scroll = false;
+    setup_permission(&mut app, "tc-scroll", allow_deny_options());
     assert!(app.viewport().auto_scroll, "permission request should enable auto_scroll");
 }
 
@@ -82,26 +80,35 @@ async fn permission_request_enables_auto_scroll() {
 async fn permission_for_unknown_tool_call_auto_rejects() {
     let mut app = test_app();
 
-    let (response_tx, mut response_rx) = oneshot::channel();
+    let session_key = forge_workspace::SessionKey::from_str_for_test("test-session");
+    let tool_id = "nonexistent".to_owned();
     let tool_call_update =
-        model::ToolCallUpdate::new("nonexistent", model::ToolCallUpdateFields::new());
+        model::ToolCallUpdate::new(tool_id.clone(), model::ToolCallUpdateFields::new());
     let options = allow_deny_options();
     let request =
         model::RequestPermissionRequest::new("test-session", tool_call_update, options, None);
-    send_client_event(&mut app, ClientEvent::PermissionRequest { request, response_tx });
+    forge_tui::app::handle_permission_request_event(
+        &mut app,
+        session_key,
+        tool_id.clone(),
+        request,
+    );
 
     // Should NOT be in pending queue
     assert!(app.pending_interaction_ids().is_empty());
 
-    // The response should have been sent (auto-reject with last option = "deny")
-    let response = response_rx.try_recv();
-    assert!(response.is_ok(), "auto-reject should send response immediately");
-    let resp = response.unwrap();
-    if let model::RequestPermissionOutcome::Selected(selected) = resp.outcome {
-        assert_eq!(selected.option_id.clone(), "deny", "auto-reject should pick last option");
-    } else {
+    // The auto-reject path should have dispatched a permission outcome
+    // via the workspace channel (captured by App's test-capture under
+    // `cfg(test)`).
+    let dispatched = app.test_dispatched_permission_outcomes.borrow();
+    let entry = dispatched
+        .iter()
+        .find(|(tid, _)| tid == &tool_id)
+        .expect("auto-reject should dispatch an outcome immediately");
+    let forge_primitives::PermissionOutcome::Selected { option_id } = &entry.1 else {
         panic!("expected Selected outcome from auto-reject");
-    }
+    };
+    assert_eq!(option_id, "deny", "auto-reject should pick last option");
 }
 
 // --- Multiple permissions queue correctly ---
@@ -109,8 +116,8 @@ async fn permission_for_unknown_tool_call_auto_rejects() {
 #[tokio::test]
 async fn multiple_permissions_queue_in_order() {
     let mut app = test_app();
-    let _rx1 = setup_permission(&mut app, "tc-q1", allow_deny_options());
-    let _rx2 = setup_permission(&mut app, "tc-q2", allow_deny_options());
+    setup_permission(&mut app, "tc-q1", allow_deny_options());
+    setup_permission(&mut app, "tc-q2", allow_deny_options());
 
     assert_eq!(app.pending_interaction_ids().len(), 2);
     assert_eq!(app.pending_interaction_ids()[0], "tc-q1");
@@ -130,9 +137,9 @@ async fn multiple_permissions_queue_in_order() {
 #[tokio::test]
 async fn duplicate_permission_request_is_rejected_without_duplicate_queue_entry() {
     let mut app = test_app();
-    let mut first_rx = setup_permission(&mut app, "tc-dup", allow_deny_options());
+    setup_permission(&mut app, "tc-dup", allow_deny_options());
 
-    let (response_tx, mut duplicate_rx) = oneshot::channel();
+    let session_key = forge_workspace::SessionKey::from_str_for_test("test-session");
     let tool_call_update = model::ToolCallUpdate::new("tc-dup", model::ToolCallUpdateFields::new());
     let request = model::RequestPermissionRequest::new(
         "test-session",
@@ -140,16 +147,25 @@ async fn duplicate_permission_request_is_rejected_without_duplicate_queue_entry(
         allow_deny_options(),
         None,
     );
-    send_client_event(&mut app, ClientEvent::PermissionRequest { request, response_tx });
+    forge_tui::app::handle_permission_request_event(
+        &mut app,
+        session_key,
+        "tc-dup".to_owned(),
+        request,
+    );
 
     assert_eq!(app.pending_interaction_ids(), vec!["tc-dup"]);
-    assert!(matches!(first_rx.try_recv(), Err(tokio::sync::oneshot::error::TryRecvError::Empty)));
-
-    let resp = duplicate_rx.try_recv().expect("duplicate permission should be auto-rejected");
-    let model::RequestPermissionOutcome::Selected(selected) = resp.outcome else {
+    // The duplicate should have auto-rejected via workspace dispatch.
+    // The first request is still pending — no outcome dispatched for it.
+    let dispatched = app.test_dispatched_permission_outcomes.borrow();
+    let entries: Vec<_> = dispatched.iter().filter(|(tid, _)| tid == "tc-dup").collect();
+    // Expect exactly one auto-reject outcome (for the duplicate); the
+    // first pending hasn't been resolved yet.
+    assert_eq!(entries.len(), 1, "duplicate permission should produce one auto-reject");
+    let forge_primitives::PermissionOutcome::Selected { option_id } = &entries[0].1 else {
         panic!("expected Selected outcome from duplicate auto-reject");
     };
-    assert_eq!(selected.option_id.clone(), "deny");
+    assert_eq!(option_id, "deny");
 }
 
 // --- Scroll interaction during streaming ---
@@ -157,8 +173,8 @@ async fn duplicate_permission_request_is_rejected_without_duplicate_queue_entry(
 #[tokio::test]
 async fn scroll_target_preserved_across_text_chunks() {
     let mut app = test_app();
-    app.viewport_mut().scroll_target = 42;
-    app.viewport_mut().auto_scroll = false;
+    app.active_viewport_mut().scroll_target = 42;
+    app.active_viewport_mut().auto_scroll = false;
 
     send_msg(&mut app, assistant_message(vec![text_block("Some text")]));
 
@@ -170,8 +186,8 @@ async fn scroll_target_preserved_across_text_chunks() {
 #[tokio::test]
 async fn tool_call_does_not_change_scroll_when_auto_scroll_off() {
     let mut app = test_app();
-    app.viewport_mut().scroll_target = 10;
-    app.viewport_mut().auto_scroll = false;
+    app.active_viewport_mut().scroll_target = 10;
+    app.active_viewport_mut().auto_scroll = false;
 
     send_msg(
         &mut app,
@@ -196,7 +212,10 @@ async fn turn_complete_resets_transient_state() {
     app.spinner_frame = 42;
 
     let session_key = active_session_key(&app);
-    send_client_event(&mut app, ClientEvent::TurnComplete { session_key, terminal_reason: None });
+    send_client_event(
+        &mut app,
+        SessionUpdate::TurnComplete { key: session_key, terminal_reason: None },
+    );
 
     assert!(matches!(app.status, AppStatus::Ready));
     assert_eq!(app.files_accessed(), 0, "files_accessed should reset");
@@ -213,7 +232,10 @@ async fn turn_complete_does_not_clear_messages() {
     assert_eq!(app.messages().len(), 1);
 
     let session_key = active_session_key(&app);
-    send_client_event(&mut app, ClientEvent::TurnComplete { session_key, terminal_reason: None });
+    send_client_event(
+        &mut app,
+        SessionUpdate::TurnComplete { key: session_key, terminal_reason: None },
+    );
 
     assert_eq!(app.messages().len(), 1, "messages should persist across turns");
 }
@@ -233,7 +255,10 @@ async fn turn_complete_does_not_clear_tool_call_index() {
     assert!(app.tool_call_index().contains_key("tc-persist"));
 
     let session_key = active_session_key(&app);
-    send_client_event(&mut app, ClientEvent::TurnComplete { session_key, terminal_reason: None });
+    send_client_event(
+        &mut app,
+        SessionUpdate::TurnComplete { key: session_key, terminal_reason: None },
+    );
 
     assert!(
         app.tool_call_index().contains_key("tc-persist"),
@@ -254,7 +279,10 @@ async fn turn_complete_does_not_clear_todos() {
     app.set_show_todo_panel(true);
 
     let session_key = active_session_key(&app);
-    send_client_event(&mut app, ClientEvent::TurnComplete { session_key, terminal_reason: None });
+    send_client_event(
+        &mut app,
+        SessionUpdate::TurnComplete { key: session_key, terminal_reason: None },
+    );
 
     assert_eq!(app.todos().len(), 1, "todos should persist across turns");
     assert!(app.show_todo_panel(), "todo panel state should persist");
@@ -271,7 +299,10 @@ async fn turn_complete_does_not_affect_mode() {
     }));
 
     let session_key = active_session_key(&app);
-    send_client_event(&mut app, ClientEvent::TurnComplete { session_key, terminal_reason: None });
+    send_client_event(
+        &mut app,
+        SessionUpdate::TurnComplete { key: session_key, terminal_reason: None },
+    );
 
     assert!(app.mode().is_some(), "mode should persist across turns");
 }

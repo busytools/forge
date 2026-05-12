@@ -1,5 +1,4 @@
 use super::{App, AppStatus, CancelOrigin, ChatMessage, MessageBlock, MessageRole, TextBlock};
-use crate::agent::events::ClientEvent;
 use crate::agent::model;
 use crate::app::slash;
 
@@ -14,7 +13,7 @@ pub(super) fn submit_input(app: &mut App) {
     app.subagent = None;
 
     // No connection yet - can't submit
-    let text = app.input.text();
+    let text = app.input().text();
     if text.trim().is_empty() {
         return;
     }
@@ -48,7 +47,7 @@ pub(super) fn submit_input(app: &mut App) {
     }
 
     app.pending_auto_submit_after_cancel = false;
-    app.input.clear();
+    app.input_mut().clear();
     app.sync_help_open_with_input();
     dispatch_submission(app, text);
 }
@@ -78,19 +77,20 @@ pub(super) fn request_cancel(app: &mut App, origin: CancelOrigin) -> Result<(), 
         return Ok(());
     }
 
-    let Some(conn) = app.conn().cloned() else {
+    if !app.has_active_agent() {
         return Err("not connected yet".to_owned());
-    };
-    let Some(sid) = app.session_id().cloned() else {
+    }
+    let Some(sid) = app.session_id() else {
         return Err("no active session".to_owned());
     };
 
     let session_id = sid.to_string();
-    conn.cancel(session_id.clone()).map_err(|e| e.to_string())?;
+    app.dispatch_command(|key| forge_workspace::Command::Cancel { key })
+        .map_err(|e| e.to_string())?;
     app.set_pending_cancel_origin(Some(origin));
     app.set_cancelled_turn_pending_hint(matches!(origin, CancelOrigin::Manual));
     let session_key = forge_workspace::SessionKey::from_session_id(session_id.clone());
-    let _ = app.event_tx.send(ClientEvent::TurnCancelled { session_key });
+    let _ = app.update_tx.send(forge_workspace::SessionUpdate::TurnCancelled { key: session_key });
     tracing::info!(
         target: crate::logging::targets::APP_INPUT,
         event_name = "turn_cancel_requested",
@@ -109,7 +109,7 @@ pub(super) fn maybe_auto_submit_after_cancel(app: &mut App) {
     if !matches!(app.status, AppStatus::Ready) || app.pending_cancel_origin().is_some() {
         return;
     }
-    if app.input.text().trim().is_empty() {
+    if app.input().text().trim().is_empty() {
         app.pending_auto_submit_after_cancel = false;
         return;
     }
@@ -129,8 +129,10 @@ fn dispatch_prompt_turn(app: &mut App, text: String) {
     // so their spinners don't continue during this turn.
     let _ = app.finalize_in_progress_tool_calls(model::ToolCallStatus::Failed);
 
-    let Some(conn) = app.conn().cloned() else { return };
-    let Some(sid) = app.session_id().cloned() else {
+    if !app.has_active_agent() {
+        return;
+    }
+    let Some(sid) = app.session_id() else {
         return;
     };
     let input_chars = text.chars().count();
@@ -150,15 +152,24 @@ fn dispatch_prompt_turn(app: &mut App, text: String) {
     // Lifecycle: turn started, the active session moves into Running.
     // The Projects pane reads this so the spinner glyph picks up the
     // accent color while the turn is in flight.
-    if let Some(session) = app.active_session_mut() {
-        session.lifecycle_state = crate::app::session::SessionLifecycleState::Running;
+    if let Some(key) = app.active_session_key.clone() {
+        crate::app::events::set_bucket_lifecycle_state(
+            app,
+            &key,
+            crate::app::session::SessionLifecycleState::Running,
+        );
     }
-    app.viewport_mut().engage_auto_scroll();
+    app.active_viewport_mut().engage_auto_scroll();
 
-    let tx = app.event_tx.clone();
+    let tx = app.update_tx.clone();
     // The text already contains [Image #N] badges from the textarea,
     // so the model can correlate user references with image attachments.
-    match conn.prompt_with_images(sid.to_string(), text, images) {
+    let prompt_text = text;
+    match app.dispatch_command(|key| forge_workspace::Command::Prompt {
+        key,
+        text: prompt_text,
+        attachments: images,
+    }) {
         Ok(()) => {
             crate::app::session_runtime::request_context_usage_refresh(app);
             tracing::info!(
@@ -172,9 +183,10 @@ fn dispatch_prompt_turn(app: &mut App, text: String) {
         }
         Err(e) => {
             let session_key = forge_workspace::SessionKey::from_session_id(session_id);
-            let _ = tx.send(ClientEvent::TurnError {
-                session_key,
+            let _ = tx.send(forge_workspace::SessionUpdate::TurnError {
+                key: session_key,
                 message: e.to_string(),
+                class: None,
                 terminal_reason: None,
             });
         }
@@ -190,8 +202,7 @@ mod tests {
     fn app_with_connection()
     -> (App, tokio::sync::mpsc::UnboundedReceiver<forge_primitives::Command>) {
         let mut app = App::test_default();
-        let (handle, rx) = forge_agent::Agent::testing_stub();
-        app.set_conn(Some(std::sync::Arc::new(handle)));
+        let rx = app.install_testing_stub();
         app.set_session_id(Some(model::SessionId::new("session-1")));
         (app, rx)
     }
@@ -200,11 +211,11 @@ mod tests {
     fn submit_input_while_running_keeps_input_and_requests_cancel() {
         let (mut app, mut rx) = app_with_connection();
         app.status = AppStatus::Running;
-        app.input.set_text("queued prompt");
+        app.input_mut().set_text("queued prompt");
 
         submit_input(&mut app);
 
-        assert_eq!(app.input.text(), "queued prompt");
+        assert_eq!(app.input().text(), "queued prompt");
         assert_eq!(app.pending_cancel_origin(), Some(CancelOrigin::AutoQueue));
         assert!(app.pending_auto_submit_after_cancel);
         assert!(matches!(app.status, AppStatus::Running));
@@ -240,7 +251,7 @@ mod tests {
     fn manual_cancel_prevents_later_auto_submit_after_cancel() {
         let (mut app, mut rx) = app_with_connection();
         app.status = AppStatus::Running;
-        app.input.set_text("draft");
+        app.input_mut().set_text("draft");
 
         submit_input(&mut app);
         assert_eq!(app.pending_cancel_origin(), Some(CancelOrigin::AutoQueue));
@@ -258,7 +269,7 @@ mod tests {
         app.set_pending_cancel_origin(None);
         maybe_auto_submit_after_cancel(&mut app);
 
-        assert_eq!(app.input.text(), "draft");
+        assert_eq!(app.input().text(), "draft");
         assert!(matches!(app.status, AppStatus::Ready));
         assert!(app.messages().is_empty());
         assert!(rx.try_recv().is_err(), "manual cancel should suppress queued prompt submit");
@@ -268,12 +279,12 @@ mod tests {
     fn submit_input_with_pending_cancel_keeps_input_and_sends_no_second_cancel() {
         let (mut app, mut rx) = app_with_connection();
         app.status = AppStatus::Running;
-        app.input.set_text("draft");
+        app.input_mut().set_text("draft");
 
         submit_input(&mut app);
         submit_input(&mut app);
 
-        assert_eq!(app.input.text(), "draft");
+        assert_eq!(app.input().text(), "draft");
         assert_eq!(app.pending_cancel_origin(), Some(CancelOrigin::AutoQueue));
         assert!(app.pending_auto_submit_after_cancel);
         let envelope = rx.try_recv().expect("first cancel command should be sent");
@@ -287,7 +298,7 @@ mod tests {
     fn auto_submit_dispatches_draft_once_ready() {
         let (mut app, mut rx) = app_with_connection();
         app.status = AppStatus::Running;
-        app.input.set_text("send after cancel");
+        app.input_mut().set_text("send after cancel");
 
         submit_input(&mut app);
         assert!(app.pending_auto_submit_after_cancel);
@@ -301,7 +312,7 @@ mod tests {
         maybe_auto_submit_after_cancel(&mut app);
 
         assert!(!app.pending_auto_submit_after_cancel);
-        assert!(app.input.text().is_empty());
+        assert!(app.input().text().is_empty());
         assert!(matches!(app.status, AppStatus::Thinking));
         assert_eq!(app.messages().len(), 2);
         let prompt = rx.try_recv().expect("prompt command should be sent");
@@ -318,12 +329,12 @@ mod tests {
         app.settings_home_override = Some(dir.path().to_path_buf());
         app.set_cwd_raw(dir.path().to_string_lossy().to_string());
         app.status = AppStatus::Running;
-        app.input.set_text("/config");
+        app.input_mut().set_text("/config");
 
         submit_input(&mut app);
 
         assert_eq!(app.active_view, ActiveView::Chat);
-        assert_eq!(app.input.text(), "/config");
+        assert_eq!(app.input().text(), "/config");
         assert_eq!(app.pending_cancel_origin(), Some(CancelOrigin::AutoQueue));
         assert!(app.pending_auto_submit_after_cancel);
         let cancel = rx.try_recv().expect("cancel command should be sent");
@@ -337,7 +348,7 @@ mod tests {
 
         assert!(!app.pending_auto_submit_after_cancel);
         assert_eq!(app.active_view, ActiveView::Config);
-        assert!(app.input.text().is_empty());
+        assert!(app.input().text().is_empty());
         assert!(matches!(app.status, AppStatus::Ready));
         assert!(rx.try_recv().is_err(), "config open should not dispatch a prompt turn");
     }
@@ -345,8 +356,7 @@ mod tests {
     #[test]
     fn dispatch_prompt_turn_without_session_id_leaves_state_unchanged() {
         let mut app = App::test_default();
-        let (handle, _rx) = forge_agent::Agent::testing_stub();
-        app.set_conn(Some(std::sync::Arc::new(handle)));
+        let _rx = app.install_testing_stub();
         app.status = AppStatus::Ready;
 
         dispatch_prompt_turn(&mut app, "hello".into());

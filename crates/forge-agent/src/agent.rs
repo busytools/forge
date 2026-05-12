@@ -515,15 +515,5 @@ fn dispatch(cmd: Command, bridge: &ForgeSdkBridge) -> anyhow::Result<()> {
         C::StopGitContextWatch { session_id } => {
             bridge.stop_git_context_watch(session_id.into_string())
         }
-        // `Command` is `#[non_exhaustive]`; a wildcard arm is required
-        // by the compiler. Future variants are logged and dropped
-        // until the dispatcher learns to handle them.
-        _ => {
-            tracing::warn!(
-                target: crate::logging::targets::BRIDGE_LIFECYCLE,
-                "agent dispatcher: unhandled Command variant",
-            );
-            Ok(())
-        }
     }
 }

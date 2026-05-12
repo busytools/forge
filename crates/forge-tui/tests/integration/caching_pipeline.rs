@@ -11,12 +11,12 @@
 //   Group 3: History retention + estimator validation
 //   Group 5: Regression / full pipeline
 
-use forge_tui::agent::events::ClientEvent;
 use forge_tui::app::{
     App, AppStatus, BlockCache, ChatMessage, DEFAULT_CACHE_SPLIT_HARD_LIMIT_BYTES,
     DEFAULT_CACHE_SPLIT_SOFT_LIMIT_BYTES, MessageBlock, MessageRole, TextBlock, TextBlockSpacing,
 };
 use forge_tui::ui::{SpinnerState, measure_message_height_cached};
+use forge_workspace::SessionUpdate;
 use ratatui::text::{Line, Span};
 use std::fmt::Write as _;
 
@@ -43,7 +43,7 @@ fn stream_text(app: &mut App, text: &str) {
 
 fn complete_turn(app: &mut App) {
     let session_key = active_session_key(app);
-    send_client_event(app, ClientEvent::TurnComplete { session_key, terminal_reason: None });
+    send_client_event(app, SessionUpdate::TurnComplete { key: session_key, terminal_reason: None });
 }
 
 /// Build a `ChatMessage` with a single text block for direct insertion.
@@ -192,7 +192,7 @@ async fn budget_enforcement_no_eviction_under_budget() {
     let mut app = test_app();
 
     // Create a message with a small cache.
-    app.messages_mut().push(assistant_message_with_cache("short line"));
+    app.active_messages_mut().push(assistant_message_with_cache("short line"));
     complete_turn(&mut app);
 
     let stats = app.enforce_render_cache_budget();
@@ -208,9 +208,9 @@ async fn budget_enforcement_evicts_lru_when_over_budget() {
     // Insert 3 messages with caches that each exceed 50 bytes.
     // Stored in order: msg 0 (oldest tick), msg 1, msg 2 (newest tick).
     let big_text = "x".repeat(80);
-    app.messages_mut().push(assistant_message_with_cache(&big_text));
-    app.messages_mut().push(assistant_message_with_cache(&big_text));
-    app.messages_mut().push(assistant_message_with_cache(&big_text));
+    app.active_messages_mut().push(assistant_message_with_cache(&big_text));
+    app.active_messages_mut().push(assistant_message_with_cache(&big_text));
+    app.active_messages_mut().push(assistant_message_with_cache(&big_text));
 
     let stats = app.enforce_render_cache_budget();
     assert!(stats.evicted_blocks > 0, "expected evictions, got 0");
@@ -229,8 +229,8 @@ async fn budget_enforcement_protects_streaming_tail() {
     app.render_cache_budget.max_bytes = 100;
 
     let big_text = "x".repeat(80);
-    app.messages_mut().push(assistant_message_with_cache(&big_text));
-    app.messages_mut().push(assistant_message_with_cache(&big_text));
+    app.active_messages_mut().push(assistant_message_with_cache(&big_text));
+    app.active_messages_mut().push(assistant_message_with_cache(&big_text));
 
     // Set streaming state -- last message is protected.
     app.status = AppStatus::Running;
@@ -262,7 +262,7 @@ async fn history_retention_drops_oldest_under_pressure() {
     // Push 5 messages with ~2KB text each.
     let text = "y".repeat(2000);
     for _ in 0..5 {
-        app.messages_mut().push(user_text_message(&text));
+        app.active_messages_mut().push(user_text_message(&text));
     }
 
     // Set a budget that can hold ~2 messages.
@@ -284,7 +284,7 @@ async fn history_retention_inserts_hidden_marker() {
 
     let text = "y".repeat(2000);
     for _ in 0..5 {
-        app.messages_mut().push(user_text_message(&text));
+        app.active_messages_mut().push(user_text_message(&text));
     }
     app.history_retention_mut().max_bytes = 4_000;
 
@@ -345,22 +345,26 @@ async fn full_pipeline_stream_split_and_measure_height() {
     assert!(block_count >= 2, "expected split, got {block_count} blocks");
 
     // Set viewport width.
-    let _ = app.viewport_mut().on_frame(80, 24);
+    let _ = app.active_viewport_mut().on_frame(80, 24);
 
     // Measure height.
     let spinner = inactive_spinner();
     let layout_generation = app.viewport().layout_generation;
-    let (height, _wrapped) =
-        measure_message_height_cached(&mut app.messages_mut()[0], &spinner, 80, layout_generation);
+    let (height, _wrapped) = measure_message_height_cached(
+        &mut app.active_messages_mut()[0],
+        &spinner,
+        80,
+        layout_generation,
+    );
     assert!(height > 0, "measured height should be > 0");
 
     // Set height + rebuild prefix sums.
-    app.viewport_mut().set_message_height(0, height);
-    app.viewport_mut().mark_heights_valid();
-    app.viewport_mut().rebuild_prefix_sums();
+    app.active_viewport_mut().set_message_height(0, height);
+    app.active_viewport_mut().mark_heights_valid();
+    app.active_viewport_mut().rebuild_prefix_sums();
 
-    assert!(app.viewport_mut().total_message_height() >= height);
-    assert_eq!(app.viewport_mut().find_first_visible(0), 0);
+    assert!(app.active_viewport_mut().total_message_height() >= height);
+    assert_eq!(app.active_viewport_mut().find_first_visible(0), 0);
 }
 
 #[tokio::test]
@@ -373,14 +377,14 @@ async fn invalidation_from_streaming_preserves_fast_path() {
     assert_eq!(app.messages().len(), 1);
 
     // Set up viewport with valid heights and prefix sums.
-    let _ = app.viewport_mut().on_frame(80, 24);
-    app.viewport_mut().set_message_height(0, 5);
-    app.viewport_mut().mark_heights_valid();
-    app.viewport_mut().rebuild_prefix_sums();
+    let _ = app.active_viewport_mut().on_frame(80, 24);
+    app.active_viewport_mut().set_message_height(0, 5);
+    app.active_viewport_mut().mark_heights_valid();
+    app.active_viewport_mut().rebuild_prefix_sums();
 
     // Insert a user message so the next streaming chunk creates a new assistant message
     // (consecutive assistant chunks merge into the last assistant message by design).
-    app.messages_mut().push(user_text_message("follow-up prompt"));
+    app.active_messages_mut().push(user_text_message("follow-up prompt"));
 
     // Stream second assistant message.
     stream_text(&mut app, "Second message content.");
@@ -389,7 +393,7 @@ async fn invalidation_from_streaming_preserves_fast_path() {
     // The new assistant message dirties itself, and the previous tail user message
     // may also be dirtied because it stops being the last message and regains its
     // trailing separator row. Earlier non-tail messages should remain untouched.
-    if let Some(stale) = app.viewport_mut().oldest_stale_index() {
+    if let Some(stale) = app.active_viewport_mut().oldest_stale_index() {
         assert!(
             stale >= 1,
             "oldest stale message should be >= 1 (previous tail or new assistant), got {stale}"
@@ -405,24 +409,24 @@ async fn resize_invalidates_all_heights() {
     // Stream 2 assistant messages with a user message in between.
     stream_text(&mut app, "Message one.");
     complete_turn(&mut app);
-    app.messages_mut().push(user_text_message("next prompt"));
+    app.active_messages_mut().push(user_text_message("next prompt"));
     stream_text(&mut app, "Message two.");
     complete_turn(&mut app);
     assert_eq!(app.messages().len(), 3); // assistant, user, assistant
 
     // Set up viewport at width 80 with valid caches.
-    let _ = app.viewport_mut().on_frame(80, 24);
-    app.viewport_mut().set_message_height(0, 5);
-    app.viewport_mut().set_message_height(1, 3);
-    app.viewport_mut().set_message_height(2, 10);
-    app.viewport_mut().mark_heights_valid();
-    app.viewport_mut().rebuild_prefix_sums();
+    let _ = app.active_viewport_mut().on_frame(80, 24);
+    app.active_viewport_mut().set_message_height(0, 5);
+    app.active_viewport_mut().set_message_height(1, 3);
+    app.active_viewport_mut().set_message_height(2, 10);
+    app.active_viewport_mut().mark_heights_valid();
+    app.active_viewport_mut().rebuild_prefix_sums();
     let old_prefix_width = app.viewport().prefix_sums_width;
     assert_eq!(app.viewport().message_heights_width, 80);
     assert_eq!(app.viewport().prefix_sums_width, 80);
 
     // Resize to 120.
-    let resized = app.viewport_mut().on_frame(120, 24);
+    let resized = app.active_viewport_mut().on_frame(120, 24);
     assert!(resized.width_changed, "should detect resize");
     assert_ne!(app.viewport().message_heights_width, 80);
     assert_ne!(app.viewport().prefix_sums_width, old_prefix_width);
@@ -438,7 +442,7 @@ async fn multi_turn_message_accumulation() {
     assert_eq!(app.messages().len(), 1);
 
     // Insert user message so next stream creates a new assistant message.
-    app.messages_mut().push(user_text_message("next prompt"));
+    app.active_messages_mut().push(user_text_message("next prompt"));
 
     // Turn 2: new assistant response.
     stream_text(&mut app, "Turn two response.");
@@ -446,30 +450,44 @@ async fn multi_turn_message_accumulation() {
     assert_eq!(app.messages().len(), 3); // assistant, user, assistant
 
     // Set viewport and measure all 3 messages.
-    let _ = app.viewport_mut().on_frame(80, 24);
+    let _ = app.active_viewport_mut().on_frame(80, 24);
     let spinner = inactive_spinner();
     let layout_generation = app.viewport().layout_generation;
-    let (h0, _) =
-        measure_message_height_cached(&mut app.messages_mut()[0], &spinner, 80, layout_generation);
-    let (h1, _) =
-        measure_message_height_cached(&mut app.messages_mut()[1], &spinner, 80, layout_generation);
-    let (h2, _) =
-        measure_message_height_cached(&mut app.messages_mut()[2], &spinner, 80, layout_generation);
+    let (h0, _) = measure_message_height_cached(
+        &mut app.active_messages_mut()[0],
+        &spinner,
+        80,
+        layout_generation,
+    );
+    let (h1, _) = measure_message_height_cached(
+        &mut app.active_messages_mut()[1],
+        &spinner,
+        80,
+        layout_generation,
+    );
+    let (h2, _) = measure_message_height_cached(
+        &mut app.active_messages_mut()[2],
+        &spinner,
+        80,
+        layout_generation,
+    );
     assert!(h0 > 0);
     assert!(h1 > 0);
     assert!(h2 > 0);
 
-    app.viewport_mut().set_message_height(0, h0);
-    app.viewport_mut().set_message_height(1, h1);
-    app.viewport_mut().set_message_height(2, h2);
-    app.viewport_mut().mark_heights_valid();
-    app.viewport_mut().rebuild_prefix_sums();
+    app.active_viewport_mut().set_message_height(0, h0);
+    app.active_viewport_mut().set_message_height(1, h1);
+    app.active_viewport_mut().set_message_height(2, h2);
+    app.active_viewport_mut().mark_heights_valid();
+    app.active_viewport_mut().rebuild_prefix_sums();
 
-    assert_eq!(app.viewport_mut().total_message_height(), h0 + h1 + h2);
+    assert_eq!(app.active_viewport_mut().total_message_height(), h0 + h1 + h2);
     assert!(
-        app.viewport_mut().cumulative_height_before(1) <= app.viewport_mut().total_message_height()
+        app.active_viewport_mut().cumulative_height_before(1)
+            <= app.active_viewport_mut().total_message_height()
     );
     assert!(
-        app.viewport_mut().cumulative_height_before(2) <= app.viewport_mut().total_message_height()
+        app.active_viewport_mut().cumulative_height_before(2)
+            <= app.active_viewport_mut().total_message_height()
     );
 }

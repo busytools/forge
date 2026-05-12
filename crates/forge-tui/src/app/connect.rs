@@ -1,14 +1,14 @@
-//! App creation and bridge connection lifecycle.
+//! App creation and connection startup.
 //!
-//! Submodules:
-//! - `bridge_lifecycle`: spawning the bridge, init handshake, event-relay loop +
-//!   inline `AgentEvent` → `ClientEvent` translation
-//! - `type_converters`: bridge wire types -> app model types (consumed by
-//!   `bridge_lifecycle` and the App-side SDK message dispatcher)
+//! After Phase 4 of the MVVM refactor the boundary is locked:
+//! TUI subscribes to `Workspace::subscribe()` once and reads
+//! [`forge_workspace::SessionUpdate`] envelopes directly (no
+//! `ClientEvent::WorkspaceUpdate` wrapper). User actions flow
+//! out via [`forge_workspace::Workspace::dispatch`] with
+//! [`forge_workspace::Command::Spawn*`] / `StartDefault` for App-
+//! level kicks and per-session commands otherwise.
 
-mod bridge_lifecycle;
 mod session_start;
-mod spawn_sleeping;
 pub(crate) mod type_converters;
 
 use super::config::ConfigState;
@@ -19,37 +19,8 @@ use super::trust;
 use super::view::ActiveView;
 use super::{App, AppStatus, FocusManager, HelpView, SelectionState};
 use crate::Cli;
-use crate::agent::client::SessionLaunchSettings;
-use crate::agent::events::ClientEvent;
-use std::rc::Rc;
+use std::sync::Arc;
 use tokio::sync::mpsc;
-
-pub(crate) struct StartConnectionParams {
-    pub(crate) event_tx: mpsc::UnboundedSender<ClientEvent>,
-    pub(crate) workspace: Rc<forge_workspace::Workspace>,
-    pub(crate) session_launch_settings: SessionLaunchSettings,
-    /// Which session the connection task should request from the
-    /// workspace. Startup wires `Default` (or `Named` from the CLI's
-    /// positional `<PROJECT>` argument); the sleeping-project click
-    /// flow wires `Named(<project name>)`.
-    pub(crate) target: forge_workspace::SessionTarget,
-    /// Synthetic-key sentinel under which to tag early failures
-    /// (before any real session id exists). Startup uses
-    /// [`App::PRE_CONNECT_KEY`]; the sleeping-project flow seeds a
-    /// `__spawn_<project>__` bucket and passes that key here so a
-    /// failure routes to the visible spawning bucket rather than a
-    /// stale pre-Connect bucket.
-    pub(crate) pre_connect_key: forge_workspace::SessionKey,
-    /// Whether a connection failure during this task's startup phase
-    /// (before any real session id exists) should also emit a
-    /// [`ClientEvent::FatalError`] alongside [`ClientEvent::ConnectionFailed`].
-    /// `true` for the startup connection task — forge-tui has nothing
-    /// to render if the very first bridge fails. `false` for the
-    /// sleeping-project spawn flow — the user has an active session;
-    /// a fresh spawn's failure should surface inline in the spawn
-    /// bucket, not kill the app.
-    pub(crate) is_fatal_on_failure: bool,
-}
 
 /// Shorten a path for display: substitute `~` for the home directory prefix.
 fn shorten_cwd_for_display(cwd: &std::path::Path) -> String {
@@ -64,7 +35,27 @@ fn shorten_cwd_for_display(cwd: &std::path::Path) -> String {
 }
 
 pub(crate) use session_start::{SessionStartReason, begin_resume_session, start_new_session};
-pub use spawn_sleeping::{spawn_for_sleeping_project, spawn_for_sleeping_session};
+
+/// Build `SessionLaunchSettings` for the startup spawn path.
+pub(crate) fn session_launch_settings_for_startup(
+    app: &App,
+) -> forge_workspace::SessionLaunchSettings {
+    session_start::session_launch_settings_for_reason(
+        app,
+        session_start::SessionStartReason::Startup,
+    )
+}
+
+/// Build `SessionLaunchSettings` for the resume / sleeping-session
+/// spawn path.
+pub(crate) fn session_launch_settings_for_resume(
+    app: &App,
+) -> forge_workspace::SessionLaunchSettings {
+    session_start::session_launch_settings_for_reason(
+        app,
+        session_start::SessionStartReason::Resume,
+    )
+}
 
 /// Create the `App` struct in `Connecting` state and load shared settings state.
 ///
@@ -72,7 +63,7 @@ pub use spawn_sleeping::{spawn_for_sleeping_project, spawn_for_sleeping_session}
 /// so trust + file index init have a sensible value to work with;
 /// the `Connected` event overwrites them with the agent's reported
 /// cwd once the workspace-backed agent finishes its handshake.
-pub fn create_app(cli: &Cli, workspace: Rc<forge_workspace::Workspace>) -> App {
+pub fn create_app(cli: &Cli, workspace: Arc<forge_workspace::Workspace>) -> App {
     // Seed cwd from the process working directory until the Connected
     // event delivers the agent's actual cwd. Trust + file_index init
     // need a non-empty value; reading `current_dir()` here is fine
@@ -81,7 +72,6 @@ pub fn create_app(cli: &Cli, workspace: Rc<forge_workspace::Workspace>) -> App {
     let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
     let cwd_display = shorten_cwd_for_display(&cwd);
 
-    let (event_tx, event_rx) = mpsc::unbounded_channel();
     let (file_index_event_tx, file_index_event_rx) = std::sync::mpsc::channel();
     let perf_path = match crate::logging::resolve_perf_path(cli) {
         Ok(path) => path,
@@ -127,12 +117,32 @@ pub fn create_app(cli: &Cli, workspace: Rc<forge_workspace::Workspace>) -> App {
         logger
     });
 
+    // Subscribe to workspace's SessionUpdate channel BEFORE any
+    // `Command::StartDefault` dispatch so the first emit is delivered
+    // to the App event loop.
+    let update_rx = workspace.subscribe().unwrap_or_else(|| {
+        // Second-subscribe paths only occur if construction is
+        // accidentally called twice (a misconfiguration). Returning a
+        // dummy receiver keeps the App constructable so the error
+        // surfaces in the regular event-loop diagnostics rather than
+        // an unwrap on the App field type.
+        let (_, rx) = mpsc::unbounded_channel();
+        rx
+    });
+    let update_tx = workspace.update_sender();
+
     let pre_connect_key = forge_workspace::SessionKey::from_session_id(App::PRE_CONNECT_KEY);
-    let mut pre_connect_session = super::session::Session::new(pre_connect_key.clone());
+    let mut pre_connect_session = super::session::UiSession::new(pre_connect_key.clone());
     pre_connect_session.messages =
         vec![super::ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "", &cwd_display, "-")];
-    pre_connect_session.cwd_raw = cwd.to_string_lossy().to_string();
     pre_connect_session.cwd = cwd_display;
+    pre_connect_session.cwd_raw = cwd.to_string_lossy().to_string();
+    // Pre-register a handle-less DomainSession for the pre-Connect
+    // key. The spawn handler later stamps the live `Arc<AgentHandle>`
+    // onto this same domain entry when
+    // `get_agent_handle_with_spawn_key` runs.
+    let pre_connect_domain = workspace.register_domain_session(pre_connect_key.clone(), None);
+    drop(pre_connect_domain);
     let mut sessions = std::collections::HashMap::new();
     sessions.insert(pre_connect_key.clone(), pre_connect_session);
     // Snapshot the persisted Projects-pane visibility before
@@ -143,7 +153,6 @@ pub fn create_app(cli: &Cli, workspace: Rc<forge_workspace::Workspace>) -> App {
         config: ConfigState::default(),
         trust: trust::TrustState::default(),
         settings_home_override: None,
-        input: super::InputState::new(),
         status: AppStatus::Connecting,
         resuming_session_id: None,
         pending_command_label: None,
@@ -151,6 +160,9 @@ pub fn create_app(cli: &Cli, workspace: Rc<forge_workspace::Workspace>) -> App {
         should_quit: false,
         exit_error: None,
         workspace: Some(workspace),
+        workspace_update_count: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        #[rustfmt::skip] #[cfg(feature = "testing")] test_dispatched_permission_outcomes: std::cell::RefCell::new(Vec::new()),
+        #[rustfmt::skip] #[cfg(feature = "testing")] test_dispatched_question_outcomes: std::cell::RefCell::new(Vec::new()),
         sessions,
         active_session_key: Some(pre_connect_key),
         login_hint: None,
@@ -159,8 +171,8 @@ pub fn create_app(cli: &Cli, workspace: Rc<forge_workspace::Workspace>) -> App {
         help_dialog: DialogState::default(),
         help_visible_count: 0,
         pending_auto_submit_after_cancel: false,
-        event_tx,
-        event_rx,
+        update_rx,
+        update_tx,
         file_index_event_tx,
         file_index_event_rx,
         spinner_frame: 0,
@@ -233,65 +245,48 @@ pub fn create_app(cli: &Cli, workspace: Rc<forge_workspace::Workspace>) -> App {
     app
 }
 
-/// Spawn the background bridge task.
+/// Kick off the startup connection via the workspace command bus.
+/// Replaces the legacy `bridge_lifecycle::run_connection_task` path
+/// with a single `Command::StartDefault` dispatch — workspace owns
+/// the spawn from there.
 pub fn start_connection(app: &mut App) {
     if !app.startup_connection_requested || app.connection_started {
         return;
     }
 
-    let Some(workspace) = app.workspace.as_ref().map(Rc::clone) else {
+    let Some(workspace) = app.workspace.as_ref() else {
         tracing::error!(
             target: crate::logging::targets::BRIDGE_LIFECYCLE,
             event_name = "start_connection_without_workspace",
             message = "start_connection invoked without a workspace; refusing to spawn bridge",
             outcome = "failure",
         );
-        // Latch connection_started so the broken-invariant path only fires
-        // once -- start_connection is called from the event loop every
-        // iteration, and without this guard we'd pile up duplicate fatal
-        // events forever.
         app.connection_started = true;
-        // Surface the broken invariant as a fatal connection failure so
-        // the event loop exits cleanly instead of spinning in Connecting.
-        let session_key = app
-            .active_session_key
-            .clone()
-            .unwrap_or_else(|| forge_workspace::SessionKey::from_session_id(App::PRE_CONNECT_KEY));
-        bridge_lifecycle::emit_connection_failed(
-            &app.event_tx,
-            &session_key,
-            "internal: workspace not initialised in App; cannot spawn bridge".to_owned(),
-            crate::error::AppError::ConnectionFailed,
-            true,
-        );
         return;
     };
 
     app.connection_started = true;
-    let target = match app.startup_project.clone() {
-        Some(name) => forge_workspace::SessionTarget::Named(name),
-        None => forge_workspace::SessionTarget::Default,
-    };
-    let params = StartConnectionParams {
-        event_tx: app.event_tx.clone(),
-        workspace,
-        session_launch_settings: session_start::session_launch_settings_for_reason(
-            app,
-            session_start::SessionStartReason::Startup,
-        ),
-        target,
-        pre_connect_key: forge_workspace::SessionKey::from_session_id(App::PRE_CONNECT_KEY),
-        is_fatal_on_failure: true,
-    };
-    tokio::task::spawn_local(async move {
-        bridge_lifecycle::run_connection_task(params).await;
-    });
+    let launch_settings = session_start::session_launch_settings_for_reason(
+        app,
+        session_start::SessionStartReason::Startup,
+    );
+    let project_name = app.startup_project.clone();
+    if let Err(err) =
+        workspace.dispatch(forge_workspace::Command::StartDefault { project_name, launch_settings })
+    {
+        tracing::error!(
+            target: crate::logging::targets::BRIDGE_LIFECYCLE,
+            event_name = "start_connection_dispatch_failed",
+            error = %err,
+            "Command::StartDefault dispatch failed",
+        );
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use crate::Cli;
-    use std::rc::Rc;
+    use std::sync::Arc;
 
     fn write_default_forge_toml(dir: &std::path::Path, project_path: &std::path::Path) {
         let project_path_str = project_path.to_string_lossy().replace('\\', "/");
@@ -328,7 +323,8 @@ mod tests {
             perf_append: false,
         };
 
-        let app = super::create_app(&cli, Rc::new(workspace));
+        let local = tokio::task::LocalSet::new();
+        let app = local.run_until(async { super::create_app(&cli, Arc::new(workspace)) }).await;
 
         // cwd is seeded from the process; the Connected event later
         // overwrites it with the agent's reported value.

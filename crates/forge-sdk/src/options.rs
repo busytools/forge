@@ -28,12 +28,8 @@ pub type WireTee = Arc<dyn Fn(&str) + Send + Sync>;
 
 /// Configuration for one `Client` invocation.
 ///
-/// Construct via [`OptionsBuilder`] rather than populating directly; the
-/// struct is `#[non_exhaustive]` so new fields (permission callback, MCP
-/// servers, hooks) can be added in later milestones without breaking
-/// callers.
+/// Construct via [`OptionsBuilder`] rather than populating directly.
 #[derive(Clone)]
-#[non_exhaustive]
 #[allow(clippy::struct_excessive_bools)] // mirrors the CLI's `ClaudeAgentOptions` verbatim
 pub struct Options {
     /// Path or name of the `claude` binary to spawn.

@@ -64,11 +64,11 @@ fn reset_messages_for_new_session(app: &mut App, preserve_current_welcome_tip: b
     }
     app.push_message_tracked(welcome);
     app.sync_welcome_snapshot();
-    *app.viewport_mut() = super::super::ChatViewport::new();
+    *app.active_viewport_mut() = super::super::ChatViewport::new();
 }
 
 fn reset_input_state_for_new_session(app: &mut App) {
-    app.input.clear();
+    app.input_mut().clear();
     app.help_open = false;
     app.pending_submit = None;
     app.pending_paste_text.clear();
@@ -80,7 +80,7 @@ fn reset_input_state_for_new_session(app: &mut App) {
 fn reset_interaction_state_for_new_session(app: &mut App) {
     app.pending_interaction_ids_mut().clear();
     app.clear_tool_scope_tracking();
-    app.tool_call_index_mut().clear();
+    app.active_tool_call_index_mut().clear();
     app.todos_mut().clear();
     app.set_show_todo_panel(false);
     app.set_todo_scroll(0);
@@ -126,7 +126,7 @@ fn append_resume_user_message_chunk(app: &mut App, chunk: &model::ContentChunk) 
         return;
     }
 
-    if let Some(last) = app.messages_mut().last_mut()
+    if let Some(last) = app.active_messages_mut().last_mut()
         && matches!(last.role, MessageRole::User)
     {
         if let Some(MessageBlock::Text(block)) = last.blocks.last_mut() {
@@ -233,6 +233,6 @@ pub(super) fn load_resume_history(app: &mut App, history_messages: &[forge_primi
     app.finalize_turn_runtime_artifacts(model::ToolCallStatus::Failed);
     app.clear_active_turn_assistant();
     app.enforce_history_retention_tracked();
-    *app.viewport_mut() = super::super::ChatViewport::new();
-    app.viewport_mut().engage_auto_scroll();
+    *app.active_viewport_mut() = super::super::ChatViewport::new();
+    app.active_viewport_mut().engage_auto_scroll();
 }

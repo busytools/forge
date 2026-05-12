@@ -9,7 +9,6 @@ use forge_primitives::Message;
 /// A single stream-json line from the subprocess — either a regular message
 /// or a control request.
 #[derive(Debug, Clone)]
-#[non_exhaustive]
 pub enum DecodedLine {
     /// An assistant/user/system/result message.
     Message(Message),

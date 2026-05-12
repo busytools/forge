@@ -19,7 +19,6 @@ use crate::runtime::{FastModeState, TerminalReason};
 /// handled by a private shim — users never see it. Every variant here is
 /// the user-facing shape.
 #[derive(Debug, Clone, PartialEq)]
-#[non_exhaustive]
 pub enum Message {
     /// An assistant turn (may be a partial chunk during streaming).
     Assistant {

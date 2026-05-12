@@ -283,21 +283,27 @@ where
     let mut next_document = app.config.document_for(spec.file).clone();
     edit(&mut next_document);
 
-    // Production path delegates to the AgentHandle (forge-agent
-    // bridge) so the same atomic write + `$CLAUDE_CONFIG_DIR`-respecting
-    // path resolution that settings reads use is shared with writes.
-    // Test fixtures with
-    // home_override (and the disconnected case where app.conn is
-    // None) keep the direct fs save — env vars are process-global
-    // and would race across nextest's parallel runs.
-    let save_result = match (&app.settings_home_override, app.conn()) {
-        (None, Some(conn)) => {
+    // Production path delegates to the workspace facade so the same
+    // atomic write + `$CLAUDE_CONFIG_DIR`-respecting path resolution
+    // that settings reads use is shared with writes. Test fixtures
+    // with home_override (and the disconnected case where the
+    // workspace lacks an agent for this session) keep the direct fs
+    // save — env vars are process-global and would race across
+    // nextest's parallel runs.
+    let workspace_bridge = match app.settings_home_override.as_ref() {
+        None => crate::app::config::store_workspace_bridge(app),
+        Some(_) => None,
+    };
+    let save_result = match workspace_bridge {
+        Some(bridge) => {
             let cwd = std::path::PathBuf::from(app.cwd_raw());
             let target = store::settings_target_for(spec.file, cwd);
-            conn.write_settings_document(&target, &next_document)
+            bridge
+                .workspace
+                .write_settings_document(bridge.key, &target, &next_document)
                 .map_err(|err| format!("Failed to write settings: {err}"))
         }
-        _ => store::save(&path, &next_document),
+        None => store::save(&path, &next_document),
     };
 
     match save_result {
@@ -436,14 +442,14 @@ pub(super) fn open_session_rename_overlay(app: &mut App) {
 }
 
 pub(super) fn generate_session_title(app: &mut App) {
-    let Some(session_id) = app.session_id().map(std::string::ToString::to_string) else {
+    let Some(session_id) = app.session_id().map(|s| s.to_string()) else {
         return;
     };
-    let Some(conn) = app.conn().cloned() else {
+    if !app.has_active_agent() {
         app.config.last_error = Some("No active bridge connection".to_owned());
         app.config.status_message = None;
         return;
-    };
+    }
     let Some(description) = session_title_generation_description(app, &session_id) else {
         app.config.last_error =
             Some("No session summary is available to generate a title".to_owned());
@@ -451,7 +457,9 @@ pub(super) fn generate_session_title(app: &mut App) {
         return;
     };
 
-    match conn.generate_session_title(session_id.clone(), description) {
+    match app
+        .dispatch_command(|key| forge_workspace::Command::GenerateSessionTitle { key, description })
+    {
         Ok(()) => {
             app.config.pending_session_title_change = Some(PendingSessionTitleChangeState {
                 session_id,
@@ -634,22 +642,24 @@ fn handle_session_rename_overlay_key(app: &mut App, key: KeyEvent) {
 }
 
 fn confirm_session_rename_overlay(app: &mut App) {
-    let Some(session_id) = app.session_id().map(std::string::ToString::to_string) else {
+    let Some(session_id) = app.session_id().map(|s| s.to_string()) else {
         app.config.overlay = None;
         return;
     };
-    let Some(conn) = app.conn().cloned() else {
+    if !app.has_active_agent() {
         app.config.last_error = Some("No active bridge connection".to_owned());
         app.config.status_message = None;
         return;
-    };
+    }
     let Some(overlay) = app.config.session_rename_overlay().cloned() else {
         return;
     };
 
     let trimmed = overlay.draft.trim().to_owned();
     let requested_title = (!trimmed.is_empty()).then_some(trimmed.clone());
-    match conn.rename_session(session_id.clone(), trimmed) {
+    match app
+        .dispatch_command(|key| forge_workspace::Command::RenameSession { key, title: trimmed })
+    {
         Ok(()) => {
             app.config.pending_session_title_change = Some(PendingSessionTitleChangeState {
                 session_id,

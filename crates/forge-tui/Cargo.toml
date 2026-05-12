@@ -22,7 +22,6 @@ path = "src/main.rs"
 # Workspace-shared deps. Versions + features come from the workspace
 # unless overridden here.
 forge-primitives = { workspace = true }
-forge-agent = { workspace = true }
 forge-workspace = { workspace = true }
 anyhow = { workspace = true }
 clap = { workspace = true }
@@ -58,9 +57,19 @@ tui-textarea-2 = "0.10.2"
 
 [features]
 perf = []
+# Cross-crate test helpers. Exposes the per-`App` test-capture fields
+# (`test_dispatched_{permission,question}_outcomes`) plus the
+# `try_take_dispatched_*` getters so integration tests in this crate's
+# `tests/` directory (separate compilation unit; `#[cfg(test)]` items
+# aren't visible across that boundary) can assert "the user-pick
+# handler fired outcome X for tool_id Y" without spinning up a real
+# workspace. Enabled by this crate's own `[dev-dependencies]` self-ref
+# so unit + integration tests both see the same gated surface.
+testing = ["forge-workspace/testing"]
 
 [dev-dependencies]
-forge-workspace = { workspace = true, features = ["test-helpers"] }
+forge-tui = { path = ".", features = ["testing"] }
+forge-workspace = { workspace = true, features = ["test-helpers", "testing"] }
 pretty_assertions = { workspace = true }
 tempfile = { workspace = true }
 

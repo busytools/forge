@@ -8,6 +8,7 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
 use std::fs;
+use std::sync::Arc;
 
 use forge_workspace::{SessionLaunchSettings, SessionTarget, Workspace, WorkspaceError};
 use tempfile::tempdir;
@@ -34,9 +35,11 @@ async fn forge_tui_starts_against_fixture_default_project() {
     let dir = tempdir().expect("tempdir");
     write_default_config(dir.path());
 
-    let workspace = Workspace::new(dir.path().to_owned())
-        .await
-        .expect("workspace constructs against fixture forge.toml");
+    let workspace = Arc::new(
+        Workspace::new(dir.path().to_owned())
+            .await
+            .expect("workspace constructs against fixture forge.toml"),
+    );
 
     let handle = workspace
         .get_agent_handle(SessionTarget::Default, SessionLaunchSettings::default())

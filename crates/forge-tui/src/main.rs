@@ -2,7 +2,7 @@ use clap::{CommandFactory, Parser};
 use forge_tui::Cli;
 use forge_tui::error::AppError;
 use std::path::PathBuf;
-use std::rc::Rc;
+use std::sync::Arc;
 use tracing::info_span;
 
 // Binary entry — `process::exit` is the only way to set a non-zero
@@ -59,7 +59,7 @@ fn run() -> anyhow::Result<()> {
         // restoration needed) and exit non-zero.
         let config_dir = resolve_config_dir();
         let workspace = match forge_workspace::Workspace::new(config_dir).await {
-            Ok(w) => Rc::new(w),
+            Ok(w) => Arc::new(w),
             Err(err) => return Err(anyhow::anyhow!("forge: {err}")),
         };
 
@@ -77,7 +77,7 @@ fn run() -> anyhow::Result<()> {
         // App holds an Rc clone; main retains the original so we can
         // reclaim ownership and call `shutdown().await` after the
         // event loop returns.
-        let mut app = forge_tui::app::create_app(&cli, Rc::clone(&workspace));
+        let mut app = forge_tui::app::create_app(&cli, Arc::clone(&workspace));
 
         // Phase 2: start non-session startup work + TUI.
         // The bridge itself is started from the TUI loop only after trust is accepted.
@@ -91,27 +91,14 @@ fn run() -> anyhow::Result<()> {
 
         let exit_error = app.exit_error.take();
 
-        // Phase 3: drop the App so its Rc<Workspace> clone is released,
-        // then reclaim ownership of the workspace and drain the agent
-        // pool gracefully. If any background task (e.g. the connection
-        // task in `run_connection_task`) still holds an Rc clone,
-        // `try_unwrap` fails — we log and skip the explicit shutdown,
-        // letting `Drop` on Workspace + `kill_on_drop` on the
-        // subprocesses handle teardown.
+        // Phase 3: drop the App so its `Arc<Workspace>` clone is
+        // released, then drain the agent pool gracefully. Phase 4
+        // changed `Workspace::shutdown` to `&self` — background
+        // tasks holding Arc clones no longer block shutdown; they
+        // observe their command channel closing and exit on their
+        // own.
         drop(app);
-        match Rc::try_unwrap(workspace) {
-            Ok(workspace) => {
-                workspace.shutdown().await;
-            }
-            Err(_) => {
-                tracing::warn!(
-                    target: forge_tui::logging::targets::APP_LIFECYCLE,
-                    event_name = "workspace_shutdown_skipped",
-                    message = "workspace Rc still held at exit; agents drop via Drop instead of shutdown",
-                    outcome = "skipped",
-                );
-            }
-        }
+        workspace.shutdown().await;
 
         if let Some(app_error) = exit_error {
             return Err(anyhow::Error::new(app_error));

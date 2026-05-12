@@ -71,7 +71,7 @@ pub(super) fn handle_mouse_event(app: &mut App, mouse: MouseEvent) {
             if app.selection.is_some() {
                 clear_selection(app);
             }
-            app.viewport_mut().scroll_up(MOUSE_SCROLL_LINES);
+            app.active_viewport_mut().scroll_up(MOUSE_SCROLL_LINES);
         }
         MouseEventKind::ScrollDown => {
             if app.projects_pane_overlay_open && app.layout.top_bar.is_some() {
@@ -80,7 +80,7 @@ pub(super) fn handle_mouse_event(app: &mut App, mouse: MouseEvent) {
             if app.selection.is_some() {
                 clear_selection(app);
             }
-            app.viewport_mut().scroll_down(MOUSE_SCROLL_LINES);
+            app.active_viewport_mut().scroll_down(MOUSE_SCROLL_LINES);
         }
         _ => {}
     }
@@ -195,7 +195,7 @@ fn set_scroll_from_thumb_top(
     }
     .min(max_scroll);
 
-    let vp = app.viewport_mut();
+    let vp = app.active_viewport_mut();
     vp.auto_scroll = false;
     vp.scroll_target = target;
     // Keep content movement responsive while dragging the thumb.
@@ -267,7 +267,8 @@ fn try_toggle_tool_call_at_click(app: &mut App, mouse: MouseEvent) -> bool {
         return false;
     };
     let global_default = app.tools_collapsed;
-    let Some(MessageBlock::ToolCall(tc)) = app.messages_mut()[msg_idx].blocks.get_mut(block_idx)
+    let Some(MessageBlock::ToolCall(tc)) =
+        app.active_messages_mut()[msg_idx].blocks.get_mut(block_idx)
     else {
         return false;
     };
@@ -529,8 +530,19 @@ fn close_session(app: &mut App, session_key: &forge_workspace::SessionKey) {
 fn switch_to_session_or_spawn(app: &mut App, session_key: forge_workspace::SessionKey) {
     if app.sessions.contains_key(&session_key) {
         app.switch_active_session(session_key);
-    } else {
-        crate::app::connect::spawn_for_sleeping_session(app, &session_key);
+    } else if let Some(workspace) = app.workspace.as_ref() {
+        let launch_settings = crate::app::connect::session_launch_settings_for_resume(app);
+        if let Err(err) = workspace.dispatch(forge_workspace::Command::SpawnSession {
+            session_id: session_key.as_str().to_owned(),
+            launch_settings,
+        }) {
+            tracing::warn!(
+                target: crate::logging::targets::APP_SESSION,
+                session_id = %session_key.as_str(),
+                error = %err,
+                "switch_to_session_or_spawn: dispatch failed",
+            );
+        }
     }
 }
 
@@ -582,7 +594,20 @@ fn switch_to_project_lead(app: &mut App, project_name: &str) {
             app.switch_active_session(key);
         }
         _ => {
-            crate::app::connect::spawn_for_sleeping_project(app, project_name);
+            if let Some(workspace) = app.workspace.as_ref() {
+                let launch_settings = crate::app::connect::session_launch_settings_for_startup(app);
+                if let Err(err) = workspace.dispatch(forge_workspace::Command::SpawnProject {
+                    project_name: resolved_name,
+                    launch_settings,
+                }) {
+                    tracing::warn!(
+                        target: crate::logging::targets::APP_SESSION,
+                        project = %project_name,
+                        error = %err,
+                        "switch_to_project_lead: dispatch failed",
+                    );
+                }
+            }
         }
     }
 }

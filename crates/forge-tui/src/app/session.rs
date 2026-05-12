@@ -12,7 +12,6 @@
 //! Projects pane UI).
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-use std::sync::Arc;
 use std::time::Instant;
 
 use forge_workspace::SessionKey;
@@ -20,50 +19,73 @@ use forge_workspace::SessionKey;
 use crate::agent::events::TerminalMap;
 use crate::agent::model;
 use crate::app::git_context::GitContextState;
+use crate::app::input::InputState;
 use crate::app::state::cache_metrics::CacheMetrics;
 use crate::app::state::messages::ChatMessage;
 use crate::app::state::render_budget::{RenderCacheEvictionKey, RenderCacheSlotState};
 use crate::app::state::types::{
     CancelOrigin, HistoryRetentionPolicy, HistoryRetentionStats, McpState, ModeState,
-    SessionTurnState, SessionUsageState, TodoItem, ToolCallScope,
+    SessionUsageState, TodoItem, ToolCallScope,
 };
 use crate::app::state::viewport::ChatViewport;
 use crate::app::state::{ChatRenderTraceState, TerminalToolCallRef, TurnNoticeRef};
+pub use forge_primitives::runtime::SessionLifecycleState;
+use forge_primitives::runtime::{RuntimeSessionState, SessionTurnState};
+use forge_primitives::{AccountInfo, SessionId};
 
 /// Per-session runtime state. Initialised when a session connects;
 /// dropped when the session is closed or forge-tui exits.
 ///
-/// No `Debug` derive — `AgentHandle` owns callback closures and
-/// doesn't derive `Debug`. `Default` is hand-rolled (rather than
-/// derived) because [`Self::last_activity_at`] is an [`Instant`]
-/// which has no `Default` impl. Every other field falls through to
-/// its type's `Default::default()`; if a field needs a non-default
-/// initializer, factor it through [`Session::new`] rather than
+/// `Default` is hand-rolled (rather than derived) because
+/// [`Self::last_activity_at`] is an [`Instant`] which has no
+/// `Default` impl. Every other field falls through to its type's
+/// `Default::default()`; if a field needs a non-default
+/// initializer, factor it through [`UiSession::new`] rather than
 /// expanding the manual impl.
+///
+/// Owns the operational state TUI renders. Workspace is a thin
+/// proxy that holds routing metadata (AgentHandle pool, command
+/// senders, pending interactions) but never duplicates these
+/// fields. TUI reducers in `app::events::*` update them from
+/// `SessionUpdate` payloads as events arrive.
 #[allow(clippy::struct_excessive_bools)]
-pub struct Session {
+pub struct UiSession {
     /// The claude-issued session UUID, also used as the map key.
     /// Stored here for symmetry; the map lookup uses the same value.
     pub key: Option<SessionKey>,
-    /// Claude-issued session id (typed wrapper). `None` until the
-    /// first `Connected` event from this session's bridge.
-    pub session_id: Option<model::SessionId>,
-    /// Lifecycle state for the Projects pane (Phase 2b-α). Set on
-    /// bucket creation; transitions wired by event handlers in a
-    /// follow-up task. The pane reads this to pick the per-session
-    /// state glyph.
+    /// TUI-side mirror of the workspace's authoritative `session_id`.
+    /// Workspace stamps the real id onto `DomainSession.session_id`
+    /// (for `AgentHandle` dispatch); TUI mirrors it here for render
+    /// code so no per-frame workspace lock is needed.
+    pub session_id: Option<SessionId>,
+    /// Lifecycle state for the Projects pane glyph + the render loop's
+    /// "is_animating" probe. Updated by the TUI reducers in
+    /// `app::events::*` as each `SessionUpdate` arrives.
     pub lifecycle_state: SessionLifecycleState,
+    /// Raw cwd as a filesystem path. Used for trust lookups, file
+    /// indexing, project-key derivation, and `claude --resume` re-spawn
+    /// reconstruction.
+    pub cwd_raw: String,
+    /// Monotonic session authority epoch — bumped on each session
+    /// reset (`/new`, login, logout) so stale async view data can be
+    /// ignored.
+    pub session_scope_epoch: u64,
+    /// SDK turn state — model-resolution cache, mode capability,
+    /// MCP cooldowns, auth/error flags.
+    pub turn_state: SessionTurnState,
+    /// Account snapshot from the bridge's status event.
+    pub account_info: Option<AccountInfo>,
+    /// Forge-side display name of the `[[accounts]]` entry the
+    /// workspace picked for this bridge.
+    pub active_account_display_name: Option<String>,
+    /// Latest SDK runtime liveness state (`Idle` / `Running` /
+    /// `RequiresAction`).
+    pub runtime_session_state: Option<RuntimeSessionState>,
     /// Wall-clock instant of the last wire event applied to this
     /// session. Seeded at bucket creation so the Projects pane's
     /// "2m" / "1h" / "5d" rendering has a stable baseline before
     /// the first event arrives.
     pub last_activity_at: Instant,
-    /// Agent connection handle for this session. `None` while the
-    /// session's bridge is starting up.
-    pub conn: Option<Arc<forge_agent::AgentHandle>>,
-    /// Monotonic session authority epoch — used to ignore stale
-    /// async view data after a session reset / reconnect.
-    pub session_scope_epoch: u64,
     /// Chat history buffer for this session. Welcome message at
     /// index 0; user/assistant turns appended.
     pub messages: Vec<ChatMessage>,
@@ -80,9 +102,6 @@ pub struct Session {
     pub active_turn_assistant_message_idx: Option<usize>,
 
     // ---- Turn lifecycle ----
-    /// Per-session SDK turn state — model-resolution cache, mode
-    /// capability, MCP cooldowns, auth/error flags.
-    pub turn_state: SessionTurnState,
     /// True while the SDK reports active compaction.
     pub is_compacting: bool,
     /// When true, the current/next turn completion should clear
@@ -156,8 +175,6 @@ pub struct Session {
     /// envelope. Higher-fidelity than `current_model.resolved_id` for
     /// per-turn model verification.
     pub observed_assistant_model: Option<String>,
-    /// Latest SDK runtime liveness state.
-    pub runtime_session_state: Option<model::RuntimeSessionState>,
     /// Fast mode state telemetry from the SDK.
     pub fast_mode_state: model::FastModeState,
     /// Latest config options observed from bridge `config_option_update` events.
@@ -166,29 +183,16 @@ pub struct Session {
     pub session_usage: SessionUsageState,
 
     // ---- Account / auth ----
-    /// Account info from the bridge status snapshot (email, org, subscription).
-    pub account_info: Option<forge_primitives::AccountInfo>,
-    /// Forge-side account identity: which `[[accounts]]` entry from
-    /// `forge.toml` the workspace picked for this bridge. `None`
-    /// when forge wasn't launched via the workspace (direct
-    /// `Agent::spawn` from tests / smoke). Surfaced via
-    /// [`crate::agent::events::ClientEvent::StatusSnapshotReceived`]'s
-    /// `forge_account` and rendered in the welcome message + Status
-    /// panel.
-    pub active_account_display_name: Option<String>,
     /// OAuth credentials snapshot from the bridge — populated at
     /// session connect, refreshed after `/login` and `/logout` so
     /// callers can ask "is the user authenticated?" without doing
     /// their own filesystem walk to `<config_dir>/.credentials.json`.
-    pub oauth_credentials: Option<forge_agent::cloud::oauth_credentials::OauthCredentials>,
+    pub oauth_credentials: Option<forge_primitives::cloud::oauth_credentials::OauthCredentials>,
 
     // ---- Filesystem ----
     /// Display-friendly cwd (`~/foo` form) used by status panel /
     /// footer / welcome card.
     pub cwd: String,
-    /// Raw cwd as a filesystem path, used for trust lookups, file
-    /// indexing, and project-key derivation.
-    pub cwd_raw: String,
     /// Number of files accessed during the active turn (incremented
     /// on Read/Edit/Write tool starts, reset on TurnComplete).
     pub files_accessed: usize,
@@ -245,48 +249,46 @@ pub struct Session {
     /// per-frame summaries.
     pub last_chat_render_trace_state: Option<ChatRenderTraceState>,
 
-    /// Input draft saved when this session was last the active one.
-    /// `App::switch_active_session` snapshots the live `app.input.text()`
-    /// into here on outgoing-session swap and restores it on
-    /// incoming-session swap. Without this, the input textarea
-    /// persists across switches — typing in tracker-cc and then
-    /// switching to dotfiles shows tracker-cc's draft in dotfiles's
-    /// input. `App::status` is derived from `lifecycle_state` at
-    /// switch time rather than snapshotted here, so a background turn
-    /// that completed while the user was elsewhere doesn't strand
-    /// the incoming bucket on a stale `Thinking` / `Running` status.
-    pub draft_input: String,
+    /// Per-session input editor. Each session owns its own input
+    /// state; switching the active session naturally swaps the editor
+    /// because the accessor reads from this bucket. Replaces the
+    /// pre-Phase-6 App-level `input` field plus the per-bucket
+    /// `draft_input` snapshot/restore dance in `switch_active_session`.
+    pub input: InputState,
 }
 
-impl Session {
+impl UiSession {
     #[must_use]
     pub fn new(key: SessionKey) -> Self {
         Self { key: Some(key), last_activity_at: Instant::now(), ..Self::default() }
     }
 }
 
-impl Default for Session {
+impl Default for UiSession {
     fn default() -> Self {
         // `Instant` has no `Default` impl, so the derive is replaced
         // with a hand-rolled version that seeds `last_activity_at`
         // to "now" and falls through to `Default::default()` for
         // every other field via destructuring of an internal
         // synthesizer. The shape stays maintainable: any field added
-        // to `Session` whose type does have `Default` lands here for
-        // free without code change.
+        // to `UiSession` whose type does have `Default` lands here
+        // for free without code change.
         Self {
             key: Option::default(),
             session_id: Option::default(),
             lifecycle_state: SessionLifecycleState::default(),
-            last_activity_at: Instant::now(),
-            conn: Option::default(),
+            cwd_raw: String::default(),
             session_scope_epoch: u64::default(),
+            turn_state: SessionTurnState::default(),
+            account_info: Option::default(),
+            active_account_display_name: Option::default(),
+            runtime_session_state: Option::default(),
+            last_activity_at: Instant::now(),
             messages: Vec::default(),
             message_retained_bytes: Vec::default(),
             retained_history_bytes: usize::default(),
             viewport: ChatViewport::default(),
             active_turn_assistant_message_idx: Option::default(),
-            turn_state: SessionTurnState::default(),
             is_compacting: bool::default(),
             pending_compact_clear: bool::default(),
             pending_interaction_ids: Vec::default(),
@@ -310,15 +312,11 @@ impl Default for Session {
             observed_permission_mode: Option::default(),
             observed_effort: Option::default(),
             observed_assistant_model: Option::default(),
-            runtime_session_state: Option::default(),
             fast_mode_state: model::FastModeState::default(),
             config_options: BTreeMap::default(),
             session_usage: SessionUsageState::default(),
-            account_info: Option::default(),
-            active_account_display_name: Option::default(),
             oauth_credentials: Option::default(),
             cwd: String::default(),
-            cwd_raw: String::default(),
             files_accessed: usize::default(),
             git_context: GitContextState::default(),
             mcp: McpState::default(),
@@ -337,32 +335,17 @@ impl Default for Session {
             cache_metrics: CacheMetrics::default(),
             last_active_turn_height_state: Option::default(),
             last_chat_render_trace_state: Option::default(),
-            draft_input: String::default(),
+            input: InputState::default(),
         }
     }
 }
 
-/// Lifecycle state of a [`Session`], used by the Projects pane to
-/// render the right state glyph and (in later phases) by the
-/// multiplexer to decide redraw semantics. See
-/// `~/.claude-subspace/plans/2026-05-10-forge-tui-projects-pane-wide-design.md`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum SessionLifecycleState {
-    /// No subprocess yet; lead exists conceptually but has never
-    /// been spawned (or has been freed).
-    #[default]
-    Sleeping,
-    /// Subprocess spawn in flight — between user click and first
-    /// `Connected` event from the bridge.
-    Spawning,
-    /// Subprocess is alive and idle (no turn in progress).
-    Idle,
-    /// Subprocess is mid-turn or actively streaming.
-    Running,
-    /// Background session is paused on a permission prompt and
-    /// needs user input to continue.
-    Attention,
-}
+// Phase 4 deleted the `pub type Session = UiSession;` back-compat
+// alias; the ~250 call sites that used `UiSession::new(...)` etc.
+// were migrated to `UiSession::new(...)`. `UiSession` owns the
+// operational state TUI renders; workspace's `DomainSession` holds
+// only the routing metadata (`AgentHandle` slot, `session_id`,
+// pending interactions).
 
 #[cfg(test)]
 mod tests {

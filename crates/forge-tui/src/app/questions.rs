@@ -268,12 +268,13 @@ fn respond_question(app: &mut App) {
         return;
     };
     let Some(MessageBlock::ToolCall(tc)) =
-        app.messages_mut().get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
+        app.active_messages_mut().get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
     else {
         return;
     };
     let tc = tc.as_mut();
     let mut invalidated = false;
+    let mut outcome_to_dispatch: Option<forge_primitives::QuestionOutcome> = None;
     if let Some(pending) = tc.pending_question.take() {
         let selected_indices = question_selected_indices(&pending);
         let selected_option_ids = selected_indices
@@ -292,9 +293,7 @@ fn respond_question(app: &mut App) {
                 tool_call_id = %tool_id,
                 selected_option_count = selected_indices.len(),
             );
-            let _ = pending.response_tx.send(model::RequestQuestionResponse::new(
-                model::RequestQuestionOutcome::Cancelled,
-            ));
+            outcome_to_dispatch = Some(forge_primitives::QuestionOutcome::Cancelled);
         } else {
             tracing::debug!(
                 target: crate::logging::targets::APP_PERMISSION,
@@ -305,11 +304,13 @@ fn respond_question(app: &mut App) {
                 selected_option_count = selected_option_ids.len(),
                 has_annotation = annotation.is_some(),
             );
-            let _ = pending.response_tx.send(model::RequestQuestionResponse::new(
-                model::RequestQuestionOutcome::Answered(
-                    model::AnsweredQuestionOutcome::new(selected_option_ids).annotation(annotation),
-                ),
-            ));
+            outcome_to_dispatch = Some(forge_primitives::QuestionOutcome::Answered {
+                selected_option_ids,
+                annotation: annotation.map(|a| forge_primitives::QuestionAnnotation {
+                    preview: a.preview,
+                    notes: a.notes,
+                }),
+            });
         }
         tc.mark_tool_call_layout_dirty();
         invalidated = true;
@@ -318,6 +319,11 @@ fn respond_question(app: &mut App) {
         app.sync_render_cache_slot(mi, bi);
         app.recompute_message_retained_bytes(mi);
         app.invalidate_layout(InvalidationLevel::MessageChanged(mi));
+    }
+    if let Some(outcome) = outcome_to_dispatch
+        && let Some(session_key) = app.active_session_key.clone()
+    {
+        crate::app::events::turn::dispatch_question_outcome(app, &session_key, &tool_id, outcome);
     }
 
     focus_next_inline_interaction(app);
@@ -332,19 +338,25 @@ fn respond_question_cancel(app: &mut App) {
         return;
     };
     let Some(MessageBlock::ToolCall(tc)) =
-        app.messages_mut().get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
+        app.active_messages_mut().get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
     else {
         return;
     };
     let tc = tc.as_mut();
-    if let Some(pending) = tc.pending_question.take() {
-        let _ = pending
-            .response_tx
-            .send(model::RequestQuestionResponse::new(model::RequestQuestionOutcome::Cancelled));
+    let cancelled = tc.pending_question.take().is_some();
+    if cancelled {
         tc.mark_tool_call_layout_dirty();
         app.sync_render_cache_slot(mi, bi);
         app.recompute_message_retained_bytes(mi);
         app.invalidate_layout(InvalidationLevel::MessageChanged(mi));
+        if let Some(session_key) = app.active_session_key.clone() {
+            crate::app::events::turn::dispatch_question_outcome(
+                app,
+                &session_key,
+                &tool_id,
+                forge_primitives::QuestionOutcome::Cancelled,
+            );
+        }
     }
 
     focus_next_inline_interaction(app);
@@ -454,7 +466,6 @@ mod tests {
     };
     use pretty_assertions::assert_eq;
     use std::collections::BTreeSet;
-    use tokio::sync::oneshot;
 
     fn test_tool_call(id: &str) -> ToolCallInfo {
         ToolCallInfo {
@@ -492,23 +503,60 @@ mod tests {
         ChatMessage::new(MessageRole::Assistant, vec![MessageBlock::ToolCall(Box::new(tc))], None)
     }
 
+    /// Test-only wrapper mirroring the legacy
+    /// `oneshot::Receiver<RequestQuestionResponse>` shape — see
+    /// `app::permissions::tests::TestPermissionRx` for the rationale.
+    pub(super) struct TestQuestionRx {
+        pub tool_id: String,
+    }
+
+    impl TestQuestionRx {
+        pub fn try_recv(
+            &mut self,
+            app: &App,
+        ) -> Result<model::RequestQuestionResponse, tokio::sync::oneshot::error::TryRecvError>
+        {
+            match crate::app::events::turn::test_capture::try_take_dispatched_question_outcome(
+                app,
+                &self.tool_id,
+            ) {
+                Ok(forge_primitives::QuestionOutcome::Answered {
+                    selected_option_ids,
+                    annotation,
+                }) => Ok(model::RequestQuestionResponse::new(
+                    model::RequestQuestionOutcome::Answered(
+                        model::AnsweredQuestionOutcome::new(selected_option_ids).annotation(
+                            annotation.map(|a| model::QuestionAnnotation {
+                                preview: a.preview,
+                                notes: a.notes,
+                            }),
+                        ),
+                    ),
+                )),
+                Ok(forge_primitives::QuestionOutcome::Cancelled) => Ok(
+                    model::RequestQuestionResponse::new(model::RequestQuestionOutcome::Cancelled),
+                ),
+                Err(err) => Err(err),
+            }
+        }
+    }
+
     fn add_question(
         app: &mut App,
         tool_id: &str,
         prompt: model::QuestionPrompt,
         focused: bool,
-    ) -> oneshot::Receiver<model::RequestQuestionResponse> {
+    ) -> TestQuestionRx {
         let msg_idx = app.messages().len();
-        app.messages_mut().push(assistant_tool_msg(test_tool_call(tool_id)));
+        app.active_messages_mut().push(assistant_tool_msg(test_tool_call(tool_id)));
         app.index_tool_call(tool_id.to_owned(), msg_idx, 0);
 
-        let (tx, rx) = oneshot::channel();
         if let Some(MessageBlock::ToolCall(tc)) =
-            app.messages_mut().get_mut(msg_idx).and_then(|m| m.blocks.get_mut(0))
+            app.active_messages_mut().get_mut(msg_idx).and_then(|m| m.blocks.get_mut(0))
         {
             tc.pending_question = Some(InlineQuestion {
                 prompt,
-                response_tx: tx,
+                tool_id: tool_id.to_owned(),
                 focused_option_index: 0,
                 selected_option_indices: BTreeSet::new(),
                 notes: String::new(),
@@ -520,7 +568,7 @@ mod tests {
             });
         }
         app.pending_interaction_ids_mut().push(tool_id.to_owned());
-        rx
+        TestQuestionRx { tool_id: tool_id.to_owned() }
     }
 
     #[test]
@@ -552,7 +600,7 @@ mod tests {
         assert_eq!(consumed_enter, Some(true));
         assert!(app.pending_interaction_ids().is_empty());
 
-        let resp = rx.try_recv().expect("question should be answered");
+        let resp = rx.try_recv(&app).expect("question should be answered");
         let model::RequestQuestionOutcome::Answered(answered) = resp.outcome else {
             panic!("expected answered question response");
         };
@@ -622,7 +670,7 @@ mod tests {
             Some(true)
         );
 
-        let resp = rx.try_recv().expect("question should be answered");
+        let resp = rx.try_recv(&app).expect("question should be answered");
         let model::RequestQuestionOutcome::Answered(answered) = resp.outcome else {
             panic!("expected answered question response");
         };

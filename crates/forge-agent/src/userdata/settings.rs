@@ -33,7 +33,6 @@ use forge_sdk::Error;
 /// consumers that care about distinguishing missing vs. corrupt
 /// should re-read directly.
 #[derive(Debug, Clone, Default, PartialEq)]
-#[non_exhaustive]
 pub struct SettingsDocuments {
     /// `<config_dir>/settings.json` — user-scope settings.
     pub user: Option<Value>,
@@ -48,7 +47,6 @@ pub struct SettingsDocuments {
 /// the `config_dir` argument, `ProjectLocal` is project-relative,
 /// and `Preferences` is `$HOME`-pinned.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[non_exhaustive]
 pub enum SettingsTarget {
     /// `<config_dir>/settings.json`.
     User,

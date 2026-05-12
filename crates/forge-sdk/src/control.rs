@@ -38,7 +38,6 @@ pub enum ControlRequestType {
 /// previous strict-enum behaviour, an unknown subtype no longer
 /// panics the session.
 #[derive(Debug, Clone)]
-#[non_exhaustive]
 pub enum ControlRequestKind {
     /// A permission check for a tool call.
     CanUseTool {
@@ -252,10 +251,7 @@ impl<'de> Deserialize<'de> for ControlRequestKind {
             }
             // Forward-compat catch-all. NOTE: when adding a new known
             // `ControlRequestKind` variant, add a matching arm above —
-            // the `#[non_exhaustive]` on the enum protects external
-            // callers from exhaustive matches but doesn't enforce
-            // anything inside this hand-rolled `Deserialize`. A new
-            // variant without an arm here will silently land in
+            // a new variant without an arm here will silently land in
             // `Unknown` instead of being recognised.
             other => Ok(Self::Unknown { subtype: other.to_string(), raw }),
         }

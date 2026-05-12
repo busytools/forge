@@ -1,15 +1,15 @@
 //! Thin TUI-side spawner: kicks off the cloud-side statuspage poller
-//! and translates the result into `ClientEvent::ServiceStatus`.
+//! and translates the result into `SessionUpdate::ServiceStatus`.
 
 use super::App;
-use crate::agent::events::{ClientEvent, ServiceStatusSeverity};
-use forge_agent::cloud::service_status::{ServiceSeverity, fetch_service_status};
+use forge_workspace::SessionUpdate;
+use forge_workspace::cloud::service_status::fetch_service_status;
 use tracing::{Instrument as _, info_span};
 
 const STATUSPAGE_SUMMARY_URL: &str = "https://status.claude.com/api/v2/summary.json";
 
 pub fn start_service_status_check(app: &App) {
-    let event_tx = app.event_tx.clone();
+    let update_tx = app.update_tx.clone();
     tracing::info!(
         target: crate::logging::targets::APP_NETWORK,
         event_name = "service_check_started",
@@ -36,11 +36,15 @@ pub fn start_service_status_check(app: &App) {
                 outcome = "success",
                 severity = ?issue.severity,
             );
-            let severity = match issue.severity {
-                ServiceSeverity::Warning => ServiceStatusSeverity::Warning,
-                ServiceSeverity::Error => ServiceStatusSeverity::Error,
-            };
-            let _ = event_tx.send(ClientEvent::ServiceStatus { severity, message: issue.message });
+            // `forge_workspace::cloud::service_status::ServiceSeverity` is
+            // the same wire-shape enum as
+            // `forge_primitives::cloud::service_status::ServiceSeverity`
+            // (re-exported); the `SessionUpdate::ServiceStatus` variant
+            // can consume it directly.
+            let _ = update_tx.send(SessionUpdate::ServiceStatus {
+                severity: issue.severity,
+                message: issue.message,
+            });
         }
         .instrument(service_status_span),
     );

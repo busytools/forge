@@ -117,9 +117,9 @@ fn filter_candidates(
 
 fn build_subagent_state(app: &App) -> Option<SubagentState> {
     let detection = detect_subagent_at_cursor(
-        app.input.lines(),
-        app.input.cursor_row(),
-        app.input.cursor_col(),
+        app.input().lines(),
+        app.input().cursor_row(),
+        app.input().cursor_col(),
     )?;
     let candidates = filter_candidates(app.available_agents(), &detection.query);
     if candidates.is_empty() {
@@ -202,7 +202,7 @@ pub fn confirm_selection(app: &mut App) {
         return;
     };
 
-    let mut lines = app.input.lines().to_vec();
+    let mut lines = app.input().lines().to_vec();
     let Some(line) = lines.get(subagent.trigger_row) else {
         if app.mention.is_none() && app.slash.is_none() {
             app.release_focus_target(FocusTarget::Mention);
@@ -232,7 +232,7 @@ pub fn confirm_selection(app: &mut App) {
     let new_cursor_col = subagent.trigger_col + replacement.chars().count();
     let new_line_len = new_line.chars().count();
     lines[subagent.trigger_row] = new_line;
-    app.input.replace_lines_and_cursor(
+    app.input_mut().replace_lines_and_cursor(
         lines,
         subagent.trigger_row,
         new_cursor_col.min(new_line_len),
@@ -313,12 +313,12 @@ mod tests {
     #[test]
     fn sync_with_cursor_activates_when_subagent_token_is_valid() {
         let mut app = App::test_default();
-        app.active_session_mut().unwrap().available_agents = vec![
+        app.try_active_bucket_mut().unwrap().available_agents = vec![
             crate::agent::model::AvailableAgent::new("reviewer", "Review code"),
             crate::agent::model::AvailableAgent::new("explore", "Explore codebase"),
         ];
-        app.input.set_text("&re");
-        let _ = app.input.set_cursor_col(3);
+        app.input_mut().set_text("&re");
+        let _ = app.input_mut().set_cursor_col(3);
 
         sync_with_cursor(&mut app);
 
@@ -330,9 +330,9 @@ mod tests {
     #[test]
     fn sync_with_cursor_activates_on_bare_ampersand_at_line_end() {
         let mut app = App::test_default();
-        app.active_session_mut().unwrap().available_agents =
+        app.try_active_bucket_mut().unwrap().available_agents =
             vec![crate::agent::model::AvailableAgent::new("reviewer", "Review code")];
-        app.input.set_text("&");
+        app.input_mut().set_text("&");
 
         sync_with_cursor(&mut app);
 

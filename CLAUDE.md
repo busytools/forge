@@ -1,13 +1,14 @@
 # forge — project guide
 
 A Rust workspace for personal-use agentic tooling around Anthropic's
-`claude` CLI. Five components, layered acyclically:
+`claude` CLI. Six components, layered acyclically:
 
 ```
 forge-primitives ──── leaf (pure data, no logic)
 forge-sdk        ──→ primitives
 forge-agent      ──→ primitives + sdk
-forge-tui        ──→ primitives + agent
+forge-workspace  ──→ primitives + agent           (the MVVM orchestrator)
+forge-tui        ──→ primitives + workspace       (no direct agent dep)
 ```
 
 - **`forge-primitives`** — workspace-shared wire-shape types. Message
@@ -24,17 +25,135 @@ forge-tui        ──→ primitives + agent
 - **`forge-agent`** — drives one `forge-sdk` Client behind a
   channel-based `Agent`/`AgentHandle` API. Owns userdata (settings,
   trust, sessions catalog, memory, plugins), cloud (oauth/usage/
-  account/service-status), and env (git context). The brain between
-  SDK and TUI.
-- **`forge-tui`** — native terminal interface. Consumes `AgentEvent`s,
-  emits `Command`s. No direct dep on `forge-sdk` — primitives + agent
-  cover everything the UI needs.
+  account/service-status), env (git context), translate (event ↔
+  message conversions), and tooling (tool-result helpers). The brain
+  between SDK and workspace.
+- **`forge-workspace`** — multi-session orchestrator. Owns
+  `DomainSession` per active session (authoritative operational
+  state: lifecycle, cwd, turn_state, account_info, runtime liveness,
+  pending interactions). Drives per-session `SessionTask` actors that
+  pump events from `AgentHandle::take_events()` and route Commands
+  back. Single TUI-facing facade.
+- **`forge-tui`** — native terminal interface. Pure view layer; no
+  multi-session logic, no agent internals, no operational state.
+  Holds per-session presentation buckets (`UiSession`: messages list,
+  viewport, input editor, hover hints). Has no direct `forge-agent`
+  dependency.
 - **`forge-test-harness`** — wire-conformance harness. `sdk_wire` scope
   (forge-sdk ↔ claude CLI). Replay-based offline tests + opt-in live
   capture.
 
-Multiple sessions = multiple `forge` processes (one per tmux/zellij
-pane). No daemon, no shared state.
+Multiple sessions = one `forge` process per tmux/zellij pane, with
+multiple `Workspace`-managed sessions inside that process. No daemon,
+no shared state across processes.
+
+## Communication contract (MVVM after #102)
+
+After the MVVM refactor (PR #104) the TUI ↔ workspace contract is
+**one channel pair** — single producer/consumer in each direction:
+
+- **TUI → workspace:** `Workspace::dispatch(Command)`. One enum
+  (`forge_workspace::protocol::Command`), one entry point. Every
+  user-driven action (prompt, respond-to-permission, switch session,
+  spawn project, etc.) is a `Command`.
+- **workspace → TUI:** `SessionUpdate` via the channel returned by
+  `Workspace::subscribe()`. TUI's `App.update_rx` consumes it. One
+  enum (`forge_workspace::protocol::SessionUpdate`), one consumer.
+
+This is the entire contract. No second channel for "control events"
+vs "data events." No callback hooks. No shared mutable state. Just
+two enum streams.
+
+**Strict wiring (post Phase 6).** TUI no longer holds an
+`Arc<AgentHandle>`. Every outbound agent call flows through
+`Workspace::dispatch(Command)` — that's `Prompt`, `Cancel`,
+`SetMode`/`SetModel`, `NewSession`/`ResumeSession`/`ResumeOrNew`,
+`GenerateSessionTitle`/`RenameSession`, the full MCP suite
+(`ReconnectMcpServer`, `ToggleMcpServer`, `AuthenticateMcpServer`,
+`ClearMcpAuth`, `SetMcpServers`, `SubmitMcpOauthCallbackUrl`),
+`RespondElicitation`, and the git-watch start/stop pair. Query-style
+refreshes are direct `Workspace` methods rather than command
+variants: `refresh_status_snapshot`, `refresh_oauth_credentials_snapshot`,
+`refresh_context_usage`, `reload_plugins`, `refresh_mcp_snapshot`.
+Direct-accessor facades (`settings_documents`, `write_settings_document`,
+`project_memory_path`, `config_dir_for`, `oauth_usage`) also live as
+inherent `Workspace` methods. `SessionUpdate::Connected` /
+`SessionReplaced` / `AuthCompleted` no longer carry an
+`Arc<AgentHandle>` payload — the handle is stamped onto the
+workspace's `DomainSession`, never reaches TUI.
+
+**Workspace-as-proxy realignment (final landing).** `DomainSession`
+carries only workspace-internal routing metadata: `key`, `conn`,
+`session_id` (mirror for `AgentHandle` dispatch), and
+`pending_interactions` (oneshot mailbox for `Respond*` Commands).
+All operational state TUI renders — `lifecycle_state`, `cwd_raw`,
+`turn_state`, `session_scope_epoch`, `account_info`,
+`active_account_display_name`, `runtime_session_state` — lives on
+`UiSession`. TUI reducers update those fields directly from
+`SessionUpdate` data; render reads `app.sessions[key].<field>`
+straight (no workspace lookup, no per-frame lock). Workspace's
+`apply_event_to_domain` only writes `session_id` — the field
+workspace itself needs internally to call `AgentHandle` methods.
+
+### Single-channel event bus (nuance worth knowing)
+
+The same `SessionUpdate` channel TUI subscribes to is **also used as
+an event bus for TUI-internal async work**. A few TUI-side modules
+grab a sender via `Workspace::update_sender()` and emit their own
+`SessionUpdate`s rather than dispatching a `Command` and waiting for
+a round-trip:
+
+- `forge-tui/src/app/plugins.rs` — local plugin install/uninstall
+  side-effects.
+- `forge-tui/src/app/slash/executors.rs` — `/help`, `/clear`, and
+  other slash commands that run entirely TUI-side.
+- `forge-tui/src/app/service_status_check.rs` — periodic Anthropic
+  service-status polling.
+- `forge-tui/src/app/input_submit.rs` — input-submit UI bookkeeping.
+
+These don't violate the "workspace owns the domain" rule — they're
+TUI-originated presentation events that reuse the existing channel
+as a single event bus rather than spinning up a second one. The
+alternative (separate TUI-internal channel) was rejected because it
+adds plumbing without obvious benefit and forks the reducer
+machinery.
+
+Future-proofing watchlist: if the goal ever becomes "swap the TUI
+for something else," the only contract a replacement should need to
+honor is the two-enum-stream boundary. The leaky-emitter pattern
+above is an *implicit* second contract that a replacement would
+either have to replicate or have migrated away first. Tracking issue
+at [busytools/forge#105](https://github.com/busytools/forge/issues/105) —
+not high priority.
+
+### `forge-workspace` is a thin facade, not strong isolation
+
+The MVVM boundary between TUI and agent is enforced at the
+**dependency graph** level (`forge-tui/Cargo.toml` has zero
+`forge-agent` line), not at the Rust visibility level. Concretely:
+`forge-workspace` does pass-through re-exports of forge-agent
+submodules:
+
+```rust
+pub mod cloud      { pub use forge_agent::cloud::*; }
+pub mod commands   { pub use forge_agent::commands::*; }
+pub mod env::git   { pub use forge_agent::env::git::*; }
+pub mod session_lifecycle { pub use forge_agent::session_lifecycle::*; }
+pub mod tooling    { pub use forge_agent::tooling::*; }
+pub mod translate  { pub use forge_agent::translate::*; }
+pub mod userdata   { pub use forge_agent::userdata::*; }
+```
+
+So `forge-tui` imports `forge_workspace::cloud::oauth::Token` (say),
+but the type is *defined* in `forge_agent::cloud::oauth`. The
+workspace exposes forge-agent's surface verbatim. The boundary is
+"TUI can only reach forge-agent via the forge-workspace name" — not
+"TUI sees a smaller, curated API."
+
+This is the pragmatic shortcut. Tightening it (specific
+`Workspace::method()` wrappers in place of each wildcard re-export)
+is a "Phase 7 narrow agent surface" follow-up if the cost of the
+current shape ever shows up.
 
 ## Project scope
 
