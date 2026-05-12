@@ -194,7 +194,6 @@ pub fn create_app(cli: &Cli, workspace: Arc<forge_workspace::Workspace>) -> App 
         rendered_input_lines: Vec::new(),
         rendered_input_area: ratatui::layout::Rect::new(0, 0, 0, 0),
         mention: None,
-        file_index: super::file_index::FileIndexState::default(),
         slash: None,
         subagent: None,
         pending_submit: None,

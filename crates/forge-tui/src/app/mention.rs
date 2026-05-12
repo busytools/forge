@@ -153,6 +153,25 @@ pub fn update_query(app: &mut App) {
 }
 
 pub fn refresh_from_file_index(app: &mut App) {
+    // Snapshot what we need from the active bucket's file_index
+    // before borrowing `app.mention` mutably — `app.mention.as_mut()`
+    // disjoint-borrows the `mention` field, but the borrow checker
+    // doesn't split through method calls, so we can't read
+    // `app.file_index()` while `mention: &mut` is live.
+    let scan_finished = app.file_index().scan_finished;
+    let candidates_snapshot = {
+        // Limit the immutable borrow of `app.file_index()` to this
+        // block by extracting just what `visible_candidates` needs.
+        let entries_ref: &_ = &app.file_index().entries;
+        let query_snapshot = app.mention.as_ref().map(|m| m.query.clone());
+        match query_snapshot {
+            Some(q) if q.chars().count() >= MIN_QUERY_CHARS => {
+                Some(file_index::visible_candidates(entries_ref, &q))
+            }
+            _ => None,
+        }
+    };
+
     let Some(mention) = app.mention.as_mut() else {
         return;
     };
@@ -163,14 +182,12 @@ pub fn refresh_from_file_index(app: &mut App) {
         return;
     }
 
-    mention.candidates = file_index::visible_candidates(&app.file_index.entries, &mention.query);
+    if let Some(candidates) = candidates_snapshot {
+        mention.candidates = candidates;
+    }
     mention.search_status = if mention.candidates.is_empty() {
-        if app.file_index.scan_finished {
-            MentionSearchStatus::NoMatches
-        } else {
-            MentionSearchStatus::Searching
-        }
-    } else if app.file_index.scan_finished {
+        if scan_finished { MentionSearchStatus::NoMatches } else { MentionSearchStatus::Searching }
+    } else if scan_finished {
         MentionSearchStatus::Ready
     } else {
         MentionSearchStatus::Searching
@@ -519,7 +536,7 @@ mod tests {
 
         activate(&mut app);
         run_search(&mut app);
-        let initial_generation = app.file_index.generation;
+        let initial_generation = app.file_index_mut().generation;
         assert!(app.mention.as_ref().is_some_and(|mention| {
             mention.candidates.iter().any(|candidate| candidate.rel_path == "root.rs")
         }));
@@ -529,7 +546,7 @@ mod tests {
         update_query(&mut app);
 
         let mention = app.mention.as_ref().expect("mention should remain active");
-        assert_eq!(app.file_index.generation, initial_generation);
+        assert_eq!(app.file_index().generation, initial_generation);
         assert_eq!(mention.candidates.len(), 1);
         assert_eq!(mention.candidates[0].rel_path, "src/nested/needle.rs");
     }

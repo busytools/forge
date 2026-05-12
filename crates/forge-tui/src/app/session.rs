@@ -18,6 +18,7 @@ use forge_workspace::SessionKey;
 
 use crate::agent::events::TerminalMap;
 use crate::agent::model;
+use crate::app::file_index::FileIndexState;
 use crate::app::git_context::GitContextState;
 use crate::app::input::InputState;
 use crate::app::state::cache_metrics::CacheMetrics;
@@ -218,6 +219,13 @@ pub struct UiSession {
     /// always lists the active project's sessions even when the user
     /// has switched mid-session.
     pub recent_sessions: Vec<RecentSessionInfo>,
+    /// File index for `@`-mention autocomplete. Scans the bucket's
+    /// `cwd` and updates incrementally via the workspace-wide
+    /// `FileIndexEvent` channel (`App::file_index_event_tx`).
+    /// Per-session because the index is project-scoped — switching
+    /// active session via the Projects pane must show the new
+    /// project's files, not the previous project's.
+    pub file_index: FileIndexState,
 
     // ---- Todos ----
     /// Current todo list from Claude's `TodoWrite` tool calls.
@@ -338,6 +346,7 @@ impl Default for UiSession {
             mcp: McpState::default(),
             usage: UsageState::default(),
             recent_sessions: Vec::default(),
+            file_index: FileIndexState::default(),
             todos: Vec::default(),
             show_todo_panel: bool::default(),
             todo_scroll: usize::default(),

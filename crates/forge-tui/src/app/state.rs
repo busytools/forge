@@ -323,8 +323,12 @@ pub struct App {
     pub rendered_input_area: ratatui::layout::Rect,
     /// Active `@` file mention autocomplete state.
     pub mention: Option<mention::MentionState>,
-    /// App-owned file index backing `@` file mention autocomplete.
-    pub file_index: file_index::FileIndexState,
+    // `file_index: FileIndexState` moved to `UiSession.file_index`
+    // (per-session bucket). The scanner is project-scoped — switching
+    // active session shows the new project's files. The channel
+    // endpoints (`file_index_event_tx` / `_rx`) stay App-level since
+    // the scanner thread is a single workspace-wide pump. See
+    // `App::file_index` / `App::file_index_mut`.
     /// Active slash-command autocomplete state.
     pub slash: Option<slash::SlashState>,
     /// Active subagent autocomplete state (`&name`).
@@ -499,6 +503,14 @@ impl App {
         // the incoming bucket's cwd guarantees one canonical update
         // per switch.
         crate::app::tab_title::update_tab_title(&self.status, self.spinner_frame, self.cwd());
+        // Ensure the file index for `@`-mention autocomplete is
+        // started for the incoming bucket. Each bucket owns its own
+        // `FileIndexState`; if this is the first time we've switched
+        // to this bucket the index is empty and needs a fresh scan
+        // against the bucket's cwd. `ensure_started` is idempotent:
+        // it's a no-op when the bucket's index is already scanning
+        // or has a current root matching the cwd.
+        crate::app::file_index::ensure_started(self);
         self.force_redraw = true;
         self.needs_redraw = true;
     }
@@ -1281,6 +1293,27 @@ impl App {
         key: &forge_workspace::SessionKey,
     ) -> Option<&mut Vec<RecentSessionInfo>> {
         self.sessions.get_mut(key).map(|s| &mut s.recent_sessions)
+    }
+
+    /// Active session's file-index state for `@`-mention autocomplete.
+    /// Returns an empty default state when no active session exists
+    /// (test paths, brief pre-Connect window).
+    #[must_use]
+    pub fn file_index(&self) -> &super::file_index::FileIndexState {
+        static FALLBACK: std::sync::OnceLock<super::file_index::FileIndexState> =
+            std::sync::OnceLock::new();
+        match self.active_session() {
+            Some(s) => &s.file_index,
+            None => FALLBACK.get_or_init(super::file_index::FileIndexState::default),
+        }
+    }
+
+    /// Mutable borrow of the active session's file index. Used by
+    /// the scanner + watcher lifecycle in `app::file_index` and the
+    /// `@`-mention reducer in `app::mention`.
+    #[must_use]
+    pub fn file_index_mut(&mut self) -> &mut super::file_index::FileIndexState {
+        &mut self.active_bucket_mut().file_index
     }
 
     // ---- Account / auth accessors ----
@@ -2152,7 +2185,6 @@ impl App {
             rendered_input_lines: Vec::new(),
             rendered_input_area: ratatui::layout::Rect::default(),
             mention: None,
-            file_index: file_index::FileIndexState::default(),
             slash: None,
             subagent: None,
             pending_submit: None,

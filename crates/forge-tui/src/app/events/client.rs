@@ -1665,9 +1665,9 @@ mod tests {
         let canonical = dir.path().canonicalize().expect("canonicalize");
         let mut app = App::test_default();
         // Seed stale file_index state to verify the restart wipes it.
-        app.file_index.generation = 3;
-        app.file_index.root = Some(std::path::PathBuf::from("/old/path"));
-        app.file_index.entries.insert(
+        app.file_index_mut().generation = 3;
+        app.file_index_mut().root = Some(std::path::PathBuf::from("/old/path"));
+        app.file_index_mut().entries.insert(
             "stale.rs".to_owned(),
             crate::app::file_index::FileCandidate {
                 rel_path: "stale.rs".to_owned(),
@@ -1678,7 +1678,7 @@ mod tests {
                 is_dir: false,
             },
         );
-        app.file_index.scan_finished = true;
+        app.file_index_mut().scan_finished = true;
 
         let pending_key = app.active_session_key.clone().expect("pending active key");
         let new_cwd = canonical.to_string_lossy().into_owned();
@@ -1697,13 +1697,16 @@ mod tests {
         );
 
         assert_eq!(
-            app.file_index.root.as_deref(),
+            app.file_index_mut().root.as_deref(),
             Some(canonical.as_path()),
             "file_index root must follow the Connected cwd",
         );
-        assert!(app.file_index.generation > 3, "file_index generation must advance on restart");
-        assert!(app.file_index.entries.is_empty(), "stale entries cleared on restart");
-        assert!(!app.file_index.scan_finished, "scan_finished reset on restart");
+        assert!(
+            app.file_index_mut().generation > 3,
+            "file_index generation must advance on restart"
+        );
+        assert!(app.file_index_mut().entries.is_empty(), "stale entries cleared on restart");
+        assert!(!app.file_index_mut().scan_finished, "scan_finished reset on restart");
     }
 
     /// `SessionUpdate::SessionReplaced` shares the
@@ -1717,9 +1720,9 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let canonical = dir.path().canonicalize().expect("canonicalize");
         let mut app = App::test_default();
-        app.file_index.generation = 8;
-        app.file_index.root = Some(std::path::PathBuf::from("/before"));
-        app.file_index.entries.insert(
+        app.file_index_mut().generation = 8;
+        app.file_index_mut().root = Some(std::path::PathBuf::from("/before"));
+        app.file_index_mut().entries.insert(
             "before.rs".to_owned(),
             crate::app::file_index::FileCandidate {
                 rel_path: "before.rs".to_owned(),
@@ -1730,7 +1733,7 @@ mod tests {
                 is_dir: false,
             },
         );
-        app.file_index.scan_finished = true;
+        app.file_index_mut().scan_finished = true;
 
         let pending_key = app.active_session_key.clone().expect("pending active key");
         let replaced_cwd = canonical.to_string_lossy().into_owned();
@@ -1749,12 +1752,15 @@ mod tests {
         );
 
         assert_eq!(
-            app.file_index.root.as_deref(),
+            app.file_index_mut().root.as_deref(),
             Some(canonical.as_path()),
             "file_index root must follow the SessionReplaced cwd",
         );
-        assert!(app.file_index.generation > 8, "file_index generation must advance on restart");
-        assert!(app.file_index.entries.is_empty(), "stale entries cleared on restart");
-        assert!(!app.file_index.scan_finished, "scan_finished reset on restart");
+        assert!(
+            app.file_index_mut().generation > 8,
+            "file_index generation must advance on restart"
+        );
+        assert!(app.file_index_mut().entries.is_empty(), "stale entries cleared on restart");
+        assert!(!app.file_index_mut().scan_finished, "scan_finished reset on restart");
     }
 }
