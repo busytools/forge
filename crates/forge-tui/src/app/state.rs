@@ -112,8 +112,12 @@ pub enum PaneHitTarget {
     /// switch active session to that specific session.
     SessionRow { session_key: forge_workspace::SessionKey, y: u16, height: u16 },
     /// Click on the `▤` icon in the Narrow-tier top bar → toggle
-    /// the projects overlay.
+    /// the Projects overlay.
     TopBarIcon { y: u16, height: u16, x_start: u16, x_end: u16 },
+    /// Click on the `▦` icon in the Narrow-tier top bar (right end)
+    /// → toggle the Inspector overlay. Mirror of `TopBarIcon` for
+    /// the right-side pane.
+    InspectorTopBarIcon { y: u16, height: u16, x_start: u16, x_end: u16 },
     /// Click on the `✕` glyph in the overlay banner → close the
     /// overlay without switching sessions.
     OverlayClose { y: u16, height: u16, x_start: u16, x_end: u16 },
@@ -143,6 +147,7 @@ impl PaneHitTarget {
             Self::ProjectHeader { y, height, .. }
             | Self::SessionRow { y, height, .. }
             | Self::TopBarIcon { y, height, .. }
+            | Self::InspectorTopBarIcon { y, height, .. }
             | Self::OverlayClose { y, height, .. }
             | Self::CloseSession { y, height, .. } => (*y, *height),
         };
@@ -161,6 +166,7 @@ impl PaneHitTarget {
         match self {
             Self::ProjectHeader { .. } | Self::SessionRow { .. } => true,
             Self::TopBarIcon { x_start, x_end, .. }
+            | Self::InspectorTopBarIcon { x_start, x_end, .. }
             | Self::OverlayClose { x_start, x_end, .. }
             | Self::CloseSession { x_start, x_end, .. } => (*x_start..*x_end).contains(&x),
         }
@@ -273,6 +279,20 @@ pub struct App {
     /// top bar; closed by clicking the overlay's `✕` glyph, by Esc,
     /// or by switching to a project / session row inside the overlay.
     pub projects_pane_overlay_open: bool,
+    /// Whether the Wide/Medium-tier Inspector pane is currently
+    /// visible (right side, mirror of [`Self::projects_pane_visible`]).
+    /// Toggled by Ctrl+E; persisted to `forge-state.toml`. Default
+    /// `true`. Has no effect at Narrow tier — that tier uses
+    /// [`Self::inspector_pane_overlay_open`] for the on-demand
+    /// overlay.
+    pub inspector_pane_visible: bool,
+    /// Whether the Narrow-tier Inspector overlay is currently open.
+    /// Transient — NOT persisted; each launch starts closed. Toggled
+    /// by Ctrl+E at Narrow tier or by clicking the `▦` icon in the
+    /// top bar; closed by clicking the overlay's `✕` glyph or by
+    /// Esc. Mutually exclusive with `projects_pane_overlay_open` —
+    /// opening one closes the other.
+    pub inspector_pane_overlay_open: bool,
     /// Click hit-targets stamped by
     /// [`crate::ui::projects_pane::render`]. Cleared on each render
     /// and refilled. The mouse handler iterates this to find what
@@ -1540,48 +1560,18 @@ impl App {
         &mut self.active_bucket_mut().todos
     }
 
-    /// Active session's todo-panel-expanded flag.
+    /// Active session's TodoWrite-verification-nudge flag.
     #[must_use]
-    pub fn show_todo_panel(&self) -> bool {
-        self.active_session().is_some_and(|s| s.show_todo_panel)
+    pub fn todo_verification_nudge(&self) -> bool {
+        self.active_session().is_some_and(|s| s.todo_verification_nudge)
     }
 
-    /// Set the active session's todo-panel-expanded flag.
-    pub fn set_show_todo_panel(&mut self, value: bool) {
-        self.active_bucket_mut().show_todo_panel = value;
-    }
-
-    /// Active session's todo-panel scroll offset.
-    #[must_use]
-    pub fn todo_scroll(&self) -> usize {
-        self.active_session().map_or(0, |s| s.todo_scroll)
-    }
-
-    /// Set the active session's todo-panel scroll offset.
-    pub fn set_todo_scroll(&mut self, value: usize) {
-        self.active_bucket_mut().todo_scroll = value;
-    }
-
-    /// Active session's selected-todo index.
-    #[must_use]
-    pub fn todo_selected(&self) -> usize {
-        self.active_session().map_or(0, |s| s.todo_selected)
-    }
-
-    /// Set the active session's selected-todo index.
-    pub fn set_todo_selected(&mut self, value: usize) {
-        self.active_bucket_mut().todo_selected = value;
-    }
-
-    /// Borrow the active session's cached compact todo line.
-    #[must_use]
-    pub fn cached_todo_compact(&self) -> Option<&ratatui::text::Line<'static>> {
-        self.active_session().and_then(|s| s.cached_todo_compact.as_ref())
-    }
-
-    /// Set the active session's cached compact todo line.
-    pub fn set_cached_todo_compact(&mut self, value: Option<ratatui::text::Line<'static>>) {
-        self.active_bucket_mut().cached_todo_compact = value;
+    /// Set the active session's TodoWrite-verification-nudge flag.
+    /// Called by the TodoWrite tool-result handler to surface (or
+    /// clear) the dim-yellow notice above the Inspector pane's TASKS
+    /// section.
+    pub fn set_todo_verification_nudge(&mut self, value: bool) {
+        self.active_bucket_mut().todo_verification_nudge = value;
     }
 
     // ---- Render cache + history retention accessors ----
@@ -2269,6 +2259,8 @@ impl App {
             tools_collapsed: false,
             projects_pane_visible: true,
             projects_pane_overlay_open: false,
+            inspector_pane_visible: true,
+            inspector_pane_overlay_open: false,
             pane_hit_targets: Vec::new(),
             layout: crate::ui::layout::AppLayout::default(),
             force_redraw: false,
@@ -2557,7 +2549,10 @@ impl App {
     #[must_use]
     fn focus_context(&self) -> FocusContext {
         FocusContext::new(
-            self.show_todo_panel() && !self.todos().is_empty(),
+            // Todo list focus is gone — the bottom todo panel was
+            // replaced by the Inspector pane (right side), which is
+            // mouse-only / read-only and never claims keyboard focus.
+            false,
             self.autocomplete_focus_available(),
             !self.pending_interaction_ids().is_empty(),
         )
@@ -4451,12 +4446,6 @@ mod tests {
 
     fn focus_test_app_with_available_targets() -> App {
         let mut app = make_test_app();
-        app.todos_mut().push(TodoItem {
-            content: "Task".into(),
-            status: TodoStatus::Pending,
-            active_form: String::new(),
-        });
-        app.set_show_todo_panel(true);
         app.pending_interaction_ids_mut().push("perm-1".into());
         *app.slash_mut() = Some(SlashState {
             trigger_row: 0,
@@ -4479,9 +4468,6 @@ mod tests {
 
         assert_eq!(app.focus_owner(), FocusOwner::Input);
 
-        app.claim_focus_target(FocusTarget::TodoList);
-        assert_eq!(app.focus_owner(), FocusOwner::TodoList);
-
         app.claim_focus_target(FocusTarget::Permission);
         assert_eq!(app.focus_owner(), FocusOwner::Permission);
 
@@ -4492,16 +4478,15 @@ mod tests {
         assert_eq!(app.focus_owner(), FocusOwner::Permission);
 
         app.release_focus_target(FocusTarget::Permission);
-        assert_eq!(app.focus_owner(), FocusOwner::TodoList);
-
-        app.release_focus_target(FocusTarget::TodoList);
         assert_eq!(app.focus_owner(), FocusOwner::Input);
     }
 
     #[test]
     fn focus_owner_falls_back_to_input_when_claimed_target_is_unavailable() {
         let mut app = make_test_app();
-        app.claim_focus_target(FocusTarget::TodoList);
+        // Mention focus is only valid when slash/mention state is set;
+        // claiming it without that state should fall back to Input.
+        app.claim_focus_target(FocusTarget::Mention);
         assert_eq!(app.focus_owner(), FocusOwner::Input);
     }
 

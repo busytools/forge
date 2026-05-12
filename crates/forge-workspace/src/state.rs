@@ -34,8 +34,9 @@ pub(crate) struct PersistedSelectionState {
     pub round_robin_next: Option<usize>,
 }
 
-/// UI preferences persisted across forge launches. Currently scoped
-/// to the Wide-tier Projects pane visibility toggle (Ctrl+B). New
+/// UI preferences persisted across forge launches. Scoped to the
+/// Wide / Medium-tier side-pane visibility toggles (Ctrl+B for the
+/// left Projects pane, Ctrl+E for the right Inspector pane). New
 /// fields land with their own `#[serde(default = "...")]` defaults
 /// so older `forge-state.toml` files keep round-tripping.
 #[derive(Debug, Deserialize, Serialize)]
@@ -44,11 +45,18 @@ pub(crate) struct PersistedUiState {
     /// Default `true` so first-launch users see the pane.
     #[serde(default = "default_pane_visible")]
     pub projects_pane_visible: bool,
+    /// Whether the Inspector pane was visible at last shutdown.
+    /// Default `true` so first-launch users see the pane.
+    #[serde(default = "default_pane_visible")]
+    pub inspector_pane_visible: bool,
 }
 
 impl Default for PersistedUiState {
     fn default() -> Self {
-        Self { projects_pane_visible: default_pane_visible() }
+        Self {
+            projects_pane_visible: default_pane_visible(),
+            inspector_pane_visible: default_pane_visible(),
+        }
     }
 }
 

@@ -459,13 +459,12 @@ mod tests {
     fn visual_line_count_hides_prompt_suggestion_hint_when_input_lacks_focus() {
         let mut app = App::test_default();
         app.set_prompt_suggestion(Some("Write tests for the retry flow".to_owned()));
-        app.set_show_todo_panel(true);
-        app.todos_mut().push(crate::app::TodoItem {
-            content: "todo".to_owned(),
-            status: crate::app::TodoStatus::Pending,
-            active_form: String::new(),
-        });
-        app.claim_focus_target(FocusTarget::TodoList);
+        // Claim Permission focus to take focus off the input — the
+        // prompt-suggestion hint only renders when the input owns
+        // focus. (The old TodoList focus target was used here before;
+        // it's been removed along with the bottom todo panel.)
+        *app.pending_interaction_ids_mut() = vec!["perm-1".into()];
+        app.claim_focus_target(FocusTarget::Permission);
         assert_eq!(visual_line_count(&mut app, 80), 1);
     }
 }

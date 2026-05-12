@@ -368,24 +368,23 @@
 <h2 class="section-title" id="layout">Layout</h2>
 
 <p class="intro">
-  forge-tui's main frame is a strict vertical stack composed by <code>layout::compute</code>. <strong>This stack only renders in <code>ActiveView::Chat</code>.</strong> When the user opens <code>/config</code>, the resume picker, or hits the trust gate, forge swaps the entire frame to a single full-screen overlay (<code>ActiveView::Config</code>, <code>ActiveView::SessionPicker</code>, <code>ActiveView::Trusted</code>) — chat / input / todo panel all disappear during those views. At terminal widths ≥160 cols the chat frame docks to the right of a 26ch <a href="#projects-pane">Projects pane</a> (which now carries the account / mode / model / usage / location panel at its bottom); between 120–159 cols the pane shrinks to a compact 20ch with label truncation; below 120 cols a single-row top bar replaces the inline pane and tapping its <code>▤</code> icon (or <kbd>Ctrl+B</kbd>) opens a full-screen Projects overlay (which carries the same bottom panel).
+  forge-tui's main frame is a strict vertical stack composed by <code>layout::compute</code>, flanked by inline side panes at the wider tiers. <strong>This stack only renders in <code>ActiveView::Chat</code>.</strong> When the user opens <code>/config</code>, the resume picker, or hits the trust gate, forge swaps the entire frame to a single full-screen overlay (<code>ActiveView::Config</code>, <code>ActiveView::SessionPicker</code>, <code>ActiveView::Trusted</code>) — chat / input / side panes all disappear during those views. At terminal widths ≥160 cols the chat frame is flanked by a 26ch <a href="#projects-pane">Projects pane</a> on the left (carrying the account / mode / model / usage / location panel at its bottom) and a 26ch <a href="#inspector-pane">Inspector pane</a> on the right (carrying the live <code>TASKS</code> list from <code>TodoWrite</code>); between 120–159 cols both panes shrink to 20ch with truncation; below 120 cols a single-row top bar replaces both panes — tapping the <code>▤</code> icon (or <kbd>Ctrl+B</kbd>) opens the Projects overlay, tapping <code>▦</code> (or <kbd>Ctrl+E</kbd>) opens the Inspector overlay.
 </p>
 
 <p class="intro">
-  In <code>ActiveView::Chat</code> the stack is:
+  In <code>ActiveView::Chat</code> the central stack is:
 </p>
 
 <ol style="color: var(--muted); font-size: 13px; line-height: 1.7; margin: 0 0 16px 22px;">
   <li><code>body</code> — chat scrollback (Min 3 rows, takes the flex)</li>
   <li><code>input_sep</code> — full-width <code>─</code> separator (1 row, DIM)</li>
-  <li><code>todo</code> — todo panel (0 when no todos, else 1 row closed or up to 5 rows open)</li>
   <li><code>input</code> — input field (1 row, grows up to N as user types)</li>
   <li><code>input_bottom_sep</code> — full-width <code>─</code> separator (1 row, DIM)</li>
   <li><code>help</code> — help overlay (0 when inactive, else <code>HELP_PANEL_HEIGHT = 14</code>)</li>
 </ol>
 
 <p class="intro" style="margin-top: 8px;">
-  The mode / model / fast-mode / cwd / branch / usage <strong>status used to sit as 2 rows below the input</strong>; that row is gone. All of those pieces now live in the <a href="#projects-pane">Projects pane</a>'s bottom panel together with the account name and a per-window usage bar (5h, 7d).
+  The mode / model / fast-mode / cwd / branch / usage <strong>status used to sit as 2 rows below the input</strong>; that row is gone. All of those pieces now live in the <a href="#projects-pane">Projects pane</a>'s bottom panel together with the account name and a per-window usage bar (5h, 7d). The live todo list <strong>used to sit above the input</strong> as the <code>todo</code> panel (closed = 1-line compact, open = up to 5 rows, toggle on <kbd>Ctrl+T</kbd>); that panel is gone too — todos now render in the right-hand <a href="#inspector-pane">Inspector pane</a> as its <code>TASKS</code> section.
 </p>
 
 <p class="intro">
@@ -410,13 +409,12 @@
   <span class="dim">│  </span>   <span class="dim">Compiling forge-tui v0.14.2</span>
   <span class="dim">└─ </span><span class="success">Summary [4.2s] 1565 tests run: 1565 passed</span>
   <span class="muted-c">────────────────────────────────────────────────────────────────────────────</span>
-  <span class="dim">[</span><span class="accent">2/5</span><span class="dim">]</span> Adding tests for the near-threshold branch
   <span class="accent">❯</span> <span class="dim italic">Type your message…</span>
   <span class="muted-c">────────────────────────────────────────────────────────────────────────────</span>
 </pre>
 </div>
 
-<p class="caption">Left padding is 2 cols across the chat body. Two horizontal <code>─</code> separators in DIM frame the input + (optional) todo panel — one above, one below. The todo panel slot is between <code>input_sep</code> and <code>input</code>; here shown in compact mode showing "<code>[2/5] Adding tests…</code>". The bottom of the chat frame ends at the lower <code>─</code>; the status pieces that used to sit below the input now live in the <a href="#projects-pane">Projects pane</a>'s bottom panel.</p>
+<p class="caption">Left padding is 2 cols across the chat body. Two horizontal <code>─</code> separators in DIM frame the input — one above, one below. The bottom of the chat frame ends at the lower <code>─</code>; the status pieces that used to sit below the input now live in the <a href="#projects-pane">Projects pane</a>'s bottom panel, and the todo list that used to sit above the input is now in the <a href="#inspector-pane">Inspector pane</a>'s <code>TASKS</code> section.</p>
 
 <div class="surface" id="projects-pane">
   <div class="surface-head">
@@ -520,6 +518,92 @@ chat continues here…
       <dt>toggle</dt><dd><code>Ctrl+B</code> at Wide / Medium tiers hides / restores the inline pane (persisted to <code>forge-state.toml</code> <code>[ui].projects_pane_visible</code>, default <code>true</code>). At Narrow tier <code>Ctrl+B</code> toggles the transient overlay flag (NOT persisted — each launch starts closed). <kbd>Esc</kbd> also closes the overlay.</dd>
       <dt>scope</dt><dd>All three tiers ship: Wide (≥160) inline 26ch · Medium (120–159) inline 20ch with truncation · Narrow (&lt;120) top-bar + overlay. Click + toggle behaviour tier-agnostic for the inline pane; Narrow uses overlay + <code>✕</code> semantics. Mouse-only interaction in v1 (plus <kbd>Ctrl+B</kbd> / <kbd>Esc</kbd>) — chat input always has keyboard focus.</dd>
       <dt>layout</dt><dd>The pane is vertically split into two anchored regions: <strong>top</strong> for the project list, <strong>bottom</strong> for the account / status panel. The panel reserves a fixed 17 rows from the bottom up (rule + 5 identity rows + 7 usage rows including blank gaps + 1 separator blank + 2 location rows). The project list takes everything above. When the project list overflows its region it scrolls within itself; the panel's rows are never reclaimed. If the project list is short, the unused rows in the list region render blank — the panel does NOT slide upward to close the gap. The panel is skipped entirely when the pane height drops below 24 rows so the project list keeps at least 7 rows.</dd>
+    </dl>
+  </div>
+</div>
+
+<div class="surface" id="inspector-pane">
+  <div class="surface-head">
+    <h4>Inspector pane (Wide / Medium / Narrow tiers)</h4>
+    <div class="when">visible: at all terminal widths — Wide (≥160) renders a 26ch inline pane on the right of chat, Medium (120–159) a 20ch inline pane, Narrow (&lt;120) an <code>Inspector ▦</code> icon on the top bar with on-demand full-screen overlay</div>
+  </div>
+  <div class="surface-body">
+    <p>Right-side pane, 26ch wide, docked to the right of the chat frame. Mirror of the <a href="#projects-pane">Projects pane</a> on the left — same banner shape, same rule, same Narrow-tier overlay semantics, same persisted-visibility model. Reads strictly from the active session: switching projects via the left pane swaps the Inspector's content alongside it.</p>
+    <p>The pane currently carries one section, <strong>TASKS</strong> — the live snapshot of the agent's <code>TodoWrite</code> list. The chat scrollback no longer surfaces a <code>TodoWrite</code> tool-call card; updates land transparently here. When the agent hasn't emitted any todos for the current session, the pane shows only its banner + rule and the rest of the column is blank.</p>
+    <div class="term">
+      <pre class="indent">
+  <span class="accent-bold">INSPECTOR</span>
+  <span class="dim">─────────────────────────</span>
+
+  <span class="dim bold">  TASKS</span>
+
+  <span class="success">  ✓</span> <span class="dim" style="text-decoration: line-through">Read the rate-limit code</span>
+  <span class="success">  ✓</span> <span class="dim" style="text-decoration: line-through">Add the soft-wording branch</span>
+  <span class="accent">  ▸</span> <span class="bold">Adding tests for the</span>
+       <span class="bold">near-threshold branch</span>
+  <span class="dim">  ○</span> Run cargo nextest
+  <span class="dim">  ○</span> Open PR
+</pre>
+    </div>
+    <p>Item glyphs and styles:</p>
+    <ul style="color: var(--muted); font-size: 13px; line-height: 1.7; margin: 0 0 12px 18px;">
+      <li><span class="success">✓</span> green — <code>Completed</code> (text DIM + crossed-out)</li>
+      <li><span class="accent">▸</span> RUST_ORANGE — <code>InProgress</code> (text white bold; uses <code>active_form</code> when present, else <code>content</code>; <strong>wraps</strong> onto continuation lines indented under the glyph)</li>
+      <li><span class="dim">○</span> DIM — <code>Pending</code> (text gray)</li>
+    </ul>
+    <p>Only the in-progress item wraps. Completed and pending items truncate with <code>…</code> at the pane's right edge — they're scannable status, not actionable text. At Medium tier (20ch) truncation is routine; at Wide tier (26ch) most items fit.</p>
+    <p>When <code>TodoWriteOutputMetadata.verification_nudge_needed</code> is set, a one-line dim-yellow notice sits between the rule and the <code>TASKS</code> header until the next <code>TodoWrite</code> clears it:</p>
+    <div class="term">
+      <pre class="indent">
+  <span class="accent-bold">INSPECTOR</span>
+  <span class="dim">─────────────────────────</span>
+  <span class="warning">  ⚠ verify before declaring complete</span>
+
+  <span class="dim bold">  TASKS</span>
+
+  <span class="accent">  ▸</span> <span class="bold">Open PR</span>
+</pre>
+    </div>
+    <p>Empty state — no todos for the active session — keeps the banner + rule, nothing below:</p>
+    <div class="term">
+      <pre class="indent">
+  <span class="accent-bold">INSPECTOR</span>
+  <span class="dim">─────────────────────────</span>
+
+
+
+
+</pre>
+    </div>
+    <p>At Narrow tier (&lt;120 cols), the inline pane is replaced by an <code>Inspector ▦</code> icon on the right end of the same top bar that hosts the <code>▤</code> Projects icon on the left. Tap <code>Inspector ▦</code> (or <kbd>Ctrl+E</kbd>) to expand the overlay — full-screen rendering of the same content with a <code>✕</code> glyph in the banner to dismiss. <kbd>Esc</kbd> also closes. The Projects overlay and the Inspector overlay are mutually exclusive: opening one closes the other.</p>
+    <div class="term">
+      <pre class="indent">
+<span class="dim">▤</span>  forge·main                                  <span class="dim">▦</span>
+<span class="dim">─────────────────────────────────────────────────</span>
+chat continues here…
+</pre>
+    </div>
+    <div class="term">
+      <pre class="indent">
+<span class="accent-bold">INSPECTOR ▦</span>                                       <span class="dim">✕</span>
+<span class="dim">─────────────────────────────────────────────────</span>
+
+<span class="dim bold">  TASKS</span>
+
+<span class="success">  ✓</span> <span class="dim" style="text-decoration: line-through">Read the rate-limit code</span>
+<span class="success">  ✓</span> <span class="dim" style="text-decoration: line-through">Add the soft-wording branch</span>
+<span class="accent">  ▸</span> <span class="bold">Adding tests for the near-threshold branch</span>
+<span class="dim">  ○</span> Run cargo nextest
+<span class="dim">  ○</span> Open PR
+</pre>
+    </div>
+    <dl>
+      <dt>code</dt><dd><code>crates/forge-tui/src/ui/inspector_pane.rs::render</code> (inline) · <code>::render_overlay</code> (Narrow overlay) · <code>crates/forge-tui/src/ui/top_bar.rs::render</code> (Narrow top bar — both icons) · click handling in <code>crates/forge-tui/src/app/events/mouse.rs</code></dd>
+      <dt>color</dt><dd>banner (<code>INSPECTOR</code> / <code>INSPECTOR ▦</code>): <code>RUST_ORANGE</code> bold · rule: <code>DIM</code> · section header (<code>TASKS</code>): <code>DIM</code> bold · completed glyph (<code>✓</code>) + text: <span class="success">green</span> glyph, <code>DIM</code> crossed-out text · in-progress glyph (<code>▸</code>) + text: <code>RUST_ORANGE</code> glyph, white bold text · pending glyph (<code>○</code>) + text: <code>DIM</code> · verification nudge line: <span class="warning">yellow</span> · top-bar <code>▦</code> icon: <code>DIM</code> when overlay closed, <code>RUST_ORANGE</code> bold when open · overlay <code>✕</code>: <code>DIM</code></dd>
+      <dt>data source</dt><dd>Per-active-session <code>app.todos()</code> (the <code>UiSession.todos</code> bucket from PR #109). <code>TodoWriteOutputMetadata.verification_nudge_needed</code> from the latest <code>TodoWrite</code> tool result drives the nudge line.</dd>
+      <dt>click</dt><dd>v1: read-only. No clickable items. Future could surface a click-to-expand for truncated items, or a click-to-toggle-complete affordance. At Narrow tier the <code>▦</code> top-bar icon toggles overlay open/close; the overlay <code>✕</code> glyph dismisses.</dd>
+      <dt>toggle</dt><dd><kbd>Ctrl+E</kbd> at Wide / Medium tiers hides / restores the inline pane (persisted to <code>forge-state.toml</code> <code>[ui].inspector_pane_visible</code>, default <code>true</code>). At Narrow tier <kbd>Ctrl+E</kbd> toggles the transient overlay flag (NOT persisted — each launch starts closed). <kbd>Esc</kbd> also closes the overlay. Mirror of the left pane's <kbd>Ctrl+B</kbd>.</dd>
+      <dt>scope</dt><dd>All three tiers ship: Wide (≥160) inline 26ch · Medium (120–159) inline 20ch with item truncation · Narrow (&lt;120) top-bar icon + overlay. Single section (<code>TASKS</code>) in v1; the pane scaffold is sized to accommodate future sections (e.g. GIT, PROCESSES) stacking under TASKS without restructuring.</dd>
     </dl>
   </div>
 </div>
@@ -666,48 +750,11 @@ chat continues here…
 
 <div class="surface">
   <div class="surface-head">
-    <h4>TodoWrite tool call (in chat)</h4>
-    <div class="when">visible: appears in chat scrollback at the moment the agent invokes <code>TodoWrite</code></div>
+    <h4>TodoWrite tool call</h4>
+    <div class="when">visible: never in chat — TodoWrite is silent in the scrollback. The live todo state lives in the <a href="#inspector-pane">Inspector pane</a>'s <code>TASKS</code> section.</div>
   </div>
   <div class="surface-body">
-    <p>Renders via the standard tool-call path — status icon + dotted-circle kind icon + title. The persistent live view of todos lives in the docked panel below.</p>
-    <div class="term">
-      <pre class="indent">
-  <span class="success">✓</span> <span class="bold">◌</span> 5 items</pre>
-    </div>
-  </div>
-</div>
-
-<div class="surface">
-  <div class="surface-head">
-    <h4>Todo panel (docked above input)</h4>
-    <div class="when">visible: always when <code>app.todos</code> is non-empty</div>
-  </div>
-  <div class="surface-body">
-    <p>Two states. <strong>Closed</strong> (default): single compact line showing progress + the in-progress task (or first pending if none in-progress). <code>[completed/total] active-task-text</code> — count in RUST_ORANGE, brackets in DIM, text in white.</p>
-    <div class="term">
-      <pre class="indent">
-  <span class="dim">[</span><span class="accent">2/5</span><span class="dim">]</span> Adding tests for the near-threshold branch</pre>
-    </div>
-    <p><strong>Open</strong>: up to <code>MAX_VISIBLE = 5</code> rows, scrollable. Status icons:</p>
-    <ul style="color: var(--muted); font-size: 13px; line-height: 1.7; margin: 0 0 12px 18px;">
-      <li><span class="success">✓</span> green — <code>Completed</code> (text DIM + crossed-out)</li>
-      <li><span class="accent">▸</span> RUST_ORANGE — <code>InProgress</code> (text white bold; uses <code>active_form</code> if set, else <code>content</code>)</li>
-      <li><span class="dim">○</span> DIM — <code>Pending</code> (text gray)</li>
-    </ul>
-    <p>When focus is on the panel itself, the selected row gets <code>REVERSED</code> modifier.</p>
-    <div class="term">
-      <pre class="indent">
-  <span class="success">✓</span> <span class="dim" style="text-decoration: line-through">Read the rate-limit code</span>
-  <span class="success">✓</span> <span class="dim" style="text-decoration: line-through">Add the soft-wording branch</span>
-  <span class="accent">▸</span> <span class="bold">Adding tests for the near-threshold branch</span>
-  <span class="dim">○</span> Run cargo nextest
-  <span class="dim">○</span> Open PR</pre>
-    </div>
-    <dl>
-      <dt>code</dt><dd><code>crates/forge-tui/src/ui/todo.rs</code> · <code>render_closed</code> + <code>render_open</code></dd>
-      <dt>focus</dt><dd>Tab cycles to <code>FocusOwner::TodoList</code>; arrows scroll, Esc returns focus to input</dd>
-    </dl>
+    <p>The chat-stream tool-call card for <code>TodoWrite</code> is suppressed. Every <code>TodoWrite</code> call updates the Inspector pane in place; no chat noise. When <code>TodoWriteOutputMetadata.verification_nudge_needed</code> is set, the nudge surfaces as a dim-yellow line in the Inspector above the <code>TASKS</code> header (see <a href="#inspector-pane">Inspector pane</a>).</p>
   </div>
 </div>
 

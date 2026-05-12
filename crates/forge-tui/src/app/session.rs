@@ -278,18 +278,13 @@ pub struct UiSession {
 
     // ---- Todos ----
     /// Current todo list from Claude's `TodoWrite` tool calls.
+    /// Rendered by [`crate::ui::inspector_pane`] (right side).
     pub todos: Vec<TodoItem>,
-    /// Whether the todo panel is expanded (true) or shows compact
-    /// status line (false). Toggled by Ctrl+T.
-    pub show_todo_panel: bool,
-    /// Scroll offset for the expanded todo panel (capped at 5
-    /// visible lines).
-    pub todo_scroll: usize,
-    /// Selected todo index used for keyboard navigation in the open
-    /// todo panel.
-    pub todo_selected: usize,
-    /// Cached todo compact line (invalidated on `set_todos()`).
-    pub cached_todo_compact: Option<ratatui::text::Line<'static>>,
+    /// Whether the latest `TodoWrite` tool result carried
+    /// `TodoWriteOutputMetadata.verification_nudge_needed = Some(true)`.
+    /// Surfaces as a dim-yellow notice above the TASKS header in the
+    /// Inspector pane. Cleared on the next `TodoWrite`.
+    pub todo_verification_nudge: bool,
 
     // ---- Render cache + history retention ----
     /// Cached render-cache slot metadata parallel to
@@ -412,10 +407,7 @@ impl Default for UiSession {
             slash: Option::default(),
             subagent: Option::default(),
             todos: Vec::default(),
-            show_todo_panel: bool::default(),
-            todo_scroll: usize::default(),
-            todo_selected: usize::default(),
-            cached_todo_compact: Option::default(),
+            todo_verification_nudge: bool::default(),
             render_cache_slots: Vec::default(),
             render_cache_total_bytes: usize::default(),
             render_cache_protected_bytes: usize::default(),

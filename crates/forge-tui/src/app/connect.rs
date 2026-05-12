@@ -145,9 +145,10 @@ pub fn create_app(cli: &Cli, workspace: Arc<forge_workspace::Workspace>) -> App 
     drop(pre_connect_domain);
     let mut sessions = std::collections::HashMap::new();
     sessions.insert(pre_connect_key.clone(), pre_connect_session);
-    // Snapshot the persisted Projects-pane visibility before
-    // moving `workspace` into the App struct below.
+    // Snapshot the persisted side-pane visibility before moving
+    // `workspace` into the App struct below.
     let projects_pane_visible = workspace.projects_pane_visible();
+    let inspector_pane_visible = workspace.inspector_pane_visible();
     let mut app = App {
         active_view: ActiveView::Chat,
         config: ConfigState::default(),
@@ -175,6 +176,8 @@ pub fn create_app(cli: &Cli, workspace: Arc<forge_workspace::Workspace>) -> App 
         tools_collapsed: true,
         projects_pane_visible,
         projects_pane_overlay_open: false,
+        inspector_pane_visible,
+        inspector_pane_overlay_open: false,
         pane_hit_targets: Vec::new(),
         layout: crate::ui::layout::AppLayout::default(),
         force_redraw: false,

@@ -398,6 +398,7 @@ fn handle_pane_click(app: &mut App, mouse: MouseEvent) -> bool {
             matches!(
                 t,
                 PaneHitTarget::TopBarIcon { .. }
+                    | PaneHitTarget::InspectorTopBarIcon { .. }
                     | PaneHitTarget::OverlayClose { .. }
                     | PaneHitTarget::CloseSession { .. }
             ) && t.contains(mouse.column, mouse.row)
@@ -406,12 +407,26 @@ fn handle_pane_click(app: &mut App, mouse: MouseEvent) -> bool {
     if let Some(target) = xy_target {
         match target {
             PaneHitTarget::TopBarIcon { .. } => {
+                // Mutually exclusive overlays — opening Projects
+                // closes Inspector.
+                if !app.projects_pane_overlay_open {
+                    app.inspector_pane_overlay_open = false;
+                }
                 app.projects_pane_overlay_open = !app.projects_pane_overlay_open;
+                app.needs_redraw = true;
+                return true;
+            }
+            PaneHitTarget::InspectorTopBarIcon { .. } => {
+                if !app.inspector_pane_overlay_open {
+                    app.projects_pane_overlay_open = false;
+                }
+                app.inspector_pane_overlay_open = !app.inspector_pane_overlay_open;
                 app.needs_redraw = true;
                 return true;
             }
             PaneHitTarget::OverlayClose { .. } => {
                 app.projects_pane_overlay_open = false;
+                app.inspector_pane_overlay_open = false;
                 app.needs_redraw = true;
                 return true;
             }
@@ -454,6 +469,7 @@ fn handle_pane_click(app: &mut App, mouse: MouseEvent) -> bool {
             // glyph's x range — treat as "in-overlay no-op" so we
             // still consume.
             PaneHitTarget::TopBarIcon { .. }
+            | PaneHitTarget::InspectorTopBarIcon { .. }
             | PaneHitTarget::OverlayClose { .. }
             | PaneHitTarget::CloseSession { .. } => true,
         };
@@ -486,6 +502,7 @@ fn handle_pane_click(app: &mut App, mouse: MouseEvent) -> bool {
         // x+y-bounded glyphs are checked first; here for exhaustive
         // matching only.
         PaneHitTarget::TopBarIcon { .. }
+        | PaneHitTarget::InspectorTopBarIcon { .. }
         | PaneHitTarget::OverlayClose { .. }
         | PaneHitTarget::CloseSession { .. } => true,
     }
