@@ -136,6 +136,19 @@ impl SessionTask {
             } => {
                 let history = history_updates.unwrap_or_default();
                 let real_key = SessionKey::from_session_id(session_id.clone());
+                // Realign the workspace's per-task registrations
+                // (`pool`, `command_senders`, `domain_handles`) onto
+                // the real session UUID. `get_agent_handle` registered
+                // them under the pool key returned by
+                // `resolve_target` — usually the lead session id, but
+                // a placeholder (`__fresh__:<project_key>`) for a
+                // project with no on-disk sessions, or the previous
+                // session's id on a `/new` flow. Without this, the
+                // TUI's `active_session_key` flips to `real_key` after
+                // `Connected` / `SessionReplaced` and every subsequent
+                // `Command::Prompt` falls off `dispatch`'s key lookup
+                // with `UnknownSession`.
+                self.rekey_to(&real_key);
                 if self.connected_once {
                     let _ = self.update_tx.send(SessionUpdate::SessionReplaced {
                         key: real_key,
@@ -181,6 +194,10 @@ impl SessionTask {
             } => {
                 let history = history_updates.unwrap_or_default();
                 let real_key = SessionKey::from_session_id(session_id.clone());
+                // Same rekey rationale as the `Connected` arm — the
+                // `/new` / `/resume` / `/login` flows hit this path
+                // and need the workspace's routing maps to catch up.
+                self.rekey_to(&real_key);
                 let _ = self.update_tx.send(SessionUpdate::SessionReplaced {
                     key: real_key,
                     session_id: SessionId::new(session_id),
@@ -439,6 +456,28 @@ impl SessionTask {
     /// `Connected` yet.
     fn session_id_string(&self) -> Option<String> {
         self.domain.lock().session_id.as_ref().map(std::string::ToString::to_string)
+    }
+
+    /// Migrate this task's workspace-side registrations from the
+    /// current `self.key` to `real_key` (and update `self.key`).
+    /// No-op when `self.key == real_key` or the workspace has been
+    /// dropped. Delegates to
+    /// [`crate::Workspace::migrate_session_task`] for the actual map
+    /// shuffling so the lock-ordering rules live in one place.
+    fn rekey_to(&mut self, real_key: &SessionKey) {
+        if self.key.as_str() == real_key.as_str() {
+            return;
+        }
+        if let Some(workspace) = self.workspace.upgrade() {
+            workspace.migrate_session_task(&self.key, real_key);
+        }
+        tracing::info!(
+            target: "forge_workspace::session_task",
+            from = %self.key.as_str(),
+            to = %real_key.as_str(),
+            "session task rekeyed onto real session UUID"
+        );
+        self.key = real_key.clone();
     }
 }
 
