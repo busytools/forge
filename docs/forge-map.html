@@ -302,7 +302,7 @@
   <p>
     Visual truth doc for forge-tui. <strong>Current implemented state only — no future ideas, no aspirational sketches.</strong> Every UI surface the running TUI can render today is captured here, regardless of when in a session each one is actually visible. Anything new arrives in the same PR that lands the code change.
   </p>
-  <p class="meta">v0.14.2 baseline · 2026-05-07 · open in any modern browser</p>
+  <p class="meta">v0.15.1 baseline · 2026-05-12 · open in any modern browser</p>
 </header>
 
 <nav class="toc">
@@ -310,7 +310,6 @@
   <a href="#layout">Layout</a>
   <a href="#chat">Chat</a>
   <a href="#tools">Tool calls</a>
-  <a href="#footer-sec">Footer</a>
   <a href="#input">Input + autocomplete</a>
   <a href="#prompts">Permission &amp; question prompts</a>
   <a href="#help">Help</a>
@@ -369,7 +368,7 @@
 <h2 class="section-title" id="layout">Layout</h2>
 
 <p class="intro">
-  forge-tui's main frame is a strict vertical stack composed by <code>layout::compute</code>. <strong>This stack only renders in <code>ActiveView::Chat</code>.</strong> When the user opens <code>/config</code>, the resume picker, or hits the trust gate, forge swaps the entire frame to a single full-screen overlay (<code>ActiveView::Config</code>, <code>ActiveView::SessionPicker</code>, <code>ActiveView::Trusted</code>) — chat / input / todo panel / footer all disappear during those views. At terminal widths ≥160 cols the chat frame docks to the right of a 26ch <a href="#projects-pane">Projects pane</a>; between 120–159 cols the pane shrinks to a compact 20ch with label truncation; below 120 cols a single-row top bar replaces the inline pane and tapping its <code>▤</code> icon (or <kbd>Ctrl+B</kbd>) opens a full-screen Projects overlay.
+  forge-tui's main frame is a strict vertical stack composed by <code>layout::compute</code>. <strong>This stack only renders in <code>ActiveView::Chat</code>.</strong> When the user opens <code>/config</code>, the resume picker, or hits the trust gate, forge swaps the entire frame to a single full-screen overlay (<code>ActiveView::Config</code>, <code>ActiveView::SessionPicker</code>, <code>ActiveView::Trusted</code>) — chat / input / todo panel all disappear during those views. At terminal widths ≥160 cols the chat frame docks to the right of a 26ch <a href="#projects-pane">Projects pane</a> (which now carries the account / mode / model / usage / location panel at its bottom); between 120–159 cols the pane shrinks to a compact 20ch with label truncation; below 120 cols a single-row top bar replaces the inline pane and tapping its <code>▤</code> icon (or <kbd>Ctrl+B</kbd>) opens a full-screen Projects overlay (which carries the same bottom panel).
 </p>
 
 <p class="intro">
@@ -383,8 +382,11 @@
   <li><code>input</code> — input field (1 row, grows up to N as user types)</li>
   <li><code>input_bottom_sep</code> — full-width <code>─</code> separator (1 row, DIM)</li>
   <li><code>help</code> — help overlay (0 when inactive, else <code>HELP_PANEL_HEIGHT = 14</code>)</li>
-  <li><code>footer</code> — 2 rows (primary + context). Hidden in ultra-compact mode (terminal height &lt; 8 rows)</li>
 </ol>
+
+<p class="intro" style="margin-top: 8px;">
+  The mode / model / fast-mode / cwd / branch / usage <strong>status used to sit as 2 rows below the input</strong>; that row is gone. All of those pieces now live in the <a href="#projects-pane">Projects pane</a>'s bottom panel together with the account name and a per-window usage bar (5h, 7d).
+</p>
 
 <p class="intro">
   Multiple sessions = multiple <code>forge</code> processes, each in its own terminal pane. There is no in-process coordinator view today. Multi-session is the direction we're heading; see the <a href="#multi">final section</a>.
@@ -411,12 +413,10 @@
   <span class="dim">[</span><span class="accent">2/5</span><span class="dim">]</span> Adding tests for the near-threshold branch
   <span class="accent">❯</span> <span class="dim italic">Type your message…</span>
   <span class="muted-c">────────────────────────────────────────────────────────────────────────────</span>
-   <span class="dim">[default]</span>  <span class="dim">[sonnet 4.5/Max]</span>  <span class="dim">[FAST:OFF]</span>  <span>?</span> <span class="dim">: Help</span>
-   <span class="dim">Loc:</span> <span class="dim">~/Projects/forge</span> <span class="dim">(</span><span class="dim">main</span><span class="dim">)</span>                                  <span class="dim">42%</span>
 </pre>
 </div>
 
-<p class="caption">Left padding is 2 cols across the chat body and footer. Two horizontal <code>─</code> separators in DIM frame the input + (optional) todo panel — one above, one below. The todo panel slot is between <code>input_sep</code> and <code>input</code>; here shown in compact mode showing "<code>[2/5] Adding tests…</code>". Footer is the bottom 2 rows.</p>
+<p class="caption">Left padding is 2 cols across the chat body. Two horizontal <code>─</code> separators in DIM frame the input + (optional) todo panel — one above, one below. The todo panel slot is between <code>input_sep</code> and <code>input</code>; here shown in compact mode showing "<code>[2/5] Adding tests…</code>". The bottom of the chat frame ends at the lower <code>─</code>; the status pieces that used to sit below the input now live in the <a href="#projects-pane">Projects pane</a>'s bottom panel.</p>
 
 <div class="surface" id="projects-pane">
   <div class="surface-head">
@@ -438,9 +438,42 @@
   <span class="bold">  gateway</span>
   <span class="bold">  data-modules</span>
   <span class="bold">  dotfiles</span>
+
+
+
+
+
+
+
+
+
+
+
+  <span class="dim">─────────────────────────</span>
+
+  <span class="dim">  Profile  </span>Stargate
+  <span class="dim">  Mode     </span><span class="warning">[Auto]</span>
+  <span class="dim">  Model    </span>sonnet-4.5/Max
+  <span class="dim">  Fast     </span><span class="dim">off</span>
+
+  <span class="dim">  Ctx   </span><span class="accent">████████</span><span class="dim">░░░░</span>  65%
+  <span class="dim">  5h    </span><span class="accent">███</span><span class="dim">░░░░░░░░░</span>  23%
+  <span class="dim">        resets in 2h</span>
+  <span class="dim">  7d    </span><span class="accent">████</span><span class="dim">░░░░░░░░</span>  34%
+  <span class="dim">        resets in 4d</span>
+
+  <span class="dim">  📁 ~/Projects/forge</span>
+  <span class="dim">  ⎇  fix/instrumented…</span>
 </pre>
     </div>
-    <p>At Narrow tier (&lt;120 cols), the inline pane is replaced by a single-line top bar showing <code>▤  &lt;active-project&gt;·&lt;active-session&gt;</code>. Tap <code>▤</code> (or <kbd>Ctrl+B</kbd>) to expand the overlay — full-screen list of projects with the active project's drilldown and a <code>✕</code> glyph in the banner to dismiss. Picking a project / session row in the overlay switches active session AND closes the overlay in one action. <kbd>Esc</kbd> also closes. Aggregate unread badge on <code>▤</code> is deferred to a follow-up issue.</p>
+    <p>The pane has <strong>two anchored regions</strong>: the project list grows from the top, and the <strong>account / status panel</strong> is hard-docked at the bottom. The dim <code>─</code> rule between them sits at a fixed row from the bottom — a permanent gutter, not a separator that floats based on list length. <strong>The two never overlap.</strong> When the project list outgrows its region the list scrolls within itself; the panel never gives up its rows. The empty space above the rule in the mockup above shows what a short project list looks like — the panel still sits at the bottom, gravity is preserved.</p>
+    <p>The panel's job is to read like <strong>account chrome</strong>, not "current status." Even though Mode / Model / Ctx flip when the user switches to another session in another project, the panel's shape, position, and labelling stay put. The Profile line at the top of the panel is the anchor — when you switch from your <code>Stargate</code> account's forge session to your <code>Gateway</code> account's data-modules session, Profile flips and Mode / Model / Ctx flip with it, but the panel itself doesn't move. The panel renders, in order:</p>
+    <ul style="color: var(--muted); font-size: 13px; line-height: 1.7; margin: 0 0 12px 18px;">
+      <li><strong>Identity / posture</strong> — <code>Profile</code> (active account display name from <code>forge.toml</code>'s <code>[[accounts]]</code>, via <code>app.active_account_display_name</code>), <code>Mode</code> (permission mode badge — same colors as the old footer used: <code>auto</code> / <code>acceptEdits</code> yellow, <code>plan</code> blue, <code>bypassPermissions</code> / <code>dontAsk</code> red, <code>default</code> dim), <code>Model</code> (display_name + effort if supported), <code>Fast</code> (off / cd / on, same colors as the old <code>FAST:*</code> badge).</li>
+      <li><strong>Usage bars</strong> — three 12-cell filling bars: <code>Ctx</code> (per-session context %), <code>5h</code> (5-hour plan window), <code>7d</code> (combined 7-day window). Each bar tinted by threshold via the same <code>gauge_style</code> helper the <code>/usage</code> page uses — orange <code>&lt; 65%</code>, yellow <code>≥ 65%</code>, red <code>≥ 85%</code>. The <code>5h</code> and <code>7d</code> rows are followed by an indented "resets in …" line in DIM (text from <code>usage::format_window_reset</code>).</li>
+      <li><strong>Location</strong> — <code>📁</code> + cwd (full path at Wide tier, trailing-2-components fallback at Medium / overlay-tight widths). <code>⎇</code> + git branch (yellow when the chip is <code>BranchChip::Detached</code>).</li>
+    </ul>
+    <p>At Narrow tier (&lt;120 cols), the inline pane is replaced by a single-line top bar showing <code>▤  &lt;active-project&gt;·&lt;active-session&gt;</code>. Tap <code>▤</code> (or <kbd>Ctrl+B</kbd>) to expand the overlay — full-screen list of projects with the active project's drilldown, the same account / status panel docked at the bottom, and a <code>✕</code> glyph in the banner to dismiss. Picking a project / session row in the overlay switches active session AND closes the overlay in one action. <kbd>Esc</kbd> also closes. Aggregate unread badge on <code>▤</code> is deferred to a follow-up issue.</p>
     <div class="term">
       <pre class="indent">
 <span class="dim">▤</span>  forge·main
@@ -448,7 +481,7 @@
 chat continues here…
 </pre>
     </div>
-    <p>Once the overlay is open, the body is replaced by the full project list (same drilldown semantics as the inline pane, just full-width):</p>
+    <p>Once the overlay is open, the body is replaced by the full project list (same drilldown semantics as the inline pane, just full-width) with the account / status panel docked at the bottom of the overlay:</p>
     <div class="term">
       <pre class="indent">
 <span class="accent-bold">▤ PROJECTS</span>                                        <span class="dim">✕</span>
@@ -458,15 +491,29 @@ chat continues here…
 <span class="dim">  ⠋ ◆</span> <span class="accent">•</span> main
 <span class="bold">  stargate</span>
 <span class="bold">  gateway</span>
+
+
+<span class="dim">─────────────────────────────────────────────────</span>
+<span class="dim">  Profile  </span>Stargate
+<span class="dim">  Mode     </span><span class="warning">[Auto]</span>
+<span class="dim">  Model    </span>sonnet-4.5/Max
+<span class="dim">  Fast     </span><span class="dim">off</span>
+
+<span class="dim">  Ctx   </span><span class="accent">████████</span><span class="dim">░░░░</span>  65%
+<span class="dim">  5h    </span><span class="accent">███</span><span class="dim">░░░░░░░░░</span>  23%     <span class="dim">resets in 2h</span>
+<span class="dim">  7d    </span><span class="accent">████</span><span class="dim">░░░░░░░░</span>  34%     <span class="dim">resets in 4d</span>
+
+<span class="dim">  📁 ~/Projects/forge        ⎇  fix/instrumented-drops</span>
 </pre>
     </div>
     <dl>
-      <dt>code</dt><dd><code>crates/forge-tui/src/ui/projects_pane.rs::render</code> (inline) · <code>::render_overlay</code> (Narrow overlay) · <code>crates/forge-tui/src/ui/top_bar.rs::render</code> (Narrow top bar) · click handling in <code>crates/forge-tui/src/app/events/mouse.rs</code> · sleeping-project spawn in <code>crates/forge-tui/src/app/connect.rs::spawn_for_sleeping_project</code></dd>
-      <dt>color</dt><dd>banner (<code>PROJECTS</code> / <code>▤ PROJECTS</code>): <code>RUST_ORANGE</code> bold · rule: <code>DIM</code> · active project: <code>RUST_ORANGE</code> bold · background project: default fg + bold · session-row state glyph + lead marker (<code>◆</code>): <code>DIM</code> · current marker (<code>•</code>): <code>RUST_ORANGE</code> · session label: default fg · top-bar <code>▤</code> icon: <code>DIM</code> when overlay closed, <code>RUST_ORANGE</code> bold when open · overlay <code>✕</code>: <code>DIM</code></dd>
+      <dt>code</dt><dd><code>crates/forge-tui/src/ui/projects_pane.rs::render</code> (inline) · <code>::render_overlay</code> (Narrow overlay) · <code>::render_account_status_footer</code> (the bottom panel, called from both render paths) · <code>crates/forge-tui/src/ui/top_bar.rs::render</code> (Narrow top bar) · click handling in <code>crates/forge-tui/src/app/events/mouse.rs</code> · sleeping-project spawn in <code>crates/forge-tui/src/app/connect.rs::spawn_for_sleeping_project</code></dd>
+      <dt>color</dt><dd>banner (<code>PROJECTS</code> / <code>▤ PROJECTS</code>): <code>RUST_ORANGE</code> bold · rule: <code>DIM</code> · active project: <code>RUST_ORANGE</code> bold · background project: default fg + bold · session-row state glyph + lead marker (<code>◆</code>): <code>DIM</code> · current marker (<code>•</code>): <code>RUST_ORANGE</code> · session label: default fg · top-bar <code>▤</code> icon: <code>DIM</code> when overlay closed, <code>RUST_ORANGE</code> bold when open · overlay <code>✕</code>: <code>DIM</code> · panel labels (<code>Profile</code>, <code>Mode</code>, <code>Model</code>, <code>Fast</code>, <code>Ctx</code>, <code>5h</code>, <code>7d</code>): <code>DIM</code> · panel values: default fg unless badge-colored (Mode badge follows the legacy footer mode colors; Fast follows the legacy <code>FAST:*</code> colors; usage bar fill follows <code>gauge_style</code>) · panel filling bar empty cells (<code>░</code>): <code>DIM</code> · panel reset-in lines + <code>📁</code> + <code>⎇</code>: <code>DIM</code> (branch turns yellow when detached)</dd>
       <dt>state glyphs</dt><dd>session lifecycle prefix in the active project's drilldown — <code>⠋</code> Running / Spawning · <code>△</code> Attention (background paused on a permission prompt) · <code>·</code> Sleeping · <code> </code> (space) Idle. Background-project rows render no state glyph; only the active project's sessions show one.</dd>
       <dt>click</dt><dd>project header → <code>switch_to_project_lead</code>: in-process lead → instant <code>switch_active_session</code>; sleeping lead → <code>spawn_for_sleeping_project</code> (synthetic bucket + async <code>get_agent_handle</code>). Active-project session row → direct <code>switch_active_session</code> on that session. At Narrow tier, both also close the overlay; the <code>▤</code> top-bar icon toggles overlay open/close, and the overlay <code>✕</code> glyph dismisses without switching.</dd>
       <dt>toggle</dt><dd><code>Ctrl+B</code> at Wide / Medium tiers hides / restores the inline pane (persisted to <code>forge-state.toml</code> <code>[ui].projects_pane_visible</code>, default <code>true</code>). At Narrow tier <code>Ctrl+B</code> toggles the transient overlay flag (NOT persisted — each launch starts closed). <kbd>Esc</kbd> also closes the overlay.</dd>
       <dt>scope</dt><dd>All three tiers ship: Wide (≥160) inline 26ch · Medium (120–159) inline 20ch with truncation · Narrow (&lt;120) top-bar + overlay. Click + toggle behaviour tier-agnostic for the inline pane; Narrow uses overlay + <code>✕</code> semantics. Mouse-only interaction in v1 (plus <kbd>Ctrl+B</kbd> / <kbd>Esc</kbd>) — chat input always has keyboard focus.</dd>
+      <dt>layout</dt><dd>The pane is vertically split into two anchored regions: <strong>top</strong> for the project list, <strong>bottom</strong> for the account / status panel. The panel reserves a fixed row count from the bottom up (its natural content height — ~15 rows on Wide, ~14 on Medium with the cwd / branch lines truncated to fit). The project list takes everything above the panel's reserved rows minus one row for the dim <code>─</code> divider. When the project list overflows its region it scrolls within itself; the panel's rows are never reclaimed. If the project list is short, the unused rows in the list region render blank — the panel does NOT slide upward to close the gap.</dd>
     </dl>
   </div>
 </div>
@@ -673,55 +720,6 @@ chat continues here…
     <dl>
       <dt>code</dt><dd><code>crates/forge-tui/src/ui/tool_call/standard.rs</code> · <code>matches!(tc.sdk_tool_name.as_str(), "Agent" | "Task")</code> selects the longer summary limit</dd>
       <dt>backgrounded badges</dt><dd>via <code>tool_output_badge_spans</code> — <code>  [backgrounded]</code> when <code>task_metadata.is_backgrounded == Some(true)</code> · <code>  [assistant backgrounded]</code> for Bash that the assistant auto-backgrounded (signalled in <code>BashOutputMetadata.assistant_auto_backgrounded</code>)</dd>
-    </dl>
-  </div>
-</div>
-
-<!-- ============================================================== -->
-<h2 class="section-title" id="footer-sec">Footer</h2>
-
-<p class="intro">
-  <strong>Two rows.</strong> Present at the bottom of the chat view (<code>ActiveView::Chat</code>) — hidden when forge swaps to a full-frame view (<code>ActiveView::Config</code>, <code>ActiveView::Trusted</code>, <code>ActiveView::SessionPicker</code>) and also hidden in ultra-compact mode (terminal height &lt; 8 rows). Pieces are positional; nothing in the footer is clickable today (footer-specific mouse routing isn't implemented — chat-pane mouse handling does cover scroll-wheel scrolling, scrollbar-thumb drag, text selection, and click-to-toggle on tool-call rows).
-</p>
-
-<div class="surface">
-  <div class="surface-head">
-    <h4>Primary row — mode · model · fast-mode · help</h4>
-    <div class="when">visible: in <code>ActiveView::Chat</code> when connected (not on Config / Trusted / SessionPicker views, not in ultra-compact mode)</div>
-  </div>
-  <div class="surface-body">
-    <p>Three bracketed badges from left to right: permission mode, model+effort, fast-mode. Brackets <code>[...]</code> share the badge color. Two-space gaps between badges. Then a white <code>?</code> + dim "<code> : Help</code>" hint. Right-aligned: pending-permission count when &gt;0 (yellow). When <code>app.mode</code> is None (pre-init), only the help hint shows.</p>
-    <div class="term">
-      <pre class="indent">
-   <span class="dim">[default]</span>  <span class="dim">[sonnet 4.5/Max]</span>  <span class="dim">[FAST:OFF]</span>  <span>?</span> <span class="dim">: Help</span>                            <span class="warning">2 PEND. PERM.</span></pre>
-    </div>
-    <dl>
-      <dt>code</dt><dd><code>crates/forge-tui/src/ui/footer.rs::build_primary_line</code></dd>
-      <dt>mode colors</dt><dd><code>default</code> → DIM · <code>auto</code> + <code>acceptEdits</code> → Yellow · <code>plan</code> → Blue · <code>bypassPermissions</code> + <code>dontAsk</code> → Red · other → Magenta</dd>
-      <dt>mode label</dt><dd>text comes from <code>mode.current_mode_name</code> (CLI-provided). Whatever the CLI sends — not a fixed enum string</dd>
-      <dt>model badge</dt><dd>format <code>display_name_short[/effort]</code>; effort segment hidden when <code>!current_model.supports_effort</code>. Effort labels: <code>Low</code> / <code>Med</code> / <code>High</code> / <code>Xhi</code> / <code>Max</code></dd>
-      <dt>fast-mode badges</dt><dd><code>FAST:OFF</code> in DIM · <code>FAST:CD</code> in Yellow · <code>FAST:ON</code> in RUST_ORANGE</dd>
-      <dt>right hint</dt><dd>"N PEND. PERM." in Yellow when there are pending-permission tool-call requests in the chat</dd>
-    </dl>
-  </div>
-</div>
-
-<div class="surface">
-  <div class="surface-head">
-    <h4>Context row — cwd · branch · usage</h4>
-    <div class="when">visible: in <code>ActiveView::Chat</code> when connected (not on Config / Trusted / SessionPicker views, not in ultra-compact mode)</div>
-  </div>
-  <div class="surface-body">
-    <p>Left-aligned: <code>Loc:</code> + truncated cwd, then optional <code>(branch)</code> in parens (yellow when detached HEAD). Right-aligned: MCP-needs-auth count when &gt;0 (yellow), else context-usage % (gray).</p>
-    <div class="term">
-      <pre class="indent">
-   <span class="dim">Loc:</span> <span class="dim">~/Projects/forge</span> <span class="dim">(</span><span class="dim">main</span><span class="dim">)</span>                                       <span class="dim">42%</span>
-   <span class="dim">Loc:</span> <span class="dim">~/Projects/forge</span> <span class="dim">(</span><span class="warning">detached</span><span class="dim">)</span>                                <span class="warning">3 MCP NEEDS AUTH</span>
-   <span class="dim">Loc:</span> <span class="dim">~/Projects/forge</span>                                                  <span class="dim">87%</span></pre>
-    </div>
-    <dl>
-      <dt>code</dt><dd><code>crates/forge-tui/src/ui/footer.rs::build_context_line</code></dd>
-      <dt>truncation</dt><dd>cwd shrinks first when width is tight; branch caps at <code>MIN_CONTEXT_BRANCH_WIDTH = 4</code></dd>
     </dl>
   </div>
 </div>
@@ -1297,7 +1295,7 @@ chat continues here…
       <li><strong>Near threshold without overage</strong> (AllowedWarning + <code>is_using_overage = false</code> + <code>surpassed_threshold &gt; 0</code>) → "<em>Near rate-limit threshold. Resets in 4h 23m at 14:30 UTC.</em>"</li>
       <li><strong>General case</strong> → "<em>{Approaching | Rate limit reached}, you've used N% of your &lt;type&gt; rate limit. {You are using your overage allowance. | You can continue using your overage allowance.} Resets in &lt;timer&gt;.</em>"</li>
     </ul>
-    <p>Same message also drives the footer's secondary-row chip when applicable.</p>
+    <p>This same message also tints the rate-limit chip on the assistant's reply when applicable.</p>
     <dl>
       <dt>code</dt><dd><code>crates/forge-tui/src/app/events/rate_limit.rs::format_rate_limit_summary</code></dd>
     </dl>
@@ -1428,7 +1426,10 @@ chat continues here…
     <tr><td class="glyph">✕</td><td class="codepoint">U+2715</td><td>Narrow-tier overlay close glyph</td><td>multiplication x — sits at the right edge of the overlay banner; click dismisses the overlay without switching session (DIM)</td></tr>
     <tr><td class="glyph">?</td><td class="codepoint">U+003F</td><td>question-prompt header marker · help toggle key</td><td>RUST_ORANGE in question header; same key activates help</td></tr>
     <tr class="outlier"><td class="glyph">|</td><td class="codepoint">U+007C</td><td>question-prompt horizontal-options separator</td><td>ASCII pipe used between options in the horizontal question layout (<code>"  |  "</code>, DIM) — sits next to box-drawing <code>│</code>; flagged in #40 for replacement</td></tr>
-    <tr><td class="glyph">[ ]</td><td class="codepoint">U+005B / U+005D</td><td>footer mode/model badges · multi-select checkbox</td><td>ASCII brackets wrap each footer badge; the multi-select checkbox in question prompt uses <code>[x]</code> / <code>[ ]</code></td></tr>
+    <tr><td class="glyph">[ ]</td><td class="codepoint">U+005B / U+005D</td><td>Projects-pane status panel mode badge · multi-select checkbox</td><td>ASCII brackets wrap the panel's <code>Mode</code> badge in the pane footer; the multi-select checkbox in question prompt uses <code>[x]</code> / <code>[ ]</code></td></tr>
+    <tr><td class="glyph">████░░░░</td><td class="codepoint">U+2588 / U+2591</td><td>Projects-pane status panel usage bars</td><td>12-cell filling bar for <code>Ctx</code>, <code>5h</code>, <code>7d</code> rows. Filled cells (<code>█</code>) tinted via <code>gauge_style</code> (orange &lt; 65%, yellow ≥ 65%, red ≥ 85%); empty cells (<code>░</code>) DIM</td></tr>
+    <tr><td class="glyph">📁</td><td class="codepoint">U+1F4C1</td><td>Projects-pane status panel cwd marker</td><td>file-folder emoji prefix for the cwd row in the pane's bottom panel (DIM); cwd text follows (full path at Wide, trailing-2-components fallback at tight widths)</td></tr>
+    <tr><td class="glyph">⎇</td><td class="codepoint">U+2387</td><td>Projects-pane status panel branch marker</td><td>alternative-key symbol prefix for the branch row (DIM); branch label yellow when <code>BranchChip::Detached</code>, otherwise default fg</td></tr>
     <tr><td class="glyph">⠋ ⠙ ⠹</td><td class="codepoint">U+280B…</td><td>spinner frames · Projects pane Running / Spawning session-state glyph</td><td>Braille spinner during in-progress states (10 frames in <code>SPINNER_FRAMES</code>); also the static <code>⠋</code> session-row prefix for Running and Spawning sessions in the active project's drilldown (DIM)</td></tr>
     <tr><td class="glyph">▸</td><td class="codepoint">U+25B8</td><td>selection indicator</td><td>permission / question / plan-approval options · todo InProgress · autocomplete selected row</td></tr>
     <tr><td class="glyph">&gt;</td><td class="codepoint">U+003E</td><td>trust prompt selected action · MCP server-list selected marker</td><td>ASCII greater-than (white-on-RUST_ORANGE bold for selected, leading space for unselected)</td></tr>
