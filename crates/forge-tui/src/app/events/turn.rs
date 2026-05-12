@@ -989,12 +989,22 @@ fn apply_turn_complete_presentation(
 ) {
     if app.active_session_key.as_ref() != Some(session_key) {
         let Some(session) = app.session_mut(session_key) else {
-            tracing::warn!(
+            // Promoted to `error` for triage visibility. When this
+            // fires the bucket's `lifecycle_state` never returns to
+            // `Idle`, the Projects pane glyph stays as the spinner,
+            // and (if the active bucket is the one whose TurnComplete
+            // dropped) the chat spinner sits on "Thinking..." until
+            // forge restarts.
+            let bucket_keys: Vec<String> =
+                app.sessions.keys().map(|k| k.as_str().to_owned()).collect();
+            tracing::error!(
                 target: crate::logging::targets::APP_SESSION,
                 event_name = "turn_complete_dropped",
                 message = "turn complete dropped for an unknown session",
                 outcome = "dropped",
                 session_key = %session_key.as_str(),
+                active_session_key = ?app.active_session_key.as_ref().map(|k| k.as_str().to_owned()),
+                bucket_keys = ?bucket_keys,
                 reason = "unknown_session",
             );
             return;

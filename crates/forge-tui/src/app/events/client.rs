@@ -1,6 +1,26 @@
 use super::{App, session, turn};
 use forge_workspace::{SessionKey, SessionUpdate};
 
+/// Compact discriminant name for a wire `Message`. Used by the
+/// `sdk_message_dropped` error log so a triage grep can see whether
+/// the dropped envelope was a Result (TurnComplete carrier),
+/// Assistant content, etc. — without dumping the full payload.
+fn msg_variant_name(msg: &forge_primitives::Message) -> &'static str {
+    match msg {
+        forge_primitives::Message::Assistant { .. } => "Assistant",
+        forge_primitives::Message::User { .. } => "User",
+        forge_primitives::Message::System { .. } => "System",
+        forge_primitives::Message::Result { .. } => "Result",
+        forge_primitives::Message::TaskStarted { .. } => "TaskStarted",
+        forge_primitives::Message::TaskProgress { .. } => "TaskProgress",
+        forge_primitives::Message::TaskNotification { .. } => "TaskNotification",
+        forge_primitives::Message::RateLimitEvent { .. } => "RateLimitEvent",
+        forge_primitives::Message::StreamEvent { .. } => "StreamEvent",
+        forge_primitives::Message::Error { .. } => "Error",
+        forge_primitives::Message::Unknown { .. } => "Unknown",
+    }
+}
+
 /// Per-session event multiplexer. Each [`SessionUpdate`] is routed
 /// to the [`crate::app::session::UiSession`] bucket it targets via the
 /// envelope's [`SessionUpdate::session_key`] accessor.
@@ -700,12 +720,27 @@ fn apply_sdk_message_presentation(app: &mut App, session_id: &str, msg: forge_pr
         // buffer still only shows what was on screen at switch-out.
         let session_key = SessionKey::from_session_id(session_id.to_owned());
         if app.session_mut(&session_key).is_none() {
-            tracing::warn!(
+            // Promoted to `error` so always-on debug logs make this
+            // very visible. The wire `session_id` doesn't match any
+            // known UiSession bucket — typically a key-drift race
+            // (in-flight wire frame whose session_id was rekey'd /
+            // dropped between the SessionTask emit and this reducer).
+            // The dumped context lets us see exactly which key the
+            // wire used vs what the TUI was tracking. If the
+            // dropped msg is `Result`, TurnComplete never fires and
+            // the spinner stays on "Thinking..." forever.
+            let bucket_keys: Vec<String> =
+                app.sessions.keys().map(|k| k.as_str().to_owned()).collect();
+            tracing::error!(
                 target: crate::logging::targets::APP_SESSION,
                 event_name = "sdk_message_dropped",
                 message = "SDK message dropped for an unknown session",
                 outcome = "dropped",
-                session_id = %session_id,
+                wire_session_id = %session_id,
+                active_session_id = %active_session_id_str,
+                active_session_key = ?app.active_session_key.as_ref().map(|k| k.as_str().to_owned()),
+                msg_variant = msg_variant_name(&msg),
+                bucket_keys = ?bucket_keys,
                 reason = "unknown_session",
             );
             return;
