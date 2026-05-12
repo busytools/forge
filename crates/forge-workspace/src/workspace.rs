@@ -1056,6 +1056,45 @@ impl Workspace {
             handles.insert(to, domain);
         }
     }
+
+    /// Migrate this workspace's per-`SessionTask` registrations from
+    /// `from` to `to`. Called by the per-session task actor on
+    /// `Connected` / `SessionReplaced` when the pool key it was
+    /// registered under differs from the real claude-issued session
+    /// UUID — i.e., the `/new` / `/resume` / first-Connect-of-a-fresh-
+    /// project paths where the pool key was a placeholder (a previous
+    /// session's id or `__fresh__:<project_key>`) and the actual
+    /// session UUID isn't known until the bridge fires `init`.
+    ///
+    /// Atomically moves the entries in `pool`, `command_senders`, and
+    /// `domain_handles` (and rewrites the moved `DomainSession.key`
+    /// field). Without this migration, `Workspace::dispatch`'s key
+    /// lookup falls off the end with `UnknownSession` for every
+    /// `Command::Prompt` / `Cancel` / etc. after a session-replace —
+    /// the SessionTask is still alive at the old key but the TUI's
+    /// `active_session_key` has flipped to the new one.
+    ///
+    /// No-op when `from == to` or when `from` is not registered.
+    pub fn migrate_session_task(&self, from: &SessionKey, to: &SessionKey) {
+        if from == to {
+            return;
+        }
+        // Lock order matches `get_agent_handle`'s insertion order:
+        // pool → command_senders → domain_handles.
+        let mut pool = self.pool.lock();
+        let mut senders = self.command_senders.lock();
+        let mut handles = self.domain_handles.lock();
+        if let Some(pooled) = pool.remove(from) {
+            pool.insert(to.clone(), pooled);
+        }
+        if let Some(sender) = senders.remove(from) {
+            senders.insert(to.clone(), sender);
+        }
+        if let Some(domain) = handles.remove(from) {
+            domain.lock().key = to.clone();
+            handles.insert(to.clone(), domain);
+        }
+    }
 }
 
 #[cfg(feature = "testing")]
@@ -1512,5 +1551,127 @@ config_dir = "~/.claude-gateway"
         workspace.dispatch(Command::Cancel { key }).expect("dispatch");
         let cmd = rx.try_recv().expect("queued");
         assert!(matches!(cmd, forge_primitives::Command::Cancel { .. }));
+    }
+
+    // ---- Session-task rekey tests ----
+    //
+    // Regression coverage for the `/new` prompt-stuck bug: the
+    // `SessionTask` was registered under the pool key from
+    // `resolve_target` (usually the previous session's id), but TUI's
+    // `active_session_key` flips to the real session UUID on
+    // `SessionUpdate::SessionReplaced`. Without `migrate_session_task`,
+    // `Command::Prompt { key: new_uuid }` fell off `dispatch`'s key
+    // lookup with `UnknownSession`. These tests pin the routing.
+
+    /// Seed `command_senders`, `pool`, and `domain_handles` at `key`
+    /// against a fresh stub handle so `Workspace::dispatch` will
+    /// route through the `SessionTask`-style fast path (rather than
+    /// the test-only direct fallback). Returns the routed-command
+    /// receiver so the test can assert on what flows through.
+    fn install_fake_session_task(
+        workspace: &Arc<Workspace>,
+        key: &SessionKey,
+    ) -> mpsc::UnboundedReceiver<Command> {
+        let (handle, _agent_rx) = Workspace::testing_stub_handle();
+        let arc = Arc::new(handle);
+        workspace.pool.lock().insert(
+            key.clone(),
+            PooledAgent { handle: Arc::clone(&arc), account: AccountKey("test".to_owned()) },
+        );
+        let (cmd_tx, cmd_rx) = mpsc::unbounded_channel::<Command>();
+        workspace.command_senders.lock().insert(key.clone(), cmd_tx);
+        let domain = workspace.register_domain_session(key.clone(), Some(arc));
+        domain.lock().session_id = Some(forge_primitives::SessionId::new(key.as_str()));
+        cmd_rx
+    }
+
+    /// Direct unit test on `migrate_session_task`: each map (`pool`,
+    /// `command_senders`, `domain_handles`) moves from `from` to `to`,
+    /// and the migrated `DomainSession.key` field is rewritten.
+    #[test]
+    fn migrate_session_task_moves_all_three_maps() {
+        let (workspace, _update_rx) = Workspace::testing_stub();
+        let from = SessionKey::from_str_for_test("old-pool-key");
+        let to = SessionKey::from_str_for_test("real-session-uuid");
+        let _cmd_rx = install_fake_session_task(&workspace, &from);
+
+        assert!(workspace.command_senders.lock().contains_key(&from));
+        assert!(workspace.pool.lock().contains_key(&from));
+        assert!(workspace.domain_handles.lock().contains_key(&from));
+
+        workspace.migrate_session_task(&from, &to);
+
+        assert!(!workspace.command_senders.lock().contains_key(&from));
+        assert!(workspace.command_senders.lock().contains_key(&to));
+        assert!(!workspace.pool.lock().contains_key(&from));
+        assert!(workspace.pool.lock().contains_key(&to));
+        assert!(!workspace.domain_handles.lock().contains_key(&from));
+        let domain = workspace.domain_handles.lock().get(&to).cloned().expect("migrated");
+        assert_eq!(domain.lock().key.as_str(), to.as_str());
+    }
+
+    /// Regression for the `/new` prompt-stuck bug. A `Command::Prompt`
+    /// dispatched against the new key must route through the
+    /// migrated `command_senders` entry, not fall off with
+    /// `UnknownSession`. Mirrors what happens inside the SessionTask
+    /// after `AgentEvent::SessionReplaced`.
+    #[test]
+    fn dispatch_after_migrate_routes_to_new_key() {
+        let (workspace, _update_rx) = Workspace::testing_stub();
+        let from = SessionKey::from_str_for_test("pre-new-session");
+        let to = SessionKey::from_str_for_test("post-new-session");
+        let mut cmd_rx = install_fake_session_task(&workspace, &from);
+
+        // Before migrate: dispatch at `to` fails because no entry
+        // exists, dispatch at `from` succeeds.
+        let result = workspace.dispatch(Command::Cancel { key: to.clone() });
+        assert!(matches!(result, Err(DispatchError::UnknownSession(_))));
+
+        workspace.dispatch(Command::Cancel { key: from.clone() }).expect("from routes");
+        assert!(matches!(cmd_rx.try_recv(), Ok(Command::Cancel { .. })));
+
+        // Migrate, then re-test.
+        workspace.migrate_session_task(&from, &to);
+
+        let result = workspace.dispatch(Command::Cancel { key: from.clone() });
+        assert!(
+            matches!(result, Err(DispatchError::UnknownSession(_))),
+            "old key must not route after migration"
+        );
+
+        workspace.dispatch(Command::Cancel { key: to }).expect("new key routes");
+        let cmd = cmd_rx.try_recv().expect("queued on migrated channel");
+        assert!(matches!(cmd, Command::Cancel { .. }));
+    }
+
+    /// `migrate_session_task` with `from == to` is a no-op. Guards
+    /// the typical case where the pool key already equals the real
+    /// session UUID (e.g., resuming an existing lead session).
+    #[test]
+    fn migrate_session_task_no_op_when_from_equals_to() {
+        let (workspace, _update_rx) = Workspace::testing_stub();
+        let key = SessionKey::from_str_for_test("same-key");
+        let _cmd_rx = install_fake_session_task(&workspace, &key);
+
+        workspace.migrate_session_task(&key, &key);
+
+        assert!(workspace.command_senders.lock().contains_key(&key));
+        assert!(workspace.pool.lock().contains_key(&key));
+        assert!(workspace.domain_handles.lock().contains_key(&key));
+    }
+
+    /// `migrate_session_task` on an unregistered source is a no-op.
+    #[test]
+    fn migrate_session_task_no_op_when_from_unregistered() {
+        let (workspace, _update_rx) = Workspace::testing_stub();
+        let from = SessionKey::from_str_for_test("never-registered");
+        let to = SessionKey::from_str_for_test("destination");
+
+        workspace.migrate_session_task(&from, &to);
+
+        assert!(!workspace.command_senders.lock().contains_key(&from));
+        assert!(!workspace.command_senders.lock().contains_key(&to));
+        assert!(!workspace.pool.lock().contains_key(&to));
+        assert!(workspace.domain_session_for(&to).is_none());
     }
 }
