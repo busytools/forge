@@ -30,6 +30,8 @@ use crate::app::state::types::{
 use crate::app::state::viewport::ChatViewport;
 use crate::app::state::{ChatRenderTraceState, TerminalToolCallRef, TurnNoticeRef};
 pub use forge_primitives::runtime::SessionLifecycleState;
+use forge_primitives::runtime::{RuntimeSessionState, SessionTurnState};
+use forge_primitives::{AccountInfo, SessionId};
 
 /// Per-session runtime state. Initialised when a session connects;
 /// dropped when the session is closed or forge-tui exits.
@@ -41,16 +43,44 @@ pub use forge_primitives::runtime::SessionLifecycleState;
 /// initializer, factor it through [`UiSession::new`] rather than
 /// expanding the manual impl.
 ///
-/// Renamed from `Session` in Phase 2 of the MVVM refactor (#102) to
-/// signal it's a UI-side projection of the authoritative
-/// [`forge_workspace::DomainSession`]. The agent connection handle
-/// lives on `DomainSession`, not here — TUI's outbound traffic
-/// flows through `Workspace::dispatch` / `Workspace::refresh_*`.
+/// Owns the operational state TUI renders. Workspace is a thin
+/// proxy that holds routing metadata (AgentHandle pool, command
+/// senders, pending interactions) but never duplicates these
+/// fields. TUI reducers in `app::events::*` update them from
+/// `SessionUpdate` payloads as events arrive.
 #[allow(clippy::struct_excessive_bools)]
 pub struct UiSession {
     /// The claude-issued session UUID, also used as the map key.
     /// Stored here for symmetry; the map lookup uses the same value.
     pub key: Option<SessionKey>,
+    /// TUI-side mirror of the workspace's authoritative `session_id`.
+    /// Workspace stamps the real id onto `DomainSession.session_id`
+    /// (for `AgentHandle` dispatch); TUI mirrors it here for render
+    /// code so no per-frame workspace lock is needed.
+    pub session_id: Option<SessionId>,
+    /// Lifecycle state for the Projects pane glyph + the render loop's
+    /// "is_animating" probe. Updated by the TUI reducers in
+    /// `app::events::*` as each `SessionUpdate` arrives.
+    pub lifecycle_state: SessionLifecycleState,
+    /// Raw cwd as a filesystem path. Used for trust lookups, file
+    /// indexing, project-key derivation, and `claude --resume` re-spawn
+    /// reconstruction.
+    pub cwd_raw: String,
+    /// Monotonic session authority epoch — bumped on each session
+    /// reset (`/new`, login, logout) so stale async view data can be
+    /// ignored.
+    pub session_scope_epoch: u64,
+    /// SDK turn state — model-resolution cache, mode capability,
+    /// MCP cooldowns, auth/error flags.
+    pub turn_state: SessionTurnState,
+    /// Account snapshot from the bridge's status event.
+    pub account_info: Option<AccountInfo>,
+    /// Forge-side display name of the `[[accounts]]` entry the
+    /// workspace picked for this bridge.
+    pub active_account_display_name: Option<String>,
+    /// Latest SDK runtime liveness state (`Idle` / `Running` /
+    /// `RequiresAction`).
+    pub runtime_session_state: Option<RuntimeSessionState>,
     /// Wall-clock instant of the last wire event applied to this
     /// session. Seeded at bucket creation so the Projects pane's
     /// "2m" / "1h" / "5d" rendering has a stable baseline before
@@ -245,6 +275,14 @@ impl Default for UiSession {
         // for free without code change.
         Self {
             key: Option::default(),
+            session_id: Option::default(),
+            lifecycle_state: SessionLifecycleState::default(),
+            cwd_raw: String::default(),
+            session_scope_epoch: u64::default(),
+            turn_state: SessionTurnState::default(),
+            account_info: Option::default(),
+            active_account_display_name: Option::default(),
+            runtime_session_state: Option::default(),
             last_activity_at: Instant::now(),
             messages: Vec::default(),
             message_retained_bytes: Vec::default(),
@@ -304,9 +342,10 @@ impl Default for UiSession {
 
 // Phase 4 deleted the `pub type Session = UiSession;` back-compat
 // alias; the ~250 call sites that used `UiSession::new(...)` etc.
-// were migrated to `UiSession::new(...)`. The new name signals the
-// UI-side projection role; the authoritative state is
-// `forge_workspace::DomainSession`.
+// were migrated to `UiSession::new(...)`. `UiSession` owns the
+// operational state TUI renders; workspace's `DomainSession` holds
+// only the routing metadata (`AgentHandle` slot, `session_id`,
+// pending interactions).
 
 #[cfg(test)]
 mod tests {

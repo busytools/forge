@@ -3,8 +3,11 @@
 //!
 //! Pools [`forge_agent::Agent`] instances behind a single
 //! [`Workspace`] handle. One [`DomainSession`] per active session
-//! holds the authoritative operational state (lifecycle, cwd,
-//! turn_state, account info, runtime liveness, pending interactions).
+//! holds workspace-internal routing metadata (`AgentHandle` slot,
+//! claude-issued `session_id`, pending-interaction mailbox).
+//! Operational state TUI renders (lifecycle, cwd, turn state,
+//! account info) lives on the TUI's `UiSession`; workspace is a thin
+//! proxy that reacts to `Command`s in and emits `SessionUpdate`s out.
 //! A per-session actor pumps events from `AgentHandle::take_events()`,
 //! translates them into [`SessionUpdate`]s, and routes [`Command`]s
 //! back.
@@ -50,9 +53,8 @@
 //!
 //! These are TUI-originated presentation events that reuse the
 //! existing channel as a single event bus rather than spinning up a
-//! second one. Workspace still owns operational state in
-//! `DomainSession` — these injected updates only mutate
-//! presentation-side state in TUI's `UiSession` buckets.
+//! second one. They only mutate presentation-side state in TUI's
+//! `UiSession` buckets — workspace itself never reads those updates.
 //!
 //! Future-proofing watchlist: if the goal ever becomes "swap the TUI
 //! for a different frontend," the only contract a replacement should
@@ -90,10 +92,7 @@ mod workspace;
 
 pub use domain_session::DomainSession;
 pub use error::WorkspaceError;
-pub use protocol::{
-    Command, DispatchError, PendingInteractionSlot, SessionUpdate, TurnErrorClass,
-    TurnFinalizeStatus,
-};
+pub use protocol::{Command, DispatchError, PendingInteractionSlot, SessionUpdate, TurnErrorClass};
 pub use target::{ProjectKey, SessionKey, SessionTarget};
 pub use views::{ProjectView, SessionView};
 pub use workspace::Workspace;

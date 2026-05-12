@@ -79,16 +79,6 @@ impl std::fmt::Debug for PendingInteractionSlot {
     }
 }
 
-/// Status that drives `Workspace::finalize_turn_in_domain`. Phase 3c
-/// is the primary caller; defined here so the type lives in the
-/// protocol module from day one.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TurnFinalizeStatus {
-    Complete,
-    Error,
-    Cancelled,
-}
-
 /// Command envelope: forge-tui -> forge-workspace.
 ///
 /// Every variant carries a `SessionKey` identifying the target

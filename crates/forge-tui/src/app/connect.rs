@@ -136,13 +136,12 @@ pub fn create_app(cli: &Cli, workspace: Arc<forge_workspace::Workspace>) -> App 
     pre_connect_session.messages =
         vec![super::ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "", &cwd_display, "-")];
     pre_connect_session.cwd = cwd_display;
-    // Pre-register a handle-less DomainSession for the pre-Connect key
-    // and seed `cwd_raw` on it. Post-Phase 5 `cwd_raw` lives on the
-    // workspace's `DomainSession`; the spawn handler later stamps the
-    // live `Arc<AgentHandle>` onto this same domain entry when
+    pre_connect_session.cwd_raw = cwd.to_string_lossy().to_string();
+    // Pre-register a handle-less DomainSession for the pre-Connect
+    // key. The spawn handler later stamps the live `Arc<AgentHandle>`
+    // onto this same domain entry when
     // `get_agent_handle_with_spawn_key` runs.
     let pre_connect_domain = workspace.register_domain_session(pre_connect_key.clone(), None);
-    pre_connect_domain.lock().cwd_raw = cwd.to_string_lossy().to_string();
     drop(pre_connect_domain);
     let mut sessions = std::collections::HashMap::new();
     sessions.insert(pre_connect_key.clone(), pre_connect_session);

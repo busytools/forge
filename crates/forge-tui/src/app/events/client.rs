@@ -305,6 +305,8 @@ fn apply_session_update_spawning(
     }
     let mut bucket = crate::app::session::UiSession::new(key.clone());
     bucket.cwd = shorten_cwd_display_path(cwd);
+    cwd.clone_into(&mut bucket.cwd_raw);
+    bucket.lifecycle_state = crate::app::session::SessionLifecycleState::Spawning;
     bucket.messages.push(crate::app::ChatMessage::new(
         crate::app::MessageRole::System(Some(crate::app::SystemSeverity::Info)),
         vec![crate::app::MessageBlock::Text(crate::app::TextBlock::from_complete(&format!(
@@ -314,15 +316,6 @@ fn apply_session_update_spawning(
     ));
     bucket.message_retained_bytes.push(0);
     app.sessions.insert(key.clone(), bucket);
-    // Stamp cwd_raw onto the DomainSession (post-Phase 5 authoritative).
-    if let Some(workspace) = app.workspace.as_ref() {
-        workspace.set_cwd_raw_in_domain(&key, cwd.to_owned());
-    }
-    super::set_lifecycle_state_in_workspace(
-        app,
-        &key,
-        crate::app::session::SessionLifecycleState::Spawning,
-    );
     app.switch_active_session(key);
 }
 
@@ -363,24 +356,18 @@ fn apply_forge_account_identity_presentation(
         app.sync_welcome_snapshot();
         return;
     }
-    // Background-session path: write through the workspace's
-    // `DomainSession` directly. `app.session_mut(session_key)` would
-    // also work to confirm the bucket exists but the projection field
-    // is gone post-Phase 5 — the workspace's domain handle is the
-    // authoritative store.
-    if let Some(workspace) = app.workspace.as_ref() {
-        if let Some(domain) = workspace.domain_session_for(session_key) {
-            domain.lock().active_account_display_name = Some(display_name);
-        } else {
-            tracing::warn!(
-                target: crate::logging::targets::APP_AUTH,
-                event_name = "forge_account_identity_dropped",
-                message = "forge-account identity dropped for an unknown session",
-                outcome = "dropped",
-                session_key = %session_key.as_str(),
-                reason = "unknown_session",
-            );
-        }
+    // Background-session path: write directly to the bucket.
+    if let Some(bucket) = app.sessions.get_mut(session_key) {
+        bucket.active_account_display_name = Some(display_name);
+    } else {
+        tracing::warn!(
+            target: crate::logging::targets::APP_AUTH,
+            event_name = "forge_account_identity_dropped",
+            message = "forge-account identity dropped for an unknown session",
+            outcome = "dropped",
+            session_key = %session_key.as_str(),
+            reason = "unknown_session",
+        );
     }
 }
 
@@ -419,24 +406,19 @@ fn apply_status_snapshot_presentation(
         app.set_account_info(Some(account));
         app.set_active_account_display_name(forge_account.map(|f| f.display_name));
         app.sync_welcome_snapshot();
-    } else if let Some(workspace) = app.workspace.as_ref() {
-        // Background-session path: write through DomainSession.
-        if let Some(domain) = workspace.domain_session_for(&session_key) {
-            let mut guard = domain.lock();
-            guard.account_info = Some(account);
-            guard.active_account_display_name = forge_account.map(|f| f.display_name);
-        } else {
-            tracing::warn!(
-                target: crate::logging::targets::APP_AUTH,
-                event_name = "status_snapshot_dropped",
-                message = "status snapshot dropped for an unknown session",
-                outcome = "dropped",
-                session_id = %session_id,
-                reason = "unknown_session",
-            );
-            return;
-        }
+    } else if let Some(bucket) = app.sessions.get_mut(&session_key) {
+        // Background-session path: write directly to the bucket.
+        bucket.account_info = Some(account);
+        bucket.active_account_display_name = forge_account.map(|f| f.display_name);
     } else {
+        tracing::warn!(
+            target: crate::logging::targets::APP_AUTH,
+            event_name = "status_snapshot_dropped",
+            message = "status snapshot dropped for an unknown session",
+            outcome = "dropped",
+            session_id = %session_id,
+            reason = "unknown_session",
+        );
         return;
     }
     tracing::info!(
@@ -942,7 +924,7 @@ fn apply_session_update_key_renamed(app: &mut App, from: &SessionKey, to: Sessio
         } else {
             bucket.key = Some(to.clone());
             app.sessions.insert(to.clone(), bucket);
-            super::set_lifecycle_state_in_workspace(
+            super::set_bucket_lifecycle_state(
                 app,
                 &to,
                 crate::app::session::SessionLifecycleState::Idle,
@@ -952,7 +934,7 @@ fn apply_session_update_key_renamed(app: &mut App, from: &SessionKey, to: Sessio
         // Neither `from` nor `to` exists. Seed a fresh idle bucket
         // at `to` so the subsequent Connected reducer can populate it.
         app.sessions.insert(to.clone(), crate::app::session::UiSession::new(to.clone()));
-        super::set_lifecycle_state_in_workspace(
+        super::set_bucket_lifecycle_state(
             app,
             &to,
             crate::app::session::SessionLifecycleState::Idle,
@@ -972,11 +954,15 @@ mod tests {
     fn seed_two_sessions(app: &mut App) -> (SessionKey, SessionKey) {
         let key_a = SessionKey::from_str_for_test("session-a");
         let key_b = SessionKey::from_str_for_test("session-b");
-        app.sessions.insert(key_a.clone(), UiSession::new(key_a.clone()));
-        app.sessions.insert(key_b.clone(), UiSession::new(key_b.clone()));
-        // Register a DomainSession for each so post-Phase-5 accessors
-        // (account_info, session_id, …) that route through the
-        // workspace's `domain_session_for(key)` see a live entry.
+        let mut bucket_a = UiSession::new(key_a.clone());
+        bucket_a.session_id = Some(forge_primitives::SessionId::new(key_a.as_str()));
+        let mut bucket_b = UiSession::new(key_b.clone());
+        bucket_b.session_id = Some(forge_primitives::SessionId::new(key_b.as_str()));
+        app.sessions.insert(key_a.clone(), bucket_a);
+        app.sessions.insert(key_b.clone(), bucket_b);
+        // Register a DomainSession for each so AgentHandle dispatch
+        // (which still needs an internal session_id mirror on the
+        // workspace side) can route through.
         if let Some(ws) = app.workspace.as_ref() {
             for k in [&key_a, &key_b] {
                 let (h, _) = forge_workspace::Workspace::testing_stub_handle();
@@ -989,17 +975,12 @@ mod tests {
         (key_a, key_b)
     }
 
-    /// Read the `account_info` field on the workspace's
-    /// `DomainSession` for `key`. Used by tests post-Phase 5; the
-    /// projection field is gone from `UiSession`.
-    fn domain_account_info_for(
+    /// Read the `account_info` field on the bucket for `key`.
+    fn bucket_account_info_for(
         app: &App,
         key: &SessionKey,
     ) -> Option<forge_primitives::AccountInfo> {
-        app.workspace
-            .as_ref()
-            .and_then(|ws| ws.domain_session_for(key))
-            .and_then(|d| d.lock().account_info.clone())
+        app.sessions.get(key).and_then(|s| s.account_info.clone())
     }
 
     /// Multiplexer-isolation test: a `StatusSnapshotReceived` event
@@ -1016,8 +997,8 @@ mod tests {
         // The pre-Connect synthetic bucket from `App::test_default`
         // stays in the map; we only care that A and B are present.
         let (key_a, key_b) = seed_two_sessions(&mut app);
-        assert!(domain_account_info_for(&app, &key_a).is_none());
-        assert!(domain_account_info_for(&app, &key_b).is_none());
+        assert!(bucket_account_info_for(&app, &key_a).is_none());
+        assert!(bucket_account_info_for(&app, &key_b).is_none());
 
         // Fire a state-change event tagged for B.
         let account = forge_primitives::AccountInfo {
@@ -1034,12 +1015,12 @@ mod tests {
         );
 
         // B's domain reflects the change.
-        let b_info = domain_account_info_for(&app, &key_b).expect("b account_info");
+        let b_info = bucket_account_info_for(&app, &key_b).expect("b account_info");
         assert_eq!(b_info.email.as_deref(), Some("b@example.com"));
 
         // A's domain is untouched.
         assert!(
-            domain_account_info_for(&app, &key_a).is_none(),
+            bucket_account_info_for(&app, &key_a).is_none(),
             "session A's account_info must not be set"
         );
 
@@ -1064,9 +1045,9 @@ mod tests {
                 forge_account: None,
             },
         );
-        let a_info = domain_account_info_for(&app, &key_a).expect("a account_info");
+        let a_info = bucket_account_info_for(&app, &key_a).expect("a account_info");
         assert_eq!(a_info.email.as_deref(), Some("a@example.com"));
-        assert!(domain_account_info_for(&app, &key_b).is_none());
+        assert!(bucket_account_info_for(&app, &key_b).is_none());
         assert!(app.needs_redraw);
     }
 
@@ -1341,20 +1322,13 @@ mod tests {
             },
         );
 
-        let ws = app.workspace.as_ref().expect("workspace stub present");
-        let domain = ws.domain_session_for(&synth_key).expect("domain registered for spawn");
-        let domain_snap = domain.lock();
-        assert!(
-            matches!(
-                domain_snap.lifecycle_state,
-                crate::app::session::SessionLifecycleState::Spawning
-            ),
-            "lifecycle state set to Spawning, got {:?}",
-            domain_snap.lifecycle_state,
-        );
-        assert_eq!(domain_snap.cwd_raw, "/Users/v/Projects/forge");
-        drop(domain_snap);
         let bucket = app.sessions.get(&synth_key).expect("spawn bucket created");
+        assert!(
+            matches!(bucket.lifecycle_state, crate::app::session::SessionLifecycleState::Spawning),
+            "lifecycle state set to Spawning, got {:?}",
+            bucket.lifecycle_state,
+        );
+        assert_eq!(bucket.cwd_raw, "/Users/v/Projects/forge");
         assert!(
             bucket.messages.iter().any(|m| matches!(m.role, crate::app::MessageRole::System(_))),
             "spawning placeholder system message present"
@@ -1364,6 +1338,154 @@ mod tests {
             Some(&synth_key),
             "active session switched to the placeholder",
         );
+    }
+
+    /// User-visible bug fix verification: after the spawning reducer
+    /// runs, `is_animating` (the render-loop probe) sees a session in
+    /// `Spawning` lifecycle and keeps the spinner ticking. Pre-fix,
+    /// the lifecycle state lived on `DomainSession` and a synth-key
+    /// race left it stuck at `Idle`, freezing the spinner on wake-up.
+    #[test]
+    fn spinner_animates_during_spawning() {
+        let mut app = App::test_default();
+        app.sessions.clear();
+        app.active_session_key = None;
+
+        let synth_key = SessionKey::from_session_id("__spawn_forge__".to_owned());
+        apply_session_update(
+            &mut app,
+            forge_workspace::SessionUpdate::Spawning {
+                key: synth_key.clone(),
+                project_name: "forge".to_owned(),
+                cwd: "/Users/v/Projects/forge".to_owned(),
+                display_name: "forge".to_owned(),
+            },
+        );
+
+        let any_spawning_or_running = app.sessions.values().any(|s| {
+            matches!(
+                s.lifecycle_state,
+                crate::app::session::SessionLifecycleState::Running
+                    | crate::app::session::SessionLifecycleState::Spawning
+            )
+        });
+        assert!(
+            any_spawning_or_running,
+            "Spawning bucket should drive the spinner via direct UiSession read",
+        );
+    }
+
+    /// `SessionUpdate::Spawning` writes `cwd_raw` directly onto the
+    /// bucket. Previously this was mirrored onto a workspace
+    /// `DomainSession`; now the bucket is the only owner.
+    #[test]
+    fn spawning_reducer_writes_cwd_raw_onto_bucket() {
+        let mut app = App::test_default();
+        app.sessions.clear();
+        app.active_session_key = None;
+        let key = SessionKey::from_session_id("__spawn_a__".to_owned());
+        apply_session_update(
+            &mut app,
+            forge_workspace::SessionUpdate::Spawning {
+                key: key.clone(),
+                project_name: "a".to_owned(),
+                cwd: "/p/a".to_owned(),
+                display_name: "a".to_owned(),
+            },
+        );
+        let bucket = app.sessions.get(&key).expect("bucket created");
+        assert_eq!(bucket.cwd_raw, "/p/a");
+    }
+
+    /// `SessionUpdate::StatusSnapshot` for a background session writes
+    /// `account_info` + `active_account_display_name` directly onto
+    /// the target bucket without touching the active session's bucket.
+    #[test]
+    fn status_snapshot_background_writes_account_fields_to_bucket() {
+        let mut app = App::test_default();
+        let (active, background) = seed_two_sessions(&mut app);
+        let account = forge_primitives::AccountInfo {
+            email: Some("bg@example.com".to_owned()),
+            ..Default::default()
+        };
+        apply_session_update(
+            &mut app,
+            forge_workspace::SessionUpdate::StatusSnapshot {
+                session_id: background.as_str().to_owned(),
+                account: account.clone(),
+                forge_account: Some(forge_primitives::ForgeAccountIdentity::new(
+                    "Background".to_owned(),
+                )),
+            },
+        );
+        assert!(bucket_account_info_for(&app, &background).is_some());
+        assert_eq!(
+            app.sessions.get(&background).and_then(|s| s.active_account_display_name.as_deref()),
+            Some("Background"),
+        );
+        // Active bucket left untouched.
+        assert!(bucket_account_info_for(&app, &active).is_none());
+    }
+
+    /// `SessionUpdate::Connected` on a background bucket writes
+    /// session_id + cwd_raw + lifecycle Idle directly onto the bucket
+    /// while also mirroring session_id onto the workspace's
+    /// DomainSession for AgentHandle dispatch.
+    #[test]
+    fn connected_background_writes_session_id_onto_bucket_and_domain() {
+        let mut app = App::test_default();
+        let (_active, background) = seed_two_sessions(&mut app);
+        // Clear the bucket's session_id so we can verify the reducer
+        // re-stamps it.
+        if let Some(b) = app.sessions.get_mut(&background) {
+            b.session_id = None;
+            b.cwd_raw = String::new();
+            b.lifecycle_state = crate::app::session::SessionLifecycleState::Spawning;
+        }
+        let current_model = forge_primitives::CurrentModel {
+            resolved_id: "claude".to_owned(),
+            display_name_short: "claude".to_owned(),
+            display_name_long: "claude".to_owned(),
+            requested_id: None,
+            catalog_id: None,
+            supports_effort: false,
+            supported_effort_levels: Vec::new(),
+            supports_fast_mode: None,
+            supports_auto_mode: None,
+            supports_adaptive_thinking: None,
+            is_authoritative: true,
+        };
+        apply_session_update(
+            &mut app,
+            forge_workspace::SessionUpdate::Connected {
+                key: background.clone(),
+                session_id: forge_primitives::SessionId::new(background.as_str()),
+                cwd: "/bg".to_owned(),
+                current_model,
+                available_models: Vec::new(),
+                mode: None,
+                history: Vec::new(),
+            },
+        );
+        let bucket = app.sessions.get(&background).expect("bucket present");
+        assert_eq!(bucket.cwd_raw, "/bg");
+        assert!(matches!(bucket.lifecycle_state, crate::app::session::SessionLifecycleState::Idle));
+        assert_eq!(
+            bucket.session_id.as_ref().map(std::string::ToString::to_string),
+            Some(background.as_str().to_owned()),
+        );
+        // The reducer also mirrors session_id onto the workspace's
+        // DomainSession so AgentHandle dispatch routes through the
+        // claude-issued UUID. Without this, `Command::Cancel` /
+        // `Prompt` for the background session would carry the wrong
+        // (or no) session_id when SessionTask processes them.
+        let domain = app
+            .workspace
+            .as_ref()
+            .and_then(|ws| ws.domain_session_for(&background))
+            .expect("domain registered by seed_two_sessions");
+        let domain_sid = domain.lock().session_id.as_ref().map(std::string::ToString::to_string);
+        assert_eq!(domain_sid, Some(background.as_str().to_owned()));
     }
 
     /// `SessionUpdate::Spawning` should be idempotent: a second
@@ -1433,17 +1555,9 @@ mod tests {
         let to = SessionKey::from_session_id("real-uuid-9000".to_owned());
 
         // Seed a placeholder bucket under `from` with some content
-        // so we can verify the migration preserves state. Register
-        // a domain handle for `from` and stamp `cwd_raw` on it (the
-        // bucket field is gone post-Phase 5).
-        {
-            let ws = app.workspace.as_ref().expect("workspace stub");
-            let (stub, _) = forge_workspace::Workspace::testing_stub_handle();
-            let domain =
-                ws.register_domain_session_for_test(from.clone(), std::sync::Arc::new(stub));
-            domain.lock().cwd_raw = "/proj".to_owned();
-        }
+        // so we can verify the migration preserves state.
         let mut bucket = UiSession::new(from.clone());
+        bucket.cwd_raw = "/proj".to_owned();
         bucket.messages.push(crate::app::ChatMessage::new(
             crate::app::MessageRole::System(Some(crate::app::SystemSeverity::Info)),
             vec![crate::app::MessageBlock::Text(crate::app::TextBlock::from_complete(

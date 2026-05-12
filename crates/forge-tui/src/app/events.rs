@@ -25,19 +25,18 @@ use crossterm::event::{Event, KeyEventKind};
 
 pub use client::apply_session_update;
 
-/// Set the workspace's `DomainSession.lifecycle_state` for `key`.
-/// Reducer-side helper used by the per-event handlers in this module
-/// tree (`session`, `client`, `turn`) plus `app::input_submit`. The
-/// 8-field deletion (Phase 5 Task 5) replaces direct
-/// `session.lifecycle_state = …` writes with this helper. No-op when
-/// no workspace is bound or no domain handle is registered for `key`.
-pub(crate) fn set_lifecycle_state_in_workspace(
-    app: &App,
+/// Set the bucket's `lifecycle_state` for `key`. Reducer-side helper
+/// used by the per-event handlers in this module tree (`session`,
+/// `client`, `turn`) plus `app::input_submit`. No-op when no bucket
+/// is registered for `key`.
+pub(crate) fn set_bucket_lifecycle_state(
+    app: &mut App,
     key: &forge_workspace::SessionKey,
     state: crate::app::session::SessionLifecycleState,
 ) {
-    let Some(workspace) = app.workspace.as_ref() else { return };
-    workspace.set_lifecycle_state_in_domain(key, state);
+    if let Some(bucket) = app.sessions.get_mut(key) {
+        bucket.lifecycle_state = state;
+    }
 }
 #[cfg(feature = "testing")]
 pub use turn::{handle_permission_request_event, handle_question_request_event};
@@ -1530,10 +1529,10 @@ mod tests {
         let Some(MessageBlock::Welcome(welcome)) = first.blocks.first() else {
             panic!("expected welcome block");
         };
-        // Workspace mode (post-Phase 5): the renderer shows the
-        // "Account: …" skeleton while the picker / status snapshot
-        // are still in flight, so the user sees a stable placeholder
-        // rather than a brief empty row that fills in.
+        // Workspace mode: the renderer shows the "Account: …"
+        // skeleton while the picker / status snapshot are still in
+        // flight, so the user sees a stable placeholder rather than a
+        // brief empty row that fills in.
         assert_eq!(welcome.account_label, "Account");
         assert_eq!(welcome.subscription, "…");
     }
@@ -2054,7 +2053,7 @@ mod tests {
         // Welcome row shows the "Account: …" skeleton because the
         // tier hasn't arrived yet — committing "Account: Subspace"
         // now would flicker into "Account: Subspace · team" once
-        // the status snapshot lands. Workspace mode (post-Phase 5).
+        // the status snapshot lands.
         let Some(MessageBlock::Welcome(welcome)) = app.messages()[0].blocks.first() else {
             panic!("expected welcome block");
         };
@@ -2123,10 +2122,10 @@ mod tests {
             },
         );
 
-        // Workspace mode (post-Phase 5): without a forge_account
-        // display name to pair with the subscription tier, the row
-        // stays on the "Account: …" skeleton rather than flipping to
-        // the legacy `Subscription: <tier>` label.
+        // Workspace mode: without a forge_account display name to
+        // pair with the subscription tier, the row stays on the
+        // "Account: …" skeleton rather than flipping to the legacy
+        // `Subscription: <tier>` label.
         let Some(MessageBlock::Welcome(welcome)) = app.messages()[0].blocks.first() else {
             panic!("expected welcome block");
         };
@@ -2177,9 +2176,8 @@ mod tests {
     fn stale_usage_refresh_result_for_old_epoch_is_ignored() {
         let mut app = make_test_app();
         // Set up an active session bucket so the scope-epoch read
-        // path returns a non-zero value. Post-Phase 5,
-        // `session_scope_epoch` lives on the workspace's
-        // `DomainSession`; bump it 5x via the App accessor.
+        // path returns a non-zero value. `session_scope_epoch` lives
+        // on `UiSession`; bump it 5x via the App accessor.
         app.set_session_id(Some(model::SessionId::new("scope-epoch-test")));
         for _ in 0..5 {
             app.bump_session_scope_epoch();

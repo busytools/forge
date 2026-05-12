@@ -18,15 +18,12 @@ use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::layout::Rect;
 
-/// Register a `DomainSession` for `key` on the App's workspace
-/// stub (post-Phase 5: `lifecycle_state` lives there, not on the
-/// bucket) and stamp `state`. Uses the workspace's `testing`-gated
-/// helpers.
+/// Insert (or update) a `UiSession` bucket for `key` carrying
+/// `lifecycle_state`. The Projects pane reads lifecycle directly off
+/// the bucket; no workspace lookup needed.
 fn register_lifecycle_for_test(app: &mut App, key: &SessionKey, state: SessionLifecycleState) {
-    let ws = app.workspace.as_ref().expect("workspace stub present in App::test_default");
-    let (stub_handle, _) = forge_workspace::Workspace::testing_stub_handle();
-    let domain = ws.register_domain_session_for_test(key.clone(), std::sync::Arc::new(stub_handle));
-    domain.lock().lifecycle_state = state;
+    let bucket = app.sessions.entry(key.clone()).or_insert_with(|| UiSession::new(key.clone()));
+    bucket.lifecycle_state = state;
 }
 
 fn render_to_lines(

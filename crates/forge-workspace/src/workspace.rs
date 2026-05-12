@@ -16,9 +16,7 @@ use crate::account::{AccountKey, AccountStateMap};
 use crate::config::{LoadedConfig, LoadedProject, load_from_dir};
 use crate::domain_session::DomainSession;
 use crate::error::WorkspaceError;
-use crate::protocol::{
-    Command, DispatchError, PendingInteractionSlot, SessionUpdate, TurnFinalizeStatus,
-};
+use crate::protocol::{Command, DispatchError, PendingInteractionSlot, SessionUpdate};
 use crate::session_task::SessionTask;
 use crate::spawn;
 use crate::state::{
@@ -786,85 +784,12 @@ impl Workspace {
         guard.pending_interactions.insert(tool_id, slot);
     }
 
-    /// Stamp the forge-side display name onto the
-    /// [`DomainSession`] for `key`. Called by
-    /// `bridge_lifecycle::run_connection_task` from the pre-event-loop
-    /// branch that emits the forge-account identity before the
-    /// CLI-side status snapshot lands. The `StatusSnapshot` arm of
-    /// the per-event projection eventually overwrites this with the
-    /// value carried by `forge_account`, but the early stamp keeps the
-    /// workspace-side view current as soon as the workspace's account
-    /// picker has resolved the account. No-op when no session task is
-    /// registered for `key`.
-    pub fn record_forge_account_identity_for_domain(&self, key: &SessionKey, display_name: String) {
-        let Some(domain) = self.domain_handles.lock().get(key).cloned() else {
-            return;
-        };
-        let mut guard = domain.lock();
-        guard.active_account_display_name = Some(display_name);
-    }
-
-    /// Set the `lifecycle_state` field on the workspace's
-    /// `DomainSession` for `key`. No-op when no domain handle is
-    /// registered for `key`. TUI-side reducers use this when applying
-    /// `SessionUpdate` variants that need to flip lifecycle (Spawning
-    /// on Spawning, Attention on PermissionRequest / QuestionRequest,
-    /// Idle on TurnComplete, Sleeping / Attention on
-    /// ConnectionFailed, …).
-    pub fn set_lifecycle_state_in_domain(
-        &self,
-        key: &SessionKey,
-        state: forge_primitives::runtime::SessionLifecycleState,
-    ) {
-        let Some(domain) = self.domain_handles.lock().get(key).cloned() else {
-            return;
-        };
-        domain.lock().lifecycle_state = state;
-    }
-
-    /// Set the `account_info` field on the workspace's
-    /// `DomainSession` for `key`. No-op when no domain handle is
-    /// registered for `key`.
-    pub fn set_account_info_in_domain(
-        &self,
-        key: &SessionKey,
-        value: Option<forge_primitives::AccountInfo>,
-    ) {
-        let Some(domain) = self.domain_handles.lock().get(key).cloned() else {
-            return;
-        };
-        domain.lock().account_info = value;
-    }
-
-    /// Set the `active_account_display_name` field on the workspace's
-    /// `DomainSession` for `key`. No-op when no domain handle is
-    /// registered for `key`.
-    pub fn set_active_account_display_name_in_domain(
-        &self,
-        key: &SessionKey,
-        value: Option<String>,
-    ) {
-        let Some(domain) = self.domain_handles.lock().get(key).cloned() else {
-            return;
-        };
-        domain.lock().active_account_display_name = value;
-    }
-
-    /// Set the `cwd_raw` field on the workspace's `DomainSession`
-    /// for `key`. No-op when no domain handle is registered for
-    /// `key`. Background-session reducers + spawn / connect paths
-    /// write this when stamping a session's cwd onto the domain.
-    pub fn set_cwd_raw_in_domain(&self, key: &SessionKey, value: String) {
-        let Some(domain) = self.domain_handles.lock().get(key).cloned() else {
-            return;
-        };
-        domain.lock().cwd_raw = value;
-    }
-
     /// Set the `session_id` field on the workspace's `DomainSession`
     /// for `key`. No-op when no domain handle is registered for
     /// `key`. Used by `App::set_session_id` to stamp the
-    /// claude-issued UUID once the first `Connected` event fires.
+    /// claude-issued UUID once the first `Connected` event fires —
+    /// the workspace consults this when routing `AgentHandle` calls
+    /// that take a session_id.
     pub fn set_session_id_in_domain(
         &self,
         key: &SessionKey,
@@ -874,63 +799,6 @@ impl Workspace {
             return;
         };
         domain.lock().session_id = value;
-    }
-
-    /// Run `f` with mutable access to the `turn_state` field on the
-    /// workspace's `DomainSession` for `key`. The lock is held for
-    /// the duration of the closure. Returns `None` when no domain
-    /// handle is registered for `key`; otherwise returns the
-    /// closure's value wrapped in `Some`. Used by TUI reducers in
-    /// `events/sdk_message.rs` + `events/turn.rs` + `app/config/*`
-    /// to mutate the per-session SDK turn state that previously
-    /// lived inline on `UiSession`.
-    ///
-    /// # Errors
-    ///
-    /// No errors — `None` signals the absence of a domain handle.
-    pub fn with_turn_state_mut<R>(
-        &self,
-        key: &SessionKey,
-        f: impl FnOnce(&mut forge_primitives::runtime::SessionTurnState) -> R,
-    ) -> Option<R> {
-        let domain = self.domain_handles.lock().get(key).cloned()?;
-        let mut guard = domain.lock();
-        Some(f(&mut guard.turn_state))
-    }
-
-    /// Run `f` with read-only access to the `turn_state` field on
-    /// the workspace's `DomainSession` for `key`. Returns `None`
-    /// when no domain handle is registered.
-    pub fn with_turn_state<R>(
-        &self,
-        key: &SessionKey,
-        f: impl FnOnce(&forge_primitives::runtime::SessionTurnState) -> R,
-    ) -> Option<R> {
-        let domain = self.domain_handles.lock().get(key).cloned()?;
-        let guard = domain.lock();
-        Some(f(&guard.turn_state))
-    }
-
-    /// Finalize the workspace-side view of a session's turn. Resets
-    /// the domain bucket's `lifecycle_state` to `Idle` and zeroes the
-    /// `turn_state` so the workspace's projection mirrors what the
-    /// TUI does on its own `Session` bucket at the end of every
-    /// turn. Called from `events/turn.rs`'s `handle_turn_*_event`
-    /// handlers (active-session path) and from the SessionUpdate
-    /// reducers (background path).
-    ///
-    /// `status` differentiates Complete/Error/Cancelled so a future
-    /// caller can branch on it without changing the public signature;
-    /// the body itself does not branch yet — every terminal status
-    /// produces the same Idle/default reset.
-    pub fn finalize_turn_in_domain(&self, key: &SessionKey, status: TurnFinalizeStatus) {
-        let Some(domain) = self.domain_handles.lock().get(key).cloned() else {
-            return;
-        };
-        let mut guard = domain.lock();
-        guard.lifecycle_state = forge_primitives::runtime::SessionLifecycleState::Idle;
-        guard.turn_state = forge_primitives::runtime::SessionTurnState::default();
-        let _ = status;
     }
 
     /// Graceful shutdown of every pooled Agent. Drains the pool, then
@@ -1161,16 +1029,10 @@ impl Workspace {
     /// in later when the spawn handler runs); `Some` for test fixtures
     /// that wire a stub handle up front.
     ///
-    /// Used by:
-    ///
-    /// - `forge-tui::connect::create_app` to seed the pre-Connect
-    ///   domain so the TUI's projection accessors (`cwd_raw`,
-    ///   `session_id`, …) have a domain handle to read from even
-    ///   before the first spawn completes.
-    /// - test fixtures (`App::test_default`) under the `testing`
-    ///   feature for the same reason — replaces direct mutation of
-    ///   the `UiSession` projection fields that were deleted in
-    ///   Phase 5.
+    /// `DomainSession` carries workspace-internal routing metadata
+    /// (`conn` / `session_id` / `pending_interactions`). TUI's per-
+    /// session operational state lives on `UiSession`; the workspace
+    /// does not read or write those fields.
     ///
     /// Returns the inserted `Arc<Mutex<DomainSession>>` so callers
     /// can seed fields on the same handle they just registered.

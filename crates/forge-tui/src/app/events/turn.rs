@@ -76,14 +76,9 @@ fn apply_permission_request_presentation(
     // means that bucket is paused awaiting user input — flip to
     // Attention so the Projects pane shows the △ glyph. Active
     // sessions don't need this — the inline permission card itself
-    // surfaces the prompt to the user. (Workspace's
-    // `apply_event_to_domain` already flipped DomainSession's
-    // lifecycle_state when the AgentEvent fired; this is a
-    // belt-and-braces second-write for parity with the legacy reducer
-    // semantics in case the event arrived without an upstream
-    // workspace projection.)
+    // surfaces the prompt to the user.
     if app.active_session_key.as_ref() != Some(session_key) {
-        super::set_lifecycle_state_in_workspace(
+        super::set_bucket_lifecycle_state(
             app,
             session_key,
             crate::app::session::SessionLifecycleState::Attention,
@@ -380,7 +375,7 @@ fn apply_question_request_presentation(
     // Lifecycle: as with permission prompts — a question landing on a
     // non-active session flips that bucket to Attention.
     if app.active_session_key.as_ref() != Some(session_key) {
-        super::set_lifecycle_state_in_workspace(
+        super::set_bucket_lifecycle_state(
             app,
             session_key,
             crate::app::session::SessionLifecycleState::Attention,
@@ -865,7 +860,7 @@ fn apply_turn_cancelled_presentation(app: &mut App, session_key: &SessionKey) {
         // Lifecycle: cancellation accepted — return active session
         // to Idle. (Steady-state TurnComplete fires shortly after,
         // also setting Idle — this is a defensive idempotent set.)
-        super::set_lifecycle_state_in_workspace(
+        super::set_bucket_lifecycle_state(
             app,
             session_key,
             crate::app::session::SessionLifecycleState::Idle,
@@ -892,7 +887,7 @@ fn apply_turn_cancelled_presentation(app: &mut App, session_key: &SessionKey) {
     // Drop the `session` mut borrow before reaching for the workspace.
     let _ = session;
     // Lifecycle: background cancel accepted — same Idle target.
-    super::set_lifecycle_state_in_workspace(
+    super::set_bucket_lifecycle_state(
         app,
         session_key,
         crate::app::session::SessionLifecycleState::Idle,
@@ -962,17 +957,13 @@ fn finish_ready_turn_exit(app: &mut App, exit: TurnExitState, tool_status: model
 }
 
 /// Active-path entry point used by `sdk_message::apply_result_finalize`.
-/// Runs both the workspace-side operational hook
-/// ([`forge_workspace::Workspace::finalize_turn_in_domain`]) and the
-/// TUI presentation, so the SDK-message-driven turn-completion flow
-/// stays in sync with the DomainSession projection.
+/// Runs the TUI presentation; lifecycle reset to `Idle` happens via
+/// the bucket writes inside `apply_turn_complete_presentation`.
 pub(super) fn handle_turn_complete_event(
     app: &mut App,
-    workspace: &forge_workspace::Workspace,
     session_key: &SessionKey,
     terminal_reason: Option<forge_primitives::TerminalReason>,
 ) {
-    workspace.finalize_turn_in_domain(session_key, forge_workspace::TurnFinalizeStatus::Complete);
     apply_turn_complete_presentation(app, session_key, terminal_reason);
 }
 
@@ -1021,12 +1012,12 @@ fn apply_turn_complete_presentation(
         session.turn_notice_refs.clear();
         let _ = session;
         // Lifecycle: background bucket's turn has wrapped — return
-        // it to Idle so the Projects pane drops the spinner glyph.
-        super::set_lifecycle_state_in_workspace(
-            app,
-            session_key,
-            crate::app::session::SessionLifecycleState::Idle,
-        );
+        // it to Idle so the Projects pane drops the spinner glyph,
+        // and reset the per-turn SDK state.
+        if let Some(bucket) = app.sessions.get_mut(session_key) {
+            bucket.lifecycle_state = crate::app::session::SessionLifecycleState::Idle;
+            bucket.turn_state = forge_primitives::runtime::SessionTurnState::default();
+        }
         if let Some(reason) = terminal_reason {
             tracing::debug!(
                 target: crate::logging::targets::APP_SESSION,
@@ -1056,11 +1047,14 @@ fn apply_turn_complete_presentation(
         model::ToolCallStatus::Completed
     };
     finish_ready_turn_exit(app, exit, tool_status);
-    // Lifecycle: turn done, active session returns to Idle. The
-    // Projects pane drops the spinner glyph back to the default
-    // foreground color.
+    // Lifecycle: turn done, active session returns to Idle and
+    // turn_state resets. The Projects pane drops the spinner glyph
+    // back to the default foreground color.
     if let Some(key) = app.active_session_key.clone() {
-        super::set_lifecycle_state_in_workspace(
+        if let Some(bucket) = app.sessions.get_mut(&key) {
+            bucket.turn_state = forge_primitives::runtime::SessionTurnState::default();
+        }
+        super::set_bucket_lifecycle_state(
             app,
             &key,
             crate::app::session::SessionLifecycleState::Idle,
@@ -1079,18 +1073,15 @@ fn apply_turn_complete_presentation(
 }
 
 /// Active-path entry point used by `sdk_message::apply_result_finalize`.
-/// Runs both the workspace-side operational hook
-/// ([`forge_workspace::Workspace::finalize_turn_in_domain`]) and the
-/// TUI presentation.
+/// Runs the TUI presentation; lifecycle reset to `Idle` happens via
+/// the bucket writes inside `apply_turn_error_presentation`.
 pub(super) fn handle_turn_error_event(
     app: &mut App,
-    workspace: &forge_workspace::Workspace,
     session_key: &SessionKey,
     msg: &str,
     classified: Option<TurnErrorClass>,
     terminal_reason: Option<forge_primitives::TerminalReason>,
 ) {
-    workspace.finalize_turn_in_domain(session_key, forge_workspace::TurnFinalizeStatus::Error);
     apply_turn_error_presentation(app, session_key, msg, classified, terminal_reason);
 }
 
@@ -1153,12 +1144,12 @@ fn apply_turn_error_presentation(
         session.turn_notice_refs.clear();
         let _ = session;
         // Lifecycle: turn ended (with error) — return the background
-        // bucket to Idle so the Projects pane drops the spinner glyph.
-        super::set_lifecycle_state_in_workspace(
-            app,
-            session_key,
-            crate::app::session::SessionLifecycleState::Idle,
-        );
+        // bucket to Idle so the Projects pane drops the spinner glyph,
+        // and reset the per-turn SDK state.
+        if let Some(bucket) = app.sessions.get_mut(session_key) {
+            bucket.lifecycle_state = crate::app::session::SessionLifecycleState::Idle;
+            bucket.turn_state = forge_primitives::runtime::SessionTurnState::default();
+        }
         let summary = summarize_internal_error(msg);
         if cancelled_requested.is_some() {
             tracing::warn!(
@@ -1199,9 +1190,12 @@ fn apply_turn_error_presentation(
         );
         app.pending_submit = None;
         finish_ready_turn_exit(app, exit, model::ToolCallStatus::Failed);
-        // Lifecycle: cancelled turn — back to Idle.
+        // Lifecycle: cancelled turn — back to Idle, reset turn_state.
         if let Some(key) = app.active_session_key.clone() {
-            super::set_lifecycle_state_in_workspace(
+            if let Some(bucket) = app.sessions.get_mut(&key) {
+                bucket.turn_state = forge_primitives::runtime::SessionTurnState::default();
+            }
+            super::set_bucket_lifecycle_state(
                 app,
                 &key,
                 crate::app::session::SessionLifecycleState::Idle,
@@ -1279,12 +1273,15 @@ fn apply_turn_error_presentation(
     }
     app.clear_active_turn_assistant();
     super::notices::clear_turn_notice_tracking(app);
-    // Lifecycle: errored turn — back to Idle. The active session
-    // status itself is already AppStatus::Error (set above) so the
-    // input remains locked; lifecycle is the per-session pane glyph,
-    // independent of the App-global input lock.
+    // Lifecycle: errored turn — back to Idle, reset turn_state. The
+    // active session status itself is already AppStatus::Error (set
+    // above) so the input remains locked; lifecycle is the per-session
+    // pane glyph, independent of the App-global input lock.
     if let Some(key) = app.active_session_key.clone() {
-        super::set_lifecycle_state_in_workspace(
+        if let Some(bucket) = app.sessions.get_mut(&key) {
+            bucket.turn_state = forge_primitives::runtime::SessionTurnState::default();
+        }
+        super::set_bucket_lifecycle_state(
             app,
             &key,
             crate::app::session::SessionLifecycleState::Idle,

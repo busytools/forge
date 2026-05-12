@@ -135,15 +135,11 @@ fn append_project_rows(
     let mut active: Vec<(&ProjectView, SessionLifecycleState, bool, forge_workspace::SessionKey)> =
         Vec::new();
     let mut inactive: Vec<&ProjectView> = Vec::new();
-    // Helper: read `lifecycle_state` for `key` via the workspace's
-    // `DomainSession`. Falls back to `Idle` when the workspace has
-    // no domain handle for the key (post-Phase 5: the field lives on
-    // DomainSession; pre-Phase 5 it was a bucket field).
+    // Helper: read `lifecycle_state` for `key` from the bucket.
+    // Falls back to `Idle` when no bucket is registered (e.g., the
+    // catalog references a session the user has never woken).
     let lifecycle_for = |key: &forge_workspace::SessionKey| -> SessionLifecycleState {
-        app.workspace
-            .as_ref()
-            .and_then(|ws| ws.domain_session_for(key))
-            .map_or(SessionLifecycleState::default(), |d| d.lock().lifecycle_state)
+        app.sessions.get(key).map_or(SessionLifecycleState::default(), |s| s.lifecycle_state)
     };
 
     for project in projects {

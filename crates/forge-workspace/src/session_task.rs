@@ -13,7 +13,6 @@ use std::sync::Arc;
 use forge_agent::AgentHandle;
 use forge_agent::client::AgentEvent;
 use forge_primitives::SessionId;
-use forge_primitives::runtime::SessionLifecycleState;
 use parking_lot::Mutex;
 use tokio::sync::mpsc;
 
@@ -76,10 +75,6 @@ impl SessionTask {
         // picks an account. Emit ForgeAccountIdentity now so welcome
         // rendering shows the right label from the first frame.
         if let Some(display_name) = self.handle.display_name() {
-            {
-                let mut guard = self.domain.lock();
-                guard.active_account_display_name = Some(display_name.clone());
-            }
             let id_key = self.spawn_key.clone().unwrap_or_else(|| self.key.clone());
             let _ = self
                 .update_tx
@@ -634,44 +629,18 @@ fn warn_no_session(key: &SessionKey, command: &'static str) {
 /// Apply an [`AgentEvent`] to a [`DomainSession`]. Pure mutation; no
 /// I/O, no async, no sends. Called from inside
 /// [`SessionTask::translate_event`] under the domain's lock.
+///
+/// Workspace only owns the `session_id` mirror used for `AgentHandle`
+/// dispatch — operational state (lifecycle, cwd, turn state,
+/// account info) lives on the TUI's `UiSession`, populated via the
+/// `SessionUpdate` envelopes the task emits.
 pub(crate) fn apply_event_to_domain(domain: &mut DomainSession, event: &AgentEvent) {
     match event {
-        AgentEvent::Connected { session_id, cwd, .. } => {
-            // First Connected on this bridge: stamp session_id, set
-            // cwd, lifecycle = Idle.
-            if domain.session_id.is_none() {
-                domain.session_id = Some(SessionId::new(session_id.clone()));
-            }
-            if !cwd.is_empty() {
-                domain.cwd_raw.clone_from(cwd);
-            }
-            domain.lifecycle_state = SessionLifecycleState::Idle;
-        }
-        AgentEvent::SessionReplaced { session_id, cwd, .. } => {
-            // /new, login, logout. Bump epoch; new session id; cwd
-            // may change.
+        AgentEvent::Connected { session_id, .. } if domain.session_id.is_none() => {
             domain.session_id = Some(SessionId::new(session_id.clone()));
-            if !cwd.is_empty() {
-                domain.cwd_raw.clone_from(cwd);
-            }
-            domain.session_scope_epoch = domain.session_scope_epoch.wrapping_add(1);
-            domain.lifecycle_state = SessionLifecycleState::Idle;
         }
-        AgentEvent::PermissionRequest { .. }
-        | AgentEvent::QuestionRequest { .. }
-        | AgentEvent::ElicitationRequest { .. } => {
-            domain.lifecycle_state = SessionLifecycleState::Attention;
-        }
-        AgentEvent::StatusSnapshot { account, forge_account, .. } => {
-            domain.account_info = Some(account.clone());
-            domain.active_account_display_name =
-                forge_account.as_ref().map(|fa| fa.display_name.clone());
-        }
-        AgentEvent::AuthRequired { .. } => {
-            domain.lifecycle_state = SessionLifecycleState::AuthRequired;
-        }
-        AgentEvent::ConnectionFailed { .. } => {
-            domain.lifecycle_state = SessionLifecycleState::Failed;
+        AgentEvent::SessionReplaced { session_id, .. } => {
+            domain.session_id = Some(SessionId::new(session_id.clone()));
         }
         _ => {}
     }
@@ -780,7 +749,6 @@ fn spawn_question_response_forwarder(
 mod tests {
     use super::*;
     use forge_agent::Agent;
-    use forge_primitives::AccountInfo;
 
     fn empty_domain() -> DomainSession {
         let (handle, _rx) = Agent::testing_stub();
@@ -788,14 +756,14 @@ mod tests {
     }
 
     /// `apply_event_to_domain` on `AgentEvent::Connected` stamps
-    /// `session_id`, sets `cwd_raw`, and flips lifecycle to `Idle`.
-    /// First-Connected behavior — the contract is "fresh session
-    /// just landed; bucket reflects its identity".
+    /// `session_id` so the workspace can route subsequent
+    /// `AgentHandle` calls. The first-Connect path leaves any
+    /// existing session_id alone — the bridge can re-fire this on
+    /// snapshot rebuilds.
     #[test]
-    fn translate_connected_stamps_session_id_and_cwd() {
+    fn translate_connected_stamps_session_id() {
         let mut domain = empty_domain();
         assert!(domain.session_id.is_none());
-        assert_eq!(domain.cwd_raw, "");
 
         apply_event_to_domain(
             &mut domain,
@@ -825,18 +793,15 @@ mod tests {
             domain.session_id.as_ref().map(std::string::ToString::to_string),
             Some("real-uuid-1".to_owned())
         );
-        assert_eq!(domain.cwd_raw, "/proj");
-        assert!(matches!(domain.lifecycle_state, SessionLifecycleState::Idle));
     }
 
-    /// `SessionReplaced` (e.g., `/new`, login, logout) bumps the
-    /// session_scope_epoch and replaces the session_id. Pre-existing
-    /// session state is invalidated by the epoch bump.
+    /// `SessionReplaced` (e.g., `/new`, login, logout) overwrites the
+    /// session_id mirror; the new session_id is what subsequent
+    /// `AgentHandle` calls dispatch with.
     #[test]
-    fn translate_session_replaced_bumps_epoch() {
+    fn translate_session_replaced_replaces_session_id() {
         let mut domain = empty_domain();
         domain.session_id = Some(SessionId::new("old-uuid"));
-        domain.session_scope_epoch = 5;
 
         apply_event_to_domain(
             &mut domain,
@@ -866,100 +831,6 @@ mod tests {
             domain.session_id.as_ref().map(std::string::ToString::to_string),
             Some("new-uuid".to_owned())
         );
-        assert_eq!(domain.cwd_raw, "/new-proj");
-        assert_eq!(domain.session_scope_epoch, 6, "epoch incremented");
-        assert!(matches!(domain.lifecycle_state, SessionLifecycleState::Idle));
-    }
-
-    /// `PermissionRequest` / `QuestionRequest` / `ElicitationRequest`
-    /// flip lifecycle to `Attention` (the Projects pane glyph
-    /// surfaces it).
-    #[test]
-    fn translate_permission_request_flips_attention() {
-        let mut domain = empty_domain();
-        domain.lifecycle_state = SessionLifecycleState::Idle;
-
-        apply_event_to_domain(
-            &mut domain,
-            &AgentEvent::PermissionRequest {
-                session_id: "uuid".to_owned(),
-                request: forge_primitives::PermissionRequest {
-                    tool_call: forge_primitives::ToolCall {
-                        tool_call_id: "tool-1".to_owned(),
-                        title: "test".to_owned(),
-                        kind: "execute".to_owned(),
-                        status: "pending".to_owned(),
-                        content: Vec::new(),
-                        raw_input: None,
-                        raw_output: None,
-                        output_metadata: None,
-                        task_metadata: None,
-                        locations: Vec::new(),
-                        meta: None,
-                    },
-                    options: Vec::new(),
-                    display: None,
-                },
-            },
-        );
-
-        assert!(matches!(domain.lifecycle_state, SessionLifecycleState::Attention));
-    }
-
-    /// `StatusSnapshot` captures `account_info` and
-    /// `active_account_display_name` from the wire envelope. Verifies
-    /// the workspace-side cache is current for any TUI reader that
-    /// reads via `Workspace::domain_session_for`.
-    #[test]
-    fn translate_status_snapshot_captures_account_fields() {
-        let mut domain = empty_domain();
-        assert!(domain.account_info.is_none());
-
-        apply_event_to_domain(
-            &mut domain,
-            &AgentEvent::StatusSnapshot {
-                session_id: "uuid".to_owned(),
-                account: AccountInfo {
-                    email: Some("user@example.com".to_owned()),
-                    ..Default::default()
-                },
-                forge_account: Some(forge_primitives::ForgeAccountIdentity::new(
-                    "Subspace".to_owned(),
-                )),
-            },
-        );
-
-        assert_eq!(
-            domain.account_info.as_ref().and_then(|a| a.email.as_deref()),
-            Some("user@example.com")
-        );
-        assert_eq!(domain.active_account_display_name.as_deref(), Some("Subspace"));
-    }
-
-    /// `AuthRequired` flips lifecycle to the AuthRequired state.
-    #[test]
-    fn translate_auth_required_flips_lifecycle() {
-        let mut domain = empty_domain();
-        apply_event_to_domain(
-            &mut domain,
-            &AgentEvent::AuthRequired {
-                method_name: "oauth".to_owned(),
-                method_description: "Sign in with Claude".to_owned(),
-            },
-        );
-        assert!(matches!(domain.lifecycle_state, SessionLifecycleState::AuthRequired));
-    }
-
-    /// `ConnectionFailed` flips lifecycle to `Failed` so the
-    /// Projects pane glyph reflects the broken session.
-    #[test]
-    fn translate_connection_failed_flips_lifecycle() {
-        let mut domain = empty_domain();
-        apply_event_to_domain(
-            &mut domain,
-            &AgentEvent::ConnectionFailed { message: "boom".to_owned() },
-        );
-        assert!(matches!(domain.lifecycle_state, SessionLifecycleState::Failed));
     }
 
     /// Common harness for the `execute_command_via_handle` tests

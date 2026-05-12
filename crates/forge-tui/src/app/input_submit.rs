@@ -153,7 +153,7 @@ fn dispatch_prompt_turn(app: &mut App, text: String) {
     // The Projects pane reads this so the spinner glyph picks up the
     // accent color while the turn is in flight.
     if let Some(key) = app.active_session_key.clone() {
-        crate::app::events::set_lifecycle_state_in_workspace(
+        crate::app::events::set_bucket_lifecycle_state(
             app,
             &key,
             crate::app::session::SessionLifecycleState::Running,

@@ -922,20 +922,10 @@ fn apply_result_finalize(
         .active_session_key
         .clone()
         .unwrap_or_else(|| forge_workspace::SessionKey::from_session_id(App::PRE_CONNECT_KEY));
-    // Clone the `Arc<Workspace>` so the turn-lifecycle handlers can
-    // run the workspace-side `finalize_turn_in_domain` operational
-    // hook without holding an immutable borrow of `app` across the
-    // `&mut App` calls below. Falls back silently when no workspace
-    // is wired (test fixtures).
-    let workspace = app.workspace.as_ref().map(std::sync::Arc::clone);
     if !is_error && subtype == "success" {
         let _: () = app.with_turn_state_mut(|ts| ts.last_assistant_error = None);
         finalize_open_tool_calls(app, "completed");
-        if let Some(workspace) = workspace.as_ref() {
-            super::turn::handle_turn_complete_event(app, workspace, &active_key, terminal_reason);
-        } else {
-            super::turn::apply_session_update_turn_complete(app, active_key, terminal_reason);
-        }
+        super::turn::handle_turn_complete_event(app, &active_key, terminal_reason);
         return;
     }
 
@@ -955,42 +945,8 @@ fn apply_result_finalize(
         String::new()
     };
     let class = classify_turn_error_kind(subtype, &errors_array, assistant_error.as_deref());
-    if let Some(workspace) = workspace.as_ref() {
-        super::turn::handle_turn_error_event(
-            app,
-            workspace,
-            &active_key,
-            &message,
-            Some(class),
-            terminal_reason,
-        );
-    } else {
-        super::turn::apply_session_update_turn_error(
-            app,
-            active_key,
-            message,
-            Some(workspace_turn_error_class(class)),
-            terminal_reason,
-        );
-    }
+    super::turn::handle_turn_error_event(app, &active_key, &message, Some(class), terminal_reason);
     let _: () = app.with_turn_state_mut(|ts| ts.last_assistant_error = None);
-}
-
-/// Map the local [`crate::agent::error_handling::TurnErrorClass`] to
-/// the workspace-side [`forge_workspace::TurnErrorClass`]. Used only
-/// in the test-fallback path of [`apply_result_finalize`] where no
-/// workspace is wired and we route through
-/// [`super::turn::apply_session_update_turn_error`] directly.
-fn workspace_turn_error_class(
-    class: crate::agent::error_handling::TurnErrorClass,
-) -> forge_workspace::TurnErrorClass {
-    use crate::agent::error_handling::TurnErrorClass as Src;
-    match class {
-        Src::PlanLimit => forge_workspace::TurnErrorClass::PlanLimit,
-        Src::AuthRequired => forge_workspace::TurnErrorClass::AuthRequired,
-        Src::Internal => forge_workspace::TurnErrorClass::Internal,
-        Src::Other => forge_workspace::TurnErrorClass::Other,
-    }
 }
 
 /// App-side classifier for `TurnError` payloads — picks one of the

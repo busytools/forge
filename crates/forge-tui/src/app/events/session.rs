@@ -6,8 +6,9 @@ use super::super::{
 };
 use super::push_system_message_with_severity;
 use super::session_reset::{load_resume_history, reset_for_new_session};
-use super::set_lifecycle_state_in_workspace;
+use super::set_bucket_lifecycle_state;
 use crate::agent::model;
+use crate::app::session::SessionLifecycleState;
 use crate::error::AppError;
 use forge_primitives::cloud::service_status::ServiceSeverity;
 use forge_workspace::SessionKey;
@@ -15,18 +16,15 @@ use forge_workspace::SessionKey;
 const TURN_ERROR_INPUT_LOCK_HINT: &str =
     "Input disabled after an error. Press Ctrl+Q to quit and try again.";
 
-/// Bump the `session_scope_epoch` field on the workspace's
-/// `DomainSession` for `key`. Background-session paths (auth-required
-/// for non-active session, logout for non-active session, connection
-/// failure for non-active session) use this helper instead of the
+/// Bump the `session_scope_epoch` field on the bucket for `key`.
+/// Background-session paths (auth-required for non-active session,
+/// logout for non-active session, connection failure for non-active
+/// session) use this helper instead of the
 /// `App::bump_session_scope_epoch` accessor, which targets the
-/// *active* session. No-op when no workspace is bound or no domain
-/// handle is registered for `key`.
-fn bump_session_scope_epoch_in_workspace(app: &App, key: &SessionKey) {
-    let Some(workspace) = app.workspace.as_ref() else { return };
-    if let Some(domain) = workspace.domain_session_for(key) {
-        let mut guard = domain.lock();
-        guard.session_scope_epoch = guard.session_scope_epoch.saturating_add(1);
+/// *active* session. No-op when no bucket is registered for `key`.
+fn bump_bucket_session_scope_epoch(app: &mut App, key: &SessionKey) {
+    if let Some(bucket) = app.sessions.get_mut(key) {
+        bucket.session_scope_epoch = bucket.session_scope_epoch.saturating_add(1);
     }
 }
 
@@ -96,14 +94,18 @@ fn apply_connected_presentation(
         let session_id_for_domain = session_id.clone();
         if let Some(bucket) = app.sessions.get_mut(&session_key) {
             bucket.cwd = display;
+            bucket.cwd_raw = cwd;
+            bucket.session_id =
+                Some(forge_primitives::SessionId::new(session_id_for_domain.to_string()));
             bucket.current_model = Some(current_model);
             bucket.mode = mode;
             bucket.available_models = available_models;
+            bucket.lifecycle_state = SessionLifecycleState::Idle;
         }
-        // Mirror cwd_raw + session_id onto the DomainSession
-        // (post-Phase 5 authoritative source for the projection).
+        // Mirror session_id onto the workspace's DomainSession so
+        // AgentHandle dispatch (which routes by claude-issued session
+        // UUID) can resolve this bucket.
         if let Some(workspace) = app.workspace.as_ref() {
-            workspace.set_cwd_raw_in_domain(&session_key, cwd);
             workspace.set_session_id_in_domain(
                 &session_key,
                 Some(forge_primitives::SessionId::new(session_id_for_domain.to_string())),
@@ -202,8 +204,7 @@ pub(super) fn handle_auth_required_event(
     method_description: String,
 ) {
     if app.active_session_key.as_ref() != Some(session_key) {
-        // Bump workspace's epoch BEFORE the bucket's mut borrow.
-        bump_session_scope_epoch_in_workspace(app, session_key);
+        bump_bucket_session_scope_epoch(app, session_key);
         let Some(session) = app.session_mut(session_key) else {
             tracing::warn!(
                 target: crate::logging::targets::APP_AUTH,
@@ -221,6 +222,8 @@ pub(super) fn handle_auth_required_event(
         // becomes "needs auth"; if/when the user switches to it we
         // surface the hint then.
         session.key = None;
+        session.session_id = None;
+        session.account_info = None;
         session.current_model = None;
         session.mode = None;
         session.fast_mode_state = model::FastModeState::Off;
@@ -232,9 +235,16 @@ pub(super) fn handle_auth_required_event(
         super::turn::finalize_background_tool_calls(session, model::ToolCallStatus::Failed);
         session.active_turn_assistant_message_idx = None;
         session.turn_notice_refs.clear();
+        // Flip the bucket's lifecycle state so the Projects pane glyph
+        // reflects the auth-blocked condition. Pre-Phase-5 the workspace
+        // wrote this; with operational state back on UiSession the
+        // reducer owns it directly.
+        session.lifecycle_state = crate::app::session::SessionLifecycleState::AuthRequired;
         let _ = session;
+        // Mirror session_id reset onto the workspace's DomainSession
+        // so AgentHandle dispatch stops routing to a no-longer-valid
+        // session id.
         if let Some(workspace) = app.workspace.as_ref() {
-            workspace.set_account_info_in_domain(session_key, None);
             workspace.set_session_id_in_domain(session_key, None);
         }
         tracing::warn!(
@@ -265,6 +275,17 @@ pub(super) fn handle_auth_required_event(
     app.finalize_turn_runtime_artifacts(model::ToolCallStatus::Failed);
     app.clear_active_turn_assistant();
     super::notices::clear_turn_notice_tracking(app);
+    // Flip the active bucket's lifecycle state too — if the user
+    // switches away from this session while it's auth-blocked, the
+    // Projects pane glyph picks up the AuthRequired marker without
+    // waiting for a subsequent event.
+    if let Some(key) = app.active_session_key.clone() {
+        super::set_bucket_lifecycle_state(
+            app,
+            &key,
+            crate::app::session::SessionLifecycleState::AuthRequired,
+        );
+    }
     tracing::warn!(
         target: crate::logging::targets::APP_AUTH,
         event_name = "auth_required_detected",
@@ -280,7 +301,7 @@ pub(super) fn handle_connection_failed_event(app: &mut App, session_key: &Sessio
         // Bump workspace's epoch BEFORE acquiring the session's mut
         // borrow — the bump needs `&app.workspace` and the mut borrow
         // would conflict.
-        bump_session_scope_epoch_in_workspace(app, session_key);
+        bump_bucket_session_scope_epoch(app, session_key);
         let Some(session) = app.session_mut(session_key) else {
             tracing::warn!(
                 target: crate::logging::targets::APP_SESSION,
@@ -298,6 +319,8 @@ pub(super) fn handle_connection_failed_event(app: &mut App, session_key: &Sessio
         // a background bucket is the bucket itself; the active
         // session's status stays as-is.
         session.key = None;
+        session.session_id = None;
+        session.account_info = None;
         session.current_model = None;
         session.mode = None;
         session.fast_mode_state = model::FastModeState::Off;
@@ -310,9 +333,9 @@ pub(super) fn handle_connection_failed_event(app: &mut App, session_key: &Sessio
         session.active_turn_assistant_message_idx = None;
         session.turn_notice_refs.clear();
         let next_state = if is_rate_limited {
-            crate::app::session::SessionLifecycleState::Attention
+            SessionLifecycleState::Attention
         } else {
-            crate::app::session::SessionLifecycleState::Sleeping
+            SessionLifecycleState::Sleeping
         };
         // Rate-limit fallback message in the bucket's own chat
         // buffer so a future switch shows the explainer. Other
@@ -329,9 +352,11 @@ pub(super) fn handle_connection_failed_event(app: &mut App, session_key: &Sessio
         }
         // Drop the `session` mut borrow before reaching for `app.workspace`.
         let _ = session;
-        set_lifecycle_state_in_workspace(app, session_key, next_state);
+        set_bucket_lifecycle_state(app, session_key, next_state);
+        // Mirror session_id reset onto the workspace's DomainSession
+        // so AgentHandle dispatch stops routing to a no-longer-valid
+        // session id.
         if let Some(workspace) = app.workspace.as_ref() {
-            workspace.set_account_info_in_domain(session_key, None);
             workspace.set_session_id_in_domain(session_key, None);
         }
         tracing::error!(
@@ -372,7 +397,7 @@ pub(super) fn handle_connection_failed_event(app: &mut App, session_key: &Sessio
     } else {
         crate::app::session::SessionLifecycleState::Sleeping
     };
-    set_lifecycle_state_in_workspace(app, session_key, next_state);
+    set_bucket_lifecycle_state(app, session_key, next_state);
     if is_rate_limited {
         push_system_message_with_severity(
             app,
@@ -519,8 +544,7 @@ pub(super) fn handle_auth_completed_event(app: &mut App, session_key: &SessionKe
 
 pub(super) fn handle_logout_completed_event(app: &mut App, session_key: &SessionKey) {
     if app.active_session_key.as_ref() != Some(session_key) {
-        // Bump workspace's epoch BEFORE the bucket's mut borrow.
-        bump_session_scope_epoch_in_workspace(app, session_key);
+        bump_bucket_session_scope_epoch(app, session_key);
         let Some(session) = app.session_mut(session_key) else {
             tracing::warn!(
                 target: crate::logging::targets::APP_AUTH,
@@ -537,6 +561,8 @@ pub(super) fn handle_logout_completed_event(app: &mut App, session_key: &Session
         // pending_command). Foreground switching to that bucket
         // will surface the auth-required hint via AuthRequired.
         session.key = None;
+        session.session_id = None;
+        session.account_info = None;
         session.current_model = None;
         session.mode = None;
         session.fast_mode_state = model::FastModeState::Off;
@@ -544,8 +570,10 @@ pub(super) fn handle_logout_completed_event(app: &mut App, session_key: &Session
         session.oauth_credentials = None;
         session.mcp = super::super::McpState::default();
         let _ = session;
+        // Mirror session_id reset onto the workspace's DomainSession
+        // so AgentHandle dispatch stops routing to a no-longer-valid
+        // session id.
         if let Some(workspace) = app.workspace.as_ref() {
-            workspace.set_account_info_in_domain(session_key, None);
             workspace.set_session_id_in_domain(session_key, None);
         }
         tracing::info!(
@@ -680,7 +708,7 @@ pub(super) fn handle_session_replaced_event(
     // pane glyph stale until the next lifecycle event. The active-
     // session Connected path does the same reset explicitly; this
     // mirrors it for the SessionReplaced path.
-    super::set_lifecycle_state_in_workspace(
+    super::set_bucket_lifecycle_state(
         app,
         &session_key,
         crate::app::session::SessionLifecycleState::Idle,
@@ -943,7 +971,7 @@ pub(super) fn apply_session_update_connected(
             workspace.register_domain_session(key.clone(), None);
         }
     }
-    set_lifecycle_state_in_workspace(app, &key, crate::app::session::SessionLifecycleState::Idle);
+    set_bucket_lifecycle_state(app, &key, crate::app::session::SessionLifecycleState::Idle);
     // Match legacy single-session semantics: when there's no
     // synthetic to migrate (single-session session-reset path /
     // SessionReplaced semantics arriving as Connected), default to
