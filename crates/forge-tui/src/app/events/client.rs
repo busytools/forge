@@ -81,6 +81,13 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
             crate::app::session_runtime::request_status_snapshot_refresh(app);
             crate::app::session_runtime::request_oauth_credentials_snapshot_refresh(app);
             crate::app::session_runtime::request_context_usage_refresh(app);
+            // The account / status panel at the Projects pane bottom
+            // renders 5h + 7d usage bars on every frame. Before, usage
+            // only fetched when the user opened the /usage config tab;
+            // now we kick the fetch on every Connected so the bars
+            // land within seconds of session start instead of staying
+            // on placeholder `—%` until the user opens /usage.
+            crate::app::usage::request_refresh_if_needed(app);
         }
         SessionUpdate::SessionReplaced {
             key,
@@ -105,6 +112,10 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
             crate::app::session_runtime::request_status_snapshot_refresh(app);
             crate::app::session_runtime::request_oauth_credentials_snapshot_refresh(app);
             crate::app::session_runtime::request_context_usage_refresh(app);
+            // Same reason as the Connected arm above — keep the
+            // pane-footer 5h/7d bars fresh when the session is
+            // replaced (`/new` / `/resume` / `/login` flows).
+            crate::app::usage::request_refresh_if_needed(app);
         }
         SessionUpdate::SessionsListed { sessions } => {
             session::apply_session_update_sessions_listed(app, sessions);

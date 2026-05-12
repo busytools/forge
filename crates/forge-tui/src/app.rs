@@ -184,6 +184,14 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
         // each tick instead of relying on the wire.
         events::rate_limit::maybe_recover_from_rate_limit_lock(app);
 
+        // The Projects pane's account/status panel renders 5h + 7d
+        // usage bars on every frame. Keep the snapshot live by
+        // calling `request_refresh_if_needed` each tick — it's
+        // idempotent (no-ops while the existing snapshot is younger
+        // than `USAGE_REFRESH_TTL` and while a request is in flight),
+        // so the actual fetch only fires once per TTL window.
+        crate::app::usage::request_refresh_if_needed(app);
+
         // Tick the burst detector: flush any held/buffered content that
         // has timed out. EmitChar re-inserts a single held character;
         // EmitPaste feeds the accumulated burst into the paste queue.

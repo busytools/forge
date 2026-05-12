@@ -5,7 +5,13 @@ use forge_workspace::SessionUpdate;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
-const USAGE_REFRESH_TTL: Duration = Duration::from_secs(30);
+/// How long a usage snapshot stays "fresh" before
+/// [`request_refresh_if_needed`] will trigger a re-fetch. The
+/// render loop in `app.rs` calls `request_refresh_if_needed` every
+/// tick; the TTL gates how often that call actually spawns a fetch
+/// task. 2 minutes is a compromise between "panel feels live" and
+/// "don't hammer Anthropic's usage endpoint".
+const USAGE_REFRESH_TTL: Duration = Duration::from_secs(120);
 
 struct UsageRefreshFailure {
     source: UsageSourceKind,

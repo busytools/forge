@@ -4,7 +4,6 @@ mod chat_view;
 mod config;
 mod diff;
 mod document_table;
-mod footer;
 pub(crate) mod help;
 mod highlight;
 mod input;
