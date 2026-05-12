@@ -82,6 +82,19 @@ inherent `Workspace` methods. `SessionUpdate::Connected` /
 `Arc<AgentHandle>` payload — the handle is stamped onto the
 workspace's `DomainSession`, never reaches TUI.
 
+**Workspace-as-proxy realignment (final landing).** `DomainSession`
+carries only workspace-internal routing metadata: `key`, `conn`,
+`session_id` (mirror for `AgentHandle` dispatch), and
+`pending_interactions` (oneshot mailbox for `Respond*` Commands).
+All operational state TUI renders — `lifecycle_state`, `cwd_raw`,
+`turn_state`, `session_scope_epoch`, `account_info`,
+`active_account_display_name`, `runtime_session_state` — lives on
+`UiSession`. TUI reducers update those fields directly from
+`SessionUpdate` data; render reads `app.sessions[key].<field>`
+straight (no workspace lookup, no per-frame lock). Workspace's
+`apply_event_to_domain` only writes `session_id` — the field
+workspace itself needs internally to call `AgentHandle` methods.
+
 ### Single-channel event bus (nuance worth knowing)
 
 The same `SessionUpdate` channel TUI subscribes to is **also used as
