@@ -8,9 +8,9 @@ pub(super) fn submit_input(app: &mut App) {
     }
 
     // Dismiss any open mention dropdown
-    app.mention = None;
-    app.slash = None;
-    app.subagent = None;
+    *app.mention_mut() = None;
+    *app.slash_mut() = None;
+    *app.subagent_mut() = None;
 
     // No connection yet - can't submit
     let text = app.input().text();

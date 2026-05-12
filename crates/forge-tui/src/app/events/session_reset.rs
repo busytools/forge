@@ -99,10 +99,10 @@ fn reset_render_state_for_new_session(app: &mut App) {
     app.rendered_chat_area = ratatui::layout::Rect::default();
     app.rendered_input_lines.clear();
     app.rendered_input_area = ratatui::layout::Rect::default();
-    app.mention = None;
+    *app.mention_mut() = None;
     crate::app::file_index::reset(app);
-    app.slash = None;
-    app.subagent = None;
+    *app.slash_mut() = None;
+    *app.subagent_mut() = None;
     app.help_view = super::super::HelpView::default();
     app.help_dialog = crate::app::dialog::DialogState::default();
     app.help_visible_count = 0;

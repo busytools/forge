@@ -268,6 +268,13 @@ pub struct UiSession {
     /// submit. Per-session because they belong to the editor that
     /// received the paste.
     pub pending_images: Vec<crate::app::clipboard_image::ImageAttachment>,
+    /// Active `@`-mention autocomplete state. Per-session because
+    /// the dropdown belongs to this bucket's input editor.
+    pub mention: Option<crate::app::mention::MentionState>,
+    /// Active slash-command autocomplete state. Per-session.
+    pub slash: Option<crate::app::slash::SlashState>,
+    /// Active subagent autocomplete state (`&name`). Per-session.
+    pub subagent: Option<crate::app::subagent::SubagentState>,
 
     // ---- Todos ----
     /// Current todo list from Claude's `TodoWrite` tool calls.
@@ -401,6 +408,9 @@ impl Default for UiSession {
             active_paste_session: Option::default(),
             next_paste_session_id: 1, // Match the legacy App-level seed.
             pending_images: Vec::default(),
+            mention: Option::default(),
+            slash: Option::default(),
+            subagent: Option::default(),
             todos: Vec::default(),
             show_todo_panel: bool::default(),
             todo_scroll: usize::default(),

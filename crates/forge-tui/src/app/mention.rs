@@ -124,9 +124,9 @@ pub fn activate(app: &mut App) {
         return;
     };
 
-    app.mention = Some(MentionState::new(trigger_row, trigger_col, query, Vec::new()));
-    app.slash = None;
-    app.subagent = None;
+    *app.mention_mut() = Some(MentionState::new(trigger_row, trigger_col, query, Vec::new()));
+    *app.slash_mut() = None;
+    *app.subagent_mut() = None;
     refresh_query_state(app);
 }
 
@@ -143,7 +143,7 @@ pub fn update_query(app: &mut App) {
         return;
     };
 
-    if let Some(ref mut mention) = app.mention {
+    if let Some(mention) = app.mention_mut().as_mut() {
         mention.trigger_row = trigger_row;
         mention.trigger_col = trigger_col;
         mention.query = query;
@@ -154,7 +154,7 @@ pub fn update_query(app: &mut App) {
 
 pub fn refresh_from_file_index(app: &mut App) {
     // Snapshot what we need from the active bucket's file_index
-    // before borrowing `app.mention` mutably — `app.mention.as_mut()`
+    // before borrowing `app.mention()` mutably — `app.mention_mut().as_mut()`
     // disjoint-borrows the `mention` field, but the borrow checker
     // doesn't split through method calls, so we can't read
     // `app.file_index()` while `mention: &mut` is live.
@@ -163,7 +163,7 @@ pub fn refresh_from_file_index(app: &mut App) {
         // Limit the immutable borrow of `app.file_index()` to this
         // block by extracting just what `visible_candidates` needs.
         let entries_ref: &_ = &app.file_index().entries;
-        let query_snapshot = app.mention.as_ref().map(|m| m.query.clone());
+        let query_snapshot = app.mention().map(|m| m.query.clone());
         match query_snapshot {
             Some(q) if q.chars().count() >= MIN_QUERY_CHARS => {
                 Some(file_index::visible_candidates(entries_ref, &q))
@@ -172,7 +172,7 @@ pub fn refresh_from_file_index(app: &mut App) {
         }
     };
 
-    let Some(mention) = app.mention.as_mut() else {
+    let Some(mention) = app.mention_mut().as_mut() else {
         return;
     };
 
@@ -197,7 +197,7 @@ pub fn refresh_from_file_index(app: &mut App) {
 }
 
 fn refresh_query_state(app: &mut App) {
-    let Some(mention) = app.mention.as_mut() else {
+    let Some(mention) = app.mention_mut().as_mut() else {
         return;
     };
 
@@ -212,7 +212,7 @@ fn refresh_query_state(app: &mut App) {
 }
 
 fn sync_focus(app: &mut App) {
-    if app.mention.as_ref().is_some_and(MentionState::has_selectable_candidates) {
+    if app.mention().is_some_and(MentionState::has_selectable_candidates) {
         app.claim_focus_target(FocusTarget::Mention);
     } else {
         app.release_focus_target(FocusTarget::Mention);
@@ -229,7 +229,7 @@ pub fn sync_with_cursor(app: &mut App) {
         app.input().cursor_col(),
     )
     .is_some();
-    match (in_mention, app.mention.is_some()) {
+    match (in_mention, app.mention().is_some()) {
         (true, true) => update_query(app),
         (true, false) => activate(app),
         (false, true) => deactivate(app),
@@ -239,7 +239,7 @@ pub fn sync_with_cursor(app: &mut App) {
 
 /// Confirm the selected candidate: replace `@query` in input with `@rel_path`.
 pub fn confirm_selection(app: &mut App) {
-    let Some(mention) = app.mention.take() else {
+    let Some(mention) = app.mention_mut().take() else {
         return;
     };
     app.release_focus_target(FocusTarget::Mention);
@@ -278,22 +278,22 @@ pub fn confirm_selection(app: &mut App) {
 
 /// Deactivate mention autocomplete.
 pub fn deactivate(app: &mut App) {
-    app.mention = None;
-    if app.slash.is_none() && app.subagent.is_none() {
+    *app.mention_mut() = None;
+    if app.slash().is_none() && app.subagent().is_none() {
         app.release_focus_target(FocusTarget::Mention);
     }
 }
 
 /// Move selection up in the candidate list.
 pub fn move_up(app: &mut App) {
-    if let Some(ref mut mention) = app.mention {
+    if let Some(mention) = app.mention_mut().as_mut() {
         mention.dialog.move_up(mention.candidates.len(), MAX_VISIBLE);
     }
 }
 
 /// Move selection down in the candidate list.
 pub fn move_down(app: &mut App) {
-    if let Some(ref mut mention) = app.mention {
+    if let Some(mention) = app.mention_mut().as_mut() {
         mention.dialog.move_down(mention.candidates.len(), MAX_VISIBLE);
     }
 }
@@ -352,7 +352,7 @@ mod tests {
         for _ in 0..200 {
             crate::app::file_index::drain_events(app);
             std::thread::sleep(Duration::from_millis(5));
-            let is_settled = app.mention.as_ref().is_none_or(|mention| {
+            let is_settled = app.mention().is_none_or(|mention| {
                 !matches!(mention.search_status, MentionSearchStatus::Searching)
             });
             if is_settled {
@@ -370,7 +370,7 @@ mod tests {
         sync_with_cursor(&mut app);
         run_search(&mut app);
 
-        let mention = app.mention.as_ref().expect("mention should be active");
+        let mention = app.mention().expect("mention should be active");
         assert_eq!(mention.query, "src");
         assert!(!mention.candidates.is_empty());
     }
@@ -386,7 +386,7 @@ mod tests {
         confirm_selection(&mut app);
 
         assert_eq!(app.input().lines()[0], "open @src/lib.rs now");
-        assert!(app.mention.is_none());
+        assert!(app.mention().is_none());
     }
 
     #[test]
@@ -411,7 +411,7 @@ mod tests {
 
         activate(&mut app);
 
-        let mention = app.mention.as_ref().expect("mention should be active");
+        let mention = app.mention().expect("mention should be active");
         assert_eq!(mention.query, "");
         assert!(mention.candidates.is_empty());
         assert_eq!(mention.placeholder_message().as_deref(), Some("Type to search files"));
@@ -425,12 +425,12 @@ mod tests {
         let _ = app.input_mut().set_cursor(0, col);
         activate(&mut app);
         run_search(&mut app);
-        assert!(app.mention.is_some());
+        assert!(app.mention().is_some());
 
         let _ = app.input_mut().set_cursor_col(1);
         update_query(&mut app);
 
-        let mention = app.mention.as_ref().expect("mention should stay active");
+        let mention = app.mention().expect("mention should stay active");
         assert_eq!(mention.query, "");
         assert!(mention.candidates.is_empty());
     }
@@ -446,7 +446,7 @@ mod tests {
         activate(&mut app);
         run_search(&mut app);
 
-        let mention = app.mention.as_ref().expect("mention should be active");
+        let mention = app.mention().expect("mention should be active");
         assert!(mention.candidates.iter().any(|candidate| candidate.rel_path == "visible.rs"));
         assert!(!mention.candidates.iter().any(|candidate| candidate.rel_path == "ignored.rs"));
     }
@@ -466,7 +466,7 @@ mod tests {
         activate(&mut app);
         run_search(&mut app);
 
-        let mention = app.mention.as_ref().expect("mention should be active");
+        let mention = app.mention().expect("mention should be active");
         assert!(mention.candidates.iter().any(|candidate| candidate.rel_path == "visible.rs"));
         assert!(mention.candidates.iter().any(|candidate| candidate.rel_path == "ignored.rs"));
     }
@@ -485,7 +485,7 @@ mod tests {
         activate(&mut app);
         run_search(&mut app);
 
-        let mention = app.mention.as_ref().expect("mention should be active");
+        let mention = app.mention().expect("mention should be active");
         assert!(mention.candidates.iter().any(|candidate| candidate.rel_path == "src/visible.rs"));
         assert!(!mention.candidates.iter().any(|candidate| candidate.rel_path == "src/hidden.rs"));
     }
@@ -497,14 +497,14 @@ mod tests {
         let _ = app.input_mut().set_cursor(0, 2);
 
         activate(&mut app);
-        assert!(app.mention.as_ref().is_some_and(|mention| mention.candidates.is_empty()));
+        assert!(app.mention().is_some_and(|mention| mention.candidates.is_empty()));
 
         app.input_mut().set_text("@sr");
         let _ = app.input_mut().set_cursor(0, 3);
         update_query(&mut app);
         run_search(&mut app);
 
-        let mention = app.mention.as_ref().expect("mention should remain active");
+        let mention = app.mention().expect("mention should remain active");
         assert_eq!(mention.query, "sr");
         assert!(!mention.candidates.is_empty());
     }
@@ -519,7 +519,7 @@ mod tests {
         activate(&mut app);
         run_search(&mut app);
 
-        let mention = app.mention.as_ref().expect("mention should be active");
+        let mention = app.mention().expect("mention should be active");
         assert!(mention.candidates.iter().any(|candidate| candidate.rel_path == "root.rs"));
         assert!(
             mention.candidates.iter().any(|candidate| candidate.rel_path == "src/nested/deep.rs")
@@ -537,7 +537,7 @@ mod tests {
         activate(&mut app);
         run_search(&mut app);
         let initial_generation = app.file_index_mut().generation;
-        assert!(app.mention.as_ref().is_some_and(|mention| {
+        assert!(app.mention().is_some_and(|mention| {
             mention.candidates.iter().any(|candidate| candidate.rel_path == "root.rs")
         }));
 
@@ -545,7 +545,7 @@ mod tests {
         let _ = app.input_mut().set_cursor(0, "@needle".chars().count());
         update_query(&mut app);
 
-        let mention = app.mention.as_ref().expect("mention should remain active");
+        let mention = app.mention().expect("mention should remain active");
         assert_eq!(app.file_index().generation, initial_generation);
         assert_eq!(mention.candidates.len(), 1);
         assert_eq!(mention.candidates[0].rel_path, "src/nested/needle.rs");

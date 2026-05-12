@@ -32,8 +32,9 @@ fn busy_view_test_app() -> App {
         start: SelectionPoint { row: 0, col: 0 },
         placeholder_index: Some(1),
     });
-    app.mention = Some(crate::app::mention::MentionState::new(0, 0, "rs".to_owned(), vec![]));
-    app.slash = Some(SlashState {
+    *app.mention_mut() =
+        Some(crate::app::mention::MentionState::new(0, 0, "rs".to_owned(), vec![]));
+    *app.slash_mut() = Some(SlashState {
         trigger_row: 0,
         trigger_col: 0,
         query: "/co".to_owned(),
@@ -41,7 +42,7 @@ fn busy_view_test_app() -> App {
         candidates: vec![],
         dialog: DialogState::default(),
     });
-    app.subagent = Some(SubagentState {
+    *app.subagent_mut() = Some(SubagentState {
         trigger_row: 0,
         trigger_col: 0,
         query: "plan".to_owned(),
@@ -70,9 +71,9 @@ fn set_active_view_clears_transient_chat_state_but_keeps_draft() {
     assert_eq!(app.input().text(), "draft");
     assert!(app.selection().is_none());
     assert!(app.scrollbar_drag.is_none());
-    assert!(app.mention.is_none());
-    assert!(app.slash.is_none());
-    assert!(app.subagent.is_none());
+    assert!(app.mention().is_none());
+    assert!(app.slash().is_none());
+    assert!(app.subagent().is_none());
     assert!(app.pending_paste_text().is_empty());
     assert!(app.pending_paste_session().is_none());
     assert!(app.active_paste_session().is_none());
@@ -100,7 +101,7 @@ fn set_active_view_same_view_is_noop() {
 
     assert_eq!(app.active_view, ActiveView::Chat);
     assert!(app.selection().is_some());
-    assert!(app.mention.is_some());
+    assert!(app.mention().is_some());
     assert!(!app.pending_paste_text().is_empty());
     assert!(app.pending_submit().is_some());
     assert!(!app.needs_redraw);

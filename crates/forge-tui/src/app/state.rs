@@ -308,18 +308,12 @@ pub struct App {
     pub rendered_input_lines: Vec<String>,
     /// Area where input content was rendered (for selection mapping).
     pub rendered_input_area: ratatui::layout::Rect,
-    /// Active `@` file mention autocomplete state.
-    pub mention: Option<mention::MentionState>,
     // `file_index: FileIndexState` moved to `UiSession.file_index`
     // (per-session bucket). The scanner is project-scoped — switching
     // active session shows the new project's files. The channel
     // endpoints (`file_index_event_tx` / `_rx`) stay App-level since
     // the scanner thread is a single workspace-wide pump. See
     // `App::file_index` / `App::file_index_mut`.
-    /// Active slash-command autocomplete state.
-    pub slash: Option<slash::SlashState>,
-    /// Active subagent autocomplete state (`&name`).
-    pub subagent: Option<subagent::SubagentState>,
     /// Timing-based paste burst detector. Detects rapid character streams
     /// (paste delivered as individual key events) and buffers them into a
     /// single paste payload. Fallback for terminals without bracketed paste.
@@ -1378,6 +1372,33 @@ impl App {
         &mut self.active_bucket_mut().pending_images
     }
 
+    #[must_use]
+    pub fn mention(&self) -> Option<&mention::MentionState> {
+        self.active_session().and_then(|s| s.mention.as_ref())
+    }
+    #[must_use]
+    pub fn mention_mut(&mut self) -> &mut Option<mention::MentionState> {
+        &mut self.active_bucket_mut().mention
+    }
+
+    #[must_use]
+    pub fn slash(&self) -> Option<&slash::SlashState> {
+        self.active_session().and_then(|s| s.slash.as_ref())
+    }
+    #[must_use]
+    pub fn slash_mut(&mut self) -> &mut Option<slash::SlashState> {
+        &mut self.active_bucket_mut().slash
+    }
+
+    #[must_use]
+    pub fn subagent(&self) -> Option<&subagent::SubagentState> {
+        self.active_session().and_then(|s| s.subagent.as_ref())
+    }
+    #[must_use]
+    pub fn subagent_mut(&mut self) -> &mut Option<subagent::SubagentState> {
+        &mut self.active_bucket_mut().subagent
+    }
+
     /// Active session's file-index state for `@`-mention autocomplete.
     /// Returns an empty default state when no active session exists
     /// (test paths, brief pre-Connect window).
@@ -2260,9 +2281,6 @@ impl App {
             rendered_chat_area: ratatui::layout::Rect::default(),
             rendered_input_lines: Vec::new(),
             rendered_input_area: ratatui::layout::Rect::default(),
-            mention: None,
-            slash: None,
-            subagent: None,
             paste_burst: super::paste_burst::PasteBurstDetector::new(),
             needs_redraw: true,
             notifications: super::notify::NotificationManager::new(),
@@ -2448,11 +2466,11 @@ impl App {
 
     #[must_use]
     pub fn active_autocomplete_kind(&self) -> Option<AutocompleteKind> {
-        if self.mention.is_some() {
+        if self.mention().is_some() {
             Some(AutocompleteKind::Mention)
-        } else if self.slash.is_some() {
+        } else if self.slash().is_some() {
             Some(AutocompleteKind::Slash)
-        } else if self.subagent.is_some() {
+        } else if self.subagent().is_some() {
             Some(AutocompleteKind::Subagent)
         } else {
             None
@@ -2473,9 +2491,9 @@ impl App {
 
     #[must_use]
     pub fn autocomplete_focus_available(&self) -> bool {
-        self.mention.as_ref().is_some_and(mention::MentionState::has_selectable_candidates)
-            || self.slash.is_some()
-            || self.subagent.is_some()
+        self.mention().is_some_and(mention::MentionState::has_selectable_candidates)
+            || self.slash().is_some()
+            || self.subagent().is_some()
     }
 
     #[must_use]
@@ -4440,7 +4458,7 @@ mod tests {
         });
         app.set_show_todo_panel(true);
         app.pending_interaction_ids_mut().push("perm-1".into());
-        app.slash = Some(SlashState {
+        *app.slash_mut() = Some(SlashState {
             trigger_row: 0,
             trigger_col: 0,
             query: String::new(),

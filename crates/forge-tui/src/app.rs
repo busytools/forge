@@ -842,7 +842,7 @@ mod tests {
         );
 
         assert_eq!(app.input().text(), "/mode plan ");
-        assert!(app.slash.is_none());
+        assert!(app.slash().is_none());
         assert_eq!(app.focus_owner(), FocusOwner::Input);
 
         events::handle_terminal_event(
@@ -870,7 +870,7 @@ mod tests {
         );
 
         assert_eq!(app.input().text(), "/model sonnet ");
-        assert!(app.slash.is_none());
+        assert!(app.slash().is_none());
         assert_eq!(app.focus_owner(), FocusOwner::Input);
 
         events::handle_terminal_event(
@@ -904,7 +904,7 @@ mod tests {
         );
 
         assert_eq!(app.input().text(), "/resume session-1 ");
-        assert!(app.slash.is_none());
+        assert!(app.slash().is_none());
         assert_eq!(app.focus_owner(), FocusOwner::Input);
 
         events::handle_terminal_event(

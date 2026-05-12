@@ -171,7 +171,7 @@ pub(super) fn apply_available_commands_update(app: &mut App, cmds: model::Availa
     );
     *app.available_commands_mut() = cmds.available_commands;
     crate::app::plugins::clamp_selection(app);
-    if app.slash.is_some() {
+    if app.slash().is_some() {
         super::slash::update_query(app);
     }
 }
@@ -185,7 +185,7 @@ pub(super) fn apply_available_agents_update(app: &mut App, agents: model::Availa
         agent_count = agents.available_agents.len(),
     );
     *app.available_agents_mut() = agents.available_agents;
-    if app.subagent.is_some() {
+    if app.subagent().is_some() {
         super::subagent::update_query(app);
     }
 }
@@ -1395,7 +1395,7 @@ mod tests {
         assert!(app.todos().is_empty());
         assert!(!app.show_todo_panel());
         assert!(app.selection().is_none());
-        assert!(app.mention.is_none());
+        assert!(app.mention().is_none());
         assert!(!app.cancelled_turn_pending_hint());
         assert!(app.rendered_chat_lines.is_empty());
         assert!(app.rendered_input_lines.is_empty());
@@ -1874,7 +1874,7 @@ mod tests {
             status: TodoStatus::InProgress,
             active_form: String::new(),
         });
-        app.mention = Some(mention::MentionState::new(0, 0, String::new(), Vec::new()));
+        *app.mention_mut() = Some(mention::MentionState::new(0, 0, String::new(), Vec::new()));
         app.mcp_mut().servers.push(forge_primitives::McpServerStatus {
             name: "supabase".into(),
             status: forge_primitives::McpServerConnectionStatus::Connected,
@@ -1909,7 +1909,7 @@ mod tests {
         assert!(app.pending_interaction_ids().is_empty());
         assert!(app.todos().is_empty());
         assert!(!app.show_todo_panel());
-        assert!(app.mention.is_none());
+        assert!(app.mention().is_none());
         assert!(app.mcp().servers.is_empty());
         assert_eq!(app.cwd_raw(), "/replacement");
         assert_eq!(app.cwd(), "/replacement");
@@ -3695,7 +3695,7 @@ mod tests {
         );
 
         assert_eq!(app.input().text(), "@");
-        assert!(app.mention.is_some());
+        assert!(app.mention().is_some());
     }
 
     #[test]
@@ -4517,7 +4517,7 @@ mod tests {
             true,
         );
 
-        app.slash = Some(SlashState {
+        *app.slash_mut() = Some(SlashState {
             trigger_row: 0,
             trigger_col: 0,
             query: String::new(),
@@ -5186,7 +5186,7 @@ mod tests {
         });
         app.set_show_todo_panel(true);
         app.claim_focus_target(FocusTarget::TodoList);
-        app.slash = Some(SlashState {
+        *app.slash_mut() = Some(SlashState {
             trigger_row: 0,
             trigger_col: 0,
             query: String::new(),
@@ -5205,7 +5205,7 @@ mod tests {
             Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
         );
 
-        assert!(app.mention.is_none());
+        assert!(app.mention().is_none());
         assert_eq!(app.focus_owner(), FocusOwner::TodoList);
     }
 

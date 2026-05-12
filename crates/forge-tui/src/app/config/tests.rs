@@ -820,11 +820,12 @@ fn immediate_save_respect_gitignore_invalidates_active_mention_session_cache() {
     app.set_cwd_raw(dir.path().to_string_lossy().to_string());
 
     open(&mut app).expect("open");
-    app.mention = Some(crate::app::mention::MentionState::new(0, 0, "rs".to_owned(), vec![]));
+    *app.mention_mut() =
+        Some(crate::app::mention::MentionState::new(0, 0, "rs".to_owned(), vec![]));
     select_setting(&mut app, SettingId::RespectGitignore);
     handle_key(&mut app, KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
 
-    let mention = app.mention.as_ref().expect("mention should stay active");
+    let mention = app.mention().expect("mention should stay active");
     assert!(mention.candidates.is_empty());
     assert_eq!(mention.placeholder_message().as_deref(), Some("Searching files..."));
     assert!(!app.config.respect_gitignore_effective());

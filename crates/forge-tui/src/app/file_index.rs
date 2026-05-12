@@ -282,7 +282,7 @@ fn refresh_after_mutation_if_active(app: &mut App, key: &forge_workspace::Sessio
 }
 
 fn refresh_after_mutation(app: &mut App) {
-    if app.mention.is_some() {
+    if app.mention().is_some() {
         super::mention::refresh_from_file_index(app);
     }
     app.needs_redraw = true;
@@ -897,7 +897,7 @@ mod tests {
         app.file_index_mut().generation = 5;
         app.file_index_mut().scan_finished = true;
         app.file_index_mut().entries.insert("existing.rs".to_owned(), candidate("existing.rs"));
-        app.mention = Some(mention::MentionState::new(0, 0, "new".to_owned(), Vec::new()));
+        *app.mention_mut() = Some(mention::MentionState::new(0, 0, "new".to_owned(), Vec::new()));
 
         app.file_index_event_tx
             .send(FileIndexEvent::FsBatch {
@@ -910,7 +910,7 @@ mod tests {
         drain_events(&mut app);
 
         assert!(app.needs_redraw);
-        let mention = app.mention.as_ref().expect("mention");
+        let mention = app.mention().expect("mention");
         assert_eq!(
             mention
                 .candidates
@@ -930,7 +930,7 @@ mod tests {
         app.file_index_mut().root = Some(root.clone());
         app.file_index_mut().entries.insert("before.rs".to_owned(), candidate("before.rs"));
         app.file_index_mut().entries.insert("keep.rs".to_owned(), candidate("keep.rs"));
-        app.mention = Some(mention::MentionState::new(0, 0, "rs".to_owned(), Vec::new()));
+        *app.mention_mut() = Some(mention::MentionState::new(0, 0, "rs".to_owned(), Vec::new()));
 
         std::fs::rename(root.join("before.rs"), root.join("after.rs"))
             .expect("rename watched file");
@@ -949,7 +949,7 @@ mod tests {
         assert!(!app.file_index_mut().entries.contains_key("before.rs"));
         assert!(app.file_index_mut().entries.contains_key("after.rs"));
         assert!(app.file_index_mut().entries.contains_key("keep.rs"));
-        let mention = app.mention.as_ref().expect("mention");
+        let mention = app.mention().expect("mention");
         let visible = mention
             .candidates
             .iter()

@@ -389,7 +389,7 @@ mod tests {
         app.input_mut().set_text("/compact now");
         let _ = app.input_mut().set_cursor(0, "/compact now".chars().count());
         sync_with_cursor(&mut app);
-        assert!(app.slash.is_none());
+        assert!(app.slash().is_none());
     }
 
     #[test]
@@ -406,7 +406,7 @@ mod tests {
         app.input_mut().set_text("/mode xyz");
         let _ = app.input_mut().set_cursor(0, "/mode xyz".chars().count());
         sync_with_cursor(&mut app);
-        assert!(app.slash.is_none());
+        assert!(app.slash().is_none());
     }
 
     #[test]
@@ -414,7 +414,7 @@ mod tests {
         let mut app = App::test_default();
         app.input_mut().set_text("/resume old-id trailing");
         let _ = app.input_mut().set_cursor(0, "/resume old-id".chars().count());
-        app.slash = Some(SlashState {
+        *app.slash_mut() = Some(SlashState {
             trigger_row: 0,
             trigger_col: 8,
             query: "old-id".to_owned(),
@@ -686,7 +686,7 @@ mod tests {
     fn confirm_selection_with_invalid_trigger_row_is_noop() {
         let mut app = App::test_default();
         app.input_mut().set_text("/mode");
-        app.slash = Some(SlashState {
+        *app.slash_mut() = Some(SlashState {
             trigger_row: 99,
             trigger_col: 0,
             query: "m".into(),

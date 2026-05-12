@@ -312,7 +312,7 @@ where
             if previous_respect_gitignore
                 .is_some_and(|previous| previous != app.config.respect_gitignore_effective())
             {
-                if app.mention.is_some() {
+                if app.mention().is_some() {
                     crate::app::file_index::restart(app);
                     crate::app::mention::refresh_from_file_index(app);
                 } else {

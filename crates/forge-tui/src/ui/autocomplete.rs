@@ -36,17 +36,17 @@ struct DropdownMeta {
 }
 
 pub fn is_active(app: &App) -> bool {
-    app.mention.is_some()
-        || app.slash.as_ref().is_some_and(|s| !s.candidates.is_empty())
-        || app.subagent.as_ref().is_some_and(|s| !s.candidates.is_empty())
+    app.mention().is_some()
+        || app.slash().is_some_and(|s| !s.candidates.is_empty())
+        || app.subagent().is_some_and(|s| !s.candidates.is_empty())
 }
 
 pub fn compute_height(app: &App) -> u16 {
-    let count = if let Some(m) = &app.mention {
+    let count = if let Some(m) = &app.mention() {
         m.candidates.len().max(1)
-    } else if let Some(s) = &app.slash {
+    } else if let Some(s) = &app.slash() {
         s.candidates.len()
-    } else if let Some(s) = &app.subagent {
+    } else if let Some(s) = &app.subagent() {
         s.candidates.len()
     } else {
         0
@@ -105,15 +105,15 @@ pub fn render(frame: &mut Frame, input_area: Rect, app: &App) {
 }
 
 fn active_dropdown(app: &App) -> Option<Dropdown<'_>> {
-    if let Some(m) = &app.mention {
+    if let Some(m) = &app.mention() {
         return Some(Dropdown::Mention(m));
     }
-    if let Some(s) = &app.slash
+    if let Some(s) = &app.slash()
         && !s.candidates.is_empty()
     {
         return Some(Dropdown::Slash(s));
     }
-    if let Some(s) = &app.subagent
+    if let Some(s) = &app.subagent()
         && !s.candidates.is_empty()
     {
         return Some(Dropdown::Subagent(s));

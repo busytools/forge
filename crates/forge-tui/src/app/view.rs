@@ -33,9 +33,9 @@ fn clear_transient_view_state(app: &mut App) {
     app.help_view = crate::app::HelpView::default();
     app.help_dialog = crate::app::dialog::DialogState::default();
     app.help_visible_count = 0;
-    app.mention = None;
-    app.slash = None;
-    app.subagent = None;
+    *app.mention_mut() = None;
+    *app.slash_mut() = None;
+    *app.subagent_mut() = None;
     if app.active_view == ActiveView::Config {
         app.config.overlay = None;
     }
