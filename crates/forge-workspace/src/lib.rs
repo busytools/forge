@@ -1,8 +1,63 @@
-//! `forge-workspace` — multi-session orchestrator.
+//! `forge-workspace` — multi-session orchestrator and TUI-facing
+//! facade.
 //!
 //! Pools [`forge_agent::Agent`] instances behind a single
-//! [`Workspace`] handle. See spec at
-//! `~/.claude-subspace/plans/2026-05-09-forge-tui-phase-1a-workspace-design.md`.
+//! [`Workspace`] handle. One [`DomainSession`] per active session
+//! holds the authoritative operational state (lifecycle, cwd,
+//! turn_state, account info, runtime liveness, pending interactions).
+//! A per-session actor pumps events from `AgentHandle::take_events()`,
+//! translates them into [`SessionUpdate`]s, and routes [`Command`]s
+//! back.
+//!
+//! ## Communication contract
+//!
+//! Post-MVVM refactor (#102) the TUI ↔ workspace contract is **one
+//! channel pair**:
+//!
+//! - **TUI → workspace:** [`Workspace::dispatch`] takes a
+//!   [`protocol::Command`]. One enum, one entry point.
+//! - **workspace → TUI:** [`Workspace::subscribe`] returns a receiver
+//!   for [`protocol::SessionUpdate`]. One enum, one consumer.
+//!
+//! No second channel for "control events" vs "data events." No
+//! callback hooks. No shared mutable state.
+//!
+//! ## Single-channel event bus
+//!
+//! The same `SessionUpdate` channel TUI subscribes to is also reused
+//! as an event bus for TUI-internal async work. A few TUI-side
+//! modules (`forge_tui::app::plugins`, `slash::executors`,
+//! `service_status_check`, `input_submit`) grab a sender via
+//! [`Workspace::update_sender`] and emit their own `SessionUpdate`s
+//! rather than dispatching a `Command` and waiting for a round-trip.
+//!
+//! These are TUI-originated presentation events that reuse the
+//! existing channel as a single event bus rather than spinning up a
+//! second one. Workspace still owns operational state in
+//! `DomainSession` — these injected updates only mutate
+//! presentation-side state in TUI's `UiSession` buckets.
+//!
+//! Future-proofing watchlist: if the goal ever becomes "swap the TUI
+//! for a different frontend," the only contract a replacement should
+//! need to honor is the two-enum-stream boundary. The leaky-emitter
+//! pattern above is an implicit second contract. Tracked at
+//! <https://github.com/busytools/forge/issues/105> — not urgent.
+//!
+//! ## Facade scope (intentionally thin)
+//!
+//! The MVVM boundary between forge-tui and forge-agent is enforced at
+//! the **dependency graph** level: `forge-tui/Cargo.toml` has no
+//! `forge-agent` line; everything routes through forge-workspace. But
+//! the workspace exposes forge-agent's submodules verbatim via
+//! pass-through `pub use` (see `cloud`, `commands`, `env::git`,
+//! `session_lifecycle`, `tooling`, `translate`, `userdata` below).
+//! Types like `forge_workspace::cloud::oauth::Token` are *defined* in
+//! forge-agent — the workspace just exposes them under the workspace
+//! name so TUI can keep its dep graph clean.
+//!
+//! Tightening this (specific [`Workspace`] methods in place of each
+//! wildcard re-export) is a "Phase 7 narrow agent surface" follow-up.
+//! Not a current TODO; documented for future reference.
 
 mod account;
 mod config;
