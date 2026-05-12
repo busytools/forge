@@ -885,7 +885,7 @@ mod tests {
     #[test]
     fn resume_selection_then_second_enter_arms_submit() {
         let mut app = App::test_default();
-        app.recent_sessions = vec![RecentSessionInfo {
+        *app.recent_sessions_mut() = vec![RecentSessionInfo {
             session_id: "session-1".to_owned(),
             summary: "Session one".to_owned(),
             last_modified_ms: 1,

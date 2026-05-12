@@ -2173,6 +2173,58 @@ mod tests {
     }
 
     #[test]
+    fn recent_sessions_routes_to_targeted_bucket_not_active_bucket() {
+        // Regression for the /resume autocomplete showing the wrong
+        // project's sessions: each bucket owns its own
+        // `recent_sessions`. A listing delivered for bucket B must
+        // NOT overwrite bucket A's list, even if A is currently active.
+        let mut app = make_test_app();
+        let key_a = forge_workspace::SessionKey::from_str_for_test("project-a");
+        let key_b = forge_workspace::SessionKey::from_str_for_test("project-b");
+        app.sessions.insert(key_a.clone(), crate::app::session::UiSession::new(key_a.clone()));
+        app.sessions.insert(key_b.clone(), crate::app::session::UiSession::new(key_b.clone()));
+        app.active_session_key = Some(key_a.clone());
+
+        // Seed A's list directly so we have an observable baseline.
+        app.sessions.get_mut(&key_a).expect("bucket a").recent_sessions =
+            vec![crate::app::RecentSessionInfo {
+                session_id: "a-only".into(),
+                summary: "From A".into(),
+                last_modified_ms: 100,
+                file_size_bytes: 1,
+                cwd: Some("/proj-a".into()),
+                git_branch: None,
+                custom_title: None,
+                first_prompt: None,
+            }];
+
+        // Listing targets B. The active bucket is A.
+        apply_session_update(
+            &mut app,
+            SessionUpdate::SessionsListed {
+                key: key_b.clone(),
+                sessions: vec![forge_primitives::SessionListEntry {
+                    session_id: "b-only".into(),
+                    summary: "From B".into(),
+                    last_modified_ms: 200,
+                    file_size_bytes: 1,
+                    cwd: Some("/proj-b".into()),
+                    git_branch: None,
+                    custom_title: None,
+                    first_prompt: None,
+                }],
+            },
+        );
+
+        // A (active) still has its original list, B got the new one.
+        assert_eq!(app.recent_sessions().len(), 1);
+        assert_eq!(app.recent_sessions()[0].session_id, "a-only");
+        let bucket_b = app.sessions.get(&key_b).expect("bucket b");
+        assert_eq!(bucket_b.recent_sessions.len(), 1);
+        assert_eq!(bucket_b.recent_sessions[0].session_id, "b-only");
+    }
+
+    #[test]
     fn usage_routes_to_targeted_bucket_not_active_bucket() {
         // Regression for the wrong-account-bars bug: each `UiSession`
         // bucket owns its own `UsageState`. A snapshot delivered for
@@ -2302,6 +2354,7 @@ mod tests {
         apply_session_update(
             &mut app,
             SessionUpdate::SessionsListed {
+                key: forge_workspace::SessionKey::from_session_id(App::PRE_CONNECT_KEY),
                 sessions: vec![forge_primitives::SessionListEntry {
                     session_id: "session-1".to_owned(),
                     summary: "Renamed session".to_owned(),
@@ -2321,7 +2374,7 @@ mod tests {
             Some("Renamed session to Renamed session")
         );
         assert!(app.config.last_error.is_none());
-        assert_eq!(app.recent_sessions.len(), 1);
+        assert_eq!(app.recent_sessions().len(), 1);
     }
 
     #[test]
@@ -2396,6 +2449,7 @@ mod tests {
         apply_session_update(
             &mut app,
             SessionUpdate::SessionsListed {
+                key: forge_workspace::SessionKey::from_session_id(App::PRE_CONNECT_KEY),
                 sessions: vec![forge_primitives::SessionListEntry {
                     session_id: "session-1".to_owned(),
                     summary: "Generated session".to_owned(),
@@ -2422,6 +2476,7 @@ mod tests {
         apply_session_update(
             &mut app,
             SessionUpdate::SessionsListed {
+                key: forge_workspace::SessionKey::from_session_id(App::PRE_CONNECT_KEY),
                 sessions: vec![listed_session("session-1", "First Session")],
             },
         );
@@ -2447,7 +2502,15 @@ mod tests {
         assert_eq!(app.active_view, ActiveView::Chat);
         assert!(!app.startup_session_picker_resolved);
 
-        apply_session_update(&mut app, SessionUpdate::SessionsListed { sessions: Vec::new() });
+        // Post-Connected the bucket has migrated to the real key
+        // (`test-session`); SessionsListed routes onto that bucket.
+        apply_session_update(
+            &mut app,
+            SessionUpdate::SessionsListed {
+                key: forge_workspace::SessionKey::from_session_id("test-session"),
+                sessions: Vec::new(),
+            },
+        );
 
         assert_eq!(app.active_view, ActiveView::Chat);
         assert!(app.startup_session_picker_resolved);
@@ -2463,7 +2526,7 @@ mod tests {
     fn sessions_listed_refresh_preserves_picker_selection_by_session_id() {
         let mut app = make_test_app();
         app.active_view = ActiveView::SessionPicker;
-        app.recent_sessions = vec![
+        *app.recent_sessions_mut() = vec![
             crate::app::RecentSessionInfo {
                 session_id: "session-1".to_owned(),
                 summary: "First".to_owned(),
@@ -2491,6 +2554,7 @@ mod tests {
         apply_session_update(
             &mut app,
             SessionUpdate::SessionsListed {
+                key: forge_workspace::SessionKey::from_session_id(App::PRE_CONNECT_KEY),
                 sessions: vec![
                     listed_session("session-2", "Second"),
                     listed_session("session-3", "Third"),
@@ -2499,7 +2563,7 @@ mod tests {
         );
 
         assert_eq!(app.session_picker.selected, 0);
-        assert_eq!(app.recent_sessions[app.session_picker.selected].session_id, "session-2");
+        assert_eq!(app.recent_sessions()[app.session_picker.selected].session_id, "session-2");
         assert_eq!(app.session_picker.scroll_offset, 0);
     }
 

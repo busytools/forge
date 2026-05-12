@@ -40,7 +40,7 @@ fn app_with_status_connection()
     let rx = app.install_testing_stub();
     app.set_session_id(Some(crate::agent::model::SessionId::new("session-1")));
     app.config.active_tab = ConfigTab::Status;
-    app.recent_sessions = vec![crate::app::RecentSessionInfo {
+    *app.recent_sessions_mut() = vec![crate::app::RecentSessionInfo {
         session_id: "session-1".to_owned(),
         summary: "Existing session summary".to_owned(),
         last_modified_ms: 0,
@@ -706,9 +706,9 @@ fn status_tab_g_generates_session_title_from_current_title_fallback() {
 #[test]
 fn status_tab_g_requires_existing_session_metadata() {
     let (mut app, mut rx) = app_with_status_connection();
-    app.recent_sessions[0].custom_title = None;
-    app.recent_sessions[0].summary.clear();
-    app.recent_sessions[0].first_prompt = None;
+    app.recent_sessions_mut()[0].custom_title = None;
+    app.recent_sessions_mut()[0].summary.clear();
+    app.recent_sessions_mut()[0].first_prompt = None;
 
     handle_key(&mut app, KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE));
 

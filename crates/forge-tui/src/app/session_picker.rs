@@ -7,7 +7,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 pub(crate) const MAX_PICKER_SESSIONS: usize = 10;
 
 pub(crate) fn picker_session_count(app: &App) -> usize {
-    app.recent_sessions.len().min(MAX_PICKER_SESSIONS)
+    app.recent_sessions().len().min(MAX_PICKER_SESSIONS)
 }
 
 pub(crate) fn startup_picker_is_loading(app: &App) -> bool {
@@ -56,7 +56,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
 
 fn activate_selection(app: &mut App) {
     let Some(session) =
-        app.recent_sessions.iter().take(MAX_PICKER_SESSIONS).nth(app.session_picker.selected)
+        app.recent_sessions().iter().take(MAX_PICKER_SESSIONS).nth(app.session_picker.selected)
     else {
         return;
     };
@@ -100,7 +100,7 @@ mod tests {
     fn picker_app() -> App {
         let mut app = App::test_default();
         app.active_view = ActiveView::SessionPicker;
-        app.recent_sessions = vec![
+        *app.recent_sessions_mut() = vec![
             RecentSessionInfo {
                 session_id: "session-1".to_owned(),
                 summary: "one".to_owned(),

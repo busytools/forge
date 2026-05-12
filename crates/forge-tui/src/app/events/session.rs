@@ -139,16 +139,21 @@ fn apply_connected_presentation(
 
 pub(super) fn handle_sessions_listed_event(
     app: &mut App,
+    key: &SessionKey,
     sessions: Vec<forge_primitives::SessionListEntry>,
 ) {
     let session_count = sessions.len();
     let pending_title_change = app.config.pending_session_title_change.take();
+    // Selection state is reconciled against the active bucket's list
+    // (the picker UI shows the active session's catalog). Reading
+    // here before the targeted write so a session-switch-then-listing
+    // race doesn't snapshot the wrong list.
     let selected_session_id = app
-        .recent_sessions
+        .recent_sessions()
         .get(app.session_picker.selected)
         .map(|session| session.session_id.clone());
     let had_pending_title_change = pending_title_change.is_some();
-    app.recent_sessions = sessions
+    let mapped: Vec<RecentSessionInfo> = sessions
         .into_iter()
         .map(|entry| RecentSessionInfo {
             session_id: entry.session_id,
@@ -161,10 +166,23 @@ pub(super) fn handle_sessions_listed_event(
             first_prompt: entry.first_prompt,
         })
         .collect();
+    let Some(slot) = app.recent_sessions_mut_for(key) else {
+        // Bucket no longer exists — session was closed before the
+        // listing landed. Drop silently.
+        tracing::debug!(
+            target: crate::logging::targets::APP_SESSION,
+            event_name = "sessions_listed_dropped",
+            outcome = "dropped",
+            session_key = %key.as_str(),
+            reason = "unknown_bucket",
+        );
+        return;
+    };
+    *slot = mapped;
     let mut pending_title_change_resolved = false;
     if let Some(pending_title_change) = pending_title_change {
         let renamed_session_present = app
-            .recent_sessions
+            .recent_sessions()
             .iter()
             .any(|session| session.session_id == pending_title_change.session_id);
         pending_title_change_resolved = renamed_session_present;
@@ -864,7 +882,7 @@ fn reconcile_session_picker_selection(app: &mut App, selected_session_id: Option
 
     if let Some(session_id) = selected_session_id
         && let Some(idx) =
-            app.recent_sessions.iter().position(|session| session.session_id == session_id)
+            app.recent_sessions().iter().position(|session| session.session_id == session_id)
         && idx < session_count
     {
         app.session_picker.selected = idx;
@@ -1037,9 +1055,10 @@ pub(super) fn apply_session_update_session_replaced(
 
 pub(super) fn apply_session_update_sessions_listed(
     app: &mut App,
+    key: &SessionKey,
     sessions: Vec<forge_primitives::SessionListEntry>,
 ) {
-    handle_sessions_listed_event(app, sessions);
+    handle_sessions_listed_event(app, key, sessions);
 }
 
 #[allow(clippy::needless_pass_by_value)]

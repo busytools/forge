@@ -429,7 +429,7 @@ pub(super) fn open_session_rename_overlay(app: &mut App) {
     };
     let session_id = session_id.to_string();
     let draft = app
-        .recent_sessions
+        .recent_sessions()
         .iter()
         .find(|session| session.session_id == session_id)
         .and_then(|session| session.custom_title.clone())
@@ -749,7 +749,7 @@ fn char_to_byte_index(text: &str, char_index: usize) -> usize {
 }
 
 fn session_title_generation_description(app: &App, session_id: &str) -> Option<String> {
-    let session = app.recent_sessions.iter().find(|session| session.session_id == session_id)?;
+    let session = app.recent_sessions().iter().find(|session| session.session_id == session_id)?;
     [
         session.custom_title.as_deref(),
         Some(session.summary.as_str()),

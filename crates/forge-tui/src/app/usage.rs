@@ -51,20 +51,14 @@ pub(crate) fn request_refresh(app: &mut App) {
     // tests sometimes drive the lifecycle without one. The OAuth
     // path bails with a clear "no connection" error when the
     // workspace + active session can't be resolved.
-    let workspace_key = app
-        .workspace
-        .as_ref()
-        .map(|ws| (Arc::clone(ws), session_key.clone()));
+    let workspace_key = app.workspace.as_ref().map(|ws| (Arc::clone(ws), session_key.clone()));
 
     tokio::task::spawn_local(async move {
-        let _ = event_tx
-            .send(SessionUpdate::UsageRefreshStarted { key: session_key.clone() });
+        let _ = event_tx.send(SessionUpdate::UsageRefreshStarted { key: session_key.clone() });
         match refresh_snapshot(source_mode, cwd_raw, workspace_key.as_ref()).await {
             Ok(snapshot) => {
-                let _ = event_tx.send(SessionUpdate::UsageSnapshotReceived {
-                    key: session_key,
-                    snapshot,
-                });
+                let _ = event_tx
+                    .send(SessionUpdate::UsageSnapshotReceived { key: session_key, snapshot });
             }
             Err(error) => {
                 let _ = event_tx.send(SessionUpdate::UsageRefreshFailed {

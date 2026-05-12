@@ -185,7 +185,6 @@ pub fn create_app(cli: &Cli, workspace: Arc<forge_workspace::Workspace>) -> App 
         force_redraw: false,
         focus: FocusManager::default(),
         plugins: PluginsState::default(),
-        recent_sessions: Vec::new(),
         session_picker: SessionPickerState::default(),
         cached_frame_area: ratatui::layout::Rect::new(0, 0, 0, 0),
         selection: Option::<SelectionState>::None,

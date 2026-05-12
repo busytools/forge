@@ -25,7 +25,7 @@ use crate::app::state::messages::ChatMessage;
 use crate::app::state::render_budget::{RenderCacheEvictionKey, RenderCacheSlotState};
 use crate::app::state::types::{
     CancelOrigin, HistoryRetentionPolicy, HistoryRetentionStats, McpState, ModeState,
-    SessionUsageState, TodoItem, ToolCallScope, UsageState,
+    RecentSessionInfo, SessionUsageState, TodoItem, ToolCallScope, UsageState,
 };
 use crate::app::state::viewport::ChatViewport;
 use crate::app::state::{ChatRenderTraceState, TerminalToolCallRef, TurnNoticeRef};
@@ -211,6 +211,13 @@ pub struct UiSession {
     /// that lands after the user has switched sessions still writes
     /// to the bucket that requested it.
     pub usage: UsageState,
+    /// Catalog of resumable sessions for this bucket's project,
+    /// produced by `forge_sdk_worker::list_recent_sessions` against
+    /// the bucket's `cwd`. Drives the startup `/resume` picker and
+    /// `/resume <id>` autocomplete. Per-session so the autocomplete
+    /// always lists the active project's sessions even when the user
+    /// has switched mid-session.
+    pub recent_sessions: Vec<RecentSessionInfo>,
 
     // ---- Todos ----
     /// Current todo list from Claude's `TodoWrite` tool calls.
@@ -330,6 +337,7 @@ impl Default for UiSession {
             git_context: GitContextState::default(),
             mcp: McpState::default(),
             usage: UsageState::default(),
+            recent_sessions: Vec::default(),
             todos: Vec::default(),
             show_todo_panel: bool::default(),
             todo_scroll: usize::default(),

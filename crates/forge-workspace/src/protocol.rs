@@ -459,6 +459,12 @@ pub enum SessionUpdate {
         error: Option<String>,
     },
     SessionsListed {
+        /// Bucket this session list belongs to. The catalog scan that
+        /// produces `sessions` runs against the spawning session's
+        /// `cwd`, so the listing is project-scoped — routing onto
+        /// the requesting bucket prevents another session's `/resume`
+        /// autocomplete from inheriting a stale project's list.
+        key: SessionKey,
         sessions: Vec<SessionListEntry>,
     },
     ServiceStatus {
@@ -530,7 +536,8 @@ impl SessionUpdate {
             | Self::ForgeAccountIdentity { key, .. }
             | Self::UsageRefreshStarted { key, .. }
             | Self::UsageSnapshotReceived { key, .. }
-            | Self::UsageRefreshFailed { key, .. } => Some(key.clone()),
+            | Self::UsageRefreshFailed { key, .. }
+            | Self::SessionsListed { key, .. } => Some(key.clone()),
             Self::RuntimeReloadCompleted { session_id }
             | Self::RuntimeReloadFailed { session_id, .. }
             | Self::ChatAppended { session_id, .. }
@@ -543,7 +550,6 @@ impl SessionUpdate {
                 Some(SessionKey::from_session_id(session_id.clone()))
             }
             Self::KeyRenamed { .. }
-            | Self::SessionsListed { .. }
             | Self::ServiceStatus { .. }
             | Self::PluginsInventoryUpdated { .. }
             | Self::PluginsInventoryRefreshFailed { .. }
@@ -662,17 +668,18 @@ impl std::fmt::Debug for SessionUpdate {
                 .debug_struct("McpSnapshot")
                 .field("session_id", session_id)
                 .finish_non_exhaustive(),
-            Self::SessionsListed { sessions } => {
-                f.debug_struct("SessionsListed").field("count", &sessions.len()).finish()
-            }
+            Self::SessionsListed { key, sessions } => f
+                .debug_struct("SessionsListed")
+                .field("key", key)
+                .field("count", &sessions.len())
+                .finish(),
             Self::ServiceStatus { .. } => f.debug_struct("ServiceStatus").finish_non_exhaustive(),
             Self::UsageRefreshStarted { key } => {
                 f.debug_struct("UsageRefreshStarted").field("key", key).finish()
             }
-            Self::UsageSnapshotReceived { key, .. } => f
-                .debug_struct("UsageSnapshotReceived")
-                .field("key", key)
-                .finish_non_exhaustive(),
+            Self::UsageSnapshotReceived { key, .. } => {
+                f.debug_struct("UsageSnapshotReceived").field("key", key).finish_non_exhaustive()
+            }
             Self::UsageRefreshFailed { key, .. } => {
                 f.debug_struct("UsageRefreshFailed").field("key", key).finish_non_exhaustive()
             }

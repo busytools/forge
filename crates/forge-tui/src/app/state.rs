@@ -300,8 +300,11 @@ pub struct App {
     pub focus: FocusManager,
     /// Plugin inventory and UI state for the Config > Plugins view.
     pub plugins: PluginsState,
-    /// Recently persisted session IDs discovered at startup.
-    pub recent_sessions: Vec<RecentSessionInfo>,
+    // `recent_sessions: Vec<RecentSessionInfo>` moved to
+    // `UiSession.recent_sessions` (per-session bucket). The session
+    // list is per-project — switching active session via the
+    // Projects pane naturally swaps the list along with the bucket.
+    // See `App::recent_sessions` / `App::recent_sessions_mut`.
     /// Selection state for the startup session picker screen.
     pub session_picker: SessionPickerState,
     /// Last known frame area (for mouse selection mapping).
@@ -1249,11 +1252,35 @@ impl App {
     /// `None` when the target bucket no longer exists (session
     /// closed before the result landed — drop the result silently).
     #[must_use]
-    pub fn usage_mut_for(
+    pub fn usage_mut_for(&mut self, key: &forge_workspace::SessionKey) -> Option<&mut UsageState> {
+        self.sessions.get_mut(key).map(|s| &mut s.usage)
+    }
+
+    /// Active session's catalog of resumable sessions. The
+    /// `/resume <id>` autocomplete and startup picker read from
+    /// this list. Returns an empty slice in the brief pre-Connect
+    /// window where no bucket exists.
+    #[must_use]
+    pub fn recent_sessions(&self) -> &[RecentSessionInfo] {
+        self.active_session().map_or(&[], |s| s.recent_sessions.as_slice())
+    }
+
+    /// Mutable borrow of the active session's recent-sessions list.
+    /// Used by tests + the SDK-side bridge polling path.
+    #[must_use]
+    pub fn recent_sessions_mut(&mut self) -> &mut Vec<RecentSessionInfo> {
+        &mut self.active_bucket_mut().recent_sessions
+    }
+
+    /// Mutable borrow of a specific bucket's recent-sessions list.
+    /// Used by `handle_sessions_listed_event` to route the wire
+    /// payload onto the bucket that requested the scan.
+    #[must_use]
+    pub fn recent_sessions_mut_for(
         &mut self,
         key: &forge_workspace::SessionKey,
-    ) -> Option<&mut UsageState> {
-        self.sessions.get_mut(key).map(|s| &mut s.usage)
+    ) -> Option<&mut Vec<RecentSessionInfo>> {
+        self.sessions.get_mut(key).map(|s| &mut s.recent_sessions)
     }
 
     // ---- Account / auth accessors ----
@@ -2116,7 +2143,6 @@ impl App {
             force_redraw: false,
             focus: FocusManager::default(),
             plugins: PluginsState::default(),
-            recent_sessions: Vec::new(),
             session_picker: SessionPickerState::default(),
             cached_frame_area: ratatui::layout::Rect::default(),
             selection: None,

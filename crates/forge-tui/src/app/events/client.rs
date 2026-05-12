@@ -117,8 +117,8 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
             // replaced (`/new` / `/resume` / `/login` flows).
             crate::app::usage::request_refresh_if_needed(app);
         }
-        SessionUpdate::SessionsListed { sessions } => {
-            session::apply_session_update_sessions_listed(app, sessions);
+        SessionUpdate::SessionsListed { key, sessions } => {
+            session::apply_session_update_sessions_listed(app, &key, sessions);
         }
         SessionUpdate::AuthRequired { key, method_name, method_description } => {
             session::apply_session_update_auth_required(app, key, method_name, method_description);
