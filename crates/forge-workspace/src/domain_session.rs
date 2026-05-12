@@ -26,7 +26,6 @@ use crate::protocol::PendingInteractionSlot;
 /// `record_forge_account_identity_for_domain`,
 /// `finalize_turn_in_domain`) to also write under the lock. TUI
 /// readers borrow via `Workspace::domain_session_for(key)`.
-#[non_exhaustive]
 pub struct DomainSession {
     pub key: SessionKey,
     /// Claude-issued session UUID. `None` until the first `Connected`

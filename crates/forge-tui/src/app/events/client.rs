@@ -287,14 +287,6 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
                 crate::app::plugins::apply_cli_action_failure(app, message);
             }
         }
-        // `SessionUpdate` is `#[non_exhaustive]`. Newer variants land
-        // without a reducer until the matching dispatcher arm ships.
-        _ => {
-            tracing::trace!(
-                target: crate::logging::targets::APP_SESSION,
-                "SessionUpdate variant not yet reduced; ignoring",
-            );
-        }
     }
     if is_active_or_global {
         app.needs_redraw = true;
@@ -1513,5 +1505,140 @@ mod tests {
             Some(&user_pick),
             "active_session_key must stay on user_pick after a background KeyRenamed",
         );
+    }
+
+    /// Build a minimal `forge_primitives::CurrentModel` for tests
+    /// that need to fire a `SessionUpdate::Connected` /
+    /// `SessionUpdate::SessionReplaced` envelope. Field values are
+    /// deliberately uninteresting — the assertion target is the
+    /// file_index side effect, not the model state.
+    fn test_current_model() -> forge_primitives::CurrentModel {
+        forge_primitives::CurrentModel {
+            requested_id: None,
+            resolved_id: "test-model".to_owned(),
+            display_name_short: "test-model".to_owned(),
+            display_name_long: "test-model".to_owned(),
+            catalog_id: None,
+            supports_effort: false,
+            supported_effort_levels: Vec::new(),
+            supports_fast_mode: None,
+            supports_auto_mode: None,
+            supports_adaptive_thinking: None,
+            is_authoritative: true,
+        }
+    }
+
+    fn stub_handle() -> std::sync::Arc<forge_workspace::AgentHandle> {
+        let (h, _) = forge_workspace::Workspace::testing_stub_handle();
+        std::sync::Arc::new(h)
+    }
+
+    /// `SessionUpdate::Connected` for the active session reaches the
+    /// active apply-chain path which restarts `app.file_index` with
+    /// the new cwd. After the event lands, the file_index root must
+    /// match the new cwd, the generation must have advanced, and the
+    /// stale `entries` map must have been cleared so the next scan
+    /// starts from a clean slate. The asynchronous scan completion
+    /// itself isn't asserted — only that the synchronous restart side
+    /// effects fired against the production reducer path.
+    #[test]
+    fn connected_refreshes_file_index_candidates_for_new_cwd() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let canonical = dir.path().canonicalize().expect("canonicalize");
+        let mut app = App::test_default();
+        // Seed stale file_index state to verify the restart wipes it.
+        app.file_index.generation = 3;
+        app.file_index.root = Some(std::path::PathBuf::from("/old/path"));
+        app.file_index.entries.insert(
+            "stale.rs".to_owned(),
+            crate::app::file_index::FileCandidate {
+                rel_path: "stale.rs".to_owned(),
+                rel_path_lower: "stale.rs".to_owned(),
+                basename_lower: "stale.rs".to_owned(),
+                depth: 0,
+                modified: std::time::SystemTime::UNIX_EPOCH,
+                is_dir: false,
+            },
+        );
+        app.file_index.scan_finished = true;
+
+        let pending_key = app.active_session_key.clone().expect("pending active key");
+        let new_cwd = canonical.to_string_lossy().into_owned();
+
+        apply_session_update(
+            &mut app,
+            forge_workspace::SessionUpdate::Connected {
+                key: pending_key,
+                session_id: forge_primitives::SessionId::new("session-1"),
+                cwd: new_cwd.clone(),
+                current_model: test_current_model(),
+                available_models: Vec::new(),
+                mode: None,
+                history: Vec::new(),
+                conn: stub_handle(),
+            },
+        );
+
+        assert_eq!(
+            app.file_index.root.as_deref(),
+            Some(canonical.as_path()),
+            "file_index root must follow the Connected cwd",
+        );
+        assert!(app.file_index.generation > 3, "file_index generation must advance on restart");
+        assert!(app.file_index.entries.is_empty(), "stale entries cleared on restart");
+        assert!(!app.file_index.scan_finished, "scan_finished reset on restart");
+    }
+
+    /// `SessionUpdate::SessionReplaced` shares the
+    /// `handle_session_replaced_event` path which restarts the
+    /// `file_index` against the replaced cwd. Same assertion shape as
+    /// the `Connected` test — production code path runs through
+    /// `apply_session_update_session_replaced` →
+    /// `handle_session_replaced_event` → `file_index::restart`.
+    #[test]
+    fn session_replaced_refreshes_file_index_candidates_for_replaced_cwd() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let canonical = dir.path().canonicalize().expect("canonicalize");
+        let mut app = App::test_default();
+        app.file_index.generation = 8;
+        app.file_index.root = Some(std::path::PathBuf::from("/before"));
+        app.file_index.entries.insert(
+            "before.rs".to_owned(),
+            crate::app::file_index::FileCandidate {
+                rel_path: "before.rs".to_owned(),
+                rel_path_lower: "before.rs".to_owned(),
+                basename_lower: "before.rs".to_owned(),
+                depth: 0,
+                modified: std::time::SystemTime::UNIX_EPOCH,
+                is_dir: false,
+            },
+        );
+        app.file_index.scan_finished = true;
+
+        let pending_key = app.active_session_key.clone().expect("pending active key");
+        let replaced_cwd = canonical.to_string_lossy().into_owned();
+
+        apply_session_update(
+            &mut app,
+            forge_workspace::SessionUpdate::SessionReplaced {
+                key: pending_key,
+                session_id: forge_primitives::SessionId::new("session-2"),
+                cwd: replaced_cwd.clone(),
+                current_model: test_current_model(),
+                available_models: Vec::new(),
+                mode: None,
+                history: Vec::new(),
+                conn: stub_handle(),
+            },
+        );
+
+        assert_eq!(
+            app.file_index.root.as_deref(),
+            Some(canonical.as_path()),
+            "file_index root must follow the SessionReplaced cwd",
+        );
+        assert!(app.file_index.generation > 8, "file_index generation must advance on restart");
+        assert!(app.file_index.entries.is_empty(), "stale entries cleared on restart");
+        assert!(!app.file_index.scan_finished, "scan_finished reset on restart");
     }
 }

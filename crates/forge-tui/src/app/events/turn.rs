@@ -1114,14 +1114,11 @@ pub(super) fn apply_session_update_turn_error(
 }
 
 fn map_workspace_turn_error_class(class: forge_workspace::TurnErrorClass) -> TurnErrorClass {
-    // `forge_workspace::TurnErrorClass` is `#[non_exhaustive]`, so a
-    // wildcard arm is mandatory. `Other` flows through it alongside
-    // any future variant rustc adds upstream.
     match class {
         forge_workspace::TurnErrorClass::PlanLimit => TurnErrorClass::PlanLimit,
         forge_workspace::TurnErrorClass::AuthRequired => TurnErrorClass::AuthRequired,
         forge_workspace::TurnErrorClass::Internal => TurnErrorClass::Internal,
-        _ => TurnErrorClass::Other,
+        forge_workspace::TurnErrorClass::Other => TurnErrorClass::Other,
     }
 }
 

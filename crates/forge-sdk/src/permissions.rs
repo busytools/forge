@@ -249,7 +249,7 @@ mod tests {
     #[test]
     fn with_updated_permissions_is_noop_on_deny() {
         let d = PermissionDecision::deny("nope").with_updated_permissions(vec![
-            PermissionUpdate::SetMode { mode: PermissionMode::Default, destination: None },
+            PermissionUpdate::SetMode { mode: PermissionMode::Ask, destination: None },
         ]);
         // Still a deny; permissions are not readable.
         assert!(d.updated_permissions().is_empty());

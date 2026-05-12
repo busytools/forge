@@ -419,10 +419,10 @@ fn glyph_for_lifecycle(
             let color = if session_is_active { theme::RUST_ORANGE } else { theme::DIM };
             ("●".to_owned(), color)
         }
-        // `SessionLifecycleState` is `#[non_exhaustive]`; future
-        // variants render as Sleeping until the pane learns about
-        // them explicitly.
-        SessionLifecycleState::Sleeping | _ => ("·".to_owned(), theme::DIM),
+        SessionLifecycleState::Sleeping
+        | SessionLifecycleState::AuthRequired
+        | SessionLifecycleState::Failed
+        | SessionLifecycleState::LoggedOut => ("·".to_owned(), theme::DIM),
     }
 }
 

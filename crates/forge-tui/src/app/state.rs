@@ -451,10 +451,12 @@ impl App {
             match lifecycle {
                 L::Spawning => AppStatus::Connecting,
                 L::Running => AppStatus::Running,
-                // `SessionLifecycleState` is `#[non_exhaustive]`;
-                // any future variant defaults to the same Ready
-                // status the existing non-running ones map to.
-                L::Sleeping | L::Idle | L::Attention | _ => AppStatus::Ready,
+                L::Sleeping
+                | L::Idle
+                | L::Attention
+                | L::AuthRequired
+                | L::Failed
+                | L::LoggedOut => AppStatus::Ready,
             }
         }
         if self.active_session_key.as_ref() == Some(&key) {

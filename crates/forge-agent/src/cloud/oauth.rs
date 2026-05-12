@@ -47,10 +47,6 @@ impl From<super::oauth_usage::OauthUsageError> for OauthFetchError {
             OauthUsageError::Decode(message) => {
                 Self::Failed(format!("Failed to decode Claude OAuth usage response: {message}"))
             }
-            // `OauthUsageError` is #[non_exhaustive]; route unknown
-            // future variants through a generic failure so the match
-            // stays exhaustive across crate boundaries.
-            other => Self::Failed(format!("Claude OAuth error: {other}")),
         }
     }
 }

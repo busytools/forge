@@ -8,7 +8,6 @@ use serde::{Deserialize, Serialize};
 
 /// A point-in-time snapshot of the git introspection state.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[non_exhaustive]
 pub struct GitContext {
     /// Current branch resolution. `NoRepo` when `cwd` isn't inside a
     /// git tree at all.
@@ -18,7 +17,6 @@ pub struct GitContext {
 /// Branch resolution states emitted by `git_context` and the watcher.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "value", rename_all = "snake_case")]
-#[non_exhaustive]
 pub enum GitBranch {
     /// Branch is named — `.git/HEAD` resolved to `refs/heads/<name>`.
     Named(String),

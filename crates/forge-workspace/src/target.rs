@@ -47,7 +47,6 @@ impl ProjectKey {
 
 /// What [`crate::Workspace::get_agent_handle`] should hand back.
 #[derive(Clone, Debug)]
-#[non_exhaustive]
 pub enum SessionTarget {
     /// The lead of the project marked `default = true` in
     /// `forge.toml`. Errors if no default is configured.

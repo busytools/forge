@@ -39,11 +39,10 @@ pub(super) fn handle_sdk_message(app: &mut App, msg: Message) {
         Message::TaskNotification { .. } => handle_task_notification(app, msg),
         Message::RateLimitEvent { .. } => handle_rate_limit_event(app, msg),
         Message::Result { .. } => handle_result(app, msg),
-        // `Message::StreamEvent` and `_` (Error / Unknown / future
-        // variants on the `#[non_exhaustive]` enum) — no-op today.
-        // Re-add a handler if a downstream consumer needs to react
-        // to partial-message frames.
-        Message::StreamEvent { .. } | _ => {}
+        // Streaming partial-message events and the transport-layer
+        // `Error` / forward-compat `Unknown` frames are no-ops today.
+        // Re-add a handler if a downstream consumer needs to react.
+        Message::StreamEvent { .. } | Message::Error { .. } | Message::Unknown { .. } => {}
     }
 }
 

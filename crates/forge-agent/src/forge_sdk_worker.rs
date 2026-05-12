@@ -176,7 +176,7 @@ async fn emit_connected(
     let init_permission_mode = raw_permission_mode
         .as_deref()
         .and_then(bridge_state::PermissionMode::from_wire)
-        .or(Some(bridge_state::PermissionMode::Default));
+        .or(Some(bridge_state::PermissionMode::Ask));
     let supports_bypass = init_record
         .and_then(|r| r.get("supportsBypassPermissionsMode"))
         .and_then(serde_json::Value::as_bool)
@@ -368,15 +368,8 @@ pub(crate) async fn send_prompt(
 }
 
 pub(crate) fn parse_permission_mode(mode: &str) -> anyhow::Result<PermissionMode> {
-    match mode {
-        "default" | "ask" => Ok(PermissionMode::Default),
-        "acceptEdits" | "accept_edits" => Ok(PermissionMode::AcceptEdits),
-        "plan" => Ok(PermissionMode::Plan),
-        "bypassPermissions" | "bypass_permissions" => Ok(PermissionMode::BypassPermissions),
-        "auto" => Ok(PermissionMode::Auto),
-        "dontAsk" | "dont_ask" | "deny" => Ok(PermissionMode::DontAsk),
-        other => Err(anyhow::anyhow!("forge_sdk: unknown permission mode {other:?}")),
-    }
+    forge_primitives::permission::PermissionMode::from_wire(mode)
+        .ok_or_else(|| anyhow::anyhow!("forge_sdk: unknown permission mode {mode:?}"))
 }
 
 // ----------------------------------------------------------------------------

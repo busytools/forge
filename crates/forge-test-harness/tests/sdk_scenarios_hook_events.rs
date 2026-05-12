@@ -230,7 +230,7 @@ async fn wire_capture_permission_request_hook() {
 
     let opts = OptionsBuilder::new()
         .max_turns(3)
-        .permission_mode(PermissionMode::Default)
+        .permission_mode(PermissionMode::Ask)
         .extra_arg("permission-mode", Some("default".to_string()))
         .permission_prompt_tool_name("stdio")
         .hooks(hooks)

@@ -16,7 +16,6 @@ use crate::{ElicitationAction, McpServerConfig, PermissionOutcome, QuestionOutco
 /// UI → agent channel envelope. Each variant maps to one inherent
 /// method on `forge_agent::ForgeSdkBridge`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[non_exhaustive]
 pub enum Command {
     // --- Session lifecycle ---
     NewSession {

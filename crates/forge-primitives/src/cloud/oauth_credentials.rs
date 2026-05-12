@@ -18,7 +18,6 @@ use serde::{Deserialize, Serialize};
 /// shape — don't round-trip these through anything but the live
 /// in-memory reader.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[non_exhaustive]
 pub struct OauthCredentials {
     /// The bearer token to send as `Authorization: Bearer <token>` to
     /// `api.anthropic.com`.

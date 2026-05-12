@@ -8,7 +8,6 @@ use thiserror::Error;
 
 /// All errors surfaced by `forge-sdk`.
 #[derive(Debug, Error)]
-#[non_exhaustive]
 pub enum Error {
     /// The `claude` binary (or a custom replacement) was not found on `PATH`.
     ///

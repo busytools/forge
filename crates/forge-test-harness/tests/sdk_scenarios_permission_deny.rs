@@ -2,7 +2,7 @@
 //!
 //! Matches the canonical permission-deny example.
 //! (`examples/tool_permission_callback.py`): register a
-//! `can_use_tool` callback and run in `PermissionMode::Default` — the CLI
+//! `can_use_tool` callback and run in `PermissionMode::Ask` — the CLI
 //! should emit a `can_use_tool` `control_request` per tool use, the
 //! SDK handler replies with `deny`, and the CLI reports denial in the
 //! turn.
@@ -23,13 +23,13 @@ async fn wire_capture_permission_deny() {
     // (auto-mode classifier decides in-process). Force `default`
     // permission mode and empty allowlist via `--settings`.
     // Emit `--permission-mode default` explicitly (forge-sdk's
-    // PermissionMode::Default → "default" normally suppresses the flag,
+    // PermissionMode::Ask → "default" normally suppresses the flag,
     // which lets the developer's user-level `settings.json` win).
     // Overriding via extra_arg forces the CLI to adopt default mode
     // regardless of any autoMode / skipAutoPermissionPrompt settings.
     let opts = OptionsBuilder::new()
         .max_turns(3)
-        .permission_mode(PermissionMode::Default)
+        .permission_mode(PermissionMode::Ask)
         .extra_arg("permission-mode", Some("default".to_string()))
         // `--permission-prompt-tool stdio` tells the CLI to route
         // permission prompts as `can_use_tool` control_requests over

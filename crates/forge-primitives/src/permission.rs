@@ -8,16 +8,15 @@
 //! `DenyPermissions` variant names, and one in `forge_agent::state`
 //! with `Default` / `DontAsk` variant names. They mapped to the same
 //! wire strings; the variant names diverged for historical reasons.
-//! Canonical names match the wire/CLI strings literally.
 
 use serde::{Deserialize, Serialize};
 
 /// Which permission flow the `claude` binary should use for tool
 /// invocations. Mirrors the upstream CLI's six-variant set.
 ///
-/// Variant names match the JSON wire strings exactly via
-/// `#[serde(rename = ...)]`:
-///  - `Default` -> "default"
+/// Variant `Ask` maps to wire `"default"`; the rest match wire strings
+/// 1:1 via `#[serde(rename = ...)]`:
+///  - `Ask` -> "default"
 ///  - `AcceptEdits` -> "acceptEdits"
 ///  - `Plan` -> "plan"
 ///  - `DontAsk` -> "dontAsk"
@@ -30,7 +29,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum PermissionMode {
     #[serde(rename = "default")]
-    Default,
+    Ask,
     #[serde(rename = "acceptEdits")]
     AcceptEdits,
     #[serde(rename = "plan")]
@@ -49,7 +48,7 @@ impl PermissionMode {
     #[must_use]
     pub fn as_wire(self) -> &'static str {
         match self {
-            Self::Default => "default",
+            Self::Ask => "default",
             Self::AcceptEdits => "acceptEdits",
             Self::Plan => "plan",
             Self::DontAsk => "dontAsk",
@@ -69,11 +68,11 @@ impl PermissionMode {
     /// canonical camelCase forms (`"acceptEdits"`, `"dontAsk"`,
     /// `"bypassPermissions"`) and the snake_case + legacy aliases
     /// (`"accept_edits"`, `"dont_ask"`, `"bypass_permissions"`,
-    /// `"ask"` -> Default, `"deny"` -> DontAsk).
+    /// `"ask"` -> Ask, `"deny"` -> DontAsk).
     #[must_use]
     pub fn from_wire(s: &str) -> Option<Self> {
         Some(match s {
-            "default" | "ask" => Self::Default,
+            "default" | "ask" => Self::Ask,
             "acceptEdits" | "accept_edits" => Self::AcceptEdits,
             "plan" => Self::Plan,
             "dontAsk" | "dont_ask" | "deny" => Self::DontAsk,
@@ -88,7 +87,7 @@ impl PermissionMode {
     #[must_use]
     pub fn display_name(self) -> &'static str {
         match self {
-            Self::Default => "Default",
+            Self::Ask => "Ask",
             Self::AcceptEdits => "Accept Edits",
             Self::Plan => "Plan",
             Self::DontAsk => "Don't Ask",
@@ -105,7 +104,7 @@ mod tests {
     #[test]
     fn permission_mode_round_trips_through_wire() {
         for mode in [
-            PermissionMode::Default,
+            PermissionMode::Ask,
             PermissionMode::AcceptEdits,
             PermissionMode::Plan,
             PermissionMode::DontAsk,
@@ -118,7 +117,7 @@ mod tests {
 
     #[test]
     fn permission_mode_aliases() {
-        assert_eq!(PermissionMode::from_wire("ask"), Some(PermissionMode::Default));
+        assert_eq!(PermissionMode::from_wire("ask"), Some(PermissionMode::Ask));
         assert_eq!(PermissionMode::from_wire("accept_edits"), Some(PermissionMode::AcceptEdits));
         assert_eq!(PermissionMode::from_wire("dont_ask"), Some(PermissionMode::DontAsk));
         assert_eq!(PermissionMode::from_wire("deny"), Some(PermissionMode::DontAsk));
@@ -130,7 +129,7 @@ mod tests {
 
     #[test]
     fn permission_mode_as_cli_arg_matches_as_wire() {
-        assert_eq!(PermissionMode::Default.as_cli_arg(), "default");
+        assert_eq!(PermissionMode::Ask.as_cli_arg(), "default");
         assert_eq!(PermissionMode::DontAsk.as_cli_arg(), "dontAsk");
     }
 

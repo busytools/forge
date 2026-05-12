@@ -53,10 +53,7 @@ impl From<GitBranch> for BranchDisplayState {
             GitBranch::Named(name) => Self::Named(name),
             GitBranch::Detached => Self::Detached,
             GitBranch::NoRepo => Self::NoRepo,
-            // `forge_primitives::git::GitBranch` is `#[non_exhaustive]`; explicit
-            // `Unknown` plus the wildcard for any future variants both
-            // surface as `Unknown` (TUI hides the chip).
-            GitBranch::Unknown | _ => Self::Unknown,
+            GitBranch::Unknown => Self::Unknown,
         }
     }
 }
@@ -109,12 +106,7 @@ mod tests {
     use forge_primitives::git::{GitBranch, GitContext};
 
     fn ctx(branch: GitBranch) -> GitContext {
-        // forge_primitives::git::GitContext is #[non_exhaustive] but
-        // GitContext::default() yields `branch: GitBranch::NoRepo`;
-        // overwrite the field for test setup.
-        let mut c = GitContext::default();
-        c.branch = branch;
-        c
+        GitContext { branch }
     }
 
     #[test]

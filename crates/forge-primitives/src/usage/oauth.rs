@@ -10,7 +10,6 @@ use serde::{Deserialize, Serialize};
 /// API can omit any window for accounts that don't qualify (free tier,
 /// new account, etc.).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[non_exhaustive]
 pub struct OauthUsage {
     /// Rolling 5-hour rate-limit window (the "session" budget).
     pub five_hour: Option<OauthUsageWindow>,
@@ -28,7 +27,6 @@ pub struct OauthUsage {
 /// `resets_at` is whatever the API emits (ISO-8601 string or numeric
 /// epoch). Consumers parse it themselves.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[non_exhaustive]
 pub struct OauthUsageWindow {
     /// Percentage of the window consumed (0.0–100.0). `None` when the
     /// API omits the field for this window.
@@ -45,7 +43,6 @@ pub struct OauthUsageWindow {
 /// returns them — consumers convert to major units (`/ 100.0`) for
 /// display.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[non_exhaustive]
 pub struct OauthExtraUsage {
     /// `true` when the account has opted in to pay-as-you-go.
     pub is_enabled: Option<bool>,
@@ -64,7 +61,6 @@ pub struct OauthExtraUsage {
 /// `Unauthorized`) from terminal ones so callers can decide whether
 /// to retry against a different auth source.
 #[derive(Debug, thiserror::Error)]
-#[non_exhaustive]
 pub enum OauthUsageError {
     /// No OAuth credentials were resolved from file or keychain.
     /// Caller should advise `/login`.

@@ -39,7 +39,6 @@ use crate::SessionKey;
 /// [`From`] impl below maps between them so future variant divergence
 /// becomes a compile error rather than a silent drop.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
 pub enum TurnErrorClass {
     PlanLimit,
     AuthRequired,
@@ -84,7 +83,6 @@ impl std::fmt::Debug for PendingInteractionSlot {
 /// is the primary caller; defined here so the type lives in the
 /// protocol module from day one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
 pub enum TurnFinalizeStatus {
     Complete,
     Error,
@@ -99,7 +97,6 @@ pub enum TurnFinalizeStatus {
 /// `Respond*` end-to-end; other variants log + drop until Phase 2
 /// wires them to `AgentHandle` methods.
 #[derive(Debug)]
-#[non_exhaustive]
 pub enum Command {
     Prompt {
         key: SessionKey,
@@ -261,7 +258,6 @@ impl Command {
 /// variants do NOT carry response oneshots — responses flow back via
 /// `Command::Respond*`. The workspace stores the oneshot in
 /// `DomainSession.pending_interactions` when emitting these variants.
-#[non_exhaustive]
 pub enum SessionUpdate {
     /// Workspace has synthesized a spawning state for a project /
     /// session wake (in response to `Command::SpawnProject` /
@@ -659,7 +655,6 @@ impl std::fmt::Debug for SessionUpdate {
 
 /// Errors from `Workspace::dispatch`.
 #[derive(Debug, thiserror::Error)]
-#[non_exhaustive]
 pub enum DispatchError {
     #[error("no session task registered for key {0:?}")]
     UnknownSession(SessionKey),

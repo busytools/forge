@@ -32,7 +32,6 @@ const WATCH_DEBOUNCE: Duration = Duration::from_millis(75);
 
 /// Failure modes for [`GitContextWatcher::new`].
 #[derive(Debug, Error)]
-#[non_exhaustive]
 pub enum GitError {
     /// `notify` failed to set up its OS-level fs watch.
     #[error("failed to initialise git metadata watcher: {0}")]
@@ -49,9 +48,7 @@ pub fn git_context(cwd: &Path) -> GitContext {
         Some(repo) => repo.resolve_branch_state(),
         None => GitBranch::NoRepo,
     };
-    let mut ctx = GitContext::default();
-    ctx.branch = branch;
-    ctx
+    GitContext { branch }
 }
 
 /// Async watcher that streams `GitContext` snapshots whenever the
@@ -206,8 +203,7 @@ fn run_debounce_loop(
         let new_branch = repo.resolve_branch_state();
         if new_branch != last_branch {
             last_branch = new_branch.clone();
-            let mut snap = GitContext::default();
-            snap.branch = new_branch;
+            let snap = GitContext { branch: new_branch };
             if snap_tx.send(snap).is_err() {
                 return; // receiver dropped
             }
@@ -555,8 +551,7 @@ mod tests {
 
     #[test]
     fn git_context_serde_roundtrip() {
-        let mut context = GitContext::default();
-        context.branch = GitBranch::Named("main".to_owned());
+        let context = GitContext { branch: GitBranch::Named("main".to_owned()) };
         let json = serde_json::to_string(&context).expect("serialize");
         let parsed: GitContext = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(parsed, context);

@@ -195,7 +195,6 @@ impl TerminalReason {
 /// in Phase 2 of the MVVM refactor (#102) so both `forge-tui` and
 /// `forge-workspace` can project this state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-#[non_exhaustive]
 pub enum SessionLifecycleState {
     /// No subprocess yet; lead exists conceptually but has never
     /// been spawned (or has been freed).

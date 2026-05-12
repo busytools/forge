@@ -215,14 +215,7 @@ fn parse_oauth_credentials(json: &Value) -> Option<OauthCredentials> {
     }
 
     let expires_at = oauth.get("expiresAt").and_then(parse_timestamp_value);
-    // `OauthCredentials` is `#[non_exhaustive]` in `forge-primitives`, so
-    // it can't be constructed directly across crate boundaries. Build via
-    // serde to keep the construction infallible for known-good inputs.
-    let json = serde_json::json!({
-        "access_token": access_token,
-        "expires_at": expires_at,
-    });
-    serde_json::from_value(json).ok()
+    Some(OauthCredentials { access_token: access_token.to_owned(), expires_at })
 }
 
 #[cfg(test)]

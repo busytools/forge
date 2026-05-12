@@ -426,7 +426,6 @@ where
 /// [`run_live_scenario`] when the scenario produced a trace (regardless of
 /// whether a `Result` frame was seen before EOF).
 #[derive(Debug)]
-#[non_exhaustive]
 pub struct ScenarioCapture {
     /// Absolute path of the `target/wire-traces/` dump for this run.
     pub trace_path: std::path::PathBuf,
@@ -464,11 +463,6 @@ pub fn decode_all_inbound(log: &TraceLog) -> DecodeReport {
             Ok(DecodedLine::Unknown { type_str, .. }) => {
                 report.unknown_types.push(type_str);
             }
-            // `DecodedLine` is `#[non_exhaustive]` — future variants
-            // surface as a count, not an error. Update categories
-            // in `DecodeReport` if you add a variant that needs
-            // dedicated tracking.
-            Ok(_) => {}
             Err(e) => report.decode_errors.push((idx, format!("{e}"))),
         }
     }

@@ -28,12 +28,8 @@ pub type WireTee = Arc<dyn Fn(&str) + Send + Sync>;
 
 /// Configuration for one `Client` invocation.
 ///
-/// Construct via [`OptionsBuilder`] rather than populating directly; the
-/// struct is `#[non_exhaustive]` so new fields (permission callback, MCP
-/// servers, hooks) can be added in later milestones without breaking
-/// callers.
+/// Construct via [`OptionsBuilder`] rather than populating directly.
 #[derive(Clone)]
-#[non_exhaustive]
 #[allow(clippy::struct_excessive_bools)] // mirrors the CLI's `ClaudeAgentOptions` verbatim
 pub struct Options {
     /// Path or name of the `claude` binary to spawn.
@@ -195,7 +191,7 @@ impl Default for Options {
             cwd: None,
             resume: None,
             model: None,
-            permission_mode: PermissionMode::Default,
+            permission_mode: PermissionMode::Ask,
             can_use_tool: None,
             mcp_servers: Vec::new(),
             external_mcp_servers: HashMap::new(),
@@ -881,7 +877,7 @@ mod tests_options_build {
         assert_eq!(opts.binary, "claude");
         assert!(opts.cwd.is_none());
         assert!(opts.resume.is_none());
-        assert_eq!(opts.permission_mode, PermissionMode::Default);
+        assert_eq!(opts.permission_mode, PermissionMode::Ask);
         assert!(opts.model.is_none());
     }
 

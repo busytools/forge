@@ -8,7 +8,7 @@ use forge_primitives::{ModeInfo, ModeState};
 use super::state::PermissionMode;
 
 const BASE_SUPPORTED_MODE_IDS: [PermissionMode; 4] = [
-    PermissionMode::Default,
+    PermissionMode::Ask,
     PermissionMode::AcceptEdits,
     PermissionMode::Plan,
     PermissionMode::DontAsk,
@@ -19,7 +19,7 @@ fn unique_mode_ids(modes: Vec<PermissionMode>) -> Vec<PermissionMode> {
     // plan, dontAsk, auto, bypassPermissions. Filter to only present
     // ids while preserving canonical order.
     const CANONICAL_ORDER: [PermissionMode; 6] = [
-        PermissionMode::Default,
+        PermissionMode::Ask,
         PermissionMode::AcceptEdits,
         PermissionMode::Plan,
         PermissionMode::DontAsk,
@@ -117,7 +117,7 @@ mod tests {
         assert_eq!(
             supported,
             vec![
-                PermissionMode::Default,
+                PermissionMode::Ask,
                 PermissionMode::AcceptEdits,
                 PermissionMode::Plan,
                 PermissionMode::DontAsk
@@ -151,7 +151,7 @@ mod tests {
     #[test]
     fn build_mode_state_from_supported_uses_supported_list() {
         let supported = vec![
-            PermissionMode::Default,
+            PermissionMode::Ask,
             PermissionMode::AcceptEdits,
             PermissionMode::Plan,
             PermissionMode::DontAsk,
