@@ -64,6 +64,24 @@ This is the entire contract. No second channel for "control events"
 vs "data events." No callback hooks. No shared mutable state. Just
 two enum streams.
 
+**Strict wiring (post Phase 6).** TUI no longer holds an
+`Arc<AgentHandle>`. Every outbound agent call flows through
+`Workspace::dispatch(Command)` — that's `Prompt`, `Cancel`,
+`SetMode`/`SetModel`, `NewSession`/`ResumeSession`/`ResumeOrNew`,
+`GenerateSessionTitle`/`RenameSession`, the full MCP suite
+(`ReconnectMcpServer`, `ToggleMcpServer`, `AuthenticateMcpServer`,
+`ClearMcpAuth`, `SetMcpServers`, `SubmitMcpOauthCallbackUrl`),
+`RespondElicitation`, and the git-watch start/stop pair. Query-style
+refreshes are direct `Workspace` methods rather than command
+variants: `refresh_status_snapshot`, `refresh_oauth_credentials_snapshot`,
+`refresh_context_usage`, `reload_plugins`, `refresh_mcp_snapshot`.
+Direct-accessor facades (`settings_documents`, `write_settings_document`,
+`project_memory_path`, `config_dir_for`, `oauth_usage`) also live as
+inherent `Workspace` methods. `SessionUpdate::Connected` /
+`SessionReplaced` / `AuthCompleted` no longer carry an
+`Arc<AgentHandle>` payload — the handle is stamped onto the
+workspace's `DomainSession`, never reaches TUI.
+
 ### Single-channel event bus (nuance worth knowing)
 
 The same `SessionUpdate` channel TUI subscribes to is **also used as

@@ -77,15 +77,16 @@ pub(super) fn request_cancel(app: &mut App, origin: CancelOrigin) -> Result<(), 
         return Ok(());
     }
 
-    let Some(conn) = app.conn().cloned() else {
+    if !app.has_active_agent() {
         return Err("not connected yet".to_owned());
-    };
+    }
     let Some(sid) = app.session_id() else {
         return Err("no active session".to_owned());
     };
 
     let session_id = sid.to_string();
-    conn.cancel(session_id.clone()).map_err(|e| e.to_string())?;
+    app.dispatch_command(|key| forge_workspace::Command::Cancel { key })
+        .map_err(|e| e.to_string())?;
     app.set_pending_cancel_origin(Some(origin));
     app.set_cancelled_turn_pending_hint(matches!(origin, CancelOrigin::Manual));
     let session_key = forge_workspace::SessionKey::from_session_id(session_id.clone());
@@ -128,7 +129,9 @@ fn dispatch_prompt_turn(app: &mut App, text: String) {
     // so their spinners don't continue during this turn.
     let _ = app.finalize_in_progress_tool_calls(model::ToolCallStatus::Failed);
 
-    let Some(conn) = app.conn().cloned() else { return };
+    if !app.has_active_agent() {
+        return;
+    }
     let Some(sid) = app.session_id() else {
         return;
     };
@@ -161,7 +164,12 @@ fn dispatch_prompt_turn(app: &mut App, text: String) {
     let tx = app.update_tx.clone();
     // The text already contains [Image #N] badges from the textarea,
     // so the model can correlate user references with image attachments.
-    match conn.prompt_with_images(sid.to_string(), text, images) {
+    let prompt_text = text;
+    match app.dispatch_command(|key| forge_workspace::Command::Prompt {
+        key,
+        text: prompt_text,
+        attachments: images,
+    }) {
         Ok(()) => {
             crate::app::session_runtime::request_context_usage_refresh(app);
             tracing::info!(
@@ -194,8 +202,7 @@ mod tests {
     fn app_with_connection()
     -> (App, tokio::sync::mpsc::UnboundedReceiver<forge_primitives::Command>) {
         let mut app = App::test_default();
-        let (handle, rx) = forge_workspace::Workspace::testing_stub_handle();
-        app.set_active_conn(Some(std::sync::Arc::new(handle)));
+        let rx = app.install_testing_stub();
         app.set_session_id(Some(model::SessionId::new("session-1")));
         (app, rx)
     }
@@ -349,8 +356,7 @@ mod tests {
     #[test]
     fn dispatch_prompt_turn_without_session_id_leaves_state_unchanged() {
         let mut app = App::test_default();
-        let (handle, _rx) = forge_workspace::Workspace::testing_stub_handle();
-        app.set_active_conn(Some(std::sync::Arc::new(handle)));
+        let _rx = app.install_testing_stub();
         app.status = AppStatus::Ready;
 
         dispatch_prompt_turn(&mut app, "hello".into());

@@ -46,7 +46,6 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
             available_models,
             mode,
             history,
-            conn,
         } => {
             session::apply_session_update_connected(
                 app,
@@ -57,7 +56,6 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
                 available_models,
                 mode,
                 history,
-                conn,
             );
             crate::app::config::refresh_mcp_snapshot(app);
             crate::app::session_runtime::request_status_snapshot_refresh(app);
@@ -72,7 +70,6 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
             available_models,
             mode,
             history,
-            conn,
         } => {
             session::apply_session_update_session_replaced(
                 app,
@@ -83,7 +80,6 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
                 available_models,
                 mode,
                 history,
-                conn,
             );
             crate::app::config::refresh_mcp_snapshot(app);
             crate::app::session_runtime::request_status_snapshot_refresh(app);
@@ -102,8 +98,8 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
         SessionUpdate::SlashCommandError { key, message } => {
             session::apply_session_update_slash_command_error(app, key, message);
         }
-        SessionUpdate::AuthCompleted { key, conn } => {
-            session::apply_session_update_auth_completed(app, key, conn);
+        SessionUpdate::AuthCompleted { key } => {
+            session::apply_session_update_auth_completed(app, key);
         }
         SessionUpdate::LogoutCompleted { key } => {
             session::apply_session_update_logout_completed(app, key);
@@ -1525,11 +1521,6 @@ mod tests {
         }
     }
 
-    fn stub_handle() -> std::sync::Arc<forge_workspace::AgentHandle> {
-        let (h, _) = forge_workspace::Workspace::testing_stub_handle();
-        std::sync::Arc::new(h)
-    }
-
     /// `SessionUpdate::Connected` for the active session reaches the
     /// active apply-chain path which restarts `app.file_index` with
     /// the new cwd. After the event lands, the file_index root must
@@ -1572,7 +1563,6 @@ mod tests {
                 available_models: Vec::new(),
                 mode: None,
                 history: Vec::new(),
-                conn: stub_handle(),
             },
         );
 
@@ -1625,7 +1615,6 @@ mod tests {
                 available_models: Vec::new(),
                 mode: None,
                 history: Vec::new(),
-                conn: stub_handle(),
             },
         );
 

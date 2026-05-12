@@ -150,42 +150,39 @@ fn log_session_request(
     }
 }
 
-pub(crate) fn start_new_session(
-    app: &App,
-    conn: &forge_workspace::AgentHandle,
-    reason: SessionStartReason,
-) -> anyhow::Result<()> {
+pub(crate) fn start_new_session(app: &App, reason: SessionStartReason) -> anyhow::Result<()> {
     let launch_settings = session_launch_settings_for_reason(app, reason);
     log_session_request(app, reason, &launch_settings, None);
-    conn.new_session(app.cwd_raw(), launch_settings)
+    let cwd = app.cwd_raw();
+    app.dispatch_command(|key| forge_workspace::Command::NewSession { key, cwd, launch_settings })
+        .map_err(|err| anyhow::anyhow!("workspace dispatch failed: {err}"))
 }
 
-pub(crate) fn resume_session(
-    app: &App,
-    conn: &forge_workspace::AgentHandle,
-    session_id: String,
-) -> anyhow::Result<()> {
+pub(crate) fn resume_session(app: &App, session_id: String) -> anyhow::Result<()> {
     let launch_settings = session_launch_settings_for_reason(app, SessionStartReason::Resume);
     log_session_request(app, SessionStartReason::Resume, &launch_settings, Some(&session_id));
+    let cwd = app.cwd_raw();
     // `claude --resume` keys sessions off the subprocess's working
     // directory; pass the current bucket's cwd so claude looks in the
     // right project subdir. Empty cwd would inherit forge's `$PWD`,
     // which for an in-session resume usually does not match the
     // target project.
-    conn.resume_session(session_id, app.cwd_raw(), launch_settings)
+    app.dispatch_command(|key| forge_workspace::Command::ResumeSession {
+        key,
+        session_id,
+        cwd,
+        launch_settings,
+    })
+    .map_err(|err| anyhow::anyhow!("workspace dispatch failed: {err}"))
 }
 
 /// Begin a session resume by marking the target session and sending the command.
 ///
 /// Caller owns UI concerns such as entering `CommandPending` and surfacing
 /// synchronous errors.
-pub(crate) fn begin_resume_session(
-    app: &mut App,
-    conn: &forge_workspace::AgentHandle,
-    session_id: String,
-) -> anyhow::Result<()> {
+pub(crate) fn begin_resume_session(app: &mut App, session_id: String) -> anyhow::Result<()> {
     app.resuming_session_id = Some(session_id.clone());
-    resume_session(app, conn, session_id)
+    resume_session(app, session_id)
 }
 
 #[cfg(test)]

@@ -369,18 +369,7 @@ mod tests {
     use pretty_assertions::assert_eq;
     use ratatui::layout::Rect;
 
-    use std::sync::Arc;
     use std::time::{Duration, Instant};
-
-    /// Helper: a no-op `Arc<AgentHandle>` for tests that construct
-    /// `SessionUpdate::Connected` / `SessionUpdate::SessionReplaced`
-    /// envelopes without driving a real bridge. The handle is wired
-    /// to a sender whose receiver is dropped immediately, so any
-    /// command the test code sends through it is silently swallowed.
-    fn stub_conn() -> Arc<forge_workspace::AgentHandle> {
-        let (handle, _rx) = forge_workspace::Workspace::testing_stub_handle();
-        Arc::new(handle)
-    }
 
     /// Helper: synthetic [`forge_workspace::SessionKey`] used to
     /// tag `ClientEvent`s emitted by tests. Tests built around
@@ -792,13 +781,6 @@ mod tests {
     }
 
     fn connected_event(model_name: &str) -> SessionUpdate {
-        connected_event_with_conn(model_name, stub_conn())
-    }
-
-    fn connected_event_with_conn(
-        model_name: &str,
-        conn: Arc<forge_workspace::AgentHandle>,
-    ) -> SessionUpdate {
         SessionUpdate::Connected {
             key: forge_workspace::SessionKey::from_session_id("test-session".to_owned()),
             session_id: forge_primitives::SessionId::new("test-session"),
@@ -807,7 +789,6 @@ mod tests {
             available_models: Vec::new(),
             mode: None,
             history: Vec::new(),
-            conn,
         }
     }
 
@@ -884,16 +865,11 @@ mod tests {
         }
     }
 
-    fn app_with_bridge_connection() -> (
-        App,
-        tokio::sync::mpsc::UnboundedReceiver<forge_primitives::Command>,
-        Arc<forge_workspace::AgentHandle>,
-    ) {
+    fn app_with_bridge_connection()
+    -> (App, tokio::sync::mpsc::UnboundedReceiver<forge_primitives::Command>) {
         let mut app = make_test_app();
-        let (handle, rx) = forge_workspace::Workspace::testing_stub_handle();
-        let arc = Arc::new(handle);
-        app.set_active_conn(Some(Arc::clone(&arc)));
-        (app, rx, arc)
+        let rx = app.install_testing_stub();
+        (app, rx)
     }
 
     fn listed_session(id: &str, title: &str) -> forge_primitives::SessionListEntry {
@@ -1561,7 +1537,7 @@ mod tests {
 
     #[test]
     fn connected_requests_mcp_snapshot_even_outside_mcp_tab() {
-        let (mut app, mut rx, conn) = app_with_bridge_connection();
+        let (mut app, mut rx) = app_with_bridge_connection();
         app.config.active_tab = crate::app::config::ConfigTab::Status;
         app.mcp_mut().servers.push(forge_primitives::McpServerStatus {
             name: "supabase".into(),
@@ -1575,7 +1551,7 @@ mod tests {
             sampling_required: None,
         });
 
-        apply_session_update(&mut app, connected_event_with_conn("claude-updated", conn));
+        apply_session_update(&mut app, connected_event("claude-updated"));
 
         // First command is the per-session git watcher start. Drain it
         // so the snapshot-command assertion still works.
@@ -1612,7 +1588,6 @@ mod tests {
                 available_models: Vec::new(),
                 mode: None,
                 history: Vec::new(),
-                conn: stub_conn(),
             },
         );
 
@@ -1646,7 +1621,6 @@ mod tests {
                 available_models: Vec::new(),
                 mode: None,
                 history: Vec::new(),
-                conn: stub_conn(),
             },
         );
 
@@ -1920,7 +1894,6 @@ mod tests {
                 available_models: Vec::new(),
                 mode: None,
                 history: Vec::new(),
-                conn: stub_conn(),
             },
         );
 
@@ -1946,7 +1919,7 @@ mod tests {
 
     #[test]
     fn session_replaced_requests_mcp_snapshot_even_outside_mcp_tab() {
-        let (mut app, mut rx, conn) = app_with_bridge_connection();
+        let (mut app, mut rx) = app_with_bridge_connection();
         app.config.active_tab = crate::app::config::ConfigTab::Status;
         app.mcp_mut().servers.push(forge_primitives::McpServerStatus {
             name: "supabase".into(),
@@ -1970,7 +1943,6 @@ mod tests {
                 available_models: Vec::new(),
                 mode: None,
                 history: Vec::new(),
-                conn,
             },
         );
 
@@ -1990,9 +1962,9 @@ mod tests {
 
     #[test]
     fn connected_requests_status_snapshot_on_connect() {
-        let (mut app, mut rx, conn) = app_with_bridge_connection();
+        let (mut app, mut rx) = app_with_bridge_connection();
 
-        apply_session_update(&mut app, connected_event_with_conn("claude-updated", conn));
+        apply_session_update(&mut app, connected_event("claude-updated"));
 
         // First command is the per-session git watcher start. Drain it
         // so the snapshot-command assertions still work.
@@ -2417,8 +2389,7 @@ mod tests {
         assert!(app.startup_recent_sessions_loaded);
         assert!(!app.startup_session_picker_resolved);
 
-        let (handle, _rx) = forge_workspace::Workspace::testing_stub_handle();
-        app.set_active_conn(Some(std::sync::Arc::new(handle)));
+        let _rx = app.install_testing_stub();
         apply_session_update(&mut app, connected_event("claude-updated"));
 
         assert_eq!(app.active_view, ActiveView::SessionPicker);
@@ -2429,8 +2400,7 @@ mod tests {
     fn startup_picker_empty_list_stays_in_chat_with_info_message() {
         let mut app = make_test_app();
         app.startup_session_picker_requested = true;
-        let (handle, _rx) = forge_workspace::Workspace::testing_stub_handle();
-        app.set_active_conn(Some(std::sync::Arc::new(handle)));
+        let _rx = app.install_testing_stub();
 
         apply_session_update(&mut app, connected_event("claude-updated"));
         assert_eq!(app.active_view, ActiveView::Chat);
@@ -2583,7 +2553,6 @@ mod tests {
                 available_models: Vec::new(),
                 mode: None,
                 history: Vec::new(),
-                conn: stub_conn(),
             },
         );
 
@@ -2609,7 +2578,6 @@ mod tests {
                 available_models: Vec::new(),
                 mode: None,
                 history: history_updates,
-                conn: stub_conn(),
             },
         );
 
@@ -2644,7 +2612,6 @@ mod tests {
                 available_models: Vec::new(),
                 mode: None,
                 history: history_updates,
-                conn: stub_conn(),
             },
         );
 
@@ -2692,7 +2659,6 @@ mod tests {
                 available_models: Vec::new(),
                 mode: None,
                 history: vec![open_tool],
-                conn: stub_conn(),
             },
         );
 
@@ -2721,7 +2687,6 @@ mod tests {
                 available_models: Vec::new(),
                 mode: None,
                 history: vec![assistant_text_message("assistant reply")],
-                conn: stub_conn(),
             },
         );
 
@@ -2749,7 +2714,6 @@ mod tests {
                 available_models: Vec::new(),
                 mode: None,
                 history: vec![task_tool],
-                conn: stub_conn(),
             },
         );
 
@@ -3438,7 +3402,6 @@ mod tests {
                 available_models: Vec::new(),
                 mode: None,
                 history: Vec::new(),
-                conn: stub_conn(),
             },
         );
         assert!(app.turn_notice_refs().is_empty());
@@ -3874,7 +3837,7 @@ mod tests {
 
     #[test]
     fn enter_submits_draft_when_permission_arrives_mid_compose() {
-        let (mut app, mut bridge_rx, _conn) = app_with_bridge_connection();
+        let (mut app, mut bridge_rx) = app_with_bridge_connection();
         let tool_id = "perm-submit";
         append_tool_call_block(&mut app, tool_id);
         app.set_session_id(Some(model::SessionId::new("session-1")));
@@ -3995,7 +3958,7 @@ mod tests {
 
     #[test]
     fn tab_focuses_question_and_enter_confirms_only_after_explicit_handoff() {
-        let (mut app, _bridge_rx, _conn) = app_with_bridge_connection();
+        let (mut app, _bridge_rx) = app_with_bridge_connection();
         let mut response_rx = attach_pending_question(
             &mut app,
             "question-tab",
@@ -4522,7 +4485,7 @@ mod tests {
 
     #[test]
     fn second_esc_after_permission_rejection_requests_turn_cancel() {
-        let (mut app, mut rx, _conn) = app_with_bridge_connection();
+        let (mut app, mut rx) = app_with_bridge_connection();
         app.status = AppStatus::Running;
         app.set_session_id(Some(model::SessionId::new("session-1")));
         let mut response_rx = attach_pending_permission(

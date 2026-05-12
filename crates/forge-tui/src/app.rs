@@ -343,10 +343,10 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
 
     // Cancel any active turn and give the adapter a moment to clean up
     if matches!(app.status, AppStatus::Thinking | AppStatus::Running)
-        && let Some(conn) = app.conn()
-        && let Some(sid) = app.session_id()
+        && app.has_active_agent()
+        && app.session_id().is_some()
     {
-        let _ = conn.cancel(sid.to_string());
+        let _ = app.dispatch_command(|key| forge_workspace::Command::Cancel { key });
     }
 
     // Restore terminal
@@ -574,8 +574,7 @@ mod tests {
     fn app_with_connection()
     -> (App, tokio::sync::mpsc::UnboundedReceiver<forge_primitives::Command>) {
         let mut app = App::test_default();
-        let (handle, rx) = forge_workspace::Workspace::testing_stub_handle();
-        app.set_active_conn(Some(std::sync::Arc::new(handle)));
+        let rx = app.install_testing_stub();
         app.set_session_id(Some(model::SessionId::new("session-1")));
         (app, rx)
     }

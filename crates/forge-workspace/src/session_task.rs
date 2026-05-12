@@ -150,7 +150,6 @@ impl SessionTask {
                         available_models,
                         mode,
                         history,
-                        conn: Arc::clone(&self.handle),
                     });
                 } else {
                     self.connected_once = true;
@@ -174,7 +173,6 @@ impl SessionTask {
                         available_models,
                         mode,
                         history,
-                        conn: Arc::clone(&self.handle),
                     });
                 }
             }
@@ -196,7 +194,6 @@ impl SessionTask {
                     available_models,
                     mode,
                     history,
-                    conn: Arc::clone(&self.handle),
                 });
             }
             AgentEvent::AuthRequired { method_name, method_description } => {
@@ -434,49 +431,204 @@ impl SessionTask {
                     }
                 }
             }
-            Command::RespondElicitation { key: _, elicitation_id, action } => {
-                let mut guard = self.domain.lock();
-                match guard.pending_interactions.remove(&elicitation_id) {
-                    Some(PendingInteractionSlot::Elicitation(tx)) => {
-                        if tx.send(action).is_err() {
-                            tracing::warn!(
-                                target: "forge_workspace::session_task",
-                                key = %self.key.as_str(),
-                                elicitation_id = %elicitation_id,
-                                "elicitation oneshot receiver dropped"
-                            );
-                        }
-                    }
-                    Some(other) => {
-                        tracing::warn!(
-                            target: "forge_workspace::session_task",
-                            key = %self.key.as_str(),
-                            elicitation_id = %elicitation_id,
-                            slot = ?other,
-                            "RespondElicitation got non-Elicitation slot. Dropping."
-                        );
-                    }
-                    None => {
-                        tracing::warn!(
-                            target: "forge_workspace::session_task",
-                            key = %self.key.as_str(),
-                            elicitation_id = %elicitation_id,
-                            "RespondElicitation found no pending interaction"
-                        );
-                    }
-                }
-            }
             other => {
-                tracing::trace!(
-                    target: "forge_workspace::session_task",
-                    key = %self.key.as_str(),
-                    command = ?other,
-                    "command received (Phase 4 stub; future phases wire to AgentHandle)"
-                );
-                drop(other);
+                let sid = self.session_id_string();
+                let _ = execute_command_via_handle(&self.handle, &self.key, sid.as_deref(), other);
             }
         }
     }
+
+    /// Snapshot the session id stamped on `DomainSession`, formatted
+    /// as a `String`. Most agent commands need the wire session_id;
+    /// returns `None` when the bridge hasn't emitted its first
+    /// `Connected` yet.
+    fn session_id_string(&self) -> Option<String> {
+        self.domain.lock().session_id.as_ref().map(std::string::ToString::to_string)
+    }
+}
+
+/// Forward a `Command` straight to `handle`. Pure transport — no
+/// pending-interaction bookkeeping; the only commands that consult
+/// `PendingInteractionSlot` (RespondPermission / RespondQuestion)
+/// must be handled by the caller before delegation here.
+///
+/// Used by both `SessionTask::execute_command` (production: actor
+/// path) and `Workspace::dispatch`'s synchronous test fallback when
+/// no `SessionTask` is running for `key`.
+///
+/// Returns `Ok(())` on successful enqueue; `Err(...)` only on
+/// AgentHandle send failure (dispatcher channel closed). Commands
+/// requiring a `session_id` that the domain doesn't have yet
+/// (pre-Connect) log a warning and return `Ok(())`.
+pub(crate) fn execute_command_via_handle(
+    handle: &Arc<AgentHandle>,
+    key: &SessionKey,
+    session_id: Option<&str>,
+    cmd: Command,
+) -> anyhow::Result<()> {
+    match cmd {
+        Command::RespondElicitation { key: _, elicitation_id, action, content } => {
+            // MCP elicitation responses bypass `pending_interactions`
+            // entirely — the bridge emits `AgentEvent::ElicitationRequest`
+            // without registering a workspace-side oneshot, and the TUI
+            // replies out of band with optional `content`. Forward
+            // straight to the agent.
+            let Some(sid) = session_id else {
+                warn_no_session(key, "RespondElicitation");
+                return Ok(());
+            };
+            handle.respond_to_elicitation(sid.to_owned(), elicitation_id, action, content)
+        }
+        Command::Prompt { key: _, text, attachments } => {
+            let Some(sid) = session_id else {
+                warn_no_session(key, "Prompt");
+                return Ok(());
+            };
+            handle.prompt_with_images(sid.to_owned(), text, attachments)
+        }
+        Command::Cancel { key: _ } => {
+            let Some(sid) = session_id else {
+                warn_no_session(key, "Cancel");
+                return Ok(());
+            };
+            handle.cancel(sid.to_owned())
+        }
+        Command::SetMode { key: _, mode } => {
+            let Some(sid) = session_id else {
+                warn_no_session(key, "SetMode");
+                return Ok(());
+            };
+            handle.set_mode(sid.to_owned(), mode.as_wire().to_owned())
+        }
+        Command::SetModel { key: _, model } => {
+            let Some(sid) = session_id else {
+                warn_no_session(key, "SetModel");
+                return Ok(());
+            };
+            handle.set_model(sid.to_owned(), model)
+        }
+        Command::NewSession { key: _, cwd, launch_settings } => {
+            handle.new_session(cwd, launch_settings)
+        }
+        Command::ResumeSession { key: _, session_id, cwd, launch_settings } => {
+            handle.resume_session(session_id, cwd, launch_settings)
+        }
+        Command::ResumeOrNewSession { key: _, session_id, cwd, launch_settings } => {
+            handle.resume_or_new_session(session_id, cwd, launch_settings)
+        }
+        Command::GenerateSessionTitle { key: _, description } => {
+            let Some(sid) = session_id else {
+                warn_no_session(key, "GenerateSessionTitle");
+                return Ok(());
+            };
+            handle.generate_session_title(sid.to_owned(), description)
+        }
+        Command::RenameSession { key: _, title } => {
+            let Some(sid) = session_id else {
+                warn_no_session(key, "RenameSession");
+                return Ok(());
+            };
+            handle.rename_session(sid.to_owned(), title)
+        }
+        Command::ReconnectMcpServer { key: _, server_name } => {
+            let Some(sid) = session_id else {
+                warn_no_session(key, "ReconnectMcpServer");
+                return Ok(());
+            };
+            handle.reconnect_mcp_server(sid.to_owned(), server_name)
+        }
+        Command::ToggleMcpServer { key: _, server_name, enabled } => {
+            let Some(sid) = session_id else {
+                warn_no_session(key, "ToggleMcpServer");
+                return Ok(());
+            };
+            handle.toggle_mcp_server(sid.to_owned(), server_name, enabled)
+        }
+        Command::SetMcpServers { key: _, servers } => {
+            let Some(sid) = session_id else {
+                warn_no_session(key, "SetMcpServers");
+                return Ok(());
+            };
+            handle.set_mcp_servers(sid.to_owned(), servers)
+        }
+        Command::AuthenticateMcpServer { key: _, server_name } => {
+            let Some(sid) = session_id else {
+                warn_no_session(key, "AuthenticateMcpServer");
+                return Ok(());
+            };
+            handle.authenticate_mcp_server(sid.to_owned(), server_name)
+        }
+        Command::ClearMcpAuth { key: _, server_name } => {
+            let Some(sid) = session_id else {
+                warn_no_session(key, "ClearMcpAuth");
+                return Ok(());
+            };
+            handle.clear_mcp_auth(sid.to_owned(), server_name)
+        }
+        Command::SubmitMcpOauthCallbackUrl { key: _, server_name, callback_url } => {
+            let Some(sid) = session_id else {
+                warn_no_session(key, "SubmitMcpOauthCallbackUrl");
+                return Ok(());
+            };
+            handle.submit_mcp_oauth_callback_url(sid.to_owned(), server_name, callback_url)
+        }
+        Command::RespondPermission { .. } | Command::RespondQuestion { .. } => {
+            tracing::error!(
+                target: "forge_workspace::session_task",
+                key = %key.as_str(),
+                command = ?cmd,
+                "Respond* commands must be handled by SessionTask::execute_command before delegation"
+            );
+            Ok(())
+        }
+        Command::StartGitWatch { key: _, session_id, cwd } => {
+            handle.start_git_context_watch(session_id, cwd)
+        }
+        Command::StopGitWatch { key: _, session_id } => handle.stop_git_context_watch(session_id),
+        // The remaining variants (CloseSession, the four Request*
+        // refresh commands, RuntimeReload, UpdatePermissions)
+        // aren't wired through `dispatch` yet — they predate the
+        // Phase 6 strict-wiring pass and remain stubs. Refresh
+        // commands flow via `Workspace::refresh_*` direct methods
+        // instead.
+        stub @ (Command::CloseSession { .. }
+        | Command::RequestStatusSnapshot { .. }
+        | Command::RequestMcpSnapshot { .. }
+        | Command::RequestContextUsage { .. }
+        | Command::RequestOauthCredentials { .. }
+        | Command::RuntimeReload { .. }
+        | Command::UpdatePermissions { .. }) => {
+            tracing::trace!(
+                target: "forge_workspace::session_task",
+                key = %key.as_str(),
+                command = ?stub,
+                "command received but not yet wired to AgentHandle"
+            );
+            Ok(())
+        }
+        // App-level commands are caught in Workspace::dispatch's
+        // app-level branch; they never reach this helper.
+        misrouted @ (Command::SpawnProject { .. }
+        | Command::SpawnSession { .. }
+        | Command::StartDefault { .. }) => {
+            tracing::warn!(
+                target: "forge_workspace::session_task",
+                key = %key.as_str(),
+                command = ?misrouted,
+                "App-level command unexpectedly routed via per-session path"
+            );
+            Ok(())
+        }
+    }
+}
+
+fn warn_no_session(key: &SessionKey, command: &'static str) {
+    tracing::warn!(
+        target: "forge_workspace::session_task",
+        key = %key.as_str(),
+        command,
+        "command dropped: no session_id stamped on DomainSession yet",
+    );
 }
 
 /// Apply an [`AgentEvent`] to a [`DomainSession`]. Pure mutation; no
@@ -808,5 +960,185 @@ mod tests {
             &AgentEvent::ConnectionFailed { message: "boom".to_owned() },
         );
         assert!(matches!(domain.lifecycle_state, SessionLifecycleState::Failed));
+    }
+
+    /// Common harness for the `execute_command_via_handle` tests
+    /// below: build a fresh stub handle + drain channel, return both.
+    fn stub_handle_with_rx()
+    -> (Arc<AgentHandle>, tokio::sync::mpsc::UnboundedReceiver<forge_primitives::Command>) {
+        let (handle, rx) = Agent::testing_stub();
+        (Arc::new(handle), rx)
+    }
+
+    /// `Command::Prompt` reaches the underlying agent's command
+    /// dispatcher as `PromptWithImages`.
+    #[test]
+    fn execute_prompt_forwards_to_handle() {
+        let (handle, mut rx) = stub_handle_with_rx();
+        let key = SessionKey::from_str_for_test("sess");
+        execute_command_via_handle(
+            &handle,
+            &key,
+            Some("sess-1"),
+            Command::Prompt { key: key.clone(), text: "hi".into(), attachments: Vec::new() },
+        )
+        .expect("dispatch succeeds");
+        let cmd = rx.try_recv().expect("command queued");
+        assert!(matches!(
+            cmd,
+            forge_primitives::Command::PromptWithImages { session_id, .. }
+                if session_id == "sess-1"
+        ));
+    }
+
+    /// `Command::Cancel` reaches the agent's command dispatcher.
+    #[test]
+    fn execute_cancel_forwards_to_handle() {
+        let (handle, mut rx) = stub_handle_with_rx();
+        let key = SessionKey::from_str_for_test("sess");
+        execute_command_via_handle(
+            &handle,
+            &key,
+            Some("sess-1"),
+            Command::Cancel { key: key.clone() },
+        )
+        .expect("dispatch succeeds");
+        let cmd = rx.try_recv().expect("command queued");
+        assert!(matches!(
+            cmd,
+            forge_primitives::Command::Cancel { session_id } if session_id == "sess-1"
+        ));
+    }
+
+    /// `Command::SetMode` translates the typed `PermissionMode` back
+    /// to its wire form on the way out to the bridge.
+    #[test]
+    fn execute_set_mode_uses_wire_form() {
+        use forge_primitives::permission::PermissionMode;
+        let (handle, mut rx) = stub_handle_with_rx();
+        let key = SessionKey::from_str_for_test("sess");
+        execute_command_via_handle(
+            &handle,
+            &key,
+            Some("sess-1"),
+            Command::SetMode { key: key.clone(), mode: PermissionMode::Plan },
+        )
+        .expect("dispatch succeeds");
+        let cmd = rx.try_recv().expect("command queued");
+        match cmd {
+            forge_primitives::Command::SetMode { session_id, mode } => {
+                assert_eq!(session_id.as_str(), "sess-1");
+                assert_eq!(mode, "plan");
+            }
+            other => panic!("expected SetMode, got {other:?}"),
+        }
+    }
+
+    /// `Command::GenerateSessionTitle` forwards through the new path.
+    #[test]
+    fn execute_generate_session_title_forwards_to_handle() {
+        let (handle, mut rx) = stub_handle_with_rx();
+        let key = SessionKey::from_str_for_test("sess");
+        execute_command_via_handle(
+            &handle,
+            &key,
+            Some("sess-1"),
+            Command::GenerateSessionTitle { key: key.clone(), description: "first turn".into() },
+        )
+        .expect("dispatch succeeds");
+        let cmd = rx.try_recv().expect("command queued");
+        match cmd {
+            forge_primitives::Command::GenerateSessionTitle { session_id, description } => {
+                assert_eq!(session_id.as_str(), "sess-1");
+                assert_eq!(description, "first turn");
+            }
+            other => panic!("expected GenerateSessionTitle, got {other:?}"),
+        }
+    }
+
+    /// `Command::ReconnectMcpServer` reaches the bridge with the
+    /// server name carried through.
+    #[test]
+    fn execute_reconnect_mcp_server_forwards() {
+        let (handle, mut rx) = stub_handle_with_rx();
+        let key = SessionKey::from_str_for_test("sess");
+        execute_command_via_handle(
+            &handle,
+            &key,
+            Some("sess-1"),
+            Command::ReconnectMcpServer { key: key.clone(), server_name: "fs".into() },
+        )
+        .expect("dispatch succeeds");
+        let cmd = rx.try_recv().expect("command queued");
+        match cmd {
+            forge_primitives::Command::ReconnectMcpServer { server_name, .. } => {
+                assert_eq!(server_name, "fs");
+            }
+            other => panic!("expected ReconnectMcpServer, got {other:?}"),
+        }
+    }
+
+    /// `Command::SubmitMcpOauthCallbackUrl` carries the captured URL
+    /// through.
+    #[test]
+    fn execute_submit_mcp_oauth_callback_url_forwards() {
+        let (handle, mut rx) = stub_handle_with_rx();
+        let key = SessionKey::from_str_for_test("sess");
+        execute_command_via_handle(
+            &handle,
+            &key,
+            Some("sess-1"),
+            Command::SubmitMcpOauthCallbackUrl {
+                key: key.clone(),
+                server_name: "github".into(),
+                callback_url: "https://example.com/cb?code=abc".into(),
+            },
+        )
+        .expect("dispatch succeeds");
+        let cmd = rx.try_recv().expect("command queued");
+        match cmd {
+            forge_primitives::Command::SubmitMcpOauthCallbackUrl { callback_url, .. } => {
+                assert_eq!(callback_url, "https://example.com/cb?code=abc");
+            }
+            other => panic!("expected SubmitMcpOauthCallbackUrl, got {other:?}"),
+        }
+    }
+
+    /// `Command::RespondElicitation` forwards directly (no
+    /// `pending_interactions` lookup needed — MCP elicitations
+    /// bypass the workspace's oneshot path).
+    #[test]
+    fn execute_respond_elicitation_forwards_with_content() {
+        let (handle, mut rx) = stub_handle_with_rx();
+        let key = SessionKey::from_str_for_test("sess");
+        execute_command_via_handle(
+            &handle,
+            &key,
+            Some("sess-1"),
+            Command::RespondElicitation {
+                key: key.clone(),
+                elicitation_id: "elic-1".into(),
+                action: forge_primitives::ElicitationAction::Accept,
+                content: Some(serde_json::json!({"answer": "yes"})),
+            },
+        )
+        .expect("dispatch succeeds");
+        let cmd = rx.try_recv().expect("command queued");
+        assert!(matches!(
+            cmd,
+            forge_primitives::Command::RespondToElicitation { content: Some(_), .. }
+        ));
+    }
+
+    /// `Command::Cancel` without a `session_id` (pre-Connect) logs
+    /// and returns `Ok(())` rather than panicking.
+    #[test]
+    fn execute_command_without_session_id_is_dropped() {
+        let (handle, mut rx) = stub_handle_with_rx();
+        let key = SessionKey::from_str_for_test("sess");
+        execute_command_via_handle(&handle, &key, None, Command::Cancel { key: key.clone() })
+            .expect("dispatch returns Ok");
+        // Nothing should have been queued.
+        assert!(rx.try_recv().is_err());
     }
 }

@@ -2,6 +2,7 @@ use forge_workspace::cloud::{cli, oauth};
 
 use crate::app::{App, UsageSnapshot, UsageSourceKind, UsageSourceMode, UsageWindow};
 use forge_workspace::SessionUpdate;
+use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 const USAGE_REFRESH_TTL: Duration = Duration::from_secs(30);
@@ -32,15 +33,19 @@ pub(crate) fn request_refresh(app: &mut App) {
     let epoch = app.session_scope_epoch();
     let source_mode = app.usage.active_source;
     let cwd_raw = app.cwd_raw();
-    // Optional — the CLI fallback path doesn't need a connection,
-    // and tests sometimes drive the lifecycle without a bridge. The
-    // OAuth path bails with a clear "no connection" error when conn
-    // is None.
-    let conn = app.conn().cloned();
+    // Optional — the CLI fallback path doesn't need a workspace, and
+    // tests sometimes drive the lifecycle without one. The OAuth
+    // path bails with a clear "no connection" error when the
+    // workspace + active session can't be resolved.
+    let workspace_key = app
+        .workspace
+        .as_ref()
+        .zip(app.active_session_key.as_ref())
+        .map(|(ws, key)| (Arc::clone(ws), key.clone()));
 
     tokio::task::spawn_local(async move {
         let _ = event_tx.send(SessionUpdate::UsageRefreshStarted { epoch });
-        match refresh_snapshot(source_mode, cwd_raw, conn.as_deref()).await {
+        match refresh_snapshot(source_mode, cwd_raw, workspace_key.as_ref()).await {
             Ok(snapshot) => {
                 let _ = event_tx.send(SessionUpdate::UsageSnapshotReceived { epoch, snapshot });
             }
@@ -140,27 +145,31 @@ fn format_remaining_until(target: SystemTime) -> String {
 async fn refresh_snapshot(
     source_mode: UsageSourceMode,
     cwd_raw: String,
-    conn: Option<&forge_workspace::AgentHandle>,
+    workspace_key: Option<&(Arc<forge_workspace::Workspace>, forge_workspace::SessionKey)>,
 ) -> Result<UsageSnapshot, UsageRefreshFailure> {
     match source_mode {
-        UsageSourceMode::Oauth => fetch_oauth_via_bridge(conn).await,
+        UsageSourceMode::Oauth => fetch_oauth_via_bridge(workspace_key).await,
         UsageSourceMode::Cli => cli::fetch_snapshot(cwd_raw)
             .await
             .map_err(|message| UsageRefreshFailure { source: UsageSourceKind::Cli, message }),
-        UsageSourceMode::Auto => refresh_snapshot_auto(cwd_raw, conn).await,
+        UsageSourceMode::Auto => refresh_snapshot_auto(cwd_raw, workspace_key).await,
     }
 }
 
 async fn fetch_oauth_via_bridge(
-    conn: Option<&forge_workspace::AgentHandle>,
+    workspace_key: Option<&(Arc<forge_workspace::Workspace>, forge_workspace::SessionKey)>,
 ) -> Result<UsageSnapshot, UsageRefreshFailure> {
-    let Some(conn) = conn else {
+    let Some((workspace, key)) = workspace_key else {
         return Err(UsageRefreshFailure {
             source: UsageSourceKind::Oauth,
             message: "Bridge connection required for OAuth usage fetch.".to_owned(),
         });
     };
-    oauth::fetch_snapshot(conn).await.map_err(|error| UsageRefreshFailure {
+    let payload = workspace
+        .oauth_usage(key)
+        .await
+        .map_err(|message| UsageRefreshFailure { source: UsageSourceKind::Oauth, message })?;
+    oauth::snapshot_from_payload(payload).map_err(|error| UsageRefreshFailure {
         source: UsageSourceKind::Oauth,
         message: error.into_message(),
     })
@@ -168,10 +177,13 @@ async fn fetch_oauth_via_bridge(
 
 async fn refresh_snapshot_auto(
     cwd_raw: String,
-    conn: Option<&forge_workspace::AgentHandle>,
+    workspace_key: Option<&(Arc<forge_workspace::Workspace>, forge_workspace::SessionKey)>,
 ) -> Result<UsageSnapshot, UsageRefreshFailure> {
-    let oauth_result = match conn {
-        Some(conn) => oauth::fetch_snapshot(conn).await,
+    let oauth_result = match workspace_key {
+        Some((workspace, key)) => match workspace.oauth_usage(key).await {
+            Ok(payload) => oauth::snapshot_from_payload(payload),
+            Err(message) => Err(oauth::OauthFetchError::Unavailable(message)),
+        },
         None => Err(oauth::OauthFetchError::Unavailable(
             "Bridge connection required for OAuth usage fetch.".to_owned(),
         )),

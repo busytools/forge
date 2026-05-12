@@ -13,7 +13,6 @@ use super::{
     App, AppStatus, ChatMessage, MessageBlock, MessageRole, TextBlock, dialog::DialogState,
 };
 use crate::agent::model;
-use std::sync::Arc;
 
 pub const MAX_VISIBLE: usize = 8;
 const MAX_CANDIDATES: usize = 50;
@@ -102,28 +101,27 @@ fn push_user_message(app: &mut App, text: impl Into<String>) {
     app.active_viewport_mut().engage_auto_scroll();
 }
 
-fn require_connection(
-    app: &mut App,
-    not_connected_msg: &'static str,
-) -> Option<Arc<forge_workspace::AgentHandle>> {
-    let Some(conn) = app.conn().cloned() else {
+fn require_connection(app: &mut App, not_connected_msg: &'static str) -> bool {
+    if !app.has_active_agent() {
         push_system_message(app, not_connected_msg);
-        return None;
-    };
-    Some(conn)
+        return false;
+    }
+    true
 }
 
 fn require_active_session(
     app: &mut App,
     not_connected_msg: &'static str,
     no_session_msg: &'static str,
-) -> Option<(Arc<forge_workspace::AgentHandle>, model::SessionId)> {
-    let conn = require_connection(app, not_connected_msg)?;
+) -> Option<model::SessionId> {
+    if !require_connection(app, not_connected_msg) {
+        return None;
+    }
     let Some(session_id) = app.session_id() else {
         push_system_message(app, no_session_msg);
         return None;
     };
-    Some((conn, session_id))
+    Some(session_id)
 }
 
 /// Block the input field while a slash command is in flight.
@@ -489,8 +487,7 @@ mod tests {
         tokio::task::LocalSet::new()
             .run_until(async {
                 let mut app = App::test_default();
-                let (handle, mut rx) = forge_workspace::Workspace::testing_stub_handle();
-                app.set_active_conn(Some(std::sync::Arc::new(handle)));
+                let mut rx = app.install_testing_stub();
 
                 let consumed = try_handle_submit(&mut app, "/resume abc-123");
                 assert!(consumed);
@@ -511,8 +508,7 @@ mod tests {
         tokio::task::LocalSet::new()
             .run_until(async {
                 let mut app = App::test_default();
-                let (handle, _rx) = forge_workspace::Workspace::testing_stub_handle();
-                app.set_active_conn(Some(std::sync::Arc::new(handle)));
+                let _rx = app.install_testing_stub();
                 app.set_session_id(Some("sess-1".into()));
                 app.set_mode(Some(super::super::ModeState {
                     current_mode_id: "code".to_owned(),
@@ -543,8 +539,7 @@ mod tests {
         tokio::task::LocalSet::new()
             .run_until(async {
                 let mut app = App::test_default();
-                let (handle, _rx) = forge_workspace::Workspace::testing_stub_handle();
-                app.set_active_conn(Some(std::sync::Arc::new(handle)));
+                let _rx = app.install_testing_stub();
                 app.set_session_id(Some("sess-1".into()));
                 app.set_current_model(Some(
                     crate::agent::model::CurrentModel::new("old-model", "old-model", "old-model")
@@ -568,8 +563,7 @@ mod tests {
         tokio::task::LocalSet::new()
             .run_until(async {
                 let mut app = App::test_default();
-                let (handle, _rx) = forge_workspace::Workspace::testing_stub_handle();
-                app.set_active_conn(Some(std::sync::Arc::new(handle)));
+                let _rx = app.install_testing_stub();
 
                 let consumed = try_handle_submit(&mut app, "/new");
                 assert!(consumed);
@@ -603,8 +597,7 @@ mod tests {
     #[test]
     fn compact_with_active_session_sets_compacting_without_success_pending() {
         let mut app = App::test_default();
-        let (handle, _rx) = forge_workspace::Workspace::testing_stub_handle();
-        app.set_active_conn(Some(std::sync::Arc::new(handle)));
+        let _rx = app.install_testing_stub();
         app.set_session_id(Some(model::SessionId::new("session-1")));
 
         let consumed = try_handle_submit(&mut app, "/compact");

@@ -190,10 +190,16 @@ fn api_provider_label(provider: &str) -> String {
 }
 
 fn resolve_memory_path(app: &App) -> String {
-    let Some(conn) = app.conn().cloned() else {
+    let Some(workspace) = app.workspace.as_ref() else {
         return "(no connection)".to_owned();
     };
-    let memory_md = conn.project_memory_path(std::path::Path::new(&app.cwd_raw()));
+    let Some(key) = app.active_session_key.as_ref() else {
+        return "(no connection)".to_owned();
+    };
+    let Some(memory_md) = workspace.project_memory_path(key, std::path::Path::new(&app.cwd_raw()))
+    else {
+        return "(no connection)".to_owned();
+    };
     if memory_md.exists() {
         format!("auto memory ({})", memory_md.display())
     } else {

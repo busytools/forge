@@ -1248,8 +1248,7 @@ mod tests {
     fn app_with_connection()
     -> (crate::app::App, tokio::sync::mpsc::UnboundedReceiver<forge_primitives::Command>) {
         let mut app = crate::app::App::test_default();
-        let (handle, rx) = forge_workspace::Workspace::testing_stub_handle();
-        app.set_active_conn(Some(std::sync::Arc::new(handle)));
+        let rx = app.install_testing_stub();
         app.set_session_id(Some(model::SessionId::new("session-1")));
         (app, rx)
     }

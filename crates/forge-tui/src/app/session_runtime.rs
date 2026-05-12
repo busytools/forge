@@ -7,14 +7,17 @@ pub(crate) enum RuntimeReloadRequestOutcome {
 }
 
 pub(crate) fn request_runtime_reload(app: &mut App) -> RuntimeReloadRequestOutcome {
-    let Some(conn) = app.conn().cloned() else {
+    let Some(workspace) = app.workspace.as_ref() else {
+        return RuntimeReloadRequestOutcome::Unavailable;
+    };
+    let Some(key) = app.active_session_key.as_ref() else {
         return RuntimeReloadRequestOutcome::Unavailable;
     };
     let Some(session_id) = app.session_id() else {
         return RuntimeReloadRequestOutcome::Unavailable;
     };
     let session_id = session_id.to_string();
-    match conn.reload_plugins(session_id.clone()) {
+    match workspace.reload_plugins(key) {
         Ok(()) => {
             tracing::debug!(
                 target: crate::logging::targets::APP_SESSION,
@@ -45,7 +48,11 @@ pub(crate) fn request_context_usage_refresh(app: &mut App) {
         return;
     }
 
-    let Some(conn) = app.conn().cloned() else {
+    let Some(workspace) = app.workspace.clone() else {
+        clear_context_usage_refresh_state(app);
+        return;
+    };
+    let Some(key) = app.active_session_key.clone() else {
         clear_context_usage_refresh_state(app);
         return;
     };
@@ -60,7 +67,7 @@ pub(crate) fn request_context_usage_refresh(app: &mut App) {
         usage.context_usage_in_flight = true;
         usage.context_usage_refresh_pending = false;
     }
-    match conn.get_context_usage(session_id.clone()) {
+    match workspace.refresh_context_usage(&key) {
         Ok(()) => tracing::debug!(
             target: crate::logging::targets::APP_SESSION,
             event_name = "context_usage_requested",
@@ -83,15 +90,14 @@ pub(crate) fn request_context_usage_refresh(app: &mut App) {
 }
 
 pub(crate) fn request_status_snapshot_refresh(app: &mut App) {
-    let Some(conn) = app.conn().cloned() else {
-        return;
-    };
+    let Some(workspace) = app.workspace.as_ref() else { return };
+    let Some(key) = app.active_session_key.as_ref() else { return };
     let Some(session_id) = app.session_id() else {
         return;
     };
 
     let session_id = session_id.to_string();
-    match conn.get_status_snapshot(session_id.clone()) {
+    match workspace.refresh_status_snapshot(key) {
         Ok(()) => tracing::debug!(
             target: crate::logging::targets::APP_AUTH,
             event_name = "status_snapshot_requested",
@@ -111,15 +117,14 @@ pub(crate) fn request_status_snapshot_refresh(app: &mut App) {
 }
 
 pub(crate) fn request_oauth_credentials_snapshot_refresh(app: &mut App) {
-    let Some(conn) = app.conn().cloned() else {
-        return;
-    };
+    let Some(workspace) = app.workspace.as_ref() else { return };
+    let Some(key) = app.active_session_key.as_ref() else { return };
     let Some(session_id) = app.session_id() else {
         return;
     };
 
     let session_id = session_id.to_string();
-    match conn.get_oauth_credentials_snapshot(session_id.clone()) {
+    match workspace.refresh_oauth_credentials_snapshot(key) {
         Ok(()) => tracing::debug!(
             target: crate::logging::targets::APP_AUTH,
             event_name = "oauth_credentials_snapshot_requested",
@@ -169,8 +174,7 @@ mod tests {
     fn app_with_connection()
     -> (App, tokio::sync::mpsc::UnboundedReceiver<forge_primitives::Command>) {
         let mut app = App::test_default();
-        let (handle, rx) = forge_workspace::Workspace::testing_stub_handle();
-        app.set_active_conn(Some(std::sync::Arc::new(handle)));
+        let rx = app.install_testing_stub();
         app.set_session_id(Some(model::SessionId::new("session-1")));
         (app, rx)
     }

@@ -13,7 +13,7 @@ pub(crate) fn picker_session_count(app: &App) -> usize {
 pub(crate) fn startup_picker_is_loading(app: &App) -> bool {
     app.startup_session_picker_requested
         && !app.startup_session_picker_resolved
-        && (app.conn().is_none() || !app.startup_recent_sessions_loaded)
+        && (!app.has_active_agent() || !app.startup_recent_sessions_loaded)
 }
 
 pub fn handle_key(app: &mut App, key: KeyEvent) {
@@ -61,17 +61,17 @@ fn activate_selection(app: &mut App) {
         return;
     };
     let session_id = session.session_id.clone();
-    let Some(conn) = app.conn().cloned() else {
+    if !app.has_active_agent() {
         app.startup_session_picker_resolved = true;
         view::set_active_view(app, ActiveView::Chat);
         return;
-    };
+    }
 
     app.startup_session_picker_resolved = true;
     app.status = AppStatus::CommandPending;
     app.pending_command_label = Some(format!("Resuming session {session_id}..."));
     app.pending_command_ack = None;
-    if let Err(e) = begin_resume_session(app, conn.as_ref(), session_id) {
+    if let Err(e) = begin_resume_session(app, session_id) {
         app.pending_command_label = None;
         app.pending_command_ack = None;
         app.status = AppStatus::Ready;
@@ -130,7 +130,7 @@ mod tests {
         let mut app = picker_app();
         app.startup_session_picker_requested = true;
         app.startup_recent_sessions_loaded = false;
-        app.set_active_conn(None);
+        app.clear_active_conn();
 
         handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
 
@@ -152,8 +152,7 @@ mod tests {
     #[test]
     fn enter_triggers_resume() {
         let mut app = picker_app();
-        let (handle, mut rx) = forge_workspace::Workspace::testing_stub_handle();
-        app.set_active_conn(Some(std::sync::Arc::new(handle)));
+        let mut rx = app.install_testing_stub();
 
         handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
@@ -181,13 +180,12 @@ mod tests {
     #[test]
     fn failed_resume_restores_ready_state_and_surfaces_error() {
         let mut app = picker_app();
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<forge_primitives::Command>();
+        // Install the stub, then drop the commands rx so the bridge's
+        // dispatcher channel is closed. The next dispatch through the
+        // workspace will surface as a send error and trip the failure
+        // path in `activate_selection`.
+        let rx = app.install_testing_stub();
         drop(rx);
-        app.set_active_conn(Some(std::sync::Arc::new({
-            let _ = tx;
-            let (h, _) = forge_workspace::Workspace::testing_stub_handle();
-            h
-        })));
 
         handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 

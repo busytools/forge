@@ -37,8 +37,7 @@ fn select_setting(app: &mut App, setting_id: SettingId) {
 fn app_with_status_connection()
 -> (App, tokio::sync::mpsc::UnboundedReceiver<forge_primitives::Command>) {
     let mut app = App::test_default();
-    let (handle, rx) = forge_workspace::Workspace::testing_stub_handle();
-    app.set_active_conn(Some(std::sync::Arc::new(handle)));
+    let rx = app.install_testing_stub();
     app.set_session_id(Some(crate::agent::model::SessionId::new("session-1")));
     app.config.active_tab = ConfigTab::Status;
     app.recent_sessions = vec![crate::app::RecentSessionInfo {
@@ -1302,8 +1301,7 @@ fn mcp_details_overlay_enter_closes_overlay() {
 #[test]
 fn mcp_tab_refresh_key_requests_snapshot() {
     let (_dir, mut app) = open_settings_test_app();
-    let (handle, mut rx) = forge_workspace::Workspace::testing_stub_handle();
-    app.set_active_conn(Some(std::sync::Arc::new(handle)));
+    let mut rx = app.install_testing_stub();
     app.set_session_id(Some(crate::agent::model::SessionId::new("session-1")));
     app.config.active_tab = ConfigTab::Mcp;
     app.mcp_mut().servers.push(forge_primitives::McpServerStatus {
@@ -1341,8 +1339,7 @@ fn mcp_tab_refresh_key_requests_snapshot() {
 #[test]
 fn request_mcp_snapshot_sends_outside_mcp_tab() {
     let (_dir, mut app) = open_settings_test_app();
-    let (handle, mut rx) = forge_workspace::Workspace::testing_stub_handle();
-    app.set_active_conn(Some(std::sync::Arc::new(handle)));
+    let mut rx = app.install_testing_stub();
     app.set_session_id(Some(crate::agent::model::SessionId::new("session-1")));
     app.config.active_tab = ConfigTab::Status;
 
@@ -1361,8 +1358,7 @@ fn request_mcp_snapshot_sends_outside_mcp_tab() {
 #[test]
 fn refresh_mcp_snapshot_clears_existing_servers_before_request() {
     let (_dir, mut app) = open_settings_test_app();
-    let (handle, mut rx) = forge_workspace::Workspace::testing_stub_handle();
-    app.set_active_conn(Some(std::sync::Arc::new(handle)));
+    let mut rx = app.install_testing_stub();
     app.set_session_id(Some(crate::agent::model::SessionId::new("session-1")));
     app.mcp_mut().servers.push(forge_primitives::McpServerStatus {
         name: "stale".to_owned(),
@@ -1392,8 +1388,7 @@ fn refresh_mcp_snapshot_clears_existing_servers_before_request() {
 #[test]
 fn refresh_mcp_snapshot_if_needed_skips_outside_mcp_tab() {
     let (_dir, mut app) = open_settings_test_app();
-    let (handle, mut rx) = forge_workspace::Workspace::testing_stub_handle();
-    app.set_active_conn(Some(std::sync::Arc::new(handle)));
+    let mut rx = app.install_testing_stub();
     app.set_session_id(Some(crate::agent::model::SessionId::new("session-1")));
     app.config.active_tab = ConfigTab::Status;
 

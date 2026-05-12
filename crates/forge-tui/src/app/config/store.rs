@@ -37,24 +37,37 @@ pub struct LoadedSettingsDocuments {
     pub preferences_document: Value,
 }
 
+/// Workspace-backed entry point into the bridge's settings reader.
+/// Holds a borrowed `&Workspace` plus the active session's
+/// `&SessionKey` so `load` / `resolve_paths` can ask the workspace
+/// for the bridge's documents + config_dir without TUI ever holding
+/// an `AgentHandle` directly.
+#[derive(Clone, Copy)]
+pub struct WorkspaceBridge<'a> {
+    pub workspace: &'a forge_workspace::Workspace,
+    pub key: &'a forge_workspace::SessionKey,
+}
+
 pub fn load(
     home_override: Option<&Path>,
     project_root_override: Option<&Path>,
-    bridge: Option<&forge_workspace::AgentHandle>,
+    bridge: Option<WorkspaceBridge<'_>>,
 ) -> Result<LoadedSettingsDocuments, String> {
     let paths = resolve_paths(home_override, project_root_override, bridge)?;
 
-    // Production path delegates to the AgentHandle (forge-agent
-    // bridge) so the same `$CLAUDE_CONFIG_DIR`-respecting reader is
-    // used everywhere. Test
-    // fixtures pass home_override / project_root_override (and `None`
-    // for `bridge`) and bypass the bridge — env vars are
+    // Production path delegates to the workspace facade so the same
+    // `$CLAUDE_CONFIG_DIR`-respecting reader is used everywhere.
+    // Test fixtures pass home_override / project_root_override (and
+    // `None` for `bridge`) and bypass the workspace — env vars are
     // process-global and would race across parallel test runs.
     let (settings_document, local_settings_document, preferences_document) = match bridge {
         Some(bridge) if home_override.is_none() && project_root_override.is_none() => {
             let cwd = std::env::current_dir()
                 .map_err(|err| format!("Failed to resolve current directory: {err}"))?;
-            let docs = bridge.settings_documents(&cwd);
+            let docs = bridge
+                .workspace
+                .settings_documents(bridge.key, &cwd)
+                .ok_or_else(|| "no agent registered for session".to_owned())?;
             (
                 docs.user.unwrap_or_else(empty_object),
                 docs.project_local.unwrap_or_else(empty_object),
@@ -354,7 +367,7 @@ pub fn set_preferred_notification_channel(document: &mut Value, channel: Preferr
 fn resolve_paths(
     home_override: Option<&Path>,
     project_root_override: Option<&Path>,
-    bridge: Option<&forge_workspace::AgentHandle>,
+    bridge: Option<WorkspaceBridge<'_>>,
 ) -> Result<SettingsPaths, String> {
     let home = if let Some(path) = home_override {
         path.to_path_buf()
@@ -369,12 +382,15 @@ fn resolve_paths(
     };
 
     // User settings live under <config_dir>, which honours
-    // $CLAUDE_CONFIG_DIR — delegate to the AgentHandle so the env
-    // var is resolved in exactly one place. The home_override case
-    // (used by tests) and the no-bridge case (early init /
-    // disconnected) both bypass the bridge.
+    // $CLAUDE_CONFIG_DIR — delegate to the workspace facade so the
+    // env var is resolved in exactly one place. The home_override
+    // case (used by tests) and the no-bridge case (early init /
+    // disconnected) both bypass the workspace.
     let settings = match (home_override, bridge) {
-        (None, Some(bridge)) => bridge.config_dir().join(SETTINGS_FILENAME),
+        (None, Some(bridge)) => bridge.workspace.config_dir_for(bridge.key).map_or_else(
+            || home.join(CLAUDE_DIR).join(SETTINGS_FILENAME),
+            |dir| dir.join(SETTINGS_FILENAME),
+        ),
         (Some(_), _) | (None, None) => home.join(CLAUDE_DIR).join(SETTINGS_FILENAME),
     };
 

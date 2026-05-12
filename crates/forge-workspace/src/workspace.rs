@@ -657,9 +657,15 @@ impl Workspace {
     /// Some(key)`) fan out to the matching `SessionTask`. App-level
     /// commands (`cmd.key() == None` — `SpawnProject`,
     /// `SpawnSession`, `StartDefault`) route to the workspace's own
-    /// handler. Phase 1 implements per-session routing fully;
-    /// app-level routing is stubbed (logs + drops) until Phase 4
-    /// wires the spawn handlers.
+    /// handler.
+    ///
+    /// Test fallback: when no `SessionTask` is registered for `key`
+    /// but a `DomainSession` carries a stub `AgentHandle` (e.g., the
+    /// `Workspace::testing_stub` path), the command runs
+    /// synchronously against that handle. This keeps `#[test]`-flavor
+    /// unit tests (no tokio runtime) able to observe the
+    /// `forge_primitives::Command` emitted on the stub's channel
+    /// without spinning up an async actor.
     ///
     /// # Errors
     ///
@@ -671,10 +677,22 @@ impl Workspace {
         if let Some(key) = cmd.key() {
             let key = key.clone();
             let senders = self.command_senders.lock();
-            let Some(sender) = senders.get(&key) else {
+            if let Some(sender) = senders.get(&key) {
+                return sender.send(cmd).map_err(|_| DispatchError::SessionClosed(key));
+            }
+            drop(senders);
+            // No SessionTask — test fallback. Look up a registered
+            // DomainSession with a `conn` slot and dispatch the command
+            // synchronously against that handle.
+            let Some(handle) = self.agent_handle_for(&key) else {
                 return Err(DispatchError::UnknownSession(key));
             };
-            sender.send(cmd).map_err(|_| DispatchError::SessionClosed(key))
+            let sid =
+                self.domain_handles.lock().get(&key).and_then(|d| {
+                    d.lock().session_id.as_ref().map(std::string::ToString::to_string)
+                });
+            crate::session_task::execute_command_via_handle(&handle, &key, sid.as_deref(), cmd)
+                .map_err(|_| DispatchError::SessionClosed(key))
         } else {
             // App-level commands: route into `spawn::*` handlers. The
             // spawn handlers run on a tokio task because they await
@@ -931,6 +949,175 @@ impl Workspace {
         let _ = self.command_senders.lock().remove(session_key);
         let _ = self.domain_handles.lock().remove(session_key);
     }
+
+    // ---- Refresh helpers (workspace → agent) ----
+    //
+    // These five methods are query-style: TUI says "re-emit state X
+    // for `key`" and the payload returns via `SessionUpdate`. They
+    // bypass the [`Command`] envelope because they don't carry
+    // mutation state, and they need the workspace-side
+    // `Arc<AgentHandle>` lookup rather than per-session task routing.
+
+    /// Request a fresh status snapshot for `key`. The bridge replies
+    /// asynchronously via [`SessionUpdate::StatusSnapshot`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DispatchError::UnknownSession`] when no agent is
+    /// registered for `key` (e.g., the session was just closed) or
+    /// when the bridge hasn't stamped a `session_id` yet.
+    pub fn refresh_status_snapshot(&self, key: &SessionKey) -> Result<(), DispatchError> {
+        let (handle, sid) = self.handle_and_session_id(key)?;
+        handle.get_status_snapshot(sid).map_err(|_| DispatchError::SessionClosed(key.clone()))
+    }
+
+    /// Request a fresh OAuth credentials snapshot for `key`. The
+    /// bridge replies via [`SessionUpdate::OauthCredentialsSnapshot`].
+    ///
+    /// # Errors
+    ///
+    /// See [`Self::refresh_status_snapshot`].
+    pub fn refresh_oauth_credentials_snapshot(
+        &self,
+        key: &SessionKey,
+    ) -> Result<(), DispatchError> {
+        let (handle, sid) = self.handle_and_session_id(key)?;
+        handle
+            .get_oauth_credentials_snapshot(sid)
+            .map_err(|_| DispatchError::SessionClosed(key.clone()))
+    }
+
+    /// Request a fresh context-usage snapshot for `key`. The bridge
+    /// replies via [`SessionUpdate::ContextUsageSnapshot`].
+    ///
+    /// # Errors
+    ///
+    /// See [`Self::refresh_status_snapshot`].
+    pub fn refresh_context_usage(&self, key: &SessionKey) -> Result<(), DispatchError> {
+        let (handle, sid) = self.handle_and_session_id(key)?;
+        handle.get_context_usage(sid).map_err(|_| DispatchError::SessionClosed(key.clone()))
+    }
+
+    /// Reload session plugins for `key`. The bridge replies via
+    /// [`SessionUpdate::RuntimeReloadCompleted`] / `RuntimeReloadFailed`.
+    ///
+    /// # Errors
+    ///
+    /// See [`Self::refresh_status_snapshot`].
+    pub fn reload_plugins(&self, key: &SessionKey) -> Result<(), DispatchError> {
+        let (handle, sid) = self.handle_and_session_id(key)?;
+        handle.reload_plugins(sid).map_err(|_| DispatchError::SessionClosed(key.clone()))
+    }
+
+    /// Request a fresh MCP server snapshot for `key`. The bridge
+    /// replies via [`SessionUpdate::McpSnapshot`].
+    ///
+    /// # Errors
+    ///
+    /// See [`Self::refresh_status_snapshot`].
+    pub fn refresh_mcp_snapshot(&self, key: &SessionKey) -> Result<(), DispatchError> {
+        let (handle, sid) = self.handle_and_session_id(key)?;
+        handle.get_mcp_snapshot(sid).map_err(|_| DispatchError::SessionClosed(key.clone()))
+    }
+
+    // ---- Direct-accessor facades (workspace owns the bridge call) ----
+
+    /// Resolve the auto-memory path the bridge would consult for
+    /// `cwd`, scoped to `key`'s configured account. Returns `None`
+    /// when no agent is registered for `key`.
+    #[must_use]
+    pub fn project_memory_path(&self, key: &SessionKey, cwd: &std::path::Path) -> Option<PathBuf> {
+        let handle = self.agent_handle_for(key)?;
+        Some(handle.project_memory_path(cwd))
+    }
+
+    /// Snapshot the bridge's settings documents for `key` at `cwd`.
+    /// Returns `None` when no agent is registered for `key`.
+    #[must_use]
+    pub fn settings_documents(
+        &self,
+        key: &SessionKey,
+        cwd: &std::path::Path,
+    ) -> Option<forge_agent::userdata::settings::SettingsDocuments> {
+        let handle = self.agent_handle_for(key)?;
+        Some(handle.settings_documents(cwd))
+    }
+
+    /// Persist a settings document via the bridge for `key`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` with a human-readable message when no agent is
+    /// registered for `key` or when the bridge's I/O fails.
+    pub fn write_settings_document(
+        &self,
+        key: &SessionKey,
+        target: &forge_agent::userdata::settings::SettingsTarget,
+        document: &serde_json::Value,
+    ) -> Result<(), String> {
+        let handle = self
+            .agent_handle_for(key)
+            .ok_or_else(|| "no agent registered for session".to_owned())?;
+        handle.write_settings_document(target, document).map_err(|err| err.to_string())
+    }
+
+    /// Resolve the agent's configured config_dir for `key`. Returns
+    /// `None` when no agent is registered for `key`.
+    #[must_use]
+    pub fn config_dir_for(&self, key: &SessionKey) -> Option<PathBuf> {
+        let handle = self.agent_handle_for(key)?;
+        Some(handle.config_dir())
+    }
+
+    /// Fetch the OAuth usage payload via the bridge bound to `key`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` with a human-readable message when no agent is
+    /// registered for `key`; otherwise propagates the bridge's
+    /// `OauthUsageError`.
+    pub async fn oauth_usage(
+        &self,
+        key: &SessionKey,
+    ) -> Result<forge_agent::cloud::oauth_usage::OauthUsage, String> {
+        let handle = self
+            .agent_handle_for(key)
+            .ok_or_else(|| "Bridge connection required for OAuth usage fetch.".to_owned())?;
+        handle.oauth_usage().await.map_err(|err| err.to_string())
+    }
+
+    /// Borrow the [`Arc<AgentHandle>`] registered against `key`.
+    /// Workspace-internal helper — surfaces a sometimes-`None` to keep
+    /// the early-init / disconnected branches explicit.
+    fn agent_handle_for(&self, key: &SessionKey) -> Option<Arc<AgentHandle>> {
+        let pool = self.pool.lock();
+        if let Some(pooled) = pool.get(key) {
+            return Some(Arc::clone(&pooled.handle));
+        }
+        drop(pool);
+        // Fall back to `domain_handles[key].conn` for pre-Connect /
+        // testing-stub callers that never went through the pool path.
+        let domain = self.domain_handles.lock().get(key).cloned()?;
+        domain.lock().conn.clone()
+    }
+
+    /// Resolve `(handle, session_id_string)` for `key`. Both must be
+    /// available; missing either surfaces as `UnknownSession` for
+    /// uniform error handling.
+    fn handle_and_session_id(
+        &self,
+        key: &SessionKey,
+    ) -> Result<(Arc<AgentHandle>, String), DispatchError> {
+        let handle =
+            self.agent_handle_for(key).ok_or_else(|| DispatchError::UnknownSession(key.clone()))?;
+        let sid = self
+            .domain_handles
+            .lock()
+            .get(key)
+            .and_then(|d| d.lock().session_id.as_ref().map(std::string::ToString::to_string))
+            .ok_or_else(|| DispatchError::UnknownSession(key.clone()))?;
+        Ok((handle, sid))
+    }
 }
 
 #[cfg(test)]
@@ -1004,6 +1191,31 @@ impl Workspace {
     pub fn testing_stub_handle()
     -> (forge_agent::AgentHandle, mpsc::UnboundedReceiver<forge_primitives::Command>) {
         forge_agent::Agent::testing_stub()
+    }
+
+    /// Register a fresh testing-stub agent against `key`'s
+    /// `DomainSession`. Returns the matching
+    /// `forge_primitives::Command` receiver so tests can assert on
+    /// the commands the workspace routes through it (the same shape
+    /// as `testing_stub_handle()`, but with the handle installed in
+    /// one step so TUI test code doesn't have to touch
+    /// `AgentHandle` directly).
+    ///
+    /// Auto-creates a `DomainSession` for `key` when none is
+    /// registered yet; otherwise overwrites the existing
+    /// `DomainSession.conn` slot.
+    #[must_use]
+    pub fn install_testing_stub(
+        &self,
+        key: &SessionKey,
+    ) -> mpsc::UnboundedReceiver<forge_primitives::Command> {
+        let (handle, rx) = forge_agent::Agent::testing_stub();
+        let arc = Arc::new(handle);
+        let domain = self
+            .domain_session_for(key)
+            .unwrap_or_else(|| self.register_domain_session(key.clone(), None));
+        domain.lock().conn = Some(arc);
+        rx
     }
 
     /// Convenience alias for [`Self::register_domain_session`] used
@@ -1329,5 +1541,90 @@ config_dir = "~/.claude-granite"
         let content = std::fs::read_to_string(&state_path).expect("state file written");
         assert!(content.contains("last_used_at"));
         assert!(content.contains("Granite") || content.contains("Subspace"));
+    }
+
+    // ---- Refresh + facade tests ----
+    //
+    // Use a synthetically-registered `DomainSession` so the test
+    // doesn't need a real subprocess. The stub handle's command
+    // dispatcher captures whatever the workspace pushes through it,
+    // which is what we assert on.
+
+    /// Wire one `DomainSession` for `key` against a fresh testing
+    /// stub. Returns the workspace, the matching primitives command
+    /// receiver, and the registered key.
+    fn ws_with_stub_session()
+    -> (Arc<Workspace>, mpsc::UnboundedReceiver<forge_primitives::Command>, SessionKey) {
+        let (workspace, _update_rx) = Workspace::testing_stub();
+        let key = SessionKey::from_str_for_test("refresh-test");
+        let rx = workspace.install_testing_stub(&key);
+        // Stamp a session_id so refresh paths don't bail on
+        // "no session_id yet".
+        if let Some(domain) = workspace.domain_session_for(&key) {
+            domain.lock().session_id =
+                Some(forge_primitives::SessionId::new(key.as_str().to_owned()));
+        }
+        (workspace, rx, key)
+    }
+
+    #[test]
+    fn refresh_status_snapshot_dispatches_get_status_snapshot() {
+        let (workspace, mut rx, key) = ws_with_stub_session();
+        workspace.refresh_status_snapshot(&key).expect("dispatch");
+        let cmd = rx.try_recv().expect("queued");
+        assert!(matches!(cmd, forge_primitives::Command::GetStatusSnapshot { .. }));
+    }
+
+    #[test]
+    fn refresh_context_usage_dispatches_get_context_usage() {
+        let (workspace, mut rx, key) = ws_with_stub_session();
+        workspace.refresh_context_usage(&key).expect("dispatch");
+        let cmd = rx.try_recv().expect("queued");
+        assert!(matches!(cmd, forge_primitives::Command::GetContextUsage { .. }));
+    }
+
+    #[test]
+    fn refresh_oauth_credentials_dispatches() {
+        let (workspace, mut rx, key) = ws_with_stub_session();
+        workspace.refresh_oauth_credentials_snapshot(&key).expect("dispatch");
+        let cmd = rx.try_recv().expect("queued");
+        assert!(matches!(cmd, forge_primitives::Command::GetOauthCredentialsSnapshot { .. }));
+    }
+
+    #[test]
+    fn reload_plugins_dispatches() {
+        let (workspace, mut rx, key) = ws_with_stub_session();
+        workspace.reload_plugins(&key).expect("dispatch");
+        let cmd = rx.try_recv().expect("queued");
+        assert!(matches!(cmd, forge_primitives::Command::ReloadPlugins { .. }));
+    }
+
+    #[test]
+    fn refresh_mcp_snapshot_dispatches() {
+        let (workspace, mut rx, key) = ws_with_stub_session();
+        workspace.refresh_mcp_snapshot(&key).expect("dispatch");
+        let cmd = rx.try_recv().expect("queued");
+        assert!(matches!(cmd, forge_primitives::Command::GetMcpSnapshot { .. }));
+    }
+
+    #[test]
+    fn refresh_status_snapshot_unknown_session_errors() {
+        let (workspace, _update_rx) = Workspace::testing_stub();
+        let key = SessionKey::from_str_for_test("never-registered");
+        let err = workspace.refresh_status_snapshot(&key).expect_err("unknown session");
+        assert!(matches!(err, DispatchError::UnknownSession(_)));
+    }
+
+    /// `dispatch(Command::Cancel)` falls back to synchronous direct
+    /// dispatch when no SessionTask is registered. This is the path
+    /// TUI unit tests rely on — `set_active_conn` installs a stub
+    /// handle but never spawns a task, and tests need to observe
+    /// the primitive command on the rx.
+    #[test]
+    fn dispatch_falls_back_to_direct_when_no_session_task() {
+        let (workspace, mut rx, key) = ws_with_stub_session();
+        workspace.dispatch(Command::Cancel { key }).expect("dispatch");
+        let cmd = rx.try_recv().expect("queued");
+        assert!(matches!(cmd, forge_primitives::Command::Cancel { .. }));
     }
 }

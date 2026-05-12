@@ -11,7 +11,6 @@ use crate::agent::model;
 use crate::error::AppError;
 use forge_primitives::cloud::service_status::ServiceSeverity;
 use forge_workspace::SessionKey;
-use std::sync::Arc;
 
 const TURN_ERROR_INPUT_LOCK_HINT: &str =
     "Input disabled after an error. Press Ctrl+Q to quit and try again.";
@@ -51,7 +50,6 @@ fn apply_connected_presentation(
     available_models: Vec<model::AvailableModel>,
     mode: Option<super::super::ModeState>,
     history_messages: &[forge_primitives::Message],
-    conn: Arc<forge_workspace::AgentHandle>,
     was_active: bool,
 ) {
     let session_id_for_log = session_id.to_string();
@@ -63,9 +61,6 @@ fn apply_connected_presentation(
         // full active-session apply chain so welcome / file-index /
         // runtime-tabs all sync.
         app.active_session_key = Some(session_key.clone());
-        if let Some(bucket) = app.sessions.get_mut(&session_key) {
-            bucket.conn = Some(conn);
-        }
         apply_session_cwd(app, cwd);
         reset_for_new_session(app, session_id, current_model, mode, true);
         refresh_session_git_watcher(app, prev_session_id);
@@ -100,7 +95,6 @@ fn apply_connected_presentation(
         let display = shorten_cwd_display(&cwd);
         let session_id_for_domain = session_id.clone();
         if let Some(bucket) = app.sessions.get_mut(&session_key) {
-            bucket.conn = Some(conn);
             bucket.cwd = display;
             bucket.current_model = Some(current_model);
             bucket.mode = mode;
@@ -472,11 +466,7 @@ pub(super) fn handle_slash_command_error_event(app: &mut App, session_key: &Sess
     app.resuming_session_id = None;
 }
 
-pub(super) fn handle_auth_completed_event(
-    app: &mut App,
-    session_key: &SessionKey,
-    conn: &Arc<forge_workspace::AgentHandle>,
-) {
+pub(super) fn handle_auth_completed_event(app: &mut App, session_key: &SessionKey) {
     if app.active_session_key.as_ref() != Some(session_key) {
         // Auth completed for a non-active session is a degenerate case
         // — the user must have triggered /login from a session that's
@@ -510,7 +500,7 @@ pub(super) fn handle_auth_completed_event(
         outcome = "success",
     );
 
-    if let Err(e) = start_new_session(app, conn.as_ref(), SessionStartReason::Login) {
+    if let Err(e) = start_new_session(app, SessionStartReason::Login) {
         tracing::error!(
             target: crate::logging::targets::APP_AUTH,
             event_name = "login_session_restart_failed",
@@ -584,10 +574,10 @@ pub(super) fn handle_logout_completed_event(app: &mut App, session_key: &Session
         outcome = "success",
     );
 
-    if let Some(conn) = app.conn().cloned() {
+    if app.has_active_agent() {
         app.pending_command_label = Some("Starting session...".to_owned());
         app.pending_command_ack = None;
-        if let Err(e) = start_new_session(app, conn.as_ref(), SessionStartReason::Logout) {
+        if let Err(e) = start_new_session(app, SessionStartReason::Logout) {
             tracing::error!(
                 target: crate::logging::targets::APP_AUTH,
                 event_name = "logout_session_restart_failed",
@@ -628,7 +618,6 @@ pub(super) fn handle_session_replaced_event(
     available_models: Vec<model::AvailableModel>,
     mode: Option<super::super::ModeState>,
     history_messages: &[forge_primitives::Message],
-    conn: Arc<forge_workspace::AgentHandle>,
 ) {
     let session_id_for_log = session_id.to_string();
     let session_key = SessionKey::from_session_id(session_id.to_string());
@@ -650,15 +639,11 @@ pub(super) fn handle_session_replaced_event(
     *app.available_models_mut() = available_models;
     reset_for_new_session(app, session_id, current_model, mode, false);
 
-    // Install the AgentHandle that the bridge routed alongside this
-    // event onto the freshly-inserted bucket. The bridge swapped its
-    // Client to the new CLI session (see
-    // `forge_sdk_worker::spawn_session`); the Arc identity is the
-    // same as before but we don't have to dig it out of the outgoing
-    // bucket — the event carries it directly.
-    if let Some(new_bucket) = app.session_mut(&session_key) {
-        new_bucket.conn = Some(conn);
-    }
+    // The AgentHandle binding lives on the workspace's `DomainSession`
+    // (post-strict-wiring) — TUI no longer caches it on the bucket.
+    // `SessionTask` re-binds the handle for the replacement session
+    // ahead of emitting `SessionReplaced`, so nothing for TUI to do
+    // here.
 
     // Apply cwd AFTER the bucket swap so it lands on the new bucket.
     // Pre-swap it would write to the now-abandoned outgoing bucket
@@ -794,11 +779,14 @@ pub(super) fn apply_session_cwd(app: &mut App, cwd_raw: String) {
 /// watcher is stopped first to prevent the bridge worker from
 /// accumulating zombie watchers across replaced sessions.
 pub(super) fn refresh_session_git_watcher(app: &App, prev_session_id: Option<String>) {
-    let Some(conn) = app.conn().cloned() else {
+    if !app.has_active_agent() {
         return;
-    };
+    }
     if let Some(prev) = prev_session_id
-        && let Err(err) = conn.stop_git_context_watch(prev)
+        && let Err(err) = app.dispatch_command(|key| forge_workspace::Command::StopGitWatch {
+            key,
+            session_id: prev,
+        })
     {
         tracing::warn!(
             target: crate::logging::targets::APP_SESSION,
@@ -810,7 +798,12 @@ pub(super) fn refresh_session_git_watcher(app: &App, prev_session_id: Option<Str
         return;
     };
     let cwd = std::path::PathBuf::from(app.cwd_raw());
-    if let Err(err) = conn.start_git_context_watch(session_id.to_string(), cwd) {
+    let session_id_str = session_id.to_string();
+    if let Err(err) = app.dispatch_command(|key| forge_workspace::Command::StartGitWatch {
+        key,
+        session_id: session_id_str,
+        cwd,
+    }) {
         tracing::warn!(
             target: crate::logging::targets::APP_SESSION,
             error = %err,
@@ -845,7 +838,7 @@ fn maybe_open_startup_session_picker(app: &mut App) {
     if !app.startup_session_picker_requested || app.startup_session_picker_resolved {
         return;
     }
-    if app.conn().is_none() || !app.startup_recent_sessions_loaded {
+    if !app.has_active_agent() || !app.startup_recent_sessions_loaded {
         return;
     }
 
@@ -890,7 +883,6 @@ pub(super) fn apply_session_update_connected(
     available_models: Vec<forge_primitives::AvailableModel>,
     mode: Option<forge_primitives::ModeState>,
     history: Vec<forge_primitives::Message>,
-    conn: Arc<forge_workspace::AgentHandle>,
 ) {
     use super::super::connect::type_converters::{
         convert_current_model, convert_mode_state, map_available_models,
@@ -963,7 +955,6 @@ pub(super) fn apply_session_update_connected(
         map_available_models(available_models),
         mode.map(convert_mode_state),
         &history,
-        conn,
         was_active,
     );
 }
@@ -987,7 +978,6 @@ pub(super) fn apply_session_update_session_replaced(
     available_models: Vec<forge_primitives::AvailableModel>,
     mode: Option<forge_primitives::ModeState>,
     history: Vec<forge_primitives::Message>,
-    conn: Arc<forge_workspace::AgentHandle>,
 ) {
     use super::super::connect::type_converters::{
         convert_current_model, convert_mode_state, map_available_models,
@@ -1000,7 +990,6 @@ pub(super) fn apply_session_update_session_replaced(
         map_available_models(available_models),
         mode.map(convert_mode_state),
         &history,
-        conn,
     );
 }
 
@@ -1041,12 +1030,8 @@ pub(super) fn apply_session_update_slash_command_error(
 }
 
 #[allow(clippy::needless_pass_by_value)]
-pub(super) fn apply_session_update_auth_completed(
-    app: &mut App,
-    key: SessionKey,
-    conn: Arc<forge_workspace::AgentHandle>,
-) {
-    handle_auth_completed_event(app, &key, &conn);
+pub(super) fn apply_session_update_auth_completed(app: &mut App, key: SessionKey) {
+    handle_auth_completed_event(app, &key);
 }
 
 #[allow(clippy::needless_pass_by_value)]

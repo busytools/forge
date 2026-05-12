@@ -15,7 +15,6 @@ use crate::app::{mention, questions, slash, subagent};
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 #[cfg(test)]
 use std::cell::Cell;
-use std::sync::Arc;
 use std::time::Instant;
 
 const HELP_TAB_PREV_KEY: KeyCode = KeyCode::Left;
@@ -663,22 +662,19 @@ fn handle_mode_cycle_key(app: &mut App, key: KeyEvent) -> bool {
         .map(|m| ModeInfo { id: m.id.clone(), name: m.name.clone() })
         .collect();
 
-    if let Some(conn) = app.conn()
-        && let Some(sid) = app.session_id()
+    if app.has_active_agent()
+        && app.session_id().is_some()
+        && let Some(parsed_mode) = forge_primitives::permission::PermissionMode::from_wire(&next_id)
+        && let Err(e) =
+            app.dispatch_command(|key| forge_workspace::Command::SetMode { key, mode: parsed_mode })
     {
-        let mode_id = next_id.clone();
-        let conn = Arc::clone(conn);
-        tokio::task::spawn_local(async move {
-            if let Err(e) = conn.set_mode(sid.to_string(), mode_id) {
-                tracing::error!(
-                    target: crate::logging::targets::APP_INPUT,
-                    event_name = "mode_change_request_failed",
-                    message = "failed to request mode change",
-                    outcome = "failure",
-                    error_message = %e,
-                );
-            }
-        });
+        tracing::error!(
+            target: crate::logging::targets::APP_INPUT,
+            event_name = "mode_change_request_failed",
+            message = "failed to request mode change",
+            outcome = "failure",
+            error_message = %e,
+        );
     }
 
     app.set_mode(Some(ModeState {

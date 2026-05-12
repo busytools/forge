@@ -127,7 +127,7 @@ fn handle_mode_submit(app: &mut App, args: &[&str]) -> bool {
         return true;
     }
 
-    let Some((conn, sid)) = require_active_session(
+    let Some(sid) = require_active_session(
         app,
         "Cannot switch mode: not connected yet.",
         "Cannot switch mode: no active session.",
@@ -141,6 +141,11 @@ fn handle_mode_submit(app: &mut App, args: &[&str]) -> bool {
         push_system_message(app, format!("Unknown mode: {requested_mode}"));
         return true;
     }
+    let Some(parsed_mode) = forge_primitives::permission::PermissionMode::from_wire(requested_mode)
+    else {
+        push_system_message(app, format!("Unknown mode: {requested_mode}"));
+        return true;
+    };
 
     // Apply CurrentModeUpdate + ModeStateUpdate App-side immediately
     // so the footer chip refreshes without waiting for the worker
@@ -148,20 +153,15 @@ fn handle_mode_submit(app: &mut App, args: &[&str]) -> bool {
     // state is needed — the UI never sees a stale pending phase.
     apply_optimistic_mode_change(app, requested_mode);
 
-    let tx = app.update_tx.clone();
-    let requested_mode_owned = requested_mode.to_owned();
     let session_key = forge_workspace::SessionKey::from_session_id(sid.to_string());
-    tokio::task::spawn_local(async move {
-        match conn.set_mode(sid.to_string(), requested_mode_owned) {
-            Ok(()) => {}
-            Err(e) => {
-                let _ = tx.send(SessionUpdate::SlashCommandError {
-                    key: session_key,
-                    message: format!("Failed to run /mode: {e}"),
-                });
-            }
-        }
-    });
+    if let Err(e) =
+        app.dispatch_command(|key| forge_workspace::Command::SetMode { key, mode: parsed_mode })
+    {
+        let _ = app.update_tx.send(SessionUpdate::SlashCommandError {
+            key: session_key,
+            message: format!("Failed to run /mode: {e}"),
+        });
+    }
     true
 }
 
@@ -204,7 +204,7 @@ fn handle_model_submit(app: &mut App, args: &[&str]) -> bool {
         return true;
     }
 
-    let Some((conn, sid)) = require_active_session(
+    let Some(sid) = require_active_session(
         app,
         "Cannot switch model: not connected yet.",
         "Cannot switch model: no active session.",
@@ -224,20 +224,16 @@ fn handle_model_submit(app: &mut App, args: &[&str]) -> bool {
     // is synchronous so no `CommandPending` state is needed.
     apply_optimistic_model_change(app, model_name);
 
-    let tx = app.update_tx.clone();
     let model_name = model_name.to_owned();
     let session_key = forge_workspace::SessionKey::from_session_id(sid.to_string());
-    tokio::task::spawn_local(async move {
-        match conn.set_model(sid.to_string(), model_name) {
-            Ok(()) => {}
-            Err(e) => {
-                let _ = tx.send(SessionUpdate::SlashCommandError {
-                    key: session_key,
-                    message: format!("Failed to run /model: {e}"),
-                });
-            }
-        }
-    });
+    if let Err(e) =
+        app.dispatch_command(|key| forge_workspace::Command::SetModel { key, model: model_name })
+    {
+        let _ = app.update_tx.send(SessionUpdate::SlashCommandError {
+            key: session_key,
+            message: format!("Failed to run /model: {e}"),
+        });
+    }
     true
 }
 
@@ -286,14 +282,13 @@ fn handle_new_session_submit(app: &mut App, args: &[&str]) -> bool {
 
     push_user_message(app, "/new");
 
-    let Some(conn) = require_connection(app, "Cannot create new session: not connected yet.")
-    else {
+    if !require_connection(app, "Cannot create new session: not connected yet.") {
         return true;
-    };
+    }
 
     set_command_pending(app, "Starting new session...", None);
 
-    if let Err(e) = start_new_session(app, conn.as_ref(), SessionStartReason::NewSession) {
+    if let Err(e) = start_new_session(app, SessionStartReason::NewSession) {
         let session_key = app
             .active_session_key
             .clone()
@@ -318,13 +313,13 @@ fn handle_resume_submit(app: &mut App, args: &[&str]) -> bool {
     }
 
     push_user_message(app, format!("/resume {session_id}"));
-    let Some(conn) = require_connection(app, "Cannot resume session: not connected yet.") else {
+    if !require_connection(app, "Cannot resume session: not connected yet.") {
         return true;
-    };
+    }
 
     set_command_pending(app, &format!("Resuming session {session_id}..."), None);
     let session_id = session_id.to_owned();
-    if let Err(e) = begin_resume_session(app, conn.as_ref(), session_id) {
+    if let Err(e) = begin_resume_session(app, session_id) {
         let session_key = app
             .active_session_key
             .clone()

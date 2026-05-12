@@ -1389,7 +1389,7 @@ pub fn initialize_shared_state(app: &mut App) -> Result<(), String> {
     let loaded = store::load(
         app.settings_home_override.as_deref(),
         Some(pr.as_path()),
-        app.conn().map(std::sync::Arc::as_ref),
+        store_workspace_bridge(app).as_ref().copied(),
     )?;
     app.config.apply_loaded(loaded, false);
     app.reconcile_runtime_from_persisted_settings_change();
@@ -1405,7 +1405,7 @@ pub fn open(app: &mut App) -> Result<(), String> {
     let loaded = store::load(
         app.settings_home_override.as_deref(),
         Some(pr.as_path()),
-        app.conn().map(std::sync::Arc::as_ref),
+        store_workspace_bridge(app).as_ref().copied(),
     )?;
     app.config.apply_loaded(loaded, false);
     app.reconcile_runtime_from_persisted_settings_change();
@@ -1547,14 +1547,13 @@ pub fn request_status_snapshot_if_needed(app: &App) {
     if app.config.active_tab != ConfigTab::Status {
         return;
     }
-    let Some(conn) = app.conn().cloned() else {
-        return;
-    };
+    let Some(workspace) = app.workspace.as_ref() else { return };
+    let Some(key) = app.active_session_key.as_ref() else { return };
     let Some(session_id) = app.session_id() else {
         return;
     };
     let session_id = session_id.to_string();
-    match conn.get_status_snapshot(session_id.clone()) {
+    match workspace.refresh_status_snapshot(key) {
         Ok(()) => tracing::debug!(
             target: crate::logging::targets::APP_AUTH,
             event_name = "status_snapshot_requested",
@@ -1571,6 +1570,15 @@ pub fn request_status_snapshot_if_needed(app: &App) {
             error_message = %error,
         ),
     }
+}
+
+/// Build a `WorkspaceBridge` for the active session, or `None`
+/// when no workspace / active session is set. Drives the new
+/// `store::load` signature.
+pub(crate) fn store_workspace_bridge(app: &App) -> Option<store::WorkspaceBridge<'_>> {
+    let workspace = app.workspace.as_ref()?;
+    let key = app.active_session_key.as_ref()?;
+    Some(store::WorkspaceBridge { workspace, key })
 }
 
 pub(crate) fn model_status_label(model: Option<&str>, app: &App) -> String {

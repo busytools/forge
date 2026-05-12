@@ -12,7 +12,6 @@
 //! Projects pane UI).
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-use std::sync::Arc;
 use std::time::Instant;
 
 use forge_workspace::SessionKey;
@@ -35,19 +34,18 @@ pub use forge_primitives::runtime::SessionLifecycleState;
 /// Per-session runtime state. Initialised when a session connects;
 /// dropped when the session is closed or forge-tui exits.
 ///
-/// No `Debug` derive — `AgentHandle` owns callback closures and
-/// doesn't derive `Debug`. `Default` is hand-rolled (rather than
-/// derived) because [`Self::last_activity_at`] is an [`Instant`]
-/// which has no `Default` impl. Every other field falls through to
-/// its type's `Default::default()`; if a field needs a non-default
+/// `Default` is hand-rolled (rather than derived) because
+/// [`Self::last_activity_at`] is an [`Instant`] which has no
+/// `Default` impl. Every other field falls through to its type's
+/// `Default::default()`; if a field needs a non-default
 /// initializer, factor it through [`UiSession::new`] rather than
 /// expanding the manual impl.
 ///
 /// Renamed from `Session` in Phase 2 of the MVVM refactor (#102) to
 /// signal it's a UI-side projection of the authoritative
-/// [`forge_workspace::DomainSession`]. The `Session` alias below
-/// preserves all ~250 existing call sites; Phase 4 deletes the alias
-/// and migrates call sites to `UiSession` directly.
+/// [`forge_workspace::DomainSession`]. The agent connection handle
+/// lives on `DomainSession`, not here — TUI's outbound traffic
+/// flows through `Workspace::dispatch` / `Workspace::refresh_*`.
 #[allow(clippy::struct_excessive_bools)]
 pub struct UiSession {
     /// The claude-issued session UUID, also used as the map key.
@@ -58,9 +56,6 @@ pub struct UiSession {
     /// "2m" / "1h" / "5d" rendering has a stable baseline before
     /// the first event arrives.
     pub last_activity_at: Instant,
-    /// Agent connection handle for this session. `None` while the
-    /// session's bridge is starting up.
-    pub conn: Option<Arc<forge_workspace::AgentHandle>>,
     /// Chat history buffer for this session. Welcome message at
     /// index 0; user/assistant turns appended.
     pub messages: Vec<ChatMessage>,
@@ -251,7 +246,6 @@ impl Default for UiSession {
         Self {
             key: Option::default(),
             last_activity_at: Instant::now(),
-            conn: Option::default(),
             messages: Vec::default(),
             message_retained_bytes: Vec::default(),
             retained_history_bytes: usize::default(),

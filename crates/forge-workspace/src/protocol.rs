@@ -6,10 +6,9 @@
 //! Phases 3a-d migrate emitters/consumers but the variant shapes
 //! themselves don't change.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::sync::Arc;
 
-use forge_agent::AgentHandle;
 use forge_agent::client::SessionLaunchSettings;
 use forge_primitives::cloud::oauth_credentials::OauthCredentials;
 use forge_primitives::cloud::service_status::ServiceSeverity;
@@ -24,7 +23,8 @@ use forge_primitives::runtime::{AvailableModel, CurrentModel, ModeState, Termina
 use forge_primitives::usage::{UsageSnapshot, UsageSourceKind};
 use forge_primitives::{
     AccountInfo, ElicitationAction, ElicitationRequest, ForgeAccountIdentity, ImageAttachment,
-    McpAuthRedirect, McpOperationError, McpServerStatus, Message, SessionId, SessionListEntry,
+    McpAuthRedirect, McpOperationError, McpServerConfig, McpServerStatus, Message, SessionId,
+    SessionListEntry,
 };
 use tokio::sync::oneshot;
 
@@ -114,9 +114,6 @@ pub enum Command {
         key: SessionKey,
         model: String,
     },
-    Compact {
-        key: SessionKey,
-    },
     NewSession {
         key: SessionKey,
         cwd: String,
@@ -144,10 +141,58 @@ pub enum Command {
         tool_id: String,
         outcome: QuestionOutcome,
     },
+    /// MCP elicitation response. Currently routed directly to
+    /// `AgentHandle::respond_to_elicitation` — the workspace never
+    /// stores a `PendingInteractionSlot::Elicitation` slot for
+    /// inbound `ElicitationRequest`s, so the oneshot path used by
+    /// permission/question round-trips doesn't apply here.
     RespondElicitation {
         key: SessionKey,
         elicitation_id: String,
         action: ElicitationAction,
+        content: Option<serde_json::Value>,
+    },
+    /// Request a fresh session title from the bridge.
+    GenerateSessionTitle {
+        key: SessionKey,
+        description: String,
+    },
+    /// Persist a custom title for the active session.
+    RenameSession {
+        key: SessionKey,
+        title: String,
+    },
+    /// Reconnect a configured MCP server.
+    ReconnectMcpServer {
+        key: SessionKey,
+        server_name: String,
+    },
+    /// Toggle a configured MCP server on/off.
+    ToggleMcpServer {
+        key: SessionKey,
+        server_name: String,
+        enabled: bool,
+    },
+    /// Replace the live MCP server registration for this session.
+    SetMcpServers {
+        key: SessionKey,
+        servers: BTreeMap<String, McpServerConfig>,
+    },
+    /// Begin OAuth (or similar) auth flow for an MCP server.
+    AuthenticateMcpServer {
+        key: SessionKey,
+        server_name: String,
+    },
+    /// Wipe cached auth for an MCP server.
+    ClearMcpAuth {
+        key: SessionKey,
+        server_name: String,
+    },
+    /// Submit a captured OAuth callback URL for an MCP server.
+    SubmitMcpOauthCallbackUrl {
+        key: SessionKey,
+        server_name: String,
+        callback_url: String,
     },
     CloseSession {
         key: SessionKey,
@@ -229,13 +274,20 @@ impl Command {
             | Self::Cancel { key }
             | Self::SetMode { key, .. }
             | Self::SetModel { key, .. }
-            | Self::Compact { key }
             | Self::NewSession { key, .. }
             | Self::ResumeSession { key, .. }
             | Self::ResumeOrNewSession { key, .. }
             | Self::RespondPermission { key, .. }
             | Self::RespondQuestion { key, .. }
             | Self::RespondElicitation { key, .. }
+            | Self::GenerateSessionTitle { key, .. }
+            | Self::RenameSession { key, .. }
+            | Self::ReconnectMcpServer { key, .. }
+            | Self::ToggleMcpServer { key, .. }
+            | Self::SetMcpServers { key, .. }
+            | Self::AuthenticateMcpServer { key, .. }
+            | Self::ClearMcpAuth { key, .. }
+            | Self::SubmitMcpOauthCallbackUrl { key, .. }
             | Self::CloseSession { key }
             | Self::StartGitWatch { key, .. }
             | Self::StopGitWatch { key, .. }
@@ -294,7 +346,6 @@ pub enum SessionUpdate {
         available_models: Vec<AvailableModel>,
         mode: Option<ModeState>,
         history: Vec<Message>,
-        conn: Arc<AgentHandle>,
     },
     SessionReplaced {
         key: SessionKey,
@@ -304,7 +355,6 @@ pub enum SessionUpdate {
         available_models: Vec<AvailableModel>,
         mode: Option<ModeState>,
         history: Vec<Message>,
-        conn: Arc<AgentHandle>,
     },
     ConnectionFailed {
         key: SessionKey,
@@ -318,7 +368,6 @@ pub enum SessionUpdate {
     },
     AuthCompleted {
         key: SessionKey,
-        conn: Arc<AgentHandle>,
     },
     LogoutCompleted {
         key: SessionKey,

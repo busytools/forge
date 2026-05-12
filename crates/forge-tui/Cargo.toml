@@ -65,7 +65,7 @@ perf = []
 # handler fired outcome X for tool_id Y" without spinning up a real
 # workspace. Enabled by this crate's own `[dev-dependencies]` self-ref
 # so unit + integration tests both see the same gated surface.
-testing = []
+testing = ["forge-workspace/testing"]
 
 [dev-dependencies]
 forge-tui = { path = ".", features = ["testing"] }

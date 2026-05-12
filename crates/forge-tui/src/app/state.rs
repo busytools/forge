@@ -637,7 +637,7 @@ impl App {
     /// freshly-minted pre-Connect bucket.
     ///
     /// If a synthetic-keyed bucket exists (from an earlier
-    /// `set_active_conn` before `set_session_id` — test ordering),
+    /// `install_testing_stub` before `set_session_id` — test ordering),
     /// migrates that bucket's contents to the real key so the conn
     /// + session_id end up on the same bucket.
     ///
@@ -730,28 +730,77 @@ impl App {
         }
     }
 
-    /// Active session's agent connection handle.
+    /// `true` when the active session has a registered agent handle
+    /// in the workspace's `DomainSession`. Production code consults
+    /// this rather than holding an `Arc<AgentHandle>` directly —
+    /// outbound traffic flows through `Workspace::dispatch` /
+    /// `Workspace::refresh_*` calls.
     #[must_use]
-    pub fn conn(&self) -> Option<&std::sync::Arc<forge_workspace::AgentHandle>> {
-        self.active_session().and_then(|s| s.conn.as_ref())
+    pub fn has_active_agent(&self) -> bool {
+        let Some(workspace) = self.workspace.as_ref() else { return false };
+        let Some(key) = self.active_session_key.as_ref() else { return false };
+        workspace.domain_session_for(key).is_some_and(|d| d.lock().conn.is_some())
     }
 
-    /// Set the active session's connection handle. Auto-creates
-    /// a session bucket with a synthetic key if no active session
-    /// exists yet — needed for tests that wire `set_active_conn` before
-    /// `set_session_id`. Production code calls these in
-    /// chronological order (Connected event fires both with the
-    /// real session_id), so the synthetic-key path is test-only.
-    pub fn set_active_conn(&mut self, conn: Option<std::sync::Arc<forge_workspace::AgentHandle>>) {
-        if self.active_session_key.is_none() && conn.is_some() {
+    /// Dispatch a workspace [`forge_workspace::Command`] for the
+    /// active session. Stamps the active `SessionKey` onto
+    /// `builder`'s output before dispatching. No-op (returns
+    /// `Err(UnknownSession)`) when there is no active session.
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`forge_workspace::DispatchError`] from the
+    /// underlying `Workspace::dispatch`.
+    pub fn dispatch_command(
+        &self,
+        builder: impl FnOnce(forge_workspace::SessionKey) -> forge_workspace::Command,
+    ) -> Result<(), forge_workspace::DispatchError> {
+        let workspace = self.workspace.as_ref().ok_or_else(|| {
+            forge_workspace::DispatchError::UnknownSession(
+                forge_workspace::SessionKey::from_session_id("__no_workspace__"),
+            )
+        })?;
+        let key = self.active_session_key.clone().ok_or_else(|| {
+            forge_workspace::DispatchError::UnknownSession(
+                forge_workspace::SessionKey::from_session_id("__no_active__"),
+            )
+        })?;
+        workspace.dispatch(builder(key))
+    }
+
+    /// Install a fresh testing stub agent against the active
+    /// session's [`forge_workspace::DomainSession`], auto-creating a
+    /// pre-Connect bucket when no active session exists yet. Returns
+    /// the matching `forge_primitives::Command` receiver so tests can
+    /// assert on the commands the workspace routes through the stub.
+    ///
+    /// Test-only entry point: production flows register handles via
+    /// `Workspace::get_agent_handle`.
+    #[cfg(any(test, feature = "testing"))]
+    #[allow(clippy::expect_used, clippy::missing_panics_doc)]
+    pub fn install_testing_stub(
+        &mut self,
+    ) -> tokio::sync::mpsc::UnboundedReceiver<forge_primitives::Command> {
+        if self.active_session_key.is_none() {
             let key = forge_workspace::SessionKey::from_session_id(Self::PRE_CONNECT_KEY);
             self.sessions
                 .entry(key.clone())
                 .or_insert_with(|| super::session::UiSession::new(key.clone()));
             self.active_session_key = Some(key);
         }
-        if let Some(s) = self.try_active_bucket_mut() {
-            s.conn = conn;
+        let key = self.active_session_key.clone().expect("active_session_key was just set above");
+        let workspace = self.workspace.as_ref().expect("workspace required for testing stub");
+        workspace.install_testing_stub(&key)
+    }
+
+    /// Detach the testing-stub agent from the active session's
+    /// `DomainSession` (no-op when none is installed).
+    #[cfg(any(test, feature = "testing"))]
+    pub fn clear_active_conn(&mut self) {
+        let Some(key) = self.active_session_key.clone() else { return };
+        let Some(workspace) = self.workspace.as_ref() else { return };
+        if let Some(domain) = workspace.domain_session_for(&key) {
+            domain.lock().conn = None;
         }
     }
 
@@ -2062,13 +2111,14 @@ impl App {
         // `lifecycle_state`, etc.) read from this DomainSession; tests
         // that previously seeded bucket fields now seed via the App
         // setters that route to the DomainSession.
+        //
+        // `conn` starts as `None` — tests that exercise "post-Connect"
+        // flows install a stub handle via `App::install_testing_stub` (which
+        // writes onto this same DomainSession). Tests that target the
+        // pre-Connect state observe `has_active_agent() == false` until
+        // they do.
         let (workspace, _update_rx) = forge_workspace::Workspace::testing_stub();
-        let (stub_handle, _stub_cmd_rx) = forge_workspace::Workspace::testing_stub_handle();
-        let stub_handle_arc = std::sync::Arc::new(stub_handle);
-        let domain = workspace.register_domain_session_for_test(
-            pending_key.clone(),
-            std::sync::Arc::clone(&stub_handle_arc),
-        );
+        let domain = workspace.register_domain_session(pending_key.clone(), None);
         domain.lock().cwd_raw = "/test".into();
 
         Self {
