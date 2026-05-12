@@ -14,10 +14,10 @@ pub const WIDE_TIER_MIN_WIDTH: u16 = 160;
 pub const MEDIUM_TIER_MIN_WIDTH: u16 = 120;
 
 /// Width (columns) of each side pane at Wide tier.
-pub const PANE_WIDTH_WIDE: u16 = 32;
+pub const PANE_WIDTH_WIDE: u16 = 40;
 
 /// Width (columns) of each side pane at Medium tier.
-pub const PANE_WIDTH_MEDIUM: u16 = 24;
+pub const PANE_WIDTH_MEDIUM: u16 = 30;
 
 /// Width (columns) of the vertical separator column between a side
 /// pane and the chat column when the pane is visible.

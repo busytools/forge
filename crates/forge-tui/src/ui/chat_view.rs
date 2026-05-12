@@ -117,6 +117,26 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     // now render in the Inspector pane (right side) via
     // `inspector_pane::render`.
 
+    // Inspector pane divider continuation. The chat's own scrollbar
+    // rail covers the chat body's vertical range, but the rows below
+    // (input + separators + help) don't get the rail and so the
+    // boundary between the chat column and the right pane looks
+    // broken there. Paint the same DIM `▕` glyph at the chat
+    // column's rightmost col across the input/help band so the
+    // divider runs continuously from frame top to frame bottom.
+    if let Some(pane_right_area) = areas.pane_right {
+        let rail_x = pane_right_area.x.saturating_sub(1);
+        let rail_y_start = areas.body.y.saturating_add(areas.body.height);
+        let rail_y_end = frame_area.y.saturating_add(frame_area.height);
+        let buf = frame.buffer_mut();
+        for y in rail_y_start..rail_y_end {
+            if let Some(cell) = buf.cell_mut((rail_x, y)) {
+                cell.set_symbol("\u{2595}");
+                cell.set_style(Style::default().add_modifier(ratatui::style::Modifier::DIM));
+            }
+        }
+    }
+
     render_perf_fps_overlay(frame, frame_area, frame_area.y, app);
 }
 
