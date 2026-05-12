@@ -7,7 +7,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 pub(crate) const MAX_PICKER_SESSIONS: usize = 10;
 
 pub(crate) fn picker_session_count(app: &App) -> usize {
-    app.recent_sessions.len().min(MAX_PICKER_SESSIONS)
+    app.recent_sessions().len().min(MAX_PICKER_SESSIONS)
 }
 
 pub(crate) fn startup_picker_is_loading(app: &App) -> bool {
@@ -56,7 +56,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
 
 fn activate_selection(app: &mut App) {
     let Some(session) =
-        app.recent_sessions.iter().take(MAX_PICKER_SESSIONS).nth(app.session_picker.selected)
+        app.recent_sessions().iter().take(MAX_PICKER_SESSIONS).nth(app.session_picker.selected)
     else {
         return;
     };
@@ -69,13 +69,13 @@ fn activate_selection(app: &mut App) {
 
     app.startup_session_picker_resolved = true;
     app.status = AppStatus::CommandPending;
-    app.pending_command_label = Some(format!("Resuming session {session_id}..."));
-    app.pending_command_ack = None;
+    *app.pending_command_label_mut() = Some(format!("Resuming session {session_id}..."));
+    *app.pending_command_ack_mut() = None;
     if let Err(e) = begin_resume_session(app, session_id) {
-        app.pending_command_label = None;
-        app.pending_command_ack = None;
+        *app.pending_command_label_mut() = None;
+        *app.pending_command_ack_mut() = None;
         app.status = AppStatus::Ready;
-        app.resuming_session_id = None;
+        *app.resuming_session_id_mut() = None;
         push_system_message_with_severity(
             app,
             Some(SystemSeverity::Error),
@@ -100,7 +100,7 @@ mod tests {
     fn picker_app() -> App {
         let mut app = App::test_default();
         app.active_view = ActiveView::SessionPicker;
-        app.recent_sessions = vec![
+        *app.recent_sessions_mut() = vec![
             RecentSessionInfo {
                 session_id: "session-1".to_owned(),
                 summary: "one".to_owned(),
@@ -158,7 +158,7 @@ mod tests {
 
         assert_eq!(app.active_view, ActiveView::Chat);
         assert!(matches!(app.status, AppStatus::CommandPending));
-        assert_eq!(app.resuming_session_id.as_deref(), Some("session-1"));
+        assert_eq!(app.resuming_session_id(), Some("session-1"));
         let cmd = rx.try_recv().expect("resume command");
         assert!(matches!(
             cmd,
@@ -191,8 +191,8 @@ mod tests {
 
         assert_eq!(app.active_view, ActiveView::Chat);
         assert!(matches!(app.status, AppStatus::Ready));
-        assert!(app.resuming_session_id.is_none());
-        assert!(app.pending_command_label.is_none());
+        assert!(app.resuming_session_id().is_none());
+        assert!(app.pending_command_label().is_none());
         let last = app.messages().last().expect("error message");
         let text = match last.blocks.first().expect("text block") {
             crate::app::MessageBlock::Text(block) => block.text.as_str(),

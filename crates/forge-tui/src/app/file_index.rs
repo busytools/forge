@@ -50,10 +50,28 @@ pub enum FileIndexChange {
 }
 
 pub enum FileIndexEvent {
-    ScanBatch { generation: u64, entries: Vec<FileCandidate> },
-    ScanFinished { generation: u64 },
-    FsBatch { generation: u64, changes: Vec<FileIndexChange> },
-    RebuildRequested { generation: u64 },
+    /// Each variant carries `key` so the workspace-wide
+    /// `file_index_event_rx` pump can route to the right per-bucket
+    /// `FileIndexState`. Without it, A's scanner output would land
+    /// in B's index whenever B is active during A's scan.
+    ScanBatch {
+        key: forge_workspace::SessionKey,
+        generation: u64,
+        entries: Vec<FileCandidate>,
+    },
+    ScanFinished {
+        key: forge_workspace::SessionKey,
+        generation: u64,
+    },
+    FsBatch {
+        key: forge_workspace::SessionKey,
+        generation: u64,
+        changes: Vec<FileIndexChange>,
+    },
+    RebuildRequested {
+        key: forge_workspace::SessionKey,
+        generation: u64,
+    },
 }
 
 #[derive(Default)]
@@ -75,44 +93,56 @@ impl Drop for FileIndexWatchHandle {
 }
 
 pub fn reset(app: &mut App) {
-    app.file_index.generation = app.file_index.generation.saturating_add(1);
-    app.file_index.root = None;
-    app.file_index.respect_gitignore = app.config.respect_gitignore_effective();
-    app.file_index.entries.clear();
-    app.file_index.scan_finished = false;
-    app.file_index.rebuild_pending = false;
-    app.file_index.scan_overrides = ScanOverrides::default();
-    app.file_index.scan = None;
-    app.file_index.watch = None;
+    app.file_index_mut().generation = app.file_index_mut().generation.saturating_add(1);
+    app.file_index_mut().root = None;
+    app.file_index_mut().respect_gitignore = app.config.respect_gitignore_effective();
+    app.file_index_mut().entries.clear();
+    app.file_index_mut().scan_finished = false;
+    app.file_index_mut().rebuild_pending = false;
+    app.file_index_mut().scan_overrides = ScanOverrides::default();
+    app.file_index_mut().scan = None;
+    app.file_index_mut().watch = None;
 }
 
 pub fn restart(app: &mut App) {
     reset(app);
+    let Some(key) = app.active_session_key.clone() else {
+        // No active session — nothing to start. The scanner emits
+        // require a bucket key to route results onto, and there's
+        // nothing reasonable to scan against without one.
+        return;
+    };
     let root = PathBuf::from(app.cwd_raw());
-    let generation = app.file_index.generation;
+    let generation = app.file_index_mut().generation;
     let respect_gitignore = app.config.respect_gitignore_effective();
-    app.file_index.root = Some(root.clone());
-    app.file_index.respect_gitignore = respect_gitignore;
-    app.file_index.scan_finished = false;
-    app.file_index.rebuild_pending = false;
-    app.file_index.scan_overrides = ScanOverrides::default();
-    app.file_index.scan = Some(spawn_scan(
+    app.file_index_mut().root = Some(root.clone());
+    app.file_index_mut().respect_gitignore = respect_gitignore;
+    app.file_index_mut().scan_finished = false;
+    app.file_index_mut().rebuild_pending = false;
+    app.file_index_mut().scan_overrides = ScanOverrides::default();
+    app.file_index_mut().scan = Some(spawn_scan(
+        key.clone(),
         root.clone(),
         generation,
         respect_gitignore,
         app.file_index_event_tx.clone(),
     ));
-    app.file_index.watch =
-        Some(spawn_watch(&root, generation, respect_gitignore, app.file_index_event_tx.clone()));
+    app.file_index_mut().watch = Some(spawn_watch(
+        key,
+        &root,
+        generation,
+        respect_gitignore,
+        app.file_index_event_tx.clone(),
+    ));
 }
 
 pub fn ensure_started(app: &mut App) {
     let respect_gitignore = app.config.respect_gitignore_effective();
     let current_root = PathBuf::from(app.cwd_raw());
-    let needs_restart = app.file_index.root.as_ref() != Some(&current_root)
-        || app.file_index.respect_gitignore != respect_gitignore
-        || (app.file_index.root.is_none())
-        || (!app.file_index.scan_finished && app.file_index.scan.is_none());
+    let needs_restart = app.file_index_mut().root.as_ref() != Some(&current_root)
+        || app.file_index_mut().respect_gitignore != respect_gitignore
+        || (app.file_index_mut().root.is_none())
+        || (!app.file_index_mut().scan_finished && app.file_index_mut().scan.is_none());
     if needs_restart {
         restart(app);
     }
@@ -181,41 +211,59 @@ fn match_tier(candidate: &FileCandidate, query_lower: &str) -> Option<u8> {
 
 fn apply_event(app: &mut App, event: FileIndexEvent) {
     match event {
-        FileIndexEvent::ScanBatch { generation, entries } => {
-            if generation != app.file_index.generation {
+        FileIndexEvent::ScanBatch { key, generation, entries } => {
+            let Some(slot) = app.sessions.get_mut(&key) else {
+                return;
+            };
+            if generation != slot.file_index.generation {
                 return;
             }
             for entry in entries {
-                if app.file_index.scan_overrides.blocks(&entry.rel_path) {
+                if slot.file_index.scan_overrides.blocks(&entry.rel_path) {
                     continue;
                 }
-                app.file_index.entries.insert(entry.rel_path.clone(), entry);
+                slot.file_index.entries.insert(entry.rel_path.clone(), entry);
             }
-            refresh_after_mutation(app);
+            refresh_after_mutation_if_active(app, &key);
         }
-        FileIndexEvent::ScanFinished { generation } => {
-            if generation != app.file_index.generation {
+        FileIndexEvent::ScanFinished { key, generation } => {
+            let Some(slot) = app.sessions.get_mut(&key) else {
+                return;
+            };
+            if generation != slot.file_index.generation {
                 return;
             }
-            app.file_index.scan_finished = true;
-            app.file_index.scan_overrides = ScanOverrides::default();
-            app.file_index.scan = None;
-            refresh_after_mutation(app);
+            slot.file_index.scan_finished = true;
+            slot.file_index.scan_overrides = ScanOverrides::default();
+            slot.file_index.scan = None;
+            refresh_after_mutation_if_active(app, &key);
         }
-        FileIndexEvent::FsBatch { generation, changes } => {
-            if generation != app.file_index.generation {
+        FileIndexEvent::FsBatch { key, generation, changes } => {
+            let Some(slot) = app.sessions.get_mut(&key) else {
+                return;
+            };
+            if generation != slot.file_index.generation {
                 return;
             }
             for change in changes {
-                if !app.file_index.scan_finished {
-                    app.file_index.scan_overrides.record_change(&change);
+                if !slot.file_index.scan_finished {
+                    slot.file_index.scan_overrides.record_change(&change);
                 }
-                apply_change(&mut app.file_index.entries, change);
+                apply_change(&mut slot.file_index.entries, change);
             }
-            refresh_after_mutation(app);
+            refresh_after_mutation_if_active(app, &key);
         }
-        FileIndexEvent::RebuildRequested { generation } => {
-            if generation != app.file_index.generation {
+        FileIndexEvent::RebuildRequested { key, generation } => {
+            // Only restart when the event targets the active session;
+            // background buckets keep their stale generation until
+            // they're switched-to (`switch_active_session` calls
+            // `ensure_started`).
+            let active_key = app.active_session_key.clone();
+            if active_key.as_ref() != Some(&key) {
+                return;
+            }
+            let active_generation = app.file_index().generation;
+            if generation != active_generation {
                 return;
             }
             restart(app);
@@ -224,8 +272,17 @@ fn apply_event(app: &mut App, event: FileIndexEvent) {
     }
 }
 
+/// Run `refresh_after_mutation` only when the just-mutated bucket
+/// is the active one. Background-bucket mutations don't drive any
+/// visible UI, so the @-mention refresh is a wasted hop.
+fn refresh_after_mutation_if_active(app: &mut App, key: &forge_workspace::SessionKey) {
+    if app.active_session_key.as_ref() == Some(key) {
+        refresh_after_mutation(app);
+    }
+}
+
 fn refresh_after_mutation(app: &mut App) {
-    if app.mention.is_some() {
+    if app.mention().is_some() {
         super::mention::refresh_from_file_index(app);
     }
     app.needs_redraw = true;
@@ -252,6 +309,7 @@ fn apply_change(entries: &mut BTreeMap<String, FileCandidate>, change: FileIndex
 }
 
 fn spawn_scan(
+    key: forge_workspace::SessionKey,
     root: PathBuf,
     generation: u64,
     respect_gitignore: bool,
@@ -267,7 +325,11 @@ fn spawn_scan(
                 return true;
             }
             event_tx
-                .send(FileIndexEvent::ScanBatch { generation, entries: std::mem::take(&mut batch) })
+                .send(FileIndexEvent::ScanBatch {
+                    key: key.clone(),
+                    generation,
+                    entries: std::mem::take(&mut batch),
+                })
                 .is_ok()
         };
         if !for_each_candidate(
@@ -280,16 +342,19 @@ fn spawn_scan(
             return;
         }
         if !batch.is_empty()
-            && event_tx.send(FileIndexEvent::ScanBatch { generation, entries: batch }).is_err()
+            && event_tx
+                .send(FileIndexEvent::ScanBatch { key: key.clone(), generation, entries: batch })
+                .is_err()
         {
             return;
         }
-        let _ = event_tx.send(FileIndexEvent::ScanFinished { generation });
+        let _ = event_tx.send(FileIndexEvent::ScanFinished { key, generation });
     });
     FileIndexScanHandle { cancel }
 }
 
 fn spawn_watch(
+    key: forge_workspace::SessionKey,
     root: &Path,
     generation: u64,
     respect_gitignore: bool,
@@ -325,6 +390,7 @@ fn spawn_watch(
             match event {
                 Ok(event) => {
                     if let Some(next_event) = normalize_watch_event(
+                        key.clone(),
                         &root_for_thread,
                         generation,
                         respect_gitignore,
@@ -335,7 +401,8 @@ fn spawn_watch(
                 }
                 Err(err) => {
                     tracing::warn!(%err, "file index watcher event failed");
-                    let _ = event_tx.send(FileIndexEvent::RebuildRequested { generation });
+                    let _ = event_tx
+                        .send(FileIndexEvent::RebuildRequested { key: key.clone(), generation });
                 }
             }
         }
@@ -344,6 +411,7 @@ fn spawn_watch(
 }
 
 fn normalize_watch_event(
+    key: forge_workspace::SessionKey,
     root: &Path,
     generation: u64,
     respect_gitignore: bool,
@@ -352,7 +420,7 @@ fn normalize_watch_event(
     use notify::event::{CreateKind, EventKind, ModifyKind, RemoveKind, RenameMode};
 
     if matches_ignore_semantics_change(root, &event.paths) {
-        return Some(FileIndexEvent::RebuildRequested { generation });
+        return Some(FileIndexEvent::RebuildRequested { key, generation });
     }
 
     let changes = match event.kind {
@@ -370,11 +438,11 @@ fn normalize_watch_event(
         | EventKind::Remove(RemoveKind::Any | RemoveKind::File | RemoveKind::Folder) => {
             collect_remove_changes(root, &event.paths)
         }
-        EventKind::Other => return Some(FileIndexEvent::RebuildRequested { generation }),
+        EventKind::Other => return Some(FileIndexEvent::RebuildRequested { key, generation }),
         _ => Vec::new(),
     };
 
-    (!changes.is_empty()).then_some(FileIndexEvent::FsBatch { generation, changes })
+    (!changes.is_empty()).then_some(FileIndexEvent::FsBatch { key, generation, changes })
 }
 
 fn matches_ignore_semantics_change(root: &Path, paths: &[PathBuf]) -> bool {
@@ -664,25 +732,75 @@ mod tests {
 
         mention::activate(&mut app);
         wait_for(&mut app, Duration::from_secs(2), |app| {
-            app.file_index.scan_finished && !app.file_index.entries.is_empty()
+            app.file_index().scan_finished && !app.file_index().entries.is_empty()
         });
-        let generation = app.file_index.generation;
+        let generation = app.file_index().generation;
 
         mention::deactivate(&mut app);
         app.input_mut().set_text("@src");
         let _ = app.input_mut().set_cursor(0, 4);
         mention::activate(&mut app);
 
-        assert_eq!(app.file_index.generation, generation);
+        assert_eq!(app.file_index().generation, generation);
+    }
+
+    /// Regression for the `@`-mention wrong-project bug. Each bucket
+    /// owns its own `FileIndexState`; a scan event targeting bucket
+    /// B must NOT touch bucket A's index, even when A is the active
+    /// bucket at delivery time.
+    #[test]
+    fn scan_event_routes_to_targeted_bucket_not_active_bucket() {
+        let mut app = App::test_default();
+        let key_a = forge_workspace::SessionKey::from_str_for_test("project-a");
+        let key_b = forge_workspace::SessionKey::from_str_for_test("project-b");
+        app.sessions.insert(key_a.clone(), crate::app::session::UiSession::new(key_a.clone()));
+        app.sessions.insert(key_b.clone(), crate::app::session::UiSession::new(key_b.clone()));
+        app.active_session_key = Some(key_a.clone());
+
+        // Seed B's generation so the targeted scan event matches.
+        let generation = {
+            let bucket_b = app.sessions.get_mut(&key_b).expect("bucket b");
+            bucket_b.file_index.generation = 42;
+            bucket_b.file_index.generation
+        };
+
+        app.file_index_event_tx
+            .send(FileIndexEvent::ScanBatch {
+                key: key_b.clone(),
+                generation,
+                entries: vec![FileCandidate {
+                    rel_path: "b-only.rs".to_owned(),
+                    rel_path_lower: "b-only.rs".to_owned(),
+                    basename_lower: "b-only.rs".to_owned(),
+                    depth: 0,
+                    modified: SystemTime::UNIX_EPOCH,
+                    is_dir: false,
+                }],
+            })
+            .expect("send scan batch for B");
+
+        drain_events(&mut app);
+
+        // A (active) untouched, B got the entry.
+        assert!(
+            app.file_index().entries.is_empty(),
+            "active bucket A must not be touched by a scan targeted at B"
+        );
+        let bucket_b = app.sessions.get(&key_b).expect("bucket b");
+        assert!(
+            bucket_b.file_index.entries.contains_key("b-only.rs"),
+            "bucket B's index should hold the scanned entry"
+        );
     }
 
     #[test]
     fn stale_scan_event_is_ignored_after_reset() {
         let mut app = App::test_default();
-        let stale_generation = app.file_index.generation;
+        let stale_generation = app.file_index_mut().generation;
         reset(&mut app);
         app.file_index_event_tx
             .send(FileIndexEvent::ScanBatch {
+                key: forge_workspace::SessionKey::from_session_id(App::PRE_CONNECT_KEY),
                 generation: stale_generation,
                 entries: vec![FileCandidate {
                     rel_path: "stale.rs".to_owned(),
@@ -697,23 +815,25 @@ mod tests {
 
         drain_events(&mut app);
 
-        assert!(app.file_index.entries.is_empty());
+        assert!(app.file_index_mut().entries.is_empty());
     }
 
     #[test]
     fn live_remove_blocks_late_scan_entry_from_same_generation() {
         let mut app = App::test_default();
-        app.file_index.generation = 7;
-        app.file_index.scan_finished = false;
+        app.file_index_mut().generation = 7;
+        app.file_index_mut().scan_finished = false;
 
         app.file_index_event_tx
             .send(FileIndexEvent::FsBatch {
+                key: forge_workspace::SessionKey::from_session_id(App::PRE_CONNECT_KEY),
                 generation: 7,
                 changes: vec![FileIndexChange::RemoveExact { rel_path: "stale.rs".to_owned() }],
             })
             .expect("send live remove");
         app.file_index_event_tx
             .send(FileIndexEvent::ScanBatch {
+                key: forge_workspace::SessionKey::from_session_id(App::PRE_CONNECT_KEY),
                 generation: 7,
                 entries: vec![FileCandidate {
                     rel_path: "stale.rs".to_owned(),
@@ -728,17 +848,18 @@ mod tests {
 
         drain_events(&mut app);
 
-        assert!(!app.file_index.entries.contains_key("stale.rs"));
+        assert!(!app.file_index_mut().entries.contains_key("stale.rs"));
     }
 
     #[test]
     fn live_upsert_beats_late_scan_entry_for_same_path() {
         let mut app = App::test_default();
-        app.file_index.generation = 11;
-        app.file_index.scan_finished = false;
+        app.file_index_mut().generation = 11;
+        app.file_index_mut().scan_finished = false;
 
         app.file_index_event_tx
             .send(FileIndexEvent::FsBatch {
+                key: forge_workspace::SessionKey::from_session_id(App::PRE_CONNECT_KEY),
                 generation: 11,
                 changes: vec![FileIndexChange::Upsert(FileCandidate {
                     rel_path: "fresh.rs".to_owned(),
@@ -752,6 +873,7 @@ mod tests {
             .expect("send live upsert");
         app.file_index_event_tx
             .send(FileIndexEvent::ScanBatch {
+                key: forge_workspace::SessionKey::from_session_id(App::PRE_CONNECT_KEY),
                 generation: 11,
                 entries: vec![FileCandidate {
                     rel_path: "fresh.rs".to_owned(),
@@ -766,7 +888,7 @@ mod tests {
 
         drain_events(&mut app);
 
-        let candidate = app.file_index.entries.get("fresh.rs").expect("fresh candidate");
+        let candidate = app.file_index_mut().entries.get("fresh.rs").expect("fresh candidate");
         assert_eq!(candidate.modified, SystemTime::UNIX_EPOCH + Duration::from_secs(20));
     }
 
@@ -806,7 +928,13 @@ mod tests {
             std::fs::write(path, "").expect("write file");
         }
         let (tx, rx) = mpsc::channel();
-        let _scan = spawn_scan(tmp.path().to_path_buf(), 1, true, tx);
+        let _scan = spawn_scan(
+            forge_workspace::SessionKey::from_session_id(App::PRE_CONNECT_KEY),
+            tmp.path().to_path_buf(),
+            1,
+            true,
+            tx,
+        );
 
         let first = rx.recv_timeout(Duration::from_secs(2)).expect("first scan event");
         assert!(matches!(first, FileIndexEvent::ScanBatch { .. }));
@@ -815,13 +943,14 @@ mod tests {
     #[test]
     fn fs_batch_create_updates_visible_candidates_without_real_watcher() {
         let mut app = App::test_default();
-        app.file_index.generation = 5;
-        app.file_index.scan_finished = true;
-        app.file_index.entries.insert("existing.rs".to_owned(), candidate("existing.rs"));
-        app.mention = Some(mention::MentionState::new(0, 0, "new".to_owned(), Vec::new()));
+        app.file_index_mut().generation = 5;
+        app.file_index_mut().scan_finished = true;
+        app.file_index_mut().entries.insert("existing.rs".to_owned(), candidate("existing.rs"));
+        *app.mention_mut() = Some(mention::MentionState::new(0, 0, "new".to_owned(), Vec::new()));
 
         app.file_index_event_tx
             .send(FileIndexEvent::FsBatch {
+                key: forge_workspace::SessionKey::from_session_id(App::PRE_CONNECT_KEY),
                 generation: 5,
                 changes: vec![FileIndexChange::Upsert(candidate("new.rs"))],
             })
@@ -830,7 +959,7 @@ mod tests {
         drain_events(&mut app);
 
         assert!(app.needs_redraw);
-        let mention = app.mention.as_ref().expect("mention");
+        let mention = app.mention().expect("mention");
         assert_eq!(
             mention
                 .candidates
@@ -845,27 +974,31 @@ mod tests {
     fn fs_batch_rename_replaces_old_path_without_real_watcher() {
         let (mut app, tmp) = app_with_temp_files(&["before.rs", "keep.rs"]);
         let root = tmp.path().canonicalize().expect("canonicalize tempdir");
-        app.file_index.generation = 9;
-        app.file_index.scan_finished = true;
-        app.file_index.root = Some(root.clone());
-        app.file_index.entries.insert("before.rs".to_owned(), candidate("before.rs"));
-        app.file_index.entries.insert("keep.rs".to_owned(), candidate("keep.rs"));
-        app.mention = Some(mention::MentionState::new(0, 0, "rs".to_owned(), Vec::new()));
+        app.file_index_mut().generation = 9;
+        app.file_index_mut().scan_finished = true;
+        app.file_index_mut().root = Some(root.clone());
+        app.file_index_mut().entries.insert("before.rs".to_owned(), candidate("before.rs"));
+        app.file_index_mut().entries.insert("keep.rs".to_owned(), candidate("keep.rs"));
+        *app.mention_mut() = Some(mention::MentionState::new(0, 0, "rs".to_owned(), Vec::new()));
 
         std::fs::rename(root.join("before.rs"), root.join("after.rs"))
             .expect("rename watched file");
         let changes =
             collect_rename_changes(&root, true, &[root.join("before.rs"), root.join("after.rs")]);
         app.file_index_event_tx
-            .send(FileIndexEvent::FsBatch { generation: 9, changes })
+            .send(FileIndexEvent::FsBatch {
+                key: forge_workspace::SessionKey::from_session_id(App::PRE_CONNECT_KEY),
+                generation: 9,
+                changes,
+            })
             .expect("send rename fs batch");
 
         drain_events(&mut app);
 
-        assert!(!app.file_index.entries.contains_key("before.rs"));
-        assert!(app.file_index.entries.contains_key("after.rs"));
-        assert!(app.file_index.entries.contains_key("keep.rs"));
-        let mention = app.mention.as_ref().expect("mention");
+        assert!(!app.file_index_mut().entries.contains_key("before.rs"));
+        assert!(app.file_index_mut().entries.contains_key("after.rs"));
+        assert!(app.file_index_mut().entries.contains_key("keep.rs"));
+        let mention = app.mention().expect("mention");
         let visible = mention
             .candidates
             .iter()

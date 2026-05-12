@@ -171,7 +171,7 @@ fn write_text_to_clipboard(selected_text: String) -> ClipboardCopyResult {
 }
 
 fn selection_text_for_copy(app: &mut App) -> Option<String> {
-    let selection = app.selection?;
+    let selection = app.selection().copied()?;
     crate::ui::refresh_selection_snapshot(app);
     let lines = match selection.kind {
         super::SelectionKind::Chat => &app.rendered_chat_lines,
@@ -361,10 +361,10 @@ pub(super) fn handle_normal_key(app: &mut App, key: KeyEvent) -> bool {
 }
 
 fn should_ignore_key_during_paste(app: &mut App, key: KeyEvent) -> bool {
-    if app.pending_submit.is_some() && is_editing_like_key(key) {
-        app.pending_submit = None;
+    if app.pending_submit().is_some() && is_editing_like_key(key) {
+        *app.pending_submit_mut() = None;
     }
-    !app.pending_paste_text.is_empty() && is_editing_like_key(key)
+    !app.pending_paste_text().is_empty() && is_editing_like_key(key)
 }
 
 fn is_editing_like_key(key: KeyEvent) -> bool {
@@ -426,10 +426,10 @@ fn handle_turn_control_key(app: &mut App, key: KeyEvent) -> bool {
         app.needs_redraw = true;
         return true;
     }
-    app.pending_submit = None;
+    *app.pending_submit_mut() = None;
     // Clear any pending image attachments on Escape.
-    if !app.pending_images.is_empty() {
-        app.pending_images.clear();
+    if !app.pending_images().is_empty() {
+        app.pending_images_mut().clear();
         app.needs_redraw = true;
     }
     if app.focus_owner() == FocusOwner::TodoList {
@@ -472,7 +472,7 @@ fn handle_submit_key(app: &mut App, key: KeyEvent) -> bool {
     if !key.modifiers.contains(KeyModifiers::SHIFT)
         && !key.modifiers.contains(KeyModifiers::CONTROL)
     {
-        app.pending_submit = Some(app.input().snapshot());
+        *app.pending_submit_mut() = Some(app.input().snapshot());
         tracing::debug!(
             target: crate::logging::targets::APP_INPUT,
             event_name = "deferred_submit_armed",
@@ -481,7 +481,7 @@ fn handle_submit_key(app: &mut App, key: KeyEvent) -> bool {
         );
         return false;
     }
-    app.pending_submit = None;
+    *app.pending_submit_mut() = None;
     tracing::debug!(
         target: crate::logging::targets::APP_INPUT,
         event_name = "explicit_newline_inserted",
@@ -717,15 +717,15 @@ fn handle_clipboard_paste_key(app: &mut App, key: KeyEvent) -> bool {
         if let Ok(img_data) = clipboard.get_image() {
             match super::clipboard_image::encode_clipboard_image(img_data) {
                 Ok(attachment) => {
-                    app.pending_images.push(attachment);
+                    app.pending_images_mut().push(attachment);
                     // Insert badge text at the cursor position so the user (and
                     // the model) can see where images are relative to text.
-                    let idx = app.pending_images.len();
+                    let idx = app.pending_images().len();
                     let badge = format!("[Image #{idx}]");
                     app.input_mut().insert_str(&badge);
                     app.needs_redraw = true;
                     tracing::debug!(
-                        count = app.pending_images.len(),
+                        count = app.pending_images().len(),
                         "clipboard_paste: attached image from clipboard"
                     );
                     return true;
@@ -810,8 +810,8 @@ fn try_delete_image_badge(app: &mut App, direction: &str) -> bool {
         return false;
     };
     let array_idx = one_based_idx.saturating_sub(1);
-    if array_idx < app.pending_images.len() {
-        app.pending_images.remove(array_idx);
+    if array_idx < app.pending_images().len() {
+        app.pending_images_mut().remove(array_idx);
     }
     app.input_mut().renumber_image_badges();
     app.needs_redraw = true;
@@ -1211,7 +1211,7 @@ mod tests {
     #[test]
     fn queued_paste_still_blocks_overlapping_key_text() {
         let mut app = App::test_default();
-        app.pending_paste_text = "clipboard".to_owned();
+        *app.pending_paste_text_mut() = "clipboard".to_owned();
 
         let blocked = should_ignore_key_during_paste(
             &mut app,
@@ -1251,7 +1251,7 @@ mod tests {
         app.bind_active_turn_assistant(0);
         app.rendered_chat_area = Rect::new(0, 0, 20, 6);
         app.rendered_chat_lines = vec!["hello".to_owned()];
-        app.selection = Some(SelectionState {
+        *app.selection_mut() = Some(SelectionState {
             kind: SelectionKind::Chat,
             start: SelectionPoint { row: 0, col: 0 },
             end: SelectionPoint { row: 0, col: 11 },
@@ -1277,7 +1277,7 @@ mod tests {
         app.input_mut().set_text("hello");
         app.rendered_input_area = Rect::new(0, 0, 20, 4);
         app.rendered_input_lines = vec!["hello".to_owned()];
-        app.selection = Some(SelectionState {
+        *app.selection_mut() = Some(SelectionState {
             kind: SelectionKind::Input,
             start: SelectionPoint { row: 0, col: 0 },
             end: SelectionPoint { row: 0, col: 11 },

@@ -138,9 +138,9 @@ pub fn activate(app: &mut App) {
     let Some(state) = build_subagent_state(app) else {
         return;
     };
-    app.subagent = Some(state);
-    app.mention = None;
-    app.slash = None;
+    *app.subagent_mut() = Some(state);
+    *app.mention_mut() = None;
+    *app.slash_mut() = None;
     app.claim_focus_target(FocusTarget::Mention);
 }
 
@@ -150,20 +150,20 @@ pub fn update_query(app: &mut App) {
         return;
     };
 
-    if let Some(ref mut subagent) = app.subagent {
+    if let Some(subagent) = app.subagent_mut().as_mut() {
         subagent.trigger_row = next_state.trigger_row;
         subagent.trigger_col = next_state.trigger_col;
         subagent.query = next_state.query;
         subagent.candidates = next_state.candidates;
         subagent.dialog.clamp(subagent.candidates.len(), MAX_VISIBLE);
     } else {
-        app.subagent = Some(next_state);
+        *app.subagent_mut() = Some(next_state);
         app.claim_focus_target(FocusTarget::Mention);
     }
 }
 
 pub fn sync_with_cursor(app: &mut App) {
-    match (build_subagent_state(app), app.subagent.is_some()) {
+    match (build_subagent_state(app), app.subagent().is_some()) {
         (Some(_), true) => update_query(app),
         (Some(_), false) => activate(app),
         (None, true) => deactivate(app),
@@ -172,31 +172,31 @@ pub fn sync_with_cursor(app: &mut App) {
 }
 
 pub fn deactivate(app: &mut App) {
-    app.subagent = None;
-    if app.mention.is_none() && app.slash.is_none() {
+    *app.subagent_mut() = None;
+    if app.mention().is_none() && app.slash().is_none() {
         app.release_focus_target(FocusTarget::Mention);
     }
 }
 
 pub fn move_up(app: &mut App) {
-    if let Some(ref mut subagent) = app.subagent {
+    if let Some(subagent) = app.subagent_mut().as_mut() {
         subagent.dialog.move_up(subagent.candidates.len(), MAX_VISIBLE);
     }
 }
 
 pub fn move_down(app: &mut App) {
-    if let Some(ref mut subagent) = app.subagent {
+    if let Some(subagent) = app.subagent_mut().as_mut() {
         subagent.dialog.move_down(subagent.candidates.len(), MAX_VISIBLE);
     }
 }
 
 pub fn confirm_selection(app: &mut App) {
-    let Some(subagent) = app.subagent.take() else {
+    let Some(subagent) = app.subagent_mut().take() else {
         return;
     };
 
     let Some(candidate) = subagent.candidates.get(subagent.dialog.selected) else {
-        if app.mention.is_none() && app.slash.is_none() {
+        if app.mention().is_none() && app.slash().is_none() {
             app.release_focus_target(FocusTarget::Mention);
         }
         return;
@@ -204,7 +204,7 @@ pub fn confirm_selection(app: &mut App) {
 
     let mut lines = app.input().lines().to_vec();
     let Some(line) = lines.get(subagent.trigger_row) else {
-        if app.mention.is_none() && app.slash.is_none() {
+        if app.mention().is_none() && app.slash().is_none() {
             app.release_focus_target(FocusTarget::Mention);
         }
         return;
@@ -212,7 +212,7 @@ pub fn confirm_selection(app: &mut App) {
 
     let chars: Vec<char> = line.chars().collect();
     if subagent.trigger_col >= chars.len() || chars[subagent.trigger_col] != '&' {
-        if app.mention.is_none() && app.slash.is_none() {
+        if app.mention().is_none() && app.slash().is_none() {
             app.release_focus_target(FocusTarget::Mention);
         }
         return;
@@ -239,7 +239,7 @@ pub fn confirm_selection(app: &mut App) {
     );
 
     sync_with_cursor(app);
-    if app.mention.is_none() && app.slash.is_none() && app.subagent.is_none() {
+    if app.mention().is_none() && app.slash().is_none() && app.subagent().is_none() {
         app.release_focus_target(FocusTarget::Mention);
     }
 }
@@ -322,7 +322,7 @@ mod tests {
 
         sync_with_cursor(&mut app);
 
-        let state = app.subagent.as_ref().expect("subagent state should be active");
+        let state = app.subagent().expect("subagent state should be active");
         assert_eq!(state.query, "re");
         assert!(!state.candidates.is_empty());
     }
@@ -336,7 +336,7 @@ mod tests {
 
         sync_with_cursor(&mut app);
 
-        let state = app.subagent.as_ref().expect("subagent state should be active");
+        let state = app.subagent().expect("subagent state should be active");
         assert_eq!(state.query, "");
         assert!(!state.candidates.is_empty());
     }

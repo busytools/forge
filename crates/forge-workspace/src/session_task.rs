@@ -327,7 +327,15 @@ impl SessionTask {
                     self.update_tx.send(SessionUpdate::RuntimeReloadFailed { session_id, message });
             }
             AgentEvent::SessionsListed { sessions } => {
-                let _ = self.update_tx.send(SessionUpdate::SessionsListed { sessions });
+                // Route via `spawn_key` while the pre-Connect bucket
+                // is still in place — same pattern as `AuthRequired`
+                // and `ForgeAccountIdentity`. After the first Connected
+                // the synth_key migrates to the real session UUID
+                // (via `KeyRenamed`); subsequent SessionsListed events
+                // land via `self.key` directly because `spawn_key` is
+                // cleared in the Connected arm.
+                let key = self.spawn_key.clone().unwrap_or_else(|| self.key.clone());
+                let _ = self.update_tx.send(SessionUpdate::SessionsListed { key, sessions });
             }
             AgentEvent::StatusSnapshot { session_id, account, forge_account } => {
                 let _ = self.update_tx.send(SessionUpdate::StatusSnapshot {

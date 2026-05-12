@@ -40,7 +40,7 @@ fn app_with_status_connection()
     let rx = app.install_testing_stub();
     app.set_session_id(Some(crate::agent::model::SessionId::new("session-1")));
     app.config.active_tab = ConfigTab::Status;
-    app.recent_sessions = vec![crate::app::RecentSessionInfo {
+    *app.recent_sessions_mut() = vec![crate::app::RecentSessionInfo {
         session_id: "session-1".to_owned(),
         summary: "Existing session summary".to_owned(),
         last_modified_ms: 0,
@@ -582,7 +582,7 @@ async fn activating_usage_tab_starts_refresh_lifecycle() {
             activate_tab(&mut app, ConfigTab::Usage);
 
             assert_eq!(app.config.active_tab, ConfigTab::Usage);
-            assert!(app.usage.in_flight);
+            assert!(app.usage().in_flight);
         })
         .await;
 }
@@ -596,7 +596,7 @@ async fn usage_tab_r_triggers_manual_refresh() {
 
             handle_key(&mut app, KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE));
 
-            assert!(app.usage.in_flight);
+            assert!(app.usage().in_flight);
         })
         .await;
 }
@@ -706,9 +706,9 @@ fn status_tab_g_generates_session_title_from_current_title_fallback() {
 #[test]
 fn status_tab_g_requires_existing_session_metadata() {
     let (mut app, mut rx) = app_with_status_connection();
-    app.recent_sessions[0].custom_title = None;
-    app.recent_sessions[0].summary.clear();
-    app.recent_sessions[0].first_prompt = None;
+    app.recent_sessions_mut()[0].custom_title = None;
+    app.recent_sessions_mut()[0].summary.clear();
+    app.recent_sessions_mut()[0].first_prompt = None;
 
     handle_key(&mut app, KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE));
 
@@ -820,11 +820,12 @@ fn immediate_save_respect_gitignore_invalidates_active_mention_session_cache() {
     app.set_cwd_raw(dir.path().to_string_lossy().to_string());
 
     open(&mut app).expect("open");
-    app.mention = Some(crate::app::mention::MentionState::new(0, 0, "rs".to_owned(), vec![]));
+    *app.mention_mut() =
+        Some(crate::app::mention::MentionState::new(0, 0, "rs".to_owned(), vec![]));
     select_setting(&mut app, SettingId::RespectGitignore);
     handle_key(&mut app, KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
 
-    let mention = app.mention.as_ref().expect("mention should stay active");
+    let mention = app.mention().expect("mention should stay active");
     assert!(mention.candidates.is_empty());
     assert_eq!(mention.placeholder_message().as_deref(), Some("Searching files..."));
     assert!(!app.config.respect_gitignore_effective());

@@ -209,14 +209,14 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
         }
 
         // Merge and process `Event::Paste` chunks as one paste action.
-        if app.active_view == ActiveView::Chat && !app.pending_paste_text.is_empty() {
+        if app.active_view == ActiveView::Chat && !app.pending_paste_text().is_empty() {
             finalize_pending_paste_event(app);
         }
 
         // Deferred submit: if Enter was pressed and no paste payload arrived
         // in this drain cycle, restore the exact pre-submit snapshot and
         // submit that unchanged draft.
-        if app.active_view == ActiveView::Chat && app.pending_submit.is_some() {
+        if app.active_view == ActiveView::Chat && app.pending_submit().is_some() {
             finalize_deferred_submit(app);
         }
 
@@ -397,15 +397,14 @@ async fn wait_for_shutdown_signal() -> std::io::Result<()> {
 
 /// Finalize queued `Event::Paste` chunks for this drain cycle.
 fn finalize_pending_paste_event(app: &mut App) {
-    let pasted = std::mem::take(&mut app.pending_paste_text);
+    let pasted = std::mem::take(app.pending_paste_text_mut());
     if pasted.is_empty() {
         return;
     }
     let pasted_chars = pasted.chars().count();
 
-    let session = app.pending_paste_session.take().unwrap_or_else(|| {
-        let id = app.next_paste_session_id;
-        app.next_paste_session_id = app.next_paste_session_id.saturating_add(1);
+    let session = app.pending_paste_session_mut().take().unwrap_or_else(|| {
+        let id = app.allocate_paste_session_id();
         state::PasteSessionState {
             id,
             start: SelectionPoint { row: app.input().cursor_row(), col: app.input().cursor_col() },
@@ -432,7 +431,7 @@ fn finalize_pending_paste_event(app: &mut App) {
         .is_some()
         && app.input_mut().append_to_active_paste_block(&pasted);
     if appended {
-        app.active_paste_session = Some(session);
+        *app.active_paste_session_mut() = Some(session);
         app.needs_redraw = true;
         tracing::debug!(
             target: crate::logging::targets::APP_PASTE,
@@ -451,7 +450,7 @@ fn finalize_pending_paste_event(app: &mut App) {
         let idx = app.input().lines().get(app.input().cursor_row()).and_then(|line| {
             input::parse_paste_placeholder_before_cursor(line, app.input().cursor_col())
         });
-        app.active_paste_session =
+        *app.active_paste_session_mut() =
             Some(state::PasteSessionState { placeholder_index: idx, ..session });
         tracing::debug!(
             target: crate::logging::targets::APP_PASTE,
@@ -465,7 +464,7 @@ fn finalize_pending_paste_event(app: &mut App) {
         );
     } else {
         app.input_mut().insert_str(&pasted);
-        app.active_paste_session = None;
+        *app.active_paste_session_mut() = None;
         tracing::debug!(
             target: crate::logging::targets::APP_PASTE,
             event_name = "paste_inline_inserted",
@@ -559,7 +558,7 @@ fn strip_input_range(app: &mut App, start: SelectionPoint, end: SelectionPoint) 
 /// Finalize a deferred Enter by restoring the exact pre-submit input snapshot
 /// and submitting that original draft text.
 fn finalize_deferred_submit(app: &mut App) {
-    let Some(snapshot) = app.pending_submit.take() else {
+    let Some(snapshot) = app.pending_submit_mut().take() else {
         return;
     };
     app.input_mut().restore_snapshot(snapshot);
@@ -592,7 +591,7 @@ mod tests {
 
         // Not applied until post-drain finalization.
         assert!(app.input().is_empty());
-        assert!(!app.pending_paste_text.is_empty());
+        assert!(!app.pending_paste_text().is_empty());
 
         finalize_pending_paste_event(&mut app);
 
@@ -604,13 +603,13 @@ mod tests {
     fn pending_paste_chunk_appends_to_same_session_placeholder() {
         let mut app = App::test_default();
         app.input_mut().insert_paste_block("a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk");
-        app.active_paste_session = Some(state::PasteSessionState {
+        *app.active_paste_session_mut() = Some(state::PasteSessionState {
             id: 7,
             start: SelectionPoint { row: 0, col: 0 },
             placeholder_index: Some(0),
         });
-        app.pending_paste_session = app.active_paste_session;
-        app.pending_paste_text = "\nl\nm".to_owned();
+        *app.pending_paste_session_mut() = app.active_paste_session().copied();
+        *app.pending_paste_text_mut() = "\nl\nm".to_owned();
 
         finalize_pending_paste_event(&mut app);
 
@@ -621,7 +620,7 @@ mod tests {
     #[test]
     fn pending_paste_exact_1000_chars_stays_inline() {
         let mut app = App::test_default();
-        app.pending_paste_text = "x".repeat(1000);
+        *app.pending_paste_text_mut() = "x".repeat(1000);
 
         finalize_pending_paste_event(&mut app);
 
@@ -632,7 +631,7 @@ mod tests {
     fn pending_paste_finalization_marks_redraw() {
         let mut app = App::test_default();
         app.needs_redraw = false;
-        app.pending_paste_text = "hello\nworld".to_owned();
+        *app.pending_paste_text_mut() = "hello\nworld".to_owned();
 
         finalize_pending_paste_event(&mut app);
 
@@ -696,7 +695,7 @@ mod tests {
     #[test]
     fn pending_paste_1001_chars_becomes_placeholder() {
         let mut app = App::test_default();
-        app.pending_paste_text = "x".repeat(1001);
+        *app.pending_paste_text_mut() = "x".repeat(1001);
 
         finalize_pending_paste_event(&mut app);
 
@@ -707,7 +706,7 @@ mod tests {
     #[test]
     fn pending_paste_session_isolation_prevents_unintended_append() {
         let mut app = App::test_default();
-        app.pending_paste_text = "a".repeat(1001);
+        *app.pending_paste_text_mut() = "a".repeat(1001);
         finalize_pending_paste_event(&mut app);
         events::handle_terminal_event(
             &mut app,
@@ -717,7 +716,7 @@ mod tests {
             )),
         );
 
-        app.pending_paste_text = "b".repeat(1001);
+        *app.pending_paste_text_mut() = "b".repeat(1001);
         finalize_pending_paste_event(&mut app);
 
         assert_eq!(
@@ -740,11 +739,11 @@ mod tests {
 
         assert_eq!(app.input().text(), "hello world");
         assert_eq!(app.input().cursor(), (0, "hello".chars().count()));
-        assert!(app.pending_submit.is_some());
+        assert!(app.pending_submit().is_some());
 
         finalize_deferred_submit(&mut app);
 
-        assert!(app.pending_submit.is_none());
+        assert!(app.pending_submit().is_none());
         assert!(app.input().text().is_empty());
         assert_eq!(app.messages().len(), 2);
         assert!(matches!(app.messages()[0].role, MessageRole::User));
@@ -772,11 +771,11 @@ mod tests {
 
         assert_eq!(app.input().text(), "alpha beta\ngamma");
         assert_eq!(app.input().cursor(), (0, "alpha".chars().count()));
-        assert!(app.pending_submit.is_some());
+        assert!(app.pending_submit().is_some());
 
         finalize_deferred_submit(&mut app);
 
-        assert!(app.pending_submit.is_none());
+        assert!(app.pending_submit().is_none());
         assert!(matches!(
             app.messages()[0].blocks.as_slice(),
             [MessageBlock::Text(block)] if block.text == "alpha beta\ngamma"
@@ -804,11 +803,11 @@ mod tests {
             &mut app,
             Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
         );
-        assert!(app.pending_submit.is_some());
+        assert!(app.pending_submit().is_some());
 
         finalize_deferred_submit(&mut app);
 
-        assert!(app.pending_submit.is_none());
+        assert!(app.pending_submit().is_none());
         assert!(app.input().text().is_empty());
         assert!(!app.is_help_active());
         assert!(matches!(
@@ -843,7 +842,7 @@ mod tests {
         );
 
         assert_eq!(app.input().text(), "/mode plan ");
-        assert!(app.slash.is_none());
+        assert!(app.slash().is_none());
         assert_eq!(app.focus_owner(), FocusOwner::Input);
 
         events::handle_terminal_event(
@@ -851,7 +850,7 @@ mod tests {
             Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
         );
 
-        assert!(app.pending_submit.is_some());
+        assert!(app.pending_submit().is_some());
     }
 
     #[test]
@@ -871,7 +870,7 @@ mod tests {
         );
 
         assert_eq!(app.input().text(), "/model sonnet ");
-        assert!(app.slash.is_none());
+        assert!(app.slash().is_none());
         assert_eq!(app.focus_owner(), FocusOwner::Input);
 
         events::handle_terminal_event(
@@ -879,13 +878,13 @@ mod tests {
             Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
         );
 
-        assert!(app.pending_submit.is_some());
+        assert!(app.pending_submit().is_some());
     }
 
     #[test]
     fn resume_selection_then_second_enter_arms_submit() {
         let mut app = App::test_default();
-        app.recent_sessions = vec![RecentSessionInfo {
+        *app.recent_sessions_mut() = vec![RecentSessionInfo {
             session_id: "session-1".to_owned(),
             summary: "Session one".to_owned(),
             last_modified_ms: 1,
@@ -905,7 +904,7 @@ mod tests {
         );
 
         assert_eq!(app.input().text(), "/resume session-1 ");
-        assert!(app.slash.is_none());
+        assert!(app.slash().is_none());
         assert_eq!(app.focus_owner(), FocusOwner::Input);
 
         events::handle_terminal_event(
@@ -913,7 +912,7 @@ mod tests {
             Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
         );
 
-        assert!(app.pending_submit.is_some());
+        assert!(app.pending_submit().is_some());
     }
 
     #[test]
@@ -925,12 +924,12 @@ mod tests {
             &mut app,
             Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
         );
-        assert!(app.pending_submit.is_some());
+        assert!(app.pending_submit().is_some());
 
         events::handle_terminal_event(&mut app, Event::Paste("pasted".into()));
 
-        assert!(app.pending_submit.is_none());
-        assert_eq!(app.pending_paste_text, "pasted");
+        assert!(app.pending_submit().is_none());
+        assert_eq!(app.pending_paste_text(), "pasted");
         assert_eq!(app.input().text(), "draft");
     }
 
@@ -943,14 +942,14 @@ mod tests {
             &mut app,
             Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
         );
-        assert!(app.pending_submit.is_some());
+        assert!(app.pending_submit().is_some());
 
         events::handle_terminal_event(
             &mut app,
             Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
         );
 
-        assert!(app.pending_submit.is_none());
+        assert!(app.pending_submit().is_none());
         finalize_deferred_submit(&mut app);
         assert_eq!(app.input().text(), "draft");
         assert!(app.messages().is_empty());

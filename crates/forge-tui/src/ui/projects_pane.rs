@@ -629,12 +629,12 @@ fn build_account_panel_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     push_usage_window_lines(
         &mut lines,
         "5h",
-        app.usage.snapshot.as_ref().and_then(|s| s.five_hour.as_ref()),
+        app.usage().snapshot.as_ref().and_then(|s| s.five_hour.as_ref()),
     );
     push_usage_window_lines(
         &mut lines,
         "7d",
-        app.usage.snapshot.as_ref().and_then(|s| s.seven_day.as_ref()),
+        app.usage().snapshot.as_ref().and_then(|s| s.seven_day.as_ref()),
     );
 
     // Row 12: blank.

@@ -1,7 +1,7 @@
 use forge_workspace::cloud::{cli, oauth};
 
 use crate::app::{App, UsageSnapshot, UsageSourceKind, UsageSourceMode, UsageWindow};
-use forge_workspace::SessionUpdate;
+use forge_workspace::{SessionKey, SessionUpdate};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
@@ -19,45 +19,50 @@ struct UsageRefreshFailure {
 }
 
 pub(crate) fn request_refresh_if_needed(app: &mut App) {
-    if app.usage.in_flight {
+    if app.usage().in_flight {
         return;
     }
-    if app.usage.snapshot.as_ref().is_some_and(is_snapshot_fresh) {
+    if app.usage().snapshot.as_ref().is_some_and(is_snapshot_fresh) {
         return;
     }
     request_refresh(app);
 }
 
 pub(crate) fn request_refresh(app: &mut App) {
-    if app.usage.in_flight || tokio::runtime::Handle::try_current().is_err() {
+    if app.usage().in_flight || tokio::runtime::Handle::try_current().is_err() {
         return;
     }
 
-    apply_refresh_started(app);
+    // Capture the bucket key BEFORE the fetch fires so the result
+    // routes to the right session even if the user has switched
+    // active bucket by the time the fetch lands. `request_refresh`
+    // is a no-op when there's no active session, so the unwrap is
+    // safe here — but bail defensively just in case.
+    let Some(session_key) = app.active_session_key.clone() else {
+        return;
+    };
+
+    apply_refresh_started_for(app, &session_key);
 
     let event_tx = app.update_tx.clone();
-    let epoch = app.session_scope_epoch();
-    let source_mode = app.usage.active_source;
+    let source_mode = app.usage().active_source;
     let cwd_raw = app.cwd_raw();
     // Optional — the CLI fallback path doesn't need a workspace, and
     // tests sometimes drive the lifecycle without one. The OAuth
     // path bails with a clear "no connection" error when the
     // workspace + active session can't be resolved.
-    let workspace_key = app
-        .workspace
-        .as_ref()
-        .zip(app.active_session_key.as_ref())
-        .map(|(ws, key)| (Arc::clone(ws), key.clone()));
+    let workspace_key = app.workspace.as_ref().map(|ws| (Arc::clone(ws), session_key.clone()));
 
     tokio::task::spawn_local(async move {
-        let _ = event_tx.send(SessionUpdate::UsageRefreshStarted { epoch });
+        let _ = event_tx.send(SessionUpdate::UsageRefreshStarted { key: session_key.clone() });
         match refresh_snapshot(source_mode, cwd_raw, workspace_key.as_ref()).await {
             Ok(snapshot) => {
-                let _ = event_tx.send(SessionUpdate::UsageSnapshotReceived { epoch, snapshot });
+                let _ = event_tx
+                    .send(SessionUpdate::UsageSnapshotReceived { key: session_key, snapshot });
             }
             Err(error) => {
                 let _ = event_tx.send(SessionUpdate::UsageRefreshFailed {
-                    epoch,
+                    key: session_key,
                     message: error.message,
                     source: error.source,
                 });
@@ -66,30 +71,45 @@ pub(crate) fn request_refresh(app: &mut App) {
     });
 }
 
-pub(crate) fn apply_refresh_started(app: &mut App) {
-    app.usage.in_flight = true;
-    app.usage.last_error = None;
-    app.usage.last_attempted_source = None;
+pub(crate) fn apply_refresh_started_for(app: &mut App, key: &SessionKey) {
+    let Some(slot) = app.usage_mut_for(key) else {
+        return;
+    };
+    slot.in_flight = true;
+    slot.last_error = None;
+    slot.last_attempted_source = None;
 }
 
-pub(crate) fn apply_refresh_success(app: &mut App, snapshot: UsageSnapshot) {
-    app.usage.last_attempted_source = Some(snapshot.source);
-    app.usage.snapshot = Some(snapshot);
-    app.usage.in_flight = false;
-    app.usage.last_error = None;
+pub(crate) fn apply_refresh_success_for(app: &mut App, key: &SessionKey, snapshot: UsageSnapshot) {
+    let Some(slot) = app.usage_mut_for(key) else {
+        return;
+    };
+    slot.last_attempted_source = Some(snapshot.source);
+    slot.snapshot = Some(snapshot);
+    slot.in_flight = false;
+    slot.last_error = None;
 }
 
-pub(crate) fn apply_refresh_failure(app: &mut App, message: String, source: UsageSourceKind) {
-    app.usage.in_flight = false;
-    app.usage.last_error = Some(message);
-    app.usage.last_attempted_source = Some(source);
+pub(crate) fn apply_refresh_failure_for(
+    app: &mut App,
+    key: &SessionKey,
+    message: String,
+    source: UsageSourceKind,
+) {
+    let Some(slot) = app.usage_mut_for(key) else {
+        return;
+    };
+    slot.in_flight = false;
+    slot.last_error = Some(message);
+    slot.last_attempted_source = Some(source);
 }
 
 pub(crate) fn reset_for_session_change(app: &mut App) {
-    app.usage.snapshot = None;
-    app.usage.in_flight = false;
-    app.usage.last_error = None;
-    app.usage.last_attempted_source = None;
+    let slot = app.usage_mut();
+    slot.snapshot = None;
+    slot.in_flight = false;
+    slot.last_error = None;
+    slot.last_attempted_source = None;
 }
 
 pub(crate) fn visible_windows(snapshot: &UsageSnapshot) -> Vec<&UsageWindow> {

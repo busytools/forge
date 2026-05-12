@@ -8,9 +8,9 @@ pub(super) fn submit_input(app: &mut App) {
     }
 
     // Dismiss any open mention dropdown
-    app.mention = None;
-    app.slash = None;
-    app.subagent = None;
+    *app.mention_mut() = None;
+    *app.slash_mut() = None;
+    *app.subagent_mut() = None;
 
     // No connection yet - can't submit
     let text = app.input().text();
@@ -24,7 +24,7 @@ pub(super) fn submit_input(app: &mut App) {
     if is_turn_busy(app) {
         match request_cancel(app, CancelOrigin::AutoQueue) {
             Ok(()) => {
-                app.pending_auto_submit_after_cancel = true;
+                app.set_pending_auto_submit_after_cancel(true);
                 tracing::debug!(
                     target: crate::logging::targets::APP_INPUT,
                     event_name = "submit_deferred_for_cancel",
@@ -33,7 +33,7 @@ pub(super) fn submit_input(app: &mut App) {
                 );
             }
             Err(message) => {
-                app.pending_auto_submit_after_cancel = false;
+                app.set_pending_auto_submit_after_cancel(false);
                 tracing::error!(
                     target: crate::logging::targets::APP_INPUT,
                     event_name = "cancel_request_failed",
@@ -46,7 +46,7 @@ pub(super) fn submit_input(app: &mut App) {
         return;
     }
 
-    app.pending_auto_submit_after_cancel = false;
+    app.set_pending_auto_submit_after_cancel(false);
     app.input_mut().clear();
     app.sync_help_open_with_input();
     dispatch_submission(app, text);
@@ -60,7 +60,7 @@ fn is_turn_busy(app: &App) -> bool {
 
 pub(super) fn request_cancel(app: &mut App, origin: CancelOrigin) -> Result<(), String> {
     if matches!(origin, CancelOrigin::Manual) {
-        app.pending_auto_submit_after_cancel = false;
+        app.set_pending_auto_submit_after_cancel(false);
     }
 
     if !matches!(app.status, AppStatus::Thinking | AppStatus::Running) {
@@ -103,17 +103,17 @@ pub(super) fn request_cancel(app: &mut App, origin: CancelOrigin) -> Result<(), 
 }
 
 pub(super) fn maybe_auto_submit_after_cancel(app: &mut App) {
-    if !app.pending_auto_submit_after_cancel {
+    if !app.pending_auto_submit_after_cancel() {
         return;
     }
     if !matches!(app.status, AppStatus::Ready) || app.pending_cancel_origin().is_some() {
         return;
     }
     if app.input().text().trim().is_empty() {
-        app.pending_auto_submit_after_cancel = false;
+        app.set_pending_auto_submit_after_cancel(false);
         return;
     }
-    app.pending_auto_submit_after_cancel = false;
+    app.set_pending_auto_submit_after_cancel(false);
     submit_input(app);
 }
 
@@ -139,7 +139,7 @@ fn dispatch_prompt_turn(app: &mut App, text: String) {
     let session_id = sid.to_string();
 
     // Take pending images for this turn.
-    let images = std::mem::take(&mut app.pending_images);
+    let images = std::mem::take(app.pending_images_mut());
 
     let user_blocks = vec![MessageBlock::Text(TextBlock::from_complete(&text))];
 
@@ -217,7 +217,7 @@ mod tests {
 
         assert_eq!(app.input().text(), "queued prompt");
         assert_eq!(app.pending_cancel_origin(), Some(CancelOrigin::AutoQueue));
-        assert!(app.pending_auto_submit_after_cancel);
+        assert!(app.pending_auto_submit_after_cancel());
         assert!(matches!(app.status, AppStatus::Running));
         assert!(app.messages().is_empty());
         let envelope = rx.try_recv().expect("cancel command should be sent");
@@ -231,14 +231,14 @@ mod tests {
     fn manual_cancel_promotes_existing_auto_cancel() {
         let (mut app, mut rx) = app_with_connection();
         app.status = AppStatus::Thinking;
-        app.pending_auto_submit_after_cancel = true;
+        app.set_pending_auto_submit_after_cancel(true);
 
         request_cancel(&mut app, CancelOrigin::AutoQueue).expect("auto cancel request");
         request_cancel(&mut app, CancelOrigin::Manual).expect("manual cancel request");
 
         assert_eq!(app.pending_cancel_origin(), Some(CancelOrigin::Manual));
         assert!(app.cancelled_turn_pending_hint());
-        assert!(!app.pending_auto_submit_after_cancel);
+        assert!(!app.pending_auto_submit_after_cancel());
         let envelope = rx.try_recv().expect("single cancel command should be sent");
         assert!(matches!(
             envelope,
@@ -255,7 +255,7 @@ mod tests {
 
         submit_input(&mut app);
         assert_eq!(app.pending_cancel_origin(), Some(CancelOrigin::AutoQueue));
-        assert!(app.pending_auto_submit_after_cancel);
+        assert!(app.pending_auto_submit_after_cancel());
         let cancel = rx.try_recv().expect("cancel command should be sent");
         assert!(matches!(
             cancel, forge_primitives::Command::Cancel { session_id } if session_id == "session-1"
@@ -263,7 +263,7 @@ mod tests {
 
         request_cancel(&mut app, CancelOrigin::Manual).expect("manual cancel request");
         assert_eq!(app.pending_cancel_origin(), Some(CancelOrigin::Manual));
-        assert!(!app.pending_auto_submit_after_cancel);
+        assert!(!app.pending_auto_submit_after_cancel());
 
         app.status = AppStatus::Ready;
         app.set_pending_cancel_origin(None);
@@ -286,7 +286,7 @@ mod tests {
 
         assert_eq!(app.input().text(), "draft");
         assert_eq!(app.pending_cancel_origin(), Some(CancelOrigin::AutoQueue));
-        assert!(app.pending_auto_submit_after_cancel);
+        assert!(app.pending_auto_submit_after_cancel());
         let envelope = rx.try_recv().expect("first cancel command should be sent");
         assert!(matches!(
             envelope, forge_primitives::Command::Cancel { session_id } if session_id == "session-1"
@@ -301,7 +301,7 @@ mod tests {
         app.input_mut().set_text("send after cancel");
 
         submit_input(&mut app);
-        assert!(app.pending_auto_submit_after_cancel);
+        assert!(app.pending_auto_submit_after_cancel());
         let cancel = rx.try_recv().expect("cancel command should be sent");
         assert!(matches!(
             cancel, forge_primitives::Command::Cancel { session_id } if session_id == "session-1"
@@ -311,7 +311,7 @@ mod tests {
         app.set_pending_cancel_origin(None);
         maybe_auto_submit_after_cancel(&mut app);
 
-        assert!(!app.pending_auto_submit_after_cancel);
+        assert!(!app.pending_auto_submit_after_cancel());
         assert!(app.input().text().is_empty());
         assert!(matches!(app.status, AppStatus::Thinking));
         assert_eq!(app.messages().len(), 2);
@@ -336,7 +336,7 @@ mod tests {
         assert_eq!(app.active_view, ActiveView::Chat);
         assert_eq!(app.input().text(), "/config");
         assert_eq!(app.pending_cancel_origin(), Some(CancelOrigin::AutoQueue));
-        assert!(app.pending_auto_submit_after_cancel);
+        assert!(app.pending_auto_submit_after_cancel());
         let cancel = rx.try_recv().expect("cancel command should be sent");
         assert!(matches!(
             cancel, forge_primitives::Command::Cancel { session_id } if session_id == "session-1"
@@ -346,7 +346,7 @@ mod tests {
         app.set_pending_cancel_origin(None);
         maybe_auto_submit_after_cancel(&mut app);
 
-        assert!(!app.pending_auto_submit_after_cancel);
+        assert!(!app.pending_auto_submit_after_cancel());
         assert_eq!(app.active_view, ActiveView::Config);
         assert!(app.input().text().is_empty());
         assert!(matches!(app.status, AppStatus::Ready));

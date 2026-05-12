@@ -127,8 +127,8 @@ fn require_active_session(
 /// Block the input field while a slash command is in flight.
 fn set_command_pending(app: &mut App, label: &str, ack: Option<super::PendingCommandAck>) {
     app.status = AppStatus::CommandPending;
-    app.pending_command_label = Some(label.to_owned());
-    app.pending_command_ack = ack;
+    *app.pending_command_label_mut() = Some(label.to_owned());
+    *app.pending_command_ack_mut() = ack;
 }
 
 #[cfg(test)]
@@ -389,7 +389,7 @@ mod tests {
         app.input_mut().set_text("/compact now");
         let _ = app.input_mut().set_cursor(0, "/compact now".chars().count());
         sync_with_cursor(&mut app);
-        assert!(app.slash.is_none());
+        assert!(app.slash().is_none());
     }
 
     #[test]
@@ -406,7 +406,7 @@ mod tests {
         app.input_mut().set_text("/mode xyz");
         let _ = app.input_mut().set_cursor(0, "/mode xyz".chars().count());
         sync_with_cursor(&mut app);
-        assert!(app.slash.is_none());
+        assert!(app.slash().is_none());
     }
 
     #[test]
@@ -414,7 +414,7 @@ mod tests {
         let mut app = App::test_default();
         app.input_mut().set_text("/resume old-id trailing");
         let _ = app.input_mut().set_cursor(0, "/resume old-id".chars().count());
-        app.slash = Some(SlashState {
+        *app.slash_mut() = Some(SlashState {
             trigger_row: 0,
             trigger_col: 8,
             query: "old-id".to_owned(),
@@ -492,7 +492,7 @@ mod tests {
                 let consumed = try_handle_submit(&mut app, "/resume abc-123");
                 assert!(consumed);
                 assert!(matches!(app.status, AppStatus::CommandPending));
-                assert_eq!(app.resuming_session_id.as_deref(), Some("abc-123"));
+                assert_eq!(app.resuming_session_id(), Some("abc-123"));
 
                 tokio::task::yield_now().await;
                 assert!(rx.try_recv().is_ok());
@@ -526,7 +526,7 @@ mod tests {
                     Some("plan"),
                     "expected mode applied synchronously to plan"
                 );
-                assert!(app.pending_command_label.is_none());
+                assert!(app.pending_command_label().is_none());
             })
             .await;
     }
@@ -553,7 +553,7 @@ mod tests {
                     Some("sonnet"),
                     "expected current_model applied synchronously to sonnet"
                 );
-                assert!(app.pending_command_label.is_none());
+                assert!(app.pending_command_label().is_none());
             })
             .await;
     }
@@ -572,7 +572,7 @@ mod tests {
                     "expected CommandPending, got {:?}",
                     app.status
                 );
-                assert_eq!(app.pending_command_label.as_deref(), Some("Starting new session..."));
+                assert_eq!(app.pending_command_label(), Some("Starting new session..."));
             })
             .await;
     }
@@ -686,7 +686,7 @@ mod tests {
     fn confirm_selection_with_invalid_trigger_row_is_noop() {
         let mut app = App::test_default();
         app.input_mut().set_text("/mode");
-        app.slash = Some(SlashState {
+        *app.slash_mut() = Some(SlashState {
             trigger_row: 99,
             trigger_col: 0,
             query: "m".into(),

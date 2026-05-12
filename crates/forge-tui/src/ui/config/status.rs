@@ -116,7 +116,7 @@ fn kv_line(lines: &mut Vec<Line<'static>>, key: &str, value: &str) {
 fn derive_session_name(app: &App) -> String {
     if let Some(sid) = app.session_id() {
         let sid_str = sid.to_string();
-        if let Some(session) = app.recent_sessions.iter().find(|s| s.session_id == sid_str) {
+        if let Some(session) = app.recent_sessions().iter().find(|s| s.session_id == sid_str) {
             if let Some(ref title) = session.custom_title
                 && !title.trim().is_empty()
             {
@@ -262,7 +262,7 @@ mod tests {
     fn status_lines_uses_custom_title() {
         let mut app = App::test_default();
         app.set_session_id(Some(crate::agent::model::SessionId::new("test-sess-1")));
-        app.recent_sessions = vec![crate::app::RecentSessionInfo {
+        *app.recent_sessions_mut() = vec![crate::app::RecentSessionInfo {
             session_id: "test-sess-1".to_owned(),
             summary: String::new(),
             last_modified_ms: 0,
