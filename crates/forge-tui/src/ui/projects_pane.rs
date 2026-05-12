@@ -484,9 +484,20 @@ fn glyph_for_lifecycle(
 /// "account chrome, not status row" intent in the design brief).
 ///
 /// 17 rows: rule + 5 identity (Profile/Mode/Model/Effort/Fast) +
-/// 1 blank + 1 Ctx + 1 blank + 2 (5h bar + ETA) + 1 blank +
-/// 2 (7d bar + ETA) + 1 blank + 2 (📁 + ⎇).
+/// 1 blank + 1 Ctx + 1 blank + 2 (5h bar + ETA row) + 1 blank +
+/// 2 (7d bar + ETA row) + 1 blank + 2 (📁 + ⎇).
 const ACCOUNT_PANEL_HEIGHT: u16 = 17;
+
+/// Width (columns) the rule and content extend up to from the
+/// pane's right edge. Matches the project-row right gutter so the
+/// bottom-panel content visually aligns with the project list above.
+const PANEL_RIGHT_GUTTER: usize = 2;
+
+/// Per-row chrome inside the bar row: `2 indent + 3 label + 2 gap +
+/// BAR + 2 gap + 4 pct`. The bar cell count is derived per render
+/// so the bar stretches to fill (pane_width - PANEL_RIGHT_GUTTER -
+/// chrome).
+const BAR_ROW_FIXED_CHROME: usize = 2 + 3 + 2 + 2 + 4;
 
 /// Below this pane height we skip the panel entirely (would crowd the
 /// project list too aggressively). The chat footer is gone in this
@@ -501,8 +512,31 @@ const ACCOUNT_PANEL_MIN_PANE_HEIGHT: u16 = 24;
 /// regardless of label length.
 const ACCOUNT_PANEL_ID_LABEL_WIDTH: usize = 7;
 
-/// Cells in each usage filling bar (`Ctx` / `5h` / `7d`).
-const ACCOUNT_PANEL_BAR_CELLS: usize = 12;
+/// Bar cell count derived from the pane width so the row stretches
+/// to fill the available content area (pane width minus the 2-col
+/// left indent, fixed chrome from label/gaps/pct, and the right
+/// gutter). At pane width 32 (Wide tier) this is 17 cells; at width
+/// 24 (Medium tier) it's 9 cells. Floored at 6 so the gradient
+/// remains visually meaningful even at very narrow panes.
+fn bar_cells_for(pane_width: u16) -> usize {
+    let pane = usize::from(pane_width);
+    pane.saturating_sub(PANEL_RIGHT_GUTTER).saturating_sub(BAR_ROW_FIXED_CHROME).max(6)
+}
+
+/// Distribute `cells` over the 4 colour zones (green / yellow /
+/// orange / red), placing the remainder in the lower-indexed zones
+/// first. For 12 cells this yields `[3, 3, 3, 3]` (matching the
+/// original polish brief); for 17 cells `[5, 4, 4, 4]`; etc.
+const fn bar_zone_sizes(cells: usize) -> [usize; 4] {
+    let base = cells / 4;
+    let extra = cells % 4;
+    [
+        base + if extra >= 1 { 1 } else { 0 },
+        base + if extra >= 2 { 1 } else { 0 },
+        base + if extra >= 3 { 1 } else { 0 },
+        base,
+    ]
+}
 
 /// Render the account / status panel into the bottom of `area`.
 /// Returns the number of rows the panel consumed (caller subtracts
@@ -524,28 +558,24 @@ fn render_account_status_footer(frame: &mut Frame, area: Rect, app: &App) -> u16
     height
 }
 
-/// 12-cell filling bar with a per-cell position colour gradient.
-/// Cell 1–3 render green, 4–6 yellow, 7–9 orange, 10–12 red — so the
-/// rightmost filled cell tells you which zone the bar is in. Empty
-/// cells stay `░` in DIM. The bar glyph is `▓` (DARK SHADE) for every
-/// filled cell; gradient is fg-colour only, never a glyph swap.
-fn bar_spans(pct: f64) -> Vec<Span<'static>> {
+/// Filling bar with a per-cell position colour gradient over the
+/// 4 zones (green / yellow / orange / red). `cells` is the total
+/// bar width; the function distributes filled cells across the zones
+/// and uses `░` DIM for empty cells. The bar glyph is `▓` (DARK
+/// SHADE) for every filled cell; gradient is fg-colour only, never
+/// a glyph swap.
+fn bar_spans(pct: f64, cells: usize) -> Vec<Span<'static>> {
     let pct = pct.clamp(0.0, 100.0);
-    // `ACCOUNT_PANEL_BAR_CELLS` is a small constant (12); the cast to
-    // f64 is exact within mantissa range.
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_precision_loss)]
-    let filled = ((pct / 100.0) * ACCOUNT_PANEL_BAR_CELLS as f64).round() as usize;
-    let filled = filled.min(ACCOUNT_PANEL_BAR_CELLS);
-    let empty = ACCOUNT_PANEL_BAR_CELLS - filled;
+    let filled = ((pct / 100.0) * cells as f64).round() as usize;
+    let filled = filled.min(cells);
+    let empty = cells - filled;
 
-    // Group filled cells into the 4 zones by position (1-indexed).
-    // Each zone covers 3 cells: 1–3 green, 4–6 yellow, 7–9 orange,
-    // 10–12 red. `filled` is in 0..=12; zone counts are how many of
-    // those cells fall in each band.
-    let green = filled.min(3);
-    let yellow = filled.saturating_sub(3).min(3);
-    let orange = filled.saturating_sub(6).min(3);
-    let red = filled.saturating_sub(9).min(3);
+    let zones = bar_zone_sizes(cells);
+    let green = filled.min(zones[0]);
+    let yellow = filled.saturating_sub(zones[0]).min(zones[1]);
+    let orange = filled.saturating_sub(zones[0] + zones[1]).min(zones[2]);
+    let red = filled.saturating_sub(zones[0] + zones[1] + zones[2]).min(zones[3]);
 
     let mut spans = Vec::with_capacity(5);
     if green > 0 {
@@ -653,10 +683,11 @@ fn build_account_panel_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     lines.push(Line::default());
 
     // Row 7: Ctx bar. No ETA row — context has no reset window.
+    let bar_cells = bar_cells_for(width);
     let ctx_pct = app.session_usage().context_usage_percent.map_or(0.0, f64::from);
     let ctx_pct_str = format!("{:>3}%", app.session_usage().context_usage_percent.unwrap_or(0));
     let mut ctx_line = vec![Span::raw("  "), label_span("Ctx", 3), Span::raw("  ")];
-    ctx_line.extend(bar_spans(ctx_pct));
+    ctx_line.extend(bar_spans(ctx_pct, bar_cells));
     ctx_line.push(Span::raw("  "));
     ctx_line.push(Span::raw(ctx_pct_str));
     lines.push(Line::from(ctx_line));
@@ -664,7 +695,7 @@ fn build_account_panel_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     // Row 8: blank between Ctx and 5h.
     lines.push(Line::default());
 
-    // Rows 9..=10: 5h bar + ETA.
+    // Rows 9..=10: 5h bar + ETA row.
     push_usage_window_lines(
         &mut lines,
         "5h",
@@ -675,7 +706,7 @@ fn build_account_panel_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     // Row 11: blank between 5h and 7d.
     lines.push(Line::default());
 
-    // Rows 12..=13: 7d bar + ETA.
+    // Rows 12..=13: 7d bar + ETA row.
     push_usage_window_lines(
         &mut lines,
         "7d",
@@ -686,8 +717,12 @@ fn build_account_panel_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     // Row 14: blank separating usage from location.
     lines.push(Line::default());
 
-    // Rows 15..=16: location + branch.
-    let cwd_budget = usize::from(width).saturating_sub(2 + 2 + 1); // "  📁 "
+    // Rows 15..=16: location + branch. Budget leaves the
+    // `PANEL_RIGHT_GUTTER` cols of trailing space so the values
+    // align with the project rows' right edge above.
+    let cwd_chrome = 2 + 2 + 1; // "  📁 "
+    let cwd_budget =
+        usize::from(width).saturating_sub(cwd_chrome).saturating_sub(PANEL_RIGHT_GUTTER);
     let cwd_value = fit_path_for_panel(app.cwd(), cwd_budget);
     lines.push(Line::from(vec![
         Span::styled("  📁 ".to_owned(), Style::default().fg(theme::DIM)),
@@ -695,7 +730,9 @@ fn build_account_panel_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     ]));
 
     let (branch_value, branch_color) = branch_label_and_color(app);
-    let branch_budget = usize::from(width).saturating_sub(2 + 1 + 2); // "  ⎇  "
+    let branch_chrome = 2 + 1 + 2; // "  ⎇  "
+    let branch_budget =
+        usize::from(width).saturating_sub(branch_chrome).saturating_sub(PANEL_RIGHT_GUTTER);
     let branch_value = truncate_with_ellipsis(&branch_value, branch_budget);
     lines.push(Line::from(vec![
         Span::styled("  ⎇  ".to_owned(), Style::default().fg(theme::DIM)),
@@ -719,29 +756,35 @@ fn build_account_panel_lines(app: &App, width: u16) -> Vec<Line<'static>> {
 /// `width` is the full pane width so the ETA can be right-justified
 /// against the right edge (matches the percent column of the bar row
 /// above it).
+/// Append two rows for one usage window: a bar+percent row, then a
+/// DIM ETA row right-justified to the panel's content right edge
+/// (col `width - PANEL_RIGHT_GUTTER`). The bar stretches to fill
+/// the available content width.
 fn push_usage_window_lines(
     lines: &mut Vec<Line<'static>>,
     label: &'static str,
     window: Option<&crate::app::UsageWindow>,
     width: u16,
 ) {
+    let bar_cells = bar_cells_for(width);
     let pct_value = window.map_or(0.0, |w| w.utilization);
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let pct_text = window
         .map_or_else(|| "  —%".to_owned(), |w| format!("{:>3}%", w.utilization.round() as i64));
     let mut row = vec![Span::raw("  "), label_span(label, 3), Span::raw("  ")];
-    row.extend(bar_spans(pct_value));
+    row.extend(bar_spans(pct_value, bar_cells));
     row.push(Span::raw("  "));
     row.push(Span::raw(pct_text));
     lines.push(Line::from(row));
 
     // ETA — duration only (no "resets in " prose), DIM, right-justified
-    // to the pane's right edge so it visually sits below the percent
-    // column of the bar row.
+    // to the content right edge (pane width minus the 2-col right
+    // gutter). Visually sits below the percent column of the bar row.
     let eta_text =
         window.and_then(format_window_reset_duration_only).unwrap_or_else(|| "—".to_owned());
     let eta_chars = eta_text.chars().count();
-    let pad = usize::from(width).saturating_sub(eta_chars);
+    let right_edge = usize::from(width).saturating_sub(PANEL_RIGHT_GUTTER);
+    let pad = right_edge.saturating_sub(eta_chars);
     lines.push(Line::from(vec![
         Span::raw(" ".repeat(pad)),
         Span::styled(eta_text, Style::default().fg(theme::DIM)),
@@ -979,27 +1022,42 @@ mod tests {
     }
 
     #[test]
-    fn bar_spans_gradient_zone_counts() {
-        // 25% → 3 cells, all green (1 zone band).
-        let spans = bar_spans(25.0);
-        // 1 filled span (green) + 1 empty (░) = 2 spans.
-        assert_eq!(spans.len(), 2);
+    fn bar_spans_gradient_zone_counts_for_12_cells() {
+        // 12-cell bar (the canonical 4×3 split): 25% → 3 green; 50%
+        // → 3 green + 3 yellow; 75% → +3 orange; 100% → +3 red.
+        let spans = bar_spans(25.0, 12);
+        assert_eq!(spans.len(), 2); // green + empty
 
-        // 50% → 6 cells: 3 green + 3 yellow.
-        let spans = bar_spans(50.0);
+        let spans = bar_spans(50.0, 12);
         assert_eq!(spans.len(), 3); // green + yellow + empty
 
-        // 75% → 9 cells: green + yellow + orange.
-        let spans = bar_spans(75.0);
+        let spans = bar_spans(75.0, 12);
         assert_eq!(spans.len(), 4); // green + yellow + orange + empty
 
-        // 100% → all 12 cells filled, no empty.
-        let spans = bar_spans(100.0);
+        let spans = bar_spans(100.0, 12);
         assert_eq!(spans.len(), 4); // green + yellow + orange + red
 
-        // 0% → entirely empty.
-        let spans = bar_spans(0.0);
-        assert_eq!(spans.len(), 1);
+        let spans = bar_spans(0.0, 12);
+        assert_eq!(spans.len(), 1); // empty only
+    }
+
+    #[test]
+    fn bar_zone_sizes_distributes_remainder() {
+        assert_eq!(bar_zone_sizes(12), [3, 3, 3, 3]);
+        assert_eq!(bar_zone_sizes(17), [5, 4, 4, 4]);
+        assert_eq!(bar_zone_sizes(18), [5, 5, 4, 4]);
+        assert_eq!(bar_zone_sizes(19), [5, 5, 5, 4]);
+        assert_eq!(bar_zone_sizes(9), [3, 2, 2, 2]);
+    }
+
+    #[test]
+    fn bar_cells_for_stretches_to_pane_width() {
+        // Wide pane (32): 32 - 2 (right gutter) - 13 (chrome) = 17.
+        assert_eq!(bar_cells_for(32), 17);
+        // Medium pane (24): 24 - 2 - 13 = 9.
+        assert_eq!(bar_cells_for(24), 9);
+        // Narrower than the chrome+floor: clamps to 6.
+        assert_eq!(bar_cells_for(10), 6);
     }
 
     #[test]

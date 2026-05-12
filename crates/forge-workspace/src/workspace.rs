@@ -431,6 +431,25 @@ impl Workspace {
         self.persist_state();
     }
 
+    /// Read the persisted Inspector-pane visibility preference.
+    /// Default `true` if `forge-state.toml` is missing, unparseable,
+    /// or omits the field.
+    #[must_use]
+    pub fn inspector_pane_visible(&self) -> bool {
+        self.persisted_ui.lock().inspector_pane_visible
+    }
+
+    /// Update + atomically persist the Inspector-pane visibility
+    /// preference. Same persistence path as
+    /// [`Self::set_projects_pane_visible`].
+    pub fn set_inspector_pane_visible(&self, visible: bool) {
+        {
+            let mut ui = self.persisted_ui.lock();
+            ui.inspector_pane_visible = visible;
+        }
+        self.persist_state();
+    }
+
     /// Snapshot the live in-memory state (account picker + UI
     /// preferences) into a [`PersistedState`] and write it to
     /// `forge-state.toml`. Both [`Self::get_agent_handle`] (account
@@ -460,7 +479,10 @@ impl Workspace {
             PersistedState {
                 accounts: persisted_accounts,
                 selection: PersistedSelectionState { round_robin_next },
-                ui: PersistedUiState { projects_pane_visible: ui.projects_pane_visible },
+                ui: PersistedUiState {
+                    projects_pane_visible: ui.projects_pane_visible,
+                    inspector_pane_visible: ui.inspector_pane_visible,
+                },
             }
         };
         state::save(&self.config_dir, &snapshot);

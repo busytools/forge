@@ -61,6 +61,9 @@ pub(super) fn handle_tool_call_update_session(app: &mut App, tcu: &model::ToolCa
     if let Some(todos) = update_outcome.pending_todos {
         set_todos(app, todos);
     }
+    if let Some(nudge) = update_outcome.pending_verification_nudge {
+        app.set_todo_verification_nudge(nudge);
+    }
     if matches!(app.status, AppStatus::Running) && !has_in_progress_tool_calls(app) {
         app.status = AppStatus::Thinking;
     }
@@ -94,6 +97,12 @@ struct ToolCallUpdateApplyOutcome {
     changed: bool,
     layout_dirty_idx: Option<usize>,
     pending_todos: Option<Vec<super::super::TodoItem>>,
+    /// `Some(true)` / `Some(false)` when the update carries a
+    /// `TodoWriteOutputMetadata.verification_nudge_needed` value;
+    /// `None` when this update isn't a TodoWrite tool call or
+    /// doesn't include output metadata. The caller routes this into
+    /// `App::set_todo_verification_nudge`.
+    pending_verification_nudge: Option<bool>,
 }
 
 fn apply_tool_call_update_to_indexed_block(
@@ -103,8 +112,12 @@ fn apply_tool_call_update_to_indexed_block(
     id_str: &str,
     tcu: &model::ToolCallUpdate,
 ) -> ToolCallUpdateApplyOutcome {
-    let mut out =
-        ToolCallUpdateApplyOutcome { changed: false, layout_dirty_idx: None, pending_todos: None };
+    let mut out = ToolCallUpdateApplyOutcome {
+        changed: false,
+        layout_dirty_idx: None,
+        pending_todos: None,
+        pending_verification_nudge: None,
+    };
     let terminals = match app.terminals() {
         Some(t) => std::rc::Rc::clone(t),
         None => std::rc::Rc::new(std::cell::RefCell::new(std::collections::HashMap::new())),
@@ -142,6 +155,20 @@ fn apply_tool_call_update_to_indexed_block(
             tc,
             tcu.fields.raw_input.as_ref(),
         );
+        if tc.sdk_tool_name == "TodoWrite" {
+            // The TodoWrite output metadata may arrive in this same
+            // update (a separate `fields.output_metadata`) or have
+            // been merged earlier; either way `tc.output_metadata`
+            // is now authoritative. Surface the nudge flag for the
+            // caller to route to the per-session state.
+            let nudge = tc
+                .output_metadata
+                .as_ref()
+                .and_then(|meta| meta.todo_write.as_ref())
+                .and_then(|tw| tw.verification_nudge_needed)
+                .unwrap_or(false);
+            out.pending_verification_nudge = Some(nudge);
+        }
         detach_terminal = detach_terminal_if_final(tc);
 
         if changed {

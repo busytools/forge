@@ -276,7 +276,7 @@ async fn turn_complete_does_not_clear_todos() {
         status: forge_tui::app::TodoStatus::InProgress,
         active_form: "Testing".into(),
     }];
-    app.set_show_todo_panel(true);
+    app.set_todo_verification_nudge(true);
 
     let session_key = active_session_key(&app);
     send_client_event(
@@ -285,7 +285,7 @@ async fn turn_complete_does_not_clear_todos() {
     );
 
     assert_eq!(app.todos().len(), 1, "todos should persist across turns");
-    assert!(app.show_todo_panel(), "todo panel state should persist");
+    assert!(app.todo_verification_nudge(), "nudge flag should persist across turns");
 }
 
 #[tokio::test]

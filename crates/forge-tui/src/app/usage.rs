@@ -202,9 +202,20 @@ async fn fetch_oauth_via_bridge(
 }
 
 async fn refresh_snapshot_auto(
-    cwd_raw: String,
+    _cwd_raw: String,
     workspace_key: Option<&(Arc<forge_workspace::Workspace>, forge_workspace::SessionKey)>,
 ) -> Result<UsageSnapshot, UsageRefreshFailure> {
+    // Auto = OAuth-only.
+    //
+    // The CLI fallback (`claude /usage`) used to fire here when OAuth
+    // failed for any transient reason. Each invocation spawned a fresh
+    // `claude` subprocess, which writes a single-shot `.jsonl` session
+    // file into the project's session directory under `<config_dir>/
+    // projects/`. With the panel polling usage on a tick, those files
+    // accumulated rapidly (100+ in a few hours) and poisoned both the
+    // lead-session resolution and the `/resume` picker. Dropped to
+    // prevent the side effect; OAuth failures now surface as a usage
+    // refresh error rather than silently spawning subprocess sessions.
     let oauth_result = match workspace_key {
         Some((workspace, key)) => match workspace.oauth_usage(key).await {
             Ok(payload) => oauth::snapshot_from_payload(payload),
@@ -214,22 +225,10 @@ async fn refresh_snapshot_auto(
             "Bridge connection required for OAuth usage fetch.".to_owned(),
         )),
     };
-    match oauth_result {
-        Ok(snapshot) => Ok(snapshot),
-        Err(error) if error.should_fallback_to_cli() => {
-            let oauth_message = error.into_message();
-            cli::fetch_snapshot(cwd_raw).await.map_err(|message| UsageRefreshFailure {
-                source: UsageSourceKind::Cli,
-                message: format!(
-                    "OAuth unavailable ({oauth_message}). CLI fallback failed: {message}"
-                ),
-            })
-        }
-        Err(error) => Err(UsageRefreshFailure {
-            source: UsageSourceKind::Oauth,
-            message: error.into_message(),
-        }),
-    }
+    oauth_result.map_err(|error| UsageRefreshFailure {
+        source: UsageSourceKind::Oauth,
+        message: error.into_message(),
+    })
 }
 
 #[cfg(test)]

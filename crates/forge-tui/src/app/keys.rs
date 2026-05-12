@@ -301,16 +301,16 @@ fn handle_global_shortcuts(app: &mut App, key: KeyEvent) -> bool {
     }
 
     match (key.code, key.modifiers) {
-        (KeyCode::Char('t'), m) if m == KeyModifiers::CONTROL => {
-            toggle_todo_panel_focus(app);
-            true
-        }
         (KeyCode::Char('x'), m) if m == KeyModifiers::CONTROL => {
             toggle_all_tool_calls(app);
             true
         }
         (KeyCode::Char('b'), m) if m == KeyModifiers::CONTROL => {
             toggle_projects_pane(app);
+            true
+        }
+        (KeyCode::Char('e'), m) if m == KeyModifiers::CONTROL => {
+            toggle_inspector_pane(app);
             true
         }
         (KeyCode::Char('l'), m) if m == KeyModifiers::CONTROL => {
@@ -554,14 +554,6 @@ fn handle_navigation_key(app: &mut App, key: KeyEvent) -> bool {
         (KeyCode::Right, _) if app.focus_owner() != FocusOwner::TodoList => {
             app.input_mut().textarea_move_right()
         }
-        (KeyCode::Up, _) if app.focus_owner() == FocusOwner::TodoList => {
-            move_todo_selection_up(app);
-            true
-        }
-        (KeyCode::Down, _) if app.focus_owner() == FocusOwner::TodoList => {
-            move_todo_selection_down(app);
-            true
-        }
         (KeyCode::Up, _) => {
             if !try_move_input_cursor_up(app) {
                 app.active_viewport_mut().scroll_up(1);
@@ -591,7 +583,9 @@ fn handle_focus_toggle_key(app: &mut App, key: KeyEvent) -> bool {
                 && !m.contains(KeyModifiers::CONTROL)
                 && !m.contains(KeyModifiers::ALT) =>
         {
-            if !app.pending_interaction_ids().is_empty() {
+            if app.pending_interaction_ids().is_empty() {
+                false
+            } else {
                 match app.focus_owner() {
                     FocusOwner::Permission => {
                         clear_inline_interaction_focus(app);
@@ -603,15 +597,6 @@ fn handle_focus_toggle_key(app: &mut App, key: KeyEvent) -> bool {
                     }
                     _ => false,
                 }
-            } else if app.show_todo_panel() && !app.todos().is_empty() {
-                if app.focus_owner() == FocusOwner::TodoList {
-                    app.release_focus_target(FocusTarget::TodoList);
-                } else {
-                    app.claim_focus_target(FocusTarget::TodoList);
-                }
-                true
-            } else {
-                false
             }
         }
         _ => false,
@@ -921,46 +906,6 @@ fn should_sync_autocomplete_after_key(app: &App, key: KeyEvent) -> bool {
     }
 }
 
-pub(super) fn toggle_todo_panel_focus(app: &mut App) {
-    if app.todos().is_empty() {
-        app.set_show_todo_panel(false);
-        app.release_focus_target(FocusTarget::TodoList);
-        app.set_todo_scroll(0);
-        app.set_todo_selected(0);
-        return;
-    }
-
-    app.set_show_todo_panel(!app.show_todo_panel());
-    if app.show_todo_panel() {
-        // Start at in-progress todo when available; fallback to first item.
-        let next =
-            app.todos().iter().position(|t| t.status == super::TodoStatus::InProgress).unwrap_or(0);
-        app.set_todo_selected(next);
-        app.claim_focus_target(FocusTarget::TodoList);
-    } else {
-        app.release_focus_target(FocusTarget::TodoList);
-    }
-}
-
-pub(super) fn move_todo_selection_up(app: &mut App) {
-    if app.todos().is_empty() || !app.show_todo_panel() {
-        app.release_focus_target(FocusTarget::TodoList);
-        return;
-    }
-    app.set_todo_selected(app.todo_selected().saturating_sub(1));
-}
-
-pub(super) fn move_todo_selection_down(app: &mut App) {
-    if app.todos().is_empty() || !app.show_todo_panel() {
-        app.release_focus_target(FocusTarget::TodoList);
-        return;
-    }
-    let max = app.todos().len().saturating_sub(1);
-    if app.todo_selected() < max {
-        app.set_todo_selected(app.todo_selected().saturating_add(1));
-    }
-}
-
 /// Handle keystrokes while mention/slash autocomplete dropdown is active.
 pub(super) fn handle_autocomplete_key(app: &mut App, key: KeyEvent) -> bool {
     match app.active_autocomplete_kind() {
@@ -1168,11 +1113,39 @@ pub(super) fn toggle_all_tool_calls(app: &mut App) {
 pub(super) fn toggle_projects_pane(app: &mut App) {
     let area_width = app.cached_frame_area.width;
     if area_width < crate::ui::layout::MEDIUM_TIER_MIN_WIDTH {
+        // Opening the Projects overlay closes the Inspector overlay
+        // (mutually exclusive — both are full-screen).
+        if !app.projects_pane_overlay_open {
+            app.inspector_pane_overlay_open = false;
+        }
         app.projects_pane_overlay_open = !app.projects_pane_overlay_open;
     } else {
         app.projects_pane_visible = !app.projects_pane_visible;
         if let Some(workspace) = app.workspace.as_ref() {
             workspace.set_projects_pane_visible(app.projects_pane_visible);
+        }
+    }
+    app.invalidate_layout(InvalidationLevel::Global);
+    app.needs_redraw = true;
+}
+
+/// Tier-aware Ctrl+E handler — mirror of [`toggle_projects_pane`]
+/// for the right Inspector pane. At Wide / Medium tiers flips the
+/// persisted `inspector_pane_visible` flag (writes through to
+/// `forge-state.toml`). At Narrow tier flips the transient
+/// `inspector_pane_overlay_open` flag and closes any open Projects
+/// overlay (mutually exclusive).
+pub(super) fn toggle_inspector_pane(app: &mut App) {
+    let area_width = app.cached_frame_area.width;
+    if area_width < crate::ui::layout::MEDIUM_TIER_MIN_WIDTH {
+        if !app.inspector_pane_overlay_open {
+            app.projects_pane_overlay_open = false;
+        }
+        app.inspector_pane_overlay_open = !app.inspector_pane_overlay_open;
+    } else {
+        app.inspector_pane_visible = !app.inspector_pane_visible;
+        if let Some(workspace) = app.workspace.as_ref() {
+            workspace.set_inspector_pane_visible(app.inspector_pane_visible);
         }
     }
     app.invalidate_layout(InvalidationLevel::Global);

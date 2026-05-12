@@ -1,4 +1,4 @@
-use super::{App, FocusTarget, TodoItem, TodoStatus};
+use super::{App, TodoItem, TodoStatus};
 use crate::agent::model;
 
 /// Parse a `TodoWrite` `raw_input` JSON value into a `Vec<TodoItem>`.
@@ -30,38 +30,24 @@ pub(super) fn parse_todos_if_present(raw_input: &serde_json::Value) -> Option<Ve
     )
 }
 
+/// Replace the active session's todo list. Empties or all-completed
+/// lists clear the active list; the Inspector pane then renders just
+/// its chrome (banner + rule) until the next `TodoWrite` arrives.
 pub(super) fn set_todos(app: &mut App, todos: Vec<TodoItem>) {
-    app.set_cached_todo_compact(None);
     if todos.is_empty() {
         app.todos_mut().clear();
-        app.set_show_todo_panel(false);
-        app.set_todo_scroll(0);
-        app.set_todo_selected(0);
-        app.release_focus_target(FocusTarget::TodoList);
         return;
     }
-
     let all_done = todos.iter().all(|t| t.status == TodoStatus::Completed);
     if all_done {
         app.todos_mut().clear();
-        app.set_show_todo_panel(false);
-        app.set_todo_scroll(0);
-        app.set_todo_selected(0);
-        app.release_focus_target(FocusTarget::TodoList);
     } else {
         *app.todos_mut() = todos;
-        if app.todo_selected() >= app.todos().len() {
-            app.set_todo_selected(app.todos().len().saturating_sub(1));
-        }
-        if !app.show_todo_panel() {
-            app.release_focus_target(FocusTarget::TodoList);
-        }
     }
 }
 
 /// Convert bridge plan entries into the local todo list.
 pub(super) fn apply_plan_todos(app: &mut App, plan: &model::Plan) {
-    app.set_cached_todo_compact(None);
     let mut todos = Vec::with_capacity(plan.entries.len());
     for entry in &plan.entries {
         let status_str = format!("{:?}", entry.status);
@@ -181,34 +167,25 @@ mod tests {
     }
 
     #[test]
-    fn set_todos_clears_panel_state_for_empty_or_completed_inputs() {
+    fn set_todos_clears_list_for_empty_or_all_completed_inputs() {
         for todos in [
             Vec::new(),
             vec![todo("done", TodoStatus::Completed), todo("done too", TodoStatus::Completed)],
         ] {
             let mut app = App::test_default();
-            app.set_show_todo_panel(true);
-            app.set_todo_scroll(4);
-            app.set_todo_selected(3);
-            app.claim_focus_target(FocusTarget::TodoList);
+            *app.todos_mut() = vec![todo("seed", TodoStatus::Pending)];
 
             set_todos(&mut app, todos);
 
             assert!(app.todos().is_empty());
-            assert!(!app.show_todo_panel());
-            assert_eq!(app.todo_scroll(), 0);
-            assert_eq!(app.todo_selected(), 0);
-            assert_eq!(app.focus_owner(), crate::app::focus::FocusOwner::Input);
         }
     }
 
     #[test]
-    fn set_todos_retains_visible_items_and_clamps_selection() {
+    fn set_todos_retains_visible_items() {
         let mut app = App::test_default();
         *app.todos_mut() =
             vec![todo("old", TodoStatus::Pending), todo("old-2", TodoStatus::Pending)];
-        app.set_show_todo_panel(true);
-        app.set_todo_selected(5);
 
         set_todos(
             &mut app,
@@ -216,14 +193,12 @@ mod tests {
         );
 
         assert_eq!(app.todos().len(), 2);
-        assert!(app.show_todo_panel());
-        assert_eq!(app.todo_selected(), 1);
         assert_eq!(app.todos()[0].content, "new-a");
         assert_eq!(app.todos()[1].status, TodoStatus::InProgress);
     }
 
     #[test]
-    fn apply_plan_todos_maps_bridge_statuses_and_hides_completed_plans() {
+    fn apply_plan_todos_maps_bridge_statuses_and_clears_completed_plans() {
         let mut app = App::test_default();
         let active_plan = model::Plan::new(vec![
             model::PlanEntry::new(
@@ -253,6 +228,5 @@ mod tests {
         apply_plan_todos(&mut app, &completed_plan);
 
         assert!(app.todos().is_empty());
-        assert!(!app.show_todo_panel());
     }
 }
