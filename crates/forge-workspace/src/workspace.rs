@@ -653,6 +653,16 @@ impl Workspace {
         self.domain_handles.lock().get(key).cloned()
     }
 
+    /// Whether the session at `key` currently has a live agent
+    /// handle stamped onto its [`DomainSession`]. Encapsulates the
+    /// presence check so callers don't need to peek at
+    /// `DomainSession.conn` directly — the field layout is a
+    /// workspace internal.
+    #[must_use]
+    pub fn has_agent_for(&self, key: &SessionKey) -> bool {
+        self.domain_session_for(key).is_some_and(|d| d.lock().conn.is_some())
+    }
+
     /// Route a [`Command`]. Per-session commands (`cmd.key() ==
     /// Some(key)`) fan out to the matching `SessionTask`. App-level
     /// commands (`cmd.key() == None` — `SpawnProject`,
@@ -681,18 +691,32 @@ impl Workspace {
                 return sender.send(cmd).map_err(|_| DispatchError::SessionClosed(key));
             }
             drop(senders);
-            // No SessionTask — test fallback. Look up a registered
-            // DomainSession with a `conn` slot and dispatch the command
-            // synchronously against that handle.
-            let Some(handle) = self.agent_handle_for(&key) else {
-                return Err(DispatchError::UnknownSession(key));
-            };
-            let sid =
-                self.domain_handles.lock().get(&key).and_then(|d| {
+            // In production this branch returns `UnknownSession`: a
+            // per-session `Command` arrives before a `SessionTask`
+            // exists, which is the contract violation the error
+            // signals. Under `cfg(any(test, feature = "testing"))`,
+            // tests that wire a stub `AgentHandle` directly onto a
+            // `DomainSession` (without a running tokio runtime to host
+            // a real `SessionTask`) get a synchronous fallback so the
+            // command still reaches the stub. Gating this here means
+            // the fallback is structurally unreachable in production —
+            // a future refactor can't open the race window silently.
+            #[cfg(any(test, feature = "testing"))]
+            {
+                let Some(handle) = self.agent_handle_for(&key) else {
+                    return Err(DispatchError::UnknownSession(key));
+                };
+                let sid = self.domain_handles.lock().get(&key).and_then(|d| {
                     d.lock().session_id.as_ref().map(std::string::ToString::to_string)
                 });
-            crate::session_task::execute_command_via_handle(&handle, &key, sid.as_deref(), cmd)
-                .map_err(|_| DispatchError::SessionClosed(key))
+                crate::session_task::execute_command_via_handle(&handle, &key, sid.as_deref(), cmd)
+                    .map_err(|_| DispatchError::SessionClosed(key))
+            }
+            #[cfg(not(any(test, feature = "testing")))]
+            {
+                let _ = cmd;
+                Err(DispatchError::UnknownSession(key))
+            }
         } else {
             // App-level commands: route into `spawn::*` handlers. The
             // spawn handlers run on a tokio task because they await

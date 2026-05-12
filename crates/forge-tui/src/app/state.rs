@@ -739,7 +739,7 @@ impl App {
     pub fn has_active_agent(&self) -> bool {
         let Some(workspace) = self.workspace.as_ref() else { return false };
         let Some(key) = self.active_session_key.as_ref() else { return false };
-        workspace.domain_session_for(key).is_some_and(|d| d.lock().conn.is_some())
+        workspace.has_agent_for(key)
     }
 
     /// Dispatch a workspace [`forge_workspace::Command`] for the
