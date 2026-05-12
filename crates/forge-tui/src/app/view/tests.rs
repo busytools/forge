@@ -12,7 +12,7 @@ use crate::app::{
 fn busy_view_test_app() -> App {
     let mut app = App::test_default();
     app.input_mut().set_text("draft");
-    app.selection = Some(SelectionState {
+    *app.selection_mut() = Some(SelectionState {
         kind: SelectionKind::Chat,
         start: SelectionPoint { row: 0, col: 0 },
         end: SelectionPoint { row: 0, col: 4 },
@@ -20,20 +20,21 @@ fn busy_view_test_app() -> App {
     });
     app.scrollbar_drag =
         Some(ScrollbarDragState { thumb_grab_offset: 1, track_space: 4, max_scroll: 12 });
-    app.pending_submit = Some(app.input().snapshot());
-    app.pending_paste_text = "blocked".to_owned();
-    app.pending_paste_session = Some(PasteSessionState {
+    *app.pending_submit_mut() = Some(app.input().snapshot());
+    *app.pending_paste_text_mut() = "blocked".to_owned();
+    *app.pending_paste_session_mut() = Some(PasteSessionState {
         id: 1,
         start: SelectionPoint { row: 0, col: 0 },
         placeholder_index: Some(0),
     });
-    app.active_paste_session = Some(PasteSessionState {
+    *app.active_paste_session_mut() = Some(PasteSessionState {
         id: 2,
         start: SelectionPoint { row: 0, col: 0 },
         placeholder_index: Some(1),
     });
-    app.mention = Some(crate::app::mention::MentionState::new(0, 0, "rs".to_owned(), vec![]));
-    app.slash = Some(SlashState {
+    *app.mention_mut() =
+        Some(crate::app::mention::MentionState::new(0, 0, "rs".to_owned(), vec![]));
+    *app.slash_mut() = Some(SlashState {
         trigger_row: 0,
         trigger_col: 0,
         query: "/co".to_owned(),
@@ -41,7 +42,7 @@ fn busy_view_test_app() -> App {
         candidates: vec![],
         dialog: DialogState::default(),
     });
-    app.subagent = Some(SubagentState {
+    *app.subagent_mut() = Some(SubagentState {
         trigger_row: 0,
         trigger_col: 0,
         query: "plan".to_owned(),
@@ -68,15 +69,15 @@ fn set_active_view_clears_transient_chat_state_but_keeps_draft() {
 
     assert_eq!(app.active_view, ActiveView::Trusted);
     assert_eq!(app.input().text(), "draft");
-    assert!(app.selection.is_none());
+    assert!(app.selection().is_none());
     assert!(app.scrollbar_drag.is_none());
-    assert!(app.mention.is_none());
-    assert!(app.slash.is_none());
-    assert!(app.subagent.is_none());
-    assert!(app.pending_paste_text.is_empty());
-    assert!(app.pending_paste_session.is_none());
-    assert!(app.active_paste_session.is_none());
-    assert!(app.pending_submit.is_none());
+    assert!(app.mention().is_none());
+    assert!(app.slash().is_none());
+    assert!(app.subagent().is_none());
+    assert!(app.pending_paste_text().is_empty());
+    assert!(app.pending_paste_session().is_none());
+    assert!(app.active_paste_session().is_none());
+    assert!(app.pending_submit().is_none());
 }
 
 #[test]
@@ -87,8 +88,8 @@ fn set_active_view_switches_to_config_from_trusted() {
     set_active_view(&mut app, ActiveView::Config);
 
     assert_eq!(app.active_view, ActiveView::Config);
-    assert!(app.selection.is_none());
-    assert!(app.pending_paste_text.is_empty());
+    assert!(app.selection().is_none());
+    assert!(app.pending_paste_text().is_empty());
 }
 
 #[test]
@@ -99,10 +100,10 @@ fn set_active_view_same_view_is_noop() {
     set_active_view(&mut app, ActiveView::Chat);
 
     assert_eq!(app.active_view, ActiveView::Chat);
-    assert!(app.selection.is_some());
-    assert!(app.mention.is_some());
-    assert!(!app.pending_paste_text.is_empty());
-    assert!(app.pending_submit.is_some());
+    assert!(app.selection().is_some());
+    assert!(app.mention().is_some());
+    assert!(!app.pending_paste_text().is_empty());
+    assert!(app.pending_submit().is_some());
     assert!(!app.needs_redraw);
 }
 

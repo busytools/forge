@@ -459,6 +459,12 @@ pub enum SessionUpdate {
         error: Option<String>,
     },
     SessionsListed {
+        /// Bucket this session list belongs to. The catalog scan that
+        /// produces `sessions` runs against the spawning session's
+        /// `cwd`, so the listing is project-scoped — routing onto
+        /// the requesting bucket prevents another session's `/resume`
+        /// autocomplete from inheriting a stale project's list.
+        key: SessionKey,
         sessions: Vec<SessionListEntry>,
     },
     ServiceStatus {
@@ -466,14 +472,19 @@ pub enum SessionUpdate {
         message: String,
     },
     UsageRefreshStarted {
-        epoch: u64,
+        /// Bucket the in-flight fetch belongs to. Used by the TUI
+        /// reducer to route lifecycle flags onto the right
+        /// `UiSession.usage` slot even if the user switched sessions
+        /// mid-fetch. Dropped silently when the bucket no longer
+        /// exists (rare; session closed before the fetch landed).
+        key: SessionKey,
     },
     UsageSnapshotReceived {
-        epoch: u64,
+        key: SessionKey,
         snapshot: UsageSnapshot,
     },
     UsageRefreshFailed {
-        epoch: u64,
+        key: SessionKey,
         message: String,
         source: UsageSourceKind,
     },
@@ -522,7 +533,11 @@ impl SessionUpdate {
             | Self::TurnComplete { key, .. }
             | Self::TurnCancelled { key }
             | Self::TurnError { key, .. }
-            | Self::ForgeAccountIdentity { key, .. } => Some(key.clone()),
+            | Self::ForgeAccountIdentity { key, .. }
+            | Self::UsageRefreshStarted { key, .. }
+            | Self::UsageSnapshotReceived { key, .. }
+            | Self::UsageRefreshFailed { key, .. }
+            | Self::SessionsListed { key, .. } => Some(key.clone()),
             Self::RuntimeReloadCompleted { session_id }
             | Self::RuntimeReloadFailed { session_id, .. }
             | Self::ChatAppended { session_id, .. }
@@ -535,11 +550,7 @@ impl SessionUpdate {
                 Some(SessionKey::from_session_id(session_id.clone()))
             }
             Self::KeyRenamed { .. }
-            | Self::SessionsListed { .. }
             | Self::ServiceStatus { .. }
-            | Self::UsageRefreshStarted { .. }
-            | Self::UsageSnapshotReceived { .. }
-            | Self::UsageRefreshFailed { .. }
             | Self::PluginsInventoryUpdated { .. }
             | Self::PluginsInventoryRefreshFailed { .. }
             | Self::PluginsCliActionSucceeded { .. }
@@ -657,19 +668,20 @@ impl std::fmt::Debug for SessionUpdate {
                 .debug_struct("McpSnapshot")
                 .field("session_id", session_id)
                 .finish_non_exhaustive(),
-            Self::SessionsListed { sessions } => {
-                f.debug_struct("SessionsListed").field("count", &sessions.len()).finish()
-            }
+            Self::SessionsListed { key, sessions } => f
+                .debug_struct("SessionsListed")
+                .field("key", key)
+                .field("count", &sessions.len())
+                .finish(),
             Self::ServiceStatus { .. } => f.debug_struct("ServiceStatus").finish_non_exhaustive(),
-            Self::UsageRefreshStarted { epoch } => {
-                f.debug_struct("UsageRefreshStarted").field("epoch", epoch).finish()
+            Self::UsageRefreshStarted { key } => {
+                f.debug_struct("UsageRefreshStarted").field("key", key).finish()
             }
-            Self::UsageSnapshotReceived { epoch, .. } => f
-                .debug_struct("UsageSnapshotReceived")
-                .field("epoch", epoch)
-                .finish_non_exhaustive(),
-            Self::UsageRefreshFailed { epoch, .. } => {
-                f.debug_struct("UsageRefreshFailed").field("epoch", epoch).finish_non_exhaustive()
+            Self::UsageSnapshotReceived { key, .. } => {
+                f.debug_struct("UsageSnapshotReceived").field("key", key).finish_non_exhaustive()
+            }
+            Self::UsageRefreshFailed { key, .. } => {
+                f.debug_struct("UsageRefreshFailed").field("key", key).finish_non_exhaustive()
             }
             Self::PluginsInventoryUpdated { cwd_raw, .. } => f
                 .debug_struct("PluginsInventoryUpdated")

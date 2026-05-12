@@ -88,7 +88,7 @@ fn handle_resize(app: &mut App, width: u16, height: u16) {
     app.rendered_input_area = ratatui::layout::Rect::default();
     app.rendered_chat_lines.clear();
     app.rendered_input_lines.clear();
-    app.selection = None;
+    *app.selection_mut() = None;
     app.scrollbar_drag = None;
 
     // The Narrow-tier Projects overlay is transient — its design
@@ -112,7 +112,7 @@ fn handle_resize(app: &mut App, width: u16, height: u16) {
 fn dispatch_key_by_view(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
     match app.active_view {
         ActiveView::Chat => {
-            app.active_paste_session = None;
+            *app.active_paste_session_mut() = None;
             super::keys::dispatch_key_by_focus(app, key)
         }
         ActiveView::Config => {
@@ -133,7 +133,7 @@ fn dispatch_key_by_view(app: &mut App, key: crossterm::event::KeyEvent) -> bool 
 fn dispatch_mouse_by_view(app: &mut App, mouse: crossterm::event::MouseEvent) {
     match app.active_view {
         ActiveView::Chat => {
-            app.active_paste_session = None;
+            *app.active_paste_session_mut() = None;
             mouse::handle_mouse_event(app, mouse);
         }
         ActiveView::Config | ActiveView::Trusted | ActiveView::SessionPicker => {
@@ -171,7 +171,7 @@ pub(super) fn apply_available_commands_update(app: &mut App, cmds: model::Availa
     );
     *app.available_commands_mut() = cmds.available_commands;
     crate::app::plugins::clamp_selection(app);
-    if app.slash.is_some() {
+    if app.slash().is_some() {
         super::slash::update_query(app);
     }
 }
@@ -185,7 +185,7 @@ pub(super) fn apply_available_agents_update(app: &mut App, agents: model::Availa
         agent_count = agents.available_agents.len(),
     );
     *app.available_agents_mut() = agents.available_agents;
-    if app.subagent.is_some() {
+    if app.subagent().is_some() {
         super::subagent::update_query(app);
     }
 }
@@ -197,7 +197,7 @@ pub fn apply_mode_state_update(app: &mut App, mode: crate::app::ModeState) {
     if mode_changed {
         app.invalidate_layout(InvalidationLevel::Global);
     }
-    if matches!(app.pending_command_ack, Some(PendingCommandAck::CurrentMode)) {
+    if matches!(app.pending_command_ack(), Some(PendingCommandAck::CurrentMode)) {
         session::clear_pending_command(app);
     }
 }
@@ -206,10 +206,11 @@ pub fn apply_current_model_update(app: &mut App, current_model: model::CurrentMo
     let next_resolved_id = current_model.resolved_id.clone();
     let next_display_short = current_model.display_name_short.clone();
     let next_display_long = current_model.display_name_long.clone();
-    let pending_ack_before = format!("{:?}", app.pending_command_ack);
+    let pending_ack_before = format!("{:?}", app.pending_command_ack());
     app.set_current_model(Some(current_model));
-    let clearing_pending = matches!(app.pending_command_ack, Some(PendingCommandAck::CurrentModel));
-    if matches!(app.pending_command_ack, Some(PendingCommandAck::CurrentModel)) {
+    let clearing_pending =
+        matches!(app.pending_command_ack(), Some(PendingCommandAck::CurrentModel));
+    if matches!(app.pending_command_ack(), Some(PendingCommandAck::CurrentModel)) {
         session::clear_pending_command(app);
     }
     tracing::debug!(
@@ -241,7 +242,7 @@ pub fn apply_current_mode_update(app: &mut App, update: &model::CurrentModeUpdat
     if mode_changed {
         app.invalidate_layout(InvalidationLevel::Global);
     }
-    if matches!(app.pending_command_ack, Some(PendingCommandAck::CurrentMode)) {
+    if matches!(app.pending_command_ack(), Some(PendingCommandAck::CurrentMode)) {
         session::clear_pending_command(app);
     }
 }
@@ -1393,8 +1394,8 @@ mod tests {
         assert!(!app.force_redraw);
         assert!(app.todos().is_empty());
         assert!(!app.show_todo_panel());
-        assert!(app.selection.is_none());
-        assert!(app.mention.is_none());
+        assert!(app.selection().is_none());
+        assert!(app.mention().is_none());
         assert!(!app.cancelled_turn_pending_hint());
         assert!(app.rendered_chat_lines.is_empty());
         assert!(app.rendered_input_lines.is_empty());
@@ -1578,7 +1579,7 @@ mod tests {
             "/test",
             "-",
         ));
-        app.resuming_session_id = Some("resume-123".into());
+        *app.resuming_session_id_mut() = Some("resume-123".into());
 
         apply_session_update(
             &mut app,
@@ -1595,7 +1596,7 @@ mod tests {
 
         assert_eq!(app.cwd_raw(), "/changed");
         assert_eq!(app.cwd(), "/changed");
-        assert!(app.resuming_session_id.is_none());
+        assert!(app.resuming_session_id().is_none());
         let Some(first) = app.messages().first() else {
             panic!("missing welcome message");
         };
@@ -1699,7 +1700,7 @@ mod tests {
         app.active_messages_mut().push(user_msg("hello"));
         app.status = AppStatus::Running;
         app.set_files_accessed(9);
-        app.usage.snapshot = Some(UsageSnapshot {
+        app.usage_mut().snapshot = Some(UsageSnapshot {
             source: UsageSourceKind::Oauth,
             fetched_at: std::time::SystemTime::now(),
             five_hour: None,
@@ -1739,7 +1740,7 @@ mod tests {
         assert_eq!(app.messages().len(), 1);
         assert!(matches!(app.messages()[0].role, MessageRole::Welcome));
         assert_eq!(app.files_accessed(), 0);
-        assert!(app.usage.snapshot.is_none());
+        assert!(app.usage().snapshot.is_none());
         assert!(app.account_info().is_none());
         assert!(app.plugins.installed.is_empty());
         assert!(app.plugins.last_inventory_refresh_at.is_none());
@@ -1799,7 +1800,7 @@ mod tests {
 
         assert!(matches!(app.status, AppStatus::Ready));
         assert_eq!(app.input().text(), "keep me");
-        let Some(hint) = &app.login_hint else {
+        let Some(hint) = &app.login_hint() else {
             panic!("expected login hint");
         };
         assert_eq!(hint.method_name, "oauth");
@@ -1873,7 +1874,7 @@ mod tests {
             status: TodoStatus::InProgress,
             active_form: String::new(),
         });
-        app.mention = Some(mention::MentionState::new(0, 0, String::new(), Vec::new()));
+        *app.mention_mut() = Some(mention::MentionState::new(0, 0, String::new(), Vec::new()));
         app.mcp_mut().servers.push(forge_primitives::McpServerStatus {
             name: "supabase".into(),
             status: forge_primitives::McpServerConnectionStatus::Connected,
@@ -1908,7 +1909,7 @@ mod tests {
         assert!(app.pending_interaction_ids().is_empty());
         assert!(app.todos().is_empty());
         assert!(!app.show_todo_panel());
-        assert!(app.mention.is_none());
+        assert!(app.mention().is_none());
         assert!(app.mcp().servers.is_empty());
         assert_eq!(app.cwd_raw(), "/replacement");
         assert_eq!(app.cwd(), "/replacement");
@@ -1997,7 +1998,7 @@ mod tests {
 
                 apply_session_update(&mut app, connected_event("claude-updated"));
 
-                assert!(app.usage.in_flight);
+                assert!(app.usage().in_flight);
             })
             .await;
     }
@@ -2173,20 +2174,111 @@ mod tests {
     }
 
     #[test]
-    fn stale_usage_refresh_result_for_old_epoch_is_ignored() {
+    fn recent_sessions_routes_to_targeted_bucket_not_active_bucket() {
+        // Regression for the /resume autocomplete showing the wrong
+        // project's sessions: each bucket owns its own
+        // `recent_sessions`. A listing delivered for bucket B must
+        // NOT overwrite bucket A's list, even if A is currently active.
         let mut app = make_test_app();
-        // Set up an active session bucket so the scope-epoch read
-        // path returns a non-zero value. `session_scope_epoch` lives
-        // on `UiSession`; bump it 5x via the App accessor.
-        app.set_session_id(Some(model::SessionId::new("scope-epoch-test")));
-        for _ in 0..5 {
-            app.bump_session_scope_epoch();
-        }
+        let key_a = forge_workspace::SessionKey::from_str_for_test("project-a");
+        let key_b = forge_workspace::SessionKey::from_str_for_test("project-b");
+        app.sessions.insert(key_a.clone(), crate::app::session::UiSession::new(key_a.clone()));
+        app.sessions.insert(key_b.clone(), crate::app::session::UiSession::new(key_b.clone()));
+        app.active_session_key = Some(key_a.clone());
+
+        // Seed A's list directly so we have an observable baseline.
+        app.sessions.get_mut(&key_a).expect("bucket a").recent_sessions =
+            vec![crate::app::RecentSessionInfo {
+                session_id: "a-only".into(),
+                summary: "From A".into(),
+                last_modified_ms: 100,
+                file_size_bytes: 1,
+                cwd: Some("/proj-a".into()),
+                git_branch: None,
+                custom_title: None,
+                first_prompt: None,
+            }];
+
+        // Listing targets B. The active bucket is A.
+        apply_session_update(
+            &mut app,
+            SessionUpdate::SessionsListed {
+                key: key_b.clone(),
+                sessions: vec![forge_primitives::SessionListEntry {
+                    session_id: "b-only".into(),
+                    summary: "From B".into(),
+                    last_modified_ms: 200,
+                    file_size_bytes: 1,
+                    cwd: Some("/proj-b".into()),
+                    git_branch: None,
+                    custom_title: None,
+                    first_prompt: None,
+                }],
+            },
+        );
+
+        // A (active) still has its original list, B got the new one.
+        assert_eq!(app.recent_sessions().len(), 1);
+        assert_eq!(app.recent_sessions()[0].session_id, "a-only");
+        let bucket_b = app.sessions.get(&key_b).expect("bucket b");
+        assert_eq!(bucket_b.recent_sessions.len(), 1);
+        assert_eq!(bucket_b.recent_sessions[0].session_id, "b-only");
+    }
+
+    #[test]
+    fn usage_routes_to_targeted_bucket_not_active_bucket() {
+        // Regression for the wrong-account-bars bug: each `UiSession`
+        // bucket owns its own `UsageState`. A snapshot delivered for
+        // bucket B must NOT overwrite bucket A's snapshot, even if
+        // A is the currently active session at delivery time.
+        let mut app = make_test_app();
+        let key_a = forge_workspace::SessionKey::from_str_for_test("sess-a");
+        let key_b = forge_workspace::SessionKey::from_str_for_test("sess-b");
+        app.sessions.insert(key_a.clone(), crate::app::session::UiSession::new(key_a.clone()));
+        app.sessions.insert(key_b.clone(), crate::app::session::UiSession::new(key_b.clone()));
+        app.active_session_key = Some(key_a.clone());
+
+        // Snapshot targets B. The active bucket is A.
+        let snapshot_for_b = UsageSnapshot {
+            source: UsageSourceKind::Oauth,
+            fetched_at: std::time::SystemTime::now(),
+            five_hour: None,
+            seven_day: None,
+            seven_day_opus: None,
+            seven_day_sonnet: None,
+            extra_usage: None,
+        };
+        apply_session_update(
+            &mut app,
+            SessionUpdate::UsageSnapshotReceived {
+                key: key_b.clone(),
+                snapshot: snapshot_for_b.clone(),
+            },
+        );
+
+        // A (active) untouched, B got the data.
+        assert!(
+            app.usage().snapshot.is_none(),
+            "active bucket A must not be touched by a snapshot targeted at B"
+        );
+        let bucket_b = app.sessions.get(&key_b).expect("bucket b");
+        assert!(bucket_b.usage.snapshot.is_some(), "bucket B received its snapshot");
+    }
+
+    #[test]
+    fn usage_refresh_result_for_unknown_session_key_is_dropped() {
+        // Replaces the old scope-epoch guard. After moving `usage`
+        // onto `UiSession` (per-session bucket), the routing key is
+        // the bucket's `SessionKey`. A result targeting a key that
+        // no longer exists in `app.sessions` (session closed before
+        // the fetch landed) drops silently — no slot to write to.
+        let mut app = make_test_app();
+        app.set_session_id(Some(model::SessionId::new("active-session")));
 
         apply_session_update(
             &mut app,
             SessionUpdate::UsageSnapshotReceived {
-                epoch: 4,
+                key: forge_workspace::SessionKey::from_session_id("unknown-bucket"),
                 snapshot: UsageSnapshot {
                     source: UsageSourceKind::Oauth,
                     fetched_at: std::time::SystemTime::now(),
@@ -2199,7 +2291,8 @@ mod tests {
             },
         );
 
-        assert!(app.usage.snapshot.is_none());
+        // Active bucket untouched — the result targeted a different key.
+        assert!(app.usage().snapshot.is_none());
     }
 
     #[test]
@@ -2236,7 +2329,7 @@ mod tests {
     fn slash_command_error_while_resuming_returns_ready_and_clears_marker() {
         let mut app = make_test_app();
         app.status = AppStatus::CommandPending;
-        app.resuming_session_id = Some("resume-123".into());
+        *app.resuming_session_id_mut() = Some("resume-123".into());
 
         let session_key = active_session_key(&app);
         apply_session_update(
@@ -2245,7 +2338,7 @@ mod tests {
         );
 
         assert!(matches!(app.status, AppStatus::Ready));
-        assert!(app.resuming_session_id.is_none());
+        assert!(app.resuming_session_id().is_none());
     }
 
     #[test]
@@ -2262,6 +2355,7 @@ mod tests {
         apply_session_update(
             &mut app,
             SessionUpdate::SessionsListed {
+                key: forge_workspace::SessionKey::from_session_id(App::PRE_CONNECT_KEY),
                 sessions: vec![forge_primitives::SessionListEntry {
                     session_id: "session-1".to_owned(),
                     summary: "Renamed session".to_owned(),
@@ -2281,7 +2375,7 @@ mod tests {
             Some("Renamed session to Renamed session")
         );
         assert!(app.config.last_error.is_none());
-        assert_eq!(app.recent_sessions.len(), 1);
+        assert_eq!(app.recent_sessions().len(), 1);
     }
 
     #[test]
@@ -2356,6 +2450,7 @@ mod tests {
         apply_session_update(
             &mut app,
             SessionUpdate::SessionsListed {
+                key: forge_workspace::SessionKey::from_session_id(App::PRE_CONNECT_KEY),
                 sessions: vec![forge_primitives::SessionListEntry {
                     session_id: "session-1".to_owned(),
                     summary: "Generated session".to_owned(),
@@ -2382,6 +2477,7 @@ mod tests {
         apply_session_update(
             &mut app,
             SessionUpdate::SessionsListed {
+                key: forge_workspace::SessionKey::from_session_id(App::PRE_CONNECT_KEY),
                 sessions: vec![listed_session("session-1", "First Session")],
             },
         );
@@ -2407,7 +2503,15 @@ mod tests {
         assert_eq!(app.active_view, ActiveView::Chat);
         assert!(!app.startup_session_picker_resolved);
 
-        apply_session_update(&mut app, SessionUpdate::SessionsListed { sessions: Vec::new() });
+        // Post-Connected the bucket has migrated to the real key
+        // (`test-session`); SessionsListed routes onto that bucket.
+        apply_session_update(
+            &mut app,
+            SessionUpdate::SessionsListed {
+                key: forge_workspace::SessionKey::from_session_id("test-session"),
+                sessions: Vec::new(),
+            },
+        );
 
         assert_eq!(app.active_view, ActiveView::Chat);
         assert!(app.startup_session_picker_resolved);
@@ -2423,7 +2527,7 @@ mod tests {
     fn sessions_listed_refresh_preserves_picker_selection_by_session_id() {
         let mut app = make_test_app();
         app.active_view = ActiveView::SessionPicker;
-        app.recent_sessions = vec![
+        *app.recent_sessions_mut() = vec![
             crate::app::RecentSessionInfo {
                 session_id: "session-1".to_owned(),
                 summary: "First".to_owned(),
@@ -2451,6 +2555,7 @@ mod tests {
         apply_session_update(
             &mut app,
             SessionUpdate::SessionsListed {
+                key: forge_workspace::SessionKey::from_session_id(App::PRE_CONNECT_KEY),
                 sessions: vec![
                     listed_session("session-2", "Second"),
                     listed_session("session-3", "Third"),
@@ -2459,7 +2564,7 @@ mod tests {
         );
 
         assert_eq!(app.session_picker.selected, 0);
-        assert_eq!(app.recent_sessions[app.session_picker.selected].session_id, "session-2");
+        assert_eq!(app.recent_sessions()[app.session_picker.selected].session_id, "session-2");
         assert_eq!(app.session_picker.scroll_offset, 0);
     }
 
@@ -2467,8 +2572,8 @@ mod tests {
     fn current_mode_update_clears_pending_when_expected() {
         let mut app = make_test_app();
         app.status = AppStatus::CommandPending;
-        app.pending_command_label = Some("Switching mode...".into());
-        app.pending_command_ack = Some(PendingCommandAck::CurrentMode);
+        *app.pending_command_label_mut() = Some("Switching mode...".into());
+        *app.pending_command_ack_mut() = Some(PendingCommandAck::CurrentMode);
         app.set_mode(Some(crate::app::ModeState {
             current_mode_id: "code".to_owned(),
             current_mode_name: "Code".to_owned(),
@@ -2485,8 +2590,8 @@ mod tests {
         send_msg(&mut app, system_message("status", serde_json::json!({"permissionMode": "plan"})));
 
         assert!(matches!(app.status, AppStatus::Ready));
-        assert!(app.pending_command_label.is_none());
-        assert!(app.pending_command_ack.is_none());
+        assert!(app.pending_command_label().is_none());
+        assert!(app.pending_command_ack().is_none());
         let layout_generation_after = app.viewport().layout_generation;
         let mode = app.mode().cloned().expect("mode should be present");
         assert_eq!(mode.current_mode_id, "plan");
@@ -2521,16 +2626,16 @@ mod tests {
     fn current_model_update_updates_state_and_clears_pending_when_expected() {
         let mut app = make_test_app();
         app.status = AppStatus::CommandPending;
-        app.pending_command_label = Some("Switching model...".into());
-        app.pending_command_ack = Some(PendingCommandAck::CurrentModel);
+        *app.pending_command_label_mut() = Some("Switching model...".into());
+        *app.pending_command_ack_mut() = Some(PendingCommandAck::CurrentModel);
         app.set_current_model(Some(test_current_model("old-model")));
 
         send_msg(&mut app, system_message("init", serde_json::json!({"model": "sonnet"})));
 
         assert!(matches!(app.status, AppStatus::Ready));
         assert_eq!(app.current_model().map(|model| model.resolved_id.as_str()), Some("sonnet"));
-        assert!(app.pending_command_label.is_none());
-        assert!(app.pending_command_ack.is_none());
+        assert!(app.pending_command_label().is_none());
+        assert!(app.pending_command_ack().is_none());
     }
 
     // `non_matching_config_option_update_keeps_pending` removed in the
@@ -2542,7 +2647,7 @@ mod tests {
     #[test]
     fn resume_does_not_add_confirmation_system_message() {
         let mut app = make_test_app();
-        app.resuming_session_id = Some("requested-123".into());
+        *app.resuming_session_id_mut() = Some("requested-123".into());
 
         apply_session_update(
             &mut app,
@@ -2559,7 +2664,7 @@ mod tests {
 
         assert_eq!(app.messages().len(), 1);
         assert!(matches!(app.messages()[0].role, MessageRole::Welcome));
-        assert!(app.resuming_session_id.is_none());
+        assert!(app.resuming_session_id().is_none());
         assert!(matches!(app.status, AppStatus::Ready));
     }
 
@@ -3574,7 +3679,7 @@ mod tests {
     #[test]
     fn pending_paste_payload_blocks_overlapping_key_text_insertion() {
         let mut app = make_test_app();
-        app.pending_paste_text = "clipboard".to_owned();
+        *app.pending_paste_text_mut() = "clipboard".to_owned();
 
         handle_normal_key(&mut app, KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
 
@@ -3590,7 +3695,7 @@ mod tests {
         );
 
         assert_eq!(app.input().text(), "@");
-        assert!(app.mention.is_some());
+        assert!(app.mention().is_some());
     }
 
     #[test]
@@ -3889,7 +3994,7 @@ mod tests {
             Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
         );
 
-        assert!(app.pending_submit.is_some());
+        assert!(app.pending_submit().is_some());
         assert!(matches!(
             response_rx.try_recv(&app),
             Err(tokio::sync::oneshot::error::TryRecvError::Empty)
@@ -3897,7 +4002,7 @@ mod tests {
 
         super::super::finalize_deferred_submit(&mut app);
 
-        assert!(app.pending_submit.is_none());
+        assert!(app.pending_submit().is_none());
         assert!(app.pending_interaction_ids().is_empty());
         assert!(bridge_rx.try_recv().is_ok());
         assert!(response_rx.try_recv(&app).is_err());
@@ -3995,7 +4100,7 @@ mod tests {
             &mut app,
             Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
         );
-        assert!(app.pending_submit.is_some());
+        assert!(app.pending_submit().is_some());
         assert!(matches!(
             response_rx.try_recv(&app),
             Err(tokio::sync::oneshot::error::TryRecvError::Empty)
@@ -4412,7 +4517,7 @@ mod tests {
             true,
         );
 
-        app.slash = Some(SlashState {
+        *app.slash_mut() = Some(SlashState {
             trigger_row: 0,
             trigger_col: 0,
             query: String::new(),
@@ -4483,7 +4588,7 @@ mod tests {
             crate::app::keys::override_test_clipboard(crate::app::keys::TestClipboardMode::Succeed);
         app.status = AppStatus::Connecting;
         app.rendered_input_lines = vec!["copy".to_owned()];
-        app.selection = Some(crate::app::SelectionState {
+        *app.selection_mut() = Some(crate::app::SelectionState {
             kind: crate::app::SelectionKind::Input,
             start: crate::app::SelectionPoint { row: 0, col: 0 },
             end: crate::app::SelectionPoint { row: 0, col: 4 },
@@ -4496,7 +4601,7 @@ mod tests {
         );
 
         assert!(!app.should_quit);
-        assert!(app.selection.is_none());
+        assert!(app.selection().is_none());
     }
 
     #[test]
@@ -4585,7 +4690,7 @@ mod tests {
         let mut app = make_test_app();
         app.status = AppStatus::Connecting;
         app.input_mut().set_text("seed");
-        app.pending_submit = None;
+        *app.pending_submit_mut() = None;
         app.help_view = HelpView::Keys;
 
         for key in [
@@ -4600,7 +4705,7 @@ mod tests {
         }
 
         assert_eq!(app.input().text(), "seed");
-        assert!(app.pending_submit.is_none());
+        assert!(app.pending_submit().is_none());
         assert_eq!(app.help_view, HelpView::Keys);
     }
 
@@ -4610,7 +4715,7 @@ mod tests {
         let _clipboard =
             crate::app::keys::override_test_clipboard(crate::app::keys::TestClipboardMode::Succeed);
         app.rendered_input_lines = vec!["copy".to_owned()];
-        app.selection = Some(crate::app::SelectionState {
+        *app.selection_mut() = Some(crate::app::SelectionState {
             kind: crate::app::SelectionKind::Input,
             start: crate::app::SelectionPoint { row: 0, col: 0 },
             end: crate::app::SelectionPoint { row: 0, col: 4 },
@@ -4623,13 +4728,13 @@ mod tests {
         );
 
         assert!(!app.should_quit);
-        assert!(app.selection.is_none());
+        assert!(app.selection().is_none());
     }
 
     #[test]
     fn ctrl_c_without_selection_quits() {
         let mut app = make_test_app();
-        app.selection = None;
+        *app.selection_mut() = None;
 
         handle_terminal_event(
             &mut app,
@@ -4645,7 +4750,7 @@ mod tests {
         let _clipboard =
             crate::app::keys::override_test_clipboard(crate::app::keys::TestClipboardMode::Succeed);
         app.rendered_input_lines = vec!["copy".to_owned()];
-        app.selection = Some(crate::app::SelectionState {
+        *app.selection_mut() = Some(crate::app::SelectionState {
             kind: crate::app::SelectionKind::Input,
             start: crate::app::SelectionPoint { row: 0, col: 0 },
             end: crate::app::SelectionPoint { row: 0, col: 4 },
@@ -4657,7 +4762,7 @@ mod tests {
             Event::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
         );
         assert!(!app.should_quit);
-        assert!(app.selection.is_none());
+        assert!(app.selection().is_none());
 
         handle_terminal_event(
             &mut app,
@@ -4672,7 +4777,7 @@ mod tests {
         let _clipboard =
             crate::app::keys::override_test_clipboard(crate::app::keys::TestClipboardMode::Fail);
         app.rendered_input_lines = vec!["copy".to_owned()];
-        app.selection = Some(crate::app::SelectionState {
+        *app.selection_mut() = Some(crate::app::SelectionState {
             kind: crate::app::SelectionKind::Input,
             start: crate::app::SelectionPoint { row: 0, col: 0 },
             end: crate::app::SelectionPoint { row: 0, col: 4 },
@@ -4685,14 +4790,14 @@ mod tests {
         );
 
         assert!(!app.should_quit);
-        assert!(app.selection.is_some());
+        assert!(app.selection().is_some());
     }
 
     #[test]
     fn ctrl_c_with_zero_length_selection_quits() {
         let mut app = make_test_app();
         app.rendered_input_lines = vec!["copy".to_owned()];
-        app.selection = Some(crate::app::SelectionState {
+        *app.selection_mut() = Some(crate::app::SelectionState {
             kind: crate::app::SelectionKind::Input,
             start: crate::app::SelectionPoint { row: 0, col: 0 },
             end: crate::app::SelectionPoint { row: 0, col: 0 },
@@ -4713,7 +4818,7 @@ mod tests {
         let _clipboard =
             crate::app::keys::override_test_clipboard(crate::app::keys::TestClipboardMode::Succeed);
         app.rendered_input_lines = vec!["   ".to_owned()];
-        app.selection = Some(crate::app::SelectionState {
+        *app.selection_mut() = Some(crate::app::SelectionState {
             kind: crate::app::SelectionKind::Input,
             start: crate::app::SelectionPoint { row: 0, col: 0 },
             end: crate::app::SelectionPoint { row: 0, col: 1 },
@@ -4726,13 +4831,13 @@ mod tests {
         );
 
         assert!(!app.should_quit);
-        assert!(app.selection.is_none());
+        assert!(app.selection().is_none());
     }
 
     #[test]
     fn ctrl_q_quits_even_with_selection() {
         let mut app = make_test_app();
-        app.selection = Some(crate::app::SelectionState {
+        *app.selection_mut() = Some(crate::app::SelectionState {
             kind: crate::app::SelectionKind::Input,
             start: crate::app::SelectionPoint { row: 0, col: 0 },
             end: crate::app::SelectionPoint { row: 0, col: 0 },
@@ -4765,7 +4870,7 @@ mod tests {
         let mut app = make_test_app();
         app.status = AppStatus::Error;
         app.input_mut().set_text("seed");
-        app.pending_submit = None;
+        *app.pending_submit_mut() = None;
 
         for key in [
             KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
@@ -4779,7 +4884,7 @@ mod tests {
         }
 
         assert_eq!(app.input().text(), "seed");
-        assert!(app.pending_submit.is_none());
+        assert!(app.pending_submit().is_none());
     }
 
     #[test]
@@ -4815,7 +4920,7 @@ mod tests {
 
         handle_terminal_event(&mut app, Event::Paste("blocked".into()));
 
-        assert!(app.pending_paste_text.is_empty());
+        assert!(app.pending_paste_text().is_empty());
         assert!(app.input().is_empty());
     }
 
@@ -4823,7 +4928,7 @@ mod tests {
     fn mouse_scroll_clears_selection_before_scrolling() {
         let mut app = make_test_app();
         app.active_viewport_mut().scroll_target = 2;
-        app.selection = Some(crate::app::SelectionState {
+        *app.selection_mut() = Some(crate::app::SelectionState {
             kind: crate::app::SelectionKind::Chat,
             start: crate::app::SelectionPoint { row: 0, col: 0 },
             end: crate::app::SelectionPoint { row: 0, col: 1 },
@@ -4840,7 +4945,7 @@ mod tests {
             }),
         );
 
-        assert!(app.selection.is_none());
+        assert!(app.selection().is_none());
         assert_eq!(app.viewport().scroll_target, 5);
     }
 
@@ -4851,7 +4956,7 @@ mod tests {
         app.active_viewport_mut().height_prefix_sums = vec![30];
         app.active_viewport_mut().scrollbar_thumb_top = 0.0;
         app.active_viewport_mut().scrollbar_thumb_size = 3.0;
-        app.selection = Some(crate::app::SelectionState {
+        *app.selection_mut() = Some(crate::app::SelectionState {
             kind: crate::app::SelectionKind::Chat,
             start: crate::app::SelectionPoint { row: 0, col: 0 },
             end: crate::app::SelectionPoint { row: 0, col: 1 },
@@ -4869,7 +4974,7 @@ mod tests {
         );
 
         assert!(app.scrollbar_drag.is_some());
-        assert!(app.selection.is_none());
+        assert!(app.selection().is_none());
         assert!(!app.viewport().auto_scroll);
         assert!(app.viewport().scroll_target > 0);
     }
@@ -4966,7 +5071,7 @@ mod tests {
         };
         assert_eq!(tc.collapsed_override, Some(true));
         // Selection should NOT have started — click was consumed.
-        assert!(app.selection.is_none());
+        assert!(app.selection().is_none());
 
         // mark_tool_call_layout_dirty zeroed the cached measurement so a
         // real re-render would re-fill it. The test doesn't run the
@@ -5038,7 +5143,7 @@ mod tests {
         };
         assert!(tc.collapsed_override.is_none());
         // A text-area click should have started a selection.
-        assert!(app.selection.is_some());
+        assert!(app.selection().is_some());
     }
 
     #[test]
@@ -5081,7 +5186,7 @@ mod tests {
         });
         app.set_show_todo_panel(true);
         app.claim_focus_target(FocusTarget::TodoList);
-        app.slash = Some(SlashState {
+        *app.slash_mut() = Some(SlashState {
             trigger_row: 0,
             trigger_col: 0,
             query: String::new(),
@@ -5100,7 +5205,7 @@ mod tests {
             Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
         );
 
-        assert!(app.mention.is_none());
+        assert!(app.mention().is_none());
         assert_eq!(app.focus_owner(), FocusOwner::TodoList);
     }
 
@@ -5167,7 +5272,7 @@ mod tests {
         );
 
         assert_eq!(app.input().text(), "seed");
-        assert!(app.pending_submit.is_none());
+        assert!(app.pending_submit().is_none());
         assert!(app.config.fast_mode_effective());
         assert!(app.config.last_error.is_none());
     }
@@ -5189,7 +5294,7 @@ mod tests {
 
         assert_eq!(app.active_view, ActiveView::Chat);
         assert_eq!(app.input().text(), "seed");
-        assert!(app.pending_submit.is_none());
+        assert!(app.pending_submit().is_none());
     }
 
     #[test]
@@ -5199,7 +5304,7 @@ mod tests {
 
         handle_terminal_event(&mut app, Event::Paste("blocked".into()));
 
-        assert!(app.pending_paste_text.is_empty());
+        assert!(app.pending_paste_text().is_empty());
         assert!(app.input().is_empty());
     }
 
@@ -5230,7 +5335,7 @@ mod tests {
         let mut app = make_test_app();
         app.active_view = ActiveView::Config;
         app.active_viewport_mut().scroll_target = 4;
-        app.selection = Some(SelectionState {
+        *app.selection_mut() = Some(SelectionState {
             kind: SelectionKind::Chat,
             start: SelectionPoint { row: 0, col: 0 },
             end: SelectionPoint { row: 0, col: 1 },
@@ -5248,7 +5353,7 @@ mod tests {
         );
 
         assert_eq!(app.viewport().scroll_target, 4);
-        assert!(app.selection.is_some());
+        assert!(app.selection().is_some());
     }
 
     #[test]
@@ -5273,7 +5378,7 @@ mod tests {
 
         assert_eq!(app.active_view, ActiveView::Chat);
         assert_eq!(app.input().text(), "seed");
-        assert!(app.pending_paste_text.is_empty());
+        assert!(app.pending_paste_text().is_empty());
         assert!(app.startup_connection_requested);
     }
 
@@ -5284,7 +5389,7 @@ mod tests {
 
         handle_terminal_event(&mut app, Event::Paste("blocked".into()));
 
-        assert!(app.pending_paste_text.is_empty());
+        assert!(app.pending_paste_text().is_empty());
         assert!(app.input().is_empty());
     }
 
@@ -5295,7 +5400,7 @@ mod tests {
 
         handle_terminal_event(&mut app, Event::Paste("blocked".into()));
 
-        assert!(app.pending_paste_text.is_empty());
+        assert!(app.pending_paste_text().is_empty());
         assert!(app.input().is_empty());
     }
 
@@ -5332,7 +5437,7 @@ mod tests {
         let mut app = make_test_app();
         app.active_view = ActiveView::Trusted;
         app.active_viewport_mut().scroll_target = 4;
-        app.selection = Some(SelectionState {
+        *app.selection_mut() = Some(SelectionState {
             kind: SelectionKind::Chat,
             start: SelectionPoint { row: 0, col: 0 },
             end: SelectionPoint { row: 0, col: 1 },
@@ -5350,7 +5455,7 @@ mod tests {
         );
 
         assert_eq!(app.viewport().scroll_target, 4);
-        assert!(app.selection.is_some());
+        assert!(app.selection().is_some());
     }
 
     #[test]
@@ -5358,7 +5463,7 @@ mod tests {
         let mut app = make_test_app();
         app.active_view = ActiveView::SessionPicker;
         app.active_viewport_mut().scroll_target = 4;
-        app.selection = Some(SelectionState {
+        *app.selection_mut() = Some(SelectionState {
             kind: SelectionKind::Chat,
             start: SelectionPoint { row: 0, col: 0 },
             end: SelectionPoint { row: 0, col: 1 },
@@ -5376,7 +5481,7 @@ mod tests {
         );
 
         assert_eq!(app.viewport().scroll_target, 4);
-        assert!(app.selection.is_some());
+        assert!(app.selection().is_some());
     }
 
     #[test]

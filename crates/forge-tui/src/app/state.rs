@@ -196,12 +196,6 @@ pub struct App {
     pub trust: TrustState,
     pub settings_home_override: Option<PathBuf>,
     pub status: AppStatus,
-    /// Session id currently being resumed via `/resume`.
-    pub resuming_session_id: Option<String>,
-    /// Spinner label shown while a slash command is in flight (`CommandPending`).
-    pub pending_command_label: Option<String>,
-    /// Ack marker required to clear `CommandPending` for strict completion semantics.
-    pub pending_command_ack: Option<PendingCommandAck>,
     pub should_quit: bool,
     /// Optional fatal app error that should be surfaced at CLI boundary.
     pub exit_error: Option<crate::error::AppError>,
@@ -238,8 +232,6 @@ pub struct App {
     /// `None` only in the brief pre-Connect window where no session
     /// has landed in the map yet.
     pub active_session_key: Option<forge_workspace::SessionKey>,
-    /// Login hint shown when authentication is required. Rendered above the input field.
-    pub login_hint: Option<LoginHint>,
     /// Active help overlay view when `?` help is open.
     pub help_view: HelpView,
     /// Whether the help overlay is explicitly open.
@@ -249,9 +241,6 @@ pub struct App {
     /// Number of items that currently fit in the help viewport (updated each render).
     /// Used by key handlers for accurate scroll step size.
     pub help_visible_count: usize,
-    /// Auto-submit the current input draft once cancellation transitions the app
-    /// back to `Ready`.
-    pub pending_auto_submit_after_cancel: bool,
     /// Receiver for `SessionUpdate`s emitted by the workspace. The
     /// main event loop reads from here and dispatches via
     /// `events::apply_session_update`. Replaces the legacy
@@ -300,14 +289,15 @@ pub struct App {
     pub focus: FocusManager,
     /// Plugin inventory and UI state for the Config > Plugins view.
     pub plugins: PluginsState,
-    /// Recently persisted session IDs discovered at startup.
-    pub recent_sessions: Vec<RecentSessionInfo>,
+    // `recent_sessions: Vec<RecentSessionInfo>` moved to
+    // `UiSession.recent_sessions` (per-session bucket). The session
+    // list is per-project — switching active session via the
+    // Projects pane naturally swaps the list along with the bucket.
+    // See `App::recent_sessions` / `App::recent_sessions_mut`.
     /// Selection state for the startup session picker screen.
     pub session_picker: SessionPickerState,
     /// Last known frame area (for mouse selection mapping).
     pub cached_frame_area: ratatui::layout::Rect,
-    /// Current selection state for mouse-based selection.
-    pub selection: Option<SelectionState>,
     /// Active scrollbar drag state while left mouse button is held on the rail.
     pub scrollbar_drag: Option<ScrollbarDragState>,
     /// Cached rendered chat lines for selection/copy.
@@ -318,40 +308,20 @@ pub struct App {
     pub rendered_input_lines: Vec<String>,
     /// Area where input content was rendered (for selection mapping).
     pub rendered_input_area: ratatui::layout::Rect,
-    /// Active `@` file mention autocomplete state.
-    pub mention: Option<mention::MentionState>,
-    /// App-owned file index backing `@` file mention autocomplete.
-    pub file_index: file_index::FileIndexState,
-    /// Active slash-command autocomplete state.
-    pub slash: Option<slash::SlashState>,
-    /// Active subagent autocomplete state (`&name`).
-    pub subagent: Option<subagent::SubagentState>,
-    /// Deferred plain-Enter submit. Stores the exact input state from before the
-    /// Enter key so submission can restore and use the original draft text.
-    ///
-    /// If another editing-like event or a paste payload arrives in the same
-    /// drain cycle, this is cleared and no submit occurs.
-    pub pending_submit: Option<InputSnapshot>,
+    // `file_index: FileIndexState` moved to `UiSession.file_index`
+    // (per-session bucket). The scanner is project-scoped — switching
+    // active session shows the new project's files. The channel
+    // endpoints (`file_index_event_tx` / `_rx`) stay App-level since
+    // the scanner thread is a single workspace-wide pump. See
+    // `App::file_index` / `App::file_index_mut`.
     /// Timing-based paste burst detector. Detects rapid character streams
     /// (paste delivered as individual key events) and buffers them into a
     /// single paste payload. Fallback for terminals without bracketed paste.
     pub paste_burst: super::paste_burst::PasteBurstDetector,
-    /// Buffered `Event::Paste` payload for this drain cycle.
-    /// Some terminals split one clipboard paste into multiple chunks; we merge
-    /// them and apply placeholder threshold to the merged content once per cycle.
-    pub pending_paste_text: String,
-    /// Pending paste session metadata for the currently queued `Event::Paste` payload.
-    pub pending_paste_session: Option<PasteSessionState>,
-    /// Most recent active placeholder paste session, used for safe chunk continuation.
-    pub active_paste_session: Option<PasteSessionState>,
-    /// Monotonic counter for paste session identifiers.
-    pub next_paste_session_id: u64,
-    /// Pending image attachments accumulated via Ctrl+V clipboard reads and
-    /// consumed on submit. No cap on count — this is a developer tool, so
-    /// users are trusted to attach as many images as they need.
-    pub pending_images: Vec<crate::app::clipboard_image::ImageAttachment>,
-    /// Config > Usage snapshot and refresh lifecycle.
-    pub usage: UsageState,
+    // `usage: UsageState` moved to `UiSession.usage` (per-session
+    // bucket). Each forge session fetches Anthropic plan utilisation
+    // independently; the Projects-pane account panel reads via the
+    // active bucket. See `App::usage` / `App::usage_mut`.
     /// Dirty flag: skip `terminal.draw()` when nothing changed since last frame.
     pub needs_redraw: bool,
     /// Central notification manager (bell + desktop toast when unfocused).
@@ -494,6 +464,14 @@ impl App {
         // the incoming bucket's cwd guarantees one canonical update
         // per switch.
         crate::app::tab_title::update_tab_title(&self.status, self.spinner_frame, self.cwd());
+        // Ensure the file index for `@`-mention autocomplete is
+        // started for the incoming bucket. Each bucket owns its own
+        // `FileIndexState`; if this is the first time we've switched
+        // to this bucket the index is empty and needs a fresh scan
+        // against the bucket's cwd. `ensure_started` is idempotent:
+        // it's a no-op when the bucket's index is already scanning
+        // or has a current root matching the cwd.
+        crate::app::file_index::ensure_started(self);
         self.force_redraw = true;
         self.needs_redraw = true;
     }
@@ -1219,6 +1197,229 @@ impl App {
         &mut self.active_bucket_mut().session_usage
     }
 
+    /// Borrow the active session's Anthropic-plan usage state. The
+    /// pane footer's `5h` / `7d` bars read this. Returns a static
+    /// empty state during the brief pre-Connect window where no
+    /// session bucket exists yet.
+    #[must_use]
+    pub fn usage(&self) -> &UsageState {
+        static FALLBACK: std::sync::OnceLock<UsageState> = std::sync::OnceLock::new();
+        match self.active_session() {
+            Some(s) => &s.usage,
+            None => FALLBACK.get_or_init(UsageState::default),
+        }
+    }
+
+    /// Mutable borrow of the active session's usage state. Used by
+    /// `app::usage::request_refresh` to flip the in-flight flag
+    /// before spawning the fetch task.
+    #[must_use]
+    pub fn usage_mut(&mut self) -> &mut UsageState {
+        &mut self.active_bucket_mut().usage
+    }
+
+    /// Mutable borrow of a specific session's usage state by key.
+    /// Used by the `Usage*` reducers in `events/client.rs` to route
+    /// a fetch result onto the bucket that requested it, even if
+    /// the user has switched active session mid-fetch. Returns
+    /// `None` when the target bucket no longer exists (session
+    /// closed before the result landed — drop the result silently).
+    #[must_use]
+    pub fn usage_mut_for(&mut self, key: &forge_workspace::SessionKey) -> Option<&mut UsageState> {
+        self.sessions.get_mut(key).map(|s| &mut s.usage)
+    }
+
+    /// Active session's catalog of resumable sessions. The
+    /// `/resume <id>` autocomplete and startup picker read from
+    /// this list. Returns an empty slice in the brief pre-Connect
+    /// window where no bucket exists.
+    #[must_use]
+    pub fn recent_sessions(&self) -> &[RecentSessionInfo] {
+        self.active_session().map_or(&[], |s| s.recent_sessions.as_slice())
+    }
+
+    /// Mutable borrow of the active session's recent-sessions list.
+    /// Used by tests + the SDK-side bridge polling path.
+    #[must_use]
+    pub fn recent_sessions_mut(&mut self) -> &mut Vec<RecentSessionInfo> {
+        &mut self.active_bucket_mut().recent_sessions
+    }
+
+    /// Mutable borrow of a specific bucket's recent-sessions list.
+    /// Used by `handle_sessions_listed_event` to route the wire
+    /// payload onto the bucket that requested the scan.
+    #[must_use]
+    pub fn recent_sessions_mut_for(
+        &mut self,
+        key: &forge_workspace::SessionKey,
+    ) -> Option<&mut Vec<RecentSessionInfo>> {
+        self.sessions.get_mut(key).map(|s| &mut s.recent_sessions)
+    }
+
+    // ---- Per-session UI/input accessors (latent smells migrated) ----
+    //
+    // Each pair below mirrors a `UiSession` field with a read accessor
+    // returning a reference and a mut accessor returning `&mut <T>`.
+    // The mut accessor auto-creates the active bucket via
+    // `active_bucket_mut`, so call sites can always write.
+
+    #[must_use]
+    pub fn login_hint(&self) -> Option<&LoginHint> {
+        self.active_session().and_then(|s| s.login_hint.as_ref())
+    }
+    #[must_use]
+    pub fn login_hint_mut(&mut self) -> &mut Option<LoginHint> {
+        &mut self.active_bucket_mut().login_hint
+    }
+
+    #[must_use]
+    pub fn resuming_session_id(&self) -> Option<&str> {
+        self.active_session().and_then(|s| s.resuming_session_id.as_deref())
+    }
+    #[must_use]
+    pub fn resuming_session_id_mut(&mut self) -> &mut Option<String> {
+        &mut self.active_bucket_mut().resuming_session_id
+    }
+
+    #[must_use]
+    pub fn pending_command_label(&self) -> Option<&str> {
+        self.active_session().and_then(|s| s.pending_command_label.as_deref())
+    }
+    #[must_use]
+    pub fn pending_command_label_mut(&mut self) -> &mut Option<String> {
+        &mut self.active_bucket_mut().pending_command_label
+    }
+
+    #[must_use]
+    pub fn pending_command_ack(&self) -> Option<&PendingCommandAck> {
+        self.active_session().and_then(|s| s.pending_command_ack.as_ref())
+    }
+    #[must_use]
+    pub fn pending_command_ack_mut(&mut self) -> &mut Option<PendingCommandAck> {
+        &mut self.active_bucket_mut().pending_command_ack
+    }
+
+    #[must_use]
+    pub fn pending_auto_submit_after_cancel(&self) -> bool {
+        self.active_session().is_some_and(|s| s.pending_auto_submit_after_cancel)
+    }
+    pub fn set_pending_auto_submit_after_cancel(&mut self, value: bool) {
+        self.active_bucket_mut().pending_auto_submit_after_cancel = value;
+    }
+
+    #[must_use]
+    pub fn selection(&self) -> Option<&SelectionState> {
+        self.active_session().and_then(|s| s.selection.as_ref())
+    }
+    #[must_use]
+    pub fn selection_mut(&mut self) -> &mut Option<SelectionState> {
+        &mut self.active_bucket_mut().selection
+    }
+
+    #[must_use]
+    pub fn pending_submit(&self) -> Option<&InputSnapshot> {
+        self.active_session().and_then(|s| s.pending_submit.as_ref())
+    }
+    #[must_use]
+    pub fn pending_submit_mut(&mut self) -> &mut Option<InputSnapshot> {
+        &mut self.active_bucket_mut().pending_submit
+    }
+
+    #[must_use]
+    pub fn pending_paste_text(&self) -> &str {
+        self.active_session().map_or("", |s| s.pending_paste_text.as_str())
+    }
+    #[must_use]
+    pub fn pending_paste_text_mut(&mut self) -> &mut String {
+        &mut self.active_bucket_mut().pending_paste_text
+    }
+
+    #[must_use]
+    pub fn pending_paste_session(&self) -> Option<&PasteSessionState> {
+        self.active_session().and_then(|s| s.pending_paste_session.as_ref())
+    }
+    #[must_use]
+    pub fn pending_paste_session_mut(&mut self) -> &mut Option<PasteSessionState> {
+        &mut self.active_bucket_mut().pending_paste_session
+    }
+
+    #[must_use]
+    pub fn active_paste_session(&self) -> Option<&PasteSessionState> {
+        self.active_session().and_then(|s| s.active_paste_session.as_ref())
+    }
+    #[must_use]
+    pub fn active_paste_session_mut(&mut self) -> &mut Option<PasteSessionState> {
+        &mut self.active_bucket_mut().active_paste_session
+    }
+
+    #[must_use]
+    pub fn next_paste_session_id(&self) -> u64 {
+        self.active_session().map_or(1, |s| s.next_paste_session_id)
+    }
+    pub fn allocate_paste_session_id(&mut self) -> u64 {
+        let slot = &mut self.active_bucket_mut().next_paste_session_id;
+        let id = *slot;
+        *slot = slot.saturating_add(1);
+        id
+    }
+
+    #[must_use]
+    pub fn pending_images(&self) -> &[crate::app::clipboard_image::ImageAttachment] {
+        self.active_session().map_or(&[], |s| s.pending_images.as_slice())
+    }
+    #[must_use]
+    pub fn pending_images_mut(&mut self) -> &mut Vec<crate::app::clipboard_image::ImageAttachment> {
+        &mut self.active_bucket_mut().pending_images
+    }
+
+    #[must_use]
+    pub fn mention(&self) -> Option<&mention::MentionState> {
+        self.active_session().and_then(|s| s.mention.as_ref())
+    }
+    #[must_use]
+    pub fn mention_mut(&mut self) -> &mut Option<mention::MentionState> {
+        &mut self.active_bucket_mut().mention
+    }
+
+    #[must_use]
+    pub fn slash(&self) -> Option<&slash::SlashState> {
+        self.active_session().and_then(|s| s.slash.as_ref())
+    }
+    #[must_use]
+    pub fn slash_mut(&mut self) -> &mut Option<slash::SlashState> {
+        &mut self.active_bucket_mut().slash
+    }
+
+    #[must_use]
+    pub fn subagent(&self) -> Option<&subagent::SubagentState> {
+        self.active_session().and_then(|s| s.subagent.as_ref())
+    }
+    #[must_use]
+    pub fn subagent_mut(&mut self) -> &mut Option<subagent::SubagentState> {
+        &mut self.active_bucket_mut().subagent
+    }
+
+    /// Active session's file-index state for `@`-mention autocomplete.
+    /// Returns an empty default state when no active session exists
+    /// (test paths, brief pre-Connect window).
+    #[must_use]
+    pub fn file_index(&self) -> &super::file_index::FileIndexState {
+        static FALLBACK: std::sync::OnceLock<super::file_index::FileIndexState> =
+            std::sync::OnceLock::new();
+        match self.active_session() {
+            Some(s) => &s.file_index,
+            None => FALLBACK.get_or_init(super::file_index::FileIndexState::default),
+        }
+    }
+
+    /// Mutable borrow of the active session's file index. Used by
+    /// the scanner + watcher lifecycle in `app::file_index` and the
+    /// `@`-mention reducer in `app::mention`.
+    #[must_use]
+    pub fn file_index_mut(&mut self) -> &mut super::file_index::FileIndexState {
+        &mut self.active_bucket_mut().file_index
+    }
+
     // ---- Account / auth accessors ----
 
     /// Active session's account-info snapshot.
@@ -1527,18 +1728,17 @@ impl App {
             return;
         }
         let chunk_chars = text.chars().count();
-        let had_pending_submit = self.pending_submit.is_some();
-        self.pending_submit = None;
-        if self.pending_paste_text.is_empty() {
-            let continued_session = self.active_paste_session.and_then(|session| {
+        let had_pending_submit = self.pending_submit().is_some();
+        *self.pending_submit_mut() = None;
+        if self.pending_paste_text().is_empty() {
+            let continued_session = self.active_paste_session().copied().and_then(|session| {
                 let current_line = self.input().lines().get(self.input().cursor_row())?;
                 let idx =
                     parse_paste_placeholder_before_cursor(current_line, self.input().cursor_col())?;
                 (session.placeholder_index == Some(idx)).then_some(session)
             });
-            self.pending_paste_session = Some(continued_session.unwrap_or_else(|| {
-                let id = self.next_paste_session_id;
-                self.next_paste_session_id = self.next_paste_session_id.saturating_add(1);
+            let opened = continued_session.unwrap_or_else(|| {
+                let id = self.allocate_paste_session_id();
                 PasteSessionState {
                     id,
                     start: SelectionPoint {
@@ -1547,30 +1747,30 @@ impl App {
                     },
                     placeholder_index: None,
                 }
-            }));
-            if let Some(session) = self.pending_paste_session {
-                tracing::debug!(
-                    target: crate::logging::targets::APP_PASTE,
-                    event_name = "paste_queue_opened",
-                    message = "paste queue session opened",
-                    outcome = "start",
-                    session_id = session.id,
-                    start_row = session.start.row,
-                    start_col = session.start.col,
-                    placeholder_index = ?session.placeholder_index,
-                    chunk_chars,
-                    had_pending_submit,
-                );
-            }
+            });
+            *self.pending_paste_session_mut() = Some(opened);
+            tracing::debug!(
+                target: crate::logging::targets::APP_PASTE,
+                event_name = "paste_queue_opened",
+                message = "paste queue session opened",
+                outcome = "start",
+                session_id = opened.id,
+                start_row = opened.start.row,
+                start_col = opened.start.col,
+                placeholder_index = ?opened.placeholder_index,
+                chunk_chars,
+                had_pending_submit,
+            );
         }
-        self.pending_paste_text.push_str(text);
+        self.pending_paste_text_mut().push_str(text);
+        let pending_chars = self.pending_paste_text().chars().count();
         tracing::debug!(
             target: crate::logging::targets::APP_PASTE,
             event_name = "paste_queue_updated",
             message = "paste queue updated",
             outcome = "success",
             chunk_chars,
-            pending_chars = self.pending_paste_text.chars().count(),
+            pending_chars,
             had_pending_submit,
         );
     }
@@ -2048,9 +2248,6 @@ impl App {
             trust: TrustState::default(),
             settings_home_override: None,
             status: AppStatus::Ready,
-            resuming_session_id: None,
-            pending_command_label: None,
-            pending_command_ack: None,
             should_quit: false,
             exit_error: None,
             workspace: Some(workspace),
@@ -2059,12 +2256,10 @@ impl App {
             #[rustfmt::skip] #[cfg(feature = "testing")] test_dispatched_question_outcomes: std::cell::RefCell::new(Vec::new()),
             sessions,
             active_session_key: Some(pending_key),
-            login_hint: None,
             help_view: HelpView::Keys,
             help_open: false,
             help_dialog: dialog::DialogState::default(),
             help_visible_count: 0,
-            pending_auto_submit_after_cancel: false,
             update_rx: rx,
             update_tx: tx,
             file_index_event_tx: file_index_tx,
@@ -2079,27 +2274,14 @@ impl App {
             force_redraw: false,
             focus: FocusManager::default(),
             plugins: PluginsState::default(),
-            recent_sessions: Vec::new(),
             session_picker: SessionPickerState::default(),
             cached_frame_area: ratatui::layout::Rect::default(),
-            selection: None,
             scrollbar_drag: None,
             rendered_chat_lines: Vec::new(),
             rendered_chat_area: ratatui::layout::Rect::default(),
             rendered_input_lines: Vec::new(),
             rendered_input_area: ratatui::layout::Rect::default(),
-            mention: None,
-            file_index: file_index::FileIndexState::default(),
-            slash: None,
-            subagent: None,
-            pending_submit: None,
             paste_burst: super::paste_burst::PasteBurstDetector::new(),
-            pending_paste_text: String::new(),
-            pending_paste_session: None,
-            active_paste_session: None,
-            next_paste_session_id: 1,
-            pending_images: Vec::new(),
-            usage: UsageState::default(),
             needs_redraw: true,
             notifications: super::notify::NotificationManager::new(),
             perf: None,
@@ -2284,11 +2466,11 @@ impl App {
 
     #[must_use]
     pub fn active_autocomplete_kind(&self) -> Option<AutocompleteKind> {
-        if self.mention.is_some() {
+        if self.mention().is_some() {
             Some(AutocompleteKind::Mention)
-        } else if self.slash.is_some() {
+        } else if self.slash().is_some() {
             Some(AutocompleteKind::Slash)
-        } else if self.subagent.is_some() {
+        } else if self.subagent().is_some() {
             Some(AutocompleteKind::Subagent)
         } else {
             None
@@ -2309,9 +2491,9 @@ impl App {
 
     #[must_use]
     pub fn autocomplete_focus_available(&self) -> bool {
-        self.mention.as_ref().is_some_and(mention::MentionState::has_selectable_candidates)
-            || self.slash.is_some()
-            || self.subagent.is_some()
+        self.mention().is_some_and(mention::MentionState::has_selectable_candidates)
+            || self.slash().is_some()
+            || self.subagent().is_some()
     }
 
     #[must_use]
@@ -4276,7 +4458,7 @@ mod tests {
         });
         app.set_show_todo_panel(true);
         app.pending_interaction_ids_mut().push("perm-1".into());
-        app.slash = Some(SlashState {
+        *app.slash_mut() = Some(SlashState {
             trigger_row: 0,
             trigger_col: 0,
             query: String::new(),

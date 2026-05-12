@@ -6,7 +6,7 @@ use super::{MAX_VISIBLE, SlashContext, SlashState};
 use crate::app::{App, FocusTarget};
 
 fn release_autocomplete_focus_if_idle(app: &mut App) {
-    if app.slash.is_none() && app.mention.is_none() && app.subagent.is_none() {
+    if app.slash().is_none() && app.mention().is_none() && app.subagent().is_none() {
         app.release_focus_target(FocusTarget::Mention);
     }
 }
@@ -57,9 +57,9 @@ pub fn activate(app: &mut App) {
         return;
     };
 
-    app.slash = Some(state);
-    app.mention = None;
-    app.subagent = None;
+    *app.slash_mut() = Some(state);
+    *app.mention_mut() = None;
+    *app.subagent_mut() = None;
     app.claim_focus_target(FocusTarget::Mention);
 }
 
@@ -69,7 +69,7 @@ pub fn update_query(app: &mut App) {
         return;
     };
 
-    if let Some(ref mut slash) = app.slash {
+    if let Some(slash) = app.slash_mut().as_mut() {
         let keep_selection = slash.context == next_state.context;
         let dialog = if keep_selection { slash.dialog } else { super::DialogState::default() };
         slash.trigger_row = next_state.trigger_row;
@@ -80,13 +80,13 @@ pub fn update_query(app: &mut App) {
         slash.dialog = dialog;
         slash.dialog.clamp(slash.candidates.len(), MAX_VISIBLE);
     } else {
-        app.slash = Some(next_state);
+        *app.slash_mut() = Some(next_state);
         app.claim_focus_target(FocusTarget::Mention);
     }
 }
 
 pub fn sync_with_cursor(app: &mut App) {
-    match (build_slash_state(app), app.slash.is_some()) {
+    match (build_slash_state(app), app.slash().is_some()) {
         (Some(_), true) => update_query(app),
         (Some(_), false) => activate(app),
         (None, true) => deactivate(app),
@@ -95,25 +95,25 @@ pub fn sync_with_cursor(app: &mut App) {
 }
 
 pub fn deactivate(app: &mut App) {
-    app.slash = None;
+    *app.slash_mut() = None;
     release_autocomplete_focus_if_idle(app);
 }
 
 pub fn move_up(app: &mut App) {
-    if let Some(ref mut slash) = app.slash {
+    if let Some(slash) = app.slash_mut().as_mut() {
         slash.dialog.move_up(slash.candidates.len(), MAX_VISIBLE);
     }
 }
 
 pub fn move_down(app: &mut App) {
-    if let Some(ref mut slash) = app.slash {
+    if let Some(slash) = app.slash_mut().as_mut() {
         slash.dialog.move_down(slash.candidates.len(), MAX_VISIBLE);
     }
 }
 
 /// Confirm selected candidate in input.
 pub fn confirm_selection(app: &mut App) {
-    let Some(slash) = app.slash.take() else {
+    let Some(slash) = app.slash_mut().take() else {
         return;
     };
 

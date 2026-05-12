@@ -181,7 +181,7 @@ pub(crate) fn resume_session(app: &App, session_id: String) -> anyhow::Result<()
 /// Caller owns UI concerns such as entering `CommandPending` and surfacing
 /// synchronous errors.
 pub(crate) fn begin_resume_session(app: &mut App, session_id: String) -> anyhow::Result<()> {
-    app.resuming_session_id = Some(session_id.clone());
+    *app.resuming_session_id_mut() = Some(session_id.clone());
     resume_session(app, session_id)
 }
 

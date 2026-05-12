@@ -82,7 +82,7 @@ fn render_session_list(frame: &mut Frame, area: Rect, app: &mut App) {
     let start = app.session_picker.scroll_offset;
     let end = (start + visible_count).min(session_count);
     let mut lines = Vec::with_capacity((end - start) * usize::from(lines_per_item));
-    for (idx, session) in app.recent_sessions[start..end].iter().enumerate() {
+    for (idx, session) in app.recent_sessions()[start..end].iter().enumerate() {
         let selected = start + idx == app.session_picker.selected;
         let base_style = if selected {
             Style::default().fg(ratatui::style::Color::White).bg(theme::RUST_ORANGE)
@@ -200,7 +200,7 @@ mod tests {
     fn renders_session_titles() {
         let mut app = App::test_default();
         app.active_view = ActiveView::SessionPicker;
-        app.recent_sessions = vec![session("s1", "First Session")];
+        *app.recent_sessions_mut() = vec![session("s1", "First Session")];
 
         let text = draw_text(&mut app);
 
@@ -212,7 +212,7 @@ mod tests {
     fn highlights_selected_session_with_marker() {
         let mut app = App::test_default();
         app.active_view = ActiveView::SessionPicker;
-        app.recent_sessions = vec![session("s1", "First"), session("s2", "Second")];
+        *app.recent_sessions_mut() = vec![session("s1", "First"), session("s2", "Second")];
         app.session_picker.selected = 1;
 
         let text = draw_text(&mut app);
@@ -246,7 +246,7 @@ mod tests {
     fn limits_picker_to_ten_recent_sessions() {
         let mut app = App::test_default();
         app.active_view = ActiveView::SessionPicker;
-        app.recent_sessions =
+        *app.recent_sessions_mut() =
             (1..=11).map(|idx| session(&format!("s{idx}"), &format!("Session {idx}"))).collect();
 
         let text = draw_text_with_size(&mut app, 80, 30);

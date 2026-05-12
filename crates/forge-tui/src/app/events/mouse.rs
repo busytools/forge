@@ -32,7 +32,7 @@ pub(super) fn handle_mouse_event(app: &mut App, mouse: MouseEvent) {
                 return;
             }
             if let Some(pt) = mouse_point_to_selection(app, mouse) {
-                app.selection = Some(super::super::SelectionState {
+                *app.selection_mut() = Some(super::super::SelectionState {
                     kind: pt.kind,
                     start: pt.point,
                     end: pt.point,
@@ -47,13 +47,13 @@ pub(super) fn handle_mouse_event(app: &mut App, mouse: MouseEvent) {
                 return;
             }
             let pt = mouse_point_to_selection(app, mouse);
-            if let (Some(sel), Some(pt)) = (&mut app.selection, pt) {
+            if let (Some(sel), Some(pt)) = (app.selection_mut().as_mut(), pt) {
                 sel.end = pt.point;
             }
         }
         MouseEventKind::Up(crossterm::event::MouseButton::Left) => {
             app.scrollbar_drag = None;
-            if let Some(sel) = &mut app.selection {
+            if let Some(sel) = app.selection_mut().as_mut() {
                 sel.dragging = false;
             }
         }
@@ -68,7 +68,7 @@ pub(super) fn handle_mouse_event(app: &mut App, mouse: MouseEvent) {
             if app.projects_pane_overlay_open && app.layout.top_bar.is_some() {
                 return;
             }
-            if app.selection.is_some() {
+            if app.selection().is_some() {
                 clear_selection(app);
             }
             app.active_viewport_mut().scroll_up(MOUSE_SCROLL_LINES);
@@ -77,7 +77,7 @@ pub(super) fn handle_mouse_event(app: &mut App, mouse: MouseEvent) {
             if app.projects_pane_overlay_open && app.layout.top_bar.is_some() {
                 return;
             }
-            if app.selection.is_some() {
+            if app.selection().is_some() {
                 clear_selection(app);
             }
             app.active_viewport_mut().scroll_down(MOUSE_SCROLL_LINES);

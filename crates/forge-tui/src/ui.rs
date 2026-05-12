@@ -36,7 +36,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 }
 
 pub(crate) fn refresh_selection_snapshot(app: &mut App) {
-    let Some(selection) = app.selection else {
+    let Some(selection) = app.selection() else {
         return;
     };
 

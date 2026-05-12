@@ -13,7 +13,7 @@ pub(super) fn render(frame: &mut Frame, area: Rect, app: &App) {
         return;
     }
 
-    let windows = app.usage.snapshot.as_ref().map_or_else(Vec::new, usage::visible_windows);
+    let windows = app.usage().snapshot.as_ref().map_or_else(Vec::new, usage::visible_windows);
 
     let mut constraints = vec![Constraint::Length(1)];
     if windows.is_empty() {
@@ -24,13 +24,13 @@ pub(super) fn render(frame: &mut Frame, area: Rect, app: &App) {
             constraints.push(Constraint::Length(1));
         }
         if let Some(extra_usage) =
-            app.usage.snapshot.as_ref().and_then(|snapshot| snapshot.extra_usage.as_ref())
+            app.usage().snapshot.as_ref().and_then(|snapshot| snapshot.extra_usage.as_ref())
         {
             constraints
                 .push(Constraint::Length(extra_usage_height(extra_usage, content_area.width)));
             constraints.push(Constraint::Length(1));
         }
-        if let Some(error) = app.usage.last_error.as_deref() {
+        if let Some(error) = app.usage().last_error.as_deref() {
             constraints.push(Constraint::Length(error_height(error, content_area.width)));
         }
         constraints.push(Constraint::Min(0));
@@ -48,7 +48,7 @@ pub(super) fn render(frame: &mut Frame, area: Rect, app: &App) {
         return;
     }
 
-    let Some(snapshot) = app.usage.snapshot.as_ref() else {
+    let Some(snapshot) = app.usage().snapshot.as_ref() else {
         return;
     };
     let mut section_index = 1usize;
@@ -64,7 +64,7 @@ pub(super) fn render(frame: &mut Frame, area: Rect, app: &App) {
         section_index += 2;
     }
 
-    if let Some(error) = app.usage.last_error.as_deref() {
+    if let Some(error) = app.usage().last_error.as_deref() {
         render_error(frame, sections[section_index], error);
     }
 }
@@ -74,7 +74,7 @@ fn render_spacer(frame: &mut Frame, area: Rect) {
 }
 
 fn render_empty_state(frame: &mut Frame, area: Rect, app: &App) {
-    if app.usage.in_flight {
+    if app.usage().in_flight {
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
                 "Loading usage data...",
@@ -85,7 +85,7 @@ fn render_empty_state(frame: &mut Frame, area: Rect, app: &App) {
         return;
     }
 
-    let (title, body, color) = if let Some(error) = app.usage.last_error.as_deref() {
+    let (title, body, color) = if let Some(error) = app.usage().last_error.as_deref() {
         ("Unable to load usage", error, theme::STATUS_ERROR)
     } else {
         (
@@ -269,7 +269,7 @@ mod tests {
 
     fn usage_app() -> App {
         let mut app = App::test_default();
-        app.usage = UsageState {
+        *app.usage_mut() = UsageState {
             snapshot: None,
             in_flight: false,
             last_error: None,
@@ -289,7 +289,7 @@ mod tests {
     #[test]
     fn renders_loading_state() {
         let mut app = usage_app();
-        app.usage.in_flight = true;
+        app.usage_mut().in_flight = true;
         let rendered = render_usage(&app);
         assert!(rendered.contains("Loading usage data..."));
     }
@@ -297,7 +297,7 @@ mod tests {
     #[test]
     fn renders_snapshot_with_extra_usage_and_error() {
         let mut app = usage_app();
-        app.usage.snapshot = Some(UsageSnapshot {
+        app.usage_mut().snapshot = Some(UsageSnapshot {
             source: UsageSourceKind::Oauth,
             fetched_at: SystemTime::now(),
             five_hour: Some(UsageWindow {
@@ -321,7 +321,8 @@ mod tests {
                 currency: Some("USD".to_owned()),
             }),
         });
-        app.usage.last_error = Some("Network timeout while refreshing cached data.".to_owned());
+        app.usage_mut().last_error =
+            Some("Network timeout while refreshing cached data.".to_owned());
 
         let rendered = render_usage(&app);
         assert!(rendered.contains("5-hour"));
@@ -344,7 +345,7 @@ mod tests {
     #[test]
     fn extra_usage_wraps_inside_card_on_narrow_widths() {
         let mut app = usage_app();
-        app.usage.snapshot = Some(UsageSnapshot {
+        app.usage_mut().snapshot = Some(UsageSnapshot {
             source: UsageSourceKind::Oauth,
             fetched_at: SystemTime::now(),
             five_hour: Some(UsageWindow {

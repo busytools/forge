@@ -117,8 +117,8 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
             // replaced (`/new` / `/resume` / `/login` flows).
             crate::app::usage::request_refresh_if_needed(app);
         }
-        SessionUpdate::SessionsListed { sessions } => {
-            session::apply_session_update_sessions_listed(app, sessions);
+        SessionUpdate::SessionsListed { key, sessions } => {
+            session::apply_session_update_sessions_listed(app, &key, sessions);
         }
         SessionUpdate::AuthRequired { key, method_name, method_description } => {
             session::apply_session_update_auth_required(app, key, method_name, method_description);
@@ -223,44 +223,14 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
         SessionUpdate::TurnError { key, message, class, terminal_reason } => {
             turn::apply_session_update_turn_error(app, key, message, class, terminal_reason);
         }
-        SessionUpdate::UsageRefreshStarted { epoch } => {
-            if app.session_scope_epoch() != epoch {
-                tracing::debug!(
-                    target: crate::logging::targets::APP_CONFIG,
-                    event_name = "usage_refresh_started_dropped",
-                    expected_epoch = app.session_scope_epoch(),
-                    received_epoch = epoch,
-                    "stale usage refresh start dropped"
-                );
-            } else {
-                crate::app::usage::apply_refresh_started(app);
-            }
+        SessionUpdate::UsageRefreshStarted { key } => {
+            crate::app::usage::apply_refresh_started_for(app, &key);
         }
-        SessionUpdate::UsageSnapshotReceived { epoch, snapshot } => {
-            if app.session_scope_epoch() != epoch {
-                tracing::debug!(
-                    target: crate::logging::targets::APP_CONFIG,
-                    event_name = "usage_snapshot_dropped",
-                    expected_epoch = app.session_scope_epoch(),
-                    received_epoch = epoch,
-                    "stale usage snapshot dropped"
-                );
-            } else {
-                crate::app::usage::apply_refresh_success(app, snapshot);
-            }
+        SessionUpdate::UsageSnapshotReceived { key, snapshot } => {
+            crate::app::usage::apply_refresh_success_for(app, &key, snapshot);
         }
-        SessionUpdate::UsageRefreshFailed { epoch, message, source } => {
-            if app.session_scope_epoch() != epoch {
-                tracing::debug!(
-                    target: crate::logging::targets::APP_CONFIG,
-                    event_name = "usage_refresh_failure_dropped",
-                    expected_epoch = app.session_scope_epoch(),
-                    received_epoch = epoch,
-                    "stale usage refresh failure dropped"
-                );
-            } else {
-                crate::app::usage::apply_refresh_failure(app, message, source);
-            }
+        SessionUpdate::UsageRefreshFailed { key, message, source } => {
+            crate::app::usage::apply_refresh_failure_for(app, &key, message, source);
         }
         SessionUpdate::PluginsInventoryUpdated { cwd_raw, snapshot, claude_path } => {
             if app.cwd_raw() != cwd_raw {
@@ -1695,9 +1665,9 @@ mod tests {
         let canonical = dir.path().canonicalize().expect("canonicalize");
         let mut app = App::test_default();
         // Seed stale file_index state to verify the restart wipes it.
-        app.file_index.generation = 3;
-        app.file_index.root = Some(std::path::PathBuf::from("/old/path"));
-        app.file_index.entries.insert(
+        app.file_index_mut().generation = 3;
+        app.file_index_mut().root = Some(std::path::PathBuf::from("/old/path"));
+        app.file_index_mut().entries.insert(
             "stale.rs".to_owned(),
             crate::app::file_index::FileCandidate {
                 rel_path: "stale.rs".to_owned(),
@@ -1708,7 +1678,7 @@ mod tests {
                 is_dir: false,
             },
         );
-        app.file_index.scan_finished = true;
+        app.file_index_mut().scan_finished = true;
 
         let pending_key = app.active_session_key.clone().expect("pending active key");
         let new_cwd = canonical.to_string_lossy().into_owned();
@@ -1727,13 +1697,16 @@ mod tests {
         );
 
         assert_eq!(
-            app.file_index.root.as_deref(),
+            app.file_index_mut().root.as_deref(),
             Some(canonical.as_path()),
             "file_index root must follow the Connected cwd",
         );
-        assert!(app.file_index.generation > 3, "file_index generation must advance on restart");
-        assert!(app.file_index.entries.is_empty(), "stale entries cleared on restart");
-        assert!(!app.file_index.scan_finished, "scan_finished reset on restart");
+        assert!(
+            app.file_index_mut().generation > 3,
+            "file_index generation must advance on restart"
+        );
+        assert!(app.file_index_mut().entries.is_empty(), "stale entries cleared on restart");
+        assert!(!app.file_index_mut().scan_finished, "scan_finished reset on restart");
     }
 
     /// `SessionUpdate::SessionReplaced` shares the
@@ -1747,9 +1720,9 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let canonical = dir.path().canonicalize().expect("canonicalize");
         let mut app = App::test_default();
-        app.file_index.generation = 8;
-        app.file_index.root = Some(std::path::PathBuf::from("/before"));
-        app.file_index.entries.insert(
+        app.file_index_mut().generation = 8;
+        app.file_index_mut().root = Some(std::path::PathBuf::from("/before"));
+        app.file_index_mut().entries.insert(
             "before.rs".to_owned(),
             crate::app::file_index::FileCandidate {
                 rel_path: "before.rs".to_owned(),
@@ -1760,7 +1733,7 @@ mod tests {
                 is_dir: false,
             },
         );
-        app.file_index.scan_finished = true;
+        app.file_index_mut().scan_finished = true;
 
         let pending_key = app.active_session_key.clone().expect("pending active key");
         let replaced_cwd = canonical.to_string_lossy().into_owned();
@@ -1779,12 +1752,15 @@ mod tests {
         );
 
         assert_eq!(
-            app.file_index.root.as_deref(),
+            app.file_index_mut().root.as_deref(),
             Some(canonical.as_path()),
             "file_index root must follow the SessionReplaced cwd",
         );
-        assert!(app.file_index.generation > 8, "file_index generation must advance on restart");
-        assert!(app.file_index.entries.is_empty(), "stale entries cleared on restart");
-        assert!(!app.file_index.scan_finished, "scan_finished reset on restart");
+        assert!(
+            app.file_index_mut().generation > 8,
+            "file_index generation must advance on restart"
+        );
+        assert!(app.file_index_mut().entries.is_empty(), "stale entries cleared on restart");
+        assert!(!app.file_index_mut().scan_finished, "scan_finished reset on restart");
     }
 }

@@ -307,7 +307,7 @@ pub(super) fn argument_candidates(
 
     match command_name {
         "/resume" => app
-            .recent_sessions
+            .recent_sessions()
             .iter()
             .map(|session| {
                 let summary = session.summary.trim();

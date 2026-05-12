@@ -23,19 +23,19 @@ pub fn set_active_view(app: &mut App, next: ActiveView) {
 }
 
 fn clear_transient_view_state(app: &mut App) {
-    app.selection = None;
+    *app.selection_mut() = None;
     app.scrollbar_drag = None;
-    app.active_paste_session = None;
-    app.pending_paste_session = None;
-    app.pending_paste_text.clear();
-    app.pending_submit = None;
+    *app.active_paste_session_mut() = None;
+    *app.pending_paste_session_mut() = None;
+    app.pending_paste_text_mut().clear();
+    *app.pending_submit_mut() = None;
     app.help_open = false;
     app.help_view = crate::app::HelpView::default();
     app.help_dialog = crate::app::dialog::DialogState::default();
     app.help_visible_count = 0;
-    app.mention = None;
-    app.slash = None;
-    app.subagent = None;
+    *app.mention_mut() = None;
+    *app.slash_mut() = None;
+    *app.subagent_mut() = None;
     if app.active_view == ActiveView::Config {
         app.config.overlay = None;
     }

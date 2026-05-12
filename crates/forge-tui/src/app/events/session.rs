@@ -68,7 +68,7 @@ fn apply_connected_presentation(
             load_resume_history(app, history_messages);
         }
         clear_pending_command(app);
-        app.resuming_session_id = None;
+        *app.resuming_session_id_mut() = None;
         crate::app::file_index::restart(app);
         app.rebuild_chat_focus_from_state();
         crate::app::config::refresh_runtime_tabs_for_session_change(app);
@@ -139,16 +139,21 @@ fn apply_connected_presentation(
 
 pub(super) fn handle_sessions_listed_event(
     app: &mut App,
+    key: &SessionKey,
     sessions: Vec<forge_primitives::SessionListEntry>,
 ) {
     let session_count = sessions.len();
     let pending_title_change = app.config.pending_session_title_change.take();
+    // Selection state is reconciled against the active bucket's list
+    // (the picker UI shows the active session's catalog). Reading
+    // here before the targeted write so a session-switch-then-listing
+    // race doesn't snapshot the wrong list.
     let selected_session_id = app
-        .recent_sessions
+        .recent_sessions()
         .get(app.session_picker.selected)
         .map(|session| session.session_id.clone());
     let had_pending_title_change = pending_title_change.is_some();
-    app.recent_sessions = sessions
+    let mapped: Vec<RecentSessionInfo> = sessions
         .into_iter()
         .map(|entry| RecentSessionInfo {
             session_id: entry.session_id,
@@ -161,10 +166,23 @@ pub(super) fn handle_sessions_listed_event(
             first_prompt: entry.first_prompt,
         })
         .collect();
+    let Some(slot) = app.recent_sessions_mut_for(key) else {
+        // Bucket no longer exists — session was closed before the
+        // listing landed. Drop silently.
+        tracing::debug!(
+            target: crate::logging::targets::APP_SESSION,
+            event_name = "sessions_listed_dropped",
+            outcome = "dropped",
+            session_key = %key.as_str(),
+            reason = "unknown_bucket",
+        );
+        return;
+    };
+    *slot = mapped;
     let mut pending_title_change_resolved = false;
     if let Some(pending_title_change) = pending_title_change {
         let renamed_session_present = app
-            .recent_sessions
+            .recent_sessions()
             .iter()
             .any(|session| session.session_id == pending_title_change.session_id);
         pending_title_change_resolved = renamed_session_present;
@@ -259,15 +277,15 @@ pub(super) fn handle_auth_required_event(
     }
     let method_name_for_log = method_name.clone();
     clear_pending_command(app);
-    app.resuming_session_id = None;
-    app.login_hint = Some(LoginHint { method_name, method_description });
+    *app.resuming_session_id_mut() = None;
+    *app.login_hint_mut() = Some(LoginHint { method_name, method_description });
     app.bump_session_scope_epoch();
     app.clear_session_runtime_identity();
     super::clear_compaction_state(app, false);
     app.set_last_rate_limit_update(None);
     app.set_cancelled_turn_pending_hint(false);
     app.set_pending_cancel_origin(None);
-    app.pending_auto_submit_after_cancel = false;
+    app.set_pending_auto_submit_after_cancel(false);
     app.set_account_info(None);
     *app.mcp_mut() = super::super::McpState::default();
     app.config.pending_session_title_change = None;
@@ -375,18 +393,18 @@ pub(super) fn handle_connection_failed_event(app: &mut App, session_key: &Sessio
     super::clear_compaction_state(app, false);
     app.set_cancelled_turn_pending_hint(false);
     app.set_pending_cancel_origin(None);
-    app.pending_auto_submit_after_cancel = false;
+    app.set_pending_auto_submit_after_cancel(false);
     app.set_last_rate_limit_update(None);
     app.set_account_info(None);
     *app.mcp_mut() = super::super::McpState::default();
     app.config.pending_session_title_change = None;
     crate::app::usage::reset_for_session_change(app);
-    app.resuming_session_id = None;
-    app.pending_command_label = None;
-    app.pending_command_ack = None;
+    *app.resuming_session_id_mut() = None;
+    *app.pending_command_label_mut() = None;
+    *app.pending_command_ack_mut() = None;
     app.finalize_turn_runtime_artifacts(model::ToolCallStatus::Failed);
     app.input_mut().clear();
-    app.pending_submit = None;
+    *app.pending_submit_mut() = None;
     app.status = AppStatus::Error;
     app.clear_active_turn_assistant();
     super::notices::clear_turn_notice_tracking(app);
@@ -488,7 +506,7 @@ pub(super) fn handle_slash_command_error_event(app: &mut App, session_key: &Sess
     app.enforce_history_retention_tracked();
     app.active_viewport_mut().engage_auto_scroll();
     clear_pending_command(app);
-    app.resuming_session_id = None;
+    *app.resuming_session_id_mut() = None;
 }
 
 pub(super) fn handle_auth_completed_event(app: &mut App, session_key: &SessionKey) {
@@ -509,9 +527,9 @@ pub(super) fn handle_auth_completed_event(app: &mut App, session_key: &SessionKe
         );
         return;
     }
-    app.login_hint = None;
-    app.pending_command_label = Some("Starting session...".to_owned());
-    app.pending_command_ack = None;
+    *app.login_hint_mut() = None;
+    *app.pending_command_label_mut() = Some("Starting session...".to_owned());
+    *app.pending_command_ack_mut() = None;
     push_system_message_with_severity(
         app,
         Some(SystemSeverity::Info),
@@ -603,8 +621,8 @@ pub(super) fn handle_logout_completed_event(app: &mut App, session_key: &Session
     );
 
     if app.has_active_agent() {
-        app.pending_command_label = Some("Starting session...".to_owned());
-        app.pending_command_ack = None;
+        *app.pending_command_label_mut() = Some("Starting session...".to_owned());
+        *app.pending_command_ack_mut() = None;
         if let Err(e) = start_new_session(app, SessionStartReason::Logout) {
             tracing::error!(
                 target: crate::logging::targets::APP_AUTH,
@@ -653,7 +671,7 @@ pub(super) fn handle_session_replaced_event(
     let available_model_count = available_models.len();
     super::clear_compaction_state(app, false);
     app.set_pending_cancel_origin(None);
-    app.pending_auto_submit_after_cancel = false;
+    app.set_pending_auto_submit_after_cancel(false);
     let prev_session_id = app.session_id().map(|s| s.to_string());
 
     // Capture the outgoing bucket's key BEFORE `reset_for_new_session`
@@ -683,7 +701,7 @@ pub(super) fn handle_session_replaced_event(
         load_resume_history(app, history_messages);
     }
     clear_pending_command(app);
-    app.resuming_session_id = None;
+    *app.resuming_session_id_mut() = None;
     crate::app::file_index::restart(app);
     crate::app::config::refresh_runtime_tabs_for_session_change(app);
 
@@ -764,15 +782,15 @@ pub(super) fn handle_fatal_error_event(app: &mut App, error: AppError) {
     app.exit_error = Some(error);
     app.should_quit = true;
     app.status = AppStatus::Error;
-    app.pending_submit = None;
-    app.pending_command_label = None;
-    app.pending_command_ack = None;
+    *app.pending_submit_mut() = None;
+    *app.pending_command_label_mut() = None;
+    *app.pending_command_ack_mut() = None;
 }
 
 /// Clear the `CommandPending` state and restore `Ready`.
 pub(super) fn clear_pending_command(app: &mut App) {
-    app.pending_command_label = None;
-    app.pending_command_ack = None;
+    *app.pending_command_label_mut() = None;
+    *app.pending_command_ack_mut() = None;
     app.status = AppStatus::Ready;
 }
 
@@ -864,7 +882,7 @@ fn reconcile_session_picker_selection(app: &mut App, selected_session_id: Option
 
     if let Some(session_id) = selected_session_id
         && let Some(idx) =
-            app.recent_sessions.iter().position(|session| session.session_id == session_id)
+            app.recent_sessions().iter().position(|session| session.session_id == session_id)
         && idx < session_count
     {
         app.session_picker.selected = idx;
@@ -1037,9 +1055,10 @@ pub(super) fn apply_session_update_session_replaced(
 
 pub(super) fn apply_session_update_sessions_listed(
     app: &mut App,
+    key: &SessionKey,
     sessions: Vec<forge_primitives::SessionListEntry>,
 ) {
-    handle_sessions_listed_event(app, sessions);
+    handle_sessions_listed_event(app, key, sessions);
 }
 
 #[allow(clippy::needless_pass_by_value)]
