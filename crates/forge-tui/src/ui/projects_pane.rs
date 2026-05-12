@@ -455,30 +455,38 @@ fn glyph_for_lifecycle(
 // stable-shape block:
 //
 //   ─────────────────────────
-//
 //     Profile  Stargate
 //     Mode     [Auto]
-//     Model    sonnet-4.5/Max
+//     Model    Opus 1M
+//     Effort   Max
 //     Fast     off
 //
-//     Ctx   ████████░░░░  65%
-//     5h    ███░░░░░░░░░  23%
-//           resets in 2h
-//     7d    ████░░░░░░░░  34%
-//           resets in 4d
+//     Ctx   ▓▓▓▓▓░░░░░░░  39%
+//
+//     5h    ▓▓░░░░░░░░░░  15%
+//                       1h 48m
+//
+//     7d    ▓▓▓▓▓▓▓▓▓▓▓░  89%
+//                        4d 4h
 //
 //     📁 ~/Projects/forge
-//     ⎇  fix/instrumented-drops
+//     ⎇  main
 //
 // `ACCOUNT_PANEL_HEIGHT` is constant. The panel's render swallows the
 // fixed N rows from the bottom of the pane; the project list takes
-// everything above.
+// everything above. Bar fill colour is a per-cell position gradient
+// (cells 1–3 green, 4–6 yellow, 7–9 orange, 10–12 red) so the
+// rightmost filled cell tells you which zone the bar is in.
 // ---------------------------------------------------------------
 
 /// Rows the account panel reserves from the bottom of the pane.
 /// Constant by design — values flip but shape stays put (see the
 /// "account chrome, not status row" intent in the design brief).
-const ACCOUNT_PANEL_HEIGHT: u16 = 15;
+///
+/// 17 rows: rule + 5 identity (Profile/Mode/Model/Effort/Fast) +
+/// 1 blank + 1 Ctx + 1 blank + 2 (5h bar + ETA) + 1 blank +
+/// 2 (7d bar + ETA) + 1 blank + 2 (📁 + ⎇).
+const ACCOUNT_PANEL_HEIGHT: u16 = 17;
 
 /// Below this pane height we skip the panel entirely (would crowd the
 /// project list too aggressively). The chat footer is gone in this
@@ -516,10 +524,11 @@ fn render_account_status_footer(frame: &mut Frame, area: Rect, app: &App) -> u16
     height
 }
 
-/// 12-cell filling bar for a 0..=100 utilisation. Returns a pair of
-/// spans: the filled portion in the threshold colour, the empty
-/// portion in DIM. Matches the `gauge_style` thresholds from
-/// `ui/config/usage.rs` (orange < 65, yellow ≥ 65, red ≥ 85).
+/// 12-cell filling bar with a per-cell position colour gradient.
+/// Cell 1–3 render green, 4–6 yellow, 7–9 orange, 10–12 red — so the
+/// rightmost filled cell tells you which zone the bar is in. Empty
+/// cells stay `░` in DIM. The bar glyph is `▓` (DARK SHADE) for every
+/// filled cell; gradient is fg-colour only, never a glyph swap.
 fn bar_spans(pct: f64) -> Vec<Span<'static>> {
     let pct = pct.clamp(0.0, 100.0);
     // `ACCOUNT_PANEL_BAR_CELLS` is a small constant (12); the cast to
@@ -528,17 +537,33 @@ fn bar_spans(pct: f64) -> Vec<Span<'static>> {
     let filled = ((pct / 100.0) * ACCOUNT_PANEL_BAR_CELLS as f64).round() as usize;
     let filled = filled.min(ACCOUNT_PANEL_BAR_CELLS);
     let empty = ACCOUNT_PANEL_BAR_CELLS - filled;
-    let fill_color = if pct >= 85.0 {
-        theme::STATUS_ERROR
-    } else if pct >= 65.0 {
-        theme::STATUS_WARNING
-    } else {
-        theme::RUST_ORANGE
-    };
-    vec![
-        Span::styled("█".repeat(filled), Style::default().fg(fill_color)),
-        Span::styled("░".repeat(empty), Style::default().fg(theme::DIM)),
-    ]
+
+    // Group filled cells into the 4 zones by position (1-indexed).
+    // Each zone covers 3 cells: 1–3 green, 4–6 yellow, 7–9 orange,
+    // 10–12 red. `filled` is in 0..=12; zone counts are how many of
+    // those cells fall in each band.
+    let green = filled.min(3);
+    let yellow = filled.saturating_sub(3).min(3);
+    let orange = filled.saturating_sub(6).min(3);
+    let red = filled.saturating_sub(9).min(3);
+
+    let mut spans = Vec::with_capacity(5);
+    if green > 0 {
+        spans.push(Span::styled("▓".repeat(green), Style::default().fg(Color::Green)));
+    }
+    if yellow > 0 {
+        spans.push(Span::styled("▓".repeat(yellow), Style::default().fg(theme::STATUS_WARNING)));
+    }
+    if orange > 0 {
+        spans.push(Span::styled("▓".repeat(orange), Style::default().fg(theme::RUST_ORANGE)));
+    }
+    if red > 0 {
+        spans.push(Span::styled("▓".repeat(red), Style::default().fg(theme::STATUS_ERROR)));
+    }
+    if empty > 0 {
+        spans.push(Span::styled("░".repeat(empty), Style::default().fg(theme::DIM)));
+    }
+    spans
 }
 
 /// Padded label cell — `"<text>"` right-padded with spaces so the
@@ -559,16 +584,16 @@ fn label_span(text: &'static str, width: usize) -> Span<'static> {
 fn build_account_panel_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     let mut lines: Vec<Line<'static>> = Vec::with_capacity(ACCOUNT_PANEL_HEIGHT as usize);
 
-    // Row 0: dim rule.
+    // Row 0: dim rule. No blank after — the identity block sits flush
+    // against the rule, treating the rule as the panel's top edge
+    // rather than a section separator.
     let rule_width = usize::from(width.saturating_sub(2));
     lines.push(Line::from(vec![
         Span::raw(" "),
         Span::styled("─".repeat(rule_width), Style::default().fg(theme::DIM)),
     ]));
-    // Row 1: blank.
-    lines.push(Line::default());
 
-    // Rows 2..=5: identity / posture block. Labels right-padded to
+    // Rows 1..=5: identity / posture block. Labels right-padded to
     // `ACCOUNT_PANEL_ID_LABEL_WIDTH` chars ("Profile" is the longest).
     // Two-space gutter before the value.
     let value_budget = usize::from(width).saturating_sub(2 + ACCOUNT_PANEL_ID_LABEL_WIDTH + 2);
@@ -593,7 +618,8 @@ fn build_account_panel_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         Span::styled(mode_label_fitted, Style::default().fg(mode_color)),
     ]));
 
-    // Model.
+    // Model. Display name only — effort lives on its own row below so
+    // a long model name can't push it off-screen.
     let model_value = build_model_label(app).unwrap_or_else(|| "—".to_owned());
     let model_fitted = truncate_with_ellipsis(&model_value, value_budget);
     lines.push(Line::from(vec![
@@ -601,6 +627,17 @@ fn build_account_panel_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         label_span("Model", ACCOUNT_PANEL_ID_LABEL_WIDTH),
         Span::raw("  "),
         Span::raw(model_fitted),
+    ]));
+
+    // Effort. Always shown — the underlying `EffortLevel` always has
+    // a value (config carries a default). Keeping the row unconditional
+    // means it doesn't appear / disappear as the user switches models.
+    let effort = app.observed_effort().unwrap_or_else(|| app.config.thinking_effort_effective());
+    lines.push(Line::from(vec![
+        Span::raw("  "),
+        label_span("Effort", ACCOUNT_PANEL_ID_LABEL_WIDTH),
+        Span::raw("  "),
+        Span::raw(effort_short_label(effort).to_owned()),
     ]));
 
     // Fast mode.
@@ -612,12 +649,10 @@ fn build_account_panel_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         Span::styled(fast_label.to_owned(), Style::default().fg(fast_color)),
     ]));
 
-    // Row 6: blank.
+    // Row 6: blank separating identity from usage.
     lines.push(Line::default());
 
-    // Rows 7..=11: usage block. Labels right-padded to 3 chars ("Ctx",
-    // "5h", "7d"). 2-space gutter before the bar; bar is 12 cells;
-    // 2-space gutter before the percent.
+    // Row 7: Ctx bar. No ETA row — context has no reset window.
     let ctx_pct = app.session_usage().context_usage_percent.map_or(0.0, f64::from);
     let ctx_pct_str = format!("{:>3}%", app.session_usage().context_usage_percent.unwrap_or(0));
     let mut ctx_line = vec![Span::raw("  "), label_span("Ctx", 3), Span::raw("  ")];
@@ -626,21 +661,32 @@ fn build_account_panel_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     ctx_line.push(Span::raw(ctx_pct_str));
     lines.push(Line::from(ctx_line));
 
+    // Row 8: blank between Ctx and 5h.
+    lines.push(Line::default());
+
+    // Rows 9..=10: 5h bar + ETA.
     push_usage_window_lines(
         &mut lines,
         "5h",
         app.usage().snapshot.as_ref().and_then(|s| s.five_hour.as_ref()),
+        width,
     );
+
+    // Row 11: blank between 5h and 7d.
+    lines.push(Line::default());
+
+    // Rows 12..=13: 7d bar + ETA.
     push_usage_window_lines(
         &mut lines,
         "7d",
         app.usage().snapshot.as_ref().and_then(|s| s.seven_day.as_ref()),
+        width,
     );
 
-    // Row 12: blank.
+    // Row 14: blank separating usage from location.
     lines.push(Line::default());
 
-    // Rows 13..=14: location + branch.
+    // Rows 15..=16: location + branch.
     let cwd_budget = usize::from(width).saturating_sub(2 + 2 + 1); // "  📁 "
     let cwd_value = fit_path_for_panel(app.cwd(), cwd_budget);
     lines.push(Line::from(vec![
@@ -664,15 +710,20 @@ fn build_account_panel_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     lines
 }
 
-/// Append a 12-cell-bar row + an indented "resets in …" row for one
+/// Append a 12-cell-bar row + a DIM right-justified ETA row for one
 /// usage window. When the window is missing (no snapshot yet, account
-/// has no Anthropic plan, etc.) both rows still render — bar at 0%,
-/// reset line as `—` — so the panel's total row count stays at
-/// `ACCOUNT_PANEL_HEIGHT`.
+/// has no Anthropic plan, etc.) the bar renders at 0% and the ETA
+/// row shows `—` right-justified — so the panel's total row count
+/// stays at `ACCOUNT_PANEL_HEIGHT`.
+///
+/// `width` is the full pane width so the ETA can be right-justified
+/// against the right edge (matches the percent column of the bar row
+/// above it).
 fn push_usage_window_lines(
     lines: &mut Vec<Line<'static>>,
     label: &'static str,
     window: Option<&crate::app::UsageWindow>,
+    width: u16,
 ) {
     let pct_value = window.map_or(0.0, |w| w.utilization);
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
@@ -684,12 +735,27 @@ fn push_usage_window_lines(
     row.push(Span::raw(pct_text));
     lines.push(Line::from(row));
 
-    let reset_text =
-        window.and_then(crate::app::usage::format_window_reset).unwrap_or_else(|| "—".to_owned());
+    // ETA — duration only (no "resets in " prose), DIM, right-justified
+    // to the pane's right edge so it visually sits below the percent
+    // column of the bar row.
+    let eta_text =
+        window.and_then(format_window_reset_duration_only).unwrap_or_else(|| "—".to_owned());
+    let eta_chars = eta_text.chars().count();
+    let pad = usize::from(width).saturating_sub(eta_chars);
     lines.push(Line::from(vec![
-        Span::raw("        "),
-        Span::styled(reset_text, Style::default().fg(theme::DIM)),
+        Span::raw(" ".repeat(pad)),
+        Span::styled(eta_text, Style::default().fg(theme::DIM)),
     ]));
+}
+
+/// Strip the `"resets in "` prefix from
+/// [`crate::app::usage::format_window_reset`]'s output, leaving just
+/// the duration (e.g. `"1h 48m"`, `"4d 4h"`). Returns the full text
+/// untouched when the helper produced something else (e.g. an account
+/// custom description without the standard prefix).
+fn format_window_reset_duration_only(window: &crate::app::UsageWindow) -> Option<String> {
+    let full = crate::app::usage::format_window_reset(window)?;
+    Some(full.strip_prefix("resets in ").map_or(full.clone(), str::to_owned))
 }
 
 /// Permission-mode label + color, mirroring the legacy footer's
@@ -713,20 +779,48 @@ fn mode_label_and_color(app: &App) -> (String, Color) {
     (name, color)
 }
 
-/// Model + effort badge for the panel — `display_name_short[/effort]`
-/// when the model supports an effort scale, else just
-/// `display_name_short`. Returns `None` when the CLI hasn't reported
-/// a current model yet (early in spawn).
+/// Model label for the panel — `display_name_short` with the
+/// `(… context)` wrapper stripped so a name like
+/// `Opus (1M context)` renders as `Opus 1M` and fits the narrow
+/// value column without truncation. Other callers of
+/// `display_name_short` (welcome card, /config picker) keep the raw
+/// value. Returns `None` when the CLI hasn't reported a current
+/// model yet (early in spawn).
 fn build_model_label(app: &App) -> Option<String> {
     let current = app.current_model()?;
-    let mut badge = current.display_name_short.clone();
-    if current.supports_effort {
-        let effective =
-            app.observed_effort().unwrap_or_else(|| app.config.thinking_effort_effective());
-        badge.push('/');
-        badge.push_str(effort_short_label(effective));
+    Some(condense_model_name(&current.display_name_short))
+}
+
+/// Condense a model display name for the panel's narrow column.
+/// Strips a trailing parenthetical and folds it into the base name,
+/// dropping any trailing `context` word inside the parens:
+///
+/// - `"Opus (1M context)"`   → `"Opus 1M"`
+/// - `"Sonnet (200K context)"` → `"Sonnet 200K"`
+/// - `"Foo (Bar)"`            → `"Foo Bar"` (no "context" word)
+/// - `"Sonnet 4.5"`           → `"Sonnet 4.5"` (no parens — unchanged)
+///
+/// The inverse of "elegant" but predictable. Single-pass over chars
+/// because the input is always short (< 32 chars in practice).
+fn condense_model_name(raw: &str) -> String {
+    let trimmed = raw.trim();
+    let Some(open) = trimmed.rfind('(') else {
+        return trimmed.to_owned();
+    };
+    if !trimmed.ends_with(')') {
+        return trimmed.to_owned();
     }
-    Some(badge)
+    let base = trimmed[..open].trim_end();
+    // Inner content excludes the parens themselves.
+    let inner = trimmed[open + 1..trimmed.len() - 1].trim();
+    let inner_no_context = inner.strip_suffix("context").map_or(inner, str::trim_end);
+    if inner_no_context.is_empty() {
+        return base.to_owned();
+    }
+    if base.is_empty() {
+        return inner_no_context.to_owned();
+    }
+    format!("{base} {inner_no_context}")
 }
 
 /// Short effort label for the panel's Model row. Same set the legacy
@@ -859,5 +953,61 @@ mod tests {
         // Medium tier (20): 20 - 10 = 10.
         assert_eq!(name_budget_inactive(20), 10);
         assert_eq!(name_budget_inactive(26), 16);
+    }
+
+    #[test]
+    fn condense_model_name_drops_context_wrapper() {
+        assert_eq!(condense_model_name("Opus (1M context)"), "Opus 1M");
+        assert_eq!(condense_model_name("Sonnet (200K context)"), "Sonnet 200K");
+    }
+
+    #[test]
+    fn condense_model_name_keeps_unwrapped_names() {
+        assert_eq!(condense_model_name("Sonnet 4.5"), "Sonnet 4.5");
+        assert_eq!(condense_model_name("Opus"), "Opus");
+    }
+
+    #[test]
+    fn condense_model_name_folds_parens_without_context_word() {
+        assert_eq!(condense_model_name("Foo (Bar)"), "Foo Bar");
+    }
+
+    #[test]
+    fn condense_model_name_strips_whitespace() {
+        assert_eq!(condense_model_name("  Opus (1M context)  "), "Opus 1M");
+        assert_eq!(condense_model_name("Opus ( 1M context )"), "Opus 1M");
+    }
+
+    #[test]
+    fn bar_spans_gradient_zone_counts() {
+        // 25% → 3 cells, all green (1 zone band).
+        let spans = bar_spans(25.0);
+        // 1 filled span (green) + 1 empty (░) = 2 spans.
+        assert_eq!(spans.len(), 2);
+
+        // 50% → 6 cells: 3 green + 3 yellow.
+        let spans = bar_spans(50.0);
+        assert_eq!(spans.len(), 3); // green + yellow + empty
+
+        // 75% → 9 cells: green + yellow + orange.
+        let spans = bar_spans(75.0);
+        assert_eq!(spans.len(), 4); // green + yellow + orange + empty
+
+        // 100% → all 12 cells filled, no empty.
+        let spans = bar_spans(100.0);
+        assert_eq!(spans.len(), 4); // green + yellow + orange + red
+
+        // 0% → entirely empty.
+        let spans = bar_spans(0.0);
+        assert_eq!(spans.len(), 1);
+    }
+
+    #[test]
+    fn account_panel_height_matches_row_count() {
+        // The const + the debug_assert in build_account_panel_lines
+        // co-anchor the layout. This test pins the constant explicitly
+        // so a change to row count surfaces here too, not only at
+        // runtime.
+        assert_eq!(ACCOUNT_PANEL_HEIGHT, 17);
     }
 }
