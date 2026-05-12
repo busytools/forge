@@ -744,6 +744,55 @@ mod tests {
         assert_eq!(app.file_index().generation, generation);
     }
 
+    /// Regression for the `@`-mention wrong-project bug. Each bucket
+    /// owns its own `FileIndexState`; a scan event targeting bucket
+    /// B must NOT touch bucket A's index, even when A is the active
+    /// bucket at delivery time.
+    #[test]
+    fn scan_event_routes_to_targeted_bucket_not_active_bucket() {
+        let mut app = App::test_default();
+        let key_a = forge_workspace::SessionKey::from_str_for_test("project-a");
+        let key_b = forge_workspace::SessionKey::from_str_for_test("project-b");
+        app.sessions.insert(key_a.clone(), crate::app::session::UiSession::new(key_a.clone()));
+        app.sessions.insert(key_b.clone(), crate::app::session::UiSession::new(key_b.clone()));
+        app.active_session_key = Some(key_a.clone());
+
+        // Seed B's generation so the targeted scan event matches.
+        let generation = {
+            let bucket_b = app.sessions.get_mut(&key_b).expect("bucket b");
+            bucket_b.file_index.generation = 42;
+            bucket_b.file_index.generation
+        };
+
+        app.file_index_event_tx
+            .send(FileIndexEvent::ScanBatch {
+                key: key_b.clone(),
+                generation,
+                entries: vec![FileCandidate {
+                    rel_path: "b-only.rs".to_owned(),
+                    rel_path_lower: "b-only.rs".to_owned(),
+                    basename_lower: "b-only.rs".to_owned(),
+                    depth: 0,
+                    modified: SystemTime::UNIX_EPOCH,
+                    is_dir: false,
+                }],
+            })
+            .expect("send scan batch for B");
+
+        drain_events(&mut app);
+
+        // A (active) untouched, B got the entry.
+        assert!(
+            app.file_index().entries.is_empty(),
+            "active bucket A must not be touched by a scan targeted at B"
+        );
+        let bucket_b = app.sessions.get(&key_b).expect("bucket b");
+        assert!(
+            bucket_b.file_index.entries.contains_key("b-only.rs"),
+            "bucket B's index should hold the scanned entry"
+        );
+    }
+
     #[test]
     fn stale_scan_event_is_ignored_after_reset() {
         let mut app = App::test_default();
