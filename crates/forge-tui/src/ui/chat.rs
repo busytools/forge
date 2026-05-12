@@ -644,25 +644,11 @@ fn render_scrollbar_overlay(
         return;
     }
 
-    // Always draw the rail. When the right Inspector pane is visible
-    // the rail doubles as the visual divider between the chat column
-    // and the pane (no separate `│` separator in the layout) — so
-    // even when the content fits without scrolling we need the rail
-    // to keep that boundary continuous down the full chat height.
-    let rail_style = Style::default().add_modifier(Modifier::DIM);
-    let rail_x = area.right().saturating_sub(1);
-    {
-        let buf = frame.buffer_mut();
-        for row in 0..area.height as usize {
-            let y = area.y.saturating_add(row as u16);
-            if let Some(cell) = buf.cell_mut((rail_x, y)) {
-                cell.set_symbol("\u{2595}");
-                cell.set_style(rail_style);
-            }
-        }
-    }
-
-    // Thumb only when content overflows (geometry is `Some`).
+    // Thumb only — no rail. The dim `▕` rail looked visually busy
+    // sitting against the Inspector pane to its right; the thumb
+    // alone is enough to indicate scroll position when content
+    // overflows. When the content fits the whole right column is
+    // empty.
     let Some(target) = crate::app::compute_scrollbar_geometry(
         content_height,
         viewport_height,
@@ -674,6 +660,7 @@ fn render_scrollbar_overlay(
     };
     let geometry = smooth_scrollbar_geometry(viewport, target, viewport_height, reduced_motion);
     let thumb_style = Style::default().fg(theme::ROLE_ASSISTANT);
+    let rail_x = area.right().saturating_sub(1);
     let thumb_top = geometry.thumb_top.min(area.height.saturating_sub(1) as usize);
     let thumb_end = thumb_top.saturating_add(geometry.thumb_size).min(area.height as usize);
     let buf = frame.buffer_mut();

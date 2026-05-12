@@ -13,11 +13,19 @@ pub const WIDE_TIER_MIN_WIDTH: u16 = 160;
 /// collapse to top-bar icons (Narrow tier overlay).
 pub const MEDIUM_TIER_MIN_WIDTH: u16 = 120;
 
-/// Width (columns) of each side pane at Wide tier.
-pub const PANE_WIDTH_WIDE: u16 = 40;
+/// Width (columns) of the left Projects pane at Wide tier.
+pub const PANE_WIDTH_WIDE: u16 = 35;
 
-/// Width (columns) of each side pane at Medium tier.
-pub const PANE_WIDTH_MEDIUM: u16 = 30;
+/// Width (columns) of the left Projects pane at Medium tier.
+pub const PANE_WIDTH_MEDIUM: u16 = 26;
+
+/// Width (columns) of the right Inspector pane at Wide tier.
+/// Slightly wider than the Projects pane so `TASKS` items render
+/// in full without truncation.
+pub const PANE_WIDTH_RIGHT_WIDE: u16 = 40;
+
+/// Width (columns) of the right Inspector pane at Medium tier.
+pub const PANE_WIDTH_RIGHT_MEDIUM: u16 = 30;
 
 /// Width (columns) of the vertical separator column between a side
 /// pane and the chat column when the pane is visible.
@@ -161,17 +169,20 @@ fn compute_horizontal_split(
         return (None, None, None, None, area);
     }
 
-    let pane_width =
-        if area.width >= WIDE_TIER_MIN_WIDTH { PANE_WIDTH_WIDE } else { PANE_WIDTH_MEDIUM };
+    let (left_width, right_width) = if area.width >= WIDE_TIER_MIN_WIDTH {
+        (PANE_WIDTH_WIDE, PANE_WIDTH_RIGHT_WIDE)
+    } else {
+        (PANE_WIDTH_MEDIUM, PANE_WIDTH_RIGHT_MEDIUM)
+    };
 
     // Build the horizontal constraint vector based on which panes
     // are visible.
     //
     // Left side (Projects pane): contributes
-    //   pane_width + PANE_SEPARATOR_WIDTH + CHAT_PADDING
+    //   left_width + PANE_SEPARATOR_WIDTH + CHAT_PADDING
     // — a full `│` rule sits between the pane and the chat column.
     //
-    // Right side (Inspector pane): contributes just `pane_width`.
+    // Right side (Inspector pane): contributes just `right_width`.
     // No separator + no padding — the chat's own scrollbar rail
     // (`▕`, rendered at chat's right edge) acts as the visual
     // divider, and the Inspector pane's 2-col content indent
@@ -180,13 +191,13 @@ fn compute_horizontal_split(
     // pre-polish layout produced.
     let mut constraints: Vec<Constraint> = Vec::new();
     if pane_visible {
-        constraints.push(Constraint::Length(pane_width));
+        constraints.push(Constraint::Length(left_width));
         constraints.push(Constraint::Length(PANE_SEPARATOR_WIDTH));
         constraints.push(Constraint::Length(CHAT_PADDING));
     }
     constraints.push(Constraint::Min(1));
     if pane_right_visible {
-        constraints.push(Constraint::Length(pane_width));
+        constraints.push(Constraint::Length(right_width));
     }
 
     let rects = Layout::horizontal(constraints).split(area);
@@ -513,7 +524,7 @@ mod tests {
     fn right_pane_allocated_at_wide_tier_when_visible() {
         let layout = compute(area(180, 40), 1, 1, false, true);
         let right = layout.pane_right.expect("right pane should be allocated at width 180");
-        assert_eq!(right.width, PANE_WIDTH_WIDE);
+        assert_eq!(right.width, PANE_WIDTH_RIGHT_WIDE);
         // Right pane sits at the right edge.
         assert_eq!(right.x + right.width, 180);
         // Body sits immediately to the left of the right pane — no
@@ -529,7 +540,7 @@ mod tests {
         let left = layout.pane.expect("left pane allocated");
         let right = layout.pane_right.expect("right pane allocated");
         assert_eq!(left.width, PANE_WIDTH_WIDE);
-        assert_eq!(right.width, PANE_WIDTH_WIDE);
+        assert_eq!(right.width, PANE_WIDTH_RIGHT_WIDE);
         // Left flush against x=0; right flush against the right edge.
         assert_eq!(left.x, 0);
         assert_eq!(right.x + right.width, 180);
@@ -546,7 +557,7 @@ mod tests {
     fn right_pane_width_at_medium_tier() {
         let layout = compute(area(140, 40), 1, 1, false, true);
         let right = layout.pane_right.expect("right pane allocated at medium");
-        assert_eq!(right.width, PANE_WIDTH_MEDIUM);
+        assert_eq!(right.width, PANE_WIDTH_RIGHT_MEDIUM);
         assert!(layout.pane_right_separator.is_none());
     }
 
