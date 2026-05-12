@@ -45,7 +45,7 @@ use super::dialog;
 use super::file_index;
 use super::focus::{FocusContext, FocusManager, FocusOwner, FocusTarget};
 use super::inline_interactions::{clear_inline_interaction_focus, focus_next_inline_interaction};
-use super::input::{InputSnapshot, InputState, parse_paste_placeholder_before_cursor};
+use super::input::{InputSnapshot, parse_paste_placeholder_before_cursor};
 use super::mention;
 use super::plugins::PluginsState;
 use super::slash;
@@ -195,7 +195,6 @@ pub struct App {
     pub config: ConfigState,
     pub trust: TrustState,
     pub settings_home_override: Option<PathBuf>,
-    pub input: InputState,
     pub status: AppStatus,
     /// Session id currently being resumed via `/resume`.
     pub resuming_session_id: Option<String>,
@@ -414,6 +413,28 @@ impl App {
         self.sessions.get_mut(key)
     }
 
+    /// Read access to the active session's input editor. Lifted from
+    /// `App.input` onto `UiSession.input` in Phase 6 of the MVVM
+    /// refactor (#102); each session owns its own editor so switching
+    /// the active session naturally swaps the visible input.
+    #[must_use]
+    pub fn input(&self) -> &super::input::InputState {
+        // Fallback to a static default for the brief pre-Connect
+        // window where no bucket has landed yet; in practice the
+        // pre-Connect bucket is seeded at startup so this branch is
+        // never hit in production.
+        static EMPTY_INPUT: std::sync::OnceLock<super::input::InputState> =
+            std::sync::OnceLock::new();
+        self.active_session()
+            .map_or_else(|| EMPTY_INPUT.get_or_init(super::input::InputState::new), |s| &s.input)
+    }
+
+    /// Mutable access to the active session's input editor. Companion
+    /// to [`Self::input`].
+    pub fn input_mut(&mut self) -> &mut super::input::InputState {
+        &mut self.active_bucket_mut().input
+    }
+
     /// Switch which session the renderer reads from. State on both
     /// sides is preserved (in-memory buckets in `sessions`); the
     /// next paint reflects the new active session. No-op if `key`
@@ -449,41 +470,19 @@ impl App {
             return;
         }
 
-        // Snapshot the outgoing session's per-session UI state into
-        // its bucket so a future switch back restores it. Without
-        // this, `app.input` and `app.status` persist across switches
-        // and bleed into the destination session — typing in A then
-        // switching to B leaves A's draft visible in B's input, and
-        // A's `Running`/`Thinking` status blocks every submit in B
-        // via `is_turn_busy`.
-        // Snapshot the outgoing session's input draft so a future
-        // switch back restores what the user was typing. `app.status`
-        // is derived freshly from the destination bucket's
-        // `lifecycle_state` instead of being snapshotted, so a
-        // background turn that completed while the user was away
+        // `App.status` is derived freshly from the destination
+        // bucket's `lifecycle_state` instead of being snapshotted, so
+        // a background turn that completed while the user was away
         // doesn't leave a stale `Thinking`/`Running` status on the
-        // incoming bucket.
-        let outgoing_draft = self.input.text();
-        if let Some(outgoing_key) = self.active_session_key.clone()
-            && let Some(outgoing) = self.sessions.get_mut(&outgoing_key)
-        {
-            outgoing.draft_input = outgoing_draft;
-        }
-
-        let incoming_draft =
-            self.sessions.get(&key).map_or(String::new(), |s| s.draft_input.clone());
-        // Reads through the workspace's DomainSession (post-Phase 5
-        // authoritative source).
+        // incoming bucket. Input state lives on each `UiSession`, so
+        // switching `active_session_key` naturally swaps the editor
+        // — no draft snapshot/restore needed.
         let incoming_lifecycle = self
             .workspace
             .as_ref()
             .and_then(|ws| ws.domain_session_for(&key))
             .map_or(crate::app::session::SessionLifecycleState::Idle, |d| d.lock().lifecycle_state);
         self.active_session_key = Some(key);
-        self.input.clear();
-        if !incoming_draft.is_empty() {
-            self.input.set_text(&incoming_draft);
-        }
         self.status = status_for_lifecycle(incoming_lifecycle);
         // Update terminal/tab title immediately on switch so the host
         // terminal reflects the project the user just selected. The
@@ -1555,9 +1554,9 @@ impl App {
         self.pending_submit = None;
         if self.pending_paste_text.is_empty() {
             let continued_session = self.active_paste_session.and_then(|session| {
-                let current_line = self.input.lines().get(self.input.cursor_row())?;
+                let current_line = self.input().lines().get(self.input().cursor_row())?;
                 let idx =
-                    parse_paste_placeholder_before_cursor(current_line, self.input.cursor_col())?;
+                    parse_paste_placeholder_before_cursor(current_line, self.input().cursor_col())?;
                 (session.placeholder_index == Some(idx)).then_some(session)
             });
             self.pending_paste_session = Some(continued_session.unwrap_or_else(|| {
@@ -1566,8 +1565,8 @@ impl App {
                 PasteSessionState {
                     id,
                     start: SelectionPoint {
-                        row: self.input.cursor_row(),
-                        col: self.input.cursor_col(),
+                        row: self.input().cursor_row(),
+                        col: self.input().cursor_col(),
                     },
                     placeholder_index: None,
                 }
@@ -2075,7 +2074,6 @@ impl App {
             config: ConfigState::default(),
             trust: TrustState::default(),
             settings_home_override: None,
-            input: InputState::new(),
             status: AppStatus::Ready,
             resuming_session_id: None,
             pending_command_label: None,
@@ -2330,7 +2328,7 @@ impl App {
     }
 
     pub fn sync_help_open_with_input(&mut self) {
-        if self.help_open && self.input.text().trim() != "?" {
+        if self.help_open && self.input().text().trim() != "?" {
             self.help_open = false;
             self.release_focus_target(FocusTarget::Help);
         }
@@ -2345,7 +2343,7 @@ impl App {
 
     #[must_use]
     pub fn has_draft_input_for_focus(&self) -> bool {
-        !self.input.is_empty()
+        !self.input().is_empty()
     }
 
     pub fn rebuild_chat_focus_from_state(&mut self) {

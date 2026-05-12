@@ -7,8 +7,8 @@
 //! 2. **This module** (`forge_tui::agent`) — the TUI-side mapping
 //!    onto the agent layer. Holds:
 //!    - [`events`] — `ClientEvent` enum: the UI's translated view of
-//!      `forge_agent::AgentEvent` (with extra UI-side variants like
-//!      `AuthCompleted`, `FatalError`).
+//!      the agent layer's event stream (with extra UI-side variants
+//!      like `AuthCompleted`, `FatalError`).
 //!    - [`model`] — UI-typed model describing agent state for the
 //!      view layer to render.
 //!    - Re-export shims (`agents`, `error_handling`, `state_parsing`,
@@ -20,8 +20,8 @@
 //!
 //! Anything that's UI-tied (uses `crate::app::*`, `crate::error::AppError`,
 //! ratatui types, etc.) lives in `events` / `model`. Everything else
-//! is a passthrough to `forge_workspace::*` (which itself re-exports
-//! from `forge_agent::*`).
+//! is a passthrough to `forge_workspace::*`, which is the TUI-facing
+//! facade for the agent layer.
 //!
 //! Phase 5 of the MVVM refactor (#102) flipped these shims to source
 //! from `forge_workspace` so forge-tui no longer needs `forge-agent`
@@ -54,16 +54,16 @@ pub use forge_workspace::{PermissionMode, SessionLaunchSettings};
 pub use forge_workspace::AgentEvent;
 
 pub mod client {
-    //! Re-export shim — `crate::agent::client::*` paths resolve into
-    //! `forge_workspace::*` (which forwards to `forge_agent::client::*`).
+    //! Re-export shim — `crate::agent::client::*` paths resolve through
+    //! `forge_workspace::*`, the TUI-facing facade.
     #[cfg(feature = "testing")]
     pub use forge_workspace::AgentEvent;
     pub use forge_workspace::SessionLaunchSettings;
 }
 pub mod state {
-    //! Re-export shim — `crate::agent::state::*` paths resolve into
-    //! `forge_workspace::*` (which forwards to `forge_agent::state::*`,
-    //! itself a re-export of `forge_primitives::permission::PermissionMode`).
+    //! Re-export shim — `crate::agent::state::*` paths resolve through
+    //! `forge_workspace::PermissionMode`, itself a re-export of
+    //! `forge_primitives::permission::PermissionMode`.
     pub use forge_workspace::PermissionMode;
 }
 pub mod commands {

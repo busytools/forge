@@ -13,7 +13,7 @@ pub(super) fn submit_input(app: &mut App) {
     app.subagent = None;
 
     // No connection yet - can't submit
-    let text = app.input.text();
+    let text = app.input().text();
     if text.trim().is_empty() {
         return;
     }
@@ -47,7 +47,7 @@ pub(super) fn submit_input(app: &mut App) {
     }
 
     app.pending_auto_submit_after_cancel = false;
-    app.input.clear();
+    app.input_mut().clear();
     app.sync_help_open_with_input();
     dispatch_submission(app, text);
 }
@@ -108,7 +108,7 @@ pub(super) fn maybe_auto_submit_after_cancel(app: &mut App) {
     if !matches!(app.status, AppStatus::Ready) || app.pending_cancel_origin().is_some() {
         return;
     }
-    if app.input.text().trim().is_empty() {
+    if app.input().text().trim().is_empty() {
         app.pending_auto_submit_after_cancel = false;
         return;
     }
@@ -204,11 +204,11 @@ mod tests {
     fn submit_input_while_running_keeps_input_and_requests_cancel() {
         let (mut app, mut rx) = app_with_connection();
         app.status = AppStatus::Running;
-        app.input.set_text("queued prompt");
+        app.input_mut().set_text("queued prompt");
 
         submit_input(&mut app);
 
-        assert_eq!(app.input.text(), "queued prompt");
+        assert_eq!(app.input().text(), "queued prompt");
         assert_eq!(app.pending_cancel_origin(), Some(CancelOrigin::AutoQueue));
         assert!(app.pending_auto_submit_after_cancel);
         assert!(matches!(app.status, AppStatus::Running));
@@ -244,7 +244,7 @@ mod tests {
     fn manual_cancel_prevents_later_auto_submit_after_cancel() {
         let (mut app, mut rx) = app_with_connection();
         app.status = AppStatus::Running;
-        app.input.set_text("draft");
+        app.input_mut().set_text("draft");
 
         submit_input(&mut app);
         assert_eq!(app.pending_cancel_origin(), Some(CancelOrigin::AutoQueue));
@@ -262,7 +262,7 @@ mod tests {
         app.set_pending_cancel_origin(None);
         maybe_auto_submit_after_cancel(&mut app);
 
-        assert_eq!(app.input.text(), "draft");
+        assert_eq!(app.input().text(), "draft");
         assert!(matches!(app.status, AppStatus::Ready));
         assert!(app.messages().is_empty());
         assert!(rx.try_recv().is_err(), "manual cancel should suppress queued prompt submit");
@@ -272,12 +272,12 @@ mod tests {
     fn submit_input_with_pending_cancel_keeps_input_and_sends_no_second_cancel() {
         let (mut app, mut rx) = app_with_connection();
         app.status = AppStatus::Running;
-        app.input.set_text("draft");
+        app.input_mut().set_text("draft");
 
         submit_input(&mut app);
         submit_input(&mut app);
 
-        assert_eq!(app.input.text(), "draft");
+        assert_eq!(app.input().text(), "draft");
         assert_eq!(app.pending_cancel_origin(), Some(CancelOrigin::AutoQueue));
         assert!(app.pending_auto_submit_after_cancel);
         let envelope = rx.try_recv().expect("first cancel command should be sent");
@@ -291,7 +291,7 @@ mod tests {
     fn auto_submit_dispatches_draft_once_ready() {
         let (mut app, mut rx) = app_with_connection();
         app.status = AppStatus::Running;
-        app.input.set_text("send after cancel");
+        app.input_mut().set_text("send after cancel");
 
         submit_input(&mut app);
         assert!(app.pending_auto_submit_after_cancel);
@@ -305,7 +305,7 @@ mod tests {
         maybe_auto_submit_after_cancel(&mut app);
 
         assert!(!app.pending_auto_submit_after_cancel);
-        assert!(app.input.text().is_empty());
+        assert!(app.input().text().is_empty());
         assert!(matches!(app.status, AppStatus::Thinking));
         assert_eq!(app.messages().len(), 2);
         let prompt = rx.try_recv().expect("prompt command should be sent");
@@ -322,12 +322,12 @@ mod tests {
         app.settings_home_override = Some(dir.path().to_path_buf());
         app.set_cwd_raw(dir.path().to_string_lossy().to_string());
         app.status = AppStatus::Running;
-        app.input.set_text("/config");
+        app.input_mut().set_text("/config");
 
         submit_input(&mut app);
 
         assert_eq!(app.active_view, ActiveView::Chat);
-        assert_eq!(app.input.text(), "/config");
+        assert_eq!(app.input().text(), "/config");
         assert_eq!(app.pending_cancel_origin(), Some(CancelOrigin::AutoQueue));
         assert!(app.pending_auto_submit_after_cancel);
         let cancel = rx.try_recv().expect("cancel command should be sent");
@@ -341,7 +341,7 @@ mod tests {
 
         assert!(!app.pending_auto_submit_after_cancel);
         assert_eq!(app.active_view, ActiveView::Config);
-        assert!(app.input.text().is_empty());
+        assert!(app.input().text().is_empty());
         assert!(matches!(app.status, AppStatus::Ready));
         assert!(rx.try_recv().is_err(), "config open should not dispatch a prompt turn");
     }

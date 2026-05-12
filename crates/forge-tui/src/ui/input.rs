@@ -64,7 +64,7 @@ fn has_cancel_hint(app: &App) -> bool {
 }
 
 fn has_prompt_suggestion_hint(app: &App) -> bool {
-    app.input.is_empty()
+    app.input().is_empty()
         && app.focus_owner() == FocusOwner::Input
         && app.prompt_suggestion().is_some_and(|suggestion| !suggestion.trim().is_empty())
 }
@@ -217,7 +217,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     if app.selection.is_some_and(|selection| selection.kind == crate::app::SelectionKind::Input) {
         refresh_selection_snapshot(app);
     }
-    frame.render_widget(app.input.editor(), geometry.text);
+    frame.render_widget(app.input().editor(), geometry.text);
 
     if let Some(sel) = app.selection
         && sel.kind == crate::app::SelectionKind::Input
@@ -237,14 +237,14 @@ pub(super) fn refresh_selection_snapshot(app: &mut App) {
     }
 
     configure_input_textarea(app);
-    app.rendered_input_lines = render_lines_from_textarea(app.input.editor(), area);
+    app.rendered_input_lines = render_lines_from_textarea(app.input().editor(), area);
 }
 
 fn configure_input_textarea(app: &mut App) {
-    let needs_highlight_update = app.input.highlight_version != app.input.content_version;
+    let needs_highlight_update = app.input().highlight_version != app.input().content_version;
 
     {
-        let textarea = app.input.editor_mut();
+        let textarea = app.input_mut().editor_mut();
         textarea.set_placeholder_text("Type a message...");
         textarea.set_placeholder_style(Style::default().fg(theme::DIM));
         textarea.set_cursor_line_style(Style::default());
@@ -252,11 +252,12 @@ fn configure_input_textarea(app: &mut App) {
     }
 
     if needs_highlight_update {
-        let lines = app.input.lines().to_vec();
-        let textarea = app.input.editor_mut();
+        let lines = app.input().lines().to_vec();
+        let content_version = app.input().content_version;
+        let textarea = app.input_mut().editor_mut();
         textarea.clear_custom_highlight();
         apply_textarea_highlights(textarea, &lines);
-        app.input.highlight_version = app.input.content_version;
+        app.input_mut().highlight_version = content_version;
     }
 }
 
@@ -374,7 +375,7 @@ pub fn visual_line_count(app: &mut App, area_width: u16) -> u16 {
     let hint = hint_line_count(app);
     let content_width =
         area_width.saturating_sub(INPUT_PAD * 2 + INPUT_RIGHT_PAD).saturating_sub(PROMPT_WIDTH);
-    let input_lines = app.input.measure_visual_lines(content_width, MAX_INPUT_HEIGHT);
+    let input_lines = app.input_mut().measure_visual_lines(content_width, MAX_INPUT_HEIGHT);
     hint + input_lines
 }
 
@@ -417,7 +418,7 @@ mod tests {
     #[test]
     fn visual_line_count_uses_textarea_max_rows() {
         let mut app = App::test_default();
-        app.input.set_text(&"x".repeat(500));
+        app.input_mut().set_text(&"x".repeat(500));
         assert_eq!(visual_line_count(&mut app, 8), MAX_INPUT_HEIGHT);
     }
 
@@ -449,7 +450,7 @@ mod tests {
     fn visual_line_count_hides_prompt_suggestion_hint_when_input_not_empty() {
         let mut app = App::test_default();
         app.set_prompt_suggestion(Some("Write tests for the retry flow".to_owned()));
-        app.input.set_text("draft");
+        app.input_mut().set_text("draft");
         assert_eq!(visual_line_count(&mut app, 80), 1);
     }
 

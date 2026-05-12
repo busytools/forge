@@ -366,7 +366,7 @@ pub(super) fn handle_connection_failed_event(app: &mut App, session_key: &Sessio
     app.pending_command_label = None;
     app.pending_command_ack = None;
     app.finalize_turn_runtime_artifacts(model::ToolCallStatus::Failed);
-    app.input.clear();
+    app.input_mut().clear();
     app.pending_submit = None;
     app.status = AppStatus::Error;
     app.clear_active_turn_assistant();

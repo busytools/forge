@@ -122,11 +122,11 @@ pub fn confirm_selection(app: &mut App) {
         return;
     };
 
-    let mut lines = app.input.lines().to_vec();
+    let mut lines = app.input().lines().to_vec();
     let Some(line) = lines.get(slash.trigger_row) else {
         tracing::debug!(
             trigger_row = slash.trigger_row,
-            line_count = app.input.lines().len(),
+            line_count = app.input().lines().len(),
             "Slash confirm aborted: trigger row out of bounds"
         );
         release_autocomplete_focus_if_idle(app);
@@ -163,7 +163,11 @@ pub fn confirm_selection(app: &mut App) {
         );
     }
     lines[slash.trigger_row] = new_line;
-    app.input.replace_lines_and_cursor(lines, slash.trigger_row, new_cursor_col.min(new_line_len));
+    app.input_mut().replace_lines_and_cursor(
+        lines,
+        slash.trigger_row,
+        new_cursor_col.min(new_line_len),
+    );
 
     if closes_after_confirmation {
         deactivate(app);

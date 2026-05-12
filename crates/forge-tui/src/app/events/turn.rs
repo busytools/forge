@@ -751,14 +751,12 @@ pub(crate) fn dispatch_permission_outcome(
     }
 }
 
-/// Behind the `testing` Cargo feature so this surface never leaks
-/// into production builds. Holds the `try_take_dispatched_*`
-/// getters used by unit + integration tests to assert outcomes.
-/// `allow(dead_code)` because the production tree never calls these;
-/// `#[cfg(feature = "testing")]` gates them out of production builds.
-#[cfg(feature = "testing")]
-#[allow(dead_code)]
-pub mod test_capture {
+/// Same-crate test helpers for `dispatch_*_outcome`'s testing-feature
+/// capture vecs. Only `#[cfg(test)]` callers (in the lib's own test
+/// modules) reach these; integration tests read the capture vecs
+/// directly via the `pub` fields.
+#[cfg(test)]
+pub(crate) mod test_capture {
     use super::App;
 
     /// Test-only: pop the first captured permission outcome whose
@@ -1267,7 +1265,7 @@ fn apply_turn_error_presentation(
     }
     app.finalize_turn_runtime_artifacts(model::ToolCallStatus::Failed);
     app.pending_auto_submit_after_cancel = false;
-    app.input.clear();
+    app.input_mut().clear();
     app.pending_submit = None;
     app.status = AppStatus::Error;
     let rate_limit_context = if matches!(error_class, TurnErrorClass::PlanLimit) {

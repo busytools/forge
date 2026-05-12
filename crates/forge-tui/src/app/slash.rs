@@ -388,8 +388,8 @@ mod tests {
     #[test]
     fn non_variable_command_argument_mode_is_disabled() {
         let mut app = App::test_default();
-        app.input.set_text("/compact now");
-        let _ = app.input.set_cursor(0, "/compact now".chars().count());
+        app.input_mut().set_text("/compact now");
+        let _ = app.input_mut().set_cursor(0, "/compact now".chars().count());
         sync_with_cursor(&mut app);
         assert!(app.slash.is_none());
     }
@@ -405,8 +405,8 @@ mod tests {
                 name: "Plan".to_owned(),
             }],
         }));
-        app.input.set_text("/mode xyz");
-        let _ = app.input.set_cursor(0, "/mode xyz".chars().count());
+        app.input_mut().set_text("/mode xyz");
+        let _ = app.input_mut().set_cursor(0, "/mode xyz".chars().count());
         sync_with_cursor(&mut app);
         assert!(app.slash.is_none());
     }
@@ -414,8 +414,8 @@ mod tests {
     #[test]
     fn confirm_selection_replaces_only_active_argument_token() {
         let mut app = App::test_default();
-        app.input.set_text("/resume old-id trailing");
-        let _ = app.input.set_cursor(0, "/resume old-id".chars().count());
+        app.input_mut().set_text("/resume old-id trailing");
+        let _ = app.input_mut().set_cursor(0, "/resume old-id".chars().count());
         app.slash = Some(SlashState {
             trigger_row: 0,
             trigger_col: 8,
@@ -435,7 +435,7 @@ mod tests {
 
         confirm_selection(&mut app);
 
-        assert_eq!(app.input.text(), "/resume new-id trailing");
+        assert_eq!(app.input().text(), "/resume new-id trailing");
     }
 
     #[test]
@@ -684,7 +684,7 @@ mod tests {
     #[test]
     fn confirm_selection_with_invalid_trigger_row_is_noop() {
         let mut app = App::test_default();
-        app.input.set_text("/mode");
+        app.input_mut().set_text("/mode");
         app.slash = Some(SlashState {
             trigger_row: 99,
             trigger_col: 0,
@@ -700,7 +700,7 @@ mod tests {
 
         confirm_selection(&mut app);
 
-        assert_eq!(app.input.text(), "/mode");
+        assert_eq!(app.input().text(), "/mode");
     }
 
     #[test]

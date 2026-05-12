@@ -177,10 +177,10 @@ fn walk_assistant_content(
             {
                 // Wire-side tool-result variants the typed enum
                 // doesn't enumerate: `mcp_tool_result`,
-                // `web_fetch_tool_result`, etc. (full set in
-                // `forge_agent::tooling::TOOL_RESULT_TYPES`). They
-                // share the `tool_use_id` + `content` + `is_error`
-                // shape — pull those off the raw value.
+                // `web_fetch_tool_result`, etc. (full set lives in the
+                // tooling module's `TOOL_RESULT_TYPES`). They share the
+                // `tool_use_id` + `content` + `is_error` shape — pull
+                // those off the raw value.
                 let Some(record) = raw.as_object() else { continue };
                 let Some(tool_use_id) =
                     record.get("tool_use_id").and_then(Value::as_str).filter(|s| !s.is_empty())

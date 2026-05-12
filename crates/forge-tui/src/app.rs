@@ -192,7 +192,7 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
         {
             match action {
                 paste_burst::FlushAction::EmitChar(ch) => {
-                    let _ = app.input.textarea_insert_char(ch);
+                    let _ = app.input_mut().textarea_insert_char(ch);
                 }
                 paste_burst::FlushAction::EmitPaste(text) => {
                     app.queue_paste_text(&text);
@@ -405,27 +405,29 @@ fn finalize_pending_paste_event(app: &mut App) {
         app.next_paste_session_id = app.next_paste_session_id.saturating_add(1);
         state::PasteSessionState {
             id,
-            start: SelectionPoint { row: app.input.cursor_row(), col: app.input.cursor_col() },
+            start: SelectionPoint { row: app.input().cursor_row(), col: app.input().cursor_col() },
             placeholder_index: None,
         }
     });
     let session_id = session.id;
 
     if session.placeholder_index.is_none() {
-        let end = SelectionPoint { row: app.input.cursor_row(), col: app.input.cursor_col() };
+        let end = SelectionPoint { row: app.input().cursor_row(), col: app.input().cursor_col() };
         strip_input_range(app, session.start, end);
     }
 
     let appended = session
         .placeholder_index
         .and_then(|session_idx| {
-            let current_line = app.input.lines().get(app.input.cursor_row())?;
-            let current_idx =
-                input::parse_paste_placeholder_before_cursor(current_line, app.input.cursor_col())?;
+            let current_line = app.input().lines().get(app.input().cursor_row())?;
+            let current_idx = input::parse_paste_placeholder_before_cursor(
+                current_line,
+                app.input().cursor_col(),
+            )?;
             (current_idx == session_idx).then_some(())
         })
         .is_some()
-        && app.input.append_to_active_paste_block(&pasted);
+        && app.input_mut().append_to_active_paste_block(&pasted);
     if appended {
         app.active_paste_session = Some(session);
         app.needs_redraw = true;
@@ -442,9 +444,9 @@ fn finalize_pending_paste_event(app: &mut App) {
 
     let char_count = input::count_text_chars(&pasted);
     if char_count > input::PASTE_PLACEHOLDER_CHAR_THRESHOLD {
-        app.input.insert_paste_block(&pasted);
-        let idx = app.input.lines().get(app.input.cursor_row()).and_then(|line| {
-            input::parse_paste_placeholder_before_cursor(line, app.input.cursor_col())
+        app.input_mut().insert_paste_block(&pasted);
+        let idx = app.input().lines().get(app.input().cursor_row()).and_then(|line| {
+            input::parse_paste_placeholder_before_cursor(line, app.input().cursor_col())
         });
         app.active_paste_session =
             Some(state::PasteSessionState { placeholder_index: idx, ..session });
@@ -459,7 +461,7 @@ fn finalize_pending_paste_event(app: &mut App) {
             placeholder_index = ?idx,
         );
     } else {
-        app.input.insert_str(&pasted);
+        app.input_mut().insert_str(&pasted);
         app.active_paste_session = None;
         tracing::debug!(
             target: crate::logging::targets::APP_PASTE,
@@ -469,7 +471,7 @@ fn finalize_pending_paste_event(app: &mut App) {
             session_id,
             pasted_chars,
             char_count,
-            lines = app.input.lines().len(),
+            lines = app.input().lines().len(),
         );
     }
     app.needs_redraw = true;
@@ -525,23 +527,23 @@ fn apply_merged_input_snapshot(app: &mut App, merged: &str, cursor_offset: usize
         cursor.col = cursor.col.min(lines[cursor.row].chars().count());
     }
 
-    app.input.replace_lines_and_cursor(lines, cursor.row, cursor.col);
+    app.input_mut().replace_lines_and_cursor(lines, cursor.row, cursor.col);
 }
 
 fn strip_input_range(app: &mut App, start: SelectionPoint, end: SelectionPoint) {
     if cursor_gt(start, end) || start == end {
         return;
     }
-    let Some(start_offset) = cursor_to_byte_offset(app.input.lines(), start) else {
+    let Some(start_offset) = cursor_to_byte_offset(app.input().lines(), start) else {
         return;
     };
-    let Some(end_offset) = cursor_to_byte_offset(app.input.lines(), end) else {
+    let Some(end_offset) = cursor_to_byte_offset(app.input().lines(), end) else {
         return;
     };
     if start_offset >= end_offset {
         return;
     }
-    let raw = app.input.lines().join("\n");
+    let raw = app.input().lines().join("\n");
     if end_offset > raw.len() {
         return;
     }
@@ -557,7 +559,7 @@ fn finalize_deferred_submit(app: &mut App) {
     let Some(snapshot) = app.pending_submit.take() else {
         return;
     };
-    app.input.restore_snapshot(snapshot);
+    app.input_mut().restore_snapshot(snapshot);
     input_submit::submit_input(app);
 }
 
@@ -587,19 +589,19 @@ mod tests {
         events::handle_terminal_event(&mut app, Event::Paste(second.clone()));
 
         // Not applied until post-drain finalization.
-        assert!(app.input.is_empty());
+        assert!(app.input().is_empty());
         assert!(!app.pending_paste_text.is_empty());
 
         finalize_pending_paste_event(&mut app);
 
-        assert_eq!(app.input.lines(), vec!["[Pasted Text 1 - 1101 chars]"]);
-        assert_eq!(app.input.text(), format!("{first}{second}"));
+        assert_eq!(app.input().lines(), vec!["[Pasted Text 1 - 1101 chars]"]);
+        assert_eq!(app.input().text(), format!("{first}{second}"));
     }
 
     #[test]
     fn pending_paste_chunk_appends_to_same_session_placeholder() {
         let mut app = App::test_default();
-        app.input.insert_paste_block("a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk");
+        app.input_mut().insert_paste_block("a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk");
         app.active_paste_session = Some(state::PasteSessionState {
             id: 7,
             start: SelectionPoint { row: 0, col: 0 },
@@ -610,8 +612,8 @@ mod tests {
 
         finalize_pending_paste_event(&mut app);
 
-        assert_eq!(app.input.lines(), vec!["[Pasted Text 1 - 25 chars]"]);
-        assert_eq!(app.input.text(), "a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk\nl\nm");
+        assert_eq!(app.input().lines(), vec!["[Pasted Text 1 - 25 chars]"]);
+        assert_eq!(app.input().text(), "a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk\nl\nm");
     }
 
     #[test]
@@ -621,7 +623,7 @@ mod tests {
 
         finalize_pending_paste_event(&mut app);
 
-        assert_eq!(app.input.lines(), vec!["x".repeat(1000)]);
+        assert_eq!(app.input().lines(), vec!["x".repeat(1000)]);
     }
 
     #[test]
@@ -633,7 +635,7 @@ mod tests {
         finalize_pending_paste_event(&mut app);
 
         assert!(app.needs_redraw);
-        assert_eq!(app.input.lines(), vec!["hello", "world"]);
+        assert_eq!(app.input().lines(), vec!["hello", "world"]);
     }
 
     #[test]
@@ -642,7 +644,7 @@ mod tests {
         let t0 = Instant::now();
 
         assert_eq!(app.paste_burst.on_char('a', t0), paste_burst::CharAction::Passthrough('a'));
-        let _ = app.input.textarea_insert_char('a');
+        let _ = app.input_mut().textarea_insert_char('a');
         assert_eq!(
             app.paste_burst.on_char('b', t0 + Duration::from_millis(2)),
             paste_burst::CharAction::Consumed
@@ -651,7 +653,7 @@ mod tests {
             app.paste_burst.on_char('c', t0 + Duration::from_millis(4)),
             paste_burst::CharAction::RetroCapture(1)
         );
-        let _ = app.input.textarea_delete_char_before();
+        let _ = app.input_mut().textarea_delete_char_before();
 
         let t_flush = t0 + Duration::from_millis(200);
         assert_eq!(
@@ -660,7 +662,7 @@ mod tests {
         );
         app.queue_paste_text("abc");
         finalize_pending_paste_event(&mut app);
-        assert_eq!(app.input.text(), "abc");
+        assert_eq!(app.input().text(), "abc");
 
         let t_enter = t_flush + Duration::from_millis(10);
         assert!(app.paste_burst.on_enter(t_enter));
@@ -685,8 +687,8 @@ mod tests {
         app.queue_paste_text("\ndef");
         finalize_pending_paste_event(&mut app);
 
-        assert_eq!(app.input.lines(), vec!["abc", "def"]);
-        assert_eq!(app.input.text(), "abc\ndef");
+        assert_eq!(app.input().lines(), vec!["abc", "def"]);
+        assert_eq!(app.input().text(), "abc\ndef");
     }
 
     #[test]
@@ -696,8 +698,8 @@ mod tests {
 
         finalize_pending_paste_event(&mut app);
 
-        assert_eq!(app.input.lines(), vec!["[Pasted Text 1 - 1001 chars]"]);
-        assert_eq!(app.input.text(), "x".repeat(1001));
+        assert_eq!(app.input().lines(), vec!["[Pasted Text 1 - 1001 chars]"]);
+        assert_eq!(app.input().text(), "x".repeat(1001));
     }
 
     #[test]
@@ -717,31 +719,31 @@ mod tests {
         finalize_pending_paste_event(&mut app);
 
         assert_eq!(
-            app.input.lines(),
+            app.input().lines(),
             vec!["[Pasted Text 1 - 1001 chars][Pasted Text 2 - 1001 chars]"]
         );
-        assert_eq!(app.input.text(), format!("{}{}", "a".repeat(1001), "b".repeat(1001)));
+        assert_eq!(app.input().text(), format!("{}{}", "a".repeat(1001), "b".repeat(1001)));
     }
 
     #[test]
     fn plain_enter_preserves_single_line_draft_before_submit() {
         let (mut app, mut rx) = app_with_connection();
-        app.input.set_text("hello world");
-        let _ = app.input.set_cursor(0, "hello".chars().count());
+        app.input_mut().set_text("hello world");
+        let _ = app.input_mut().set_cursor(0, "hello".chars().count());
 
         events::handle_terminal_event(
             &mut app,
             Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
         );
 
-        assert_eq!(app.input.text(), "hello world");
-        assert_eq!(app.input.cursor(), (0, "hello".chars().count()));
+        assert_eq!(app.input().text(), "hello world");
+        assert_eq!(app.input().cursor(), (0, "hello".chars().count()));
         assert!(app.pending_submit.is_some());
 
         finalize_deferred_submit(&mut app);
 
         assert!(app.pending_submit.is_none());
-        assert!(app.input.text().is_empty());
+        assert!(app.input().text().is_empty());
         assert_eq!(app.messages().len(), 2);
         assert!(matches!(app.messages()[0].role, MessageRole::User));
         assert!(matches!(
@@ -758,16 +760,16 @@ mod tests {
     #[test]
     fn plain_enter_preserves_multiline_draft_with_mid_buffer_cursor() {
         let (mut app, mut rx) = app_with_connection();
-        app.input.set_text("alpha beta\ngamma");
-        let _ = app.input.set_cursor(0, "alpha".chars().count());
+        app.input_mut().set_text("alpha beta\ngamma");
+        let _ = app.input_mut().set_cursor(0, "alpha".chars().count());
 
         events::handle_terminal_event(
             &mut app,
             Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
         );
 
-        assert_eq!(app.input.text(), "alpha beta\ngamma");
-        assert_eq!(app.input.cursor(), (0, "alpha".chars().count()));
+        assert_eq!(app.input().text(), "alpha beta\ngamma");
+        assert_eq!(app.input().cursor(), (0, "alpha".chars().count()));
         assert!(app.pending_submit.is_some());
 
         finalize_deferred_submit(&mut app);
@@ -793,7 +795,7 @@ mod tests {
             Event::Key(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE)),
         );
 
-        assert_eq!(app.input.text(), "?");
+        assert_eq!(app.input().text(), "?");
         assert!(app.is_help_active());
 
         events::handle_terminal_event(
@@ -805,7 +807,7 @@ mod tests {
         finalize_deferred_submit(&mut app);
 
         assert!(app.pending_submit.is_none());
-        assert!(app.input.text().is_empty());
+        assert!(app.input().text().is_empty());
         assert!(!app.is_help_active());
         assert!(matches!(
             app.messages()[0].blocks.as_slice(),
@@ -829,8 +831,8 @@ mod tests {
                 ModeInfo { id: "code".to_owned(), name: "Code".to_owned() },
             ],
         }));
-        app.input.set_text("/mode pl");
-        let _ = app.input.set_cursor(0, "/mode pl".chars().count());
+        app.input_mut().set_text("/mode pl");
+        let _ = app.input_mut().set_cursor(0, "/mode pl".chars().count());
         crate::app::slash::sync_with_cursor(&mut app);
 
         events::handle_terminal_event(
@@ -838,7 +840,7 @@ mod tests {
             Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
         );
 
-        assert_eq!(app.input.text(), "/mode plan ");
+        assert_eq!(app.input().text(), "/mode plan ");
         assert!(app.slash.is_none());
         assert_eq!(app.focus_owner(), FocusOwner::Input);
 
@@ -857,8 +859,8 @@ mod tests {
             model::AvailableModel::new("sonnet", "Claude Sonnet"),
             model::AvailableModel::new("haiku", "Claude Haiku"),
         ];
-        app.input.set_text("/model so");
-        let _ = app.input.set_cursor(0, "/model so".chars().count());
+        app.input_mut().set_text("/model so");
+        let _ = app.input_mut().set_cursor(0, "/model so".chars().count());
         crate::app::slash::sync_with_cursor(&mut app);
 
         events::handle_terminal_event(
@@ -866,7 +868,7 @@ mod tests {
             Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
         );
 
-        assert_eq!(app.input.text(), "/model sonnet ");
+        assert_eq!(app.input().text(), "/model sonnet ");
         assert!(app.slash.is_none());
         assert_eq!(app.focus_owner(), FocusOwner::Input);
 
@@ -891,8 +893,8 @@ mod tests {
             custom_title: None,
             first_prompt: None,
         }];
-        app.input.set_text("/resume se");
-        let _ = app.input.set_cursor(0, "/resume se".chars().count());
+        app.input_mut().set_text("/resume se");
+        let _ = app.input_mut().set_cursor(0, "/resume se".chars().count());
         crate::app::slash::sync_with_cursor(&mut app);
 
         events::handle_terminal_event(
@@ -900,7 +902,7 @@ mod tests {
             Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
         );
 
-        assert_eq!(app.input.text(), "/resume session-1 ");
+        assert_eq!(app.input().text(), "/resume session-1 ");
         assert!(app.slash.is_none());
         assert_eq!(app.focus_owner(), FocusOwner::Input);
 
@@ -915,7 +917,7 @@ mod tests {
     #[test]
     fn paste_event_cancels_deferred_submit_snapshot() {
         let mut app = App::test_default();
-        app.input.set_text("draft");
+        app.input_mut().set_text("draft");
 
         events::handle_terminal_event(
             &mut app,
@@ -927,13 +929,13 @@ mod tests {
 
         assert!(app.pending_submit.is_none());
         assert_eq!(app.pending_paste_text, "pasted");
-        assert_eq!(app.input.text(), "draft");
+        assert_eq!(app.input().text(), "draft");
     }
 
     #[test]
     fn esc_cancels_deferred_submit_snapshot_before_finalize() {
         let (mut app, mut rx) = app_with_connection();
-        app.input.set_text("draft");
+        app.input_mut().set_text("draft");
 
         events::handle_terminal_event(
             &mut app,
@@ -948,7 +950,7 @@ mod tests {
 
         assert!(app.pending_submit.is_none());
         finalize_deferred_submit(&mut app);
-        assert_eq!(app.input.text(), "draft");
+        assert_eq!(app.input().text(), "draft");
         assert!(app.messages().is_empty());
         assert!(rx.try_recv().is_err(), "Esc should prevent deferred submit dispatch");
     }

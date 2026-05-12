@@ -154,7 +154,6 @@ pub fn create_app(cli: &Cli, workspace: Arc<forge_workspace::Workspace>) -> App 
         config: ConfigState::default(),
         trust: trust::TrustState::default(),
         settings_home_override: None,
-        input: super::InputState::new(),
         status: AppStatus::Connecting,
         resuming_session_id: None,
         pending_command_label: None,

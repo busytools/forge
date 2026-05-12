@@ -68,7 +68,7 @@ fn reset_messages_for_new_session(app: &mut App, preserve_current_welcome_tip: b
 }
 
 fn reset_input_state_for_new_session(app: &mut App) {
-    app.input.clear();
+    app.input_mut().clear();
     app.help_open = false;
     app.pending_submit = None;
     app.pending_paste_text.clear();

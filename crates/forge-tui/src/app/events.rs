@@ -1809,7 +1809,7 @@ mod tests {
     #[test]
     fn auth_required_sets_hint_without_prefilling_login_command() {
         let mut app = make_test_app();
-        app.input.set_text("keep me");
+        app.input_mut().set_text("keep me");
 
         let session_key = active_session_key(&app);
         apply_session_update(
@@ -1822,7 +1822,7 @@ mod tests {
         );
 
         assert!(matches!(app.status, AppStatus::Ready));
-        assert_eq!(app.input.text(), "keep me");
+        assert_eq!(app.input().text(), "keep me");
         let Some(hint) = &app.login_hint else {
             panic!("expected login hint");
         };
@@ -1852,7 +1852,7 @@ mod tests {
     #[test]
     fn service_status_error_pushes_system_error_without_locking_input() {
         let mut app = make_test_app();
-        app.input.set_text("draft stays");
+        app.input_mut().set_text("draft stays");
 
         apply_session_update(
             &mut app,
@@ -1863,7 +1863,7 @@ mod tests {
         );
 
         assert!(matches!(app.status, AppStatus::Ready));
-        assert_eq!(app.input.text(), "draft stays");
+        assert_eq!(app.input().text(), "draft stays");
         let Some(last) = app.messages().last() else {
             panic!("expected system message");
         };
@@ -3588,7 +3588,7 @@ mod tests {
         ] {
             let mut app = make_test_app();
             handler(&mut app, KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL));
-            assert_eq!(app.input.text(), "");
+            assert_eq!(app.input().text(), "");
         }
     }
 
@@ -3599,7 +3599,7 @@ mod tests {
 
         handle_normal_key(&mut app, KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
 
-        assert_eq!(app.input.text(), "");
+        assert_eq!(app.input().text(), "");
     }
 
     #[test]
@@ -3610,59 +3610,59 @@ mod tests {
             KeyEvent::new(KeyCode::Char('@'), KeyModifiers::CONTROL | KeyModifiers::ALT),
         );
 
-        assert_eq!(app.input.text(), "@");
+        assert_eq!(app.input().text(), "@");
         assert!(app.mention.is_some());
     }
 
     #[test]
     fn word_nav_backspace_and_delete_use_word_operations() {
         let mut app = make_test_app();
-        app.input.set_text("hello world");
+        app.input_mut().set_text("hello world");
 
         handle_normal_key(&mut app, KeyEvent::new(KeyCode::Backspace, WORD_NAV_MOD));
-        assert_eq!(app.input.text(), "hello ");
+        assert_eq!(app.input().text(), "hello ");
 
-        app.input.move_home();
+        app.input_mut().move_home();
         handle_normal_key(&mut app, KeyEvent::new(KeyCode::Delete, WORD_NAV_MOD));
-        assert_eq!(app.input.text(), " ");
+        assert_eq!(app.input().text(), " ");
     }
 
     #[test]
     fn cmd_z_and_redo_undo_and_redo_textarea_history() {
         let mut app = make_test_app();
-        app.input.set_text("hello world");
+        app.input_mut().set_text("hello world");
 
         handle_normal_key(&mut app, KeyEvent::new(KeyCode::Backspace, WORD_NAV_MOD));
-        assert_eq!(app.input.text(), "hello ");
+        assert_eq!(app.input().text(), "hello ");
 
         handle_normal_key(&mut app, KeyEvent::new(KeyCode::Char('z'), CMD_MOD));
-        assert_eq!(app.input.text(), "hello world");
+        assert_eq!(app.input().text(), "hello world");
 
         // Redo: Cmd+Shift+Z on macOS (reported as 'Z' with SUPER), Ctrl+Y elsewhere.
         #[cfg(target_os = "macos")]
         handle_normal_key(&mut app, KeyEvent::new(KeyCode::Char('Z'), CMD_MOD));
         #[cfg(not(target_os = "macos"))]
         handle_normal_key(&mut app, KeyEvent::new(KeyCode::Char('y'), CMD_MOD));
-        assert_eq!(app.input.text(), "hello ");
+        assert_eq!(app.input().text(), "hello ");
     }
 
     #[test]
     fn word_nav_left_right_move_by_word() {
         let mut app = make_test_app();
-        app.input.set_text("hello world");
-        app.input.move_home();
+        app.input_mut().set_text("hello world");
+        app.input_mut().move_home();
 
         handle_normal_key(&mut app, KeyEvent::new(KeyCode::Right, WORD_NAV_MOD));
-        assert!(app.input.cursor_col() > 0);
+        assert!(app.input().cursor_col() > 0);
 
         handle_normal_key(&mut app, KeyEvent::new(KeyCode::Left, WORD_NAV_MOD));
-        assert_eq!(app.input.cursor_col(), 0);
+        assert_eq!(app.input().cursor_col(), 0);
     }
 
     #[test]
     fn help_overlay_left_right_switches_help_view_tab() {
         let mut app = make_test_app();
-        app.input.set_text("?");
+        app.input_mut().set_text("?");
         app.help_open = true;
         app.help_view = HelpView::Keys;
 
@@ -3720,12 +3720,12 @@ mod tests {
         app.claim_focus_target(FocusTarget::TodoList);
         app.set_todo_selected(1);
 
-        let before_cursor_row = app.input.cursor_row();
-        let before_cursor_col = app.input.cursor_col();
+        let before_cursor_row = app.input().cursor_row();
+        let before_cursor_col = app.input().cursor_col();
         handle_normal_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
         assert_eq!(app.todo_selected(), 2);
-        assert_eq!(app.input.cursor_row(), before_cursor_row);
-        assert_eq!(app.input.cursor_col(), before_cursor_col);
+        assert_eq!(app.input().cursor_row(), before_cursor_row);
+        assert_eq!(app.input().cursor_col(), before_cursor_col);
 
         handle_normal_key(&mut app, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
         assert_eq!(app.todo_selected(), 1);
@@ -3798,7 +3798,7 @@ mod tests {
             Event::Key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE)),
         );
 
-        assert_eq!(app.input.text(), "h");
+        assert_eq!(app.input().text(), "h");
         assert_eq!(app.focus_owner(), FocusOwner::Input);
     }
 
@@ -3807,7 +3807,7 @@ mod tests {
         let mut app = make_test_app();
         let tool_id = "perm-draft";
         append_tool_call_block(&mut app, tool_id);
-        app.input.set_text("draft in progress");
+        app.input_mut().set_text("draft in progress");
 
         let session_key = app.active_session_key.clone().expect("active key");
         turn::handle_permission_request_event(
@@ -3843,7 +3843,7 @@ mod tests {
         let mut app = make_test_app();
         let tool_id = "question-draft";
         append_tool_call_block(&mut app, tool_id);
-        app.input.set_text("draft in progress");
+        app.input_mut().set_text("draft in progress");
 
         let session_key = app.active_session_key.clone().expect("active key");
         turn::handle_question_request_event(
@@ -3878,7 +3878,7 @@ mod tests {
         let tool_id = "perm-submit";
         append_tool_call_block(&mut app, tool_id);
         app.set_session_id(Some(model::SessionId::new("session-1")));
-        app.input.set_text("ship the fix");
+        app.input_mut().set_text("ship the fix");
 
         let session_key = app.active_session_key.clone().expect("active key");
         let mut response_rx = TestPermissionRxLocal { tool_id: tool_id.to_owned() };
@@ -3944,7 +3944,7 @@ mod tests {
             ],
             false,
         );
-        app.input.set_text("keep drafting");
+        app.input_mut().set_text("keep drafting");
         app.release_focus_target(FocusTarget::Permission);
 
         handle_terminal_event(
@@ -3989,7 +3989,7 @@ mod tests {
         );
 
         assert_eq!(app.focus_owner(), FocusOwner::Input);
-        assert_eq!(app.input.text(), "h");
+        assert_eq!(app.input().text(), "h");
         assert_eq!(permission_focus_state(&app, "perm-auto"), Some(false));
     }
 
@@ -4010,7 +4010,7 @@ mod tests {
             ),
             false,
         );
-        app.input.set_text("draft answer");
+        app.input_mut().set_text("draft answer");
 
         handle_terminal_event(
             &mut app,
@@ -4062,7 +4062,7 @@ mod tests {
         );
 
         assert_eq!(app.focus_owner(), FocusOwner::Input);
-        assert_eq!(app.input.text(), "n");
+        assert_eq!(app.input().text(), "n");
         assert_eq!(question_focus_state(&app, "question-auto"), Some(false));
     }
 
@@ -4464,7 +4464,7 @@ mod tests {
     #[test]
     fn plan_approval_raw_ctrl_y_resolves_without_editing_input() {
         let mut app = make_test_app();
-        app.input.set_text("seed");
+        app.input_mut().set_text("seed");
         let mut response_rx = attach_pending_permission(
             &mut app,
             "perm-1",
@@ -4493,7 +4493,7 @@ mod tests {
             panic!("expected selected permission response");
         };
         assert_eq!(selected.option_id.clone(), "plan-approve");
-        assert_eq!(app.input.text(), "seed");
+        assert_eq!(app.input().text(), "seed");
         assert!(app.pending_interaction_ids().is_empty());
     }
 
@@ -4605,7 +4605,7 @@ mod tests {
     fn connecting_state_blocks_input_shortcuts_and_tab() {
         let mut app = make_test_app();
         app.status = AppStatus::Connecting;
-        app.input.set_text("seed");
+        app.input_mut().set_text("seed");
         app.pending_submit = None;
         app.help_view = HelpView::Keys;
 
@@ -4620,7 +4620,7 @@ mod tests {
             handle_terminal_event(&mut app, Event::Key(key));
         }
 
-        assert_eq!(app.input.text(), "seed");
+        assert_eq!(app.input().text(), "seed");
         assert!(app.pending_submit.is_none());
         assert_eq!(app.help_view, HelpView::Keys);
     }
@@ -4785,7 +4785,7 @@ mod tests {
     fn error_state_blocks_input_shortcuts() {
         let mut app = make_test_app();
         app.status = AppStatus::Error;
-        app.input.set_text("seed");
+        app.input_mut().set_text("seed");
         app.pending_submit = None;
 
         for key in [
@@ -4799,7 +4799,7 @@ mod tests {
             handle_terminal_event(&mut app, Event::Key(key));
         }
 
-        assert_eq!(app.input.text(), "seed");
+        assert_eq!(app.input().text(), "seed");
         assert!(app.pending_submit.is_none());
     }
 
@@ -4837,7 +4837,7 @@ mod tests {
         handle_terminal_event(&mut app, Event::Paste("blocked".into()));
 
         assert!(app.pending_paste_text.is_empty());
-        assert!(app.input.is_empty());
+        assert!(app.input().is_empty());
     }
 
     #[test]
@@ -5142,29 +5142,29 @@ mod tests {
     #[test]
     fn up_down_moves_input_cursor_when_multiline() {
         let mut app = make_test_app();
-        app.input.set_text("line1\nline2\nline3");
-        let _ = app.input.set_cursor(1, 3);
+        app.input_mut().set_text("line1\nline2\nline3");
+        let _ = app.input_mut().set_cursor(1, 3);
         app.active_viewport_mut().scroll_target = 7;
 
         handle_normal_key(&mut app, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
-        assert_eq!(app.input.cursor_row(), 0);
+        assert_eq!(app.input().cursor_row(), 0);
         assert_eq!(app.viewport().scroll_target, 7);
 
         handle_normal_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-        assert_eq!(app.input.cursor_row(), 1);
+        assert_eq!(app.input().cursor_row(), 1);
         assert_eq!(app.viewport().scroll_target, 7);
     }
 
     #[test]
     fn down_at_input_bottom_falls_back_to_chat_scroll() {
         let mut app = make_test_app();
-        app.input.set_text("line1\nline2");
-        let _ = app.input.set_cursor(1, 0);
+        app.input_mut().set_text("line1\nline2");
+        let _ = app.input_mut().set_cursor(1, 0);
         app.active_viewport_mut().scroll_target = 2;
 
         handle_normal_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
 
-        assert_eq!(app.input.cursor_row(), 1);
+        assert_eq!(app.input().cursor_row(), 1);
         assert_eq!(app.viewport().scroll_target, 3);
     }
 
@@ -5180,14 +5180,14 @@ mod tests {
             .iter()
             .position(|spec| spec.id == crate::app::config::SettingId::FastMode)
             .expect("fast mode setting row");
-        app.input.set_text("seed");
+        app.input_mut().set_text("seed");
 
         handle_terminal_event(
             &mut app,
             Event::Key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE)),
         );
 
-        assert_eq!(app.input.text(), "seed");
+        assert_eq!(app.input().text(), "seed");
         assert!(app.pending_submit.is_none());
         assert!(app.config.fast_mode_effective());
         assert!(app.config.last_error.is_none());
@@ -5201,7 +5201,7 @@ mod tests {
         app.set_cwd_raw(dir.path().to_string_lossy().to_string());
         crate::app::config::open(&mut app).expect("open settings");
         app.active_view = ActiveView::Config;
-        app.input.set_text("seed");
+        app.input_mut().set_text("seed");
 
         handle_terminal_event(
             &mut app,
@@ -5209,7 +5209,7 @@ mod tests {
         );
 
         assert_eq!(app.active_view, ActiveView::Chat);
-        assert_eq!(app.input.text(), "seed");
+        assert_eq!(app.input().text(), "seed");
         assert!(app.pending_submit.is_none());
     }
 
@@ -5221,7 +5221,7 @@ mod tests {
         handle_terminal_event(&mut app, Event::Paste("blocked".into()));
 
         assert!(app.pending_paste_text.is_empty());
-        assert!(app.input.is_empty());
+        assert!(app.input().is_empty());
     }
 
     #[test]
@@ -5280,7 +5280,7 @@ mod tests {
 
         let mut app = make_test_app();
         app.active_view = ActiveView::Trusted;
-        app.input.set_text("seed");
+        app.input_mut().set_text("seed");
         app.set_cwd_raw(dir.path().join("project").to_string_lossy().to_string());
         app.config.preferences_path = Some(path);
         app.trust.status = crate::app::trust::TrustStatus::Untrusted;
@@ -5293,7 +5293,7 @@ mod tests {
         );
 
         assert_eq!(app.active_view, ActiveView::Chat);
-        assert_eq!(app.input.text(), "seed");
+        assert_eq!(app.input().text(), "seed");
         assert!(app.pending_paste_text.is_empty());
         assert!(app.startup_connection_requested);
     }
@@ -5306,7 +5306,7 @@ mod tests {
         handle_terminal_event(&mut app, Event::Paste("blocked".into()));
 
         assert!(app.pending_paste_text.is_empty());
-        assert!(app.input.is_empty());
+        assert!(app.input().is_empty());
     }
 
     #[test]
@@ -5317,7 +5317,7 @@ mod tests {
         handle_terminal_event(&mut app, Event::Paste("blocked".into()));
 
         assert!(app.pending_paste_text.is_empty());
-        assert!(app.input.is_empty());
+        assert!(app.input().is_empty());
     }
 
     #[test]
@@ -5345,7 +5345,7 @@ mod tests {
         );
 
         assert!(!app.needs_redraw);
-        assert!(app.input.is_empty());
+        assert!(app.input().is_empty());
     }
 
     #[test]
@@ -5449,7 +5449,7 @@ mod tests {
 
         handle_normal_key(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
 
-        assert_eq!(app.input.text(), "Write focused tests");
+        assert_eq!(app.input().text(), "Write focused tests");
         assert!(app.prompt_suggestion().is_none());
     }
 
@@ -5467,7 +5467,7 @@ mod tests {
         handle_normal_key(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
 
         assert_eq!(app.focus_owner(), FocusOwner::TodoList);
-        assert!(app.input.is_empty());
+        assert!(app.input().is_empty());
         assert_eq!(app.prompt_suggestion(), Some("Write focused tests"));
     }
 

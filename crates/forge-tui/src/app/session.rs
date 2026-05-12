@@ -20,6 +20,7 @@ use forge_workspace::SessionKey;
 use crate::agent::events::TerminalMap;
 use crate::agent::model;
 use crate::app::git_context::GitContextState;
+use crate::app::input::InputState;
 use crate::app::state::cache_metrics::CacheMetrics;
 use crate::app::state::messages::ChatMessage;
 use crate::app::state::render_budget::{RenderCacheEvictionKey, RenderCacheSlotState};
@@ -223,17 +224,12 @@ pub struct UiSession {
     /// per-frame summaries.
     pub last_chat_render_trace_state: Option<ChatRenderTraceState>,
 
-    /// Input draft saved when this session was last the active one.
-    /// `App::switch_active_session` snapshots the live `app.input.text()`
-    /// into here on outgoing-session swap and restores it on
-    /// incoming-session swap. Without this, the input textarea
-    /// persists across switches — typing in tracker-cc and then
-    /// switching to dotfiles shows tracker-cc's draft in dotfiles's
-    /// input. `App::status` is derived from `lifecycle_state` at
-    /// switch time rather than snapshotted here, so a background turn
-    /// that completed while the user was elsewhere doesn't strand
-    /// the incoming bucket on a stale `Thinking` / `Running` status.
-    pub draft_input: String,
+    /// Per-session input editor. Each session owns its own input
+    /// state; switching the active session naturally swaps the editor
+    /// because the accessor reads from this bucket. Replaces the
+    /// pre-Phase-6 App-level `input` field plus the per-bucket
+    /// `draft_input` snapshot/restore dance in `switch_active_session`.
+    pub input: InputState,
 }
 
 impl UiSession {
@@ -307,7 +303,7 @@ impl Default for UiSession {
             cache_metrics: CacheMetrics::default(),
             last_active_turn_height_state: Option::default(),
             last_chat_render_trace_state: Option::default(),
-            draft_input: String::default(),
+            input: InputState::default(),
         }
     }
 }
