@@ -140,10 +140,9 @@ fn append_body(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
         return;
     }
 
-    // Blank between rule (or nudge) and TASKS header.
-    lines.push(Line::default());
     // TASKS section header — DIM bold, 2-col indent (matches the
-    // left pane's `ACTIVE` / `INACTIVE` section headers).
+    // left pane's `ACTIVE` / `INACTIVE` section headers, which sit
+    // flush against the dim rule above without an intervening blank).
     lines.push(Line::from(Span::styled(
         "  TASKS".to_owned(),
         Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD),
@@ -158,7 +157,8 @@ fn append_body(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
     let glyph_indent = PANE_PAD + 2; // "  " + glyph + " "
     let text_budget = usize::from(width.saturating_sub(glyph_indent));
 
-    for todo in todos {
+    let todo_count = todos.len();
+    for (idx, todo) in todos.iter().enumerate() {
         let (glyph, glyph_color) = match todo.status {
             TodoStatus::Completed => ("\u{2713}", Color::Green), // ✓
             TodoStatus::InProgress => ("\u{25b8}", theme::RUST_ORANGE), // ▸
@@ -216,6 +216,12 @@ fn append_body(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
                 Span::raw(" "),
                 Span::styled(truncated, text_style),
             ]));
+        }
+        // Blank between tasks for breathing room. Skipped after the
+        // last item so we don't leave a trailing blank at the end of
+        // the TASKS section.
+        if idx + 1 < todo_count {
+            lines.push(Line::default());
         }
     }
 }

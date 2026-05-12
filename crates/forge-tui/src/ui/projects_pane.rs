@@ -483,10 +483,10 @@ fn glyph_for_lifecycle(
 /// Constant by design — values flip but shape stays put (see the
 /// "account chrome, not status row" intent in the design brief).
 ///
-/// 17 rows: rule + 5 identity (Profile/Mode/Model/Effort/Fast) +
-/// 1 blank + 1 Ctx + 1 blank + 2 (5h bar + ETA) + 1 blank +
-/// 2 (7d bar + ETA) + 1 blank + 2 (📁 + ⎇).
-const ACCOUNT_PANEL_HEIGHT: u16 = 17;
+/// 15 rows: rule + 5 identity (Profile/Mode/Model/Effort/Fast) +
+/// 1 blank + 1 Ctx + 1 blank + 1 (5h bar with inline ETA) + 1 blank +
+/// 1 (7d bar with inline ETA) + 1 blank + 2 (📁 + ⎇).
+const ACCOUNT_PANEL_HEIGHT: u16 = 15;
 
 /// Below this pane height we skip the panel entirely (would crowd the
 /// project list too aggressively). The chat footer is gone in this
@@ -664,29 +664,28 @@ fn build_account_panel_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     // Row 8: blank between Ctx and 5h.
     lines.push(Line::default());
 
-    // Rows 9..=10: 5h bar + ETA.
+    // Row 9: 5h bar with inline ETA (one row total — no separate ETA
+    // row to leave horizontal space empty).
     push_usage_window_lines(
         &mut lines,
         "5h",
         app.usage().snapshot.as_ref().and_then(|s| s.five_hour.as_ref()),
-        width,
     );
 
-    // Row 11: blank between 5h and 7d.
+    // Row 10: blank between 5h and 7d.
     lines.push(Line::default());
 
-    // Rows 12..=13: 7d bar + ETA.
+    // Row 11: 7d bar with inline ETA.
     push_usage_window_lines(
         &mut lines,
         "7d",
         app.usage().snapshot.as_ref().and_then(|s| s.seven_day.as_ref()),
-        width,
     );
 
-    // Row 14: blank separating usage from location.
+    // Row 12: blank separating usage from location.
     lines.push(Line::default());
 
-    // Rows 15..=16: location + branch.
+    // Rows 13..=14: location + branch.
     let cwd_budget = usize::from(width).saturating_sub(2 + 2 + 1); // "  📁 "
     let cwd_value = fit_path_for_panel(app.cwd(), cwd_budget);
     lines.push(Line::from(vec![
@@ -719,40 +718,29 @@ fn build_account_panel_lines(app: &App, width: u16) -> Vec<Line<'static>> {
 /// `width` is the full pane width so the ETA can be right-justified
 /// against the right edge (matches the percent column of the bar row
 /// above it).
-/// Right-edge column of the bar row in the bottom panel. The row
-/// shape is `2 indent + 3 label + 2 gap + 12 bar + 2 gap + 4 pct`
-/// — the ETA on the next line right-justifies to this column so it
-/// visually sits directly below the percent text instead of floating
-/// off at the pane's outer edge (which leaves a sparse gap when the
-/// pane is wider than 25 cols).
-const BAR_ROW_WIDTH: usize = 2 + 3 + 2 + ACCOUNT_PANEL_BAR_CELLS + 2 + 4;
-
+/// Append a single row containing the usage window's label + bar +
+/// percent + DIM inline ETA. Inlining the ETA on the same row saves
+/// vertical space and fills what was previously empty trailing
+/// horizontal space on the bar row. Format:
+/// `  <label>  <bar>  <pct>  <ETA>`
 fn push_usage_window_lines(
     lines: &mut Vec<Line<'static>>,
     label: &'static str,
     window: Option<&crate::app::UsageWindow>,
-    _width: u16,
 ) {
     let pct_value = window.map_or(0.0, |w| w.utilization);
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let pct_text = window
         .map_or_else(|| "  —%".to_owned(), |w| format!("{:>3}%", w.utilization.round() as i64));
+    let eta_text =
+        window.and_then(format_window_reset_duration_only).unwrap_or_else(|| "—".to_owned());
     let mut row = vec![Span::raw("  "), label_span(label, 3), Span::raw("  ")];
     row.extend(bar_spans(pct_value));
     row.push(Span::raw("  "));
     row.push(Span::raw(pct_text));
+    row.push(Span::raw("  "));
+    row.push(Span::styled(eta_text, Style::default().fg(theme::DIM)));
     lines.push(Line::from(row));
-
-    // ETA — duration only (no "resets in " prose), DIM, right-justified
-    // to the percent column's right edge (see [`BAR_ROW_WIDTH`]).
-    let eta_text =
-        window.and_then(format_window_reset_duration_only).unwrap_or_else(|| "—".to_owned());
-    let eta_chars = eta_text.chars().count();
-    let pad = BAR_ROW_WIDTH.saturating_sub(eta_chars);
-    lines.push(Line::from(vec![
-        Span::raw(" ".repeat(pad)),
-        Span::styled(eta_text, Style::default().fg(theme::DIM)),
-    ]));
 }
 
 /// Strip the `"resets in "` prefix from
@@ -1015,6 +1003,6 @@ mod tests {
         // co-anchor the layout. This test pins the constant explicitly
         // so a change to row count surfaces here too, not only at
         // runtime.
-        assert_eq!(ACCOUNT_PANEL_HEIGHT, 17);
+        assert_eq!(ACCOUNT_PANEL_HEIGHT, 15);
     }
 }

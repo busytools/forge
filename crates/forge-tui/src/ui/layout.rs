@@ -176,19 +176,11 @@ fn compute_horizontal_split(
     };
 
     // Build the horizontal constraint vector based on which panes
-    // are visible.
-    //
-    // Left side (Projects pane): contributes
-    //   left_width + PANE_SEPARATOR_WIDTH + CHAT_PADDING
-    // — a full `│` rule sits between the pane and the chat column.
-    //
-    // Right side (Inspector pane): contributes just `right_width`.
-    // No separator + no padding — the chat's own scrollbar rail
-    // (`▕`, rendered at chat's right edge) acts as the visual
-    // divider, and the Inspector pane's 2-col content indent
-    // provides breathing room from it. This avoids the
-    // "two-vertical-lines-side-by-side" effect the symmetric
-    // pre-polish layout produced.
+    // are visible. Layout is symmetric — both sides get a `│`
+    // separator + 1-col padding between the pane and the chat
+    // column. The chat scrollbar no longer renders its rail (only
+    // the thumb), so the two adjacent-vertical-lines issue the
+    // pre-symmetric layout caused is gone.
     let mut constraints: Vec<Constraint> = Vec::new();
     if pane_visible {
         constraints.push(Constraint::Length(left_width));
@@ -197,6 +189,8 @@ fn compute_horizontal_split(
     }
     constraints.push(Constraint::Min(1));
     if pane_right_visible {
+        constraints.push(Constraint::Length(CHAT_PADDING));
+        constraints.push(Constraint::Length(PANE_SEPARATOR_WIDTH));
         constraints.push(Constraint::Length(right_width));
     }
 
@@ -212,9 +206,14 @@ fn compute_horizontal_split(
     let pane_separator_rect = pane_rect.map(|_| rects[1]);
     let chat_area = rects[idx];
     idx += 1;
-    let pane_right_rect = if pane_right_visible { Some(rects[idx]) } else { None };
-    // No right-side separator — the chat scrollbar plays that role.
-    let pane_right_separator_rect: Option<Rect> = None;
+    let (pane_right_rect, pane_right_separator_rect) = if pane_right_visible {
+        // After chat: padding, separator, pane
+        let separator = rects[idx + 1];
+        let pane = rects[idx + 2];
+        (Some(pane), Some(separator))
+    } else {
+        (None, None)
+    };
     (pane_rect, pane_separator_rect, pane_right_rect, pane_right_separator_rect, chat_area)
 }
 
@@ -527,11 +526,11 @@ mod tests {
         assert_eq!(right.width, PANE_WIDTH_RIGHT_WIDE);
         // Right pane sits at the right edge.
         assert_eq!(right.x + right.width, 180);
-        // Body sits immediately to the left of the right pane — no
-        // separator column between them (the chat scrollbar fills
-        // that role).
-        assert_eq!(layout.body.x + layout.body.width, right.x);
-        assert!(layout.pane_right_separator.is_none());
+        // Body sits separated from the right pane by padding + a
+        // `│` separator (mirror of the left side).
+        assert!(layout.body.x + layout.body.width <= right.x);
+        let sep = layout.pane_right_separator.expect("right separator allocated");
+        assert_eq!(sep.width, PANE_SEPARATOR_WIDTH);
     }
 
     #[test]
@@ -544,13 +543,13 @@ mod tests {
         // Left flush against x=0; right flush against the right edge.
         assert_eq!(left.x, 0);
         assert_eq!(right.x + right.width, 180);
-        // Body sits strictly between the two panes — flush against the
-        // right pane's left edge (no separator on the right side; the
-        // chat scrollbar serves that role).
+        // Body sits strictly between the two panes with separator +
+        // padding on each side.
         assert!(layout.body.x >= left.x + left.width);
-        assert_eq!(layout.body.x + layout.body.width, right.x);
-        // Right side has no separator + no extra padding.
-        assert!(layout.pane_right_separator.is_none());
+        assert!(layout.body.x + layout.body.width <= right.x);
+        // Both sides have separators.
+        assert!(layout.pane_separator.is_some());
+        assert!(layout.pane_right_separator.is_some());
     }
 
     #[test]
@@ -558,7 +557,7 @@ mod tests {
         let layout = compute(area(140, 40), 1, 1, false, true);
         let right = layout.pane_right.expect("right pane allocated at medium");
         assert_eq!(right.width, PANE_WIDTH_RIGHT_MEDIUM);
-        assert!(layout.pane_right_separator.is_none());
+        assert!(layout.pane_right_separator.is_some());
     }
 
     #[test]
