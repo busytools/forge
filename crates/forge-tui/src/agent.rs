@@ -6,9 +6,11 @@
 //!    callbacks, owns userdata/cloud/env. Lives in `crates/forge-agent`.
 //! 2. **This module** (`forge_tui::agent`) — the TUI-side mapping
 //!    onto the agent layer. Holds:
-//!    - [`events`] — `ClientEvent` enum: the UI's translated view of
-//!      the agent layer's event stream (with extra UI-side variants
-//!      like `AuthCompleted`, `FatalError`).
+//!    - [`events`] — terminal-process tracking (`TerminalMap`,
+//!      `TerminalProcess`) for spawned shell commands. Pre-MVVM-#102
+//!      this module also held the `ClientEvent` enum; that enum was
+//!      retired in Phase 4 when the TUI flipped to consuming
+//!      `forge_workspace::SessionUpdate` directly.
 //!    - [`model`] — UI-typed model describing agent state for the
 //!      view layer to render.
 //!    - Re-export shims (`agents`, `error_handling`, `state_parsing`,

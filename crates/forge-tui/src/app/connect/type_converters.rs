@@ -1,9 +1,13 @@
 //! Wire-shape conversions from `forge_primitives::*` (the
-//! serde-derived envelope structs that ride on `AgentEvent`) into
-//! `crate::agent::model::*` (the App's runtime model). Consumed by
-//! `bridge_lifecycle` (for the `AgentEvent` translation) plus the
-//! App-side `sdk_message` and slash-command executors that build
-//! model values from wire envelopes captured in tool-call payloads.
+//! serde-derived envelope structs) into `crate::agent::model::*`
+//! (the App's runtime model). Consumed by the App-side `sdk_message`
+//! reducer and slash-command executors that build model values from
+//! wire envelopes captured in tool-call payloads. Pre-MVVM-#102
+//! these conversions were also driven by `bridge_lifecycle`'s
+//! `AgentEvent` translation; that role moved to
+//! `forge_workspace::SessionTask::translate_event` in Phase 4, which
+//! produces `SessionUpdate`s carrying values already in
+//! `forge_primitives` shapes.
 
 use crate::agent::model;
 use crate::app::{ModeInfo, ModeState};
