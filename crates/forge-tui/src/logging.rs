@@ -96,6 +96,19 @@ pub fn bridge_diagnostics_enabled() -> bool {
     BRIDGE_DIAGNOSTICS_ENABLED.load(Ordering::Relaxed)
 }
 
+/// Default tracing filter. `info` baseline keeps signal-to-noise
+/// sensible; the four targets at `debug` are the ones we actually
+/// stare at when triaging UI/event drops (session lifecycle, command
+/// dispatch, input submission, bridge connect path). `tui_markdown`
+/// is pinned to `warn` because it emits a per-frame "no markdown
+/// extensions" debug line that swamps everything else.
+const DEFAULT_LOG_DIRECTIVES: &str = "info,\
+    app.session=debug,\
+    app.command=debug,\
+    app.input=debug,\
+    bridge.lifecycle=debug,\
+    tui_markdown=warn";
+
 fn build_filter_directives(cli: &Cli) -> String {
     let mut directives = cli
         .log_filter
@@ -107,7 +120,7 @@ fn build_filter_directives(cli: &Cli) -> String {
                 .map(str::to_owned)
         })
         .or_else(|| std::env::var("RUST_LOG").ok())
-        .unwrap_or_else(|| "info".to_owned());
+        .unwrap_or_else(|| DEFAULT_LOG_DIRECTIVES.to_owned());
     if !directives.contains("tui_markdown=") {
         directives.push_str(",tui_markdown=info");
     }
@@ -139,19 +152,16 @@ fn resolve_log_path(cli: &Cli) -> anyhow::Result<Option<ResolvedLogPath>> {
     if let Some(path) = cli.log_file.clone() {
         return Ok(Some(ResolvedLogPath { path, source: LogPathSource::Explicit }));
     }
-    if !logging_enabled_without_explicit_path(cli) {
-        return Ok(None);
-    }
+    // Logging on by default. Forge is personal-use and the rolling
+    // writer caps disk at ~50MB (5 × 10MB), so we can afford
+    // always-on diagnostics. Users who explicitly want forge silent
+    // can set `RUST_LOG=off`. The `_cli` arg stays in the signature
+    // for compatibility with the explicit-opt-in flags
+    // (`--enable-logs`, `--diagnostics-preset`, …) — they're now
+    // redundant but kept so existing wrappers don't break.
+    let _ = cli;
     let path = default_log_path()?;
     Ok(Some(ResolvedLogPath { path, source: LogPathSource::Default }))
-}
-
-fn logging_enabled_without_explicit_path(cli: &Cli) -> bool {
-    cli.enable_logs
-        || cli.diagnostics_preset.is_some()
-        || cli.log_filter.is_some()
-        || cli.log_append
-        || std::env::var_os("RUST_LOG").is_some()
 }
 
 fn default_log_path() -> anyhow::Result<PathBuf> {
@@ -512,8 +522,8 @@ impl BridgeDiagnosticRecord {
 #[cfg(test)]
 mod tests {
     use super::{
-        BridgeDiagnosticRecord, RollingFileWriter, clear_rotated_files, preview_text,
-        resolve_log_path, resolve_perf_path, rotated_log_path,
+        BridgeDiagnosticRecord, DEFAULT_LOG_DIRECTIVES, RollingFileWriter, clear_rotated_files,
+        preview_text, resolve_log_path, resolve_perf_path, rotated_log_path,
     };
     use crate::{Cli, DiagnosticsPreset};
     use std::fs;
@@ -556,6 +566,46 @@ mod tests {
         let resolved = resolve_log_path(&cli).expect("resolve succeeds").expect("path exists");
         assert_eq!(resolved.path, PathBuf::from("custom.log"));
         assert_eq!(resolved.source.as_str(), "explicit");
+    }
+
+    #[test]
+    fn resolve_log_path_returns_default_with_no_triggers_set() {
+        // Logs are on by default — no CLI flag, env var, or filter
+        // needed. Pins the policy so a future refactor can't
+        // accidentally re-introduce the "opt-in" gate.
+        let cli = Cli {
+            project: None,
+            generate_completion: None,
+            enable_logs: false,
+            diagnostics_preset: None,
+            log_file: None,
+            log_filter: None,
+            log_append: false,
+            enable_perf: false,
+            perf_log: None,
+            perf_append: false,
+        };
+
+        let resolved = resolve_log_path(&cli).expect("resolve succeeds").expect("path exists");
+        assert_eq!(resolved.source.as_str(), "default");
+        let path = resolved.path.to_string_lossy().replace('\\', "/");
+        assert!(path.ends_with("forge-tui/logs/forge.log"));
+    }
+
+    #[test]
+    fn default_log_directives_target_the_drop_diagnosis_paths() {
+        // `sdk_message_dropped` and `turn_complete_dropped` warns
+        // live under `app.session`. `app.command` covers the
+        // dispatch path. `bridge.lifecycle` covers connect/spawn.
+        // Anything dropping out of these regresses the always-on
+        // debug coverage we ship for triage.
+        assert!(DEFAULT_LOG_DIRECTIVES.contains("app.session=debug"));
+        assert!(DEFAULT_LOG_DIRECTIVES.contains("app.command=debug"));
+        assert!(DEFAULT_LOG_DIRECTIVES.contains("app.input=debug"));
+        assert!(DEFAULT_LOG_DIRECTIVES.contains("bridge.lifecycle=debug"));
+        // tui_markdown emits a per-frame "no markdown extensions"
+        // debug line; pinning it to warn keeps it out of the log.
+        assert!(DEFAULT_LOG_DIRECTIVES.contains("tui_markdown=warn"));
     }
 
     #[test]
