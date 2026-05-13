@@ -259,6 +259,76 @@ threat model. See `project_trust_model.md` in auto-memory before
 running any audit or considering security hardening — findings whose
 severity depends on adversarial assumptions get demoted or dropped.
 
+### Architectural direction (in-flight, ratified 2026-05-13)
+
+forge is converging on a **multi-agent peer-coordination model**
+that goes beyond a single-session terminal wrapper. The two epics
+tracking this direction:
+
+- **#114 — Multi-agent coordination via in-process MCP server.**
+  Every "subagent" is a full forge peer session (own `claude`
+  subprocess, own chat view, own permissions). Peers communicate
+  via an in-process MCP server exposing `mcp__forge__spawn_session`,
+  `ask_session`, `tell_session`, `list_sessions`, `close_session`,
+  `whoami`. The pattern comes from `mrocklin/claudechic` →
+  `example/architect`; forge improves on it with typed
+  correlation IDs, hop-count cycle prevention, actor-pattern
+  serialization, no global DI bridge.
+- **#115 — Git worktrees as first-class primitive.** `spawn_worktree_session`
+  MCP tool (composes with #114) creates a peer in an isolated
+  git worktree. `finish_worktree` is a multi-phase state machine
+  (RESOLUTION → CLEANUP) driven by the LLM through repeated MCP
+  tool calls. Default path: `<repo>/.claude/worktrees/<name>/`
+  matching Claude Code's convention for interop.
+
+**Together these unlock**: one parent agent orchestrating N peer
+agents each in its own worktree on its own branch, coordinated via
+MCP messaging. Cross-project peer chatter via the same MCP. This
+is a fundamentally different daily-driver shape from anything
+Claude Code or its competitors ship today.
+
+**Reference impls** (read these before designing either feature):
+- `~/Projects/peer-tools/architect/mcp.py` (519 lines) — the peer
+  MCP server pattern.
+- `~/Projects/peer-tools/architect/features/worktree/git.py` (756
+  lines, 99% identical to `mrocklin/claudechic` upstream) — the
+  worktree primitives.
+
+**Critical Claude Code interop facts** (so forge doesn't reinvent
+existing conventions):
+- Claude Code's `--worktree [name]` defaults to in-repo
+  `<repo>/.claude/worktrees/<name>/` (NOT sibling). Forge matches.
+- `EnterWorktree` / `ExitWorktree` are built-in Claude Code tools
+  the LLM can call. Forge decides per session whether to block
+  these (in favour of `mcp__forge__*` tools) or allow.
+- `AgentInput.isolation: "worktree"` is Claude's native auto-worktree
+  for Task subagents. Forge's MCP worktree path is separate (peer
+  vs child).
+- Wire-envelope carries `worktree: {name, path, branch, original_cwd,
+  original_branch}` when in a worktree session — forge-sdk decoder
+  surfaces this as `SessionUpdate::WorktreeContextChanged`.
+- Hook events `WorktreeCreate` / `WorktreeRemove` are first-class in
+  Claude Code; forge emits `SessionUpdate` variants with matching
+  names for interop.
+- `.worktreeinclude` (repo-root gitignore-syntax file) is Claude
+  Code's convention for copying gitignored files (e.g. `.env`,
+  `.claude/settings.local.json`) into new worktrees. Forge respects
+  this file plus an additional `forge.toml [worktree]` schema for
+  per-path copy-vs-symlink policy.
+- `worktree.baseRef = "fresh" | "head"` setting (origin/HEAD vs
+  local HEAD). Forge mirrors as the default; MCP tool args override
+  for LLM-driven spawns.
+
+**Crate placement for these features**:
+- MCP tool impls (Tool trait): `forge-agent::mcp_agenting` (new
+  module).
+- Worktree env helpers: `forge-agent::env::worktree` (sibling to
+  `env::git_diff`).
+- Wire types (`WorktreeInfo`, `FinishState`, etc.): `forge-primitives`.
+- New `Command` / `SessionUpdate` variants: `forge-workspace::protocol`.
+- UI surfaces: `forge-tui` Inspector pane WORKTREES sub-section,
+  Projects pane parent-of indent.
+
 ## Vision: simple, efficient, capable — Rust-native
 
 forge **is no longer a feature-parity port of Python's
