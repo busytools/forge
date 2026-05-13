@@ -1,6 +1,20 @@
+use std::time::{Duration, Instant};
+
+use super::state::types::PendingEchoBubble;
 use super::{App, AppStatus, CancelOrigin, ChatMessage, MessageBlock, MessageRole, TextBlock};
 use crate::agent::model;
 use crate::app::slash;
+
+/// Bubbles whose `queued_command` wire echo hasn't arrived within
+/// this threshold are flagged by the staleness sweep — likely lost
+/// (claude rejected silently, race, etc.). Visual bubble stays
+/// dimmed but a warn-level trace fires + the bubble is moved from
+/// pending to "stale" so the chip count is accurate.
+///
+/// 60s is generous — a turn with a long-running tool can legitimately
+/// keep an in-flight echo waiting. Lower it if real usage shows
+/// bubbles routinely stuck past their actual delivery.
+pub(crate) const PENDING_BUBBLE_STALE_SECS: u64 = 60;
 
 pub(super) fn submit_input(app: &mut App) {
     if matches!(app.status, AppStatus::Connecting | AppStatus::CommandPending | AppStatus::Error) {
@@ -66,26 +80,15 @@ fn is_turn_busy(app: &App) -> bool {
 }
 
 /// Cancel the in-flight turn. As of issue #85 the only routine caller
-/// is the Escape keybinding (`CancelOrigin::Manual`); submit no longer
-/// calls this for `AutoQueue` cancels — submit queues instead.
-/// `CancelOrigin::AutoQueue` is still set by other code paths (paste
-/// burst, error recovery) that haven't migrated to the queue model.
+/// is the Escape keybinding (`CancelOrigin::Manual`); submit dispatches
+/// immediately and claude internally queues mid-turn writes — so no
+/// auto-induced cancels happen anywhere in the codebase.
 pub(super) fn request_cancel(app: &mut App, origin: CancelOrigin) -> Result<(), String> {
-    if matches!(origin, CancelOrigin::Manual) {
-        app.set_pending_auto_submit_after_cancel(false);
-    }
-
     if !matches!(app.status, AppStatus::Thinking | AppStatus::Running) {
         return Ok(());
     }
-
-    if let Some(existing_origin) = app.pending_cancel_origin() {
-        if matches!(existing_origin, CancelOrigin::AutoQueue)
-            && matches!(origin, CancelOrigin::Manual)
-        {
-            app.set_pending_cancel_origin(Some(CancelOrigin::Manual));
-            app.set_cancelled_turn_pending_hint(true);
-        }
+    if app.pending_cancel_origin().is_some() {
+        // Already cancelling — second Escape is a no-op.
         return Ok(());
     }
 
@@ -114,28 +117,10 @@ pub(super) fn request_cancel(app: &mut App, origin: CancelOrigin) -> Result<(), 
     Ok(())
 }
 
-/// **Vestigial** as of issue #85: the cancel-on-submit + post-cancel
-/// auto-submit pattern was replaced with message queueing (see
-/// [`drain_queued_messages`]). `pending_auto_submit_after_cancel` is
-/// never set to `true` in the new submit flow, so this function is a
-/// no-op in practice. Kept in place to avoid churning every turn-
-/// complete consumer in the behaviour-change PR. Future cleanup:
-/// delete this function + the field together once the queue path has
-/// soaked.
-pub(super) fn maybe_auto_submit_after_cancel(app: &mut App) {
-    if !app.pending_auto_submit_after_cancel() {
-        return;
-    }
-    if !matches!(app.status, AppStatus::Ready) || app.pending_cancel_origin().is_some() {
-        return;
-    }
-    if app.input().text().trim().is_empty() {
-        app.set_pending_auto_submit_after_cancel(false);
-        return;
-    }
-    app.set_pending_auto_submit_after_cancel(false);
-    submit_input(app);
-}
+// `maybe_auto_submit_after_cancel` removed 2026-05-13 alongside the
+// rest of the local-queue + cancel-on-submit machinery. Submit
+// dispatches immediately now; there is no post-cancel auto-submit
+// phase.
 
 /// Push a dimmed user bubble + dispatch `Command::Prompt` immediately.
 /// Called when the user submits while a turn is in flight (#85).
@@ -162,12 +147,16 @@ fn dispatch_pending_bubble(
         return;
     };
 
-    // Track (text, idx) for the wire-echo handler to un-dim later.
-    // Clone the text once for the pending-echo entry; the original
+    // Track the pending bubble for the wire-echo handler to un-dim
+    // later. Clone the text once for the pending entry; the original
     // moves into Command::Prompt below.
     let queue_depth_after = match app.session_mut(&key) {
         Some(session) => {
-            session.pending_echo_bubbles.push_back((text.clone(), chat_message_idx));
+            session.pending_echo_bubbles.push_back(PendingEchoBubble {
+                text: text.clone(),
+                message_idx: chat_message_idx,
+                dispatched_at: Instant::now(),
+            });
             session.pending_echo_bubbles.len()
         }
         None => return,
@@ -214,9 +203,9 @@ fn dispatch_pending_bubble(
 }
 
 /// Un-dim a pending bubble when its `queued_command` echo arrives on
-/// the wire. Called by the content-block walker in
-/// `events::sdk_message::walk_user_tool_results` when it encounters
-/// a `ContentBlock::QueuedCommand`. Returns `true` if a matching
+/// the wire. Called by the content-block walkers in
+/// `events::sdk_message` when they encounter a
+/// `ContentBlock::QueuedCommand`. Returns `true` if a matching
 /// pending bubble was found and un-dimmed; `false` if no match (the
 /// caller should push a fresh user bubble for the replay case).
 pub(crate) fn un_dim_matching_pending(app: &mut App, prompt_text: &str) -> bool {
@@ -225,9 +214,8 @@ pub(crate) fn un_dim_matching_pending(app: &mut App, prompt_text: &str) -> bool 
     };
     let matched_idx = match app.session_mut(&key) {
         Some(session) => {
-            let position =
-                session.pending_echo_bubbles.iter().position(|(text, _)| text == prompt_text);
-            position.and_then(|pos| session.pending_echo_bubbles.remove(pos).map(|(_, idx)| idx))
+            let position = session.pending_echo_bubbles.iter().position(|p| p.text == prompt_text);
+            position.and_then(|pos| session.pending_echo_bubbles.remove(pos).map(|p| p.message_idx))
         }
         None => return false,
     };
@@ -250,7 +238,69 @@ pub(crate) fn un_dim_matching_pending(app: &mut App, prompt_text: &str) -> bool 
         );
         return true;
     }
+    // Index didn't resolve to a User bubble in the active bucket —
+    // most likely retention truncation. Log so the orphan doesn't
+    // hide silently. Caller's "no match" branch pushes a fresh
+    // bubble for the replay path, which is the right behaviour.
+    tracing::warn!(
+        target: crate::logging::targets::APP_INPUT,
+        event_name = "pending_bubble_orphaned",
+        message = "matched pending entry but bubble vanished from chat history",
+        outcome = "degraded",
+        idx,
+        reason = "likely_history_retention_truncation",
+    );
     false
+}
+
+/// Per-tick sweep that flags pending dimmed bubbles whose
+/// `queued_command` echo hasn't arrived within
+/// [`PENDING_BUBBLE_STALE_SECS`]. Removes them from
+/// `pending_echo_bubbles` (so the chip count stops claiming they're
+/// "in-flight") and logs at warn-level so the loss is visible. The
+/// chat bubble itself stays — visually dimmed — so the user notices
+/// something didn't deliver.
+///
+/// Called from the per-frame render tick in `app.rs`. No-op when
+/// the deque is empty or all entries are within threshold.
+pub(crate) fn sweep_stale_pending_bubbles(app: &mut App) {
+    let Some(key) = app.active_session_key.clone() else {
+        return;
+    };
+    let threshold = Duration::from_secs(PENDING_BUBBLE_STALE_SECS);
+    let now = Instant::now();
+    let Some(session) = app.session_mut(&key) else {
+        return;
+    };
+    let before = session.pending_echo_bubbles.len();
+    if before == 0 {
+        return;
+    }
+    // Retain only those within threshold; collect dropped ones for
+    // logging.
+    let mut dropped: Vec<(String, usize)> = Vec::new();
+    session.pending_echo_bubbles.retain(|p| {
+        if now.duration_since(p.dispatched_at) >= threshold {
+            dropped.push((p.text.clone(), p.message_idx));
+            false
+        } else {
+            true
+        }
+    });
+    if dropped.is_empty() {
+        return;
+    }
+    for (text, idx) in dropped {
+        tracing::warn!(
+            target: crate::logging::targets::APP_INPUT,
+            event_name = "pending_bubble_stale",
+            message = "queued_command echo did not arrive within threshold; bubble likely lost",
+            outcome = "degraded",
+            idx,
+            prompt_chars = text.chars().count(),
+            threshold_secs = PENDING_BUBBLE_STALE_SECS,
+        );
+    }
 }
 
 fn dispatch_prompt_turn(app: &mut App, text: String) {
@@ -374,10 +424,8 @@ mod tests {
         // pending_echo_bubbles tracks the (text, idx) for un-dim later.
         let bucket = app.try_active_bucket_mut().expect("active bucket exists");
         assert_eq!(bucket.pending_echo_bubbles.len(), 1);
-        assert_eq!(bucket.pending_echo_bubbles[0].0, "queued prompt");
-        assert_eq!(bucket.pending_echo_bubbles[0].1, 0);
-        // No auto-submit-after-cancel set (vestigial path stays cold).
-        assert!(!bucket.pending_auto_submit_after_cancel);
+        assert_eq!(bucket.pending_echo_bubbles[0].text, "queued prompt");
+        assert_eq!(bucket.pending_echo_bubbles[0].message_idx, 0);
         assert!(app.pending_cancel_origin().is_none());
         // Prompt IS dispatched immediately — claude will internally
         // queue it as a `queued_command` on the next outbound message.
@@ -449,6 +497,80 @@ mod tests {
     }
 
     #[test]
+    fn sweep_stale_pending_bubbles_flags_old_entries() {
+        // A pending entry with a back-dated `dispatched_at` (older
+        // than the threshold) should be dropped from the deque +
+        // logged. The dimmed bubble itself stays in chat history.
+        let (mut app, _rx) = app_with_connection();
+        app.status = AppStatus::Running;
+        app.input_mut().set_text("ghost");
+        submit_input(&mut app);
+
+        // Backdate the entry to > 60s ago.
+        {
+            let bucket = app.try_active_bucket_mut().expect("active bucket exists");
+            let entry = bucket.pending_echo_bubbles.front_mut().expect("entry");
+            entry.dispatched_at = std::time::Instant::now()
+                .checked_sub(std::time::Duration::from_secs(PENDING_BUBBLE_STALE_SECS + 1))
+                .expect("clock far enough past epoch to backdate");
+        }
+
+        sweep_stale_pending_bubbles(&mut app);
+
+        // Pending deque emptied; chat bubble still present + dimmed.
+        let bucket = app.try_active_bucket_mut().expect("active bucket exists");
+        assert!(bucket.pending_echo_bubbles.is_empty());
+        assert_eq!(app.messages().len(), 1);
+        assert!(app.messages()[0].queued, "stale bubble stays visibly dimmed");
+    }
+
+    #[test]
+    fn sweep_stale_pending_bubbles_leaves_fresh_entries_alone() {
+        // Just-dispatched entries (within threshold) survive the sweep.
+        let (mut app, _rx) = app_with_connection();
+        app.status = AppStatus::Running;
+        app.input_mut().set_text("fresh");
+        submit_input(&mut app);
+
+        sweep_stale_pending_bubbles(&mut app);
+
+        let bucket = app.try_active_bucket_mut().expect("active bucket exists");
+        assert_eq!(bucket.pending_echo_bubbles.len(), 1);
+    }
+
+    #[test]
+    fn pending_echo_bubbles_survives_pre_connect_bucket_migration() {
+        // The pre-Connect → real-key bucket migration moves bucket
+        // fields verbatim via `sessions.remove(&pre).insert(real, ..)`.
+        // pending_echo_bubbles is a VecDeque field on UiSession, so
+        // it rides along — pin that with a regression test.
+        let mut app = App::test_default();
+        let _rx = app.install_testing_stub();
+        // We don't have an active session id yet — pre-Connect.
+        app.status = AppStatus::Running;
+        app.input_mut().set_text("pre-connect msg");
+        submit_input(&mut app);
+
+        // Sanity: entry is on the synthetic pre-Connect bucket.
+        let pre_key = forge_workspace::SessionKey::from_session_id(App::PRE_CONNECT_KEY);
+        assert!(app.sessions.contains_key(&pre_key));
+        assert_eq!(app.sessions.get(&pre_key).expect("pre bucket").pending_echo_bubbles.len(), 1);
+
+        // Trigger the migration.
+        app.set_session_id(Some(model::SessionId::new("real-uuid")));
+
+        let real_key = forge_workspace::SessionKey::from_session_id("real-uuid");
+        assert!(!app.sessions.contains_key(&pre_key), "synthetic bucket removed");
+        let real_bucket = app.sessions.get(&real_key).expect("real bucket exists");
+        assert_eq!(
+            real_bucket.pending_echo_bubbles.len(),
+            1,
+            "pending_echo_bubbles must ride along the bucket migration"
+        );
+        assert_eq!(real_bucket.pending_echo_bubbles[0].text, "pre-connect msg");
+    }
+
+    #[test]
     fn submit_input_with_empty_text_is_noop() {
         let (mut app, mut rx) = app_with_connection();
         app.status = AppStatus::Running;
@@ -462,24 +584,24 @@ mod tests {
     }
 
     #[test]
-    fn manual_cancel_promotes_existing_auto_cancel() {
-        // request_cancel itself is still exercised by non-submit callers
-        // (paste burst, error recovery); this test pins the promotion
-        // semantics independent of submit.
+    fn repeated_manual_cancel_is_idempotent() {
+        // The `AutoQueue`-vs-`Manual` promotion logic was removed
+        // along with the variant 2026-05-13. Repeat manual cancel
+        // calls are now plain idempotent — second call is a no-op,
+        // no second wire dispatch.
         let (mut app, mut rx) = app_with_connection();
         app.status = AppStatus::Thinking;
 
-        request_cancel(&mut app, CancelOrigin::AutoQueue).expect("auto cancel request");
-        request_cancel(&mut app, CancelOrigin::Manual).expect("manual cancel request");
+        request_cancel(&mut app, CancelOrigin::Manual).expect("first manual cancel");
+        request_cancel(&mut app, CancelOrigin::Manual).expect("second manual cancel");
 
         assert_eq!(app.pending_cancel_origin(), Some(CancelOrigin::Manual));
-        assert!(app.cancelled_turn_pending_hint());
         let envelope = rx.try_recv().expect("single cancel command should be sent");
         assert!(matches!(
             envelope,
             forge_primitives::Command::Cancel { session_id } if session_id == "session-1"
         ));
-        assert!(rx.try_recv().is_err(), "manual promotion should not send second cancel");
+        assert!(rx.try_recv().is_err(), "second cancel should not re-dispatch");
     }
 
     #[test]

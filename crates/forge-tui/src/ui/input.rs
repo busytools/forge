@@ -151,10 +151,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
             let spinner_ch = SPINNER_FRAMES[app.spinner_frame % SPINNER_FRAMES.len()];
             let cancel_line = Line::from(vec![
                 Span::styled(format!("{spinner_ch} "), Style::default().fg(theme::DIM)),
-                Span::styled(
-                    "Cancelling current turn... draft will auto-submit when ready.",
-                    Style::default().fg(theme::DIM),
-                ),
+                Span::styled("Cancelling current turn...", Style::default().fg(theme::DIM)),
             ]);
             let cancel_area =
                 Rect { x: hint_pad.x, y: hint_y, width: hint_pad.width, height: CANCEL_HINT_LINES };
@@ -473,7 +470,7 @@ mod tests {
     #[test]
     fn visual_line_count_includes_cancel_hint_row() {
         let mut app = App::test_default();
-        app.set_pending_cancel_origin(Some(CancelOrigin::AutoQueue));
+        app.set_pending_cancel_origin(Some(CancelOrigin::Manual));
         assert_eq!(visual_line_count(&mut app, 80), CANCEL_HINT_LINES + 1);
     }
 

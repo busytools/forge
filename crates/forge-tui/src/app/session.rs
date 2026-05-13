@@ -26,8 +26,8 @@ use crate::app::state::messages::ChatMessage;
 use crate::app::state::render_budget::{RenderCacheEvictionKey, RenderCacheSlotState};
 use crate::app::state::types::{
     CancelOrigin, HistoryRetentionPolicy, HistoryRetentionStats, LoginHint, McpState, ModeState,
-    PasteSessionState, PendingCommandAck, RecentSessionInfo, SelectionState, SessionUsageState,
-    TodoItem, ToolCallScope, UsageState,
+    PasteSessionState, PendingCommandAck, PendingEchoBubble, RecentSessionInfo, SelectionState,
+    SessionUsageState, TodoItem, ToolCallScope, UsageState,
 };
 use crate::app::state::viewport::ChatViewport;
 use crate::app::state::{ChatRenderTraceState, TerminalToolCallRef, TurnNoticeRef};
@@ -238,21 +238,17 @@ pub struct UiSession {
     /// Ack marker required to clear `CommandPending` for strict
     /// completion semantics. Per-session.
     pub pending_command_ack: Option<PendingCommandAck>,
-    /// Auto-submit the current input draft once cancellation
-    /// transitions the app back to `Ready`. Per-session.
-    ///
-    /// **Vestigial** as of issue #85: the cancel-on-submit + post-cancel
-    /// auto-submit pattern was replaced with immediate dispatch +
-    /// wire-echo un-dim (see [`Self::pending_echo_bubbles`]). Always
-    /// `false` in the new flow; left in place to avoid churning every
-    /// consumer in a behaviour-change PR. Future cleanup: delete.
-    pub pending_auto_submit_after_cancel: bool,
-    /// `(prompt_text, message_idx)` pairs for user bubbles awaiting
-    /// the `queued_command` wire echo to un-dim. See issue #85.
+    // `pending_auto_submit_after_cancel` removed 2026-05-13 along
+    // with the cancel-on-submit pattern. Submit dispatches
+    // immediately now; there is no post-cancel auto-submit phase.
+    // See [`Self::pending_echo_bubbles`] for the replacement
+    // mechanism.
+    /// Pending dimmed user bubbles awaiting the `queued_command` wire
+    /// echo to un-dim. See issue #85.
     ///
     /// When the user submits while a turn is in flight, forge:
     /// 1. Pushes a dimmed user bubble at `messages.len()`,
-    /// 2. Records `(text, idx)` here,
+    /// 2. Records `(text, idx, dispatched_at)` here,
     /// 3. Dispatches `Command::Prompt` immediately.
     ///
     /// Claude internally queues the dispatched input and bundles it
@@ -264,10 +260,17 @@ pub struct UiSession {
     ///
     /// FIFO order matches submit order; matching is by exact text
     /// (works for identical successive messages because we pop the
-    /// front match).
+    /// front match). Claude's wire shape for `queued_command` carries
+    /// no `source_uuid` or correlation id, so text-FIFO is the best
+    /// we can do.
+    ///
+    /// `dispatched_at` is read by the staleness sweep in
+    /// `input_submit::sweep_stale_pending_bubbles` — bubbles that
+    /// haven't seen their echo within the staleness window (60s) get
+    /// logged + visually marked.
     ///
     /// Per-session, in-memory only.
-    pub pending_echo_bubbles: VecDeque<(String, usize)>,
+    pub pending_echo_bubbles: VecDeque<PendingEchoBubble>,
     /// Active text selection (mouse-driven). Per-session so a
     /// selection started in one session doesn't render in another
     /// after a switch.
@@ -435,7 +438,6 @@ impl Default for UiSession {
             resuming_session_id: Option::default(),
             pending_command_label: Option::default(),
             pending_command_ack: Option::default(),
-            pending_auto_submit_after_cancel: bool::default(),
             pending_echo_bubbles: VecDeque::default(),
             selection: Option::default(),
             pending_submit: Option::default(),

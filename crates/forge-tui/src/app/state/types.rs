@@ -78,6 +78,26 @@ pub struct SessionPickerState {
 // manages the in-flight queue internally via its `queued_command`
 // content-block mechanism.
 
+/// One entry on `UiSession.pending_echo_bubbles`. Tracks a dimmed
+/// user bubble that was dispatched while a turn was in flight,
+/// waiting for the `queued_command` wire echo to confirm claude
+/// consumed it. See issue #85.
+///
+/// `dispatched_at` is consulted by the staleness sweep to flag
+/// bubbles whose echo never arrived within the threshold (likely
+/// dropped — log + leave visible so the user knows).
+#[derive(Debug, Clone)]
+pub struct PendingEchoBubble {
+    /// Exact prompt text dispatched. Used for FIFO matching against
+    /// incoming `queued_command` echo blocks.
+    pub text: String,
+    /// Index into `UiSession.messages` of the dimmed bubble.
+    pub message_idx: usize,
+    /// When `Command::Prompt` was dispatched. Used by the staleness
+    /// sweep to log + flag bubbles whose echo never arrived.
+    pub dispatched_at: std::time::Instant,
+}
+
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct MessageUsage {
     pub input_tokens: Option<u64>,
@@ -201,10 +221,20 @@ pub enum ToolCallScope {
     SubagentChild { parent_tool_use_id: String },
 }
 
+/// Why the user-visible cancel was requested. As of issue #85 the
+/// only routine caller is the Escape keybinding ([`Self::Manual`]).
+/// The historical `AutoQueue` variant (set by submit-during-busy to
+/// distinguish auto-induced cancels for the post-cancel auto-submit
+/// path) was removed alongside the rest of the local-queue machinery
+/// — submit now dispatches immediately and claude internally queues
+/// in-flight inputs as `queued_command` content blocks.
+///
+/// The enum is kept as a single-variant for forward-extensibility
+/// (future cancel origins like "rate-limit" or "external API" can
+/// land without rewriting every match site).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CancelOrigin {
     Manual,
-    AutoQueue,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

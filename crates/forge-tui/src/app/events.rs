@@ -1457,33 +1457,6 @@ mod tests {
     }
 
     #[test]
-    fn turn_complete_after_auto_cancel_marks_tail_assistant_layout_dirty() {
-        let mut app = make_test_app();
-        app.status = AppStatus::Running;
-        app.active_messages_mut().push(user_msg("build app"));
-        app.active_messages_mut().push(assistant_msg(vec![MessageBlock::Text(
-            TextBlock::from_complete("partial output"),
-        )]));
-        app.set_pending_cancel_origin(Some(CancelOrigin::AutoQueue));
-
-        let session_key = active_session_key(&app);
-        apply_session_update(
-            &mut app,
-            forge_workspace::SessionUpdate::TurnComplete {
-                key: session_key,
-                terminal_reason: None,
-            },
-        );
-
-        assert!(matches!(app.status, AppStatus::Ready));
-        assert!(!app.active_viewport_mut().message_height_is_current(1));
-        let Some(last) = app.messages().last() else {
-            panic!("expected assistant message");
-        };
-        assert!(matches!(last.role, MessageRole::Assistant));
-    }
-
-    #[test]
     fn connected_updates_welcome_session_id_while_pristine() {
         let mut app = make_test_app();
         app.active_messages_mut().push(ChatMessage::welcome(
@@ -3550,36 +3523,6 @@ mod tests {
             panic!("expected text block");
         };
         assert_eq!(block.text, "Conversation interrupted. Tell the model how to proceed.");
-    }
-
-    #[test]
-    fn turn_error_after_auto_cancel_marks_tail_assistant_layout_dirty() {
-        let mut app = make_test_app();
-        app.status = AppStatus::Running;
-        app.active_messages_mut().push(user_msg("build app"));
-        app.active_messages_mut().push(assistant_msg(vec![MessageBlock::Text(
-            TextBlock::from_complete("partial output"),
-        )]));
-        app.set_pending_cancel_origin(Some(CancelOrigin::AutoQueue));
-
-        let session_key = active_session_key(&app);
-        apply_session_update(
-            &mut app,
-            forge_workspace::SessionUpdate::TurnError {
-                key: session_key,
-                message: "Error: Request was aborted.\n    at stack line".into(),
-                class: None,
-                terminal_reason: None,
-            },
-        );
-
-        assert!(matches!(app.status, AppStatus::Ready));
-        assert!(!app.active_viewport_mut().message_height_is_current(1));
-        assert_eq!(app.messages().len(), 2);
-        let Some(last) = app.messages().last() else {
-            panic!("expected assistant message");
-        };
-        assert!(matches!(last.role, MessageRole::Assistant));
     }
 
     #[test]

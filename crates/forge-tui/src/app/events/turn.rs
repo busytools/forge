@@ -1078,7 +1078,6 @@ fn apply_turn_complete_presentation(
         );
     }
     if app.active_view == super::super::ActiveView::Chat {
-        super::super::input_submit::maybe_auto_submit_after_cancel(app);
         // Issue #85 (revised 2026-05-13): queue drain removed.
         // Claude's CLI manages the in-flight queue internally; forge
         // dispatches immediately on submit. Un-dim happens when the
@@ -1221,7 +1220,6 @@ fn apply_turn_error_presentation(
         }
         crate::app::session_runtime::request_context_usage_refresh(app);
         if app.active_view == super::super::ActiveView::Chat {
-            super::super::input_submit::maybe_auto_submit_after_cancel(app);
             // Issue #85 (revised): no drain — claude handles queueing.
         }
         return;
@@ -1274,7 +1272,6 @@ fn apply_turn_error_presentation(
         TurnErrorClass::Other => {}
     }
     app.finalize_turn_runtime_artifacts(model::ToolCallStatus::Failed);
-    app.set_pending_auto_submit_after_cancel(false);
     app.input_mut().clear();
     *app.pending_submit_mut() = None;
     app.status = AppStatus::Error;

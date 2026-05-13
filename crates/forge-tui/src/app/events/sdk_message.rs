@@ -190,6 +190,16 @@ fn walk_assistant_content(
                 let raw_content = record.get("content");
                 apply_tool_result_block(app, tool_use_id, is_error, raw_content, Some(raw));
             }
+            ContentBlock::QueuedCommand { prompt, .. } => {
+                // Symmetric coverage with the user-content walker —
+                // claude *might* embed `queued_command` blocks on an
+                // assistant content array as well as the user side.
+                // Edge case (we've only seen them on the user side
+                // in JSONL captures), but the walker pair is the
+                // safer placement.
+                let prompt_text = extract_queued_command_text(prompt);
+                handle_queued_command_echo(app, &prompt_text);
+            }
             _ => {}
         }
     }
@@ -291,26 +301,66 @@ fn walk_user_tool_results(app: &mut App, content: &[forge_primitives::ContentBlo
             ContentBlock::QueuedCommand { prompt, .. } => {
                 // Issue #85: claude bundled a user-typed-while-busy
                 // message as a `queued_command` content block here.
-                // Match it against a pending dimmed bubble (live case)
-                // or push a fresh user bubble (replay case).
-                let Some(prompt_text) = prompt.as_str() else {
-                    // Multi-block prompt — rare; render the raw shape
-                    // as fallback text so the user sees SOMETHING.
-                    let fallback = serde_json::to_string(prompt).unwrap_or_default();
-                    handle_queued_command_echo(app, &fallback);
-                    continue;
-                };
-                handle_queued_command_echo(app, prompt_text);
+                // Match against a pending dimmed bubble (live) or
+                // push a fresh user bubble (replay).
+                let prompt_text = extract_queued_command_text(prompt);
+                handle_queued_command_echo(app, &prompt_text);
             }
             _ => {}
         }
     }
 }
 
+/// Extract a renderable text string from a `queued_command` block's
+/// `prompt` field. Wire shape for `prompt` is `Value` so it could be
+/// a plain string, OR a content-block array for multi-modal inputs
+/// (e.g. text + image). For the latter, walk the inner blocks and
+/// concatenate the text content. Image/document blocks render as
+/// `[image]` / `[document]` placeholders so the user sees something
+/// rather than blank.
+///
+/// This is invoked twice — once for the user-content walker (live
+/// mid-turn / replay), once for the assistant-content walker (edge
+/// case).
+fn extract_queued_command_text(prompt: &Value) -> String {
+    if let Some(s) = prompt.as_str() {
+        return s.to_owned();
+    }
+    let Some(blocks) = prompt.as_array() else {
+        // Object or other — render as JSON literal so the user can
+        // see SOMETHING. Should never hit in practice.
+        return serde_json::to_string(prompt).unwrap_or_else(|_| String::from("[unrenderable]"));
+    };
+    let mut parts = Vec::new();
+    for block in blocks {
+        let Some(obj) = block.as_object() else { continue };
+        match obj.get("type").and_then(Value::as_str) {
+            Some("text") => {
+                if let Some(t) = obj.get("text").and_then(Value::as_str) {
+                    parts.push(t.to_owned());
+                }
+            }
+            Some("image") => parts.push(String::from("[image]")),
+            Some("document") => parts.push(String::from("[document]")),
+            Some(other) => parts.push(format!("[{other}]")),
+            None => {}
+        }
+    }
+    parts.join("\n")
+}
+
 /// Issue #85: process a `queued_command` content-block echo from the
 /// wire. If a matching pending dimmed bubble exists (live mid-turn
 /// case), un-dim it. Otherwise push a fresh user bubble (replay /
 /// session-resume case).
+///
+/// Matching is by exact prompt text + FIFO ordering (so identical
+/// successive pending entries get un-dimmed in submit-order). Claude
+/// CLI's wire `queued_command` shape carries `{type, prompt,
+/// commandMode}` and does NOT include a `source_uuid` or any
+/// correlation id (verified 2026-05-13 against a real session JSONL),
+/// so text-FIFO is the best we can do. If Anthropic adds a stable
+/// correlation field later, the matching can be tightened.
 fn handle_queued_command_echo(app: &mut App, prompt_text: &str) {
     use crate::app::{ChatMessage, MessageBlock, MessageRole, TextBlock};
     if crate::app::input_submit::un_dim_matching_pending(app, prompt_text) {
@@ -1015,4 +1065,52 @@ fn classify_turn_error_kind(
         return TurnErrorClass::Internal;
     }
     TurnErrorClass::Other
+}
+
+#[cfg(test)]
+mod queued_command_tests {
+    use super::extract_queued_command_text;
+    use serde_json::json;
+
+    #[test]
+    fn plain_string_prompt_round_trips() {
+        let prompt = json!("Q1, let's give.");
+        assert_eq!(extract_queued_command_text(&prompt), "Q1, let's give.");
+    }
+
+    #[test]
+    fn multi_block_prompt_concatenates_text_blocks() {
+        // Multi-modal queued input: text + image.
+        let prompt = json!([
+            {"type": "text", "text": "look at this"},
+            {"type": "image", "source": {"type": "base64", "data": "..."}},
+        ]);
+        assert_eq!(extract_queued_command_text(&prompt), "look at this\n[image]");
+    }
+
+    #[test]
+    fn unknown_inner_block_type_renders_as_placeholder() {
+        // Forward-compat: unrecognised inner block types render as
+        // `[<type>]` placeholders so the user sees something.
+        let prompt = json!([
+            {"type": "text", "text": "hi"},
+            {"type": "future_block_type", "payload": "..."},
+        ]);
+        assert_eq!(extract_queued_command_text(&prompt), "hi\n[future_block_type]");
+    }
+
+    #[test]
+    fn empty_array_returns_empty_string() {
+        let prompt = json!([]);
+        assert_eq!(extract_queued_command_text(&prompt), "");
+    }
+
+    #[test]
+    fn non_array_non_string_falls_back_to_json_literal() {
+        // Object shape — render as JSON literal so the user sees
+        // something rather than blank.
+        let prompt = json!({"weird": "shape"});
+        let out = extract_queued_command_text(&prompt);
+        assert!(out.contains("weird"));
+    }
 }

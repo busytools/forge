@@ -203,6 +203,11 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
         // user-message envelope. Forge un-dims the pending bubble
         // when that content block echoes back on the wire — see
         // `events::sdk_message::handle_queued_command_echo`.
+        //
+        // The staleness sweep below catches bubbles whose echo
+        // never arrived (claude rejected silently, race, etc.).
+        // No-op when the per-session pending deque is empty.
+        crate::app::input_submit::sweep_stale_pending_bubbles(app);
 
         // Tick the burst detector: flush any held/buffered content that
         // has timed out. EmitChar re-inserts a single held character;
