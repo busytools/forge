@@ -2803,6 +2803,70 @@ mod tests {
     }
 
     #[test]
+    fn turn_complete_with_trailing_user_anticipates_next_turn() {
+        // Mid-turn-submitted user bubbles end up at the tail of the
+        // chat when the in-flight turn wraps. Claude immediately
+        // starts a follow-up turn to consume them, but its first
+        // content chunk takes ~1-2s to arrive. forge anticipates the
+        // next turn by pushing an empty assistant placeholder + flipping
+        // status to Thinking so the spinner stays visible.
+        let mut app = make_test_app();
+        app.set_session_id(Some(model::SessionId::new("session-anticipate")));
+        app.active_messages_mut().push(user_msg("first"));
+        app.active_messages_mut().push(assistant_msg(vec![MessageBlock::Text(
+            TextBlock::from_complete("response to first"),
+        )]));
+        app.active_messages_mut().push(user_msg("mid-turn-1"));
+        app.active_messages_mut().push(user_msg("mid-turn-2"));
+        app.status = AppStatus::Running;
+
+        let session_key = active_session_key(&app);
+        apply_session_update(
+            &mut app,
+            forge_workspace::SessionUpdate::TurnComplete {
+                key: session_key,
+                terminal_reason: None,
+            },
+        );
+
+        // An empty assistant placeholder was appended after the two
+        // mid-turn user bubbles, and the active turn assistant index
+        // points at it.
+        let last = app.messages().last().expect("trailing assistant placeholder");
+        assert!(matches!(last.role, MessageRole::Assistant));
+        assert!(last.blocks.is_empty(), "placeholder is empty until claude streams text");
+        assert_eq!(app.active_turn_assistant_message_idx(), Some(app.messages().len() - 1));
+        // Status flipped back to Thinking so the spinner renders.
+        assert!(matches!(app.status, AppStatus::Thinking));
+    }
+
+    #[test]
+    fn turn_complete_with_trailing_assistant_does_not_anticipate() {
+        // Standard turn completion (no mid-turn submits): tail is the
+        // assistant message that just streamed. No extra placeholder
+        // pushed, status returns to Ready.
+        let mut app = make_test_app();
+        app.set_session_id(Some(model::SessionId::new("session-normal")));
+        app.active_messages_mut().push(user_msg("hi"));
+        app.active_messages_mut()
+            .push(assistant_msg(vec![MessageBlock::Text(TextBlock::from_complete("hello back"))]));
+        app.status = AppStatus::Running;
+
+        let before = app.messages().len();
+        let session_key = active_session_key(&app);
+        apply_session_update(
+            &mut app,
+            forge_workspace::SessionUpdate::TurnComplete {
+                key: session_key,
+                terminal_reason: None,
+            },
+        );
+
+        assert_eq!(app.messages().len(), before, "no extra placeholder appended");
+        assert!(matches!(app.status, AppStatus::Ready));
+    }
+
+    #[test]
     fn turn_complete_keeps_history_and_adds_compaction_success_after_manual_boundary() {
         let mut app = make_test_app();
         app.set_session_id(Some(model::SessionId::new("session-x")));

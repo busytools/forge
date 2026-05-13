@@ -1042,6 +1042,7 @@ fn apply_turn_complete_presentation(
     }
     let exit = begin_turn_exit(app, true);
     let turn_was_active = exit.turn_was_active;
+    let tail_assistant_idx_before = exit.tail_assistant_idx;
     if let Some(reason) = terminal_reason {
         tracing::debug!(
             target: crate::logging::targets::APP_SESSION,
@@ -1077,9 +1078,69 @@ fn apply_turn_complete_presentation(
             super::super::notify::NotifyEvent::TurnComplete,
         );
     }
+    // Mid-turn submits leave user bubbles after the active assistant.
+    // When this turn wraps, claude immediately starts another turn to
+    // consume those buffered prompts — but its first content chunk
+    // can take 1-2s to arrive, leaving a gap where the chat looks
+    // idle. Anticipate that next turn: push an empty assistant
+    // placeholder + flip back to Thinking so the spinner shows
+    // continuously through the handoff.
+    anticipate_buffered_next_turn(app, tail_assistant_idx_before);
     // No git-diff refresh trigger here — the `git_diff` module's
     // periodic ticker (1s poke + 10s staleness rule) catches any
     // post-turn file changes within the next ticker pass.
+}
+
+/// When a turn wraps with mid-turn-submitted user bubbles still at
+/// the tail (claude buffered them internally and is about to consume
+/// them in a fresh turn), push the assistant placeholder + spinner
+/// for that next turn proactively so the user sees continuous
+/// activity instead of a brief "idle" gap.
+///
+/// `tail_assistant_idx_before` is the position of the assistant
+/// message at the start of turn exit (before
+/// `remove_empty_tail_assistant` ran). Mid-turn submits push user
+/// bubbles AFTER that index, so a tail-User whose index exceeds
+/// `tail_assistant_idx_before` is unambiguously a mid-turn submit.
+/// A tail-User at or before that index means the prior assistant
+/// placeholder was empty + got removed (degenerate turn) and there
+/// were no mid-turn submits — don't anticipate.
+fn anticipate_buffered_next_turn(app: &mut App, tail_assistant_idx_before: Option<usize>) {
+    let Some(last_idx) = app.messages().len().checked_sub(1) else {
+        return;
+    };
+    let last_is_user = app
+        .messages()
+        .get(last_idx)
+        .is_some_and(|m| matches!(m.role, crate::app::MessageRole::User));
+    if !last_is_user {
+        return;
+    }
+    match tail_assistant_idx_before {
+        Some(prior_idx) if last_idx > prior_idx => {}
+        _ => return,
+    }
+    app.push_message_tracked(crate::app::ChatMessage::new(
+        crate::app::MessageRole::Assistant,
+        Vec::new(),
+        None,
+    ));
+    app.bind_active_turn_assistant_to_tail();
+    app.enforce_history_retention_tracked();
+    app.status = super::super::AppStatus::Thinking;
+    if let Some(key) = app.active_session_key.clone() {
+        super::set_bucket_lifecycle_state(
+            app,
+            &key,
+            crate::app::session::SessionLifecycleState::Running,
+        );
+    }
+    tracing::debug!(
+        target: crate::logging::targets::APP_SESSION,
+        event_name = "anticipated_buffered_turn",
+        message = "trailing user bubbles → pushed assistant placeholder for next turn",
+        outcome = "success",
+    );
 }
 
 /// Active-path entry point used by `sdk_message::apply_result_finalize`.
