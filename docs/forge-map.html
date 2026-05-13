@@ -523,8 +523,8 @@ chat continues here…
   </div>
   <div class="surface-body">
     <p>Right-side pane, 40ch wide, docked to the right of the chat frame. Mirror of the <a href="#projects-pane">Projects pane</a> on the left in chrome (banner + rule), Narrow-tier overlay semantics, and persisted-visibility model. The horizontal layout is asymmetric on purpose: the left pane has a <code>│</code> separator + 1-col padding between it and the chat column; the right pane sits flush against the chat column, using the chat's own scrollbar rail (<code>▕</code>) as the visual divider. The pane's own 2-col content indent provides breathing room from the scrollbar. Reads strictly from the active session — switching projects via the left pane swaps the Inspector's content alongside it.</p>
-    <p>The pane carries two sections: <strong>GIT</strong> (always rendered) and <strong>TASKS</strong> (rendered when the active session has todos or a pending verification nudge). The chat scrollback no longer surfaces a <code>TodoWrite</code> tool-call card; updates land transparently in the <code>TASKS</code> section. When the active session has no todos, only the <code>GIT</code> section renders below the banner + rule.</p>
-    <p>The <strong>GIT</strong> section shows the active session's cwd, current branch (when in a repo), an optional subtitle (<code>worktree</code> for uncommitted changes, <code>vs &lt;default&gt;</code> for a clean feature branch), aggregate <code>+N -M</code> totals, and the top-5 files (head-truncated when the path overflows). The data is polled — <code>git_diff</code> shells out to <code>git --numstat</code> every 10 s for the active session only; a 1 s ticker pokes the drain pump, the rule "snapshot is <code>None</code> OR age ≥ 10 s → fetch" decides whether to spawn a scan.</p>
+    <p>The pane carries two sections: <strong>GIT</strong> (always rendered) and <strong>TASKS</strong> (rendered when the active session has todos or a pending verification nudge). A DIM <code>─</code> horizontal rule separates them so the two surfaces read as visually distinct rather than two adjacent DIM-bold headers. The chat scrollback no longer surfaces a <code>TodoWrite</code> tool-call card; updates land transparently in the <code>TASKS</code> section. When the active session has no todos, only the <code>GIT</code> section renders below the banner + rule.</p>
+    <p>The <strong>GIT</strong> section shows the active session's cwd, the current branch with aggregate <code>+N -M</code> totals right-justified beside it (when there's a diff), and a box-drawing tree of the top-5 changed files grouped by directory. Single-child directory chains fold into one row so paths like <code>crates/forge-agent/src/env/</code> appear as a single header above their file children. The data is polled — <code>git_diff</code> shells out to <code>git --numstat</code> every 10 s for the active session only; a 1 s ticker pokes the drain pump, the rule "snapshot is <code>None</code> OR age ≥ 10 s → fetch" decides whether to spawn a scan.</p>
     <div class="term">
       <pre class="indent">
   <span class="accent-bold">INSPECTOR</span>
@@ -533,12 +533,21 @@ chat continues here…
   <span class="dim bold">  GIT</span>
 
   <span class="dim">  ~/Projects/forge</span>
-  <span class="dim">  ⎇</span> <span class="accent">feat/x</span>
+  <span class="dim">  ⎇</span> <span class="accent">feat/x</span>           <span class="success">+1667</span> <span class="error">-1139</span>
 
-  <span class="warning">  worktree</span>          <span class="success">+12</span> <span class="error">-3</span>
+  <span class="dim">  crates</span>
+  <span class="dim">  ├─ forge-agent/src/env</span>
+  <span class="dim">  │  ├─ git_diff.rs</span>      <span class="success">+648</span> <span class="error">-0</span>
+  <span class="dim">  │  └─ git.rs</span>             <span class="success">+0</span> <span class="error">-559</span>
+  <span class="dim">  └─ forge-tui/src</span>
+  <span class="dim">     ├─ app</span>
+  <span class="dim">     │  ├─ git_diff.rs</span>   <span class="success">+427</span> <span class="error">-0</span>
+  <span class="dim">     │  └─ git_context.rs</span>   <span class="success">+0</span> <span class="error">-179</span>
+  <span class="dim">     └─ ui</span>
+  <span class="dim">        └─ inspector_pane.rs</span> <span class="success">+340</span> <span class="error">-21</span>
+  <span class="dim italic">  +22 more</span>
 
-  <span class="dim">  src/foo.rs</span>      <span class="success">+9</span> <span class="error">-2</span>
-  <span class="dim">  src/bar.rs</span>      <span class="success">+3</span> <span class="error">-1</span>
+  <span class="dim">─────────────────────────</span>
 
   <span class="dim bold">  TASKS</span>
 
@@ -552,11 +561,11 @@ chat continues here…
     </div>
     <p>GIT renders one of five shapes, all keyed off <code>UiSession.git_diff_snapshot</code>:</p>
     <ul style="color: var(--muted); font-size: 13px; line-height: 1.7; margin: 0 0 12px 18px;">
-      <li><strong>No snapshot yet</strong> (pre-first-scan window) — only the path row renders. Branch / subtitle / files are added once the first poll completes.</li>
-      <li><strong>Not a git repo</strong> (<code>GitDiffView::NoRepo</code>) — only the path row renders. No branch, no diff.</li>
-      <li><strong>Clean default branch</strong> (<code>GitDiffView::CleanDefault</code>) — path + branch row in DIM (or yellow <code>HEAD</code> for detached HEAD + clean tree). No subtitle, no diff.</li>
-      <li><strong>Worktree dirty</strong> (<code>GitDiffView::Worktree</code>) — path + branch + yellow <code>worktree</code> subtitle with right-justified <code>+TOTAL -TOTAL</code> totals + per-file rows + optional <code>+N more</code> overflow when more than 5 files changed.</li>
-      <li><strong>Feature branch clean</strong> (<code>GitDiffView::BranchVsDefault</code>) — path + branch in <span class="accent">RUST_ORANGE</span> + DIM <code>vs &lt;default&gt;</code> subtitle with right-justified totals + per-file rows for the branch-vs-default diff.</li>
+      <li><strong>No snapshot yet</strong> (pre-first-scan window) — only the path row renders. Branch + tree are added once the first poll completes.</li>
+      <li><strong>Not a git repo</strong> (<code>GitDiffView::NoRepo</code>) — only the path row renders. No branch, no tree.</li>
+      <li><strong>Clean default branch</strong> (<code>GitDiffView::CleanDefault</code>) — path + branch row in DIM with no trailing totals (or yellow <code>HEAD</code> for detached HEAD + clean tree). No tree.</li>
+      <li><strong>Worktree dirty</strong> (<code>GitDiffView::Worktree</code>) — path + branch row with right-justified aggregate <code>+TOTAL -TOTAL</code> totals + box-drawing tree of the top-5 modified files + optional <code>+N more</code> overflow.</li>
+      <li><strong>Feature branch clean</strong> (<code>GitDiffView::BranchVsDefault</code>) — path + branch in <span class="accent">RUST_ORANGE</span> with right-justified branch-vs-default totals + the same tree shape, sourced from <code>git diff &lt;default&gt;...HEAD</code>.</li>
     </ul>
     <p>Item glyphs and styles:</p>
     <ul style="color: var(--muted); font-size: 13px; line-height: 1.7; margin: 0 0 12px 18px;">
@@ -577,7 +586,7 @@ chat continues here…
   <span class="accent">  ▸</span> <span class="bold">Open PR</span>
 </pre>
     </div>
-    <p>Empty TASKS state — when the active session has no todos, the GIT section still renders. With a clean default branch + no diff to show:</p>
+    <p>Empty TASKS state — when the active session has no todos, the GIT section renders without a TASKS separator below it. With a clean default branch + no diff to show:</p>
     <div class="term">
       <pre class="indent">
   <span class="accent-bold">INSPECTOR</span>
@@ -605,12 +614,21 @@ chat continues here…
 <span class="dim bold">  GIT</span>
 
 <span class="dim">  ~/Projects/forge</span>
-<span class="dim">  ⎇</span> <span class="accent">feat/x</span>
+<span class="dim">  ⎇</span> <span class="accent">feat/x</span>                                <span class="success">+1667</span> <span class="error">-1139</span>
 
-<span class="warning">  worktree</span>                                <span class="success">+12</span> <span class="error">-3</span>
+<span class="dim">  crates</span>
+<span class="dim">  ├─ forge-agent/src/env</span>
+<span class="dim">  │  ├─ git_diff.rs</span>                       <span class="success">+648</span> <span class="error">-0</span>
+<span class="dim">  │  └─ git.rs</span>                              <span class="success">+0</span> <span class="error">-559</span>
+<span class="dim">  └─ forge-tui/src</span>
+<span class="dim">     ├─ app</span>
+<span class="dim">     │  ├─ git_diff.rs</span>                    <span class="success">+427</span> <span class="error">-0</span>
+<span class="dim">     │  └─ git_context.rs</span>                   <span class="success">+0</span> <span class="error">-179</span>
+<span class="dim">     └─ ui</span>
+<span class="dim">        └─ inspector_pane.rs</span>             <span class="success">+340</span> <span class="error">-21</span>
+<span class="dim italic">  +22 more</span>
 
-<span class="dim">  src/foo.rs</span>                              <span class="success">+9</span> <span class="error">-2</span>
-<span class="dim">  src/bar.rs</span>                              <span class="success">+3</span> <span class="error">-1</span>
+<span class="dim">─────────────────────────────────────────────────</span>
 
 <span class="dim bold">  TASKS</span>
 
@@ -623,7 +641,7 @@ chat continues here…
     </div>
     <dl>
       <dt>code</dt><dd><code>crates/forge-tui/src/ui/inspector_pane.rs::render</code> (inline) · <code>::render_overlay</code> (Narrow overlay) · <code>crates/forge-tui/src/ui/top_bar.rs::render</code> (Narrow top bar — both icons) · click handling in <code>crates/forge-tui/src/app/events/mouse.rs</code> · git-diff poller in <code>crates/forge-tui/src/app/git_diff.rs</code> (1 s ticker + 10 s staleness rule) → <code>forge_workspace::scan_git_diff</code> → <code>forge_agent::env::git_diff::scan</code></dd>
-      <dt>color</dt><dd>banner (<code>INSPECTOR</code> / <code>INSPECTOR ▦</code>): <code>RUST_ORANGE</code> bold · rule: <code>DIM</code> · section headers (<code>GIT</code>, <code>TASKS</code>): <code>DIM</code> bold · GIT path + per-file paths: <code>DIM</code> · GIT branch glyph (<code>⎇</code>): <code>DIM</code> · GIT branch name: <code>DIM</code> on default branch, <span class="accent">RUST_ORANGE</span> on a feature branch, <span class="warning">yellow</span> (<code>HEAD</code>) for detached HEAD · GIT <code>worktree</code> subtitle: <span class="warning">yellow</span> · GIT <code>vs &lt;default&gt;</code> subtitle: <code>DIM</code> · GIT <code>+N</code> totals + per-file added: <span class="success">green</span> · GIT <code>-M</code> totals + per-file removed: <span class="error">red</span> · GIT <code>+N more</code> overflow: <code>DIM</code> italic · TASKS completed glyph (<code>✓</code>) + text: <span class="success">green</span> glyph, <code>DIM</code> crossed-out text · TASKS in-progress glyph (<code>▸</code>) + text: <code>RUST_ORANGE</code> glyph, white bold text · TASKS pending glyph (<code>○</code>) + text: <code>DIM</code> · verification nudge line: <span class="warning">yellow</span> · top-bar <code>▦</code> icon: <code>DIM</code> when overlay closed, <code>RUST_ORANGE</code> bold when open · overlay <code>✕</code>: <code>DIM</code></dd>
+      <dt>color</dt><dd>banner (<code>INSPECTOR</code> / <code>INSPECTOR ▦</code>): <code>RUST_ORANGE</code> bold · banner rule + GIT/TASKS separator rule: <code>DIM</code> · section headers (<code>GIT</code>, <code>TASKS</code>): <code>DIM</code> bold · GIT path: <code>DIM</code> · GIT branch glyph (<code>⎇</code>): <code>DIM</code> · GIT branch name: <code>DIM</code> on default branch, <span class="accent">RUST_ORANGE</span> on a feature branch, <span class="warning">yellow</span> (<code>HEAD</code>) for detached HEAD · GIT branch-row aggregate <code>+N</code>: <span class="success">green</span>, <code>-M</code>: <span class="error">red</span> (right-justified beside the branch name; only when the snapshot carries a diff) · GIT tree connectors (<code>├─</code> / <code>└─</code> / <code>│</code>) + directory labels + file leaf labels: <code>DIM</code> · GIT per-file <code>+N</code>: <span class="success">green</span>, <code>-M</code>: <span class="error">red</span> · GIT <code>+N more</code> overflow: <code>DIM</code> italic · TASKS completed glyph (<code>✓</code>) + text: <span class="success">green</span> glyph, <code>DIM</code> crossed-out text · TASKS in-progress glyph (<code>▸</code>) + text: <code>RUST_ORANGE</code> glyph, white bold text · TASKS pending glyph (<code>○</code>) + text: <code>DIM</code> · verification nudge line: <span class="warning">yellow</span> · top-bar <code>▦</code> icon: <code>DIM</code> when overlay closed, <code>RUST_ORANGE</code> bold when open · overlay <code>✕</code>: <code>DIM</code></dd>
       <dt>data source</dt><dd>GIT: <code>UiSession.git_diff_snapshot</code> — produced by the agent-side scanner (<code>forge_agent::env::git_diff::scan</code>) which shells out to <code>git rev-parse</code> / <code>symbolic-ref</code> / <code>status --porcelain</code> / <code>diff --numstat</code>, mediated by <code>forge_workspace::Workspace::scan_git_diff</code>. Polled every 10 s for the active session only — synthetic spawn buckets and pre-Connect buckets skip refresh. Cwd changes invalidate the cached snapshot via a generation epoch bump so any in-flight scan against the old cwd is dropped. TASKS: per-active-session <code>app.todos()</code> (the <code>UiSession.todos</code> bucket from PR #109). <code>TodoWriteOutputMetadata.verification_nudge_needed</code> from the latest <code>TodoWrite</code> tool result drives the nudge line.</dd>
       <dt>click</dt><dd>v1: read-only. No clickable items. Future could surface a click-to-expand for truncated items, or a click-to-toggle-complete affordance. At Narrow tier the <code>▦</code> top-bar icon toggles overlay open/close; the overlay <code>✕</code> glyph dismisses.</dd>
       <dt>toggle</dt><dd><kbd>Ctrl+E</kbd> at Wide / Medium tiers hides / restores the inline pane (persisted to <code>forge-state.toml</code> <code>[ui].inspector_pane_visible</code>, default <code>true</code>). At Narrow tier <kbd>Ctrl+E</kbd> toggles the transient overlay flag (NOT persisted — each launch starts closed). <kbd>Esc</kbd> also closes the overlay. Mirror of the left pane's <kbd>Ctrl+B</kbd>.</dd>
@@ -1479,9 +1497,10 @@ chat continues here…
     <tr><td class="glyph">╮</td><td class="codepoint">U+256E</td><td>top-right corner</td><td></td></tr>
     <tr><td class="glyph">╰</td><td class="codepoint">U+2570</td><td>bottom-left corner</td><td></td></tr>
     <tr><td class="glyph">╯</td><td class="codepoint">U+256F</td><td>bottom-right corner</td><td></td></tr>
-    <tr><td class="glyph">─</td><td class="codepoint">U+2500</td><td>horizontal lines</td><td>also <code>theme::SEPARATOR_CHAR</code> (used between chat and input, etc.)</td></tr>
-    <tr><td class="glyph">│</td><td class="codepoint">U+2502</td><td>vertical lines</td><td>standard tool body prefix (<code>  │  </code>) · overlay borders</td></tr>
-    <tr><td class="glyph">└</td><td class="codepoint">U+2514</td><td>tool body last-line corner</td><td>combined with <code>─</code> as <code>└─ </code> for the final body row</td></tr>
+    <tr><td class="glyph">─</td><td class="codepoint">U+2500</td><td>horizontal lines</td><td>also <code>theme::SEPARATOR_CHAR</code> (used between chat and input, banner rules, Inspector pane GIT/TASKS separator, etc.)</td></tr>
+    <tr><td class="glyph">│</td><td class="codepoint">U+2502</td><td>vertical lines</td><td>standard tool body prefix (<code>  │  </code>) · overlay borders · Inspector GIT tree continuation column</td></tr>
+    <tr><td class="glyph">├</td><td class="codepoint">U+251C</td><td>Inspector GIT tree connector</td><td>tee-right — marks a non-last child in the file tree, combined with <code>─</code> as <code>├─ </code></td></tr>
+    <tr><td class="glyph">└</td><td class="codepoint">U+2514</td><td>tool body last-line corner · Inspector GIT tree connector</td><td>combined with <code>─</code> as <code>└─ </code> for the final body row, also the last-child connector in the GIT file tree</td></tr>
     <tr><td class="glyph">⬚</td><td class="codepoint">U+2B1A</td><td>Read tool icon</td><td>open square — read-only inspection</td></tr>
     <tr><td class="glyph">▣</td><td class="codepoint">U+25A3</td><td>Write/Edit/MultiEdit/NotebookEdit/Delete</td><td>filled square — mutation</td></tr>
     <tr><td class="glyph">⌕</td><td class="codepoint">U+2315</td><td>Glob/Grep/LS</td><td>magnifier</td></tr>

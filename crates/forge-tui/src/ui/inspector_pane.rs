@@ -2,12 +2,14 @@
 //! overlay at Narrow tier).
 //!
 //! Mirror of the left [`crate::ui::projects_pane`] in chrome and
-//! tier behaviour. Two sections:
+//! tier behaviour. Two sections separated by a DIM `─` rule:
 //!
-//! - `GIT` — always rendered. Shows the active session's cwd plus a
-//!   snapshot-driven branch row, subtitle (`worktree` /
-//!   `vs <default>`), aggregate `+N -M` totals, and the top file
-//!   list — sourced from `UiSession.git_diff_snapshot`.
+//! - `GIT` — always rendered. Shows the active session's cwd, the
+//!   current branch with aggregate `+N -M` totals right-justified
+//!   beside it (when there's a diff), and a box-drawing tree of
+//!   the top-N changed files grouped by directory. Single-child
+//!   directory chains fold so deep paths render as one row. Sourced
+//!   from `UiSession.git_diff_snapshot`.
 //! - `TASKS` — rendered when the active session has todos or a
 //!   pending verification nudge. The live `TodoWrite` snapshot is
 //!   the sole surface for the todo list; the chat-stream
@@ -42,6 +44,12 @@ use crate::app::TodoStatus;
 /// Horizontal padding inside the pane (matches the left
 /// `projects_pane`'s 2-col indent).
 const PANE_PAD: u16 = 2;
+
+/// Minimum gap (cols) between the path column and the stats column
+/// in a per-file diff row. Reserves visual breathing room so the
+/// truncated path never butts up against the `+N -M` numbers even at
+/// the worst-case width.
+const PATH_STATS_GAP: usize = 2;
 
 /// Render the Inspector pane into `area` (inline at Wide/Medium).
 pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
@@ -119,23 +127,40 @@ fn build_lines(app: &App, width: u16) -> Vec<Line<'static>> {
 
 /// Append the body (GIT section + verification nudge + TASKS
 /// section) to `lines`. Shared between the inline render and the
-/// Narrow overlay render.
+/// Narrow overlay render. GIT and TASKS are separated by a DIM
+/// `─` rule mirroring the projects pane's project-list /
+/// account-panel boundary, so the two surfaces read as visually
+/// distinct rather than two `DIM bold` headers next to each other.
 fn append_body(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
     append_git_section(lines, app, width);
 
     let todos = app.todos();
     let has_tasks = !todos.is_empty() || app.todo_verification_nudge();
     if has_tasks {
-        // Blank separator between GIT and TASKS sections.
+        lines.push(Line::default());
+        push_section_rule(lines, width);
         lines.push(Line::default());
         append_tasks_section(lines, app, width);
     }
 }
 
+/// Append a dim `─` horizontal rule across `width − 2` cols with a
+/// 1-col leading space, matching the banner-rule + projects-pane
+/// section-separator shape so the inspector body reads consistently
+/// with the rest of the chrome.
+fn push_section_rule(lines: &mut Vec<Line<'static>>, width: u16) {
+    let rule_width = usize::from(width.saturating_sub(2));
+    lines.push(Line::from(vec![
+        Span::raw(" "),
+        Span::styled("\u{2500}".repeat(rule_width), Style::default().fg(theme::DIM)),
+    ]));
+}
+
 /// Append the GIT section to `lines`. Always renders header + path.
-/// Branch, subtitle, totals, and file list are gated on the
-/// active session's `git_diff_snapshot` — `None` (no scan yet)
-/// stops after the path row.
+/// Branch (with right-justified aggregate totals when the snapshot
+/// carries a diff) + file tree are gated on the active session's
+/// `git_diff_snapshot` — `None` (no scan yet) stops after the path
+/// row.
 fn append_git_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
     // Section header — DIM bold, flush against the rule above
     // (mirrors `TASKS`).
@@ -160,77 +185,48 @@ fn append_git_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
         return;
     };
 
+    // Carry aggregate totals (worktree dirty OR branch-vs-default,
+    // whichever the scanner produced) so they can attach to the
+    // branch row. `CleanDefault` / `NoRepo` carry no totals.
+    let (files_slice, total_files, totals): (&[GitDiffFile], usize, Option<(u32, u32)>) =
+        match &snapshot.view {
+            GitDiffView::NoRepo | GitDiffView::CleanDefault => (&[], 0, None),
+            GitDiffView::Worktree { files, total_files, total_added, total_removed }
+            | GitDiffView::BranchVsDefault { files, total_files, total_added, total_removed } => {
+                (files.as_slice(), *total_files, Some((*total_added, *total_removed)))
+            }
+        };
+
     // Branch row — gated on the resolved branch state. `NoRepo` and
-    // `Unknown` collapse to no row.
+    // `Unknown` collapse to no row. Aggregate `+N -M` totals (when
+    // there's a diff) right-justify to the pane edge alongside the
+    // branch name.
     if let Some((label, color)) = branch_row_for(snapshot) {
-        let branch_chrome = usize::from(PANE_PAD) + 2; // "  ⎇ "
-        let branch_budget = usize::from(width).saturating_sub(branch_chrome);
-        let label = truncate_with_ellipsis(&label, branch_budget);
+        lines.push(branch_line(width, &label, color, totals));
+    }
+
+    if files_slice.is_empty() {
+        return;
+    }
+
+    // Blank between the branch row and the file tree.
+    lines.push(Line::default());
+
+    let tree = build_tree(files_slice);
+    render_tree(lines, &tree, width);
+
+    // Overflow row when the trimmed top-N is shorter than the total
+    // changed-files count.
+    if total_files > files_slice.len() {
+        let more = total_files - files_slice.len();
         lines.push(Line::from(vec![
-            Span::styled("  \u{2387} ".to_owned(), Style::default().fg(theme::DIM)),
-            Span::styled(label, Style::default().fg(color)),
+            Span::raw("  "),
+            Span::styled(
+                format!("+{more} more"),
+                Style::default().fg(theme::DIM).add_modifier(Modifier::ITALIC),
+            ),
         ]));
     }
-
-    match &snapshot.view {
-        GitDiffView::NoRepo | GitDiffView::CleanDefault => {
-            // No subtitle, no file list. Path (+ optional branch) is the whole section.
-        }
-        GitDiffView::Worktree { files, total_files, total_added, total_removed } => {
-            append_diff_block(
-                lines,
-                width,
-                DiffSectionHeader { label: "worktree", color: theme::STATUS_WARNING },
-                DiffSectionTotals {
-                    files,
-                    total_files: *total_files,
-                    total_added: *total_added,
-                    total_removed: *total_removed,
-                },
-            );
-        }
-        GitDiffView::BranchVsDefault { files, total_files, total_added, total_removed } => {
-            // `BranchVsDefault` is only constructed by the scanner
-            // when a default branch resolved (see `git_diff.rs` —
-            // `default_branch.as_deref()`'s `let-else` returns
-            // `CleanDefault` when `None`). The `unwrap_or_default`
-            // is a defensive fallback for future drift; an empty
-            // string renders as `vs ` which is preferable to a
-            // panic.
-            let default = snapshot.default_branch.as_deref().unwrap_or_default();
-            let subtitle = format!("vs {default}");
-            append_diff_block(
-                lines,
-                width,
-                DiffSectionHeader { label: &subtitle, color: theme::DIM },
-                DiffSectionTotals {
-                    files,
-                    total_files: *total_files,
-                    total_added: *total_added,
-                    total_removed: *total_removed,
-                },
-            );
-        }
-    }
-}
-
-/// Subtitle label + colour for a diff section. `worktree` renders
-/// in `STATUS_WARNING`; `vs <default>` renders in `DIM`.
-#[derive(Clone, Copy)]
-struct DiffSectionHeader<'a> {
-    label: &'a str,
-    color: Color,
-}
-
-/// Aggregate stats + per-file rows for a diff section. `files` is
-/// already trimmed to the top-N; `total_files` covers the full
-/// changed-file count for the `+N more` overflow line.
-#[derive(Clone, Copy)]
-struct DiffSectionTotals<'a> {
-    files: &'a [GitDiffFile],
-    total_files: usize,
-    total_added: u32,
-    total_removed: u32,
 }
 
 /// Resolve the branch row's `(label, color)` for the snapshot.
@@ -247,115 +243,279 @@ fn branch_row_for(snapshot: &GitDiffSnapshot) -> Option<(String, Color)> {
     }
 }
 
-/// Append the diff block (blank + subtitle row + blank + file rows +
-/// overflow indicator) under the branch row.
-fn append_diff_block(
-    lines: &mut Vec<Line<'static>>,
-    width: u16,
-    header: DiffSectionHeader<'_>,
-    totals: DiffSectionTotals<'_>,
-) {
-    // Blank between the branch row and the subtitle.
-    lines.push(Line::default());
-
-    // Subtitle row with right-justified `+N -M` totals. Layout:
-    // `  <subtitle> …pad…  +N -M  ` — left indent + right gutter
-    // both `PANE_PAD`.
-    lines.push(stat_line(
-        width,
-        header.label,
-        header.color,
-        totals.total_added,
-        totals.total_removed,
-    ));
-
-    // Blank between the subtitle row and the per-file rows. When
-    // there are no per-file rows (empty list — defensive, only if
-    // git reported counts but no parseable numstat lines), we still
-    // emit the blank for visual consistency with the populated case.
-    if !totals.files.is_empty() {
-        lines.push(Line::default());
-    }
-
-    for file in totals.files {
-        let f_added = format!("+{}", file.added);
-        let f_removed = format!("-{}", file.removed);
-        let f_added_chars = f_added.chars().count();
-        let f_removed_chars = f_removed.chars().count();
-        // Path budget = width - left indent - stats column - right gutter.
-        let stats_width = f_added_chars + 1 + f_removed_chars; // `+N -M`
-        let path_budget = usize::from(width)
-            .saturating_sub(usize::from(PANE_PAD)) // left indent
-            .saturating_sub(stats_width)
-            .saturating_sub(usize::from(PANE_PAD)); // right gutter
-        let path_value = fit_path_head_truncated(&file.path, path_budget);
-        let path_chars = path_value.chars().count();
-        let pad = usize::from(width)
-            .saturating_sub(usize::from(PANE_PAD))
-            .saturating_sub(path_chars)
-            .saturating_sub(stats_width)
-            .saturating_sub(usize::from(PANE_PAD));
-        lines.push(Line::from(vec![
-            Span::raw("  "),
-            Span::styled(path_value, Style::default().fg(theme::DIM)),
-            Span::raw(" ".repeat(pad)),
-            Span::styled(f_added, Style::default().fg(Color::Green)),
-            Span::raw(" "),
-            Span::styled(f_removed, Style::default().fg(Color::Red)),
-            Span::raw("  "),
-        ]));
-    }
-
-    // Overflow row when the trimmed top-N is shorter than the total
-    // changed-files count.
-    if totals.total_files > totals.files.len() {
-        let more = totals.total_files - totals.files.len();
-        lines.push(Line::from(vec![
-            Span::raw("  "),
-            Span::styled(
-                format!("+{more} more"),
-                Style::default().fg(theme::DIM).add_modifier(Modifier::ITALIC),
-            ),
-        ]));
-    }
-}
-
-/// One line laying out `  <label>  …pad…  +A -R  ` for the subtitle
-/// row. Path-row layout uses the same shape but with per-file
-/// budgeting — see `append_diff_block`.
-fn stat_line(
+/// Render the branch row: `  ⎇ <label> …pad… +A -R  `. When `totals`
+/// is `None` (clean tree on the default branch) the trailing stats
+/// + their pad collapse to nothing, leaving just `  ⎇ <label>`.
+fn branch_line(
     width: u16,
     label: &str,
     label_color: Color,
-    added: u32,
-    removed: u32,
+    totals: Option<(u32, u32)>,
 ) -> Line<'static> {
+    let glyph_chrome = usize::from(PANE_PAD) + 2; // "  ⎇ "
+    let mut spans = vec![Span::styled("  \u{2387} ".to_owned(), Style::default().fg(theme::DIM))];
+    let Some((added, removed)) = totals else {
+        // No diff — render the branch name without a stats column.
+        // Truncate to the remaining budget if the branch name itself
+        // overflows.
+        let label_budget = usize::from(width).saturating_sub(glyph_chrome);
+        let fitted = truncate_with_ellipsis(label, label_budget);
+        spans.push(Span::styled(fitted, Style::default().fg(label_color)));
+        return Line::from(spans);
+    };
+
     let added_str = format!("+{added}");
     let removed_str = format!("-{removed}");
-    let added_chars = added_str.chars().count();
-    let removed_chars = removed_str.chars().count();
-    let label_chars = label.chars().count();
-    let stats_width = added_chars + 1 + removed_chars;
+    let stats_width = added_str.chars().count() + 1 + removed_str.chars().count();
+    // Reserve `PATH_STATS_GAP` between label and stats so a wide
+    // branch name can't butt up against the numbers.
+    let label_budget = usize::from(width)
+        .saturating_sub(glyph_chrome)
+        .saturating_sub(PATH_STATS_GAP)
+        .saturating_sub(stats_width)
+        .saturating_sub(usize::from(PANE_PAD));
+    let fitted = truncate_with_ellipsis(label, label_budget);
+    let label_chars = fitted.chars().count();
     let pad = usize::from(width)
-        .saturating_sub(usize::from(PANE_PAD))
+        .saturating_sub(glyph_chrome)
         .saturating_sub(label_chars)
         .saturating_sub(stats_width)
         .saturating_sub(usize::from(PANE_PAD));
-    Line::from(vec![
+    spans.push(Span::styled(fitted, Style::default().fg(label_color)));
+    spans.push(Span::raw(" ".repeat(pad)));
+    spans.push(Span::styled(added_str, Style::default().fg(Color::Green)));
+    spans.push(Span::raw(" "));
+    spans.push(Span::styled(removed_str, Style::default().fg(Color::Red)));
+    spans.push(Span::raw("  "));
+    Line::from(spans)
+}
+
+/// Tree node built from the diff's file list — a single trie node
+/// with either a `file_stats` leaf or zero+ `children` (a
+/// directory). After construction we fold any non-root dir whose
+/// only child is itself a dir, collapsing chains like
+/// `crates/forge-tui/src` into a single labelled row.
+struct TreeNode {
+    /// Display label for this node. Folded chains are joined with
+    /// `/` here (e.g. `forge-agent/src/env`). The implicit root has
+    /// an empty label and is never rendered.
+    label: String,
+    /// `Some` for file leaves (carries `(added, removed)`), `None`
+    /// for directories.
+    file_stats: Option<(u32, u32)>,
+    /// Sorted children: directories first (alpha), then files
+    /// (alpha). Empty for file leaves.
+    children: Vec<TreeNode>,
+}
+
+impl TreeNode {
+    fn is_dir(&self) -> bool {
+        self.file_stats.is_none()
+    }
+}
+
+/// Build a tree from the (already top-N trimmed + change-sorted)
+/// file list. Resulting tree has the implicit root with each
+/// distinct top-level component as a direct child.
+fn build_tree(files: &[GitDiffFile]) -> TreeNode {
+    let mut root = TreeNode { label: String::new(), file_stats: None, children: Vec::new() };
+    for file in files {
+        insert_file(&mut root, &file.path, (file.added, file.removed));
+    }
+    sort_tree(&mut root);
+    fold_single_child_dirs(&mut root);
+    root
+}
+
+fn insert_file(node: &mut TreeNode, path: &str, stats: (u32, u32)) {
+    let mut components = path.split('/').filter(|c| !c.is_empty());
+    let Some(first) = components.next() else {
+        // Empty path — ignore (defensive; the scanner doesn't emit
+        // empty paths but the renderer shouldn't panic if it ever
+        // does).
+        return;
+    };
+    let rest: Vec<&str> = components.collect();
+    if rest.is_empty() {
+        // Leaf — attach as a file child. Duplicate file names in the
+        // same directory would overwrite here, but git's diff output
+        // can't produce that shape (every path is unique).
+        node.children.push(TreeNode {
+            label: first.to_owned(),
+            file_stats: Some(stats),
+            children: Vec::new(),
+        });
+        return;
+    }
+    // Find or insert the directory child for `first`.
+    let dir_idx = node
+        .children
+        .iter()
+        .position(|child| child.is_dir() && child.label == first)
+        .unwrap_or_else(|| {
+            node.children.push(TreeNode {
+                label: first.to_owned(),
+                file_stats: None,
+                children: Vec::new(),
+            });
+            node.children.len() - 1
+        });
+    let remainder = rest.join("/");
+    insert_file(&mut node.children[dir_idx], &remainder, stats);
+}
+
+/// Sort children: directories first (alpha), then files (alpha).
+/// Recurses into directory children.
+fn sort_tree(node: &mut TreeNode) {
+    node.children.sort_by(|a, b| match (a.is_dir(), b.is_dir()) {
+        (true, false) => std::cmp::Ordering::Less,
+        (false, true) => std::cmp::Ordering::Greater,
+        _ => a.label.cmp(&b.label),
+    });
+    for child in &mut node.children {
+        sort_tree(child);
+    }
+}
+
+/// Fold any directory whose only child is itself a directory by
+/// concatenating labels with `/`. Repeatedly applies until no more
+/// folding is possible. Recurses depth-first so deep chains
+/// (`crates/forge-tui/src`) collapse in one pass.
+fn fold_single_child_dirs(node: &mut TreeNode) {
+    for child in &mut node.children {
+        fold_single_child_dirs(child);
+    }
+    // Now fold this node's directory children whose only child is a
+    // directory. (Files cannot be folded onto their parent — that
+    // would lose the file's stats row.)
+    for child in &mut node.children {
+        while child.is_dir() && child.children.len() == 1 && child.children[0].is_dir() {
+            let mut only = child.children.remove(0);
+            child.label.push('/');
+            child.label.push_str(&only.label);
+            child.children = std::mem::take(&mut only.children);
+        }
+    }
+}
+
+/// Render the tree under `root`'s implicit-root children. Each
+/// top-level entry renders flush with the pane indent (no connector);
+/// deeper entries gain `├─` / `└─` connectors with `│  ` /  `   `
+/// continuation prefixes for ancestor levels.
+fn render_tree(lines: &mut Vec<Line<'static>>, root: &TreeNode, width: u16) {
+    let count = root.children.len();
+    for (idx, child) in root.children.iter().enumerate() {
+        let is_last = idx + 1 == count;
+        render_tree_node(lines, child, "", true, is_last, width);
+    }
+}
+
+fn render_tree_node(
+    lines: &mut Vec<Line<'static>>,
+    node: &TreeNode,
+    prefix: &str,
+    is_top_level: bool,
+    is_last: bool,
+    width: u16,
+) {
+    let connector = if is_top_level {
+        ""
+    } else if is_last {
+        "\u{2514}\u{2500} "
+    } else {
+        "\u{251c}\u{2500} "
+    };
+    let line_prefix = format!("{prefix}{connector}");
+    lines.push(tree_row(width, &line_prefix, &node.label, node.file_stats));
+
+    if node.children.is_empty() {
+        return;
+    }
+    // Compute the prefix continuation for THIS node's children.
+    // Top-level entries don't have a visible connector above them so
+    // their children start with no continuation prefix; deeper nodes
+    // append `│  ` (not-last) or `   ` (last) to mark which ancestor
+    // columns still have unfinished siblings below.
+    let continuation = if is_top_level {
+        String::new()
+    } else if is_last {
+        format!("{prefix}   ")
+    } else {
+        format!("{prefix}\u{2502}  ")
+    };
+    let count = node.children.len();
+    for (idx, child) in node.children.iter().enumerate() {
+        let child_is_last = idx + 1 == count;
+        render_tree_node(lines, child, &continuation, false, child_is_last, width);
+    }
+}
+
+/// One tree row: pane indent + tree prefix + label + (for file
+/// leaves) right-justified `+N -M` stats. Directory rows render the
+/// label DIM with no stats column.
+fn tree_row(
+    width: u16,
+    tree_prefix: &str,
+    label: &str,
+    file_stats: Option<(u32, u32)>,
+) -> Line<'static> {
+    let prefix_chars = tree_prefix.chars().count();
+    let mut spans = vec![
         Span::raw("  "),
-        Span::styled(label.to_owned(), Style::default().fg(label_color)),
-        Span::raw(" ".repeat(pad)),
-        Span::styled(added_str, Style::default().fg(Color::Green)),
-        Span::raw(" "),
-        Span::styled(removed_str, Style::default().fg(Color::Red)),
-        Span::raw("  "),
-    ])
+        Span::styled(tree_prefix.to_owned(), Style::default().fg(theme::DIM)),
+    ];
+
+    let Some((added, removed)) = file_stats else {
+        // Directory row — just the label, no stats. Truncate the
+        // label if it overflows the available width (rare in
+        // practice since folding keeps single-child chains
+        // collapsed).
+        let label_budget = usize::from(width)
+            .saturating_sub(usize::from(PANE_PAD))
+            .saturating_sub(prefix_chars)
+            .saturating_sub(usize::from(PANE_PAD));
+        let fitted = truncate_with_ellipsis(label, label_budget);
+        spans.push(Span::styled(fitted, Style::default().fg(theme::DIM)));
+        return Line::from(spans);
+    };
+
+    let added_str = format!("+{added}");
+    let removed_str = format!("-{removed}");
+    let stats_width = added_str.chars().count() + 1 + removed_str.chars().count();
+    // Reserve `PATH_STATS_GAP` cols between label and stats so the
+    // stats column always has breathing room even when the filename
+    // is exactly at budget.
+    let label_budget = usize::from(width)
+        .saturating_sub(usize::from(PANE_PAD))
+        .saturating_sub(prefix_chars)
+        .saturating_sub(PATH_STATS_GAP)
+        .saturating_sub(stats_width)
+        .saturating_sub(usize::from(PANE_PAD));
+    let fitted = truncate_with_ellipsis(label, label_budget);
+    let label_chars = fitted.chars().count();
+    let pad = usize::from(width)
+        .saturating_sub(usize::from(PANE_PAD))
+        .saturating_sub(prefix_chars)
+        .saturating_sub(label_chars)
+        .saturating_sub(stats_width)
+        .saturating_sub(usize::from(PANE_PAD));
+    spans.push(Span::styled(fitted, Style::default().fg(theme::DIM)));
+    spans.push(Span::raw(" ".repeat(pad)));
+    spans.push(Span::styled(added_str, Style::default().fg(Color::Green)));
+    spans.push(Span::raw(" "));
+    spans.push(Span::styled(removed_str, Style::default().fg(Color::Red)));
+    spans.push(Span::raw("  "));
+    Line::from(spans)
 }
 
 /// Head-truncate `s` to at most `max_chars` characters with a
 /// leading `…` ellipsis. Preserves the tail (so the leaf component
-/// of a path / filename stays visible). Returns the original
-/// string when it already fits; collapses to `…` at `max_chars` ≤ 1.
+/// of a path / filename stays visible). When `s` contains `/`
+/// separators the truncation prefers to drop whole leading
+/// components (yielding `…/foo/bar.rs` rather than chopping
+/// mid-name); falls back to character-level head-truncation when
+/// even the basename is too long. Returns the original string when
+/// it already fits; collapses to `…` at `max_chars` ≤ 1.
 fn fit_path_head_truncated(s: &str, max_chars: usize) -> String {
     let total = s.chars().count();
     if total <= max_chars {
@@ -364,7 +524,23 @@ fn fit_path_head_truncated(s: &str, max_chars: usize) -> String {
     if max_chars <= 1 {
         return "\u{2026}".to_owned();
     }
-    let keep = max_chars - 1; // room for the leading ellipsis
+    // Try component-aware truncation: walk left-to-right over the
+    // path components and return the first tail that fits when
+    // prefixed with `…/`. Lands at a `/` boundary so the result
+    // reads as a clean partial path rather than a chopped string.
+    let components: Vec<&str> = s.split('/').collect();
+    if components.len() > 1 {
+        for start in 1..components.len() {
+            let tail = components[start..].join("/");
+            let with_prefix = format!("\u{2026}/{tail}");
+            if with_prefix.chars().count() <= max_chars {
+                return with_prefix;
+            }
+        }
+    }
+    // Even the basename overflows — fall back to char-level cut
+    // so we at least preserve the trailing characters.
+    let keep = max_chars - 1;
     let skip = total - keep;
     let mut out = String::from("\u{2026}");
     out.extend(s.chars().skip(skip));
@@ -600,12 +776,31 @@ mod tests {
 
     #[test]
     fn head_truncate_keeps_tail_with_leading_ellipsis() {
-        // 12 chars budget; the tail (after the dropped head) plus the
-        // leading `…` must come out to exactly 12 chars.
-        let out = fit_path_head_truncated("~/Projects/forge/crates/forge-tui", 12);
-        assert_eq!(out.chars().count(), 12);
+        // Component-aware truncation lands at a `/` boundary, so the
+        // result is `≤ max_chars` (not necessarily exactly equal) and
+        // always starts `…/` when at least one component was dropped.
+        let out = fit_path_head_truncated("~/Projects/forge/crates/forge-tui", 16);
+        assert!(out.chars().count() <= 16, "got {out:?}");
+        assert!(out.starts_with("\u{2026}/"), "got {out:?}");
+        assert!(out.ends_with("forge-tui"), "got {out:?}");
+    }
+
+    #[test]
+    fn head_truncate_drops_leading_components_first() {
+        // 29-char budget — too tight for the full path, but
+        // `…/src/env/git_diff.rs` (21 chars) fits cleanly at a
+        // component boundary.
+        let out = fit_path_head_truncated("crates/forge-agent/src/env/git_diff.rs", 29);
+        assert_eq!(out, "\u{2026}/src/env/git_diff.rs");
+    }
+
+    #[test]
+    fn head_truncate_basename_overflow_falls_back_to_char_cut() {
+        // No `/` separators at all — has to char-cut.
+        let out = fit_path_head_truncated("supercalifragilisticexpialidocious", 10);
+        assert_eq!(out.chars().count(), 10);
         assert!(out.starts_with('\u{2026}'));
-        assert!(out.ends_with("forge-tui"));
+        assert!(out.ends_with("docious"));
     }
 
     #[test]
@@ -660,5 +855,115 @@ mod tests {
     fn branch_row_unknown_collapses_to_none() {
         let s = snap(GitBranch::Unknown, None, GitDiffView::CleanDefault);
         assert!(branch_row_for(&s).is_none());
+    }
+
+    fn file(path: &str, added: u32, removed: u32) -> GitDiffFile {
+        GitDiffFile { path: path.to_owned(), added, removed }
+    }
+
+    /// One row in the flattened tree shape used by the tree-builder
+    /// tests: `(depth, label, file_stats)`. Aliased here to dodge
+    /// clippy's `type_complexity` lint without an inline `#[allow]`.
+    type FlatRow = (usize, String, Option<(u32, u32)>);
+
+    /// Build the tree from a representative diff and walk it to a
+    /// flat `(depth, label, file_stats)` list so the test reads as a
+    /// structure-checking shape rather than poking at private fields.
+    fn flatten(tree: &TreeNode, depth: usize, out: &mut Vec<FlatRow>) {
+        if !tree.label.is_empty() {
+            out.push((depth, tree.label.clone(), tree.file_stats));
+        }
+        for child in &tree.children {
+            flatten(child, if tree.label.is_empty() { depth } else { depth + 1 }, out);
+        }
+    }
+
+    #[test]
+    fn build_tree_folds_single_child_directory_chains() {
+        let files = vec![
+            file("crates/forge-agent/src/env/git_diff.rs", 648, 0),
+            file("crates/forge-agent/src/env/git.rs", 0, 559),
+        ];
+        let tree = build_tree(&files);
+        let mut flat = Vec::new();
+        flatten(&tree, 0, &mut flat);
+        assert_eq!(
+            flat,
+            vec![
+                (0, "crates/forge-agent/src/env".to_owned(), None),
+                (1, "git.rs".to_owned(), Some((0, 559))),
+                (1, "git_diff.rs".to_owned(), Some((648, 0))),
+            ]
+        );
+    }
+
+    #[test]
+    fn build_tree_stops_folding_at_first_split() {
+        // `crates` has two dir children → don't fold.
+        // `forge-tui` has one dir child (`src`) → fold into `forge-tui/src`.
+        // `forge-tui/src` has two dir children (`app`, `ui`) → stop.
+        let files = vec![
+            file("crates/forge-agent/src/env/git_diff.rs", 648, 0),
+            file("crates/forge-tui/src/app/git_diff.rs", 427, 0),
+            file("crates/forge-tui/src/ui/inspector_pane.rs", 340, 21),
+        ];
+        let tree = build_tree(&files);
+        let mut flat = Vec::new();
+        flatten(&tree, 0, &mut flat);
+        assert_eq!(
+            flat,
+            vec![
+                (0, "crates".to_owned(), None),
+                (1, "forge-agent/src/env".to_owned(), None),
+                (2, "git_diff.rs".to_owned(), Some((648, 0))),
+                (1, "forge-tui/src".to_owned(), None),
+                (2, "app".to_owned(), None),
+                (3, "git_diff.rs".to_owned(), Some((427, 0))),
+                (2, "ui".to_owned(), None),
+                (3, "inspector_pane.rs".to_owned(), Some((340, 21))),
+            ]
+        );
+    }
+
+    #[test]
+    fn build_tree_directories_sort_before_files_within_a_node() {
+        let files = vec![
+            file("Cargo.toml", 3, 1),
+            file("crates/forge-tui/src/app.rs", 10, 2),
+            file("README.md", 1, 0),
+        ];
+        let tree = build_tree(&files);
+        let mut flat = Vec::new();
+        flatten(&tree, 0, &mut flat);
+        // `crates/...` (folded) directory entry should come first;
+        // then files in alpha order at the root level.
+        assert_eq!(
+            flat,
+            vec![
+                (0, "crates/forge-tui/src".to_owned(), None),
+                (1, "app.rs".to_owned(), Some((10, 2))),
+                (0, "Cargo.toml".to_owned(), Some((3, 1))),
+                (0, "README.md".to_owned(), Some((1, 0))),
+            ]
+        );
+    }
+
+    #[test]
+    fn build_tree_does_not_fold_dir_with_single_file_child() {
+        // `ui` has one child but it's a file — fold rule is dir-dir
+        // only, so `ui` stays as its own row above the file leaf.
+        let files = vec![file("crates/forge-tui/src/ui/inspector_pane.rs", 340, 21)];
+        let tree = build_tree(&files);
+        let mut flat = Vec::new();
+        flatten(&tree, 0, &mut flat);
+        assert_eq!(
+            flat,
+            vec![
+                // The whole chain folds because every directory has
+                // a single dir child up to the leaf's parent.
+                (0, "crates/forge-tui/src/ui".to_owned(), None),
+                (1, "inspector_pane.rs".to_owned(), Some((340, 21))),
+            ]
+        );
     }
 }
