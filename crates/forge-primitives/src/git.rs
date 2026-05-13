@@ -1,20 +1,12 @@
 //! Git introspection data shapes.
 //!
-//! Type-only — the watcher impl (notify + tokio + filesystem) lives
-//! in `forge_agent::env::git`. These are the wire shapes that cross
-//! crate boundaries.
+//! Type-only — branch resolution + diff scanning live in
+//! `forge_agent::env::git_diff`. `GitBranch` is the wire shape
+//! re-used by both the agent-side snapshot and the TUI-side render.
 
 use serde::{Deserialize, Serialize};
 
-/// A point-in-time snapshot of the git introspection state.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct GitContext {
-    /// Current branch resolution. `NoRepo` when `cwd` isn't inside a
-    /// git tree at all.
-    pub branch: GitBranch,
-}
-
-/// Branch resolution states emitted by `git_context` and the watcher.
+/// Branch resolution states emitted by the git-diff scanner.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum GitBranch {

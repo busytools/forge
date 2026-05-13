@@ -27,11 +27,16 @@ pub(crate) fn status_lines(app: &App) -> Vec<Line<'static>> {
 
     kv_line(&mut lines, "cwd", app.cwd());
 
-    if let Some(chip) = app.git_branch_chip() {
-        let branch_text = match chip {
-            crate::app::git_context::BranchChip::Named(name) => name.to_owned(),
-            crate::app::git_context::BranchChip::Detached => "(detached)".to_owned(),
-        };
+    if let Some(branch_text) = app
+        .active_session()
+        .and_then(|s| s.git_diff_snapshot.as_ref())
+        .and_then(|snap| match &snap.branch {
+            forge_primitives::git::GitBranch::Named(name) => Some(name.clone()),
+            forge_primitives::git::GitBranch::Detached => Some("(detached)".to_owned()),
+            forge_primitives::git::GitBranch::NoRepo
+            | forge_primitives::git::GitBranch::Unknown => None,
+        })
+    {
         kv_line(&mut lines, "Git branch", &branch_text);
     }
 

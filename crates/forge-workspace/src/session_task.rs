@@ -349,10 +349,6 @@ impl SessionTask {
                     .update_tx
                     .send(SessionUpdate::OauthCredentialsSnapshot { session_id, credentials });
             }
-            AgentEvent::GitContextSnapshot { session_id, context } => {
-                let _ =
-                    self.update_tx.send(SessionUpdate::GitContextSnapshot { session_id, context });
-            }
             AgentEvent::ContextUsage { session_id, percentage } => {
                 let _ = self
                     .update_tx
@@ -623,10 +619,6 @@ pub(crate) fn execute_command_via_handle(
             );
             Ok(())
         }
-        Command::StartGitWatch { key: _, session_id, cwd } => {
-            handle.start_git_context_watch(session_id, cwd)
-        }
-        Command::StopGitWatch { key: _, session_id } => handle.stop_git_context_watch(session_id),
         // The remaining variants (CloseSession, the four Request*
         // refresh commands, RuntimeReload, UpdatePermissions)
         // aren't wired through `dispatch` yet — they predate the

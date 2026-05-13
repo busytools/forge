@@ -5,4 +5,5 @@
 //! (network-side talk to api.anthropic.com): `env` is local-machine
 //! state about the project the user is working on right now.
 
-pub mod git;
+pub mod cli_version;
+pub mod git_diff;

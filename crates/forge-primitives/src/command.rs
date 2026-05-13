@@ -5,7 +5,6 @@
 //! etc.) live on a separate sync surface, not in `Command`.
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
@@ -146,15 +145,6 @@ pub enum Command {
 
     // --- Plugins / runtime ---
     ReloadPlugins {
-        session_id: SessionId,
-    },
-
-    // --- Git context ---
-    StartGitContextWatch {
-        session_id: SessionId,
-        cwd: PathBuf,
-    },
-    StopGitContextWatch {
         session_id: SessionId,
     },
 }

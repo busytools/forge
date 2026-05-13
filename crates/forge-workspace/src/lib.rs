@@ -68,7 +68,7 @@
 //! the **dependency graph** level: `forge-tui/Cargo.toml` has no
 //! `forge-agent` line; everything routes through forge-workspace. But
 //! the workspace exposes forge-agent's submodules verbatim via
-//! pass-through `pub use` (see `cloud`, `commands`, `env::git`,
+//! pass-through `pub use` (see `cloud`, `commands`, `env::git_diff`,
 //! `session_lifecycle`, `tooling`, `translate`, `userdata` below).
 //! Types like `forge_workspace::cloud::oauth::Token` are *defined* in
 //! forge-agent — the workspace just exposes them under the workspace
@@ -113,7 +113,7 @@ pub use forge_agent::client::SessionLaunchSettings;
 // Production code in forge-tui consumes data via `SessionUpdate`
 // events; these re-exports back the small set of helpers + types the
 // TUI still calls directly (translate::*, tooling::*, commands::*,
-// session_lifecycle::*, cloud::*, env::git::*, userdata::*).
+// session_lifecycle::*, cloud::*, env::git_diff::*, userdata::*).
 pub mod cloud {
     pub use forge_agent::cloud::*;
 }
@@ -121,8 +121,11 @@ pub mod commands {
     pub use forge_agent::commands::*;
 }
 pub mod env {
-    pub mod git {
-        pub use forge_agent::env::git::*;
+    pub mod cli_version {
+        pub use forge_agent::env::cli_version::*;
+    }
+    pub mod git_diff {
+        pub use forge_agent::env::git_diff::*;
     }
 }
 pub mod session_lifecycle {

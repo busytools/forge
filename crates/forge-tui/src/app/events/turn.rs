@@ -1080,6 +1080,9 @@ fn apply_turn_complete_presentation(
     if app.active_view == super::super::ActiveView::Chat {
         super::super::input_submit::maybe_auto_submit_after_cancel(app);
     }
+    // No git-diff refresh trigger here — the `git_diff` module's
+    // periodic ticker (1s poke + 10s staleness rule) catches any
+    // post-turn file changes within the next ticker pass.
 }
 
 /// Active-path entry point used by `sdk_message::apply_result_finalize`.

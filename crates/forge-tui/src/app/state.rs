@@ -261,6 +261,25 @@ pub struct App {
     pub update_tx: mpsc::UnboundedSender<forge_workspace::SessionUpdate>,
     pub file_index_event_tx: std_mpsc::Sender<file_index::FileIndexEvent>,
     pub file_index_event_rx: std_mpsc::Receiver<file_index::FileIndexEvent>,
+    /// Send / receive ends of the TUI-internal channel that the
+    /// `crate::app::git_diff` background scanner tasks use to
+    /// hand `GitDiffSnapshot` results back to the main loop.
+    /// Mirrors the file_index channel pattern.
+    pub git_diff_event_tx: std_mpsc::Sender<crate::app::git_diff::GitDiffEvent>,
+    pub git_diff_event_rx: std_mpsc::Receiver<crate::app::git_diff::GitDiffEvent>,
+    /// Send / receive ends of the TUI-internal channel that the
+    /// `crate::app::cli_version` startup fetch task uses to hand
+    /// the merged `CliVersionInfo` snapshot back to the main loop.
+    /// One-shot in practice (single fetch at startup); the channel
+    /// stays open for the app's lifetime in case a follow-up
+    /// re-fetch is added later.
+    pub cli_version_event_tx: std_mpsc::Sender<crate::app::cli_version::CliVersionEvent>,
+    pub cli_version_event_rx: std_mpsc::Receiver<crate::app::cli_version::CliVersionEvent>,
+    /// Latest installed-vs-published claude CLI version snapshot.
+    /// `None` until the startup fetch task lands. Rendered by the
+    /// bottom-left account panel; missing values render as DIM `—`
+    /// so the panel's row count stays constant.
+    pub cli_version_info: Option<forge_workspace::env::cli_version::CliVersionInfo>,
     pub spinner_frame: usize,
     pub spinner_last_advance_at: Option<Instant>,
     /// Session-level preference for collapsing non-Execute tool call bodies.
@@ -492,6 +511,10 @@ impl App {
         // it's a no-op when the bucket's index is already scanning
         // or has a current root matching the cwd.
         crate::app::file_index::ensure_started(self);
+        // No explicit git-diff refresh on session switch — the 10s
+        // timer (which fires its first tick immediately) catches any
+        // stale snapshot on the next pump cycle. Keeping the switch
+        // path lean.
         self.force_redraw = true;
         self.needs_redraw = true;
     }
@@ -2206,6 +2229,8 @@ impl App {
     pub fn test_default() -> Self {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<forge_workspace::SessionUpdate>();
         let (file_index_tx, file_index_rx) = std_mpsc::channel();
+        let (git_diff_tx, git_diff_rx) = std_mpsc::channel();
+        let (cli_version_tx, cli_version_rx) = std_mpsc::channel();
         let pending_key = forge_workspace::SessionKey::from_session_id(Self::PRE_CONNECT_KEY);
         let mut pending_session = super::session::UiSession::new(pending_key.clone());
         // Seed a synthetic `current_model` so tests that depend on
@@ -2254,6 +2279,11 @@ impl App {
             update_tx: tx,
             file_index_event_tx: file_index_tx,
             file_index_event_rx: file_index_rx,
+            git_diff_event_tx: git_diff_tx,
+            git_diff_event_rx: git_diff_rx,
+            cli_version_event_tx: cli_version_tx,
+            cli_version_event_rx: cli_version_rx,
+            cli_version_info: None,
             spinner_frame: 0,
             spinner_last_advance_at: None,
             tools_collapsed: false,
@@ -2289,37 +2319,6 @@ impl App {
             startup_session_picker_resolved: false,
             startup_project: None,
         }
-    }
-
-    #[must_use]
-    pub fn git_branch(&self) -> Option<&str> {
-        self.active_session().and_then(|s| s.git_context.branch_name())
-    }
-
-    /// Structured form of `git_branch()` that distinguishes named
-    /// branches from detached HEAD so renderers can style them
-    /// differently. `NoRepo` and `Unknown` collapse to `None` —
-    /// nothing to show in the chip.
-    #[must_use]
-    pub(crate) fn git_branch_chip(&self) -> Option<crate::app::git_context::BranchChip<'_>> {
-        self.active_session().and_then(|s| s.git_context.branch_chip())
-    }
-
-    /// Apply a bridge-pushed git context snapshot to the local
-    /// cache. Marks `needs_redraw` when the resolved branch changes.
-    pub fn apply_git_context_snapshot(&mut self, info: forge_primitives::git::GitContext) {
-        let changed = self.active_bucket_mut().git_context.apply_snapshot(info);
-        self.needs_redraw |= changed;
-    }
-
-    #[cfg(test)]
-    pub fn set_git_detached_for_test(&mut self) {
-        self.active_bucket_mut().git_context.set_detached_for_test();
-    }
-
-    #[cfg(test)]
-    pub fn set_git_branch_for_test(&mut self, branch: Option<&str>) {
-        self.active_bucket_mut().git_context.set_branch_for_test(branch);
     }
 
     /// Resolve the effective focus owner for Up/Down and other directional keys.

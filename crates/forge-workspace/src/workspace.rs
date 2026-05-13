@@ -1000,6 +1000,37 @@ impl Workspace {
         handle.oauth_usage().await.map_err(|err| err.to_string())
     }
 
+    /// Scan the project at `cwd` and return a git-diff snapshot for
+    /// the Inspector pane's GIT section. Delegates to
+    /// [`forge_agent::env::git_diff::scan`] — exists as a workspace
+    /// method so the TUI never depends on `forge-agent` directly
+    /// (see CLAUDE.md placement guide).
+    ///
+    /// Infallible: scanner errors collapse to
+    /// `GitDiffView::NoRepo` with structured WARN logs. Renderer
+    /// treats the returned snapshot as authoritative regardless of
+    /// which variant came back.
+    pub async fn scan_git_diff(
+        &self,
+        cwd: &std::path::Path,
+    ) -> forge_agent::env::git_diff::GitDiffSnapshot {
+        forge_agent::env::git_diff::scan(cwd).await
+    }
+
+    /// Probe the local `claude --version` and the latest published
+    /// version on npm in parallel, returning both via
+    /// [`forge_agent::env::cli_version::CliVersionInfo`]. Used by
+    /// the bottom-left account panel to render the forge + claude
+    /// version rows and the `↑ vX.Y.Z` update indicator.
+    ///
+    /// Infallible: each probe collapses to `None` on its half of the
+    /// struct when it fails (binary missing, no network, parse
+    /// failure, timeout); structured WARN logs surface the failure
+    /// without breaking the renderer.
+    pub async fn fetch_cli_version_info(&self) -> forge_agent::env::cli_version::CliVersionInfo {
+        forge_agent::env::cli_version::fetch_info().await
+    }
+
     /// Borrow the [`Arc<AgentHandle>`] registered against `key`.
     /// Workspace-internal helper — surfaces a sometimes-`None` to keep
     /// the early-init / disconnected branches explicit.

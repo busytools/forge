@@ -19,7 +19,6 @@ use forge_workspace::SessionKey;
 use crate::agent::events::TerminalMap;
 use crate::agent::model;
 use crate::app::file_index::FileIndexState;
-use crate::app::git_context::GitContextState;
 use crate::app::input::InputSnapshot;
 use crate::app::input::InputState;
 use crate::app::state::cache_metrics::CacheMetrics;
@@ -199,10 +198,6 @@ pub struct UiSession {
     /// Number of files accessed during the active turn (incremented
     /// on Read/Edit/Write tool starts, reset on TurnComplete).
     pub files_accessed: usize,
-    /// Git repo context used by footer/status rendering and live
-    /// branch tracking. Mutated by bridge-pushed git context
-    /// snapshots.
-    pub(crate) git_context: GitContextState,
     /// Config > MCP live server snapshot and refresh lifecycle.
     pub mcp: McpState,
     /// Anthropic plan usage snapshot and refresh lifecycle. Per-session
@@ -285,6 +280,25 @@ pub struct UiSession {
     /// Surfaces as a dim-yellow notice above the TASKS header in the
     /// Inspector pane. Cleared on the next `TodoWrite`.
     pub todo_verification_nudge: bool,
+
+    // ---- Git diff snapshot (Inspector GIT section) ----
+    /// Latest poll result. `None` until the first scan completes
+    /// (post-Connect). Replaces the retired `GitContextWatcher`
+    /// branch push — the snapshot carries branch info too.
+    pub git_diff_snapshot: Option<forge_workspace::env::git_diff::GitDiffSnapshot>,
+    /// Generation epoch. Bumped on cwd change (Connected,
+    /// SessionReplaced). Spawned scanner echoes it into its event
+    /// so `drain_events` can drop stale results from a previous
+    /// cwd.
+    pub git_diff_generation: u64,
+    /// In-flight scan guard. Spawned scanner task sets to `true`
+    /// before running, clears on exit. `request_refresh` early-
+    /// returns when this is already `true`.
+    pub git_diff_scan_in_flight: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// When the latest snapshot was applied. Used by the
+    /// switch-session refresh hook to decide whether to refresh
+    /// on `active_session_key` change.
+    pub git_diff_last_refreshed_at: Option<std::time::Instant>,
 
     // ---- Render cache + history retention ----
     /// Cached render-cache slot metadata parallel to
@@ -386,7 +400,6 @@ impl Default for UiSession {
             oauth_credentials: Option::default(),
             cwd: String::default(),
             files_accessed: usize::default(),
-            git_context: GitContextState::default(),
             mcp: McpState::default(),
             usage: UsageState::default(),
             recent_sessions: Vec::default(),
@@ -408,6 +421,10 @@ impl Default for UiSession {
             subagent: Option::default(),
             todos: Vec::default(),
             todo_verification_nudge: bool::default(),
+            git_diff_snapshot: None,
+            git_diff_generation: 0,
+            git_diff_scan_in_flight: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            git_diff_last_refreshed_at: None,
             render_cache_slots: Vec::default(),
             render_cache_total_bytes: usize::default(),
             render_cache_protected_bytes: usize::default(),
