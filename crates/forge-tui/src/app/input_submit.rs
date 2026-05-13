@@ -143,9 +143,11 @@ pub(super) fn maybe_auto_submit_after_cancel(app: &mut App) {
 ///   and starts a new turn with the combined payload. Used by the
 ///   `TurnComplete` / cancelled-error drain hooks.
 /// - **Thinking / Running** (turn still in flight): injects the
-///   combined payload mid-turn — writes to claude stdin without
-///   pushing an assistant placeholder, letting claude's existing
-///   stream emit the next assistant message naturally. Used by the
+///   combined payload mid-turn AND pushes a fresh assistant
+///   placeholder at the tail, re-binding the active assistant index
+///   so claude's continued stream chunks land in chronological order
+///   BELOW the un-dimmed user bubbles. The previously-streaming
+///   assistant message freezes wherever it was. Used by the
 ///   `tool_result` and time-based-fallback hooks.
 /// - Other statuses (Connecting, Error, CommandPending): no-op; queue
 ///   waits.
@@ -250,11 +252,31 @@ enum DrainMode {
 }
 
 /// Mid-turn drain: dispatch `Command::Prompt` while a turn is in
-/// flight. Does NOT push an assistant placeholder (the in-flight
-/// assistant message already exists and continues streaming) and
-/// does NOT change `app.status` or lifecycle state. Claude's
-/// existing stream picks up the new user message and emits its next
-/// assistant response naturally.
+/// flight, AND push a fresh empty assistant placeholder so subsequent
+/// stream chunks land in chronological order (below the queued user
+/// bubbles, not into the previously-active assistant message above
+/// them).
+///
+/// Why the placeholder is mandatory here: the streaming chunk handler
+/// appends text to whichever message [`App::active_turn_assistant_message_idx`]
+/// points at. If we left the index pointing at the old assistant
+/// message that was streaming BEFORE the queued bubbles, claude's
+/// continued response would land ABOVE the user bubbles even though
+/// it's responding to them — confusing visual ordering. By pushing
+/// a fresh placeholder AT THE TAIL (after the un-dimmed user
+/// bubbles) and re-binding the active index, the next chunk lands
+/// below, producing the correct chronological flow:
+///
+/// ```text
+/// user1
+/// assistant1   ← frozen at whatever it had streamed pre-injection
+/// user2        ← was queued, just un-dimmed
+/// user3        ← was queued, just un-dimmed
+/// assistant2   ← fresh placeholder, continued response lands here
+/// ```
+///
+/// Status + lifecycle stay as Thinking/Running — the turn never
+/// ended; we just reparented the streaming target.
 fn inject_combined_into_running_turn(
     app: &mut App,
     text: String,
@@ -268,6 +290,13 @@ fn inject_combined_into_running_turn(
     };
     let input_chars = text.chars().count();
     let session_id = sid.to_string();
+
+    // Reparent the streaming assistant target onto a fresh placeholder
+    // at the tail — see doc comment above for why this is mandatory.
+    app.push_message_tracked(ChatMessage::new(MessageRole::Assistant, Vec::new(), None));
+    app.bind_active_turn_assistant_to_tail();
+    app.enforce_history_retention_tracked();
+    app.active_viewport_mut().engage_auto_scroll();
 
     let tx = app.update_tx.clone();
     let prompt_text = text;
@@ -637,12 +666,14 @@ mod tests {
     }
 
     #[test]
-    fn drain_queued_messages_mid_turn_injects_without_assistant_placeholder() {
-        // Issue #85 amendment: mid-turn drain (status=Running) should
-        // inject the prompt into the in-flight turn WITHOUT pushing
-        // a new assistant placeholder. claude's existing stream
-        // continues; the un-dimmed bubble lands in chat history
-        // before the next assistant message.
+    fn drain_queued_messages_mid_turn_reparents_assistant_target() {
+        // Issue #85 amendment: mid-turn drain (status=Running) injects
+        // the prompt AND pushes a fresh assistant placeholder at the
+        // tail, re-binding the active assistant index so subsequent
+        // stream chunks land BELOW the un-dimmed user bubbles (in
+        // chronological order). Without this, claude's continued
+        // response streams into the previously-active assistant
+        // message ABOVE the queued bubbles — broken ordering.
         let (mut app, mut rx) = app_with_connection();
         app.status = AppStatus::Running;
         app.input_mut().set_text("steering message");
@@ -655,10 +686,16 @@ mod tests {
         // Drain while still Running — mid-turn injection path.
         drain_queued_messages(&mut app);
 
-        // Bubble un-dimmed; status UNCHANGED (still Running);
-        // NO new assistant placeholder pushed.
+        // Bubble un-dimmed; status UNCHANGED (still Running); a new
+        // empty assistant placeholder pushed at the tail.
         assert!(!app.messages()[0].queued);
-        assert_eq!(app.messages().len(), 1, "mid-turn drain must NOT push assistant placeholder");
+        assert_eq!(
+            app.messages().len(),
+            2,
+            "mid-turn drain must push a fresh assistant placeholder at tail"
+        );
+        assert!(matches!(app.messages()[1].role, MessageRole::Assistant));
+        assert!(app.messages()[1].blocks.is_empty(), "tail assistant placeholder must be empty");
         assert!(matches!(app.status, AppStatus::Running));
 
         let prompt = rx.try_recv().expect("mid-turn prompt should be dispatched");
