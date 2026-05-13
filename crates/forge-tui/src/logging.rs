@@ -83,7 +83,7 @@ impl LoggingRuntime {
             log_append = cli.log_append,
             log_rotation_max_bytes = LOG_ROTATION_MAX_BYTES,
             log_rotation_max_files = LOG_ROTATION_MAX_FILES,
-            version = env!("CARGO_PKG_VERSION"),
+            version = crate::FORGE_VERSION,
         );
         BRIDGE_DIAGNOSTICS_ENABLED.store(true, Ordering::Relaxed);
 
