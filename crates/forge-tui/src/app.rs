@@ -7,7 +7,7 @@ mod dialog;
 pub(crate) mod events;
 pub(crate) mod file_index;
 mod focus;
-pub(crate) mod git_context;
+pub(crate) mod git_diff;
 mod inline_interactions;
 pub(crate) mod input;
 mod input_submit;
@@ -176,6 +176,7 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
         }
 
         file_index::drain_events(app);
+        git_diff::drain_events(app);
 
         // If a prior turn ended in Error state because of a rate-limit
         // rejection, drop the input lock once the rate-limit window

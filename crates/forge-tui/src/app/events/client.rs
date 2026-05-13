@@ -150,9 +150,6 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
         SessionUpdate::OauthCredentialsSnapshot { session_id, credentials } => {
             apply_session_update_oauth_credentials_snapshot(app, session_id, credentials);
         }
-        SessionUpdate::GitContextSnapshot { session_id, context } => {
-            apply_session_update_git_context_snapshot(app, session_id, context);
-        }
         SessionUpdate::ContextUsageSnapshot { session_id, percentage } => {
             apply_session_update_context_usage_snapshot(app, session_id, percentage);
         }
@@ -486,46 +483,6 @@ fn apply_oauth_credentials_snapshot_presentation(
         has_credentials,
         has_expiry,
     );
-}
-
-/// Phase 3b — `SessionUpdate::GitContextSnapshot` reducer for the
-/// session bucket addressed by `session_id`. Active-session
-/// targeting goes through [`crate::app::App::apply_git_context_snapshot`]
-/// (which can flip `needs_redraw`); background-session targeting
-/// writes directly into the bucket without flipping redraw.
-#[allow(clippy::needless_pass_by_value)]
-pub(super) fn apply_session_update_git_context_snapshot(
-    app: &mut App,
-    session_id: String,
-    context: forge_primitives::git::GitContext,
-) {
-    apply_git_context_snapshot_presentation(app, &session_id, context);
-}
-
-fn apply_git_context_snapshot_presentation(
-    app: &mut App,
-    session_id: &str,
-    context: forge_primitives::git::GitContext,
-) {
-    let session_key = SessionKey::from_session_id(session_id.to_owned());
-    let is_active = app.active_session_key.as_ref() == Some(&session_key);
-    if is_active {
-        app.apply_git_context_snapshot(context);
-    } else if let Some(session) = app.session_mut(&session_key) {
-        // Apply the snapshot directly to the bucket. We deliberately
-        // don't flip `needs_redraw` here — the multiplexer already
-        // skips redraw for background-session events.
-        let _changed = session.git_context.apply_snapshot(context);
-    } else {
-        tracing::warn!(
-            target: crate::logging::targets::APP_SESSION,
-            event_name = "git_context_snapshot_dropped",
-            message = "git context snapshot dropped for an unknown session",
-            outcome = "dropped",
-            session_id = %session_id,
-            reason = "unknown_session",
-        );
-    }
 }
 
 /// Phase 3b — `SessionUpdate::ContextUsageSnapshot` reducer for the

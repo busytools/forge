@@ -312,14 +312,6 @@ impl AgentHandle {
             outcome,
         })
     }
-
-    pub fn start_git_context_watch(&self, session_id: String, cwd: PathBuf) -> anyhow::Result<()> {
-        self.send(Command::StartGitContextWatch { session_id: session_id.into(), cwd })
-    }
-
-    pub fn stop_git_context_watch(&self, session_id: String) -> anyhow::Result<()> {
-        self.send(Command::StopGitContextWatch { session_id: session_id.into() })
-    }
 }
 
 /// Agent factory — wraps a private `ForgeSdkBridge` behind a channel API.
@@ -509,11 +501,5 @@ fn dispatch(cmd: Command, bridge: &ForgeSdkBridge) -> anyhow::Result<()> {
         C::SubmitMcpOauthCallbackUrl { session_id, server_name, callback_url } => bridge
             .submit_mcp_oauth_callback_url(session_id.into_string(), server_name, callback_url),
         C::ReloadPlugins { session_id } => bridge.reload_plugins(session_id.into_string()),
-        C::StartGitContextWatch { session_id, cwd } => {
-            bridge.start_git_context_watch(session_id.into_string(), cwd)
-        }
-        C::StopGitContextWatch { session_id } => {
-            bridge.stop_git_context_watch(session_id.into_string())
-        }
     }
 }

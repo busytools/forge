@@ -73,6 +73,8 @@ pub fn create_app(cli: &Cli, workspace: Arc<forge_workspace::Workspace>) -> App 
     let cwd_display = shorten_cwd_for_display(&cwd);
 
     let (file_index_event_tx, file_index_event_rx) = std::sync::mpsc::channel();
+    let (git_diff_event_tx, git_diff_event_rx) = std::sync::mpsc::channel();
+    crate::app::git_diff::spawn_periodic_timer(git_diff_event_tx.clone());
     let perf_path = match crate::logging::resolve_perf_path(cli) {
         Ok(path) => path,
         Err(err) => {
@@ -171,6 +173,8 @@ pub fn create_app(cli: &Cli, workspace: Arc<forge_workspace::Workspace>) -> App 
         update_tx,
         file_index_event_tx,
         file_index_event_rx,
+        git_diff_event_tx,
+        git_diff_event_rx,
         spinner_frame: 0,
         spinner_last_advance_at: None,
         tools_collapsed: true,

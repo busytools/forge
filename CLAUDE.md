@@ -47,6 +47,101 @@ Multiple sessions = one `forge` process per tmux/zellij pane, with
 multiple `Workspace`-managed sessions inside that process. No daemon,
 no shared state across processes.
 
+## Crate placement guide (where does my new code go?)
+
+When adding a feature, work top-down through this decision tree.
+First match wins.
+
+1. **Is it a type that crosses a crate boundary?** (a message envelope,
+   a snapshot struct, a hook payload, anything serialised over a
+   channel or stored in a field that more than one crate touches)
+   → `forge-primitives`. No logic, no I/O, no async — pure data
+   shapes only. New trait-impls on these types go elsewhere; the type
+   definition itself lives here.
+
+2. **Does it speak stream-json to the `claude` CLI subprocess?**
+   (decoder additions, new control_request subtype, transport-layer
+   change, in-process MCP host, OptionsBuilder fields)
+   → `forge-sdk`. Single responsibility. Pair with a wire-conformance
+   scenario in `forge-test-harness`.
+
+3. **Is it live state about the user's environment that the agent
+   needs to know?** (git branch/diff watcher, cwd resolution, env
+   probes, OAuth credentials, plugin manifest, settings IO, sessions
+   catalog scan)
+   → `forge-agent`. Specifically `forge-agent::env::*` for live
+   environment state; `forge-agent::cloud::*` for Anthropic API /
+   OAuth concerns; `forge-agent::userdata::*` for `~/.claude*` files
+   (config, settings, plugins). Async, may shell out.
+
+4. **Is it orchestration that knows about projects, sessions, accounts,
+   the `forge.toml` schema, or the cross-session command bus?**
+   → `forge-workspace`. The MVVM orchestrator. Adds methods to
+   `Workspace`, dispatch variants to `Command`, presentation events
+   to `SessionUpdate`. Re-exports forge-agent types as needed for the
+   TUI's facade view (see "thin facade" note above).
+
+5. **Is it a TUI widget, screen, key binding, mouse handler, or
+   per-session presentation state?**
+   → `forge-tui`. Consumes `forge-workspace` only — no direct
+   `forge-agent` dependency. Render code in `ui/`, dispatch + state
+   in `app/`. Per-session presentation lives on `UiSession`.
+
+6. **Is it a wire-conformance scenario?**
+   → `forge-test-harness`. Replay baselines under
+   `baselines/sdk/<PINNED_CLI_VERSION>/`.
+
+### Worked examples (recent + reference cases)
+
+| Feature | Where it lives | Why |
+|---|---|---|
+| Git snapshot (branch + dirty check + file stats) | `forge-agent::env::git_diff` + `forge-workspace::scan_git_diff` wrapper + `forge-tui::app::git_diff` consumer + `forge-tui::ui::inspector_pane` GIT section | Subprocess + parsing = environment state → agent. Workspace mediates the async call. TUI owns the refresh cadence (1 s ticker, `snapshot.is_none() OR age ≥ 10 s → fetch`) and the render. Replaced the earlier `forge-agent::env::git` `notify::Watcher` + `forge-tui::app::git_context` cache — branch info folds into the same polled snapshot so a single subprocess invocation covers what the renderer needs. |
+| Account LRU picker | `forge-agent::userdata::accounts` | Tracks per-account state from `~/.claude*` dirs. |
+| `/resume` session list | `forge-agent::userdata::catalog::scan` for the disk read; `forge-tui::ui::session_picker` for the picker UI | Scan logic is environment-level; picker is pure UI. |
+| TodoWrite chat rendering (suppressed) | `forge-tui::ui::tool_call::*` | UI decision about what to show; no logic change to the wire. |
+| Mode / Effort / Model state | `forge-agent::state` for source-of-truth; `forge-tui::agent::model` for the observed-state cache | Agent owns the SDK-derived state; TUI mirrors for render. |
+| New permission prompt variant | `forge-primitives::permission` for the shape; `forge-sdk::control` for the request; `forge-agent::cloud::auth_status` for the policy; `forge-tui::ui::tool_call::interactions` for the render | The classic 4-crate split when a single feature crosses every layer. |
+| Inspector pane (TASKS section) | `forge-tui::ui::inspector_pane` | Pure UI; reads `app.todos()` (which lives on `UiSession`). |
+| Bottom panel ETA right-justification | `forge-tui::ui::projects_pane` | Pure UI tweak. |
+| `/usage` polling (the bug that created junk session files) | Should have been `forge-agent::cloud::usage` only (was `forge-agent::cloud::cli` which spawned `claude`); fixed by dropping the CLI fallback. | Cautionary tale: env probes that spawn `claude` itself create new sessions; design them to NOT pollute the user's session directory. |
+
+### Anti-patterns (caught in review repeatedly)
+
+- **Subprocess calls in `forge-tui`.** If you find yourself reaching for
+  `tokio::process::Command` in a TUI module, stop. That belongs in
+  `forge-agent::env::*` with a `forge-workspace::*` method exposing
+  it. TUI calls the workspace method async (see
+  `Workspace::oauth_usage` / `Workspace::scan_git_diff` for the
+  precedent).
+- **Adding a `SessionUpdate` variant for purely TUI-internal data.**
+  The single-channel event bus is for cross-crate flow. If the
+  producer and consumer are both inside forge-tui, use a separate
+  mpsc channel (see `file_index_event_tx/rx` / `git_diff_event_tx/rx`
+  for the pattern).
+- **Cross-crate type duplication.** If forge-tui has a `Foo` and
+  forge-agent has a `Foo` with the same fields, one of them is wrong
+  and the type should be lifted to `forge-primitives` (or imported
+  from the source crate via a forge-workspace re-export).
+- **Workspace methods that bypass the Command bus for user actions.**
+  User-initiated actions (Prompt, Cancel, SetMode, NewSession, etc.)
+  go through `Workspace::dispatch(Command)`. Query-style refreshes
+  (`refresh_status_snapshot`, `oauth_usage`, `scan_git_diff`) are
+  direct inherent methods. Don't conflate the two.
+
+### When the placement is genuinely ambiguous
+
+Some features are split across multiple crates legitimately (the git
+diff example above touches three). Use this rule of thumb:
+
+- Logic / I/O / subprocess work → agent.
+- Cross-crate envelope shape → primitives.
+- Multi-session orchestration / cross-cutting state → workspace.
+- Anything the user sees → TUI.
+
+If unsure, ask the user. The default failure mode in this codebase
+is "too much in forge-tui" — bias placement decisions toward the
+deeper-down crate when in doubt.
+
 ## Communication contract (MVVM after #102)
 
 After the MVVM refactor (PR #104) the TUI ↔ workspace contract is
@@ -137,7 +232,7 @@ submodules:
 ```rust
 pub mod cloud      { pub use forge_agent::cloud::*; }
 pub mod commands   { pub use forge_agent::commands::*; }
-pub mod env::git   { pub use forge_agent::env::git::*; }
+pub mod env::git_diff { pub use forge_agent::env::git_diff::*; }
 pub mod session_lifecycle { pub use forge_agent::session_lifecycle::*; }
 pub mod tooling    { pub use forge_agent::tooling::*; }
 pub mod translate  { pub use forge_agent::translate::*; }

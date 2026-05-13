@@ -53,7 +53,6 @@ fn apply_connected_presentation(
     let session_id_for_log = session_id.to_string();
     let history_message_count = history_messages.len();
     let available_model_count = available_models.len();
-    let prev_session_id = app.session_id().map(|s| s.to_string());
     if was_active {
         // Active path: the user is watching this session. Run the
         // full active-session apply chain so welcome / file-index /
@@ -61,7 +60,6 @@ fn apply_connected_presentation(
         app.active_session_key = Some(session_key.clone());
         apply_session_cwd(app, cwd);
         reset_for_new_session(app, session_id, current_model, mode, true);
-        refresh_session_git_watcher(app, prev_session_id);
         *app.available_models_mut() = available_models;
         app.sync_welcome_snapshot();
         if !history_messages.is_empty() {
@@ -672,7 +670,6 @@ pub(super) fn handle_session_replaced_event(
     super::clear_compaction_state(app, false);
     app.set_pending_cancel_origin(None);
     app.set_pending_auto_submit_after_cancel(false);
-    let prev_session_id = app.session_id().map(|s| s.to_string());
 
     // Capture the outgoing bucket's key BEFORE `reset_for_new_session`
     // runs — that call goes through `set_session_id`, which inserts a
@@ -695,7 +692,6 @@ pub(super) fn handle_session_replaced_event(
     // Pre-swap it would write to the now-abandoned outgoing bucket
     // and the new welcome card would render an empty path.
     apply_session_cwd(app, cwd);
-    refresh_session_git_watcher(app, prev_session_id);
     app.sync_welcome_snapshot();
     if !history_messages.is_empty() {
         load_resume_history(app, history_messages);
@@ -825,50 +821,33 @@ pub(super) fn apply_session_cwd(app: &mut App, cwd_raw: String) {
     if cwd_raw.is_empty() {
         return;
     }
+    let cwd_changed = app.cwd_raw() != cwd_raw;
     let display = shorten_cwd_display(&cwd_raw);
     app.set_cwd_raw(cwd_raw);
     app.set_cwd(display);
     sync_welcome_cwd(app);
     app.reconcile_trust_state_from_preferences_and_cwd();
-}
 
-/// Restart the bridge-side git watcher for the current session's
-/// cwd. Must be called AFTER `apply_session_cwd` (so `app.cwd_raw`
-/// is set) AND AFTER `reset_for_new_session` (so `app.session_id`
-/// is set to the new session). If `prev_session_id` is `Some`, its
-/// watcher is stopped first to prevent the bridge worker from
-/// accumulating zombie watchers across replaced sessions.
-pub(super) fn refresh_session_git_watcher(app: &App, prev_session_id: Option<String>) {
-    if !app.has_active_agent() {
-        return;
-    }
-    if let Some(prev) = prev_session_id
-        && let Err(err) = app.dispatch_command(|key| forge_workspace::Command::StopGitWatch {
-            key,
-            session_id: prev,
-        })
+    // Bump the git-diff generation when the cwd genuinely changed,
+    // reset the cached snapshot to `None`, AND abandon the in-flight
+    // guard. The next periodic tick repopulates against the new cwd.
+    // The generation guard means any in-flight scan against the old
+    // cwd lands stale and is dropped by `git_diff::drain_events`.
+    // Clearing `scan_in_flight` here lets the next ticker re-fire
+    // immediately instead of waiting for the abandoned scan to time
+    // out (worst case ~50s on a hung remote mount). The abandoned
+    // scan's eventual `store(false)` on its `Arc<AtomicBool>` is
+    // harmless — it stores onto the same atomic, which is already
+    // `false`. Skips a no-op when the cwd didn't actually change
+    // (idempotent Connected re-applies).
+    if cwd_changed
+        && let Some(key) = app.active_session_key.clone()
+        && let Some(session) = app.sessions.get_mut(&key)
     {
-        tracing::warn!(
-            target: crate::logging::targets::APP_SESSION,
-            error = %err,
-            "failed to stop previous git context watcher",
-        );
-    }
-    let Some(session_id) = app.session_id() else {
-        return;
-    };
-    let cwd = std::path::PathBuf::from(app.cwd_raw());
-    let session_id_str = session_id.to_string();
-    if let Err(err) = app.dispatch_command(|key| forge_workspace::Command::StartGitWatch {
-        key,
-        session_id: session_id_str,
-        cwd,
-    }) {
-        tracing::warn!(
-            target: crate::logging::targets::APP_SESSION,
-            error = %err,
-            "failed to start git context watcher for session",
-        );
+        session.git_diff_generation = session.git_diff_generation.saturating_add(1);
+        session.git_diff_snapshot = None;
+        session.git_diff_last_refreshed_at = None;
+        session.git_diff_scan_in_flight.store(false, std::sync::atomic::Ordering::Release);
     }
 }
 

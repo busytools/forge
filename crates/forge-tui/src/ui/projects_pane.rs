@@ -469,24 +469,25 @@ fn glyph_for_lifecycle(
 //     7d    ▓▓▓▓▓▓▓▓▓▓▓░  89%
 //                        4d 4h
 //
-//     📁 ~/Projects/forge
-//     ⎇  main
-//
 // `ACCOUNT_PANEL_HEIGHT` is constant. The panel's render swallows the
 // fixed N rows from the bottom of the pane; the project list takes
 // everything above. Bar fill colour is a per-cell position gradient
 // (cells 1–3 green, 4–6 yellow, 7–9 orange, 10–12 red) so the
 // rightmost filled cell tells you which zone the bar is in.
+//
+// The `📁 cwd` and `⎇ branch` rows that used to live here moved to
+// the right-hand Inspector pane's `GIT` section in the 2026-05-13
+// pane work — see `crate::ui::inspector_pane`.
 // ---------------------------------------------------------------
 
 /// Rows the account panel reserves from the bottom of the pane.
 /// Constant by design — values flip but shape stays put (see the
 /// "account chrome, not status row" intent in the design brief).
 ///
-/// 17 rows: rule + 5 identity (Profile/Mode/Model/Effort/Fast) +
+/// 14 rows: rule + 5 identity (Profile/Mode/Model/Effort/Fast) +
 /// 1 blank + 1 Ctx + 1 blank + 2 (5h bar + ETA row) + 1 blank +
-/// 2 (7d bar + ETA row) + 1 blank + 2 (📁 + ⎇).
-const ACCOUNT_PANEL_HEIGHT: u16 = 17;
+/// 2 (7d bar + ETA row).
+const ACCOUNT_PANEL_HEIGHT: u16 = 14;
 
 /// Width (columns) the rule and content extend up to from the
 /// pane's right edge. Matches the project-row right gutter so the
@@ -706,38 +707,14 @@ fn build_account_panel_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     // Row 11: blank between 5h and 7d.
     lines.push(Line::default());
 
-    // Rows 12..=13: 7d bar + ETA row.
+    // Rows 12..=13: 7d bar + ETA row. The panel ends here — cwd /
+    // branch moved to the Inspector pane's GIT section.
     push_usage_window_lines(
         &mut lines,
         "7d",
         app.usage().snapshot.as_ref().and_then(|s| s.seven_day.as_ref()),
         width,
     );
-
-    // Row 14: blank separating usage from location.
-    lines.push(Line::default());
-
-    // Rows 15..=16: location + branch. Budget leaves the
-    // `PANEL_RIGHT_GUTTER` cols of trailing space so the values
-    // align with the project rows' right edge above.
-    let cwd_chrome = 2 + 2 + 1; // "  📁 "
-    let cwd_budget =
-        usize::from(width).saturating_sub(cwd_chrome).saturating_sub(PANEL_RIGHT_GUTTER);
-    let cwd_value = fit_path_for_panel(app.cwd(), cwd_budget);
-    lines.push(Line::from(vec![
-        Span::styled("  📁 ".to_owned(), Style::default().fg(theme::DIM)),
-        Span::styled(cwd_value, Style::default().fg(theme::DIM)),
-    ]));
-
-    let (branch_value, branch_color) = branch_label_and_color(app);
-    let branch_chrome = 2 + 1 + 2; // "  ⎇  "
-    let branch_budget =
-        usize::from(width).saturating_sub(branch_chrome).saturating_sub(PANEL_RIGHT_GUTTER);
-    let branch_value = truncate_with_ellipsis(&branch_value, branch_budget);
-    lines.push(Line::from(vec![
-        Span::styled("  ⎇  ".to_owned(), Style::default().fg(theme::DIM)),
-        Span::styled(branch_value, Style::default().fg(branch_color)),
-    ]));
 
     debug_assert_eq!(
         u16::try_from(lines.len()).unwrap_or(u16::MAX),
@@ -890,44 +867,6 @@ fn fast_mode_label_and_color(app: &App) -> (&'static str, Color) {
     }
 }
 
-/// Branch chip label + color. Detached HEAD highlights as
-/// `STATUS_WARNING`. Empty result → "—" in DIM.
-fn branch_label_and_color(app: &App) -> (String, Color) {
-    match app.git_branch_chip() {
-        Some(crate::app::git_context::BranchChip::Named(b)) => (b.to_owned(), theme::DIM),
-        Some(crate::app::git_context::BranchChip::Detached) => {
-            ("detached".to_owned(), theme::STATUS_WARNING)
-        }
-        None => ("—".to_owned(), theme::DIM),
-    }
-}
-
-/// Head-truncate a filesystem path to fit `max_chars`. Prefers the
-/// trailing path components (so the leaf project / file is preserved)
-/// when full path doesn't fit. Mirrors the legacy footer's
-/// `fit_location_value` shape but optimised for the 24-ish-cell
-/// budget the panel offers.
-fn fit_path_for_panel(cwd: &str, max_chars: usize) -> String {
-    if cwd.chars().count() <= max_chars {
-        return cwd.to_owned();
-    }
-    // Trailing-2-components fallback. If still too long, ellipsise.
-    let trailing_two =
-        cwd.split(['/', '\\']).filter(|c| !c.is_empty() && *c != "~").collect::<Vec<_>>();
-    if let Some(tail) = trailing_two.last() {
-        if let Some(second_last) = trailing_two.iter().rev().nth(1) {
-            let joined = format!("{second_last}/{tail}");
-            if joined.chars().count() <= max_chars {
-                return joined;
-            }
-        }
-        if tail.chars().count() <= max_chars {
-            return (*tail).to_owned();
-        }
-    }
-    truncate_with_ellipsis(cwd, max_chars)
-}
-
 /// Head-truncate `s` to at most `max_chars` characters with a
 /// trailing `…` ellipsis. Returns the original string if it
 /// already fits. When `max_chars` is `0` or `1` the result is just
@@ -1066,6 +1005,6 @@ mod tests {
         // co-anchor the layout. This test pins the constant explicitly
         // so a change to row count surfaces here too, not only at
         // runtime.
-        assert_eq!(ACCOUNT_PANEL_HEIGHT, 17);
+        assert_eq!(ACCOUNT_PANEL_HEIGHT, 14);
     }
 }

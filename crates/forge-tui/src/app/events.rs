@@ -1554,9 +1554,6 @@ mod tests {
 
         apply_session_update(&mut app, connected_event("claude-updated"));
 
-        // First command is the per-session git watcher start. Drain it
-        // so the snapshot-command assertion still works.
-        let _git = rx.try_recv().expect("git context watcher start command");
         let envelope = rx.try_recv().expect("mcp snapshot command");
         assert_eq!(
             envelope,
@@ -1946,9 +1943,6 @@ mod tests {
             },
         );
 
-        // First command is the per-session git watcher start. Drain it
-        // so the snapshot-command assertion still works.
-        let _git = rx.try_recv().expect("git context watcher start command");
         let envelope = rx.try_recv().expect("mcp snapshot command");
         assert_eq!(
             envelope,
@@ -1966,9 +1960,6 @@ mod tests {
 
         apply_session_update(&mut app, connected_event("claude-updated"));
 
-        // First command is the per-session git watcher start. Drain it
-        // so the snapshot-command assertions still work.
-        let _git = rx.try_recv().expect("git context watcher start command");
         let mcp = rx.try_recv().expect("mcp snapshot command");
         assert_eq!(
             mcp,

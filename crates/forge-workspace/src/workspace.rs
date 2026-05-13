@@ -1000,6 +1000,23 @@ impl Workspace {
         handle.oauth_usage().await.map_err(|err| err.to_string())
     }
 
+    /// Scan the project at `cwd` and return a git-diff snapshot for
+    /// the Inspector pane's GIT section. Delegates to
+    /// [`forge_agent::env::git_diff::scan`] — exists as a workspace
+    /// method so the TUI never depends on `forge-agent` directly
+    /// (see CLAUDE.md placement guide).
+    ///
+    /// Infallible: scanner errors collapse to
+    /// `GitDiffView::NoRepo` with structured WARN logs. Renderer
+    /// treats the returned snapshot as authoritative regardless of
+    /// which variant came back.
+    pub async fn scan_git_diff(
+        &self,
+        cwd: &std::path::Path,
+    ) -> forge_agent::env::git_diff::GitDiffSnapshot {
+        forge_agent::env::git_diff::scan(cwd).await
+    }
+
     /// Borrow the [`Arc<AgentHandle>`] registered against `key`.
     /// Workspace-internal helper — surfaces a sometimes-`None` to keep
     /// the early-init / disconnected branches explicit.
