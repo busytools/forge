@@ -185,31 +185,38 @@ fn append_git_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
         return;
     };
 
-    // Carry aggregate totals (worktree dirty OR branch-vs-default,
-    // whichever the scanner produced) so they can attach to the
-    // branch row. `CleanDefault` / `NoRepo` carry no totals.
-    let (files_slice, total_files, totals): (&[GitDiffFile], usize, Option<(u32, u32)>) =
-        match &snapshot.view {
-            GitDiffView::NoRepo | GitDiffView::CleanDefault => (&[], 0, None),
-            GitDiffView::Worktree { files, total_files, total_added, total_removed }
-            | GitDiffView::BranchVsDefault { files, total_files, total_added, total_removed } => {
-                (files.as_slice(), *total_files, Some((*total_added, *total_removed)))
-            }
-        };
+    // Pull the diff display info out of the snapshot. `None` for
+    // `CleanDefault` / `NoRepo` — no subtitle, no totals, no files.
+    let diff = build_diff_display(snapshot);
 
-    // Branch row — gated on the resolved branch state. `NoRepo` and
-    // `Unknown` collapse to no row. Aggregate `+N -M` totals (when
-    // there's a diff) right-justify to the pane edge alongside the
-    // branch name.
+    // Branch row — just the branch glyph + name. Totals moved to
+    // the subtitle row below so the worktree-vs-vs-default
+    // distinction is unambiguous (the totals follow the label that
+    // describes them).
     if let Some((label, color)) = branch_row_for(snapshot) {
-        lines.push(branch_line(width, &label, color, totals));
+        lines.push(branch_line(width, &label, color));
     }
+
+    // Subtitle row — sits directly below the branch row, indented
+    // under the branch name (PANE_PAD + glyph + space = 4 cols) so
+    // it reads as a sub-label of the branch. Carries the diff
+    // label (`worktree` / `vs <default>`) AND the right-justified
+    // `+N -M` totals so both signals land on one line. Only
+    // rendered when there's a diff to describe. DIM label so it
+    // doesn't compete with the branch name for attention; stats
+    // keep their green / red so the numbers stay scannable.
+    if let Some(diff) = diff.as_ref() {
+        lines.push(diff_subtitle_line(width, &diff.subtitle, diff.totals));
+    }
+
+    let files_slice = diff.as_ref().map_or(&[][..], |d| d.files);
+    let total_files = diff.as_ref().map_or(0, |d| d.total_files);
 
     if files_slice.is_empty() {
         return;
     }
 
-    // Blank between the branch row and the file tree.
+    // Blank between the subtitle row and the file tree.
     lines.push(Line::default());
 
     let tree = build_tree(files_slice);
@@ -243,51 +250,94 @@ fn branch_row_for(snapshot: &GitDiffSnapshot) -> Option<(String, Color)> {
     }
 }
 
-/// Render the branch row: `  ⎇ <label> …pad… +A -R  `. When `totals`
-/// is `None` (clean tree on the default branch) the trailing stats
-/// + their pad collapse to nothing, leaving just `  ⎇ <label>`.
-fn branch_line(
-    width: u16,
-    label: &str,
-    label_color: Color,
-    totals: Option<(u32, u32)>,
-) -> Line<'static> {
+/// Render the branch row: `  ⎇ <label>`. Totals + the worktree /
+/// vs-default subtitle land on the next line (see
+/// [`diff_subtitle_line`]) so a worktree-dirty branch row and a
+/// branch-vs-default branch row look identical in chrome — the
+/// disambiguation is on the subtitle row directly below.
+fn branch_line(width: u16, label: &str, label_color: Color) -> Line<'static> {
     let glyph_chrome = usize::from(PANE_PAD) + 2; // "  ⎇ "
-    let mut spans = vec![Span::styled("  \u{2387} ".to_owned(), Style::default().fg(theme::DIM))];
-    let Some((added, removed)) = totals else {
-        // No diff — render the branch name without a stats column.
-        // Truncate to the remaining budget if the branch name itself
-        // overflows.
-        let label_budget = usize::from(width).saturating_sub(glyph_chrome);
-        let fitted = truncate_with_ellipsis(label, label_budget);
-        spans.push(Span::styled(fitted, Style::default().fg(label_color)));
-        return Line::from(spans);
-    };
+    let label_budget = usize::from(width).saturating_sub(glyph_chrome);
+    let fitted = truncate_with_ellipsis(label, label_budget);
+    Line::from(vec![
+        Span::styled("  \u{2387} ".to_owned(), Style::default().fg(theme::DIM)),
+        Span::styled(fitted, Style::default().fg(label_color)),
+    ])
+}
 
+/// One-line display of the diff context: the `worktree` /
+/// `vs <default>` label (DIM, indented under the branch name so it
+/// reads as a sub-label of the branch row) plus right-justified
+/// `+N -M` totals. Indent is `PANE_PAD + glyph + space` = 4 cols
+/// so the label starts where the branch name does. Layout mirrors
+/// the per-file diff rows so the totals column right-aligns with
+/// every other stats column in the section.
+fn diff_subtitle_line(width: u16, label: &str, totals: (u32, u32)) -> Line<'static> {
+    let (added, removed) = totals;
+    let indent_chrome = usize::from(PANE_PAD) + 2; // "    " (4 cols)
     let added_str = format!("+{added}");
     let removed_str = format!("-{removed}");
     let stats_width = added_str.chars().count() + 1 + removed_str.chars().count();
-    // Reserve `PATH_STATS_GAP` between label and stats so a wide
-    // branch name can't butt up against the numbers.
     let label_budget = usize::from(width)
-        .saturating_sub(glyph_chrome)
+        .saturating_sub(indent_chrome)
         .saturating_sub(PATH_STATS_GAP)
         .saturating_sub(stats_width)
         .saturating_sub(usize::from(PANE_PAD));
     let fitted = truncate_with_ellipsis(label, label_budget);
     let label_chars = fitted.chars().count();
     let pad = usize::from(width)
-        .saturating_sub(glyph_chrome)
+        .saturating_sub(indent_chrome)
         .saturating_sub(label_chars)
         .saturating_sub(stats_width)
         .saturating_sub(usize::from(PANE_PAD));
-    spans.push(Span::styled(fitted, Style::default().fg(label_color)));
-    spans.push(Span::raw(" ".repeat(pad)));
-    spans.push(Span::styled(added_str, Style::default().fg(Color::Green)));
-    spans.push(Span::raw(" "));
-    spans.push(Span::styled(removed_str, Style::default().fg(Color::Red)));
-    spans.push(Span::raw("  "));
-    Line::from(spans)
+    Line::from(vec![
+        Span::raw("    "),
+        Span::styled(fitted, Style::default().fg(theme::DIM)),
+        Span::raw(" ".repeat(pad)),
+        Span::styled(added_str, Style::default().fg(Color::Green)),
+        Span::raw(" "),
+        Span::styled(removed_str, Style::default().fg(Color::Red)),
+        Span::raw("  "),
+    ])
+}
+
+/// Diff-display info pulled out of a `GitDiffSnapshot` view. `None`
+/// for `CleanDefault` / `NoRepo` (nothing to show); `Some` otherwise
+/// with `subtitle` carrying `"worktree"` for `Worktree` and
+/// `"vs <default>"` for `BranchVsDefault`.
+struct DiffDisplay<'a> {
+    files: &'a [GitDiffFile],
+    total_files: usize,
+    totals: (u32, u32),
+    subtitle: String,
+}
+
+fn build_diff_display(snapshot: &GitDiffSnapshot) -> Option<DiffDisplay<'_>> {
+    match &snapshot.view {
+        GitDiffView::NoRepo | GitDiffView::CleanDefault => None,
+        GitDiffView::Worktree { files, total_files, total_added, total_removed } => {
+            Some(DiffDisplay {
+                files,
+                total_files: *total_files,
+                totals: (*total_added, *total_removed),
+                subtitle: "worktree".to_owned(),
+            })
+        }
+        GitDiffView::BranchVsDefault { files, total_files, total_added, total_removed } => {
+            // `BranchVsDefault` is only constructed when the scanner
+            // resolved a default branch (see `git_diff.rs`'s let-else
+            // that collapses to `CleanDefault` when `None`). The
+            // `unwrap_or_default` is defensive: future drift renders
+            // an empty `vs ` instead of panicking.
+            let default = snapshot.default_branch.as_deref().unwrap_or_default();
+            Some(DiffDisplay {
+                files,
+                total_files: *total_files,
+                totals: (*total_added, *total_removed),
+                subtitle: format!("vs {default}"),
+            })
+        }
+    }
 }
 
 /// Tree node built from the diff's file list — a single trie node
