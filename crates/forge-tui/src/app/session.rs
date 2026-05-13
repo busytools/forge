@@ -11,7 +11,7 @@
 //! (Phase 2 of the side-panes feature; backend prerequisite for the
 //! Projects pane UI).
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::time::Instant;
 
 use forge_workspace::SessionKey;
@@ -26,8 +26,8 @@ use crate::app::state::messages::ChatMessage;
 use crate::app::state::render_budget::{RenderCacheEvictionKey, RenderCacheSlotState};
 use crate::app::state::types::{
     CancelOrigin, HistoryRetentionPolicy, HistoryRetentionStats, LoginHint, McpState, ModeState,
-    PasteSessionState, PendingCommandAck, RecentSessionInfo, SelectionState, SessionUsageState,
-    TodoItem, ToolCallScope, UsageState,
+    PasteSessionState, PendingCommandAck, QueuedMessage, RecentSessionInfo, SelectionState,
+    SessionUsageState, TodoItem, ToolCallScope, UsageState,
 };
 use crate::app::state::viewport::ChatViewport;
 use crate::app::state::{ChatRenderTraceState, TerminalToolCallRef, TurnNoticeRef};
@@ -240,7 +240,26 @@ pub struct UiSession {
     pub pending_command_ack: Option<PendingCommandAck>,
     /// Auto-submit the current input draft once cancellation
     /// transitions the app back to `Ready`. Per-session.
+    ///
+    /// **Vestigial** as of issue #85: the cancel-on-submit + post-cancel
+    /// auto-submit pattern was replaced with message queueing
+    /// (see [`Self::queued_messages`]). Always `false` in the new
+    /// flow; left in place to avoid churning every consumer in a
+    /// behaviour-change PR. Future cleanup: delete.
     pub pending_auto_submit_after_cancel: bool,
+    /// User messages typed while a turn is in flight, awaiting drain
+    /// on the next `TurnComplete`. See issue #85 + `QueuedMessage`
+    /// (in `crate::app::state::types`).
+    ///
+    /// Drain semantics: when a turn ends, the entire queue
+    /// concatenates into a single new turn — all texts joined with
+    /// `\n\n`, attachments merged. The chat-history representation
+    /// stays as N distinct dimmed bubbles so the user sees what they
+    /// typed; the wire sees one combined prompt.
+    ///
+    /// Per-session: switching sessions doesn't touch other sessions'
+    /// queues. Not persisted across forge restart.
+    pub queued_messages: VecDeque<QueuedMessage>,
     /// Active text selection (mouse-driven). Per-session so a
     /// selection started in one session doesn't render in another
     /// after a switch.
@@ -409,6 +428,7 @@ impl Default for UiSession {
             pending_command_label: Option::default(),
             pending_command_ack: Option::default(),
             pending_auto_submit_after_cancel: bool::default(),
+            queued_messages: VecDeque::default(),
             selection: Option::default(),
             pending_submit: Option::default(),
             pending_paste_text: String::default(),

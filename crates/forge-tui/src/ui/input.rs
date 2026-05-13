@@ -45,6 +45,7 @@ const SPINNER_FRAMES: &[char] = &[
 const LOGIN_HINT_LINES: u16 = 2;
 const CANCEL_HINT_LINES: u16 = 1;
 const PROMPT_SUGGESTION_HINT_LINES: u16 = 1;
+const QUEUED_HINT_LINES: u16 = 1;
 
 #[derive(Clone, Copy)]
 pub(crate) struct InputRenderGeometry {
@@ -69,11 +70,25 @@ fn has_prompt_suggestion_hint(app: &App) -> bool {
         && app.prompt_suggestion().is_some_and(|suggestion| !suggestion.trim().is_empty())
 }
 
+/// Issue #85: active session has messages queued (typed while a turn
+/// was in flight, waiting to drain on the next turn-complete).
+fn queued_message_count(app: &App) -> usize {
+    app.active_session_key
+        .as_ref()
+        .and_then(|key| app.sessions.get(key))
+        .map_or(0, |session| session.queued_messages.len())
+}
+
+fn has_queued_hint(app: &App) -> bool {
+    queued_message_count(app) > 0
+}
+
 pub(crate) fn hint_line_count(app: &App) -> u16 {
     let login = if has_login_hint(app) { LOGIN_HINT_LINES } else { 0 };
     let cancel = if has_cancel_hint(app) { CANCEL_HINT_LINES } else { 0 };
     let suggestion = if has_prompt_suggestion_hint(app) { PROMPT_SUGGESTION_HINT_LINES } else { 0 };
-    login + cancel + suggestion
+    let queued = if has_queued_hint(app) { QUEUED_HINT_LINES } else { 0 };
+    login + cancel + suggestion + queued
 }
 
 pub(crate) fn compute_render_geometry(area: Rect, hint_lines: u16) -> InputRenderGeometry {
@@ -161,6 +176,27 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
                 height: PROMPT_SUGGESTION_HINT_LINES,
             };
             frame.render_widget(Paragraph::new(suggestion_line), suggestion_area);
+            hint_y = hint_y.saturating_add(PROMPT_SUGGESTION_HINT_LINES);
+        }
+
+        // Issue #85: queued-message chip. Shows `Queued: N` when the
+        // active session has at least one message waiting to drain.
+        if has_queued_hint(app) {
+            let count = queued_message_count(app);
+            let chip = Line::from(vec![
+                Span::styled("Queued: ", Style::default().fg(theme::DIM)),
+                Span::styled(
+                    count.to_string(),
+                    Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    "  · Press Esc to cancel current turn, queue drains on turn-complete",
+                    Style::default().fg(theme::DIM).add_modifier(Modifier::DIM),
+                ),
+            ]);
+            let queued_area =
+                Rect { x: hint_pad.x, y: hint_y, width: hint_pad.width, height: QUEUED_HINT_LINES };
+            frame.render_widget(Paragraph::new(chip), queued_area);
         }
     }
 
