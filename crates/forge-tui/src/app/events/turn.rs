@@ -1077,15 +1077,6 @@ fn apply_turn_complete_presentation(
             super::super::notify::NotifyEvent::TurnComplete,
         );
     }
-    // Issue #85 (revised again 2026-05-13): claude does NOT echo
-    // `queued_command` content blocks on its stdout — the attachment
-    // is persisted to the session JSONL only. So the wire-echo path
-    // in `un_dim_matching_pending` never fires on live turns. The
-    // turn boundary is our only reliable signal: any pending bubble
-    // that was dispatched mid-turn has been (or is about to be)
-    // consumed by claude as the next turn's user message. Drain the
-    // deque and un-dim the bubbles here.
-    crate::app::input_submit::un_dim_pending_on_turn_complete(app);
     // No git-diff refresh trigger here — the `git_diff` module's
     // periodic ticker (1s poke + 10s staleness rule) catches any
     // post-turn file changes within the next ticker pass.

@@ -70,33 +70,12 @@ pub struct SessionPickerState {
     pub scroll_offset: usize,
 }
 
-// `QueuedMessage` removed 2026-05-13. The local queue concept (forge
-// holding typed-while-busy messages until TurnComplete) was replaced
-// with dispatch-immediately + un-dim-on-wire-echo: see
-// `UiSession.pending_echo_bubbles` and
-// `events::sdk_message::handle_queued_command_echo`. Claude CLI
-// manages the in-flight queue internally via its `queued_command`
-// content-block mechanism.
-
-/// One entry on `UiSession.pending_echo_bubbles`. Tracks a dimmed
-/// user bubble that was dispatched while a turn was in flight,
-/// waiting for the `queued_command` wire echo to confirm claude
-/// consumed it. See issue #85.
-///
-/// `dispatched_at` is consulted by the staleness sweep to flag
-/// bubbles whose echo never arrived within the threshold (likely
-/// dropped — log + leave visible so the user knows).
-#[derive(Debug, Clone)]
-pub struct PendingEchoBubble {
-    /// Exact prompt text dispatched. Used for FIFO matching against
-    /// incoming `queued_command` echo blocks.
-    pub text: String,
-    /// Index into `UiSession.messages` of the dimmed bubble.
-    pub message_idx: usize,
-    /// When `Command::Prompt` was dispatched. Used by the staleness
-    /// sweep to log + flag bubbles whose echo never arrived.
-    pub dispatched_at: std::time::Instant,
-}
+// `QueuedMessage` + `PendingEchoBubble` removed 2026-05-13. Forge
+// no longer maintains any local queue or dim/un-dim state for
+// mid-turn submits — claude's CLI handles in-flight buffering
+// internally, and the chat just appends a regular user bubble per
+// submit. Session resume reconstructs queued messages from the
+// JSONL `type:"attachment"` rows via `forge_agent::userdata::catalog::scan`.
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct MessageUsage {

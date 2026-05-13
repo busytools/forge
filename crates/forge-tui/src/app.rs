@@ -197,18 +197,6 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
 
         // Issue #85 (revised 2026-05-13): no timer-based drain.
         // Submit dispatches `Command::Prompt` immediately on every
-        // Enter regardless of in-flight state; claude's CLI manages
-        // the in-flight queue internally and bundles the message as
-        // a `queued_command` content block on the next outbound
-        // user-message envelope. Forge un-dims the pending bubble
-        // when that content block echoes back on the wire — see
-        // `events::sdk_message::handle_queued_command_echo`.
-        //
-        // The staleness sweep below catches bubbles whose echo
-        // never arrived (claude rejected silently, race, etc.).
-        // No-op when the per-session pending deque is empty.
-        crate::app::input_submit::sweep_stale_pending_bubbles(app);
-
         // Tick the burst detector: flush any held/buffered content that
         // has timed out. EmitChar re-inserts a single held character;
         // EmitPaste feeds the accumulated burst into the paste queue.

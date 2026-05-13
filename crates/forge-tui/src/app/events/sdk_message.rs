@@ -351,43 +351,27 @@ fn extract_queued_command_text(prompt: &Value) -> String {
 
 /// Issue #85: process a `queued_command` content-block.
 ///
-/// **Source of these blocks (verified by live wire capture
-/// 2026-05-13)**: claude does NOT emit `queued_command` on stream-
-/// json stdout. It only persists them to the session JSONL as
-/// `type:"attachment"` rows. The replay-side scanner in
+/// **Reachability (verified by live wire capture 2026-05-13)**:
+/// claude does NOT emit `queued_command` on stream-json stdout — it
+/// only persists those messages to the session JSONL as
+/// `type:"attachment"` rows. The replay scanner in
 /// `forge_agent::userdata::catalog::scan` hoists those rows into
-/// synthetic user envelopes carrying one `queued_command` content
-/// block each, which is what reaches this walker. So in practice
-/// this code path runs during session resume — never on a live turn.
+/// synthetic user envelopes carrying a single `queued_command`
+/// content block each. So in practice this walker only runs during
+/// session resume; live mid-turn submits never hit it.
 ///
-/// The live mid-turn un-dim is handled by
-/// `input_submit::un_dim_pending_on_turn_complete`, which fires on
-/// the turn boundary instead of any per-message wire signal.
-///
-/// The `un_dim_matching_pending` branch below is kept as a defensive
-/// fallback: if a future CLI version ever starts echoing
-/// `queued_command` on stdout, the dimmed bubble can still un-dim
-/// precisely. Today it is reachable only via the replay path with no
-/// pending entries, so the else-branch (push fresh bubble) is what
-/// actually fires.
-///
-/// Matching is by exact prompt text + FIFO ordering. The wire shape
-/// carries `{type, prompt, commandMode}` and no correlation id, so
-/// text-FIFO is the best we can do if the precise path ever activates.
+/// Action: push a regular user bubble. (Live mid-turn submits
+/// already pushed their own bubble at submit time — see
+/// `input_submit::dispatch_prompt` — and never reach this code.)
 fn handle_queued_command_echo(app: &mut App, prompt_text: &str) {
     use crate::app::{ChatMessage, MessageBlock, MessageRole, TextBlock};
-    if crate::app::input_submit::un_dim_matching_pending(app, prompt_text) {
-        return;
-    }
-    // No pending match → treat as replay: push a fresh user bubble
-    // so the historical input shows up in chat.
     let blocks = vec![MessageBlock::Text(TextBlock::from_complete(prompt_text))];
     app.push_message_tracked(ChatMessage::new(MessageRole::User, blocks, None));
     app.enforce_history_retention_tracked();
     tracing::debug!(
         target: crate::logging::targets::APP_INPUT,
         event_name = "queued_command_replayed",
-        message = "no pending match for queued_command echo; pushed fresh bubble (replay path)",
+        message = "pushed user bubble for replayed queued_command (session resume path)",
         outcome = "success",
         prompt_chars = prompt_text.chars().count(),
     );

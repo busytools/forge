@@ -11,7 +11,7 @@
 //! (Phase 2 of the side-panes feature; backend prerequisite for the
 //! Projects pane UI).
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::time::Instant;
 
 use forge_workspace::SessionKey;
@@ -26,8 +26,8 @@ use crate::app::state::messages::ChatMessage;
 use crate::app::state::render_budget::{RenderCacheEvictionKey, RenderCacheSlotState};
 use crate::app::state::types::{
     CancelOrigin, HistoryRetentionPolicy, HistoryRetentionStats, LoginHint, McpState, ModeState,
-    PasteSessionState, PendingCommandAck, PendingEchoBubble, RecentSessionInfo, SelectionState,
-    SessionUsageState, TodoItem, ToolCallScope, UsageState,
+    PasteSessionState, PendingCommandAck, RecentSessionInfo, SelectionState, SessionUsageState,
+    TodoItem, ToolCallScope, UsageState,
 };
 use crate::app::state::viewport::ChatViewport;
 use crate::app::state::{ChatRenderTraceState, TerminalToolCallRef, TurnNoticeRef};
@@ -238,39 +238,6 @@ pub struct UiSession {
     /// Ack marker required to clear `CommandPending` for strict
     /// completion semantics. Per-session.
     pub pending_command_ack: Option<PendingCommandAck>,
-    // `pending_auto_submit_after_cancel` removed 2026-05-13 along
-    // with the cancel-on-submit pattern. Submit dispatches
-    // immediately now; there is no post-cancel auto-submit phase.
-    // See [`Self::pending_echo_bubbles`] for the replacement
-    // mechanism.
-    /// Pending dimmed user bubbles awaiting the `queued_command` wire
-    /// echo to un-dim. See issue #85.
-    ///
-    /// When the user submits while a turn is in flight, forge:
-    /// 1. Pushes a dimmed user bubble at `messages.len()`,
-    /// 2. Records `(text, idx, dispatched_at)` here,
-    /// 3. Dispatches `Command::Prompt` immediately.
-    ///
-    /// Claude internally queues the dispatched input and bundles it
-    /// as a `queued_command` content block on the next outbound
-    /// user-message envelope. When the matching `QueuedCommand` block
-    /// echoes back on the wire, `input_submit::un_dim_matching_pending`
-    /// removes the entry from this deque and flips the bubble's
-    /// `queued` flag to false.
-    ///
-    /// FIFO order matches submit order; matching is by exact text
-    /// (works for identical successive messages because we pop the
-    /// front match). Claude's wire shape for `queued_command` carries
-    /// no `source_uuid` or correlation id, so text-FIFO is the best
-    /// we can do.
-    ///
-    /// `dispatched_at` is read by the staleness sweep in
-    /// `input_submit::sweep_stale_pending_bubbles` — bubbles that
-    /// haven't seen their echo within the staleness window (60s) get
-    /// logged + visually marked.
-    ///
-    /// Per-session, in-memory only.
-    pub pending_echo_bubbles: VecDeque<PendingEchoBubble>,
     /// Active text selection (mouse-driven). Per-session so a
     /// selection started in one session doesn't render in another
     /// after a switch.
@@ -438,7 +405,6 @@ impl Default for UiSession {
             resuming_session_id: Option::default(),
             pending_command_label: Option::default(),
             pending_command_ack: Option::default(),
-            pending_echo_bubbles: VecDeque::default(),
             selection: Option::default(),
             pending_submit: Option::default(),
             pending_paste_text: String::default(),

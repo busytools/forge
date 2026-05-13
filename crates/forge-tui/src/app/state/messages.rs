@@ -14,31 +14,12 @@ pub struct ChatMessage {
     pub blocks: Vec<MessageBlock>,
     pub usage: Option<MessageUsage>,
     pub render_cache: MessageRenderCache,
-    /// True when this is a queued (not-yet-fired) user message
-    /// awaiting a turn-complete to drain. The renderer dims +
-    /// italicises the bubble while this flag is set; flipped to
-    /// `false` when the queue fires. See issue #85 + `QueuedMessage`.
-    pub queued: bool,
 }
 
 impl ChatMessage {
     #[must_use]
     pub fn new(role: MessageRole, blocks: Vec<MessageBlock>, usage: Option<MessageUsage>) -> Self {
-        Self { role, blocks, usage, render_cache: MessageRenderCache::default(), queued: false }
-    }
-
-    /// Convenience constructor for a queued (dimmed) user message.
-    /// The bubble renders dimmed until the queue drains; on drain
-    /// the drain handler flips `queued` to `false`.
-    #[must_use]
-    pub fn new_queued(role: MessageRole, blocks: Vec<MessageBlock>) -> Self {
-        Self {
-            role,
-            blocks,
-            usage: None,
-            render_cache: MessageRenderCache::default(),
-            queued: true,
-        }
+        Self { role, blocks, usage, render_cache: MessageRenderCache::default() }
     }
 
     #[must_use]

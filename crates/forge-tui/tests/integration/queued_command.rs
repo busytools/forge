@@ -49,7 +49,7 @@ async fn replay_synthesised_user_envelope_pushes_un_dimmed_bubble() {
     assert_eq!(app.messages().len(), before + 1, "replay bubble pushed");
     let new_msg = app.messages().last().expect("bubble");
     assert!(matches!(new_msg.role, MessageRole::User));
-    assert!(!new_msg.queued, "replay bubbles are NOT dimmed");
+    // Replayed bubbles are plain user bubbles — no dim/queued state.
 }
 
 #[tokio::test]
