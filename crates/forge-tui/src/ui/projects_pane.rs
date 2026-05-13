@@ -469,6 +469,9 @@ fn glyph_for_lifecycle(
 //     7d    ▓▓▓▓▓▓▓▓▓▓▓░  89%
 //                        4d 4h
 //
+//     forge    v0.15.1
+//     claude   v2.0.45  ↑ v2.0.50
+//
 // `ACCOUNT_PANEL_HEIGHT` is constant. The panel's render swallows the
 // fixed N rows from the bottom of the pane; the project list takes
 // everything above. Bar fill colour is a per-cell position gradient
@@ -484,10 +487,11 @@ fn glyph_for_lifecycle(
 /// Constant by design — values flip but shape stays put (see the
 /// "account chrome, not status row" intent in the design brief).
 ///
-/// 14 rows: rule + 5 identity (Profile/Mode/Model/Effort/Fast) +
+/// 17 rows: rule + 5 identity (Profile/Mode/Model/Effort/Fast) +
 /// 1 blank + 1 Ctx + 1 blank + 2 (5h bar + ETA row) + 1 blank +
-/// 2 (7d bar + ETA row).
-const ACCOUNT_PANEL_HEIGHT: u16 = 14;
+/// 2 (7d bar + ETA row) + 1 blank + 2 (forge + claude version
+/// rows).
+const ACCOUNT_PANEL_HEIGHT: u16 = 17;
 
 /// Width (columns) the rule and content extend up to from the
 /// pane's right edge. Matches the project-row right gutter so the
@@ -707,14 +711,51 @@ fn build_account_panel_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     // Row 11: blank between 5h and 7d.
     lines.push(Line::default());
 
-    // Rows 12..=13: 7d bar + ETA row. The panel ends here — cwd /
-    // branch moved to the Inspector pane's GIT section.
+    // Rows 12..=13: 7d bar + ETA row.
     push_usage_window_lines(
         &mut lines,
         "7d",
         app.usage().snapshot.as_ref().and_then(|s| s.seven_day.as_ref()),
         width,
     );
+
+    // Row 14: blank between usage and version rows.
+    lines.push(Line::default());
+
+    // Rows 15..=16: forge + claude versions. The claude row shows
+    // a yellow `↑ vX.Y.Z` indicator when the npm registry probe
+    // reports a strictly-newer published version. Both rows render
+    // a DIM `—` placeholder when the corresponding probe failed so
+    // the panel's row count stays constant.
+    let forge_version = format!("v{}", env!("CARGO_PKG_VERSION"));
+    lines.push(Line::from(vec![
+        Span::raw("  "),
+        label_span("forge", ACCOUNT_PANEL_ID_LABEL_WIDTH),
+        Span::raw("  "),
+        Span::raw(forge_version),
+    ]));
+
+    let cli_info = app.cli_version_info.as_ref();
+    let installed = cli_info
+        .and_then(|i| i.installed.as_deref())
+        .map_or_else(|| "—".to_owned(), |v| format!("v{v}"));
+    let mut claude_spans = vec![
+        Span::raw("  "),
+        label_span("claude", ACCOUNT_PANEL_ID_LABEL_WIDTH),
+        Span::raw("  "),
+        Span::raw(installed),
+    ];
+    if let Some(info) = cli_info
+        && info.has_update()
+        && let Some(latest) = info.latest.as_deref()
+    {
+        claude_spans.push(Span::raw("  "));
+        claude_spans.push(Span::styled(
+            format!("\u{2191} v{latest}"),
+            Style::default().fg(theme::STATUS_WARNING),
+        ));
+    }
+    lines.push(Line::from(claude_spans));
 
     debug_assert_eq!(
         u16::try_from(lines.len()).unwrap_or(u16::MAX),
@@ -1005,6 +1046,6 @@ mod tests {
         // co-anchor the layout. This test pins the constant explicitly
         // so a change to row count surfaces here too, not only at
         // runtime.
-        assert_eq!(ACCOUNT_PANEL_HEIGHT, 14);
+        assert_eq!(ACCOUNT_PANEL_HEIGHT, 17);
     }
 }

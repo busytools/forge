@@ -1017,6 +1017,20 @@ impl Workspace {
         forge_agent::env::git_diff::scan(cwd).await
     }
 
+    /// Probe the local `claude --version` and the latest published
+    /// version on npm in parallel, returning both via
+    /// [`forge_agent::env::cli_version::CliVersionInfo`]. Used by
+    /// the bottom-left account panel to render the forge + claude
+    /// version rows and the `↑ vX.Y.Z` update indicator.
+    ///
+    /// Infallible: each probe collapses to `None` on its half of the
+    /// struct when it fails (binary missing, no network, parse
+    /// failure, timeout); structured WARN logs surface the failure
+    /// without breaking the renderer.
+    pub async fn fetch_cli_version_info(&self) -> forge_agent::env::cli_version::CliVersionInfo {
+        forge_agent::env::cli_version::fetch_info().await
+    }
+
     /// Borrow the [`Arc<AgentHandle>`] registered against `key`.
     /// Workspace-internal helper — surfaces a sometimes-`None` to keep
     /// the early-init / disconnected branches explicit.

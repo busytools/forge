@@ -459,6 +459,9 @@
 
   <span class="dim">  7d    </span><span class="success">▓▓▓</span><span class="warning">▓▓▓</span><span class="accent">▓▓▓</span><span class="error">▓▓</span><span class="dim">░</span>  89%
   <span class="dim">                    4d 4h</span>
+
+  <span class="dim">  forge    </span>v0.15.1
+  <span class="dim">  claude   </span>v2.0.45<span class="warning">  ↑ v2.0.50</span>
 </pre>
     </div>
     <p>The pane has <strong>two anchored regions</strong>: the project list grows from the top, and the <strong>account / status panel</strong> is hard-docked at the bottom. The dim <code>─</code> rule between them sits at a fixed row from the bottom — a permanent gutter, not a separator that floats based on list length. <strong>The two never overlap.</strong> When the project list outgrows its region the list scrolls within itself; the panel never gives up its rows. The empty space above the rule in the mockup above shows what a short project list looks like — the panel still sits at the bottom, gravity is preserved.</p>
@@ -466,8 +469,9 @@
     <ul style="color: var(--muted); font-size: 13px; line-height: 1.7; margin: 0 0 12px 18px;">
       <li><strong>Identity / posture</strong> — <code>Profile</code> (active account display name from <code>forge.toml</code>'s <code>[[accounts]]</code>, via <code>app.active_account_display_name</code>), <code>Mode</code> (permission mode badge — same colors as the old footer used: <code>auto</code> / <code>acceptEdits</code> yellow, <code>plan</code> blue, <code>bypassPermissions</code> / <code>dontAsk</code> red, <code>default</code> dim), <code>Model</code> (display name with the <code>(… context)</code> wrapper stripped, e.g. <code>Opus (1M context)</code> → <code>Opus 1M</code> — only in the panel; other surfaces keep the raw name), <code>Effort</code> (always shown on its own row so a long model name can never push it off-screen), <code>Fast</code> (off / cd / on, same colors as the old <code>FAST:*</code> badge).</li>
       <li><strong>Usage bars</strong> — three 12-cell filling bars: <code>Ctx</code> (per-session context %), <code>5h</code> (5-hour plan window), <code>7d</code> (combined 7-day window). The fill colour is a <strong>per-cell position gradient</strong>, not a threshold step: cells 1–3 green, 4–6 yellow, 7–9 orange, 10–12 red, so the rightmost filled cell tells you which zone the bar is in. Empty cells stay <code>░</code> in DIM. The <code>5h</code> and <code>7d</code> rows are followed by a DIM, right-justified duration on the next line (e.g. <code>1h 48m</code> / <code>4d 4h</code>) — the legacy <code>resets in</code> prose was dropped so the eye lands on the time, not the verb. A single blank row separates each bar group from the next.</li>
+      <li><strong>Versions</strong> — two trailing rows: <code>forge</code> (the running binary's <code>CARGO_PKG_VERSION</code>) and <code>claude</code> (the version reported by <code>claude --version</code> on the local machine). When the npm registry probe finds a strictly-newer published version under the <code>@anthropic-ai/claude-code</code> <code>latest</code> dist-tag, a <span class="warning">yellow <code>↑ vX.Y.Z</code></span> indicator appends to the <code>claude</code> row. Probes run once at app startup in parallel via <code>Workspace::fetch_cli_version_info</code>; missing values render as <code>—</code> so the row count stays constant.</li>
     </ul>
-    <p>The <code>📁 cwd</code> and <code>⎇ branch</code> rows that used to sit at the bottom of this panel moved to the right-hand <a href="#inspector-pane">Inspector pane</a>'s <code>GIT</code> section. The panel's row budget shrank from 17 to 14 with that move.</p>
+    <p>The <code>📁 cwd</code> and <code>⎇ branch</code> rows that used to sit at the bottom of this panel moved to the right-hand <a href="#inspector-pane">Inspector pane</a>'s <code>GIT</code> section.</p>
     <p>At Narrow tier (&lt;120 cols), the inline pane is replaced by a single-line top bar showing <code>▤  &lt;active-project&gt;·&lt;active-session&gt;</code>. Tap <code>▤</code> (or <kbd>Ctrl+B</kbd>) to expand the overlay — full-screen list of projects with the active project's drilldown, the same account / status panel docked at the bottom, and a <code>✕</code> glyph in the banner to dismiss. Picking a project / session row in the overlay switches active session AND closes the overlay in one action. <kbd>Esc</kbd> also closes. Aggregate unread badge on <code>▤</code> is deferred to a follow-up issue.</p>
     <div class="term">
       <pre class="indent">
@@ -502,6 +506,9 @@ chat continues here…
 
 <span class="dim">  7d    </span><span class="success">▓▓▓</span><span class="warning">▓▓▓</span><span class="accent">▓▓▓</span><span class="error">▓▓</span><span class="dim">░</span>  89%
 <span class="dim">                                            4d 4h</span>
+
+<span class="dim">  forge    </span>v0.15.1
+<span class="dim">  claude   </span>v2.0.45<span class="warning">  ↑ v2.0.50</span>
 </pre>
     </div>
     <dl>
@@ -511,7 +518,7 @@ chat continues here…
       <dt>click</dt><dd>project header → <code>switch_to_project_lead</code>: in-process lead → instant <code>switch_active_session</code>; sleeping lead → <code>spawn_for_sleeping_project</code> (synthetic bucket + async <code>get_agent_handle</code>). Active-project session row → direct <code>switch_active_session</code> on that session. At Narrow tier, both also close the overlay; the <code>▤</code> top-bar icon toggles overlay open/close, and the overlay <code>✕</code> glyph dismisses without switching.</dd>
       <dt>toggle</dt><dd><code>Ctrl+B</code> at Wide / Medium tiers hides / restores the inline pane (persisted to <code>forge-state.toml</code> <code>[ui].projects_pane_visible</code>, default <code>true</code>). At Narrow tier <code>Ctrl+B</code> toggles the transient overlay flag (NOT persisted — each launch starts closed). <kbd>Esc</kbd> also closes the overlay.</dd>
       <dt>scope</dt><dd>All three tiers ship: Wide (≥160) inline 40ch · Medium (120–159) inline 30ch with truncation · Narrow (&lt;120) top-bar + overlay. Click + toggle behaviour tier-agnostic for the inline pane; Narrow uses overlay + <code>✕</code> semantics. Mouse-only interaction in v1 (plus <kbd>Ctrl+B</kbd> / <kbd>Esc</kbd>) — chat input always has keyboard focus.</dd>
-      <dt>layout</dt><dd>The pane is vertically split into two anchored regions: <strong>top</strong> for the project list, <strong>bottom</strong> for the account / status panel. The panel reserves a fixed 14 rows from the bottom up (rule + 5 identity rows + 1 blank + 1 Ctx bar + 1 blank + 2 (5h bar + ETA) + 1 blank + 2 (7d bar + ETA)). The project list takes everything above. When the project list overflows its region it scrolls within itself; the panel's rows are never reclaimed. If the project list is short, the unused rows in the list region render blank — the panel does NOT slide upward to close the gap. The panel is skipped entirely when the pane height drops below 24 rows so the project list keeps at least 7 rows.</dd>
+      <dt>layout</dt><dd>The pane is vertically split into two anchored regions: <strong>top</strong> for the project list, <strong>bottom</strong> for the account / status panel. The panel reserves a fixed 17 rows from the bottom up (rule + 5 identity rows + 1 blank + 1 Ctx bar + 1 blank + 2 (5h bar + ETA) + 1 blank + 2 (7d bar + ETA) + 1 blank + 2 version rows). The project list takes everything above. When the project list overflows its region it scrolls within itself; the panel's rows are never reclaimed. If the project list is short, the unused rows in the list region render blank — the panel does NOT slide upward to close the gap. The panel is skipped entirely when the pane height drops below 24 rows so the project list keeps at least 7 rows.</dd>
     </dl>
   </div>
 </div>

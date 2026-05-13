@@ -1,5 +1,6 @@
 pub(crate) mod active_bucket_scope;
 mod cache_policy;
+pub(crate) mod cli_version;
 pub(crate) mod clipboard_image;
 pub(crate) mod config;
 mod connect;
@@ -177,6 +178,7 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
 
         file_index::drain_events(app);
         git_diff::drain_events(app);
+        cli_version::drain_events(app);
 
         // If a prior turn ended in Error state because of a rate-limit
         // rejection, drop the input lock once the rate-limit window
