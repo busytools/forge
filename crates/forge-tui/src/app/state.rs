@@ -1873,7 +1873,7 @@ impl App {
         let (label, value) = self.welcome_account_display();
         let session_id = self.welcome_session_id_display();
         let mut message = ChatMessage::welcome(
-            env!("CARGO_PKG_VERSION"),
+            crate::FORGE_VERSION,
             &value,
             self.welcome_cwd_display(),
             &session_id,

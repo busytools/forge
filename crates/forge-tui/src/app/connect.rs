@@ -138,7 +138,7 @@ pub fn create_app(cli: &Cli, workspace: Arc<forge_workspace::Workspace>) -> App 
     let pre_connect_key = forge_workspace::SessionKey::from_session_id(App::PRE_CONNECT_KEY);
     let mut pre_connect_session = super::session::UiSession::new(pre_connect_key.clone());
     pre_connect_session.messages =
-        vec![super::ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "", &cwd_display, "-")];
+        vec![super::ChatMessage::welcome(crate::FORGE_VERSION, "", &cwd_display, "-")];
     pre_connect_session.cwd = cwd_display;
     pre_connect_session.cwd_raw = cwd.to_string_lossy().to_string();
     // Pre-register a handle-less DomainSession for the pre-Connect

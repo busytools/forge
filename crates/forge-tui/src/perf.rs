@@ -138,7 +138,7 @@ mod enabled {
                 run_id: run_id.as_str(),
                 ts_ms,
                 pid: std::process::id(),
-                version: env!("CARGO_PKG_VERSION"),
+                version: crate::FORGE_VERSION,
                 append,
             };
             write_json_line(&mut writer, &started);

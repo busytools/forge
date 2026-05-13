@@ -727,7 +727,7 @@ fn build_account_panel_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     // reports a strictly-newer published version. Both rows render
     // a DIM `—` placeholder when the corresponding probe failed so
     // the panel's row count stays constant.
-    let forge_version = format!("v{}", env!("CARGO_PKG_VERSION"));
+    let forge_version = format!("v{}", crate::FORGE_VERSION_SHORT);
     lines.push(Line::from(vec![
         Span::raw("  "),
         label_span("forge", ACCOUNT_PANEL_ID_LABEL_WIDTH),

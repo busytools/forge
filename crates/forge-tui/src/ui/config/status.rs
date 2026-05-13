@@ -19,7 +19,7 @@ pub(crate) fn status_lines(app: &App) -> Vec<Line<'static>> {
 
     // ---- Session ----
     section_header(&mut lines, "Session");
-    kv_line(&mut lines, "Version", env!("CARGO_PKG_VERSION"));
+    kv_line(&mut lines, "Version", crate::FORGE_VERSION);
     kv_line(&mut lines, "Session name", &derive_session_name(app));
 
     let session_id_str = app.session_id().map_or_else(|| "(none)".to_owned(), |s| s.to_string());
