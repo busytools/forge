@@ -1342,13 +1342,9 @@ impl App {
         &mut self.active_bucket_mut().pending_command_ack
     }
 
-    #[must_use]
-    pub fn pending_auto_submit_after_cancel(&self) -> bool {
-        self.active_session().is_some_and(|s| s.pending_auto_submit_after_cancel)
-    }
-    pub fn set_pending_auto_submit_after_cancel(&mut self, value: bool) {
-        self.active_bucket_mut().pending_auto_submit_after_cancel = value;
-    }
+    // `pending_auto_submit_after_cancel` getter/setter removed
+    // 2026-05-13 along with the underlying field — submit dispatches
+    // immediately now. See `UiSession::pending_echo_bubbles`.
 
     #[must_use]
     pub fn selection(&self) -> Option<&SelectionState> {

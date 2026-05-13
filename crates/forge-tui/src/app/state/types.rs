@@ -70,31 +70,12 @@ pub struct SessionPickerState {
     pub scroll_offset: usize,
 }
 
-/// A user message typed while a turn was in flight, waiting for the
-/// current turn to complete before firing. See issue #85.
-///
-/// Per the locked design: on `TurnComplete`, the entire queue
-/// concatenates into a single new turn — all queued texts joined with
-/// `\n\n` paragraph breaks, attachments merged. The chat-history
-/// representation stays as N distinct dimmed bubbles (one per typed
-/// message) so the visual mirrors what the user typed even though the
-/// wire sees one combined prompt.
-#[derive(Debug, Clone)]
-pub struct QueuedMessage {
-    /// Raw typed text. Concatenated with `\n\n` against sibling
-    /// queued messages when the queue drains.
-    pub text: String,
-    /// Image attachments pasted while composing this queued message.
-    /// Merged with sibling queued messages' attachments on drain.
-    pub attachments: Vec<crate::app::clipboard_image::ImageAttachment>,
-    /// Index into `UiSession.messages` of the dimmed user bubble
-    /// representing this queued message. The drain handler walks
-    /// these to un-dim the bubbles when the queue fires.
-    pub chat_message_idx: usize,
-    /// Wall-clock when the user pressed Enter. Useful for debug
-    /// logging + future analytics; not load-bearing for behaviour.
-    pub queued_at: std::time::Instant,
-}
+// `QueuedMessage` + `PendingEchoBubble` removed 2026-05-13. Forge
+// no longer maintains any local queue or dim/un-dim state for
+// mid-turn submits — claude's CLI handles in-flight buffering
+// internally, and the chat just appends a regular user bubble per
+// submit. Session resume reconstructs queued messages from the
+// JSONL `type:"attachment"` rows via `forge_agent::userdata::catalog::scan`.
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct MessageUsage {
@@ -219,10 +200,20 @@ pub enum ToolCallScope {
     SubagentChild { parent_tool_use_id: String },
 }
 
+/// Why the user-visible cancel was requested. As of issue #85 the
+/// only routine caller is the Escape keybinding ([`Self::Manual`]).
+/// The historical `AutoQueue` variant (set by submit-during-busy to
+/// distinguish auto-induced cancels for the post-cancel auto-submit
+/// path) was removed alongside the rest of the local-queue machinery
+/// — submit now dispatches immediately and claude internally queues
+/// in-flight inputs as `queued_command` content blocks.
+///
+/// The enum is kept as a single-variant for forward-extensibility
+/// (future cancel origins like "rate-limit" or "external API" can
+/// land without rewriting every match site).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CancelOrigin {
     Manual,
-    AutoQueue,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

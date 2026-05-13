@@ -14,5 +14,6 @@ mod message_helpers;
 mod caching_pipeline;
 mod internal_failures;
 mod permissions;
+mod queued_command;
 mod state_transitions;
 mod tool_lifecycle;

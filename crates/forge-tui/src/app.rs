@@ -195,16 +195,8 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
         // so the actual fetch only fires once per TTL window.
         crate::app::usage::request_refresh_if_needed(app);
 
-        // Issue #85: time-based fallback for the queue. Tool-free
-        // turns (pure-text responses) emit no `tool_result` events,
-        // so the concrete drain hook in `apply_tool_result_block`
-        // never fires. Without this, queued messages would only
-        // drain at TurnComplete — re-introducing the original bug
-        // for tool-free turns. The timer fires when the oldest
-        // queued message has been waiting > 10s. No-op when the
-        // queue is empty.
-        crate::app::input_submit::maybe_drain_queue_on_timer(app);
-
+        // Issue #85 (revised 2026-05-13): no timer-based drain.
+        // Submit dispatches `Command::Prompt` immediately on every
         // Tick the burst detector: flush any held/buffered content that
         // has timed out. EmitChar re-inserts a single held character;
         // EmitPaste feeds the accumulated burst into the paste queue.

@@ -220,9 +220,23 @@ fn parse_session_messages<R: std::io::Read>(reader: R) -> Vec<SessionMessage> {
                 continue;
             }
         };
-        let kind = match value.get("type").and_then(Value::as_str) {
-            Some("user") => SessionMessageKind::User,
-            Some("assistant") => SessionMessageKind::Assistant,
+        let row_type = value.get("type").and_then(Value::as_str);
+        let (kind, message) = match row_type {
+            Some("user") => (SessionMessageKind::User, value.get("message").cloned()),
+            Some("assistant") => (SessionMessageKind::Assistant, value.get("message").cloned()),
+            // Attachment rows hold claude's persisted record of mid-turn
+            // queued inputs — `{"type":"attachment", "attachment":{"type":
+            // "queued_command", "prompt":"...", "commandMode":"prompt"}}`.
+            // On replay we hoist them into a synthetic user envelope
+            // whose single content block is the `queued_command`, so the
+            // downstream walker reconstructs the user bubble that was
+            // never on the wire as a regular user message.
+            Some("attachment") => match value.get("attachment") {
+                Some(att) if att.get("type").and_then(Value::as_str) == Some("queued_command") => {
+                    (SessionMessageKind::User, Some(synthesize_queued_command_message(att)))
+                }
+                _ => continue,
+            },
             _ => continue,
         };
         if value.get("parent_tool_use_id").is_some_and(|v| !v.is_null()) {
@@ -230,16 +244,37 @@ fn parse_session_messages<R: std::io::Read>(reader: R) -> Vec<SessionMessage> {
         }
         let uuid = value.get("uuid").and_then(Value::as_str).unwrap_or_default().to_string();
         let sess = value.get("session_id").and_then(Value::as_str).unwrap_or_default().to_string();
-        let message = value.get("message").cloned().unwrap_or(Value::Null);
         out.push(SessionMessage {
             kind,
             uuid,
             session_id: sess,
-            message,
+            message: message.unwrap_or(Value::Null),
             parent_tool_use_id: None,
         });
     }
     out
+}
+
+/// Build a `{"role":"user","content":[{queued_command}]}` envelope from
+/// a JSONL attachment row's `attachment` field. Used during session
+/// replay to surface mid-turn queued inputs that claude persisted as
+/// `type:"attachment"` rows (which the scanner would otherwise skip).
+fn synthesize_queued_command_message(attachment: &Value) -> Value {
+    let mut block = serde_json::Map::new();
+    block.insert("type".into(), Value::String("queued_command".into()));
+    if let Some(prompt) = attachment.get("prompt") {
+        block.insert("prompt".into(), prompt.clone());
+    }
+    if let Some(mode) = attachment.get("commandMode") {
+        block.insert("commandMode".into(), mode.clone());
+    }
+    if let Some(src) = attachment.get("source_uuid") {
+        block.insert("source_uuid".into(), src.clone());
+    }
+    serde_json::json!({
+        "role": "user",
+        "content": [Value::Object(block)],
+    })
 }
 
 /// Sanitise a path the same way the `claude` CLI does —
@@ -1001,6 +1036,47 @@ mod tests {
     fn collect_agent_files_returns_empty_for_missing_dir() {
         let collected = collect_agent_files(Path::new("/nonexistent/path/xyz"));
         assert!(collected.is_empty());
+    }
+
+    #[test]
+    fn parse_session_messages_hoists_attachment_queued_command_to_user() {
+        // claude persists mid-turn queued inputs as
+        // `{"type":"attachment", "attachment":{"type":"queued_command",
+        // "prompt":"...", "commandMode":"prompt"}}`. The scanner must
+        // synthesise these as user rows so replay reconstructs the
+        // bubble that was never on the live wire as a regular user
+        // message.
+        let jsonl = r#"{"type":"user","message":{"role":"user","content":"plain prompt"},"uuid":"u1","session_id":"s1"}
+{"type":"attachment","attachment":{"type":"queued_command","prompt":"queued prompt","commandMode":"prompt"},"uuid":"a1","session_id":"s1"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"hello"}]},"uuid":"as1","session_id":"s1"}
+"#;
+        let msgs = parse_session_messages(jsonl.as_bytes());
+        assert_eq!(msgs.len(), 3, "expected 3 rows (user + synthesised user + assistant)");
+        assert!(matches!(msgs[0].kind, SessionMessageKind::User));
+        assert!(matches!(msgs[1].kind, SessionMessageKind::User), "attachment row hoisted to User");
+        assert_eq!(msgs[1].uuid, "a1");
+        let content = msgs[1]
+            .message
+            .get("content")
+            .and_then(Value::as_array)
+            .expect("synthesised message has content array");
+        assert_eq!(content.len(), 1);
+        assert_eq!(content[0].get("type").and_then(Value::as_str), Some("queued_command"));
+        assert_eq!(content[0].get("prompt").and_then(Value::as_str), Some("queued prompt"));
+        assert_eq!(content[0].get("commandMode").and_then(Value::as_str), Some("prompt"));
+        assert!(matches!(msgs[2].kind, SessionMessageKind::Assistant));
+    }
+
+    #[test]
+    fn parse_session_messages_skips_attachment_without_queued_command() {
+        // Other attachment subtypes (image, document, etc.) are not
+        // user-bubble-worthy — keep skipping them.
+        let jsonl = r#"{"type":"attachment","attachment":{"type":"image","source":{}},"uuid":"a1","session_id":"s1"}
+{"type":"assistant","message":{"role":"assistant","content":[]},"uuid":"as1","session_id":"s1"}
+"#;
+        let msgs = parse_session_messages(jsonl.as_bytes());
+        assert_eq!(msgs.len(), 1, "non-queued_command attachment must be skipped");
+        assert!(matches!(msgs[0].kind, SessionMessageKind::Assistant));
     }
 
     #[test]

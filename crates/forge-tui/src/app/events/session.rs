@@ -283,7 +283,6 @@ pub(super) fn handle_auth_required_event(
     app.set_last_rate_limit_update(None);
     app.set_cancelled_turn_pending_hint(false);
     app.set_pending_cancel_origin(None);
-    app.set_pending_auto_submit_after_cancel(false);
     app.set_account_info(None);
     *app.mcp_mut() = super::super::McpState::default();
     app.config.pending_session_title_change = None;
@@ -391,7 +390,6 @@ pub(super) fn handle_connection_failed_event(app: &mut App, session_key: &Sessio
     super::clear_compaction_state(app, false);
     app.set_cancelled_turn_pending_hint(false);
     app.set_pending_cancel_origin(None);
-    app.set_pending_auto_submit_after_cancel(false);
     app.set_last_rate_limit_update(None);
     app.set_account_info(None);
     *app.mcp_mut() = super::super::McpState::default();
@@ -669,7 +667,6 @@ pub(super) fn handle_session_replaced_event(
     let available_model_count = available_models.len();
     super::clear_compaction_state(app, false);
     app.set_pending_cancel_origin(None);
-    app.set_pending_auto_submit_after_cancel(false);
 
     // Capture the outgoing bucket's key BEFORE `reset_for_new_session`
     // runs — that call goes through `set_session_id`, which inserts a

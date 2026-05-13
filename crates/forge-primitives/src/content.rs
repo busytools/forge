@@ -112,6 +112,38 @@ pub enum ContentBlock {
         source: Value,
     },
 
+    /// User input that was typed while a previous turn was in flight
+    /// and got "queued" by the CLI. Claude Code packages these as
+    /// `queued_command`-type content blocks on the next outbound
+    /// user-message envelope going to the model, so the model sees
+    /// them as additional context.
+    ///
+    /// Wire shape (from the CLI binary's `gO6` function):
+    /// ```json
+    /// {"type": "queued_command",
+    ///  "prompt": "<text or content-block list>",
+    ///  "commandMode": "prompt" | "bash",
+    ///  "source_uuid": "<optional>",
+    ///  ...}
+    /// ```
+    ///
+    /// Forge surfaces this so resumed sessions render the queued
+    /// inputs as user bubbles in the chat. Without it, a session
+    /// that had mid-turn queued inputs would replay missing those
+    /// user messages — see issue #85.
+    QueuedCommand {
+        /// The queued user text (or content-block array — kept as
+        /// `Value` so list-of-blocks variants pass through cleanly).
+        prompt: Value,
+        /// Mode the input was submitted in. Typically `"prompt"`;
+        /// `"bash"` for `!`-prefixed shell commands.
+        command_mode: Option<String>,
+        /// Source UUID assigned by the CLI when the input was queued.
+        /// Useful for de-duplication / threading; not load-bearing
+        /// for rendering.
+        source_uuid: Option<String>,
+    },
+
     /// Forward-compat fallback for content block types forge-sdk
     /// doesn't model explicitly. Callers can branch on `type_str` +
     /// inspect `raw` — the decoder never errors on an unrecognised
@@ -185,6 +217,18 @@ impl Serialize for ContentBlock {
                     "type": "image",
                     "source": source,
                 })
+            }
+            ContentBlock::QueuedCommand { prompt, command_mode, source_uuid } => {
+                let mut obj = serde_json::Map::new();
+                obj.insert("type".into(), Value::String("queued_command".into()));
+                obj.insert("prompt".into(), prompt.clone());
+                if let Some(mode) = command_mode {
+                    obj.insert("commandMode".into(), Value::String(mode.clone()));
+                }
+                if let Some(uuid) = source_uuid {
+                    obj.insert("source_uuid".into(), Value::String(uuid.clone()));
+                }
+                Value::Object(obj)
             }
             ContentBlock::Unknown { raw, .. } => raw.clone(),
         };
@@ -262,6 +306,11 @@ impl<'de> Deserialize<'de> for ContentBlock {
                     ContentBlock::Image { source }
                 })
             }
+            "queued_command" => Ok(ContentBlock::QueuedCommand {
+                prompt: raw.get("prompt").cloned().unwrap_or(Value::Null),
+                command_mode: raw.get("commandMode").and_then(Value::as_str).map(str::to_string),
+                source_uuid: raw.get("source_uuid").and_then(Value::as_str).map(str::to_string),
+            }),
             other => Ok(ContentBlock::Unknown { type_str: other.to_string(), raw }),
         }
     }
