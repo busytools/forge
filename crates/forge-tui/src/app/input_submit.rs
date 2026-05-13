@@ -253,6 +253,56 @@ pub(crate) fn un_dim_matching_pending(app: &mut App, prompt_text: &str) -> bool 
     false
 }
 
+/// Un-dim every pending bubble at a turn boundary.
+///
+/// Empirical finding 2026-05-13: claude does NOT echo `queued_command`
+/// content blocks on its stream-json stdout. The attachment record is
+/// only persisted to the session JSONL for resume purposes. So the
+/// wire-echo path in `un_dim_matching_pending` never fires on live
+/// turns. The only signal we get that claude consumed the buffered
+/// inputs is `SessionUpdate::TurnComplete` — by that point any
+/// in-flight buffered prompt has been (or is about to be) handed off
+/// to the model as the next turn's user message.
+///
+/// Strategy: when the in-flight turn ends, mark every pending bubble
+/// as no-longer-dimmed and drain the deque. We lose per-bubble
+/// precision (can't tell which buffered prompt claude consumed when),
+/// but the visual state matches reality: "your input was queued, then
+/// claude processed it".
+///
+/// Called from `events::turn::handle_turn_complete_event`. No-op when
+/// the deque is empty.
+pub(crate) fn un_dim_pending_on_turn_complete(app: &mut App) {
+    let Some(key) = app.active_session_key.clone() else {
+        return;
+    };
+    let drained: Vec<PendingEchoBubble> = match app.session_mut(&key) {
+        Some(session) if !session.pending_echo_bubbles.is_empty() => {
+            session.pending_echo_bubbles.drain(..).collect()
+        }
+        _ => return,
+    };
+    let drained_count = drained.len();
+    if let Some(bucket) = app.try_active_bucket_mut() {
+        for entry in &drained {
+            if let Some(msg) = bucket.messages.get_mut(entry.message_idx)
+                && matches!(msg.role, MessageRole::User)
+                && msg.queued
+            {
+                msg.queued = false;
+                msg.invalidate_render_cache();
+            }
+        }
+    }
+    tracing::debug!(
+        target: crate::logging::targets::APP_INPUT,
+        event_name = "pending_bubbles_un_dimmed_at_turn_complete",
+        message = "drained pending_echo_bubbles + un-dimmed bubbles at turn boundary",
+        outcome = "success",
+        drained_count,
+    );
+}
+
 /// Per-tick sweep that flags pending dimmed bubbles whose
 /// `queued_command` echo hasn't arrived within
 /// [`PENDING_BUBBLE_STALE_SECS`]. Removes them from
@@ -536,6 +586,37 @@ mod tests {
 
         let bucket = app.try_active_bucket_mut().expect("active bucket exists");
         assert_eq!(bucket.pending_echo_bubbles.len(), 1);
+    }
+
+    #[test]
+    fn un_dim_pending_on_turn_complete_drains_and_un_dims_all() {
+        // The empirical un-dim signal: TurnComplete. Multiple pending
+        // bubbles drained simultaneously when the in-flight turn
+        // wraps — claude has consumed (or is about to consume) the
+        // buffered prompts as the next turn's user input.
+        let (mut app, _rx) = app_with_connection();
+        app.status = AppStatus::Running;
+        app.input_mut().set_text("first");
+        submit_input(&mut app);
+        app.input_mut().set_text("second");
+        submit_input(&mut app);
+
+        assert!(app.messages()[0].queued);
+        assert!(app.messages()[1].queued);
+        assert_eq!(app.try_active_bucket_mut().unwrap().pending_echo_bubbles.len(), 2);
+
+        un_dim_pending_on_turn_complete(&mut app);
+
+        assert!(!app.messages()[0].queued, "first bubble un-dimmed");
+        assert!(!app.messages()[1].queued, "second bubble un-dimmed");
+        assert!(app.try_active_bucket_mut().unwrap().pending_echo_bubbles.is_empty());
+    }
+
+    #[test]
+    fn un_dim_pending_on_turn_complete_is_noop_when_empty() {
+        let (mut app, _rx) = app_with_connection();
+        un_dim_pending_on_turn_complete(&mut app);
+        assert!(app.try_active_bucket_mut().unwrap().pending_echo_bubbles.is_empty());
     }
 
     #[test]
