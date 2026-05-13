@@ -13,7 +13,6 @@ use forge_agent::client::SessionLaunchSettings;
 use forge_primitives::cloud::oauth_credentials::OauthCredentials;
 use forge_primitives::cloud::service_status::ServiceSeverity;
 use forge_primitives::error::AppError;
-use forge_primitives::git::GitContext;
 use forge_primitives::permission::PermissionMode;
 use forge_primitives::permission_ui::{PermissionOutcome, PermissionRequest};
 use forge_primitives::permissions::PermissionUpdate;
@@ -187,15 +186,6 @@ pub enum Command {
     CloseSession {
         key: SessionKey,
     },
-    StartGitWatch {
-        key: SessionKey,
-        session_id: String,
-        cwd: PathBuf,
-    },
-    StopGitWatch {
-        key: SessionKey,
-        session_id: String,
-    },
     RequestStatusSnapshot {
         key: SessionKey,
         session_id: String,
@@ -279,8 +269,6 @@ impl Command {
             | Self::ClearMcpAuth { key, .. }
             | Self::SubmitMcpOauthCallbackUrl { key, .. }
             | Self::CloseSession { key }
-            | Self::StartGitWatch { key, .. }
-            | Self::StopGitWatch { key, .. }
             | Self::RequestStatusSnapshot { key, .. }
             | Self::RequestMcpSnapshot { key, .. }
             | Self::RequestContextUsage { key, .. }
@@ -445,10 +433,6 @@ pub enum SessionUpdate {
         session_id: String,
         credentials: Option<OauthCredentials>,
     },
-    GitContextSnapshot {
-        session_id: String,
-        context: GitContext,
-    },
     ContextUsageSnapshot {
         session_id: String,
         percentage: Option<u8>,
@@ -544,7 +528,6 @@ impl SessionUpdate {
             | Self::HookObservation { session_id, .. }
             | Self::StatusSnapshot { session_id, .. }
             | Self::OauthCredentialsSnapshot { session_id, .. }
-            | Self::GitContextSnapshot { session_id, .. }
             | Self::ContextUsageSnapshot { session_id, .. }
             | Self::McpSnapshot { session_id, .. } => {
                 Some(SessionKey::from_session_id(session_id.clone()))
@@ -654,10 +637,6 @@ impl std::fmt::Debug for SessionUpdate {
             }
             Self::OauthCredentialsSnapshot { session_id, .. } => f
                 .debug_struct("OauthCredentialsSnapshot")
-                .field("session_id", session_id)
-                .finish_non_exhaustive(),
-            Self::GitContextSnapshot { session_id, .. } => f
-                .debug_struct("GitContextSnapshot")
                 .field("session_id", session_id)
                 .finish_non_exhaustive(),
             Self::ContextUsageSnapshot { session_id, .. } => f

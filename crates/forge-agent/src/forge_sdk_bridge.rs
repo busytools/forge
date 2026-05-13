@@ -54,8 +54,8 @@ pub(crate) type PendingQuestions = Arc<Mutex<HashMap<String, oneshot::Sender<Que
 /// In-process bridge wrapping a single [`forge_sdk::Client`].
 ///
 /// Single instance per connection. The bridge owns the spawned
-/// `forge_sdk::Client`, the `can_use_tool` parking lots, the per-cwd
-/// git-context watchers, and the outbound `AgentEvent` channel.
+/// `forge_sdk::Client`, the `can_use_tool` parking lots, and the
+/// outbound `AgentEvent` channel.
 #[derive(Clone)]
 pub struct ForgeSdkBridge {
     inner: Arc<BridgeInner>,
@@ -74,9 +74,6 @@ pub(crate) struct BridgeInner {
     pub(crate) pending: PendingResponses,
     /// Question round-trip parking lot.
     pub(crate) pending_questions: PendingQuestions,
-    /// Active git-context watcher tasks, keyed by `session_id`. Aborted
-    /// on bridge drop or session replace.
-    git_watchers: Mutex<HashMap<String, tokio::task::JoinHandle<()>>>,
     /// Current session id, shared with the `can_use_tool` callback so
     /// permission/question events carry the right `session_id`.
     pub(crate) session_id_slot: Arc<Mutex<String>>,
@@ -116,7 +113,6 @@ impl ForgeSdkBridge {
                 events_rx: Mutex::new(Some(events_rx)),
                 pending: Arc::new(Mutex::new(HashMap::new())),
                 pending_questions: Arc::new(Mutex::new(HashMap::new())),
-                git_watchers: Mutex::new(HashMap::new()),
                 session_id_slot: Arc::new(Mutex::new(String::new())),
                 config_dir,
                 display_name,
@@ -214,66 +210,11 @@ impl ForgeSdkBridge {
         });
         Ok(())
     }
-
-    /// Replace any existing git watcher for `session_id` with a new
-    /// task that pumps `GitContextWatcher` snapshots into the event
-    /// channel.
-    fn install_git_watcher(&self, session_id: String, cwd: &Path) {
-        // Abort any prior watcher for this session so notify cleans up
-        // its OS-level subscriptions before we replace it.
-        if let Some(prev) = self.inner.git_watchers.lock().remove(&session_id) {
-            prev.abort();
-        }
-
-        let mut watcher = match crate::env::git::GitContextWatcher::new(cwd) {
-            Ok(watcher) => watcher,
-            Err(err) => {
-                tracing::warn!(
-                    target: crate::logging::targets::BRIDGE_LIFECYCLE,
-                    session_id = %session_id,
-                    cwd = %cwd.display(),
-                    error = %err,
-                    "failed to start git context watcher",
-                );
-                return;
-            }
-        };
-        let event_tx = self.inner.event_tx.clone();
-        let task_session_id = session_id.clone();
-        let handle = tokio::spawn(async move {
-            while let Some(context) = watcher.next_snapshot().await {
-                if event_tx
-                    .send(AgentEvent::GitContextSnapshot {
-                        session_id: task_session_id.clone(),
-                        context,
-                    })
-                    .is_err()
-                {
-                    break;
-                }
-            }
-        });
-        self.inner.git_watchers.lock().insert(session_id, handle);
-    }
-
-    fn stop_git_watcher(&self, session_id: &str) {
-        if let Some(handle) = self.inner.git_watchers.lock().remove(session_id) {
-            handle.abort();
-        }
-    }
 }
 
 impl Default for ForgeSdkBridge {
     fn default() -> Self {
         Self::new(PathBuf::from(TESTING_STUB_CONFIG_DIR), None)
-    }
-}
-
-impl Drop for BridgeInner {
-    fn drop(&mut self) {
-        for (_, handle) in self.git_watchers.lock().drain() {
-            handle.abort();
-        }
     }
 }
 
@@ -828,20 +769,6 @@ impl ForgeSdkBridge {
             &tool_call_id,
             outcome,
         );
-        Ok(())
-    }
-
-    pub(crate) fn start_git_context_watch(
-        &self,
-        session_id: String,
-        cwd: PathBuf,
-    ) -> anyhow::Result<()> {
-        self.install_git_watcher(session_id, &cwd);
-        Ok(())
-    }
-
-    pub(crate) fn stop_git_context_watch(&self, session_id: String) -> anyhow::Result<()> {
-        self.stop_git_watcher(&session_id);
         Ok(())
     }
 

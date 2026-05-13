@@ -96,10 +96,6 @@ pub enum AgentEvent {
         session_id: String,
         credentials: Option<crate::cloud::oauth_credentials::OauthCredentials>,
     },
-    GitContextSnapshot {
-        session_id: String,
-        context: crate::env::git::GitContext,
-    },
     ContextUsage {
         session_id: String,
         percentage: Option<u8>,
@@ -170,7 +166,6 @@ impl AgentEvent {
             Self::SessionsListed { .. } => "sessions_listed",
             Self::StatusSnapshot { .. } => "status_snapshot",
             Self::OauthCredentialsSnapshot { .. } => "oauth_credentials_snapshot",
-            Self::GitContextSnapshot { .. } => "git_context_snapshot",
             Self::ContextUsage { .. } => "context_usage",
             Self::McpSnapshot { .. } => "mcp_snapshot",
             Self::SdkMessage { .. } => "sdk_message",
@@ -194,7 +189,6 @@ impl AgentEvent {
             | Self::SessionReplaced { session_id, .. }
             | Self::StatusSnapshot { session_id, .. }
             | Self::OauthCredentialsSnapshot { session_id, .. }
-            | Self::GitContextSnapshot { session_id, .. }
             | Self::ContextUsage { session_id, .. }
             | Self::McpSnapshot { session_id, .. }
             | Self::SdkMessage { session_id, .. }
@@ -227,7 +221,6 @@ impl AgentEvent {
             | Self::SessionsListed { .. }
             | Self::StatusSnapshot { .. }
             | Self::OauthCredentialsSnapshot { .. }
-            | Self::GitContextSnapshot { .. }
             | Self::ContextUsage { .. }
             | Self::McpSnapshot { .. }
             | Self::SdkMessage { .. } => None,
