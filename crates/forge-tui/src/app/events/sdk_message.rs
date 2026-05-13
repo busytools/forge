@@ -288,9 +288,46 @@ fn walk_user_tool_results(app: &mut App, content: &[forge_primitives::ContentBlo
                 let raw_content = record.get("content");
                 apply_tool_result_block(app, tool_use_id, is_error, raw_content, Some(raw));
             }
+            ContentBlock::QueuedCommand { prompt, .. } => {
+                // Issue #85: claude bundled a user-typed-while-busy
+                // message as a `queued_command` content block here.
+                // Match it against a pending dimmed bubble (live case)
+                // or push a fresh user bubble (replay case).
+                let Some(prompt_text) = prompt.as_str() else {
+                    // Multi-block prompt — rare; render the raw shape
+                    // as fallback text so the user sees SOMETHING.
+                    let fallback = serde_json::to_string(prompt).unwrap_or_default();
+                    handle_queued_command_echo(app, &fallback);
+                    continue;
+                };
+                handle_queued_command_echo(app, prompt_text);
+            }
             _ => {}
         }
     }
+}
+
+/// Issue #85: process a `queued_command` content-block echo from the
+/// wire. If a matching pending dimmed bubble exists (live mid-turn
+/// case), un-dim it. Otherwise push a fresh user bubble (replay /
+/// session-resume case).
+fn handle_queued_command_echo(app: &mut App, prompt_text: &str) {
+    use crate::app::{ChatMessage, MessageBlock, MessageRole, TextBlock};
+    if crate::app::input_submit::un_dim_matching_pending(app, prompt_text) {
+        return;
+    }
+    // No pending match → treat as replay: push a fresh user bubble
+    // so the historical input shows up in chat.
+    let blocks = vec![MessageBlock::Text(TextBlock::from_complete(prompt_text))];
+    app.push_message_tracked(ChatMessage::new(MessageRole::User, blocks, None));
+    app.enforce_history_retention_tracked();
+    tracing::debug!(
+        target: crate::logging::targets::APP_INPUT,
+        event_name = "queued_command_replayed",
+        message = "no pending match for queued_command echo; pushed fresh bubble (replay path)",
+        outcome = "success",
+        prompt_chars = prompt_text.chars().count(),
+    );
 }
 
 /// Reads `meta.claudeCode.parentToolUseId` from a tool_call's meta
@@ -363,14 +400,6 @@ fn apply_tool_result_block(
     let base = app.with_turn_state(|ts| ts.tool_calls.get(tool_use_id).cloned());
     let fields = build_tool_result_fields(is_error, raw_content, base.as_ref(), raw_block);
     apply_tool_call_update(app, tool_use_id, fields);
-
-    // Issue #85: tool_result is the concrete "gap between actions"
-    // signal — claude just finished a tool call and is about to
-    // think about the next step. If the user queued any messages
-    // while this turn was in flight, mid-turn-inject them now so
-    // claude can incorporate the new context into its next move.
-    // Drain is a no-op when the queue is empty.
-    crate::app::input_submit::drain_queued_messages(app);
 }
 
 /// Mutate `app.turn_state.tool_calls` with the supplied update

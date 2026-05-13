@@ -1,6 +1,3 @@
-use std::time::Instant;
-
-use super::state::types::QueuedMessage;
 use super::{App, AppStatus, CancelOrigin, ChatMessage, MessageBlock, MessageRole, TextBlock};
 use crate::agent::model;
 use crate::app::slash;
@@ -33,14 +30,25 @@ pub(super) fn submit_input(app: &mut App) {
         return;
     }
 
-    // Issue #85: send is non-destructive. If a turn is in flight, queue
-    // the message rather than cancelling. The queue drains on the next
-    // TurnComplete (whether natural or Escape-induced cancel). To
-    // explicitly cancel the in-flight turn, the user presses Escape —
-    // which routes through `request_cancel(Manual)` from keys.rs.
+    // Issue #85 (revised 2026-05-13): send is non-destructive AND
+    // always dispatches immediately. Claude CLI's internal queue
+    // (the `queued_command` mechanism in the binary's `gO6` function)
+    // handles in-flight bundling — when forge writes `Command::Prompt`
+    // mid-turn, claude buffers it and packages it as a `queued_command`
+    // content block on the next outbound user-message envelope going
+    // to the model. The "popped" signal is the `QueuedCommand` block
+    // echoing back on the wire (caught by
+    // `events::sdk_message::handle_queued_command_echo`).
+    //
+    // While busy, forge pushes a DIMMED bubble locally so the user
+    // sees their input acknowledged before claude consumes it, and
+    // tracks the (text, message_idx) pair in
+    // `UiSession.pending_echo_bubbles` so the wire-echo handler can
+    // find + un-dim it. While idle, the existing fresh-turn path
+    // applies (pushes user + assistant placeholder, sets Thinking).
     if is_turn_busy(app) {
         let images = std::mem::take(app.pending_images_mut());
-        enqueue_message(app, text, images);
+        dispatch_pending_bubble(app, text, images);
         app.input_mut().clear();
         app.sync_help_open_with_input();
         return;
@@ -129,348 +137,120 @@ pub(super) fn maybe_auto_submit_after_cancel(app: &mut App) {
     submit_input(app);
 }
 
-/// Drain queued messages. Issue #85.
+/// Push a dimmed user bubble + dispatch `Command::Prompt` immediately.
+/// Called when the user submits while a turn is in flight (#85).
 ///
-/// Concatenates all queued texts with `\n\n` paragraph breaks, merges
-/// attachments, fires a single `Command::Prompt`. The dimmed user
-/// bubbles representing the queued messages get un-dimmed so the user
-/// sees the model has now seen them. Chat history retains the
-/// N-separate-bubble visual shape even though the wire sees one
-/// combined prompt.
-///
-/// Dispatches based on app status:
-/// - **Ready** (turn just ended): pushes a fresh assistant placeholder
-///   and starts a new turn with the combined payload. Used by the
-///   `TurnComplete` / cancelled-error drain hooks.
-/// - **Thinking / Running** (turn still in flight): injects the
-///   combined payload mid-turn AND pushes a fresh assistant
-///   placeholder at the tail, re-binding the active assistant index
-///   so claude's continued stream chunks land in chronological order
-///   BELOW the un-dimmed user bubbles. The previously-streaming
-///   assistant message freezes wherever it was. Used by the
-///   `tool_result` and time-based-fallback hooks.
-/// - Other statuses (Connecting, Error, CommandPending): no-op; queue
-///   waits.
-///
-/// Empirical question to answer during testing: does claude in
-/// stream-json subprocess mode accept user-message writes to stdin
-/// mid-turn (i.e., during a Thinking/Running state)? Architect's
-/// peer-via-MCP pattern + the user's interactive-CLI observation
-/// suggest yes, but forge-sdk's transport may handle this
-/// differently. If a mid-turn write triggers an error, the drain
-/// gracefully reverts: the bubbles stay un-dimmed (claude got the
-/// message), the dispatch error surfaces via `TurnError`.
-pub(super) fn drain_queued_messages(app: &mut App) {
-    if app.pending_cancel_origin().is_some() {
-        return;
-    }
-    let Some(key) = app.active_session_key.clone() else {
-        return;
-    };
-
-    // Collect the queue before mutating messages — avoids overlapping
-    // borrows between `app.session_mut` and the active-bucket access
-    // below.
-    let queued: Vec<QueuedMessage> = {
-        let Some(session) = app.session_mut(&key) else {
-            return;
-        };
-        if session.queued_messages.is_empty() {
-            return;
-        }
-        session.queued_messages.drain(..).collect()
-    };
-
-    // Un-dim the bubbles. Stale indices (e.g. trimmed by history
-    // retention) are skipped silently — the dimmed visual is already
-    // gone in that case.
-    if let Some(bucket) = app.try_active_bucket_mut() {
-        for q in &queued {
-            let idx = q.chat_message_idx;
-            if let Some(msg) = bucket.messages.get_mut(idx)
-                && matches!(msg.role, MessageRole::User)
-            {
-                msg.queued = false;
-                msg.invalidate_render_cache();
-            }
-        }
-    }
-
-    let queue_size = queued.len();
-    let combined_text = queued.iter().map(|q| q.text.as_str()).collect::<Vec<_>>().join("\n\n");
-    let combined_attachments: Vec<crate::app::clipboard_image::ImageAttachment> =
-        queued.into_iter().flat_map(|q| q.attachments.into_iter()).collect();
-
-    let drain_mode = match app.status {
-        AppStatus::Ready => DrainMode::FreshTurn,
-        AppStatus::Thinking | AppStatus::Running => DrainMode::MidTurnInjection,
-        _ => {
-            tracing::warn!(
-                target: crate::logging::targets::APP_INPUT,
-                event_name = "queue_drain_skipped_bad_status",
-                message = "queue drain skipped — app status doesn't permit dispatch",
-                outcome = "deferred",
-                status = ?app.status,
-                queue_size,
-            );
-            // Bubbles are already un-dimmed (we did that above) but
-            // the texts haven't been dispatched. Re-enqueue is
-            // awkward because chat_message_idx points at the same
-            // bubbles we just un-dimmed. Acceptable v1 trade-off:
-            // user-visible signal is "bubbles look sent" but model
-            // didn't actually see them. The bad statuses
-            // (Connecting/Error/CommandPending) are rare enough to
-            // defer the fix; document in PR + #85.
-            return;
-        }
-    };
-
-    tracing::info!(
-        target: crate::logging::targets::APP_INPUT,
-        event_name = "queue_drained",
-        message = "queued messages drained into a single combined prompt",
-        outcome = "start",
-        queue_size,
-        drain_mode = ?drain_mode,
-    );
-
-    match drain_mode {
-        DrainMode::FreshTurn => fire_combined_turn(app, combined_text, combined_attachments),
-        DrainMode::MidTurnInjection => {
-            inject_combined_into_running_turn(app, combined_text, combined_attachments);
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-enum DrainMode {
-    /// Turn ended; start a fresh turn with the combined payload.
-    FreshTurn,
-    /// Turn still in flight; write the combined payload to claude
-    /// mid-stream. Claude appends to current conversation context.
-    MidTurnInjection,
-}
-
-/// Mid-turn drain: dispatch `Command::Prompt` while a turn is in
-/// flight, AND push a fresh empty assistant placeholder so subsequent
-/// stream chunks land in chronological order (below the queued user
-/// bubbles, not into the previously-active assistant message above
-/// them).
-///
-/// Why the placeholder is mandatory here: the streaming chunk handler
-/// appends text to whichever message [`App::active_turn_assistant_message_idx`]
-/// points at. If we left the index pointing at the old assistant
-/// message that was streaming BEFORE the queued bubbles, claude's
-/// continued response would land ABOVE the user bubbles even though
-/// it's responding to them — confusing visual ordering. By pushing
-/// a fresh placeholder AT THE TAIL (after the un-dimmed user
-/// bubbles) and re-binding the active index, the next chunk lands
-/// below, producing the correct chronological flow:
-///
-/// ```text
-/// user1
-/// assistant1   ← frozen at whatever it had streamed pre-injection
-/// user2        ← was queued, just un-dimmed
-/// user3        ← was queued, just un-dimmed
-/// assistant2   ← fresh placeholder, continued response lands here
-/// ```
-///
-/// Status + lifecycle stay as Thinking/Running — the turn never
-/// ended; we just reparented the streaming target.
-fn inject_combined_into_running_turn(
-    app: &mut App,
-    text: String,
-    images: Vec<crate::app::clipboard_image::ImageAttachment>,
-) {
-    if !app.has_active_agent() {
-        return;
-    }
-    let Some(sid) = app.session_id() else {
-        return;
-    };
-    let input_chars = text.chars().count();
-    let session_id = sid.to_string();
-
-    // Reparent the streaming assistant target onto a fresh placeholder
-    // at the tail — see doc comment above for why this is mandatory.
-    app.push_message_tracked(ChatMessage::new(MessageRole::Assistant, Vec::new(), None));
-    app.bind_active_turn_assistant_to_tail();
-    app.enforce_history_retention_tracked();
-    app.active_viewport_mut().engage_auto_scroll();
-
-    let tx = app.update_tx.clone();
-    let prompt_text = text;
-    match app.dispatch_command(|key| forge_workspace::Command::Prompt {
-        key,
-        text: prompt_text,
-        attachments: images,
-    }) {
-        Ok(()) => {
-            tracing::info!(
-                target: crate::logging::targets::APP_INPUT,
-                event_name = "queue_injected_mid_turn",
-                message = "queued prompt injected into running turn",
-                outcome = "success",
-                session_id = %session_id,
-                input_chars,
-            );
-        }
-        Err(e) => {
-            let session_key = forge_workspace::SessionKey::from_session_id(session_id);
-            let _ = tx.send(forge_workspace::SessionUpdate::TurnError {
-                key: session_key,
-                message: e.to_string(),
-                class: None,
-                terminal_reason: None,
-            });
-        }
-    }
-}
-
-/// Fire the combined queued payload as a fresh turn. Mirrors
-/// `dispatch_prompt_turn` but skips the user-message push — the
-/// dimmed bubbles already exist in chat history; the drain handler
-/// un-dimmed them above.
-fn fire_combined_turn(
-    app: &mut App,
-    text: String,
-    images: Vec<crate::app::clipboard_image::ImageAttachment>,
-) {
-    let _ = app.finalize_in_progress_tool_calls(model::ToolCallStatus::Failed);
-
-    if !app.has_active_agent() {
-        return;
-    }
-    let Some(sid) = app.session_id() else {
-        return;
-    };
-    let input_chars = text.chars().count();
-    let session_id = sid.to_string();
-
-    // Push the empty assistant message — the thinking indicator
-    // anchors here. No user message push: the user bubbles are
-    // already in chat from the earlier `enqueue_message` calls.
-    app.push_message_tracked(ChatMessage::new(MessageRole::Assistant, Vec::new(), None));
-    app.bind_active_turn_assistant_to_tail();
-    app.enforce_history_retention_tracked();
-    app.status = AppStatus::Thinking;
-    if let Some(key) = app.active_session_key.clone() {
-        crate::app::events::set_bucket_lifecycle_state(
-            app,
-            &key,
-            crate::app::session::SessionLifecycleState::Running,
-        );
-    }
-    app.active_viewport_mut().engage_auto_scroll();
-
-    let tx = app.update_tx.clone();
-    let prompt_text = text;
-    match app.dispatch_command(|key| forge_workspace::Command::Prompt {
-        key,
-        text: prompt_text,
-        attachments: images,
-    }) {
-        Ok(()) => {
-            crate::app::session_runtime::request_context_usage_refresh(app);
-            tracing::info!(
-                target: crate::logging::targets::APP_INPUT,
-                event_name = "queue_drained_dispatched",
-                message = "combined queued prompt dispatched (fresh turn)",
-                outcome = "success",
-                session_id = %session_id,
-                input_chars,
-            );
-        }
-        Err(e) => {
-            let session_key = forge_workspace::SessionKey::from_session_id(session_id);
-            let _ = tx.send(forge_workspace::SessionUpdate::TurnError {
-                key: session_key,
-                message: e.to_string(),
-                class: None,
-                terminal_reason: None,
-            });
-        }
-    }
-}
-
-/// Time-based drain trigger called from the per-tick render loop.
-/// Only fires when:
-/// - app is mid-turn (`Thinking`/`Running`), AND
-/// - the queue is non-empty, AND
-/// - the OLDEST queued message has been waiting longer than
-///   [`QUEUE_TIMER_FALLBACK_SECS`].
-///
-/// Heuristic fallback for tool-free turns (pure-text turns emit no
-/// `tool_result` events, so the concrete `apply_tool_result_block`
-/// drain hook never fires). 10s gives the user enough time to keep
-/// typing if they're composing a longer follow-up while watching
-/// the model stream.
-pub(super) fn maybe_drain_queue_on_timer(app: &mut App) {
-    if !matches!(app.status, AppStatus::Thinking | AppStatus::Running) {
-        return;
-    }
-    let Some(key) = app.active_session_key.clone() else {
-        return;
-    };
-    let oldest_age = match app.session_mut(&key) {
-        Some(s) if !s.queued_messages.is_empty() => {
-            s.queued_messages.front().map(|q| q.queued_at.elapsed())
-        }
-        _ => return,
-    };
-    let Some(age) = oldest_age else { return };
-    if age < std::time::Duration::from_secs(QUEUE_TIMER_FALLBACK_SECS) {
-        return;
-    }
-    drain_queued_messages(app);
-}
-
-/// Threshold for the time-based queue drain fallback (see
-/// [`maybe_drain_queue_on_timer`]). 10s mirrors the rough "few
-/// seconds" gap behaviour the user observed in the interactive
-/// claude CLI. Conservative — bumping higher delays delivery; lower
-/// risks pre-empting the user mid-compose.
-const QUEUE_TIMER_FALLBACK_SECS: u64 = 10;
-
-/// Append a dimmed user bubble to the chat AND push a `QueuedMessage`
-/// onto the active session's queue. Called when the user submits while
-/// a turn is in flight (issue #85).
-fn enqueue_message(
+/// Claude CLI's internal queue handles in-flight bundling: the
+/// dispatched message becomes a `queued_command` content block on
+/// claude's next outbound user-message envelope. When that block
+/// echoes back on the wire (handled by
+/// `events::sdk_message::handle_queued_command_echo`), forge un-dims
+/// the bubble we pushed here. The (text, message_idx) pair is tracked
+/// in `UiSession.pending_echo_bubbles` for the matching.
+fn dispatch_pending_bubble(
     app: &mut App,
     text: String,
     attachments: Vec<crate::app::clipboard_image::ImageAttachment>,
 ) {
     let user_blocks = vec![MessageBlock::Text(TextBlock::from_complete(&text))];
-    let queued_bubble = ChatMessage::new_queued(MessageRole::User, user_blocks);
-    app.push_message_tracked(queued_bubble);
+    let pending_bubble = ChatMessage::new_queued(MessageRole::User, user_blocks);
+    app.push_message_tracked(pending_bubble);
     app.enforce_history_retention_tracked();
     let chat_message_idx = app.messages().len().saturating_sub(1);
 
     let Some(key) = app.active_session_key.clone() else {
         return;
     };
+
+    // Track (text, idx) for the wire-echo handler to un-dim later.
+    // Clone the text once for the pending-echo entry; the original
+    // moves into Command::Prompt below.
     let queue_depth_after = match app.session_mut(&key) {
         Some(session) => {
-            session.queued_messages.push_back(QueuedMessage {
-                text,
-                attachments,
-                chat_message_idx,
-                queued_at: Instant::now(),
-            });
-            session.queued_messages.len()
+            session.pending_echo_bubbles.push_back((text.clone(), chat_message_idx));
+            session.pending_echo_bubbles.len()
         }
         None => return,
     };
 
     app.active_viewport_mut().engage_auto_scroll();
 
-    tracing::debug!(
-        target: crate::logging::targets::APP_INPUT,
-        event_name = "message_queued",
-        message = "message queued for drain on next turn-complete",
-        outcome = "success",
-        queue_depth_after,
-    );
+    // Dispatch immediately — claude internally queues in-flight inputs
+    // as `queued_command` attachments on the next outbound message.
+    let tx = app.update_tx.clone();
+    let Some(sid) = app.session_id() else {
+        tracing::warn!(
+            target: crate::logging::targets::APP_INPUT,
+            event_name = "pending_bubble_no_session",
+            message = "pending bubble pushed but no session id to dispatch against",
+            outcome = "deferred",
+        );
+        return;
+    };
+    let session_id = sid.to_string();
+    let input_chars = text.chars().count();
+    match app.dispatch_command(|key| forge_workspace::Command::Prompt { key, text, attachments }) {
+        Ok(()) => {
+            tracing::debug!(
+                target: crate::logging::targets::APP_INPUT,
+                event_name = "pending_bubble_dispatched",
+                message = "dispatched mid-turn prompt; awaiting queued_command echo",
+                outcome = "success",
+                session_id = %session_id,
+                queue_depth_after,
+                input_chars,
+            );
+        }
+        Err(e) => {
+            let session_key = forge_workspace::SessionKey::from_session_id(session_id);
+            let _ = tx.send(forge_workspace::SessionUpdate::TurnError {
+                key: session_key,
+                message: e.to_string(),
+                class: None,
+                terminal_reason: None,
+            });
+        }
+    }
+}
+
+/// Un-dim a pending bubble when its `queued_command` echo arrives on
+/// the wire. Called by the content-block walker in
+/// `events::sdk_message::walk_user_tool_results` when it encounters
+/// a `ContentBlock::QueuedCommand`. Returns `true` if a matching
+/// pending bubble was found and un-dimmed; `false` if no match (the
+/// caller should push a fresh user bubble for the replay case).
+pub(crate) fn un_dim_matching_pending(app: &mut App, prompt_text: &str) -> bool {
+    let Some(key) = app.active_session_key.clone() else {
+        return false;
+    };
+    let matched_idx = match app.session_mut(&key) {
+        Some(session) => {
+            let position =
+                session.pending_echo_bubbles.iter().position(|(text, _)| text == prompt_text);
+            position.and_then(|pos| session.pending_echo_bubbles.remove(pos).map(|(_, idx)| idx))
+        }
+        None => return false,
+    };
+    let Some(idx) = matched_idx else {
+        return false;
+    };
+    if let Some(bucket) = app.try_active_bucket_mut()
+        && let Some(msg) = bucket.messages.get_mut(idx)
+        && matches!(msg.role, MessageRole::User)
+    {
+        msg.queued = false;
+        msg.invalidate_render_cache();
+        tracing::debug!(
+            target: crate::logging::targets::APP_INPUT,
+            event_name = "pending_bubble_un_dimmed",
+            message = "matching queued_command echo arrived; un-dimmed bubble",
+            outcome = "success",
+            idx,
+            prompt_chars = prompt_text.chars().count(),
+        );
+        return true;
+    }
+    false
 }
 
 fn dispatch_prompt_turn(app: &mut App, text: String) {
@@ -583,206 +363,89 @@ mod tests {
 
         submit_input(&mut app);
 
-        // Input cleared (queued; nothing left to edit).
+        // Input cleared, dimmed bubble appended, prompt dispatched
+        // immediately (claude will queue internally).
         assert!(app.input().text().is_empty());
-        // No cancel dispatched — send is non-destructive now.
-        assert!(rx.try_recv().is_err(), "submit while busy must not cancel");
-        // Status unchanged.
         assert!(matches!(app.status, AppStatus::Running));
-        // Dimmed user bubble appended to chat history.
         assert_eq!(app.messages().len(), 1);
         let msg = &app.messages()[0];
         assert!(matches!(msg.role, MessageRole::User));
-        assert!(msg.queued, "queued bubble must carry the queued flag");
-        // Queue contains the message.
+        assert!(msg.queued, "pending bubble must carry the queued flag");
+        // pending_echo_bubbles tracks the (text, idx) for un-dim later.
         let bucket = app.try_active_bucket_mut().expect("active bucket exists");
-        assert_eq!(bucket.queued_messages.len(), 1);
-        assert_eq!(bucket.queued_messages[0].text, "queued prompt");
+        assert_eq!(bucket.pending_echo_bubbles.len(), 1);
+        assert_eq!(bucket.pending_echo_bubbles[0].0, "queued prompt");
+        assert_eq!(bucket.pending_echo_bubbles[0].1, 0);
         // No auto-submit-after-cancel set (vestigial path stays cold).
         assert!(!bucket.pending_auto_submit_after_cancel);
         assert!(app.pending_cancel_origin().is_none());
+        // Prompt IS dispatched immediately — claude will internally
+        // queue it as a `queued_command` on the next outbound message.
+        let prompt = rx.try_recv().expect("prompt dispatched immediately");
+        assert!(matches!(
+            prompt,
+            forge_primitives::Command::PromptWithImages { session_id, text, .. }
+                if session_id == "session-1" && text == "queued prompt"
+        ));
     }
 
     #[test]
-    fn drain_queued_messages_fires_combined_prompt() {
-        let (mut app, mut rx) = app_with_connection();
-
-        // Queue three messages while busy.
+    fn un_dim_matching_pending_finds_and_clears() {
+        // Wire echo arrives for a pending dimmed bubble → bubble
+        // un-dims, pending entry removed.
+        let (mut app, _rx) = app_with_connection();
         app.status = AppStatus::Running;
-        app.input_mut().set_text("first");
-        submit_input(&mut app);
-        app.input_mut().set_text("second");
-        submit_input(&mut app);
-        app.input_mut().set_text("third");
+        app.input_mut().set_text("hello");
         submit_input(&mut app);
 
-        // Sanity: three dimmed bubbles + zero turns dispatched.
-        assert_eq!(app.messages().len(), 3);
-        assert!(rx.try_recv().is_err());
-        {
-            let bucket = app.try_active_bucket_mut().expect("active bucket exists");
-            assert_eq!(bucket.queued_messages.len(), 3);
-        }
-
-        // Transition to Ready (simulates TurnComplete arriving).
-        app.status = AppStatus::Ready;
-
-        drain_queued_messages(&mut app);
-
-        // Queue empty; bubbles un-dimmed; single combined prompt dispatched.
-        {
-            let bucket = app.try_active_bucket_mut().expect("active bucket exists");
-            assert!(bucket.queued_messages.is_empty());
-        }
-        for i in 0..3 {
-            let msg = &app.messages()[i];
-            assert!(matches!(msg.role, MessageRole::User));
-            assert!(!msg.queued, "drain must un-dim the bubble at idx {i}");
-        }
-        // Empty assistant message pushed for the new turn (idx 3).
-        assert_eq!(app.messages().len(), 4);
-        assert!(matches!(app.messages()[3].role, MessageRole::Assistant));
-        assert!(matches!(app.status, AppStatus::Thinking));
-
-        let prompt = rx.try_recv().expect("combined prompt should be dispatched");
-        match prompt {
-            forge_primitives::Command::PromptWithImages { session_id, text, .. } => {
-                assert_eq!(session_id, "session-1");
-                assert_eq!(text, "first\n\nsecond\n\nthird");
-            }
-            other => panic!("expected PromptWithImages, got: {other:?}"),
-        }
-    }
-
-    #[test]
-    fn drain_queued_messages_is_noop_when_empty() {
-        let (mut app, mut rx) = app_with_connection();
-        app.status = AppStatus::Ready;
-
-        drain_queued_messages(&mut app);
-
-        assert!(rx.try_recv().is_err());
-        assert!(app.messages().is_empty());
-    }
-
-    #[test]
-    fn drain_queued_messages_mid_turn_reparents_assistant_target() {
-        // Issue #85 amendment: mid-turn drain (status=Running) injects
-        // the prompt AND pushes a fresh assistant placeholder at the
-        // tail, re-binding the active assistant index so subsequent
-        // stream chunks land BELOW the un-dimmed user bubbles (in
-        // chronological order). Without this, claude's continued
-        // response streams into the previously-active assistant
-        // message ABOVE the queued bubbles — broken ordering.
-        let (mut app, mut rx) = app_with_connection();
-        app.status = AppStatus::Running;
-        app.input_mut().set_text("steering message");
-        submit_input(&mut app);
-
-        // One queued dimmed user bubble.
-        assert_eq!(app.messages().len(), 1);
         assert!(app.messages()[0].queued);
+        let matched = un_dim_matching_pending(&mut app, "hello");
 
-        // Drain while still Running — mid-turn injection path.
-        drain_queued_messages(&mut app);
-
-        // Bubble un-dimmed; status UNCHANGED (still Running); a new
-        // empty assistant placeholder pushed at the tail.
+        assert!(matched, "exact-text match should succeed");
         assert!(!app.messages()[0].queued);
-        assert_eq!(
-            app.messages().len(),
-            2,
-            "mid-turn drain must push a fresh assistant placeholder at tail"
-        );
-        assert!(matches!(app.messages()[1].role, MessageRole::Assistant));
-        assert!(app.messages()[1].blocks.is_empty(), "tail assistant placeholder must be empty");
-        assert!(matches!(app.status, AppStatus::Running));
-
-        let prompt = rx.try_recv().expect("mid-turn prompt should be dispatched");
-        match prompt {
-            forge_primitives::Command::PromptWithImages { session_id, text, .. } => {
-                assert_eq!(session_id, "session-1");
-                assert_eq!(text, "steering message");
-            }
-            other => panic!("expected PromptWithImages, got: {other:?}"),
-        }
-    }
-
-    #[test]
-    fn drain_queued_messages_skips_when_status_invalid() {
-        // Statuses outside Ready/Thinking/Running (Connecting, Error,
-        // CommandPending) skip drain — bubbles are un-dimmed but the
-        // dispatch is deferred. Acceptable v1 trade-off.
-        let (mut app, mut rx) = app_with_connection();
-        app.status = AppStatus::Running;
-        app.input_mut().set_text("queued");
-        submit_input(&mut app);
-        // Flip to a bad status before drain fires.
-        app.status = AppStatus::Connecting;
-        drain_queued_messages(&mut app);
-        // No dispatch.
-        assert!(rx.try_recv().is_err());
-    }
-
-    #[test]
-    fn maybe_drain_queue_on_timer_noop_if_idle() {
-        // Timer only fires mid-turn — idle sessions drain via the
-        // TurnComplete path (already covered elsewhere).
-        let (mut app, mut rx) = app_with_connection();
-        app.status = AppStatus::Ready;
-        // No queue + idle = pure no-op.
-        maybe_drain_queue_on_timer(&mut app);
-        assert!(rx.try_recv().is_err());
-    }
-
-    #[test]
-    fn maybe_drain_queue_on_timer_noop_within_threshold() {
-        // Queue a message while busy; timer should NOT fire
-        // immediately (within the 10s threshold).
-        let (mut app, mut rx) = app_with_connection();
-        app.status = AppStatus::Running;
-        app.input_mut().set_text("recent");
-        submit_input(&mut app);
-        // Immediate timer check — queued_at is "just now".
-        maybe_drain_queue_on_timer(&mut app);
-        // Queue still populated, nothing dispatched.
         let bucket = app.try_active_bucket_mut().expect("active bucket exists");
-        assert_eq!(bucket.queued_messages.len(), 1);
-        assert!(rx.try_recv().is_err());
+        assert!(bucket.pending_echo_bubbles.is_empty());
     }
 
     #[test]
-    fn maybe_drain_queue_on_timer_fires_after_threshold() {
-        // Synthesise an "old" queued_at by writing directly to the
-        // bucket, then call maybe_drain. The timer-based drain
-        // should fire because the oldest message is past threshold.
-        let (mut app, mut rx) = app_with_connection();
+    fn un_dim_matching_pending_no_match_returns_false() {
+        // Echo for text that wasn't pending → returns false so the
+        // caller can push a fresh bubble (replay path).
+        let (mut app, _rx) = app_with_connection();
         app.status = AppStatus::Running;
-        app.input_mut().set_text("steering");
+        app.input_mut().set_text("hello");
         submit_input(&mut app);
 
-        // Backdate the queued_at by 15s.
-        {
-            let bucket = app.try_active_bucket_mut().expect("active bucket exists");
-            let entry = bucket.queued_messages.front_mut().expect("queued entry");
-            entry.queued_at = Instant::now()
-                .checked_sub(std::time::Duration::from_secs(15))
-                .expect("system clock far enough past epoch to backdate 15s");
-        }
+        let matched = un_dim_matching_pending(&mut app, "different text");
 
-        maybe_drain_queue_on_timer(&mut app);
-
-        // Drain fired — queue empty, bubble un-dimmed, prompt dispatched.
+        assert!(!matched);
+        // Pending bubble stays dimmed.
+        assert!(app.messages()[0].queued);
         let bucket = app.try_active_bucket_mut().expect("active bucket exists");
-        assert!(bucket.queued_messages.is_empty());
-        assert!(!app.messages()[0].queued);
-        let prompt = rx.try_recv().expect("timer-triggered drain should dispatch");
-        match prompt {
-            forge_primitives::Command::PromptWithImages { text, .. } => {
-                assert_eq!(text, "steering");
-            }
-            other => panic!("expected PromptWithImages, got: {other:?}"),
-        }
+        assert_eq!(bucket.pending_echo_bubbles.len(), 1);
+    }
+
+    #[test]
+    fn un_dim_matching_pending_fifo_disambiguates_duplicates() {
+        // Two identical pending bubbles → first echo un-dims the
+        // FIRST bubble (FIFO), second echo un-dims the second.
+        let (mut app, _rx) = app_with_connection();
+        app.status = AppStatus::Running;
+        app.input_mut().set_text("dup");
+        submit_input(&mut app);
+        app.input_mut().set_text("dup");
+        submit_input(&mut app);
+
+        assert_eq!(app.messages().len(), 2);
+        assert!(app.messages()[0].queued);
+        assert!(app.messages()[1].queued);
+
+        un_dim_matching_pending(&mut app, "dup");
+        assert!(!app.messages()[0].queued, "first FIFO match un-dims idx 0");
+        assert!(app.messages()[1].queued, "second pending stays dimmed");
+
+        un_dim_matching_pending(&mut app, "dup");
+        assert!(!app.messages()[1].queued, "second match un-dims idx 1");
     }
 
     #[test]
@@ -793,9 +456,8 @@ mod tests {
 
         submit_input(&mut app);
 
-        // Nothing queued, nothing dispatched.
         let bucket = app.try_active_bucket_mut().expect("active bucket exists");
-        assert!(bucket.queued_messages.is_empty());
+        assert!(bucket.pending_echo_bubbles.is_empty());
         assert!(rx.try_recv().is_err());
     }
 
@@ -850,7 +512,7 @@ mod tests {
         assert!(app.input().text().is_empty());
         // No cancel + no queue entry.
         let bucket = app.try_active_bucket_mut().expect("active bucket exists");
-        assert!(bucket.queued_messages.is_empty());
+        assert!(bucket.pending_echo_bubbles.is_empty());
         assert!(app.pending_cancel_origin().is_none());
         assert!(rx.try_recv().is_err());
     }

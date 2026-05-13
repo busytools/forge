@@ -1079,10 +1079,11 @@ fn apply_turn_complete_presentation(
     }
     if app.active_view == super::super::ActiveView::Chat {
         super::super::input_submit::maybe_auto_submit_after_cancel(app);
-        // Issue #85: drain any messages the user queued while this
-        // turn was in flight. Concatenates queued texts with `\n\n`,
-        // merges attachments, dispatches a single fresh `Prompt`.
-        super::super::input_submit::drain_queued_messages(app);
+        // Issue #85 (revised 2026-05-13): queue drain removed.
+        // Claude's CLI manages the in-flight queue internally; forge
+        // dispatches immediately on submit. Un-dim happens when the
+        // `queued_command` echo arrives on the wire — see
+        // `events::sdk_message::walk_user_tool_results`.
     }
     // No git-diff refresh trigger here — the `git_diff` module's
     // periodic ticker (1s poke + 10s staleness rule) catches any
@@ -1221,11 +1222,7 @@ fn apply_turn_error_presentation(
         crate::app::session_runtime::request_context_usage_refresh(app);
         if app.active_view == super::super::ActiveView::Chat {
             super::super::input_submit::maybe_auto_submit_after_cancel(app);
-            // Issue #85: same drain hook as the natural turn-complete
-            // path. Escape-induced cancel transitions to Ready via
-            // `finish_ready_turn_exit`, so drain fires if any
-            // messages queued during the now-cancelled turn.
-            super::super::input_submit::drain_queued_messages(app);
+            // Issue #85 (revised): no drain — claude handles queueing.
         }
         return;
     }

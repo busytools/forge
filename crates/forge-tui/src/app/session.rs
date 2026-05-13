@@ -26,8 +26,8 @@ use crate::app::state::messages::ChatMessage;
 use crate::app::state::render_budget::{RenderCacheEvictionKey, RenderCacheSlotState};
 use crate::app::state::types::{
     CancelOrigin, HistoryRetentionPolicy, HistoryRetentionStats, LoginHint, McpState, ModeState,
-    PasteSessionState, PendingCommandAck, QueuedMessage, RecentSessionInfo, SelectionState,
-    SessionUsageState, TodoItem, ToolCallScope, UsageState,
+    PasteSessionState, PendingCommandAck, RecentSessionInfo, SelectionState, SessionUsageState,
+    TodoItem, ToolCallScope, UsageState,
 };
 use crate::app::state::viewport::ChatViewport;
 use crate::app::state::{ChatRenderTraceState, TerminalToolCallRef, TurnNoticeRef};
@@ -242,24 +242,32 @@ pub struct UiSession {
     /// transitions the app back to `Ready`. Per-session.
     ///
     /// **Vestigial** as of issue #85: the cancel-on-submit + post-cancel
-    /// auto-submit pattern was replaced with message queueing
-    /// (see [`Self::queued_messages`]). Always `false` in the new
-    /// flow; left in place to avoid churning every consumer in a
-    /// behaviour-change PR. Future cleanup: delete.
+    /// auto-submit pattern was replaced with immediate dispatch +
+    /// wire-echo un-dim (see [`Self::pending_echo_bubbles`]). Always
+    /// `false` in the new flow; left in place to avoid churning every
+    /// consumer in a behaviour-change PR. Future cleanup: delete.
     pub pending_auto_submit_after_cancel: bool,
-    /// User messages typed while a turn is in flight, awaiting drain
-    /// on the next `TurnComplete`. See issue #85 + `QueuedMessage`
-    /// (in `crate::app::state::types`).
+    /// `(prompt_text, message_idx)` pairs for user bubbles awaiting
+    /// the `queued_command` wire echo to un-dim. See issue #85.
     ///
-    /// Drain semantics: when a turn ends, the entire queue
-    /// concatenates into a single new turn — all texts joined with
-    /// `\n\n`, attachments merged. The chat-history representation
-    /// stays as N distinct dimmed bubbles so the user sees what they
-    /// typed; the wire sees one combined prompt.
+    /// When the user submits while a turn is in flight, forge:
+    /// 1. Pushes a dimmed user bubble at `messages.len()`,
+    /// 2. Records `(text, idx)` here,
+    /// 3. Dispatches `Command::Prompt` immediately.
     ///
-    /// Per-session: switching sessions doesn't touch other sessions'
-    /// queues. Not persisted across forge restart.
-    pub queued_messages: VecDeque<QueuedMessage>,
+    /// Claude internally queues the dispatched input and bundles it
+    /// as a `queued_command` content block on the next outbound
+    /// user-message envelope. When the matching `QueuedCommand` block
+    /// echoes back on the wire, `input_submit::un_dim_matching_pending`
+    /// removes the entry from this deque and flips the bubble's
+    /// `queued` flag to false.
+    ///
+    /// FIFO order matches submit order; matching is by exact text
+    /// (works for identical successive messages because we pop the
+    /// front match).
+    ///
+    /// Per-session, in-memory only.
+    pub pending_echo_bubbles: VecDeque<(String, usize)>,
     /// Active text selection (mouse-driven). Per-session so a
     /// selection started in one session doesn't render in another
     /// after a switch.
@@ -428,7 +436,7 @@ impl Default for UiSession {
             pending_command_label: Option::default(),
             pending_command_ack: Option::default(),
             pending_auto_submit_after_cancel: bool::default(),
-            queued_messages: VecDeque::default(),
+            pending_echo_bubbles: VecDeque::default(),
             selection: Option::default(),
             pending_submit: Option::default(),
             pending_paste_text: String::default(),

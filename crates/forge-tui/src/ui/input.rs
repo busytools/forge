@@ -70,13 +70,14 @@ fn has_prompt_suggestion_hint(app: &App) -> bool {
         && app.prompt_suggestion().is_some_and(|suggestion| !suggestion.trim().is_empty())
 }
 
-/// Issue #85: active session has messages queued (typed while a turn
-/// was in flight, waiting to drain on the next turn-complete).
+/// Issue #85: active session has pending dimmed bubbles awaiting the
+/// `queued_command` wire echo. Submit dispatches immediately; the
+/// bubble un-dims when the matching echo arrives from claude.
 fn queued_message_count(app: &App) -> usize {
     app.active_session_key
         .as_ref()
         .and_then(|key| app.sessions.get(key))
-        .map_or(0, |session| session.queued_messages.len())
+        .map_or(0, |session| session.pending_echo_bubbles.len())
 }
 
 fn has_queued_hint(app: &App) -> bool {
@@ -190,7 +191,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
                     Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
-                    "  · Press Esc to cancel current turn, queue drains on turn-complete",
+                    "  · Awaiting claude to consume (un-dims on queued_command echo)",
                     Style::default().fg(theme::DIM).add_modifier(Modifier::DIM),
                 ),
             ]);

@@ -70,31 +70,13 @@ pub struct SessionPickerState {
     pub scroll_offset: usize,
 }
 
-/// A user message typed while a turn was in flight, waiting for the
-/// current turn to complete before firing. See issue #85.
-///
-/// Per the locked design: on `TurnComplete`, the entire queue
-/// concatenates into a single new turn — all queued texts joined with
-/// `\n\n` paragraph breaks, attachments merged. The chat-history
-/// representation stays as N distinct dimmed bubbles (one per typed
-/// message) so the visual mirrors what the user typed even though the
-/// wire sees one combined prompt.
-#[derive(Debug, Clone)]
-pub struct QueuedMessage {
-    /// Raw typed text. Concatenated with `\n\n` against sibling
-    /// queued messages when the queue drains.
-    pub text: String,
-    /// Image attachments pasted while composing this queued message.
-    /// Merged with sibling queued messages' attachments on drain.
-    pub attachments: Vec<crate::app::clipboard_image::ImageAttachment>,
-    /// Index into `UiSession.messages` of the dimmed user bubble
-    /// representing this queued message. The drain handler walks
-    /// these to un-dim the bubbles when the queue fires.
-    pub chat_message_idx: usize,
-    /// Wall-clock when the user pressed Enter. Useful for debug
-    /// logging + future analytics; not load-bearing for behaviour.
-    pub queued_at: std::time::Instant,
-}
+// `QueuedMessage` removed 2026-05-13. The local queue concept (forge
+// holding typed-while-busy messages until TurnComplete) was replaced
+// with dispatch-immediately + un-dim-on-wire-echo: see
+// `UiSession.pending_echo_bubbles` and
+// `events::sdk_message::handle_queued_command_echo`. Claude CLI
+// manages the in-flight queue internally via its `queued_command`
+// content-block mechanism.
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct MessageUsage {
