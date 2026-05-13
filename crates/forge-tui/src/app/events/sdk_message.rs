@@ -349,18 +349,31 @@ fn extract_queued_command_text(prompt: &Value) -> String {
     parts.join("\n")
 }
 
-/// Issue #85: process a `queued_command` content-block echo from the
-/// wire. If a matching pending dimmed bubble exists (live mid-turn
-/// case), un-dim it. Otherwise push a fresh user bubble (replay /
-/// session-resume case).
+/// Issue #85: process a `queued_command` content-block.
 ///
-/// Matching is by exact prompt text + FIFO ordering (so identical
-/// successive pending entries get un-dimmed in submit-order). Claude
-/// CLI's wire `queued_command` shape carries `{type, prompt,
-/// commandMode}` and does NOT include a `source_uuid` or any
-/// correlation id (verified 2026-05-13 against a real session JSONL),
-/// so text-FIFO is the best we can do. If Anthropic adds a stable
-/// correlation field later, the matching can be tightened.
+/// **Source of these blocks (verified by live wire capture
+/// 2026-05-13)**: claude does NOT emit `queued_command` on stream-
+/// json stdout. It only persists them to the session JSONL as
+/// `type:"attachment"` rows. The replay-side scanner in
+/// `forge_agent::userdata::catalog::scan` hoists those rows into
+/// synthetic user envelopes carrying one `queued_command` content
+/// block each, which is what reaches this walker. So in practice
+/// this code path runs during session resume — never on a live turn.
+///
+/// The live mid-turn un-dim is handled by
+/// `input_submit::un_dim_pending_on_turn_complete`, which fires on
+/// the turn boundary instead of any per-message wire signal.
+///
+/// The `un_dim_matching_pending` branch below is kept as a defensive
+/// fallback: if a future CLI version ever starts echoing
+/// `queued_command` on stdout, the dimmed bubble can still un-dim
+/// precisely. Today it is reachable only via the replay path with no
+/// pending entries, so the else-branch (push fresh bubble) is what
+/// actually fires.
+///
+/// Matching is by exact prompt text + FIFO ordering. The wire shape
+/// carries `{type, prompt, commandMode}` and no correlation id, so
+/// text-FIFO is the best we can do if the precise path ever activates.
 fn handle_queued_command_echo(app: &mut App, prompt_text: &str) {
     use crate::app::{ChatMessage, MessageBlock, MessageRole, TextBlock};
     if crate::app::input_submit::un_dim_matching_pending(app, prompt_text) {
