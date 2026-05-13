@@ -5,9 +5,12 @@
 //! tier behaviour. Two sections separated by a DIM `─` rule:
 //!
 //! - `GIT` — always rendered. Shows the active session's cwd, the
-//!   current branch with aggregate `+N -M` totals right-justified
-//!   beside it (when there's a diff), and a box-drawing tree of
-//!   the top-N changed files grouped by directory. Single-child
+//!   current branch on its own row, a sub-label row carrying the
+//!   diff context (`worktree` / `vs <default>`) with aggregate
+//!   `+N -M` totals right-justified (when there's a diff), an
+//!   optional `PR #N → closes #M #K` row when the scanner resolved
+//!   an open pull request for the branch, and a box-drawing tree
+//!   of the top-N changed files grouped by directory. Single-child
 //!   directory chains fold so deep paths render as one row. Sourced
 //!   from `UiSession.git_diff_snapshot`.
 //! - `TASKS` — rendered when the active session has todos or a
@@ -28,7 +31,7 @@
 //!   uses `active_form` when present, else `content`)
 //! - `○` DIM glyph + gray text for `Pending` (truncates with `…`)
 
-use forge_primitives::git::GitBranch;
+use forge_primitives::git::{GitBranch, GitIssueRef, GitPrInfo};
 use forge_workspace::env::git_diff::{GitDiffFile, GitDiffSnapshot, GitDiffView};
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -209,6 +212,16 @@ fn append_git_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
         lines.push(diff_subtitle_line(width, &diff.subtitle, diff.totals));
     }
 
+    // PR row — sits below the subtitle (or directly under the
+    // branch row when there's no diff). Same 4-col indent so it
+    // reads as another sub-label of the branch. Renders only when
+    // the scanner resolved a PR for the current branch; truncates
+    // the closing-issue list with `…` when the row would overflow
+    // the pane width.
+    if let Some(pr) = snapshot.pr.as_ref() {
+        lines.push(pr_line(width, pr, &snapshot.closes));
+    }
+
     let files_slice = diff.as_ref().map_or(&[][..], |d| d.files);
     let total_files = diff.as_ref().map_or(0, |d| d.total_files);
 
@@ -263,6 +276,96 @@ fn branch_line(width: u16, label: &str, label_color: Color) -> Line<'static> {
         Span::styled("  \u{2387} ".to_owned(), Style::default().fg(theme::DIM)),
         Span::styled(fitted, Style::default().fg(label_color)),
     ])
+}
+
+/// PR row: `    PR #1234 → closes #1230 #1228`. Indented 4 cols to
+/// align with the diff-subtitle row directly above so both read as
+/// sub-labels of the branch. The PR number lights up in
+/// `RUST_ORANGE` (matches the feature-branch convention — the PR is
+/// the headline); everything else stays DIM. The closing-issue list
+/// is truncated with `…` when it would overflow the pane width;
+/// when even one issue can't fit, the whole `→ closes …` tail
+/// collapses to a single `…` suffix.
+fn pr_line(width: u16, pr: &GitPrInfo, closes: &[GitIssueRef]) -> Line<'static> {
+    let indent = "    "; // 4 cols, mirrors diff_subtitle_line
+    let pr_number = format!("#{}", pr.number);
+
+    // Closes-list disabled when empty — just `PR #N`.
+    if closes.is_empty() {
+        return Line::from(vec![
+            Span::raw(indent.to_owned()),
+            Span::styled("PR ".to_owned(), Style::default().fg(theme::DIM)),
+            Span::styled(pr_number, Style::default().fg(theme::RUST_ORANGE)),
+        ]);
+    }
+
+    // Chrome consumed BEFORE the issue numbers: indent (4) +
+    // "PR " (3) + "#N" + " → closes " (11). The trailing 2 cols
+    // are the pane's right gutter (mirrors how diff_subtitle_line
+    // budgets PANE_PAD on the right edge).
+    let chrome_chars =
+        indent.chars().count() + 3 + pr_number.chars().count() + 11 + usize::from(PANE_PAD);
+    let budget = usize::from(width).saturating_sub(chrome_chars);
+
+    // Greedily fit issue numbers, separated by single spaces. If
+    // even the first issue doesn't fit, the closes tail collapses
+    // to just `…`.
+    let mut closes_str = String::new();
+    let mut shown = 0usize;
+    for issue in closes {
+        let chunk_len = if closes_str.is_empty() {
+            1 + count_digits(issue.number) // `#<n>`
+        } else {
+            1 + 1 + count_digits(issue.number) // ` #<n>`
+        };
+        if closes_str.chars().count().saturating_add(chunk_len) > budget {
+            break;
+        }
+        if !closes_str.is_empty() {
+            closes_str.push(' ');
+        }
+        closes_str.push('#');
+        closes_str.push_str(&issue.number.to_string());
+        shown = shown.saturating_add(1);
+    }
+
+    if shown == 0 {
+        // Nothing fit — show `PR #N → …` so the existence of a
+        // closes list still surfaces even when we can't render any
+        // of it.
+        return Line::from(vec![
+            Span::raw(indent.to_owned()),
+            Span::styled("PR ".to_owned(), Style::default().fg(theme::DIM)),
+            Span::styled(pr_number, Style::default().fg(theme::RUST_ORANGE)),
+            Span::styled(" \u{2192} \u{2026}".to_owned(), Style::default().fg(theme::DIM)),
+        ]);
+    }
+    if shown < closes.len() {
+        closes_str.push(' ');
+        closes_str.push('\u{2026}');
+    }
+
+    Line::from(vec![
+        Span::raw(indent.to_owned()),
+        Span::styled("PR ".to_owned(), Style::default().fg(theme::DIM)),
+        Span::styled(pr_number, Style::default().fg(theme::RUST_ORANGE)),
+        Span::styled(format!(" \u{2192} closes {closes_str}"), Style::default().fg(theme::DIM)),
+    ])
+}
+
+/// Decimal-digit count for `n`. Used by [`pr_line`] to budget the
+/// closing-issue list against pane width without allocating a
+/// temporary `to_string()` per issue. `0` is one digit.
+fn count_digits(mut n: u64) -> usize {
+    if n == 0 {
+        return 1;
+    }
+    let mut digits = 0usize;
+    while n > 0 {
+        digits = digits.saturating_add(1);
+        n /= 10;
+    }
+    digits
 }
 
 /// One-line display of the diff context: the `worktree` /
@@ -865,7 +968,13 @@ mod tests {
     }
 
     fn snap(branch: GitBranch, default: Option<&str>, view: GitDiffView) -> GitDiffSnapshot {
-        GitDiffSnapshot { branch, default_branch: default.map(str::to_owned), view }
+        GitDiffSnapshot {
+            branch,
+            default_branch: default.map(str::to_owned),
+            view,
+            pr: None,
+            closes: Vec::new(),
+        }
     }
 
     #[test]
@@ -1021,5 +1130,75 @@ mod tests {
                 (1, "inspector_pane.rs".to_owned(), Some((340, 21))),
             ]
         );
+    }
+
+    /// Concatenate a `Line`'s span contents into a single string for
+    /// assertion. The `pr_line` tests only care about textual layout
+    /// (truncation, separators, issue ordering); styling assertions
+    /// would be brittle and don't add coverage beyond what colour-table
+    /// review provides.
+    fn line_text(line: &Line<'_>) -> String {
+        line.spans.iter().map(|s| s.content.as_ref()).collect::<String>()
+    }
+
+    fn pr(number: u64) -> GitPrInfo {
+        GitPrInfo { number, url: format!("https://github.com/example/repo/pull/{number}") }
+    }
+
+    fn issue(number: u64) -> GitIssueRef {
+        GitIssueRef { number, url: format!("https://github.com/example/repo/issues/{number}") }
+    }
+
+    #[test]
+    fn pr_line_no_closes_renders_pr_only() {
+        let line = pr_line(40, &pr(1234), &[]);
+        assert_eq!(line_text(&line), "    PR #1234");
+    }
+
+    #[test]
+    fn pr_line_with_single_issue_renders_arrow_and_number() {
+        let line = pr_line(40, &pr(1234), &[issue(1230)]);
+        assert_eq!(line_text(&line), "    PR #1234 \u{2192} closes #1230");
+    }
+
+    #[test]
+    fn pr_line_with_multiple_issues_renders_all_when_width_allows() {
+        let line = pr_line(40, &pr(1234), &[issue(1230), issue(1228)]);
+        assert_eq!(line_text(&line), "    PR #1234 \u{2192} closes #1230 #1228");
+    }
+
+    #[test]
+    fn pr_line_truncates_overflowing_issue_list_with_ellipsis() {
+        let closes: Vec<_> = (100..110).map(issue).collect();
+        let line = pr_line(40, &pr(1234), &closes);
+        let text = line_text(&line);
+        // Must start with the standard PR prefix and end with the
+        // ellipsis truncation marker.
+        assert!(text.starts_with("    PR #1234 \u{2192} closes "), "unexpected prefix: {text:?}");
+        assert!(text.ends_with(" \u{2026}"), "expected ellipsis suffix: {text:?}");
+        // The visible row width must respect the pane budget (40
+        // cols minus PANE_PAD's right gutter).
+        let visible_chars = text.chars().count();
+        assert!(visible_chars <= 38, "row overflows 40-col pane: {text:?} ({visible_chars} cols)");
+    }
+
+    #[test]
+    fn pr_line_collapses_to_ellipsis_when_no_issue_fits() {
+        // Pane narrower than even one issue number can fit alongside
+        // the chrome; the closes tail should collapse to a bare `…`.
+        let line = pr_line(20, &pr(9999), &[issue(987_654)]);
+        let text = line_text(&line);
+        assert!(text.ends_with("\u{2192} \u{2026}"), "expected collapse: {text:?}");
+    }
+
+    #[test]
+    fn count_digits_handles_edges() {
+        assert_eq!(count_digits(0), 1);
+        assert_eq!(count_digits(9), 1);
+        assert_eq!(count_digits(10), 2);
+        assert_eq!(count_digits(99), 2);
+        assert_eq!(count_digits(100), 3);
+        assert_eq!(count_digits(9_999), 4);
+        assert_eq!(count_digits(u64::MAX), 20);
     }
 }
