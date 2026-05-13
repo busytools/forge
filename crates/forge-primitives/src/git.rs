@@ -32,3 +32,22 @@ impl GitBranch {
         }
     }
 }
+
+/// Open pull request associated with the current branch. Populated
+/// by the git-diff scanner via `gh pr list --head <branch>`; surfaces
+/// in the Inspector pane's GIT section as the `PR #N` row.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitPrInfo {
+    pub number: u64,
+    pub url: String,
+}
+
+/// Issue closed by an open PR (parsed from `closingIssuesReferences`
+/// on the GraphQL response, which is more reliable than scanning the
+/// PR body for `Closes #N`). Surfaces in the Inspector pane's GIT
+/// section as part of the `PR #N → closes #M #K` row.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitIssueRef {
+    pub number: u64,
+    pub url: String,
+}

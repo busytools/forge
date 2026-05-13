@@ -72,8 +72,14 @@ impl Drop for ScanInFlightGuard {
 }
 
 /// Spawn a tokio local task that awaits
-/// `workspace.scan_git_diff(cwd)` and sends a `SnapshotReady` on
-/// completion.
+/// `workspace.scan_git_diff(cwd, prev)` and sends a `SnapshotReady`
+/// on completion.
+///
+/// `prev_snapshot` carries the session's most-recent
+/// `GitDiffSnapshot`, cloned by the caller (the spawn moves
+/// ownership into the task). The scanner uses it to short-circuit
+/// the `gh pr list` call when the branch hasn't changed — see
+/// [`forge_agent::env::git_diff::scan`].
 ///
 /// Early-returns (and logs at debug level) when:
 /// - `cwd` is empty (synthetic spawn key, no real project).
@@ -86,6 +92,7 @@ pub fn request_refresh(
     cwd: std::path::PathBuf,
     generation: u64,
     scan_in_flight: Arc<AtomicBool>,
+    prev_snapshot: Option<GitDiffSnapshot>,
 ) {
     if cwd.as_os_str().is_empty() {
         tracing::debug!(
@@ -117,7 +124,7 @@ pub fn request_refresh(
         // completion, panic, or runtime abort. Moved into the task
         // so its lifetime brackets the await.
         let _guard = guard;
-        let snapshot = workspace.scan_git_diff(&cwd).await;
+        let snapshot = workspace.scan_git_diff(&cwd, prev_snapshot.as_ref()).await;
         // Best-effort send; the receiver going away (app shutdown)
         // is fine — drop the result.
         let _ = tx.send(GitDiffEvent::SnapshotReady { key, generation, snapshot });
@@ -218,6 +225,10 @@ fn apply_timer_tick(app: &mut App) {
     let cwd = std::path::PathBuf::from(session.cwd_raw.clone());
     let generation = session.git_diff_generation;
     let scan_in_flight = Arc::clone(&session.git_diff_scan_in_flight);
+    // Clone the prior snapshot so the spawned scan can reuse cached
+    // PR info when the branch hasn't changed. The session keeps its
+    // own copy for render until the new snapshot lands.
+    let prev_snapshot = session.git_diff_snapshot.clone();
     let Some(workspace) = app.workspace.as_ref().map(Arc::clone) else {
         return;
     };
@@ -228,6 +239,7 @@ fn apply_timer_tick(app: &mut App) {
         cwd,
         generation,
         scan_in_flight,
+        prev_snapshot,
     );
 }
 
@@ -271,6 +283,8 @@ mod tests {
             branch: GitBranch::Named("main".into()),
             default_branch: Some("main".into()),
             view: GitDiffView::CleanDefault,
+            pr: None,
+            closes: Vec::new(),
         }
     }
 
@@ -357,6 +371,7 @@ mod tests {
             std::path::PathBuf::new(), // empty
             0,
             Arc::clone(&scan_in_flight),
+            None,
         );
 
         // No event spawned → guard untouched, channel empty.
@@ -380,6 +395,7 @@ mod tests {
             std::path::PathBuf::from("/tmp/some-cwd"),
             0,
             Arc::clone(&scan_in_flight),
+            None,
         );
 
         // Guard stays set (we didn't take it); no event spawned.

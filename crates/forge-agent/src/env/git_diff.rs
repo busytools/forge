@@ -19,7 +19,8 @@
 use std::path::Path;
 use std::time::Duration;
 
-use forge_primitives::git::GitBranch;
+use forge_primitives::git::{GitBranch, GitIssueRef, GitPrInfo};
+use serde::Deserialize;
 use tokio::process::Command;
 use tokio::time::timeout;
 
@@ -53,6 +54,15 @@ pub struct GitDiffSnapshot {
     /// `master` exists as a local ref.
     pub default_branch: Option<String>,
     pub view: GitDiffView,
+    /// Open pull request for the current branch, if one exists. Only
+    /// populated for `Named` non-default branches; `None` otherwise.
+    /// Cached across scans by branch name — refetched only when the
+    /// branch changes (see [`scan`]'s `prev` parameter).
+    pub pr: Option<GitPrInfo>,
+    /// Issues the open PR closes (from GitHub's
+    /// `closingIssuesReferences`). Empty when there's no PR or the
+    /// PR doesn't reference any issues. Cached alongside `pr`.
+    pub closes: Vec<GitIssueRef>,
 }
 
 /// What flavour of diff the snapshot represents.
@@ -94,9 +104,15 @@ pub struct GitDiffFile {
 /// Always succeeds — every failure path collapses to
 /// [`GitDiffView::NoRepo`] with a WARN log naming the step that
 /// failed. Callers should treat the snapshot as authoritative for
-/// rendering regardless of which view variant comes back.
+/// rendering regardless of which variant came back.
+///
+/// `prev` is the most recent snapshot for this `cwd` (if any). It's
+/// used to reuse cached PR info: when `prev.branch` matches the
+/// newly-resolved branch (same `Named(name)`), the prior
+/// `pr` / `closes` carry over without re-running `gh`. Pass `None`
+/// for cold starts.
 #[must_use]
-pub async fn scan(cwd: &Path) -> GitDiffSnapshot {
+pub async fn scan(cwd: &Path, prev: Option<&GitDiffSnapshot>) -> GitDiffSnapshot {
     let raw_branch = match run_git(cwd, &["rev-parse", "--abbrev-ref", "HEAD"]).await {
         GitOutput::Ok(s) => s.trim().to_owned(),
         GitOutput::Empty | GitOutput::Failed | GitOutput::Oversize => {
@@ -104,6 +120,8 @@ pub async fn scan(cwd: &Path) -> GitDiffSnapshot {
                 branch: GitBranch::NoRepo,
                 default_branch: None,
                 view: GitDiffView::NoRepo,
+                pr: None,
+                closes: Vec::new(),
             };
         }
     };
@@ -117,65 +135,61 @@ pub async fn scan(cwd: &Path) -> GitDiffSnapshot {
     };
 
     let default_branch = resolve_default_branch(cwd).await;
+    let on_default = default_branch.as_ref().is_some_and(|default| default == &raw_branch);
     let dirty = is_worktree_dirty(cwd).await;
 
-    // Detached + dirty → Worktree (diff vs the detached commit is
-    // meaningful via `git diff --numstat HEAD`).
-    // Detached + clean → CleanDefault (nothing to diff against).
-    if detached {
+    // View resolution mirrors the previous early-return ladder, just
+    // collapsed into a single binding so the final snapshot is built
+    // once at the bottom alongside `pr` / `closes`.
+    let view = if detached {
         if dirty {
             let stats = numstat(cwd, &["diff", "--numstat", "HEAD"]).await;
-            return GitDiffSnapshot {
-                branch,
-                default_branch,
-                view: GitDiffView::Worktree {
-                    files: stats.files,
-                    total_files: stats.total_files,
-                    total_added: stats.total_added,
-                    total_removed: stats.total_removed,
-                },
-            };
-        }
-        return GitDiffSnapshot { branch, default_branch, view: GitDiffView::CleanDefault };
-    }
-
-    let on_default = default_branch.as_ref().is_some_and(|default| default == &raw_branch);
-
-    if dirty {
-        let stats = numstat(cwd, &["diff", "--numstat", "HEAD"]).await;
-        return GitDiffSnapshot {
-            branch,
-            default_branch,
-            view: GitDiffView::Worktree {
+            GitDiffView::Worktree {
                 files: stats.files,
                 total_files: stats.total_files,
                 total_added: stats.total_added,
                 total_removed: stats.total_removed,
-            },
-        };
-    }
-
-    if on_default {
-        return GitDiffSnapshot { branch, default_branch, view: GitDiffView::CleanDefault };
-    }
-
-    // Feature branch + clean → branch-vs-default diff. Skip if the
-    // default branch is unknown (no sensible base to diff against).
-    let Some(default) = default_branch.as_deref() else {
-        return GitDiffSnapshot { branch, default_branch, view: GitDiffView::CleanDefault };
-    };
-    let range = format!("{default}...HEAD");
-    let stats = numstat(cwd, &["diff", "--numstat", &range]).await;
-    GitDiffSnapshot {
-        branch,
-        default_branch,
-        view: GitDiffView::BranchVsDefault {
+            }
+        } else {
+            GitDiffView::CleanDefault
+        }
+    } else if dirty {
+        let stats = numstat(cwd, &["diff", "--numstat", "HEAD"]).await;
+        GitDiffView::Worktree {
             files: stats.files,
             total_files: stats.total_files,
             total_added: stats.total_added,
             total_removed: stats.total_removed,
-        },
-    }
+        }
+    } else if on_default {
+        GitDiffView::CleanDefault
+    } else if let Some(default) = default_branch.as_deref() {
+        // Feature branch + clean → branch-vs-default diff. Skip if
+        // the default branch is unknown (no sensible base to diff
+        // against — collapses to CleanDefault).
+        let range = format!("{default}...HEAD");
+        let stats = numstat(cwd, &["diff", "--numstat", &range]).await;
+        GitDiffView::BranchVsDefault {
+            files: stats.files,
+            total_files: stats.total_files,
+            total_added: stats.total_added,
+            total_removed: stats.total_removed,
+        }
+    } else {
+        GitDiffView::CleanDefault
+    };
+
+    // PR / closes only make sense for named non-default branches —
+    // default branch never has a PR open against itself, detached /
+    // unknown branches can't be queried by name. For eligible
+    // branches, reuse the prior snapshot's data when the branch name
+    // matches; otherwise spawn a fresh `gh pr list` call.
+    let (pr, closes) = match &branch {
+        GitBranch::Named(name) if !on_default => pr_for_branch(cwd, name, prev).await,
+        _ => (None, Vec::new()),
+    };
+
+    GitDiffSnapshot { branch, default_branch, view, pr, closes }
 }
 
 /// Per-scan aggregate the renderer needs. `files` is the top-N
@@ -278,6 +292,104 @@ fn parse_numstat(raw: &str) -> Vec<GitDiffFile> {
             Some(GitDiffFile { path: path.to_owned(), added, removed })
         })
         .collect()
+}
+
+/// Resolve PR info for a named branch, reusing `prev`'s cached
+/// `pr` / `closes` when the prior snapshot's branch matches `branch`.
+/// Otherwise spawns `gh pr list` to fetch fresh.
+///
+/// The cache key is the branch name. The implication: branch
+/// rename / new branch / fresh session all force a refetch, but
+/// staying on the same branch across the polled 10s scans is free.
+async fn pr_for_branch(
+    cwd: &Path,
+    branch: &str,
+    prev: Option<&GitDiffSnapshot>,
+) -> (Option<GitPrInfo>, Vec<GitIssueRef>) {
+    if let Some(prev) = prev
+        && let GitBranch::Named(prev_name) = &prev.branch
+        && prev_name == branch
+    {
+        return (prev.pr.clone(), prev.closes.clone());
+    }
+    fetch_pr_for_branch(cwd, branch).await
+}
+
+/// Shell out to `gh pr list --head <branch> --state open --json …`
+/// and parse the first entry. Returns `(None, vec![])` on any
+/// failure path — `gh` missing, unauthenticated, not a github
+/// repo, no PR for the branch, JSON parse error. Failures log
+/// at WARN with a structured event so operators can grep for
+/// `gh_pr_lookup_*` when triaging "PR row never shows".
+async fn fetch_pr_for_branch(cwd: &Path, branch: &str) -> (Option<GitPrInfo>, Vec<GitIssueRef>) {
+    let args = [
+        "pr",
+        "list",
+        "--head",
+        branch,
+        "--state",
+        "open",
+        "--limit",
+        "1",
+        "--json",
+        "number,url,closingIssuesReferences",
+    ];
+    let raw = match run_gh(cwd, &args).await {
+        GitOutput::Ok(s) => s,
+        GitOutput::Empty => {
+            // `gh` returned exit 0 with empty stdout — unusual for
+            // `--json`, which always emits at least `[]`. Treat as
+            // no PR rather than a hard failure.
+            return (None, Vec::new());
+        }
+        GitOutput::Failed | GitOutput::Oversize => return (None, Vec::new()),
+    };
+    let entries: Vec<GhPrEntry> = match serde_json::from_str(&raw) {
+        Ok(parsed) => parsed,
+        Err(err) => {
+            tracing::warn!(
+                target: crate::logging::targets::ENV_GIT,
+                cwd = %cwd.display(),
+                event_name = "gh_pr_lookup_parse_failed",
+                message = "gh pr list returned unparseable json",
+                outcome = "failure",
+                error = %err,
+                branch = %branch,
+            );
+            return (None, Vec::new());
+        }
+    };
+    let Some(first) = entries.into_iter().next() else {
+        // Empty array — no open PR for this branch. Cache as None so
+        // subsequent scans on the same branch skip the gh call.
+        return (None, Vec::new());
+    };
+    let pr = GitPrInfo { number: first.number, url: first.url };
+    let closes = first
+        .closing_issues
+        .into_iter()
+        .map(|issue| GitIssueRef { number: issue.number, url: issue.url })
+        .collect();
+    (Some(pr), closes)
+}
+
+/// `gh pr list --json` entry shape. Only the fields we actually
+/// render are deserialised; `gh` adds others (`id`, `title`, …) that
+/// serde silently drops.
+#[derive(Deserialize)]
+struct GhPrEntry {
+    number: u64,
+    url: String,
+    #[serde(default, rename = "closingIssuesReferences")]
+    closing_issues: Vec<GhIssueEntry>,
+}
+
+/// `closingIssuesReferences` element shape. Same selective-field
+/// pattern as `GhPrEntry`.
+#[derive(Deserialize)]
+struct GhIssueEntry {
+    number: u64,
+    url: String,
 }
 
 /// Result of one `git` subprocess invocation. Callers treat all
@@ -383,6 +495,82 @@ async fn run_git(cwd: &Path, args: &[&str]) -> GitOutput {
     if stdout.trim().is_empty() { GitOutput::Empty } else { GitOutput::Ok(stdout) }
 }
 
+/// Spawn `gh <args>` from `cwd` (gh derives the github repo from
+/// the current working directory — there's no `-C` equivalent).
+/// Mirrors [`run_git`]'s timeout / classification / WARN logging so
+/// failures distinguish "gh: command not found" (binary missing)
+/// from "gh: To use GitHub CLI in a Git repository, please run …"
+/// (not a github remote) from "no pull requests found" (legitimate
+/// empty result) when triaging "PR row never shows".
+async fn run_gh(cwd: &Path, args: &[&str]) -> GitOutput {
+    let mut command = Command::new("gh");
+    command.current_dir(cwd).args(args).kill_on_drop(true);
+    let fut = command.output();
+    let output = match timeout(COMMAND_TIMEOUT, fut).await {
+        Ok(Ok(out)) => out,
+        Ok(Err(err)) => {
+            tracing::warn!(
+                target: crate::logging::targets::ENV_GIT,
+                cwd = %cwd.display(),
+                event_name = "gh_subprocess_failed",
+                message = "gh subprocess spawn / wait failed",
+                outcome = "failure",
+                error = %err,
+                args = ?args,
+            );
+            return GitOutput::Failed;
+        }
+        Err(_) => {
+            tracing::warn!(
+                target: crate::logging::targets::ENV_GIT,
+                cwd = %cwd.display(),
+                event_name = "gh_subprocess_timeout",
+                message = "gh subprocess timed out",
+                outcome = "timeout",
+                args = ?args,
+            );
+            return GitOutput::Failed;
+        }
+    };
+    if !output.status.success() {
+        // gh exits non-zero on: missing auth (4), not a github
+        // remote (1), API error (1). All collapse to "no PR" for
+        // the renderer, but the log captures stderr so an operator
+        // can tell which case fired.
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stderr_truncated = if stderr.len() > STDERR_LOG_CAP {
+            format!("{}…", &stderr[..STDERR_LOG_CAP])
+        } else {
+            stderr.into_owned()
+        };
+        tracing::warn!(
+            target: crate::logging::targets::ENV_GIT,
+            cwd = %cwd.display(),
+            event_name = "gh_subprocess_nonzero_exit",
+            message = "gh subprocess exited non-zero",
+            outcome = "failure",
+            exit_code = output.status.code().unwrap_or(-1),
+            stderr = %stderr_truncated,
+            args = ?args,
+        );
+        return GitOutput::Failed;
+    }
+    if output.stdout.len() > STDOUT_SIZE_CAP {
+        tracing::warn!(
+            target: crate::logging::targets::ENV_GIT,
+            cwd = %cwd.display(),
+            event_name = "gh_subprocess_oversize",
+            message = "gh subprocess stdout exceeded size cap",
+            outcome = "oversize",
+            bytes = output.stdout.len(),
+            args = ?args,
+        );
+        return GitOutput::Oversize;
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    if stdout.trim().is_empty() { GitOutput::Empty } else { GitOutput::Ok(stdout) }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -475,7 +663,7 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn scan_no_repo_returns_no_repo_view() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let snap = scan(dir.path()).await;
+        let snap = scan(dir.path(), None).await;
         assert!(matches!(snap.view, GitDiffView::NoRepo));
         assert!(snap.default_branch.is_none());
     }
@@ -486,7 +674,7 @@ mod tests {
         init_repo(&dir, "main");
         write_file(&dir, "README.md", "hello\n");
         commit_all(&dir, "init");
-        let snap = scan(dir.path()).await;
+        let snap = scan(dir.path(), None).await;
         assert!(matches!(snap.view, GitDiffView::CleanDefault), "got {:?}", snap.view);
         assert_eq!(snap.default_branch.as_deref(), Some("main"));
     }
@@ -499,7 +687,7 @@ mod tests {
         commit_all(&dir, "init");
         // Dirty: modify the tracked file without committing.
         write_file(&dir, "README.md", "second\nthird\n");
-        let snap = scan(dir.path()).await;
+        let snap = scan(dir.path(), None).await;
         let GitDiffView::Worktree { files, total_files, total_added, total_removed } = snap.view
         else {
             panic!("expected Worktree, got {:?}", snap.view);
@@ -526,7 +714,7 @@ mod tests {
         write_file(&dir, "feat.rs", "fn x() {}\n");
         commit_all(&dir, "feat commit");
 
-        let snap = scan(dir.path()).await;
+        let snap = scan(dir.path(), None).await;
         let GitDiffView::BranchVsDefault { files, total_files, total_added, total_removed } =
             snap.view
         else {
@@ -555,7 +743,7 @@ mod tests {
         // expectation is worktree-only (no vs-default mixing).
         write_file(&dir, "feat.rs", "fn x() {}\nfn y() {}\n");
 
-        let snap = scan(dir.path()).await;
+        let snap = scan(dir.path(), None).await;
         let GitDiffView::Worktree { files, total_files, total_added: _, total_removed: _ } =
             snap.view
         else {
@@ -580,7 +768,7 @@ mod tests {
         // Dirty in detached state.
         write_file(&dir, "README.md", "third\n");
 
-        let snap = scan(dir.path()).await;
+        let snap = scan(dir.path(), None).await;
         assert!(
             matches!(snap.view, GitDiffView::Worktree { .. }),
             "expected Worktree, got {:?}",
@@ -600,7 +788,7 @@ mod tests {
             StdCommand::new("git").arg("-C").arg(dir.path()).args(args).output().expect("git ok");
         };
         run(&["checkout", "-q", "HEAD~1"]);
-        let snap = scan(dir.path()).await;
+        let snap = scan(dir.path(), None).await;
         assert!(matches!(snap.view, GitDiffView::CleanDefault), "got {:?}", snap.view);
     }
 
@@ -625,7 +813,7 @@ mod tests {
             .output()
             .expect("git ok");
 
-        let snap = scan(dir.path()).await;
+        let snap = scan(dir.path(), None).await;
         let GitDiffView::Worktree { files, total_files, total_added, total_removed } = snap.view
         else {
             panic!("expected Worktree, got {:?}", snap.view);
@@ -659,5 +847,127 @@ mod tests {
         assert_eq!(files[1].path, "big-b.rs");
         assert_eq!(files[2].path, "medium.rs");
         assert_eq!(files[3].path, "small.rs");
+    }
+
+    /// `pr_for_branch` short-circuits the `gh pr list` call when
+    /// `prev`'s branch matches the requested branch — even when the
+    /// `cwd` would make a real `gh` invocation fail (tempdir has no
+    /// git remote). The returned `pr` / `closes` MUST be clones of
+    /// `prev`'s, proving the cache hit.
+    #[tokio::test(flavor = "current_thread")]
+    async fn pr_for_branch_reuses_prev_when_named_branch_matches() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pr = GitPrInfo { number: 42, url: "https://example/pull/42".into() };
+        let closes = vec![GitIssueRef { number: 7, url: "https://example/issues/7".into() }];
+        let prev = GitDiffSnapshot {
+            branch: GitBranch::Named("feat/x".into()),
+            default_branch: Some("main".into()),
+            view: GitDiffView::CleanDefault,
+            pr: Some(pr.clone()),
+            closes: closes.clone(),
+        };
+
+        let (got_pr, got_closes) = pr_for_branch(dir.path(), "feat/x", Some(&prev)).await;
+        assert_eq!(got_pr, Some(pr));
+        assert_eq!(got_closes, closes);
+    }
+
+    /// Cache miss when the requested branch differs from `prev`'s.
+    /// `cwd` here isn't a github repo, so `gh pr list` collapses to
+    /// `(None, vec![])` whether or not `gh` is installed — that's the
+    /// expected miss outcome.
+    #[tokio::test(flavor = "current_thread")]
+    async fn pr_for_branch_refetches_when_branch_differs() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let prev = GitDiffSnapshot {
+            branch: GitBranch::Named("feat/x".into()),
+            default_branch: Some("main".into()),
+            view: GitDiffView::CleanDefault,
+            pr: Some(GitPrInfo { number: 42, url: "https://example/pull/42".into() }),
+            closes: Vec::new(),
+        };
+
+        let (got_pr, got_closes) = pr_for_branch(dir.path(), "feat/y", Some(&prev)).await;
+        assert_eq!(got_pr, None, "cache must not apply across branches");
+        assert!(got_closes.is_empty());
+    }
+
+    /// Cache miss when `prev`'s branch is non-Named (Detached /
+    /// NoRepo / Unknown). Defensive: by construction prev shouldn't
+    /// carry pr data in those states, but we shouldn't trust the
+    /// invariant from the cache path.
+    #[tokio::test(flavor = "current_thread")]
+    async fn pr_for_branch_refetches_when_prev_is_detached() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let prev = GitDiffSnapshot {
+            branch: GitBranch::Detached,
+            default_branch: Some("main".into()),
+            view: GitDiffView::CleanDefault,
+            pr: Some(GitPrInfo { number: 42, url: "url".into() }),
+            closes: Vec::new(),
+        };
+
+        let (got_pr, _got_closes) = pr_for_branch(dir.path(), "feat/x", Some(&prev)).await;
+        assert_eq!(got_pr, None);
+    }
+
+    /// `scan` carries cached PR data through the cache-hit path. Set
+    /// up a real git repo on a feature branch, build a `prev`
+    /// snapshot for the same branch with a synthetic PR, and assert
+    /// the returned snapshot mirrors prev's PR fields. Without the
+    /// cache, `scan` would call `gh` against a non-github tempdir
+    /// and the PR fields would come back empty.
+    #[tokio::test(flavor = "current_thread")]
+    async fn scan_carries_prev_pr_through_when_branch_unchanged() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        init_repo(&dir, "main");
+        write_file(&dir, "README.md", "first\n");
+        commit_all(&dir, "init");
+        let run = |args: &[&str]| {
+            StdCommand::new("git").arg("-C").arg(dir.path()).args(args).output().expect("git ok");
+        };
+        run(&["checkout", "-q", "-b", "feat/cache"]);
+        write_file(&dir, "feat.rs", "fn x() {}\n");
+        commit_all(&dir, "feat commit");
+
+        let synthetic_pr = GitPrInfo { number: 99, url: "https://example/pull/99".into() };
+        let synthetic_closes =
+            vec![GitIssueRef { number: 1, url: "https://example/issues/1".into() }];
+        let prev = GitDiffSnapshot {
+            branch: GitBranch::Named("feat/cache".into()),
+            default_branch: Some("main".into()),
+            view: GitDiffView::CleanDefault,
+            pr: Some(synthetic_pr.clone()),
+            closes: synthetic_closes.clone(),
+        };
+
+        let snap = scan(dir.path(), Some(&prev)).await;
+        assert_eq!(snap.pr, Some(synthetic_pr), "cached PR must carry through scan");
+        assert_eq!(snap.closes, synthetic_closes);
+    }
+
+    /// On the default branch, `scan` skips the PR fetch entirely —
+    /// `pr` / `closes` stay empty. Mirrors the "no PR opens against
+    /// main" assumption (true for personal repos; fork → upstream
+    /// edge case is out of scope for v1).
+    #[tokio::test(flavor = "current_thread")]
+    async fn scan_skips_pr_fetch_on_default_branch() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        init_repo(&dir, "main");
+        write_file(&dir, "README.md", "hello\n");
+        commit_all(&dir, "init");
+
+        let prev = GitDiffSnapshot {
+            branch: GitBranch::Named("main".into()),
+            default_branch: Some("main".into()),
+            view: GitDiffView::CleanDefault,
+            pr: Some(GitPrInfo { number: 1, url: "url".into() }),
+            closes: Vec::new(),
+        };
+        // Even with a cache-hit-shaped prev, the default-branch gate
+        // wins and the PR field clears.
+        let snap = scan(dir.path(), Some(&prev)).await;
+        assert_eq!(snap.pr, None);
+        assert!(snap.closes.is_empty());
     }
 }
