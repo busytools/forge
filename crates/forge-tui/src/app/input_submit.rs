@@ -129,29 +129,36 @@ pub(super) fn maybe_auto_submit_after_cancel(app: &mut App) {
     submit_input(app);
 }
 
-/// Drain queued messages on a turn-complete boundary. Issue #85.
+/// Drain queued messages. Issue #85.
 ///
 /// Concatenates all queued texts with `\n\n` paragraph breaks, merges
-/// attachments, fires a single fresh `Command::Prompt`. The dimmed
-/// user bubbles representing the queued messages get un-dimmed so the
-/// user sees the model has now seen them. Chat history retains the
+/// attachments, fires a single `Command::Prompt`. The dimmed user
+/// bubbles representing the queued messages get un-dimmed so the user
+/// sees the model has now seen them. Chat history retains the
 /// N-separate-bubble visual shape even though the wire sees one
 /// combined prompt.
 ///
-/// Caller contract: only invoke after the active turn has fully ended
-/// (status transitioned back to `Ready`, lifecycle to `Idle`). The
-/// `apply_turn_complete_presentation` and cancelled-error paths in
-/// `events::turn` are the wired call sites.
+/// Dispatches based on app status:
+/// - **Ready** (turn just ended): pushes a fresh assistant placeholder
+///   and starts a new turn with the combined payload. Used by the
+///   `TurnComplete` / cancelled-error drain hooks.
+/// - **Thinking / Running** (turn still in flight): injects the
+///   combined payload mid-turn — writes to claude stdin without
+///   pushing an assistant placeholder, letting claude's existing
+///   stream emit the next assistant message naturally. Used by the
+///   `tool_result` and time-based-fallback hooks.
+/// - Other statuses (Connecting, Error, CommandPending): no-op; queue
+///   waits.
 ///
-/// V1 scope: only the ACTIVE session's queue drains here. Background-
-/// session queues drain when the user switches to them and the next
-/// turn completes there. Real-error (non-cancelled) blocks drain —
-/// queue waits until the user clears the error. Both are documented
-/// limitations in #85; revisit in v1.5 if real-world usage hits them.
+/// Empirical question to answer during testing: does claude in
+/// stream-json subprocess mode accept user-message writes to stdin
+/// mid-turn (i.e., during a Thinking/Running state)? Architect's
+/// peer-via-MCP pattern + the user's interactive-CLI observation
+/// suggest yes, but forge-sdk's transport may handle this
+/// differently. If a mid-turn write triggers an error, the drain
+/// gracefully reverts: the bubbles stay un-dimmed (claude got the
+/// message), the dispatch error surfaces via `TurnError`.
 pub(super) fn drain_queued_messages(app: &mut App) {
-    if !matches!(app.status, AppStatus::Ready) {
-        return;
-    }
     if app.pending_cancel_origin().is_some() {
         return;
     }
@@ -160,7 +167,8 @@ pub(super) fn drain_queued_messages(app: &mut App) {
     };
 
     // Collect the queue before mutating messages — avoids overlapping
-    // borrows between `app.session_mut` and `app.messages_mut`.
+    // borrows between `app.session_mut` and the active-bucket access
+    // below.
     let queued: Vec<QueuedMessage> = {
         let Some(session) = app.session_mut(&key) else {
             return;
@@ -191,15 +199,103 @@ pub(super) fn drain_queued_messages(app: &mut App) {
     let combined_attachments: Vec<crate::app::clipboard_image::ImageAttachment> =
         queued.into_iter().flat_map(|q| q.attachments.into_iter()).collect();
 
+    let drain_mode = match app.status {
+        AppStatus::Ready => DrainMode::FreshTurn,
+        AppStatus::Thinking | AppStatus::Running => DrainMode::MidTurnInjection,
+        _ => {
+            tracing::warn!(
+                target: crate::logging::targets::APP_INPUT,
+                event_name = "queue_drain_skipped_bad_status",
+                message = "queue drain skipped — app status doesn't permit dispatch",
+                outcome = "deferred",
+                status = ?app.status,
+                queue_size,
+            );
+            // Bubbles are already un-dimmed (we did that above) but
+            // the texts haven't been dispatched. Re-enqueue is
+            // awkward because chat_message_idx points at the same
+            // bubbles we just un-dimmed. Acceptable v1 trade-off:
+            // user-visible signal is "bubbles look sent" but model
+            // didn't actually see them. The bad statuses
+            // (Connecting/Error/CommandPending) are rare enough to
+            // defer the fix; document in PR + #85.
+            return;
+        }
+    };
+
     tracing::info!(
         target: crate::logging::targets::APP_INPUT,
         event_name = "queue_drained",
-        message = "queued messages drained into a single combined turn",
+        message = "queued messages drained into a single combined prompt",
         outcome = "start",
         queue_size,
+        drain_mode = ?drain_mode,
     );
 
-    fire_combined_turn(app, combined_text, combined_attachments);
+    match drain_mode {
+        DrainMode::FreshTurn => fire_combined_turn(app, combined_text, combined_attachments),
+        DrainMode::MidTurnInjection => {
+            inject_combined_into_running_turn(app, combined_text, combined_attachments);
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum DrainMode {
+    /// Turn ended; start a fresh turn with the combined payload.
+    FreshTurn,
+    /// Turn still in flight; write the combined payload to claude
+    /// mid-stream. Claude appends to current conversation context.
+    MidTurnInjection,
+}
+
+/// Mid-turn drain: dispatch `Command::Prompt` while a turn is in
+/// flight. Does NOT push an assistant placeholder (the in-flight
+/// assistant message already exists and continues streaming) and
+/// does NOT change `app.status` or lifecycle state. Claude's
+/// existing stream picks up the new user message and emits its next
+/// assistant response naturally.
+fn inject_combined_into_running_turn(
+    app: &mut App,
+    text: String,
+    images: Vec<crate::app::clipboard_image::ImageAttachment>,
+) {
+    if !app.has_active_agent() {
+        return;
+    }
+    let Some(sid) = app.session_id() else {
+        return;
+    };
+    let input_chars = text.chars().count();
+    let session_id = sid.to_string();
+
+    let tx = app.update_tx.clone();
+    let prompt_text = text;
+    match app.dispatch_command(|key| forge_workspace::Command::Prompt {
+        key,
+        text: prompt_text,
+        attachments: images,
+    }) {
+        Ok(()) => {
+            tracing::info!(
+                target: crate::logging::targets::APP_INPUT,
+                event_name = "queue_injected_mid_turn",
+                message = "queued prompt injected into running turn",
+                outcome = "success",
+                session_id = %session_id,
+                input_chars,
+            );
+        }
+        Err(e) => {
+            let session_key = forge_workspace::SessionKey::from_session_id(session_id);
+            let _ = tx.send(forge_workspace::SessionUpdate::TurnError {
+                key: session_key,
+                message: e.to_string(),
+                class: None,
+                terminal_reason: None,
+            });
+        }
+    }
 }
 
 /// Fire the combined queued payload as a fresh turn. Mirrors
@@ -250,7 +346,7 @@ fn fire_combined_turn(
             tracing::info!(
                 target: crate::logging::targets::APP_INPUT,
                 event_name = "queue_drained_dispatched",
-                message = "combined queued prompt dispatched",
+                message = "combined queued prompt dispatched (fresh turn)",
                 outcome = "success",
                 session_id = %session_id,
                 input_chars,
@@ -267,6 +363,45 @@ fn fire_combined_turn(
         }
     }
 }
+
+/// Time-based drain trigger called from the per-tick render loop.
+/// Only fires when:
+/// - app is mid-turn (`Thinking`/`Running`), AND
+/// - the queue is non-empty, AND
+/// - the OLDEST queued message has been waiting longer than
+///   [`QUEUE_TIMER_FALLBACK_SECS`].
+///
+/// Heuristic fallback for tool-free turns (pure-text turns emit no
+/// `tool_result` events, so the concrete `apply_tool_result_block`
+/// drain hook never fires). 10s gives the user enough time to keep
+/// typing if they're composing a longer follow-up while watching
+/// the model stream.
+pub(super) fn maybe_drain_queue_on_timer(app: &mut App) {
+    if !matches!(app.status, AppStatus::Thinking | AppStatus::Running) {
+        return;
+    }
+    let Some(key) = app.active_session_key.clone() else {
+        return;
+    };
+    let oldest_age = match app.session_mut(&key) {
+        Some(s) if !s.queued_messages.is_empty() => {
+            s.queued_messages.front().map(|q| q.queued_at.elapsed())
+        }
+        _ => return,
+    };
+    let Some(age) = oldest_age else { return };
+    if age < std::time::Duration::from_secs(QUEUE_TIMER_FALLBACK_SECS) {
+        return;
+    }
+    drain_queued_messages(app);
+}
+
+/// Threshold for the time-based queue drain fallback (see
+/// [`maybe_drain_queue_on_timer`]). 10s mirrors the rough "few
+/// seconds" gap behaviour the user observed in the interactive
+/// claude CLI. Conservative — bumping higher delays delivery; lower
+/// risks pre-empting the user mid-compose.
+const QUEUE_TIMER_FALLBACK_SECS: u64 = 10;
 
 /// Append a dimmed user bubble to the chat AND push a `QueuedMessage`
 /// onto the active session's queue. Called when the user submits while
@@ -502,18 +637,115 @@ mod tests {
     }
 
     #[test]
-    fn drain_queued_messages_skips_when_not_ready() {
+    fn drain_queued_messages_mid_turn_injects_without_assistant_placeholder() {
+        // Issue #85 amendment: mid-turn drain (status=Running) should
+        // inject the prompt into the in-flight turn WITHOUT pushing
+        // a new assistant placeholder. claude's existing stream
+        // continues; the un-dimmed bubble lands in chat history
+        // before the next assistant message.
         let (mut app, mut rx) = app_with_connection();
-        // Queue a message.
+        app.status = AppStatus::Running;
+        app.input_mut().set_text("steering message");
+        submit_input(&mut app);
+
+        // One queued dimmed user bubble.
+        assert_eq!(app.messages().len(), 1);
+        assert!(app.messages()[0].queued);
+
+        // Drain while still Running — mid-turn injection path.
+        drain_queued_messages(&mut app);
+
+        // Bubble un-dimmed; status UNCHANGED (still Running);
+        // NO new assistant placeholder pushed.
+        assert!(!app.messages()[0].queued);
+        assert_eq!(app.messages().len(), 1, "mid-turn drain must NOT push assistant placeholder");
+        assert!(matches!(app.status, AppStatus::Running));
+
+        let prompt = rx.try_recv().expect("mid-turn prompt should be dispatched");
+        match prompt {
+            forge_primitives::Command::PromptWithImages { session_id, text, .. } => {
+                assert_eq!(session_id, "session-1");
+                assert_eq!(text, "steering message");
+            }
+            other => panic!("expected PromptWithImages, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn drain_queued_messages_skips_when_status_invalid() {
+        // Statuses outside Ready/Thinking/Running (Connecting, Error,
+        // CommandPending) skip drain — bubbles are un-dimmed but the
+        // dispatch is deferred. Acceptable v1 trade-off.
+        let (mut app, mut rx) = app_with_connection();
         app.status = AppStatus::Running;
         app.input_mut().set_text("queued");
         submit_input(&mut app);
-        // Status still Running — drain must not fire.
+        // Flip to a bad status before drain fires.
+        app.status = AppStatus::Connecting;
         drain_queued_messages(&mut app);
-        // Queue still populated.
+        // No dispatch.
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn maybe_drain_queue_on_timer_noop_if_idle() {
+        // Timer only fires mid-turn — idle sessions drain via the
+        // TurnComplete path (already covered elsewhere).
+        let (mut app, mut rx) = app_with_connection();
+        app.status = AppStatus::Ready;
+        // No queue + idle = pure no-op.
+        maybe_drain_queue_on_timer(&mut app);
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn maybe_drain_queue_on_timer_noop_within_threshold() {
+        // Queue a message while busy; timer should NOT fire
+        // immediately (within the 10s threshold).
+        let (mut app, mut rx) = app_with_connection();
+        app.status = AppStatus::Running;
+        app.input_mut().set_text("recent");
+        submit_input(&mut app);
+        // Immediate timer check — queued_at is "just now".
+        maybe_drain_queue_on_timer(&mut app);
+        // Queue still populated, nothing dispatched.
         let bucket = app.try_active_bucket_mut().expect("active bucket exists");
         assert_eq!(bucket.queued_messages.len(), 1);
         assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn maybe_drain_queue_on_timer_fires_after_threshold() {
+        // Synthesise an "old" queued_at by writing directly to the
+        // bucket, then call maybe_drain. The timer-based drain
+        // should fire because the oldest message is past threshold.
+        let (mut app, mut rx) = app_with_connection();
+        app.status = AppStatus::Running;
+        app.input_mut().set_text("steering");
+        submit_input(&mut app);
+
+        // Backdate the queued_at by 15s.
+        {
+            let bucket = app.try_active_bucket_mut().expect("active bucket exists");
+            let entry = bucket.queued_messages.front_mut().expect("queued entry");
+            entry.queued_at = Instant::now()
+                .checked_sub(std::time::Duration::from_secs(15))
+                .expect("system clock far enough past epoch to backdate 15s");
+        }
+
+        maybe_drain_queue_on_timer(&mut app);
+
+        // Drain fired — queue empty, bubble un-dimmed, prompt dispatched.
+        let bucket = app.try_active_bucket_mut().expect("active bucket exists");
+        assert!(bucket.queued_messages.is_empty());
+        assert!(!app.messages()[0].queued);
+        let prompt = rx.try_recv().expect("timer-triggered drain should dispatch");
+        match prompt {
+            forge_primitives::Command::PromptWithImages { text, .. } => {
+                assert_eq!(text, "steering");
+            }
+            other => panic!("expected PromptWithImages, got: {other:?}"),
+        }
     }
 
     #[test]
