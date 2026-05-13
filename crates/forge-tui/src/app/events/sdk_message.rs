@@ -363,6 +363,14 @@ fn apply_tool_result_block(
     let base = app.with_turn_state(|ts| ts.tool_calls.get(tool_use_id).cloned());
     let fields = build_tool_result_fields(is_error, raw_content, base.as_ref(), raw_block);
     apply_tool_call_update(app, tool_use_id, fields);
+
+    // Issue #85: tool_result is the concrete "gap between actions"
+    // signal — claude just finished a tool call and is about to
+    // think about the next step. If the user queued any messages
+    // while this turn was in flight, mid-turn-inject them now so
+    // claude can incorporate the new context into its next move.
+    // Drain is a no-op when the queue is empty.
+    crate::app::input_submit::drain_queued_messages(app);
 }
 
 /// Mutate `app.turn_state.tool_calls` with the supplied update
