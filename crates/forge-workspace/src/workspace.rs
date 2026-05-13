@@ -1006,6 +1006,11 @@ impl Workspace {
     /// method so the TUI never depends on `forge-agent` directly
     /// (see CLAUDE.md placement guide).
     ///
+    /// `prev` is the caller's most-recent snapshot for the same
+    /// `cwd`, used by the scanner to short-circuit the `gh pr list`
+    /// call when the branch hasn't changed. Pass `None` for cold
+    /// starts.
+    ///
     /// Infallible: scanner errors collapse to
     /// `GitDiffView::NoRepo` with structured WARN logs. Renderer
     /// treats the returned snapshot as authoritative regardless of
@@ -1013,8 +1018,9 @@ impl Workspace {
     pub async fn scan_git_diff(
         &self,
         cwd: &std::path::Path,
+        prev: Option<&forge_agent::env::git_diff::GitDiffSnapshot>,
     ) -> forge_agent::env::git_diff::GitDiffSnapshot {
-        forge_agent::env::git_diff::scan(cwd).await
+        forge_agent::env::git_diff::scan(cwd, prev).await
     }
 
     /// Probe the local `claude --version` and the latest published
