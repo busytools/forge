@@ -242,7 +242,7 @@ fn build_message_layout(
     render_context: MessageRenderContext<'_>,
 ) -> MessageLayout {
     let mut layout = MessageLayout::new();
-    layout.push_wrapped_line(role_label_line(&msg.role), render_context.width);
+    layout.push_wrapped_line(role_label_line(msg), render_context.width);
 
     match msg.role {
         MessageRole::Welcome => append_welcome_blocks(msg, render_context.width, &mut layout),
@@ -270,11 +270,24 @@ fn append_welcome_blocks(msg: &mut ChatMessage, width: u16, layout: &mut Message
 }
 
 fn append_user_blocks(msg: &mut ChatMessage, width: u16, layout: &mut MessageLayout) {
+    let queued = msg.queued;
     for block in &mut msg.blocks {
         match block {
             MessageBlock::Text(block) => {
                 let trailing_gap = block.trailing_blank_lines();
-                let rendered = text_block_layout(block, width, Some(theme::USER_MSG_BG), true);
+                // Issue #85: queued user bubbles drop the USER_MSG_BG
+                // tint and gain a DIM + ITALIC overlay so they read
+                // as "waiting" — visually distinct from sent user
+                // messages without losing readability.
+                let bg = if queued { None } else { Some(theme::USER_MSG_BG) };
+                let mut rendered = text_block_layout(block, width, bg, true);
+                if queued {
+                    for line in &mut rendered.lines {
+                        for span in &mut line.spans {
+                            span.style = span.style.add_modifier(Modifier::DIM | Modifier::ITALIC);
+                        }
+                    }
+                }
                 layout.push_lines(rendered.lines, rendered.height, rendered.wrapped_lines);
                 for _ in 0..trailing_gap {
                     layout.push_blank();
@@ -819,6 +832,10 @@ fn build_message_render_signature(
     use std::hash::{Hash, Hasher};
     let mut hasher = DefaultHasher::new();
     msg.role.hash(&mut hasher);
+    // Issue #85: queued state changes the render (dimmed / italic +
+    // " · Queued" tag). Fold into the signature so the cache
+    // invalidates correctly when drain flips queued → false.
+    msg.queued.hash(&mut hasher);
     spinner.show_empty_thinking.hash(&mut hasher);
     spinner.show_thinking.hash(&mut hasher);
     spinner.show_compacting.hash(&mut hasher);
@@ -1032,18 +1049,38 @@ fn should_skip_whole_block(
     false
 }
 
-fn role_label_line(role: &MessageRole) -> Line<'static> {
-    match role {
+fn role_label_line(msg: &ChatMessage) -> Line<'static> {
+    match msg.role {
         MessageRole::Welcome => Line::from(Span::styled(
             "Overview",
             Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
         )),
-        MessageRole::User => Line::from(Span::styled(
-            "User",
-            Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD),
-        )),
+        MessageRole::User => {
+            if msg.queued {
+                // Issue #85: queued user message — append a "Queued"
+                // tag to the role label so the user can see at a
+                // glance that this bubble hasn't been sent yet.
+                Line::from(vec![
+                    Span::styled(
+                        "User",
+                        Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        " · Queued",
+                        Style::default()
+                            .fg(theme::DIM)
+                            .add_modifier(Modifier::DIM | Modifier::ITALIC),
+                    ),
+                ])
+            } else {
+                Line::from(Span::styled(
+                    "User",
+                    Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD),
+                ))
+            }
+        }
         MessageRole::Assistant => assistant_role_label_line(),
-        MessageRole::System(_) => system_role_label_line(system_severity_from_role(role)),
+        MessageRole::System(_) => system_role_label_line(system_severity_from_role(&msg.role)),
     }
 }
 
