@@ -391,15 +391,27 @@ mod tests {
 
     fn init_repo(dir: &TempDir, initial_branch: &str) {
         let path = dir.path();
+        // The `git init -b <branch>` flag was added in git 2.28; CI
+        // runners can still be on 2.25 (Ubuntu 20.04's default). To
+        // stay compatible we `init` without `-b` and then point HEAD
+        // at the desired branch via `symbolic-ref` — works on every
+        // git version, including ones where `init.defaultBranch`
+        // isn't recognised. Each call asserts `status.success()` so
+        // a silent setup failure surfaces here rather than confusing
+        // the assertion downstream.
         let run = |args: &[&str]| {
-            StdCommand::new("git")
-                .arg("-C")
-                .arg(path)
-                .args(args)
-                .output()
-                .expect("git command runs");
+            let out =
+                StdCommand::new("git").arg("-C").arg(path).args(args).output().expect("git ok");
+            assert!(
+                out.status.success(),
+                "git {:?} failed in {}: stderr={}",
+                args,
+                path.display(),
+                String::from_utf8_lossy(&out.stderr),
+            );
         };
-        run(&["init", "-q", "-b", initial_branch]);
+        run(&["init", "-q"]);
+        run(&["symbolic-ref", "HEAD", &format!("refs/heads/{initial_branch}")]);
         run(&["config", "user.email", "test@example.com"]);
         run(&["config", "user.name", "Test"]);
         run(&["config", "commit.gpgsign", "false"]);
