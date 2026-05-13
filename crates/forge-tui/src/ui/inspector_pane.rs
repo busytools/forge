@@ -576,12 +576,18 @@ fn append_tasks_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
     // Blank between header and first item.
     lines.push(Line::default());
 
-    // Item rendering budget: full width minus the 2-col indent, the
-    // 1-col glyph, and the 1-col space after the glyph. Continuation
-    // lines for the wrapped in-progress item indent under the text
-    // column (start col 5 from the pane's x=0).
+    // Item rendering budget: full width minus the 2-col left indent,
+    // the 1-col glyph, the 1-col space after the glyph, AND a 2-col
+    // right gutter so truncated `…` items don't butt up against the
+    // pane edge. Continuation lines for the wrapped in-progress item
+    // indent under the text column (start col 5 from the pane's x=0).
+    // Right-gutter reservation here mirrors the GIT section's
+    // `…stats column +  PANE_PAD` math so both sections honour the
+    // same visual margin.
     let glyph_indent = PANE_PAD + 2; // "  " + glyph + " "
-    let text_budget = usize::from(width.saturating_sub(glyph_indent));
+    let text_budget = usize::from(width)
+        .saturating_sub(usize::from(glyph_indent))
+        .saturating_sub(usize::from(PANE_PAD));
 
     let todo_count = todos.len();
     for (idx, todo) in todos.iter().enumerate() {
