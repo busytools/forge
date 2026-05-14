@@ -33,7 +33,7 @@ use crate::agent::model::ToolCallStatus;
 use crate::app::MessageBlock;
 use crate::app::MessageRole;
 use crate::app::state::tool_call_info::{
-    ToolCallInfo, is_cron_create_tool_name, is_monitor_tool_name,
+    ToolCallInfo, is_cron_create_tool_name, is_execute_tool_name, is_monitor_tool_name,
 };
 
 /// One row in the PROCESSES section, materialised from a single
@@ -102,10 +102,26 @@ pub fn collect_active_processes(app: &App) -> Vec<ProcessRow> {
 
 /// Project a single `ToolCallInfo` into a `ProcessRow` if it
 /// matches one of the long-running tool kinds we surface.
+///
+/// Bash detection covers two paths:
+///
+/// 1. **Explicit:** caller invoked `Bash` with `run_in_background:
+///    true` in `raw_input`. The tool returns immediately with a
+///    `backgroundTaskId` and runs in claude's local-bash task
+///    registry. This is the common case for "start a watch and let
+///    me keep working" prompts.
+/// 2. **Auto-promoted:** claude's CLI promotes a foreground Bash to
+///    background after a timeout. Detected via
+///    [`ToolCallInfo::assistant_auto_backgrounded`], which forge's
+///    type_converters set from the tool_result metadata.
+///
+/// The earlier scoping that keyed only on the second path missed
+/// the entire first path — explicit `run_in_background: true` Bash
+/// calls never set the auto-flag, so they were silently excluded.
 fn process_row_for(tc: &ToolCallInfo) -> Option<ProcessRow> {
-    // Bash backgrounded — wins on the metadata flag, irrespective
-    // of how `sdk_tool_name` is capitalised in this CLI version.
-    if tc.assistant_auto_backgrounded() {
+    if is_execute_tool_name(&tc.sdk_tool_name)
+        && (raw_input_run_in_background(tc.raw_input.as_ref()) || tc.assistant_auto_backgrounded())
+    {
         return Some(bash_backgrounded_row(tc));
     }
     if is_monitor_tool_name(&tc.sdk_tool_name) {
@@ -115,6 +131,18 @@ fn process_row_for(tc: &ToolCallInfo) -> Option<ProcessRow> {
         return Some(cron_row(tc));
     }
     None
+}
+
+/// True when `raw_input` is `Some` AND carries
+/// `"run_in_background": true`. Returns `false` for absent
+/// `raw_input` or any other shape — matches the
+/// `raw_input_is_persistent` defensive style.
+fn raw_input_run_in_background(raw_input: Option<&Value>) -> bool {
+    raw_input
+        .and_then(|v| v.as_object())
+        .and_then(|o| o.get("run_in_background"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
 }
 
 fn bash_backgrounded_row(tc: &ToolCallInfo) -> ProcessRow {
@@ -249,5 +277,28 @@ mod tests {
         assert_eq!(read_bool_field(Some(&input), "persistent"), Some(true));
         assert_eq!(read_bool_field(Some(&input), "other"), None);
         assert_eq!(read_bool_field(Some(&input), "missing"), None);
+    }
+
+    #[test]
+    fn raw_input_run_in_background_returns_true_only_when_field_is_true() {
+        // Explicit run_in_background path — the case the earlier
+        // collector missed entirely.
+        let input = json!({"run_in_background": true, "command": "sleep 10"});
+        assert!(raw_input_run_in_background(Some(&input)));
+
+        // Explicit false (foreground Bash).
+        let input = json!({"run_in_background": false, "command": "echo hi"});
+        assert!(!raw_input_run_in_background(Some(&input)));
+
+        // Field absent — default is foreground.
+        let input = json!({"command": "echo hi"});
+        assert!(!raw_input_run_in_background(Some(&input)));
+
+        // None raw_input — same default.
+        assert!(!raw_input_run_in_background(None));
+
+        // Non-bool — defensive: don't treat truthy strings as true.
+        let input = json!({"run_in_background": "true"});
+        assert!(!raw_input_run_in_background(Some(&input)));
     }
 }
