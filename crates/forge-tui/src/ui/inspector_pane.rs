@@ -48,7 +48,7 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState};
+use ratatui::widgets::Paragraph;
 
 use super::theme;
 use crate::agent::model::ToolCallStatus;
@@ -193,13 +193,41 @@ fn render_scrollable_body(frame: &mut Frame, body_area: Rect, app: &mut App) {
 
     frame.render_widget(Paragraph::new(body_lines).scroll((offset, 0)), body_area);
 
-    // Scrollbar only when body overflows. Vertical on the right edge,
-    // unstyled track + a DIM thumb so it blends with the pane chrome.
-    if total > visible {
-        let mut state = ScrollbarState::new(total).position(offset.into());
-        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
-            .style(Style::default().fg(theme::DIM));
-        frame.render_stateful_widget(scrollbar, body_area, &mut state);
+    // Scrollbar — thumb-only, no rail, painted as `▐` (U+2590) cells
+    // in `ROLE_ASSISTANT` colour. Matches the chat scrollbar exactly
+    // so the two surfaces read as a consistent pair.
+    render_inspector_thumb(frame, body_area, total, visible, offset);
+}
+
+/// Paint the inspector body's scroll thumb. Mirrors
+/// `ui::chat::render_scrollbar_overlay`: thumb-only (no rail), uses
+/// `▐` (U+2590) cells styled `ROLE_ASSISTANT`, geometry via the
+/// shared [`crate::app::compute_scrollbar_geometry`]. No-op when the
+/// body fits inside the visible area.
+fn render_inspector_thumb(
+    frame: &mut Frame,
+    body_area: Rect,
+    total: usize,
+    visible: usize,
+    offset: u16,
+) {
+    let Some(geometry) =
+        crate::app::compute_scrollbar_geometry(total, visible, f32::from(offset))
+    else {
+        return;
+    };
+    let thumb_style = Style::default().fg(theme::ROLE_ASSISTANT);
+    let rail_x = body_area.right().saturating_sub(1);
+    let area_h = usize::from(body_area.height);
+    let thumb_top = geometry.thumb_top.min(area_h.saturating_sub(1));
+    let thumb_end = thumb_top.saturating_add(geometry.thumb_size).min(area_h);
+    let buf = frame.buffer_mut();
+    for row in thumb_top..thumb_end {
+        let y = body_area.y.saturating_add(u16::try_from(row).unwrap_or(u16::MAX));
+        if let Some(cell) = buf.cell_mut((rail_x, y)) {
+            cell.set_symbol("\u{2590}");
+            cell.set_style(thumb_style);
+        }
     }
 }
 
