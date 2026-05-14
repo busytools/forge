@@ -1044,48 +1044,20 @@ fn append_processes_section(
     )));
     lines.push(Line::default());
 
-    let glyph_indent = PANE_PAD + 2; // "  " + glyph + " "
-    let text_budget = usize::from(width)
-        .saturating_sub(usize::from(glyph_indent))
-        .saturating_sub(usize::from(PANE_PAD));
-    let continuation_indent = "    "; // 4 cols — under the text col.
-    // `└─ ` is 3 codepoints (U+2514, U+2500, U+0020) so each
-    // continuation row's chrome eats 3 cols. truncate_with_ellipsis
-    // measures in `.chars()` (matches the count), so subtract 3.
-    let continuation_budget = usize::from(width)
-        .saturating_sub(continuation_indent.chars().count())
-        .saturating_sub(usize::from(PANE_PAD))
-        .saturating_sub(3);
     let include_memory = width >= PROCESSES_MEMORY_WIDTH_THRESHOLD;
     let process_count = collection.rows.len();
     for (idx, process) in collection.rows.iter().enumerate() {
-        let (glyph, glyph_color, headline_style) = glyph_and_style_for(process);
-        let headline_fitted = truncate_with_ellipsis(&process.headline, text_budget);
-        lines.push(Line::from(vec![
-            Span::raw("  "),
-            Span::styled(glyph.to_owned(), Style::default().fg(glyph_color)),
-            Span::raw(" "),
-            Span::styled(headline_fitted, headline_style),
-        ]));
-
-        if let Some(detail) = process.detail.as_ref() {
-            let fitted = truncate_with_ellipsis(detail, continuation_budget);
-            lines.push(Line::from(vec![
-                Span::raw(continuation_indent.to_owned()),
-                Span::styled("\u{2514}\u{2500} ".to_owned(), Style::default().fg(theme::DIM)),
-                Span::styled(fitted, Style::default().fg(theme::DIM)),
-            ]));
+        if process.depth == 0 {
+            append_supervisor_row(lines, process, width, include_memory);
+        } else {
+            append_descendant_row(lines, process, width, include_memory);
         }
-
-        let metadata_text = build_metadata_with_memory(process, include_memory);
-        let metadata_fitted = truncate_with_ellipsis(&metadata_text, continuation_budget);
-        lines.push(Line::from(vec![
-            Span::raw(continuation_indent.to_owned()),
-            Span::styled("\u{2514}\u{2500} ".to_owned(), Style::default().fg(theme::DIM)),
-            Span::styled(metadata_fitted, Style::default().fg(theme::DIM)),
-        ]));
-
-        if idx + 1 < process_count {
+        // Blank between SUPERVISOR rows (depth-0). Descendant rows
+        // pack tight under their supervisor with no blanks so the
+        // tree reads as one connected block.
+        let next_is_supervisor =
+            collection.rows.get(idx + 1).is_some_and(|next| next.depth == 0);
+        if idx + 1 < process_count && next_is_supervisor {
             lines.push(Line::default());
         }
     }
@@ -1094,6 +1066,113 @@ fn append_processes_section(
     // scrollbar IS the overflow indicator. `collection.overflow`
     // remains on the struct for potential future use (e.g. a
     // sanity-bound notice when the soft cap actually trims rows).
+}
+
+/// Render a depth-0 row (direct child of `claude`, the "supervisor"
+/// of its subtree) as the existing 3-line block: glyph + headline,
+/// `└─ cmdline` continuation, `└─ Kind · status · NN MB`
+/// continuation. Mirrors pre-tree behaviour for the top row of each
+/// branch.
+fn append_supervisor_row(
+    lines: &mut Vec<Line<'static>>,
+    process: &ProcessRow,
+    width: u16,
+    include_memory: bool,
+) {
+    let glyph_indent = PANE_PAD + 2; // "  " + glyph + " "
+    let text_budget = usize::from(width)
+        .saturating_sub(usize::from(glyph_indent))
+        .saturating_sub(usize::from(PANE_PAD));
+    let continuation_indent = "    "; // 4 cols — under the text col.
+    // `└─ ` is 3 codepoints (U+2514, U+2500, U+0020) so each
+    // continuation row's chrome eats 3 cols.
+    let continuation_budget = usize::from(width)
+        .saturating_sub(continuation_indent.chars().count())
+        .saturating_sub(usize::from(PANE_PAD))
+        .saturating_sub(3);
+
+    let (glyph, glyph_color, headline_style) = glyph_and_style_for(process);
+    let headline_fitted = truncate_with_ellipsis(&process.headline, text_budget);
+    lines.push(Line::from(vec![
+        Span::raw("  "),
+        Span::styled(glyph.to_owned(), Style::default().fg(glyph_color)),
+        Span::raw(" "),
+        Span::styled(headline_fitted, headline_style),
+    ]));
+
+    if let Some(detail) = process.detail.as_ref() {
+        let fitted = truncate_with_ellipsis(detail, continuation_budget);
+        lines.push(Line::from(vec![
+            Span::raw(continuation_indent.to_owned()),
+            Span::styled("\u{2514}\u{2500} ".to_owned(), Style::default().fg(theme::DIM)),
+            Span::styled(fitted, Style::default().fg(theme::DIM)),
+        ]));
+    }
+
+    let metadata_text = build_metadata_with_memory(process, include_memory);
+    let metadata_fitted = truncate_with_ellipsis(&metadata_text, continuation_budget);
+    lines.push(Line::from(vec![
+        Span::raw(continuation_indent.to_owned()),
+        Span::styled("\u{2514}\u{2500} ".to_owned(), Style::default().fg(theme::DIM)),
+        Span::styled(metadata_fitted, Style::default().fg(theme::DIM)),
+    ]));
+}
+
+/// Render a depth-≥1 descendant as a single-line entry with
+/// box-drawing tree connectors built from `ancestor_has_more` +
+/// `is_last_sibling`. Drops the cmdline continuation so deep trees
+/// don't blow the screen budget; the supervisor's 3-line block
+/// already carries the full cmdline context. The metadata
+/// (`Kind · status · NN MB`) lives inline on the same row, after the
+/// headline + a `· ` separator.
+///
+/// Format: `<pane pad><ancestor cols><connector><glyph> <headline> · <metadata>`
+/// where `ancestor cols` is one 3-col chunk per ancestor depth (`│  `
+/// when that ancestor has more siblings below, `   ` when not), and
+/// `connector` is `└─ ` (last sibling) or `├─ ` (more siblings
+/// below).
+fn append_descendant_row(
+    lines: &mut Vec<Line<'static>>,
+    process: &ProcessRow,
+    width: u16,
+    include_memory: bool,
+) {
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    spans.push(Span::raw(" ".repeat(usize::from(PANE_PAD))));
+
+    // One 3-col chunk per ancestor depth — vertical-bar continuation
+    // when that ancestor has more siblings to come, blanks otherwise.
+    for has_more in &process.ancestor_has_more {
+        let chunk = if *has_more { "\u{2502}  " } else { "   " };
+        spans.push(Span::styled(chunk.to_owned(), Style::default().fg(theme::DIM)));
+    }
+
+    // Connector for THIS row.
+    let connector = if process.is_last_sibling { "\u{2514}\u{2500} " } else { "\u{251C}\u{2500} " };
+    spans.push(Span::styled(connector.to_owned(), Style::default().fg(theme::DIM)));
+
+    // Glyph + space + headline + " · " + metadata.
+    let (glyph, glyph_color, headline_style) = glyph_and_style_for(process);
+    spans.push(Span::styled(glyph.to_owned(), Style::default().fg(glyph_color)));
+    spans.push(Span::raw(" "));
+
+    let metadata_text = build_metadata_with_memory(process, include_memory);
+    // Reserve room for ` · <metadata>` after the headline.
+    let chrome_chars = usize::from(PANE_PAD)
+        + usize::from(process.depth) * 3
+        + 3 // connector
+        + 2 // glyph + space
+        + 3 // " · "
+        + metadata_text.chars().count()
+        + usize::from(PANE_PAD); // right gutter
+    let headline_budget = usize::from(width).saturating_sub(chrome_chars).max(1);
+    let headline_fitted = truncate_with_ellipsis(&process.headline, headline_budget);
+
+    spans.push(Span::styled(headline_fitted, headline_style));
+    spans.push(Span::styled(" \u{00B7} ".to_owned(), Style::default().fg(theme::DIM)));
+    spans.push(Span::styled(metadata_text, Style::default().fg(theme::DIM)));
+
+    lines.push(Line::from(spans));
 }
 
 /// Compose the metadata string for a row, optionally suffixing
@@ -1547,6 +1626,9 @@ mod tests {
             metadata: metadata.to_owned(),
             status,
             memory_bytes: None,
+            depth: 0,
+            is_last_sibling: true,
+            ancestor_has_more: Vec::new(),
         }
     }
 
@@ -1751,6 +1833,9 @@ mod tests {
             metadata: metadata.to_owned(),
             status: ToolCallStatus::InProgress,
             memory_bytes: Some(memory_bytes),
+            depth: 0,
+            is_last_sibling: true,
+            ancestor_has_more: Vec::new(),
         }
     }
 

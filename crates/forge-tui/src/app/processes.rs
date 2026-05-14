@@ -54,11 +54,14 @@ pub struct ProcessRow {
     /// rows carry the cron expression (`*/5 * * * *`).
     pub headline: String,
     /// Secondary line carrying the cmdline (OS) or cron prompt.
-    /// `None` when nothing meaningful applies.
+    /// `None` when nothing meaningful applies. Renderer drops this
+    /// at depth >= 1 to keep the tree compact (only the supervisor
+    /// row shows full context).
     pub detail: Option<String>,
     /// Trailing metadata line: kind label · status · flags.
     /// Pre-rendered as a single string; the renderer suffixes a
     /// `· 12 MB` segment at Wide tier when `memory_bytes` is set.
+    /// Same depth-collapse as `detail`.
     pub metadata: String,
     /// Tool-call status driving the row's status glyph. OS-walked
     /// entries always read as `InProgress` (alive-set membership is
@@ -68,6 +71,25 @@ pub struct ProcessRow {
     /// wire-only rows (e.g. Cron registrations have no process).
     /// Used for (a) sort ordering and (b) Wide-tier metadata suffix.
     pub memory_bytes: Option<u64>,
+    /// Tree depth. `0` = direct child of `claude` (a "supervisor"
+    /// row); `>= 1` = a transitive descendant rendered nested
+    /// underneath. The renderer uses this for indentation +
+    /// box-drawing connectors and switches to a single-line compact
+    /// form for `depth >= 1`.
+    pub depth: u8,
+    /// Whether this row is the last child of its parent in the
+    /// process tree. The renderer uses this to pick `└─` (last) vs
+    /// `├─` (not last) for the tree connector at this row's depth.
+    /// Always `true` for depth 0 (supervisors are top-level).
+    pub is_last_sibling: bool,
+    /// Per-ancestor-depth "more siblings below" flags. Length
+    /// equals `depth` (so a depth-0 row has an empty slice). Each
+    /// entry corresponds to one ancestor level: `true` = that
+    /// ancestor has more siblings below this row → renderer prints
+    /// `│  ` continuation in that column; `false` = no more
+    /// siblings → renderer prints three spaces. Drives correct
+    /// vertical-bar continuations across nested levels.
+    pub ancestor_has_more: Vec<bool>,
 }
 
 /// Kind discriminator for a [`ProcessRow`].
@@ -179,38 +201,141 @@ pub fn collect_active_processes(app: &App) -> ProcessCollection {
         }
     }
 
-    sort_rows(&mut rows);
     rows.truncate(PROCESSES_MAX);
     ProcessCollection { rows }
 }
 
-/// Build one [`ProcessRow`] per OS-walked descendant, overlaying
-/// wire-tracked tool descriptions when the cmdline substring-matches
-/// any alive `Bash` / `Monitor` invocation.
+/// DFS the OS snapshot's process tree from claude's direct children
+/// down, emitting one [`ProcessRow`] per node in pre-order with
+/// correct `depth` + tree-connector metadata. Wire-matched rows
+/// (`Bash` / `Monitor`) are pinned at the top of each sibling
+/// group; unmatched siblings sort by memory desc with PID as the
+/// stable tie-break.
 fn rows_from_os_snapshot<'a>(
     snapshot: &'a ProcessSnapshot,
     wire_alive: &'a [&'a ToolCallInfo],
 ) -> Vec<ProcessRow> {
-    snapshot
-        .processes
-        .iter()
-        .map(|entry| {
-            let matched = wire_alive.iter().copied().find(|tc| {
-                let cmd = read_str_field(tc.raw_input.as_ref(), "command");
-                !cmd.is_empty() && process_cmdline_matches_tool_input(&entry.command, cmd)
-            });
-            match matched {
-                Some(tc) if is_monitor_tool_name(&tc.sdk_tool_name) => {
-                    enriched_monitor_row(tc, entry)
-                }
-                Some(tc) if is_execute_tool_name(&tc.sdk_tool_name) => enriched_bash_row(tc, entry),
-                // Matched something we don't have a special kind for
-                // (defensive — shouldn't fire today). Fall through to
-                // the generic OS row so we still surface the process.
-                _ => generic_os_row(entry),
-            }
-        })
-        .collect()
+    use std::collections::HashMap;
+
+    // Index by pid + build a parent → children adjacency list.
+    let by_pid: HashMap<u32, &ProcessEntry> =
+        snapshot.processes.iter().map(|e| (e.pid, e)).collect();
+    let mut children_of: HashMap<u32, Vec<&ProcessEntry>> = HashMap::new();
+    for entry in &snapshot.processes {
+        children_of.entry(entry.parent_pid).or_default().push(entry);
+    }
+
+    // Roots = entries whose parent is NOT in the snapshot (the
+    // snapshot only includes claude's descendants, so a missing
+    // parent means the parent IS claude itself).
+    let mut roots: Vec<&ProcessEntry> =
+        snapshot.processes.iter().filter(|e| !by_pid.contains_key(&e.parent_pid)).collect();
+    sort_siblings_inplace(&mut roots, wire_alive);
+
+    let mut rows = Vec::new();
+    let n_roots = roots.len();
+    for (idx, root) in roots.iter().enumerate() {
+        emit_with_descendants(
+            root,
+            0,
+            idx + 1 == n_roots,
+            &[],
+            &children_of,
+            wire_alive,
+            &mut rows,
+        );
+    }
+    rows
+}
+
+/// Emit `entry` + DFS its children, sorted siblings-first. Each
+/// emitted row carries `depth`, `is_last_sibling`, and the slice of
+/// "more siblings below" flags for each ancestor level so the
+/// renderer can pick the right tree connector at every column.
+fn emit_with_descendants<'a>(
+    entry: &'a ProcessEntry,
+    depth: u8,
+    is_last_sibling: bool,
+    ancestor_has_more: &[bool],
+    children_of: &std::collections::HashMap<u32, Vec<&'a ProcessEntry>>,
+    wire_alive: &[&ToolCallInfo],
+    out: &mut Vec<ProcessRow>,
+) {
+    let mut row = build_row_for_entry(entry, wire_alive);
+    row.depth = depth;
+    row.is_last_sibling = is_last_sibling;
+    row.ancestor_has_more = ancestor_has_more.to_vec();
+    out.push(row);
+
+    let Some(kids_ref) = children_of.get(&entry.pid) else {
+        return;
+    };
+    let mut kids = kids_ref.clone();
+    sort_siblings_inplace(&mut kids, wire_alive);
+
+    // The next level's ancestor_has_more appends THIS row's
+    // "more-siblings-below" bit so a deep descendant knows whether
+    // to keep drawing the `│` continuation in this row's column.
+    let mut next_ancestors = ancestor_has_more.to_vec();
+    next_ancestors.push(!is_last_sibling);
+
+    let n = kids.len();
+    for (i, kid) in kids.iter().enumerate() {
+        emit_with_descendants(
+            kid,
+            depth.saturating_add(1),
+            i + 1 == n,
+            &next_ancestors,
+            children_of,
+            wire_alive,
+            out,
+        );
+    }
+}
+
+/// Build a row for a single OS entry, doing the wire-match check
+/// against the alive tool calls. Tree position (`depth`,
+/// `is_last_sibling`, `ancestor_has_more`) is initialised to
+/// defaults; the DFS walker overwrites them.
+fn build_row_for_entry(entry: &ProcessEntry, wire_alive: &[&ToolCallInfo]) -> ProcessRow {
+    let matched = wire_alive.iter().copied().find(|tc| {
+        let cmd = read_str_field(tc.raw_input.as_ref(), "command");
+        !cmd.is_empty() && process_cmdline_matches_tool_input(&entry.command, cmd)
+    });
+    match matched {
+        Some(tc) if is_monitor_tool_name(&tc.sdk_tool_name) => enriched_monitor_row(tc, entry),
+        Some(tc) if is_execute_tool_name(&tc.sdk_tool_name) => enriched_bash_row(tc, entry),
+        // Matched something we don't have a special kind for
+        // (defensive — shouldn't fire today). Fall through to
+        // the generic OS row so we still surface the process.
+        _ => generic_os_row(entry),
+    }
+}
+
+/// Sort entries in place: wire-matched first (so highlighted
+/// supervisors pin to the top of their sibling group), then memory
+/// descending, then PID as a stable tie-break.
+fn sort_siblings_inplace(entries: &mut [&ProcessEntry], wire_alive: &[&ToolCallInfo]) {
+    entries.sort_by(|a, b| {
+        let a_m = is_matched_entry(a, wire_alive);
+        let b_m = is_matched_entry(b, wire_alive);
+        match (a_m, b_m) {
+            (true, false) => std::cmp::Ordering::Less,
+            (false, true) => std::cmp::Ordering::Greater,
+            _ => b.memory_bytes.cmp(&a.memory_bytes).then_with(|| a.pid.cmp(&b.pid)),
+        }
+    });
+}
+
+/// True when `entry`'s cmdline substring-matches any alive wire
+/// tool call's `command` field. Used by [`sort_siblings_inplace`]
+/// to pin matched rows; the actual kind/glyph decision happens in
+/// [`build_row_for_entry`].
+fn is_matched_entry(entry: &ProcessEntry, wire_alive: &[&ToolCallInfo]) -> bool {
+    wire_alive.iter().any(|tc| {
+        let cmd = read_str_field(tc.raw_input.as_ref(), "command");
+        !cmd.is_empty() && process_cmdline_matches_tool_input(&entry.command, cmd)
+    })
 }
 
 /// OS process matched to a wire-tracked backgrounded `Bash`. Headline
@@ -226,6 +351,9 @@ fn enriched_bash_row(tc: &ToolCallInfo, entry: &ProcessEntry) -> ProcessRow {
         metadata: "Bash · running".to_owned(),
         status: ToolCallStatus::InProgress,
         memory_bytes: Some(entry.memory_bytes),
+        depth: 0,
+        is_last_sibling: true,
+        ancestor_has_more: Vec::new(),
     }
 }
 
@@ -254,6 +382,9 @@ fn enriched_monitor_row(tc: &ToolCallInfo, entry: &ProcessEntry) -> ProcessRow {
         metadata,
         status: ToolCallStatus::InProgress,
         memory_bytes: Some(entry.memory_bytes),
+        depth: 0,
+        is_last_sibling: true,
+        ancestor_has_more: Vec::new(),
     }
 }
 
@@ -269,6 +400,9 @@ fn generic_os_row(entry: &ProcessEntry) -> ProcessRow {
         metadata: "Process · running".to_owned(),
         status: ToolCallStatus::InProgress,
         memory_bytes: Some(entry.memory_bytes),
+        depth: 0,
+        is_last_sibling: true,
+        ancestor_has_more: Vec::new(),
     }
 }
 
@@ -297,6 +431,9 @@ fn cron_row(tc: &ToolCallInfo) -> ProcessRow {
         metadata,
         status: tc.status,
         memory_bytes: None,
+        depth: 0,
+        is_last_sibling: true,
+        ancestor_has_more: Vec::new(),
     }
 }
 
@@ -308,37 +445,6 @@ fn detail_from_command(command: &str) -> Option<String> {
     if trimmed.is_empty() { None } else { Some(trimmed.to_owned()) }
 }
 
-/// Sort: wire-matched kinds (`BashBackgrounded`, `Monitor`) pinned
-/// at the top because they're the rows the user actually cares
-/// about (claude knows what work they represent — highlighted in
-/// RUST_ORANGE). Generic `Process` rows next (OS-only entries with
-/// no wire match — DIM). `Cron` (wire-only registrations, no
-/// backing process) last. Within each tier: memory descending,
-/// with the no-memory tier (Cron) preserving insertion order.
-fn sort_rows(rows: &mut [ProcessRow]) {
-    rows.sort_by(|a, b| {
-        kind_sort_rank(a.kind).cmp(&kind_sort_rank(b.kind)).then_with(|| {
-            match (a.memory_bytes, b.memory_bytes) {
-                (Some(am), Some(bm)) => bm.cmp(&am),
-                (Some(_), None) => std::cmp::Ordering::Less,
-                (None, Some(_)) => std::cmp::Ordering::Greater,
-                (None, None) => std::cmp::Ordering::Equal,
-            }
-        })
-    });
-}
-
-/// Sort rank for [`ProcessKind`]: lower wins (top of section). The
-/// two wire-matched kinds share rank 0 so they intermix by memory
-/// within the top group; generic `Process` is rank 1; `Cron` is
-/// rank 2 (always at the bottom).
-fn kind_sort_rank(kind: ProcessKind) -> u8 {
-    match kind {
-        ProcessKind::BashBackgrounded | ProcessKind::Monitor => 0,
-        ProcessKind::Process => 1,
-        ProcessKind::Cron => 2,
-    }
-}
 
 /// Format a byte count compactly for the metadata suffix:
 /// `< 1 KB` → `b`, `< 1 MB` → `K`, etc. Two significant digits in
@@ -533,77 +639,143 @@ mod tests {
         assert!(rows[0].metadata.contains("persistent"));
     }
 
-    #[test]
-    fn sort_rows_pins_wire_matched_first_then_process_then_cron() {
-        // Mixed kinds with sizes chosen to prove the primary sort
-        // is BY KIND, not by memory: a tiny Bash row pins above a
-        // huge generic Process row.
-        let big_process = ProcessRow {
-            kind: ProcessKind::Process,
-            headline: "rustc".to_owned(),
-            detail: None,
-            metadata: "Process · running".to_owned(),
-            status: ToolCallStatus::InProgress,
-            memory_bytes: Some(512 * 1024 * 1024),
-        };
-        let small_bash = ProcessRow {
-            kind: ProcessKind::BashBackgrounded,
-            headline: "Run tests".to_owned(),
-            detail: None,
-            metadata: "Bash · running".to_owned(),
-            status: ToolCallStatus::InProgress,
-            memory_bytes: Some(8 * 1024 * 1024),
-        };
-        let medium_monitor = ProcessRow {
-            kind: ProcessKind::Monitor,
-            headline: "Watch CI".to_owned(),
-            detail: None,
-            metadata: "Monitor · running".to_owned(),
-            status: ToolCallStatus::InProgress,
-            memory_bytes: Some(32 * 1024 * 1024),
-        };
-        let cron = ProcessRow {
-            kind: ProcessKind::Cron,
-            headline: "*/5 * * * *".to_owned(),
-            detail: None,
-            metadata: "Cron · recurring".to_owned(),
-            status: ToolCallStatus::Completed,
-            memory_bytes: None,
-        };
-        let mut rows =
-            vec![big_process.clone(), cron.clone(), small_bash.clone(), medium_monitor.clone()];
-        sort_rows(&mut rows);
-        // Wire-matched (Bash + Monitor) first, by memory desc within
-        // the tier. Monitor (32 MB) > Bash (8 MB).
-        assert_eq!(rows[0].headline, "Watch CI");
-        assert_eq!(rows[1].headline, "Run tests");
-        // Then generic Process rows.
-        assert_eq!(rows[2].headline, "rustc");
-        // Cron last.
-        assert_eq!(rows[3].headline, "*/5 * * * *");
+    /// Helper: build a multi-entry snapshot expressing a small
+    /// claude → zsh → cargo → rustc tree. The OS scanner only
+    /// includes claude's descendants, so "claude itself" is just
+    /// the absence of an entry for pid 1.
+    fn tree_snapshot() -> ProcessSnapshot {
+        ProcessSnapshot {
+            scanned_at: std::time::SystemTime::now(),
+            processes: vec![
+                // zsh wrapper — direct child of claude (parent_pid=1
+                // which isn't in the snapshot, so this is a root).
+                ProcessEntry {
+                    pid: 10,
+                    parent_pid: 1,
+                    name: "zsh".to_owned(),
+                    command: "/bin/zsh -c -l eval 'cargo nextest run'".to_owned(),
+                    memory_bytes: 8 * 1024 * 1024,
+                    started_at_unix: None,
+                },
+                // cargo — child of zsh.
+                ProcessEntry {
+                    pid: 20,
+                    parent_pid: 10,
+                    name: "cargo".to_owned(),
+                    command: "cargo nextest run".to_owned(),
+                    memory_bytes: 256 * 1024 * 1024,
+                    started_at_unix: None,
+                },
+                // Two rustc workers — children of cargo.
+                ProcessEntry {
+                    pid: 30,
+                    parent_pid: 20,
+                    name: "rustc".to_owned(),
+                    command: "rustc --crate-name forge_tui".to_owned(),
+                    memory_bytes: 512 * 1024 * 1024,
+                    started_at_unix: None,
+                },
+                ProcessEntry {
+                    pid: 31,
+                    parent_pid: 20,
+                    name: "rustc".to_owned(),
+                    command: "rustc --crate-name forge_workspace".to_owned(),
+                    memory_bytes: 384 * 1024 * 1024,
+                    started_at_unix: None,
+                },
+            ],
+        }
     }
 
     #[test]
-    fn sort_rows_within_wire_tier_orders_by_memory_desc() {
-        let small_bash = ProcessRow {
-            kind: ProcessKind::BashBackgrounded,
-            headline: "small".to_owned(),
-            detail: None,
-            metadata: "Bash · running".to_owned(),
-            status: ToolCallStatus::InProgress,
-            memory_bytes: Some(10),
+    fn rows_from_os_snapshot_emits_dfs_order_with_correct_depth() {
+        let snapshot = tree_snapshot();
+        let rows = rows_from_os_snapshot(&snapshot, &[]);
+        // DFS pre-order: zsh (d0) → cargo (d1) → rustc (d2) → rustc (d2)
+        assert_eq!(rows.len(), 4);
+        assert_eq!(rows[0].depth, 0);
+        assert_eq!(rows[0].headline, "zsh");
+        assert_eq!(rows[1].depth, 1);
+        assert_eq!(rows[1].headline, "cargo");
+        assert_eq!(rows[2].depth, 2);
+        assert_eq!(rows[3].depth, 2);
+    }
+
+    #[test]
+    fn rows_from_os_snapshot_pins_matched_supervisor_above_unmatched() {
+        // Two roots: matched zsh wrapper + unmatched node mcp-server.
+        // The matched one must come first in DFS order.
+        let tc = fake_tool_call_info(
+            "toolu_1",
+            "Bash",
+            json!({
+                "description": "Run unit tests",
+                "command": "cargo nextest run",
+                "run_in_background": true,
+            }),
+        );
+        let snapshot = ProcessSnapshot {
+            scanned_at: std::time::SystemTime::now(),
+            processes: vec![
+                ProcessEntry {
+                    pid: 100,
+                    parent_pid: 1,
+                    name: "node".to_owned(),
+                    command: "node /path/to/mcp-server".to_owned(),
+                    memory_bytes: 128 * 1024 * 1024,
+                    started_at_unix: None,
+                },
+                ProcessEntry {
+                    pid: 200,
+                    parent_pid: 1,
+                    name: "zsh".to_owned(),
+                    command: "/bin/zsh -c -l eval 'cargo nextest run'".to_owned(),
+                    memory_bytes: 8 * 1024 * 1024,
+                    started_at_unix: None,
+                },
+            ],
         };
-        let big_bash = ProcessRow {
-            kind: ProcessKind::BashBackgrounded,
-            headline: "big".to_owned(),
-            detail: None,
-            metadata: "Bash · running".to_owned(),
-            status: ToolCallStatus::InProgress,
-            memory_bytes: Some(1_000),
-        };
-        let mut rows = vec![small_bash, big_bash];
-        sort_rows(&mut rows);
-        assert_eq!(rows[0].headline, "big");
-        assert_eq!(rows[1].headline, "small");
+        let tcs = [&tc];
+        let rows = rows_from_os_snapshot(&snapshot, &tcs[..]);
+        // zsh is matched; node is not. Matched root sorts first
+        // despite node having more memory.
+        assert_eq!(rows[0].kind, ProcessKind::BashBackgrounded);
+        assert_eq!(rows[0].headline, "Run unit tests");
+        assert_eq!(rows[1].kind, ProcessKind::Process);
+        assert_eq!(rows[1].headline, "node");
+    }
+
+    #[test]
+    fn rows_from_os_snapshot_marks_last_sibling_and_ancestor_has_more() {
+        let snapshot = tree_snapshot();
+        let rows = rows_from_os_snapshot(&snapshot, &[]);
+        // zsh root: only root → is_last_sibling = true, no ancestors.
+        assert!(rows[0].is_last_sibling);
+        assert!(rows[0].ancestor_has_more.is_empty());
+        // cargo: only child of zsh → is_last_sibling = true,
+        // ancestor_has_more = [false] (zsh has no more roots below).
+        assert!(rows[1].is_last_sibling);
+        assert_eq!(rows[1].ancestor_has_more, vec![false]);
+        // First rustc (memory 512 MB): NOT last of cargo's two
+        // children (since memory-desc sort puts it first AND there's
+        // a second one below); ancestor_has_more carries through:
+        // zsh has no more (false), cargo has no more either (false,
+        // because cargo IS the last child of zsh).
+        assert!(!rows[2].is_last_sibling);
+        assert_eq!(rows[2].ancestor_has_more, vec![false, false]);
+        // Second rustc (memory 384 MB): last child of cargo.
+        assert!(rows[3].is_last_sibling);
+        assert_eq!(rows[3].ancestor_has_more, vec![false, false]);
+    }
+
+    #[test]
+    fn rows_from_os_snapshot_cron_appended_separately() {
+        // Cron rows aren't part of the OS tree; they're appended
+        // by `collect_active_processes` AFTER the OS-walk DFS
+        // returns. Verify `rows_from_os_snapshot` itself emits zero
+        // Cron-kind rows.
+        let snapshot = tree_snapshot();
+        let rows = rows_from_os_snapshot(&snapshot, &[]);
+        assert!(rows.iter().all(|r| r.kind != ProcessKind::Cron));
     }
 }
