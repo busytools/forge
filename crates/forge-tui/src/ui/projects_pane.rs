@@ -284,25 +284,19 @@ fn append_org_project_row(
         // 1-col separator before the button — matches the 1-col
         // separator before the `time` column on idle rows.
         spans.push(Span::raw(" "));
-        // 2-col pre-button pad (no bg) — pushes the bg-coloured
-        // button RIGHT so its single cell sits at row_right - 3,
-        // matching the idle row's last time char column. The
-        // larger pad here (vs the previous 1 cell) makes room for
-        // shrinking the button from 2 cells to 1 while keeping
-        // active + idle row right edges flush.
-        spans.push(Span::raw("  "));
-        // Close affordance: lowercase `x` on `USER_MSG_BG` slate,
-        // 1 cell. No leading bg-padding cell — the bare glyph on
-        // a slate cell is enough to read as a button affordance
-        // without the extra bg-cell-as-shoulder that previously
-        // sat to the left of the x.
+        // Close affordance: ` x ` 3-cell button on `USER_MSG_BG`
+        // slate. 1-col bg-pad on each side of the lowercase `x`
+        // glyph so the button reads as a proper rectangular
+        // affordance with breathing room rather than a bare 1-cell
+        // letter. Right edge of the button sits at row_right - 3,
+        // exactly where the idle row's last time char ends, so
+        // active + idle row right edges stay flush.
         spans.push(Span::styled(
-            "x".to_owned(),
+            " x ".to_owned(),
             Style::default().fg(Color::Gray).bg(theme::USER_MSG_BG).add_modifier(Modifier::BOLD),
         ));
         // 2-col right gutter — matches the inspector pane's GIT
-        // section right edge AND the idle row's 2-col gutter, so
-        // active + idle rows end at exactly the same x.
+        // section right edge AND the idle row's 2-col gutter.
         spans.push(Span::raw("  "));
         lines.push(Line::from(spans));
         // Hit targets: whole row → focus/switch; button + 1-col
@@ -313,11 +307,11 @@ fn append_org_project_row(
             height: 1,
         });
         let row_right = area.x.saturating_add(area.width);
-        // Close button: the `x` 1-cell span sits at
-        // (row_right - 3). 3-col hit band runs (row_right - 4)
-        // to (row_right - 2) for 1-col tolerance each side;
-        // the rightmost gutter cols stay inert.
-        let close_x_start = row_right.saturating_sub(4);
+        // Close button: the ` x ` 3-cell span occupies
+        // (row_right - 5) to (row_right - 3). 5-col hit band runs
+        // (row_right - 6) to (row_right - 2) for 1-col tolerance
+        // each side; the rightmost gutter cols stay inert.
+        let close_x_start = row_right.saturating_sub(6);
         let close_x_end = row_right.saturating_sub(2);
         app.pane_hit_targets.push(PaneHitTarget::CloseSession {
             session_key: session_key.clone(),
