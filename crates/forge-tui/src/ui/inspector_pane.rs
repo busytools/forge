@@ -48,7 +48,7 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::Paragraph;
+use ratatui::widgets::{Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState};
 
 use super::theme;
 use crate::agent::model::ToolCallStatus;
@@ -70,20 +70,32 @@ const PANE_PAD: u16 = 2;
 const PATH_STATS_GAP: usize = 2;
 
 /// Render the Inspector pane into `area` (inline at Wide/Medium).
+///
+/// Layout: the top 2 lines (banner + rule) stay pinned; everything
+/// below scrolls based on the active session's `inspector_scroll_offset`.
+/// A vertical scrollbar renders on the right edge when the body
+/// overflows the visible area.
 pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
-    let lines = build_lines(app, area.width);
-    frame.render_widget(Paragraph::new(lines), area);
+    let (banner_area, body_area) = split_banner_body(area);
+
+    // Pinned banner: `INSPECTOR` in RUST_ORANGE bold + dim rule.
+    let banner_lines = build_inline_banner(area.width);
+    frame.render_widget(Paragraph::new(banner_lines), banner_area);
+
+    // Scrollable body.
+    render_scrollable_body(frame, body_area, app);
 }
 
 /// Render the Narrow-tier full-screen Inspector overlay into `area`.
 /// Shares the body builder with the inline path, wrapped in an
 /// overlay-specific banner with an `INSPECTOR ▦` label on the left
 /// and a `✕` glyph on the right (stamped as
-/// [`PaneHitTarget::OverlayClose`] for the click handler).
+/// [`PaneHitTarget::OverlayClose`] for the click handler). The
+/// banner + rule stay pinned; the body scrolls underneath them.
 pub fn render_overlay(frame: &mut Frame, area: Rect, app: &mut App) {
     app.pane_hit_targets.clear();
 
-    let mut lines: Vec<Line<'static>> = Vec::new();
+    let (banner_area, body_area) = split_banner_body(area);
 
     // Banner row: `INSPECTOR ▦ … ✕` spanning the full overlay width.
     let banner_label = "INSPECTOR \u{25a6}";
@@ -91,14 +103,20 @@ pub fn render_overlay(frame: &mut Frame, area: Rect, app: &mut App) {
     let banner_chars = banner_label.chars().count();
     let close_chars = close_glyph.chars().count();
     let pad = usize::from(area.width).saturating_sub(banner_chars).saturating_sub(close_chars);
-    lines.push(Line::from(vec![
+    let banner_line = Line::from(vec![
         Span::styled(
             banner_label.to_owned(),
             Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
         ),
         Span::raw(" ".repeat(pad)),
         Span::styled(close_glyph.to_owned(), Style::default().fg(theme::DIM)),
-    ]));
+    ]);
+    let rule_line = Line::from(Span::styled(
+        "\u{2500}".repeat(usize::from(area.width)),
+        Style::default().fg(theme::DIM),
+    ));
+    frame.render_widget(Paragraph::new(vec![banner_line, rule_line]), banner_area);
+
     // Stamp ✕ hit-target — last char on the banner row.
     let close_x_start =
         area.x.saturating_add(area.width).saturating_sub(u16::try_from(close_chars).unwrap_or(1));
@@ -110,37 +128,79 @@ pub fn render_overlay(frame: &mut Frame, area: Rect, app: &mut App) {
         x_end: close_x_end,
     });
 
-    // Dim rule under the banner.
-    let rule_width = usize::from(area.width);
-    lines.push(Line::from(Span::styled(
-        "\u{2500}".repeat(rule_width),
-        Style::default().fg(theme::DIM),
-    )));
-
-    append_body(&mut lines, app, area.width);
-
-    frame.render_widget(Paragraph::new(lines), area);
+    render_scrollable_body(frame, body_area, app);
 }
 
-/// Build the full inline-pane line list: banner + rule + body.
-fn build_lines(app: &App, width: u16) -> Vec<Line<'static>> {
-    let mut lines: Vec<Line<'static>> = Vec::new();
+/// Split the inspector area into the pinned banner (top 2 lines:
+/// banner + rule) and the scrollable body underneath. Both are
+/// clamped to fit when the supplied area is shorter than 2 rows.
+fn split_banner_body(area: Rect) -> (Rect, Rect) {
+    let banner_height = area.height.min(2);
+    let banner_area = Rect { x: area.x, y: area.y, width: area.width, height: banner_height };
+    let body_area = Rect {
+        x: area.x,
+        y: area.y.saturating_add(banner_height),
+        width: area.width,
+        height: area.height.saturating_sub(banner_height),
+    };
+    (banner_area, body_area)
+}
 
-    // Banner: `INSPECTOR` in RUST_ORANGE bold (mirror of `PROJECTS`).
-    lines.push(Line::from(Span::styled(
-        "  INSPECTOR".to_owned(),
-        Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
-    )));
-    // Dim rule under the banner.
+/// Build the inline-pane's banner: `  INSPECTOR` heading + dim rule
+/// under it. Two lines total, mirroring the projects pane's banner.
+fn build_inline_banner(width: u16) -> Vec<Line<'static>> {
     let rule_width = usize::from(width.saturating_sub(2));
-    lines.push(Line::from(vec![
-        Span::raw(" "),
-        Span::styled("\u{2500}".repeat(rule_width), Style::default().fg(theme::DIM)),
-    ]));
+    vec![
+        Line::from(Span::styled(
+            "  INSPECTOR".to_owned(),
+            Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(vec![
+            Span::raw(" "),
+            Span::styled("\u{2500}".repeat(rule_width), Style::default().fg(theme::DIM)),
+        ]),
+    ]
+}
 
-    append_body(&mut lines, app, width);
+/// Render the inspector body (`GIT` → `TASKS` → `PROCESSES` …)
+/// into `body_area` with the active session's scroll offset
+/// applied. Clamps the offset to `[0, max]` (writing the clamped
+/// value back so the wheel handler doesn't desync after the body
+/// shrinks), stamps `body_area` onto `App.rendered_inspector_body_area`
+/// for the mouse-wheel hit test, and overlays a vertical scrollbar
+/// on the right edge whenever the body overflows.
+fn render_scrollable_body(frame: &mut Frame, body_area: Rect, app: &mut App) {
+    app.rendered_inspector_body_area = body_area;
+    if body_area.height == 0 || body_area.width == 0 {
+        return;
+    }
 
-    lines
+    let mut body_lines: Vec<Line<'static>> = Vec::new();
+    append_body(&mut body_lines, app, body_area.width);
+    let total = body_lines.len();
+    let visible = usize::from(body_area.height);
+    let max_offset = total.saturating_sub(visible);
+    let max_offset_u16 = u16::try_from(max_offset).unwrap_or(u16::MAX);
+
+    // Read + clamp + write back the per-session scroll offset.
+    let offset = if let Some(session) = app.try_active_bucket_mut() {
+        let clamped = session.inspector_scroll_offset.min(max_offset_u16);
+        session.inspector_scroll_offset = clamped;
+        clamped
+    } else {
+        0
+    };
+
+    frame.render_widget(Paragraph::new(body_lines).scroll((offset, 0)), body_area);
+
+    // Scrollbar only when body overflows. Vertical on the right edge,
+    // unstyled track + a DIM thumb so it blends with the pane chrome.
+    if total > visible {
+        let mut state = ScrollbarState::new(total).position(offset.into());
+        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .style(Style::default().fg(theme::DIM));
+        frame.render_stateful_widget(scrollbar, body_area, &mut state);
+    }
 }
 
 /// Append the body (GIT section + verification nudge + TASKS
@@ -921,16 +981,10 @@ fn append_processes_section(
         }
     }
 
-    if collection.overflow > 0 {
-        let more = collection.overflow;
-        lines.push(Line::from(vec![
-            Span::raw("  "),
-            Span::styled(
-                format!("+{more} more"),
-                Style::default().fg(theme::DIM).add_modifier(Modifier::ITALIC),
-            ),
-        ]));
-    }
+    // No `+N more` footer — the inspector pane scrolls, so the
+    // scrollbar IS the overflow indicator. `collection.overflow`
+    // remains on the struct for potential future use (e.g. a
+    // sanity-bound notice when the soft cap actually trims rows).
 }
 
 /// Compose the metadata string for a row, optionally suffixing
@@ -1391,7 +1445,7 @@ mod tests {
     /// stay readable. Memory rendering needs an explicit
     /// `memory_bytes`; tests opt in via [`make_process_row_with_memory`].
     fn collection(rows: Vec<ProcessRow>) -> ProcessCollection {
-        ProcessCollection { rows, overflow: 0 }
+        ProcessCollection { rows }
     }
 
     #[test]
@@ -1623,38 +1677,6 @@ mod tests {
 
         let meta = line_text(&lines[3]);
         assert!(!meta.contains("MB"), "expected no memory suffix on Medium tier: {meta:?}");
-    }
-
-    #[test]
-    fn processes_section_renders_plus_n_more_overflow_row() {
-        let row = make_row_with_memory(
-            ProcessKind::Process,
-            "cargo",
-            "Process · running",
-            12 * 1024 * 1024,
-        );
-        let coll = ProcessCollection { rows: vec![row], overflow: 3 };
-        let mut lines = Vec::new();
-        append_processes_section(&mut lines, &coll, 40);
-
-        // header + blank + headline + meta (no detail row) + overflow = 5
-        assert_eq!(lines.len(), 5, "expected 5 lines with overflow=3, got {}", lines.len());
-        let overflow_line = line_text(&lines[4]);
-        assert_eq!(overflow_line, "  +3 more");
-    }
-
-    #[test]
-    fn processes_section_skips_overflow_row_when_zero() {
-        let row = make_row_with_memory(ProcessKind::Process, "cargo", "Process · running", 0);
-        let mut lines = Vec::new();
-        append_processes_section(&mut lines, &collection(vec![row]), 40);
-
-        for line in &lines {
-            assert!(
-                !line_text(line).contains("more"),
-                "overflow row leaked into render with overflow=0"
-            );
-        }
     }
 
     #[test]

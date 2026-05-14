@@ -313,6 +313,16 @@ pub struct UiSession {
     /// staleness rule in `process_scanner::should_refresh`.
     pub process_last_refreshed_at: Option<std::time::Instant>,
 
+    // ---- Inspector pane scroll state ----
+    /// Vertical scroll offset (lines from top) for the Inspector
+    /// pane's scrollable body — everything from the `GIT` section
+    /// downward. The banner + rule above it stay pinned. Lives
+    /// per-session so switching sessions and coming back preserves
+    /// where the user was looking, same shape as chat scrollback.
+    /// Reset to `0` on session creation; mouse wheel + future
+    /// keyboard nav mutate it.
+    pub inspector_scroll_offset: u16,
+
     // ---- Render cache + history retention ----
     /// Cached render-cache slot metadata parallel to
     /// `messages[*].blocks[*]` plus one synthetic per-message slot
@@ -441,6 +451,7 @@ impl Default for UiSession {
             process_scan_generation: 0,
             process_scan_in_flight: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             process_last_refreshed_at: None,
+            inspector_scroll_offset: 0,
             render_cache_slots: Vec::default(),
             render_cache_total_bytes: usize::default(),
             render_cache_protected_bytes: usize::default(),

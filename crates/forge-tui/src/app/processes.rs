@@ -34,10 +34,13 @@ use crate::app::state::tool_call_info::{
     ToolCallInfo, is_cron_create_tool_name, is_execute_tool_name, is_monitor_tool_name,
 };
 
-/// Top-N cap on the rendered PROCESSES section. Heavier processes
-/// (by resident memory) win the slots; the remainder collapse to a
-/// single `+N more` overflow row at the bottom.
-const PROCESSES_MAX: usize = 5;
+/// Soft cap on the rendered PROCESSES section. Sanity bound so a
+/// runaway process tree doesn't blow up the body line count; users
+/// scroll within the section to see everything below the cap. The
+/// `overflow` count on [`ProcessCollection`] is no longer rendered
+/// as a footer row (the scrollbar IS the overflow indicator) but
+/// is kept so future surfaces can show "n hidden" if needed.
+const PROCESSES_MAX: usize = 50;
 
 /// One row in the PROCESSES section.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -82,14 +85,13 @@ pub enum ProcessKind {
     Process,
 }
 
-/// Result of [`collect_active_processes`]: top-N rows plus an
-/// overflow count for the `+N more` footer.
+/// Result of [`collect_active_processes`]: rows that survived
+/// sorting + the [`PROCESSES_MAX`] sanity cap. The pane scrolls
+/// when the section overflows the visible area, so no overflow
+/// footer is rendered.
 #[derive(Debug, Clone)]
 pub struct ProcessCollection {
     pub rows: Vec<ProcessRow>,
-    /// Number of rows trimmed by the top-N cap. Renderer appends a
-    /// `+N more` overflow line when > 0.
-    pub overflow: usize,
 }
 
 impl ProcessCollection {
@@ -115,7 +117,7 @@ impl ProcessCollection {
 #[must_use]
 pub fn collect_active_processes(app: &App) -> ProcessCollection {
     let Some(session) = app.active_session() else {
-        return ProcessCollection { rows: Vec::new(), overflow: 0 };
+        return ProcessCollection { rows: Vec::new() };
     };
 
     // Snapshot wire-alive tool calls: ones whose `task_started` fired
@@ -158,9 +160,8 @@ pub fn collect_active_processes(app: &App) -> ProcessCollection {
     }
 
     sort_rows(&mut rows);
-    let overflow = rows.len().saturating_sub(PROCESSES_MAX);
     rows.truncate(PROCESSES_MAX);
-    ProcessCollection { rows, overflow }
+    ProcessCollection { rows }
 }
 
 /// Build one [`ProcessRow`] per OS-walked descendant, overlaying
@@ -425,7 +426,7 @@ mod tests {
         // construction is heavyweight enough that we don't build
         // one here — we just verify the contract via the empty
         // path's shape.)
-        let coll = ProcessCollection { rows: Vec::new(), overflow: 0 };
+        let coll = ProcessCollection { rows: Vec::new() };
         assert!(coll.is_empty());
     }
 

@@ -352,6 +352,13 @@ pub struct App {
     pub rendered_input_lines: Vec<String>,
     /// Area where input content was rendered (for selection mapping).
     pub rendered_input_area: ratatui::layout::Rect,
+    /// Area where the Inspector pane's **scrollable body** was last
+    /// rendered (excluding the pinned banner + rule above it). Used
+    /// by the mouse-wheel handler to detect "wheel scrolled while
+    /// cursor is over the inspector pane" and adjust the active
+    /// session's `inspector_scroll_offset`. `Rect::default()` until
+    /// the first inspector render.
+    pub rendered_inspector_body_area: ratatui::layout::Rect,
     // `file_index: FileIndexState` moved to `UiSession.file_index`
     // (per-session bucket). The scanner is project-scoped — switching
     // active session shows the new project's files. The channel
@@ -2307,6 +2314,7 @@ impl App {
             rendered_chat_area: ratatui::layout::Rect::default(),
             rendered_input_lines: Vec::new(),
             rendered_input_area: ratatui::layout::Rect::default(),
+            rendered_inspector_body_area: ratatui::layout::Rect::default(),
             paste_burst: super::paste_burst::PasteBurstDetector::new(),
             needs_redraw: true,
             notifications: super::notify::NotificationManager::new(),

@@ -203,6 +203,7 @@ pub fn create_app(cli: &Cli, workspace: Arc<forge_workspace::Workspace>) -> App 
         rendered_chat_area: ratatui::layout::Rect::new(0, 0, 0, 0),
         rendered_input_lines: Vec::new(),
         rendered_input_area: ratatui::layout::Rect::new(0, 0, 0, 0),
+        rendered_inspector_body_area: ratatui::layout::Rect::new(0, 0, 0, 0),
         paste_burst: super::paste_burst::PasteBurstDetector::new(),
         needs_redraw: true,
         notifications: super::notify::NotificationManager::new(),
