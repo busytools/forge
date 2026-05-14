@@ -29,13 +29,31 @@ pub use client::apply_session_update;
 /// used by the per-event handlers in this module tree (`session`,
 /// `client`, `turn`) plus `app::input_submit`. No-op when no bucket
 /// is registered for `key`.
+///
+/// Emits a `tracing::debug!` on every transition (including no-op
+/// same-state writes) so the "Projects-pane spinner stops mid-turn"
+/// flake (forge#TBD) has a trail when it next reproduces. Note: this
+/// helper does NOT catch the direct `bucket.lifecycle_state = ...`
+/// assignments scattered through `events/{session,client,turn}.rs`.
+/// Funnelling those through here is a separate, larger refactor —
+/// see the linked issue for the list of bypass sites.
 pub(crate) fn set_bucket_lifecycle_state(
     app: &mut App,
     key: &forge_workspace::SessionKey,
     state: crate::app::session::SessionLifecycleState,
 ) {
     if let Some(bucket) = app.sessions.get_mut(key) {
+        let from = bucket.lifecycle_state;
         bucket.lifecycle_state = state;
+        tracing::debug!(
+            target: crate::logging::targets::APP_SESSION,
+            event_name = "session_lifecycle_transition",
+            message = "session lifecycle state changed",
+            outcome = "success",
+            key = %key.as_str(),
+            from = ?from,
+            to = ?state,
+        );
     }
 }
 #[cfg(feature = "testing")]
