@@ -39,6 +39,14 @@ const fn undo_redo_label() -> &'static str {
     if cfg!(target_os = "macos") { "Cmd+z / Cmd+Shift+z" } else { "Ctrl+z/y" }
 }
 
+const fn pane_toggle_left_label() -> &'static str {
+    if cfg!(target_os = "macos") { "Ctrl+b / Cmd+Left" } else { "Ctrl+b" }
+}
+
+const fn pane_toggle_right_label() -> &'static str {
+    if cfg!(target_os = "macos") { "Ctrl+e / Cmd+Right" } else { "Ctrl+e" }
+}
+
 pub fn is_active(app: &App) -> bool {
     app.is_help_active()
 }
@@ -225,7 +233,8 @@ fn build_key_help_items(app: &App) -> Vec<(String, String)> {
         ("Ctrl+l".to_owned(), "Redraw screen".to_owned()),
         ("Shift+Tab".to_owned(), "Cycle mode".to_owned()),
         ("Ctrl+x".to_owned(), "Toggle all tool calls (or click one)".to_owned()),
-        ("Ctrl+t".to_owned(), "Toggle todos (when available)".to_owned()),
+        (pane_toggle_left_label().to_owned(), "Toggle Projects pane".to_owned()),
+        (pane_toggle_right_label().to_owned(), "Toggle Inspector pane".to_owned()),
         // Chat scrolling
         ("Ctrl+Up/Down".to_owned(), "Scroll chat".to_owned()),
         ("Mouse wheel".to_owned(), "Scroll chat".to_owned()),

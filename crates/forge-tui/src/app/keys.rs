@@ -313,6 +313,22 @@ fn handle_global_shortcuts(app: &mut App, key: KeyEvent) -> bool {
             toggle_inspector_pane(app);
             true
         }
+        // macOS-only Cmd+Left / Cmd+Right aliases for the pane
+        // toggles. Cmd doesn't exist as a modifier on Linux/Windows
+        // (`SUPER` won't fire there), and `Ctrl+Left/Right` is
+        // already word-navigation on those platforms — so we only
+        // bind these on macOS where the muscle-memory mapping
+        // "Cmd+Arrow = side pane" reads naturally.
+        #[cfg(target_os = "macos")]
+        (KeyCode::Left, m) if m == KeyModifiers::SUPER => {
+            toggle_projects_pane(app);
+            true
+        }
+        #[cfg(target_os = "macos")]
+        (KeyCode::Right, m) if m == KeyModifiers::SUPER => {
+            toggle_inspector_pane(app);
+            true
+        }
         (KeyCode::Char('l'), m) if m == KeyModifiers::CONTROL => {
             app.force_redraw = true;
             true

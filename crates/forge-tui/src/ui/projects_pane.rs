@@ -285,18 +285,22 @@ fn append_org_project_row(
         // separator before the `time` column on idle rows so the
         // button + time columns align at the same x position.
         spans.push(Span::raw(" "));
-        // Close affordance: capital `X` rendered as a muted 3-cell
-        // button — gray foreground on `USER_MSG_BG` (dark slate)
-        // background. Same rectangle shape as before but the
-        // slate bg blends with chrome instead of yelling like the
-        // previous yellow STATUS_WARNING variant.
+        // Close affordance: capital `X` rendered as a muted 2-cell
+        // button — gray-on-`USER_MSG_BG` slate. Trimmed from the
+        // previous 3-cell ` X ` so the affordance isn't visually
+        // heavy. The 1 leading bg cell + the X give the button
+        // enough surface to read as a chunky button rather than a
+        // bare letter.
         spans.push(Span::styled(
-            " X ".to_owned(),
+            " X".to_owned(),
             Style::default().fg(Color::Gray).bg(theme::USER_MSG_BG).add_modifier(Modifier::BOLD),
         ));
-        // 2-col right gutter — matches the inspector pane's GIT
-        // section right edge.
-        spans.push(Span::raw("  "));
+        // 3-col right gutter — wider than the inspector's standard
+        // 2-col gutter so the total right-side width (1 sep + 2
+        // button + 3 gutter = 6 cells) matches the idle row's
+        // right side (1 sep + 3 time + 2 gutter = 6 cells), keeping
+        // the project-name column aligned across active/idle rows.
+        spans.push(Span::raw("   "));
         lines.push(Line::from(spans));
         // Hit targets: whole row → focus/switch; button + 1-col
         // tolerance each side → close session.
@@ -306,12 +310,12 @@ fn append_org_project_row(
             height: 1,
         });
         let row_right = area.x.saturating_add(area.width);
-        // Close button: the ` X ` 3-cell span occupies
-        // (row_right - 5) to (row_right - 2). 5-col hit band runs
-        // (row_right - 6) to (row_right - 1) for 1-col tolerance
-        // each side; the rightmost gutter col stays inert.
+        // Close button: the ` X` 2-cell span occupies
+        // (row_right - 5) to (row_right - 4). 4-col hit band runs
+        // (row_right - 6) to (row_right - 3) for 1-col tolerance
+        // each side; the rightmost gutter cols stay inert.
         let close_x_start = row_right.saturating_sub(6);
-        let close_x_end = row_right.saturating_sub(1);
+        let close_x_end = row_right.saturating_sub(3);
         app.pane_hit_targets.push(PaneHitTarget::CloseSession {
             session_key: session_key.clone(),
             y: row_y,
