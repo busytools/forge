@@ -1,7 +1,9 @@
 //! View-model for the Inspector pane's `PROCESSES` section.
 //!
 //! Walks every assistant message in the active session and surfaces
-//! the long-running tool kinds claude exposes to forge:
+//! the **currently in-flight** long-running tool kinds claude
+//! exposes to forge — completed / failed / killed rows are filtered
+//! out so the section reads as a live monitor, not a history log:
 //!
 //! - **Backgrounded Bash** (`Bash` invoked with
 //!   `run_in_background: true`) — identified by
@@ -37,7 +39,7 @@ use crate::app::state::tool_call_info::{
 };
 
 /// One row in the PROCESSES section, materialised from a single
-/// long-running tool call in the active session's history.
+/// in-flight long-running tool call in the active session's history.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProcessRow {
     /// Which long-running tool kind produced this row. Determines
@@ -82,7 +84,15 @@ pub enum ProcessKind {
 /// outlive the turn that started them). Each assistant message's
 /// `ToolCall` content blocks are inspected against
 /// `is_*_tool_name` helpers plus `assistant_auto_backgrounded()`;
-/// matching tool calls are projected into rows.
+/// matching tool calls in non-terminal statuses (`Pending` or
+/// `InProgress`) are projected into rows.
+///
+/// Terminal statuses (`Completed`, `Failed`, `Killed`) are
+/// deliberately filtered out — the `RUNNING` section is a live
+/// monitor, not a history log. The chat-stream tool card already
+/// preserves the completed call's outcome; persisting a `✓` / `✗`
+/// strip here would compound clutter as a session accumulates
+/// backgrounded work.
 ///
 /// Returns an empty `Vec` when nothing matches — the renderer uses
 /// that to hide the section entirely.
@@ -92,6 +102,14 @@ pub fn collect_active_processes(app: &App) -> Vec<ProcessRow> {
     for msg in app.messages().iter().filter(|m| matches!(m.role, MessageRole::Assistant)) {
         for block in &msg.blocks {
             let MessageBlock::ToolCall(tc) = block else { continue };
+            // Skip terminal statuses — only currently-in-flight calls
+            // belong in the RUNNING section.
+            if matches!(
+                tc.status,
+                ToolCallStatus::Completed | ToolCallStatus::Failed | ToolCallStatus::Killed
+            ) {
+                continue;
+            }
             if let Some(row) = process_row_for(tc) {
                 rows.push(row);
             }

@@ -18,13 +18,16 @@
 //!   the sole surface for the todo list; the chat-stream
 //!   `TodoWrite` tool-call card is suppressed.
 //! - `PROCESSES` — rendered when the active session has at least
-//!   one long-running tool call observable in its history. Three
-//!   kinds surface here: backgrounded `Bash` (via
-//!   `assistant_auto_backgrounded`), `Monitor` streaming-process
-//!   watchers, and `CronCreate` scheduled prompts. Rows are built
-//!   by `crate::app::processes::collect_active_processes` from
-//!   each tool call's `raw_input` + status; the renderer chooses
-//!   glyphs + colours per `ProcessKind`.
+//!   one currently-in-flight long-running tool call. Three kinds
+//!   surface here: backgrounded `Bash` (via `run_in_background:
+//!   true` OR `assistant_auto_backgrounded`), `Monitor` streaming-
+//!   process watchers, and `CronCreate` scheduled prompts. Live
+//!   monitor only — completed / failed / killed rows are filtered
+//!   out at the collector level so the section disappears once
+//!   work wraps up. Rows are built by
+//!   `crate::app::processes::collect_active_processes` from each
+//!   tool call's `raw_input` + status; the renderer chooses glyphs
+//!   + colours per `ProcessKind`.
 //!
 //! Reads from per-session state on `UiSession.todos` (post PR #109)
 //! and `UiSession.git_diff_snapshot`. The
@@ -833,8 +836,9 @@ fn append_tasks_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
 /// `max_chars` columns. Breaks on whitespace where possible; falls
 /// back to hard-cut on long single tokens. Returns an empty `Vec`
 /// for an empty / whitespace-only input.
-/// Render the PROCESSES section: header + one row per long-running
-/// tool call. Each row spans up to three lines:
+/// Render the PROCESSES section: header + one row per
+/// currently-in-flight long-running tool call. Each row spans up
+/// to three lines:
 ///
 /// 1. **Headline:** status glyph + headline text styled per
 ///    [`ProcessKind`].
