@@ -1674,10 +1674,7 @@ config_dir = "~/.claude-personal"
             bound[0] == "Subspace" || bound[0] == "Granite",
             "spawn must land on a pinned account, got {bound:?}",
         );
-        assert_ne!(
-            bound[0], "Personal",
-            "Personal must be excluded by the pin",
-        );
+        assert_ne!(bound[0], "Personal", "Personal must be excluded by the pin");
     }
 
     #[tokio::test]

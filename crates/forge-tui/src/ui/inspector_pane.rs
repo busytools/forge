@@ -249,8 +249,7 @@ fn render_inspector_thumb(
     offset: u16,
     pulse: Option<usize>,
 ) {
-    let Some(geometry) =
-        crate::app::compute_scrollbar_geometry(total, visible, f32::from(offset))
+    let Some(geometry) = crate::app::compute_scrollbar_geometry(total, visible, f32::from(offset))
     else {
         return;
     };
@@ -266,7 +265,11 @@ fn render_inspector_thumb(
         // Inspector content fits well inside f32's mantissa (50-row
         // sanity cap on PROCESSES) so the precision lints can be
         // suppressed here without risking overflow.
-        #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        #[allow(
+            clippy::cast_precision_loss,
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss
+        )]
         let pos = (f32::from(offset) / max_offset as f32 * track as f32).round() as usize;
         pos
     };
@@ -292,7 +295,7 @@ fn render_inspector_thumb(
 /// scrollbar uses — same look, no movement.
 fn thumb_symbol(pulse: Option<usize>) -> &'static str {
     const STATIC_THUMB: &str = "\u{2590}"; // ▐ right half block — chat baseline
-    const THIN_THUMB: &str = "\u{2595}";   // ▕ right one-eighth block — pulse-out frame
+    const THIN_THUMB: &str = "\u{2595}"; // ▕ right one-eighth block — pulse-out frame
     match pulse {
         None => STATIC_THUMB,
         Some(frame) => match frame % 4 {

@@ -190,7 +190,7 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
     // against the parsed account set. Unknown names error with the
     // full valid-name list so the message is actionable.
     let mut projects = Vec::with_capacity(staged_projects.len());
-    for (mut project, pin) in staged_projects.into_iter().zip(project_account_pins.into_iter()) {
+    for (mut project, pin) in staged_projects.into_iter().zip(project_account_pins) {
         if let Some(pinned) = pin {
             for name in &pinned {
                 if !seen_account_names.contains(name) {
