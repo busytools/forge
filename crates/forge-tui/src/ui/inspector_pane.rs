@@ -202,8 +202,18 @@ fn render_scrollable_body(frame: &mut Frame, body_area: Rect, app: &mut App) {
 /// Paint the inspector body's scroll thumb. Mirrors
 /// `ui::chat::render_scrollbar_overlay`: thumb-only (no rail), uses
 /// `▐` (U+2590) cells styled `ROLE_ASSISTANT`, geometry via the
-/// shared [`crate::app::compute_scrollbar_geometry`]. No-op when the
-/// body fits inside the visible area.
+/// shared [`crate::app::compute_scrollbar_geometry`].
+///
+/// One deliberate difference from chat: the inspector body is much
+/// shorter than the chat scrollback (tens of rows vs. hundreds),
+/// so the `viewport² / content` formula produces a thumb that takes
+/// up half the rail or more. Clamp to [`INSPECTOR_THUMB_MAX_CELLS`]
+/// so the indicator stays visually subtle regardless of how short
+/// the content is. The clamp moves the thumb's effective track
+/// length up by `(thumb_size − clamped) / total_track` so the thumb
+/// still rides the full vertical range when scrolling.
+///
+/// No-op when the body fits inside the visible area.
 fn render_inspector_thumb(
     frame: &mut Frame,
     body_area: Rect,
@@ -216,11 +226,26 @@ fn render_inspector_thumb(
     else {
         return;
     };
+    let thumb_size = geometry.thumb_size.min(INSPECTOR_THUMB_MAX_CELLS);
+    let area_h = usize::from(body_area.height);
+    // Recompute thumb_top against the post-clamp track length so the
+    // thumb still slides across the full visible range.
+    let track = area_h.saturating_sub(thumb_size);
+    let max_offset = total.saturating_sub(visible);
+    let thumb_top = if max_offset == 0 || track == 0 {
+        0
+    } else {
+        // Inspector content fits well inside f32's mantissa (50-row
+        // sanity cap on PROCESSES) so the precision lints can be
+        // suppressed here without risking overflow.
+        #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let pos = (f32::from(offset) / max_offset as f32 * track as f32).round() as usize;
+        pos
+    };
+    let thumb_top = thumb_top.min(area_h.saturating_sub(1));
+    let thumb_end = thumb_top.saturating_add(thumb_size).min(area_h);
     let thumb_style = Style::default().fg(theme::ROLE_ASSISTANT);
     let rail_x = body_area.right().saturating_sub(1);
-    let area_h = usize::from(body_area.height);
-    let thumb_top = geometry.thumb_top.min(area_h.saturating_sub(1));
-    let thumb_end = thumb_top.saturating_add(geometry.thumb_size).min(area_h);
     let buf = frame.buffer_mut();
     for row in thumb_top..thumb_end {
         let y = body_area.y.saturating_add(u16::try_from(row).unwrap_or(u16::MAX));
@@ -230,6 +255,12 @@ fn render_inspector_thumb(
         }
     }
 }
+
+/// Visual cap for the inspector scrollbar thumb. Inspector content
+/// is tens of rows; the unclamped formula gives a thumb that
+/// dominates the rail. 3 cells reads as a clear position indicator
+/// without screaming.
+const INSPECTOR_THUMB_MAX_CELLS: usize = 3;
 
 /// Append the body (GIT section + verification nudge + TASKS
 /// section) to `lines`. Shared between the inline render and the
