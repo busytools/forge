@@ -91,25 +91,31 @@ mod enabled {
     }
 
     pub(crate) fn write_entry(name: &'static str, ms: f64, extra: Option<(&'static str, usize)>) {
-        let frame = FRAME_COUNTER.with(|c| *c.borrow());
-        let ts_ms = unix_ms();
+        // Fast path: when no `--perf-log` file is open, skip the
+        // `unix_ms()` syscall + frame-counter read + JSON serialise
+        // entirely. Cheap enough that `--features perf` can stay
+        // always-on in production builds with no measurable cost.
         LOG_FILE.with(|f| {
-            if let Some(ref mut file) = *f.borrow_mut() {
-                RUN_ID.with(|run| {
-                    let run_id = run.borrow();
-                    let sample = PerfSample {
-                        schema: PERF_SCHEMA,
-                        kind: if ms == 0.0 { "mark" } else { "duration" },
-                        run_id: run_id.as_str(),
-                        frame,
-                        ts_ms,
-                        metric: name,
-                        duration_ms: (ms != 0.0).then_some(ms),
-                        extra: extra.map(|(key, value)| PerfExtraField { key, value }),
-                    };
-                    write_json_line(file, &sample);
-                });
-            }
+            let mut file_ref = f.borrow_mut();
+            let Some(ref mut file) = *file_ref else {
+                return;
+            };
+            let frame = FRAME_COUNTER.with(|c| *c.borrow());
+            let ts_ms = unix_ms();
+            RUN_ID.with(|run| {
+                let run_id = run.borrow();
+                let sample = PerfSample {
+                    schema: PERF_SCHEMA,
+                    kind: if ms == 0.0 { "mark" } else { "duration" },
+                    run_id: run_id.as_str(),
+                    frame,
+                    ts_ms,
+                    metric: name,
+                    duration_ms: (ms != 0.0).then_some(ms),
+                    extra: extra.map(|(key, value)| PerfExtraField { key, value }),
+                };
+                write_json_line(file, &sample);
+            });
         });
     }
 
