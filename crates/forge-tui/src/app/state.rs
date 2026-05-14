@@ -343,7 +343,7 @@ pub struct App {
     /// State for the launchpad view (project picker shown when forge
     /// is invoked without a project argv, or after `/launchpad`).
     /// Always present — reset whenever the active view transitions
-    /// to [`ActiveView::Launchpad`] via [`crate::app::launchpad::open`].
+    /// to [`ActiveView::Launchpad`] via the launchpad open helper.
     /// When the active view is anything else this is unused but
     /// kept allocated so transitions are cheap.
     pub launchpad: crate::app::LaunchpadState,

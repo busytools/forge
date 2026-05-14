@@ -23,7 +23,8 @@ use super::App;
 use super::view::{ActiveView, set_active_view};
 
 /// All state the launchpad view needs. Reset whenever the view
-/// transitions to [`ActiveView::Launchpad`] (boot OR `/launchpad`).
+/// transitions to [`crate::app::ActiveView::Launchpad`] (boot OR
+/// `/launchpad`).
 #[derive(Debug, Clone)]
 pub struct LaunchpadState {
     /// Index into the flat selectable row list (project rows only —
