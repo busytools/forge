@@ -120,9 +120,24 @@ pub fn collect_active_processes(app: &App) -> ProcessCollection {
         return ProcessCollection { rows: Vec::new() };
     };
 
-    // Snapshot wire-alive tool calls: ones whose `task_started` fired
-    // and whose terminal `task_updated` has NOT. Used to enrich OS
-    // rows + to harvest Cron registrations.
+    // Snapshot wire-alive tool calls. Two paths into the alive set:
+    //
+    // 1. **Backgrounded Bash / Monitor.** `task_started` fired on
+    //    the wire and the terminal `task_updated` has NOT — so the
+    //    tool_use_id is in `alive_task_ids`'s mapped set. Note the
+    //    per-tool `tc.status` is unreliable here: claude's
+    //    `backgroundTaskId` `tool_result` arrives almost immediately
+    //    and flips status to `Completed` while the underlying
+    //    process keeps running. Trust `alive_task_ids`, not `status`.
+    //
+    // 2. **Foreground Bash.** Claude blocks on the call; no
+    //    `task_started` ever fires, so path 1 misses it entirely.
+    //    The signal here IS `tc.status == InProgress` — the
+    //    `tool_result` hasn't arrived because the command is still
+    //    running. Including these in the alive set is what lets
+    //    foreground `cargo build` / `git status` / `ls` rows pick
+    //    up the wire's `description` as a headline instead of
+    //    falling through to the generic OS row.
     let alive_tool_use_ids: HashSet<String> = app.with_turn_state(|ts| {
         ts.task_tool_use_ids
             .iter()
@@ -136,7 +151,12 @@ pub fn collect_active_processes(app: &App) -> ProcessCollection {
         .filter(|m| matches!(m.role, MessageRole::Assistant))
         .flat_map(|m| &m.blocks)
         .filter_map(|b| match b {
-            MessageBlock::ToolCall(tc) if alive_tool_use_ids.contains(&tc.id) => Some(tc.as_ref()),
+            MessageBlock::ToolCall(tc)
+                if alive_tool_use_ids.contains(&tc.id)
+                    || tc.status == ToolCallStatus::InProgress =>
+            {
+                Some(tc.as_ref())
+            }
             _ => None,
         })
         .collect();

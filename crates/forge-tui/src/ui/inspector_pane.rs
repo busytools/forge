@@ -53,6 +53,7 @@ use ratatui::widgets::Paragraph;
 use super::theme;
 use crate::agent::model::ToolCallStatus;
 use crate::app::App;
+use crate::app::MessageBlock;
 use crate::app::PaneHitTarget;
 use crate::app::TodoStatus;
 use crate::app::processes::{
@@ -193,10 +194,36 @@ fn render_scrollable_body(frame: &mut Frame, body_area: Rect, app: &mut App) {
 
     frame.render_widget(Paragraph::new(body_lines).scroll((offset, 0)), body_area);
 
-    // Scrollbar — thumb-only, no rail, painted as `▐` (U+2590) cells
-    // in `ROLE_ASSISTANT` colour. Matches the chat scrollbar exactly
-    // so the two surfaces read as a consistent pair.
-    render_inspector_thumb(frame, body_area, total, visible, offset);
+    // Scrollbar — thumb-only, no rail, painted as a block cell in
+    // `ROLE_ASSISTANT` colour. Animated when work is in flight so
+    // the indicator reads as "alive" vs. a static dot. Matches the
+    // chat scrollbar's visual weight (small thumb) plus a subtle
+    // breathing pulse.
+    let pulse = inspector_thumb_pulse(app);
+    render_inspector_thumb(frame, body_area, total, visible, offset, pulse);
+}
+
+/// Frame index for the inspector thumb's breathing pulse. Wraps to
+/// `None` when the active session has no observable work (alive
+/// task IDs empty AND no in-progress Bash/Monitor on the wire), so
+/// the thumb sits still during idle periods and only pulses while
+/// something is actually running.
+fn inspector_thumb_pulse(app: &App) -> Option<usize> {
+    let has_alive_task = app.with_turn_state(|ts| !ts.alive_task_ids.is_empty());
+    if has_alive_task {
+        return Some(app.spinner_frame);
+    }
+    let has_in_progress_tool = app.active_session().is_some_and(|session| {
+        session.messages.iter().any(|msg| {
+            msg.blocks.iter().any(|block| {
+                matches!(
+                    block,
+                    MessageBlock::ToolCall(tc) if tc.status == ToolCallStatus::InProgress
+                )
+            })
+        })
+    });
+    has_in_progress_tool.then_some(app.spinner_frame)
 }
 
 /// Paint the inspector body's scroll thumb. Mirrors
@@ -220,6 +247,7 @@ fn render_inspector_thumb(
     total: usize,
     visible: usize,
     offset: u16,
+    pulse: Option<usize>,
 ) {
     let Some(geometry) =
         crate::app::compute_scrollbar_geometry(total, visible, f32::from(offset))
@@ -246,13 +274,31 @@ fn render_inspector_thumb(
     let thumb_end = thumb_top.saturating_add(thumb_size).min(area_h);
     let thumb_style = Style::default().fg(theme::ROLE_ASSISTANT);
     let rail_x = body_area.right().saturating_sub(1);
+    let symbol = thumb_symbol(pulse);
     let buf = frame.buffer_mut();
     for row in thumb_top..thumb_end {
         let y = body_area.y.saturating_add(u16::try_from(row).unwrap_or(u16::MAX));
         if let Some(cell) = buf.cell_mut((rail_x, y)) {
-            cell.set_symbol("\u{2590}");
+            cell.set_symbol(symbol);
             cell.set_style(thumb_style);
         }
+    }
+}
+
+/// Glyph used for the inspector thumb cell. When `pulse` is `Some`
+/// (work is in flight), cycle through a 4-frame breathing pattern
+/// driven by `App.spinner_frame` so the thumb reads as "alive". When
+/// `pulse` is `None`, stay on the static block glyph the chat
+/// scrollbar uses — same look, no movement.
+fn thumb_symbol(pulse: Option<usize>) -> &'static str {
+    const STATIC_THUMB: &str = "\u{2590}"; // ▐ right half block — chat baseline
+    const THIN_THUMB: &str = "\u{2595}";   // ▕ right one-eighth block — pulse-out frame
+    match pulse {
+        None => STATIC_THUMB,
+        Some(frame) => match frame % 4 {
+            0 | 1 => STATIC_THUMB,
+            _ => THIN_THUMB,
+        },
     }
 }
 
