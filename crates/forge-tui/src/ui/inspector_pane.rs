@@ -903,6 +903,7 @@ fn fit_path_head_truncated(s: &str, max_chars: usize) -> String {
 
 fn append_tasks_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
     let todos = app.todos();
+    let spinner_frame = app.spinner_frame;
 
     // Verification nudge row sits between the rule and the TASKS
     // header when the flag is set. Dim-yellow one-liner.
@@ -921,12 +922,23 @@ fn append_tasks_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
         return;
     }
 
+    // Done / total counter for the header — m is completed, n is the
+    // full todo list (including hidden completed and visible
+    // pending/in-progress). Reads at a glance as a progress meter.
+    let total = todos.len();
+    let done = todos.iter().filter(|t| t.status == TodoStatus::Completed).count();
+
     // TASKS section header — DIM bold, 2-col indent (matches the
-    // left pane's `ACTIVE` / `INACTIVE` section headers).
-    lines.push(Line::from(Span::styled(
-        "  TASKS".to_owned(),
-        Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD),
-    )));
+    // left pane's `ACTIVE` / `INACTIVE` section headers). Trailing
+    // ` · m/n` count is DIM, separator is the same `·` we use across
+    // the rest of the inspector (GIT subtitle, PROCESSES suffixes).
+    lines.push(Line::from(vec![
+        Span::styled(
+            "  TASKS".to_owned(),
+            Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(format!(" \u{00B7} {done}/{total}"), Style::default().fg(theme::DIM)),
+    ]));
     // Blank between header and first item.
     lines.push(Line::default());
 
@@ -962,10 +974,14 @@ fn append_tasks_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
     let shown_iter = visible_todos.iter().take(cap);
     let shown_count = cap;
     for (idx, todo) in shown_iter.enumerate() {
+        // Glyph language matches PROCESSES + Projects pane:
+        // ○ DIM for pending, RUST_ORANGE braille spinner for the
+        // currently-running task, ✓ green for completed (hidden in
+        // practice — the visible_todos filter strips them).
         let (glyph, glyph_color) = match todo.status {
-            TodoStatus::Completed => ("\u{2713}", Color::Green), // ✓
-            TodoStatus::InProgress => ("\u{25b8}", theme::RUST_ORANGE), // ▸
-            TodoStatus::Pending => ("\u{25cb}", theme::DIM),     // ○
+            TodoStatus::Completed => ("\u{2713}".to_owned(), Color::Green),
+            TodoStatus::InProgress => (spinner_glyph(spinner_frame), theme::RUST_ORANGE),
+            TodoStatus::Pending => ("\u{25cb}".to_owned(), theme::DIM),
         };
         let text_style = match todo.status {
             TodoStatus::Completed => {
@@ -992,7 +1008,7 @@ fn append_tasks_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
             if let Some(first) = iter.next() {
                 lines.push(Line::from(vec![
                     Span::raw("  "),
-                    Span::styled(glyph.to_owned(), Style::default().fg(glyph_color)),
+                    Span::styled(glyph.clone(), Style::default().fg(glyph_color)),
                     Span::raw(" "),
                     Span::styled(first, text_style),
                 ]));
@@ -1001,7 +1017,7 @@ fn append_tasks_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
                 // so the pane shape stays consistent.
                 lines.push(Line::from(vec![
                     Span::raw("  "),
-                    Span::styled(glyph.to_owned(), Style::default().fg(glyph_color)),
+                    Span::styled(glyph.clone(), Style::default().fg(glyph_color)),
                 ]));
             }
             for rest in iter {
@@ -1015,7 +1031,7 @@ fn append_tasks_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
             let truncated = truncate_with_ellipsis(&display_text, text_budget);
             lines.push(Line::from(vec![
                 Span::raw("  "),
-                Span::styled(glyph.to_owned(), Style::default().fg(glyph_color)),
+                Span::styled(glyph.clone(), Style::default().fg(glyph_color)),
                 Span::raw(" "),
                 Span::styled(truncated, text_style),
             ]));
