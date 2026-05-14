@@ -20,8 +20,11 @@ pub fn try_handle_submit(app: &mut App, text: &str) -> bool {
     match parsed.name {
         "/compact" => handle_compact_submit(app, &parsed.args),
         "/config" => handle_config_submit(app, &parsed.args),
+        "/help" => handle_help_submit(app, &parsed.args),
+        "/launchpad" => handle_launchpad_submit(app, &parsed.args),
         "/mcp" => handle_mcp_submit(app, &parsed.args),
         "/plugins" => handle_plugins_submit(app, &parsed.args),
+        "/quit" => handle_quit_submit(app, &parsed.args),
         "/status" => handle_status_submit(app, &parsed.args),
         "/usage" => handle_usage_submit(app, &parsed.args),
         "/mode" => handle_mode_submit(app, &parsed.args),
@@ -30,6 +33,43 @@ pub fn try_handle_submit(app: &mut App, text: &str) -> bool {
         "/resume" => handle_resume_submit(app, &parsed.args),
         _ => handle_unknown_submit(app, parsed.name),
     }
+}
+
+/// `/launchpad` — return to the project picker. Available from chat;
+/// the launchpad's own slash autocomplete filters it out (you can't
+/// open the surface you're already on).
+fn handle_launchpad_submit(app: &mut App, args: &[&str]) -> bool {
+    if !args.is_empty() {
+        push_system_message(app, "Usage: /launchpad");
+        return true;
+    }
+    crate::app::launchpad::open(app);
+    true
+}
+
+/// `/help` — toggle the help overlay. Parallel to the `?` binding;
+/// surfaced as a slash command for discoverability from the launchpad
+/// (where `?` and `/help` both produce the same overlay).
+fn handle_help_submit(app: &mut App, args: &[&str]) -> bool {
+    if !args.is_empty() {
+        push_system_message(app, "Usage: /help");
+        return true;
+    }
+    app.help_open = !app.help_open;
+    app.needs_redraw = true;
+    true
+}
+
+/// `/quit` — exit forge. Parallel to the `Ctrl+Q` binding; surfaced
+/// as a slash command so the launchpad's keyboard-only floor has
+/// every essential affordance accessible via the slash autocomplete.
+fn handle_quit_submit(app: &mut App, args: &[&str]) -> bool {
+    if !args.is_empty() {
+        push_system_message(app, "Usage: /quit");
+        return true;
+    }
+    app.should_quit = true;
+    true
 }
 
 fn handle_compact_submit(app: &mut App, args: &[&str]) -> bool {

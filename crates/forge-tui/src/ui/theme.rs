@@ -23,6 +23,12 @@ pub const STATUS_ERROR: Color = Color::Red;
 pub const STATUS_WARNING: Color = Color::Yellow;
 pub const SLASH_COMMAND: Color = Color::LightMagenta;
 pub const SUBAGENT_TOKEN: Color = Color::LightBlue;
+/// Solid green for "session connected" indicators. Used by the
+/// launchpad picker's `●` glyph on live sessions; not used by the
+/// in-pane Projects view which uses [`RUST_ORANGE`] for the focused
+/// row's glyph (different visual hierarchy — the launchpad has no
+/// notion of "focused" beyond the selection band).
+pub const SUCCESS_GREEN: Color = Color::Rgb(130, 199, 107);
 
 /// SDK tool icon + label pair. Monochrome Unicode symbols.
 /// Unknown tool names fall back to a generic Tool label.

@@ -224,6 +224,15 @@ pub(super) fn dispatch_key_by_focus(app: &mut App, key: KeyEvent) -> bool {
         return true;
     }
 
+    // Launchpad has its own keymap and intentionally swallows every
+    // other key (including Ctrl+B / Ctrl+E and printable input) so
+    // nothing leaks into the chat input or pane toggles while the
+    // picker is the active view. `Ctrl+Q` is handled by the
+    // always-allowed shortcuts above so the user can still quit.
+    if app.active_view == crate::app::ActiveView::Launchpad {
+        return crate::app::launchpad::handle_key(app, key);
+    }
+
     if matches!(app.status, AppStatus::Connecting | AppStatus::CommandPending | AppStatus::Error)
         || app.is_compacting()
     {

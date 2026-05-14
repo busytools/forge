@@ -123,6 +123,20 @@ pub struct SessionView {
     pub last_activity: Option<SystemTime>,
 }
 
+#[cfg(feature = "test-helpers")]
+impl SessionView {
+    /// Test-only constructor for cross-crate fixtures.
+    #[must_use]
+    pub fn new_for_test(
+        session: SessionKey,
+        label: impl Into<String>,
+        is_open: bool,
+        last_activity: Option<SystemTime>,
+    ) -> Self {
+        Self { session, label: label.into(), is_open, last_activity }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -154,19 +168,5 @@ mod tests {
             sessions: Vec::new(),
         };
         assert_eq!(view.primary_account_hint(), "unknown");
-    }
-}
-
-#[cfg(feature = "test-helpers")]
-impl SessionView {
-    /// Test-only constructor for cross-crate fixtures.
-    #[must_use]
-    pub fn new_for_test(
-        session: SessionKey,
-        label: impl Into<String>,
-        is_open: bool,
-        last_activity: Option<SystemTime>,
-    ) -> Self {
-        Self { session, label: label.into(), is_open, last_activity }
     }
 }

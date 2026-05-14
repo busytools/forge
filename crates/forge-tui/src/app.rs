@@ -3,7 +3,7 @@ mod cache_policy;
 pub(crate) mod cli_version;
 pub(crate) mod clipboard_image;
 pub(crate) mod config;
-mod connect;
+pub(crate) mod connect;
 mod dialog;
 pub(crate) mod events;
 pub(crate) mod file_index;
@@ -13,6 +13,7 @@ mod inline_interactions;
 pub(crate) mod input;
 mod input_submit;
 mod keys;
+pub(crate) mod launchpad;
 pub(crate) mod mention;
 mod notify;
 pub(crate) mod paste_burst;
@@ -34,7 +35,7 @@ mod terminal;
 mod todos;
 mod trust;
 pub(crate) mod usage;
-mod view;
+pub(crate) mod view;
 
 // Re-export all public types so `crate::app::App`, `crate::app::BlockCache`, etc. still work.
 pub use cache_policy::{
@@ -67,6 +68,7 @@ pub use state::{
     WelcomeBlock, compute_scrollbar_geometry, hash_text_block_content, hash_welcome_block_content,
     is_execute_tool_name,
 };
+pub use launchpad::LaunchpadState;
 pub use trust::TrustSelection;
 pub use view::ActiveView;
 

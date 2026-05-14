@@ -340,6 +340,13 @@ pub struct App {
     // See `App::recent_sessions` / `App::recent_sessions_mut`.
     /// Selection state for the startup session picker screen.
     pub session_picker: SessionPickerState,
+    /// State for the launchpad view (project picker shown when forge
+    /// is invoked without a project argv, or after `/launchpad`).
+    /// Always present — reset whenever the active view transitions
+    /// to [`ActiveView::Launchpad`] via [`crate::app::launchpad::open`].
+    /// When the active view is anything else this is unused but
+    /// kept allocated so transitions are cheap.
+    pub launchpad: crate::app::LaunchpadState,
     /// Last known frame area (for mouse selection mapping).
     pub cached_frame_area: ratatui::layout::Rect,
     /// Active scrollbar drag state while left mouse button is held on the rail.
@@ -2308,6 +2315,7 @@ impl App {
             focus: FocusManager::default(),
             plugins: PluginsState::default(),
             session_picker: SessionPickerState::default(),
+            launchpad: crate::app::LaunchpadState::default(),
             cached_frame_area: ratatui::layout::Rect::default(),
             scrollbar_drag: None,
             rendered_chat_lines: Vec::new(),

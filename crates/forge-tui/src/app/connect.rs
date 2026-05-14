@@ -160,8 +160,24 @@ pub fn create_app(cli: &Cli, workspace: Arc<forge_workspace::Workspace>) -> App 
     // `workspace` into the App struct below.
     let projects_pane_visible = workspace.projects_pane_visible();
     let inspector_pane_visible = workspace.inspector_pane_visible();
+    // Boot view: `forge` (no argv) → launchpad picker; `forge <project>`
+    // → chat directly. Argv selection is final — no `focus = true`
+    // override, no remembered-last-pick. Snapshot launchpad state from
+    // `[ui]` settings up-front so the picker doesn't shift if the
+    // user edits forge.toml mid-session.
+    let active_view =
+        if cli.project.is_none() { ActiveView::Launchpad } else { ActiveView::Chat };
+    let initial_launchpad_state = {
+        let ui = workspace.ui_settings();
+        crate::app::LaunchpadState {
+            selected_index: 0,
+            opened_at: std::time::Instant::now(),
+            spinner_style: ui.launchpad_spinner,
+            autostart: ui.launchpad_autostart,
+        }
+    };
     let mut app = App {
-        active_view: ActiveView::Chat,
+        active_view,
         config: ConfigState::default(),
         trust: trust::TrustState::default(),
         settings_home_override: None,
@@ -202,6 +218,7 @@ pub fn create_app(cli: &Cli, workspace: Arc<forge_workspace::Workspace>) -> App 
         focus: FocusManager::default(),
         plugins: PluginsState::default(),
         session_picker: SessionPickerState::default(),
+        launchpad: initial_launchpad_state,
         cached_frame_area: ratatui::layout::Rect::new(0, 0, 0, 0),
         scrollbar_drag: None,
         rendered_chat_lines: Vec::new(),
@@ -275,12 +292,46 @@ pub fn start_connection(app: &mut App) {
         session_start::SessionStartReason::Startup,
     );
 
-    // If the user passed `--project NAME`, that wins as the first
-    // (focused) startup spawn. Otherwise, every project with
-    // `auto_start = true` in forge.toml spawns; the alphabetically-
-    // first auto_start project becomes the focused tab. With no
-    // explicit project AND no auto_start opt-ins, fall through to
-    // the default project (alphabetically-first overall).
+    // Launchpad branch: the user invoked `forge` without an argv, so
+    // no project is focused. The launchpad's autostart policy decides
+    // whether `auto_start = true` projects warm up while the picker
+    // is shown. `Always` (default) matches the pre-launchpad
+    // behaviour; `WaitForPick` / `Never` defer all spawns until the
+    // user presses Enter on a row.
+    if app.active_view == crate::app::ActiveView::Launchpad {
+        if !app.launchpad.autostart.spawns_at_boot() {
+            return;
+        }
+        let auto_start = workspace.auto_start_project_names();
+        for project_name in auto_start {
+            // Every project goes through `SpawnProject` — no
+            // `StartDefault`, since the launchpad doesn't pick a
+            // focused tab. The chat view never mounts until the
+            // user picks a row.
+            let cmd = forge_workspace::Command::SpawnProject {
+                project_name: project_name.clone(),
+                launch_settings: launch_settings.clone(),
+            };
+            if let Err(err) = workspace.dispatch(cmd) {
+                tracing::error!(
+                    target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                    event_name = "launchpad_autostart_dispatch_failed",
+                    error = %err,
+                    project = %project_name,
+                    "launchpad auto_start dispatch failed",
+                );
+            }
+        }
+        return;
+    }
+
+    // Chat branch: argv supplied OR default-focus path. If the user
+    // passed `--project NAME`, that wins as the first (focused)
+    // startup spawn. Otherwise, every project with `auto_start = true`
+    // in forge.toml spawns; the alphabetically-first auto_start
+    // project becomes the focused tab. With no explicit project AND
+    // no auto_start opt-ins, fall through to the default project
+    // (alphabetically-first overall).
     let auto_start = workspace.auto_start_project_names();
     let dispatch_targets: Vec<Option<String>> = match (&app.startup_project, auto_start.as_slice())
     {

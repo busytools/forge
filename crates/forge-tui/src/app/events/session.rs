@@ -365,9 +365,25 @@ pub(super) fn handle_connection_failed_event(app: &mut App, session_key: &Sessio
             ));
             session.message_retained_bytes.push(0);
         }
+        // Capture the failure reason on the bucket for the launchpad
+        // picker to surface beneath a failed project row. Cleared on
+        // a successful reconnect via `clear_connection_error`. Skip
+        // for rate-limit failures — those use the `Attention` glyph
+        // and the inline RATE_LIMIT_FALLBACK_MESSAGE explainer
+        // rather than the per-row error tail.
+        if !is_rate_limited {
+            session.last_connection_error = Some(msg.to_owned());
+        }
         // Drop the `session` mut borrow before reaching for `app.workspace`.
         let _ = session;
-        set_bucket_lifecycle_state(app, session_key, next_state);
+        // Non-rate-limited failures land on Failed (visible as `✗`
+        // in the launchpad picker); rate-limit gets `Attention`.
+        let lifecycle_state = if is_rate_limited {
+            next_state
+        } else {
+            SessionLifecycleState::Failed
+        };
+        set_bucket_lifecycle_state(app, session_key, lifecycle_state);
         // Mirror session_id reset onto the workspace's DomainSession
         // so AgentHandle dispatch stops routing to a no-longer-valid
         // session id.
@@ -405,12 +421,20 @@ pub(super) fn handle_connection_failed_event(app: &mut App, session_key: &Sessio
     app.clear_active_turn_assistant();
     super::notices::clear_turn_notice_tracking(app);
     // Lifecycle: rate-limit failure → Attention; other failures →
-    // Sleeping. Matches the background-bucket branch.
+    // Failed (surfaced as the `✗` glyph in the launchpad picker,
+    // identical to background failure handling above). Capture the
+    // raw message on the bucket so the launchpad's per-row error
+    // tail can surface it.
     let next_state = if is_rate_limited {
         crate::app::session::SessionLifecycleState::Attention
     } else {
-        crate::app::session::SessionLifecycleState::Sleeping
+        crate::app::session::SessionLifecycleState::Failed
     };
+    if !is_rate_limited
+        && let Some(session) = app.session_mut(session_key)
+    {
+        session.last_connection_error = Some(msg.to_owned());
+    }
     set_bucket_lifecycle_state(app, session_key, next_state);
     if is_rate_limited {
         push_system_message_with_severity(
@@ -966,6 +990,11 @@ pub(super) fn apply_session_update_connected(
         }
     }
     set_bucket_lifecycle_state(app, &key, crate::app::session::SessionLifecycleState::Idle);
+    // Clear any captured connection error on a successful reconnect —
+    // the launchpad picker stops surfacing the stale `✗` row tail.
+    if let Some(session) = app.session_mut(&key) {
+        session.last_connection_error = None;
+    }
     // `was_active` drives whether the welcome / model snapshots get
     // applied to the active-session UI. The rule is now simple:
     // this Connected is for the active session only when its key
