@@ -267,6 +267,11 @@ pub struct App {
     /// Mirrors the file_index channel pattern.
     pub git_diff_event_tx: std_mpsc::Sender<crate::app::git_diff::GitDiffEvent>,
     pub git_diff_event_rx: std_mpsc::Receiver<crate::app::git_diff::GitDiffEvent>,
+    /// Send / receive ends of the channel for the
+    /// `crate::app::process_scanner` OS-walk scanner. Same shape
+    /// as `git_diff_event_*` but carries `ProcessScanEvent`.
+    pub process_scan_event_tx: std_mpsc::Sender<crate::app::process_scanner::ProcessScanEvent>,
+    pub process_scan_event_rx: std_mpsc::Receiver<crate::app::process_scanner::ProcessScanEvent>,
     /// Send / receive ends of the TUI-internal channel that the
     /// `crate::app::cli_version` startup fetch task uses to hand
     /// the merged `CliVersionInfo` snapshot back to the main loop.
@@ -2226,6 +2231,7 @@ impl App {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<forge_workspace::SessionUpdate>();
         let (file_index_tx, file_index_rx) = std_mpsc::channel();
         let (git_diff_tx, git_diff_rx) = std_mpsc::channel();
+        let (process_scan_tx, process_scan_rx) = std_mpsc::channel();
         let (cli_version_tx, cli_version_rx) = std_mpsc::channel();
         let pending_key = forge_workspace::SessionKey::from_session_id(Self::PRE_CONNECT_KEY);
         let mut pending_session = super::session::UiSession::new(pending_key.clone());
@@ -2277,6 +2283,8 @@ impl App {
             file_index_event_rx: file_index_rx,
             git_diff_event_tx: git_diff_tx,
             git_diff_event_rx: git_diff_rx,
+            process_scan_event_tx: process_scan_tx,
+            process_scan_event_rx: process_scan_rx,
             cli_version_event_tx: cli_version_tx,
             cli_version_event_rx: cli_version_rx,
             cli_version_info: None,

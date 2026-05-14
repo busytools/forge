@@ -297,6 +297,22 @@ pub struct UiSession {
     /// on `active_session_key` change.
     pub git_diff_last_refreshed_at: Option<std::time::Instant>,
 
+    // ---- Process snapshot (Inspector PROCESSES section, OS walk) ----
+    /// Latest sysinfo-walk snapshot of claude's descendant tree.
+    /// `None` until the first scan completes. Mirrors `git_diff_snapshot`
+    /// but holds OS-level process state instead of git state.
+    pub process_snapshot: Option<forge_workspace::env::processes::ProcessSnapshot>,
+    /// Generation epoch for the process scanner. Bumped on session
+    /// swap so a scan kicked off against the old `claude_pid` can be
+    /// dropped if it lands after the swap.
+    pub process_scan_generation: u64,
+    /// In-flight scan guard. `request_refresh` short-circuits when
+    /// already `true`.
+    pub process_scan_in_flight: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// When the latest snapshot was applied. Drives the
+    /// staleness rule in `process_scanner::should_refresh`.
+    pub process_last_refreshed_at: Option<std::time::Instant>,
+
     // ---- Render cache + history retention ----
     /// Cached render-cache slot metadata parallel to
     /// `messages[*].blocks[*]` plus one synthetic per-message slot
@@ -421,6 +437,10 @@ impl Default for UiSession {
             git_diff_generation: 0,
             git_diff_scan_in_flight: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             git_diff_last_refreshed_at: None,
+            process_snapshot: None,
+            process_scan_generation: 0,
+            process_scan_in_flight: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            process_last_refreshed_at: None,
             render_cache_slots: Vec::default(),
             render_cache_total_bytes: usize::default(),
             render_cache_protected_bytes: usize::default(),

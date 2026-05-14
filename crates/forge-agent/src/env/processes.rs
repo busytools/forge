@@ -240,7 +240,8 @@ mod tests {
         // Real-world shape: claude's Bash tool runs commands via a
         // shell wrapper. The user-typed command is a substring of
         // the actual process cmdline.
-        let process_cmd = "/bin/zsh -c -l source ~/.zshrc && eval 'cargo nextest run --no-fail-fast' < /dev/null";
+        let process_cmd =
+            "/bin/zsh -c -l source ~/.zshrc && eval 'cargo nextest run --no-fail-fast' < /dev/null";
         let tool_command = "cargo nextest run --no-fail-fast";
         assert!(process_cmdline_matches_tool_input(process_cmd, tool_command));
     }
@@ -279,10 +280,7 @@ mod tests {
         let snapshot = scan(0);
         // Don't assert empty — PID 0 has children on Linux (kthreadd).
         // What we DO assert: scanned_at is recent + no panic.
-        let age = SystemTime::now()
-            .duration_since(snapshot.scanned_at)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
+        let age = SystemTime::now().duration_since(snapshot.scanned_at).map_or(0, |d| d.as_secs());
         assert!(age <= 5, "scanned_at must be recent");
     }
 

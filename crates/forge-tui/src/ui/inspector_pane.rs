@@ -55,7 +55,9 @@ use crate::agent::model::ToolCallStatus;
 use crate::app::App;
 use crate::app::PaneHitTarget;
 use crate::app::TodoStatus;
-use crate::app::processes::{ProcessKind, ProcessRow, collect_active_processes};
+use crate::app::processes::{
+    ProcessCollection, ProcessKind, ProcessRow, collect_active_processes, format_memory_short,
+};
 
 /// Horizontal padding inside the pane (matches the left
 /// `projects_pane`'s 2-col indent).
@@ -167,6 +169,11 @@ fn append_body(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
         append_processes_section(lines, &processes, width);
     }
 }
+
+/// Width threshold above which the PROCESSES section appends `· 12 MB`
+/// to each row's metadata. Wide tier (inspector at 40 cols) gets memory;
+/// Medium tier (inspector at 30 cols) drops it so the metadata fits.
+const PROCESSES_MEMORY_WIDTH_THRESHOLD: u16 = 36;
 
 /// Append a dim `─` horizontal rule across `width − 2` cols with a
 /// 1-col leading space, matching the banner-rule + projects-pane
@@ -857,7 +864,11 @@ fn append_tasks_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
 /// - `\u{2713}` (`✓`) green — completed tool call (any kind)
 /// - `\u{2717}` (`✗`) red — failed / killed
 /// - `\u{25CB}` (`○`) DIM — pending (queued, not yet started)
-fn append_processes_section(lines: &mut Vec<Line<'static>>, processes: &[ProcessRow], width: u16) {
+fn append_processes_section(
+    lines: &mut Vec<Line<'static>>,
+    collection: &ProcessCollection,
+    width: u16,
+) {
     lines.push(Line::from(Span::styled(
         "  PROCESSES".to_owned(),
         Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD),
@@ -871,15 +882,14 @@ fn append_processes_section(lines: &mut Vec<Line<'static>>, processes: &[Process
     let continuation_indent = "    "; // 4 cols — under the text col.
     // `└─ ` is 3 codepoints (U+2514, U+2500, U+0020) so each
     // continuation row's chrome eats 3 cols. truncate_with_ellipsis
-    // measures in `.chars()` (matches the count), so subtract 3
-    // here. Earlier subtractions had this at 2, which let the
-    // rendered text overflow into the right pad by one char.
+    // measures in `.chars()` (matches the count), so subtract 3.
     let continuation_budget = usize::from(width)
         .saturating_sub(continuation_indent.chars().count())
         .saturating_sub(usize::from(PANE_PAD))
         .saturating_sub(3);
-    let process_count = processes.len();
-    for (idx, process) in processes.iter().enumerate() {
+    let include_memory = width >= PROCESSES_MEMORY_WIDTH_THRESHOLD;
+    let process_count = collection.rows.len();
+    for (idx, process) in collection.rows.iter().enumerate() {
         let (glyph, glyph_color, headline_style) = glyph_and_style_for(process);
         let headline_fitted = truncate_with_ellipsis(&process.headline, text_budget);
         lines.push(Line::from(vec![
@@ -898,7 +908,8 @@ fn append_processes_section(lines: &mut Vec<Line<'static>>, processes: &[Process
             ]));
         }
 
-        let metadata_fitted = truncate_with_ellipsis(&process.metadata, continuation_budget);
+        let metadata_text = build_metadata_with_memory(process, include_memory);
+        let metadata_fitted = truncate_with_ellipsis(&metadata_text, continuation_budget);
         lines.push(Line::from(vec![
             Span::raw(continuation_indent.to_owned()),
             Span::styled("\u{2514}\u{2500} ".to_owned(), Style::default().fg(theme::DIM)),
@@ -908,6 +919,26 @@ fn append_processes_section(lines: &mut Vec<Line<'static>>, processes: &[Process
         if idx + 1 < process_count {
             lines.push(Line::default());
         }
+    }
+
+    if collection.overflow > 0 {
+        let more = collection.overflow;
+        lines.push(Line::from(vec![
+            Span::raw("  "),
+            Span::styled(
+                format!("+{more} more"),
+                Style::default().fg(theme::DIM).add_modifier(Modifier::ITALIC),
+            ),
+        ]));
+    }
+}
+
+/// Compose the metadata string for a row, optionally suffixing
+/// `· 12 MB` when the layout has room.
+fn build_metadata_with_memory(process: &ProcessRow, include_memory: bool) -> String {
+    match (include_memory, process.memory_bytes) {
+        (true, Some(bytes)) => format!("{} · {}", process.metadata, format_memory_short(bytes)),
+        _ => process.metadata.clone(),
     }
 }
 
@@ -935,6 +966,13 @@ fn glyph_and_style_for(process: &ProcessRow) -> (&'static str, Color, Style) {
                     theme::DIM,
                     Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
                 )
+            }
+            ProcessKind::Process => {
+                // Generic OS process — DIM headline so the wire-
+                // tracked rows (BashBackgrounded / Monitor) stand
+                // out by comparison. Still the right-pointing ▸
+                // glyph so it reads as live work.
+                ("\u{25B8}", theme::DIM, Style::default().fg(Color::Gray))
             }
             _ => (
                 "\u{25B8}",
@@ -1345,7 +1383,15 @@ mod tests {
             detail: detail.map(str::to_owned),
             metadata: metadata.to_owned(),
             status,
+            memory_bytes: None,
         }
+    }
+
+    /// Wrap test rows in a `ProcessCollection` so the existing tests
+    /// stay readable. Memory rendering needs an explicit
+    /// `memory_bytes`; tests opt in via [`make_process_row_with_memory`].
+    fn collection(rows: Vec<ProcessRow>) -> ProcessCollection {
+        ProcessCollection { rows, overflow: 0 }
     }
 
     #[test]
@@ -1358,7 +1404,7 @@ mod tests {
             ToolCallStatus::InProgress,
         );
         let mut lines = Vec::new();
-        append_processes_section(&mut lines, &[row], 40);
+        append_processes_section(&mut lines, &collection(vec![row]), 40);
 
         // header + blank + headline + detail-continuation + meta-continuation = 5 lines
         assert_eq!(lines.len(), 5, "expected 5 rendered lines, got {}", lines.len());
@@ -1392,7 +1438,7 @@ mod tests {
             ToolCallStatus::InProgress,
         );
         let mut lines = Vec::new();
-        append_processes_section(&mut lines, &[row], 40);
+        append_processes_section(&mut lines, &collection(vec![row]), 40);
 
         let headline = line_text(&lines[2]);
         assert!(headline.starts_with("  \u{25B8} PR #120 CI watch"), "got {headline:?}");
@@ -1415,7 +1461,7 @@ mod tests {
             ToolCallStatus::Completed,
         );
         let mut lines = Vec::new();
-        append_processes_section(&mut lines, &[row], 40);
+        append_processes_section(&mut lines, &collection(vec![row]), 40);
 
         let headline = line_text(&lines[2]);
         // ✓ is the completed-status glyph; the cron clock ⏰ only
@@ -1433,7 +1479,7 @@ mod tests {
             ToolCallStatus::InProgress,
         );
         let mut lines = Vec::new();
-        append_processes_section(&mut lines, &[row], 40);
+        append_processes_section(&mut lines, &collection(vec![row]), 40);
 
         let headline = line_text(&lines[2]);
         assert!(headline.starts_with("  \u{23F0} daily 9am"), "got {headline:?}");
@@ -1449,7 +1495,7 @@ mod tests {
             ToolCallStatus::Failed,
         );
         let mut lines = Vec::new();
-        append_processes_section(&mut lines, &[row], 40);
+        append_processes_section(&mut lines, &collection(vec![row]), 40);
 
         let headline = line_text(&lines[2]);
         assert!(headline.starts_with("  \u{2717} Run integration tests"), "got {headline:?}");
@@ -1481,7 +1527,7 @@ mod tests {
             ),
         ];
         let mut lines = Vec::new();
-        append_processes_section(&mut lines, &rows, 40);
+        append_processes_section(&mut lines, &collection(rows), 40);
 
         // header + blank + 3 rows × (headline + detail + meta = 3 lines) + 2 blanks between rows
         // = 2 + 9 + 2 = 13 lines
@@ -1503,7 +1549,7 @@ mod tests {
             ToolCallStatus::Completed,
         );
         let mut lines = Vec::new();
-        append_processes_section(&mut lines, &[row], 40);
+        append_processes_section(&mut lines, &collection(vec![row]), 40);
 
         // header + blank + headline + meta-continuation = 4 lines (no detail line)
         assert_eq!(lines.len(), 4, "expected 4 lines with detail=None, got {}", lines.len());
@@ -1519,11 +1565,117 @@ mod tests {
             ToolCallStatus::InProgress,
         );
         let mut lines = Vec::new();
-        append_processes_section(&mut lines, &[row], 40);
+        append_processes_section(&mut lines, &collection(vec![row]), 40);
 
         let headline = line_text(&lines[2]);
         assert!(headline.ends_with('\u{2026}'), "expected ellipsis: {headline:?}");
         let visible_chars = headline.chars().count();
         assert!(visible_chars <= 38, "headline overflows 40-col pane: {visible_chars} cols");
+    }
+
+    /// Helper for tests that need a row with explicit memory bytes
+    /// so the Wide-tier suffix path can be exercised.
+    fn make_row_with_memory(
+        kind: ProcessKind,
+        headline: &str,
+        metadata: &str,
+        memory_bytes: u64,
+    ) -> ProcessRow {
+        ProcessRow {
+            kind,
+            headline: headline.to_owned(),
+            detail: None,
+            metadata: metadata.to_owned(),
+            status: ToolCallStatus::InProgress,
+            memory_bytes: Some(memory_bytes),
+        }
+    }
+
+    #[test]
+    fn processes_section_appends_memory_suffix_at_wide_width() {
+        // 40-col Wide-tier inspector — width above the threshold so
+        // the metadata row carries a `· 12 MB` suffix.
+        let row = make_row_with_memory(
+            ProcessKind::Process,
+            "cargo",
+            "Process · running",
+            12 * 1024 * 1024,
+        );
+        let mut lines = Vec::new();
+        append_processes_section(&mut lines, &collection(vec![row]), 40);
+
+        let meta = line_text(&lines[3]);
+        assert!(meta.contains("12 MB"), "expected memory suffix on Wide tier: {meta:?}");
+    }
+
+    #[test]
+    fn processes_section_drops_memory_suffix_at_medium_width() {
+        // 30-col Medium-tier inspector — width below threshold so
+        // the metadata row stays bare.
+        let row = make_row_with_memory(
+            ProcessKind::Process,
+            "cargo",
+            "Process · running",
+            12 * 1024 * 1024,
+        );
+        let mut lines = Vec::new();
+        append_processes_section(&mut lines, &collection(vec![row]), 30);
+
+        let meta = line_text(&lines[3]);
+        assert!(!meta.contains("MB"), "expected no memory suffix on Medium tier: {meta:?}");
+    }
+
+    #[test]
+    fn processes_section_renders_plus_n_more_overflow_row() {
+        let row = make_row_with_memory(
+            ProcessKind::Process,
+            "cargo",
+            "Process · running",
+            12 * 1024 * 1024,
+        );
+        let coll = ProcessCollection { rows: vec![row], overflow: 3 };
+        let mut lines = Vec::new();
+        append_processes_section(&mut lines, &coll, 40);
+
+        // header + blank + headline + meta (no detail row) + overflow = 5
+        assert_eq!(lines.len(), 5, "expected 5 lines with overflow=3, got {}", lines.len());
+        let overflow_line = line_text(&lines[4]);
+        assert_eq!(overflow_line, "  +3 more");
+    }
+
+    #[test]
+    fn processes_section_skips_overflow_row_when_zero() {
+        let row = make_row_with_memory(ProcessKind::Process, "cargo", "Process · running", 0);
+        let mut lines = Vec::new();
+        append_processes_section(&mut lines, &collection(vec![row]), 40);
+
+        for line in &lines {
+            assert!(
+                !line_text(line).contains("more"),
+                "overflow row leaked into render with overflow=0"
+            );
+        }
+    }
+
+    #[test]
+    fn processes_section_process_kind_uses_dim_glyph() {
+        // OS-only `Process` rows render with a DIM ▸ glyph (vs the
+        // RUST_ORANGE ▸ for wire-tracked Bash / Monitor) so the eye
+        // separates "claude-described work" from "anonymous OS
+        // process" at a glance.
+        let row = make_row_with_memory(
+            ProcessKind::Process,
+            "cargo",
+            "Process · running",
+            8 * 1024 * 1024,
+        );
+        let mut lines = Vec::new();
+        append_processes_section(&mut lines, &collection(vec![row]), 40);
+
+        let headline = line_text(&lines[2]);
+        assert!(headline.starts_with("  \u{25B8} cargo"), "expected ▸ glyph: {headline:?}");
+        // Style assertion: pull the glyph span and check its colour.
+        let glyph_span = &lines[2].spans[1];
+        assert_eq!(glyph_span.style.fg, Some(theme::DIM));
     }
 }

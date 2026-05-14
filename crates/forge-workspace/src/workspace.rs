@@ -1068,10 +1068,11 @@ impl Workspace {
     /// callers stay in control of their concurrency model (mirrors
     /// how `scan_git_diff` exposes the async function directly).
     #[must_use]
-    pub fn scan_processes(
-        &self,
-        claude_pid: u32,
-    ) -> forge_agent::env::processes::ProcessSnapshot {
+    #[allow(clippy::unused_self)] // Mirror of `scan_git_diff` — kept as an
+    // instance method so the call site reads `workspace.scan_processes(...)`
+    // alongside the other env scanners, even though it doesn't need to
+    // touch workspace state.
+    pub fn scan_processes(&self, claude_pid: u32) -> forge_agent::env::processes::ProcessSnapshot {
         forge_agent::env::processes::scan(claude_pid)
     }
 

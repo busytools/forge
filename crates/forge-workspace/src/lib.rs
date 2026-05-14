@@ -127,6 +127,9 @@ pub mod env {
     pub mod git_diff {
         pub use forge_agent::env::git_diff::*;
     }
+    pub mod processes {
+        pub use forge_agent::env::processes::*;
+    }
 }
 pub mod session_lifecycle {
     pub use forge_agent::session_lifecycle::*;

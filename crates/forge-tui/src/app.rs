@@ -18,6 +18,7 @@ mod notify;
 pub(crate) mod paste_burst;
 mod permissions;
 pub(crate) mod plugins;
+pub(crate) mod process_scanner;
 pub(crate) mod processes;
 mod questions;
 mod selection;
@@ -180,6 +181,7 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
         file_index::drain_events(app);
         git_diff::drain_events(app);
         cli_version::drain_events(app);
+        process_scanner::drain_events(app);
 
         // If a prior turn ended in Error state because of a rate-limit
         // rejection, drop the input lock once the rate-limit window
