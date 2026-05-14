@@ -50,9 +50,13 @@ mod enabled {
 
     /// Cap on per-frame buffer size. Bounds memory if the frame
     /// never closes for some reason (no `frame_total` Timer drop
-    /// fires). 256 spans/marks per frame is well above the natural
-    /// per-frame budget (~10-20 entries observed in practice).
-    const FRAME_BUFFER_CAP: usize = 256;
+    /// fires). 1024 spans/marks per frame is comfortably above the
+    /// natural per-frame budget for active sessions with many
+    /// visible messages + tool calls (observed up to ~250 per slow
+    /// frame in chats with 30+ messages). The `frame_total` Timer
+    /// itself is always pushed regardless of cap (see `write_entry`)
+    /// so the parent span never gets dropped from a flushed batch.
+    const FRAME_BUFFER_CAP: usize = 1024;
 
     /// One buffered sample awaiting the per-frame flush decision.
     /// Storage is cheap (constant size, no heap alloc beyond the
@@ -133,10 +137,16 @@ mod enabled {
         // until that decision fires.
         let to_flush: Option<Vec<BufferedSample>> = FRAME_BUFFER.with(|b| {
             let mut buf = b.borrow_mut();
-            if buf.len() < FRAME_BUFFER_CAP {
+            let is_frame_total = name == "frame_total";
+            // `frame_total` is the framing span — without it, a
+            // flushed batch can't be tied back to a specific frame
+            // duration. Always push it regardless of cap so the
+            // parent span survives. Sub-spans get dropped at cap to
+            // bound memory.
+            if is_frame_total || buf.len() < FRAME_BUFFER_CAP {
                 buf.push(BufferedSample { name, ms, extra });
             }
-            if name != "frame_total" {
+            if !is_frame_total {
                 return None;
             }
             if ms >= SLOW_FRAME_THRESHOLD_MS {

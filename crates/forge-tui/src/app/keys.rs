@@ -304,7 +304,10 @@ fn handle_global_shortcuts(app: &mut App, key: KeyEvent) -> bool {
     }
 
     match (key.code, key.modifiers) {
-        (KeyCode::Char('x'), m) if m == KeyModifiers::CONTROL => {
+        // Toggle all tool calls — Cmd+X on macOS, Ctrl+X elsewhere
+        // via CMD_MOD. Same platform-modifier convention as the
+        // pane-toggle arrows above.
+        (KeyCode::Char('x'), m) if m == CMD_MOD => {
             toggle_all_tool_calls(app);
             true
         }
