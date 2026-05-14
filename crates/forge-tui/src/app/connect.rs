@@ -165,8 +165,7 @@ pub fn create_app(cli: &Cli, workspace: Arc<forge_workspace::Workspace>) -> App 
     // override, no remembered-last-pick. Snapshot launchpad state from
     // `[ui]` settings up-front so the picker doesn't shift if the
     // user edits forge.toml mid-session.
-    let active_view =
-        if cli.project.is_none() { ActiveView::Launchpad } else { ActiveView::Chat };
+    let active_view = if cli.project.is_none() { ActiveView::Launchpad } else { ActiveView::Chat };
     let initial_launchpad_state = {
         let ui = workspace.ui_settings();
         crate::app::LaunchpadState {

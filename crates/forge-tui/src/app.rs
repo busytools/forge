@@ -50,6 +50,7 @@ pub use events::{apply_session_update, handle_terminal_event};
 pub use events::{handle_permission_request_event, handle_question_request_event};
 pub use focus::{FocusManager, FocusOwner, FocusTarget};
 pub use input::InputState;
+pub use launchpad::LaunchpadState;
 pub(crate) use selection::normalize_selection;
 pub use service_status_check::start_service_status_check;
 pub(crate) use state::MarkdownRenderKey;
@@ -68,7 +69,6 @@ pub use state::{
     WelcomeBlock, compute_scrollbar_geometry, hash_text_block_content, hash_welcome_block_content,
     is_execute_tool_name,
 };
-pub use launchpad::LaunchpadState;
 pub use trust::TrustSelection;
 pub use view::ActiveView;
 

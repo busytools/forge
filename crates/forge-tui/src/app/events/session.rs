@@ -378,11 +378,8 @@ pub(super) fn handle_connection_failed_event(app: &mut App, session_key: &Sessio
         let _ = session;
         // Non-rate-limited failures land on Failed (visible as `✗`
         // in the launchpad picker); rate-limit gets `Attention`.
-        let lifecycle_state = if is_rate_limited {
-            next_state
-        } else {
-            SessionLifecycleState::Failed
-        };
+        let lifecycle_state =
+            if is_rate_limited { next_state } else { SessionLifecycleState::Failed };
         set_bucket_lifecycle_state(app, session_key, lifecycle_state);
         // Mirror session_id reset onto the workspace's DomainSession
         // so AgentHandle dispatch stops routing to a no-longer-valid
@@ -430,9 +427,7 @@ pub(super) fn handle_connection_failed_event(app: &mut App, session_key: &Sessio
     } else {
         crate::app::session::SessionLifecycleState::Failed
     };
-    if !is_rate_limited
-        && let Some(session) = app.session_mut(session_key)
-    {
+    if !is_rate_limited && let Some(session) = app.session_mut(session_key) {
         session.last_connection_error = Some(msg.to_owned());
     }
     set_bucket_lifecycle_state(app, session_key, next_state);

@@ -73,12 +73,8 @@ pub(crate) fn open(app: &mut App) {
             (ui.launchpad_spinner, ui.launchpad_autostart)
         })
         .unwrap_or_default();
-    app.launchpad = LaunchpadState {
-        selected_index: 0,
-        opened_at: Instant::now(),
-        spinner_style,
-        autostart,
-    };
+    app.launchpad =
+        LaunchpadState { selected_index: 0, opened_at: Instant::now(), spinner_style, autostart };
     set_active_view(app, ActiveView::Launchpad);
     app.needs_redraw = true;
 }
@@ -189,8 +185,7 @@ mod tests {
         // tests with fixtures).
         let mut app = App::test_default();
         app.active_view = ActiveView::Launchpad;
-        let consumed =
-            handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        let consumed = handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
         assert!(consumed);
         assert_eq!(app.launchpad.selected_index, 0);
     }
@@ -200,11 +195,9 @@ mod tests {
         let mut app = App::test_default();
         app.active_view = ActiveView::Launchpad;
         assert!(!app.help_open);
-        let _ =
-            handle_key(&mut app, KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE));
+        let _ = handle_key(&mut app, KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE));
         assert!(app.help_open);
-        let _ =
-            handle_key(&mut app, KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE));
+        let _ = handle_key(&mut app, KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE));
         assert!(!app.help_open);
     }
 
@@ -212,9 +205,11 @@ mod tests {
     fn unknown_key_is_consumed_silently() {
         let mut app = App::test_default();
         app.active_view = ActiveView::Launchpad;
-        let consumed =
-            handle_key(&mut app, KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE));
-        assert!(consumed, "launchpad should consume printable keys to avoid leaking into chat input");
+        let consumed = handle_key(&mut app, KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE));
+        assert!(
+            consumed,
+            "launchpad should consume printable keys to avoid leaking into chat input"
+        );
     }
 
     #[test]

@@ -117,8 +117,7 @@ fn build_picker_rows(app: &App) -> Vec<PickerRow> {
 /// Projects pane's two-step resolution: real session UUID first, then
 /// the `__spawn_<name>__` synthetic spawn key.
 fn resolve_lifecycle(app: &App, project: &ProjectView) -> SessionLifecycleState {
-    let spawn_synthetic =
-        SessionKey::from_session_id(format!("__spawn_{}__", project.name));
+    let spawn_synthetic = SessionKey::from_session_id(format!("__spawn_{}__", project.name));
     if let Some(session) = app.sessions.get(&spawn_synthetic) {
         return session.lifecycle_state;
     }
@@ -131,8 +130,7 @@ fn resolve_lifecycle(app: &App, project: &ProjectView) -> SessionLifecycleState 
 }
 
 fn resolve_error(app: &App, project: &ProjectView) -> Option<String> {
-    let spawn_synthetic =
-        SessionKey::from_session_id(format!("__spawn_{}__", project.name));
+    let spawn_synthetic = SessionKey::from_session_id(format!("__spawn_{}__", project.name));
     if let Some(session) = app.sessions.get(&spawn_synthetic)
         && let Some(err) = &session.last_connection_error
     {
@@ -216,11 +214,8 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     let picker_height = picker_frame_height(rows.len(), &rows);
     let footer_height: u16 = 1;
     let total_content = identity_height + picker_height + footer_height + 3; // 3 = breathing rows
-    let top_padding = if area.height > total_content {
-        ((area.height - total_content) / 4).max(1)
-    } else {
-        0
-    };
+    let top_padding =
+        if area.height > total_content { ((area.height - total_content) / 4).max(1) } else { 0 };
 
     let mut current_y = area.y + top_padding;
 
@@ -232,7 +227,8 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         x: picker_x,
         y: current_y,
         width: picker_outer_width,
-        height: picker_height.min(area.height.saturating_sub(current_y - area.y).saturating_sub(footer_height)),
+        height: picker_height
+            .min(area.height.saturating_sub(current_y - area.y).saturating_sub(footer_height)),
     };
     render_picker(frame, picker_area, app, &rows);
 
@@ -249,7 +245,11 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 /// version line + claude line + optional update indicator.
 fn identity_block_height(app: &App) -> u16 {
     let mut h: u16 = 6 + 1 + 1;
-    if app.cli_version_info.as_ref().is_some_and(forge_workspace::env::cli_version::CliVersionInfo::has_update) {
+    if app
+        .cli_version_info
+        .as_ref()
+        .is_some_and(forge_workspace::env::cli_version::CliVersionInfo::has_update)
+    {
         h += 1;
     }
     h
@@ -288,10 +288,7 @@ fn render_identity_block(frame: &mut Frame, area: Rect, app: &App, y: u16) {
 fn centered_text_line(text: &str, area_width: u16, style: Style) -> Line<'static> {
     let text_width = text.chars().count();
     let pad = usize::from(area_width).saturating_sub(text_width) / 2;
-    Line::from(vec![
-        Span::raw(" ".repeat(pad)),
-        Span::styled(text.to_owned(), style),
-    ])
+    Line::from(vec![Span::raw(" ".repeat(pad)), Span::styled(text.to_owned(), style)])
 }
 
 /// Estimated height: top rule + cold-boot row (if applicable) + per-
@@ -316,12 +313,7 @@ fn picker_frame_height(_total_rows: usize, rows: &[PickerRow]) -> u16 {
     h
 }
 
-fn render_picker(
-    frame: &mut Frame,
-    area: Rect,
-    app: &mut App,
-    rows: &[PickerRow],
-) {
+fn render_picker(frame: &mut Frame, area: Rect, app: &mut App, rows: &[PickerRow]) {
     if area.width == 0 || area.height == 0 {
         return;
     }
@@ -382,8 +374,7 @@ fn push_project_row(
     let hint_width: usize = 12;
     let right_width: usize = 10;
 
-    let name_label =
-        truncate_to(&row.project_name, name_width);
+    let name_label = truncate_to(&row.project_name, name_width);
     let name_pad = name_width.saturating_sub(name_label.chars().count());
     let hint_label = format!("({})", row.account_hint);
     let hint_label = truncate_to(&hint_label, hint_width);
@@ -393,8 +384,7 @@ fn push_project_row(
     // The row content starts at col 4 (2 indent + 2 connector). Pad
     // any leftover area width with spaces so the selection band
     // covers the whole row.
-    let content_width_estimate =
-        4 + 1 + 1 + 1 + name_width + 1 + hint_width + 2 + right_width;
+    let content_width_estimate = 4 + 1 + 1 + 1 + name_width + 1 + hint_width + 2 + right_width;
     let trailing_pad = usize::from(area_width).saturating_sub(content_width_estimate);
 
     if selected {
@@ -441,10 +431,7 @@ fn push_error_row(lines: &mut Vec<Line<'static>>, error: &str, area_width: u16) 
     let pad: usize = 8;
     let budget = usize::from(area_width).saturating_sub(pad + 2);
     let truncated = truncate_to(error, budget);
-    lines.push(Line::from(vec![
-        Span::raw(" ".repeat(pad)),
-        Span::styled(truncated, style),
-    ]));
+    lines.push(Line::from(vec![Span::raw(" ".repeat(pad)), Span::styled(truncated, style)]));
 }
 
 fn glyph_for_row(
@@ -570,8 +557,7 @@ fn switch_to_project_and_focus(app: &mut App, project_name: &str) {
         );
         return;
     };
-    let spawn_synthetic =
-        SessionKey::from_session_id(format!("__spawn_{resolved_name}__"));
+    let spawn_synthetic = SessionKey::from_session_id(format!("__spawn_{resolved_name}__"));
 
     // Already-spawning bucket: switch to it; KeyRenamed migrates on
     // Connected.
@@ -630,8 +616,7 @@ fn switch_to_project_and_focus(app: &mut App, project_name: &str) {
 /// dispatch a fresh `SpawnProject`. Stays on the launchpad so the
 /// user sees the row flip from `✗` to the spinning glyph.
 fn retry_project(app: &mut App, project_name: &str) {
-    let spawn_synthetic =
-        SessionKey::from_session_id(format!("__spawn_{project_name}__"));
+    let spawn_synthetic = SessionKey::from_session_id(format!("__spawn_{project_name}__"));
     if let Some(workspace) = app.workspace.as_ref() {
         workspace.release_session(&spawn_synthetic);
     }
@@ -696,18 +681,8 @@ mod tests {
     #[test]
     fn format_relative_time_short_intervals() {
         let now = SystemTime::UNIX_EPOCH + Duration::from_secs(10_000);
-        assert_eq!(
-            format_relative_time(now - Duration::from_secs(30), now),
-            "now"
-        );
-        assert_eq!(
-            format_relative_time(now - Duration::from_secs(180), now),
-            "3m"
-        );
-        assert_eq!(
-            format_relative_time(now - Duration::from_secs(7_200), now),
-            "2h"
-        );
+        assert_eq!(format_relative_time(now - Duration::from_secs(30), now), "now");
+        assert_eq!(format_relative_time(now - Duration::from_secs(180), now), "3m");
+        assert_eq!(format_relative_time(now - Duration::from_secs(7_200), now), "2h");
     }
 }
-

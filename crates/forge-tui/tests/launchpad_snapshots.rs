@@ -35,20 +35,14 @@ fn project_view(
 /// Force-set a UiSession bucket with the given lifecycle so the
 /// launchpad picker resolves the row to that state.
 fn register_bucket(app: &mut App, key: &SessionKey, lifecycle: SessionLifecycleState) {
-    let bucket = app
-        .sessions
-        .entry(key.clone())
-        .or_insert_with(|| UiSession::new(key.clone()));
+    let bucket = app.sessions.entry(key.clone()).or_insert_with(|| UiSession::new(key.clone()));
     bucket.lifecycle_state = lifecycle;
 }
 
 /// Convenience: stamp a Failed bucket carrying an error message for
 /// the launchpad's per-row error tail.
 fn register_failed_bucket(app: &mut App, key: &SessionKey, message: &str) {
-    let bucket = app
-        .sessions
-        .entry(key.clone())
-        .or_insert_with(|| UiSession::new(key.clone()));
+    let bucket = app.sessions.entry(key.clone()).or_insert_with(|| UiSession::new(key.clone()));
     bucket.lifecycle_state = SessionLifecycleState::Failed;
     bucket.last_connection_error = Some(message.to_owned());
 }
@@ -62,9 +56,7 @@ fn render_to_lines(app: &mut App, width: u16, height: u16) -> Vec<String> {
         .map(|y| {
             (0..width)
                 .map(|x| {
-                    buffer
-                        .cell((x, y))
-                        .map_or(' ', |c| c.symbol().chars().next().unwrap_or(' '))
+                    buffer.cell((x, y)).map_or(' ', |c| c.symbol().chars().next().unwrap_or(' '))
                 })
                 .collect::<String>()
                 .trim_end()
@@ -154,8 +146,5 @@ fn picker_renders_when_terminal_is_narrow() {
     app.active_view = ActiveView::Launchpad;
     let lines = render_to_lines(&mut app, 80, 24);
     // The wordmark is 43 cells wide; at width 80 it still fits centered.
-    assert!(
-        lines.iter().any(|l| l.contains("█")),
-        "wordmark renders at 80 cols: {lines:?}"
-    );
+    assert!(lines.iter().any(|l| l.contains("█")), "wordmark renders at 80 cols: {lines:?}");
 }

@@ -174,11 +174,8 @@ mod tests {
         SpinnerStyle::Ember,
     ];
 
-    const ALL_AUTOSTART: [LaunchpadAutostart; 3] = [
-        LaunchpadAutostart::Always,
-        LaunchpadAutostart::WaitForPick,
-        LaunchpadAutostart::Never,
-    ];
+    const ALL_AUTOSTART: [LaunchpadAutostart; 3] =
+        [LaunchpadAutostart::Always, LaunchpadAutostart::WaitForPick, LaunchpadAutostart::Never];
 
     #[test]
     fn default_spinner_is_braille() {
