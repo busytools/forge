@@ -474,6 +474,14 @@ fn apply_tool_call_update(
 /// Walk `app.turn_state.tool_calls` and emit a terminal status
 /// update for every still-pending entry. Called from
 /// `apply_result_finalize` when a turn ends.
+///
+/// Persistent `Monitor` calls (those launched with
+/// `raw_input.persistent == true`) are deliberately skipped: by
+/// design they outlive the turn that started them and are only
+/// terminated via `TaskStop` / explicit `KillBash`. Sweeping them
+/// to `Completed` here would visually mark a still-running monitor
+/// as done in both the chat-stream card and the Inspector PROCESSES
+/// section.
 fn finalize_open_tool_calls(app: &mut App, status: &str) {
     use forge_primitives::ToolCallUpdateFields;
 
@@ -481,6 +489,7 @@ fn finalize_open_tool_calls(app: &mut App, status: &str) {
         ts.tool_calls
             .iter()
             .filter(|(_, t)| matches!(t.status.as_str(), "pending" | "in_progress"))
+            .filter(|(_, t)| !raw_input_is_persistent(t.raw_input.as_ref()))
             .map(|(id, _)| id.clone())
             .collect()
     });
@@ -491,6 +500,20 @@ fn finalize_open_tool_calls(app: &mut App, status: &str) {
             ToolCallUpdateFields { status: Some(status.to_owned()), ..Default::default() },
         );
     }
+}
+
+/// True when `raw_input` is `Some` AND carries `"persistent": true`
+/// at the top level. The `is_some` guard matters: an absent
+/// `raw_input` (tool_use observed but body not yet applied) MUST NOT
+/// be treated as non-persistent — that would race against the
+/// out-of-order arrival of the tool_use content block and let a
+/// persistent monitor flip to `Completed` before its inputs land.
+fn raw_input_is_persistent(raw_input: Option<&Value>) -> bool {
+    raw_input
+        .and_then(|v| v.as_object())
+        .and_then(|obj| obj.get("persistent"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
 }
 
 fn handle_system(app: &mut App, msg: Message) {
@@ -928,13 +951,31 @@ fn apply_tool_progress_update(app: &mut App, tool_use_id: &str, name: &str) {
 /// Apply a `TaskNotification` summary to App state — finalises the
 /// matching `tool_use_id` with `completed` status (preserving any
 /// existing terminal `failed`/`killed` status) and updates content.
+///
+/// Persistent monitors (`raw_input.persistent == true`) are
+/// deliberately exempted from the status flip even though their
+/// `summary` content still updates. By design a persistent monitor
+/// keeps streaming after each event notification; flipping its
+/// status to `Completed` per event would mark a still-running watch
+/// as done in chat-stream + Inspector. Wire captures (2026-05-14)
+/// show `Monitor` doesn't actually deliver via `TaskNotification`
+/// in practice — events arrive via `Result` frames with
+/// `origin: task-notification`. This guard remains as defensive
+/// hardening: future CLI versions may route persistent-monitor
+/// events through the same handler, and the cost is one cheap
+/// JSON lookup.
 fn apply_tool_summary_update(app: &mut App, tool_use_id: &str, summary: &str) {
     use forge_primitives::{ToolCallContent, ToolCallUpdateFields};
 
     let Some(base) = app.with_turn_state(|ts| ts.tool_calls.get(tool_use_id).cloned()) else {
         return;
     };
+    let persistent = raw_input_is_persistent(base.raw_input.as_ref());
     let status = if matches!(base.status.as_str(), "failed" | "killed") {
+        base.status
+    } else if persistent {
+        // Keep the persistent monitor visibly running — only the
+        // summary content + raw_output update through.
         base.status
     } else {
         "completed".to_owned()
@@ -1062,6 +1103,61 @@ fn classify_turn_error_kind(
         return TurnErrorClass::Internal;
     }
     TurnErrorClass::Other
+}
+
+#[cfg(test)]
+mod persistent_guard_tests {
+    use super::raw_input_is_persistent;
+    use serde_json::json;
+
+    #[test]
+    fn returns_false_for_none_raw_input() {
+        // CRITICAL: an absent raw_input MUST NOT be treated as
+        // persistent-false implicitly — but it also can't be treated
+        // as persistent-true. The function returns false here, which
+        // is the safe fallback for the `finalize_open_tool_calls`
+        // caller (a tool with no decoded raw_input gets swept normally)
+        // and for `apply_tool_summary_update` (the status-flip path
+        // applies, matching pre-fix behaviour for tools without
+        // raw_input).
+        assert!(!raw_input_is_persistent(None));
+    }
+
+    #[test]
+    fn returns_false_when_persistent_field_missing() {
+        let input = json!({"command": "echo hi", "description": "test"});
+        assert!(!raw_input_is_persistent(Some(&input)));
+    }
+
+    #[test]
+    fn returns_false_when_persistent_field_is_false() {
+        let input = json!({"persistent": false, "command": "ls"});
+        assert!(!raw_input_is_persistent(Some(&input)));
+    }
+
+    #[test]
+    fn returns_true_when_persistent_field_is_true() {
+        let input = json!({"persistent": true, "command": "tail -F /var/log/x"});
+        assert!(raw_input_is_persistent(Some(&input)));
+    }
+
+    #[test]
+    fn returns_false_when_persistent_field_is_non_bool() {
+        // Defensive: if `persistent` is somehow a string (wire drift
+        // or test fixture), the guard treats it as not-persistent
+        // rather than panicking or evaluating truthy.
+        let input = json!({"persistent": "true"});
+        assert!(!raw_input_is_persistent(Some(&input)));
+    }
+
+    #[test]
+    fn returns_false_when_raw_input_is_not_an_object() {
+        // Wire could conceivably emit a non-object value here
+        // (e.g. a literal string for a malformed tool). The guard
+        // must not panic on `as_object()` returning None.
+        let input = json!("not-an-object");
+        assert!(!raw_input_is_persistent(Some(&input)));
+    }
 }
 
 #[cfg(test)]
