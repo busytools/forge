@@ -297,7 +297,7 @@ mod tests {
         std::fs::write(
             dir.join("forge.toml"),
             format!(
-                "[[projects]]\nname = \"forge-test\"\npath = \"{project_path_str}\"\ndefault = true\n\n[[accounts]]\ndisplay_name = \"Subspace\"\nconfig_dir = \"~/.claude-subspace\"\n"
+                "[[projects]]\nname = \"forge-test\"\npath = \"{project_path_str}\"\ndefault = true\naccounts = [\"Subspace\"]\n\n[[accounts]]\ndisplay_name = \"Subspace\"\nconfig_dir = \"~/.claude-subspace\"\n"
             ),
         )
         .expect("write forge.toml");
