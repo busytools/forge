@@ -1166,7 +1166,10 @@ fn append_process_row(
     spans.push(Span::styled(glyph.to_owned(), Style::default().fg(glyph_color)));
     spans.push(Span::raw(" "));
 
-    let candidate_suffix: Option<String> = match (include_memory, process.memory_bytes) {
+    // Suffix is the useful signal — memory for process-backed rows,
+    // Cron metadata for wire-only registrations. Always include it
+    // when set; the headline truncates with `…` to make room.
+    let suffix_text: Option<String> = match (include_memory, process.memory_bytes) {
         (true, Some(bytes)) => Some(format_memory_short(bytes)),
         _ => {
             if process.metadata.is_empty() {
@@ -1176,24 +1179,13 @@ fn append_process_row(
             }
         }
     };
-    // Suffix is auxiliary — drop it if including it would force the
-    // headline to truncate. Better to lose the `· 12 MB` than to
-    // show `…` where the user's process name should be.
-    let chrome_no_suffix = usize::from(PANE_PAD)
+    let suffix_chars = suffix_text.as_ref().map_or(0, |s| 3 + s.chars().count()); // " · " + value
+    let chrome_chars = usize::from(PANE_PAD)
         + tree_chrome_cols
         + 2 // glyph + space
+        + suffix_chars
         + usize::from(PANE_PAD); // right gutter
-    let candidate_chars = candidate_suffix.as_ref().map_or(0, |s| 3 + s.chars().count());
-    let headline_len = process.headline.chars().count();
-    let width_us = usize::from(width);
-    let suffix_text = if headline_len + chrome_no_suffix + candidate_chars <= width_us {
-        candidate_suffix
-    } else {
-        None
-    };
-    let suffix_chars = suffix_text.as_ref().map_or(0, |s| 3 + s.chars().count()); // " · " + value
-    let chrome_chars = chrome_no_suffix + suffix_chars;
-    let headline_budget = width_us.saturating_sub(chrome_chars).max(1);
+    let headline_budget = usize::from(width).saturating_sub(chrome_chars).max(1);
     let headline_fitted = truncate_with_ellipsis(&process.headline, headline_budget);
 
     spans.push(Span::styled(headline_fitted, headline_style));
@@ -1790,7 +1782,7 @@ mod tests {
                 ProcessKind::Cron,
                 "*/5 * * * *",
                 None,
-                "Cron · recurring · durable",
+                "Cron · recurring",
                 ToolCallStatus::Completed,
             ),
         ];

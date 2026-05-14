@@ -200,7 +200,13 @@ fn append_project_rows(
                 Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD),
             ),
         ]));
-        lines.push(Line::default());
+        // `│  ` continuation so the header visually links down to
+        // the first project row's connector instead of floating
+        // disconnected above an empty gap.
+        lines.push(Line::from(vec![
+            Span::raw("  "),
+            Span::styled("\u{2502}  ".to_owned(), Style::default().fg(theme::DIM)),
+        ]));
 
         let row_count = rows.len();
         for (idx, (project, live)) in rows.iter().enumerate() {
@@ -275,15 +281,22 @@ fn append_org_project_row(
         spans.push(Span::raw(" "));
         spans.push(Span::styled(label, name_style));
         spans.push(Span::raw(" ".repeat(label_pad)));
+        // 1-col separator before the button — matches the 1-col
+        // separator before the `time` column on idle rows so the
+        // button + time columns align at the same x position.
         spans.push(Span::raw(" "));
-        // Close affordance: `⏻` power glyph with the emoji
-        // variation selector (U+FE0F) so terminals render it as a
-        // 2-cell coloured emoji. Coloured `STATUS_WARNING` (yellow)
-        // instead of DIM so the glyph reads as a destructive action
-        // affordance and stays visible against the row.
+        // Close affordance: `⏻` power glyph rendered as a chunky
+        // yellow button — black foreground on `STATUS_WARNING`
+        // (yellow) background so the cells fill with colour and
+        // read as a physical button against the row. The internal
+        // ` ⏻ ` padding fills 3 contiguous yellow cells so the
+        // button looks larger than a bare 2-cell emoji glyph.
         spans.push(Span::styled(
-            "\u{23FB}\u{FE0F}".to_owned(),
-            Style::default().fg(theme::STATUS_WARNING).add_modifier(Modifier::BOLD),
+            " \u{23FB} ".to_owned(),
+            Style::default()
+                .fg(Color::Black)
+                .bg(theme::STATUS_WARNING)
+                .add_modifier(Modifier::BOLD),
         ));
         // 2-col right gutter — matches the inspector pane's GIT
         // section right edge. Without this the emoji butts against
@@ -298,11 +311,12 @@ fn append_org_project_row(
             height: 1,
         });
         let row_right = area.x.saturating_add(area.width);
-        // Close button: emoji is 2 cells wide, occupying
-        // (row_right-4)..(row_right-2). The 4-col band runs
-        // (row_right-5)..(row_right-1) for 1-col tolerance on each
-        // side; the rightmost gutter col stays inert.
-        let close_x_start = row_right.saturating_sub(5);
+        // Close button: the ` ⏻ ` chunky-button span is 3 cells
+        // wide, occupying (row_right-5)..(row_right-2). The 5-col
+        // hit band runs (row_right-6)..(row_right-1) for 1-col
+        // tolerance on each side; the rightmost gutter col stays
+        // inert.
+        let close_x_start = row_right.saturating_sub(6);
         let close_x_end = row_right.saturating_sub(1);
         app.pane_hit_targets.push(PaneHitTarget::CloseSession {
             session_key: session_key.clone(),
@@ -341,12 +355,11 @@ fn append_org_project_row(
 
 /// Chrome budget for an org-grouped row:
 /// `<2 PANE_PAD><3 connector><1 glyph><1 sp><name><1 sp><RIGHT col><2 right pad>`
-/// where RIGHT col = 4 cells (2 emoji + 1 tolerance each side for
-/// active) or 3 cells (time column for idle). Pick the wider so
-/// both row variants align in the same name column. = 4 chrome on
-/// the right and 7 on the left ⇒ 11 chrome chars per row.
+/// where RIGHT col = 3 cells (` ⏻ ` button for active rows / 3-char
+/// `Xm`/`Xh`/`Xd` time for idle rows). Total = 7 left chrome + 1 sep
+/// + 3 right col + 2 right pad = 13 chars per row.
 fn name_budget_org_row(area_width: u16) -> usize {
-    usize::from(area_width.saturating_sub(11))
+    usize::from(area_width.saturating_sub(13))
 }
 
 /// Format `activity` as a short relative-time string anchored at

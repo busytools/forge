@@ -80,12 +80,14 @@ fn renders_banner_and_project_row_under_org_header() {
     let lines = render_to_lines(&mut app, &projects, 26, 10);
 
     // Row layout: banner, rule, org header ("Test" — set by
-    // `ProjectView::new_for_test`), blank, project row under tree
-    // connector `└─`.
+    // `ProjectView::new_for_test`), `│` continuation, project row
+    // under tree connector `└─`. The continuation visually links
+    // the header down to the first project rather than floating
+    // disconnected above an empty gap.
     assert!(lines[0].contains("PROJECTS"), "banner: {:?}", lines[0]);
     assert!(lines[1].contains('─'), "rule: {:?}", lines[1]);
     assert!(lines[2].contains("Test"), "org header: {:?}", lines[2]);
-    assert!(lines[3].is_empty(), "blank after header: {:?}", lines[3]);
+    assert!(lines[3].contains('\u{2502}'), "continuation after header: {:?}", lines[3]);
     let project_row = lines.iter().find(|l| l.contains("forge")).expect("project row");
     assert!(project_row.contains('\u{2514}'), "tree connector \u{2514}: {project_row:?}");
 
@@ -162,14 +164,14 @@ fn medium_tier_truncates_long_project_labels() {
     app.sessions.insert(lead_key.clone(), UiSession::new(lead_key.clone()));
     app.active_session_key = Some(lead_key);
 
-    // Medium tier renders in a 20ch-wide pane.
-    let lines = render_to_lines(&mut app, &projects, 20, 20);
+    // Medium tier renders in a 24ch-wide pane (PANE_WIDTH_MEDIUM).
+    let lines = render_to_lines(&mut app, &projects, 24, 20);
 
-    // Project header truncated. Medium-tier active-row chrome is 10
-    // chars (`<2 indent><1 glyph><1 sp><name><1 sp><3 [×]><2 gutter>`),
-    // so at width 20 the name budget is 10. 9-char prefix + ellipsis
-    // = "subspace-…". The longest substring of the original we expect
-    // to still see is "subspace".
+    // Project header truncated. Org-grouped row chrome is 13 chars
+    // (`<2 pad><3 connector><1 glyph><1 sp><name><1 sp><3 button>
+    // <2 gutter>`), so at width 24 the name budget is 11. 10-char
+    // prefix + ellipsis = "subspace-c…". The longest substring of
+    // the original we expect to still see is "subspace".
     let any_truncated_project = lines.iter().any(|l| l.contains('…') && l.contains("subspace"));
     assert!(
         any_truncated_project,
