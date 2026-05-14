@@ -16,6 +16,7 @@ fn write_default_config(dir: &std::path::Path) {
 name = "forge"
 path = "~/Projects/forge"
 default = true
+accounts = ["Subspace"]
 
 [[accounts]]
 display_name = "Subspace"

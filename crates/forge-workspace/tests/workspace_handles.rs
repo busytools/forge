@@ -17,7 +17,13 @@ use forge_workspace::{SessionKey, SessionLaunchSettings, SessionTarget, Workspac
 use tempfile::tempdir;
 
 #[tokio::test]
-async fn dual_account_spawns_bind_distinct_config_dirs() {
+async fn cold_cache_dual_spawns_pin_to_first_in_allow_list() {
+    // The pinned `accounts = [...]` order is the determinism source
+    // when the usage cache is cold. Both spawns hit Subspace because
+    // it's first in the pin; the `Granite` entry is eligible but
+    // loses on idx tie-break (unknown-first sorts by enumerate order
+    // in `allowed`). Under live usage data, the choice would
+    // depend on remaining budget per account.
     let dir = tempdir().expect("tempdir");
     fs::write(
         dir.path().join("forge.toml"),
@@ -26,6 +32,7 @@ async fn dual_account_spawns_bind_distinct_config_dirs() {
 name = "forge"
 path = "~/Projects/forge"
 default = true
+accounts = ["Subspace", "Granite"]
 
 [[accounts]]
 display_name = "Subspace"
@@ -40,21 +47,18 @@ config_dir = "/tmp/forge-test-granite"
 
     let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
 
-    // First spawn — LRU picks Granite (alphabetical tie-break, no
-    // usage yet: Granite < Subspace).
     let h1 = workspace
         .get_agent_handle(SessionTarget::Default, SessionLaunchSettings::default())
         .await
         .expect("first spawn");
     assert_eq!(
         h1.config_dir_for_test(),
-        PathBuf::from("/tmp/forge-test-granite"),
-        "first spawn binds to Granite's config_dir",
+        PathBuf::from("/tmp/forge-test-subspace"),
+        "first spawn binds to Subspace's config_dir (first in pin)",
     );
 
-    // Second spawn — Subspace is now LRU since Granite was just used.
-    // Use a distinct SessionTarget so the pool key differs and a fresh
-    // spawn actually happens.
+    // Second spawn under a distinct SessionTarget — same pin, same
+    // cold cache, picks Subspace again deterministically.
     let other = SessionKey::from_str_for_test("dual-account-other");
     let h2 = workspace
         .get_agent_handle(SessionTarget::Session(other), SessionLaunchSettings::default())
@@ -63,7 +67,7 @@ config_dir = "/tmp/forge-test-granite"
     assert_eq!(
         h2.config_dir_for_test(),
         PathBuf::from("/tmp/forge-test-subspace"),
-        "second spawn binds to Subspace's config_dir",
+        "second spawn also binds to Subspace's config_dir under cold cache",
     );
 }
 
@@ -77,6 +81,7 @@ async fn projects_pane_visibility_round_trips_through_forge_state() {
 name = "forge"
 path = "~/Projects/forge"
 default = true
+accounts = ["Subspace"]
 
 [[accounts]]
 display_name = "Subspace"
@@ -105,10 +110,12 @@ config_dir = "/tmp/forge-test-pane-vis"
 }
 
 #[tokio::test]
-async fn ui_toggle_preserves_account_picker_state() {
+async fn ui_toggle_writes_state_file() {
     // Toggling the Projects-pane visibility writes the full
-    // forge-state.toml; the [accounts]/[selection] sections that the
-    // picker writes must NOT be wiped when the UI toggle fires.
+    // forge-state.toml. The selection-state sections that older
+    // versions persisted are gone — the account picker now drives
+    // off the in-memory usage cache, so there's no per-spawn
+    // persistence to preserve. Just verify the UI section lands.
     let dir = tempdir().expect("tempdir");
     fs::write(
         dir.path().join("forge.toml"),
@@ -117,39 +124,29 @@ async fn ui_toggle_preserves_account_picker_state() {
 name = "forge"
 path = "~/Projects/forge"
 default = true
+accounts = ["Subspace"]
 
 [[accounts]]
 display_name = "Subspace"
 config_dir = "/tmp/forge-test-ui-toggle-subspace"
-
-[[accounts]]
-display_name = "Granite"
-config_dir = "/tmp/forge-test-ui-toggle-granite"
 "#,
     )
     .expect("write forge.toml");
 
     let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
-
-    // Spawn so the picker writes [accounts].last_used_at.
-    let _ = workspace
-        .get_agent_handle(SessionTarget::Default, SessionLaunchSettings::default())
-        .await
-        .expect("spawn");
-
-    // Now toggle the Projects pane — full state file gets rewritten.
     workspace.set_projects_pane_visible(false);
 
     let state_text =
         std::fs::read_to_string(dir.path().join("forge-state.toml")).expect("read state");
-    assert!(state_text.contains("last_used_at"), "account picker state preserved on UI write");
     assert!(state_text.contains("projects_pane_visible"), "ui section written");
 }
 
 #[tokio::test]
-async fn picker_writes_preserve_ui_state() {
-    // Inverse direction: an account-picker write must NOT clobber a
-    // previously-set Projects-pane visibility.
+async fn ui_state_round_trips_across_spawns() {
+    // Verify a Projects-pane visibility set BEFORE a spawn survives
+    // the spawn (which used to also write the file). Picker writes
+    // are gone but the UI state still round-trips through the
+    // shared `persist_state` path.
     let dir = tempdir().expect("tempdir");
     fs::write(
         dir.path().join("forge.toml"),
@@ -158,6 +155,7 @@ async fn picker_writes_preserve_ui_state() {
 name = "forge"
 path = "~/Projects/forge"
 default = true
+accounts = ["Subspace"]
 
 [[accounts]]
 display_name = "Subspace"
@@ -169,7 +167,6 @@ config_dir = "/tmp/forge-test-picker-preserves-ui"
     let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
     workspace.set_projects_pane_visible(false);
 
-    // Now spawn — picker writes forge-state.toml.
     let _ = workspace
         .get_agent_handle(SessionTarget::Default, SessionLaunchSettings::default())
         .await
@@ -177,7 +174,7 @@ config_dir = "/tmp/forge-test-picker-preserves-ui"
 
     drop(workspace);
     let reloaded = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("re-load"));
-    assert!(!reloaded.projects_pane_visible(), "picker write did not clobber UI state");
+    assert!(!reloaded.projects_pane_visible(), "UI state survives reload");
 }
 
 #[tokio::test]
@@ -190,6 +187,7 @@ async fn picker_display_name_reaches_bridge() {
 name = "forge"
 path = "~/Projects/forge"
 default = true
+accounts = ["Subspace"]
 
 [[accounts]]
 display_name = "Subspace"
@@ -204,20 +202,19 @@ config_dir = "/tmp/forge-test-display-granite"
 
     let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
 
-    // First spawn — LRU picks Granite (alphabetical tie-break, no
-    // usage yet: Granite < Subspace). Bridge should carry Granite's
-    // display_name.
+    // Cold cache → both spawns pick Subspace (first in pin). The
+    // important assertion here is that the bridge actually carries
+    // a display_name through to the AgentHandle.
     let h1 = workspace
         .get_agent_handle(SessionTarget::Default, SessionLaunchSettings::default())
         .await
         .expect("first spawn");
     assert_eq!(
         h1.display_name().as_deref(),
-        Some("Granite"),
-        "first spawn binds to Granite's display_name",
+        Some("Subspace"),
+        "first spawn binds to Subspace's display_name (first in pin, cold cache)",
     );
 
-    // Second spawn under a fresh SessionTarget — Subspace is now LRU.
     let other = SessionKey::from_str_for_test("display-name-other");
     let h2 = workspace
         .get_agent_handle(SessionTarget::Session(other), SessionLaunchSettings::default())
@@ -226,6 +223,6 @@ config_dir = "/tmp/forge-test-display-granite"
     assert_eq!(
         h2.display_name().as_deref(),
         Some("Subspace"),
-        "second spawn binds to Subspace's display_name",
+        "second spawn also binds to Subspace under cold cache",
     );
 }

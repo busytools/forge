@@ -1,4 +1,12 @@
 //! `forge.toml` schema + loader.
+//!
+//! **Selection policy:** there is exactly one — every account spawn
+//! picks the account with the most remaining usage budget (the
+//! account whose `min(5h_remaining, 7d_remaining)` is highest)
+//! within the project's pinned `accounts = [...]` subset. No LRU,
+//! no round-robin, no fallback to other accounts when the pinned
+//! subset is exhausted. `[[projects]].accounts` is **required** on
+//! every project entry.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -13,8 +21,6 @@ struct ForgeToml {
     projects: Vec<ProjectEntry>,
     #[serde(default)]
     accounts: Vec<AccountEntry>,
-    #[serde(default)]
-    selection: SelectionEntry,
 }
 
 #[derive(Debug, Deserialize)]
@@ -23,14 +29,11 @@ struct ProjectEntry {
     path: String,
     #[serde(default)]
     default: bool,
-    /// Optional whitelist of account `display_name`s this project is
-    /// allowed to spawn under. Absent / unset → all `[[accounts]]`
-    /// available (today's behaviour). Each name must resolve to a
-    /// defined account or the load errors with
-    /// [`crate::error::WorkspaceError::UnknownProjectAccount`].
-    /// Empty `accounts = []` is rejected as `EmptyProjectAccounts`.
-    #[serde(default)]
-    accounts: Option<Vec<String>>,
+    /// Whitelist of account `display_name`s this project may spawn
+    /// under. Required (load errors otherwise); the picker stays
+    /// within this subset always — there is no fallback to other
+    /// accounts.
+    accounts: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -39,28 +42,10 @@ struct AccountEntry {
     config_dir: String,
 }
 
-#[derive(Debug, Deserialize, Default)]
-struct SelectionEntry {
-    #[serde(default)]
-    policy: Option<String>,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) enum SelectionPolicy {
-    #[default]
-    LeastRecentlyUsed,
-    RoundRobin,
-}
-
 #[derive(Debug, Clone)]
 pub(crate) struct LoadedAccount {
     pub display_name: String,
     pub config_dir: PathBuf,
-}
-
-#[derive(Debug, Clone, Default)]
-pub(crate) struct SelectionConfig {
-    pub policy: SelectionPolicy,
 }
 
 #[derive(Debug, Clone)]
@@ -68,7 +53,6 @@ pub(crate) struct LoadedConfig {
     pub projects: Vec<LoadedProject>,
     pub default_index: usize,
     pub accounts: Vec<LoadedAccount>,
-    pub selection: SelectionConfig,
 }
 
 #[derive(Debug, Clone)]
@@ -79,12 +63,11 @@ pub(crate) struct LoadedProject {
     /// (e.g. `~/Projects/forge` with `~` un-expanded). Use `path` for
     /// filesystem access; this for human-readable output.
     pub display_path: String,
-    /// Whitelist of account display names this project is allowed to
-    /// spawn under. `None` → all `[[accounts]]` are eligible (today's
-    /// behaviour). `Some(list)` → selection policy applies only to
-    /// the named subset. Validated at load: each name must exist in
-    /// `[[accounts]]`; an empty list is rejected.
-    pub accounts: Option<Vec<String>>,
+    /// Account `display_name`s this project may spawn under. Always
+    /// non-empty (load enforces). Picker stays within this subset;
+    /// over-limit accounts in here still get picked — there is no
+    /// fallback to accounts outside the subset.
+    pub accounts: Vec<String>,
 }
 
 impl LoadedConfig {
@@ -99,12 +82,7 @@ impl LoadedConfig {
     /// `domain_handles` access never reach those paths.
     #[cfg(feature = "testing")]
     pub(crate) fn empty_for_test() -> Self {
-        Self {
-            projects: Vec::new(),
-            default_index: 0,
-            accounts: Vec::new(),
-            selection: SelectionConfig::default(),
-        }
+        Self { projects: Vec::new(), default_index: 0, accounts: Vec::new() }
     }
 }
 
@@ -131,8 +109,7 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
     // validated — we can't cross-reference `project.accounts` until
     // the account set is known.
     let mut default_index: Option<usize> = None;
-    let mut project_account_pins: Vec<Option<Vec<String>>> =
-        Vec::with_capacity(parsed.projects.len());
+    let mut project_account_pins: Vec<Vec<String>> = Vec::with_capacity(parsed.projects.len());
     let mut staged_projects: Vec<LoadedProject> = Vec::with_capacity(parsed.projects.len());
     for (i, entry) in parsed.projects.into_iter().enumerate() {
         if entry.default {
@@ -146,23 +123,20 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
                 default_index = Some(i);
             }
         }
-        // Reject the obviously-mistaken empty list up front so we can
-        // surface a clean error without dragging it into the
-        // cross-validation step.
-        if entry.accounts.as_ref().is_some_and(Vec::is_empty) {
+        if entry.accounts.is_empty() {
             return Err(WorkspaceError::EmptyProjectAccounts {
                 path: path.clone(),
                 project: entry.name,
             });
         }
-        project_account_pins.push(entry.accounts.clone());
+        project_account_pins.push(entry.accounts);
         staged_projects.push(LoadedProject {
             name: entry.name,
             path: expand_home(&entry.path),
             display_path: entry.path,
             // Fill in after account validation; the staging field
             // here is a placeholder.
-            accounts: None,
+            accounts: Vec::new(),
         });
     }
 
@@ -186,41 +160,28 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
         });
     }
 
-    // Cross-validate each project's `accounts = [...]` pin (if any)
-    // against the parsed account set. Unknown names error with the
-    // full valid-name list so the message is actionable.
+    // Cross-validate each project's `accounts = [...]` pin against
+    // the parsed account set. Unknown names error with the full
+    // valid-name list so the message is actionable.
     let mut projects = Vec::with_capacity(staged_projects.len());
-    for (mut project, pin) in staged_projects.into_iter().zip(project_account_pins) {
-        if let Some(pinned) = pin {
-            for name in &pinned {
-                if !seen_account_names.contains(name) {
-                    let mut valid: Vec<&str> =
-                        seen_account_names.iter().map(String::as_str).collect();
-                    valid.sort_unstable();
-                    return Err(WorkspaceError::UnknownProjectAccount {
-                        path,
-                        project: project.name,
-                        account: name.clone(),
-                        valid: valid.join(", "),
-                    });
-                }
+    for (mut project, pinned) in staged_projects.into_iter().zip(project_account_pins) {
+        for name in &pinned {
+            if !seen_account_names.contains(name) {
+                let mut valid: Vec<&str> = seen_account_names.iter().map(String::as_str).collect();
+                valid.sort_unstable();
+                return Err(WorkspaceError::UnknownProjectAccount {
+                    path,
+                    project: project.name,
+                    account: name.clone(),
+                    valid: valid.join(", "),
+                });
             }
-            project.accounts = Some(pinned);
         }
+        project.accounts = pinned;
         projects.push(project);
     }
 
-    let selection = match parsed.selection.policy.as_deref() {
-        None | Some("least_recently_used") => {
-            SelectionConfig { policy: SelectionPolicy::LeastRecentlyUsed }
-        }
-        Some("round_robin") => SelectionConfig { policy: SelectionPolicy::RoundRobin },
-        Some(other) => {
-            return Err(WorkspaceError::UnknownSelectionPolicy { path, value: other.to_owned() });
-        }
-    };
-
-    Ok(LoadedConfig { projects, default_index, accounts, selection })
+    Ok(LoadedConfig { projects, default_index, accounts })
 }
 
 fn expand_home(path: &str) -> PathBuf {
@@ -252,10 +213,12 @@ mod tests {
 name = "forge"
 path = "~/Projects/forge"
 default = true
+accounts = ["Subspace"]
 
 [[projects]]
 name = "aware"
 path = "~/Projects/aware"
+accounts = ["Subspace"]
 
 [[accounts]]
 display_name = "Subspace"
@@ -294,6 +257,11 @@ config_dir = "~/.claude-subspace"
 [[projects]]
 name = "forge"
 path = "~/Projects/forge"
+accounts = ["Subspace"]
+
+[[accounts]]
+display_name = "Subspace"
+config_dir = "~/.claude-subspace"
 "#,
         );
         let err = load_from_dir(dir.path()).expect_err("no-default should error");
@@ -310,11 +278,13 @@ path = "~/Projects/forge"
 name = "forge"
 path = "~/Projects/forge"
 default = true
+accounts = ["Subspace"]
 
 [[projects]]
 name = "aware"
 path = "~/Projects/aware"
 default = true
+accounts = ["Subspace"]
 
 [[accounts]]
 display_name = "Subspace"
@@ -333,14 +303,14 @@ config_dir = "~/.claude-subspace"
             r#"
 [[projects]]
 name = "forge"
-"#, // missing `path`
+"#, // missing `path` + `accounts`
         );
         let err = load_from_dir(dir.path()).expect_err("missing field should error");
         assert!(matches!(err, WorkspaceError::ConfigParse { .. }));
     }
 
     #[test]
-    fn parses_valid_accounts_and_selection() {
+    fn missing_accounts_field_returns_config_parse() {
         let dir = tempdir().expect("tempdir");
         write_config(
             dir.path(),
@@ -353,13 +323,31 @@ default = true
 [[accounts]]
 display_name = "Subspace"
 config_dir = "~/.claude-subspace"
+"#, // missing `accounts` on the project
+        );
+        let err = load_from_dir(dir.path()).expect_err("missing accounts should error");
+        assert!(matches!(err, WorkspaceError::ConfigParse { .. }));
+    }
+
+    #[test]
+    fn parses_valid_accounts() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[projects]]
+name = "forge"
+path = "~/Projects/forge"
+default = true
+accounts = ["Subspace", "Granite"]
+
+[[accounts]]
+display_name = "Subspace"
+config_dir = "~/.claude-subspace"
 
 [[accounts]]
 display_name = "Granite"
 config_dir = "~/.claude-granite"
-
-[selection]
-policy = "round_robin"
 "#,
         );
 
@@ -368,7 +356,6 @@ policy = "round_robin"
         assert_eq!(config.accounts[0].display_name, "Subspace");
         let home = dirs::home_dir().expect("home");
         assert_eq!(config.accounts[0].config_dir, home.join(".claude-subspace"));
-        assert_eq!(config.selection.policy, SelectionPolicy::RoundRobin);
     }
 
     #[test]
@@ -381,6 +368,7 @@ policy = "round_robin"
 name = "forge"
 path = "~/Projects/forge"
 default = true
+accounts = ["Subspace"]
 "#,
         );
         let err = load_from_dir(dir.path()).expect_err("missing accounts should error");
@@ -397,6 +385,7 @@ default = true
 name = "forge"
 path = "~/Projects/forge"
 default = true
+accounts = ["Subspace"]
 
 [[accounts]]
 display_name = "Subspace"
@@ -409,31 +398,6 @@ config_dir = "~/.claude-subspace-other"
         );
         let err = load_from_dir(dir.path()).expect_err("duplicate should error");
         assert!(matches!(err, WorkspaceError::DuplicateAccount { name, .. } if name == "Subspace"));
-    }
-
-    #[test]
-    fn unknown_selection_policy_errors() {
-        let dir = tempdir().expect("tempdir");
-        write_config(
-            dir.path(),
-            r#"
-[[projects]]
-name = "forge"
-path = "~/Projects/forge"
-default = true
-
-[[accounts]]
-display_name = "Subspace"
-config_dir = "~/.claude-subspace"
-
-[selection]
-policy = "weird"
-"#,
-        );
-        let err = load_from_dir(dir.path()).expect_err("unknown policy should error");
-        assert!(
-            matches!(err, WorkspaceError::UnknownSelectionPolicy { value, .. } if value == "weird")
-        );
     }
 
     #[test]
@@ -458,30 +422,7 @@ config_dir = "~/.claude-granite"
 "#,
         );
         let config = load_from_dir(dir.path()).expect("happy path");
-        assert_eq!(
-            config.default_project().accounts.as_deref(),
-            Some(&["Subspace".to_owned(), "Granite".to_owned()][..]),
-        );
-    }
-
-    #[test]
-    fn project_accounts_pin_unset_means_no_restriction() {
-        let dir = tempdir().expect("tempdir");
-        write_config(
-            dir.path(),
-            r#"
-[[projects]]
-name = "forge"
-path = "~/Projects/forge"
-default = true
-
-[[accounts]]
-display_name = "Subspace"
-config_dir = "~/.claude-subspace"
-"#,
-        );
-        let config = load_from_dir(dir.path()).expect("happy path");
-        assert!(config.default_project().accounts.is_none());
+        assert_eq!(config.default_project().accounts, vec!["Subspace", "Granite"]);
     }
 
     #[test]
@@ -560,29 +501,6 @@ config_dir = "~/.claude-granite"
 "#,
         );
         let config = load_from_dir(dir.path()).expect("happy path");
-        assert_eq!(
-            config.default_project().accounts.as_deref(),
-            Some(&["Subspace".to_owned()][..]),
-        );
-    }
-
-    #[test]
-    fn selection_defaults_to_lru_when_missing() {
-        let dir = tempdir().expect("tempdir");
-        write_config(
-            dir.path(),
-            r#"
-[[projects]]
-name = "forge"
-path = "~/Projects/forge"
-default = true
-
-[[accounts]]
-display_name = "Subspace"
-config_dir = "~/.claude-subspace"
-"#,
-        );
-        let config = load_from_dir(dir.path()).expect("happy path");
-        assert_eq!(config.selection.policy, SelectionPolicy::LeastRecentlyUsed);
+        assert_eq!(config.default_project().accounts, vec!["Subspace"]);
     }
 }

@@ -1,74 +1,72 @@
-use forge_workspace::cloud::{cli, oauth};
-
-use crate::app::{App, UsageSnapshot, UsageSourceKind, UsageSourceMode, UsageWindow};
-use forge_workspace::{SessionKey, SessionUpdate};
-use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
-/// How long a usage snapshot stays "fresh" before
-/// [`request_refresh_if_needed`] will trigger a re-fetch. The
-/// render loop in `app.rs` calls `request_refresh_if_needed` every
-/// tick; the TTL gates how often that call actually spawns a fetch
-/// task. 2 minutes is a compromise between "panel feels live" and
-/// "don't hammer Anthropic's usage endpoint".
-const USAGE_REFRESH_TTL: Duration = Duration::from_secs(120);
+use crate::app::{App, UsageSnapshot, UsageSourceKind, UsageWindow};
+use forge_workspace::SessionKey;
 
-struct UsageRefreshFailure {
-    source: UsageSourceKind,
-    message: String,
-}
-
+/// Pull the latest cached usage snapshot for the active session's
+/// account out of the workspace's account-usage pool, populating
+/// `UsageState` on the active session. The pool is refreshed every
+/// 30 s by the workspace's background poller; this function is
+/// purely a sync read-and-copy — no fetch task, no TTL logic.
+///
+/// Historical note: this used to spawn a per-session OAuth fetch on
+/// a 120 s TTL. That path is retired — the workspace now owns the
+/// usage cache as the single source of truth and polls all
+/// configured accounts on a shared cadence. See `Workspace::start_usage_poller`.
 pub(crate) fn request_refresh_if_needed(app: &mut App) {
-    if app.usage().in_flight {
-        return;
+    let Some(workspace) = app.workspace.as_ref() else { return };
+    let Some(name) = app.active_account_display_name() else { return };
+    let snapshot = workspace.usage_for(&name);
+    let slot = app.usage_mut();
+    let new_source = snapshot.as_ref().map(|s| s.source);
+    let changed = !same_snapshot(slot.snapshot.as_ref(), snapshot.as_ref());
+    slot.snapshot = snapshot;
+    slot.in_flight = false;
+    slot.last_error = None;
+    slot.last_attempted_source = new_source;
+    if changed {
+        app.needs_redraw = true;
     }
-    if app.usage().snapshot.as_ref().is_some_and(is_snapshot_fresh) {
-        return;
-    }
-    request_refresh(app);
 }
 
+/// Manual-refresh entry point kept for callers (welcome / settings
+/// surfaces). Same shape as the if-needed variant — the workspace
+/// pool is the only source of usage now, so a "manual refresh"
+/// just re-reads it. The workspace poller's 30 s cadence is the
+/// floor on how stale a snapshot can be.
 pub(crate) fn request_refresh(app: &mut App) {
-    if app.usage().in_flight || tokio::runtime::Handle::try_current().is_err() {
-        return;
-    }
+    request_refresh_if_needed(app);
+}
 
-    // Capture the bucket key BEFORE the fetch fires so the result
-    // routes to the right session even if the user has switched
-    // active bucket by the time the fetch lands. `request_refresh`
-    // is a no-op when there's no active session, so the unwrap is
-    // safe here — but bail defensively just in case.
-    let Some(session_key) = app.active_session_key.clone() else {
-        return;
-    };
-
-    apply_refresh_started_for(app, &session_key);
-
-    let event_tx = app.update_tx.clone();
-    let source_mode = app.usage().active_source;
-    let cwd_raw = app.cwd_raw();
-    // Optional — the CLI fallback path doesn't need a workspace, and
-    // tests sometimes drive the lifecycle without one. The OAuth
-    // path bails with a clear "no connection" error when the
-    // workspace + active session can't be resolved.
-    let workspace_key = app.workspace.as_ref().map(|ws| (Arc::clone(ws), session_key.clone()));
-
-    tokio::task::spawn_local(async move {
-        let _ = event_tx.send(SessionUpdate::UsageRefreshStarted { key: session_key.clone() });
-        match refresh_snapshot(source_mode, cwd_raw, workspace_key.as_ref()).await {
-            Ok(snapshot) => {
-                let _ = event_tx
-                    .send(SessionUpdate::UsageSnapshotReceived { key: session_key, snapshot });
-            }
-            Err(error) => {
-                let _ = event_tx.send(SessionUpdate::UsageRefreshFailed {
-                    key: session_key,
-                    message: error.message,
-                    source: error.source,
-                });
-            }
+/// Compare two `UsageSnapshot` options for equality on the fields
+/// the bottom panel renders. `Eq`/`PartialEq` isn't derived on the
+/// snapshot type (timestamps + labels + nested windows), so we do a
+/// targeted check here: same source + identical utilisation values
+/// across the 5h and 7d windows. Used to gate `needs_redraw` so a
+/// no-change refresh doesn't repaint the frame.
+fn same_snapshot(a: Option<&UsageSnapshot>, b: Option<&UsageSnapshot>) -> bool {
+    match (a, b) {
+        (None, None) => true,
+        (Some(a), Some(b)) => {
+            a.source == b.source
+                && window_eq(a.five_hour.as_ref(), b.five_hour.as_ref())
+                && window_eq(a.seven_day.as_ref(), b.seven_day.as_ref())
+                && window_eq(a.seven_day_opus.as_ref(), b.seven_day_opus.as_ref())
+                && window_eq(a.seven_day_sonnet.as_ref(), b.seven_day_sonnet.as_ref())
         }
-    });
+        _ => false,
+    }
+}
+
+fn window_eq(a: Option<&UsageWindow>, b: Option<&UsageWindow>) -> bool {
+    match (a, b) {
+        (None, None) => true,
+        (Some(a), Some(b)) => {
+            (a.utilization - b.utilization).abs() < f64::EPSILON
+                && a.resets_at == b.resets_at
+        }
+        _ => false,
+    }
 }
 
 pub(crate) fn apply_refresh_started_for(app: &mut App, key: &SessionKey) {
@@ -138,10 +136,6 @@ pub(crate) fn format_window_reset(window: &UsageWindow) -> Option<String> {
     if description.is_empty() { None } else { Some(description.to_owned()) }
 }
 
-fn is_snapshot_fresh(snapshot: &UsageSnapshot) -> bool {
-    snapshot.fetched_at.elapsed().is_ok_and(|age| age < USAGE_REFRESH_TTL)
-}
-
 fn format_remaining_until(target: SystemTime) -> String {
     let Ok(remaining) = target.duration_since(SystemTime::now()) else {
         return "< 1 minute".to_owned();
@@ -166,69 +160,6 @@ fn format_remaining_until(target: SystemTime) -> String {
         return format!("{hours}h {minutes}m");
     }
     format!("{minutes}m")
-}
-
-async fn refresh_snapshot(
-    source_mode: UsageSourceMode,
-    cwd_raw: String,
-    workspace_key: Option<&(Arc<forge_workspace::Workspace>, forge_workspace::SessionKey)>,
-) -> Result<UsageSnapshot, UsageRefreshFailure> {
-    match source_mode {
-        UsageSourceMode::Oauth => fetch_oauth_via_bridge(workspace_key).await,
-        UsageSourceMode::Cli => cli::fetch_snapshot(cwd_raw)
-            .await
-            .map_err(|message| UsageRefreshFailure { source: UsageSourceKind::Cli, message }),
-        UsageSourceMode::Auto => refresh_snapshot_auto(cwd_raw, workspace_key).await,
-    }
-}
-
-async fn fetch_oauth_via_bridge(
-    workspace_key: Option<&(Arc<forge_workspace::Workspace>, forge_workspace::SessionKey)>,
-) -> Result<UsageSnapshot, UsageRefreshFailure> {
-    let Some((workspace, key)) = workspace_key else {
-        return Err(UsageRefreshFailure {
-            source: UsageSourceKind::Oauth,
-            message: "Bridge connection required for OAuth usage fetch.".to_owned(),
-        });
-    };
-    let payload = workspace
-        .oauth_usage(key)
-        .await
-        .map_err(|message| UsageRefreshFailure { source: UsageSourceKind::Oauth, message })?;
-    oauth::snapshot_from_payload(payload).map_err(|error| UsageRefreshFailure {
-        source: UsageSourceKind::Oauth,
-        message: error.into_message(),
-    })
-}
-
-async fn refresh_snapshot_auto(
-    _cwd_raw: String,
-    workspace_key: Option<&(Arc<forge_workspace::Workspace>, forge_workspace::SessionKey)>,
-) -> Result<UsageSnapshot, UsageRefreshFailure> {
-    // Auto = OAuth-only.
-    //
-    // The CLI fallback (`claude /usage`) used to fire here when OAuth
-    // failed for any transient reason. Each invocation spawned a fresh
-    // `claude` subprocess, which writes a single-shot `.jsonl` session
-    // file into the project's session directory under `<config_dir>/
-    // projects/`. With the panel polling usage on a tick, those files
-    // accumulated rapidly (100+ in a few hours) and poisoned both the
-    // lead-session resolution and the `/resume` picker. Dropped to
-    // prevent the side effect; OAuth failures now surface as a usage
-    // refresh error rather than silently spawning subprocess sessions.
-    let oauth_result = match workspace_key {
-        Some((workspace, key)) => match workspace.oauth_usage(key).await {
-            Ok(payload) => oauth::snapshot_from_payload(payload),
-            Err(message) => Err(oauth::OauthFetchError::Unavailable(message)),
-        },
-        None => Err(oauth::OauthFetchError::Unavailable(
-            "Bridge connection required for OAuth usage fetch.".to_owned(),
-        )),
-    };
-    oauth_result.map_err(|error| UsageRefreshFailure {
-        source: UsageSourceKind::Oauth,
-        message: error.into_message(),
-    })
 }
 
 #[cfg(test)]

@@ -32,9 +32,6 @@ pub enum WorkspaceError {
     #[error("duplicate account display_name '{name}' in forge.toml at {}", path.display())]
     DuplicateAccount { path: PathBuf, name: String },
 
-    #[error("unknown [selection].policy '{value}' in forge.toml at {} (expected 'least_recently_used' or 'round_robin')", path.display())]
-    UnknownSelectionPolicy { path: PathBuf, value: String },
-
     #[error("no project named '{name}' in forge.toml at {}", path.display())]
     ProjectNotFound { name: String, path: PathBuf },
 

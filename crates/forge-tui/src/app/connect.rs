@@ -79,6 +79,11 @@ pub fn create_app(cli: &Cli, workspace: Arc<forge_workspace::Workspace>) -> App 
     crate::app::git_diff::spawn_periodic_timer(git_diff_event_tx.clone());
     crate::app::cli_version::spawn_fetch(Arc::clone(&workspace), cli_version_event_tx.clone());
     crate::app::process_scanner::spawn_ticker(process_scan_event_tx.clone());
+    // Kick off the workspace's 30s account-usage poller. Fetches OAuth
+    // usage for every [[accounts]] entry; results land in the
+    // workspace's account-usage cache and the TUI's bottom panel
+    // reads from there via `Workspace::usage_for`.
+    workspace.start_usage_poller();
     let perf_path = match crate::logging::resolve_perf_path(cli) {
         Ok(path) => path,
         Err(err) => {

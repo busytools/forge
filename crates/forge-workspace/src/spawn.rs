@@ -200,6 +200,7 @@ mod tests {
 name = "forge"
 path = "~/Projects/forge"
 default = true
+accounts = ["Subspace"]
 
 [[accounts]]
 display_name = "Subspace"
