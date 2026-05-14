@@ -169,6 +169,15 @@ impl Workspace {
         self.config.orgs.iter().map(|org| (org.name.clone(), org.accounts.clone())).collect()
     }
 
+    /// Snapshot of the `[ui]` section from `forge.toml`. All fields
+    /// have defaults so callers can use the result without worrying
+    /// about whether the section was present in the config file.
+    /// Cheap clone — the struct is shallow.
+    #[must_use]
+    pub fn ui_settings(&self) -> crate::ui::UiSettings {
+        self.config.ui.clone()
+    }
+
     /// Return the names of all projects that should spawn at forge
     /// launch (`auto_start = true` OR `focus = true`). The
     /// `focus = true` project (if any) is returned FIRST so the
