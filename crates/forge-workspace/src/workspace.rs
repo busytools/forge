@@ -1037,6 +1037,44 @@ impl Workspace {
         forge_agent::env::cli_version::fetch_info().await
     }
 
+    /// OS PID of the `claude` subprocess bound to `key`. Returns
+    /// `None` when the session has no live client (pre-spawn /
+    /// post-disconnect / synthetic spawn bucket). The PID is stable
+    /// for the lifetime of the subprocess, so consumers (e.g. the
+    /// Inspector pane's PROCESSES OS walk) can cache snapshots
+    /// keyed off this value.
+    #[must_use]
+    pub fn claude_pid(&self, key: &SessionKey) -> Option<u32> {
+        self.agent_handle_for(key).and_then(|handle| handle.claude_pid())
+    }
+
+    /// Walk the descendants of `claude_pid` at the OS level and
+    /// return a sorted snapshot for the Inspector pane's PROCESSES
+    /// section. Delegates to
+    /// [`forge_agent::env::processes::scan`] — exists as a
+    /// workspace method so the TUI never depends on `forge-agent`
+    /// directly.
+    ///
+    /// Infallible: scanner failures (sysinfo errors, PID gone)
+    /// collapse to an empty snapshot. Renderer treats the returned
+    /// snapshot as authoritative regardless of how it was
+    /// populated.
+    ///
+    /// Synchronous because `sysinfo`'s refresh is a CPU-bound
+    /// system call rather than async I/O. The TUI's scanner ticker
+    /// is expected to call this from a `tokio::task::spawn_blocking`
+    /// to keep the runtime responsive — the workspace exposes the
+    /// raw function rather than wrapping it in spawn_blocking so
+    /// callers stay in control of their concurrency model (mirrors
+    /// how `scan_git_diff` exposes the async function directly).
+    #[must_use]
+    pub fn scan_processes(
+        &self,
+        claude_pid: u32,
+    ) -> forge_agent::env::processes::ProcessSnapshot {
+        forge_agent::env::processes::scan(claude_pid)
+    }
+
     /// Borrow the [`Arc<AgentHandle>`] registered against `key`.
     /// Workspace-internal helper — surfaces a sometimes-`None` to keep
     /// the early-init / disconnected branches explicit.
