@@ -20,6 +20,7 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 
 use crate::error::WorkspaceError;
+use crate::ui::UiSettings;
 
 #[derive(Debug, Deserialize)]
 struct ForgeToml {
@@ -27,6 +28,12 @@ struct ForgeToml {
     orgs: Vec<OrgEntry>,
     #[serde(default)]
     accounts: Vec<AccountEntry>,
+    /// Optional `[ui]` section — visual knobs that don't fit on
+    /// `[[orgs]]` / `[[accounts]]`. Currently carries the launchpad
+    /// spinner style; will grow as the launchpad UI lands. Absent
+    /// section → all defaults.
+    #[serde(default)]
+    ui: UiSettings,
 }
 
 #[derive(Debug, Deserialize)]
@@ -84,6 +91,9 @@ pub(crate) struct LoadedConfig {
     /// when no project opts in.
     pub default_index: usize,
     pub accounts: Vec<LoadedAccount>,
+    /// `[ui]` section knobs. All fields have defaults; absent
+    /// section means every field is at its default.
+    pub ui: UiSettings,
 }
 
 #[derive(Debug, Clone)]
@@ -138,7 +148,13 @@ impl LoadedConfig {
     /// never reach those paths.
     #[cfg(feature = "testing")]
     pub(crate) fn empty_for_test() -> Self {
-        Self { orgs: Vec::new(), projects: Vec::new(), default_index: 0, accounts: Vec::new() }
+        Self {
+            orgs: Vec::new(),
+            projects: Vec::new(),
+            default_index: 0,
+            accounts: Vec::new(),
+            ui: UiSettings::default(),
+        }
     }
 }
 
@@ -258,7 +274,7 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
             .unwrap_or_else(|| alpha[0])
     };
 
-    Ok(LoadedConfig { orgs, projects, default_index, accounts })
+    Ok(LoadedConfig { orgs, projects, default_index, accounts, ui: parsed.ui })
 }
 
 fn expand_home(path: &str) -> PathBuf {
