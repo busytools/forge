@@ -183,6 +183,13 @@ fn bash_backgrounded_row(tc: &ToolCallInfo) -> ProcessRow {
     let description = read_str_field(raw_input, "description");
     let command = read_str_field(raw_input, "command");
 
+    // Status is hardcoded to InProgress: reaching this constructor
+    // means [`collect_active_processes`] resolved the underlying
+    // task as alive. The raw `tc.status` is unreliable here for
+    // backgrounded Bash specifically — claude's tool_result with
+    // `backgroundTaskId` arrives almost immediately and flips
+    // `tc.status` to `Completed` while the actual process is still
+    // running. Trust the alive-set signal, not the per-tool status.
     ProcessRow {
         kind: ProcessKind::BashBackgrounded,
         headline: if description.is_empty() {
@@ -191,8 +198,8 @@ fn bash_backgrounded_row(tc: &ToolCallInfo) -> ProcessRow {
             description.to_owned()
         },
         detail: if command.is_empty() { None } else { Some(command.to_owned()) },
-        metadata: format!("Bash · {}", format_status(tc.status)),
-        status: tc.status,
+        metadata: "Bash · running".to_owned(),
+        status: ToolCallStatus::InProgress,
     }
 }
 
@@ -203,7 +210,9 @@ fn monitor_row(tc: &ToolCallInfo) -> ProcessRow {
     let persistent = read_bool_field(raw_input, "persistent").unwrap_or(false);
     let timeout_ms = read_u64_field(raw_input, "timeout_ms");
 
-    let mut metadata = format!("Monitor · {}", format_status(tc.status));
+    // Same hardcoded-InProgress story as `bash_backgrounded_row`:
+    // alive-set membership is the source of truth.
+    let mut metadata = String::from("Monitor · running");
     if persistent {
         metadata.push_str(" · persistent");
     } else if let Some(ms) = timeout_ms {
@@ -222,7 +231,7 @@ fn monitor_row(tc: &ToolCallInfo) -> ProcessRow {
         },
         detail: if command.is_empty() { None } else { Some(command.to_owned()) },
         metadata,
-        status: tc.status,
+        status: ToolCallStatus::InProgress,
     }
 }
 
@@ -252,16 +261,6 @@ fn cron_row(tc: &ToolCallInfo) -> ProcessRow {
     }
 }
 
-fn format_status(status: ToolCallStatus) -> &'static str {
-    match status {
-        ToolCallStatus::Pending => "pending",
-        ToolCallStatus::InProgress => "running",
-        ToolCallStatus::Completed => "done",
-        ToolCallStatus::Failed => "failed",
-        ToolCallStatus::Killed => "killed",
-    }
-}
-
 /// Read a `Value::String` field out of a tool's `raw_input` object,
 /// returning `""` when absent. The empty-string sentinel lets
 /// callers treat "field missing" and "field present but empty"
@@ -286,15 +285,6 @@ fn read_u64_field(raw_input: Option<&Value>, key: &str) -> Option<u64> {
 mod tests {
     use super::*;
     use serde_json::json;
-
-    #[test]
-    fn format_status_covers_every_variant() {
-        assert_eq!(format_status(ToolCallStatus::Pending), "pending");
-        assert_eq!(format_status(ToolCallStatus::InProgress), "running");
-        assert_eq!(format_status(ToolCallStatus::Completed), "done");
-        assert_eq!(format_status(ToolCallStatus::Failed), "failed");
-        assert_eq!(format_status(ToolCallStatus::Killed), "killed");
-    }
 
     #[test]
     fn read_str_field_returns_empty_for_missing() {
