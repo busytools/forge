@@ -4,19 +4,35 @@ use crate::app::slash;
 
 /// Handle Enter on the input editor.
 ///
-/// Issue #85 (final shape 2026-05-13): forge holds no local queue.
-/// Every submit dispatches `Command::Prompt` to claude immediately.
-/// Claude's CLI maintains its own in-flight buffer (the `gO6`
-/// queue in the bundled JS): when forge writes mid-turn, claude
-/// merges the new prompt into the next user-message envelope going
-/// to the model. The visual chat just gets one fresh user bubble
-/// per submit regardless of whether a turn is in flight.
+/// Issue #85 (revised 2026-05-14): forge holds no local queue, and
+/// every submit dispatches `Command::Prompt` to claude immediately.
+/// The mid-turn fix from this round is in the receive-path
+/// placement, not the dispatch path: every submit (idle OR mid-turn)
+/// pushes both a user bubble AND a fresh empty assistant placeholder
+/// at the tail, reparenting `active_turn_assistant_idx` onto that
+/// new placeholder. Claude's continuing wire tokens then land in
+/// the new bubble — below the user's new message — instead of
+/// pinning in the prior turn's assistant bubble above it.
+///
+/// Claude's CLI internally queues the mid-turn prompt (the bundled
+/// JS `queuedCommands` array, flushed into the next user→model
+/// envelope at the next tool cycle or turn boundary). The model's
+/// reply then covers both turn-1's continuation and the queued
+/// prompt's answer in a single assistant message; forge folds the
+/// whole thing into the reparented placeholder so geometry stays
+/// append-only.
+///
+/// Pure-text turns produce a small artifact: any turn-1 tokens that
+/// arrive between the user's submit and claude's `result` event
+/// land in the new placeholder rather than the prior asst bubble.
+/// If claude emits nothing in that window, `remove_empty_tail_assistant`
+/// strips the empty stub on TurnComplete. If it emits a few
+/// trailing tokens, they appear as a thin stub below the new user
+/// bubble — known cost of the always-reparent design.
 ///
 /// The previous dim → un-dim handshake was a pre-investigation
-/// artefact. Live-capture proved claude does not echo
-/// `queued_command` on stream-json stdout, so the only signal forge
-/// would have had was the turn boundary anyway. Simpler to trust
-/// claude's internal queue and skip the local bookkeeping entirely.
+/// artefact already removed in PR #117. This revision keeps the
+/// no-dim outcome and fixes the ordering issue PR #117 left behind.
 ///
 /// Session resume reconstructs queued submits from JSONL
 /// `type:"attachment"` rows via the catalog/scan layer in
@@ -101,15 +117,26 @@ pub(super) fn request_cancel(app: &mut App, origin: CancelOrigin) -> Result<(), 
     Ok(())
 }
 
-/// Push a fresh user bubble and dispatch `Command::Prompt`. Whether
-/// claude is idle or mid-turn, the shape is the same — claude's
-/// internal queue handles mid-turn delivery.
+/// Push a fresh user bubble + an empty assistant placeholder and
+/// dispatch `Command::Prompt`. Always pushes both — idle or mid-turn.
 ///
-/// When claude is idle this also pushes the empty assistant
-/// placeholder, finalises stale tool calls from prior turns, and
-/// flips the status + lifecycle to indicate a new turn has started.
-/// Mid-turn submits skip that bookkeeping because the in-flight turn
-/// is still going.
+/// The mid-turn shape (post 2026-05-14): every submit reparents
+/// `active_turn_assistant_idx` onto a fresh assistant placeholder at
+/// the tail. Claude's continuing wire tokens then land in that new
+/// placeholder, below the user's new bubble — append-only geometry
+/// regardless of whether a turn is already in flight. Claude's
+/// internal `gO6` queue folds the mid-turn prompt into the next
+/// user→model envelope (typically the tool_result cycle), so the
+/// response to the queued prompt naturally streams into the new
+/// asst bubble alongside whatever turn-1 continuation arrives.
+///
+/// Pure-text turns with no tool cycle leave a small artifact: any
+/// turn-1 tokens that arrive between the submit and `result` land
+/// in the new placeholder rather than the prior asst bubble. If
+/// claude emits zero tokens between submit and `result` the
+/// placeholder stays empty and `remove_empty_tail_assistant` strips
+/// it on TurnComplete. Otherwise the stub remains visible — a known
+/// cost of the always-reparent design.
 fn dispatch_prompt(app: &mut App, text: String) {
     let busy = is_turn_busy(app);
 
@@ -140,20 +167,20 @@ fn dispatch_prompt(app: &mut App, text: String) {
     let user_blocks = vec![MessageBlock::Text(TextBlock::from_complete(&text))];
     app.push_message_tracked(ChatMessage::new(MessageRole::User, user_blocks, None));
 
-    if !busy {
-        // New turn: push the empty assistant placeholder (message.rs
-        // renders the thinking indicator on the trailing-empty-
-        // assistant) and flip status + lifecycle.
-        app.push_message_tracked(ChatMessage::new(MessageRole::Assistant, Vec::new(), None));
-        app.bind_active_turn_assistant_to_tail();
-        app.status = AppStatus::Thinking;
-        if let Some(key) = app.active_session_key.clone() {
-            crate::app::events::set_bucket_lifecycle_state(
-                app,
-                &key,
-                crate::app::session::SessionLifecycleState::Running,
-            );
-        }
+    // Always push an empty assistant placeholder + reparent the
+    // active turn assistant onto it. Mid-turn submits get this
+    // treatment too — that's the entire point of the new shape, so
+    // claude's continuing tokens land below the new user bubble
+    // instead of above it.
+    app.push_message_tracked(ChatMessage::new(MessageRole::Assistant, Vec::new(), None));
+    app.bind_active_turn_assistant_to_tail();
+    app.status = AppStatus::Thinking;
+    if let Some(key) = app.active_session_key.clone() {
+        crate::app::events::set_bucket_lifecycle_state(
+            app,
+            &key,
+            crate::app::session::SessionLifecycleState::Running,
+        );
     }
     app.enforce_history_retention_tracked();
     app.active_viewport_mut().engage_auto_scroll();
@@ -228,10 +255,15 @@ mod tests {
     }
 
     #[test]
-    fn submit_input_while_running_appends_bubble_without_changing_status() {
-        // Mid-turn submit: bubble appears immediately, status stays
-        // Running, no cancel, no assistant placeholder added, prompt
-        // dispatches to claude which buffers it internally.
+    fn submit_input_while_running_appends_bubble_and_reparents_active_idx() {
+        // Mid-turn submit (post 2026-05-14): user bubble appears
+        // immediately AND a fresh empty assistant placeholder is
+        // pushed right after it, with `active_turn_assistant_idx`
+        // reparented onto the new placeholder. Status flips back to
+        // Thinking so the spinner attaches to the new placeholder
+        // while claude's continuing tokens stream into it. The prompt
+        // still dispatches immediately — claude's internal queue folds
+        // it into the next user→model envelope.
         let (mut app, mut rx) = app_with_connection();
         app.status = AppStatus::Running;
         app.input_mut().set_text("mid-turn prompt");
@@ -239,10 +271,19 @@ mod tests {
         submit_input(&mut app);
 
         assert!(app.input().text().is_empty());
-        assert!(matches!(app.status, AppStatus::Running), "status untouched");
-        assert_eq!(app.messages().len(), 1, "only the user bubble appended");
-        let msg = &app.messages()[0];
-        assert!(matches!(msg.role, MessageRole::User));
+        assert!(matches!(app.status, AppStatus::Thinking), "status flipped back to Thinking");
+        // user bubble + freshly-pushed empty asst placeholder
+        assert_eq!(app.messages().len(), 2, "user bubble + asst placeholder");
+        let user_msg = &app.messages()[0];
+        let asst_msg = &app.messages()[1];
+        assert!(matches!(user_msg.role, MessageRole::User));
+        assert!(matches!(asst_msg.role, MessageRole::Assistant));
+        assert!(asst_msg.blocks.is_empty(), "asst placeholder is empty until claude streams");
+        assert_eq!(
+            app.active_turn_assistant_message_idx(),
+            Some(1),
+            "active asst idx reparented onto the new placeholder at tail",
+        );
         assert!(app.pending_cancel_origin().is_none(), "no cancel fired");
         let prompt = rx.try_recv().expect("prompt dispatched immediately");
         assert!(matches!(
@@ -253,10 +294,11 @@ mod tests {
     }
 
     #[test]
-    fn multiple_mid_turn_submits_each_append_a_bubble() {
-        // Each mid-turn submit gets its own user bubble. Claude
-        // batches them internally; the chat shows them in submit
-        // order.
+    fn multiple_mid_turn_submits_each_push_user_bubble_and_placeholder() {
+        // Each mid-turn submit gets its own user bubble + its own
+        // freshly-bound asst placeholder. After two submits the
+        // active asst idx points at the second placeholder; claude's
+        // continuing stream will land there.
         let (mut app, mut rx) = app_with_connection();
         app.status = AppStatus::Running;
         app.input_mut().set_text("first");
@@ -264,7 +306,17 @@ mod tests {
         app.input_mut().set_text("second");
         submit_input(&mut app);
 
-        assert_eq!(app.messages().len(), 2);
+        // [user-first, asst-1 empty, user-second, asst-2 empty]
+        assert_eq!(app.messages().len(), 4, "two user bubbles + two placeholders");
+        assert!(matches!(app.messages()[0].role, MessageRole::User));
+        assert!(matches!(app.messages()[1].role, MessageRole::Assistant));
+        assert!(matches!(app.messages()[2].role, MessageRole::User));
+        assert!(matches!(app.messages()[3].role, MessageRole::Assistant));
+        assert_eq!(
+            app.active_turn_assistant_message_idx(),
+            Some(3),
+            "active asst idx tracks the most recent placeholder",
+        );
         assert!(rx.try_recv().is_ok());
         assert!(rx.try_recv().is_ok());
         assert!(rx.try_recv().is_err(), "exactly two prompts dispatched");
