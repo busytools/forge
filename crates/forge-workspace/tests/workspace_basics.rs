@@ -12,11 +12,13 @@ fn write_default_config(dir: &std::path::Path) {
     fs::write(
         dir.join("forge.toml"),
         r#"
-[[projects]]
+[[orgs]]
+name = "Default"
+accounts = ["Subspace"]
+[[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
-default = true
-accounts = ["Subspace"]
+auto_start = true
 
 [[accounts]]
 display_name = "Subspace"
@@ -33,7 +35,7 @@ async fn new_loads_config_and_lists_projects() {
 
     let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
     let projects = workspace.list_projects();
-    assert_eq!(projects.len(), 1, "one [[projects]] entry should yield one ProjectView");
+    assert_eq!(projects.len(), 1, "one [[orgs.projects]] entry should yield one ProjectView");
     let project = &projects[0];
     // The `display_path` retains the `~` form from forge.toml.
     assert_eq!(project.display_path, "~/Projects/forge");

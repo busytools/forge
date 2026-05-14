@@ -28,11 +28,14 @@ async fn cold_cache_dual_spawns_pin_to_first_in_allow_list() {
     fs::write(
         dir.path().join("forge.toml"),
         r#"
-[[projects]]
+[[orgs]]
+name = "Default"
+accounts = ["Subspace", "Granite"]
+
+[[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
-default = true
-accounts = ["Subspace", "Granite"]
+auto_start = true
 
 [[accounts]]
 display_name = "Subspace"
@@ -77,11 +80,14 @@ async fn projects_pane_visibility_round_trips_through_forge_state() {
     fs::write(
         dir.path().join("forge.toml"),
         r#"
-[[projects]]
+[[orgs]]
+name = "Default"
+accounts = ["Subspace"]
+
+[[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
-default = true
-accounts = ["Subspace"]
+auto_start = true
 
 [[accounts]]
 display_name = "Subspace"
@@ -120,11 +126,14 @@ async fn ui_toggle_writes_state_file() {
     fs::write(
         dir.path().join("forge.toml"),
         r#"
-[[projects]]
+[[orgs]]
+name = "Default"
+accounts = ["Subspace"]
+
+[[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
-default = true
-accounts = ["Subspace"]
+auto_start = true
 
 [[accounts]]
 display_name = "Subspace"
@@ -151,11 +160,14 @@ async fn ui_state_round_trips_across_spawns() {
     fs::write(
         dir.path().join("forge.toml"),
         r#"
-[[projects]]
+[[orgs]]
+name = "Default"
+accounts = ["Subspace"]
+
+[[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
-default = true
-accounts = ["Subspace"]
+auto_start = true
 
 [[accounts]]
 display_name = "Subspace"
@@ -183,11 +195,14 @@ async fn picker_display_name_reaches_bridge() {
     fs::write(
         dir.path().join("forge.toml"),
         r#"
-[[projects]]
+[[orgs]]
+name = "Default"
+accounts = ["Subspace"]
+
+[[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
-default = true
-accounts = ["Subspace"]
+auto_start = true
 
 [[accounts]]
 display_name = "Subspace"

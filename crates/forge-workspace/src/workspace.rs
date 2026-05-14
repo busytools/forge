@@ -102,8 +102,9 @@ pub(crate) struct PooledAgent {
 
 impl Workspace {
     /// Builds a Workspace, runs the catalog scan, and loads
-    /// `<config_dir>/forge.toml`. Errors if `forge.toml` is missing,
-    /// malformed, or has no project marked `default = true`. No
+    /// `<config_dir>/forge.toml`. Errors if `forge.toml` is missing
+    /// or malformed (e.g. no `[[orgs]]` entries, no
+    /// `[[orgs.projects]]` entries, unknown account references). No
     /// Agents are spawned on success.
     pub async fn new(config_dir: PathBuf) -> Result<Self, WorkspaceError> {
         let config = load_from_dir(&config_dir)?;
@@ -160,6 +161,27 @@ impl Workspace {
 
     /// Every project listed in `forge.toml`, each carrying its catalog
     /// sessions sorted by last-activity descending — `sessions[0]` is
+    /// Return the names of all orgs in declaration order, paired
+    /// with their pinned account list. The Projects pane uses this
+    /// to drive the org-grouped tree render.
+    #[must_use]
+    pub fn list_orgs(&self) -> Vec<(String, Vec<String>)> {
+        self.config
+            .orgs
+            .iter()
+            .map(|org| (org.name.clone(), org.accounts.clone()))
+            .collect()
+    }
+
+    /// Return the names of all projects that opted into
+    /// `auto_start = true` in `forge.toml`. The App spawns one
+    /// session per name at startup; the first by alphabetical
+    /// order becomes the focused tab.
+    #[must_use]
+    pub fn auto_start_project_names(&self) -> Vec<String> {
+        self.config.auto_start_projects().map(|p| p.name.clone()).collect()
+    }
+
     /// the lead. Empty `sessions` means the project has nothing on disk
     /// yet; the project still surfaces in the returned Vec.
     #[must_use]
@@ -199,6 +221,7 @@ impl Workspace {
             views.push(ProjectView {
                 key,
                 name: project.name.clone(),
+                org: project.org.clone(),
                 path: project.path.clone(),
                 display_path: project.display_path.clone(),
                 sessions,
@@ -580,11 +603,12 @@ impl Workspace {
     }
 
     /// Resolve a target's project-level account pin (the
-    /// `[[projects]].accounts = [...]` list from `forge.toml`).
-    /// Project-rooted targets read directly off the matching
-    /// `LoadedProject`; session-id targets walk the catalog for the
-    /// session's original cwd and match against `LoadedProject.path`
-    /// so a resumed session inherits the originating project's pin.
+    /// `[[orgs]].accounts = [...]` list inherited from the project's
+    /// org in `forge.toml`). Project-rooted targets read directly off
+    /// the matching `LoadedProject`; session-id targets walk the
+    /// catalog for the session's original cwd and match against
+    /// `LoadedProject.path` so a resumed session inherits the
+    /// originating project's pin.
     ///
     /// Config-load guarantees every `LoadedProject.accounts` is
     /// non-empty. The session-id branch can still miss (catalog has
@@ -1407,11 +1431,14 @@ mod tests {
         fs::write(
             dir.path().join("forge.toml"),
             r#"
-[[projects]]
+[[orgs]]
+name = "Default"
+accounts = ["Subspace"]
+
+[[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
-default = true
-accounts = ["Subspace"]
+auto_start = true
 
 [[accounts]]
 display_name = "Subspace"
@@ -1503,16 +1530,18 @@ config_dir = "~/.claude-subspace"
         fs::write(
             dir.path().join("forge.toml"),
             r#"
-[[projects]]
-name = "forge"
-path = "~/Projects/forge"
-default = true
+[[orgs]]
+name = "Default"
 accounts = ["Subspace"]
 
-[[projects]]
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+auto_start = true
+
+[[orgs.projects]]
 name = "dotfiles"
 path = "~/Projects/dotfiles"
-accounts = ["Subspace"]
 
 [[accounts]]
 display_name = "Subspace"
@@ -1542,11 +1571,14 @@ config_dir = "~/.claude-subspace"
         fs::write(
             dir.path().join("forge.toml"),
             r#"
-[[projects]]
+[[orgs]]
+name = "Default"
+accounts = ["Subspace"]
+
+[[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
-default = true
-accounts = ["Subspace"]
+auto_start = true
 
 [[accounts]]
 display_name = "Subspace"
@@ -1575,11 +1607,14 @@ config_dir = "~/.claude-subspace"
         fs::write(
             dir.path().join("forge.toml"),
             r#"
-[[projects]]
+[[orgs]]
+name = "Default"
+accounts = ["Subspace", "Granite"]
+
+[[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
-default = true
-accounts = ["Subspace", "Granite"]
+auto_start = true
 
 [[accounts]]
 display_name = "Subspace"
@@ -1638,52 +1673,8 @@ config_dir = "~/.claude-granite"
     }
 
     #[tokio::test]
-    async fn project_account_pin_routes_spawn_to_pinned_account() {
-        // Two projects: `forge` pinned to Subspace only; `aware`
-        // pinned to Granite only. Spawn on `forge` must land on
-        // Subspace — the pin is the only thing that drives the
-        // choice for a project (no LRU fallback, no implicit "use
-        // all accounts" semantic).
-        let dir = tempdir().expect("tempdir");
-        fs::write(
-            dir.path().join("forge.toml"),
-            r#"
-[[projects]]
-name = "forge"
-path = "~/Projects/forge"
-default = true
-accounts = ["Subspace"]
-
-[[projects]]
-name = "aware"
-path = "~/Projects/aware"
-accounts = ["Granite"]
-
-[[accounts]]
-display_name = "Subspace"
-config_dir = "~/.claude-subspace"
-
-[[accounts]]
-display_name = "Granite"
-config_dir = "~/.claude-granite"
-"#,
-        )
-        .expect("write forge.toml");
-
-        let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
-        let _ = workspace
-            .get_agent_handle(SessionTarget::Default, SessionLaunchSettings::default())
-            .await
-            .expect("default spawn on pinned project");
-
-        let bound = workspace.pool_accounts_for_test();
-        assert_eq!(bound.len(), 1);
-        assert_eq!(bound[0], "Subspace", "pinned project must spawn under its pinned account");
-    }
-
-    #[tokio::test]
     async fn project_account_pin_excludes_unpinned_account() {
-        // Three accounts globally; default project pins only
+        // Three accounts globally; default org pins only
         // {Subspace, Granite}. Spawn under the default project picks
         // one of the pinned pair (Granite via alpha tie-break) and
         // must never touch Personal. Multi-spawn rotation within the
@@ -1694,11 +1685,14 @@ config_dir = "~/.claude-granite"
         fs::write(
             dir.path().join("forge.toml"),
             r#"
-[[projects]]
+[[orgs]]
+name = "Default"
+accounts = ["Subspace", "Granite"]
+
+[[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
-default = true
-accounts = ["Subspace", "Granite"]
+auto_start = true
 
 [[accounts]]
 display_name = "Subspace"

@@ -1270,11 +1270,14 @@ mod tests {
         std::fs::write(
             dir.path().join("forge.toml"),
             r#"
-[[projects]]
+[[orgs]]
+name = "Default"
+accounts = ["Test"]
+
+[[orgs.projects]]
 name = "test-proj"
 path = "/tmp/test-proj"
-default = true
-accounts = ["Test"]
+auto_start = true
 
 [[accounts]]
 display_name = "Test"

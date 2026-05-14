@@ -274,16 +274,44 @@ pub fn start_connection(app: &mut App) {
         app,
         session_start::SessionStartReason::Startup,
     );
-    let project_name = app.startup_project.clone();
-    if let Err(err) =
-        workspace.dispatch(forge_workspace::Command::StartDefault { project_name, launch_settings })
-    {
-        tracing::error!(
-            target: crate::logging::targets::BRIDGE_LIFECYCLE,
-            event_name = "start_connection_dispatch_failed",
-            error = %err,
-            "Command::StartDefault dispatch failed",
-        );
+
+    // If the user passed `--project NAME`, that wins as the first
+    // (focused) startup spawn. Otherwise, every project with
+    // `auto_start = true` in forge.toml spawns; the alphabetically-
+    // first auto_start project becomes the focused tab. With no
+    // explicit project AND no auto_start opt-ins, fall through to
+    // the default project (alphabetically-first overall).
+    let auto_start = workspace.auto_start_project_names();
+    let dispatch_targets: Vec<Option<String>> = match (&app.startup_project, auto_start.as_slice()) {
+        (Some(name), _) => vec![Some(name.clone())],
+        (None, []) => vec![None], // Falls through to default in StartDefault.
+        (None, names) => names.iter().cloned().map(Some).collect(),
+    };
+
+    for (i, project_name) in dispatch_targets.iter().enumerate() {
+        // Only the first project gets `StartDefault` semantics
+        // (which sets it as the focused tab); the rest go via
+        // `SpawnProject` and land in the Projects pane silently.
+        let cmd = if i == 0 {
+            forge_workspace::Command::StartDefault {
+                project_name: project_name.clone(),
+                launch_settings: launch_settings.clone(),
+            }
+        } else {
+            forge_workspace::Command::SpawnProject {
+                project_name: project_name.clone().unwrap_or_default(),
+                launch_settings: launch_settings.clone(),
+            }
+        };
+        if let Err(err) = workspace.dispatch(cmd) {
+            tracing::error!(
+                target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                event_name = "start_connection_dispatch_failed",
+                error = %err,
+                project = ?project_name,
+                "auto_start dispatch failed",
+            );
+        }
     }
 }
 
@@ -297,7 +325,7 @@ mod tests {
         std::fs::write(
             dir.join("forge.toml"),
             format!(
-                "[[projects]]\nname = \"forge-test\"\npath = \"{project_path_str}\"\ndefault = true\naccounts = [\"Subspace\"]\n\n[[accounts]]\ndisplay_name = \"Subspace\"\nconfig_dir = \"~/.claude-subspace\"\n"
+                "[[orgs]]\nname = \"Default\"\naccounts = [\"Subspace\"]\n\n[[orgs.projects]]\nname = \"forge-test\"\npath = \"{project_path_str}\"\nauto_start = true\n\n[[accounts]]\ndisplay_name = \"Subspace\"\nconfig_dir = \"~/.claude-subspace\"\n"
             ),
         )
         .expect("write forge.toml");

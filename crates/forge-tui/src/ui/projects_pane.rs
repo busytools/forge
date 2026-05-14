@@ -137,14 +137,17 @@ pub fn render_overlay(frame: &mut Frame, area: Rect, app: &mut App, projects: &[
     frame.render_widget(Paragraph::new(lines), list_area);
 }
 
-/// Two-section project list: ACTIVE (projects with an in-process
-/// session — running/idle/attention) and INACTIVE (sleeping, click
-/// to wake). The active section carries the lifecycle glyph; the
-/// inactive section is name-only in `DIM`. The previously-shown
-/// per-session drilldown was dropped — the pane is a project
-/// navigator, not a session log. Per-session detail (and any "switch
-/// between sessions within a project" UX) moves to the in-session
-/// `/resume` picker.
+/// Org-grouped project list. Projects render as tree-leaf rows
+/// under their org's header (DIM bold). Within each org, projects
+/// sort alphabetically; orgs themselves sort alphabetically. The
+/// per-row glyph distinguishes live sessions (spinner — RUST_ORANGE
+/// when focused, terminal-default otherwise) from idle catalog
+/// entries (`○` DIM). Live rows carry a `⏻` close affordance at
+/// the right edge; idle rows show last-activity timestamp instead.
+///
+/// Tree connectors mirror the GIT / PROCESSES sections (`├─` /
+/// `└─`) so the inspector + projects pane read as one consistent
+/// visual language across the workspace.
 fn append_project_rows(
     lines: &mut Vec<Line<'static>>,
     area: Rect,
@@ -152,21 +155,17 @@ fn append_project_rows(
     projects: &[ProjectView],
 ) {
     let active_session_key = app.active_session_key.clone();
-
-    // Partition into active / inactive. A project is active iff at
-    // least one of its catalog session ids is in `app.sessions`, OR
-    // a synthetic `__spawn_<name>__` bucket is in flight for it.
     let spinner_frame = app.spinner_frame;
-    let mut active: Vec<(&ProjectView, SessionLifecycleState, bool, forge_workspace::SessionKey)> =
-        Vec::new();
-    let mut inactive: Vec<&ProjectView> = Vec::new();
-    // Helper: read `lifecycle_state` for `key` from the bucket.
-    // Falls back to `Idle` when no bucket is registered (e.g., the
-    // catalog references a session the user has never woken).
     let lifecycle_for = |key: &forge_workspace::SessionKey| -> SessionLifecycleState {
         app.sessions.get(key).map_or(SessionLifecycleState::default(), |s| s.lifecycle_state)
     };
 
+    // Bucket projects by org name. Each bucket is a Vec of
+    // (project, optional live session key, lifecycle, is_focused).
+    type RowMeta<'p> =
+        (&'p ProjectView, Option<(forge_workspace::SessionKey, SessionLifecycleState, bool)>);
+    let mut by_org: std::collections::BTreeMap<String, Vec<RowMeta<'_>>> =
+        std::collections::BTreeMap::new();
     for project in projects {
         let spawn_synthetic =
             forge_workspace::SessionKey::from_session_id(format!("__spawn_{}__", project.name));
@@ -177,167 +176,165 @@ fn append_project_rows(
             .sessions
             .get(&spawn_synthetic)
             .map(|_| (spawn_synthetic.clone(), lifecycle_for(&spawn_synthetic)));
-        if let Some((key, lifecycle)) = live_session.or(synthetic) {
+        let live = live_session.or(synthetic).map(|(key, lifecycle)| {
             let is_focused = Some(&key) == active_session_key.as_ref();
-            active.push((project, lifecycle, is_focused, key));
-        } else {
-            inactive.push(project);
-        }
+            (key, lifecycle, is_focused)
+        });
+        by_org.entry(project.org.clone()).or_default().push((project, live));
     }
-
-    // Active + Inactive — both sorted alphabetically by project
-    // name. Deliberately NOT sorted by `last_activity` (which would
-    // make active rows reshuffle every time a session ticked over
-    // recently). The pane is a high-frequency surface — flicker is
-    // worse than a tiny lookup delay for the user.
-    active.sort_by(|a, b| a.0.name.cmp(&b.0.name));
-    inactive.sort_by(|a, b| a.name.cmp(&b.name));
+    // Alphabetical project order within each org for deterministic
+    // ordering across refreshes.
+    for bucket in by_org.values_mut() {
+        bucket.sort_by(|a, b| a.0.name.cmp(&b.0.name));
+    }
 
     let now = SystemTime::now();
-    // Row chrome budget — see name_budget_active / name_budget_inactive helpers.
-
-    if !active.is_empty() {
-        lines.push(Line::from(Span::styled(
-            "  ACTIVE".to_owned(),
-            Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD),
-        )));
-        // Blank between section header and the first row — gives the
-        // header breathing room from the rows it labels.
+    let org_count = by_org.len();
+    for (org_idx, (org_name, rows)) in by_org.iter().enumerate() {
+        // Org header row — DIM bold, no tree chrome.
+        lines.push(Line::from(vec![
+            Span::raw("  "),
+            Span::styled(
+                org_name.clone(),
+                Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD),
+            ),
+        ]));
         lines.push(Line::default());
-        let name_budget = name_budget_active(area.width);
-        let active_count = active.len();
-        for (idx, (project, lifecycle, is_focused, session_key)) in active.iter().enumerate() {
-            let row_y = area.y + line_count_as_u16(lines);
-            let (glyph, glyph_color) = glyph_for_lifecycle(*lifecycle, *is_focused, spinner_frame);
-            let label = truncate_with_ellipsis(project.name.as_str(), name_budget);
-            let label_pad = name_budget.saturating_sub(label.chars().count());
-            let name_style = if *is_focused {
-                Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().add_modifier(Modifier::BOLD)
-            };
-            // No time column on active rows — the lifecycle glyph
-            // already says "alive", and the .jsonl mtime for a
-            // running session tracks every wire event so it's
-            // always `now`/`1m`/`2m` and adds no new signal.
-            lines.push(Line::from(vec![
-                Span::raw("  "),
-                Span::styled(glyph, Style::default().fg(glyph_color)),
-                Span::raw(" "),
-                Span::styled(label, name_style),
-                Span::raw(" ".repeat(label_pad)),
-                Span::raw(" "),
-                // 3-char "[×]" close affordance — reads as a button
-                // rather than a stray multiplication sign, and the
-                // wider visual footprint matches the wider click band
-                // stamped below. Bold so it pops against the DIM
-                // metadata column to its left. 2-col gutter mirrors
-                // the inactive row's time-column gutter so `[×]` and
-                // the date sit in the same x column visually.
-                Span::styled(
-                    "[×]".to_owned(),
-                    Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD),
-                ),
-                Span::raw("  "),
-            ]));
-            app.pane_hit_targets.push(PaneHitTarget::ProjectHeader {
-                project_name: project.key.as_str().to_owned(),
-                y: row_y,
-                height: 1,
-            });
-            // Close-glyph hit target — covers `[×]` (3 chars) plus
-            // a one-col tolerance on either side, for a 5-col band.
-            // The rightmost gutter col stays inert so accidental
-            // edge-clicks resolve as row-click (focus/switch).
-            // Layout positions: `... ${time} ${space} [ × ] ${gutter}`
-            // → `[×]` occupies area.right-4..area.right-1; the 5-col
-            // band runs area.right-5..area.right-1 (one space before
-            // `[`, then the 3 chars of the button, then one col after).
-            let row_right = area.x.saturating_add(area.width);
-            let close_x_start = row_right.saturating_sub(5);
-            let close_x_end = row_right.saturating_sub(1);
-            app.pane_hit_targets.push(PaneHitTarget::CloseSession {
-                session_key: session_key.clone(),
-                y: row_y,
-                height: 1,
-                x_start: close_x_start,
-                x_end: close_x_end,
-            });
+
+        let row_count = rows.len();
+        for (idx, (project, live)) in rows.iter().enumerate() {
+            let is_last = idx + 1 == row_count;
+            append_org_project_row(
+                lines,
+                area,
+                app,
+                project,
+                live.as_ref(),
+                is_last,
+                spinner_frame,
+                now,
+            );
             // Deadzone gap row between adjacent projects so a tap
             // that lands between rows fires nothing rather than the
-            // wrong row. No hit target is stamped for the blank, so
-            // the gap is a true no-op band.
-            if idx + 1 < active_count {
+            // wrong row. Skipped after the last project in the org —
+            // the org-separator blank takes its place.
+            if !is_last {
                 lines.push(Line::default());
             }
         }
-    }
 
-    if !inactive.is_empty() {
-        // Two blanks between the last active row and the INACTIVE
-        // header so the section transition reads as a clear break
-        // rather than a tight stack. Per-section blank-after-header
-        // below keeps the header off the first row inside the
-        // section.
-        if !active.is_empty() {
+        // Two blanks between orgs for a visible section break.
+        // Skipped after the last org so no trailing whitespace.
+        if org_idx + 1 < org_count {
             lines.push(Line::default());
             lines.push(Line::default());
         }
-        lines.push(Line::from(Span::styled(
-            "  INACTIVE".to_owned(),
+    }
+}
+
+/// Render one project row under an org header. Tree connector
+/// (`├─` or `└─`) sits at column 2; the live/idle glyph + name +
+/// trailing close-affordance (or relative time) fill the rest of
+/// the row. Hit targets are stamped relative to `area.y` + the
+/// current line count.
+#[allow(clippy::too_many_arguments)] // Render fn — args are layout state.
+fn append_org_project_row(
+    lines: &mut Vec<Line<'static>>,
+    area: Rect,
+    app: &mut App,
+    project: &ProjectView,
+    live: Option<&(forge_workspace::SessionKey, SessionLifecycleState, bool)>,
+    is_last: bool,
+    spinner_frame: usize,
+    now: SystemTime,
+) {
+    let row_y = area.y + line_count_as_u16(lines);
+    let connector = if is_last { "\u{2514}\u{2500} " } else { "\u{251C}\u{2500} " };
+    let name_budget = name_budget_org_row(area.width);
+
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    spans.push(Span::raw("  "));
+    spans.push(Span::styled(connector.to_owned(), Style::default().fg(theme::DIM)));
+
+    if let Some((session_key, lifecycle, is_focused)) = live {
+        let (glyph, glyph_color) = glyph_for_lifecycle(*lifecycle, *is_focused, spinner_frame);
+        let name_style = if *is_focused {
+            Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().add_modifier(Modifier::BOLD)
+        };
+        let label = truncate_with_ellipsis(project.name.as_str(), name_budget);
+        let label_pad = name_budget.saturating_sub(label.chars().count());
+        spans.push(Span::styled(glyph, Style::default().fg(glyph_color)));
+        spans.push(Span::raw(" "));
+        spans.push(Span::styled(label, name_style));
+        spans.push(Span::raw(" ".repeat(label_pad)));
+        spans.push(Span::raw(" "));
+        // Close affordance: `⏻` power glyph with the emoji
+        // variation selector (U+FE0F) so terminals render it as a
+        // 2-cell coloured emoji. Visually distinct from anything
+        // else in the pane.
+        spans.push(Span::styled(
+            "\u{23FB}\u{FE0F}".to_owned(),
             Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD),
-        )));
-        // Same blank-after-header rhythm as ACTIVE.
-        lines.push(Line::default());
-        let name_budget = name_budget_inactive(area.width);
-        let inactive_count = inactive.len();
-        for (idx, project) in inactive.iter().enumerate() {
-            let row_y = area.y + line_count_as_u16(lines);
-            let label = truncate_with_ellipsis(project.name.as_str(), name_budget);
-            let label_pad = name_budget.saturating_sub(label.chars().count());
-            let time =
-                format_relative_time(project.sessions.first().and_then(|s| s.last_activity), now);
-            lines.push(Line::from(vec![
-                Span::raw("  "),
-                Span::styled("○".to_owned(), Style::default().fg(theme::DIM)),
-                Span::raw(" "),
-                Span::styled(label, Style::default().fg(theme::DIM)),
-                Span::raw(" ".repeat(label_pad)),
-                Span::raw(" "),
-                Span::styled(time, Style::default().fg(theme::DIM)),
-                Span::raw("  "),
-            ]));
-            app.pane_hit_targets.push(PaneHitTarget::ProjectHeader {
-                project_name: project.key.as_str().to_owned(),
-                y: row_y,
-                height: 1,
-            });
-            // Deadzone gap between inactive rows — same rationale
-            // as the active section. Tap on the blank row → nothing
-            // fires; tap on the content row → focus/wake fires.
-            if idx + 1 < inactive_count {
-                lines.push(Line::default());
-            }
-        }
+        ));
+        spans.push(Span::raw("  "));
+        lines.push(Line::from(spans));
+        // Hit targets: whole row → focus/switch; emoji + 1-col
+        // tolerance each side → close session.
+        app.pane_hit_targets.push(PaneHitTarget::ProjectHeader {
+            project_name: project.key.as_str().to_owned(),
+            y: row_y,
+            height: 1,
+        });
+        let row_right = area.x.saturating_add(area.width);
+        // Close button: emoji is 2 cells wide, occupying
+        // (row_right-4)..(row_right-2). The 4-col band runs
+        // (row_right-5)..(row_right-1) for 1-col tolerance on each
+        // side; the rightmost gutter col stays inert.
+        let close_x_start = row_right.saturating_sub(5);
+        let close_x_end = row_right.saturating_sub(1);
+        app.pane_hit_targets.push(PaneHitTarget::CloseSession {
+            session_key: session_key.clone(),
+            y: row_y,
+            height: 1,
+            x_start: close_x_start,
+            x_end: close_x_end,
+        });
+    } else {
+        // Idle (no live session) — `○` DIM glyph, name in DIM, last
+        // activity time at the right edge in DIM. No close
+        // affordance since there's nothing to close.
+        let label = truncate_with_ellipsis(project.name.as_str(), name_budget);
+        let label_pad = name_budget.saturating_sub(label.chars().count());
+        let time =
+            format_relative_time(project.sessions.first().and_then(|s| s.last_activity), now);
+        spans.push(Span::styled("\u{25CB}".to_owned(), Style::default().fg(theme::DIM)));
+        spans.push(Span::raw(" "));
+        spans.push(Span::styled(label, Style::default().fg(theme::DIM)));
+        spans.push(Span::raw(" ".repeat(label_pad)));
+        spans.push(Span::raw(" "));
+        spans.push(Span::styled(time, Style::default().fg(theme::DIM)));
+        spans.push(Span::raw("  "));
+        lines.push(Line::from(spans));
+        app.pane_hit_targets.push(PaneHitTarget::ProjectHeader {
+            project_name: project.key.as_str().to_owned(),
+            y: row_y,
+            height: 1,
+        });
     }
 }
 
-/// Active-row layout:
-/// `<2 indent><1 glyph><1 sp><name><1 sp><3 [×]><2 right gutter>`
-/// = 10 chrome chars. 2-col gutter mirrors the inactive row so the
-/// trailing `[×]` lands in the same x column as the inactive time
-/// column.
-fn name_budget_active(area_width: u16) -> usize {
-    usize::from(area_width.saturating_sub(10))
+/// Chrome budget for an org-grouped row:
+/// `<2 PANE_PAD><3 connector><1 glyph><1 sp><name><1 sp><RIGHT col><2 right pad>`
+/// where RIGHT col = 4 cells (2 emoji + 1 tolerance each side for
+/// active) or 3 cells (time column for idle). Pick the wider so
+/// both row variants align in the same name column. = 4 chrome on
+/// the right and 7 on the left ⇒ 11 chrome chars per row.
+fn name_budget_org_row(area_width: u16) -> usize {
+    usize::from(area_width.saturating_sub(11))
 }
 
-/// Inactive-row layout:
-/// `<2 indent><1 glyph><1 sp><name><1 sp><3 time><2 right gutter>`
-/// = 10 chrome chars. Same budget as active so the trailing column
-/// (`[×]` vs time) aligns at the same x.
-fn name_budget_inactive(area_width: u16) -> usize {
-    usize::from(area_width.saturating_sub(10))
-}
 
 /// Format `activity` as a short relative-time string anchored at
 /// `now` (`now` / `Xm` / `Xh` / `Xd` / `Xw`), padded/truncated to a
@@ -960,22 +957,6 @@ mod tests {
     #[test]
     fn truncate_max_zero_returns_just_ellipsis() {
         assert_eq!(truncate_with_ellipsis("anything", 0), "…");
-    }
-
-    #[test]
-    fn name_budget_active_matches_chrome() {
-        // Wide tier (26): 26 - 10 chrome chars = 16.
-        // Medium tier (20): 20 - 10 = 10.
-        assert_eq!(name_budget_active(20), 10);
-        assert_eq!(name_budget_active(26), 16);
-    }
-
-    #[test]
-    fn name_budget_inactive_matches_chrome() {
-        // Wide tier (26): 26 - 10 chrome chars = 16.
-        // Medium tier (20): 20 - 10 = 10.
-        assert_eq!(name_budget_inactive(20), 10);
-        assert_eq!(name_budget_inactive(26), 16);
     }
 
     #[test]
