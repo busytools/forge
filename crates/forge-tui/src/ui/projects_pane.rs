@@ -185,12 +185,12 @@ fn append_project_rows(
         }
     }
 
-    // Active first, sorted by most-recent activity.
-    active.sort_by(|a, b| {
-        let a_act = a.0.sessions.first().and_then(|s| s.last_activity);
-        let b_act = b.0.sessions.first().and_then(|s| s.last_activity);
-        b_act.cmp(&a_act).then_with(|| a.0.key.as_str().cmp(b.0.key.as_str()))
-    });
+    // Active + Inactive — both sorted alphabetically by project
+    // name. Deliberately NOT sorted by `last_activity` (which would
+    // make active rows reshuffle every time a session ticked over
+    // recently). The pane is a high-frequency surface — flicker is
+    // worse than a tiny lookup delay for the user.
+    active.sort_by(|a, b| a.0.name.cmp(&b.0.name));
     inactive.sort_by(|a, b| a.name.cmp(&b.name));
 
     let now = SystemTime::now();

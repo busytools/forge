@@ -410,9 +410,11 @@ impl Workspace {
     /// The TUI's bottom panel + the spawn-path picker both read
     /// from that cache.
     ///
-    /// Idempotent — multiple calls each spawn an independent
-    /// poller task. The App calls this once at construction; tests
-    /// either skip it or call it explicitly.
+    /// Call once at construction. Multiple calls spawn independent
+    /// poller tasks and multiply the actual poll rate, which is
+    /// almost never what you want — the App's `create_app` is the
+    /// only production caller. Tests either skip this or call it
+    /// explicitly when they need a cache-warm path.
     pub fn start_usage_poller(self: &Arc<Self>) {
         let weak = Arc::downgrade(self);
         tokio::spawn(async move {
@@ -434,10 +436,13 @@ impl Workspace {
 
     /// One pass of the usage poller: fetch OAuth usage for every
     /// configured account in parallel, write each result back to
-    /// `AccountStateMap`. Errors per-account are logged at warn
-    /// level (no token, network blip, etc.) — they're expected
-    /// transients. Public so tests can drive a deterministic refresh
-    /// without waiting for the 30 s tick.
+    /// `AccountStateMap`. Per-account fetch errors are logged at
+    /// `warn` so persistent auth failures (revoked token, expired
+    /// refresh, missing credentials file) surface in default log
+    /// output. Snapshot-mapping errors stay at `debug` because they
+    /// indicate a response-shape drift rather than something the
+    /// user needs to act on. Public so tests can drive a
+    /// deterministic refresh without waiting for the 30 s tick.
     pub async fn refresh_account_usage_once(self: &Arc<Self>) {
         let entries: Vec<(AccountKey, std::path::PathBuf)> = {
             let accounts = self.accounts.lock();
@@ -473,12 +478,12 @@ impl Workspace {
                     }
                 },
                 Err(err) => {
-                    tracing::debug!(
+                    tracing::warn!(
                         target: "forge_workspace::account",
                         account = %key.0,
                         config_dir = %dir.display(),
                         error = %err,
-                        "usage_poll fetch failed (likely no OAuth credentials yet)",
+                        "usage_poll fetch failed; persistent failures usually mean stale OAuth credentials for this account",
                     );
                 }
             }

@@ -132,10 +132,10 @@ impl ProcessCollection {
 /// the OS process's cmdline. Cron rows tag along separately because
 /// they're registrations, not processes.
 ///
-/// Sort key: `memory_bytes` desc (heaviest processes win the slots),
-/// with wire-only rows (Cron) sorted to the end. Final list is
-/// capped at [`PROCESSES_MAX`]; `overflow` carries the count of
-/// hidden rows.
+/// Order: DFS pre-order from claude's direct children (each
+/// supervisor + its descendants in PID-asc sibling order, matched
+/// supervisors pinned first); Cron rows appended at the end. Final
+/// list is capped at [`PROCESSES_MAX`] for sanity.
 #[must_use]
 pub fn collect_active_processes(app: &App) -> ProcessCollection {
     let Some(session) = app.active_session() else {
@@ -313,8 +313,13 @@ fn build_row_for_entry(entry: &ProcessEntry, wire_alive: &[&ToolCallInfo]) -> Pr
 }
 
 /// Sort entries in place: wire-matched first (so highlighted
-/// supervisors pin to the top of their sibling group), then memory
-/// descending, then PID as a stable tie-break.
+/// supervisors pin to the top of their sibling group), then PID
+/// ascending as the sole stable tie-break.
+///
+/// Deliberately NOT sorted by memory — memory fluctuates each poll
+/// and using it as a sort key causes the section to reshuffle every
+/// frame, which reads as flicker. PID is fixed for a process's
+/// lifetime so the order is stable across refreshes.
 fn sort_siblings_inplace(entries: &mut [&ProcessEntry], wire_alive: &[&ToolCallInfo]) {
     entries.sort_by(|a, b| {
         let a_m = is_matched_entry(a, wire_alive);
@@ -322,7 +327,7 @@ fn sort_siblings_inplace(entries: &mut [&ProcessEntry], wire_alive: &[&ToolCallI
         match (a_m, b_m) {
             (true, false) => std::cmp::Ordering::Less,
             (false, true) => std::cmp::Ordering::Greater,
-            _ => b.memory_bytes.cmp(&a.memory_bytes).then_with(|| a.pid.cmp(&b.pid)),
+            _ => a.pid.cmp(&b.pid),
         }
     });
 }
@@ -766,6 +771,17 @@ mod tests {
         // Second rustc (memory 384 MB): last child of cargo.
         assert!(rows[3].is_last_sibling);
         assert_eq!(rows[3].ancestor_has_more, vec![false, false]);
+    }
+
+    #[test]
+    fn rows_from_os_snapshot_empty_snapshot_emits_no_rows() {
+        // Defensive: a fresh-spawned session may emit a poll before
+        // any process has shown up under it. The DFS must handle
+        // an empty `processes` vec without panicking.
+        let snapshot =
+            ProcessSnapshot { processes: Vec::new(), scanned_at: std::time::SystemTime::now() };
+        let rows = rows_from_os_snapshot(&snapshot, &[]);
+        assert!(rows.is_empty());
     }
 
     #[test]

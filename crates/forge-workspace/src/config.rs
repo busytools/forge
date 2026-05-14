@@ -480,6 +480,36 @@ config_dir = "~/.claude-subspace"
     }
 
     #[test]
+    fn legacy_selection_section_is_silently_ignored() {
+        // Older forge.toml files have a `[selection]` table from
+        // the LRU / round-robin era. The schema no longer has a
+        // matching field; serde drops unknown fields silently, so
+        // these files must still load cleanly. Pinning the
+        // backward-compat behaviour here so a future
+        // `#[serde(deny_unknown_fields)]` doesn't break it.
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[projects]]
+name = "forge"
+path = "~/Projects/forge"
+default = true
+accounts = ["Subspace"]
+
+[[accounts]]
+display_name = "Subspace"
+config_dir = "~/.claude-subspace"
+
+[selection]
+policy = "round_robin"
+"#,
+        );
+        let config = load_from_dir(dir.path()).expect("legacy [selection] should be silently ignored");
+        assert_eq!(config.default_project().name, "forge");
+    }
+
+    #[test]
     fn project_accounts_pin_single_name_works() {
         let dir = tempdir().expect("tempdir");
         write_config(
