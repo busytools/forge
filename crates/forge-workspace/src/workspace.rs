@@ -173,13 +173,28 @@ impl Workspace {
             .collect()
     }
 
-    /// Return the names of all projects that opted into
-    /// `auto_start = true` in `forge.toml`. The App spawns one
-    /// session per name at startup; the first by alphabetical
-    /// order becomes the focused tab.
+    /// Return the names of all projects that should spawn at forge
+    /// launch (`auto_start = true` OR `focus = true`). The
+    /// `focus = true` project (if any) is returned FIRST so the
+    /// caller's dispatch loop can route it through `StartDefault`
+    /// (focused tab) and the rest through `SpawnProject` (silent
+    /// background spawn). Without focus, the order is declaration
+    /// order from forge.toml.
     #[must_use]
     pub fn auto_start_project_names(&self) -> Vec<String> {
-        self.config.auto_start_projects().map(|p| p.name.clone()).collect()
+        let mut focused: Option<String> = None;
+        let mut rest: Vec<String> = Vec::new();
+        for project in self.config.auto_start_projects() {
+            if project.focus {
+                focused = Some(project.name.clone());
+            } else {
+                rest.push(project.name.clone());
+            }
+        }
+        match focused {
+            Some(name) => std::iter::once(name).chain(rest).collect(),
+            None => rest,
+        }
     }
 
     /// the lead. Empty `sessions` means the project has nothing on disk

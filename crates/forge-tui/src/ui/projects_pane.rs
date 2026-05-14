@@ -272,12 +272,16 @@ fn append_org_project_row(
         spans.push(Span::raw(" "));
         // Close affordance: `⏻` power glyph with the emoji
         // variation selector (U+FE0F) so terminals render it as a
-        // 2-cell coloured emoji. Visually distinct from anything
-        // else in the pane.
+        // 2-cell coloured emoji. Coloured `STATUS_WARNING` (yellow)
+        // instead of DIM so the glyph reads as a destructive action
+        // affordance and stays visible against the row.
         spans.push(Span::styled(
             "\u{23FB}\u{FE0F}".to_owned(),
-            Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD),
+            Style::default().fg(theme::STATUS_WARNING).add_modifier(Modifier::BOLD),
         ));
+        // 2-col right gutter — matches the inspector pane's GIT
+        // section right edge. Without this the emoji butts against
+        // the rightmost pane column.
         spans.push(Span::raw("  "));
         lines.push(Line::from(spans));
         // Hit targets: whole row → focus/switch; emoji + 1-col
@@ -304,7 +308,11 @@ fn append_org_project_row(
     } else {
         // Idle (no live session) — `○` DIM glyph, name in DIM, last
         // activity time at the right edge in DIM. No close
-        // affordance since there's nothing to close.
+        // affordance since there's nothing to close. Adds a 1-col
+        // pad after `time` so the date column aligns with the
+        // emoji column on active rows (emoji = 2 cells; time = 3
+        // chars; the 1-col pad here equalises them in the same x
+        // position). Plus the standard 2-col right gutter.
         let label = truncate_with_ellipsis(project.name.as_str(), name_budget);
         let label_pad = name_budget.saturating_sub(label.chars().count());
         let time =
