@@ -105,6 +105,10 @@ pub enum ProcessKind {
     /// grandchildren, anything claude's tool registry doesn't know
     /// about).
     Process,
+    /// Synthetic `+N more` row emitted when a single parent has more
+    /// children than [`MAX_CHILDREN_PER_PARENT`] allows. Renders as
+    /// a single dim italic line at the trimmed siblings' depth.
+    Overflow,
 }
 
 /// Result of [`collect_active_processes`]: rows that survived
@@ -280,16 +284,62 @@ fn emit_with_descendants<'a>(
     next_ancestors.push(!is_last_sibling);
 
     let n = kids.len();
-    for (i, kid) in kids.iter().enumerate() {
+    // Cap per-parent children at MAX_CHILDREN_PER_PARENT — when a
+    // process spawns a swarm (cargo → N rustc workers, supervisor →
+    // N MCP servers) the section would otherwise drown in
+    // near-identical rows. Show the top-priority subset (sibling
+    // sort already pinned matched + lower-PID first) and emit a
+    // single `+N more` overflow row at the same depth so the user
+    // knows there's more below.
+    let (visible_count, hidden) = if n > MAX_CHILDREN_PER_PARENT {
+        // Reserve one slot for the overflow row so the total still
+        // fits within the cap.
+        let shown = MAX_CHILDREN_PER_PARENT.saturating_sub(1);
+        (shown, n - shown)
+    } else {
+        (n, 0)
+    };
+    for (i, kid) in kids.iter().take(visible_count).enumerate() {
+        // A visible kid is the "last sibling" only if it's the last
+        // we'll emit AND there's no overflow row coming after it.
+        let kid_is_last = i + 1 == visible_count && hidden == 0;
         emit_with_descendants(
             kid,
             depth.saturating_add(1),
-            i + 1 == n,
+            kid_is_last,
             &next_ancestors,
             children_of,
             wire_alive,
             out,
         );
+    }
+    if hidden > 0 {
+        out.push(overflow_row(hidden, depth.saturating_add(1), next_ancestors));
+    }
+}
+
+/// Per-parent cap on visible children. Beyond this, only
+/// `MAX_CHILDREN_PER_PARENT - 1` are shown and a `+N more` row
+/// stands in for the remainder. Tuned to match the typical depth-1
+/// noise (a `cargo` parent commonly has 4-8 `rustc` workers; 5 rows
+/// is enough signal without bloating the section).
+const MAX_CHILDREN_PER_PARENT: usize = 5;
+
+/// Synthesise a `+N more` overflow row. Rendered as a single dim
+/// italic line at the same depth as the trimmed siblings, taking
+/// the `└─` connector (since it's structurally the last child of
+/// its parent).
+fn overflow_row(hidden: usize, depth: u8, ancestor_has_more: Vec<bool>) -> ProcessRow {
+    ProcessRow {
+        kind: ProcessKind::Overflow,
+        headline: format!("+{hidden} more"),
+        detail: None,
+        metadata: String::new(),
+        status: ToolCallStatus::InProgress,
+        memory_bytes: None,
+        depth,
+        is_last_sibling: true,
+        ancestor_has_more,
     }
 }
 
@@ -352,7 +402,10 @@ fn enriched_bash_row(tc: &ToolCallInfo, entry: &ProcessEntry) -> ProcessRow {
     ProcessRow {
         kind: ProcessKind::BashBackgrounded,
         headline,
-        detail: detail_from_command(&entry.command),
+        // No cmdline continuation — the wire description already
+        // conveys intent ("Run unit tests"); the literal shell
+        // wrapper `/bin/zsh -c -l 'cargo …'` is noise.
+        detail: None,
         metadata: "Bash · running".to_owned(),
         status: ToolCallStatus::InProgress,
         memory_bytes: Some(entry.memory_bytes),
@@ -383,7 +436,8 @@ fn enriched_monitor_row(tc: &ToolCallInfo, entry: &ProcessEntry) -> ProcessRow {
     ProcessRow {
         kind: ProcessKind::Monitor,
         headline,
-        detail: detail_from_command(&entry.command),
+        // No cmdline continuation; the description carries intent.
+        detail: None,
         metadata,
         status: ToolCallStatus::InProgress,
         memory_bytes: Some(entry.memory_bytes),
@@ -397,11 +451,27 @@ fn enriched_monitor_row(tc: &ToolCallInfo, entry: &ProcessEntry) -> ProcessRow {
 /// grandchildren, etc.). Headline is the OS process name; detail is
 /// the cmdline.
 fn generic_os_row(entry: &ProcessEntry) -> ProcessRow {
-    let headline = if entry.name.is_empty() { "(process)".to_owned() } else { entry.name.clone() };
+    // Use the cmdline as headline when available — for unmatched
+    // supervisors that's the only meaningful context (the process
+    // name alone is too vague, e.g. "node" tells you nothing about
+    // WHICH node process it is). Falls back to the process name
+    // when the cmdline is empty (some short-lived processes don't
+    // expose one via sysinfo).
+    let cmd = entry.command.trim();
+    let headline = if cmd.is_empty() {
+        if entry.name.is_empty() { "(process)".to_owned() } else { entry.name.clone() }
+    } else {
+        cmd.to_owned()
+    };
     ProcessRow {
         kind: ProcessKind::Process,
         headline,
-        detail: detail_from_command(&entry.command),
+        // `detail` retained for future surfaces (Narrow overlay,
+        // tooltips) but no longer rendered in the supervisor
+        // 2-line block. Storing it here is cheap and lets a
+        // future "expand row" affordance show the cmdline without
+        // a fresh sysinfo scan.
+        detail: None,
         metadata: "Process · running".to_owned(),
         status: ToolCallStatus::InProgress,
         memory_bytes: Some(entry.memory_bytes),
@@ -441,15 +511,6 @@ fn cron_row(tc: &ToolCallInfo) -> ProcessRow {
         ancestor_has_more: Vec::new(),
     }
 }
-
-/// Detail row for an OS entry: the cmdline, or `None` when it's
-/// empty (some short-lived processes don't expose cmdline through
-/// sysinfo).
-fn detail_from_command(command: &str) -> Option<String> {
-    let trimmed = command.trim();
-    if trimmed.is_empty() { None } else { Some(trimmed.to_owned()) }
-}
-
 
 /// Format a byte count compactly for the metadata suffix:
 /// `< 1 KB` → `b`, `< 1 MB` → `K`, etc. Two significant digits in
@@ -619,8 +680,13 @@ mod tests {
         let rows = rows_from_os_snapshot(&snapshot, &[]);
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].kind, ProcessKind::Process);
-        assert_eq!(rows[0].headline, "rustc");
-        assert!(rows[0].detail.as_deref().unwrap().contains("rustc --crate-name"));
+        // Unmatched supervisors use the cmdline as headline so the
+        // user sees what's actually running (process name alone like
+        // "rustc" or "node" is too vague when there are many).
+        assert_eq!(rows[0].headline, "rustc --crate-name forge_tui ...");
+        // `detail` is no longer set on supervisor rows — the cmdline
+        // IS the headline now.
+        assert!(rows[0].detail.is_none());
     }
 
     #[test]
@@ -699,9 +765,10 @@ mod tests {
         // DFS pre-order: zsh (d0) → cargo (d1) → rustc (d2) → rustc (d2)
         assert_eq!(rows.len(), 4);
         assert_eq!(rows[0].depth, 0);
-        assert_eq!(rows[0].headline, "zsh");
+        // Unmatched supervisor headline = cmdline (not name).
+        assert!(rows[0].headline.starts_with("/bin/zsh"));
         assert_eq!(rows[1].depth, 1);
-        assert_eq!(rows[1].headline, "cargo");
+        assert!(rows[1].headline.starts_with("cargo"));
         assert_eq!(rows[2].depth, 2);
         assert_eq!(rows[3].depth, 2);
     }
@@ -747,7 +814,8 @@ mod tests {
         assert_eq!(rows[0].kind, ProcessKind::BashBackgrounded);
         assert_eq!(rows[0].headline, "Run unit tests");
         assert_eq!(rows[1].kind, ProcessKind::Process);
-        assert_eq!(rows[1].headline, "node");
+        // Unmatched supervisor headline = cmdline (cmdline-as-name).
+        assert_eq!(rows[1].headline, "node /path/to/mcp-server");
     }
 
     #[test]
@@ -771,6 +839,78 @@ mod tests {
         // Second rustc (memory 384 MB): last child of cargo.
         assert!(rows[3].is_last_sibling);
         assert_eq!(rows[3].ancestor_has_more, vec![false, false]);
+    }
+
+    #[test]
+    fn rows_from_os_snapshot_caps_children_with_overflow_row() {
+        // A parent with 8 kids should render: 4 visible children +
+        // 1 `+N more` overflow row (matching MAX_CHILDREN_PER_PARENT = 5).
+        let mut processes = vec![
+            // Supervisor (root)
+            ProcessEntry {
+                pid: 1000,
+                parent_pid: 1, // not in snapshot → root
+                name: "cargo".to_owned(),
+                command: "cargo build".to_owned(),
+                memory_bytes: 64 * 1024 * 1024,
+                started_at_unix: None,
+            },
+        ];
+        // 8 rustc worker children with PIDs 2000..2008.
+        for i in 0..8u32 {
+            processes.push(ProcessEntry {
+                pid: 2000 + i,
+                parent_pid: 1000,
+                name: "rustc".to_owned(),
+                command: format!("rustc --crate-name worker_{i}"),
+                memory_bytes: 100 * 1024 * 1024,
+                started_at_unix: None,
+            });
+        }
+        let snapshot =
+            ProcessSnapshot { processes, scanned_at: std::time::SystemTime::now() };
+        let rows = rows_from_os_snapshot(&snapshot, &[]);
+        // 1 supervisor + 4 visible children + 1 overflow = 6 rows.
+        assert_eq!(rows.len(), 6);
+        assert_eq!(rows[0].depth, 0);
+        // 4 visible rustc children at depth 1.
+        for i in 1..=4 {
+            assert_eq!(rows[i].depth, 1);
+            assert_eq!(rows[i].kind, ProcessKind::Process);
+        }
+        // Last row: overflow with "+4 more".
+        assert_eq!(rows[5].kind, ProcessKind::Overflow);
+        assert_eq!(rows[5].headline, "+4 more");
+        assert_eq!(rows[5].depth, 1);
+        assert!(rows[5].is_last_sibling);
+    }
+
+    #[test]
+    fn rows_from_os_snapshot_no_overflow_when_within_cap() {
+        // Exactly 5 children → all shown, no overflow row.
+        let mut processes = vec![ProcessEntry {
+            pid: 1000,
+            parent_pid: 1,
+            name: "cargo".to_owned(),
+            command: "cargo build".to_owned(),
+            memory_bytes: 64 * 1024 * 1024,
+            started_at_unix: None,
+        }];
+        for i in 0..5u32 {
+            processes.push(ProcessEntry {
+                pid: 2000 + i,
+                parent_pid: 1000,
+                name: "rustc".to_owned(),
+                command: format!("rustc --crate-name w_{i}"),
+                memory_bytes: 100 * 1024 * 1024,
+                started_at_unix: None,
+            });
+        }
+        let snapshot =
+            ProcessSnapshot { processes, scanned_at: std::time::SystemTime::now() };
+        let rows = rows_from_os_snapshot(&snapshot, &[]);
+        assert_eq!(rows.len(), 6);
+        assert!(rows.iter().all(|r| r.kind != ProcessKind::Overflow));
     }
 
     #[test]

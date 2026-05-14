@@ -1228,6 +1228,11 @@ fn glyph_and_style_for(process: &ProcessRow) -> (&'static str, Color, Style) {
                 // glyph so it reads as live work.
                 ("\u{25B8}", theme::DIM, Style::default().fg(Color::Gray))
             }
+            ProcessKind::Overflow => {
+                // Synthetic `+N more` row. No glyph; the dim italic
+                // text alone signals it's a placeholder.
+                ("", theme::DIM, Style::default().fg(theme::DIM).add_modifier(Modifier::ITALIC))
+            }
             _ => (
                 "\u{25B8}",
                 theme::RUST_ORANGE,
