@@ -955,24 +955,44 @@ fn append_tasks_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
         .saturating_sub(usize::from(glyph_indent))
         .saturating_sub(usize::from(PANE_PAD));
 
-    // Hide completed tasks — they're already done, no need to
-    // surface them in a live monitor. Then cap visible at
-    // TASKS_MAX (5); any remainder collapses to a `+N more` row.
-    // Keeps the section legible even when claude has 20+ tasks
-    // queued (typical mid-implementation state).
-    let visible_todos: Vec<&_> =
+    // Visibility tiering: show as much as fits within TASKS_MAX (5).
+    //
+    // 1. **Everything fits** (total <= cap): show ALL tasks in their
+    //    original order, completed included. So a 3-task list with
+    //    1 done + 1 in-progress + 1 pending renders all three —
+    //    you can see what's behind you AND what's ahead, not just
+    //    the current step.
+    // 2. **Total exceeds cap but non-completed fits**: hide
+    //    completed entirely, show non-completed. The `m/n` count in
+    //    the section header still surfaces the done count so they
+    //    aren't lost from the eye.
+    // 3. **Non-completed itself overflows cap**: truncate at
+    //    TASKS_MAX-1 and emit `+N more` for the remainder
+    //    (completed counted as hidden too).
+    let total_count = todos.len();
+    let non_completed: Vec<&_> =
         todos.iter().filter(|t| t.status != TodoStatus::Completed).collect();
-    let total_visible = visible_todos.len();
-    let (cap, hidden) = if total_visible > TASKS_MAX {
-        // Reserve one slot for the `+N more` row.
-        let shown = TASKS_MAX.saturating_sub(1);
-        (shown, total_visible - shown)
+    let visible_todos: Vec<&_>;
+    let hidden: usize;
+    if total_count <= TASKS_MAX {
+        // Tier 1 — original order, all included.
+        visible_todos = todos.iter().collect();
+        hidden = 0;
+    } else if non_completed.len() <= TASKS_MAX {
+        // Tier 2 — completed silently hidden; m/n header conveys
+        // the missing count.
+        visible_todos = non_completed;
+        hidden = 0;
     } else {
-        (total_visible, 0)
-    };
+        // Tier 3 — non-completed itself exceeds the cap. Top
+        // TASKS_MAX-1 non-completed + `+N more` overflow row.
+        let cap = TASKS_MAX.saturating_sub(1);
+        visible_todos = non_completed.iter().copied().take(cap).collect();
+        hidden = total_count - cap;
+    }
 
-    let shown_iter = visible_todos.iter().take(cap);
-    let shown_count = cap;
+    let shown_iter = visible_todos.iter().copied();
+    let shown_count = visible_todos.len();
     for (idx, todo) in shown_iter.enumerate() {
         // Glyph language matches PROCESSES + Projects pane:
         // ○ DIM for pending, RUST_ORANGE braille spinner for the
