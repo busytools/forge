@@ -308,18 +308,36 @@ fn detail_from_command(command: &str) -> Option<String> {
     if trimmed.is_empty() { None } else { Some(trimmed.to_owned()) }
 }
 
-/// Sort: rows with memory desc, then rows without memory (Cron) at
-/// the end. Stable secondary key by `kind` so deterministic tests
-/// don't depend on hashmap iteration order. Process kinds beyond
-/// Cron sort equal — sysinfo's PID-keyed deterministic ordering
-/// from the scanner already disambiguates within a memory tier.
+/// Sort: wire-matched kinds (`BashBackgrounded`, `Monitor`) pinned
+/// at the top because they're the rows the user actually cares
+/// about (claude knows what work they represent — highlighted in
+/// RUST_ORANGE). Generic `Process` rows next (OS-only entries with
+/// no wire match — DIM). `Cron` (wire-only registrations, no
+/// backing process) last. Within each tier: memory descending,
+/// with the no-memory tier (Cron) preserving insertion order.
 fn sort_rows(rows: &mut [ProcessRow]) {
-    rows.sort_by(|a, b| match (a.memory_bytes, b.memory_bytes) {
-        (Some(am), Some(bm)) => bm.cmp(&am),
-        (Some(_), None) => std::cmp::Ordering::Less,
-        (None, Some(_)) => std::cmp::Ordering::Greater,
-        (None, None) => std::cmp::Ordering::Equal,
+    rows.sort_by(|a, b| {
+        kind_sort_rank(a.kind).cmp(&kind_sort_rank(b.kind)).then_with(|| {
+            match (a.memory_bytes, b.memory_bytes) {
+                (Some(am), Some(bm)) => bm.cmp(&am),
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (None, None) => std::cmp::Ordering::Equal,
+            }
+        })
     });
+}
+
+/// Sort rank for [`ProcessKind`]: lower wins (top of section). The
+/// two wire-matched kinds share rank 0 so they intermix by memory
+/// within the top group; generic `Process` is rank 1; `Cron` is
+/// rank 2 (always at the bottom).
+fn kind_sort_rank(kind: ProcessKind) -> u8 {
+    match kind {
+        ProcessKind::BashBackgrounded | ProcessKind::Monitor => 0,
+        ProcessKind::Process => 1,
+        ProcessKind::Cron => 2,
+    }
 }
 
 /// Format a byte count compactly for the metadata suffix:
@@ -516,22 +534,33 @@ mod tests {
     }
 
     #[test]
-    fn sort_rows_puts_largest_memory_first_and_cron_last() {
-        let small = ProcessRow {
+    fn sort_rows_pins_wire_matched_first_then_process_then_cron() {
+        // Mixed kinds with sizes chosen to prove the primary sort
+        // is BY KIND, not by memory: a tiny Bash row pins above a
+        // huge generic Process row.
+        let big_process = ProcessRow {
             kind: ProcessKind::Process,
-            headline: "small".to_owned(),
+            headline: "rustc".to_owned(),
             detail: None,
             metadata: "Process · running".to_owned(),
             status: ToolCallStatus::InProgress,
-            memory_bytes: Some(10),
+            memory_bytes: Some(512 * 1024 * 1024),
         };
-        let big = ProcessRow {
-            kind: ProcessKind::Process,
-            headline: "big".to_owned(),
+        let small_bash = ProcessRow {
+            kind: ProcessKind::BashBackgrounded,
+            headline: "Run tests".to_owned(),
             detail: None,
-            metadata: "Process · running".to_owned(),
+            metadata: "Bash · running".to_owned(),
             status: ToolCallStatus::InProgress,
-            memory_bytes: Some(1_000),
+            memory_bytes: Some(8 * 1024 * 1024),
+        };
+        let medium_monitor = ProcessRow {
+            kind: ProcessKind::Monitor,
+            headline: "Watch CI".to_owned(),
+            detail: None,
+            metadata: "Monitor · running".to_owned(),
+            status: ToolCallStatus::InProgress,
+            memory_bytes: Some(32 * 1024 * 1024),
         };
         let cron = ProcessRow {
             kind: ProcessKind::Cron,
@@ -541,10 +570,40 @@ mod tests {
             status: ToolCallStatus::Completed,
             memory_bytes: None,
         };
-        let mut rows = vec![small.clone(), cron.clone(), big.clone()];
+        let mut rows =
+            vec![big_process.clone(), cron.clone(), small_bash.clone(), medium_monitor.clone()];
+        sort_rows(&mut rows);
+        // Wire-matched (Bash + Monitor) first, by memory desc within
+        // the tier. Monitor (32 MB) > Bash (8 MB).
+        assert_eq!(rows[0].headline, "Watch CI");
+        assert_eq!(rows[1].headline, "Run tests");
+        // Then generic Process rows.
+        assert_eq!(rows[2].headline, "rustc");
+        // Cron last.
+        assert_eq!(rows[3].headline, "*/5 * * * *");
+    }
+
+    #[test]
+    fn sort_rows_within_wire_tier_orders_by_memory_desc() {
+        let small_bash = ProcessRow {
+            kind: ProcessKind::BashBackgrounded,
+            headline: "small".to_owned(),
+            detail: None,
+            metadata: "Bash · running".to_owned(),
+            status: ToolCallStatus::InProgress,
+            memory_bytes: Some(10),
+        };
+        let big_bash = ProcessRow {
+            kind: ProcessKind::BashBackgrounded,
+            headline: "big".to_owned(),
+            detail: None,
+            metadata: "Bash · running".to_owned(),
+            status: ToolCallStatus::InProgress,
+            memory_bytes: Some(1_000),
+        };
+        let mut rows = vec![small_bash, big_bash];
         sort_rows(&mut rows);
         assert_eq!(rows[0].headline, "big");
         assert_eq!(rows[1].headline, "small");
-        assert_eq!(rows[2].headline, "*/5 * * * *");
     }
 }
