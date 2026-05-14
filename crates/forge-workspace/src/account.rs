@@ -111,7 +111,8 @@ impl AccountStateMap {
                 // AND we get back a reference into `ordered_keys` for
                 // stable lifetime.
                 self.ordered_keys.iter().find(|k| k.0 == *name).map(|k| {
-                    let remaining = self.by_key.get(k).and_then(|s| s.usage.as_ref()).map(remaining_pct);
+                    let remaining =
+                        self.by_key.get(k).and_then(|s| s.usage.as_ref()).map(remaining_pct);
                     (idx, k, remaining)
                 })
             })
@@ -142,10 +143,7 @@ impl AccountStateMap {
             },
             |(_, k, _)| (*k).clone(),
         );
-        let dir = self
-            .by_key
-            .get(&picked)
-            .map_or_else(PathBuf::new, |s| s.config_dir.clone());
+        let dir = self.by_key.get(&picked).map_or_else(PathBuf::new, |s| s.config_dir.clone());
         (picked, dir)
     }
 }
@@ -213,14 +211,10 @@ mod tests {
         // Subspace: 80% used → 20% remaining
         // Granite:  10% used → 90% remaining
         // Picker must pick Granite.
-        let mut map =
-            AccountStateMap::new(&[make_account("Subspace"), make_account("Granite")]);
+        let mut map = AccountStateMap::new(&[make_account("Subspace"), make_account("Granite")]);
         map.set_usage(&AccountKey("Subspace".to_owned()), snapshot(Some(80.0), Some(60.0)));
         map.set_usage(&AccountKey("Granite".to_owned()), snapshot(Some(10.0), Some(20.0)));
-        let (picked, _) = map.pick_for_project(&[
-            "Subspace".to_owned(),
-            "Granite".to_owned(),
-        ]);
+        let (picked, _) = map.pick_for_project(&["Subspace".to_owned(), "Granite".to_owned()]);
         assert_eq!(picked.0, "Granite");
     }
 
@@ -229,14 +223,10 @@ mod tests {
         // Subspace: 5h 10% used, 7d 90% used → bound by 7d → 10% remaining
         // Granite:  5h 50% used, 7d 50% used → 50% remaining
         // Granite wins despite worse 5h because Subspace is pinned by 7d.
-        let mut map =
-            AccountStateMap::new(&[make_account("Subspace"), make_account("Granite")]);
+        let mut map = AccountStateMap::new(&[make_account("Subspace"), make_account("Granite")]);
         map.set_usage(&AccountKey("Subspace".to_owned()), snapshot(Some(10.0), Some(90.0)));
         map.set_usage(&AccountKey("Granite".to_owned()), snapshot(Some(50.0), Some(50.0)));
-        let (picked, _) = map.pick_for_project(&[
-            "Subspace".to_owned(),
-            "Granite".to_owned(),
-        ]);
+        let (picked, _) = map.pick_for_project(&["Subspace".to_owned(), "Granite".to_owned()]);
         assert_eq!(picked.0, "Granite");
     }
 
@@ -262,14 +252,10 @@ mod tests {
     fn over_limit_account_still_picked_if_best_of_subset() {
         // Both accounts over-limit; pick the less-over one. No
         // fallback to outside the subset.
-        let mut map =
-            AccountStateMap::new(&[make_account("Subspace"), make_account("Granite")]);
+        let mut map = AccountStateMap::new(&[make_account("Subspace"), make_account("Granite")]);
         map.set_usage(&AccountKey("Subspace".to_owned()), snapshot(Some(99.5), Some(50.0)));
         map.set_usage(&AccountKey("Granite".to_owned()), snapshot(Some(100.0), Some(100.0)));
-        let (picked, _) = map.pick_for_project(&[
-            "Subspace".to_owned(),
-            "Granite".to_owned(),
-        ]);
+        let (picked, _) = map.pick_for_project(&["Subspace".to_owned(), "Granite".to_owned()]);
         assert_eq!(picked.0, "Subspace");
     }
 
@@ -286,8 +272,7 @@ mod tests {
         map.set_usage(&AccountKey("Subspace".to_owned()), snapshot(Some(50.0), Some(50.0)));
         map.set_usage(&AccountKey("Granite".to_owned()), snapshot(Some(70.0), Some(70.0)));
         map.set_usage(&AccountKey("Personal".to_owned()), snapshot(Some(0.0), Some(0.0)));
-        let (picked, _) =
-            map.pick_for_project(&["Subspace".to_owned(), "Granite".to_owned()]);
+        let (picked, _) = map.pick_for_project(&["Subspace".to_owned(), "Granite".to_owned()]);
         assert_eq!(picked.0, "Subspace");
         assert_ne!(picked.0, "Personal");
     }
@@ -296,14 +281,10 @@ mod tests {
     fn alpha_tie_break_when_remaining_pct_equal() {
         // Two accounts, identical remaining. Tie-break alphabetical
         // on display name.
-        let mut map =
-            AccountStateMap::new(&[make_account("Subspace"), make_account("Granite")]);
+        let mut map = AccountStateMap::new(&[make_account("Subspace"), make_account("Granite")]);
         map.set_usage(&AccountKey("Subspace".to_owned()), snapshot(Some(50.0), Some(50.0)));
         map.set_usage(&AccountKey("Granite".to_owned()), snapshot(Some(50.0), Some(50.0)));
-        let (picked, _) = map.pick_for_project(&[
-            "Subspace".to_owned(),
-            "Granite".to_owned(),
-        ]);
+        let (picked, _) = map.pick_for_project(&["Subspace".to_owned(), "Granite".to_owned()]);
         assert_eq!(picked.0, "Granite", "alpha tie-break should pick Granite < Subspace");
     }
 

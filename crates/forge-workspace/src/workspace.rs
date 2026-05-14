@@ -444,9 +444,7 @@ impl Workspace {
             accounts
                 .ordered_keys
                 .iter()
-                .filter_map(|key| {
-                    accounts.config_dir(key).map(|dir| (key.clone(), dir.clone()))
-                })
+                .filter_map(|key| accounts.config_dir(key).map(|dir| (key.clone(), dir.clone())))
                 .collect()
         };
         let mut tasks = Vec::with_capacity(entries.len());
@@ -592,21 +590,19 @@ impl Workspace {
     fn project_accounts_for(&self, target: &SessionTarget) -> Vec<String> {
         match target {
             SessionTarget::Default => self.config.default_project().accounts.clone(),
-            SessionTarget::Named(name) => self
-                .find_project_by_name(name)
-                .map(|p| p.accounts.clone())
-                .unwrap_or_else(|_| self.config.default_project().accounts.clone()),
+            SessionTarget::Named(name) => self.find_project_by_name(name).map_or_else(
+                |_| self.config.default_project().accounts.clone(),
+                |p| p.accounts.clone(),
+            ),
             SessionTarget::Session(key) => {
-                let matched = self
-                    .session_cwd_for(key)
-                    .and_then(|cwd| {
-                        let cwd_path = std::path::PathBuf::from(&cwd);
-                        self.config
-                            .projects
-                            .iter()
-                            .find(|p| p.path == cwd_path)
-                            .map(|p| p.accounts.clone())
-                    });
+                let matched = self.session_cwd_for(key).and_then(|cwd| {
+                    let cwd_path = std::path::PathBuf::from(&cwd);
+                    self.config
+                        .projects
+                        .iter()
+                        .find(|p| p.path == cwd_path)
+                        .map(|p| p.accounts.clone())
+                });
                 matched.unwrap_or_else(|| self.config.default_project().accounts.clone())
             }
         }

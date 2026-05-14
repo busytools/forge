@@ -62,8 +62,7 @@ fn window_eq(a: Option<&UsageWindow>, b: Option<&UsageWindow>) -> bool {
     match (a, b) {
         (None, None) => true,
         (Some(a), Some(b)) => {
-            (a.utilization - b.utilization).abs() < f64::EPSILON
-                && a.resets_at == b.resets_at
+            (a.utilization - b.utilization).abs() < f64::EPSILON && a.resets_at == b.resets_at
         }
         _ => false,
     }
