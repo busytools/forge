@@ -257,10 +257,11 @@ fn render_inspector_thumb(
 }
 
 /// Visual cap for the inspector scrollbar thumb. Inspector content
-/// is tens of rows; the unclamped formula gives a thumb that
-/// dominates the rail. 3 cells reads as a clear position indicator
-/// without screaming.
-const INSPECTOR_THUMB_MAX_CELLS: usize = 3;
+/// is tens of rows so `viewport² / content` gives a thumb that
+/// dominates the rail. Hardcoding to a single cell matches the
+/// "tiny dot" the chat scrollbar shows when chat content is long,
+/// giving the two surfaces a consistent visual weight.
+const INSPECTOR_THUMB_MAX_CELLS: usize = 1;
 
 /// Append the body (GIT section + verification nudge + TASKS
 /// section) to `lines`. Shared between the inline render and the
