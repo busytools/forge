@@ -4,15 +4,25 @@
 //! every spawn; the chosen `AccountKey` becomes the spawned Agent's
 //! `CLAUDE_CONFIG_DIR` override.
 //!
-//! **One policy only**: for each candidate account in the project's
-//! pinned `accounts = [...]` subset, compute the "binding remaining
-//! pct" — `100 − max(5h_utilisation, 7d_utilisation_of_any_window)`
-//! — and pick whichever has the most remaining. Unknown-usage
-//! accounts (cache cold / fetch failed) sort BEFORE known ones so we
-//! pick them first and warm the cache. No LRU, no round-robin, no
-//! fallback outside the pin even when every pinned account is over
-//! quota — the picker still picks the best of a bad set so the user
-//! sees the bar fill and switches tier on their own.
+//! **Policy — tiered, rate-limit aware:**
+//!
+//! 1. **Unknown-usage accounts** (no snapshot yet) sort first, in
+//!    forge.toml definition order. Picking them warms the cache.
+//! 2. **Available accounts** (5h util < 100% AND 7d util < 100%)
+//!    sort next. Within this tier:
+//!    - Lowest 5h utilisation wins (most immediate headroom).
+//!    - Tie-break on lowest 7d utilisation.
+//!    - Final tie-break on forge.toml definition order.
+//! 3. **Rate-limited accounts** (either 5h or 7d at 100%) sort last.
+//!    Definition order within this tier — picker still returns
+//!    something so the spawn doesn't fail, but the spawned session
+//!    will trip the rate limit immediately and surface that to the
+//!    user. If the user's pin contains any non-rate-limited account
+//!    it will always be preferred over this tier.
+//!
+//! No LRU, no round-robin, no fallback outside the project's pin.
+//! Rate-limited accounts are visible in the panel bars so the user
+//! can manually broaden the pin or wait for the window to reset.
 
 use std::path::PathBuf;
 
@@ -85,12 +95,9 @@ impl AccountStateMap {
         self.by_key.get(key).and_then(|s| s.usage.as_ref())
     }
 
-    /// Pick the account with the most remaining usage budget within
-    /// the project's pinned `allowed` subset. Unknown-usage accounts
-    /// sort first (in `allowed`-list order) so the picker forces
-    /// data acquisition before settling on numbers. Within known
-    /// accounts: sort by binding-remaining-pct descending, with
-    /// alpha tie-break on `display_name` for stable ordering.
+    /// Pick the best account within the project's pinned `allowed`
+    /// subset using the tiered rate-limit-aware policy described in
+    /// the module docs.
     ///
     /// Returns the picked key + its config_dir. The caller's spawn
     /// path uses the dir to seed `CLAUDE_CONFIG_DIR`.
@@ -101,7 +108,7 @@ impl AccountStateMap {
     /// out of an unreachable `panic!` form.
     pub fn pick_for_project(&self, allowed: &[String]) -> (AccountKey, PathBuf) {
         debug_assert!(!allowed.is_empty(), "pick_for_project requires a non-empty allow list");
-        let mut candidates: Vec<(usize, &AccountKey, Option<f64>)> = allowed
+        let mut candidates: Vec<(usize, &AccountKey, Option<&UsageSnapshot>)> = allowed
             .iter()
             .enumerate()
             .filter_map(|(idx, name)| {
@@ -111,23 +118,33 @@ impl AccountStateMap {
                 // AND we get back a reference into `ordered_keys` for
                 // stable lifetime.
                 self.ordered_keys.iter().find(|k| k.0 == *name).map(|k| {
-                    let remaining =
-                        self.by_key.get(k).and_then(|s| s.usage.as_ref()).map(remaining_pct);
-                    (idx, k, remaining)
+                    let usage = self.by_key.get(k).and_then(|s| s.usage.as_ref());
+                    (idx, k, usage)
                 })
             })
             .collect();
-        candidates.sort_by(|a, b| match (a.2, b.2) {
-            // Unknown first, preserving definition order via the
-            // enumerate index.
-            (None, None) => a.0.cmp(&b.0),
-            (None, Some(_)) => std::cmp::Ordering::Less,
-            (Some(_), None) => std::cmp::Ordering::Greater,
-            // Known: highest remaining first, alpha tie-break on name.
-            (Some(a_rem), Some(b_rem)) => b_rem
-                .partial_cmp(&a_rem)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| a.1.0.cmp(&b.1.0)),
+        candidates.sort_by(|a, b| {
+            let tier_a = tier_of(a.2);
+            let tier_b = tier_of(b.2);
+            tier_a.cmp(&tier_b).then_with(|| {
+                // Within the same tier: known-vs-known sorts by 5h
+                // util ascending then 7d util ascending then
+                // definition order. Both-unknown + mixed (which the
+                // tier sort already segregated, defensive) fall
+                // through to definition order.
+                if let (Some(sa), Some(sb)) = (a.2, b.2) {
+                    let f_a = five_hour_util(sa);
+                    let f_b = five_hour_util(sb);
+                    let s_a = seven_day_util(sa);
+                    let s_b = seven_day_util(sb);
+                    f_a.partial_cmp(&f_b)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                        .then_with(|| s_a.partial_cmp(&s_b).unwrap_or(std::cmp::Ordering::Equal))
+                        .then_with(|| a.0.cmp(&b.0))
+                } else {
+                    a.0.cmp(&b.0)
+                }
+            })
         });
         // Invariant: candidates is non-empty because allowed is
         // non-empty and config-load validated every name exists.
@@ -148,26 +165,41 @@ impl AccountStateMap {
     }
 }
 
-/// Compute the binding remaining-pct for a usage snapshot:
-/// `100 − max(5h_util, 7d_util_of_any_window)`. Saturating to
-/// `[0, 100]`. The picker maximises this value.
-///
-/// 7-day utilization is taken as the maximum across `seven_day`,
-/// `seven_day_opus`, and `seven_day_sonnet` windows — whichever is
-/// most-used is the binding constraint. 5-hour is the single
-/// `five_hour` window. The picker honours `min(5h_rem, 7d_rem)` in
-/// spirit by using `max(5h_util, 7d_util)`: the more-used window
-/// IS the binding constraint, and `100 - max` is the headroom.
-fn remaining_pct(snapshot: &UsageSnapshot) -> f64 {
-    let five = snapshot.five_hour.as_ref().map_or(0.0, |w| w.utilization);
-    let seven_iter = [
+/// Tier classification driving the sort: 0 = unknown (warm cache),
+/// 1 = available (under both windows), 2 = rate-limited (hit at
+/// least one limit). Sorted ascending so unknown sorts before
+/// available sorts before rate-limited.
+fn tier_of(usage: Option<&UsageSnapshot>) -> u8 {
+    match usage {
+        None => 0,
+        Some(snapshot) if is_rate_limited(snapshot) => 2,
+        Some(_) => 1,
+    }
+}
+
+/// True when either window has hit 100% utilisation. Such an account
+/// will immediately trip the API rate limit on the next request, so
+/// it's excluded from the "available" tier and only used as a
+/// fallback when every pinned account is rate-limited.
+fn is_rate_limited(snapshot: &UsageSnapshot) -> bool {
+    five_hour_util(snapshot) >= 100.0 || seven_day_util(snapshot) >= 100.0
+}
+
+fn five_hour_util(snapshot: &UsageSnapshot) -> f64 {
+    snapshot.five_hour.as_ref().map_or(0.0, |w| w.utilization)
+}
+
+/// Binding 7-day utilisation: max across the three 7-day windows
+/// (`seven_day`, `seven_day_opus`, `seven_day_sonnet`). Whichever
+/// is most-used is the binding constraint for "is this account
+/// 7-day rate-limited."
+fn seven_day_util(snapshot: &UsageSnapshot) -> f64 {
+    let windows = [
         snapshot.seven_day.as_ref().map(|w| w.utilization),
         snapshot.seven_day_opus.as_ref().map(|w| w.utilization),
         snapshot.seven_day_sonnet.as_ref().map(|w| w.utilization),
     ];
-    let seven = seven_iter.into_iter().flatten().fold(0.0_f64, f64::max);
-    let bound: f64 = five.max(seven);
-    (100.0_f64 - bound).clamp(0.0, 100.0)
+    windows.into_iter().flatten().fold(0.0_f64, f64::max)
 }
 
 #[cfg(test)]
@@ -207,10 +239,10 @@ mod tests {
     }
 
     #[test]
-    fn picks_account_with_most_remaining_budget() {
-        // Subspace: 80% used → 20% remaining
-        // Granite:  10% used → 90% remaining
-        // Picker must pick Granite.
+    fn picks_account_with_lowest_five_hour_when_neither_rate_limited() {
+        // Subspace: 5h=80% — high
+        // Granite:  5h=10% — most headroom on the immediate window
+        // Both under both windows. Picker uses lowest 5h.
         let mut map = AccountStateMap::new(&[make_account("Subspace"), make_account("Granite")]);
         map.set_usage(&AccountKey("Subspace".to_owned()), snapshot(Some(80.0), Some(60.0)));
         map.set_usage(&AccountKey("Granite".to_owned()), snapshot(Some(10.0), Some(20.0)));
@@ -219,21 +251,49 @@ mod tests {
     }
 
     #[test]
-    fn binding_window_is_the_more_constrained() {
-        // Subspace: 5h 10% used, 7d 90% used → bound by 7d → 10% remaining
-        // Granite:  5h 50% used, 7d 50% used → 50% remaining
-        // Granite wins despite worse 5h because Subspace is pinned by 7d.
+    fn five_hour_is_the_primary_sort_key() {
+        // Subspace: 5h=10%, 7d=90% — high 7d but immediate headroom
+        // Granite:  5h=50%, 7d=50%
+        // Neither is rate-limited (both 7d windows < 100%), so the
+        // 5h primary key wins for Subspace.
         let mut map = AccountStateMap::new(&[make_account("Subspace"), make_account("Granite")]);
         map.set_usage(&AccountKey("Subspace".to_owned()), snapshot(Some(10.0), Some(90.0)));
         map.set_usage(&AccountKey("Granite".to_owned()), snapshot(Some(50.0), Some(50.0)));
         let (picked, _) = map.pick_for_project(&["Subspace".to_owned(), "Granite".to_owned()]);
-        assert_eq!(picked.0, "Granite");
+        assert_eq!(picked.0, "Subspace");
+    }
+
+    #[test]
+    fn rate_limited_account_excluded_in_favour_of_available_one() {
+        // Granite: 5h=0%, 7d=100% — RATE LIMITED on 7d.
+        // Subspace: 5h=80%, 7d=80% — heavily used but neither at 100%.
+        // Picker must exclude Granite even though its 5h is lower.
+        // This is the bug the user hit: 7d=100% was being ignored
+        // by the old binding-pct algo.
+        let mut map = AccountStateMap::new(&[make_account("Granite"), make_account("Subspace")]);
+        map.set_usage(&AccountKey("Granite".to_owned()), snapshot(Some(0.0), Some(100.0)));
+        map.set_usage(&AccountKey("Subspace".to_owned()), snapshot(Some(80.0), Some(80.0)));
+        let (picked, _) = map.pick_for_project(&["Granite".to_owned(), "Subspace".to_owned()]);
+        assert_eq!(picked.0, "Subspace");
+    }
+
+    #[test]
+    fn rate_limited_account_excluded_on_five_hour_too() {
+        // Granite: 5h=100%, 7d=0% — rate limited on 5h.
+        // Subspace: 5h=80%, 7d=80% — available.
+        // Must pick Subspace.
+        let mut map = AccountStateMap::new(&[make_account("Granite"), make_account("Subspace")]);
+        map.set_usage(&AccountKey("Granite".to_owned()), snapshot(Some(100.0), Some(0.0)));
+        map.set_usage(&AccountKey("Subspace".to_owned()), snapshot(Some(80.0), Some(80.0)));
+        let (picked, _) = map.pick_for_project(&["Granite".to_owned(), "Subspace".to_owned()]);
+        assert_eq!(picked.0, "Subspace");
     }
 
     #[test]
     fn unknown_usage_sorts_first_in_definition_order() {
         // Subspace has data; Granite + Personal don't.
-        // Picker must pick Granite (first unknown in definition order).
+        // Picker picks Granite (first unknown in definition order)
+        // to warm the cache, even when Subspace looks healthy.
         let mut map = AccountStateMap::new(&[
             make_account("Granite"),
             make_account("Subspace"),
@@ -249,13 +309,25 @@ mod tests {
     }
 
     #[test]
-    fn over_limit_account_still_picked_if_best_of_subset() {
-        // Both accounts over-limit; pick the less-over one. No
-        // fallback to outside the subset.
-        let mut map = AccountStateMap::new(&[make_account("Subspace"), make_account("Granite")]);
-        map.set_usage(&AccountKey("Subspace".to_owned()), snapshot(Some(99.5), Some(50.0)));
+    fn all_rate_limited_falls_back_to_definition_order() {
+        // Every pinned account hit at least one limit. Picker still
+        // returns something (the spawn must not fail) — definition
+        // order picks the first one.
+        let mut map = AccountStateMap::new(&[make_account("Granite"), make_account("Subspace")]);
         map.set_usage(&AccountKey("Granite".to_owned()), snapshot(Some(100.0), Some(100.0)));
-        let (picked, _) = map.pick_for_project(&["Subspace".to_owned(), "Granite".to_owned()]);
+        map.set_usage(&AccountKey("Subspace".to_owned()), snapshot(Some(100.0), Some(100.0)));
+        let (picked, _) = map.pick_for_project(&["Granite".to_owned(), "Subspace".to_owned()]);
+        assert_eq!(picked.0, "Granite");
+    }
+
+    #[test]
+    fn available_wins_over_rate_limited_regardless_of_pin_order() {
+        // Granite is first in the pin AND rate-limited; Subspace is
+        // second AND available. Tier sort must lift Subspace ahead.
+        let mut map = AccountStateMap::new(&[make_account("Granite"), make_account("Subspace")]);
+        map.set_usage(&AccountKey("Granite".to_owned()), snapshot(Some(50.0), Some(100.0)));
+        map.set_usage(&AccountKey("Subspace".to_owned()), snapshot(Some(99.9), Some(99.9)));
+        let (picked, _) = map.pick_for_project(&["Granite".to_owned(), "Subspace".to_owned()]);
         assert_eq!(picked.0, "Subspace");
     }
 
@@ -278,14 +350,25 @@ mod tests {
     }
 
     #[test]
-    fn alpha_tie_break_when_remaining_pct_equal() {
-        // Two accounts, identical remaining. Tie-break alphabetical
-        // on display name.
+    fn seven_day_tiebreak_when_five_hour_equal() {
+        // Both at 5h=50, tiebreaker is 7d. Granite has lower 7d so
+        // it wins despite the alphabetic ordering.
+        let mut map = AccountStateMap::new(&[make_account("Subspace"), make_account("Granite")]);
+        map.set_usage(&AccountKey("Subspace".to_owned()), snapshot(Some(50.0), Some(70.0)));
+        map.set_usage(&AccountKey("Granite".to_owned()), snapshot(Some(50.0), Some(30.0)));
+        let (picked, _) = map.pick_for_project(&["Subspace".to_owned(), "Granite".to_owned()]);
+        assert_eq!(picked.0, "Granite");
+    }
+
+    #[test]
+    fn definition_order_final_tiebreak() {
+        // Identical 5h + 7d → definition order. Subspace first in
+        // the allow list wins.
         let mut map = AccountStateMap::new(&[make_account("Subspace"), make_account("Granite")]);
         map.set_usage(&AccountKey("Subspace".to_owned()), snapshot(Some(50.0), Some(50.0)));
         map.set_usage(&AccountKey("Granite".to_owned()), snapshot(Some(50.0), Some(50.0)));
         let (picked, _) = map.pick_for_project(&["Subspace".to_owned(), "Granite".to_owned()]);
-        assert_eq!(picked.0, "Granite", "alpha tie-break should pick Granite < Subspace");
+        assert_eq!(picked.0, "Subspace");
     }
 
     #[test]
@@ -297,15 +380,7 @@ mod tests {
     }
 
     #[test]
-    fn remaining_pct_clamps_to_zero_when_over_100() {
-        // Defensive: if utilization > 100 the snapshot mapper would
-        // already clamp, but the picker's math should also be safe.
-        let s = snapshot(Some(100.0), Some(100.0));
-        assert!((remaining_pct(&s) - 0.0).abs() < f64::EPSILON);
-    }
-
-    #[test]
-    fn remaining_pct_uses_max_seven_day_window() {
+    fn seven_day_util_takes_max_across_windows() {
         // seven_day = 30, seven_day_opus = 80 → binding = max = 80
         let mut s = snapshot(Some(20.0), Some(30.0));
         s.seven_day_opus = Some(UsageWindow {
@@ -314,7 +389,14 @@ mod tests {
             resets_at: None,
             reset_description: None,
         });
-        // bound = max(20, max(30, 80, 0)) = 80
-        assert!((remaining_pct(&s) - 20.0).abs() < f64::EPSILON);
+        assert!((seven_day_util(&s) - 80.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn is_rate_limited_fires_on_either_window() {
+        assert!(is_rate_limited(&snapshot(Some(100.0), Some(0.0))));
+        assert!(is_rate_limited(&snapshot(Some(0.0), Some(100.0))));
+        assert!(is_rate_limited(&snapshot(Some(100.0), Some(100.0))));
+        assert!(!is_rate_limited(&snapshot(Some(99.9), Some(99.9))));
     }
 }
