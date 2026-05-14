@@ -282,26 +282,22 @@ fn append_org_project_row(
         spans.push(Span::styled(label, name_style));
         spans.push(Span::raw(" ".repeat(label_pad)));
         // 1-col separator before the button — matches the 1-col
-        // separator before the `time` column on idle rows so the
-        // button + time columns share the same left edge.
+        // separator before the `time` column on idle rows.
         spans.push(Span::raw(" "));
-        // Pre-button pad — pushes the button RIGHT so its rightmost
-        // cell aligns with the idle row's last time char (both at
-        // row_right - 3). Without this, a 2-cell button + 3-col
-        // gutter would leave the button's right edge at row_right - 4
-        // — 1 cell left of the time column's right edge, which
-        // reads as uneven padding when active + idle rows sit
-        // next to each other.
-        spans.push(Span::raw(" "));
-        // Close affordance: lowercase `x` on `USER_MSG_BG` slate.
-        // Sits between capital `X` (too heavy) and `×` U+00D7
-        // (multiplication sign, too dainty) — a 1-cell glyph with
-        // a slightly smaller visual footprint than capital X but
-        // still legible as a close icon. Glyph sits at the
-        // rightmost button cell so the leading bg cell gives the
-        // button enough surface to read as a button.
+        // 2-col pre-button pad (no bg) — pushes the bg-coloured
+        // button RIGHT so its single cell sits at row_right - 3,
+        // matching the idle row's last time char column. The
+        // larger pad here (vs the previous 1 cell) makes room for
+        // shrinking the button from 2 cells to 1 while keeping
+        // active + idle row right edges flush.
+        spans.push(Span::raw("  "));
+        // Close affordance: lowercase `x` on `USER_MSG_BG` slate,
+        // 1 cell. No leading bg-padding cell — the bare glyph on
+        // a slate cell is enough to read as a button affordance
+        // without the extra bg-cell-as-shoulder that previously
+        // sat to the left of the x.
         spans.push(Span::styled(
-            " x".to_owned(),
+            "x".to_owned(),
             Style::default().fg(Color::Gray).bg(theme::USER_MSG_BG).add_modifier(Modifier::BOLD),
         ));
         // 2-col right gutter — matches the inspector pane's GIT
@@ -317,11 +313,11 @@ fn append_org_project_row(
             height: 1,
         });
         let row_right = area.x.saturating_add(area.width);
-        // Close button: the ` ×` 2-cell span occupies
-        // (row_right - 4) to (row_right - 3). 4-col hit band runs
-        // (row_right - 5) to (row_right - 2) for 1-col tolerance
-        // each side; the rightmost gutter cols stay inert.
-        let close_x_start = row_right.saturating_sub(5);
+        // Close button: the `x` 1-cell span sits at
+        // (row_right - 3). 3-col hit band runs (row_right - 4)
+        // to (row_right - 2) for 1-col tolerance each side;
+        // the rightmost gutter cols stay inert.
+        let close_x_start = row_right.saturating_sub(4);
         let close_x_end = row_right.saturating_sub(2);
         app.pane_hit_targets.push(PaneHitTarget::CloseSession {
             session_key: session_key.clone(),
