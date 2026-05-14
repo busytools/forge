@@ -1084,91 +1084,43 @@ fn append_processes_section(
     let include_memory = width >= PROCESSES_MEMORY_WIDTH_THRESHOLD;
     let process_count = collection.rows.len();
     for (idx, process) in collection.rows.iter().enumerate() {
-        if process.depth == 0 {
-            append_supervisor_row(lines, process, width, include_memory);
-        } else {
-            append_descendant_row(lines, process, width, include_memory);
-        }
+        append_process_row(lines, process, width, include_memory);
         // Blank between SUPERVISOR rows (depth-0). Descendant rows
         // pack tight under their supervisor with no blanks so the
         // tree reads as one connected block.
-        let next_is_supervisor =
-            collection.rows.get(idx + 1).is_some_and(|next| next.depth == 0);
+        let next_is_supervisor = collection.rows.get(idx + 1).is_some_and(|next| next.depth == 0);
         if idx + 1 < process_count && next_is_supervisor {
             lines.push(Line::default());
         }
     }
 
     // No `+N more` footer — the inspector pane scrolls, so the
-    // scrollbar IS the overflow indicator. `collection.overflow`
-    // remains on the struct for potential future use (e.g. a
-    // sanity-bound notice when the soft cap actually trims rows).
+    // scrollbar IS the overflow indicator.
 }
 
-/// Render a depth-0 row (direct child of `claude`, the "supervisor"
-/// of its subtree) as the existing 3-line block: glyph + headline,
-/// `└─ cmdline` continuation, `└─ Kind · status · NN MB`
-/// continuation. Mirrors pre-tree behaviour for the top row of each
-/// branch.
-fn append_supervisor_row(
-    lines: &mut Vec<Line<'static>>,
-    process: &ProcessRow,
-    width: u16,
-    include_memory: bool,
-) {
-    let glyph_indent = PANE_PAD + 2; // "  " + glyph + " "
-    let text_budget = usize::from(width)
-        .saturating_sub(usize::from(glyph_indent))
-        .saturating_sub(usize::from(PANE_PAD));
-    let continuation_indent = "    "; // 4 cols — under the text col.
-    // `└─ ` is 3 codepoints (U+2514, U+2500, U+0020) so each
-    // continuation row's chrome eats 3 cols.
-    let continuation_budget = usize::from(width)
-        .saturating_sub(continuation_indent.chars().count())
-        .saturating_sub(usize::from(PANE_PAD))
-        .saturating_sub(3);
-
-    let (glyph, glyph_color, headline_style) = glyph_and_style_for(process);
-    let headline_fitted = truncate_with_ellipsis(&process.headline, text_budget);
-    lines.push(Line::from(vec![
-        Span::raw("  "),
-        Span::styled(glyph.to_owned(), Style::default().fg(glyph_color)),
-        Span::raw(" "),
-        Span::styled(headline_fitted, headline_style),
-    ]));
-
-    if let Some(detail) = process.detail.as_ref() {
-        let fitted = truncate_with_ellipsis(detail, continuation_budget);
-        lines.push(Line::from(vec![
-            Span::raw(continuation_indent.to_owned()),
-            Span::styled("\u{2514}\u{2500} ".to_owned(), Style::default().fg(theme::DIM)),
-            Span::styled(fitted, Style::default().fg(theme::DIM)),
-        ]));
-    }
-
-    let metadata_text = build_metadata_with_memory(process, include_memory);
-    let metadata_fitted = truncate_with_ellipsis(&metadata_text, continuation_budget);
-    lines.push(Line::from(vec![
-        Span::raw(continuation_indent.to_owned()),
-        Span::styled("\u{2514}\u{2500} ".to_owned(), Style::default().fg(theme::DIM)),
-        Span::styled(metadata_fitted, Style::default().fg(theme::DIM)),
-    ]));
-}
-
-/// Render a depth-≥1 descendant as a single-line entry with
-/// box-drawing tree connectors built from `ancestor_has_more` +
-/// `is_last_sibling`. Drops the cmdline continuation so deep trees
-/// don't blow the screen budget; the supervisor's 3-line block
-/// already carries the full cmdline context. The metadata
-/// (`Kind · status · NN MB`) lives inline on the same row, after the
-/// headline + a `· ` separator.
+/// Render one process row as a single line. Same shape for
+/// supervisors (depth 0) and descendants (depth ≥ 1) — the only
+/// difference is depth-0 has no tree-connector chrome, while
+/// depth-≥1 emits per-ancestor continuation cols + a connector.
 ///
-/// Format: `<pane pad><ancestor cols><connector><glyph> <headline> · <metadata>`
-/// where `ancestor cols` is one 3-col chunk per ancestor depth (`│  `
-/// when that ancestor has more siblings below, `   ` when not), and
-/// `connector` is `└─ ` (last sibling) or `├─ ` (more siblings
-/// below).
-fn append_descendant_row(
+/// Format: `<pane pad><ancestor cols><connector><glyph> <headline> · <memory>`
+/// where:
+/// - Ancestor cols: one 3-col chunk per ancestor depth (`│  `
+///   when that ancestor has more siblings below, `   ` when not).
+///   Empty at depth 0.
+/// - Connector: `└─ ` (last sibling) or `├─ ` (more siblings).
+///   Empty at depth 0.
+/// - Memory suffix: `· NN MB` when `memory_bytes` is set AND the
+///   layout has room; for Cron rows (no memory) the kind/recurring
+///   metadata fills the slot instead.
+///
+/// The redundant `Bash · running` / `Process · running` metadata
+/// dropped — the glyph + colour already convey kind, "running" is
+/// implicit (every shown row is running), and "· 83 MB" alone is
+/// enough useful detail. Cron rows still show their `Cron ·
+/// recurring · session-only` metadata because they have no memory
+/// to display.
+fn append_process_row(
     lines: &mut Vec<Line<'static>>,
     process: &ProcessRow,
     width: u16,
@@ -1177,60 +1129,80 @@ fn append_descendant_row(
     let mut spans: Vec<Span<'static>> = Vec::new();
     spans.push(Span::raw(" ".repeat(usize::from(PANE_PAD))));
 
-    // One 3-col chunk per ancestor depth — vertical-bar continuation
-    // when that ancestor has more siblings to come, blanks otherwise.
-    for has_more in &process.ancestor_has_more {
-        let chunk = if *has_more { "\u{2502}  " } else { "   " };
-        spans.push(Span::styled(chunk.to_owned(), Style::default().fg(theme::DIM)));
-    }
+    // Tree chrome (ancestor cols + connector) renders at depth ≥ 1
+    // only. Depth-0 rows (supervisors + Cron) start flush with
+    // PANE_PAD and skip directly to the glyph.
+    let tree_chrome_cols = if process.depth == 0 {
+        0
+    } else {
+        // One 3-col chunk per ancestor depth — vertical-bar
+        // continuation when that ancestor has more siblings to
+        // come, blanks otherwise. Plus 3 cols for THIS row's
+        // connector.
+        for has_more in &process.ancestor_has_more {
+            let chunk = if *has_more { "\u{2502}  " } else { "   " };
+            spans.push(Span::styled(chunk.to_owned(), Style::default().fg(theme::DIM)));
+        }
+        let connector =
+            if process.is_last_sibling { "\u{2514}\u{2500} " } else { "\u{251C}\u{2500} " };
+        spans.push(Span::styled(connector.to_owned(), Style::default().fg(theme::DIM)));
+        usize::from(process.depth) * 3 + 3
+    };
 
-    // Connector for THIS row.
-    let connector = if process.is_last_sibling { "\u{2514}\u{2500} " } else { "\u{251C}\u{2500} " };
-    spans.push(Span::styled(connector.to_owned(), Style::default().fg(theme::DIM)));
-
-    // Glyph + space + headline + optional ` · <memory>` suffix.
+    // Glyph + space + headline + optional ` · <suffix>`.
     //
-    // Descendants drop the supervisor's verbose `Kind · running`
-    // metadata — the glyph + colour already convey kind, "running"
-    // is redundant (every shown row is running), and a 40-col pane
-    // can't afford the chars. We keep ONLY the memory suffix (when
-    // present and the layout allows it) since memory is the one
-    // bit of useful per-descendant detail that isn't visible from
-    // the headline.
+    // Suffix priority:
+    // 1. Memory (`12 MB`) — when `memory_bytes` is set + layout
+    //    has room. Drops the redundant `Kind · running` metadata
+    //    string since glyph + colour already convey kind and
+    //    "running" is implicit.
+    // 2. Cron's `Cron · recurring · session-only` metadata — used
+    //    when memory is `None` (Cron rows are wire-only, no
+    //    backing process). The kind/recurring info IS the useful
+    //    signal there.
+    // 3. Nothing — `+N more` overflow rows have no memory + empty
+    //    metadata, so the row is just glyph + headline.
     let (glyph, glyph_color, headline_style) = glyph_and_style_for(process);
     spans.push(Span::styled(glyph.to_owned(), Style::default().fg(glyph_color)));
     spans.push(Span::raw(" "));
 
-    let memory_suffix = match (include_memory, process.memory_bytes) {
+    let candidate_suffix: Option<String> = match (include_memory, process.memory_bytes) {
         (true, Some(bytes)) => Some(format_memory_short(bytes)),
-        _ => None,
+        _ => {
+            if process.metadata.is_empty() {
+                None
+            } else {
+                Some(process.metadata.clone())
+            }
+        }
     };
-    let suffix_chars = memory_suffix.as_ref().map_or(0, |s| 3 + s.chars().count()); // " · " + value
-    let chrome_chars = usize::from(PANE_PAD)
-        + usize::from(process.depth) * 3
-        + 3 // connector
+    // Suffix is auxiliary — drop it if including it would force the
+    // headline to truncate. Better to lose the `· 12 MB` than to
+    // show `…` where the user's process name should be.
+    let chrome_no_suffix = usize::from(PANE_PAD)
+        + tree_chrome_cols
         + 2 // glyph + space
-        + suffix_chars
         + usize::from(PANE_PAD); // right gutter
-    let headline_budget = usize::from(width).saturating_sub(chrome_chars).max(1);
+    let candidate_chars = candidate_suffix.as_ref().map_or(0, |s| 3 + s.chars().count());
+    let headline_len = process.headline.chars().count();
+    let width_us = usize::from(width);
+    let suffix_text = if headline_len + chrome_no_suffix + candidate_chars <= width_us {
+        candidate_suffix
+    } else {
+        None
+    };
+    let suffix_chars = suffix_text.as_ref().map_or(0, |s| 3 + s.chars().count()); // " · " + value
+    let chrome_chars = chrome_no_suffix + suffix_chars;
+    let headline_budget = width_us.saturating_sub(chrome_chars).max(1);
     let headline_fitted = truncate_with_ellipsis(&process.headline, headline_budget);
 
     spans.push(Span::styled(headline_fitted, headline_style));
-    if let Some(mem) = memory_suffix {
+    if let Some(suffix) = suffix_text {
         spans.push(Span::styled(" \u{00B7} ".to_owned(), Style::default().fg(theme::DIM)));
-        spans.push(Span::styled(mem, Style::default().fg(theme::DIM)));
+        spans.push(Span::styled(suffix, Style::default().fg(theme::DIM)));
     }
 
     lines.push(Line::from(spans));
-}
-
-/// Compose the metadata string for a row, optionally suffixing
-/// `· 12 MB` when the layout has room.
-fn build_metadata_with_memory(process: &ProcessRow, include_memory: bool) -> String {
-    match (include_memory, process.memory_bytes) {
-        (true, Some(bytes)) => format!("{} · {}", process.metadata, format_memory_short(bytes)),
-        _ => process.metadata.clone(),
-    }
 }
 
 /// Pick the (glyph, glyph_color, headline_style) triple for a
@@ -1694,78 +1666,75 @@ mod tests {
     }
 
     #[test]
-    fn processes_section_renders_in_progress_bash_with_command_detail() {
-        let row = make_process_row(
+    fn processes_section_renders_bash_supervisor_as_single_line() {
+        // Supervisor rows are single-line: glyph + headline + ` · <memory>`.
+        // The verbose `Kind · running` metadata + cmdline continuation
+        // rows were retired — the glyph + colour convey kind and the
+        // memory suffix is the only useful per-row signal.
+        let row = make_row_with_memory(
             ProcessKind::BashBackgrounded,
             "Run unit tests",
-            Some("cargo nextest run --no-fail-fast"),
             "Bash · running",
-            ToolCallStatus::InProgress,
+            8 * 1024 * 1024,
         );
         let mut lines = Vec::new();
         append_processes_section(&mut lines, &collection(vec![row]), 40);
 
-        // header + blank + headline + detail-continuation + meta-continuation = 5 lines
-        assert_eq!(lines.len(), 5, "expected 5 rendered lines, got {}", lines.len());
+        // header + blank + single supervisor row = 3 lines.
+        assert_eq!(lines.len(), 3, "expected 3 rendered lines, got {}", lines.len());
 
         let header = line_text(&lines[0]);
         assert_eq!(header, "  PROCESSES");
-
-        let headline = line_text(&lines[2]);
-        assert!(headline.starts_with("  \u{25B8} Run unit tests"), "got {headline:?}");
-
-        let detail = line_text(&lines[3]);
-        assert!(
-            detail.starts_with("    \u{2514}\u{2500} cargo nextest run"),
-            "expected command continuation, got {detail:?}"
-        );
-
-        let meta = line_text(&lines[4]);
-        assert!(
-            meta.starts_with("    \u{2514}\u{2500} Bash \u{00B7} running"),
-            "expected metadata continuation, got {meta:?}"
-        );
+        let row_text = line_text(&lines[2]);
+        assert!(row_text.starts_with("  \u{25B8} Run unit tests"), "headline: {row_text:?}");
+        assert!(row_text.contains("8 MB"), "memory suffix: {row_text:?}");
+        // No `Bash · running` text — that's the regression check.
+        assert!(!row_text.contains("running"), "kind/running text must be dropped: {row_text:?}");
     }
 
     #[test]
-    fn processes_section_renders_persistent_monitor() {
-        let row = make_process_row(
+    fn processes_section_renders_persistent_monitor_as_single_line() {
+        // Monitor supervisor: same single-line shape. The `persistent`
+        // flag is part of the metadata string; for Monitor rows that
+        // info is conveyed via the suffix when no memory is set, or
+        // dropped when memory takes the suffix slot. Test pins the
+        // memory-wins path.
+        let row = make_row_with_memory(
             ProcessKind::Monitor,
             "PR #120 CI watch",
-            Some("gh run watch 25838877846"),
             "Monitor · running · persistent",
-            ToolCallStatus::InProgress,
+            4 * 1024 * 1024,
         );
         let mut lines = Vec::new();
         append_processes_section(&mut lines, &collection(vec![row]), 40);
 
-        let headline = line_text(&lines[2]);
-        assert!(headline.starts_with("  \u{25B8} PR #120 CI watch"), "got {headline:?}");
-        let meta = line_text(&lines[4]);
-        assert!(meta.contains("persistent"), "expected persistent flag in metadata: {meta:?}");
+        let row_text = line_text(&lines[2]);
+        assert!(row_text.starts_with("  \u{25B8} PR #120 CI watch"), "headline: {row_text:?}");
+        assert!(row_text.contains("4 MB"), "memory suffix wins: {row_text:?}");
     }
 
     #[test]
-    fn processes_section_renders_completed_cron_with_clock_glyph_replaced_by_check() {
-        // Cron registration finishes immediately on the wire, so a
-        // Cron row almost always renders with the completed-checkmark
-        // glyph rather than the schedule-clock glyph. Pin that
-        // behaviour explicitly so a future glyph-rotation doesn't
-        // silently change it.
+    fn processes_section_cron_supervisor_uses_metadata_suffix() {
+        // Cron rows have no memory_bytes (wire-only registrations).
+        // The metadata string IS the useful signal, so the suffix
+        // slot falls through to it — but only when the row width
+        // can fit BOTH the headline and the suffix without
+        // truncation. Test at 50 cols where everything fits.
         let row = make_process_row(
             ProcessKind::Cron,
             "*/5 * * * *",
             Some("audit memory health"),
-            "Cron · recurring · session-only",
+            "Cron · recurring",
             ToolCallStatus::Completed,
         );
         let mut lines = Vec::new();
-        append_processes_section(&mut lines, &collection(vec![row]), 40);
+        append_processes_section(&mut lines, &collection(vec![row]), 50);
 
-        let headline = line_text(&lines[2]);
+        let row_text = line_text(&lines[2]);
         // ✓ is the completed-status glyph; the cron clock ⏰ only
         // fires for the (rare) InProgress case.
-        assert!(headline.starts_with("  \u{2713} */5 * * * *"), "got {headline:?}");
+        assert!(row_text.starts_with("  \u{2713} */5 * * * *"), "got {row_text:?}");
+        assert!(row_text.contains("recurring"), "metadata suffix present: {row_text:?}");
     }
 
     #[test]
@@ -1780,47 +1749,47 @@ mod tests {
         let mut lines = Vec::new();
         append_processes_section(&mut lines, &collection(vec![row]), 40);
 
-        let headline = line_text(&lines[2]);
-        assert!(headline.starts_with("  \u{23F0} daily 9am"), "got {headline:?}");
+        let row_text = line_text(&lines[2]);
+        assert!(row_text.starts_with("  \u{23F0} daily 9am"), "got {row_text:?}");
     }
 
     #[test]
     fn processes_section_renders_failed_with_cross_glyph() {
-        let row = make_process_row(
+        let row = make_row_with_memory(
             ProcessKind::BashBackgrounded,
             "Run integration tests",
-            Some("just integration"),
             "Bash · failed",
-            ToolCallStatus::Failed,
+            16 * 1024 * 1024,
         );
+        // Override status from the helper default.
+        let mut rows = vec![row];
+        rows[0].status = ToolCallStatus::Failed;
         let mut lines = Vec::new();
-        append_processes_section(&mut lines, &collection(vec![row]), 40);
+        append_processes_section(&mut lines, &collection(rows), 40);
 
-        let headline = line_text(&lines[2]);
-        assert!(headline.starts_with("  \u{2717} Run integration tests"), "got {headline:?}");
+        let row_text = line_text(&lines[2]);
+        assert!(row_text.starts_with("  \u{2717} Run integration tests"), "got {row_text:?}");
     }
 
     #[test]
     fn processes_section_three_kinds_together_renders_blank_between_rows() {
         let rows = vec![
-            make_process_row(
+            make_row_with_memory(
                 ProcessKind::BashBackgrounded,
                 "Run tests",
-                Some("cargo nextest run"),
                 "Bash · running",
-                ToolCallStatus::InProgress,
+                8 * 1024 * 1024,
             ),
-            make_process_row(
+            make_row_with_memory(
                 ProcessKind::Monitor,
                 "Watch CI",
-                Some("gh run watch 123"),
                 "Monitor · running · persistent",
-                ToolCallStatus::InProgress,
+                4 * 1024 * 1024,
             ),
             make_process_row(
                 ProcessKind::Cron,
                 "*/5 * * * *",
-                Some("audit"),
+                None,
                 "Cron · recurring · durable",
                 ToolCallStatus::Completed,
             ),
@@ -1828,48 +1797,29 @@ mod tests {
         let mut lines = Vec::new();
         append_processes_section(&mut lines, &collection(rows), 40);
 
-        // header + blank + 3 rows × (headline + detail + meta = 3 lines) + 2 blanks between rows
-        // = 2 + 9 + 2 = 13 lines
-        assert_eq!(lines.len(), 13, "expected 13 rendered lines, got {}", lines.len());
-
-        // Sanity: each row's headline line carries the right text.
+        // header + blank + 3 single-line rows + 2 blanks between
+        // supervisor rows = 2 + 3 + 2 = 7 lines.
+        assert_eq!(lines.len(), 7, "expected 7 rendered lines, got {}", lines.len());
         assert!(line_text(&lines[2]).contains("Run tests"));
-        assert!(line_text(&lines[6]).contains("Watch CI"));
-        assert!(line_text(&lines[10]).contains("*/5 * * * *"));
-    }
-
-    #[test]
-    fn processes_section_skips_detail_row_when_none() {
-        let row = make_process_row(
-            ProcessKind::Cron,
-            "daily 9am",
-            None,
-            "Cron · recurring",
-            ToolCallStatus::Completed,
-        );
-        let mut lines = Vec::new();
-        append_processes_section(&mut lines, &collection(vec![row]), 40);
-
-        // header + blank + headline + meta-continuation = 4 lines (no detail line)
-        assert_eq!(lines.len(), 4, "expected 4 lines with detail=None, got {}", lines.len());
+        assert!(line_text(&lines[4]).contains("Watch CI"));
+        assert!(line_text(&lines[6]).contains("*/5 * * * *"));
     }
 
     #[test]
     fn processes_section_truncates_long_headline_with_ellipsis() {
-        let row = make_process_row(
+        let row = make_row_with_memory(
             ProcessKind::BashBackgrounded,
             "Run a very long described task that will absolutely overflow the pane width",
-            None,
             "Bash · running",
-            ToolCallStatus::InProgress,
+            8 * 1024 * 1024,
         );
         let mut lines = Vec::new();
         append_processes_section(&mut lines, &collection(vec![row]), 40);
 
-        let headline = line_text(&lines[2]);
-        assert!(headline.ends_with('\u{2026}'), "expected ellipsis: {headline:?}");
-        let visible_chars = headline.chars().count();
-        assert!(visible_chars <= 38, "headline overflows 40-col pane: {visible_chars} cols");
+        let row_text = line_text(&lines[2]);
+        assert!(row_text.contains('\u{2026}'), "expected ellipsis: {row_text:?}");
+        let visible_chars = row_text.chars().count();
+        assert!(visible_chars <= 38, "row overflows 40-col pane: {visible_chars} cols");
     }
 
     /// Helper for tests that need a row with explicit memory bytes
@@ -1896,7 +1846,7 @@ mod tests {
     #[test]
     fn processes_section_appends_memory_suffix_at_wide_width() {
         // 40-col Wide-tier inspector — width above the threshold so
-        // the metadata row carries a `· 12 MB` suffix.
+        // the row carries a `· 12 MB` suffix inline with the headline.
         let row = make_row_with_memory(
             ProcessKind::Process,
             "cargo",
@@ -1906,14 +1856,14 @@ mod tests {
         let mut lines = Vec::new();
         append_processes_section(&mut lines, &collection(vec![row]), 40);
 
-        let meta = line_text(&lines[3]);
-        assert!(meta.contains("12 MB"), "expected memory suffix on Wide tier: {meta:?}");
+        let row_text = line_text(&lines[2]);
+        assert!(row_text.contains("12 MB"), "expected memory suffix on Wide tier: {row_text:?}");
     }
 
     #[test]
     fn processes_section_drops_memory_suffix_at_medium_width() {
         // 30-col Medium-tier inspector — width below threshold so
-        // the metadata row stays bare.
+        // the row stays bare (no memory suffix).
         let row = make_row_with_memory(
             ProcessKind::Process,
             "cargo",
@@ -1923,8 +1873,8 @@ mod tests {
         let mut lines = Vec::new();
         append_processes_section(&mut lines, &collection(vec![row]), 30);
 
-        let meta = line_text(&lines[3]);
-        assert!(!meta.contains("MB"), "expected no memory suffix on Medium tier: {meta:?}");
+        let row_text = line_text(&lines[2]);
+        assert!(!row_text.contains("MB"), "expected no memory suffix on Medium tier: {row_text:?}");
     }
 
     #[test]

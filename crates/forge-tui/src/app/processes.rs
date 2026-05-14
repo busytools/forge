@@ -867,16 +867,15 @@ mod tests {
                 started_at_unix: None,
             });
         }
-        let snapshot =
-            ProcessSnapshot { processes, scanned_at: std::time::SystemTime::now() };
+        let snapshot = ProcessSnapshot { processes, scanned_at: std::time::SystemTime::now() };
         let rows = rows_from_os_snapshot(&snapshot, &[]);
         // 1 supervisor + 4 visible children + 1 overflow = 6 rows.
         assert_eq!(rows.len(), 6);
         assert_eq!(rows[0].depth, 0);
         // 4 visible rustc children at depth 1.
-        for i in 1..=4 {
-            assert_eq!(rows[i].depth, 1);
-            assert_eq!(rows[i].kind, ProcessKind::Process);
+        for row in &rows[1..=4] {
+            assert_eq!(row.depth, 1);
+            assert_eq!(row.kind, ProcessKind::Process);
         }
         // Last row: overflow with "+4 more".
         assert_eq!(rows[5].kind, ProcessKind::Overflow);
@@ -906,8 +905,7 @@ mod tests {
                 started_at_unix: None,
             });
         }
-        let snapshot =
-            ProcessSnapshot { processes, scanned_at: std::time::SystemTime::now() };
+        let snapshot = ProcessSnapshot { processes, scanned_at: std::time::SystemTime::now() };
         let rows = rows_from_os_snapshot(&snapshot, &[]);
         assert_eq!(rows.len(), 6);
         assert!(rows.iter().all(|r| r.kind != ProcessKind::Overflow));
