@@ -244,6 +244,7 @@ impl Workspace {
                 org: project.org.clone(),
                 path: project.path.clone(),
                 display_path: project.display_path.clone(),
+                accounts: project.accounts.clone(),
                 sessions,
             });
         }
