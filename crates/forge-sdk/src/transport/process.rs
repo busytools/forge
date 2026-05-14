@@ -272,10 +272,12 @@ impl Subprocess {
     /// when the child has already been reaped.
     ///
     /// Used by the Inspector pane's PROCESSES section to anchor an
-    /// OS-level walk of the descendant tree
-    /// ([`forge_agent::env::processes`]). The PID is stable for the
-    /// lifetime of the subprocess so the scanner can cache its
-    /// snapshot across polls keyed off this value.
+    /// OS-level walk of the descendant tree (the `forge-agent`
+    /// crate's `env::processes` scanner — not linked here because the
+    /// dependency direction forbids forge-sdk from naming forge-agent
+    /// types). The PID is stable for the lifetime of the subprocess
+    /// so the scanner can cache its snapshot across polls keyed off
+    /// this value.
     #[must_use]
     pub fn child_pid(&self) -> Option<u32> {
         self.child.as_ref().and_then(tokio::process::Child::id)
