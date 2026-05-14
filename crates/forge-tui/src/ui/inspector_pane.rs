@@ -1173,6 +1173,14 @@ fn append_process_row(
 
     // Glyph + space + headline + optional ` · <suffix>`.
     //
+    // Glyph rendering is depth-0 only — supervisors carry the
+    // spinner/loader glyph (RUST_ORANGE for wire-matched Bash /
+    // Monitor; DIM for generic OS processes); descendants drop it
+    // because the tree connector + indent already says "child of
+    // the row above" and adding a glyph per child clutters the
+    // view. Depth-0 chrome adds 2 cols for glyph+space; depth-≥1
+    // adds 0 cols past the tree connector itself.
+    //
     // Suffix priority:
     // 1. Memory (`12 MB`) — when `memory_bytes` is set + layout
     //    has room. Drops the redundant `Kind · running` metadata
@@ -1185,8 +1193,17 @@ fn append_process_row(
     // 3. Nothing — `+N more` overflow rows have no memory + empty
     //    metadata, so the row is just glyph + headline.
     let (glyph, glyph_color, headline_style) = glyph_and_style_for(process, spinner_frame);
-    spans.push(Span::styled(glyph, Style::default().fg(glyph_color)));
-    spans.push(Span::raw(" "));
+    let glyph_cols = if process.depth == 0 {
+        spans.push(Span::styled(glyph, Style::default().fg(glyph_color)));
+        spans.push(Span::raw(" "));
+        2
+    } else {
+        // Descendant — glyph + space dropped. Style is reused for
+        // the headline below so wire-matched-vs-unmatched colour
+        // still differentiates the row.
+        let _ = (glyph, glyph_color);
+        0
+    };
 
     // Suffix is the useful signal — memory for process-backed rows,
     // Cron metadata for wire-only registrations. Always include it
@@ -1204,7 +1221,7 @@ fn append_process_row(
     let suffix_chars = suffix_text.as_ref().map_or(0, |s| 3 + s.chars().count()); // " · " + value
     let chrome_chars = usize::from(PANE_PAD)
         + tree_chrome_cols
-        + 2 // glyph + space
+        + glyph_cols
         + suffix_chars
         + usize::from(PANE_PAD); // right gutter
     let headline_budget = usize::from(width).saturating_sub(chrome_chars).max(1);
