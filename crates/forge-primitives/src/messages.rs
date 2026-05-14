@@ -90,6 +90,27 @@ pub enum Message {
         task_type: Option<String>,
     },
 
+    /// Incremental lifecycle update for any long-running tool task
+    /// (backgrounded `Bash`, `Monitor`, sub-agent `Task`). Subtype
+    /// `"task_updated"`. Wire captures (`backgrounded_bash_lifecycle.jsonl`,
+    /// `monitor_persistent_stream.jsonl`) show the CLI emits this
+    /// instead of `task_notification` for the local-bash flavour:
+    /// it carries a `patch` object with status / end_time deltas.
+    /// Without a typed variant, the reducer can't transition a
+    /// backgrounded Bash from `running` to `completed`.
+    TaskUpdated {
+        /// Stable identifier for this task instance — same id surface
+        /// as `task_started` / `task_progress` / `task_notification`.
+        task_id: String,
+        /// Incremental patch applied to the task's state. Each field
+        /// is optional because patches may update only some fields.
+        patch: TaskUpdatePatch,
+        /// Unique identifier for this lifecycle event.
+        uuid: String,
+        /// Session id the task runs in.
+        session_id: String,
+    },
+
     /// Periodic progress update while a sub-agent `Task` is in flight.
     /// Subtype `"task_progress"`. v0.1.64
     /// `TaskProgressMessage`.
@@ -280,6 +301,7 @@ impl Message {
             Message::Assistant { session_id, .. }
             | Message::User { session_id, .. }
             | Message::TaskStarted { session_id, .. }
+            | Message::TaskUpdated { session_id, .. }
             | Message::TaskProgress { session_id, .. }
             | Message::TaskNotification { session_id, .. }
             | Message::Result { session_id, .. }
@@ -483,6 +505,23 @@ pub enum TaskNotificationStatus {
     Stopped,
 }
 
+/// Patch payload carried by [`Message::TaskUpdated`]. Fields are
+/// optional because the CLI emits patches that update only the
+/// changed fields. `status` is the free-form wire string (e.g.
+/// `"completed"`, `"running"`, `"killed"`) — keeping it as `String`
+/// rather than an enum lets the reducer accept future statuses
+/// without a forge-primitives bump.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct TaskUpdatePatch {
+    /// New status the task transitioned to, if the patch carries one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    /// Unix-millis wall-clock end time the CLI stamped on the task,
+    /// if applicable (terminal transitions usually set this).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end_time: Option<u64>,
+}
+
 // ---------------------------------------------------------------------------
 // Wire shim — serde sees this, users never do.
 //
@@ -614,6 +653,13 @@ enum TypedSystemRepr {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         task_type: Option<String>,
     },
+    TaskUpdated {
+        task_id: String,
+        #[serde(default)]
+        patch: TaskUpdatePatch,
+        uuid: String,
+        session_id: String,
+    },
     TaskProgress {
         task_id: String,
         description: String,
@@ -676,6 +722,12 @@ impl From<MessageRepr> for Message {
                 tool_use_id,
                 task_type,
             },
+            MessageRepr::System(SystemRepr::Typed(TypedSystemRepr::TaskUpdated {
+                task_id,
+                patch,
+                uuid,
+                session_id,
+            })) => Message::TaskUpdated { task_id, patch, uuid, session_id },
             MessageRepr::System(SystemRepr::Typed(TypedSystemRepr::TaskProgress {
                 task_id,
                 description,
@@ -825,6 +877,14 @@ impl From<Message> for MessageRepr {
                 tool_use_id,
                 task_type,
             })),
+            Message::TaskUpdated { task_id, patch, uuid, session_id } => {
+                MessageRepr::System(SystemRepr::Typed(TypedSystemRepr::TaskUpdated {
+                    task_id,
+                    patch,
+                    uuid,
+                    session_id,
+                }))
+            }
             Message::TaskProgress {
                 task_id,
                 description,

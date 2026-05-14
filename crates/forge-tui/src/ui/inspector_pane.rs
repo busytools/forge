@@ -865,10 +865,15 @@ fn append_processes_section(lines: &mut Vec<Line<'static>>, processes: &[Process
         .saturating_sub(usize::from(glyph_indent))
         .saturating_sub(usize::from(PANE_PAD));
     let continuation_indent = "    "; // 4 cols — under the text col.
+    // `└─ ` is 3 codepoints (U+2514, U+2500, U+0020) so each
+    // continuation row's chrome eats 3 cols. truncate_with_ellipsis
+    // measures in `.chars()` (matches the count), so subtract 3
+    // here. Earlier subtractions had this at 2, which let the
+    // rendered text overflow into the right pad by one char.
     let continuation_budget = usize::from(width)
         .saturating_sub(continuation_indent.chars().count())
         .saturating_sub(usize::from(PANE_PAD))
-        .saturating_sub(2); // "└─ " takes 3 cols
+        .saturating_sub(3);
     let process_count = processes.len();
     for (idx, process) in processes.iter().enumerate() {
         let (glyph, glyph_color, headline_style) = glyph_and_style_for(process);

@@ -12,6 +12,7 @@ fn msg_variant_name(msg: &forge_primitives::Message) -> &'static str {
         forge_primitives::Message::System { .. } => "System",
         forge_primitives::Message::Result { .. } => "Result",
         forge_primitives::Message::TaskStarted { .. } => "TaskStarted",
+        forge_primitives::Message::TaskUpdated { .. } => "TaskUpdated",
         forge_primitives::Message::TaskProgress { .. } => "TaskProgress",
         forge_primitives::Message::TaskNotification { .. } => "TaskNotification",
         forge_primitives::Message::RateLimitEvent { .. } => "RateLimitEvent",
