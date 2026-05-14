@@ -95,7 +95,7 @@ pub use domain_session::DomainSession;
 pub use error::WorkspaceError;
 pub use protocol::{Command, DispatchError, PendingInteractionSlot, SessionUpdate, TurnErrorClass};
 pub use target::{ProjectKey, SessionKey, SessionTarget};
-pub use ui::{SpinnerStyle, UiSettings};
+pub use ui::{LaunchpadAutostart, SpinnerStyle, UiSettings};
 pub use views::{ProjectView, SessionView};
 pub use workspace::Workspace;
 
