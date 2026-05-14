@@ -87,6 +87,25 @@ fn handle_assistant(app: &mut App, msg: Message) {
     let Message::Assistant { message, parent_tool_use_id, error, .. } = msg else {
         return;
     };
+    // Lifecycle: any assistant message arrival means this bucket
+    // has a turn in flight. Set lifecycle = Running so the
+    // Projects pane row spins. This covers the case where the
+    // user clicks a project whose turn was ALREADY in flight when
+    // they clicked (e.g. auto_start session received its first
+    // continuation from claude before the user looked at it) —
+    // input_submit's lifecycle write only fires on user-typed
+    // prompts, so without this hook the bucket would stay Idle
+    // even while assistant content streams in. Active or
+    // pivoted-background routing both end up here with the right
+    // bucket as `active_session_key` (see
+    // `apply_sdk_message_presentation`'s `with_pivoted` scope).
+    if let Some(key) = app.active_session_key.clone() {
+        super::set_bucket_lifecycle_state(
+            app,
+            &key,
+            crate::app::session::SessionLifecycleState::Running,
+        );
+    }
     // Per-turn model observation. The CLI's `system/init` carries the
     // resolved model id once per session; every subsequent Assistant
     // envelope re-states the model at `message.model`. Tracking the
