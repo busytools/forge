@@ -626,35 +626,65 @@ fn rect_contains(rect: Rect, x: u16, y: u16) -> bool {
 /// synthesizes a spawning bucket and kicks off the async lookup of
 /// the project's lead AgentHandle.
 fn switch_to_project_lead(app: &mut App, project_name: &str) {
+    // Resolve display name + project path up-front; both are used
+    // in multiple branches below.
+    let project_info = app.workspace.as_ref().and_then(|w| {
+        w.list_projects()
+            .into_iter()
+            .find(|p| p.key.as_str() == project_name)
+            .map(|p| (p.name.clone(), p.path.clone(), p.sessions))
+    });
+    let (resolved_name, project_path, catalog_sessions) = match project_info {
+        Some((name, path, sessions)) => (name, Some(path), sessions),
+        None => (project_name.to_owned(), None, Vec::new()),
+    };
+    let spawn_synthetic =
+        forge_workspace::SessionKey::from_session_id(format!("__spawn_{resolved_name}__"));
+
     // Idempotency: if the active session is already the synthetic
     // spawn bucket for this project, the user is mid-wake — a second
     // click would queue a duplicate background connection task that
     // races `CONN_SLOT` and scrambles bucket state. Return early.
-    let resolved_name = app
-        .workspace
-        .as_ref()
-        .and_then(|w| {
-            w.list_projects()
-                .into_iter()
-                .find(|p| p.key.as_str() == project_name)
-                .map(|p| p.name.clone())
-        })
-        .unwrap_or_else(|| project_name.to_owned());
-    let spawn_synthetic =
-        forge_workspace::SessionKey::from_session_id(format!("__spawn_{resolved_name}__"));
     if app.active_session_key.as_ref() == Some(&spawn_synthetic)
         && app.sessions.contains_key(&spawn_synthetic)
     {
         return;
     }
 
-    let lead_session_key = app.workspace.as_ref().and_then(|workspace| {
-        workspace
-            .list_projects()
-            .into_iter()
-            .find(|p| p.key.as_str() == project_name)
-            .and_then(|p| p.sessions.into_iter().next().map(|s| s.session))
-    });
+    // Mid-spawn switch: spawn_synthetic is in app.sessions but the
+    // user is on a different session. Switch to the spawning bucket;
+    // KeyRenamed will migrate the active key when Connected lands.
+    if app.sessions.contains_key(&spawn_synthetic) {
+        app.switch_active_session(spawn_synthetic);
+        return;
+    }
+
+    // Running-bucket match by cwd: an auto_start project's running
+    // bucket lives in app.sessions keyed by the real session UUID
+    // (post-KeyRenamed migration). If the on-disk catalog hasn't
+    // yet picked up that UUID, `list_projects` won't include it in
+    // catalog_sessions and the disk-catalog lookup below would miss
+    // — so we walk app.sessions looking for one whose `cwd_raw`
+    // matches the project's path. Cheap (typically <10 buckets) and
+    // robust to the disk-catalog refresh delay that caused
+    // "first-click spawns a duplicate" before this guard landed.
+    if let Some(path) = project_path.as_ref() {
+        let path_str = path.to_string_lossy();
+        let matching_running = app
+            .sessions
+            .iter()
+            .find(|(_, sess)| sess.cwd_raw.as_str() == path_str.as_ref())
+            .map(|(k, _)| k.clone());
+        if let Some(key) = matching_running {
+            app.switch_active_session(key);
+            return;
+        }
+    }
+
+    // Fallback to the disk catalog's most recent session for this
+    // project. If it's pooled, switch; otherwise dispatch a fresh
+    // SpawnProject (covers cold projects with no live bucket).
+    let lead_session_key = catalog_sessions.into_iter().next().map(|s| s.session);
     match lead_session_key {
         Some(key) if app.sessions.contains_key(&key) => {
             app.switch_active_session(key);
