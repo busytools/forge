@@ -148,6 +148,9 @@ pub fn render_overlay(frame: &mut Frame, area: Rect, app: &mut App, projects: &[
 /// Tree connectors mirror the GIT / PROCESSES sections (`├─` /
 /// `└─`) so the inspector + projects pane read as one consistent
 /// visual language across the workspace.
+type RowMeta<'p> =
+    (&'p ProjectView, Option<(forge_workspace::SessionKey, SessionLifecycleState, bool)>);
+
 fn append_project_rows(
     lines: &mut Vec<Line<'static>>,
     area: Rect,
@@ -162,8 +165,6 @@ fn append_project_rows(
 
     // Bucket projects by org name. Each bucket is a Vec of
     // (project, optional live session key, lifecycle, is_focused).
-    type RowMeta<'p> =
-        (&'p ProjectView, Option<(forge_workspace::SessionKey, SessionLifecycleState, bool)>);
     let mut by_org: std::collections::BTreeMap<String, Vec<RowMeta<'_>>> =
         std::collections::BTreeMap::new();
     for project in projects {
@@ -214,12 +215,17 @@ fn append_project_rows(
                 spinner_frame,
                 now,
             );
-            // Deadzone gap row between adjacent projects so a tap
-            // that lands between rows fires nothing rather than the
-            // wrong row. Skipped after the last project in the org —
-            // the org-separator blank takes its place.
+            // Deadzone gap row between adjacent projects in the
+            // same org — emits the `│  ` tree continuation so the
+            // connector lines visually link across the breathing
+            // gap rather than breaking into floating fragments.
+            // Skipped after the last project in the org — the
+            // org-separator blanks take its place.
             if !is_last {
-                lines.push(Line::default());
+                lines.push(Line::from(vec![
+                    Span::raw("  "),
+                    Span::styled("\u{2502}  ".to_owned(), Style::default().fg(theme::DIM)),
+                ]));
             }
         }
 
@@ -342,7 +348,6 @@ fn append_org_project_row(
 fn name_budget_org_row(area_width: u16) -> usize {
     usize::from(area_width.saturating_sub(11))
 }
-
 
 /// Format `activity` as a short relative-time string anchored at
 /// `now` (`now` / `Xm` / `Xh` / `Xd` / `Xw`), padded/truncated to a

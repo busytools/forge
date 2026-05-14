@@ -138,12 +138,7 @@ impl LoadedConfig {
     /// never reach those paths.
     #[cfg(feature = "testing")]
     pub(crate) fn empty_for_test() -> Self {
-        Self {
-            orgs: Vec::new(),
-            projects: Vec::new(),
-            default_index: 0,
-            accounts: Vec::new(),
-        }
+        Self { orgs: Vec::new(), projects: Vec::new(), default_index: 0, accounts: Vec::new() }
     }
 }
 
@@ -201,8 +196,7 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
         }
         for account in &org_entry.accounts {
             if !seen_account_names.contains(account) {
-                let mut valid: Vec<&str> =
-                    seen_account_names.iter().map(String::as_str).collect();
+                let mut valid: Vec<&str> = seen_account_names.iter().map(String::as_str).collect();
                 valid.sort_unstable();
                 return Err(WorkspaceError::UnknownOrgAccount {
                     path,
@@ -217,10 +211,7 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
         }
         for project_entry in org_entry.projects {
             if !seen_project_names.insert(project_entry.name.clone()) {
-                return Err(WorkspaceError::DuplicateProject {
-                    path,
-                    name: project_entry.name,
-                });
+                return Err(WorkspaceError::DuplicateProject { path, name: project_entry.name });
             }
             projects.push(LoadedProject {
                 name: project_entry.name,
@@ -564,8 +555,7 @@ config_dir = "~/.claude-subspace"
         // `focus = true` implies the project also spawns on launch
         // via `auto_start_projects`, even though it didn't set
         // `auto_start = true` explicitly.
-        let starting: Vec<&str> =
-            config.auto_start_projects().map(|p| p.name.as_str()).collect();
+        let starting: Vec<&str> = config.auto_start_projects().map(|p| p.name.as_str()).collect();
         assert!(starting.contains(&"alpha"), "focus implies auto-start: {starting:?}");
         assert!(starting.contains(&"zebra"));
     }

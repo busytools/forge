@@ -166,11 +166,7 @@ impl Workspace {
     /// to drive the org-grouped tree render.
     #[must_use]
     pub fn list_orgs(&self) -> Vec<(String, Vec<String>)> {
-        self.config
-            .orgs
-            .iter()
-            .map(|org| (org.name.clone(), org.accounts.clone()))
-            .collect()
+        self.config.orgs.iter().map(|org| (org.name.clone(), org.accounts.clone())).collect()
     }
 
     /// Return the names of all projects that should spawn at forge

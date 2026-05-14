@@ -282,7 +282,8 @@ pub fn start_connection(app: &mut App) {
     // explicit project AND no auto_start opt-ins, fall through to
     // the default project (alphabetically-first overall).
     let auto_start = workspace.auto_start_project_names();
-    let dispatch_targets: Vec<Option<String>> = match (&app.startup_project, auto_start.as_slice()) {
+    let dispatch_targets: Vec<Option<String>> = match (&app.startup_project, auto_start.as_slice())
+    {
         (Some(name), _) => vec![Some(name.clone())],
         (None, []) => vec![None], // Falls through to default in StartDefault.
         (None, names) => names.iter().cloned().map(Some).collect(),
