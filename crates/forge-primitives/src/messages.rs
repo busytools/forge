@@ -110,9 +110,17 @@ pub enum Message {
         last_tool_name: Option<String>,
     },
 
-    /// Terminal notification when a sub-agent `Task` completes, fails, or is
-    /// stopped. Subtype `"task_notification"`. v0.1.64
+    /// Terminal notification when a sub-agent `Task` completes,
+    /// fails, or is stopped. Subtype `"task_notification"`. v0.1.64
     /// `TaskNotificationMessage`.
+    ///
+    /// Despite the generic-sounding name, captures confirm this
+    /// variant only fires for the `Task` sub-agent tool — backgrounded
+    /// `Bash` and `Monitor` use the `task_started` / `task_updated`
+    /// pair (see [`Self::TaskStarted`], [`Self::TaskProgress`]) and
+    /// Monitor stream events arrive as `Result` frames with
+    /// `origin: {kind: "task-notification"}` rather than as system
+    /// notifications.
     TaskNotification {
         /// Stable identifier for this task instance.
         task_id: String,
