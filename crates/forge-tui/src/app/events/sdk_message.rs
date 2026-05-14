@@ -931,8 +931,16 @@ fn handle_task_started(app: &mut App, msg: Message) {
     apply_tool_progress_update(app, id, "Task");
     if !task_id.is_empty() {
         let id_owned = id.to_owned();
+        let task_id_owned = task_id.clone();
         let _: () = app.with_turn_state_mut(|ts| {
             ts.task_tool_use_ids.insert(task_id.clone(), id_owned);
+            // Mark the task alive — drained by handle_task_updated
+            // when patch.status is terminal. This drives PROCESSES
+            // visibility: a backgrounded Bash whose tool_result has
+            // already arrived (flipping tc.status to Completed) is
+            // still alive here until its task_updated terminal
+            // patch lands.
+            ts.alive_task_ids.insert(task_id_owned);
         });
     }
 }
@@ -989,6 +997,18 @@ fn handle_task_updated(app: &mut App, msg: Message) {
         &tool_use_id,
         ToolCallUpdateFields { status: Some(mapped_status.to_owned()), ..Default::default() },
     );
+
+    // Drain the alive-task set on terminal transitions so the
+    // PROCESSES section can drop the row. Wire vocabulary
+    // `completed` / `failed` / `killed` / `stopped` all count as
+    // terminal — anything else (`running`, `pending`, etc.) leaves
+    // the task in the alive set.
+    if matches!(wire_status, "completed" | "failed" | "killed" | "stopped") {
+        let task_id_owned = task_id;
+        let _: () = app.with_turn_state_mut(|ts| {
+            ts.alive_task_ids.remove(&task_id_owned);
+        });
+    }
 }
 
 /// Map the wire-side `task_updated.patch.status` string to the

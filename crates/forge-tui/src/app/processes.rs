@@ -80,34 +80,49 @@ pub enum ProcessKind {
 /// session's message history into a flat list of [`ProcessRow`].
 ///
 /// Iterates the active session's messages (not just the active
-/// turn's, because backgrounded Bash / persistent Monitor / Cron
-/// outlive the turn that started them). Each assistant message's
-/// `ToolCall` content blocks are inspected against
-/// `is_*_tool_name` helpers plus `assistant_auto_backgrounded()`;
-/// matching tool calls in non-terminal statuses (`Pending` or
-/// `InProgress`) are projected into rows.
+/// turn's, because backgrounded Bash / persistent Monitor outlive
+/// the turn that started them). Each assistant message's
+/// `ToolCall` content blocks are inspected against `is_*_tool_name`
+/// helpers plus `assistant_auto_backgrounded()`; matching tool
+/// calls **whose backing task is still alive** are projected into
+/// rows.
 ///
-/// Terminal statuses (`Completed`, `Failed`, `Killed`) are
-/// deliberately filtered out — the `RUNNING` section is a live
-/// monitor, not a history log. The chat-stream tool card already
-/// preserves the completed call's outcome; persisting a `✓` / `✗`
-/// strip here would compound clutter as a session accumulates
-/// backgrounded work.
+/// Liveness is keyed off the task-lifecycle wire frames forge
+/// already decodes (`task_started` adds the task_id to
+/// [`SessionTurnState::alive_task_ids`]; `task_updated` with a
+/// terminal patch removes it), NOT off the tool call's `status`.
+/// The status signal is unreliable for backgrounded Bash
+/// specifically — the tool_result with `backgroundTaskId` arrives
+/// almost immediately and flips `tc.status` to `Completed` while
+/// the actual process keeps running. Keying on `alive_task_ids`
+/// matches the chat-stream tool card's spinner logic, which uses
+/// the same task-lifecycle signal.
+///
+/// Cron jobs aren't surfaced here — `CronCreate` is a one-shot
+/// registration that completes immediately on the wire; there's
+/// no underlying "running task" to track.
 ///
 /// Returns an empty `Vec` when nothing matches — the renderer uses
 /// that to hide the section entirely.
 #[must_use]
 pub fn collect_active_processes(app: &App) -> Vec<ProcessRow> {
+    // Snapshot tool_use_ids whose backing task is currently alive.
+    // task_tool_use_ids maps task_id → tool_use_id; alive_task_ids
+    // is the subset that's still running. Cross-reference gives us
+    // the tool_use_ids to allow-list in the message walk below.
+    let alive_tool_use_ids: std::collections::HashSet<String> = app.with_turn_state(|ts| {
+        ts.task_tool_use_ids
+            .iter()
+            .filter(|(task_id, _)| ts.alive_task_ids.contains(*task_id))
+            .map(|(_, tool_use_id)| tool_use_id.clone())
+            .collect()
+    });
+
     let mut rows = Vec::new();
     for msg in app.messages().iter().filter(|m| matches!(m.role, MessageRole::Assistant)) {
         for block in &msg.blocks {
             let MessageBlock::ToolCall(tc) = block else { continue };
-            // Skip terminal statuses — only currently-in-flight calls
-            // belong in the RUNNING section.
-            if matches!(
-                tc.status,
-                ToolCallStatus::Completed | ToolCallStatus::Failed | ToolCallStatus::Killed
-            ) {
+            if !alive_tool_use_ids.contains(&tc.id) {
                 continue;
             }
             if let Some(row) = process_row_for(tc) {
