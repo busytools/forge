@@ -1151,26 +1151,38 @@ fn append_descendant_row(
     let connector = if process.is_last_sibling { "\u{2514}\u{2500} " } else { "\u{251C}\u{2500} " };
     spans.push(Span::styled(connector.to_owned(), Style::default().fg(theme::DIM)));
 
-    // Glyph + space + headline + " · " + metadata.
+    // Glyph + space + headline + optional ` · <memory>` suffix.
+    //
+    // Descendants drop the supervisor's verbose `Kind · running`
+    // metadata — the glyph + colour already convey kind, "running"
+    // is redundant (every shown row is running), and a 40-col pane
+    // can't afford the chars. We keep ONLY the memory suffix (when
+    // present and the layout allows it) since memory is the one
+    // bit of useful per-descendant detail that isn't visible from
+    // the headline.
     let (glyph, glyph_color, headline_style) = glyph_and_style_for(process);
     spans.push(Span::styled(glyph.to_owned(), Style::default().fg(glyph_color)));
     spans.push(Span::raw(" "));
 
-    let metadata_text = build_metadata_with_memory(process, include_memory);
-    // Reserve room for ` · <metadata>` after the headline.
+    let memory_suffix = match (include_memory, process.memory_bytes) {
+        (true, Some(bytes)) => Some(format_memory_short(bytes)),
+        _ => None,
+    };
+    let suffix_chars = memory_suffix.as_ref().map_or(0, |s| 3 + s.chars().count()); // " · " + value
     let chrome_chars = usize::from(PANE_PAD)
         + usize::from(process.depth) * 3
         + 3 // connector
         + 2 // glyph + space
-        + 3 // " · "
-        + metadata_text.chars().count()
+        + suffix_chars
         + usize::from(PANE_PAD); // right gutter
     let headline_budget = usize::from(width).saturating_sub(chrome_chars).max(1);
     let headline_fitted = truncate_with_ellipsis(&process.headline, headline_budget);
 
     spans.push(Span::styled(headline_fitted, headline_style));
-    spans.push(Span::styled(" \u{00B7} ".to_owned(), Style::default().fg(theme::DIM)));
-    spans.push(Span::styled(metadata_text, Style::default().fg(theme::DIM)));
+    if let Some(mem) = memory_suffix {
+        spans.push(Span::styled(" \u{00B7} ".to_owned(), Style::default().fg(theme::DIM)));
+        spans.push(Span::styled(mem, Style::default().fg(theme::DIM)));
+    }
 
     lines.push(Line::from(spans));
 }
