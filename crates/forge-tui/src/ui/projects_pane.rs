@@ -285,25 +285,20 @@ fn append_org_project_row(
         // separator before the `time` column on idle rows so the
         // button + time columns align at the same x position.
         spans.push(Span::raw(" "));
-        // Close affordance: `⏻` power glyph rendered as a chunky
-        // yellow button — black foreground on `STATUS_WARNING`
-        // (yellow) background so the cells fill with colour and
-        // read as a physical button against the row. The internal
-        // ` ⏻ ` padding fills 3 contiguous yellow cells so the
-        // button looks larger than a bare 2-cell emoji glyph.
+        // Close affordance: capital `X` rendered as a muted 3-cell
+        // button — gray foreground on `USER_MSG_BG` (dark slate)
+        // background. Same rectangle shape as before but the
+        // slate bg blends with chrome instead of yelling like the
+        // previous yellow STATUS_WARNING variant.
         spans.push(Span::styled(
-            " \u{23FB} ".to_owned(),
-            Style::default()
-                .fg(Color::Black)
-                .bg(theme::STATUS_WARNING)
-                .add_modifier(Modifier::BOLD),
+            " X ".to_owned(),
+            Style::default().fg(Color::Gray).bg(theme::USER_MSG_BG).add_modifier(Modifier::BOLD),
         ));
         // 2-col right gutter — matches the inspector pane's GIT
-        // section right edge. Without this the emoji butts against
-        // the rightmost pane column.
+        // section right edge.
         spans.push(Span::raw("  "));
         lines.push(Line::from(spans));
-        // Hit targets: whole row → focus/switch; emoji + 1-col
+        // Hit targets: whole row → focus/switch; button + 1-col
         // tolerance each side → close session.
         app.pane_hit_targets.push(PaneHitTarget::ProjectHeader {
             project_name: project.key.as_str().to_owned(),
@@ -311,11 +306,10 @@ fn append_org_project_row(
             height: 1,
         });
         let row_right = area.x.saturating_add(area.width);
-        // Close button: the ` ⏻ ` chunky-button span is 3 cells
-        // wide, occupying (row_right-5)..(row_right-2). The 5-col
-        // hit band runs (row_right-6)..(row_right-1) for 1-col
-        // tolerance on each side; the rightmost gutter col stays
-        // inert.
+        // Close button: the ` X ` 3-cell span occupies
+        // (row_right - 5) to (row_right - 2). 5-col hit band runs
+        // (row_right - 6) to (row_right - 1) for 1-col tolerance
+        // each side; the rightmost gutter col stays inert.
         let close_x_start = row_right.saturating_sub(6);
         let close_x_end = row_right.saturating_sub(1);
         app.pane_hit_targets.push(PaneHitTarget::CloseSession {
@@ -479,7 +473,7 @@ fn glyph_for_lifecycle(
 //
 //   ─────────────────────────
 //     Profile  Subspace
-//     Mode     [Auto]
+//     Mode     Auto
 //     Model    Opus 1M
 //     Effort   Max
 //     Fast     off
@@ -668,7 +662,7 @@ fn build_account_panel_lines(app: &App, width: u16) -> Vec<Line<'static>> {
 
     // Mode.
     let (mode_label, mode_color) = mode_label_and_color(app);
-    let mode_label_fitted = truncate_with_ellipsis(&format!("[{mode_label}]"), value_budget);
+    let mode_label_fitted = truncate_with_ellipsis(&mode_label, value_budget);
     lines.push(Line::from(vec![
         Span::raw("  "),
         label_span("Mode", ACCOUNT_PANEL_ID_LABEL_WIDTH),
