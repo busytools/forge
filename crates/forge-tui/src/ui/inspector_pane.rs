@@ -339,7 +339,7 @@ fn append_body(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
         lines.push(Line::default());
         push_section_rule(lines, width);
         lines.push(Line::default());
-        append_processes_section(lines, &processes, width);
+        append_processes_section(lines, &processes, width, app.spinner_frame);
     }
 }
 
@@ -1074,6 +1074,7 @@ fn append_processes_section(
     lines: &mut Vec<Line<'static>>,
     collection: &ProcessCollection,
     width: u16,
+    spinner_frame: usize,
 ) {
     lines.push(Line::from(Span::styled(
         "  PROCESSES".to_owned(),
@@ -1084,7 +1085,7 @@ fn append_processes_section(
     let include_memory = width >= PROCESSES_MEMORY_WIDTH_THRESHOLD;
     let process_count = collection.rows.len();
     for (idx, process) in collection.rows.iter().enumerate() {
-        append_process_row(lines, process, width, include_memory);
+        append_process_row(lines, process, width, include_memory, spinner_frame);
         // Blank between SUPERVISOR rows (depth-0). Descendant rows
         // pack tight under their supervisor with no blanks so the
         // tree reads as one connected block.
@@ -1125,6 +1126,7 @@ fn append_process_row(
     process: &ProcessRow,
     width: u16,
     include_memory: bool,
+    spinner_frame: usize,
 ) {
     let mut spans: Vec<Span<'static>> = Vec::new();
     spans.push(Span::raw(" ".repeat(usize::from(PANE_PAD))));
@@ -1132,21 +1134,25 @@ fn append_process_row(
     // Tree chrome (ancestor cols + connector) renders at depth ≥ 1
     // only. Depth-0 rows (supervisors + Cron) start flush with
     // PANE_PAD and skip directly to the glyph.
+    //
+    // Skip the FIRST ancestor entry — supervisors are visualised as
+    // section roots flush at col 2, not as ancestors needing a
+    // continuation column. So depth-1 kids hang their `├─` from col 2
+    // directly (matching the Projects pane org-grouped layout) and
+    // deeper levels only add continuation chunks for genuine
+    // grandparents and beyond.
     let tree_chrome_cols = if process.depth == 0 {
         0
     } else {
-        // One 3-col chunk per ancestor depth — vertical-bar
-        // continuation when that ancestor has more siblings to
-        // come, blanks otherwise. Plus 3 cols for THIS row's
-        // connector.
-        for has_more in &process.ancestor_has_more {
+        let ancestors = process.ancestor_has_more.get(1..).unwrap_or(&[]);
+        for has_more in ancestors {
             let chunk = if *has_more { "\u{2502}  " } else { "   " };
             spans.push(Span::styled(chunk.to_owned(), Style::default().fg(theme::DIM)));
         }
         let connector =
             if process.is_last_sibling { "\u{2514}\u{2500} " } else { "\u{251C}\u{2500} " };
         spans.push(Span::styled(connector.to_owned(), Style::default().fg(theme::DIM)));
-        usize::from(process.depth) * 3 + 3
+        ancestors.len() * 3 + 3
     };
 
     // Glyph + space + headline + optional ` · <suffix>`.
@@ -1162,8 +1168,8 @@ fn append_process_row(
     //    signal there.
     // 3. Nothing — `+N more` overflow rows have no memory + empty
     //    metadata, so the row is just glyph + headline.
-    let (glyph, glyph_color, headline_style) = glyph_and_style_for(process);
-    spans.push(Span::styled(glyph.to_owned(), Style::default().fg(glyph_color)));
+    let (glyph, glyph_color, headline_style) = glyph_and_style_for(process, spinner_frame);
+    spans.push(Span::styled(glyph, Style::default().fg(glyph_color)));
     spans.push(Span::raw(" "));
 
     // Suffix is the useful signal — memory for process-backed rows,
@@ -1202,45 +1208,70 @@ fn append_process_row(
 /// (Completed / Failed / Killed) override the kind glyph so the
 /// section reads accurately as a state monitor regardless of the
 /// originating tool kind.
-fn glyph_and_style_for(process: &ProcessRow) -> (&'static str, Color, Style) {
+fn glyph_and_style_for(process: &ProcessRow, spinner_frame: usize) -> (String, Color, Style) {
     match process.status {
-        ToolCallStatus::Completed => ("\u{2713}", Color::Green, Style::default().fg(theme::DIM)),
+        ToolCallStatus::Completed => {
+            ("\u{2713}".to_owned(), Color::Green, Style::default().fg(theme::DIM))
+        }
         ToolCallStatus::Failed | ToolCallStatus::Killed => (
-            "\u{2717}",
+            "\u{2717}".to_owned(),
             Color::Red,
             Style::default().fg(theme::DIM).add_modifier(Modifier::CROSSED_OUT),
         ),
-        ToolCallStatus::Pending => ("\u{25CB}", theme::DIM, Style::default().fg(Color::Gray)),
+        ToolCallStatus::Pending => {
+            ("\u{25CB}".to_owned(), theme::DIM, Style::default().fg(Color::Gray))
+        }
         ToolCallStatus::InProgress => match process.kind {
             ProcessKind::Cron => {
                 // Cron registration completes the moment claude calls
                 // CronCreate — InProgress is rare. Render with the
                 // schedule glyph regardless.
                 (
-                    "\u{23F0}",
+                    "\u{23F0}".to_owned(),
                     theme::DIM,
                     Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
                 )
             }
             ProcessKind::Process => {
-                // Generic OS process — DIM headline so the wire-
-                // tracked rows (BashBackgrounded / Monitor) stand
-                // out by comparison. Still the right-pointing ▸
-                // glyph so it reads as live work.
-                ("\u{25B8}", theme::DIM, Style::default().fg(Color::Gray))
+                // Unmatched OS process — same spinner as wire-tracked
+                // rows but DIM so the user's eye picks out the
+                // bright-coloured matched rows first. Still animates
+                // because the row IS live work.
+                (spinner_glyph(spinner_frame), theme::DIM, Style::default().fg(Color::Gray))
             }
             ProcessKind::Overflow => {
                 // Synthetic `+N more` row. No glyph; the dim italic
                 // text alone signals it's a placeholder.
-                ("", theme::DIM, Style::default().fg(theme::DIM).add_modifier(Modifier::ITALIC))
+                (
+                    String::new(),
+                    theme::DIM,
+                    Style::default().fg(theme::DIM).add_modifier(Modifier::ITALIC),
+                )
             }
             _ => (
-                "\u{25B8}",
+                // Wire-matched (Bash / Monitor) — RUST_ORANGE spinner
+                // so the row stands out as "tracked work" against the
+                // dim spinners of generic OS processes.
+                spinner_glyph(spinner_frame),
                 theme::RUST_ORANGE,
                 Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
             ),
         },
     }
+}
+
+/// Braille spinner frames, kept in sync with the Projects pane and
+/// chat-area spinners (same sequence in `ui::projects_pane`,
+/// `ui::input`, `ui::message`). The pulse is what tells the user the
+/// row is alive rather than a stale snapshot.
+const PROCESS_SPINNER_FRAMES: &[char] = &[
+    '\u{280B}', '\u{2819}', '\u{2839}', '\u{2838}', '\u{283C}', '\u{2834}', '\u{2826}', '\u{2827}',
+    '\u{2807}', '\u{280F}',
+];
+
+fn spinner_glyph(frame: usize) -> String {
+    let ch = PROCESS_SPINNER_FRAMES[frame % PROCESS_SPINNER_FRAMES.len()];
+    ch.to_string()
 }
 
 fn wrap_text(s: &str, max_chars: usize) -> Vec<String> {
@@ -1670,7 +1701,7 @@ mod tests {
             8 * 1024 * 1024,
         );
         let mut lines = Vec::new();
-        append_processes_section(&mut lines, &collection(vec![row]), 40);
+        append_processes_section(&mut lines, &collection(vec![row]), 40, 0);
 
         // header + blank + single supervisor row = 3 lines.
         assert_eq!(lines.len(), 3, "expected 3 rendered lines, got {}", lines.len());
@@ -1678,7 +1709,9 @@ mod tests {
         let header = line_text(&lines[0]);
         assert_eq!(header, "  PROCESSES");
         let row_text = line_text(&lines[2]);
-        assert!(row_text.starts_with("  \u{25B8} Run unit tests"), "headline: {row_text:?}");
+        // Wire-matched (Bash) → spinner glyph instead of static `▸`.
+        // Frame 0 picks `⠋` (the first braille spinner frame).
+        assert!(row_text.starts_with("  \u{280B} Run unit tests"), "headline: {row_text:?}");
         assert!(row_text.contains("8 MB"), "memory suffix: {row_text:?}");
         // No `Bash · running` text — that's the regression check.
         assert!(!row_text.contains("running"), "kind/running text must be dropped: {row_text:?}");
@@ -1698,10 +1731,11 @@ mod tests {
             4 * 1024 * 1024,
         );
         let mut lines = Vec::new();
-        append_processes_section(&mut lines, &collection(vec![row]), 40);
+        append_processes_section(&mut lines, &collection(vec![row]), 40, 0);
 
         let row_text = line_text(&lines[2]);
-        assert!(row_text.starts_with("  \u{25B8} PR #120 CI watch"), "headline: {row_text:?}");
+        // Monitor is wire-matched → spinner glyph (frame 0 = `⠋`).
+        assert!(row_text.starts_with("  \u{280B} PR #120 CI watch"), "headline: {row_text:?}");
         assert!(row_text.contains("4 MB"), "memory suffix wins: {row_text:?}");
     }
 
@@ -1720,7 +1754,7 @@ mod tests {
             ToolCallStatus::Completed,
         );
         let mut lines = Vec::new();
-        append_processes_section(&mut lines, &collection(vec![row]), 50);
+        append_processes_section(&mut lines, &collection(vec![row]), 50, 0);
 
         let row_text = line_text(&lines[2]);
         // ✓ is the completed-status glyph; the cron clock ⏰ only
@@ -1739,7 +1773,7 @@ mod tests {
             ToolCallStatus::InProgress,
         );
         let mut lines = Vec::new();
-        append_processes_section(&mut lines, &collection(vec![row]), 40);
+        append_processes_section(&mut lines, &collection(vec![row]), 40, 0);
 
         let row_text = line_text(&lines[2]);
         assert!(row_text.starts_with("  \u{23F0} daily 9am"), "got {row_text:?}");
@@ -1757,7 +1791,7 @@ mod tests {
         let mut rows = vec![row];
         rows[0].status = ToolCallStatus::Failed;
         let mut lines = Vec::new();
-        append_processes_section(&mut lines, &collection(rows), 40);
+        append_processes_section(&mut lines, &collection(rows), 40, 0);
 
         let row_text = line_text(&lines[2]);
         assert!(row_text.starts_with("  \u{2717} Run integration tests"), "got {row_text:?}");
@@ -1787,7 +1821,7 @@ mod tests {
             ),
         ];
         let mut lines = Vec::new();
-        append_processes_section(&mut lines, &collection(rows), 40);
+        append_processes_section(&mut lines, &collection(rows), 40, 0);
 
         // header + blank + 3 single-line rows + 2 blanks between
         // supervisor rows = 2 + 3 + 2 = 7 lines.
@@ -1806,7 +1840,7 @@ mod tests {
             8 * 1024 * 1024,
         );
         let mut lines = Vec::new();
-        append_processes_section(&mut lines, &collection(vec![row]), 40);
+        append_processes_section(&mut lines, &collection(vec![row]), 40, 0);
 
         let row_text = line_text(&lines[2]);
         assert!(row_text.contains('\u{2026}'), "expected ellipsis: {row_text:?}");
@@ -1846,7 +1880,7 @@ mod tests {
             12 * 1024 * 1024,
         );
         let mut lines = Vec::new();
-        append_processes_section(&mut lines, &collection(vec![row]), 40);
+        append_processes_section(&mut lines, &collection(vec![row]), 40, 0);
 
         let row_text = line_text(&lines[2]);
         assert!(row_text.contains("12 MB"), "expected memory suffix on Wide tier: {row_text:?}");
@@ -1863,7 +1897,7 @@ mod tests {
             12 * 1024 * 1024,
         );
         let mut lines = Vec::new();
-        append_processes_section(&mut lines, &collection(vec![row]), 30);
+        append_processes_section(&mut lines, &collection(vec![row]), 30, 0);
 
         let row_text = line_text(&lines[2]);
         assert!(!row_text.contains("MB"), "expected no memory suffix on Medium tier: {row_text:?}");
@@ -1882,10 +1916,14 @@ mod tests {
             8 * 1024 * 1024,
         );
         let mut lines = Vec::new();
-        append_processes_section(&mut lines, &collection(vec![row]), 40);
+        append_processes_section(&mut lines, &collection(vec![row]), 40, 0);
 
         let headline = line_text(&lines[2]);
-        assert!(headline.starts_with("  \u{25B8} cargo"), "expected ▸ glyph: {headline:?}");
+        // Unmatched `Process` kind also renders the spinner glyph
+        // (frame 0 = `⠋`) but in DIM — the colour difference vs
+        // RUST_ORANGE matched rows is the "is this tracked or not"
+        // signal.
+        assert!(headline.starts_with("  \u{280B} cargo"), "expected spinner glyph: {headline:?}");
         // Style assertion: pull the glyph span and check its colour.
         let glyph_span = &lines[2].spans[1];
         assert_eq!(glyph_span.style.fg, Some(theme::DIM));

@@ -3560,10 +3560,17 @@ mod tests {
         );
         assert_eq!(app.turn_notice_refs().len(), 1);
 
+        // `SessionReplaced` is the post-MVVM session-reset event
+        // (fired by /new, /login, /resume on the active bucket).
+        // Connected-for-a-different-key is no longer a session
+        // reset — it's a background project's connection — so the
+        // notice-clearing assertion must target SessionReplaced for
+        // the ACTIVE session key.
+        let active_key = active_session_key(&app);
         apply_session_update(
             &mut app,
-            SessionUpdate::Connected {
-                key: forge_workspace::SessionKey::from_session_id("new-session".to_owned()),
+            SessionUpdate::SessionReplaced {
+                key: active_key,
                 session_id: forge_primitives::SessionId::new("new-session"),
                 cwd: "/test".into(),
                 current_model: test_current_model_primitives("claude"),
