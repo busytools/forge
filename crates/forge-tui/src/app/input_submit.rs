@@ -164,6 +164,24 @@ fn dispatch_prompt(app: &mut App, text: String) {
     };
 
     let images = std::mem::take(app.pending_images_mut());
+
+    // If the tail is an empty assistant placeholder (the one a
+    // previous submit pushed that claude never had a chance to
+    // fill), drop it before appending. Without this, rapid mid-turn
+    // submits accumulate visible empty asst bubbles between user
+    // messages — exactly the artifact the screenshot from 2026-05-14
+    // showed: `restarted lets test`, empty asst, `1`, empty asst,
+    // `2`, …
+    if let Some(tail_idx) = app.messages().len().checked_sub(1) {
+        let tail_is_empty_asst = app
+            .messages()
+            .get(tail_idx)
+            .is_some_and(|msg| matches!(msg.role, MessageRole::Assistant) && msg.blocks.is_empty());
+        if tail_is_empty_asst {
+            let _ = app.remove_message_tracked(tail_idx);
+        }
+    }
+
     let user_blocks = vec![MessageBlock::Text(TextBlock::from_complete(&text))];
     app.push_message_tracked(ChatMessage::new(MessageRole::User, user_blocks, None));
 
@@ -294,11 +312,14 @@ mod tests {
     }
 
     #[test]
-    fn multiple_mid_turn_submits_each_push_user_bubble_and_placeholder() {
-        // Each mid-turn submit gets its own user bubble + its own
-        // freshly-bound asst placeholder. After two submits the
-        // active asst idx points at the second placeholder; claude's
-        // continuing stream will land there.
+    fn multiple_mid_turn_submits_strip_empty_placeholder_between_them() {
+        // Each mid-turn submit pushes its own asst placeholder, but
+        // if the next submit fires before claude streams any tokens
+        // into the previous placeholder, that empty placeholder is
+        // dropped on the next submit. Net effect: rapid-fire user
+        // bubbles sit adjacent in the scrollback, with exactly ONE
+        // empty placeholder at the tail (the latest one, awaiting
+        // claude's next token).
         let (mut app, mut rx) = app_with_connection();
         app.status = AppStatus::Running;
         app.input_mut().set_text("first");
@@ -306,20 +327,56 @@ mod tests {
         app.input_mut().set_text("second");
         submit_input(&mut app);
 
-        // [user-first, asst-1 empty, user-second, asst-2 empty]
-        assert_eq!(app.messages().len(), 4, "two user bubbles + two placeholders");
+        // [user-first, user-second, asst empty] — the empty
+        // placeholder from the first submit got dropped.
+        assert_eq!(app.messages().len(), 3, "stripped the in-between empty placeholder");
         assert!(matches!(app.messages()[0].role, MessageRole::User));
-        assert!(matches!(app.messages()[1].role, MessageRole::Assistant));
-        assert!(matches!(app.messages()[2].role, MessageRole::User));
-        assert!(matches!(app.messages()[3].role, MessageRole::Assistant));
+        assert!(matches!(app.messages()[1].role, MessageRole::User));
+        assert!(matches!(app.messages()[2].role, MessageRole::Assistant));
+        assert!(
+            app.messages()[2].blocks.is_empty(),
+            "tail asst placeholder still empty until claude streams",
+        );
         assert_eq!(
             app.active_turn_assistant_message_idx(),
-            Some(3),
-            "active asst idx tracks the most recent placeholder",
+            Some(2),
+            "active asst idx tracks the surviving tail placeholder",
         );
         assert!(rx.try_recv().is_ok());
         assert!(rx.try_recv().is_ok());
         assert!(rx.try_recv().is_err(), "exactly two prompts dispatched");
+    }
+
+    #[test]
+    fn mid_turn_submit_keeps_non_empty_prior_placeholder() {
+        // Defensive: if the tail placeholder has SOME content (claude
+        // streamed a few tokens between submits), it must NOT be
+        // dropped — that would lose claude's content. The new submit
+        // appends below it normally.
+        let (mut app, _rx) = app_with_connection();
+        app.status = AppStatus::Running;
+        // Seed a prior turn + non-empty asst at the tail.
+        app.active_messages_mut().push(ChatMessage::new(
+            MessageRole::User,
+            vec![MessageBlock::Text(TextBlock::from_complete("earlier"))],
+            None,
+        ));
+        app.active_messages_mut().push(ChatMessage::new(
+            MessageRole::Assistant,
+            vec![MessageBlock::Text(TextBlock::from_complete("partial..."))],
+            None,
+        ));
+        app.bind_active_turn_assistant_to_tail();
+        app.input_mut().set_text("follow-up");
+        submit_input(&mut app);
+
+        // [user-earlier, asst-partial (KEPT), user-follow-up, asst empty]
+        assert_eq!(app.messages().len(), 4);
+        assert!(matches!(app.messages()[1].role, MessageRole::Assistant));
+        assert!(!app.messages()[1].blocks.is_empty(), "non-empty asst preserved");
+        assert!(matches!(app.messages()[2].role, MessageRole::User));
+        assert!(matches!(app.messages()[3].role, MessageRole::Assistant));
+        assert!(app.messages()[3].blocks.is_empty(), "tail asst is the new empty placeholder");
     }
 
     #[test]
