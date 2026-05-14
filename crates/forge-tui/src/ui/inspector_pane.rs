@@ -17,9 +17,17 @@
 //!   pending verification nudge. The live `TodoWrite` snapshot is
 //!   the sole surface for the todo list; the chat-stream
 //!   `TodoWrite` tool-call card is suppressed.
+//! - `PROCESSES` — rendered when the active session has at least
+//!   one long-running tool call observable in its history. Three
+//!   kinds surface here: backgrounded `Bash` (via
+//!   `assistant_auto_backgrounded`), `Monitor` streaming-process
+//!   watchers, and `CronCreate` scheduled prompts. Rows are built
+//!   by `crate::app::processes::collect_active_processes` from
+//!   each tool call's `raw_input` + status; the renderer chooses
+//!   glyphs + colours per `ProcessKind`.
 //!
 //! Reads from per-session state on `UiSession.todos` (post PR #109)
-//! and `UiSession.git_diff_snapshot` (this PR). The
+//! and `UiSession.git_diff_snapshot`. The
 //! `TodoWriteOutputMetadata.verification_nudge_needed` flag surfaces
 //! as a dim-yellow notice above the `TASKS` header until the next
 //! `TodoWrite` clears it.
@@ -40,9 +48,11 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
 use super::theme;
+use crate::agent::model::ToolCallStatus;
 use crate::app::App;
 use crate::app::PaneHitTarget;
 use crate::app::TodoStatus;
+use crate::app::processes::{ProcessKind, ProcessRow, collect_active_processes};
 
 /// Horizontal padding inside the pane (matches the left
 /// `projects_pane`'s 2-col indent).
@@ -144,6 +154,14 @@ fn append_body(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
         push_section_rule(lines, width);
         lines.push(Line::default());
         append_tasks_section(lines, app, width);
+    }
+
+    let processes = collect_active_processes(app);
+    if !processes.is_empty() {
+        lines.push(Line::default());
+        push_section_rule(lines, width);
+        lines.push(Line::default());
+        append_processes_section(lines, &processes, width);
     }
 }
 
@@ -815,6 +833,109 @@ fn append_tasks_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
 /// `max_chars` columns. Breaks on whitespace where possible; falls
 /// back to hard-cut on long single tokens. Returns an empty `Vec`
 /// for an empty / whitespace-only input.
+/// Render the PROCESSES section: header + one row per long-running
+/// tool call. Each row spans up to three lines:
+///
+/// 1. **Headline:** status glyph + headline text styled per
+///    [`ProcessKind`].
+/// 2. **Detail** (optional `└─` continuation): the underlying shell
+///    command or cron prompt, DIM, truncated with `…` when it
+///    overflows.
+/// 3. **Metadata** (`└─` continuation): kind label · status · flags,
+///    all DIM.
+///
+/// Glyphs mirror the TASKS convention but use a kind-distinct
+/// palette for the headline so scanning the section visually
+/// separates "what's running" from "what's queued in TodoWrite":
+///
+/// - `▸` RUST_ORANGE  — `BashBackgrounded` / `Monitor` while in-flight
+/// - `\u{23F0}` (`⏰`) DIM — `Cron` (scheduled, not currently firing)
+/// - `\u{2713}` (`✓`) green — completed tool call (any kind)
+/// - `\u{2717}` (`✗`) red — failed / killed
+/// - `\u{25CB}` (`○`) DIM — pending (queued, not yet started)
+fn append_processes_section(lines: &mut Vec<Line<'static>>, processes: &[ProcessRow], width: u16) {
+    lines.push(Line::from(Span::styled(
+        "  PROCESSES".to_owned(),
+        Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD),
+    )));
+    lines.push(Line::default());
+
+    let glyph_indent = PANE_PAD + 2; // "  " + glyph + " "
+    let text_budget = usize::from(width)
+        .saturating_sub(usize::from(glyph_indent))
+        .saturating_sub(usize::from(PANE_PAD));
+    let continuation_indent = "    "; // 4 cols — under the text col.
+    let continuation_budget = usize::from(width)
+        .saturating_sub(continuation_indent.chars().count())
+        .saturating_sub(usize::from(PANE_PAD))
+        .saturating_sub(2); // "└─ " takes 3 cols
+    let process_count = processes.len();
+    for (idx, process) in processes.iter().enumerate() {
+        let (glyph, glyph_color, headline_style) = glyph_and_style_for(process);
+        let headline_fitted = truncate_with_ellipsis(&process.headline, text_budget);
+        lines.push(Line::from(vec![
+            Span::raw("  "),
+            Span::styled(glyph.to_owned(), Style::default().fg(glyph_color)),
+            Span::raw(" "),
+            Span::styled(headline_fitted, headline_style),
+        ]));
+
+        if let Some(detail) = process.detail.as_ref() {
+            let fitted = truncate_with_ellipsis(detail, continuation_budget);
+            lines.push(Line::from(vec![
+                Span::raw(continuation_indent.to_owned()),
+                Span::styled("\u{2514}\u{2500} ".to_owned(), Style::default().fg(theme::DIM)),
+                Span::styled(fitted, Style::default().fg(theme::DIM)),
+            ]));
+        }
+
+        let metadata_fitted = truncate_with_ellipsis(&process.metadata, continuation_budget);
+        lines.push(Line::from(vec![
+            Span::raw(continuation_indent.to_owned()),
+            Span::styled("\u{2514}\u{2500} ".to_owned(), Style::default().fg(theme::DIM)),
+            Span::styled(metadata_fitted, Style::default().fg(theme::DIM)),
+        ]));
+
+        if idx + 1 < process_count {
+            lines.push(Line::default());
+        }
+    }
+}
+
+/// Pick the (glyph, glyph_color, headline_style) triple for a
+/// process row based on its `kind` + `status`. Terminal statuses
+/// (Completed / Failed / Killed) override the kind glyph so the
+/// section reads accurately as a state monitor regardless of the
+/// originating tool kind.
+fn glyph_and_style_for(process: &ProcessRow) -> (&'static str, Color, Style) {
+    match process.status {
+        ToolCallStatus::Completed => ("\u{2713}", Color::Green, Style::default().fg(theme::DIM)),
+        ToolCallStatus::Failed | ToolCallStatus::Killed => (
+            "\u{2717}",
+            Color::Red,
+            Style::default().fg(theme::DIM).add_modifier(Modifier::CROSSED_OUT),
+        ),
+        ToolCallStatus::Pending => ("\u{25CB}", theme::DIM, Style::default().fg(Color::Gray)),
+        ToolCallStatus::InProgress => match process.kind {
+            ProcessKind::Cron => {
+                // Cron registration completes the moment claude calls
+                // CronCreate — InProgress is rare. Render with the
+                // schedule glyph regardless.
+                (
+                    "\u{23F0}",
+                    theme::DIM,
+                    Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+                )
+            }
+            _ => (
+                "\u{25B8}",
+                theme::RUST_ORANGE,
+                Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+            ),
+        },
+    }
+}
+
 fn wrap_text(s: &str, max_chars: usize) -> Vec<String> {
     if max_chars == 0 {
         return Vec::new();
@@ -1200,5 +1321,200 @@ mod tests {
         assert_eq!(count_digits(100), 3);
         assert_eq!(count_digits(9_999), 4);
         assert_eq!(count_digits(u64::MAX), 20);
+    }
+
+    fn make_process_row(
+        kind: ProcessKind,
+        headline: &str,
+        detail: Option<&str>,
+        metadata: &str,
+        status: ToolCallStatus,
+    ) -> ProcessRow {
+        ProcessRow {
+            kind,
+            headline: headline.to_owned(),
+            detail: detail.map(str::to_owned),
+            metadata: metadata.to_owned(),
+            status,
+        }
+    }
+
+    #[test]
+    fn processes_section_renders_in_progress_bash_with_command_detail() {
+        let row = make_process_row(
+            ProcessKind::BashBackgrounded,
+            "Run unit tests",
+            Some("cargo nextest run --no-fail-fast"),
+            "Bash · running",
+            ToolCallStatus::InProgress,
+        );
+        let mut lines = Vec::new();
+        append_processes_section(&mut lines, &[row], 40);
+
+        // header + blank + headline + detail-continuation + meta-continuation = 5 lines
+        assert_eq!(lines.len(), 5, "expected 5 rendered lines, got {}", lines.len());
+
+        let header = line_text(&lines[0]);
+        assert_eq!(header, "  PROCESSES");
+
+        let headline = line_text(&lines[2]);
+        assert!(headline.starts_with("  \u{25B8} Run unit tests"), "got {headline:?}");
+
+        let detail = line_text(&lines[3]);
+        assert!(
+            detail.starts_with("    \u{2514}\u{2500} cargo nextest run"),
+            "expected command continuation, got {detail:?}"
+        );
+
+        let meta = line_text(&lines[4]);
+        assert!(
+            meta.starts_with("    \u{2514}\u{2500} Bash \u{00B7} running"),
+            "expected metadata continuation, got {meta:?}"
+        );
+    }
+
+    #[test]
+    fn processes_section_renders_persistent_monitor() {
+        let row = make_process_row(
+            ProcessKind::Monitor,
+            "PR #120 CI watch",
+            Some("gh run watch 25838877846"),
+            "Monitor · running · persistent",
+            ToolCallStatus::InProgress,
+        );
+        let mut lines = Vec::new();
+        append_processes_section(&mut lines, &[row], 40);
+
+        let headline = line_text(&lines[2]);
+        assert!(headline.starts_with("  \u{25B8} PR #120 CI watch"), "got {headline:?}");
+        let meta = line_text(&lines[4]);
+        assert!(meta.contains("persistent"), "expected persistent flag in metadata: {meta:?}");
+    }
+
+    #[test]
+    fn processes_section_renders_completed_cron_with_clock_glyph_replaced_by_check() {
+        // Cron registration finishes immediately on the wire, so a
+        // Cron row almost always renders with the completed-checkmark
+        // glyph rather than the schedule-clock glyph. Pin that
+        // behaviour explicitly so a future glyph-rotation doesn't
+        // silently change it.
+        let row = make_process_row(
+            ProcessKind::Cron,
+            "*/5 * * * *",
+            Some("audit memory health"),
+            "Cron · recurring · session-only",
+            ToolCallStatus::Completed,
+        );
+        let mut lines = Vec::new();
+        append_processes_section(&mut lines, &[row], 40);
+
+        let headline = line_text(&lines[2]);
+        // ✓ is the completed-status glyph; the cron clock ⏰ only
+        // fires for the (rare) InProgress case.
+        assert!(headline.starts_with("  \u{2713} */5 * * * *"), "got {headline:?}");
+    }
+
+    #[test]
+    fn processes_section_renders_in_progress_cron_with_clock_glyph() {
+        let row = make_process_row(
+            ProcessKind::Cron,
+            "daily 9am",
+            None,
+            "Cron · recurring",
+            ToolCallStatus::InProgress,
+        );
+        let mut lines = Vec::new();
+        append_processes_section(&mut lines, &[row], 40);
+
+        let headline = line_text(&lines[2]);
+        assert!(headline.starts_with("  \u{23F0} daily 9am"), "got {headline:?}");
+    }
+
+    #[test]
+    fn processes_section_renders_failed_with_cross_glyph() {
+        let row = make_process_row(
+            ProcessKind::BashBackgrounded,
+            "Run integration tests",
+            Some("just integration"),
+            "Bash · failed",
+            ToolCallStatus::Failed,
+        );
+        let mut lines = Vec::new();
+        append_processes_section(&mut lines, &[row], 40);
+
+        let headline = line_text(&lines[2]);
+        assert!(headline.starts_with("  \u{2717} Run integration tests"), "got {headline:?}");
+    }
+
+    #[test]
+    fn processes_section_three_kinds_together_renders_blank_between_rows() {
+        let rows = vec![
+            make_process_row(
+                ProcessKind::BashBackgrounded,
+                "Run tests",
+                Some("cargo nextest run"),
+                "Bash · running",
+                ToolCallStatus::InProgress,
+            ),
+            make_process_row(
+                ProcessKind::Monitor,
+                "Watch CI",
+                Some("gh run watch 123"),
+                "Monitor · running · persistent",
+                ToolCallStatus::InProgress,
+            ),
+            make_process_row(
+                ProcessKind::Cron,
+                "*/5 * * * *",
+                Some("audit"),
+                "Cron · recurring · durable",
+                ToolCallStatus::Completed,
+            ),
+        ];
+        let mut lines = Vec::new();
+        append_processes_section(&mut lines, &rows, 40);
+
+        // header + blank + 3 rows × (headline + detail + meta = 3 lines) + 2 blanks between rows
+        // = 2 + 9 + 2 = 13 lines
+        assert_eq!(lines.len(), 13, "expected 13 rendered lines, got {}", lines.len());
+
+        // Sanity: each row's headline line carries the right text.
+        assert!(line_text(&lines[2]).contains("Run tests"));
+        assert!(line_text(&lines[6]).contains("Watch CI"));
+        assert!(line_text(&lines[10]).contains("*/5 * * * *"));
+    }
+
+    #[test]
+    fn processes_section_skips_detail_row_when_none() {
+        let row = make_process_row(
+            ProcessKind::Cron,
+            "daily 9am",
+            None,
+            "Cron · recurring",
+            ToolCallStatus::Completed,
+        );
+        let mut lines = Vec::new();
+        append_processes_section(&mut lines, &[row], 40);
+
+        // header + blank + headline + meta-continuation = 4 lines (no detail line)
+        assert_eq!(lines.len(), 4, "expected 4 lines with detail=None, got {}", lines.len());
+    }
+
+    #[test]
+    fn processes_section_truncates_long_headline_with_ellipsis() {
+        let row = make_process_row(
+            ProcessKind::BashBackgrounded,
+            "Run a very long described task that will absolutely overflow the pane width",
+            None,
+            "Bash · running",
+            ToolCallStatus::InProgress,
+        );
+        let mut lines = Vec::new();
+        append_processes_section(&mut lines, &[row], 40);
+
+        let headline = line_text(&lines[2]);
+        assert!(headline.ends_with('\u{2026}'), "expected ellipsis: {headline:?}");
+        let visible_chars = headline.chars().count();
+        assert!(visible_chars <= 38, "headline overflows 40-col pane: {visible_chars} cols");
     }
 }

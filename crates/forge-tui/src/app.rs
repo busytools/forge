@@ -18,6 +18,7 @@ mod notify;
 pub(crate) mod paste_burst;
 mod permissions;
 pub(crate) mod plugins;
+pub(crate) mod processes;
 mod questions;
 mod selection;
 mod service_status_check;
