@@ -187,6 +187,26 @@ pub fn is_exit_plan_mode_tool_name(tool_name: &str) -> bool {
     tool_name.eq_ignore_ascii_case("exitplanmode")
 }
 
+/// True when `tool_name` matches the long-running `Monitor` tool —
+/// claude's streaming-process watcher (`persistent` or `timeout_ms`-
+/// bounded). Used by the Inspector PROCESSES section to identify
+/// in-flight monitors regardless of how the CLI happens to capitalise
+/// the name (matches `is_execute_tool_name`'s style).
+#[must_use]
+pub fn is_monitor_tool_name(tool_name: &str) -> bool {
+    tool_name.eq_ignore_ascii_case("monitor")
+}
+
+/// True when `tool_name` matches the `CronCreate` scheduling tool.
+/// CronCreate registers cron-style recurring or one-shot prompts
+/// (see `forge_test_harness` captures + claude CLI binary trace).
+/// Used by PROCESSES to surface scheduled jobs alongside live
+/// backgrounded tasks.
+#[must_use]
+pub fn is_cron_create_tool_name(tool_name: &str) -> bool {
+    tool_name.eq_ignore_ascii_case("croncreate")
+}
+
 /// Permission state stored inline on a `ToolCallInfo`, so the permission
 /// controls render inside the tool call block (unified edit/permission UX).
 ///
@@ -217,4 +237,30 @@ pub struct InlineQuestion {
     pub focused: bool,
     pub question_index: usize,
     pub total_questions: usize,
+}
+
+#[cfg(test)]
+mod tool_name_tests {
+    use super::*;
+
+    #[test]
+    fn is_monitor_tool_name_matches_case_insensitive() {
+        assert!(is_monitor_tool_name("Monitor"));
+        assert!(is_monitor_tool_name("monitor"));
+        assert!(is_monitor_tool_name("MONITOR"));
+        assert!(!is_monitor_tool_name("Bash"));
+        assert!(!is_monitor_tool_name("MonitorTool"));
+        assert!(!is_monitor_tool_name(""));
+    }
+
+    #[test]
+    fn is_cron_create_tool_name_matches_case_insensitive() {
+        assert!(is_cron_create_tool_name("CronCreate"));
+        assert!(is_cron_create_tool_name("croncreate"));
+        assert!(is_cron_create_tool_name("CRONCREATE"));
+        assert!(!is_cron_create_tool_name("CronDelete"));
+        assert!(!is_cron_create_tool_name("CronList"));
+        assert!(!is_cron_create_tool_name("Cron"));
+        assert!(!is_cron_create_tool_name(""));
+    }
 }

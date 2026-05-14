@@ -61,11 +61,21 @@ pub(super) fn handle_mouse_event(app: &mut App, mouse: MouseEvent) {
     }
     match mouse.kind {
         MouseEventKind::ScrollUp => {
+            // Inspector body claims the wheel when the cursor is
+            // over it — both the inline pane (Wide/Medium) and the
+            // Narrow-tier overlay use the same body rect.
+            if mouse_in_inspector_body(app, mouse) {
+                scroll_inspector(app, MOUSE_SCROLL_LINES, true);
+                return;
+            }
             // While the Narrow-tier overlay is open the chat is
             // hidden behind it; scrolling the chat viewport would
             // silently move content the user can't see. Future:
             // scroll the overlay's project list when it overflows.
             if app.projects_pane_overlay_open && app.layout.top_bar.is_some() {
+                return;
+            }
+            if app.inspector_pane_overlay_open && app.layout.top_bar.is_some() {
                 return;
             }
             if app.selection().is_some() {
@@ -74,7 +84,14 @@ pub(super) fn handle_mouse_event(app: &mut App, mouse: MouseEvent) {
             app.active_viewport_mut().scroll_up(MOUSE_SCROLL_LINES);
         }
         MouseEventKind::ScrollDown => {
+            if mouse_in_inspector_body(app, mouse) {
+                scroll_inspector(app, MOUSE_SCROLL_LINES, false);
+                return;
+            }
             if app.projects_pane_overlay_open && app.layout.top_bar.is_some() {
+                return;
+            }
+            if app.inspector_pane_overlay_open && app.layout.top_bar.is_some() {
                 return;
             }
             if app.selection().is_some() {
@@ -84,6 +101,38 @@ pub(super) fn handle_mouse_event(app: &mut App, mouse: MouseEvent) {
         }
         _ => {}
     }
+}
+
+/// True when the wheel event happened with the cursor inside the
+/// Inspector pane's scrollable body (NOT the pinned banner). Lookup
+/// is against the rect cached by the last inspector render —
+/// `Rect::default()` while no inspector render has happened yet,
+/// which collapses to `false` because zero-width rects don't
+/// contain any point.
+fn mouse_in_inspector_body(app: &App, mouse: MouseEvent) -> bool {
+    let rect = app.rendered_inspector_body_area;
+    if rect.width == 0 || rect.height == 0 {
+        return false;
+    }
+    mouse.column >= rect.x
+        && mouse.column < rect.x.saturating_add(rect.width)
+        && mouse.row >= rect.y
+        && mouse.row < rect.y.saturating_add(rect.height)
+}
+
+/// Adjust the active session's `inspector_scroll_offset` by `lines`
+/// rows in the requested direction. Up = decrement (towards 0); down
+/// = increment (clamped at u16::MAX — the actual upper bound is
+/// re-clamped against the body's total line count on the next render).
+fn scroll_inspector(app: &mut App, lines: usize, up: bool) {
+    let Some(session) = app.try_active_bucket_mut() else { return };
+    let delta = u16::try_from(lines).unwrap_or(u16::MAX);
+    session.inspector_scroll_offset = if up {
+        session.inspector_scroll_offset.saturating_sub(delta)
+    } else {
+        session.inspector_scroll_offset.saturating_add(delta)
+    };
+    app.needs_redraw = true;
 }
 
 #[derive(Clone, Copy)]

@@ -49,6 +49,14 @@ impl AgentHandle {
         self.bridge.config_dir()
     }
 
+    /// OS PID of the bound `claude` child, when one is currently
+    /// attached. Surfaces to forge-workspace for the Inspector
+    /// pane's PROCESSES OS-walk.
+    #[must_use]
+    pub fn claude_pid(&self) -> Option<u32> {
+        self.bridge.claude_pid()
+    }
+
     /// Direct-accessor passthrough.
     #[must_use]
     pub fn project_memory_path(&self, cwd: &Path) -> PathBuf {

@@ -75,8 +75,10 @@ pub fn create_app(cli: &Cli, workspace: Arc<forge_workspace::Workspace>) -> App 
     let (file_index_event_tx, file_index_event_rx) = std::sync::mpsc::channel();
     let (git_diff_event_tx, git_diff_event_rx) = std::sync::mpsc::channel();
     let (cli_version_event_tx, cli_version_event_rx) = std::sync::mpsc::channel();
+    let (process_scan_event_tx, process_scan_event_rx) = std::sync::mpsc::channel();
     crate::app::git_diff::spawn_periodic_timer(git_diff_event_tx.clone());
     crate::app::cli_version::spawn_fetch(Arc::clone(&workspace), cli_version_event_tx.clone());
+    crate::app::process_scanner::spawn_ticker(process_scan_event_tx.clone());
     let perf_path = match crate::logging::resolve_perf_path(cli) {
         Ok(path) => path,
         Err(err) => {
@@ -180,6 +182,8 @@ pub fn create_app(cli: &Cli, workspace: Arc<forge_workspace::Workspace>) -> App 
         cli_version_event_tx,
         cli_version_event_rx,
         cli_version_info: None,
+        process_scan_event_tx,
+        process_scan_event_rx,
         spinner_frame: 0,
         spinner_last_advance_at: None,
         tools_collapsed: true,
@@ -199,6 +203,7 @@ pub fn create_app(cli: &Cli, workspace: Arc<forge_workspace::Workspace>) -> App 
         rendered_chat_area: ratatui::layout::Rect::new(0, 0, 0, 0),
         rendered_input_lines: Vec::new(),
         rendered_input_area: ratatui::layout::Rect::new(0, 0, 0, 0),
+        rendered_inspector_body_area: ratatui::layout::Rect::new(0, 0, 0, 0),
         paste_burst: super::paste_burst::PasteBurstDetector::new(),
         needs_redraw: true,
         notifications: super::notify::NotificationManager::new(),

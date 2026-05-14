@@ -35,6 +35,7 @@ pub(super) fn handle_sdk_message(app: &mut App, msg: Message) {
         Message::User { .. } => handle_user(app, msg),
         Message::System { .. } => handle_system(app, msg),
         Message::TaskStarted { .. } => handle_task_started(app, msg),
+        Message::TaskUpdated { .. } => handle_task_updated(app, msg),
         Message::TaskProgress { .. } => handle_task_progress(app, msg),
         Message::TaskNotification { .. } => handle_task_notification(app, msg),
         Message::RateLimitEvent { .. } => handle_rate_limit_event(app, msg),
@@ -474,13 +475,47 @@ fn apply_tool_call_update(
 /// Walk `app.turn_state.tool_calls` and emit a terminal status
 /// update for every still-pending entry. Called from
 /// `apply_result_finalize` when a turn ends.
+///
+/// Persistent `Monitor` calls (those launched with
+/// `raw_input.persistent == true`) are deliberately skipped: by
+/// design they outlive the turn that started them and are only
+/// terminated via `TaskStop` / explicit `KillBash`. Sweeping them
+/// to `Completed` here would visually mark a still-running monitor
+/// as done in both the chat-stream card and the Inspector PROCESSES
+/// section.
 fn finalize_open_tool_calls(app: &mut App, status: &str) {
+    use crate::app::state::tool_call_info::is_monitor_tool_name;
     use forge_primitives::ToolCallUpdateFields;
 
     let pending: Vec<String> = app.with_turn_state(|ts| {
         ts.tool_calls
             .iter()
             .filter(|(_, t)| matches!(t.status.as_str(), "pending" | "in_progress"))
+            .filter(|(_, t)| {
+                // Skip explicit persistent monitors — the docs and
+                // wire shape both say these outlive the turn that
+                // started them.
+                if raw_input_is_persistent(t.raw_input.as_ref()) {
+                    return false;
+                }
+                // Defensive: when raw_input is None for a Monitor-named
+                // tool, we can't tell if it's persistent yet — the
+                // tool_use's input block may not have decoded by the
+                // time the turn ends. Treat as "could be persistent"
+                // and skip finalization rather than risk flipping a
+                // still-running watch to Completed. Falls through to
+                // the normal sweep on the next turn boundary once
+                // raw_input has arrived.
+                // `ToolCall` in TurnState uses `title` as the
+                // SDK-supplied tool name (e.g. `"Monitor"`,
+                // `"Bash"`). The renderer-side `ToolCallInfo` carries
+                // a separate `sdk_tool_name`, but it's not on the
+                // wire-level struct stored here.
+                if t.raw_input.is_none() && is_monitor_tool_name(&t.title) {
+                    return false;
+                }
+                true
+            })
             .map(|(id, _)| id.clone())
             .collect()
     });
@@ -491,6 +526,20 @@ fn finalize_open_tool_calls(app: &mut App, status: &str) {
             ToolCallUpdateFields { status: Some(status.to_owned()), ..Default::default() },
         );
     }
+}
+
+/// True when `raw_input` is `Some` AND carries `"persistent": true`
+/// at the top level. The `is_some` guard matters: an absent
+/// `raw_input` (tool_use observed but body not yet applied) MUST NOT
+/// be treated as non-persistent — that would race against the
+/// out-of-order arrival of the tool_use content block and let a
+/// persistent monitor flip to `Completed` before its inputs land.
+fn raw_input_is_persistent(raw_input: Option<&Value>) -> bool {
+    raw_input
+        .and_then(|v| v.as_object())
+        .and_then(|obj| obj.get("persistent"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
 }
 
 fn handle_system(app: &mut App, msg: Message) {
@@ -882,8 +931,16 @@ fn handle_task_started(app: &mut App, msg: Message) {
     apply_tool_progress_update(app, id, "Task");
     if !task_id.is_empty() {
         let id_owned = id.to_owned();
+        let task_id_owned = task_id.clone();
         let _: () = app.with_turn_state_mut(|ts| {
             ts.task_tool_use_ids.insert(task_id.clone(), id_owned);
+            // Mark the task alive — drained by handle_task_updated
+            // when patch.status is terminal. This drives PROCESSES
+            // visibility: a backgrounded Bash whose tool_result has
+            // already arrived (flipping tc.status to Completed) is
+            // still alive here until its task_updated terminal
+            // patch lands.
+            ts.alive_task_ids.insert(task_id_owned);
         });
     }
 }
@@ -893,6 +950,84 @@ fn handle_task_progress(app: &mut App, msg: Message) {
     let id = tool_use_id.as_deref().unwrap_or("");
     if !id.is_empty() {
         apply_tool_progress_update(app, id, "Task");
+    }
+}
+
+/// Apply a `TaskUpdated` patch to the originating tool call.
+///
+/// The wire emits `task_updated` for any long-running tool task
+/// (subagent `Task`, backgrounded `Bash`, `Monitor`) carrying a
+/// `patch` object with status / end_time deltas. For PROCESSES
+/// rendering this is the canonical signal that a backgrounded Bash
+/// transitioned from running to completed — without consuming it,
+/// the chat-stream tool card and Inspector row both stay stuck on
+/// `in_progress` forever.
+///
+/// Resolution path: `task_started` populates
+/// `TurnState::task_tool_use_ids` as `task_id` → `tool_use_id`.
+/// This handler reverses the lookup to find which tool call to
+/// update. If the mapping is absent (out-of-order arrival or
+/// task_started lost), the update is dropped with a debug log —
+/// there's no recovery path that doesn't risk corrupting an
+/// unrelated tool call.
+fn handle_task_updated(app: &mut App, msg: Message) {
+    use forge_primitives::ToolCallUpdateFields;
+
+    let Message::TaskUpdated { task_id, patch, .. } = msg else { return };
+    let tool_use_id = app.with_turn_state(|ts| ts.task_tool_use_ids.get(&task_id).cloned());
+    let Some(tool_use_id) = tool_use_id else {
+        tracing::debug!(
+            target: crate::logging::targets::APP_SESSION,
+            event_name = "task_updated_no_mapping",
+            message = "task_updated for unknown task_id — dropped",
+            outcome = "dropped",
+            task_id = %task_id,
+        );
+        return;
+    };
+
+    let Some(wire_status) = patch.status.as_deref() else {
+        // No status delta in this patch (e.g. partial update that
+        // only stamped end_time). Nothing for the renderer to do.
+        return;
+    };
+    let mapped_status = map_task_updated_status_to_tool_status(wire_status);
+    apply_tool_call_update(
+        app,
+        &tool_use_id,
+        ToolCallUpdateFields { status: Some(mapped_status.to_owned()), ..Default::default() },
+    );
+
+    // Drain the alive-task set on terminal transitions so the
+    // PROCESSES section can drop the row. Wire vocabulary
+    // `completed` / `failed` / `killed` / `stopped` all count as
+    // terminal — anything else (`running`, `pending`, etc.) leaves
+    // the task in the alive set.
+    if matches!(wire_status, "completed" | "failed" | "killed" | "stopped") {
+        let task_id_owned = task_id;
+        let _: () = app.with_turn_state_mut(|ts| {
+            ts.alive_task_ids.remove(&task_id_owned);
+        });
+    }
+}
+
+/// Map the wire-side `task_updated.patch.status` string to the
+/// internal `ToolCallInfo.status` string vocabulary.
+///
+/// The wire uses `"running"`; the internal state uses
+/// `"in_progress"`. Other transitions (`completed`, `failed`,
+/// `killed`, `stopped`, `pending`) round-trip 1:1. Unknown strings
+/// pass through unchanged for forward-compat — a future CLI version
+/// adding a status won't crash forge; the renderer just won't
+/// know how to colour it.
+fn map_task_updated_status_to_tool_status(wire_status: &str) -> &str {
+    match wire_status {
+        "running" => "in_progress",
+        // `stopped` is the wire spelling for a graceful cancel; map
+        // to the internal `killed` so the renderer picks the same
+        // glyph as for explicit kill operations.
+        "stopped" => "killed",
+        other => other,
     }
 }
 
@@ -928,13 +1063,31 @@ fn apply_tool_progress_update(app: &mut App, tool_use_id: &str, name: &str) {
 /// Apply a `TaskNotification` summary to App state — finalises the
 /// matching `tool_use_id` with `completed` status (preserving any
 /// existing terminal `failed`/`killed` status) and updates content.
+///
+/// Persistent monitors (`raw_input.persistent == true`) are
+/// deliberately exempted from the status flip even though their
+/// `summary` content still updates. By design a persistent monitor
+/// keeps streaming after each event notification; flipping its
+/// status to `Completed` per event would mark a still-running watch
+/// as done in chat-stream + Inspector. Wire captures (2026-05-14)
+/// show `Monitor` doesn't actually deliver via `TaskNotification`
+/// in practice — events arrive via `Result` frames with
+/// `origin: task-notification`. This guard remains as defensive
+/// hardening: future CLI versions may route persistent-monitor
+/// events through the same handler, and the cost is one cheap
+/// JSON lookup.
 fn apply_tool_summary_update(app: &mut App, tool_use_id: &str, summary: &str) {
     use forge_primitives::{ToolCallContent, ToolCallUpdateFields};
 
     let Some(base) = app.with_turn_state(|ts| ts.tool_calls.get(tool_use_id).cloned()) else {
         return;
     };
+    let persistent = raw_input_is_persistent(base.raw_input.as_ref());
     let status = if matches!(base.status.as_str(), "failed" | "killed") {
+        base.status
+    } else if persistent {
+        // Keep the persistent monitor visibly running — only the
+        // summary content + raw_output update through.
         base.status
     } else {
         "completed".to_owned()
@@ -1062,6 +1215,101 @@ fn classify_turn_error_kind(
         return TurnErrorClass::Internal;
     }
     TurnErrorClass::Other
+}
+
+#[cfg(test)]
+mod task_updated_mapping_tests {
+    use super::map_task_updated_status_to_tool_status;
+
+    #[test]
+    fn running_maps_to_in_progress() {
+        // Wire spelling vs forge-internal spelling. Without this
+        // mapping, a backgrounded Bash transitioning through
+        // running would be left in the unknown "running" status
+        // and the renderer would pick an unintended glyph.
+        assert_eq!(map_task_updated_status_to_tool_status("running"), "in_progress");
+    }
+
+    #[test]
+    fn stopped_maps_to_killed() {
+        // `stopped` is the wire spelling for a graceful cancel
+        // (e.g. claude TaskStop). Map to the internal `killed`
+        // so the renderer picks the same red glyph as for explicit
+        // kills.
+        assert_eq!(map_task_updated_status_to_tool_status("stopped"), "killed");
+    }
+
+    #[test]
+    fn round_trip_statuses_unchanged() {
+        assert_eq!(map_task_updated_status_to_tool_status("completed"), "completed");
+        assert_eq!(map_task_updated_status_to_tool_status("failed"), "failed");
+        assert_eq!(map_task_updated_status_to_tool_status("killed"), "killed");
+        assert_eq!(map_task_updated_status_to_tool_status("pending"), "pending");
+    }
+
+    #[test]
+    fn unknown_status_passes_through() {
+        // Forward-compat: a future CLI version adding `degraded`
+        // (say) must not crash forge. The renderer's glyph picker
+        // falls back to a default; the reducer just stores the
+        // string.
+        assert_eq!(map_task_updated_status_to_tool_status("degraded"), "degraded");
+    }
+}
+
+#[cfg(test)]
+mod persistent_guard_tests {
+    use super::raw_input_is_persistent;
+    use serde_json::json;
+
+    #[test]
+    fn returns_false_for_none_raw_input() {
+        // CRITICAL: an absent raw_input MUST NOT be treated as
+        // persistent-false implicitly — but it also can't be treated
+        // as persistent-true. The function returns false here, which
+        // is the safe fallback for the `finalize_open_tool_calls`
+        // caller (a tool with no decoded raw_input gets swept normally)
+        // and for `apply_tool_summary_update` (the status-flip path
+        // applies, matching pre-fix behaviour for tools without
+        // raw_input).
+        assert!(!raw_input_is_persistent(None));
+    }
+
+    #[test]
+    fn returns_false_when_persistent_field_missing() {
+        let input = json!({"command": "echo hi", "description": "test"});
+        assert!(!raw_input_is_persistent(Some(&input)));
+    }
+
+    #[test]
+    fn returns_false_when_persistent_field_is_false() {
+        let input = json!({"persistent": false, "command": "ls"});
+        assert!(!raw_input_is_persistent(Some(&input)));
+    }
+
+    #[test]
+    fn returns_true_when_persistent_field_is_true() {
+        let input = json!({"persistent": true, "command": "tail -F /var/log/x"});
+        assert!(raw_input_is_persistent(Some(&input)));
+    }
+
+    #[test]
+    fn returns_false_when_persistent_field_is_non_bool() {
+        // Defensive: if `persistent` is somehow a string (wire drift
+        // or test fixture), the guard treats it as not-persistent
+        // rather than panicking or evaluating truthy.
+        let input = json!({"persistent": "true"});
+        assert!(!raw_input_is_persistent(Some(&input)));
+    }
+
+    #[test]
+    fn returns_false_when_raw_input_is_not_an_object() {
+        // Wire could conceivably emit a non-object value here
+        // (e.g. a literal string for a malformed tool). The guard
+        // must not panic on `as_object()` returning None.
+        let input = json!("not-an-object");
+        assert!(!raw_input_is_persistent(Some(&input)));
+    }
 }
 
 #[cfg(test)]

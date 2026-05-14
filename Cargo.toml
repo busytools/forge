@@ -50,6 +50,7 @@ tui-textarea = { package = "tui-textarea-2", version = "0.10" }
 unicode-segmentation = "1.12"
 unicode-width = "0.2"
 base64 = "0.22"
+sysinfo = { version = "0.32", default-features = false, features = ["system"] }
 
 # Workspace-internal crates
 forge-primitives = { path = "crates/forge-primitives", version = "=0.15.1" }

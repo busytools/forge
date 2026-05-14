@@ -267,6 +267,11 @@ pub struct App {
     /// Mirrors the file_index channel pattern.
     pub git_diff_event_tx: std_mpsc::Sender<crate::app::git_diff::GitDiffEvent>,
     pub git_diff_event_rx: std_mpsc::Receiver<crate::app::git_diff::GitDiffEvent>,
+    /// Send / receive ends of the channel for the
+    /// `crate::app::process_scanner` OS-walk scanner. Same shape
+    /// as `git_diff_event_*` but carries `ProcessScanEvent`.
+    pub process_scan_event_tx: std_mpsc::Sender<crate::app::process_scanner::ProcessScanEvent>,
+    pub process_scan_event_rx: std_mpsc::Receiver<crate::app::process_scanner::ProcessScanEvent>,
     /// Send / receive ends of the TUI-internal channel that the
     /// `crate::app::cli_version` startup fetch task uses to hand
     /// the merged `CliVersionInfo` snapshot back to the main loop.
@@ -347,6 +352,13 @@ pub struct App {
     pub rendered_input_lines: Vec<String>,
     /// Area where input content was rendered (for selection mapping).
     pub rendered_input_area: ratatui::layout::Rect,
+    /// Area where the Inspector pane's **scrollable body** was last
+    /// rendered (excluding the pinned banner + rule above it). Used
+    /// by the mouse-wheel handler to detect "wheel scrolled while
+    /// cursor is over the inspector pane" and adjust the active
+    /// session's `inspector_scroll_offset`. `Rect::default()` until
+    /// the first inspector render.
+    pub rendered_inspector_body_area: ratatui::layout::Rect,
     // `file_index: FileIndexState` moved to `UiSession.file_index`
     // (per-session bucket). The scanner is project-scoped — switching
     // active session shows the new project's files. The channel
@@ -2226,6 +2238,7 @@ impl App {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<forge_workspace::SessionUpdate>();
         let (file_index_tx, file_index_rx) = std_mpsc::channel();
         let (git_diff_tx, git_diff_rx) = std_mpsc::channel();
+        let (process_scan_tx, process_scan_rx) = std_mpsc::channel();
         let (cli_version_tx, cli_version_rx) = std_mpsc::channel();
         let pending_key = forge_workspace::SessionKey::from_session_id(Self::PRE_CONNECT_KEY);
         let mut pending_session = super::session::UiSession::new(pending_key.clone());
@@ -2277,6 +2290,8 @@ impl App {
             file_index_event_rx: file_index_rx,
             git_diff_event_tx: git_diff_tx,
             git_diff_event_rx: git_diff_rx,
+            process_scan_event_tx: process_scan_tx,
+            process_scan_event_rx: process_scan_rx,
             cli_version_event_tx: cli_version_tx,
             cli_version_event_rx: cli_version_rx,
             cli_version_info: None,
@@ -2299,6 +2314,7 @@ impl App {
             rendered_chat_area: ratatui::layout::Rect::default(),
             rendered_input_lines: Vec::new(),
             rendered_input_area: ratatui::layout::Rect::default(),
+            rendered_inspector_body_area: ratatui::layout::Rect::default(),
             paste_burst: super::paste_burst::PasteBurstDetector::new(),
             needs_redraw: true,
             notifications: super::notify::NotificationManager::new(),

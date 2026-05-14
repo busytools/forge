@@ -789,6 +789,16 @@ impl ForgeSdkBridge {
         self.inner.display_name.clone()
     }
 
+    /// OS PID of the spawned `claude` child, when a client is bound
+    /// and the transport reported one. Used by
+    /// [`crate::env::processes`] to anchor an OS-level walk of the
+    /// descendant process tree for the Inspector pane's PROCESSES
+    /// section. Returns `None` before the first `new_session` /
+    /// `resume_session` lands a client, or after `clear_client`.
+    pub(crate) fn claude_pid(&self) -> Option<u32> {
+        self.client().and_then(|c| c.claude_pid())
+    }
+
     pub(crate) fn project_memory_path(&self, cwd: &Path) -> PathBuf {
         crate::userdata::memory::project_memory_path(&self.inner.config_dir, cwd)
     }
