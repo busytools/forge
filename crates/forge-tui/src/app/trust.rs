@@ -48,9 +48,14 @@ pub fn initialize(app: &mut App) {
     });
     app.startup_connection_requested = app.trust.is_trusted();
     // Launchpad has no specific project context — trust is per-project
-    // and evaluated when the user picks a row. Leave the launchpad view
-    // alone here; the picker handles its own per-project trust on Enter.
+    // and evaluated when the user picks a row. Force the connection
+    // request on so `auto_start = true` projects can warm up while
+    // the picker is shown (subject to `launchpad_autostart` policy);
+    // each project's own trust gate fires at spawn time. Leave the
+    // launchpad view alone here; the picker handles its own per-
+    // project trust on Enter.
     if app.active_view == ActiveView::Launchpad {
+        app.startup_connection_requested = true;
         return;
     }
     if app.trust.is_trusted() {
@@ -213,6 +218,27 @@ mod tests {
         initialize(&mut app);
 
         assert_eq!(app.active_view, ActiveView::SessionPicker);
+        assert!(app.startup_connection_requested);
+    }
+
+    #[test]
+    fn initialize_keeps_launchpad_view_when_active() {
+        let mut app = App::test_default();
+        app.active_view = ActiveView::Launchpad;
+        app.set_cwd_raw(if cfg!(windows) { r"C:\untrusted" } else { "/home/untrusted" });
+        app.config.preferences_path = Some(std::path::PathBuf::from("prefs.json"));
+        // Untrusted process cwd — pre-launchpad, this would route to
+        // ActiveView::Trusted and leave startup_connection_requested
+        // false.
+        app.config.committed_preferences_document = json!({ "projects": {} });
+
+        initialize(&mut app);
+
+        // Launchpad view survives the trust gate.
+        assert_eq!(app.active_view, ActiveView::Launchpad);
+        // Auto-start dispatch flows through start_connection only
+        // when startup_connection_requested = true. The launchpad
+        // override forces this on so projects can warm up.
         assert!(app.startup_connection_requested);
     }
 
