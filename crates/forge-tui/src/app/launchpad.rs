@@ -91,6 +91,14 @@ pub(crate) fn open(app: &mut App) {
 /// - `?` — toggle the help overlay
 /// - `Esc` — no-op (the launchpad is the floor)
 /// - everything else — consumed silently
+///
+/// Slash autocomplete via `/` is intentionally omitted on the
+/// launchpad — the picker has no input area to render the dropdown
+/// above. The four launchpad-relevant commands are reachable
+/// directly: `/help` ≡ `?`, `/quit` ≡ `Ctrl+Q`, `/config` and
+/// `/plugins` are reachable after picking a project (or by
+/// running `forge <project>` and using the slash autocomplete in
+/// chat).
 pub fn handle_key(app: &mut App, key: KeyEvent) -> bool {
     if key.modifiers == KeyModifiers::NONE {
         match key.code {
@@ -108,16 +116,6 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> bool {
             }
             KeyCode::Char('r') => {
                 crate::ui::launchpad::retry_selected_project(app);
-                return true;
-            }
-            KeyCode::Char('/') => {
-                // Open the slash autocomplete with the launchpad-
-                // filtered subset. Push `/` into the input buffer; the
-                // slash machinery picks it up on `sync_with_cursor`.
-                app.input_mut().clear();
-                app.input_mut().set_text("/");
-                super::slash::sync_with_cursor(app);
-                app.needs_redraw = true;
                 return true;
             }
             _ => {}
