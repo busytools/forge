@@ -322,8 +322,12 @@ fn append_body(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
     append_git_section(lines, app, width);
 
     let todos = app.todos();
-    let has_tasks = !todos.is_empty() || app.todo_verification_nudge();
-    if has_tasks {
+    // Section visibility gates on PENDING/IN-PROGRESS tasks
+    // (completed are hidden by the renderer anyway). The
+    // verification nudge alone is enough to surface the section
+    // even when there are no live items.
+    let has_live_tasks = todos.iter().any(|t| t.status != TodoStatus::Completed);
+    if has_live_tasks || app.todo_verification_nudge() {
         lines.push(Line::default());
         push_section_rule(lines, width);
         lines.push(Line::default());
@@ -939,8 +943,25 @@ fn append_tasks_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
         .saturating_sub(usize::from(glyph_indent))
         .saturating_sub(usize::from(PANE_PAD));
 
-    let todo_count = todos.len();
-    for (idx, todo) in todos.iter().enumerate() {
+    // Hide completed tasks — they're already done, no need to
+    // surface them in a live monitor. Then cap visible at
+    // TASKS_MAX (5); any remainder collapses to a `+N more` row.
+    // Keeps the section legible even when claude has 20+ tasks
+    // queued (typical mid-implementation state).
+    let visible_todos: Vec<&_> =
+        todos.iter().filter(|t| t.status != TodoStatus::Completed).collect();
+    let total_visible = visible_todos.len();
+    let (cap, hidden) = if total_visible > TASKS_MAX {
+        // Reserve one slot for the `+N more` row.
+        let shown = TASKS_MAX.saturating_sub(1);
+        (shown, total_visible - shown)
+    } else {
+        (total_visible, 0)
+    };
+
+    let shown_iter = visible_todos.iter().take(cap);
+    let shown_count = cap;
+    for (idx, todo) in shown_iter.enumerate() {
         let (glyph, glyph_color) = match todo.status {
             TodoStatus::Completed => ("\u{2713}", Color::Green), // ✓
             TodoStatus::InProgress => ("\u{25b8}", theme::RUST_ORANGE), // ▸
@@ -1002,11 +1023,27 @@ fn append_tasks_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
         // Blank between tasks for breathing room. Skipped after the
         // last item so we don't leave a trailing blank at the end of
         // the TASKS section.
-        if idx + 1 < todo_count {
+        if idx + 1 < shown_count || hidden > 0 {
             lines.push(Line::default());
         }
     }
+
+    if hidden > 0 {
+        lines.push(Line::from(vec![
+            Span::raw("  "),
+            Span::styled(
+                format!("+{hidden} more"),
+                Style::default().fg(theme::DIM).add_modifier(Modifier::ITALIC),
+            ),
+        ]));
+    }
 }
+
+/// Per-section cap on TASKS rows. Completed tasks are filtered out
+/// before counting; beyond `TASKS_MAX - 1` remaining items the tail
+/// collapses to a single `+N more` row. Matches the PROCESSES
+/// per-parent cap so both surfaces feel consistent.
+const TASKS_MAX: usize = 5;
 
 /// Wrap `s` onto multiple lines so that each piece fits within
 /// `max_chars` columns. Breaks on whitespace where possible; falls
