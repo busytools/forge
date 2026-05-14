@@ -68,6 +68,14 @@ pub struct Client {
 struct ClientInner {
     /// Cloned writer (mpsc-backed via the transport's writer task).
     writer: std::sync::Arc<dyn crate::transport::AsyncWriter>,
+    /// PID of the spawned `claude` child captured at spawn time.
+    /// Stable for the lifetime of the subprocess; consumers (e.g. the
+    /// Inspector pane's OS-level process walker) cache snapshots
+    /// keyed off this value. `None` when the transport couldn't
+    /// report a PID (in practice never for a live subprocess, but
+    /// the optional makes the test stubs and post-disconnect path
+    /// total).
+    claude_pid: Option<u32>,
     /// Cached response from the `initialize` `control_request` —
     /// populated during spawn and never mutated afterwards.
     initialization_result: Option<serde_json::Value>,
@@ -117,6 +125,10 @@ impl Client {
     pub async fn spawn(options: Options) -> Result<(Self, ClientEvents), Error> {
         let mut sub = Subprocess::spawn(&options).await?;
         let writer = sub.clone_writer();
+        // Capture the PID before the reader task consumes `sub`. It
+        // doesn't change for the subprocess's lifetime so caching
+        // once is correct.
+        let claude_pid = sub.child_pid();
         let session_id = new_shared_session_id();
         let mcp_hosts =
             McpHosts::new(options.mcp_servers.clone(), options.external_mcp_servers.clone());
@@ -331,6 +343,7 @@ impl Client {
 
         let inner = Arc::new(ClientInner {
             writer,
+            claude_pid,
             initialization_result,
             cached_init_data,
             session_id,
@@ -349,6 +362,21 @@ impl Client {
     #[must_use]
     pub fn get_server_info(&self) -> Option<&serde_json::Value> {
         self.inner.initialization_result.as_ref()
+    }
+
+    /// OS-level PID of the spawned `claude` child, captured at spawn
+    /// time. Stable for the lifetime of this `Client`. Used by
+    /// downstream consumers (e.g. `forge_agent::env::processes`) to
+    /// walk the child process tree for the Inspector pane's
+    /// PROCESSES section.
+    ///
+    /// Returns `None` only when the transport couldn't report a PID
+    /// at spawn — never happens for a real subprocess on supported
+    /// platforms, but the `Option` keeps the test-stub path
+    /// expressible.
+    #[must_use]
+    pub fn claude_pid(&self) -> Option<u32> {
+        self.inner.claude_pid
     }
 
     /// Captured `system/init` payload — the CLI's first session-scoped

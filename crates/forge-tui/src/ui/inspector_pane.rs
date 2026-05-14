@@ -17,9 +17,20 @@
 //!   pending verification nudge. The live `TodoWrite` snapshot is
 //!   the sole surface for the todo list; the chat-stream
 //!   `TodoWrite` tool-call card is suppressed.
+//! - `PROCESSES` — rendered when the active session has at least
+//!   one currently-in-flight long-running tool call. Three kinds
+//!   surface here: backgrounded `Bash` (via `run_in_background:
+//!   true` OR `assistant_auto_backgrounded`), `Monitor` streaming-
+//!   process watchers, and `CronCreate` scheduled prompts. Live
+//!   monitor only — completed / failed / killed rows are filtered
+//!   out at the collector level so the section disappears once
+//!   work wraps up. Rows are built by
+//!   `crate::app::processes::collect_active_processes` from each
+//!   tool call's `raw_input` + status; the renderer chooses glyphs
+//!   + colours per `ProcessKind`.
 //!
 //! Reads from per-session state on `UiSession.todos` (post PR #109)
-//! and `UiSession.git_diff_snapshot` (this PR). The
+//! and `UiSession.git_diff_snapshot`. The
 //! `TodoWriteOutputMetadata.verification_nudge_needed` flag surfaces
 //! as a dim-yellow notice above the `TASKS` header until the next
 //! `TodoWrite` clears it.
@@ -40,9 +51,14 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
 use super::theme;
+use crate::agent::model::ToolCallStatus;
 use crate::app::App;
+use crate::app::MessageBlock;
 use crate::app::PaneHitTarget;
 use crate::app::TodoStatus;
+use crate::app::processes::{
+    ProcessCollection, ProcessKind, ProcessRow, collect_active_processes, format_memory_short,
+};
 
 /// Horizontal padding inside the pane (matches the left
 /// `projects_pane`'s 2-col indent).
@@ -55,20 +71,32 @@ const PANE_PAD: u16 = 2;
 const PATH_STATS_GAP: usize = 2;
 
 /// Render the Inspector pane into `area` (inline at Wide/Medium).
+///
+/// Layout: the top 2 lines (banner + rule) stay pinned; everything
+/// below scrolls based on the active session's `inspector_scroll_offset`.
+/// A vertical scrollbar renders on the right edge when the body
+/// overflows the visible area.
 pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
-    let lines = build_lines(app, area.width);
-    frame.render_widget(Paragraph::new(lines), area);
+    let (banner_area, body_area) = split_banner_body(area);
+
+    // Pinned banner: `INSPECTOR` in RUST_ORANGE bold + dim rule.
+    let banner_lines = build_inline_banner(area.width);
+    frame.render_widget(Paragraph::new(banner_lines), banner_area);
+
+    // Scrollable body.
+    render_scrollable_body(frame, body_area, app);
 }
 
 /// Render the Narrow-tier full-screen Inspector overlay into `area`.
 /// Shares the body builder with the inline path, wrapped in an
 /// overlay-specific banner with an `INSPECTOR ▦` label on the left
 /// and a `✕` glyph on the right (stamped as
-/// [`PaneHitTarget::OverlayClose`] for the click handler).
+/// [`PaneHitTarget::OverlayClose`] for the click handler). The
+/// banner + rule stay pinned; the body scrolls underneath them.
 pub fn render_overlay(frame: &mut Frame, area: Rect, app: &mut App) {
     app.pane_hit_targets.clear();
 
-    let mut lines: Vec<Line<'static>> = Vec::new();
+    let (banner_area, body_area) = split_banner_body(area);
 
     // Banner row: `INSPECTOR ▦ … ✕` spanning the full overlay width.
     let banner_label = "INSPECTOR \u{25a6}";
@@ -76,14 +104,20 @@ pub fn render_overlay(frame: &mut Frame, area: Rect, app: &mut App) {
     let banner_chars = banner_label.chars().count();
     let close_chars = close_glyph.chars().count();
     let pad = usize::from(area.width).saturating_sub(banner_chars).saturating_sub(close_chars);
-    lines.push(Line::from(vec![
+    let banner_line = Line::from(vec![
         Span::styled(
             banner_label.to_owned(),
             Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
         ),
         Span::raw(" ".repeat(pad)),
         Span::styled(close_glyph.to_owned(), Style::default().fg(theme::DIM)),
-    ]));
+    ]);
+    let rule_line = Line::from(Span::styled(
+        "\u{2500}".repeat(usize::from(area.width)),
+        Style::default().fg(theme::DIM),
+    ));
+    frame.render_widget(Paragraph::new(vec![banner_line, rule_line]), banner_area);
+
     // Stamp ✕ hit-target — last char on the banner row.
     let close_x_start =
         area.x.saturating_add(area.width).saturating_sub(u16::try_from(close_chars).unwrap_or(1));
@@ -95,38 +129,185 @@ pub fn render_overlay(frame: &mut Frame, area: Rect, app: &mut App) {
         x_end: close_x_end,
     });
 
-    // Dim rule under the banner.
-    let rule_width = usize::from(area.width);
-    lines.push(Line::from(Span::styled(
-        "\u{2500}".repeat(rule_width),
-        Style::default().fg(theme::DIM),
-    )));
-
-    append_body(&mut lines, app, area.width);
-
-    frame.render_widget(Paragraph::new(lines), area);
+    render_scrollable_body(frame, body_area, app);
 }
 
-/// Build the full inline-pane line list: banner + rule + body.
-fn build_lines(app: &App, width: u16) -> Vec<Line<'static>> {
-    let mut lines: Vec<Line<'static>> = Vec::new();
+/// Split the inspector area into the pinned banner (top 2 lines:
+/// banner + rule) and the scrollable body underneath. Both are
+/// clamped to fit when the supplied area is shorter than 2 rows.
+fn split_banner_body(area: Rect) -> (Rect, Rect) {
+    let banner_height = area.height.min(2);
+    let banner_area = Rect { x: area.x, y: area.y, width: area.width, height: banner_height };
+    let body_area = Rect {
+        x: area.x,
+        y: area.y.saturating_add(banner_height),
+        width: area.width,
+        height: area.height.saturating_sub(banner_height),
+    };
+    (banner_area, body_area)
+}
 
-    // Banner: `INSPECTOR` in RUST_ORANGE bold (mirror of `PROJECTS`).
-    lines.push(Line::from(Span::styled(
-        "  INSPECTOR".to_owned(),
-        Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
-    )));
-    // Dim rule under the banner.
+/// Build the inline-pane's banner: `  INSPECTOR` heading + dim rule
+/// under it. Two lines total, mirroring the projects pane's banner.
+fn build_inline_banner(width: u16) -> Vec<Line<'static>> {
     let rule_width = usize::from(width.saturating_sub(2));
-    lines.push(Line::from(vec![
-        Span::raw(" "),
-        Span::styled("\u{2500}".repeat(rule_width), Style::default().fg(theme::DIM)),
-    ]));
-
-    append_body(&mut lines, app, width);
-
-    lines
+    vec![
+        Line::from(Span::styled(
+            "  INSPECTOR".to_owned(),
+            Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(vec![
+            Span::raw(" "),
+            Span::styled("\u{2500}".repeat(rule_width), Style::default().fg(theme::DIM)),
+        ]),
+    ]
 }
+
+/// Render the inspector body (`GIT` → `TASKS` → `PROCESSES` …)
+/// into `body_area` with the active session's scroll offset
+/// applied. Clamps the offset to `[0, max]` (writing the clamped
+/// value back so the wheel handler doesn't desync after the body
+/// shrinks), stamps `body_area` onto `App.rendered_inspector_body_area`
+/// for the mouse-wheel hit test, and overlays a vertical scrollbar
+/// on the right edge whenever the body overflows.
+fn render_scrollable_body(frame: &mut Frame, body_area: Rect, app: &mut App) {
+    app.rendered_inspector_body_area = body_area;
+    if body_area.height == 0 || body_area.width == 0 {
+        return;
+    }
+
+    let mut body_lines: Vec<Line<'static>> = Vec::new();
+    append_body(&mut body_lines, app, body_area.width);
+    let total = body_lines.len();
+    let visible = usize::from(body_area.height);
+    let max_offset = total.saturating_sub(visible);
+    let max_offset_u16 = u16::try_from(max_offset).unwrap_or(u16::MAX);
+
+    // Read + clamp + write back the per-session scroll offset.
+    let offset = if let Some(session) = app.try_active_bucket_mut() {
+        let clamped = session.inspector_scroll_offset.min(max_offset_u16);
+        session.inspector_scroll_offset = clamped;
+        clamped
+    } else {
+        0
+    };
+
+    frame.render_widget(Paragraph::new(body_lines).scroll((offset, 0)), body_area);
+
+    // Scrollbar — thumb-only, no rail, painted as a block cell in
+    // `ROLE_ASSISTANT` colour. Animated when work is in flight so
+    // the indicator reads as "alive" vs. a static dot. Matches the
+    // chat scrollbar's visual weight (small thumb) plus a subtle
+    // breathing pulse.
+    let pulse = inspector_thumb_pulse(app);
+    render_inspector_thumb(frame, body_area, total, visible, offset, pulse);
+}
+
+/// Frame index for the inspector thumb's breathing pulse. Wraps to
+/// `None` when the active session has no observable work (alive
+/// task IDs empty AND no in-progress Bash/Monitor on the wire), so
+/// the thumb sits still during idle periods and only pulses while
+/// something is actually running.
+fn inspector_thumb_pulse(app: &App) -> Option<usize> {
+    let has_alive_task = app.with_turn_state(|ts| !ts.alive_task_ids.is_empty());
+    if has_alive_task {
+        return Some(app.spinner_frame);
+    }
+    let has_in_progress_tool = app.active_session().is_some_and(|session| {
+        session.messages.iter().any(|msg| {
+            msg.blocks.iter().any(|block| {
+                matches!(
+                    block,
+                    MessageBlock::ToolCall(tc) if tc.status == ToolCallStatus::InProgress
+                )
+            })
+        })
+    });
+    has_in_progress_tool.then_some(app.spinner_frame)
+}
+
+/// Paint the inspector body's scroll thumb. Mirrors
+/// `ui::chat::render_scrollbar_overlay`: thumb-only (no rail), uses
+/// `▐` (U+2590) cells styled `ROLE_ASSISTANT`, geometry via the
+/// shared [`crate::app::compute_scrollbar_geometry`].
+///
+/// One deliberate difference from chat: the inspector body is much
+/// shorter than the chat scrollback (tens of rows vs. hundreds),
+/// so the `viewport² / content` formula produces a thumb that takes
+/// up half the rail or more. Clamp to [`INSPECTOR_THUMB_MAX_CELLS`]
+/// so the indicator stays visually subtle regardless of how short
+/// the content is. The clamp moves the thumb's effective track
+/// length up by `(thumb_size − clamped) / total_track` so the thumb
+/// still rides the full vertical range when scrolling.
+///
+/// No-op when the body fits inside the visible area.
+fn render_inspector_thumb(
+    frame: &mut Frame,
+    body_area: Rect,
+    total: usize,
+    visible: usize,
+    offset: u16,
+    pulse: Option<usize>,
+) {
+    let Some(geometry) =
+        crate::app::compute_scrollbar_geometry(total, visible, f32::from(offset))
+    else {
+        return;
+    };
+    let thumb_size = geometry.thumb_size.min(INSPECTOR_THUMB_MAX_CELLS);
+    let area_h = usize::from(body_area.height);
+    // Recompute thumb_top against the post-clamp track length so the
+    // thumb still slides across the full visible range.
+    let track = area_h.saturating_sub(thumb_size);
+    let max_offset = total.saturating_sub(visible);
+    let thumb_top = if max_offset == 0 || track == 0 {
+        0
+    } else {
+        // Inspector content fits well inside f32's mantissa (50-row
+        // sanity cap on PROCESSES) so the precision lints can be
+        // suppressed here without risking overflow.
+        #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let pos = (f32::from(offset) / max_offset as f32 * track as f32).round() as usize;
+        pos
+    };
+    let thumb_top = thumb_top.min(area_h.saturating_sub(1));
+    let thumb_end = thumb_top.saturating_add(thumb_size).min(area_h);
+    let thumb_style = Style::default().fg(theme::ROLE_ASSISTANT);
+    let rail_x = body_area.right().saturating_sub(1);
+    let symbol = thumb_symbol(pulse);
+    let buf = frame.buffer_mut();
+    for row in thumb_top..thumb_end {
+        let y = body_area.y.saturating_add(u16::try_from(row).unwrap_or(u16::MAX));
+        if let Some(cell) = buf.cell_mut((rail_x, y)) {
+            cell.set_symbol(symbol);
+            cell.set_style(thumb_style);
+        }
+    }
+}
+
+/// Glyph used for the inspector thumb cell. When `pulse` is `Some`
+/// (work is in flight), cycle through a 4-frame breathing pattern
+/// driven by `App.spinner_frame` so the thumb reads as "alive". When
+/// `pulse` is `None`, stay on the static block glyph the chat
+/// scrollbar uses — same look, no movement.
+fn thumb_symbol(pulse: Option<usize>) -> &'static str {
+    const STATIC_THUMB: &str = "\u{2590}"; // ▐ right half block — chat baseline
+    const THIN_THUMB: &str = "\u{2595}";   // ▕ right one-eighth block — pulse-out frame
+    match pulse {
+        None => STATIC_THUMB,
+        Some(frame) => match frame % 4 {
+            0 | 1 => STATIC_THUMB,
+            _ => THIN_THUMB,
+        },
+    }
+}
+
+/// Visual cap for the inspector scrollbar thumb. Inspector content
+/// is tens of rows so `viewport² / content` gives a thumb that
+/// dominates the rail. Hardcoding to a single cell matches the
+/// "tiny dot" the chat scrollbar shows when chat content is long,
+/// giving the two surfaces a consistent visual weight.
+const INSPECTOR_THUMB_MAX_CELLS: usize = 1;
 
 /// Append the body (GIT section + verification nudge + TASKS
 /// section) to `lines`. Shared between the inline render and the
@@ -145,7 +326,20 @@ fn append_body(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
         lines.push(Line::default());
         append_tasks_section(lines, app, width);
     }
+
+    let processes = collect_active_processes(app);
+    if !processes.is_empty() {
+        lines.push(Line::default());
+        push_section_rule(lines, width);
+        lines.push(Line::default());
+        append_processes_section(lines, &processes, width);
+    }
 }
+
+/// Width threshold above which the PROCESSES section appends `· 12 MB`
+/// to each row's metadata. Wide tier (inspector at 40 cols) gets memory;
+/// Medium tier (inspector at 30 cols) drops it so the metadata fits.
+const PROCESSES_MEMORY_WIDTH_THRESHOLD: u16 = 36;
 
 /// Append a dim `─` horizontal rule across `width − 2` cols with a
 /// 1-col leading space, matching the banner-rule + projects-pane
@@ -815,6 +1009,140 @@ fn append_tasks_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
 /// `max_chars` columns. Breaks on whitespace where possible; falls
 /// back to hard-cut on long single tokens. Returns an empty `Vec`
 /// for an empty / whitespace-only input.
+/// Render the PROCESSES section: header + one row per
+/// currently-in-flight long-running tool call. Each row spans up
+/// to three lines:
+///
+/// 1. **Headline:** status glyph + headline text styled per
+///    [`ProcessKind`].
+/// 2. **Detail** (optional `└─` continuation): the underlying shell
+///    command or cron prompt, DIM, truncated with `…` when it
+///    overflows.
+/// 3. **Metadata** (`└─` continuation): kind label · status · flags,
+///    all DIM.
+///
+/// Glyphs mirror the TASKS convention but use a kind-distinct
+/// palette for the headline so scanning the section visually
+/// separates "what's running" from "what's queued in TodoWrite":
+///
+/// - `▸` RUST_ORANGE  — `BashBackgrounded` / `Monitor` while in-flight
+/// - `\u{23F0}` (`⏰`) DIM — `Cron` (scheduled, not currently firing)
+/// - `\u{2713}` (`✓`) green — completed tool call (any kind)
+/// - `\u{2717}` (`✗`) red — failed / killed
+/// - `\u{25CB}` (`○`) DIM — pending (queued, not yet started)
+fn append_processes_section(
+    lines: &mut Vec<Line<'static>>,
+    collection: &ProcessCollection,
+    width: u16,
+) {
+    lines.push(Line::from(Span::styled(
+        "  PROCESSES".to_owned(),
+        Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD),
+    )));
+    lines.push(Line::default());
+
+    let glyph_indent = PANE_PAD + 2; // "  " + glyph + " "
+    let text_budget = usize::from(width)
+        .saturating_sub(usize::from(glyph_indent))
+        .saturating_sub(usize::from(PANE_PAD));
+    let continuation_indent = "    "; // 4 cols — under the text col.
+    // `└─ ` is 3 codepoints (U+2514, U+2500, U+0020) so each
+    // continuation row's chrome eats 3 cols. truncate_with_ellipsis
+    // measures in `.chars()` (matches the count), so subtract 3.
+    let continuation_budget = usize::from(width)
+        .saturating_sub(continuation_indent.chars().count())
+        .saturating_sub(usize::from(PANE_PAD))
+        .saturating_sub(3);
+    let include_memory = width >= PROCESSES_MEMORY_WIDTH_THRESHOLD;
+    let process_count = collection.rows.len();
+    for (idx, process) in collection.rows.iter().enumerate() {
+        let (glyph, glyph_color, headline_style) = glyph_and_style_for(process);
+        let headline_fitted = truncate_with_ellipsis(&process.headline, text_budget);
+        lines.push(Line::from(vec![
+            Span::raw("  "),
+            Span::styled(glyph.to_owned(), Style::default().fg(glyph_color)),
+            Span::raw(" "),
+            Span::styled(headline_fitted, headline_style),
+        ]));
+
+        if let Some(detail) = process.detail.as_ref() {
+            let fitted = truncate_with_ellipsis(detail, continuation_budget);
+            lines.push(Line::from(vec![
+                Span::raw(continuation_indent.to_owned()),
+                Span::styled("\u{2514}\u{2500} ".to_owned(), Style::default().fg(theme::DIM)),
+                Span::styled(fitted, Style::default().fg(theme::DIM)),
+            ]));
+        }
+
+        let metadata_text = build_metadata_with_memory(process, include_memory);
+        let metadata_fitted = truncate_with_ellipsis(&metadata_text, continuation_budget);
+        lines.push(Line::from(vec![
+            Span::raw(continuation_indent.to_owned()),
+            Span::styled("\u{2514}\u{2500} ".to_owned(), Style::default().fg(theme::DIM)),
+            Span::styled(metadata_fitted, Style::default().fg(theme::DIM)),
+        ]));
+
+        if idx + 1 < process_count {
+            lines.push(Line::default());
+        }
+    }
+
+    // No `+N more` footer — the inspector pane scrolls, so the
+    // scrollbar IS the overflow indicator. `collection.overflow`
+    // remains on the struct for potential future use (e.g. a
+    // sanity-bound notice when the soft cap actually trims rows).
+}
+
+/// Compose the metadata string for a row, optionally suffixing
+/// `· 12 MB` when the layout has room.
+fn build_metadata_with_memory(process: &ProcessRow, include_memory: bool) -> String {
+    match (include_memory, process.memory_bytes) {
+        (true, Some(bytes)) => format!("{} · {}", process.metadata, format_memory_short(bytes)),
+        _ => process.metadata.clone(),
+    }
+}
+
+/// Pick the (glyph, glyph_color, headline_style) triple for a
+/// process row based on its `kind` + `status`. Terminal statuses
+/// (Completed / Failed / Killed) override the kind glyph so the
+/// section reads accurately as a state monitor regardless of the
+/// originating tool kind.
+fn glyph_and_style_for(process: &ProcessRow) -> (&'static str, Color, Style) {
+    match process.status {
+        ToolCallStatus::Completed => ("\u{2713}", Color::Green, Style::default().fg(theme::DIM)),
+        ToolCallStatus::Failed | ToolCallStatus::Killed => (
+            "\u{2717}",
+            Color::Red,
+            Style::default().fg(theme::DIM).add_modifier(Modifier::CROSSED_OUT),
+        ),
+        ToolCallStatus::Pending => ("\u{25CB}", theme::DIM, Style::default().fg(Color::Gray)),
+        ToolCallStatus::InProgress => match process.kind {
+            ProcessKind::Cron => {
+                // Cron registration completes the moment claude calls
+                // CronCreate — InProgress is rare. Render with the
+                // schedule glyph regardless.
+                (
+                    "\u{23F0}",
+                    theme::DIM,
+                    Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+                )
+            }
+            ProcessKind::Process => {
+                // Generic OS process — DIM headline so the wire-
+                // tracked rows (BashBackgrounded / Monitor) stand
+                // out by comparison. Still the right-pointing ▸
+                // glyph so it reads as live work.
+                ("\u{25B8}", theme::DIM, Style::default().fg(Color::Gray))
+            }
+            _ => (
+                "\u{25B8}",
+                theme::RUST_ORANGE,
+                Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+            ),
+        },
+    }
+}
+
 fn wrap_text(s: &str, max_chars: usize) -> Vec<String> {
     if max_chars == 0 {
         return Vec::new();
@@ -1200,5 +1528,282 @@ mod tests {
         assert_eq!(count_digits(100), 3);
         assert_eq!(count_digits(9_999), 4);
         assert_eq!(count_digits(u64::MAX), 20);
+    }
+
+    fn make_process_row(
+        kind: ProcessKind,
+        headline: &str,
+        detail: Option<&str>,
+        metadata: &str,
+        status: ToolCallStatus,
+    ) -> ProcessRow {
+        ProcessRow {
+            kind,
+            headline: headline.to_owned(),
+            detail: detail.map(str::to_owned),
+            metadata: metadata.to_owned(),
+            status,
+            memory_bytes: None,
+        }
+    }
+
+    /// Wrap test rows in a `ProcessCollection` so the existing tests
+    /// stay readable. Memory rendering needs an explicit
+    /// `memory_bytes`; tests opt in via [`make_process_row_with_memory`].
+    fn collection(rows: Vec<ProcessRow>) -> ProcessCollection {
+        ProcessCollection { rows }
+    }
+
+    #[test]
+    fn processes_section_renders_in_progress_bash_with_command_detail() {
+        let row = make_process_row(
+            ProcessKind::BashBackgrounded,
+            "Run unit tests",
+            Some("cargo nextest run --no-fail-fast"),
+            "Bash · running",
+            ToolCallStatus::InProgress,
+        );
+        let mut lines = Vec::new();
+        append_processes_section(&mut lines, &collection(vec![row]), 40);
+
+        // header + blank + headline + detail-continuation + meta-continuation = 5 lines
+        assert_eq!(lines.len(), 5, "expected 5 rendered lines, got {}", lines.len());
+
+        let header = line_text(&lines[0]);
+        assert_eq!(header, "  PROCESSES");
+
+        let headline = line_text(&lines[2]);
+        assert!(headline.starts_with("  \u{25B8} Run unit tests"), "got {headline:?}");
+
+        let detail = line_text(&lines[3]);
+        assert!(
+            detail.starts_with("    \u{2514}\u{2500} cargo nextest run"),
+            "expected command continuation, got {detail:?}"
+        );
+
+        let meta = line_text(&lines[4]);
+        assert!(
+            meta.starts_with("    \u{2514}\u{2500} Bash \u{00B7} running"),
+            "expected metadata continuation, got {meta:?}"
+        );
+    }
+
+    #[test]
+    fn processes_section_renders_persistent_monitor() {
+        let row = make_process_row(
+            ProcessKind::Monitor,
+            "PR #120 CI watch",
+            Some("gh run watch 25838877846"),
+            "Monitor · running · persistent",
+            ToolCallStatus::InProgress,
+        );
+        let mut lines = Vec::new();
+        append_processes_section(&mut lines, &collection(vec![row]), 40);
+
+        let headline = line_text(&lines[2]);
+        assert!(headline.starts_with("  \u{25B8} PR #120 CI watch"), "got {headline:?}");
+        let meta = line_text(&lines[4]);
+        assert!(meta.contains("persistent"), "expected persistent flag in metadata: {meta:?}");
+    }
+
+    #[test]
+    fn processes_section_renders_completed_cron_with_clock_glyph_replaced_by_check() {
+        // Cron registration finishes immediately on the wire, so a
+        // Cron row almost always renders with the completed-checkmark
+        // glyph rather than the schedule-clock glyph. Pin that
+        // behaviour explicitly so a future glyph-rotation doesn't
+        // silently change it.
+        let row = make_process_row(
+            ProcessKind::Cron,
+            "*/5 * * * *",
+            Some("audit memory health"),
+            "Cron · recurring · session-only",
+            ToolCallStatus::Completed,
+        );
+        let mut lines = Vec::new();
+        append_processes_section(&mut lines, &collection(vec![row]), 40);
+
+        let headline = line_text(&lines[2]);
+        // ✓ is the completed-status glyph; the cron clock ⏰ only
+        // fires for the (rare) InProgress case.
+        assert!(headline.starts_with("  \u{2713} */5 * * * *"), "got {headline:?}");
+    }
+
+    #[test]
+    fn processes_section_renders_in_progress_cron_with_clock_glyph() {
+        let row = make_process_row(
+            ProcessKind::Cron,
+            "daily 9am",
+            None,
+            "Cron · recurring",
+            ToolCallStatus::InProgress,
+        );
+        let mut lines = Vec::new();
+        append_processes_section(&mut lines, &collection(vec![row]), 40);
+
+        let headline = line_text(&lines[2]);
+        assert!(headline.starts_with("  \u{23F0} daily 9am"), "got {headline:?}");
+    }
+
+    #[test]
+    fn processes_section_renders_failed_with_cross_glyph() {
+        let row = make_process_row(
+            ProcessKind::BashBackgrounded,
+            "Run integration tests",
+            Some("just integration"),
+            "Bash · failed",
+            ToolCallStatus::Failed,
+        );
+        let mut lines = Vec::new();
+        append_processes_section(&mut lines, &collection(vec![row]), 40);
+
+        let headline = line_text(&lines[2]);
+        assert!(headline.starts_with("  \u{2717} Run integration tests"), "got {headline:?}");
+    }
+
+    #[test]
+    fn processes_section_three_kinds_together_renders_blank_between_rows() {
+        let rows = vec![
+            make_process_row(
+                ProcessKind::BashBackgrounded,
+                "Run tests",
+                Some("cargo nextest run"),
+                "Bash · running",
+                ToolCallStatus::InProgress,
+            ),
+            make_process_row(
+                ProcessKind::Monitor,
+                "Watch CI",
+                Some("gh run watch 123"),
+                "Monitor · running · persistent",
+                ToolCallStatus::InProgress,
+            ),
+            make_process_row(
+                ProcessKind::Cron,
+                "*/5 * * * *",
+                Some("audit"),
+                "Cron · recurring · durable",
+                ToolCallStatus::Completed,
+            ),
+        ];
+        let mut lines = Vec::new();
+        append_processes_section(&mut lines, &collection(rows), 40);
+
+        // header + blank + 3 rows × (headline + detail + meta = 3 lines) + 2 blanks between rows
+        // = 2 + 9 + 2 = 13 lines
+        assert_eq!(lines.len(), 13, "expected 13 rendered lines, got {}", lines.len());
+
+        // Sanity: each row's headline line carries the right text.
+        assert!(line_text(&lines[2]).contains("Run tests"));
+        assert!(line_text(&lines[6]).contains("Watch CI"));
+        assert!(line_text(&lines[10]).contains("*/5 * * * *"));
+    }
+
+    #[test]
+    fn processes_section_skips_detail_row_when_none() {
+        let row = make_process_row(
+            ProcessKind::Cron,
+            "daily 9am",
+            None,
+            "Cron · recurring",
+            ToolCallStatus::Completed,
+        );
+        let mut lines = Vec::new();
+        append_processes_section(&mut lines, &collection(vec![row]), 40);
+
+        // header + blank + headline + meta-continuation = 4 lines (no detail line)
+        assert_eq!(lines.len(), 4, "expected 4 lines with detail=None, got {}", lines.len());
+    }
+
+    #[test]
+    fn processes_section_truncates_long_headline_with_ellipsis() {
+        let row = make_process_row(
+            ProcessKind::BashBackgrounded,
+            "Run a very long described task that will absolutely overflow the pane width",
+            None,
+            "Bash · running",
+            ToolCallStatus::InProgress,
+        );
+        let mut lines = Vec::new();
+        append_processes_section(&mut lines, &collection(vec![row]), 40);
+
+        let headline = line_text(&lines[2]);
+        assert!(headline.ends_with('\u{2026}'), "expected ellipsis: {headline:?}");
+        let visible_chars = headline.chars().count();
+        assert!(visible_chars <= 38, "headline overflows 40-col pane: {visible_chars} cols");
+    }
+
+    /// Helper for tests that need a row with explicit memory bytes
+    /// so the Wide-tier suffix path can be exercised.
+    fn make_row_with_memory(
+        kind: ProcessKind,
+        headline: &str,
+        metadata: &str,
+        memory_bytes: u64,
+    ) -> ProcessRow {
+        ProcessRow {
+            kind,
+            headline: headline.to_owned(),
+            detail: None,
+            metadata: metadata.to_owned(),
+            status: ToolCallStatus::InProgress,
+            memory_bytes: Some(memory_bytes),
+        }
+    }
+
+    #[test]
+    fn processes_section_appends_memory_suffix_at_wide_width() {
+        // 40-col Wide-tier inspector — width above the threshold so
+        // the metadata row carries a `· 12 MB` suffix.
+        let row = make_row_with_memory(
+            ProcessKind::Process,
+            "cargo",
+            "Process · running",
+            12 * 1024 * 1024,
+        );
+        let mut lines = Vec::new();
+        append_processes_section(&mut lines, &collection(vec![row]), 40);
+
+        let meta = line_text(&lines[3]);
+        assert!(meta.contains("12 MB"), "expected memory suffix on Wide tier: {meta:?}");
+    }
+
+    #[test]
+    fn processes_section_drops_memory_suffix_at_medium_width() {
+        // 30-col Medium-tier inspector — width below threshold so
+        // the metadata row stays bare.
+        let row = make_row_with_memory(
+            ProcessKind::Process,
+            "cargo",
+            "Process · running",
+            12 * 1024 * 1024,
+        );
+        let mut lines = Vec::new();
+        append_processes_section(&mut lines, &collection(vec![row]), 30);
+
+        let meta = line_text(&lines[3]);
+        assert!(!meta.contains("MB"), "expected no memory suffix on Medium tier: {meta:?}");
+    }
+
+    #[test]
+    fn processes_section_process_kind_uses_dim_glyph() {
+        // OS-only `Process` rows render with a DIM ▸ glyph (vs the
+        // RUST_ORANGE ▸ for wire-tracked Bash / Monitor) so the eye
+        // separates "claude-described work" from "anonymous OS
+        // process" at a glance.
+        let row = make_row_with_memory(
+            ProcessKind::Process,
+            "cargo",
+            "Process · running",
+            8 * 1024 * 1024,
+        );
+        let mut lines = Vec::new();
+        append_processes_section(&mut lines, &collection(vec![row]), 40);
+
+        let headline = line_text(&lines[2]);
+        assert!(headline.starts_with("  \u{25B8} cargo"), "expected ▸ glyph: {headline:?}");
+        // Style assertion: pull the glyph span and check its colour.
+        let glyph_span = &lines[2].spans[1];
+        assert_eq!(glyph_span.style.fg, Some(theme::DIM));
     }
 }

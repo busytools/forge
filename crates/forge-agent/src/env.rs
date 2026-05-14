@@ -7,3 +7,4 @@
 
 pub mod cli_version;
 pub mod git_diff;
+pub mod processes;

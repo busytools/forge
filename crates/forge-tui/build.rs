@@ -13,12 +13,27 @@ use std::process::Command;
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
 
-    // Rerun when HEAD moves (branch switch / new commit). The path is
-    // relative to this manifest dir; in a worktree the file is a
-    // `gitdir: …` pointer but `Path::exists` still returns true so
-    // cargo picks up the rerun trigger.
+    // Rerun when HEAD moves. `.git/HEAD` only updates on branch
+    // switch (its content is `ref: refs/heads/<branch>`, which
+    // doesn't change when you commit on the same branch). To pick
+    // up the commit-on-same-branch case we additionally watch the
+    // refs + logs directories — both get content writes on
+    // `git commit` / `checkout` / `reset` / etc., and cargo's
+    // rerun-if-changed on a directory walks the tree.
+    //
+    // Without this, building forge-tui after `git commit` on a
+    // feature branch keeps re-using the previous build's
+    // FORGE_BUILD_SUFFIX_SHORT — the embedded version stamp goes
+    // stale and the binary reports an older commit hash than it
+    // was built from.
     if std::path::Path::new("../../.git/HEAD").exists() {
         println!("cargo:rerun-if-changed=../../.git/HEAD");
+    }
+    if std::path::Path::new("../../.git/refs/heads").exists() {
+        println!("cargo:rerun-if-changed=../../.git/refs/heads");
+    }
+    if std::path::Path::new("../../.git/logs/HEAD").exists() {
+        println!("cargo:rerun-if-changed=../../.git/logs/HEAD");
     }
 
     let (short, full) = compute_suffixes();
