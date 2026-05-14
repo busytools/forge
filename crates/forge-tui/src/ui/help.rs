@@ -25,14 +25,16 @@ const HELP_BUILTIN_SLASH_COMMANDS: [(&str, &str); 5] = [
     ("/usage", "Open usage"),
 ];
 
-// Platform-aware key labels: macOS uses Cmd / Alt for native conventions,
-// other OSes use Ctrl. Mirrors the modifier constants in `app::keys`.
+// Platform-aware key labels: macOS uses Cmd for app-level shortcuts,
+// other OSes use Ctrl. Word navigation is Alt+Arrow on every platform
+// since the Ctrl+Arrow slot is reserved for side-pane toggles on
+// non-macOS (mirroring the macOS Cmd+Arrow binding).
 const fn word_nav_label() -> &'static str {
-    if cfg!(target_os = "macos") { "Alt+Left/Right" } else { "Ctrl+Left/Right" }
+    "Alt+Left/Right"
 }
 
 const fn word_delete_label() -> &'static str {
-    if cfg!(target_os = "macos") { "Alt+Backspace/Delete" } else { "Ctrl+Backspace/Delete" }
+    "Alt+Backspace/Delete"
 }
 
 const fn undo_redo_label() -> &'static str {
@@ -40,11 +42,11 @@ const fn undo_redo_label() -> &'static str {
 }
 
 const fn pane_toggle_left_label() -> &'static str {
-    if cfg!(target_os = "macos") { "Ctrl+b / Cmd+Left" } else { "Ctrl+b" }
+    if cfg!(target_os = "macos") { "Cmd+Left" } else { "Ctrl+Left" }
 }
 
 const fn pane_toggle_right_label() -> &'static str {
-    if cfg!(target_os = "macos") { "Ctrl+e / Cmd+Right" } else { "Ctrl+e" }
+    if cfg!(target_os = "macos") { "Cmd+Right" } else { "Ctrl+Right" }
 }
 
 pub fn is_active(app: &App) -> bool {
