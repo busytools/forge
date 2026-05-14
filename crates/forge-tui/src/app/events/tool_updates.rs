@@ -247,8 +247,31 @@ fn apply_tool_call_content_update(
             *terminal_subscription = Some(tid);
         }
     }
-    if tc.content != content {
-        tc.content = content.to_vec();
+    // Preserve the original Diff for Edit / Write tools when the
+    // incoming update doesn't include one. The original Diff was
+    // synthesized from the tool_use input (old_string / new_string
+    // for Edit, content for Write) at tool-call creation time; a
+    // decline or error result arrives as a plain Text content block,
+    // and the naive `tc.content = content.to_vec()` below would
+    // overwrite the diff with the error text — losing the green/red
+    // diff coloring the user expects to still see after declining.
+    let preserve_diff = matches!(tc.sdk_tool_name.as_str(), "Edit" | "Write")
+        && !content.iter().any(|c| matches!(c, model::ToolCallContent::Diff(_)))
+        && tc.content.iter().any(|c| matches!(c, model::ToolCallContent::Diff(_)));
+    let new_content: Vec<model::ToolCallContent> = if preserve_diff {
+        let mut combined: Vec<model::ToolCallContent> = tc
+            .content
+            .iter()
+            .filter(|c| matches!(c, model::ToolCallContent::Diff(_)))
+            .cloned()
+            .collect();
+        combined.extend_from_slice(content);
+        combined
+    } else {
+        content.to_vec()
+    };
+    if tc.content != new_content {
+        tc.content = new_content;
         changed = true;
     }
     changed

@@ -1,37 +1,25 @@
-//! `forge-state.toml` — persisted picker state (last_used_at,
-//! round_robin_next). Lives at `<config_dir>/forge-state.toml`,
-//! same dir as forge.toml. Atomic-rename writes via `tempfile`.
-
-use std::collections::HashMap;
+//! `forge-state.toml` — persisted UI state (side-pane visibility).
+//! Lives at `<config_dir>/forge-state.toml`, same dir as forge.toml.
+//! Atomic-rename writes via `tempfile`.
+//!
+//! Historical note: this file used to also persist account
+//! `last_used_at` clocks (for LRU) and `round_robin_next` (for RR
+//! picking). Both are gone — the single account selection policy is
+//! now usage-based off a live 30s-refresh cache that the workspace
+//! holds in memory, so there's nothing useful to persist about
+//! account choice across forge launches. Old keys in existing
+//! `forge-state.toml` files are silently ignored on load.
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
 /// On-disk schema for `forge-state.toml`. Missing file → empty
-/// state (zeroed). Parse failure → empty state + warn log; the
-/// picker degrades to "everyone is least-recently-used" rather
-/// than blocking startup.
+/// state (defaults). Parse failure → empty state + warn log; the
+/// UI defaults to "panes visible" rather than blocking startup.
 #[derive(Debug, Default, Deserialize, Serialize)]
 pub(crate) struct PersistedState {
     #[serde(default)]
-    pub accounts: HashMap<String, PersistedAccountState>,
-    #[serde(default)]
-    pub selection: PersistedSelectionState,
-    #[serde(default)]
     pub ui: PersistedUiState,
-}
-
-#[derive(Debug, Default, Deserialize, Serialize)]
-pub(crate) struct PersistedAccountState {
-    /// RFC 3339 UTC. `None` → never used.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_used_at: Option<String>,
-}
-
-#[derive(Debug, Default, Deserialize, Serialize)]
-pub(crate) struct PersistedSelectionState {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub round_robin_next: Option<usize>,
 }
 
 /// UI preferences persisted across forge launches. Scoped to the
@@ -162,12 +150,11 @@ mod tests {
     fn missing_state_loads_default() {
         let dir = tempdir().expect("tempdir");
         let state = load_or_default(dir.path());
-        assert!(state.accounts.is_empty());
-        assert!(state.selection.round_robin_next.is_none());
         assert!(
             state.ui.projects_pane_visible,
             "ui.projects_pane_visible defaults to true on missing state",
         );
+        assert!(state.ui.inspector_pane_visible);
     }
 
     #[test]
@@ -188,38 +175,18 @@ mod tests {
     }
 
     #[test]
-    fn legacy_state_without_ui_section_loads_default() {
-        // forge-state.toml files written before the `[ui]` section
-        // existed must still round-trip with the default visibility.
+    fn legacy_state_with_retired_sections_loads_default() {
+        // forge-state.toml files written before the [selection] +
+        // [[accounts]] tables were retired must still round-trip
+        // — the retired sections are silently ignored.
         let dir = tempdir().expect("tempdir");
-        std::fs::write(state_path(dir.path()), "[selection]\nround_robin_next = 1\n")
-            .expect("write");
+        std::fs::write(
+            state_path(dir.path()),
+            "[selection]\nround_robin_next = 1\n\n[accounts.\"Subspace\"]\nlast_used_at = \"2026-05-09T10:23:14Z\"\n",
+        )
+        .expect("write");
         let state = load_or_default(dir.path());
-        assert_eq!(state.selection.round_robin_next, Some(1));
-        assert!(
-            state.ui.projects_pane_visible,
-            "legacy state without [ui] still defaults projects_pane_visible to true",
-        );
-    }
-
-    #[test]
-    fn round_trips_account_last_used_at() {
-        let dir = tempdir().expect("tempdir");
-        let mut state = PersistedState::default();
-        state.accounts.insert(
-            "Subspace".to_owned(),
-            PersistedAccountState { last_used_at: Some("2026-05-09T10:23:14Z".to_owned()) },
-        );
-        state.selection.round_robin_next = Some(2);
-
-        save(dir.path(), &state);
-        let loaded = load_or_default(dir.path());
-
-        assert_eq!(
-            loaded.accounts.get("Subspace").and_then(|a| a.last_used_at.as_deref()),
-            Some("2026-05-09T10:23:14Z"),
-        );
-        assert_eq!(loaded.selection.round_robin_next, Some(2));
+        assert!(state.ui.projects_pane_visible);
     }
 
     #[test]
@@ -227,7 +194,7 @@ mod tests {
         let dir = tempdir().expect("tempdir");
         std::fs::write(state_path(dir.path()), "not valid = = toml").expect("write");
         let state = load_or_default(dir.path());
-        assert!(state.accounts.is_empty());
+        assert!(state.ui.projects_pane_visible);
     }
 
     #[test]
@@ -236,10 +203,7 @@ mod tests {
         // a file masquerading as a dir is not portable, so use
         // /dev/null as a non-directory parent.
         let bad_dir = std::path::PathBuf::from("/dev/null/notadir");
-        let mut state = PersistedState::default();
-        state
-            .accounts
-            .insert("X".to_owned(), PersistedAccountState { last_used_at: Some("now".to_owned()) });
+        let state = PersistedState::default();
         // Should not panic and not propagate an error.
         save(&bad_dir, &state);
     }

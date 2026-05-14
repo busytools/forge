@@ -33,19 +33,22 @@ pub(crate) const CMD_MOD: KeyModifiers = KeyModifiers::SUPER;
 #[cfg(not(target_os = "macos"))]
 pub(crate) const CMD_MOD: KeyModifiers = KeyModifiers::CONTROL;
 
-#[cfg(target_os = "macos")]
+// Word navigation modifier — `Alt` on every platform now. macOS has
+// always used Alt (Option+Arrow); Linux/Windows used to use Ctrl+Arrow
+// but that conflicts with the side-pane toggle bindings below (Ctrl+
+// Left = Projects pane, Ctrl+Right = Inspector pane on non-macOS,
+// mirroring the macOS Cmd+Left/Right pair). Moving non-Mac word-nav
+// to Alt+Arrow unifies the muscle-memory mapping across platforms and
+// makes Ctrl+Arrow available as the pane-toggle binding on Termux
+// (Android), Linux desktops, and Windows.
 pub(crate) const WORD_NAV_MOD: KeyModifiers = KeyModifiers::ALT;
-#[cfg(not(target_os = "macos"))]
-pub(crate) const WORD_NAV_MOD: KeyModifiers = KeyModifiers::CONTROL;
 
-// Modifier that must NOT be set alongside WORD_NAV_MOD. On macOS, ALT is
-// the word-nav modifier so the disqualifier is empty (any modifier mix
-// containing ALT is fine). On Linux/Windows, CTRL+ALT must NOT trigger
-// word-nav (reserved for the host's compose / hotkey paths).
-#[cfg(target_os = "macos")]
+// Modifier that must NOT be set alongside WORD_NAV_MOD. Empty
+// universally now — any modifier mix containing ALT counts as word
+// nav. Previously Linux/Windows excluded ALT (because CTRL+ALT was
+// the host's compose path); the modifier swap above moots that
+// concern since the active path is Alt-only.
 pub(crate) const WORD_NAV_MOD_EXCLUDED: KeyModifiers = KeyModifiers::empty();
-#[cfg(not(target_os = "macos"))]
-pub(crate) const WORD_NAV_MOD_EXCLUDED: KeyModifiers = KeyModifiers::ALT;
 
 fn is_ctrl_shortcut(modifiers: KeyModifiers) -> bool {
     modifiers.contains(KeyModifiers::CONTROL) && !modifiers.contains(KeyModifiers::ALT)
@@ -301,15 +304,37 @@ fn handle_global_shortcuts(app: &mut App, key: KeyEvent) -> bool {
     }
 
     match (key.code, key.modifiers) {
-        (KeyCode::Char('x'), m) if m == KeyModifiers::CONTROL => {
+        // Toggle all tool calls — Cmd+X on macOS, Ctrl+X elsewhere
+        // via CMD_MOD. Same platform-modifier convention as the
+        // pane-toggle arrows above.
+        (KeyCode::Char('x'), m) if m == CMD_MOD => {
             toggle_all_tool_calls(app);
             true
         }
-        (KeyCode::Char('b'), m) if m == KeyModifiers::CONTROL => {
+        // Pane toggles — Cmd+Left / Cmd+Right on macOS, Ctrl+Left /
+        // Ctrl+Right elsewhere. One binding per pane, no Ctrl+B /
+        // Ctrl+E alias. Cmd+B is the platform's "bold" muscle memory
+        // and Ctrl+B is tmux's default prefix on Linux, so the
+        // arrow-based bindings avoid both conflicts. Word-nav lives
+        // on Alt+Arrow on every platform now (see WORD_NAV_MOD) so
+        // Ctrl+Arrow is free on non-macOS.
+        #[cfg(target_os = "macos")]
+        (KeyCode::Left, m) if m == KeyModifiers::SUPER => {
             toggle_projects_pane(app);
             true
         }
-        (KeyCode::Char('e'), m) if m == KeyModifiers::CONTROL => {
+        #[cfg(target_os = "macos")]
+        (KeyCode::Right, m) if m == KeyModifiers::SUPER => {
+            toggle_inspector_pane(app);
+            true
+        }
+        #[cfg(not(target_os = "macos"))]
+        (KeyCode::Left, m) if m == KeyModifiers::CONTROL => {
+            toggle_projects_pane(app);
+            true
+        }
+        #[cfg(not(target_os = "macos"))]
+        (KeyCode::Right, m) if m == KeyModifiers::CONTROL => {
             toggle_inspector_pane(app);
             true
         }
@@ -1270,10 +1295,14 @@ mod tests {
         std::fs::write(
             dir.path().join("forge.toml"),
             r#"
-[[projects]]
+[[orgs]]
+name = "Default"
+accounts = ["Test"]
+
+[[orgs.projects]]
 name = "test-proj"
 path = "/tmp/test-proj"
-default = true
+auto_start = true
 
 [[accounts]]
 display_name = "Test"

@@ -17,10 +17,14 @@ fn write_default_config(dir: &std::path::Path) {
     fs::write(
         dir.join("forge.toml"),
         r#"
-[[projects]]
+[[orgs]]
+name = "Default"
+accounts = ["Subspace"]
+
+[[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
-default = true
+auto_start = true
 
 [[accounts]]
 display_name = "Subspace"

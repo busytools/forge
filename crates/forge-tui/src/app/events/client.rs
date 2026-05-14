@@ -290,7 +290,21 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
 
 /// `SessionUpdate::Spawning` reducer. Synthesize a placeholder
 /// bucket under `key` with a "Waking {display_name}…" message, set
-/// `cwd_raw`/`cwd` from the project's path, and switch active.
+/// `cwd_raw`/`cwd` from the project's path, and (conditionally)
+/// switch active focus.
+///
+/// **Focus rule:** auto-focus the new spawn ONLY when there's no
+/// real focused session yet — i.e. `active_session_key` is `None`
+/// or still pointing at the pre-Connect placeholder. Once a real
+/// session is focused (the StartDefault target after `forge.toml`'s
+/// `focus = true` project's Connected fires), subsequent
+/// auto_start projects' `Spawning` events must NOT steal focus.
+/// This is what made multi-project auto_start drift to whichever
+/// project spawned last before the fix.
+///
+/// Existing buckets (user clicked a stale row to re-wake) still
+/// switch focus — that's an explicit user action, not a passive
+/// background spawn.
 fn apply_session_update_spawning(
     app: &mut App,
     key: SessionKey,
@@ -299,6 +313,7 @@ fn apply_session_update_spawning(
     display_name: &str,
 ) {
     if app.sessions.contains_key(&key) {
+        // Existing bucket → user-triggered re-wake. Switch focus.
         app.switch_active_session(key);
         return;
     }
@@ -315,7 +330,26 @@ fn apply_session_update_spawning(
     ));
     bucket.message_retained_bytes.push(0);
     app.sessions.insert(key.clone(), bucket);
-    app.switch_active_session(key);
+
+    // **Focus stays where it is.** Auto-focus over the pre-Connect
+    // placeholder would let whichever auto_start project's Spawning
+    // event arrives first steal the focused tab — but pre-Connect
+    // is reserved for the `focus = true` project's StartDefault
+    // migration (which doesn't go through this reducer at all; it
+    // uses KeyRenamed to swap the pre-Connect bucket onto the real
+    // key in-place). So a Spawning event for a non-focused
+    // auto_start project must just register the bucket and trigger
+    // a redraw — never move focus.
+    //
+    // The only case we'd switch focus from here is `active_session_key
+    // == None`, which doesn't happen in practice (the App constructs
+    // pre-Connect at startup). Kept defensively so a future flow that
+    // skips the pre-Connect bucket still focuses its first spawn.
+    if app.active_session_key.is_none() {
+        app.switch_active_session(key);
+    } else {
+        app.needs_redraw = true;
+    }
 }
 
 fn shorten_cwd_display_path(cwd: &str) -> String {

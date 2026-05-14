@@ -196,10 +196,14 @@ mod tests {
         fs::write(
             dir.join("forge.toml"),
             r#"
-[[projects]]
+[[orgs]]
+name = "Default"
+accounts = ["Subspace"]
+
+[[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
-default = true
+auto_start = true
 
 [[accounts]]
 display_name = "Subspace"

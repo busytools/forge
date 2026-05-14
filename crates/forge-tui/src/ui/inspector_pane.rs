@@ -249,8 +249,7 @@ fn render_inspector_thumb(
     offset: u16,
     pulse: Option<usize>,
 ) {
-    let Some(geometry) =
-        crate::app::compute_scrollbar_geometry(total, visible, f32::from(offset))
+    let Some(geometry) = crate::app::compute_scrollbar_geometry(total, visible, f32::from(offset))
     else {
         return;
     };
@@ -266,7 +265,11 @@ fn render_inspector_thumb(
         // Inspector content fits well inside f32's mantissa (50-row
         // sanity cap on PROCESSES) so the precision lints can be
         // suppressed here without risking overflow.
-        #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        #[allow(
+            clippy::cast_precision_loss,
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss
+        )]
         let pos = (f32::from(offset) / max_offset as f32 * track as f32).round() as usize;
         pos
     };
@@ -292,7 +295,7 @@ fn render_inspector_thumb(
 /// scrollbar uses — same look, no movement.
 fn thumb_symbol(pulse: Option<usize>) -> &'static str {
     const STATIC_THUMB: &str = "\u{2590}"; // ▐ right half block — chat baseline
-    const THIN_THUMB: &str = "\u{2595}";   // ▕ right one-eighth block — pulse-out frame
+    const THIN_THUMB: &str = "\u{2595}"; // ▕ right one-eighth block — pulse-out frame
     match pulse {
         None => STATIC_THUMB,
         Some(frame) => match frame % 4 {
@@ -319,8 +322,12 @@ fn append_body(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
     append_git_section(lines, app, width);
 
     let todos = app.todos();
-    let has_tasks = !todos.is_empty() || app.todo_verification_nudge();
-    if has_tasks {
+    // Section visibility gates on PENDING/IN-PROGRESS tasks
+    // (completed are hidden by the renderer anyway). The
+    // verification nudge alone is enough to surface the section
+    // even when there are no live items.
+    let has_live_tasks = todos.iter().any(|t| t.status != TodoStatus::Completed);
+    if has_live_tasks || app.todo_verification_nudge() {
         lines.push(Line::default());
         push_section_rule(lines, width);
         lines.push(Line::default());
@@ -332,7 +339,7 @@ fn append_body(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
         lines.push(Line::default());
         push_section_rule(lines, width);
         lines.push(Line::default());
-        append_processes_section(lines, &processes, width);
+        append_processes_section(lines, &processes, width, app.spinner_frame);
     }
 }
 
@@ -896,6 +903,7 @@ fn fit_path_head_truncated(s: &str, max_chars: usize) -> String {
 
 fn append_tasks_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
     let todos = app.todos();
+    let spinner_frame = app.spinner_frame;
 
     // Verification nudge row sits between the rule and the TASKS
     // header when the flag is set. Dim-yellow one-liner.
@@ -914,12 +922,23 @@ fn append_tasks_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
         return;
     }
 
+    // Done / total counter for the header — m is completed, n is the
+    // full todo list (including hidden completed and visible
+    // pending/in-progress). Reads at a glance as a progress meter.
+    let total = todos.len();
+    let done = todos.iter().filter(|t| t.status == TodoStatus::Completed).count();
+
     // TASKS section header — DIM bold, 2-col indent (matches the
-    // left pane's `ACTIVE` / `INACTIVE` section headers).
-    lines.push(Line::from(Span::styled(
-        "  TASKS".to_owned(),
-        Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD),
-    )));
+    // left pane's `ACTIVE` / `INACTIVE` section headers). Trailing
+    // ` · m/n` count is DIM, separator is the same `·` we use across
+    // the rest of the inspector (GIT subtitle, PROCESSES suffixes).
+    lines.push(Line::from(vec![
+        Span::styled(
+            "  TASKS".to_owned(),
+            Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(format!(" \u{00B7} {done}/{total}"), Style::default().fg(theme::DIM)),
+    ]));
     // Blank between header and first item.
     lines.push(Line::default());
 
@@ -936,12 +955,53 @@ fn append_tasks_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
         .saturating_sub(usize::from(glyph_indent))
         .saturating_sub(usize::from(PANE_PAD));
 
-    let todo_count = todos.len();
-    for (idx, todo) in todos.iter().enumerate() {
+    // Visibility tiering: show as much as fits within TASKS_MAX (5).
+    //
+    // 1. **Everything fits** (total <= cap): show ALL tasks in their
+    //    original order, completed included. So a 3-task list with
+    //    1 done + 1 in-progress + 1 pending renders all three —
+    //    you can see what's behind you AND what's ahead, not just
+    //    the current step.
+    // 2. **Total exceeds cap but non-completed fits**: hide
+    //    completed entirely, show non-completed. The `m/n` count in
+    //    the section header still surfaces the done count so they
+    //    aren't lost from the eye.
+    // 3. **Non-completed itself overflows cap**: truncate at
+    //    TASKS_MAX-1 and emit `+N more` for the remainder
+    //    (completed counted as hidden too).
+    let total_count = todos.len();
+    let non_completed: Vec<&_> =
+        todos.iter().filter(|t| t.status != TodoStatus::Completed).collect();
+    let visible_todos: Vec<&_>;
+    let hidden: usize;
+    if total_count <= TASKS_MAX {
+        // Tier 1 — original order, all included.
+        visible_todos = todos.iter().collect();
+        hidden = 0;
+    } else if non_completed.len() <= TASKS_MAX {
+        // Tier 2 — completed silently hidden; m/n header conveys
+        // the missing count.
+        visible_todos = non_completed;
+        hidden = 0;
+    } else {
+        // Tier 3 — non-completed itself exceeds the cap. Top
+        // TASKS_MAX-1 non-completed + `+N more` overflow row.
+        let cap = TASKS_MAX.saturating_sub(1);
+        visible_todos = non_completed.iter().copied().take(cap).collect();
+        hidden = total_count - cap;
+    }
+
+    let shown_iter = visible_todos.iter().copied();
+    let shown_count = visible_todos.len();
+    for (idx, todo) in shown_iter.enumerate() {
+        // Glyph language matches PROCESSES + Projects pane:
+        // ○ DIM for pending, RUST_ORANGE braille spinner for the
+        // currently-running task, ✓ green for completed (hidden in
+        // practice — the visible_todos filter strips them).
         let (glyph, glyph_color) = match todo.status {
-            TodoStatus::Completed => ("\u{2713}", Color::Green), // ✓
-            TodoStatus::InProgress => ("\u{25b8}", theme::RUST_ORANGE), // ▸
-            TodoStatus::Pending => ("\u{25cb}", theme::DIM),     // ○
+            TodoStatus::Completed => ("\u{2713}".to_owned(), Color::Green),
+            TodoStatus::InProgress => (spinner_glyph(spinner_frame), theme::RUST_ORANGE),
+            TodoStatus::Pending => ("\u{25cb}".to_owned(), theme::DIM),
         };
         let text_style = match todo.status {
             TodoStatus::Completed => {
@@ -968,7 +1028,7 @@ fn append_tasks_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
             if let Some(first) = iter.next() {
                 lines.push(Line::from(vec![
                     Span::raw("  "),
-                    Span::styled(glyph.to_owned(), Style::default().fg(glyph_color)),
+                    Span::styled(glyph.clone(), Style::default().fg(glyph_color)),
                     Span::raw(" "),
                     Span::styled(first, text_style),
                 ]));
@@ -977,7 +1037,7 @@ fn append_tasks_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
                 // so the pane shape stays consistent.
                 lines.push(Line::from(vec![
                     Span::raw("  "),
-                    Span::styled(glyph.to_owned(), Style::default().fg(glyph_color)),
+                    Span::styled(glyph.clone(), Style::default().fg(glyph_color)),
                 ]));
             }
             for rest in iter {
@@ -991,7 +1051,7 @@ fn append_tasks_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
             let truncated = truncate_with_ellipsis(&display_text, text_budget);
             lines.push(Line::from(vec![
                 Span::raw("  "),
-                Span::styled(glyph.to_owned(), Style::default().fg(glyph_color)),
+                Span::styled(glyph.clone(), Style::default().fg(glyph_color)),
                 Span::raw(" "),
                 Span::styled(truncated, text_style),
             ]));
@@ -999,11 +1059,27 @@ fn append_tasks_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
         // Blank between tasks for breathing room. Skipped after the
         // last item so we don't leave a trailing blank at the end of
         // the TASKS section.
-        if idx + 1 < todo_count {
+        if idx + 1 < shown_count || hidden > 0 {
             lines.push(Line::default());
         }
     }
+
+    if hidden > 0 {
+        lines.push(Line::from(vec![
+            Span::raw("  "),
+            Span::styled(
+                format!("+{hidden} more"),
+                Style::default().fg(theme::DIM).add_modifier(Modifier::ITALIC),
+            ),
+        ]));
+    }
 }
+
+/// Per-section cap on TASKS rows. Completed tasks are filtered out
+/// before counting; beyond `TASKS_MAX - 1` remaining items the tail
+/// collapses to a single `+N more` row. Matches the PROCESSES
+/// per-parent cap so both surfaces feel consistent.
+const TASKS_MAX: usize = 5;
 
 /// Wrap `s` onto multiple lines so that each piece fits within
 /// `max_chars` columns. Breaks on whitespace where possible; falls
@@ -1034,6 +1110,7 @@ fn append_processes_section(
     lines: &mut Vec<Line<'static>>,
     collection: &ProcessCollection,
     width: u16,
+    spinner_frame: usize,
 ) {
     lines.push(Line::from(Span::styled(
         "  PROCESSES".to_owned(),
@@ -1041,65 +1118,142 @@ fn append_processes_section(
     )));
     lines.push(Line::default());
 
-    let glyph_indent = PANE_PAD + 2; // "  " + glyph + " "
-    let text_budget = usize::from(width)
-        .saturating_sub(usize::from(glyph_indent))
-        .saturating_sub(usize::from(PANE_PAD));
-    let continuation_indent = "    "; // 4 cols — under the text col.
-    // `└─ ` is 3 codepoints (U+2514, U+2500, U+0020) so each
-    // continuation row's chrome eats 3 cols. truncate_with_ellipsis
-    // measures in `.chars()` (matches the count), so subtract 3.
-    let continuation_budget = usize::from(width)
-        .saturating_sub(continuation_indent.chars().count())
-        .saturating_sub(usize::from(PANE_PAD))
-        .saturating_sub(3);
     let include_memory = width >= PROCESSES_MEMORY_WIDTH_THRESHOLD;
     let process_count = collection.rows.len();
     for (idx, process) in collection.rows.iter().enumerate() {
-        let (glyph, glyph_color, headline_style) = glyph_and_style_for(process);
-        let headline_fitted = truncate_with_ellipsis(&process.headline, text_budget);
-        lines.push(Line::from(vec![
-            Span::raw("  "),
-            Span::styled(glyph.to_owned(), Style::default().fg(glyph_color)),
-            Span::raw(" "),
-            Span::styled(headline_fitted, headline_style),
-        ]));
-
-        if let Some(detail) = process.detail.as_ref() {
-            let fitted = truncate_with_ellipsis(detail, continuation_budget);
-            lines.push(Line::from(vec![
-                Span::raw(continuation_indent.to_owned()),
-                Span::styled("\u{2514}\u{2500} ".to_owned(), Style::default().fg(theme::DIM)),
-                Span::styled(fitted, Style::default().fg(theme::DIM)),
-            ]));
-        }
-
-        let metadata_text = build_metadata_with_memory(process, include_memory);
-        let metadata_fitted = truncate_with_ellipsis(&metadata_text, continuation_budget);
-        lines.push(Line::from(vec![
-            Span::raw(continuation_indent.to_owned()),
-            Span::styled("\u{2514}\u{2500} ".to_owned(), Style::default().fg(theme::DIM)),
-            Span::styled(metadata_fitted, Style::default().fg(theme::DIM)),
-        ]));
-
-        if idx + 1 < process_count {
+        append_process_row(lines, process, width, include_memory, spinner_frame);
+        // Blank between SUPERVISOR rows (depth-0). Descendant rows
+        // pack tight under their supervisor with no blanks so the
+        // tree reads as one connected block.
+        let next_is_supervisor = collection.rows.get(idx + 1).is_some_and(|next| next.depth == 0);
+        if idx + 1 < process_count && next_is_supervisor {
             lines.push(Line::default());
         }
     }
 
     // No `+N more` footer — the inspector pane scrolls, so the
-    // scrollbar IS the overflow indicator. `collection.overflow`
-    // remains on the struct for potential future use (e.g. a
-    // sanity-bound notice when the soft cap actually trims rows).
+    // scrollbar IS the overflow indicator.
 }
 
-/// Compose the metadata string for a row, optionally suffixing
-/// `· 12 MB` when the layout has room.
-fn build_metadata_with_memory(process: &ProcessRow, include_memory: bool) -> String {
-    match (include_memory, process.memory_bytes) {
-        (true, Some(bytes)) => format!("{} · {}", process.metadata, format_memory_short(bytes)),
-        _ => process.metadata.clone(),
+/// Render one process row as a single line. Same shape for
+/// supervisors (depth 0) and descendants (depth ≥ 1) — the only
+/// difference is depth-0 has no tree-connector chrome, while
+/// depth-≥1 emits per-ancestor continuation cols + a connector.
+///
+/// Format: `<pane pad><ancestor cols><connector><glyph> <headline> · <memory>`
+/// where:
+/// - Ancestor cols: one 3-col chunk per ancestor depth (`│  `
+///   when that ancestor has more siblings below, `   ` when not).
+///   Empty at depth 0.
+/// - Connector: `└─ ` (last sibling) or `├─ ` (more siblings).
+///   Empty at depth 0.
+/// - Memory suffix: `· NN MB` when `memory_bytes` is set AND the
+///   layout has room; for Cron rows (no memory) the kind/recurring
+///   metadata fills the slot instead.
+///
+/// The redundant `Bash · running` / `Process · running` metadata
+/// dropped — the glyph + colour already convey kind, "running" is
+/// implicit (every shown row is running), and "· 83 MB" alone is
+/// enough useful detail. Cron rows still show their `Cron ·
+/// recurring · session-only` metadata because they have no memory
+/// to display.
+fn append_process_row(
+    lines: &mut Vec<Line<'static>>,
+    process: &ProcessRow,
+    width: u16,
+    include_memory: bool,
+    spinner_frame: usize,
+) {
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    spans.push(Span::raw(" ".repeat(usize::from(PANE_PAD))));
+
+    // Tree chrome (ancestor cols + connector) renders at depth ≥ 1
+    // only. Depth-0 rows (supervisors + Cron) start flush with
+    // PANE_PAD and skip directly to the glyph.
+    //
+    // Skip the FIRST ancestor entry — supervisors are visualised as
+    // section roots flush at col 2, not as ancestors needing a
+    // continuation column. So depth-1 kids hang their `├─` from col 2
+    // directly (matching the Projects pane org-grouped layout) and
+    // deeper levels only add continuation chunks for genuine
+    // grandparents and beyond.
+    let tree_chrome_cols = if process.depth == 0 {
+        0
+    } else {
+        let ancestors = process.ancestor_has_more.get(1..).unwrap_or(&[]);
+        for has_more in ancestors {
+            let chunk = if *has_more { "\u{2502}  " } else { "   " };
+            spans.push(Span::styled(chunk.to_owned(), Style::default().fg(theme::DIM)));
+        }
+        let connector =
+            if process.is_last_sibling { "\u{2514}\u{2500} " } else { "\u{251C}\u{2500} " };
+        spans.push(Span::styled(connector.to_owned(), Style::default().fg(theme::DIM)));
+        ancestors.len() * 3 + 3
+    };
+
+    // Glyph + space + headline + optional ` · <suffix>`.
+    //
+    // Glyph rendering is depth-0 only — supervisors carry the
+    // spinner/loader glyph (RUST_ORANGE for wire-matched Bash /
+    // Monitor; DIM for generic OS processes); descendants drop it
+    // because the tree connector + indent already says "child of
+    // the row above" and adding a glyph per child clutters the
+    // view. Depth-0 chrome adds 2 cols for glyph+space; depth-≥1
+    // adds 0 cols past the tree connector itself.
+    //
+    // Suffix priority:
+    // 1. Memory (`12 MB`) — when `memory_bytes` is set + layout
+    //    has room. Drops the redundant `Kind · running` metadata
+    //    string since glyph + colour already convey kind and
+    //    "running" is implicit.
+    // 2. Cron's `Cron · recurring · session-only` metadata — used
+    //    when memory is `None` (Cron rows are wire-only, no
+    //    backing process). The kind/recurring info IS the useful
+    //    signal there.
+    // 3. Nothing — `+N more` overflow rows have no memory + empty
+    //    metadata, so the row is just glyph + headline.
+    let (glyph, glyph_color, headline_style) = glyph_and_style_for(process, spinner_frame);
+    let glyph_cols = if process.depth == 0 {
+        spans.push(Span::styled(glyph, Style::default().fg(glyph_color)));
+        spans.push(Span::raw(" "));
+        2
+    } else {
+        // Descendant — glyph + space dropped. Style is reused for
+        // the headline below so wire-matched-vs-unmatched colour
+        // still differentiates the row.
+        let _ = (glyph, glyph_color);
+        0
+    };
+
+    // Suffix is the useful signal — memory for process-backed rows,
+    // Cron metadata for wire-only registrations. Always include it
+    // when set; the headline truncates with `…` to make room.
+    let suffix_text: Option<String> = match (include_memory, process.memory_bytes) {
+        (true, Some(bytes)) => Some(format_memory_short(bytes)),
+        _ => {
+            if process.metadata.is_empty() {
+                None
+            } else {
+                Some(process.metadata.clone())
+            }
+        }
+    };
+    let suffix_chars = suffix_text.as_ref().map_or(0, |s| 3 + s.chars().count()); // " · " + value
+    let chrome_chars = usize::from(PANE_PAD)
+        + tree_chrome_cols
+        + glyph_cols
+        + suffix_chars
+        + usize::from(PANE_PAD); // right gutter
+    let headline_budget = usize::from(width).saturating_sub(chrome_chars).max(1);
+    let headline_fitted = truncate_with_ellipsis(&process.headline, headline_budget);
+
+    spans.push(Span::styled(headline_fitted, headline_style));
+    if let Some(suffix) = suffix_text {
+        spans.push(Span::styled(" \u{00B7} ".to_owned(), Style::default().fg(theme::DIM)));
+        spans.push(Span::styled(suffix, Style::default().fg(theme::DIM)));
     }
+
+    lines.push(Line::from(spans));
 }
 
 /// Pick the (glyph, glyph_color, headline_style) triple for a
@@ -1107,40 +1261,70 @@ fn build_metadata_with_memory(process: &ProcessRow, include_memory: bool) -> Str
 /// (Completed / Failed / Killed) override the kind glyph so the
 /// section reads accurately as a state monitor regardless of the
 /// originating tool kind.
-fn glyph_and_style_for(process: &ProcessRow) -> (&'static str, Color, Style) {
+fn glyph_and_style_for(process: &ProcessRow, spinner_frame: usize) -> (String, Color, Style) {
     match process.status {
-        ToolCallStatus::Completed => ("\u{2713}", Color::Green, Style::default().fg(theme::DIM)),
+        ToolCallStatus::Completed => {
+            ("\u{2713}".to_owned(), Color::Green, Style::default().fg(theme::DIM))
+        }
         ToolCallStatus::Failed | ToolCallStatus::Killed => (
-            "\u{2717}",
+            "\u{2717}".to_owned(),
             Color::Red,
             Style::default().fg(theme::DIM).add_modifier(Modifier::CROSSED_OUT),
         ),
-        ToolCallStatus::Pending => ("\u{25CB}", theme::DIM, Style::default().fg(Color::Gray)),
+        ToolCallStatus::Pending => {
+            ("\u{25CB}".to_owned(), theme::DIM, Style::default().fg(Color::Gray))
+        }
         ToolCallStatus::InProgress => match process.kind {
             ProcessKind::Cron => {
                 // Cron registration completes the moment claude calls
                 // CronCreate — InProgress is rare. Render with the
                 // schedule glyph regardless.
                 (
-                    "\u{23F0}",
+                    "\u{23F0}".to_owned(),
                     theme::DIM,
                     Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
                 )
             }
             ProcessKind::Process => {
-                // Generic OS process — DIM headline so the wire-
-                // tracked rows (BashBackgrounded / Monitor) stand
-                // out by comparison. Still the right-pointing ▸
-                // glyph so it reads as live work.
-                ("\u{25B8}", theme::DIM, Style::default().fg(Color::Gray))
+                // Unmatched OS process — same spinner as wire-tracked
+                // rows but DIM so the user's eye picks out the
+                // bright-coloured matched rows first. Still animates
+                // because the row IS live work.
+                (spinner_glyph(spinner_frame), theme::DIM, Style::default().fg(Color::Gray))
+            }
+            ProcessKind::Overflow => {
+                // Synthetic `+N more` row. No glyph; the dim italic
+                // text alone signals it's a placeholder.
+                (
+                    String::new(),
+                    theme::DIM,
+                    Style::default().fg(theme::DIM).add_modifier(Modifier::ITALIC),
+                )
             }
             _ => (
-                "\u{25B8}",
+                // Wire-matched (Bash / Monitor) — RUST_ORANGE spinner
+                // so the row stands out as "tracked work" against the
+                // dim spinners of generic OS processes.
+                spinner_glyph(spinner_frame),
                 theme::RUST_ORANGE,
                 Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
             ),
         },
     }
+}
+
+/// Braille spinner frames, kept in sync with the Projects pane and
+/// chat-area spinners (same sequence in `ui::projects_pane`,
+/// `ui::input`, `ui::message`). The pulse is what tells the user the
+/// row is alive rather than a stale snapshot.
+const PROCESS_SPINNER_FRAMES: &[char] = &[
+    '\u{280B}', '\u{2819}', '\u{2839}', '\u{2838}', '\u{283C}', '\u{2834}', '\u{2826}', '\u{2827}',
+    '\u{2807}', '\u{280F}',
+];
+
+fn spinner_glyph(frame: usize) -> String {
+    let ch = PROCESS_SPINNER_FRAMES[frame % PROCESS_SPINNER_FRAMES.len()];
+    ch.to_string()
 }
 
 fn wrap_text(s: &str, max_chars: usize) -> Vec<String> {
@@ -1544,6 +1728,9 @@ mod tests {
             metadata: metadata.to_owned(),
             status,
             memory_bytes: None,
+            depth: 0,
+            is_last_sibling: true,
+            ancestor_has_more: Vec::new(),
         }
     }
 
@@ -1555,78 +1742,78 @@ mod tests {
     }
 
     #[test]
-    fn processes_section_renders_in_progress_bash_with_command_detail() {
-        let row = make_process_row(
+    fn processes_section_renders_bash_supervisor_as_single_line() {
+        // Supervisor rows are single-line: glyph + headline + ` · <memory>`.
+        // The verbose `Kind · running` metadata + cmdline continuation
+        // rows were retired — the glyph + colour convey kind and the
+        // memory suffix is the only useful per-row signal.
+        let row = make_row_with_memory(
             ProcessKind::BashBackgrounded,
             "Run unit tests",
-            Some("cargo nextest run --no-fail-fast"),
             "Bash · running",
-            ToolCallStatus::InProgress,
+            8 * 1024 * 1024,
         );
         let mut lines = Vec::new();
-        append_processes_section(&mut lines, &collection(vec![row]), 40);
+        append_processes_section(&mut lines, &collection(vec![row]), 40, 0);
 
-        // header + blank + headline + detail-continuation + meta-continuation = 5 lines
-        assert_eq!(lines.len(), 5, "expected 5 rendered lines, got {}", lines.len());
+        // header + blank + single supervisor row = 3 lines.
+        assert_eq!(lines.len(), 3, "expected 3 rendered lines, got {}", lines.len());
 
         let header = line_text(&lines[0]);
         assert_eq!(header, "  PROCESSES");
-
-        let headline = line_text(&lines[2]);
-        assert!(headline.starts_with("  \u{25B8} Run unit tests"), "got {headline:?}");
-
-        let detail = line_text(&lines[3]);
-        assert!(
-            detail.starts_with("    \u{2514}\u{2500} cargo nextest run"),
-            "expected command continuation, got {detail:?}"
-        );
-
-        let meta = line_text(&lines[4]);
-        assert!(
-            meta.starts_with("    \u{2514}\u{2500} Bash \u{00B7} running"),
-            "expected metadata continuation, got {meta:?}"
-        );
+        let row_text = line_text(&lines[2]);
+        // Wire-matched (Bash) → spinner glyph instead of static `▸`.
+        // Frame 0 picks `⠋` (the first braille spinner frame).
+        assert!(row_text.starts_with("  \u{280B} Run unit tests"), "headline: {row_text:?}");
+        assert!(row_text.contains("8 MB"), "memory suffix: {row_text:?}");
+        // No `Bash · running` text — that's the regression check.
+        assert!(!row_text.contains("running"), "kind/running text must be dropped: {row_text:?}");
     }
 
     #[test]
-    fn processes_section_renders_persistent_monitor() {
-        let row = make_process_row(
+    fn processes_section_renders_persistent_monitor_as_single_line() {
+        // Monitor supervisor: same single-line shape. The `persistent`
+        // flag is part of the metadata string; for Monitor rows that
+        // info is conveyed via the suffix when no memory is set, or
+        // dropped when memory takes the suffix slot. Test pins the
+        // memory-wins path.
+        let row = make_row_with_memory(
             ProcessKind::Monitor,
             "PR #120 CI watch",
-            Some("gh run watch 25838877846"),
             "Monitor · running · persistent",
-            ToolCallStatus::InProgress,
+            4 * 1024 * 1024,
         );
         let mut lines = Vec::new();
-        append_processes_section(&mut lines, &collection(vec![row]), 40);
+        append_processes_section(&mut lines, &collection(vec![row]), 40, 0);
 
-        let headline = line_text(&lines[2]);
-        assert!(headline.starts_with("  \u{25B8} PR #120 CI watch"), "got {headline:?}");
-        let meta = line_text(&lines[4]);
-        assert!(meta.contains("persistent"), "expected persistent flag in metadata: {meta:?}");
+        let row_text = line_text(&lines[2]);
+        // Monitor is wire-matched → spinner glyph (frame 0 = `⠋`).
+        assert!(row_text.starts_with("  \u{280B} PR #120 CI watch"), "headline: {row_text:?}");
+        assert!(row_text.contains("4 MB"), "memory suffix wins: {row_text:?}");
     }
 
     #[test]
-    fn processes_section_renders_completed_cron_with_clock_glyph_replaced_by_check() {
-        // Cron registration finishes immediately on the wire, so a
-        // Cron row almost always renders with the completed-checkmark
-        // glyph rather than the schedule-clock glyph. Pin that
-        // behaviour explicitly so a future glyph-rotation doesn't
-        // silently change it.
+    fn processes_section_cron_supervisor_uses_metadata_suffix() {
+        // Cron rows have no memory_bytes (wire-only registrations).
+        // The metadata string IS the useful signal, so the suffix
+        // slot falls through to it — but only when the row width
+        // can fit BOTH the headline and the suffix without
+        // truncation. Test at 50 cols where everything fits.
         let row = make_process_row(
             ProcessKind::Cron,
             "*/5 * * * *",
             Some("audit memory health"),
-            "Cron · recurring · session-only",
+            "Cron · recurring",
             ToolCallStatus::Completed,
         );
         let mut lines = Vec::new();
-        append_processes_section(&mut lines, &collection(vec![row]), 40);
+        append_processes_section(&mut lines, &collection(vec![row]), 50, 0);
 
-        let headline = line_text(&lines[2]);
+        let row_text = line_text(&lines[2]);
         // ✓ is the completed-status glyph; the cron clock ⏰ only
         // fires for the (rare) InProgress case.
-        assert!(headline.starts_with("  \u{2713} */5 * * * *"), "got {headline:?}");
+        assert!(row_text.starts_with("  \u{2713} */5 * * * *"), "got {row_text:?}");
+        assert!(row_text.contains("recurring"), "metadata suffix present: {row_text:?}");
     }
 
     #[test]
@@ -1639,98 +1826,79 @@ mod tests {
             ToolCallStatus::InProgress,
         );
         let mut lines = Vec::new();
-        append_processes_section(&mut lines, &collection(vec![row]), 40);
+        append_processes_section(&mut lines, &collection(vec![row]), 40, 0);
 
-        let headline = line_text(&lines[2]);
-        assert!(headline.starts_with("  \u{23F0} daily 9am"), "got {headline:?}");
+        let row_text = line_text(&lines[2]);
+        assert!(row_text.starts_with("  \u{23F0} daily 9am"), "got {row_text:?}");
     }
 
     #[test]
     fn processes_section_renders_failed_with_cross_glyph() {
-        let row = make_process_row(
+        let row = make_row_with_memory(
             ProcessKind::BashBackgrounded,
             "Run integration tests",
-            Some("just integration"),
             "Bash · failed",
-            ToolCallStatus::Failed,
+            16 * 1024 * 1024,
         );
+        // Override status from the helper default.
+        let mut rows = vec![row];
+        rows[0].status = ToolCallStatus::Failed;
         let mut lines = Vec::new();
-        append_processes_section(&mut lines, &collection(vec![row]), 40);
+        append_processes_section(&mut lines, &collection(rows), 40, 0);
 
-        let headline = line_text(&lines[2]);
-        assert!(headline.starts_with("  \u{2717} Run integration tests"), "got {headline:?}");
+        let row_text = line_text(&lines[2]);
+        assert!(row_text.starts_with("  \u{2717} Run integration tests"), "got {row_text:?}");
     }
 
     #[test]
     fn processes_section_three_kinds_together_renders_blank_between_rows() {
         let rows = vec![
-            make_process_row(
+            make_row_with_memory(
                 ProcessKind::BashBackgrounded,
                 "Run tests",
-                Some("cargo nextest run"),
                 "Bash · running",
-                ToolCallStatus::InProgress,
+                8 * 1024 * 1024,
             ),
-            make_process_row(
+            make_row_with_memory(
                 ProcessKind::Monitor,
                 "Watch CI",
-                Some("gh run watch 123"),
                 "Monitor · running · persistent",
-                ToolCallStatus::InProgress,
+                4 * 1024 * 1024,
             ),
             make_process_row(
                 ProcessKind::Cron,
                 "*/5 * * * *",
-                Some("audit"),
-                "Cron · recurring · durable",
+                None,
+                "Cron · recurring",
                 ToolCallStatus::Completed,
             ),
         ];
         let mut lines = Vec::new();
-        append_processes_section(&mut lines, &collection(rows), 40);
+        append_processes_section(&mut lines, &collection(rows), 40, 0);
 
-        // header + blank + 3 rows × (headline + detail + meta = 3 lines) + 2 blanks between rows
-        // = 2 + 9 + 2 = 13 lines
-        assert_eq!(lines.len(), 13, "expected 13 rendered lines, got {}", lines.len());
-
-        // Sanity: each row's headline line carries the right text.
+        // header + blank + 3 single-line rows + 2 blanks between
+        // supervisor rows = 2 + 3 + 2 = 7 lines.
+        assert_eq!(lines.len(), 7, "expected 7 rendered lines, got {}", lines.len());
         assert!(line_text(&lines[2]).contains("Run tests"));
-        assert!(line_text(&lines[6]).contains("Watch CI"));
-        assert!(line_text(&lines[10]).contains("*/5 * * * *"));
-    }
-
-    #[test]
-    fn processes_section_skips_detail_row_when_none() {
-        let row = make_process_row(
-            ProcessKind::Cron,
-            "daily 9am",
-            None,
-            "Cron · recurring",
-            ToolCallStatus::Completed,
-        );
-        let mut lines = Vec::new();
-        append_processes_section(&mut lines, &collection(vec![row]), 40);
-
-        // header + blank + headline + meta-continuation = 4 lines (no detail line)
-        assert_eq!(lines.len(), 4, "expected 4 lines with detail=None, got {}", lines.len());
+        assert!(line_text(&lines[4]).contains("Watch CI"));
+        assert!(line_text(&lines[6]).contains("*/5 * * * *"));
     }
 
     #[test]
     fn processes_section_truncates_long_headline_with_ellipsis() {
-        let row = make_process_row(
+        let row = make_row_with_memory(
             ProcessKind::BashBackgrounded,
             "Run a very long described task that will absolutely overflow the pane width",
-            None,
             "Bash · running",
-            ToolCallStatus::InProgress,
+            8 * 1024 * 1024,
         );
         let mut lines = Vec::new();
-        append_processes_section(&mut lines, &collection(vec![row]), 40);
+        append_processes_section(&mut lines, &collection(vec![row]), 40, 0);
 
-        let headline = line_text(&lines[2]);
-        assert!(headline.ends_with('\u{2026}'), "expected ellipsis: {headline:?}");
-        let visible_chars = headline.chars().count();
-        assert!(visible_chars <= 38, "headline overflows 40-col pane: {visible_chars} cols");
+        let row_text = line_text(&lines[2]);
+        assert!(row_text.contains('\u{2026}'), "expected ellipsis: {row_text:?}");
+        let visible_chars = row_text.chars().count();
+        assert!(visible_chars <= 38, "row overflows 40-col pane: {visible_chars} cols");
     }
 
     /// Helper for tests that need a row with explicit memory bytes
@@ -1748,13 +1916,16 @@ mod tests {
             metadata: metadata.to_owned(),
             status: ToolCallStatus::InProgress,
             memory_bytes: Some(memory_bytes),
+            depth: 0,
+            is_last_sibling: true,
+            ancestor_has_more: Vec::new(),
         }
     }
 
     #[test]
     fn processes_section_appends_memory_suffix_at_wide_width() {
         // 40-col Wide-tier inspector — width above the threshold so
-        // the metadata row carries a `· 12 MB` suffix.
+        // the row carries a `· 12 MB` suffix inline with the headline.
         let row = make_row_with_memory(
             ProcessKind::Process,
             "cargo",
@@ -1762,16 +1933,16 @@ mod tests {
             12 * 1024 * 1024,
         );
         let mut lines = Vec::new();
-        append_processes_section(&mut lines, &collection(vec![row]), 40);
+        append_processes_section(&mut lines, &collection(vec![row]), 40, 0);
 
-        let meta = line_text(&lines[3]);
-        assert!(meta.contains("12 MB"), "expected memory suffix on Wide tier: {meta:?}");
+        let row_text = line_text(&lines[2]);
+        assert!(row_text.contains("12 MB"), "expected memory suffix on Wide tier: {row_text:?}");
     }
 
     #[test]
     fn processes_section_drops_memory_suffix_at_medium_width() {
         // 30-col Medium-tier inspector — width below threshold so
-        // the metadata row stays bare.
+        // the row stays bare (no memory suffix).
         let row = make_row_with_memory(
             ProcessKind::Process,
             "cargo",
@@ -1779,10 +1950,10 @@ mod tests {
             12 * 1024 * 1024,
         );
         let mut lines = Vec::new();
-        append_processes_section(&mut lines, &collection(vec![row]), 30);
+        append_processes_section(&mut lines, &collection(vec![row]), 30, 0);
 
-        let meta = line_text(&lines[3]);
-        assert!(!meta.contains("MB"), "expected no memory suffix on Medium tier: {meta:?}");
+        let row_text = line_text(&lines[2]);
+        assert!(!row_text.contains("MB"), "expected no memory suffix on Medium tier: {row_text:?}");
     }
 
     #[test]
@@ -1798,10 +1969,14 @@ mod tests {
             8 * 1024 * 1024,
         );
         let mut lines = Vec::new();
-        append_processes_section(&mut lines, &collection(vec![row]), 40);
+        append_processes_section(&mut lines, &collection(vec![row]), 40, 0);
 
         let headline = line_text(&lines[2]);
-        assert!(headline.starts_with("  \u{25B8} cargo"), "expected ▸ glyph: {headline:?}");
+        // Unmatched `Process` kind also renders the spinner glyph
+        // (frame 0 = `⠋`) but in DIM — the colour difference vs
+        // RUST_ORANGE matched rows is the "is this tracked or not"
+        // signal.
+        assert!(headline.starts_with("  \u{280B} cargo"), "expected spinner glyph: {headline:?}");
         // Style assertion: pull the glyph span and check its colour.
         let glyph_span = &lines[2].spans[1];
         assert_eq!(glyph_span.style.fg, Some(theme::DIM));

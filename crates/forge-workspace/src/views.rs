@@ -17,6 +17,10 @@ pub struct ProjectView {
     /// [`crate::SessionTarget::Named`] use this value; callers
     /// keying a HashMap of in-process Agent handles use [`Self::key`].
     pub name: String,
+    /// Name of the org this project belongs to (from
+    /// `[[orgs]].name` in `forge.toml`). Drives the org-grouping
+    /// in the Projects pane tree render.
+    pub org: String,
     /// Filesystem-resolved project root (`~` expanded). This is the
     /// path callers should hand to filesystem APIs — `cwd_raw` for
     /// the spawning bucket, `file_index::restart`,
@@ -45,7 +49,14 @@ impl ProjectView {
         sessions: Vec<SessionView>,
     ) -> Self {
         let display_path = display_path.into();
-        Self { key, name: name.into(), path: PathBuf::from(&display_path), display_path, sessions }
+        Self {
+            key,
+            name: name.into(),
+            org: "Test".to_owned(),
+            path: PathBuf::from(&display_path),
+            display_path,
+            sessions,
+        }
     }
 }
 

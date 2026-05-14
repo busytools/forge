@@ -1,4 +1,18 @@
 //! `forge.toml` schema + loader.
+//!
+//! **Org model.** Projects are grouped under `[[orgs]]` (Subspace,
+//! Granite, Personal, etc.). Each org carries the `accounts = [...]`
+//! pin shared by all its projects, replacing the per-project pin
+//! that lived here before. Projects within an org keep a flat list
+//! via `[[orgs.projects]]`. Multiple projects can carry
+//! `auto_start = true`; all auto-start projects spawn at launch and
+//! the first one (alphabetical) becomes the focused tab.
+//!
+//! **Selection policy.** Exactly one: every account spawn picks the
+//! account in the org's `accounts` subset with the most remaining
+//! usage budget. Cold cache → first-in-subset by definition order.
+//! No LRU, no round-robin, no fallback to accounts outside the org's
+//! subset.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -10,19 +24,42 @@ use crate::error::WorkspaceError;
 #[derive(Debug, Deserialize)]
 struct ForgeToml {
     #[serde(default)]
-    projects: Vec<ProjectEntry>,
+    orgs: Vec<OrgEntry>,
     #[serde(default)]
     accounts: Vec<AccountEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OrgEntry {
+    name: String,
+    /// Account `display_name`s every project in this org is allowed
+    /// to spawn under. Required; cross-validated against `[[accounts]]`.
+    accounts: Vec<String>,
     #[serde(default)]
-    selection: SelectionEntry,
+    projects: Vec<ProjectEntry>,
 }
 
 #[derive(Debug, Deserialize)]
 struct ProjectEntry {
     name: String,
     path: String,
+    /// When `true`, the project's lead session spawns automatically
+    /// at forge launch. Multiple projects can carry this; they all
+    /// spawn but none of them is the focused tab unless one also
+    /// carries `focus = true`. Defaults to `false`.
     #[serde(default)]
-    default: bool,
+    auto_start: bool,
+    /// When `true`, this project becomes the focused tab on launch
+    /// (in addition to being auto-started). At most one project
+    /// across all orgs may carry this; load errors otherwise. If no
+    /// project carries `focus`, the focused tab falls back to the
+    /// alphabetically-first `auto_start` project, or the alpha-first
+    /// project overall when none has `auto_start` either.
+    /// `focus = true` implies `auto_start = true` — explicitly
+    /// setting both is fine (and arguably clearer); setting only
+    /// `focus` is also valid and still spawns the project.
+    #[serde(default)]
+    focus: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -31,36 +68,30 @@ struct AccountEntry {
     config_dir: String,
 }
 
-#[derive(Debug, Deserialize, Default)]
-struct SelectionEntry {
-    #[serde(default)]
-    policy: Option<String>,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) enum SelectionPolicy {
-    #[default]
-    LeastRecentlyUsed,
-    RoundRobin,
-}
-
 #[derive(Debug, Clone)]
 pub(crate) struct LoadedAccount {
     pub display_name: String,
     pub config_dir: PathBuf,
 }
 
-#[derive(Debug, Clone, Default)]
-pub(crate) struct SelectionConfig {
-    pub policy: SelectionPolicy,
+#[derive(Debug, Clone)]
+pub(crate) struct LoadedConfig {
+    pub orgs: Vec<LoadedOrg>,
+    pub projects: Vec<LoadedProject>,
+    /// Index into `projects` for the focus-target at startup —
+    /// alphabetically-first project that carries `auto_start = true`,
+    /// falling back to the alphabetically-first project overall
+    /// when no project opts in.
+    pub default_index: usize,
+    pub accounts: Vec<LoadedAccount>,
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct LoadedConfig {
-    pub projects: Vec<LoadedProject>,
-    pub default_index: usize,
-    pub accounts: Vec<LoadedAccount>,
-    pub selection: SelectionConfig,
+pub(crate) struct LoadedOrg {
+    pub name: String,
+    /// Pinned account `display_name`s shared by all projects in
+    /// this org. Always non-empty (load enforces).
+    pub accounts: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -71,6 +102,20 @@ pub(crate) struct LoadedProject {
     /// (e.g. `~/Projects/forge` with `~` un-expanded). Use `path` for
     /// filesystem access; this for human-readable output.
     pub display_path: String,
+    /// Name of the org this project belongs to (matches
+    /// `LoadedOrg.name`). Workspace `project_accounts_for` resolves
+    /// the pin via this back-reference.
+    pub org: String,
+    /// Cached pinned account list from the project's org. Duplicated
+    /// here so callers don't need to walk the org list on every
+    /// resolution.
+    pub accounts: Vec<String>,
+    /// `true` when the project should spawn automatically at forge
+    /// launch.
+    pub auto_start: bool,
+    /// `true` when the project becomes the focused tab on launch.
+    /// Validated at most one project across all orgs carries this.
+    pub focus: bool,
 }
 
 impl LoadedConfig {
@@ -78,25 +123,27 @@ impl LoadedConfig {
         &self.projects[self.default_index]
     }
 
+    /// Iterate every project that should spawn at forge launch.
+    /// A project counts if it carries `auto_start = true` OR
+    /// `focus = true` (focus implies auto-start — you can't focus
+    /// a project that isn't spawned).
+    pub(crate) fn auto_start_projects(&self) -> impl Iterator<Item = &LoadedProject> {
+        self.projects.iter().filter(|p| p.auto_start || p.focus)
+    }
+
     /// Empty `LoadedConfig` for the `testing` feature's
-    /// `Workspace::testing_stub`. No projects + no accounts: production
-    /// code paths that need a project (e.g. `default_project`) will
-    /// panic when called on this value — tests that only need
-    /// `domain_handles` access never reach those paths.
+    /// `Workspace::testing_stub`. Production code paths that need a
+    /// project (e.g. `default_project`) will panic when called on
+    /// this value — tests that only need `domain_handles` access
+    /// never reach those paths.
     #[cfg(feature = "testing")]
     pub(crate) fn empty_for_test() -> Self {
-        Self {
-            projects: Vec::new(),
-            default_index: 0,
-            accounts: Vec::new(),
-            selection: SelectionConfig::default(),
-        }
+        Self { orgs: Vec::new(), projects: Vec::new(), default_index: 0, accounts: Vec::new() }
     }
 }
 
 /// Load + validate `<config_dir>/forge.toml`. Returns the parsed
-/// projects with `~` expanded and the index of the `default = true`
-/// project. Errors per spec §4 (`Errors`).
+/// orgs + projects with `~` expanded.
 pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, WorkspaceError> {
     let path = config_dir.join("forge.toml");
 
@@ -113,34 +160,14 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
     let parsed: ForgeToml = toml::from_str(&raw)
         .map_err(|source| WorkspaceError::ConfigParse { path: path.clone(), source })?;
 
-    let mut default_index: Option<usize> = None;
-    let mut projects = Vec::with_capacity(parsed.projects.len());
-    for (i, entry) in parsed.projects.into_iter().enumerate() {
-        if entry.default {
-            if default_index.is_some() {
-                tracing::warn!(
-                    target: "forge_workspace::config",
-                    "multiple [[projects]] set default = true; first wins, ignoring '{}'",
-                    entry.name,
-                );
-            } else {
-                default_index = Some(i);
-            }
-        }
-        projects.push(LoadedProject {
-            name: entry.name,
-            path: expand_home(&entry.path),
-            display_path: entry.path,
-        });
+    if parsed.orgs.is_empty() {
+        return Err(WorkspaceError::NoOrgsConfigured { path });
     }
-
-    let default_index =
-        default_index.ok_or_else(|| WorkspaceError::NoDefaultProject { path: path.clone() })?;
-
     if parsed.accounts.is_empty() {
         return Err(WorkspaceError::NoAccountsConfigured { path });
     }
 
+    // Validate accounts first — orgs cross-reference them.
     let mut seen_account_names: std::collections::HashSet<String> =
         std::collections::HashSet::new();
     let mut accounts: Vec<LoadedAccount> = Vec::with_capacity(parsed.accounts.len());
@@ -154,17 +181,84 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
         });
     }
 
-    let selection = match parsed.selection.policy.as_deref() {
-        None | Some("least_recently_used") => {
-            SelectionConfig { policy: SelectionPolicy::LeastRecentlyUsed }
+    // Validate orgs + build the flat project list.
+    let mut seen_org_names: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut seen_project_names: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
+    let mut orgs: Vec<LoadedOrg> = Vec::with_capacity(parsed.orgs.len());
+    let mut projects: Vec<LoadedProject> = Vec::new();
+    for org_entry in parsed.orgs {
+        if !seen_org_names.insert(org_entry.name.clone()) {
+            return Err(WorkspaceError::DuplicateOrg { path, name: org_entry.name });
         }
-        Some("round_robin") => SelectionConfig { policy: SelectionPolicy::RoundRobin },
-        Some(other) => {
-            return Err(WorkspaceError::UnknownSelectionPolicy { path, value: other.to_owned() });
+        if org_entry.accounts.is_empty() {
+            return Err(WorkspaceError::EmptyOrgAccounts { path, org: org_entry.name });
         }
+        for account in &org_entry.accounts {
+            if !seen_account_names.contains(account) {
+                let mut valid: Vec<&str> = seen_account_names.iter().map(String::as_str).collect();
+                valid.sort_unstable();
+                return Err(WorkspaceError::UnknownOrgAccount {
+                    path,
+                    org: org_entry.name,
+                    account: account.clone(),
+                    valid: valid.join(", "),
+                });
+            }
+        }
+        if org_entry.projects.is_empty() {
+            return Err(WorkspaceError::EmptyOrg { path, org: org_entry.name });
+        }
+        for project_entry in org_entry.projects {
+            if !seen_project_names.insert(project_entry.name.clone()) {
+                return Err(WorkspaceError::DuplicateProject { path, name: project_entry.name });
+            }
+            projects.push(LoadedProject {
+                name: project_entry.name,
+                path: expand_home(&project_entry.path),
+                display_path: project_entry.path,
+                org: org_entry.name.clone(),
+                accounts: org_entry.accounts.clone(),
+                auto_start: project_entry.auto_start,
+                focus: project_entry.focus,
+            });
+        }
+        orgs.push(LoadedOrg { name: org_entry.name, accounts: org_entry.accounts });
+    }
+
+    if projects.is_empty() {
+        return Err(WorkspaceError::NoProjectsConfigured { path });
+    }
+
+    // At most one `focus = true` allowed across all orgs. The
+    // launchpad design (next session) will lift this constraint to
+    // "zero focus → show project picker," but for now zero is
+    // tolerated and triggers the alpha-first fallback below.
+    let focus_names: Vec<&str> =
+        projects.iter().filter(|p| p.focus).map(|p| p.name.as_str()).collect();
+    if focus_names.len() > 1 {
+        return Err(WorkspaceError::MultipleFocusProjects {
+            path,
+            names: focus_names.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>().join(", "),
+        });
+    }
+
+    // Default project resolution:
+    // 1. The project carrying `focus = true`, if any.
+    // 2. Else alphabetically-first `auto_start = true` project.
+    // 3. Else alphabetically-first project overall.
+    let default_index = {
+        let mut alpha: Vec<usize> = (0..projects.len()).collect();
+        alpha.sort_by(|a, b| projects[*a].name.cmp(&projects[*b].name));
+        alpha
+            .iter()
+            .copied()
+            .find(|&i| projects[i].focus)
+            .or_else(|| alpha.iter().copied().find(|&i| projects[i].auto_start))
+            .unwrap_or_else(|| alpha[0])
     };
 
-    Ok(LoadedConfig { projects, default_index, accounts, selection })
+    Ok(LoadedConfig { orgs, projects, default_index, accounts })
 }
 
 fn expand_home(path: &str) -> PathBuf {
@@ -186,32 +280,35 @@ mod tests {
         fs::write(dir.join("forge.toml"), contents).expect("write forge.toml");
     }
 
-    #[test]
-    fn parses_valid_config_with_default() {
-        let dir = tempdir().expect("tempdir");
-        write_config(
-            dir.path(),
-            r#"
-[[projects]]
+    fn minimal_config() -> &'static str {
+        r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Subspace"]
+
+[[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
-default = true
-
-[[projects]]
-name = "aware"
-path = "~/Projects/aware"
+auto_start = true
 
 [[accounts]]
 display_name = "Subspace"
 config_dir = "~/.claude-subspace"
-"#,
-        );
+"#
+    }
 
+    #[test]
+    fn parses_minimal_config() {
+        let dir = tempdir().expect("tempdir");
+        write_config(dir.path(), minimal_config());
         let config = load_from_dir(dir.path()).expect("happy path");
-        assert_eq!(config.projects.len(), 2);
+        assert_eq!(config.orgs.len(), 1);
+        assert_eq!(config.orgs[0].name, "Personal");
+        assert_eq!(config.projects.len(), 1);
         assert_eq!(config.default_project().name, "forge");
-        let home = dirs::home_dir().expect("home");
-        assert_eq!(config.default_project().path, home.join("Projects/forge"));
+        assert_eq!(config.default_project().org, "Personal");
+        assert_eq!(config.default_project().accounts, vec!["Subspace"]);
+        assert!(config.default_project().auto_start);
     }
 
     #[test]
@@ -230,89 +327,298 @@ config_dir = "~/.claude-subspace"
     }
 
     #[test]
-    fn no_default_returns_no_default_project() {
+    fn no_orgs_errors() {
         let dir = tempdir().expect("tempdir");
         write_config(
             dir.path(),
             r#"
-[[projects]]
-name = "forge"
-path = "~/Projects/forge"
+[[accounts]]
+display_name = "Subspace"
+config_dir = "~/.claude-subspace"
 "#,
         );
-        let err = load_from_dir(dir.path()).expect_err("no-default should error");
-        assert!(matches!(err, WorkspaceError::NoDefaultProject { .. }));
+        let err = load_from_dir(dir.path()).expect_err("missing orgs should error");
+        assert!(matches!(err, WorkspaceError::NoOrgsConfigured { .. }));
     }
 
     #[test]
-    fn multiple_defaults_first_wins() {
+    fn empty_org_errors() {
         let dir = tempdir().expect("tempdir");
         write_config(
             dir.path(),
             r#"
-[[projects]]
+[[orgs]]
+name = "Empty"
+accounts = ["Subspace"]
+
+[[accounts]]
+display_name = "Subspace"
+config_dir = "~/.claude-subspace"
+"#,
+        );
+        let err = load_from_dir(dir.path()).expect_err("org without projects should error");
+        assert!(matches!(err, WorkspaceError::EmptyOrg { org, .. } if org == "Empty"));
+    }
+
+    #[test]
+    fn empty_org_accounts_errors() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[orgs]]
+name = "Personal"
+accounts = []
+
+[[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
-default = true
 
-[[projects]]
+[[accounts]]
+display_name = "Subspace"
+config_dir = "~/.claude-subspace"
+"#,
+        );
+        let err = load_from_dir(dir.path()).expect_err("empty accounts should error");
+        assert!(matches!(err, WorkspaceError::EmptyOrgAccounts { org, .. } if org == "Personal"));
+    }
+
+    #[test]
+    fn unknown_org_account_errors() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Subspace", "Bogus"]
+
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+
+[[accounts]]
+display_name = "Subspace"
+config_dir = "~/.claude-subspace"
+"#,
+        );
+        let err = load_from_dir(dir.path()).expect_err("unknown account should error");
+        match err {
+            WorkspaceError::UnknownOrgAccount { org, account, .. } => {
+                assert_eq!(org, "Personal");
+                assert_eq!(account, "Bogus");
+            }
+            other => panic!("expected UnknownOrgAccount, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn duplicate_org_name_errors() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Subspace"]
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+
+[[orgs]]
+name = "Personal"
+accounts = ["Subspace"]
+[[orgs.projects]]
 name = "aware"
 path = "~/Projects/aware"
-default = true
 
 [[accounts]]
 display_name = "Subspace"
 config_dir = "~/.claude-subspace"
 "#,
         );
-        let config = load_from_dir(dir.path()).expect("happy path");
-        assert_eq!(config.default_project().name, "forge");
+        let err = load_from_dir(dir.path()).expect_err("duplicate org should error");
+        assert!(matches!(err, WorkspaceError::DuplicateOrg { name, .. } if name == "Personal"));
     }
 
     #[test]
-    fn missing_required_field_returns_config_parse() {
+    fn duplicate_project_name_errors() {
         let dir = tempdir().expect("tempdir");
         write_config(
             dir.path(),
             r#"
-[[projects]]
+[[orgs]]
+name = "Subspace"
+accounts = ["Subspace"]
+[[orgs.projects]]
 name = "forge"
-"#, // missing `path`
-        );
-        let err = load_from_dir(dir.path()).expect_err("missing field should error");
-        assert!(matches!(err, WorkspaceError::ConfigParse { .. }));
-    }
+path = "~/Projects/subspace-forge"
 
-    #[test]
-    fn parses_valid_accounts_and_selection() {
-        let dir = tempdir().expect("tempdir");
-        write_config(
-            dir.path(),
-            r#"
-[[projects]]
+[[orgs]]
+name = "Personal"
+accounts = ["Subspace"]
+[[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
-default = true
 
 [[accounts]]
 display_name = "Subspace"
 config_dir = "~/.claude-subspace"
-
-[[accounts]]
-display_name = "Granite"
-config_dir = "~/.claude-granite"
-
-[selection]
-policy = "round_robin"
 "#,
         );
+        let err = load_from_dir(dir.path()).expect_err("duplicate project should error");
+        assert!(matches!(err, WorkspaceError::DuplicateProject { name, .. } if name == "forge"));
+    }
 
+    #[test]
+    fn default_project_is_alpha_first_auto_start() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Subspace"]
+[[orgs.projects]]
+name = "zebra"
+path = "~/Projects/zebra"
+auto_start = true
+[[orgs.projects]]
+name = "alpha"
+path = "~/Projects/alpha"
+auto_start = true
+[[orgs.projects]]
+name = "middle"
+path = "~/Projects/middle"
+[[accounts]]
+display_name = "Subspace"
+config_dir = "~/.claude-subspace"
+"#,
+        );
         let config = load_from_dir(dir.path()).expect("happy path");
-        assert_eq!(config.accounts.len(), 2);
-        assert_eq!(config.accounts[0].display_name, "Subspace");
-        let home = dirs::home_dir().expect("home");
-        assert_eq!(config.accounts[0].config_dir, home.join(".claude-subspace"));
-        assert_eq!(config.selection.policy, SelectionPolicy::RoundRobin);
+        // Auto-start projects: alpha + zebra. Alphabetical-first: alpha.
+        assert_eq!(config.default_project().name, "alpha");
+    }
+
+    #[test]
+    fn default_project_falls_back_to_alpha_first_overall() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Subspace"]
+[[orgs.projects]]
+name = "zebra"
+path = "~/Projects/zebra"
+[[orgs.projects]]
+name = "alpha"
+path = "~/Projects/alpha"
+[[accounts]]
+display_name = "Subspace"
+config_dir = "~/.claude-subspace"
+"#,
+        );
+        let config = load_from_dir(dir.path()).expect("happy path");
+        assert_eq!(config.default_project().name, "alpha");
+    }
+
+    #[test]
+    fn focus_project_wins_default_resolution_over_auto_start() {
+        // Even though `zebra` has `auto_start = true` and would be
+        // picked by the alpha-first auto_start rule, `alpha` carries
+        // `focus = true` and takes the focused slot.
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Subspace"]
+[[orgs.projects]]
+name = "zebra"
+path = "~/Projects/zebra"
+auto_start = true
+[[orgs.projects]]
+name = "alpha"
+path = "~/Projects/alpha"
+focus = true
+[[accounts]]
+display_name = "Subspace"
+config_dir = "~/.claude-subspace"
+"#,
+        );
+        let config = load_from_dir(dir.path()).expect("happy path");
+        assert_eq!(config.default_project().name, "alpha");
+        assert!(config.default_project().focus);
+        // `focus = true` implies the project also spawns on launch
+        // via `auto_start_projects`, even though it didn't set
+        // `auto_start = true` explicitly.
+        let starting: Vec<&str> = config.auto_start_projects().map(|p| p.name.as_str()).collect();
+        assert!(starting.contains(&"alpha"), "focus implies auto-start: {starting:?}");
+        assert!(starting.contains(&"zebra"));
+    }
+
+    #[test]
+    fn multiple_focus_projects_errors() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Subspace"]
+[[orgs.projects]]
+name = "one"
+path = "~/Projects/one"
+focus = true
+[[orgs.projects]]
+name = "two"
+path = "~/Projects/two"
+focus = true
+[[accounts]]
+display_name = "Subspace"
+config_dir = "~/.claude-subspace"
+"#,
+        );
+        let err = load_from_dir(dir.path()).expect_err("two focus projects should error");
+        match err {
+            WorkspaceError::MultipleFocusProjects { names, .. } => {
+                assert!(names.contains("one") && names.contains("two"));
+            }
+            other => panic!("expected MultipleFocusProjects, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn auto_start_projects_iterator_returns_only_opted_in() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[orgs]]
+name = "Personal"
+accounts = ["Subspace"]
+[[orgs.projects]]
+name = "alpha"
+path = "~/Projects/alpha"
+auto_start = true
+[[orgs.projects]]
+name = "beta"
+path = "~/Projects/beta"
+[[orgs.projects]]
+name = "gamma"
+path = "~/Projects/gamma"
+auto_start = true
+[[accounts]]
+display_name = "Subspace"
+config_dir = "~/.claude-subspace"
+"#,
+        );
+        let config = load_from_dir(dir.path()).expect("happy path");
+        let names: Vec<&str> = config.auto_start_projects().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, vec!["alpha", "gamma"]);
     }
 
     #[test]
@@ -321,10 +627,12 @@ policy = "round_robin"
         write_config(
             dir.path(),
             r#"
-[[projects]]
+[[orgs]]
+name = "Personal"
+accounts = ["Subspace"]
+[[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
-default = true
 "#,
         );
         let err = load_from_dir(dir.path()).expect_err("missing accounts should error");
@@ -337,66 +645,32 @@ default = true
         write_config(
             dir.path(),
             r#"
-[[projects]]
+[[orgs]]
+name = "Personal"
+accounts = ["Subspace"]
+[[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
-default = true
 
 [[accounts]]
 display_name = "Subspace"
 config_dir = "~/.claude-subspace"
-
 [[accounts]]
 display_name = "Subspace"
-config_dir = "~/.claude-subspace-other"
+config_dir = "~/.claude-other"
 "#,
         );
-        let err = load_from_dir(dir.path()).expect_err("duplicate should error");
+        let err = load_from_dir(dir.path()).expect_err("duplicate account should error");
         assert!(matches!(err, WorkspaceError::DuplicateAccount { name, .. } if name == "Subspace"));
     }
 
     #[test]
-    fn unknown_selection_policy_errors() {
+    fn legacy_selection_section_is_silently_ignored() {
         let dir = tempdir().expect("tempdir");
-        write_config(
-            dir.path(),
-            r#"
-[[projects]]
-name = "forge"
-path = "~/Projects/forge"
-default = true
-
-[[accounts]]
-display_name = "Subspace"
-config_dir = "~/.claude-subspace"
-
-[selection]
-policy = "weird"
-"#,
-        );
-        let err = load_from_dir(dir.path()).expect_err("unknown policy should error");
-        assert!(
-            matches!(err, WorkspaceError::UnknownSelectionPolicy { value, .. } if value == "weird")
-        );
-    }
-
-    #[test]
-    fn selection_defaults_to_lru_when_missing() {
-        let dir = tempdir().expect("tempdir");
-        write_config(
-            dir.path(),
-            r#"
-[[projects]]
-name = "forge"
-path = "~/Projects/forge"
-default = true
-
-[[accounts]]
-display_name = "Subspace"
-config_dir = "~/.claude-subspace"
-"#,
-        );
-        let config = load_from_dir(dir.path()).expect("happy path");
-        assert_eq!(config.selection.policy, SelectionPolicy::LeastRecentlyUsed);
+        let mut config_text = minimal_config().to_owned();
+        config_text.push_str("\n[selection]\npolicy = \"round_robin\"\n");
+        write_config(dir.path(), &config_text);
+        let config = load_from_dir(dir.path()).expect("legacy [selection] should be ignored");
+        assert_eq!(config.default_project().name, "forge");
     }
 }

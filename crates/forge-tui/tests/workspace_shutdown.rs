@@ -21,10 +21,14 @@ async fn workspace_shutdown_drains_after_app_drop() {
     fs::write(
         dir.path().join("forge.toml"),
         r#"
-[[projects]]
+[[orgs]]
+name = "Default"
+accounts = ["Subspace"]
+
+[[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
-default = true
+auto_start = true
 
 [[accounts]]
 display_name = "Subspace"

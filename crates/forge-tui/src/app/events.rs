@@ -29,13 +29,31 @@ pub use client::apply_session_update;
 /// used by the per-event handlers in this module tree (`session`,
 /// `client`, `turn`) plus `app::input_submit`. No-op when no bucket
 /// is registered for `key`.
+///
+/// Emits a `tracing::debug!` on every transition (including no-op
+/// same-state writes) so the "Projects-pane spinner stops mid-turn"
+/// flake (forge#TBD) has a trail when it next reproduces. Note: this
+/// helper does NOT catch the direct `bucket.lifecycle_state = ...`
+/// assignments scattered through `events/{session,client,turn}.rs`.
+/// Funnelling those through here is a separate, larger refactor —
+/// see the linked issue for the list of bypass sites.
 pub(crate) fn set_bucket_lifecycle_state(
     app: &mut App,
     key: &forge_workspace::SessionKey,
     state: crate::app::session::SessionLifecycleState,
 ) {
     if let Some(bucket) = app.sessions.get_mut(key) {
+        let from = bucket.lifecycle_state;
         bucket.lifecycle_state = state;
+        tracing::debug!(
+            target: crate::logging::targets::APP_SESSION,
+            event_name = "session_lifecycle_transition",
+            message = "session lifecycle state changed",
+            outcome = "success",
+            key = %key.as_str(),
+            from = ?from,
+            to = ?state,
+        );
     }
 }
 #[cfg(feature = "testing")]
@@ -1950,7 +1968,11 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn connected_requests_usage_refresh_when_usage_tab_is_open() {
+    async fn connected_pulls_usage_from_cache_when_usage_tab_is_open() {
+        // Usage refresh is sync now (read-and-copy from workspace
+        // cache), so `in_flight` is never observed as true. Verifies
+        // the path doesn't panic when Connected fires with the usage
+        // tab open — the previous async fetch lifecycle is retired.
         tokio::task::LocalSet::new()
             .run_until(async {
                 let mut app = make_test_app();
@@ -1959,7 +1981,7 @@ mod tests {
 
                 apply_session_update(&mut app, connected_event("claude-updated"));
 
-                assert!(app.usage().in_flight);
+                assert!(!app.usage().in_flight, "sync refresh never sets in_flight");
             })
             .await;
     }
@@ -3538,10 +3560,17 @@ mod tests {
         );
         assert_eq!(app.turn_notice_refs().len(), 1);
 
+        // `SessionReplaced` is the post-MVVM session-reset event
+        // (fired by /new, /login, /resume on the active bucket).
+        // Connected-for-a-different-key is no longer a session
+        // reset — it's a background project's connection — so the
+        // notice-clearing assertion must target SessionReplaced for
+        // the ACTIVE session key.
+        let active_key = active_session_key(&app);
         apply_session_update(
             &mut app,
-            SessionUpdate::Connected {
-                key: forge_workspace::SessionKey::from_session_id("new-session".to_owned()),
+            SessionUpdate::SessionReplaced {
+                key: active_key,
                 session_id: forge_primitives::SessionId::new("new-session"),
                 cwd: "/test".into(),
                 current_model: test_current_model_primitives("claude"),

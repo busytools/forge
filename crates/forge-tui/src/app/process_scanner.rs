@@ -3,7 +3,7 @@
 //! Drives the Inspector pane's PROCESSES section by polling the
 //! OS-level descendant tree of the active session's `claude`
 //! subprocess. Mirrors the [`crate::app::git_diff`] pattern exactly:
-//! 1 s ticker + 2 s staleness rule + std-mpsc channel + spawned
+//! 1 s ticker + 1 s staleness rule + std-mpsc channel + spawned
 //! local task per scan + per-session in-flight guard + generation
 //! counter for cwd / session swaps.
 //!
@@ -30,11 +30,14 @@ use crate::app::session::UiSession;
 /// [`SNAPSHOT_STALENESS`].
 const TICKER_INTERVAL: Duration = Duration::from_secs(1);
 
-/// How fresh the snapshot must be before we skip a refresh. 2 s
-/// chosen as a compromise between "feels live" and "spend cycles on
-/// sysinfo refreshes." Tunable; lower means more responsive, higher
-/// means less CPU.
-const SNAPSHOT_STALENESS: Duration = Duration::from_secs(2);
+/// How fresh the snapshot must be before we skip a refresh. 1 s
+/// matches [`TICKER_INTERVAL`] so a refresh effectively fires on
+/// (nearly) every tick — the panel reads as live. The sysinfo scan
+/// runs in ~50-100 ms on the blocking pool, so per-tick cost is
+/// negligible on multi-core machines and doesn't stall the UI loop.
+/// If the panel becomes a CPU hotspot on some machines, bumping
+/// this back to 2 s is a one-line revert.
+const SNAPSHOT_STALENESS: Duration = Duration::from_secs(1);
 
 /// Max events to apply per drain pump tick — same budget as
 /// `file_index` / `git_diff` so all three scanners share a single
