@@ -179,6 +179,26 @@ pub fn resolve_perf_path(cli: &Cli) -> anyhow::Result<Option<PathBuf>> {
     Ok(Some(default_diagnostics_dir()?.join(DEFAULT_PERF_FILE_NAME)))
 }
 
+/// Whether to log perf telemetry to the default sidecar path when no
+/// explicit `--perf-log` was passed.
+///
+/// With `--features perf` compiled in (the default for production
+/// builds via dotfiles' install-forge.sh), this returns `true`
+/// unconditionally so bare `forge` invocations already produce a
+/// perf log at the standard sidecar path. Without the feature, the
+/// function falls back to the CLI flags so a non-perf binary stays
+/// silent unless explicitly asked.
+///
+/// The runtime cost of "log on" with no slow frames is negligible
+/// after the `write_entry` fast-path reorder — Timer drops only
+/// pay an `Instant::elapsed` + one thread-local borrow when the
+/// LOG_FILE is None vs the typical case where they serialise.
+#[cfg(feature = "perf")]
+fn perf_enabled_without_explicit_path(_cli: &Cli) -> bool {
+    true
+}
+
+#[cfg(not(feature = "perf"))]
 fn perf_enabled_without_explicit_path(cli: &Cli) -> bool {
     cli.enable_perf || cli.perf_append
 }
