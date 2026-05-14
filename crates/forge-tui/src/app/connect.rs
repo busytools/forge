@@ -383,6 +383,21 @@ mod tests {
         .expect("write forge.toml");
     }
 
+    fn cli_with(project: Option<&str>) -> Cli {
+        Cli {
+            project: project.map(str::to_owned),
+            generate_completion: None,
+            enable_logs: false,
+            diagnostics_preset: None,
+            log_file: None,
+            log_filter: None,
+            log_append: false,
+            enable_perf: false,
+            perf_log: None,
+            perf_append: false,
+        }
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn create_app_wires_workspace_and_seeds_cwd_from_process() {
         // Workspace::new requires a forge.toml in the config dir. The
@@ -394,18 +409,7 @@ mod tests {
         let workspace =
             forge_workspace::Workspace::new(config_dir.path().to_owned()).await.expect("workspace");
 
-        let cli = Cli {
-            project: None,
-            generate_completion: None,
-            enable_logs: false,
-            diagnostics_preset: None,
-            log_file: None,
-            log_filter: None,
-            log_append: false,
-            enable_perf: false,
-            perf_log: None,
-            perf_append: false,
-        };
+        let cli = cli_with(None);
 
         let local = tokio::task::LocalSet::new();
         let app = local.run_until(async { super::create_app(&cli, Arc::new(workspace)) }).await;
@@ -414,5 +418,36 @@ mod tests {
         // overwrites it with the agent's reported value.
         assert!(!app.cwd_raw().is_empty(), "cwd_raw should be seeded from process cwd");
         assert!(app.workspace.is_some(), "workspace should be wired");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn create_app_boots_into_launchpad_when_no_argv() {
+        let config_dir = tempfile::tempdir().expect("tempdir");
+        let project_dir = tempfile::tempdir().expect("project tempdir");
+        write_default_forge_toml(config_dir.path(), project_dir.path());
+        let workspace =
+            forge_workspace::Workspace::new(config_dir.path().to_owned()).await.expect("workspace");
+        let cli = cli_with(None);
+        let local = tokio::task::LocalSet::new();
+        let app = local.run_until(async { super::create_app(&cli, Arc::new(workspace)) }).await;
+        assert_eq!(app.active_view, crate::app::ActiveView::Launchpad);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn create_app_boots_into_non_launchpad_view_when_argv_supplied() {
+        let config_dir = tempfile::tempdir().expect("tempdir");
+        let project_dir = tempfile::tempdir().expect("project tempdir");
+        write_default_forge_toml(config_dir.path(), project_dir.path());
+        let workspace =
+            forge_workspace::Workspace::new(config_dir.path().to_owned()).await.expect("workspace");
+        let cli = cli_with(Some("forge-test"));
+        let local = tokio::task::LocalSet::new();
+        let app = local.run_until(async { super::create_app(&cli, Arc::new(workspace)) }).await;
+        // With argv supplied the boot view is NOT Launchpad. In a
+        // pristine tempdir the cwd is untrusted so the trust gate
+        // routes to Trusted; once accepted the user lands in Chat.
+        // The invariant the launchpad change cares about is just
+        // "argv supplied ⇒ never the launchpad."
+        assert_ne!(app.active_view, crate::app::ActiveView::Launchpad);
     }
 }

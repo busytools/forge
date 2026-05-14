@@ -216,4 +216,15 @@ mod tests {
             handle_key(&mut app, KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE));
         assert!(consumed, "launchpad should consume printable keys to avoid leaking into chat input");
     }
+
+    #[test]
+    fn open_resets_state_from_workspace_ui_settings() {
+        let mut app = App::test_default();
+        app.active_view = ActiveView::Chat;
+        // Move selection off zero to confirm `open` resets it.
+        app.launchpad.selected_index = 7;
+        open(&mut app);
+        assert_eq!(app.active_view, ActiveView::Launchpad);
+        assert_eq!(app.launchpad.selected_index, 0);
+    }
 }

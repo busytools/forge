@@ -422,3 +422,38 @@ pub fn is_supported_command(app: &App, command_name: &str) -> bool {
             | "/usage"
     ) || advertised_commands(app).iter().any(|c| c == command_name)
 }
+
+#[cfg(test)]
+mod launchpad_filter_tests {
+    use super::*;
+    use crate::app::ActiveView;
+
+    #[test]
+    fn launchpad_view_filters_candidates_to_subset() {
+        let mut app = App::test_default();
+        app.active_view = ActiveView::Launchpad;
+        let candidates = supported_command_candidates(&app);
+        let names: Vec<&str> = candidates.iter().map(|c| c.primary.as_str()).collect();
+        assert!(names.contains(&"/config"), "launchpad surfaces /config: {names:?}");
+        assert!(names.contains(&"/help"), "launchpad surfaces /help: {names:?}");
+        assert!(names.contains(&"/plugins"), "launchpad surfaces /plugins: {names:?}");
+        assert!(names.contains(&"/quit"), "launchpad surfaces /quit: {names:?}");
+        // Session-dependent commands are filtered out.
+        for hidden in
+            ["/mode", "/model", "/compact", "/usage", "/mcp", "/new", "/resume", "/launchpad"]
+        {
+            assert!(!names.contains(&hidden), "launchpad hides {hidden}: {names:?}");
+        }
+    }
+
+    #[test]
+    fn chat_view_surfaces_full_set_including_launchpad() {
+        let mut app = App::test_default();
+        app.active_view = ActiveView::Chat;
+        let candidates = supported_command_candidates(&app);
+        let names: Vec<&str> = candidates.iter().map(|c| c.primary.as_str()).collect();
+        assert!(names.contains(&"/launchpad"), "chat surfaces /launchpad: {names:?}");
+        assert!(names.contains(&"/mode"), "chat surfaces /mode: {names:?}");
+        assert!(names.contains(&"/usage"), "chat surfaces /usage: {names:?}");
+    }
+}

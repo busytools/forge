@@ -308,6 +308,7 @@
 <nav class="toc">
   <a href="#workspace">Workspace</a>
   <a href="#layout">Layout</a>
+  <a href="#launchpad">Launchpad</a>
   <a href="#chat">Chat</a>
   <a href="#tools">Tool calls</a>
   <a href="#input">Input + autocomplete</a>
@@ -699,6 +700,95 @@ chat continues here…
       <dt>click</dt><dd>v1: read-only. No clickable items. Future could surface a click-to-expand for truncated items, or a click-to-toggle-complete affordance. At Narrow tier the <code>▦</code> top-bar icon toggles overlay open/close; the overlay <code>✕</code> glyph dismisses.</dd>
       <dt>toggle</dt><dd><kbd>Ctrl+E</kbd> at Wide / Medium tiers hides / restores the inline pane (persisted to <code>forge-state.toml</code> <code>[ui].inspector_pane_visible</code>, default <code>true</code>). At Narrow tier <kbd>Ctrl+E</kbd> toggles the transient overlay flag (NOT persisted — each launch starts closed). <kbd>Esc</kbd> also closes the overlay. Mirror of the left pane's <kbd>Ctrl+B</kbd>.</dd>
       <dt>scope</dt><dd>All three tiers ship: Wide (≥160) inline 40ch · Medium (120–159) inline 30ch with item truncation · Narrow (&lt;120) top-bar icon + overlay. Three sections live: <code>GIT</code> (always), <code>TASKS</code> (when todos / nudge present), <code>PROCESSES</code> (when long-running tool calls present). The pane scaffold remains sized to accommodate additional sections (e.g. SUBAGENTS once the multi-agent epic lands) stacking under PROCESSES without restructuring.</dd>
+    </dl>
+  </div>
+</div>
+
+<!-- ============================================================== -->
+<h2 class="section-title" id="launchpad">Launchpad — project picker</h2>
+
+<p class="intro">
+  Floor of the UI. Renders as the entire frame when forge is invoked
+  without a project argv (<code>forge</code> by itself) OR when the
+  user runs <code>/launchpad</code> mid-session. Both side panes hide
+  while launchpad is up; the ANSI Shadow wordmark + version metadata
+  + org-grouped project picker + footer hint own the full window
+  width. <code>Esc</code> is a no-op — the launchpad has nothing to
+  dismiss to. <code>Ctrl+Q</code> still quits.
+</p>
+
+<p class="intro">
+  Boot rule is argv-only: <code>forge</code> ⇒ launchpad, <code>forge
+  &lt;project-name&gt;</code> ⇒ that project's chat. No
+  "remember last picked" persistence, no <code>focus = true</code>
+  override (the field is still parsed for back-compat but no longer
+  affects routing).
+</p>
+
+<div class="surface">
+  <div class="surface-head">
+    <h4>Launchpad full-screen layout</h4>
+    <div class="when">visible: <code>ActiveView::Launchpad</code> only</div>
+  </div>
+  <div class="surface-body">
+    <p>Three vertical zones: identity block (centered horizontally near the top), picker frame (centered, framed by full-width DIM rules), and a single-row footer hint anchored to the terminal's bottom edge.</p>
+    <div class="term">
+      <pre class="indent">
+            <span class="rust-orange bold">███████╗ ██████╗ ██████╗  ██████╗ ███████╗</span>
+            <span class="rust-orange bold">██╔════╝██╔═══██╗██╔══██╗██╔════╝ ██╔════╝</span>
+            <span class="rust-orange bold">█████╗  ██║   ██║██████╔╝██║  ███╗█████╗  </span>
+            <span class="rust-orange bold">██╔══╝  ██║   ██║██╔══██╗██║   ██║██╔══╝  </span>
+            <span class="rust-orange bold">██║     ╚██████╔╝██║  ██║╚██████╔╝███████╗</span>
+            <span class="rust-orange bold">╚═╝      ╚═════╝ ╚═╝  ╚═╝ ╚═════╝ ╚══════╝</span>
+
+                          <span class="dim">v0.15.1 · 7d88141</span>
+                          <span class="dim">claude 2.1.133</span>
+
+      <span class="dim">────────────────────────────────────────────────────────</span>
+        <span class="dim">Busytools</span>
+        <span class="dim">├─</span> <span class="success-green">●</span>  <span class="bold">forge       </span> <span class="dim">(personal)        now</span>
+        <span class="dim">├─</span> <span class="rust-orange">⠹</span>  <span class="bold">hub-modules </span> <span class="dim">(personal)   spawning</span>
+        <span class="dim">└─</span> <span class="dim">○</span>  trader-cc      <span class="dim">(personal)         2d</span>
+
+        <span class="dim">Granite</span>
+        <span class="dim">└─</span> <span class="dim">○</span>  core-v1        <span class="dim">(granite)          1w</span>
+
+        <span class="dim">Subspace</span>
+        <span class="dim">└─</span> <span class="success-green">●</span>  <span class="bold">subspace    </span> <span class="dim">(subspace)        12m</span>
+      <span class="dim">────────────────────────────────────────────────────────</span>
+
+ <span class="dim">↑↓  navigate     enter  open     ?  help     ctrl+q  quit</span></pre>
+    </div>
+    <dl>
+      <dt>code</dt><dd><code>crates/forge-tui/src/ui/launchpad.rs</code> (renderer) + <code>crates/forge-tui/src/app/launchpad.rs</code> (state + keyboard handler) · wordmark stored as <code>const FORGE_WORDMARK: [&amp;str; 6]</code> (43 cols × 6 rows ANSI Shadow figlet)</dd>
+      <dt>color</dt><dd>wordmark: <code>RUST_ORANGE</code> + BOLD · version lines / org headers / tree connectors / footer hint / account hints / pending glyphs (<code>○</code>) / picker rules: <code>DIM</code> · live <code>●</code>: <code>SUCCESS_GREEN</code> (<code>#82c76b</code>) · failed <code>✗</code>: <code>STATUS_ERROR</code> · spawning spinner: <code>RUST_ORANGE</code> · selected-row band: <code>White on RUST_ORANGE</code> + BOLD · update indicator (<code>↑ vX.Y.Z available</code>): <code>RUST_ORANGE</code></dd>
+      <dt>data sources</dt><dd>Projects via <code>Workspace::list_projects()</code> grouped by org (alpha-sorted, alpha-sorted within each org) · per-row lifecycle from <code>UiSession::lifecycle_state</code> with fallback to <code>Sleeping</code> · last-activity from <code>ProjectView::sessions[0].last_activity</code> · account hint from <code>ProjectView::primary_account_hint()</code> (first item of the org's <code>accounts</code> list, lowercased) · forge version from <code>FORGE_VERSION_SHORT</code> · claude version + update flag from <code>app.cli_version_info</code> (async npm probe)</dd>
+      <dt>keys</dt><dd><kbd>↑</kbd> <kbd>↓</kbd> / <kbd>k</kbd> <kbd>j</kbd> navigate · <kbd>Enter</kbd> open selected · <kbd>r</kbd> retry (only when row is Failed) · <kbd>?</kbd> toggle help · <kbd>/</kbd> open slash autocomplete (filtered to 4 commands) · <kbd>Esc</kbd> no-op · <kbd>Ctrl+Q</kbd> quit · <kbd>Ctrl+B</kbd> <kbd>Ctrl+E</kbd> swallowed (no panes to toggle)</dd>
+      <dt>slash subset</dt><dd>Launchpad-view autocomplete surfaces <code>/config</code>, <code>/help</code>, <code>/plugins</code>, <code>/quit</code> only. Session-dependent commands (<code>/mode</code>, <code>/model</code>, <code>/compact</code>, <code>/usage</code>, <code>/mcp</code>, <code>/new</code>, <code>/resume</code>, <code>/launchpad</code>) are hidden — there's no active session to apply them to.</dd>
+      <dt>config</dt><dd><code>[ui] launchpad_spinner</code> (one of <code>braille</code> / <code>phase_of_moon</code> / <code>pulse</code> / <code>forge_dot</code> / <code>ember</code>, default <code>braille</code>) controls the per-row + cold-boot spinner glyph. <code>[ui] launchpad_autostart</code> (<code>always</code> / <code>wait_for_pick</code> / <code>never</code>, default <code>always</code>) controls whether <code>auto_start = true</code> projects warm up eagerly while the picker is shown.</dd>
+    </dl>
+  </div>
+</div>
+
+<div class="surface">
+  <div class="surface-head">
+    <h4>Lifecycle row variants</h4>
+    <div class="when">drives glyph + colour + right column per row</div>
+  </div>
+  <div class="surface-body">
+    <p>Each picker row's appearance depends on the session's lifecycle state. The glyph and the right-column label change in lockstep so the user can scan the picker for "who's live, who's spawning, who's idle, who failed."</p>
+    <div class="term">
+      <pre class="indent">
+        ├─ <span class="success-green">●</span>  <span class="bold">forge        </span><span class="dim">(personal)        now</span>   <span class="dim"># Connected (Idle / Running): bright bullet, bold name, relative-time</span>
+        ├─ <span class="rust-orange">⠹</span>  <span class="bold">hub-modules  </span><span class="dim">(personal)   spawning</span>   <span class="dim"># Spawning: spinner frame in RUST_ORANGE, literal "spawning" right column</span>
+        ├─ <span class="dim">○  trader-cc    (personal)         2d</span>   <span class="dim"># Sleeping / AuthRequired / LoggedOut / Attention: dim circle, dim name</span>
+        └─ <span style="color:#cf6171">✗</span>  <span class="bold">core-v1      </span><span class="dim">(granite)       failed</span>
+              <span style="color:#cf6171">OAuth token expired; run /login to retry…</span></pre>
+    </div>
+    <dl>
+      <dt>Failed row</dt><dd>The error description renders as a DIM-red sub-row directly beneath the project name column (indented 8 cells from row start), truncated to picker width with <code>…</code>. The raw message lives in <code>UiSession::last_connection_error</code> (populated by the connection-failed event handler, cleared on a successful reconnect).</dd>
+      <dt>Retry</dt><dd>Pressing <kbd>r</kbd> while a Failed row is highlighted drops the failed bucket and dispatches a fresh <code>Command::SpawnProject</code>. Footer hint grows a trailing <code>     r  retry</code> affordance whenever the selected row is in Failed lifecycle.</dd>
+      <dt>Selection band</dt><dd>White-on-RUST_ORANGE band on the highlighted row's entire content area. Org headers and tree connectors stay DIM regardless of which row is selected.</dd>
     </dl>
   </div>
 </div>

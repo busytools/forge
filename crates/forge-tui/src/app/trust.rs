@@ -47,6 +47,12 @@ pub fn initialize(app: &mut App) {
             .unwrap_or_else(|| "Trust preferences path is not available".to_owned())
     });
     app.startup_connection_requested = app.trust.is_trusted();
+    // Launchpad has no specific project context — trust is per-project
+    // and evaluated when the user picks a row. Leave the launchpad view
+    // alone here; the picker handles its own per-project trust on Enter.
+    if app.active_view == ActiveView::Launchpad {
+        return;
+    }
     if app.trust.is_trusted() {
         let next_view = if app.startup_session_picker_requested {
             ActiveView::SessionPicker

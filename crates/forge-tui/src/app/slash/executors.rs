@@ -17,14 +17,26 @@ pub fn try_handle_submit(app: &mut App, text: &str) -> bool {
         return false;
     };
 
+    // On the launchpad view, `/help` and `/quit` are local affordances
+    // (the launchpad has no active session for SDK commands to forward
+    // to). In the chat view these names may be SDK-advertised commands
+    // that should forward to the model — the chat handler skips them
+    // here so the unknown-submit fallback resolves the advertised
+    // command. `/launchpad` is global (works from chat) and never
+    // forwards.
+    if app.active_view == crate::app::ActiveView::Launchpad {
+        match parsed.name {
+            "/help" => return handle_help_submit(app, &parsed.args),
+            "/quit" => return handle_quit_submit(app, &parsed.args),
+            _ => {}
+        }
+    }
     match parsed.name {
         "/compact" => handle_compact_submit(app, &parsed.args),
         "/config" => handle_config_submit(app, &parsed.args),
-        "/help" => handle_help_submit(app, &parsed.args),
         "/launchpad" => handle_launchpad_submit(app, &parsed.args),
         "/mcp" => handle_mcp_submit(app, &parsed.args),
         "/plugins" => handle_plugins_submit(app, &parsed.args),
-        "/quit" => handle_quit_submit(app, &parsed.args),
         "/status" => handle_status_submit(app, &parsed.args),
         "/usage" => handle_usage_submit(app, &parsed.args),
         "/mode" => handle_mode_submit(app, &parsed.args),
