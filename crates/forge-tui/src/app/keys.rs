@@ -1274,6 +1274,7 @@ mod tests {
 name = "test-proj"
 path = "/tmp/test-proj"
 default = true
+accounts = ["Test"]
 
 [[accounts]]
 display_name = "Test"

@@ -25,6 +25,7 @@ async fn workspace_shutdown_drains_after_app_drop() {
 name = "forge"
 path = "~/Projects/forge"
 default = true
+accounts = ["Subspace"]
 
 [[accounts]]
 display_name = "Subspace"
