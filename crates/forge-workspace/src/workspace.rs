@@ -278,12 +278,21 @@ impl Workspace {
             }
         }
 
+        // Resolve the project's optional `accounts = [...]` pin from
+        // the target. Project-rooted targets read it directly off the
+        // matching `LoadedProject`; session-id targets look up the
+        // originating project via catalog cwd → `LoadedProject.path`
+        // match so a resumed session honours its project's pin.
+        let project_account_pin = self.project_accounts_for(&target);
+
         // Pick an account via policy. Holds accounts lock briefly;
         // released before we touch disk in `persist_account_state`.
+        // `pick_for_project` falls through to the unpinned LRU /
+        // round-robin pool when `project_account_pin` is None.
         let (account_key, account_dir) = {
             let mut accounts = self.accounts.lock();
             let now = SystemTime::now();
-            accounts.pick_next(now)
+            accounts.pick_for_project(project_account_pin.as_deref(), now)
         };
 
         // Persist forge-state.toml AFTER releasing the accounts
@@ -503,6 +512,33 @@ impl Workspace {
                 Ok(self.lead_session_key_for(project))
             }
             SessionTarget::Session(key) => Ok(key.clone()),
+        }
+    }
+
+    /// Resolve a target's project-level account pin (the
+    /// `[[projects]].accounts = [...]` list from `forge.toml`), if
+    /// any. Project-rooted targets read directly off the matching
+    /// `LoadedProject`; session-id targets walk the catalog for the
+    /// session's original cwd and match against `LoadedProject.path`
+    /// so a resumed session inherits the originating project's pin.
+    /// `None` means "no pin; use the global LRU/RR pool" — both the
+    /// "no `accounts` field on the project" case and the "no project
+    /// row matched" case fold into the same fallback.
+    fn project_accounts_for(&self, target: &SessionTarget) -> Option<Vec<String>> {
+        match target {
+            SessionTarget::Default => self.config.default_project().accounts.clone(),
+            SessionTarget::Named(name) => {
+                self.find_project_by_name(name).ok().and_then(|p| p.accounts.clone())
+            }
+            SessionTarget::Session(key) => {
+                let cwd = self.session_cwd_for(key)?;
+                let cwd_path = std::path::Path::new(&cwd);
+                self.config
+                    .projects
+                    .iter()
+                    .find(|p| p.path == cwd_path)
+                    .and_then(|p| p.accounts.clone())
+            }
         }
     }
 
@@ -1548,6 +1584,100 @@ config_dir = "~/.claude-granite"
         assert_eq!(bound.len(), 2);
         assert!(bound.contains(&"Granite".to_owned()));
         assert!(bound.contains(&"Subspace".to_owned()));
+    }
+
+    #[tokio::test]
+    async fn project_account_pin_routes_spawn_to_pinned_account() {
+        // Two projects: `forge` pinned to Subspace only; `aware`
+        // unpinned. Spawn on `forge` must land on Subspace even
+        // though Granite is the global LRU (never used → alpha tie-
+        // break would otherwise pick Granite).
+        let dir = tempdir().expect("tempdir");
+        fs::write(
+            dir.path().join("forge.toml"),
+            r#"
+[[projects]]
+name = "forge"
+path = "~/Projects/forge"
+default = true
+accounts = ["Subspace"]
+
+[[projects]]
+name = "aware"
+path = "~/Projects/aware"
+
+[[accounts]]
+display_name = "Subspace"
+config_dir = "~/.claude-subspace"
+
+[[accounts]]
+display_name = "Granite"
+config_dir = "~/.claude-granite"
+"#,
+        )
+        .expect("write forge.toml");
+
+        let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
+        let _ = workspace
+            .get_agent_handle(SessionTarget::Default, SessionLaunchSettings::default())
+            .await
+            .expect("default spawn on pinned project");
+
+        let bound = workspace.pool_accounts_for_test();
+        assert_eq!(bound.len(), 1);
+        assert_eq!(bound[0], "Subspace", "pinned project must spawn under its pinned account");
+    }
+
+    #[tokio::test]
+    async fn project_account_pin_excludes_unpinned_account() {
+        // Three accounts globally; default project pins only
+        // {Subspace, Granite}. Spawn under the default project picks
+        // one of the pinned pair (Granite via alpha tie-break) and
+        // must never touch Personal. Multi-spawn rotation within the
+        // subset is exercised by the unit tests in `account.rs`
+        // (`lru_restricted_pool_lru_within_subset`,
+        // `round_robin_restricted_pool_cycles_within_subset`).
+        let dir = tempdir().expect("tempdir");
+        fs::write(
+            dir.path().join("forge.toml"),
+            r#"
+[[projects]]
+name = "forge"
+path = "~/Projects/forge"
+default = true
+accounts = ["Subspace", "Granite"]
+
+[[accounts]]
+display_name = "Subspace"
+config_dir = "~/.claude-subspace"
+
+[[accounts]]
+display_name = "Granite"
+config_dir = "~/.claude-granite"
+
+[[accounts]]
+display_name = "Personal"
+config_dir = "~/.claude-personal"
+"#,
+        )
+        .expect("write forge.toml");
+
+        let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
+        let _ = workspace
+            .get_agent_handle(SessionTarget::Default, SessionLaunchSettings::default())
+            .await
+            .expect("default spawn");
+
+        let bound = workspace.pool_accounts_for_test();
+        assert_eq!(bound.len(), 1);
+        assert!(
+            bound[0] == "Subspace" || bound[0] == "Granite",
+            "spawn must land on a pinned account, got {bound:?}",
+        );
+        assert_ne!(
+            bound[0], "Personal",
+            "Personal must be excluded by the pin",
+        );
     }
 
     #[tokio::test]

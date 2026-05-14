@@ -37,4 +37,16 @@ pub enum WorkspaceError {
 
     #[error("no project named '{name}' in forge.toml at {}", path.display())]
     ProjectNotFound { name: String, path: PathBuf },
+
+    #[error(
+        "project '{project}' in forge.toml at {} references unknown account '{account}'; valid accounts: {valid}",
+        path.display()
+    )]
+    UnknownProjectAccount { path: PathBuf, project: String, account: String, valid: String },
+
+    #[error(
+        "project '{project}' in forge.toml at {} has an empty `accounts = []` list; remove the field or list at least one account",
+        path.display()
+    )]
+    EmptyProjectAccounts { path: PathBuf, project: String },
 }
