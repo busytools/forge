@@ -40,11 +40,36 @@ mod enabled {
 
     const PERF_SCHEMA: &str = "forge-perf/v1";
 
+    /// Frame duration (ms) at or above which the per-frame buffer
+    /// flushes to disk. 50 ms = below 20 FPS, well into the visible
+    /// stutter range. Frames faster than this discard their buffered
+    /// samples — the log only carries entries from frames worth
+    /// investigating, keeping the file small enough that even
+    /// week-long sessions stay manageable.
+    const SLOW_FRAME_THRESHOLD_MS: f64 = 50.0;
+
+    /// Cap on per-frame buffer size. Bounds memory if the frame
+    /// never closes for some reason (no `frame_total` Timer drop
+    /// fires). 256 spans/marks per frame is well above the natural
+    /// per-frame budget (~10-20 entries observed in practice).
+    const FRAME_BUFFER_CAP: usize = 256;
+
+    /// One buffered sample awaiting the per-frame flush decision.
+    /// Storage is cheap (constant size, no heap alloc beyond the
+    /// vector backing storage).
+    #[derive(Clone)]
+    struct BufferedSample {
+        name: &'static str,
+        ms: f64,
+        extra: Option<(&'static str, usize)>,
+    }
+
     // Thread-local file handle so Timer::drop can log without borrowing PerfLogger.
     thread_local! {
         pub(crate) static LOG_FILE: RefCell<Option<BufWriter<File>>> = const { RefCell::new(None) };
         static FRAME_COUNTER: RefCell<u64> = const { RefCell::new(0) };
         static RUN_ID: RefCell<String> = const { RefCell::new(String::new()) };
+        static FRAME_BUFFER: RefCell<Vec<BufferedSample>> = const { RefCell::new(Vec::new()) };
     }
 
     pub struct PerfLogger {
@@ -92,29 +117,66 @@ mod enabled {
 
     pub(crate) fn write_entry(name: &'static str, ms: f64, extra: Option<(&'static str, usize)>) {
         // Fast path: when no `--perf-log` file is open, skip the
-        // `unix_ms()` syscall + frame-counter read + JSON serialise
-        // entirely. Cheap enough that `--features perf` can stay
-        // always-on in production builds with no measurable cost.
+        // buffering + decision entirely. Cheap enough that
+        // `--features perf` can stay always-on in production builds
+        // with no measurable cost.
+        let logging_enabled = LOG_FILE.with(|f| f.borrow().is_some());
+        if !logging_enabled {
+            return;
+        }
+
+        // Append to the per-frame buffer. When `name == "frame_total"`
+        // (the Timer covering the whole frame), the duration is
+        // available — decide whether to flush the buffer (slow
+        // frame, useful for diagnosis) or clear it (healthy frame,
+        // nothing worth recording). Other entries just accumulate
+        // until that decision fires.
+        let to_flush: Option<Vec<BufferedSample>> = FRAME_BUFFER.with(|b| {
+            let mut buf = b.borrow_mut();
+            if buf.len() < FRAME_BUFFER_CAP {
+                buf.push(BufferedSample { name, ms, extra });
+            }
+            if name != "frame_total" {
+                return None;
+            }
+            if ms >= SLOW_FRAME_THRESHOLD_MS {
+                Some(std::mem::take(&mut *buf))
+            } else {
+                buf.clear();
+                None
+            }
+        });
+
+        let Some(samples) = to_flush else { return };
+
+        // Slow frame — drain the buffer to disk. ts_ms + frame are
+        // captured once at flush time; every sample in the batch
+        // shares those values because they all belong to the same
+        // frame and the per-sample wall-clock distinction isn't
+        // useful when the analysis pivot is "which sub-span took
+        // too long inside this slow frame."
+        let frame = FRAME_COUNTER.with(|c| *c.borrow());
+        let ts_ms = unix_ms();
         LOG_FILE.with(|f| {
             let mut file_ref = f.borrow_mut();
             let Some(ref mut file) = *file_ref else {
                 return;
             };
-            let frame = FRAME_COUNTER.with(|c| *c.borrow());
-            let ts_ms = unix_ms();
             RUN_ID.with(|run| {
                 let run_id = run.borrow();
-                let sample = PerfSample {
-                    schema: PERF_SCHEMA,
-                    kind: if ms == 0.0 { "mark" } else { "duration" },
-                    run_id: run_id.as_str(),
-                    frame,
-                    ts_ms,
-                    metric: name,
-                    duration_ms: (ms != 0.0).then_some(ms),
-                    extra: extra.map(|(key, value)| PerfExtraField { key, value }),
-                };
-                write_json_line(file, &sample);
+                for sample in &samples {
+                    let perf_sample = PerfSample {
+                        schema: PERF_SCHEMA,
+                        kind: if sample.ms == 0.0 { "mark" } else { "duration" },
+                        run_id: run_id.as_str(),
+                        frame,
+                        ts_ms,
+                        metric: sample.name,
+                        duration_ms: (sample.ms != 0.0).then_some(sample.ms),
+                        extra: sample.extra.map(|(key, value)| PerfExtraField { key, value }),
+                    };
+                    write_json_line(file, &perf_sample);
+                }
             });
         });
     }
@@ -162,6 +224,12 @@ mod enabled {
                 *value += 1;
                 *value
             });
+            // Safety net — clear any leftover buffer from a tick
+            // that didn't fire `frame_total` (e.g. `needs_redraw`
+            // skipped the draw block). Without this, marks from
+            // earlier ticks could leak into the next slow-frame
+            // flush and confuse the analysis.
+            FRAME_BUFFER.with(|b| b.borrow_mut().clear());
             if frame.is_multiple_of(240) {
                 LOG_FILE.with(|f| {
                     if let Some(ref mut file) = *f.borrow_mut() {
