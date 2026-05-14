@@ -79,6 +79,11 @@ pub fn create_app(cli: &Cli, workspace: Arc<forge_workspace::Workspace>) -> App 
     crate::app::git_diff::spawn_periodic_timer(git_diff_event_tx.clone());
     crate::app::cli_version::spawn_fetch(Arc::clone(&workspace), cli_version_event_tx.clone());
     crate::app::process_scanner::spawn_ticker(process_scan_event_tx.clone());
+    // Kick off the workspace's 30s account-usage poller. Fetches OAuth
+    // usage for every [[accounts]] entry; results land in the
+    // workspace's account-usage cache and the TUI's bottom panel
+    // reads from there via `Workspace::usage_for`.
+    workspace.start_usage_poller();
     let perf_path = match crate::logging::resolve_perf_path(cli) {
         Ok(path) => path,
         Err(err) => {
@@ -269,16 +274,45 @@ pub fn start_connection(app: &mut App) {
         app,
         session_start::SessionStartReason::Startup,
     );
-    let project_name = app.startup_project.clone();
-    if let Err(err) =
-        workspace.dispatch(forge_workspace::Command::StartDefault { project_name, launch_settings })
+
+    // If the user passed `--project NAME`, that wins as the first
+    // (focused) startup spawn. Otherwise, every project with
+    // `auto_start = true` in forge.toml spawns; the alphabetically-
+    // first auto_start project becomes the focused tab. With no
+    // explicit project AND no auto_start opt-ins, fall through to
+    // the default project (alphabetically-first overall).
+    let auto_start = workspace.auto_start_project_names();
+    let dispatch_targets: Vec<Option<String>> = match (&app.startup_project, auto_start.as_slice())
     {
-        tracing::error!(
-            target: crate::logging::targets::BRIDGE_LIFECYCLE,
-            event_name = "start_connection_dispatch_failed",
-            error = %err,
-            "Command::StartDefault dispatch failed",
-        );
+        (Some(name), _) => vec![Some(name.clone())],
+        (None, []) => vec![None], // Falls through to default in StartDefault.
+        (None, names) => names.iter().cloned().map(Some).collect(),
+    };
+
+    for (i, project_name) in dispatch_targets.iter().enumerate() {
+        // Only the first project gets `StartDefault` semantics
+        // (which sets it as the focused tab); the rest go via
+        // `SpawnProject` and land in the Projects pane silently.
+        let cmd = if i == 0 {
+            forge_workspace::Command::StartDefault {
+                project_name: project_name.clone(),
+                launch_settings: launch_settings.clone(),
+            }
+        } else {
+            forge_workspace::Command::SpawnProject {
+                project_name: project_name.clone().unwrap_or_default(),
+                launch_settings: launch_settings.clone(),
+            }
+        };
+        if let Err(err) = workspace.dispatch(cmd) {
+            tracing::error!(
+                target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                event_name = "start_connection_dispatch_failed",
+                error = %err,
+                project = ?project_name,
+                "auto_start dispatch failed",
+            );
+        }
     }
 }
 
@@ -292,7 +326,7 @@ mod tests {
         std::fs::write(
             dir.join("forge.toml"),
             format!(
-                "[[projects]]\nname = \"forge-test\"\npath = \"{project_path_str}\"\ndefault = true\n\n[[accounts]]\ndisplay_name = \"Stargate\"\nconfig_dir = \"~/.claude-stargate\"\n"
+                "[[orgs]]\nname = \"Default\"\naccounts = [\"Stargate\"]\n\n[[orgs.projects]]\nname = \"forge-test\"\npath = \"{project_path_str}\"\nauto_start = true\n\n[[accounts]]\ndisplay_name = \"Stargate\"\nconfig_dir = \"~/.claude-stargate\"\n"
             ),
         )
         .expect("write forge.toml");

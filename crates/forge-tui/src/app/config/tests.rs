@@ -574,7 +574,11 @@ fn status_tab_r_opens_session_rename_overlay() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn activating_usage_tab_starts_refresh_lifecycle() {
+async fn activating_usage_tab_pulls_from_workspace_cache() {
+    // Usage refresh is no longer async — the workspace's background
+    // poller is the sole fetcher. Activating the tab now syncs the
+    // session's view of the cache (no in-flight state to assert).
+    // The tab activation itself is what we verify here.
     tokio::task::LocalSet::new()
         .run_until(async {
             let (_dir, mut app) = open_settings_test_app();
@@ -582,13 +586,17 @@ async fn activating_usage_tab_starts_refresh_lifecycle() {
             activate_tab(&mut app, ConfigTab::Usage);
 
             assert_eq!(app.config.active_tab, ConfigTab::Usage);
-            assert!(app.usage().in_flight);
+            assert!(!app.usage().in_flight, "sync refresh never sets in_flight");
         })
         .await;
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn usage_tab_r_triggers_manual_refresh() {
+async fn usage_tab_r_does_not_panic_under_sync_refresh() {
+    // `r` on the usage tab calls into `usage::request_refresh`,
+    // which is now a sync re-read of the workspace cache. Verifies
+    // the path doesn't panic in the test fixture (no workspace
+    // wired up → silent no-op).
     tokio::task::LocalSet::new()
         .run_until(async {
             let (_dir, mut app) = open_settings_test_app();
@@ -596,7 +604,7 @@ async fn usage_tab_r_triggers_manual_refresh() {
 
             handle_key(&mut app, KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE));
 
-            assert!(app.usage().in_flight);
+            assert!(!app.usage().in_flight, "sync refresh never sets in_flight");
         })
         .await;
 }

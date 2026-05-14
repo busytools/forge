@@ -25,18 +25,28 @@ const HELP_BUILTIN_SLASH_COMMANDS: [(&str, &str); 5] = [
     ("/usage", "Open usage"),
 ];
 
-// Platform-aware key labels: macOS uses Cmd / Alt for native conventions,
-// other OSes use Ctrl. Mirrors the modifier constants in `app::keys`.
+// Platform-aware key labels: macOS uses Cmd for app-level shortcuts,
+// other OSes use Ctrl. Word navigation is Alt+Arrow on every platform
+// since the Ctrl+Arrow slot is reserved for side-pane toggles on
+// non-macOS (mirroring the macOS Cmd+Arrow binding).
 const fn word_nav_label() -> &'static str {
-    if cfg!(target_os = "macos") { "Alt+Left/Right" } else { "Ctrl+Left/Right" }
+    "Alt+Left/Right"
 }
 
 const fn word_delete_label() -> &'static str {
-    if cfg!(target_os = "macos") { "Alt+Backspace/Delete" } else { "Ctrl+Backspace/Delete" }
+    "Alt+Backspace/Delete"
 }
 
 const fn undo_redo_label() -> &'static str {
     if cfg!(target_os = "macos") { "Cmd+z / Cmd+Shift+z" } else { "Ctrl+z/y" }
+}
+
+const fn pane_toggle_left_label() -> &'static str {
+    if cfg!(target_os = "macos") { "Cmd+Left" } else { "Ctrl+Left" }
+}
+
+const fn pane_toggle_right_label() -> &'static str {
+    if cfg!(target_os = "macos") { "Cmd+Right" } else { "Ctrl+Right" }
 }
 
 pub fn is_active(app: &App) -> bool {
@@ -225,7 +235,8 @@ fn build_key_help_items(app: &App) -> Vec<(String, String)> {
         ("Ctrl+l".to_owned(), "Redraw screen".to_owned()),
         ("Shift+Tab".to_owned(), "Cycle mode".to_owned()),
         ("Ctrl+x".to_owned(), "Toggle all tool calls (or click one)".to_owned()),
-        ("Ctrl+t".to_owned(), "Toggle todos (when available)".to_owned()),
+        (pane_toggle_left_label().to_owned(), "Toggle Projects pane".to_owned()),
+        (pane_toggle_right_label().to_owned(), "Toggle Inspector pane".to_owned()),
         // Chat scrolling
         ("Ctrl+Up/Down".to_owned(), "Scroll chat".to_owned()),
         ("Mouse wheel".to_owned(), "Scroll chat".to_owned()),

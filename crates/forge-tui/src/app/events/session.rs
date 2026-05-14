@@ -966,22 +966,22 @@ pub(super) fn apply_session_update_connected(
         }
     }
     set_bucket_lifecycle_state(app, &key, crate::app::session::SessionLifecycleState::Idle);
-    // Match legacy single-session semantics: when there's no
-    // synthetic to migrate (single-session session-reset path /
-    // SessionReplaced semantics arriving as Connected), default to
-    // the active-path apply chain so a fresh Connected resets the
-    // visible session state. When there IS a synthetic migration,
-    // honour whether the user is still on the migrated bucket
-    // (active path) versus already switched away (background path).
-    let was_active = if synthetic_to_migrate.is_some() {
-        app.active_session_key.as_ref() == Some(&key)
-    } else {
-        true
-    };
-    // Ensure active_session_key follows when was_active is true.
-    if was_active && app.active_session_key.as_ref() != Some(&key) {
-        app.active_session_key = Some(key.clone());
-    }
+    // `was_active` drives whether the welcome / model snapshots get
+    // applied to the active-session UI. The rule is now simple:
+    // this Connected is for the active session only when its key
+    // already matches `active_session_key`. Active migration is
+    // owned by the synthetic_to_migrate branch above (legacy/test
+    // paths that skip KeyRenamed) and by the `KeyRenamed` reducer
+    // itself — Connected never steals focus on its own.
+    //
+    // Why the auto-steal was wrong: with multi-project auto_start,
+    // every project's Connected used to make itself active, so the
+    // LAST Connected won the focused tab regardless of which
+    // project actually owned `focus = true`. The fix routes focus
+    // through KeyRenamed (which is what fires for the
+    // `__conn_pending__` → real-key migration of the focus winner)
+    // and leaves background Connecteds untouched.
+    let was_active = app.active_session_key.as_ref() == Some(&key);
     apply_connected_presentation(
         app,
         key,

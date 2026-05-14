@@ -38,9 +38,11 @@ const COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
 /// Number of file rows surfaced in the rendered diff list. The
 /// renderer collapses the rest into a "+N more" line. With the
 /// box-drawing tree + single-child folding in `inspector_pane`,
-/// 10 file leaves typically render as ~12-15 rows including
-/// directory headers.
-const TOP_FILE_COUNT: usize = 10;
+/// 7 file leaves typically render as ~9-11 rows including
+/// directory headers — matches the TASKS / PROCESSES section caps
+/// (5) and keeps the GIT section roughly the same height as its
+/// neighbours on tall trees.
+const TOP_FILE_COUNT: usize = 7;
 
 /// Snapshot of one project's git state, suitable for rendering in
 /// the Inspector pane's GIT section. Branch info is folded in here

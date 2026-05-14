@@ -419,6 +419,24 @@ Concretely:
     Feature-branch pushes, PR creation, `gh pr comment`, non-force
     push to `main` for milestone landings, and `gh pr merge` are
     routine per project overrides.
+13. **Diagnostics are self-serve, never delegated to the user.**
+    When the user reports a problem ("FPS feels off", "look at the
+    logs", "take a look"), the agent locates the relevant artifacts
+    (perf log at `~/Library/Application Support/forge-tui/logs/`,
+    JSONL session captures, tracing log, etc.), reads them, and
+    produces a root cause. Never hand the user a flag invocation,
+    `jq` filter, or "rerun with X" recipe. Telemetry that requires
+    user opt-in is a forge bug — fix the always-on instrumentation
+    instead of asking the user to enable it.
+14. **Diagnostic-improvement TODOs go to GitHub issues, not inline.**
+    When a diagnostic feature ships but follow-on improvements are
+    deferred (rotation, configurable thresholds, …), file a GitHub
+    issue for the deferred work. Do NOT scatter aspirational
+    `TODO:` comments through the source. Inline TODOs rot, mislead
+    future readers, and have no central triage view. When the issue
+    is resolved, remove any code references to it. Concrete-fix
+    `TODO:` comments naming a specific 1-3 line change are still
+    fine; vague "consider adding X someday" TODOs belong in issues.
 
 ## Weekly upstream-watch (NEW shape)
 

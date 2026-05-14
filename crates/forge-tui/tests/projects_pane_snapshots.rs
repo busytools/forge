@@ -64,13 +64,13 @@ fn session_view(id: &str, label: &str) -> SessionView {
 }
 
 #[test]
-fn renders_banner_and_active_project_row() {
+fn renders_banner_and_project_row_under_org_header() {
     let mut app = App::test_default();
     let session_a = session_view("session-a", "main");
     let projects = vec![project_view("forge", vec![session_a.clone()])];
 
     // Insert a Session bucket for the lead so the pane treats `forge`
-    // as an active project (lands in the ACTIVE section).
+    // as a live project (gets the close-affordance + active glyph).
     let lead_key = SessionKey::from_str_for_test("session-a");
     let lead_session = UiSession::new(lead_key.clone());
     app.sessions.insert(lead_key.clone(), lead_session);
@@ -79,17 +79,21 @@ fn renders_banner_and_active_project_row() {
 
     let lines = render_to_lines(&mut app, &projects, 26, 10);
 
-    // Row layout (after the section-rhythm tightening): banner, rule,
-    // ACTIVE header, blank, project row.
+    // Row layout: banner, rule, org header ("Test" — set by
+    // `ProjectView::new_for_test`), `│` continuation, project row
+    // under tree connector `└─`. The continuation visually links
+    // the header down to the first project rather than floating
+    // disconnected above an empty gap.
     assert!(lines[0].contains("PROJECTS"), "banner: {:?}", lines[0]);
     assert!(lines[1].contains('─'), "rule: {:?}", lines[1]);
-    assert!(lines[2].contains("ACTIVE"), "ACTIVE header: {:?}", lines[2]);
-    assert!(lines[3].is_empty(), "blank after header: {:?}", lines[3]);
-    assert!(lines[4].contains("forge"), "active project row: {:?}", lines[4]);
+    assert!(lines[2].contains("Test"), "org header: {:?}", lines[2]);
+    assert!(lines[3].contains('\u{2502}'), "continuation after header: {:?}", lines[3]);
+    let project_row = lines.iter().find(|l| l.contains("forge")).expect("project row");
+    assert!(project_row.contains('\u{2514}'), "tree connector \u{2514}: {project_row:?}");
 
-    // Two hit targets for an active row: the project header (full-row
-    // click → focus/switch) and the close `[×]` glyph (right-edge
-    // band → kill session).
+    // Two hit targets for a live row: the project header (full-row
+    // click → focus/switch) and the close glyph (right-edge band →
+    // kill session).
     let project_header = app.pane_hit_targets.iter().find_map(|t| match t {
         PaneHitTarget::ProjectHeader { project_name, .. } => Some(project_name.clone()),
         _ => None,
@@ -97,15 +101,17 @@ fn renders_banner_and_active_project_row() {
     assert_eq!(project_header.as_deref(), Some("forge"), "project header hit target");
     let close_present =
         app.pane_hit_targets.iter().any(|t| matches!(t, PaneHitTarget::CloseSession { .. }));
-    assert!(close_present, "active row stamps a CloseSession hit target");
+    assert!(close_present, "live row stamps a CloseSession hit target");
 }
 
 #[test]
-fn inactive_project_lands_in_inactive_section() {
+fn live_and_idle_projects_render_under_same_org_with_distinct_glyphs() {
+    // Both projects share the "Test" org (set by
+    // `ProjectView::new_for_test`). alpha has a live bucket → gets
+    // the spinner/Idle glyph + close-affordance hit target. bravo
+    // doesn't → gets the `○` idle glyph + no close target.
     let mut app = App::test_default();
 
-    // alpha has a live bucket; bravo doesn't. alpha → ACTIVE,
-    // bravo → INACTIVE.
     let alpha_session = session_view("alpha-1", "lead");
     let bravo_session = session_view("bravo-1", "main");
     let projects = vec![
@@ -119,22 +125,24 @@ fn inactive_project_lands_in_inactive_section() {
 
     let lines = render_to_lines(&mut app, &projects, 26, 14);
 
-    let active_header = lines.iter().position(|l| l.contains("ACTIVE")).expect("ACTIVE");
-    let inactive_header = lines.iter().position(|l| l.contains("INACTIVE")).expect("INACTIVE");
+    let org_header = lines.iter().position(|l| l.contains("Test")).expect("org header");
     let alpha_row = lines.iter().position(|l| l.contains("alpha")).expect("alpha row");
     let bravo_row = lines.iter().position(|l| l.contains("bravo")).expect("bravo row");
+    assert!(org_header < alpha_row && org_header < bravo_row, "rows under org header");
 
-    assert!(active_header < alpha_row, "alpha sits under ACTIVE");
-    assert!(alpha_row < inactive_header, "ACTIVE section ends before INACTIVE header");
-    assert!(inactive_header < bravo_row, "bravo sits under INACTIVE");
-
-    // Two ProjectHeader stamps; no SessionRow stamps anywhere.
+    // Two ProjectHeader stamps + exactly one CloseSession (alpha's).
     let header_count = app
         .pane_hit_targets
         .iter()
         .filter(|t| matches!(t, PaneHitTarget::ProjectHeader { .. }))
         .count();
     assert_eq!(header_count, 2, "two project headers, got: {:?}", app.pane_hit_targets);
+    let close_count = app
+        .pane_hit_targets
+        .iter()
+        .filter(|t| matches!(t, PaneHitTarget::CloseSession { .. }))
+        .count();
+    assert_eq!(close_count, 1, "only the live row stamps a CloseSession");
     let session_row_count = app
         .pane_hit_targets
         .iter()
@@ -156,14 +164,14 @@ fn medium_tier_truncates_long_project_labels() {
     app.sessions.insert(lead_key.clone(), UiSession::new(lead_key.clone()));
     app.active_session_key = Some(lead_key);
 
-    // Medium tier renders in a 20ch-wide pane.
-    let lines = render_to_lines(&mut app, &projects, 20, 20);
+    // Medium tier renders in a 24ch-wide pane (PANE_WIDTH_MEDIUM).
+    let lines = render_to_lines(&mut app, &projects, 24, 20);
 
-    // Project header truncated. Medium-tier active-row chrome is 10
-    // chars (`<2 indent><1 glyph><1 sp><name><1 sp><3 [×]><2 gutter>`),
-    // so at width 20 the name budget is 10. 9-char prefix + ellipsis
-    // = "stargate-…". The longest substring of the original we expect
-    // to still see is "stargate".
+    // Project header truncated. Org-grouped row chrome is 13 chars
+    // (`<2 pad><3 connector><1 glyph><1 sp><name><1 sp><3 button>
+    // <2 gutter>`), so at width 24 the name budget is 11. 10-char
+    // prefix + ellipsis = "stargate-c…". The longest substring of
+    // the original we expect to still see is "stargate".
     let any_truncated_project = lines.iter().any(|l| l.contains('…') && l.contains("stargate"));
     assert!(
         any_truncated_project,

@@ -19,11 +19,17 @@ use crate::error::WorkspaceError;
 use crate::protocol::{Command, DispatchError, PendingInteractionSlot, SessionUpdate};
 use crate::session_task::SessionTask;
 use crate::spawn;
-use crate::state::{
-    self, PersistedAccountState, PersistedSelectionState, PersistedState, PersistedUiState,
-};
+use crate::state::{self, PersistedState, PersistedUiState};
 use crate::target::{ProjectKey, SessionKey, SessionTarget};
 use crate::views::{ProjectView, SessionView};
+
+/// How often the background poller refreshes account usage. The
+/// TUI's bottom panel + the spawn-path account picker both read
+/// from the cache this poll populates. Tighter than the historical
+/// per-session 120 s refresh because the picker benefits from
+/// fresher data — 30 s is the upper bound on how stale a "which
+/// account has more headroom" decision can be.
+const USAGE_POLL_INTERVAL: Duration = Duration::from_secs(30);
 
 /// Multi-session orchestrator. Owns the project catalog snapshot
 /// loaded from `<config_dir>/forge.toml` and the pool of currently
@@ -96,8 +102,9 @@ pub(crate) struct PooledAgent {
 
 impl Workspace {
     /// Builds a Workspace, runs the catalog scan, and loads
-    /// `<config_dir>/forge.toml`. Errors if `forge.toml` is missing,
-    /// malformed, or has no project marked `default = true`. No
+    /// `<config_dir>/forge.toml`. Errors if `forge.toml` is missing
+    /// or malformed (e.g. no `[[orgs]]` entries, no
+    /// `[[orgs.projects]]` entries, unknown account references). No
     /// Agents are spawned on success.
     pub async fn new(config_dir: PathBuf) -> Result<Self, WorkspaceError> {
         let config = load_from_dir(&config_dir)?;
@@ -131,28 +138,11 @@ impl Workspace {
         // descending; the per-project Vec inherits that ordering thanks
         // to push order being preserved.
 
-        // Load picker state from forge-state.toml (missing/malformed
-        // → empty defaults; never blocks startup) and seed
-        // `AccountStateMap` from the account list parsed out of
-        // `forge.toml`. Phase 1b's `get_agent_handle` consults this
-        // map on every spawn; the chosen account's `config_dir`
-        // becomes the spawn's `CLAUDE_CONFIG_DIR` override.
+        // Load persisted state (UI pane visibility only since selection
+        // is now usage-based and refreshed in-memory). Missing or
+        // malformed → defaults; never blocks startup.
         let persisted = state::load_or_default(&config_dir);
-        let persisted_last_used: HashMap<String, Option<SystemTime>> = persisted
-            .accounts
-            .iter()
-            .map(|(name, acct)| {
-                let parsed = acct.last_used_at.as_deref().and_then(parse_rfc3339);
-                (name.clone(), parsed)
-            })
-            .collect();
-
-        let accounts = AccountStateMap::new(
-            &config.accounts,
-            config.selection.policy.clone(),
-            persisted.selection.round_robin_next,
-            &persisted_last_used,
-        );
+        let accounts = AccountStateMap::new(&config.accounts);
 
         let (update_tx, update_rx) = mpsc::unbounded_channel::<SessionUpdate>();
         Ok(Self {
@@ -171,6 +161,38 @@ impl Workspace {
 
     /// Every project listed in `forge.toml`, each carrying its catalog
     /// sessions sorted by last-activity descending — `sessions[0]` is
+    /// Return the names of all orgs in declaration order, paired
+    /// with their pinned account list. The Projects pane uses this
+    /// to drive the org-grouped tree render.
+    #[must_use]
+    pub fn list_orgs(&self) -> Vec<(String, Vec<String>)> {
+        self.config.orgs.iter().map(|org| (org.name.clone(), org.accounts.clone())).collect()
+    }
+
+    /// Return the names of all projects that should spawn at forge
+    /// launch (`auto_start = true` OR `focus = true`). The
+    /// `focus = true` project (if any) is returned FIRST so the
+    /// caller's dispatch loop can route it through `StartDefault`
+    /// (focused tab) and the rest through `SpawnProject` (silent
+    /// background spawn). Without focus, the order is declaration
+    /// order from forge.toml.
+    #[must_use]
+    pub fn auto_start_project_names(&self) -> Vec<String> {
+        let mut focused: Option<String> = None;
+        let mut rest: Vec<String> = Vec::new();
+        for project in self.config.auto_start_projects() {
+            if project.focus {
+                focused = Some(project.name.clone());
+            } else {
+                rest.push(project.name.clone());
+            }
+        }
+        match focused {
+            Some(name) => std::iter::once(name).chain(rest).collect(),
+            None => rest,
+        }
+    }
+
     /// the lead. Empty `sessions` means the project has nothing on disk
     /// yet; the project still surfaces in the returned Vec.
     #[must_use]
@@ -210,6 +232,7 @@ impl Workspace {
             views.push(ProjectView {
                 key,
                 name: project.name.clone(),
+                org: project.org.clone(),
                 path: project.path.clone(),
                 display_path: project.display_path.clone(),
                 sessions,
@@ -278,19 +301,24 @@ impl Workspace {
             }
         }
 
-        // Pick an account via policy. Holds accounts lock briefly;
-        // released before we touch disk in `persist_account_state`.
-        let (account_key, account_dir) = {
-            let mut accounts = self.accounts.lock();
-            let now = SystemTime::now();
-            accounts.pick_next(now)
-        };
+        // Resolve the project's pinned `accounts = [...]` for the
+        // target. Project-rooted targets read it directly off the
+        // matching `LoadedProject`; session-id targets look up the
+        // originating project via catalog cwd → `LoadedProject.path`
+        // match so a resumed session honours its project's pin. The
+        // pin is required at the config layer (load fails otherwise),
+        // so a target that resolves to a known project always carries
+        // a non-empty list.
+        let project_account_pin = self.project_accounts_for(&target);
 
-        // Persist forge-state.toml AFTER releasing the accounts
-        // lock. `state::save` is best-effort — it logs and returns
-        // on failure rather than propagating, so a transient I/O
-        // hiccup doesn't break the spawn path.
-        self.persist_state();
+        // Pick the account with the most usage budget remaining
+        // within the pinned subset. Unknown-usage accounts (cold
+        // cache, fetch failed) sort first so the picker forces data
+        // acquisition. No fallback outside the pin.
+        let (account_key, account_dir) = {
+            let accounts = self.accounts.lock();
+            accounts.pick_for_project(&project_account_pin)
+        };
 
         // Slow path: spawn fresh Agent bound to the picked account's
         // config_dir. The Agent stores it as a typed field; every
@@ -409,6 +437,102 @@ impl Workspace {
         Ok(arc)
     }
 
+    /// Spawn the 30 s background account-usage poller. Fetches
+    /// OAuth usage for every `[[accounts]]` entry via the per-
+    /// account config-dir's credentials file (no Agent spawn
+    /// required), writes each result into `AccountStateMap.by_key`.
+    /// The TUI's bottom panel + the spawn-path picker both read
+    /// from that cache.
+    ///
+    /// Call once at construction. Multiple calls spawn independent
+    /// poller tasks and multiply the actual poll rate, which is
+    /// almost never what you want — the App's `create_app` is the
+    /// only production caller. Tests either skip this or call it
+    /// explicitly when they need a cache-warm path.
+    pub fn start_usage_poller(self: &Arc<Self>) {
+        let weak = Arc::downgrade(self);
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(USAGE_POLL_INTERVAL);
+            // First tick fires immediately — keep it so the cache
+            // warms within seconds of startup. Subsequent ticks
+            // honour `MissedTickBehavior::Skip` so a stalled fetch
+            // can't pile up backlogged refreshes.
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                interval.tick().await;
+                let Some(workspace) = weak.upgrade() else {
+                    return; // Workspace dropped; exit cleanly.
+                };
+                workspace.refresh_account_usage_once().await;
+            }
+        });
+    }
+
+    /// One pass of the usage poller: fetch OAuth usage for every
+    /// configured account in parallel, write each result back to
+    /// `AccountStateMap`. Per-account fetch errors are logged at
+    /// `warn` so persistent auth failures (revoked token, expired
+    /// refresh, missing credentials file) surface in default log
+    /// output. Snapshot-mapping errors stay at `debug` because they
+    /// indicate a response-shape drift rather than something the
+    /// user needs to act on. Public so tests can drive a
+    /// deterministic refresh without waiting for the 30 s tick.
+    pub async fn refresh_account_usage_once(self: &Arc<Self>) {
+        let entries: Vec<(AccountKey, std::path::PathBuf)> = {
+            let accounts = self.accounts.lock();
+            accounts
+                .ordered_keys
+                .iter()
+                .filter_map(|key| accounts.config_dir(key).map(|dir| (key.clone(), dir.clone())))
+                .collect()
+        };
+        let mut tasks = Vec::with_capacity(entries.len());
+        for (key, dir) in entries {
+            tasks.push(tokio::spawn(async move {
+                let result = forge_agent::cloud::oauth_usage::oauth_usage(&dir).await;
+                (key, dir, result)
+            }));
+        }
+        for task in tasks {
+            let Ok((key, dir, fetch_result)) = task.await else {
+                continue; // Task join error — skip.
+            };
+            match fetch_result {
+                Ok(payload) => match forge_agent::cloud::oauth::snapshot_from_payload(payload) {
+                    Ok(snapshot) => {
+                        self.accounts.lock().set_usage(&key, snapshot);
+                    }
+                    Err(err) => {
+                        tracing::debug!(
+                            target: "forge_workspace::account",
+                            account = %key.0,
+                            error = ?err,
+                            "usage_poll snapshot mapping failed",
+                        );
+                    }
+                },
+                Err(err) => {
+                    tracing::warn!(
+                        target: "forge_workspace::account",
+                        account = %key.0,
+                        config_dir = %dir.display(),
+                        error = %err,
+                        "usage_poll fetch failed; persistent failures usually mean stale OAuth credentials for this account",
+                    );
+                }
+            }
+        }
+    }
+
+    /// Read the cached usage snapshot for an account by display
+    /// name. `None` when the poller hasn't yet succeeded (cold
+    /// cache, no credentials, network blip). The TUI bottom panel
+    /// renders the 5h / 7d bars from this snapshot.
+    #[must_use]
+    pub fn usage_for(&self, display_name: &str) -> Option<forge_primitives::usage::UsageSnapshot> {
+        self.accounts.lock().usage(&AccountKey(display_name.to_owned())).cloned()
+    }
+
     /// Read the persisted Projects-pane visibility preference.
     /// Default `true` if `forge-state.toml` is missing, unparseable,
     /// or omits the `[ui]` section.
@@ -450,35 +574,18 @@ impl Workspace {
         self.persist_state();
     }
 
-    /// Snapshot the live in-memory state (account picker + UI
-    /// preferences) into a [`PersistedState`] and write it to
-    /// `forge-state.toml`. Both [`Self::get_agent_handle`] (account
-    /// picker mutation) and [`Self::set_projects_pane_visible`] (UI
-    /// toggle) flow through here, keeping the on-disk file the
-    /// single source of truth. Best-effort — `state::save` logs and
-    /// returns on failure so a transient write error never
-    /// propagates back into the calling path.
+    /// Snapshot the UI-visibility preferences into a
+    /// [`PersistedState`] and write it to `forge-state.toml`. Both
+    /// [`Self::set_projects_pane_visible`] and
+    /// [`Self::set_inspector_pane_visible`] flow through here.
+    /// Account selection state is no longer persisted — the picker
+    /// drives off the live in-memory usage cache. Best-effort —
+    /// `state::save` logs and returns on failure so a transient
+    /// write error never propagates back into the calling path.
     fn persist_state(&self) {
         let snapshot = {
-            let accounts = self.accounts.lock();
-            let mut persisted_accounts: HashMap<String, PersistedAccountState> = HashMap::new();
-            for (key, state) in &accounts.by_key {
-                persisted_accounts.insert(
-                    key.0.clone(),
-                    PersistedAccountState { last_used_at: state.last_used_at.map(format_rfc3339) },
-                );
-            }
-            // Only persist `round_robin_next` when the policy is
-            // round-robin; LRU sessions don't track a cursor and
-            // serialising a stale value would mislead a future
-            // policy switch.
-            let round_robin_next =
-                matches!(accounts.policy, crate::config::SelectionPolicy::RoundRobin)
-                    .then_some(accounts.round_robin_next);
             let ui = self.persisted_ui.lock();
             PersistedState {
-                accounts: persisted_accounts,
-                selection: PersistedSelectionState { round_robin_next },
                 ui: PersistedUiState {
                     projects_pane_visible: ui.projects_pane_visible,
                     inspector_pane_visible: ui.inspector_pane_visible,
@@ -503,6 +610,41 @@ impl Workspace {
                 Ok(self.lead_session_key_for(project))
             }
             SessionTarget::Session(key) => Ok(key.clone()),
+        }
+    }
+
+    /// Resolve a target's project-level account pin (the
+    /// `[[orgs]].accounts = [...]` list inherited from the project's
+    /// org in `forge.toml`). Project-rooted targets read directly off
+    /// the matching `LoadedProject`; session-id targets walk the
+    /// catalog for the session's original cwd and match against
+    /// `LoadedProject.path` so a resumed session inherits the
+    /// originating project's pin.
+    ///
+    /// Config-load guarantees every `LoadedProject.accounts` is
+    /// non-empty. The session-id branch can still miss (catalog has
+    /// no record, or cwd doesn't match any project) — those fall
+    /// back to the default project's pin so the picker always has
+    /// a non-empty list. This mirrors the "use what we know" intent
+    /// rather than a global account fallback.
+    fn project_accounts_for(&self, target: &SessionTarget) -> Vec<String> {
+        match target {
+            SessionTarget::Default => self.config.default_project().accounts.clone(),
+            SessionTarget::Named(name) => self.find_project_by_name(name).map_or_else(
+                |_| self.config.default_project().accounts.clone(),
+                |p| p.accounts.clone(),
+            ),
+            SessionTarget::Session(key) => {
+                let matched = self.session_cwd_for(key).and_then(|cwd| {
+                    let cwd_path = std::path::PathBuf::from(&cwd);
+                    self.config
+                        .projects
+                        .iter()
+                        .find(|p| p.path == cwd_path)
+                        .map(|p| p.accounts.clone())
+                });
+                matched.unwrap_or_else(|| self.config.default_project().accounts.clone())
+            }
         }
     }
 
@@ -1288,35 +1430,6 @@ impl Workspace {
     }
 }
 
-/// Parse an RFC 3339 timestamp into a [`SystemTime`]. Returns
-/// `None` on parse error so callers can fall back to "never used".
-/// Negative epochs (timestamps before 1970-01-01) are clamped to
-/// `UNIX_EPOCH` rather than rejected — they're nonsensical for the
-/// "last used" field but shouldn't block startup.
-fn parse_rfc3339(s: &str) -> Option<SystemTime> {
-    use time::OffsetDateTime;
-    OffsetDateTime::parse(s, &time::format_description::well_known::Rfc3339).ok().map(|odt| {
-        let nanos = odt.unix_timestamp_nanos();
-        if nanos < 0 {
-            SystemTime::UNIX_EPOCH
-        } else {
-            #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
-            let nanos_u64 = nanos as u64;
-            SystemTime::UNIX_EPOCH + std::time::Duration::from_nanos(nanos_u64)
-        }
-    })
-}
-
-/// Format a [`SystemTime`] as an RFC 3339 UTC string. Failure
-/// (extreme out-of-range values) yields an empty string rather
-/// than panicking — the persisted file stays well-formed even if
-/// a single field misformats.
-fn format_rfc3339(t: SystemTime) -> String {
-    use time::OffsetDateTime;
-    let odt: OffsetDateTime = t.into();
-    odt.format(&time::format_description::well_known::Rfc3339).unwrap_or_default()
-}
-
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
@@ -1329,10 +1442,14 @@ mod tests {
         fs::write(
             dir.path().join("forge.toml"),
             r#"
-[[projects]]
+[[orgs]]
+name = "Default"
+accounts = ["Stargate"]
+
+[[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
-default = true
+auto_start = true
 
 [[accounts]]
 display_name = "Stargate"
@@ -1424,12 +1541,16 @@ config_dir = "~/.claude-stargate"
         fs::write(
             dir.path().join("forge.toml"),
             r#"
-[[projects]]
+[[orgs]]
+name = "Default"
+accounts = ["Stargate"]
+
+[[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
-default = true
+auto_start = true
 
-[[projects]]
+[[orgs.projects]]
 name = "dotfiles"
 path = "~/Projects/dotfiles"
 
@@ -1461,10 +1582,14 @@ config_dir = "~/.claude-stargate"
         fs::write(
             dir.path().join("forge.toml"),
             r#"
-[[projects]]
+[[orgs]]
+name = "Default"
+accounts = ["Stargate"]
+
+[[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
-default = true
+auto_start = true
 
 [[accounts]]
 display_name = "Stargate"
@@ -1493,10 +1618,14 @@ config_dir = "~/.claude-stargate"
         fs::write(
             dir.path().join("forge.toml"),
             r#"
-[[projects]]
+[[orgs]]
+name = "Default"
+accounts = ["Stargate", "Gateway"]
+
+[[orgs.projects]]
 name = "forge"
 path = "~/Projects/forge"
-default = true
+auto_start = true
 
 [[accounts]]
 display_name = "Stargate"
@@ -1521,23 +1650,26 @@ config_dir = "~/.claude-gateway"
             .expect("default");
         let bound = workspace.pool_accounts_for_test();
         assert_eq!(bound.len(), 1);
-        // LRU tie-break is alphabetical on never-used: Gateway < Stargate.
-        assert_eq!(bound[0], "Gateway");
+        // Cold cache → unknown-first tie-break is the project's
+        // `accounts = ["Stargate", "Gateway"]` order. Stargate wins.
+        assert_eq!(bound[0], "Stargate");
     }
 
     #[tokio::test]
-    async fn second_spawn_picks_other_account_under_lru() {
+    async fn cold_cache_spawns_pick_first_in_allow_list_deterministically() {
+        // With no usage data for any account, the picker sorts
+        // unknown-first by `accounts = [...]` enumerate index. Both
+        // spawns land on the same account (Stargate, first in list).
+        // No LRU rotation any more — that's the whole point of the
+        // usage-balanced policy: data drives the choice, not time.
         let dir = make_workspace_dir_with_two_accounts();
         let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
 
-        // First spawn → Gateway (alphabetical tie-break).
         let _ = workspace
             .get_agent_handle(SessionTarget::Default, SessionLaunchSettings::default())
             .await
             .expect("first");
 
-        // Second spawn (different target so pool key differs) → Stargate
-        // (Gateway was just used, so it's no longer LRU).
         let other = SessionKey::from_str_for_test("dual-account-test-other");
         let _ = workspace
             .get_agent_handle(SessionTarget::Session(other), SessionLaunchSettings::default())
@@ -1546,24 +1678,61 @@ config_dir = "~/.claude-gateway"
 
         let bound = workspace.pool_accounts_for_test();
         assert_eq!(bound.len(), 2);
-        assert!(bound.contains(&"Gateway".to_owned()));
-        assert!(bound.contains(&"Stargate".to_owned()));
+        // Both spawns picked Stargate (first in accounts list, no
+        // usage data to differentiate).
+        assert!(bound.iter().all(|name| name == "Stargate"));
     }
 
     #[tokio::test]
-    async fn forge_state_toml_persists_after_spawn() {
-        let dir = make_workspace_dir_with_two_accounts();
+    async fn project_account_pin_excludes_unpinned_account() {
+        // Three accounts globally; default org pins only
+        // {Stargate, Gateway}. Spawn under the default project picks
+        // one of the pinned pair (Gateway via alpha tie-break) and
+        // must never touch Personal. Multi-spawn rotation within the
+        // subset is exercised by the unit tests in `account.rs`
+        // (`lru_restricted_pool_lru_within_subset`,
+        // `round_robin_restricted_pool_cycles_within_subset`).
+        let dir = tempdir().expect("tempdir");
+        fs::write(
+            dir.path().join("forge.toml"),
+            r#"
+[[orgs]]
+name = "Default"
+accounts = ["Stargate", "Gateway"]
+
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+auto_start = true
+
+[[accounts]]
+display_name = "Stargate"
+config_dir = "~/.claude-stargate"
+
+[[accounts]]
+display_name = "Gateway"
+config_dir = "~/.claude-gateway"
+
+[[accounts]]
+display_name = "Personal"
+config_dir = "~/.claude-profile3"
+"#,
+        )
+        .expect("write forge.toml");
+
         let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
         let _ = workspace
             .get_agent_handle(SessionTarget::Default, SessionLaunchSettings::default())
             .await
-            .expect("spawn");
+            .expect("default spawn");
 
-        // forge-state.toml should now exist with last_used_at populated.
-        let state_path = dir.path().join("forge-state.toml");
-        let content = std::fs::read_to_string(&state_path).expect("state file written");
-        assert!(content.contains("last_used_at"));
-        assert!(content.contains("Gateway") || content.contains("Stargate"));
+        let bound = workspace.pool_accounts_for_test();
+        assert_eq!(bound.len(), 1);
+        assert!(
+            bound[0] == "Stargate" || bound[0] == "Gateway",
+            "spawn must land on a pinned account, got {bound:?}",
+        );
+        assert_ne!(bound[0], "Personal", "Personal must be excluded by the pin");
     }
 
     // ---- Refresh + facade tests ----
