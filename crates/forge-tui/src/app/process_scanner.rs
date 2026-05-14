@@ -34,7 +34,7 @@ const TICKER_INTERVAL: Duration = Duration::from_secs(1);
 /// chosen as a compromise between "feels live" and "spend cycles on
 /// sysinfo refreshes." Tunable; lower means more responsive, higher
 /// means less CPU.
-const SNAPSHOT_STALENESS: Duration = Duration::from_secs(2);
+const SNAPSHOT_STALENESS: Duration = Duration::from_secs(1);
 
 /// Max events to apply per drain pump tick — same budget as
 /// `file_index` / `git_diff` so all three scanners share a single
