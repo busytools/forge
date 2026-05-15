@@ -24,6 +24,8 @@ use serde::Deserialize;
 use tokio::process::Command;
 use tokio::time::timeout;
 
+pub mod hunks;
+
 /// Max bytes accepted from `git diff --numstat`. A 1 MiB output is
 /// already deep in pathological territory (~10k+ files); past that
 /// we bail rather than allocate.
@@ -401,7 +403,7 @@ struct GhIssueEntry {
 /// operator might need; `Empty` is a legitimate "ran fine, no
 /// output" signal (the common case for `status --porcelain` on a
 /// clean tree).
-enum GitOutput {
+pub(super) enum GitOutput {
     Ok(String),
     /// Exit 0, empty stdout (legitimate "no output to report" case).
     Empty,
@@ -422,7 +424,7 @@ const STDERR_LOG_CAP: usize = 1024;
 /// timeout, return classified output. Non-zero exits log WARN with
 /// the captured stderr so operators can distinguish "clean tree"
 /// from "corrupt index / permissions / fatal: …" without re-running.
-async fn run_git(cwd: &Path, args: &[&str]) -> GitOutput {
+pub(super) async fn run_git(cwd: &Path, args: &[&str]) -> GitOutput {
     let mut command = Command::new("git");
     command.arg("-C").arg(cwd).args(args).kill_on_drop(true);
     let fut = command.output();
