@@ -170,8 +170,19 @@ fn build_pane_lines(overlay: &DiffOverlayState, area: Rect) -> Vec<Line<'static>
             )));
         }
         Some(file) if file.hunks.is_empty() => {
+            // An Untracked file with no hunks comes from one of
+            // the scan_untracked drop paths (size-cap exceeded,
+            // non-regular file, IO error) — all of which log WARN
+            // under ENV_GIT. The tracked-file case is a real
+            // binary diff from git. Differentiate so the user
+            // knows whether to grep logs vs accept the answer.
+            let message = if file.status == FileStatus::Untracked {
+                "  (untracked, content not surfaced — see ENV_GIT logs)"
+            } else {
+                "  (binary file or no diff content)"
+            };
             lines.push(Line::from(Span::styled(
-                "  (binary file or no diff content)",
+                message,
                 Style::default().fg(theme::DIM),
             )));
         }

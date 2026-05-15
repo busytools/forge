@@ -528,13 +528,33 @@ async fn scan_untracked(cwd: &Path) -> (Vec<FileHunks>, bool, usize) {
             Ok(meta) if !meta.is_file() => {
                 // ls-files --others normally returns regular files
                 // only, but submodules / sockets / fifos can sneak
-                // in on exotic setups. Drop them silently — the
-                // rail entry remains with empty hunks.
+                // in on exotic setups. Log so an operator hunting
+                // "why is this file showing as untracked-empty"
+                // has a breadcrumb — the rail row stays but its
+                // body is unviewable.
+                tracing::warn!(
+                    target: crate::logging::targets::ENV_GIT,
+                    event_name = "untracked_non_regular",
+                    message = "untracked entry is not a regular file; rail entry kept with empty hunks",
+                    outcome = "skipped",
+                    path = %file_path.display(),
+                );
                 Vec::new()
             }
-            Ok(_) => {
+            Ok(meta) => {
                 // File exists but exceeds MAX_UNTRACKED_FILE_SIZE.
-                // No log — this is the documented cap behavior.
+                // Documented cap behaviour; the WARN gives an
+                // operator something to grep when a specific file
+                // doesn't appear with its content.
+                tracing::warn!(
+                    target: crate::logging::targets::ENV_GIT,
+                    event_name = "untracked_oversize",
+                    message = "untracked file exceeded size cap; rail entry kept with empty hunks",
+                    outcome = "skipped",
+                    path = %file_path.display(),
+                    bytes = meta.len(),
+                    cap = MAX_UNTRACKED_FILE_SIZE,
+                );
                 Vec::new()
             }
             Err(err) => {
