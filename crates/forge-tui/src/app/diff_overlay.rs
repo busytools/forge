@@ -27,6 +27,9 @@ use super::view::{ActiveView, set_active_view};
 /// renderer can surface "scan failed" vs. "no changes" distinctly.
 /// `untracked_suppressed` carries the cap-overflow count so the
 /// rail can show a "+N untracked suppressed" notice.
+/// `seq` is the monotonic counter captured at spawn time; the
+/// drain pump uses it to drop events from a superseded scan
+/// (rapid second `/diff` before the first finishes).
 #[derive(Debug)]
 pub struct DiffOverlayEvent {
     pub cwd: PathBuf,
@@ -34,6 +37,7 @@ pub struct DiffOverlayEvent {
     pub files: Vec<FileHunks>,
     pub scanner_ok: bool,
     pub untracked_suppressed: usize,
+    pub seq: u64,
 }
 
 /// Spawn a tokio local task that awaits
@@ -44,6 +48,7 @@ pub fn spawn_fetch(
     workspace: Arc<forge_workspace::Workspace>,
     cwd: PathBuf,
     target: String,
+    seq: u64,
     tx: std_mpsc::Sender<DiffOverlayEvent>,
 ) {
     tokio::task::spawn_local(async move {
@@ -55,6 +60,7 @@ pub fn spawn_fetch(
             files,
             scanner_ok,
             untracked_suppressed,
+            seq,
         });
     });
 }
@@ -143,7 +149,19 @@ pub fn open_with_target(app: &mut App, target: String) {
         crate::app::slash::push_system_message(app, "Cannot open diff: active session has no cwd.");
         return;
     }
-    spawn_fetch(workspace, PathBuf::from(cwd_raw), target, app.diff_overlay_event_tx.clone());
+    // Bump the seq before spawning so the new scan's events
+    // outrank anything still in flight from an earlier /diff call.
+    // Old events arriving on the channel after this bump will be
+    // dropped by drain_events as superseded.
+    app.diff_scan_seq = app.diff_scan_seq.wrapping_add(1);
+    let seq = app.diff_scan_seq;
+    spawn_fetch(
+        workspace,
+        PathBuf::from(cwd_raw),
+        target,
+        seq,
+        app.diff_overlay_event_tx.clone(),
+    );
 }
 
 /// Auto-detect the diff target from the Inspector GIT snapshot and
@@ -214,6 +232,22 @@ pub fn drain_events(app: &mut App) {
             Ok(event) => event,
             Err(std_mpsc::TryRecvError::Empty | std_mpsc::TryRecvError::Disconnected) => return,
         };
+        // Superseded by a newer /diff invocation — silent drop.
+        // No user notice because they didn't navigate away or
+        // close anything; they just retriggered and the older
+        // scan's result is no longer relevant.
+        if event.seq != app.diff_scan_seq {
+            tracing::debug!(
+                target: crate::logging::targets::APP_SESSION,
+                event_name = "diff_overlay_drain_skipped_superseded",
+                message = "diff scan completed after a newer /diff superseded it; dropping result",
+                outcome = "skipped",
+                target_ref = %event.target,
+                event_seq = event.seq,
+                latest_seq = app.diff_scan_seq,
+            );
+            continue;
+        }
         if app.active_view != ActiveView::Chat {
             tracing::debug!(
                 target: crate::logging::targets::APP_SESSION,

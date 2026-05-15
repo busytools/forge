@@ -223,6 +223,7 @@ pub fn create_app(cli: &Cli, workspace: Arc<forge_workspace::Workspace>) -> App 
         cli_version_event_rx,
         diff_overlay_event_tx,
         diff_overlay_event_rx,
+        diff_scan_seq: 0,
         cli_version_info: None,
         process_scan_event_tx,
         process_scan_event_rx,

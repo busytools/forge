@@ -291,6 +291,12 @@ pub struct App {
     pub cli_version_event_rx: std_mpsc::Receiver<crate::app::cli_version::CliVersionEvent>,
     pub diff_overlay_event_tx: std_mpsc::Sender<crate::app::diff_overlay::DiffOverlayEvent>,
     pub diff_overlay_event_rx: std_mpsc::Receiver<crate::app::diff_overlay::DiffOverlayEvent>,
+    /// Monotonic counter bumped by every `/diff` invocation. Events
+    /// arriving on `diff_overlay_event_rx` carry the seq they were
+    /// spawned under; the drain pump only opens the overlay for
+    /// the latest seq, so a rapid second `/diff` correctly
+    /// supersedes the first instead of replaying the older result.
+    pub diff_scan_seq: u64,
     /// Latest installed-vs-published claude CLI version snapshot.
     /// `None` until the startup fetch task lands. Rendered by the
     /// bottom-left account panel; missing values render as DIM `—`
@@ -2371,6 +2377,7 @@ impl App {
             cli_version_event_rx: cli_version_rx,
             diff_overlay_event_tx: diff_overlay_tx,
             diff_overlay_event_rx: diff_overlay_rx,
+            diff_scan_seq: 0,
             cli_version_info: None,
             spinner_frame: 0,
             spinner_last_advance_at: None,
