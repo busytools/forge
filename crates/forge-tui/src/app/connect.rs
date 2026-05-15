@@ -156,10 +156,16 @@ pub fn create_app(cli: &Cli, workspace: Arc<forge_workspace::Workspace>) -> App 
     drop(pre_connect_domain);
     let mut sessions = std::collections::HashMap::new();
     sessions.insert(pre_connect_key.clone(), pre_connect_session);
-    // Snapshot the persisted side-pane visibility before moving
-    // `workspace` into the App struct below.
-    let projects_pane_visible = workspace.projects_pane_visible();
-    let inspector_pane_visible = workspace.inspector_pane_visible();
+    // Tier-based default for side panes: visible at Wide, hidden
+    // elsewhere. Both panes use the same threshold (Wide tier) so
+    // narrow / medium terminals start with a chat-only layout the
+    // user can grow via Ctrl+B / Ctrl+E if they want the chrome
+    // back. Nothing is persisted — each forge launch re-derives
+    // from the current terminal width.
+    let (initial_term_width, _) = crossterm::terminal::size().unwrap_or((0, 0));
+    let panes_visible_by_default = initial_term_width >= crate::ui::layout::WIDE_TIER_MIN_WIDTH;
+    let projects_pane_visible = panes_visible_by_default;
+    let inspector_pane_visible = panes_visible_by_default;
     // Boot view: `forge` (no argv) → launchpad picker; `forge <project>`
     // → chat directly. Argv selection is final — no `focus = true`
     // override, no remembered-last-pick. Snapshot launchpad state from

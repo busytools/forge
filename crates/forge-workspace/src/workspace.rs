@@ -19,7 +19,6 @@ use crate::error::WorkspaceError;
 use crate::protocol::{Command, DispatchError, PendingInteractionSlot, SessionUpdate};
 use crate::session_task::SessionTask;
 use crate::spawn;
-use crate::state::{self, PersistedState, PersistedUiState};
 use crate::target::{ProjectKey, SessionKey, SessionTarget};
 use crate::views::{ProjectView, SessionView};
 
@@ -65,15 +64,9 @@ pub struct Workspace {
     /// Live Agents keyed by session id. `parking_lot::Mutex` so the
     /// public methods can take `&self`.
     pool: Mutex<HashMap<SessionKey, PooledAgent>>,
-    /// Account picker state. Updated on every spawn; persisted to
-    /// `forge-state.toml` after each pick.
+    /// Account picker state. Updated on every spawn; refreshed by
+    /// the in-memory usage poller.
     accounts: Mutex<AccountStateMap>,
-    /// In-memory mirror of the `[ui]` section in `forge-state.toml`.
-    /// Mutated by [`Workspace::set_projects_pane_visible`] (called
-    /// from forge-tui when the user presses Ctrl+B); persisted via
-    /// the same `state::save` path the account picker uses, so
-    /// `[accounts]` / `[selection]` survive UI-only writes.
-    persisted_ui: Mutex<PersistedUiState>,
     /// Fan-in [`SessionUpdate`] sender. Cloned and handed to
     /// `bridge_lifecycle` via [`Self::update_sender`] so the existing
     /// AgentEvent translator can dual-emit `ClientEvent` + `SessionUpdate`
@@ -145,10 +138,6 @@ impl Workspace {
         // descending; the per-project Vec inherits that ordering thanks
         // to push order being preserved.
 
-        // Load persisted state (UI pane visibility only since selection
-        // is now usage-based and refreshed in-memory). Missing or
-        // malformed → defaults; never blocks startup.
-        let persisted = state::load_or_default(&config_dir);
         let accounts = AccountStateMap::new(&config.accounts);
 
         let (update_tx, update_rx) = mpsc::unbounded_channel::<SessionUpdate>();
@@ -158,7 +147,6 @@ impl Workspace {
             catalog: Mutex::new(catalog),
             pool: Mutex::new(HashMap::new()),
             accounts: Mutex::new(accounts),
-            persisted_ui: Mutex::new(persisted.ui),
             update_tx,
             update_rx_slot: Mutex::new(Some(update_rx)),
             command_senders: Mutex::new(HashMap::new()),
@@ -273,11 +261,11 @@ impl Workspace {
     /// spawn; subsequent calls reuse the existing Agent and ignore the
     /// parameter.
     ///
-    /// Each fresh spawn consults the account picker (LRU or
-    /// round-robin per `forge.toml`) and exports
+    /// Each fresh spawn consults the account picker and exports
     /// `CLAUDE_CONFIG_DIR` to the spawned `claude` subprocess so it
-    /// reads/writes the picked account's config dir. Picker state is
-    /// persisted to `forge-state.toml` after every pick.
+    /// reads/writes the picked account's config dir. Picker state
+    /// lives in the in-memory usage cache; nothing about account
+    /// choice is persisted across forge launches.
     ///
     /// Workspace does not track which handle the caller is "using" —
     /// that's the caller's concern.
@@ -565,68 +553,6 @@ impl Workspace {
     #[must_use]
     pub fn usage_error_for(&self, display_name: &str) -> Option<crate::account::UsageFetchStatus> {
         self.accounts.lock().usage_error(&AccountKey(display_name.to_owned()))
-    }
-
-    /// Read the persisted Projects-pane visibility preference.
-    /// Default `true` if `forge-state.toml` is missing, unparseable,
-    /// or omits the `[ui]` section.
-    #[must_use]
-    pub fn projects_pane_visible(&self) -> bool {
-        self.persisted_ui.lock().projects_pane_visible
-    }
-
-    /// Update + atomically persist the Projects-pane visibility
-    /// preference. Writes `forge-state.toml` via the existing
-    /// `state::save` atomic-rename path, preserving the
-    /// `[accounts]` and `[selection]` sections from the live
-    /// `AccountStateMap`. Best-effort — on I/O failure the new
-    /// value stays in memory but won't survive restart.
-    pub fn set_projects_pane_visible(&self, visible: bool) {
-        {
-            let mut ui = self.persisted_ui.lock();
-            ui.projects_pane_visible = visible;
-        }
-        self.persist_state();
-    }
-
-    /// Read the persisted Inspector-pane visibility preference.
-    /// Default `true` if `forge-state.toml` is missing, unparseable,
-    /// or omits the field.
-    #[must_use]
-    pub fn inspector_pane_visible(&self) -> bool {
-        self.persisted_ui.lock().inspector_pane_visible
-    }
-
-    /// Update + atomically persist the Inspector-pane visibility
-    /// preference. Same persistence path as
-    /// [`Self::set_projects_pane_visible`].
-    pub fn set_inspector_pane_visible(&self, visible: bool) {
-        {
-            let mut ui = self.persisted_ui.lock();
-            ui.inspector_pane_visible = visible;
-        }
-        self.persist_state();
-    }
-
-    /// Snapshot the UI-visibility preferences into a
-    /// [`PersistedState`] and write it to `forge-state.toml`. Both
-    /// [`Self::set_projects_pane_visible`] and
-    /// [`Self::set_inspector_pane_visible`] flow through here.
-    /// Account selection state is no longer persisted — the picker
-    /// drives off the live in-memory usage cache. Best-effort —
-    /// `state::save` logs and returns on failure so a transient
-    /// write error never propagates back into the calling path.
-    fn persist_state(&self) {
-        let snapshot = {
-            let ui = self.persisted_ui.lock();
-            PersistedState {
-                ui: PersistedUiState {
-                    projects_pane_visible: ui.projects_pane_visible,
-                    inspector_pane_visible: ui.inspector_pane_visible,
-                },
-            }
-        };
-        state::save(&self.config_dir, &snapshot);
     }
 
     /// Resolves a `SessionTarget` to the `SessionKey` used to look up
@@ -1475,7 +1401,6 @@ impl Workspace {
             catalog: Mutex::new(HashMap::new()),
             pool: Mutex::new(HashMap::new()),
             accounts: Mutex::new(AccountStateMap::empty_for_test()),
-            persisted_ui: Mutex::new(PersistedUiState::default()),
             update_tx,
             update_rx_slot: Mutex::new(None),
             command_senders: Mutex::new(HashMap::new()),
