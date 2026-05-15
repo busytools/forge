@@ -54,14 +54,8 @@ pub fn spawn_fetch(
     tokio::task::spawn_local(async move {
         let ScanOutcome { files, scanner_ok, untracked_suppressed } =
             workspace.scan_git_diff_hunks(&cwd, &target).await;
-        let _ = tx.send(DiffOverlayEvent {
-            cwd,
-            target,
-            files,
-            scanner_ok,
-            untracked_suppressed,
-            seq,
-        });
+        let _ =
+            tx.send(DiffOverlayEvent { cwd, target, files, scanner_ok, untracked_suppressed, seq });
     });
 }
 
@@ -155,13 +149,7 @@ pub fn open_with_target(app: &mut App, target: String) {
     // dropped by drain_events as superseded.
     app.diff_scan_seq = app.diff_scan_seq.wrapping_add(1);
     let seq = app.diff_scan_seq;
-    spawn_fetch(
-        workspace,
-        PathBuf::from(cwd_raw),
-        target,
-        seq,
-        app.diff_overlay_event_tx.clone(),
-    );
+    spawn_fetch(workspace, PathBuf::from(cwd_raw), target, seq, app.diff_overlay_event_tx.clone());
 }
 
 /// Auto-detect the diff target from the Inspector GIT snapshot and
