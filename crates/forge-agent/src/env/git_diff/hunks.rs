@@ -360,12 +360,28 @@ fn flush_section(lines: &[&str], map: &mut HashMap<String, String>) {
 /// reported back under the old path so the merger can match them
 /// against the `--name-status` entry, which uses the deleted path
 /// as the only path.
+///
+/// Tries four fallbacks in order so legitimate git sections that
+/// omit `+++ b/` lines still resolve cleanly (avoids spamming
+/// `git_section_path_missing` WARNs on normal repo activity):
+/// 1. `+++ b/<path>` — the canonical new-side header.
+/// 2. `+++ /dev/null` + `--- a/<path>` — deletions.
+/// 3. `rename to <path>` — pure renames (no content change, so no
+///    `---`/`+++` lines at all; only `rename from`/`rename to`).
+/// 4. `diff --git a/X b/Y` header — mode-only changes and binary
+///    diffs ("Binary files a/X and b/Y differ") have no `+++`
+///    lines either. `rsplit_once(" b/")` picks the LAST ` b/` so
+///    paths containing ` b/` in their interior still round-trip.
 fn path_from_section(lines: &[&str]) -> Option<String> {
     let mut new_path: Option<String> = None;
     let mut old_path: Option<String> = None;
     let mut plus_is_devnull = false;
+    let mut rename_to: Option<String> = None;
+    let mut diff_header_rest: Option<&str> = None;
     for line in lines {
-        if let Some(rest) = line.strip_prefix("--- a/") {
+        if let Some(rest) = line.strip_prefix("diff --git ") {
+            diff_header_rest = Some(rest);
+        } else if let Some(rest) = line.strip_prefix("--- a/") {
             old_path = Some(rest.to_owned());
         } else if let Some(rest) = line.strip_prefix("+++ b/") {
             new_path = Some(rest.to_owned());
@@ -373,9 +389,25 @@ fn path_from_section(lines: &[&str]) -> Option<String> {
         } else if line.starts_with("+++ /dev/null") {
             plus_is_devnull = true;
             break;
+        } else if let Some(rest) = line.strip_prefix("rename to ") {
+            rename_to = Some(rest.to_owned());
         }
     }
-    if plus_is_devnull { old_path } else { new_path }
+    if plus_is_devnull {
+        return old_path;
+    }
+    if let Some(path) = new_path {
+        return Some(path);
+    }
+    if let Some(path) = rename_to {
+        return Some(path);
+    }
+    // Last resort: parse `diff --git a/X b/Y` header. Used for
+    // mode-only / binary / pure-rename sections that don't emit
+    // any of the headers above. `rsplit_once` anchors on the LAST
+    // ` b/` which is the canonical separator in git's output even
+    // when the path itself contains ` b/`.
+    diff_header_rest.and_then(|rest| rest.rsplit_once(" b/").map(|(_, b)| b.to_owned()))
 }
 
 /// Parse one file's diff section into individual hunks. Hunks are
@@ -818,6 +850,57 @@ diff --git a/x.rs b/x.rs
             "diff --git a/bokehjs/src/lib/patch.ts b/bokehjs/src/lib/patch.ts",
             "--- a/bokehjs/src/lib/patch.ts",
             "+++ b/bokehjs/src/lib/patch.ts",
+        ];
+        assert_eq!(path_from_section(&lines), Some("bokehjs/src/lib/patch.ts".into()));
+    }
+
+    #[test]
+    fn path_from_section_pure_rename_uses_rename_to() {
+        // Pure rename (similarity index 100%) — git emits no
+        // `+++ b/` because there's no content change.
+        let lines = vec![
+            "diff --git a/old.rs b/new.rs",
+            "similarity index 100%",
+            "rename from old.rs",
+            "rename to new.rs",
+        ];
+        assert_eq!(path_from_section(&lines), Some("new.rs".into()));
+    }
+
+    #[test]
+    fn path_from_section_mode_only_uses_diff_header() {
+        // Mode change only — no `+++ b/`, no rename markers; the
+        // path is implicit in the diff --git header.
+        let lines = vec![
+            "diff --git a/build.sh b/build.sh",
+            "old mode 100644",
+            "new mode 100755",
+        ];
+        assert_eq!(path_from_section(&lines), Some("build.sh".into()));
+    }
+
+    #[test]
+    fn path_from_section_binary_diff_uses_diff_header() {
+        // Binary file diff — no `+++ b/`; the header carries the
+        // path.
+        let lines = vec![
+            "diff --git a/logo.png b/logo.png",
+            "index abc..def 100644",
+            "Binary files a/logo.png and b/logo.png differ",
+        ];
+        assert_eq!(path_from_section(&lines), Some("logo.png".into()));
+    }
+
+    #[test]
+    fn path_from_section_diff_header_with_b_in_path_resolves_via_rsplit() {
+        // Combine: binary file whose path contains ` b/`. The
+        // header parser must pick the canonical ` b/` separator
+        // (the last one) so the path round-trips even without
+        // a `+++` line.
+        let lines = vec![
+            "diff --git a/bokehjs/src/lib/patch.ts b/bokehjs/src/lib/patch.ts",
+            "index abc..def 100644",
+            "Binary files a/bokehjs/src/lib/patch.ts and b/bokehjs/src/lib/patch.ts differ",
         ];
         assert_eq!(path_from_section(&lines), Some("bokehjs/src/lib/patch.ts".into()));
     }
