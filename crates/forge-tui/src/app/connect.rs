@@ -391,7 +391,6 @@ mod tests {
             diagnostics_preset: None,
             log_file: None,
             log_filter: None,
-            log_append: false,
             enable_perf: false,
             perf_log: None,
             perf_append: false,
