@@ -1093,6 +1093,18 @@ fn reopen_comment_for_key(overlay: &mut DiffOverlayState, key: LineKey) -> Mouse
 /// path would drop the bundle on the floor and the user would
 /// lose their review notes.
 pub(super) fn close_with_submit(app: &mut App) {
+    // Flush the active editor BEFORE the pending check — a reopened
+    // chip moves its saved comment onto `active_input.prior_comment`,
+    // so `overlay.comments` is empty while the editor is open. If we
+    // checked pending first, a held-no-agent state with only a
+    // reopened-chip-in-flight would BYPASS the held branch (pending
+    // = false), fall through to dispatch_prompt's silent no-agent
+    // path, and lose the user's saved review note. The helper
+    // restores the prior to `o.comments` so the post-flush pending
+    // check sees the complete set.
+    if let Some(o) = app.diff_overlay.as_mut() {
+        let _ = close_active_input_preserving_prior(o);
+    }
     let pending = app.diff_overlay.as_ref().is_some_and(|o| !o.comments.is_empty());
     if pending && (!app.has_active_agent() || app.session_id().is_none()) {
         let comment_count = app.diff_overlay.as_ref().map_or(0, |o| o.comments.len());
@@ -1110,20 +1122,12 @@ pub(super) fn close_with_submit(app: &mut App) {
             "Diff overlay close held: agent not ready. Wait for the session to connect, then press Esc again to submit your comments.",
         );
         // Leave the overlay open so the user can retry. The user's
-        // comments stay intact on `overlay.comments`. They can also
-        // abandon by clearing chips one by one (click chip + Esc-
-        // cancel-input), though that's a long path.
+        // comments stay intact on `overlay.comments` (including any
+        // prior restored by the flush above). They can also abandon
+        // by clearing chips one by one (click chip + Esc-cancel-input),
+        // though that's a long path.
         app.needs_redraw = true;
         return;
-    }
-    // Flush the active editor first — banner-✕ / Esc with an open
-    // editor would otherwise drop the in-progress text silently. The
-    // helper logs DEBUG on any abandoned chars and, for a reopened
-    // chip, restores the prior comment so it gets bundled with the
-    // rest. After this, `o.comments` holds the complete set the user
-    // expects to submit.
-    if let Some(o) = app.diff_overlay.as_mut() {
-        let _ = close_active_input_preserving_prior(o);
     }
     // Single-pass snapshot of everything we need from overlay state
     // BEFORE close() drops it. Avoids the previous two-step (take
@@ -1860,9 +1864,11 @@ mod tests {
         // SILENT-1 fix: banner ✕ / Esc with an open editor that's a
         // chip-reopen must restore the prior to the bundle. Without
         // the pre-flight flush, the prior would be dropped silently
-        // when the helper isn't called.
+        // because the snapshot's mem::take pulls only from
+        // overlay.comments. Verify by inspecting the dispatched
+        // Command::PromptWithImages's text for the prior's content.
         let mut app = App::test_default();
-        let _ = app.install_testing_stub();
+        let mut rx = app.install_testing_stub();
         app.set_session_id(Some(crate::agent::model::SessionId::new("session-1")));
         let mut state = sample_state();
         let key = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 };
@@ -1882,10 +1888,55 @@ mod tests {
         app.diff_overlay = Some(state);
         set_active_view(&mut app, ActiveView::Diff);
         close_with_submit(&mut app);
-        // Overlay closed AND the prior comment was bundled into the
-        // submit — verified indirectly by the overlay state being
-        // dropped (close ran) and the chip wasn't silently lost.
         assert!(app.diff_overlay.is_none(), "overlay closed");
+        // The prior must have made it into the dispatched bundle —
+        // inspect the Command::PromptWithImages text the stub
+        // receiver picked up.
+        let dispatched = rx.try_recv().expect("a prompt was dispatched");
+        match dispatched {
+            forge_primitives::Command::PromptWithImages { text, .. } => {
+                assert!(
+                    text.contains("important review note"),
+                    "bundle markdown contains the prior comment text, got: {text}",
+                );
+            }
+            other => panic!("expected PromptWithImages, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn close_with_submit_holds_on_reopened_chip_with_no_agent() {
+        // Pre-flight-after-flush fix: if the agent isn't ready and
+        // the only "pending" content is a reopened chip's prior
+        // (so overlay.comments is empty at entry), the OLD pending
+        // check would bypass the held branch and dispatch_prompt
+        // would silently drop the note. The fixed order (flush
+        // first, then pending check) restores the prior into
+        // overlay.comments BEFORE the pending check, so the held
+        // branch fires correctly.
+        let mut app = App::test_default();
+        // No install_testing_stub → has_active_agent = false.
+        let mut state = sample_state();
+        let key = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 };
+        let prior = HunkComment {
+            key,
+            path: "a.rs".into(),
+            line: 1,
+            hunk_context: vec![],
+            comment_text: "to be preserved".into(),
+        };
+        let mut editor = TextArea::default();
+        editor.insert_str("to be preserved");
+        state.active_input = Some(ActiveCommentInput { key, editor, prior_comment: Some(prior) });
+        app.diff_overlay = Some(state);
+        set_active_view(&mut app, ActiveView::Diff);
+        close_with_submit(&mut app);
+        // Overlay stays open + prior restored to comments so user
+        // can retry once the agent connects.
+        let after = app.diff_overlay.as_ref().expect("overlay held");
+        assert_eq!(after.comments.len(), 1, "prior restored on held path");
+        assert_eq!(after.comments[0].comment_text, "to be preserved");
+        assert!(after.active_input.is_none(), "editor closed by the flush");
     }
 
     #[test]
