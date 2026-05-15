@@ -59,18 +59,32 @@ pub(crate) fn session_launch_settings_for_resume(
 
 /// Create the `App` struct in `Connecting` state and load shared settings state.
 ///
-/// `cwd_raw` and `cwd` are seeded from the process working directory
-/// so trust + file index init have a sensible value to work with;
-/// the `Connected` event overwrites them with the agent's reported
-/// cwd once the workspace-backed agent finishes its handshake.
+/// `cwd_raw` / `cwd` source — `forge.toml` is the single source of
+/// truth for project paths. `std::env::current_dir()` is intentionally
+/// NOT consulted: when forge is launched from inside a project's
+/// directory, using `current_dir()` as the pre-Connect bucket's
+/// `cwd_raw` makes it collide with that project's `path` in
+/// `forge.toml`, and every `cwd_raw`-keyed lookup (`find_live_bucket`,
+/// `find_running_bucket_for_path`, …) becomes a non-deterministic
+/// `HashMap` walk. The right answer is to source the seed from
+/// `forge.toml` when we know which project (chat-direct mode) and
+/// leave it empty otherwise (launchpad mode — no project picked yet).
 pub fn create_app(cli: &Cli, workspace: Arc<forge_workspace::Workspace>) -> App {
-    // Seed cwd from the process working directory until the Connected
-    // event delivers the agent's actual cwd. Trust + file_index init
-    // need a non-empty value; reading `current_dir()` here is fine
-    // because forge is always invoked from the project root the user
-    // wants to operate on.
-    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-    let cwd_display = shorten_cwd_for_display(&cwd);
+    // Resolve the pre-Connect seed cwd from `forge.toml`:
+    //
+    // - `forge <project>` (chat-direct): look up `project.path`.
+    // - `forge` (launchpad): no project picked, leave both empty.
+    //   Trust + file_index init handle an empty cwd cleanly; the
+    //   first per-project Connected event populates the real
+    //   bucket's `cwd_raw` from the agent's reported cwd.
+    let project_path = cli
+        .project
+        .as_deref()
+        .and_then(|name| workspace.list_projects().into_iter().find(|p| p.name == name))
+        .map(|p| p.path);
+    let cwd_display = project_path.as_ref().map(|p| shorten_cwd_for_display(p)).unwrap_or_default();
+    let cwd_raw =
+        project_path.as_ref().map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
 
     let (file_index_event_tx, file_index_event_rx) = std::sync::mpsc::channel();
     let (git_diff_event_tx, git_diff_event_rx) = std::sync::mpsc::channel();
@@ -147,7 +161,7 @@ pub fn create_app(cli: &Cli, workspace: Arc<forge_workspace::Workspace>) -> App 
     pre_connect_session.messages =
         vec![super::ChatMessage::welcome(crate::FORGE_VERSION, "", &cwd_display, "-")];
     pre_connect_session.cwd = cwd_display;
-    pre_connect_session.cwd_raw = cwd.to_string_lossy().to_string();
+    pre_connect_session.cwd_raw = cwd_raw;
     // Pre-register a handle-less DomainSession for the pre-Connect
     // key. The spawn handler later stamps the live `Arc<AgentHandle>`
     // onto this same domain entry when
@@ -398,10 +412,12 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn create_app_wires_workspace_and_seeds_cwd_from_process() {
-        // Workspace::new requires a forge.toml in the config dir. The
-        // project path doesn't have to exist on disk — `create_app`
-        // doesn't read it.
+    async fn create_app_launchpad_mode_leaves_cwd_raw_empty() {
+        // No argv → launchpad mode → no project picked → pre-connect
+        // bucket carries an empty `cwd_raw`. This is the invariant
+        // the `find_running_bucket_for_path` simplification depends
+        // on: pre-connect can never collide with a real project's
+        // `path` because there's nothing to compare against.
         let config_dir = tempfile::tempdir().expect("tempdir");
         let project_dir = tempfile::tempdir().expect("project tempdir");
         write_default_forge_toml(config_dir.path(), project_dir.path());
@@ -413,9 +429,37 @@ mod tests {
         let local = tokio::task::LocalSet::new();
         let app = local.run_until(async { super::create_app(&cli, Arc::new(workspace)) }).await;
 
-        // cwd is seeded from the process; the Connected event later
-        // overwrites it with the agent's reported value.
-        assert!(!app.cwd_raw().is_empty(), "cwd_raw should be seeded from process cwd");
+        assert!(
+            app.cwd_raw().is_empty(),
+            "launchpad-mode pre-connect should leave cwd_raw empty, got {:?}",
+            app.cwd_raw(),
+        );
+        assert!(app.workspace.is_some(), "workspace should be wired");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn create_app_chat_direct_mode_seeds_cwd_raw_from_forge_toml() {
+        // `forge <project>` → chat-direct mode → pre-connect bucket
+        // carries the project's `path` from `forge.toml`, NOT the
+        // process working directory. That's the architectural fix:
+        // forge.toml is the source of truth for project paths;
+        // `std::env::current_dir()` is intentionally not consulted.
+        let config_dir = tempfile::tempdir().expect("tempdir");
+        let project_dir = tempfile::tempdir().expect("project tempdir");
+        write_default_forge_toml(config_dir.path(), project_dir.path());
+        let workspace =
+            forge_workspace::Workspace::new(config_dir.path().to_owned()).await.expect("workspace");
+
+        let cli = cli_with(Some("forge-test"));
+
+        let local = tokio::task::LocalSet::new();
+        let app = local.run_until(async { super::create_app(&cli, Arc::new(workspace)) }).await;
+
+        assert_eq!(
+            app.cwd_raw(),
+            project_dir.path().to_string_lossy(),
+            "chat-direct pre-connect should carry the project's path from forge.toml",
+        );
         assert!(app.workspace.is_some(), "workspace should be wired");
     }
 
