@@ -429,7 +429,7 @@ fn append_git_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
         lines.push(Line::from(vec![
             Span::raw("  "),
             Span::styled(
-                "git scanner unhealthy — see logs (ENV_GIT)",
+                "git scanner unhealthy — see logs (target: agent.env_git)",
                 Style::default().fg(theme::STATUS_WARNING),
             ),
         ]));

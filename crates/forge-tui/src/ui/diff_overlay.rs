@@ -151,11 +151,13 @@ fn build_pane_lines(overlay: &DiffOverlayState, area: Rect) -> Vec<Line<'static>
     if !overlay.scanner_ok {
         // Include the target ref so a user who typoed (`/diff develpoment`)
         // can spot the mistake without dismissing the overlay to scroll
-        // chat. "tracing target: ENV_GIT" spells out what kind of target
-        // it is so it doesn't read as a git ref.
+        // chat. Spell out `target: agent.env_git` because that's the
+        // actual tracing-target string an operator would grep for —
+        // `ENV_GIT` was the const identifier, which doesn't match
+        // anything in the log stream.
         lines.push(Line::from(Span::styled(
             format!(
-                "  Scan failed for `{}` — see tracing logs under ENV_GIT. Press Esc to retry.",
+                "  Scan failed for `{}` — see tracing logs (target: agent.env_git). Press Esc to retry.",
                 overlay.target,
             ),
             Style::default().fg(theme::STATUS_ERROR),
@@ -173,11 +175,12 @@ fn build_pane_lines(overlay: &DiffOverlayState, area: Rect) -> Vec<Line<'static>
             // An Untracked file with no hunks comes from one of
             // the scan_untracked drop paths (size-cap exceeded,
             // non-regular file, IO error) — all of which log WARN
-            // under ENV_GIT. The tracked-file case is a real
-            // binary diff from git. Differentiate so the user
-            // knows whether to grep logs vs accept the answer.
+            // under the agent.env_git tracing target. The
+            // tracked-file case is a real binary diff from git.
+            // Differentiate so the user knows whether to grep logs
+            // vs accept the answer.
             let message = if file.status == FileStatus::Untracked {
-                "  (untracked, content not surfaced — see ENV_GIT logs)"
+                "  (untracked, content not surfaced — see logs (target: agent.env_git))"
             } else {
                 "  (binary file or no diff content)"
             };
