@@ -1116,10 +1116,13 @@ impl Workspace {
     /// as-facade pattern as [`Self::scan_git_diff`] so the TUI never
     /// depends on `forge-agent` directly.
     ///
-    /// `target` is passed verbatim to `git diff` as a two-dot
-    /// target: `"HEAD"` for working-tree-vs-HEAD (uncommitted
-    /// changes), `"main"` for everything since `main` (committed +
-    /// uncommitted), any other ref / SHA for that comparison.
+    /// `target` is passed verbatim to `git diff <target>`,
+    /// comparing the named ref against the working tree: `"HEAD"`
+    /// for working-tree-vs-HEAD (uncommitted only), `"main"` for
+    /// everything since `main` (committed + uncommitted), any other
+    /// ref / SHA for that comparison. NOT a `..` or `...` range
+    /// syntax — passing those would let git parse them as ranges
+    /// which yields a different (commit-vs-commit) diff.
     /// Untracked files round-trip only when `target == "HEAD"`.
     ///
     /// Infallible: scanner failures collapse to an empty `Vec` with

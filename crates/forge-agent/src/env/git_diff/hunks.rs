@@ -126,10 +126,13 @@ pub struct DiffLine {
     pub new_line: Option<u32>,
 }
 
-/// Top-level scanner entry. `target` is passed verbatim to `git
-/// diff` as a two-dot target — `"HEAD"` for working-tree-vs-HEAD,
+/// Top-level scanner entry. `target` is passed verbatim to
+/// `git diff <target>`, comparing the named ref against the working
+/// tree — `"HEAD"` for working-tree-vs-HEAD (uncommitted only),
 /// `"main"` for everything since `main` (committed + uncommitted),
-/// any other ref / SHA for that comparison.
+/// any other ref / SHA for that comparison. NOT a `..` or `...`
+/// range syntax; the renderer-side language ("two-dot semantics")
+/// describes the result, not the input shape.
 ///
 /// Returns one [`FileHunks`] per changed file, in the order
 /// `git diff --name-status` reports them. Untracked files (when
@@ -152,8 +155,8 @@ pub async fn scan(cwd: &Path, target: &str) -> Vec<FileHunks> {
 
     // Untracked only when the caller is asking for working-tree
     // semantics. `/diff main` from a feature branch already includes
-    // committed-since-main + uncommitted via the two-dot diff;
-    // untracked files don't belong to that comparison.
+    // committed-since-main + uncommitted via the ref-vs-worktree
+    // compare; untracked files don't belong to that comparison.
     if target == "HEAD" {
         files.extend(scan_untracked(cwd).await);
     }
