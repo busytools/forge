@@ -12,7 +12,7 @@
 //! body); the per-line diff renderer, click-to-comment, and Esc
 //! one-shot submit land in follow-up commits.
 
-use forge_workspace::env::git_diff::hunks::{FileHunks, FileStatus};
+use forge_workspace::env::git_diff::hunks::{DiffLine, DiffLineKind, FileHunks, FileStatus, Hunk};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -108,19 +108,87 @@ fn render_pane(frame: &mut Frame, area: Rect, overlay: &DiffOverlayState) {
     if area.height < 3 {
         return;
     }
-    let dim = Style::default().fg(theme::DIM);
-    let lines = vec![
-        pane_banner_row(overlay),
-        rule_row(area.width),
-        Line::default(),
-        Line::from(Span::styled(
-            "  (per-line diff body rendering pending follow-up commit)",
-            dim,
-        )),
-        Line::default(),
-        Line::from(Span::styled("  Press Esc to return to chat.", dim)),
-    ];
-    frame.render_widget(Paragraph::new(lines), area);
+    let mut lines = Vec::new();
+    lines.push(pane_banner_row(overlay));
+    lines.push(rule_row(area.width));
+    lines.push(Line::default());
+
+    match overlay.current_file() {
+        None => {
+            lines.push(Line::from(Span::styled(
+                "  (no file selected)",
+                Style::default().fg(theme::DIM),
+            )));
+        }
+        Some(file) if file.hunks.is_empty() => {
+            lines.push(Line::from(Span::styled(
+                "  (binary file or no diff content)",
+                Style::default().fg(theme::DIM),
+            )));
+        }
+        Some(file) => {
+            let gutter_width = gutter_width_for(file);
+            for (idx, hunk) in file.hunks.iter().enumerate() {
+                if idx > 0 {
+                    lines.push(Line::default());
+                }
+                lines.push(hunk_header_row(hunk));
+                for diff_line in &hunk.lines {
+                    lines.push(diff_line_row(diff_line, gutter_width));
+                }
+            }
+        }
+    }
+
+    let scroll = (overlay.body_scroll, 0);
+    frame.render_widget(Paragraph::new(lines).scroll(scroll), area);
+}
+
+fn gutter_width_for(file: &FileHunks) -> usize {
+    let max_line = file
+        .hunks
+        .iter()
+        .flat_map(|h| h.lines.iter())
+        .filter_map(|l| l.new_line.or(l.old_line))
+        .max()
+        .unwrap_or(1);
+    // Min width 2 so single-digit line numbers don't shift the
+    // marker column relative to two-digit ones inside the same
+    // hunk; cap at 6 for sanity (10⁶ lines is well beyond what
+    // anyone reviews in one pane).
+    max_line.to_string().len().clamp(2, 6)
+}
+
+fn hunk_header_row(hunk: &Hunk) -> Line<'static> {
+    let text = format!(
+        "  @@ -{},{} +{},{} @@",
+        hunk.old_start, hunk.old_count, hunk.new_start, hunk.new_count
+    );
+    Line::from(Span::styled(text, Style::default().fg(Color::Cyan)))
+}
+
+fn diff_line_row(line: &DiffLine, gutter_width: usize) -> Line<'static> {
+    let (marker, marker_color) = match line.kind {
+        DiffLineKind::Added => ("+", Color::Green),
+        DiffLineKind::Removed => ("-", Color::Red),
+        DiffLineKind::Context => (" ", theme::DIM),
+    };
+    let line_num = match line.kind {
+        DiffLineKind::Added | DiffLineKind::Context => line.new_line,
+        DiffLineKind::Removed => line.old_line,
+    };
+    let gutter = match line_num {
+        Some(n) => format!("{n:>gutter_width$}"),
+        None => " ".repeat(gutter_width),
+    };
+    Line::from(vec![
+        Span::raw("  "),
+        Span::styled(gutter, Style::default().fg(theme::DIM)),
+        Span::raw(" "),
+        Span::styled(marker, Style::default().fg(marker_color)),
+        Span::raw(" "),
+        Span::raw(line.text.clone()),
+    ])
 }
 
 fn render_narrow(frame: &mut Frame, area: Rect, _overlay: &DiffOverlayState) {
@@ -142,13 +210,28 @@ fn banner_row(label: &'static str) -> Line<'static> {
 }
 
 fn pane_banner_row(overlay: &DiffOverlayState) -> Line<'static> {
-    let title = overlay.current_file().map_or("(no file)", |f| f.path.as_str()).to_owned();
-    Line::from(vec![
+    let dim = Style::default().fg(theme::DIM);
+    let (title, added, removed) = overlay
+        .current_file()
+        .map_or_else(
+            || ("(no file)".to_owned(), 0u32, 0u32),
+            |f| (f.path.clone(), f.added_count(), f.removed_count()),
+        );
+    let mut spans = vec![
         Span::raw("  "),
         Span::styled("DIFF", Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD)),
-        Span::styled(" · ", Style::default().fg(theme::DIM)),
-        Span::styled(title, Style::default().fg(theme::DIM)),
-    ])
+        Span::styled(" · ", dim),
+        Span::styled(title, dim),
+    ];
+    if added > 0 {
+        spans.push(Span::raw("  "));
+        spans.push(Span::styled(format!("+{added}"), Style::default().fg(Color::Green)));
+    }
+    if removed > 0 {
+        spans.push(Span::raw(" "));
+        spans.push(Span::styled(format!("-{removed}"), Style::default().fg(Color::Red)));
+    }
+    Line::from(spans)
 }
 
 fn rule_row(width: u16) -> Line<'static> {
