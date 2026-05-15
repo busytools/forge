@@ -437,6 +437,31 @@ Concretely:
     is resolved, remove any code references to it. Concrete-fix
     `TODO:` comments naming a specific 1-3 line change are still
     fine; vague "consider adding X someday" TODOs belong in issues.
+15. **`forge.toml` is the source of truth for project state. Never
+    read it from the environment.** Project paths, names, accounts,
+    auto_start, account pins — all of it lives in `forge.toml`. The
+    binary's launch directory (`std::env::current_dir()`) is
+    irrelevant: the user can run `forge` (or `forge <project>`) from
+    anywhere and the behaviour must be identical. Anywhere code
+    derives "what project am I in" / "what's the project root" /
+    "where do I read `.claude/settings.local.json`" from
+    `current_dir()` is a bug. The active session bucket carries its
+    own `cwd_raw` (sourced from `forge.toml` at boot, or from the
+    agent's reported cwd post-Connect); read from there, or look up
+    the project via `Workspace::list_projects()` /
+    `find_project_view_by_name`. When you spot an env-derived
+    project-state read while doing other work, fix it on the spot
+    and audit the codebase for the same pattern — they cluster
+    (audit on 2026-05-15 found `config/store.rs:65`, `:380`,
+    `trust.rs:97`, `sdk_message.rs:1159` all sharing the same sin).
+    Exceptions: `$CLAUDE_CONFIG_DIR` for resolving where forge.toml
+    *itself* lives (set by the `claude_*` wrappers per account);
+    `$HOME` / `dirs::home_dir()` for resolving the user's home;
+    `$RUST_LOG`, `$NO_COLOR`, terminal-cap and log-path fallbacks
+    — those are ambient signals, not project state. The trigger
+    is "would this break if forge were invoked from `/tmp` instead
+    of `~/Projects/forge`?" — if yes, it's reading project state
+    from env; fix it.
 
 ## Weekly upstream-watch (NEW shape)
 

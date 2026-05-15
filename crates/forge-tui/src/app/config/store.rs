@@ -50,23 +50,21 @@ pub struct WorkspaceBridge<'a> {
 
 pub fn load(
     home_override: Option<&Path>,
-    project_root_override: Option<&Path>,
+    project_root: &Path,
     bridge: Option<WorkspaceBridge<'_>>,
 ) -> Result<LoadedSettingsDocuments, String> {
-    let paths = resolve_paths(home_override, project_root_override, bridge)?;
+    let paths = resolve_paths(home_override, project_root, bridge)?;
 
     // Production path delegates to the workspace facade so the same
     // `$CLAUDE_CONFIG_DIR`-respecting reader is used everywhere.
-    // Test fixtures pass home_override / project_root_override (and
-    // `None` for `bridge`) and bypass the workspace — env vars are
-    // process-global and would race across parallel test runs.
+    // Test fixtures pass `home_override` and bypass the workspace —
+    // env vars are process-global and would race across parallel
+    // test runs.
     let (settings_document, local_settings_document, preferences_document) = match bridge {
-        Some(bridge) if home_override.is_none() && project_root_override.is_none() => {
-            let cwd = std::env::current_dir()
-                .map_err(|err| format!("Failed to resolve current directory: {err}"))?;
+        Some(bridge) if home_override.is_none() => {
             let docs = bridge
                 .workspace
-                .settings_documents(bridge.key, &cwd)
+                .settings_documents(bridge.key, project_root)
                 .ok_or_else(|| "no agent registered for session".to_owned())?;
             (
                 docs.user.unwrap_or_else(empty_object),
@@ -366,7 +364,7 @@ pub fn set_preferred_notification_channel(document: &mut Value, channel: Preferr
 
 fn resolve_paths(
     home_override: Option<&Path>,
-    project_root_override: Option<&Path>,
+    project_root: &Path,
     bridge: Option<WorkspaceBridge<'_>>,
 ) -> Result<SettingsPaths, String> {
     let home = if let Some(path) = home_override {
@@ -374,12 +372,7 @@ fn resolve_paths(
     } else {
         dirs::home_dir().ok_or_else(|| "Failed to resolve home directory".to_owned())?
     };
-    let project_root = if let Some(path) = project_root_override {
-        path.to_path_buf()
-    } else {
-        std::env::current_dir()
-            .map_err(|err| format!("Failed to resolve current directory: {err}"))?
-    };
+    let project_root = project_root.to_path_buf();
 
     // User settings live under <config_dir>, which honours
     // $CLAUDE_CONFIG_DIR — delegate to the workspace facade so the
@@ -523,7 +516,7 @@ mod tests {
     fn load_missing_files_returns_empty_objects() {
         let dir = tempfile::tempdir().expect("tempdir");
 
-        let loaded = load(Some(dir.path()), Some(dir.path()), None).expect("load");
+        let loaded = load(Some(dir.path()), dir.path(), None).expect("load");
 
         assert_eq!(loaded.settings_document, Value::Object(Map::new()));
         assert_eq!(loaded.local_settings_document, Value::Object(Map::new()));
@@ -550,7 +543,7 @@ mod tests {
         std::fs::write(&settings_path, r#"{"fastMode":true}"#).expect("write settings");
         std::fs::write(&preferences_path, "{ not-json").expect("write malformed");
 
-        let loaded = load(Some(dir.path()), Some(dir.path()), None).expect("load");
+        let loaded = load(Some(dir.path()), dir.path(), None).expect("load");
 
         assert_eq!(fast_mode(&loaded.settings_document), Ok(true));
         assert_eq!(loaded.preferences_document, Value::Object(Map::new()));

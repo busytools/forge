@@ -91,11 +91,18 @@ fn absolutize(project_root: &Path) -> PathBuf {
     if let Ok(canonical) = project_root.canonicalize() {
         return canonical;
     }
-    if project_root.is_absolute() {
-        return project_root.to_path_buf();
-    }
-    std::env::current_dir()
-        .map_or_else(|_| project_root.to_path_buf(), |cwd| cwd.join(project_root))
+    // All callers receive `project_root` from `forge.toml`, which
+    // resolves tildes to absolute paths at config-load time
+    // (`expand_home`), or from a session bucket's `cwd_raw` which
+    // is also absolute (sourced from the agent's reported cwd or
+    // from `forge.toml`). A relative path reaching here would be a
+    // contract violation, not a runtime case to paper over —
+    // keep the input verbatim so the caller's path-comparison
+    // fails predictably instead of being silently rewritten using
+    // an ambient runtime signal (the previous `current_dir()`
+    // fallback would have produced different keys depending on
+    // where the user launched forge from).
+    project_root.to_path_buf()
 }
 
 fn normalize_project_key_string(raw: &str) -> String {
