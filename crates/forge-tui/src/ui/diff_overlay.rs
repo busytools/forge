@@ -590,7 +590,20 @@ fn build_pane_lines(
                     if let Some(input) = overlay.active_input.as_ref()
                         && input.key == line_key
                     {
-                        render_active_input(input, gutter_width, &mut lines, &mut keys);
+                        let anchor_line = match diff_line.kind {
+                            DiffLineKind::Removed => diff_line.old_line.unwrap_or(0),
+                            DiffLineKind::Added | DiffLineKind::Context => {
+                                diff_line.new_line.unwrap_or(0)
+                            }
+                        };
+                        render_active_input(
+                            input,
+                            gutter_width,
+                            anchor_line,
+                            area.width,
+                            &mut lines,
+                            &mut keys,
+                        );
                     }
                 }
             }
@@ -644,44 +657,112 @@ fn first_line_summary(text: &str) -> String {
     }
 }
 
-/// Render the active comment editor as 1+ inline rows. The TextArea
-/// holds the source-of-truth text; we paint a static view of it
-/// here because Paragraph can render strings, not widgets-inside-
-/// widgets. Each visual row gets its own `BodyRowKey::InputRow` so
-/// clicks anywhere on the editor surface still resolve to the
-/// editor (click currently no-ops; future: move cursor).
+/// Render the active comment editor as a bordered box anchored
+/// below the clicked diff line. Box title carries the anchor line
+/// number; body rows mirror the TextArea's lines; a footer row
+/// shows the key hints inside the box. Every row gets
+/// `BodyRowKey::InputRow` so any click on the dialog resolves to
+/// the editor (currently no-op; future: cursor positioning).
+///
+/// Box geometry:
+/// ```text
+///   ┌── Comment on line 371 ──────────────────┐
+///   │ user typed text here                    │
+///   │ another line of the comment             │
+///   │ Enter save · Esc cancel                 │  (DIM hint)
+///   └─────────────────────────────────────────┘
+/// ```
 fn render_active_input(
     input: &ActiveCommentInput,
     gutter_width: usize,
+    anchor_line: u32,
+    pane_width: u16,
     lines: &mut Vec<Line<'static>>,
     keys: &mut Vec<BodyRowKey>,
 ) {
-    let indent = " ".repeat(gutter_width + 4);
+    let indent_cols = gutter_width + 4;
+    let indent = " ".repeat(indent_cols);
+    // Leading "  " + indent on the left, 2-col right pad → box
+    // width is whatever's left of the pane.
+    let left_offset = 2 + indent_cols;
+    let right_pad = 2usize;
+    let box_width = usize::from(pane_width).saturating_sub(left_offset + right_pad).max(20);
+    let orange = Style::default().fg(theme::RUST_ORANGE);
+    let dim = Style::default().fg(theme::DIM);
+
+    // Top border with embedded title.
+    let title = format!(" Comment on line {anchor_line} ");
+    let title_chars = title.chars().count();
+    let dash_after = box_width.saturating_sub(1 + 2 + title_chars + 1);
+    let top = format!("┌──{title}{}┐", "─".repeat(dash_after));
+    lines.push(Line::from(vec![
+        Span::raw("  "),
+        Span::raw(indent.clone()),
+        Span::styled(top, orange),
+    ]));
+    keys.push(BodyRowKey::InputRow(input.key));
+
+    // Body rows — one per editor line. Empty editor shows a single
+    // placeholder row so the user sees where typing will land.
+    let inner_width = box_width.saturating_sub(2); // `│ … │`
     let editor_lines = input.editor.lines();
-    if editor_lines.is_empty() {
-        // Render an empty placeholder so the user sees where they're
-        // typing even before the first keystroke.
+    let body_rows: Vec<String> =
+        if editor_lines.is_empty() || editor_lines.iter().all(|l| l.is_empty()) {
+            vec!["(type your comment)".to_owned()]
+        } else {
+            editor_lines.iter().map(|l| l.clone()).collect()
+        };
+    for body_row in &body_rows {
+        let placeholder = body_rows.len() == 1 && body_row == "(type your comment)";
+        let fitted = fit_box_content(body_row, inner_width.saturating_sub(2));
+        let fitted_chars = fitted.chars().count();
+        let pad = inner_width.saturating_sub(2).saturating_sub(fitted_chars);
         lines.push(Line::from(vec![
             Span::raw("  "),
             Span::raw(indent.clone()),
-            Span::styled("│ ", Style::default().fg(theme::RUST_ORANGE)),
-            Span::styled(
-                "(type your comment, Enter to save, Esc to cancel)",
-                Style::default().fg(theme::DIM),
-            ),
-        ]));
-        keys.push(BodyRowKey::InputRow(input.key));
-        return;
-    }
-    for editor_line in editor_lines {
-        lines.push(Line::from(vec![
-            Span::raw("  "),
-            Span::raw(indent.clone()),
-            Span::styled("│ ", Style::default().fg(theme::RUST_ORANGE)),
-            Span::raw(editor_line.clone()),
+            Span::styled("│ ", orange),
+            if placeholder { Span::styled(fitted, dim) } else { Span::raw(fitted) },
+            Span::raw(" ".repeat(pad)),
+            Span::styled(" │", orange),
         ]));
         keys.push(BodyRowKey::InputRow(input.key));
     }
+
+    // In-box hint row (DIM).
+    let hint = "Enter save · Esc cancel";
+    let hint_fitted = fit_box_content(hint, inner_width.saturating_sub(2));
+    let hint_chars = hint_fitted.chars().count();
+    let hint_pad = inner_width.saturating_sub(2).saturating_sub(hint_chars);
+    lines.push(Line::from(vec![
+        Span::raw("  "),
+        Span::raw(indent.clone()),
+        Span::styled("│ ", orange),
+        Span::styled(hint_fitted, dim),
+        Span::raw(" ".repeat(hint_pad)),
+        Span::styled(" │", orange),
+    ]));
+    keys.push(BodyRowKey::InputRow(input.key));
+
+    // Bottom border.
+    let bottom = format!("└{}┘", "─".repeat(box_width.saturating_sub(2)));
+    lines.push(Line::from(vec![Span::raw("  "), Span::raw(indent), Span::styled(bottom, orange)]));
+    keys.push(BodyRowKey::InputRow(input.key));
+}
+
+/// Trim `text` to fit within `max_chars` columns. Used by the
+/// editor dialog body to keep rows from overflowing the box width.
+/// Falls back to `…`-suffix when truncation is needed.
+fn fit_box_content(text: &str, max_chars: usize) -> String {
+    let count = text.chars().count();
+    if count <= max_chars {
+        return text.to_owned();
+    }
+    if max_chars <= 1 {
+        return "\u{2026}".to_owned();
+    }
+    let take = max_chars.saturating_sub(1);
+    let truncated: String = text.chars().take(take).collect();
+    format!("{truncated}\u{2026}")
 }
 
 fn gutter_width_for(file: &FileHunks) -> usize {

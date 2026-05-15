@@ -394,13 +394,15 @@ fn append_git_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
         Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD),
     )];
     if has_glyph {
-        // " GIT" is 4 cells; glyph + right padding takes 2 cells
-        // (`⤢ ` — glyph then a single trailing space so the click
-        // target sits one column in from the absolute right edge).
-        let pad = usize::from(width).saturating_sub(4 + 2);
+        // " GIT" is 4 cells; glyph + right padding takes 3 cells
+        // (`⤢  ` — glyph then 2 trailing spaces so the click target
+        // sits 2 columns in from the absolute right edge, matching
+        // the breathing room the diff overlay's banner gives its
+        // ✕ close affordance).
+        let pad = usize::from(width).saturating_sub(4 + 3);
         header_spans.push(Span::raw(" ".repeat(pad)));
         header_spans.push(Span::styled("\u{2922}".to_owned(), Style::default().fg(theme::DIM)));
-        header_spans.push(Span::raw(" "));
+        header_spans.push(Span::raw("  "));
     }
     lines.push(Line::from(header_spans));
     // Blank between header and content.
@@ -643,7 +645,13 @@ fn count_digits(mut n: u64) -> usize {
 /// every other stats column in the section.
 fn diff_subtitle_line(width: u16, label: &str, totals: (u32, u32)) -> Line<'static> {
     let (added, removed) = totals;
-    let indent_chrome = usize::from(PANE_PAD) + 2; // "    " (4 cols)
+    // Indent is `"    "` painted below at the start of the line —
+    // 4 cells: PANE_PAD (1) + glyph (1) + 2-cell content gap. Keep
+    // this in sync with the literal indent on the Span::raw row
+    // below; an off-by-one here makes the line render 1 cell too
+    // wide, which clips the trailing-pad space and the `-M` ends up
+    // touching the right edge of the pane.
+    let indent_chrome = usize::from(PANE_PAD) + 3;
     let added_str = format!("+{added}");
     let removed_str = format!("-{removed}");
     let stats_width = added_str.chars().count() + 1 + removed_str.chars().count();
