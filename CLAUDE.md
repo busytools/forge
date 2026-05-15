@@ -437,15 +437,24 @@ Concretely:
     is resolved, remove any code references to it. Concrete-fix
     `TODO:` comments naming a specific 1-3 line change are still
     fine; vague "consider adding X someday" TODOs belong in issues.
-15. **`forge.toml` is the source of truth for project state. Never
-    read it from the environment.** Project paths, names, accounts,
-    auto_start, account pins — all of it lives in `forge.toml`. The
-    binary's launch directory (`std::env::current_dir()`) is
-    irrelevant: the user can run `forge` (or `forge <project>`) from
-    anywhere and the behaviour must be identical. Anywhere code
-    derives "what project am I in" / "what's the project root" /
-    "where do I read `.claude/settings.local.json`" from
-    `current_dir()` is a bug. The active session bucket carries its
+15. **`forge.toml` is the source of truth. Never read project state
+    or any other behaviour-shaping value from the launch directory.**
+    Project paths, names, accounts, auto_start pins, log paths,
+    settings paths, trust keys, file-index roots — everything that
+    influences forge's behaviour must come from `forge.toml`, the
+    active session's `cwd_raw`, or other fixed values. The binary's
+    launch directory (`std::env::current_dir()`) MUST NOT influence
+    anything. Strict binary trigger: **"does forge behave identically
+    when launched from `~/Projects/forge` and from `/tmp`?"** If
+    there is ANY observable difference — different project loaded,
+    different settings file, different trust prompt, different log
+    directory, different welcome banner cwd, anything — that's a
+    bug, fix it. Cosmetic differences count too: if logs land in
+    `~/Projects/forge/.forge-tui/logs` from one invocation and
+    `/Library/.../forge-tui/logs` from another, that's broken. The
+    correct fallback when a needed user-dir (state / cache / home)
+    is unavailable is to FAIL the operation, not to substitute a
+    cwd-derived alternative. The active session bucket carries its
     own `cwd_raw` (sourced from `forge.toml` at boot, or from the
     agent's reported cwd post-Connect); read from there, or look up
     the project via `Workspace::list_projects()` /
@@ -453,15 +462,16 @@ Concretely:
     project-state read while doing other work, fix it on the spot
     and audit the codebase for the same pattern — they cluster
     (audit on 2026-05-15 found `config/store.rs:65`, `:380`,
-    `trust.rs:97`, `sdk_message.rs:1159` all sharing the same sin).
-    Exceptions: `$CLAUDE_CONFIG_DIR` for resolving where forge.toml
-    *itself* lives (set by the `claude_*` wrappers per account);
-    `$HOME` / `dirs::home_dir()` for resolving the user's home;
-    `$RUST_LOG`, `$NO_COLOR`, terminal-cap and log-path fallbacks
-    — those are ambient signals, not project state. The trigger
-    is "would this break if forge were invoked from `/tmp` instead
-    of `~/Projects/forge`?" — if yes, it's reading project state
-    from env; fix it.
+    `trust.rs:97`, `sdk_message.rs:1159`, `logging.rs:220` all
+    sharing the same sin). The ONLY env reads still allowed are
+    ones that do NOT vary with launch directory: `$CLAUDE_CONFIG_DIR`
+    (set explicitly by the `claude_*` wrappers, identical for every
+    `cd`), `$HOME` / `dirs::home_dir()` (user-level constant),
+    `$RUST_LOG` / `$NO_COLOR` (user logging/output prefs),
+    `env::vars_os()` for terminal capability detection
+    (`$TERM_PROGRAM`, `$ITERM_SESSION_ID`), and user-supplied
+    `--effort` overrides like `$CLAUDE_CODE_EFFORT_LEVEL`. None of
+    those values change when the user `cd`s.
 
 ## Weekly upstream-watch (NEW shape)
 

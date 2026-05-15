@@ -217,10 +217,13 @@ fn default_diagnostics_dir() -> anyhow::Result<PathBuf> {
     if let Some(home) = dirs::home_dir() {
         return Ok(home.join(format!(".{DEFAULT_LOG_DIR}")).join("logs"));
     }
-    Ok(std::env::current_dir()
-        .context("failed to resolve current directory for default diagnostics path")?
-        .join(format!(".{DEFAULT_LOG_DIR}"))
-        .join("logs"))
+    // No state / cache / home dir available — refuse to fall back
+    // to `std::env::current_dir()`. Where the binary was launched
+    // must not change the log location: a `forge` invocation from
+    // `~/Projects/forge` and one from `/tmp` must write to the same
+    // path or to no path. Returning an error here disables logging
+    // for the rare environment that has no resolvable user dirs.
+    anyhow::bail!("no resolvable data/cache/home dir for diagnostics path")
 }
 
 #[derive(Debug)]
