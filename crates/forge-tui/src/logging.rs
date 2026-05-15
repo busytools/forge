@@ -53,9 +53,14 @@ impl LoggingRuntime {
         let directives = build_filter_directives(cli);
         let filter = tracing_subscriber::EnvFilter::try_new(directives.as_str())
             .map_err(|e| anyhow::anyhow!("invalid tracing filter `{directives}`: {e}"))?;
+        // Always append: a forge restart immediately after a bug
+        // means the launchpad-mode events that produced the bug were
+        // previously overwritten by the chat-direct restart, making
+        // post-hoc diagnosis impossible. With rotation capped at
+        // 10 MB × 5 files (~50 MB total), the on-disk cost is bounded.
         let writer = RollingFileWriter::new(
             &log_path.path,
-            cli.log_append,
+            true,
             LOG_ROTATION_MAX_BYTES,
             LOG_ROTATION_MAX_FILES,
         )?;
@@ -80,7 +85,6 @@ impl LoggingRuntime {
             log_file = %log_path.path.display(),
             log_path_source = log_path.source.as_str(),
             log_filter = %directives,
-            log_append = cli.log_append,
             log_rotation_max_bytes = LOG_ROTATION_MAX_BYTES,
             log_rotation_max_files = LOG_ROTATION_MAX_FILES,
             version = crate::FORGE_VERSION,
@@ -577,7 +581,6 @@ mod tests {
             diagnostics_preset: None,
             log_file: Some(PathBuf::from("custom.log")),
             log_filter: None,
-            log_append: false,
             enable_perf: false,
             perf_log: None,
             perf_append: false,
@@ -600,7 +603,6 @@ mod tests {
             diagnostics_preset: None,
             log_file: None,
             log_filter: None,
-            log_append: false,
             enable_perf: false,
             perf_log: None,
             perf_append: false,
@@ -637,7 +639,6 @@ mod tests {
             diagnostics_preset: None,
             log_file: None,
             log_filter: Some("app.render=trace".to_owned()),
-            log_append: false,
             enable_perf: false,
             perf_log: None,
             perf_append: false,
@@ -658,7 +659,6 @@ mod tests {
             diagnostics_preset: None,
             log_file: None,
             log_filter: None,
-            log_append: false,
             enable_perf: false,
             perf_log: None,
             perf_append: false,
@@ -677,7 +677,6 @@ mod tests {
             diagnostics_preset: Some(DiagnosticsPreset::Session),
             log_file: None,
             log_filter: None,
-            log_append: false,
             enable_perf: false,
             perf_log: None,
             perf_append: false,
@@ -696,7 +695,6 @@ mod tests {
             diagnostics_preset: None,
             log_file: None,
             log_filter: None,
-            log_append: false,
             enable_perf: true,
             perf_log: None,
             perf_append: false,

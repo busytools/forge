@@ -84,8 +84,8 @@ pub struct Cli {
     /// Write tracing diagnostics to a file.
     ///
     /// When omitted but logging is otherwise enabled via `--enable-logs`,
-    /// `--diagnostics-preset`, `--log-filter`, `--log-append`, or `RUST_LOG`,
-    /// a default log path is used.
+    /// `--diagnostics-preset`, `--log-filter`, or `RUST_LOG`, a
+    /// default log path is used.
     #[arg(long, value_name = "PATH")]
     pub log_file: Option<std::path::PathBuf>,
 
@@ -93,10 +93,6 @@ pub struct Cli {
     /// Overrides `--diagnostics-preset` and falls back to `RUST_LOG` when omitted.
     #[arg(long, value_name = "FILTER")]
     pub log_filter: Option<String>,
-
-    /// Append to the active log file instead of resetting the current log window on startup.
-    #[arg(long)]
-    pub log_append: bool,
 
     /// Enable perf telemetry using a default sidecar path when `--perf-log` is omitted.
     /// Requires a binary built with `--features perf`.
@@ -126,7 +122,6 @@ mod tests {
         assert!(cli.diagnostics_preset.is_none());
         assert!(cli.log_file.is_none());
         assert!(cli.log_filter.is_none());
-        assert!(!cli.log_append);
         assert!(!cli.enable_perf);
         assert!(cli.perf_log.is_none());
         assert!(!cli.perf_append);
