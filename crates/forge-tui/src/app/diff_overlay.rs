@@ -98,13 +98,17 @@ pub fn open_default(app: &mut App) {
     open_with_target(app, target);
 }
 
+/// Max events drained per main-loop tick. At most one scan is in
+/// flight per `/diff` invocation in practice, but the bounded loop
+/// matches the established pattern in `app::git_diff::drain_events`
+/// and `app::file_index::drain_events` so a stalled producer can't
+/// block the render loop arbitrarily long.
+const EVENT_DRAIN_BUDGET: usize = 8;
+
 /// Drain pending scan results and install the overlay state. Called
 /// from the main loop alongside the other event-channel consumers.
-/// At most one scan is typically in flight per `/diff` invocation;
-/// the drain loop stays bounded for symmetry with the other
-/// consumers.
 pub fn drain_events(app: &mut App) {
-    loop {
+    for _ in 0..EVENT_DRAIN_BUDGET {
         let event = match app.diff_overlay_event_rx.try_recv() {
             Ok(event) => event,
             Err(std_mpsc::TryRecvError::Empty | std_mpsc::TryRecvError::Disconnected) => return,
