@@ -340,6 +340,13 @@ pub struct App {
     // See `App::recent_sessions` / `App::recent_sessions_mut`.
     /// Selection state for the startup session picker screen.
     pub session_picker: SessionPickerState,
+    /// State for the launchpad view (project picker shown when forge
+    /// is invoked without a project argv, or after `/launchpad`).
+    /// Always present — reset whenever the active view transitions
+    /// to [`ActiveView::Launchpad`] via the launchpad open helper.
+    /// When the active view is anything else this is unused but
+    /// kept allocated so transitions are cheap.
+    pub launchpad: crate::app::LaunchpadState,
     /// Last known frame area (for mouse selection mapping).
     pub cached_frame_area: ratatui::layout::Rect,
     /// Active scrollbar drag state while left mouse button is held on the rail.
@@ -399,6 +406,18 @@ pub struct App {
     /// Forwarded to [`forge_workspace::SessionTarget::Named`] when the
     /// connection task spins up.
     pub startup_project: Option<String>,
+    /// True while `events::session_reset::load_resume_history` is
+    /// walking on-disk history through the shared SDK-message
+    /// dispatcher. Replay reuses the live walker so content blocks,
+    /// tool_use, todos, and plans land in the bucket via the same code
+    /// path — but the walker also has side effects that are wrong for
+    /// replay (most notably the lifecycle `Running` write in
+    /// `handle_assistant`, added so a mid-turn click flips the
+    /// Projects-pane spinner on). Replay messages are historical, not
+    /// live wire content, so the lifecycle write must be skipped while
+    /// this flag is true. Cleared at end of replay so subsequent live
+    /// messages on the same session behave normally.
+    pub replay_in_progress: bool,
 }
 
 impl App {
@@ -525,8 +544,29 @@ impl App {
         crate::app::file_index::ensure_started(self);
         // No explicit git-diff refresh on session switch — the 10s
         // timer (which fires its first tick immediately) catches any
-        // stale snapshot on the next pump cycle. Keeping the switch
-        // path lean.
+        // stale snapshot on the next pump cycle.
+        //
+        // Activation parity with the chat-direct path
+        // (`forge <project>`). That path lands the user in a fully
+        // wired session via `apply_connected_presentation`'s active
+        // branch — file index restart, chat focus rebuild, runtime
+        // tabs refresh, post-Connected per-session refreshes. The
+        // launchpad-pick path spawns the project in the BACKGROUND
+        // branch (because `__conn_pending__` is still active at
+        // Connected time) and then relies on `switch_active_session`
+        // to bring the bucket up to the same activation level.
+        // Without these calls clicking forge from the launchpad
+        // leaves the chat input unfocused, the runtime tabs stale,
+        // and the bottom panel bars empty even though the bucket
+        // itself carries the data.
+        crate::app::file_index::restart(self);
+        self.rebuild_chat_focus_from_state();
+        crate::app::config::refresh_runtime_tabs_for_session_change(self);
+        crate::app::session_runtime::request_status_snapshot_refresh(self);
+        crate::app::session_runtime::request_oauth_credentials_snapshot_refresh(self);
+        crate::app::session_runtime::request_context_usage_refresh(self);
+        crate::app::usage::request_refresh_if_needed(self);
+        self.sync_welcome_snapshot();
         self.force_redraw = true;
         self.needs_redraw = true;
     }
@@ -2308,6 +2348,7 @@ impl App {
             focus: FocusManager::default(),
             plugins: PluginsState::default(),
             session_picker: SessionPickerState::default(),
+            launchpad: crate::app::LaunchpadState::default(),
             cached_frame_area: ratatui::layout::Rect::default(),
             scrollbar_drag: None,
             rendered_chat_lines: Vec::new(),
@@ -2330,6 +2371,7 @@ impl App {
             startup_recent_sessions_loaded: false,
             startup_session_picker_resolved: false,
             startup_project: None,
+            replay_in_progress: false,
         }
     }
 
@@ -2645,6 +2687,71 @@ mod tests {
         assert_eq!(app.active_session().and_then(|s| s.key.as_ref()), Some(&key));
         assert!(app.try_active_bucket_mut().is_some());
         assert!(app.session_mut(&key).is_some());
+    }
+
+    /// Regression: clicking a launchpad-auto_started project must
+    /// trigger the per-session refresh chain (status / oauth /
+    /// context-usage / 5h+7d) so the bottom panel's bars populate.
+    /// Pre-fix, `switch_active_session` only flipped the active key —
+    /// nothing fired when the user picked a project, and the
+    /// post-Connected refreshes in `events/client.rs` had already
+    /// early-exited because they're gated on the (then pre-Connect)
+    /// active session_id.
+    ///
+    /// `request_context_usage_refresh` flips
+    /// `session_usage.context_usage_in_flight = true` when it
+    /// successfully proceeds (it needs workspace + active key +
+    /// session_id, all of which the destination bucket has post-switch).
+    /// Observing the flag flip on the destination bucket proves
+    /// `switch_active_session` invoked the refresh chain.
+    #[test]
+    fn switch_active_session_triggers_context_usage_refresh_on_destination() {
+        let mut app = App::test_default();
+        let _pre_connect_outbox = app.install_testing_stub();
+        // Seed a second bucket and stamp it with a session_id so the
+        // refresh fns clear their session_id gate after the switch.
+        let dest_key = forge_workspace::SessionKey::from_str_for_test("destination-session");
+        let mut dest_bucket = crate::app::session::UiSession::new(dest_key.clone());
+        dest_bucket.session_id =
+            Some(forge_primitives::SessionId::new(dest_key.as_str().to_owned()));
+        app.sessions.insert(dest_key.clone(), dest_bucket);
+        // Hold the destination's command receiver alive at test scope —
+        // dropping it before `switch_active_session` runs makes the
+        // workspace's stub-handle send fail, which routes through the
+        // error arm in `request_context_usage_refresh` and resets the
+        // in_flight flag we're trying to observe.
+        let _dest_outbox = if let Some(workspace) = app.workspace.as_ref() {
+            let (handle, outbox) = forge_workspace::Workspace::testing_stub_handle();
+            let domain = workspace
+                .register_domain_session_for_test(dest_key.clone(), std::sync::Arc::new(handle));
+            domain.lock().session_id =
+                Some(forge_primitives::SessionId::new(dest_key.as_str().to_owned()));
+            Some(outbox)
+        } else {
+            None
+        };
+        // Sanity baseline: destination bucket's context-usage is idle.
+        assert!(
+            !app.sessions
+                .get(&dest_key)
+                .expect("dest bucket")
+                .session_usage
+                .context_usage_in_flight,
+            "destination bucket should start with context_usage idle",
+        );
+
+        app.switch_active_session(dest_key.clone());
+
+        assert_eq!(
+            app.active_session_key.as_ref(),
+            Some(&dest_key),
+            "switch must promote destination to active",
+        );
+        assert!(
+            app.sessions.get(&dest_key).expect("dest bucket").session_usage.context_usage_in_flight,
+            "switch_active_session must call request_context_usage_refresh on the new active \
+             (otherwise the launchpad-click bottom-panel bars sit empty)",
+        );
     }
 
     // BlockCache

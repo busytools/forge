@@ -87,11 +87,11 @@ fn handle_assistant(app: &mut App, msg: Message) {
     let Message::Assistant { message, parent_tool_use_id, error, .. } = msg else {
         return;
     };
-    // Lifecycle: any assistant message arrival means this bucket
-    // has a turn in flight. Set lifecycle = Running so the
-    // Projects pane row spins. This covers the case where the
-    // user clicks a project whose turn was ALREADY in flight when
-    // they clicked (e.g. auto_start session received its first
+    // Lifecycle: any *live* assistant message arrival means this
+    // bucket has a turn in flight. Set lifecycle = Running so the
+    // Projects pane row spins. Covers the case where the user
+    // clicks a project whose turn was ALREADY in flight when they
+    // clicked (e.g. auto_start session received its first
     // continuation from claude before the user looked at it) —
     // input_submit's lifecycle write only fires on user-typed
     // prompts, so without this hook the bucket would stay Idle
@@ -99,7 +99,19 @@ fn handle_assistant(app: &mut App, msg: Message) {
     // pivoted-background routing both end up here with the right
     // bucket as `active_session_key` (see
     // `apply_sdk_message_presentation`'s `with_pivoted` scope).
-    if let Some(key) = app.active_session_key.clone() {
+    //
+    // The `replay_in_progress` gate: `load_resume_history` walks
+    // on-disk history through this same dispatcher so content
+    // blocks / tool_use / todos land via shared code. Replay
+    // messages are historical, not live wire content, so they
+    // must not flip lifecycle to Running — otherwise an
+    // auto_start session's resume leaves the bucket pinned on
+    // Running with no balancing Result to flip it back, and the
+    // Projects pane spinner sticks until the first real turn
+    // completes.
+    if !app.replay_in_progress
+        && let Some(key) = app.active_session_key.clone()
+    {
         super::set_bucket_lifecycle_state(
             app,
             &key,
@@ -342,7 +354,7 @@ fn walk_user_tool_results(app: &mut App, content: &[forge_primitives::ContentBlo
 /// This is invoked twice — once for the user-content walker (live
 /// mid-turn / replay), once for the assistant-content walker (edge
 /// case).
-fn extract_queued_command_text(prompt: &Value) -> String {
+pub(super) fn extract_queued_command_text(prompt: &Value) -> String {
     if let Some(s) = prompt.as_str() {
         return s.to_owned();
     }
@@ -383,8 +395,20 @@ fn extract_queued_command_text(prompt: &Value) -> String {
 /// Action: push a regular user bubble. (Live mid-turn submits
 /// already pushed their own bubble at submit time — see
 /// `input_submit::dispatch_prompt` — and never reach this code.)
-fn handle_queued_command_echo(app: &mut App, prompt_text: &str) {
+pub(super) fn handle_queued_command_echo(app: &mut App, prompt_text: &str) {
     use crate::app::{ChatMessage, MessageBlock, MessageRole, TextBlock};
+    // Harness-injected `<task-notification>` blobs (background-task
+    // completion events) get queued through the same path as
+    // user-typed input. They're plumbing, not a user message — render
+    // them as user bubbles is misleading on resume (the bottom of the
+    // chat fills up with notification chatter that looks like the user
+    // typed it). Skip them at the echo path so they don't reach the
+    // chat buffer at all. Mirrors the `<local-command-caveat>` /
+    // `<command-name>` filter in `events::session_reset` for the
+    // user-text path.
+    if prompt_text.trim_start().starts_with("<task-notification>") {
+        return;
+    }
     let blocks = vec![MessageBlock::Text(TextBlock::from_complete(prompt_text))];
     app.push_message_tracked(ChatMessage::new(MessageRole::User, blocks, None));
     app.enforce_history_retention_tracked();
@@ -1328,6 +1352,91 @@ mod persistent_guard_tests {
         // must not panic on `as_object()` returning None.
         let input = json!("not-an-object");
         assert!(!raw_input_is_persistent(Some(&input)));
+    }
+}
+
+#[cfg(test)]
+mod assistant_lifecycle_gate_tests {
+    //! Regression coverage for the launchpad-spinner-stuck bug.
+    //!
+    //! `handle_assistant` flips `lifecycle = Running` on every assistant
+    //! envelope so that switching into a project mid-turn surfaces the
+    //! spinning glyph in the Projects pane (see commit `1d30062`). But
+    //! `load_resume_history` reuses the same dispatcher to walk on-disk
+    //! history, so without a gate every replayed assistant message
+    //! flipped a freshly-resumed bucket to Running with no balancing
+    //! `Result` to flip it back — the Projects pane row stuck on the
+    //! spinner glyph until the user submitted a real prompt.
+    //!
+    //! These tests pin the contract: live messages still flip lifecycle
+    //! to Running; replayed messages (flagged via
+    //! `App.replay_in_progress`) do not.
+    use super::handle_assistant;
+    use crate::app::App;
+    use crate::app::session::SessionLifecycleState;
+    use forge_primitives::{AssistantEnvelope, ContentBlock, Message};
+
+    fn assistant_text_message(text: &str) -> Message {
+        Message::Assistant {
+            message: AssistantEnvelope {
+                id: "msg_test".to_owned(),
+                role: "assistant".to_owned(),
+                model: "claude-test".to_owned(),
+                content: vec![ContentBlock::Text { text: text.to_owned() }],
+                stop_reason: None,
+                stop_sequence: None,
+                usage: None,
+            },
+            session_id: String::new(),
+            parent_tool_use_id: None,
+            error: None,
+            uuid: None,
+        }
+    }
+
+    #[test]
+    fn live_assistant_message_flips_lifecycle_to_running() {
+        let mut app = App::test_default();
+        // Baseline: bucket starts at Idle (the pre-Connect bucket
+        // initialiser leaves lifecycle at the default `Sleeping`, so
+        // pin Idle here explicitly to model a connected bucket).
+        if let Some(key) = app.active_session_key.clone()
+            && let Some(bucket) = app.sessions.get_mut(&key)
+        {
+            bucket.lifecycle_state = SessionLifecycleState::Idle;
+        }
+        // Live wire content: replay flag stays false.
+        assert!(!app.replay_in_progress);
+        handle_assistant(&mut app, assistant_text_message("hi"));
+        let key = app.active_session_key.clone().expect("active key");
+        let bucket = app.sessions.get(&key).expect("bucket");
+        assert_eq!(
+            bucket.lifecycle_state,
+            SessionLifecycleState::Running,
+            "live assistant arrival must flip lifecycle to Running",
+        );
+    }
+
+    #[test]
+    fn replay_assistant_message_does_not_flip_lifecycle() {
+        let mut app = App::test_default();
+        if let Some(key) = app.active_session_key.clone()
+            && let Some(bucket) = app.sessions.get_mut(&key)
+        {
+            bucket.lifecycle_state = SessionLifecycleState::Idle;
+        }
+        // Replay walking: flag is true while load_resume_history
+        // iterates the on-disk history through this dispatcher.
+        app.replay_in_progress = true;
+        handle_assistant(&mut app, assistant_text_message("historical reply"));
+        let key = app.active_session_key.clone().expect("active key");
+        let bucket = app.sessions.get(&key).expect("bucket");
+        assert_eq!(
+            bucket.lifecycle_state,
+            SessionLifecycleState::Idle,
+            "replayed assistant message must NOT flip lifecycle — that's what \
+             leaves the Projects pane spinner stuck after a launchpad resume",
+        );
     }
 }
 

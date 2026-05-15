@@ -323,6 +323,12 @@ pub struct UiSession {
     /// keyboard nav mutate it.
     pub inspector_scroll_offset: u16,
 
+    /// Last connection error captured when this bucket transitioned
+    /// to [`SessionLifecycleState::Failed`]. `None` for any other
+    /// lifecycle state. The launchpad picker renders this beneath
+    /// a failed project row; the chat view doesn't surface it yet.
+    pub last_connection_error: Option<String>,
+
     // ---- Render cache + history retention ----
     /// Cached render-cache slot metadata parallel to
     /// `messages[*].blocks[*]` plus one synthetic per-message slot
@@ -452,6 +458,7 @@ impl Default for UiSession {
             process_scan_in_flight: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             process_last_refreshed_at: None,
             inspector_scroll_offset: 0,
+            last_connection_error: Option::default(),
             render_cache_slots: Vec::default(),
             render_cache_total_bytes: usize::default(),
             render_cache_protected_bytes: usize::default(),

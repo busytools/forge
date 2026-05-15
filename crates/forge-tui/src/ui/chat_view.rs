@@ -166,7 +166,13 @@ fn render_perf_fps_overlay(frame: &mut Frame, frame_area: Rect, y: u16, app: &Ap
     };
     let text = format!("[{fps:>5.1} FPS]");
     let width = u16::try_from(text.len()).unwrap_or(frame_area.width).min(frame_area.width);
-    let x = frame_area.x + frame_area.width.saturating_sub(width);
+    // Leave a 1-col right gutter to match the rest of the UI's
+    // padding (chat box / panes / inspector all sit 1 col off their
+    // surrounding edge). Drop the gutter if the frame is too narrow
+    // to fit the FPS text + gutter — better to show the FPS hugging
+    // the edge than to clip it entirely.
+    let right_gutter: u16 = u16::from(frame_area.width > width);
+    let x = frame_area.x + frame_area.width.saturating_sub(width + right_gutter);
     let area = Rect { x, y, width, height: 1 };
     let line = Line::from(Span::styled(
         text,

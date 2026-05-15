@@ -145,6 +145,7 @@ fn dispatch_key_by_view(app: &mut App, key: crossterm::event::KeyEvent) -> bool 
             super::session_picker::handle_key(app, key);
             true
         }
+        ActiveView::Launchpad => super::keys::dispatch_key_by_focus(app, key),
     }
 }
 
@@ -154,7 +155,12 @@ fn dispatch_mouse_by_view(app: &mut App, mouse: crossterm::event::MouseEvent) {
             *app.active_paste_session_mut() = None;
             mouse::handle_mouse_event(app, mouse);
         }
-        ActiveView::Config | ActiveView::Trusted | ActiveView::SessionPicker => {
+        ActiveView::Config
+        | ActiveView::Trusted
+        | ActiveView::SessionPicker
+        | ActiveView::Launchpad => {
+            // Mouse input is ignored on the launchpad in v1 — the
+            // picker is keyboard-only.
             let _ = mouse;
         }
     }
@@ -175,7 +181,7 @@ fn dispatch_paste_by_view(app: &mut App, text: &str) -> bool {
             false
         }
         ActiveView::Config => super::config::handle_paste(app, text),
-        ActiveView::Trusted | ActiveView::SessionPicker => false,
+        ActiveView::Trusted | ActiveView::SessionPicker | ActiveView::Launchpad => false,
     }
 }
 

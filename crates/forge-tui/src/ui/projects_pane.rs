@@ -62,7 +62,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App, projects: &[ProjectV
     // and-first-row is per section (in `append_project_rows`) so the
     // banner sits flush against the first section.
     lines.push(Line::from(Span::styled(
-        "  PROJECTS".to_owned(),
+        " PROJECTS".to_owned(),
         Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
     )));
     let rule_width = usize::from(list_area.width.saturating_sub(2));
@@ -194,7 +194,7 @@ fn append_project_rows(
     for (org_idx, (org_name, rows)) in by_org.iter().enumerate() {
         // Org header row — DIM bold, no tree chrome.
         lines.push(Line::from(vec![
-            Span::raw("  "),
+            Span::raw(" "),
             Span::styled(
                 org_name.clone(),
                 Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD),
@@ -204,7 +204,7 @@ fn append_project_rows(
         // the first project row's connector instead of floating
         // disconnected above an empty gap.
         lines.push(Line::from(vec![
-            Span::raw("  "),
+            Span::raw(" "),
             Span::styled("\u{2502}  ".to_owned(), Style::default().fg(theme::DIM)),
         ]));
 
@@ -229,7 +229,7 @@ fn append_project_rows(
             // org-separator blanks take its place.
             if !is_last {
                 lines.push(Line::from(vec![
-                    Span::raw("  "),
+                    Span::raw(" "),
                     Span::styled("\u{2502}  ".to_owned(), Style::default().fg(theme::DIM)),
                 ]));
             }
@@ -265,7 +265,7 @@ fn append_org_project_row(
     let name_budget = name_budget_org_row(area.width);
 
     let mut spans: Vec<Span<'static>> = Vec::new();
-    spans.push(Span::raw("  "));
+    spans.push(Span::raw(" "));
     spans.push(Span::styled(connector.to_owned(), Style::default().fg(theme::DIM)));
 
     if let Some((session_key, lifecycle, is_focused)) = live {
@@ -295,9 +295,9 @@ fn append_org_project_row(
             " x ".to_owned(),
             Style::default().fg(Color::Gray).bg(theme::USER_MSG_BG).add_modifier(Modifier::BOLD),
         ));
-        // 2-col right gutter — matches the inspector pane's GIT
-        // section right edge AND the idle row's 2-col gutter.
-        spans.push(Span::raw("  "));
+        // 1-col right gutter — matches the inspector pane's GIT
+        // section right edge AND the idle row's 1-col gutter.
+        spans.push(Span::raw(" "));
         lines.push(Line::from(spans));
         // Hit targets: whole row → focus/switch; button + 1-col
         // tolerance each side → close session.
@@ -308,11 +308,11 @@ fn append_org_project_row(
         });
         let row_right = area.x.saturating_add(area.width);
         // Close button: the ` x ` 3-cell span occupies
-        // (row_right - 5) to (row_right - 3). 5-col hit band runs
-        // (row_right - 6) to (row_right - 2) for 1-col tolerance
-        // each side; the rightmost gutter cols stay inert.
-        let close_x_start = row_right.saturating_sub(6);
-        let close_x_end = row_right.saturating_sub(2);
+        // (row_right - 4) to (row_right - 2). 5-col hit band runs
+        // (row_right - 5) to (row_right - 1) for 1-col tolerance
+        // each side; the rightmost gutter col stays inert.
+        let close_x_start = row_right.saturating_sub(5);
+        let close_x_end = row_right.saturating_sub(1);
         app.pane_hit_targets.push(PaneHitTarget::CloseSession {
             session_key: session_key.clone(),
             y: row_y,
@@ -327,7 +327,7 @@ fn append_org_project_row(
         // pad after `time` so the date column aligns with the
         // emoji column on active rows (emoji = 2 cells; time = 3
         // chars; the 1-col pad here equalises them in the same x
-        // position). Plus the standard 2-col right gutter.
+        // position). Plus the standard 1-col right gutter.
         let label = truncate_with_ellipsis(project.name.as_str(), name_budget);
         let label_pad = name_budget.saturating_sub(label.chars().count());
         let time =
@@ -338,7 +338,7 @@ fn append_org_project_row(
         spans.push(Span::raw(" ".repeat(label_pad)));
         spans.push(Span::raw(" "));
         spans.push(Span::styled(time, Style::default().fg(theme::DIM)));
-        spans.push(Span::raw("  "));
+        spans.push(Span::raw(" "));
         lines.push(Line::from(spans));
         app.pane_hit_targets.push(PaneHitTarget::ProjectHeader {
             project_name: project.key.as_str().to_owned(),
@@ -349,12 +349,12 @@ fn append_org_project_row(
 }
 
 /// Chrome budget for an org-grouped row:
-/// `<2 PANE_PAD><3 connector><1 glyph><1 sp><name><1 sp><RIGHT col><2 right pad>`
+/// `<1 PANE_PAD><3 connector><1 glyph><1 sp><name><1 sp><RIGHT col><1 right pad>`
 /// where RIGHT col = 3 cells (` ⏻ ` button for active rows / 3-char
-/// `Xm`/`Xh`/`Xd` time for idle rows). Total = 7 left chrome + 1 sep
-/// + 3 right col + 2 right pad = 13 chars per row.
+/// `Xm`/`Xh`/`Xd` time for idle rows). Total = 6 left chrome + 1 sep
+/// + 3 right col + 1 right pad = 11 chars per row.
 fn name_budget_org_row(area_width: u16) -> usize {
-    usize::from(area_width.saturating_sub(13))
+    usize::from(area_width.saturating_sub(11))
 }
 
 /// Format `activity` as a short relative-time string anchored at
@@ -514,13 +514,13 @@ const ACCOUNT_PANEL_HEIGHT: u16 = 17;
 /// Width (columns) the rule and content extend up to from the
 /// pane's right edge. Matches the project-row right gutter so the
 /// bottom-panel content visually aligns with the project list above.
-const PANEL_RIGHT_GUTTER: usize = 2;
+const PANEL_RIGHT_GUTTER: usize = 1;
 
-/// Per-row chrome inside the bar row: `2 indent + 3 label + 2 gap +
+/// Per-row chrome inside the bar row: `1 indent + 3 label + 2 gap +
 /// BAR + 2 gap + 4 pct`. The bar cell count is derived per render
 /// so the bar stretches to fill (pane_width - PANEL_RIGHT_GUTTER -
 /// chrome).
-const BAR_ROW_FIXED_CHROME: usize = 2 + 3 + 2 + 2 + 4;
+const BAR_ROW_FIXED_CHROME: usize = 1 + 3 + 2 + 2 + 4;
 
 /// Below this pane height we skip the panel entirely (would crowd the
 /// project list too aggressively). The chat footer is gone in this
@@ -648,14 +648,14 @@ fn build_account_panel_lines(app: &App, width: u16) -> Vec<Line<'static>> {
 
     // Rows 1..=5: identity / posture block. Labels right-padded to
     // `ACCOUNT_PANEL_ID_LABEL_WIDTH` chars ("Profile" is the longest).
-    // Two-space gutter before the value.
-    let value_budget = usize::from(width).saturating_sub(2 + ACCOUNT_PANEL_ID_LABEL_WIDTH + 2);
+    // 1-col left pad + 2-col gutter before the value.
+    let value_budget = usize::from(width).saturating_sub(1 + ACCOUNT_PANEL_ID_LABEL_WIDTH + 2);
 
     // Profile.
     let profile_value = app.active_account_display_name().unwrap_or_else(|| "—".to_owned());
     let profile_fitted = truncate_with_ellipsis(&profile_value, value_budget);
     lines.push(Line::from(vec![
-        Span::raw("  "),
+        Span::raw(" "),
         label_span("Profile", ACCOUNT_PANEL_ID_LABEL_WIDTH),
         Span::raw("  "),
         Span::raw(profile_fitted),
@@ -665,7 +665,7 @@ fn build_account_panel_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     let (mode_label, mode_color) = mode_label_and_color(app);
     let mode_label_fitted = truncate_with_ellipsis(&mode_label, value_budget);
     lines.push(Line::from(vec![
-        Span::raw("  "),
+        Span::raw(" "),
         label_span("Mode", ACCOUNT_PANEL_ID_LABEL_WIDTH),
         Span::raw("  "),
         Span::styled(mode_label_fitted, Style::default().fg(mode_color)),
@@ -676,7 +676,7 @@ fn build_account_panel_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     let model_value = build_model_label(app).unwrap_or_else(|| "—".to_owned());
     let model_fitted = truncate_with_ellipsis(&model_value, value_budget);
     lines.push(Line::from(vec![
-        Span::raw("  "),
+        Span::raw(" "),
         label_span("Model", ACCOUNT_PANEL_ID_LABEL_WIDTH),
         Span::raw("  "),
         Span::raw(model_fitted),
@@ -687,7 +687,7 @@ fn build_account_panel_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     // means it doesn't appear / disappear as the user switches models.
     let effort = app.observed_effort().unwrap_or_else(|| app.config.thinking_effort_effective());
     lines.push(Line::from(vec![
-        Span::raw("  "),
+        Span::raw(" "),
         label_span("Effort", ACCOUNT_PANEL_ID_LABEL_WIDTH),
         Span::raw("  "),
         Span::raw(effort_short_label(effort).to_owned()),
@@ -696,7 +696,7 @@ fn build_account_panel_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     // Fast mode.
     let (fast_label, fast_color) = fast_mode_label_and_color(app);
     lines.push(Line::from(vec![
-        Span::raw("  "),
+        Span::raw(" "),
         label_span("Fast", ACCOUNT_PANEL_ID_LABEL_WIDTH),
         Span::raw("  "),
         Span::styled(fast_label.to_owned(), Style::default().fg(fast_color)),
@@ -709,7 +709,7 @@ fn build_account_panel_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     let bar_cells = bar_cells_for(width);
     let ctx_pct = app.session_usage().context_usage_percent.map_or(0.0, f64::from);
     let ctx_pct_str = format!("{:>3}%", app.session_usage().context_usage_percent.unwrap_or(0));
-    let mut ctx_line = vec![Span::raw("  "), label_span("Ctx", 3), Span::raw("  ")];
+    let mut ctx_line = vec![Span::raw(" "), label_span("Ctx", 3), Span::raw("  ")];
     ctx_line.extend(bar_spans(ctx_pct, bar_cells));
     ctx_line.push(Span::raw("  "));
     ctx_line.push(Span::raw(ctx_pct_str));
@@ -718,12 +718,24 @@ fn build_account_panel_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     // Row 8: blank between Ctx and 5h.
     lines.push(Line::default());
 
+    // Surface the latest poll-attempt failure (if any) so empty
+    // bars carry a `rate-limited` / `expired` / … hint instead of
+    // looking like a forge bug. Lookup is by active account display
+    // name; the workspace returns `None` when the most recent poll
+    // succeeded.
+    let usage_error = app
+        .workspace
+        .as_ref()
+        .zip(app.active_account_display_name())
+        .and_then(|(ws, name)| ws.usage_error_for(&name));
+
     // Rows 9..=10: 5h bar + ETA row.
     push_usage_window_lines(
         &mut lines,
         "5h",
         app.usage().snapshot.as_ref().and_then(|s| s.five_hour.as_ref()),
         width,
+        usage_error,
     );
 
     // Row 11: blank between 5h and 7d.
@@ -735,6 +747,7 @@ fn build_account_panel_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         "7d",
         app.usage().snapshot.as_ref().and_then(|s| s.seven_day.as_ref()),
         width,
+        usage_error,
     );
 
     // Row 14: blank between usage and version rows.
@@ -747,7 +760,7 @@ fn build_account_panel_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     // the panel's row count stays constant.
     let forge_version = format!("v{}", crate::FORGE_VERSION_SHORT);
     lines.push(Line::from(vec![
-        Span::raw("  "),
+        Span::raw(" "),
         label_span("forge", ACCOUNT_PANEL_ID_LABEL_WIDTH),
         Span::raw("  "),
         Span::raw(forge_version),
@@ -757,21 +770,38 @@ fn build_account_panel_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     let installed = cli_info
         .and_then(|i| i.installed.as_deref())
         .map_or_else(|| "—".to_owned(), |v| format!("v{v}"));
+    // Build the claude row with a width-aware right gutter so the
+    // optional update indicator never overflows past `pane_width -
+    // PANEL_RIGHT_GUTTER`. Pre-compute the row's printed width as we
+    // assemble it; if appending the indicator would push the row
+    // past the budget, skip it (it's a hint, not load-bearing).
     let mut claude_spans = vec![
-        Span::raw("  "),
+        Span::raw(" "),
         label_span("claude", ACCOUNT_PANEL_ID_LABEL_WIDTH),
         Span::raw("  "),
-        Span::raw(installed),
+        Span::raw(installed.clone()),
     ];
+    let claude_prefix_width = 1 + ACCOUNT_PANEL_ID_LABEL_WIDTH + 2 + installed.chars().count();
     if let Some(info) = cli_info
         && info.has_update()
         && let Some(latest) = info.latest.as_deref()
     {
-        claude_spans.push(Span::raw("  "));
-        claude_spans.push(Span::styled(
-            format!("\u{2191} v{latest}"),
-            Style::default().fg(theme::STATUS_WARNING),
-        ));
+        let indicator = format!("\u{2191} v{latest}");
+        let indicator_chars = indicator.chars().count();
+        let budget = usize::from(width).saturating_sub(PANEL_RIGHT_GUTTER);
+        // At least one space must separate the installed version from
+        // the indicator, otherwise they visually collide.
+        if claude_prefix_width + 1 + indicator_chars <= budget {
+            // Right-justify the indicator into the panel's right gutter
+            // so the row terminates at exactly `pane_width -
+            // PANEL_RIGHT_GUTTER` cols — same as the bar rows / ETA
+            // rows above it. Otherwise the row's right edge slides
+            // around depending on indicator length and the panel
+            // looks ragged.
+            let fill = budget.saturating_sub(claude_prefix_width + indicator_chars);
+            claude_spans.push(Span::raw(" ".repeat(fill)));
+            claude_spans.push(Span::styled(indicator, Style::default().fg(theme::STATUS_WARNING)));
+        }
     }
     lines.push(Line::from(claude_spans));
 
@@ -801,23 +831,29 @@ fn push_usage_window_lines(
     label: &'static str,
     window: Option<&crate::app::UsageWindow>,
     width: u16,
+    usage_error: Option<forge_workspace::UsageFetchStatus>,
 ) {
     let bar_cells = bar_cells_for(width);
     let pct_value = window.map_or(0.0, |w| w.utilization);
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let pct_text = window
         .map_or_else(|| "  —%".to_owned(), |w| format!("{:>3}%", w.utilization.round() as i64));
-    let mut row = vec![Span::raw("  "), label_span(label, 3), Span::raw("  ")];
+    let mut row = vec![Span::raw(" "), label_span(label, 3), Span::raw("  ")];
     row.extend(bar_spans(pct_value, bar_cells));
     row.push(Span::raw("  "));
     row.push(Span::raw(pct_text));
     lines.push(Line::from(row));
 
-    // ETA — duration only (no "resets in " prose), DIM, right-justified
-    // to the content right edge (pane width minus the 2-col right
-    // gutter). Visually sits below the percent column of the bar row.
-    let eta_text =
-        window.and_then(format_window_reset_duration_only).unwrap_or_else(|| "—".to_owned());
+    // ETA — when a real reset window exists, show the duration only
+    // (no "resets in " prose). When the window is missing, fall
+    // back to the last poll-attempt failure label (`rate-limited`,
+    // `expired`, …) so the user can tell an empty bar from an
+    // upstream HTTP 429 / expired creds situation. With neither,
+    // collapse to `—` to keep the row count constant. DIM throughout
+    // and right-justified to `width - PANEL_RIGHT_GUTTER`.
+    let eta_text = window
+        .and_then(format_window_reset_duration_only)
+        .unwrap_or_else(|| usage_error.map_or_else(|| "—".to_owned(), usage_error_label));
     let eta_chars = eta_text.chars().count();
     let right_edge = usize::from(width).saturating_sub(PANEL_RIGHT_GUTTER);
     let pad = right_edge.saturating_sub(eta_chars);
@@ -825,6 +861,20 @@ fn push_usage_window_lines(
         Span::raw(" ".repeat(pad)),
         Span::styled(eta_text, Style::default().fg(theme::DIM)),
     ]));
+}
+
+/// Short, DIM-friendly label for an upstream usage-fetch failure.
+/// Kept terse so it fits in the same right-justified ETA column the
+/// success-path "1h 23m" duration uses.
+fn usage_error_label(status: forge_workspace::UsageFetchStatus) -> String {
+    use forge_workspace::UsageFetchStatus;
+    match status {
+        UsageFetchStatus::RateLimited => "rate-limited".to_owned(),
+        UsageFetchStatus::Expired => "expired".to_owned(),
+        UsageFetchStatus::Unauthorized => "unauthorized".to_owned(),
+        UsageFetchStatus::NetworkFailed => "offline".to_owned(),
+        UsageFetchStatus::Other => "fetch failed".to_owned(),
+    }
 }
 
 /// Strip the `"resets in "` prefix from
@@ -1034,10 +1084,10 @@ mod tests {
 
     #[test]
     fn bar_cells_for_stretches_to_pane_width() {
-        // Wide pane (32): 32 - 2 (right gutter) - 13 (chrome) = 17.
-        assert_eq!(bar_cells_for(32), 17);
-        // Medium pane (24): 24 - 2 - 13 = 9.
-        assert_eq!(bar_cells_for(24), 9);
+        // Wide pane (32): 32 - 1 (right gutter) - 12 (chrome) = 19.
+        assert_eq!(bar_cells_for(32), 19);
+        // Medium pane (24): 24 - 1 - 12 = 11.
+        assert_eq!(bar_cells_for(24), 11);
         // Narrower than the chrome+floor: clamps to 6.
         assert_eq!(bar_cells_for(10), 6);
     }

@@ -32,7 +32,29 @@ pub struct ProjectView {
     /// `~/Projects/forge`, with `~` left in place rather than
     /// expanded). Display-only — not a path you can `open()`.
     pub display_path: String,
+    /// Account `display_name`s this project may spawn under, inherited
+    /// from the project's `[[orgs]]` entry. Non-empty (the config
+    /// loader enforces). The launchpad picker reads the first entry
+    /// as the row's account hint via [`Self::primary_account_hint`].
+    pub accounts: Vec<String>,
     pub sessions: Vec<SessionView>,
+}
+
+impl ProjectView {
+    /// Lowercased first allowed account — the "account hint" rendered
+    /// as a dim column in the launchpad picker (e.g. `(personal)`,
+    /// `(gateway)`). The actual spawn picker resolves which account
+    /// the session lands under at the moment of spawn; this is just a
+    /// visual cue for the user.
+    ///
+    /// Returns `"unknown"` when the accounts vec is empty, which
+    /// shouldn't happen in production (loader enforces non-empty) but
+    /// can occur in test fixtures built via `ProjectView::new_for_test`
+    /// without an explicit accounts arg.
+    #[must_use]
+    pub fn primary_account_hint(&self) -> String {
+        self.accounts.first().map_or_else(|| "unknown".to_owned(), |a| a.to_lowercase())
+    }
 }
 
 #[cfg(feature = "test-helpers")]
@@ -55,6 +77,32 @@ impl ProjectView {
             org: "Test".to_owned(),
             path: PathBuf::from(&display_path),
             display_path,
+            accounts: Vec::new(),
+            sessions,
+        }
+    }
+
+    /// Variant of [`Self::new_for_test`] that lets the fixture
+    /// supply an org + accounts list — needed for launchpad picker
+    /// snapshot tests where the account hint column reads from
+    /// `accounts[0]`.
+    #[must_use]
+    pub fn new_for_test_with_org(
+        key: ProjectKey,
+        name: impl Into<String>,
+        display_path: impl Into<String>,
+        org: impl Into<String>,
+        accounts: Vec<String>,
+        sessions: Vec<SessionView>,
+    ) -> Self {
+        let display_path = display_path.into();
+        Self {
+            key,
+            name: name.into(),
+            org: org.into(),
+            path: PathBuf::from(&display_path),
+            display_path,
+            accounts,
             sessions,
         }
     }
@@ -86,5 +134,39 @@ impl SessionView {
         last_activity: Option<SystemTime>,
     ) -> Self {
         Self { session, label: label.into(), is_open, last_activity }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::target::ProjectKey;
+
+    #[test]
+    fn primary_account_hint_lowercases_first_account() {
+        let view = ProjectView {
+            key: ProjectKey::new("test".to_owned()),
+            name: "forge".to_owned(),
+            org: "Busytools".to_owned(),
+            path: PathBuf::from("/tmp/forge"),
+            display_path: "~/Projects/forge".to_owned(),
+            accounts: vec!["Personal".to_owned(), "Gateway".to_owned()],
+            sessions: Vec::new(),
+        };
+        assert_eq!(view.primary_account_hint(), "personal");
+    }
+
+    #[test]
+    fn primary_account_hint_returns_unknown_when_empty() {
+        let view = ProjectView {
+            key: ProjectKey::new("test".to_owned()),
+            name: "forge".to_owned(),
+            org: "Busytools".to_owned(),
+            path: PathBuf::from("/tmp/forge"),
+            display_path: "~/Projects/forge".to_owned(),
+            accounts: Vec::new(),
+            sessions: Vec::new(),
+        };
+        assert_eq!(view.primary_account_hint(), "unknown");
     }
 }
