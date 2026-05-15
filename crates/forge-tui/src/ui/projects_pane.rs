@@ -781,7 +781,7 @@ fn build_account_panel_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         Span::raw("  "),
         Span::raw(installed.clone()),
     ];
-    let mut claude_row_width = 1 + ACCOUNT_PANEL_ID_LABEL_WIDTH + 2 + installed.chars().count();
+    let claude_prefix_width = 1 + ACCOUNT_PANEL_ID_LABEL_WIDTH + 2 + installed.chars().count();
     if let Some(info) = cli_info
         && info.has_update()
         && let Some(latest) = info.latest.as_deref()
@@ -789,13 +789,20 @@ fn build_account_panel_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         let indicator = format!("\u{2191} v{latest}");
         let indicator_chars = indicator.chars().count();
         let budget = usize::from(width).saturating_sub(PANEL_RIGHT_GUTTER);
-        if claude_row_width + 2 + indicator_chars <= budget {
-            claude_spans.push(Span::raw("  "));
+        // At least one space must separate the installed version from
+        // the indicator, otherwise they visually collide.
+        if claude_prefix_width + 1 + indicator_chars <= budget {
+            // Right-justify the indicator into the panel's right gutter
+            // so the row terminates at exactly `pane_width -
+            // PANEL_RIGHT_GUTTER` cols — same as the bar rows / ETA
+            // rows above it. Otherwise the row's right edge slides
+            // around depending on indicator length and the panel
+            // looks ragged.
+            let fill = budget.saturating_sub(claude_prefix_width + indicator_chars);
+            claude_spans.push(Span::raw(" ".repeat(fill)));
             claude_spans.push(Span::styled(indicator, Style::default().fg(theme::STATUS_WARNING)));
-            claude_row_width += 2 + indicator_chars;
         }
     }
-    let _ = claude_row_width; // width tracked above for future extensions
     lines.push(Line::from(claude_spans));
 
     debug_assert_eq!(
