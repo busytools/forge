@@ -181,10 +181,7 @@ fn build_pane_lines(overlay: &DiffOverlayState, area: Rect) -> Vec<Line<'static>
             } else {
                 "  (binary file or no diff content)"
             };
-            lines.push(Line::from(Span::styled(
-                message,
-                Style::default().fg(theme::DIM),
-            )));
+            lines.push(Line::from(Span::styled(message, Style::default().fg(theme::DIM))));
         }
         Some(file) => {
             let gutter_width = gutter_width_for(file);
