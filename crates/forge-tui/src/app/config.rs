@@ -1388,7 +1388,7 @@ pub fn initialize_shared_state(app: &mut App) -> Result<(), String> {
     let pr = project_root(app);
     let loaded = store::load(
         app.settings_home_override.as_deref(),
-        Some(pr.as_path()),
+        pr.as_path(),
         store_workspace_bridge(app).as_ref().copied(),
     )?;
     app.config.apply_loaded(loaded, false);
@@ -1404,7 +1404,7 @@ pub fn open(app: &mut App) -> Result<(), String> {
     let pr = project_root(app);
     let loaded = store::load(
         app.settings_home_override.as_deref(),
-        Some(pr.as_path()),
+        pr.as_path(),
         store_workspace_bridge(app).as_ref().copied(),
     )?;
     app.config.apply_loaded(loaded, false);

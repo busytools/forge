@@ -1149,6 +1149,17 @@ fn apply_tool_summary_update(app: &mut App, tool_use_id: &str, summary: &str) {
 fn handle_rate_limit_event(app: &mut App, msg: Message) {
     let Message::RateLimitEvent { rate_limit_info, .. } = msg else { return };
     let value = serde_json::to_value(&rate_limit_info).unwrap_or(Value::Null);
+    // Per-session config_dir from the workspace's session binding,
+    // NOT `std::env::var("CLAUDE_CONFIG_DIR")` — multiple accounts
+    // mean each session has its own bound config_dir, distinct from
+    // forge's own host config_dir. Reading from env here would log
+    // forge's path on every event regardless of which account
+    // actually owns this rate-limit signal.
+    let config_dir = app
+        .workspace
+        .as_ref()
+        .and_then(|ws| app.active_session_key.as_ref().and_then(|k| ws.config_dir_for(k)))
+        .map_or_else(|| "(unbound)".to_owned(), |p| p.to_string_lossy().into_owned());
     // Raw payload at debug — useful for triaging whether a notice
     // surfaces from forge cache vs. an account-level Anthropic signal.
     tracing::debug!(
@@ -1156,8 +1167,7 @@ fn handle_rate_limit_event(app: &mut App, msg: Message) {
         event_name = "rate_limit_event_received",
         message = "raw RateLimitEvent payload from forge-sdk",
         outcome = "wire_evidence",
-        config_dir = std::env::var("CLAUDE_CONFIG_DIR")
-            .unwrap_or_else(|_| "(unset, falls back to ~/.claude)".to_owned()),
+        config_dir = %config_dir,
         session_id = app.session_id().map(|s| s.to_string()).as_deref().unwrap_or(""),
         rate_limit_info = %value,
     );
