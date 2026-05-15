@@ -48,6 +48,23 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     let sep_area = chunks[1];
     let pane_area = chunks[2];
 
+    // Short-circuit on a too-short pane: skip building the body
+    // lines (allocating Vec<Line> + per-line spans only to drop
+    // them is wasted work) and surface a "terminal too short"
+    // notice so the user knows why the body is empty.
+    if pane_area.height < 3 {
+        render_rail(frame, rail_area, overlay);
+        render_separator(frame, sep_area);
+        if pane_area.height >= 1 {
+            frame.render_widget(
+                Paragraph::new("  Terminal too short — resize and re-open /diff.")
+                    .style(Style::default().fg(theme::STATUS_WARNING)),
+                pane_area,
+            );
+        }
+        return;
+    }
+
     // Build the body line list up-front so we know its total
     // height; clamp body_scroll against (total - visible) so a
     // wheel-past-end leaves a useful one-screen-of-tail visible
@@ -68,9 +85,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     let Some(overlay) = app.diff_overlay.as_ref() else { return };
     render_rail(frame, rail_area, overlay);
     render_separator(frame, sep_area);
-    if pane_area.height >= 3 {
-        frame.render_widget(Paragraph::new(body_lines).scroll((body_scroll, 0)), pane_area);
-    }
+    frame.render_widget(Paragraph::new(body_lines).scroll((body_scroll, 0)), pane_area);
 }
 
 fn render_missing_state(frame: &mut Frame, area: Rect) {
