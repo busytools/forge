@@ -51,6 +51,26 @@ fn clear_transient_view_state(app: &mut App) {
         app.config.overlay = None;
     }
     if app.active_view == ActiveView::Diff {
+        // Pending comments / in-progress editor are dropped on
+        // indirect view transitions (e.g. session swap mid-review).
+        // The normal Esc / banner ✕ paths go through
+        // `close_with_submit` which bundles + submits comments
+        // first; reaching THIS path means something external
+        // forced the transition without giving the diff overlay
+        // a chance to flush. Log so an operator can grep for it.
+        let dropped_comments = app.diff_overlay.as_ref().map_or(0, |o| o.comments.len());
+        let had_in_progress_editor =
+            app.diff_overlay.as_ref().is_some_and(|o| o.active_input.is_some());
+        if dropped_comments > 0 || had_in_progress_editor {
+            tracing::warn!(
+                target: crate::logging::targets::APP_SESSION,
+                event_name = "diff_overlay_force_cleared",
+                message = "diff overlay cleared via view transition without close_with_submit; pending review state lost",
+                outcome = "dropped",
+                dropped_comments,
+                had_in_progress_editor,
+            );
+        }
         app.diff_overlay = None;
     }
     app.release_focus_target(crate::app::FocusTarget::Help);

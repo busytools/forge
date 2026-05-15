@@ -639,16 +639,38 @@ pub(crate) fn handle_paste(app: &mut App, text: &str) -> bool {
 /// Esc would silently destroy the saved comment — the exact bug
 /// `prior_comment` was added to prevent.
 ///
-/// Returns the count of abandoned in-progress chars (`text.len()` of
-/// the editor's content for a fresh editor; `0` for a reopen since
-/// the prior was preserved). Caller can use this for telemetry.
+/// Logs DEBUG with the abandoned char count when text is dropped
+/// (fresh draft, or modifications layered on a reopened chip), so
+/// a "where did my edit go?" triage can correlate from logs.
+/// Returns the abandoned count as a Unicode scalar count for
+/// callers that want it — most don't, but the central log fires
+/// regardless.
 fn close_active_input_preserving_prior(overlay: &mut DiffOverlayState) -> usize {
     let Some(input) = overlay.active_input.take() else { return 0 };
-    let abandoned = if input.prior_comment.is_some() {
-        0
-    } else {
-        input.editor.lines().join("\n").chars().count()
+    let current_text = input.editor.lines().join("\n");
+    // Two abandonment shapes:
+    // - Fresh draft (`prior_comment = None`): every char is lost
+    //   on dismissal.
+    // - Reopened chip with user edits: the editor seeded from the
+    //   prior, then diverged. We restore the prior verbatim on
+    //   dismissal (matches GitHub edit-modal semantics: Esc =
+    //   discard changes), so the divergence is the user's typed-
+    //   over text that gets dropped.
+    let abandoned = match input.prior_comment.as_ref() {
+        Some(prior) if current_text != prior.comment_text => current_text.chars().count(),
+        Some(_) => 0,
+        None => current_text.chars().count(),
     };
+    if abandoned > 0 {
+        tracing::debug!(
+            target: crate::logging::targets::APP_SESSION,
+            event_name = "diff_overlay_editor_dropped_in_progress",
+            message = "comment editor closed with unsaved text",
+            outcome = "dropped",
+            abandoned_chars = abandoned,
+            had_prior = input.prior_comment.is_some(),
+        );
+    }
     if let Some(prior) = input.prior_comment {
         overlay.comments.push(prior);
         overlay.recompute_comment_counts();
@@ -660,21 +682,11 @@ fn close_active_input_preserving_prior(overlay: &mut DiffOverlayState) -> usize 
 /// was opened by re-clicking a saved 💬 chip, restore the original
 /// comment so the chip reappears — the user clicked to view/edit,
 /// not to destroy. Fresh line-click editors have no prior to
-/// restore; their in-progress text is correctly discarded but
-/// logged at DEBUG with a char count so a "where did my draft go"
-/// triage can correlate.
+/// restore; their in-progress text is discarded (with the helper's
+/// central DEBUG log noting the abandoned char count).
 fn cancel_active_input(app: &mut App) {
     if let Some(overlay) = app.diff_overlay.as_mut() {
-        let abandoned = close_active_input_preserving_prior(overlay);
-        if abandoned > 0 {
-            tracing::debug!(
-                target: crate::logging::targets::APP_SESSION,
-                event_name = "diff_overlay_cancel_dropped_in_progress",
-                message = "Esc cancelled active comment editor with unsaved text",
-                outcome = "dropped",
-                abandoned_chars = abandoned,
-            );
-        }
+        let _ = close_active_input_preserving_prior(overlay);
         app.needs_redraw = true;
     }
 }
@@ -1727,6 +1739,69 @@ mod tests {
         assert!(state.active_input.is_none(), "editor closed on file cycle");
         assert_eq!(state.comments.len(), 1, "A restored");
         assert_eq!(state.current_file_idx, 1);
+    }
+
+    #[test]
+    fn reopen_edit_then_cancel_drops_edits_and_restores_prior() {
+        // F1: user reopens chip, types edits, then dismisses (Esc).
+        // Per GitHub edit-modal semantics, the chip restores to its
+        // pre-edit state — the typed-over changes are intentionally
+        // dropped. Verify the prior is restored verbatim AND the
+        // helper reports the divergence as abandoned chars (so the
+        // central DEBUG log fires for telemetry).
+        let mut state = sample_state();
+        let key = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 };
+        let prior = HunkComment {
+            key,
+            path: "a.rs".into(),
+            line: 1,
+            hunk_context: vec![],
+            comment_text: "original text".into(),
+        };
+        let mut editor = TextArea::default();
+        editor.insert_str("original text with user-typed edits");
+        state.active_input =
+            Some(ActiveCommentInput { key, editor, prior_comment: Some(prior.clone()) });
+        let abandoned = close_active_input_preserving_prior(&mut state);
+        assert!(abandoned > 0, "user's typed-over text counts as abandoned");
+        assert_eq!(state.comments.len(), 1);
+        assert_eq!(state.comments[0].comment_text, "original text", "prior restored verbatim");
+    }
+
+    #[test]
+    fn reopen_no_edit_then_cancel_reports_zero_abandoned() {
+        // F1 boundary: when the editor's content equals the prior
+        // exactly (user reopened, didn't type), abandoned should be 0
+        // — no telemetry log fires for "viewed and dismissed".
+        let mut state = sample_state();
+        let key = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 };
+        let prior = HunkComment {
+            key,
+            path: "a.rs".into(),
+            line: 1,
+            hunk_context: vec![],
+            comment_text: "exactly this".into(),
+        };
+        let mut editor = TextArea::default();
+        editor.insert_str("exactly this");
+        state.active_input = Some(ActiveCommentInput { key, editor, prior_comment: Some(prior) });
+        let abandoned = close_active_input_preserving_prior(&mut state);
+        assert_eq!(abandoned, 0, "no divergence → no abandoned text");
+        assert_eq!(state.comments.len(), 1);
+    }
+
+    #[test]
+    fn fresh_editor_close_reports_abandoned_chars() {
+        // F2 sister test: a fresh-editor dismissal via any of the
+        // helper-using paths surfaces the abandoned count.
+        let mut state = sample_state();
+        let key = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 };
+        let mut editor = TextArea::default();
+        editor.insert_str("draft typed by user");
+        state.active_input = Some(ActiveCommentInput { key, editor, prior_comment: None });
+        let abandoned = close_active_input_preserving_prior(&mut state);
+        assert_eq!(abandoned, "draft typed by user".chars().count());
+        assert!(state.comments.is_empty(), "fresh editor's text is not saved");
     }
 
     #[test]
