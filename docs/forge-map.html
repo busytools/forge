@@ -1493,38 +1493,107 @@ chat continues here…
     <div class="when">visible: when <code>/diff</code> or <code>/diff &lt;target&gt;</code> runs, or when the Inspector <a href="#inspector-pane">GIT section</a>'s <code>⤢</code> glyph is clicked. Lives in <code>ActiveView::Diff</code> — chat / input / projects pane / inspector pane all disappear while it's up, same overlay pattern as <a href="#settings">Config</a> / <a href="#sessions">Session picker</a> / <a href="#welcome">Trust</a>.</div>
   </div>
   <div class="surface-body">
-    <p>Read-only viewer for reviewing changes against any git ref. Mouse wheel scrolls the diff body, click a file row in the FILES rail to switch context, <kbd>Esc</kbd> closes.</p>
+    <p>Click-to-review viewer for changes against any git ref. Mouse wheel scrolls the diff body, click a file in the FILES rail to switch context, click a diff line to attach a comment, <kbd>Esc</kbd> closes and (when there are pending comments) bundles them into a one-shot chat message to the agent.</p>
 
     <p>The default <code>/diff</code> (no args) reads the Inspector <a href="#inspector-pane">GIT section</a>'s snapshot and picks a target accordingly: <strong>worktree dirty</strong> on any branch → <code>git diff HEAD</code>; <strong>feature branch clean</strong> → <code>git diff &lt;default-branch&gt;</code>. Six distinct empty-state cases each surface a specific system notice in chat instead of opening the overlay: no Inspector snapshot yet ("try again in a moment"), <code>NoRepo</code> ("Not a git repository"), scanner crashed (see HIGH-2 distinction below), feature-branch with unresolvable default ref (suggests explicit <code>/diff &lt;ref&gt;</code>), and clean default ("No changes vs <em>&lt;name&gt;</em>"). <code>/diff &lt;target&gt;</code> takes a ref / branch / SHA and runs <code>git diff &lt;target&gt;</code> directly — comparing the named ref against the working tree (captures committed + uncommitted in one view, so <code>/diff main</code> from a feature branch shows the full PR-equivalent picture).</p>
 
     <p>Two horizontally-stacked surfaces with chrome mirroring the chat's <a href="#projects-pane">Projects pane</a>: single-banner-row + DIM rule + 2-col content indent, 40ch (Wide) / 30ch (Medium) FILES rail width, <code>│</code> separator between rail and right pane.</p>
 
     <ul style="color: var(--muted); font-size: 13px; line-height: 1.7; margin: 0 0 12px 18px;">
-      <li><strong>FILES rail:</strong> banner <code>FILES</code> + DIM rule + blank row. One row per changed file: status glyph (<code>M</code>/<code>A</code>/<code>D</code>/<code>R</code>/<code>C</code>/<code>T</code>/<code>U</code>/<code>!</code> for Unmerged) + path (front-truncated when it overflows the rail width). Currently-viewed file marker is <code>▸</code> in <span class="accent">RUST_ORANGE</span>. Click any row → switch right pane to that file + reset body scroll. Untracked files (capped at 4 per scan, each ≤1KB content) appear with the <code>U</code> glyph. When the cap is exceeded, a yellow <code>+N untracked suppressed (cap M)</code> line is appended to the rail so the user knows their working tree has untracked entries beyond what's listed.</li>
-      <li><strong>DIFF body:</strong> banner <code>DIFF · &lt;current-file-path&gt;  +N -M</code> (the per-file added / removed counts append to the banner whenever the currently-viewed file has non-zero deltas — green <code>+N</code>, red <code>-M</code>) + DIM rule + blank row. Unified diff lines: per-line gutter showing the line number from the relevant side (new-file for context/added, old-file for removed), a <code>+</code>/<code>-</code>/space marker, then the raw line text. Hunk headers (<code>@@ -X,Y +A,B @@</code>) render in <code>Color::Cyan</code>. No background tints, no syntax highlighting, no word-level diff yet — markers are coloured (<span class="success">green</span> <code>+</code>, <span class="error">red</span> <code>-</code>) and that's the only colour discrimination. Mouse wheel scrolls the body; rail and body scroll independently. <code>body_scroll</code> is clamped against the rendered line count on each render so a wheel-past-end leaves the tail visible instead of a blank pane.</li>
+      <li><strong>FILES rail:</strong> banner <code>FILES</code> + DIM rule + blank row. One row per changed file: status glyph (<code>M</code>/<code>A</code>/<code>D</code>/<code>R</code>/<code>C</code>/<code>T</code>/<code>U</code>/<code>!</code> for Unmerged) + path (front-truncated when it overflows the rail width) + optional <code>💬 N</code> badge in <span class="accent">RUST_ORANGE</span> when N saved comments are anchored in that file. Currently-viewed file marker is <code>▸</code> in <span class="accent">RUST_ORANGE</span>. Click any row → switch right pane to that file + reset body scroll + close any open comment editor. Mouse wheel over the rail advances <code>rail_scroll</code> so long file lists are scrollable (renderer clamps against <code>max(0, file_count - visible)</code>). Untracked files (capped at 4 per scan, each ≤1KB content) appear with the <code>U</code> glyph. When the cap is exceeded, a yellow <code>+N untracked suppressed (cap M)</code> line is appended to the rail so the user knows their working tree has untracked entries beyond what's listed.</li>
+      <li><strong>DIFF body:</strong> banner <code>DIFF · &lt;current-file-path&gt;  +N -M  ✕</code> (the per-file added / removed counts append whenever the currently-viewed file has non-zero deltas — green <code>+N</code>, red <code>-M</code>; the trailing DIM <code>✕</code> is a click affordance for close/submit, equivalent to <kbd>Esc</kbd>) + DIM rule + blank row. Unified diff lines: per-line gutter showing the line number from the relevant side (new-file for context/added, old-file for removed), a <code>+</code>/<code>-</code>/space marker, then the raw line text. Hunk headers (<code>@@ -X,Y +A,B @@</code>) render in <code>Color::Cyan</code>. Click any diff line to mount an inline comment editor (see "Comment workflow" below). Saved comments render as a single chip row "<code>💬 L&lt;line&gt; &lt;summary&gt;</code>" immediately after their anchor line. Mouse wheel over the body advances <code>body_scroll</code>; rail and body scroll independently. <code>body_scroll</code> is clamped against the rendered line count on each render so a wheel-past-end leaves the tail visible instead of a blank pane.</li>
+      <li><strong>Footer:</strong> bottom row of the overlay shows pending comment count + key hints. With an editor open: "<code>Enter save · Esc cancel input</code>". With saved comments and no editor: "<code>N comments pending · click a diff line to comment · Esc submit &amp; close</code>". With nothing pending: "<code>click a diff line to comment · Esc close</code>".</li>
     </ul>
 
     <div class="term">
       <pre class="indent">
-  <span class="accent-bold">  FILES</span>                                 <span class="dim">│</span>  <span class="accent-bold">DIFF</span> <span class="dim">·</span> <span class="dim">crates/forge-tui/src/ui/inspector_pane.rs</span>  <span class="success">+340</span> <span class="error">-21</span>
+  <span class="accent-bold">  FILES</span>                                 <span class="dim">│</span>  <span class="accent-bold">DIFF</span> <span class="dim">·</span> <span class="dim">crates/forge-tui/src/ui/inspector_pane.rs</span>  <span class="success">+340</span> <span class="error">-21</span>  <span class="dim">✕</span>
   <span class="dim">─────────────────────────────────────</span>  <span class="dim">│</span>  <span class="dim">──────────────────────────────────────────────────────────────</span>
 
   <span class="accent">  M</span>  crates/forge-agent/src/env/        <span class="dim">│</span>    <span style="color: cyan;">@@ -363,8 +363,15 @@</span>
-       <span class="dim">git_diff.rs</span>                       <span class="dim">│</span>    <span class="dim">363</span>   fn render_git_section(app: &amp;mut App, lines: &amp;mut Vec&lt;Line&gt;) {
+       <span class="dim">git_diff.rs</span>  <span class="accent">💬 1</span>                <span class="dim">│</span>    <span class="dim">363</span>   fn render_git_section(app: &amp;mut App, lines: &amp;mut Vec&lt;Line&gt;) {
                                          <span class="dim">│</span>    <span class="dim">364</span>       let banner = "GIT";
   <span class="accent">  M</span>  crates/forge-agent/src/env/        <span class="dim">│</span>    <span class="dim">365</span> <span class="success">+</span> let Some(snapshot) = app.active_session()
        <span class="dim">git.rs</span>                            <span class="dim">│</span>    <span class="dim">366</span> <span class="success">+</span>     .and_then(|s| s.git_diff_snapshot.as_ref())
-                                         <span class="dim">│</span>    <span class="dim">367</span> <span class="success">+</span> else {
-  <span class="success">  A</span>  crates/forge-tui/src/app/          <span class="dim">│</span>    <span class="dim">368</span> <span class="success">+</span>     return;
-       <span class="dim">git_diff.rs</span>                       <span class="dim">│</span>    <span class="dim">369</span> <span class="success">+</span> };
-                                         <span class="dim">│</span>    <span class="dim">370</span>       lines.push(header_row(banner));
-  <span class="accent">  ▸</span>  crates/forge-tui/src/ui/           <span class="dim">│</span>    <span class="dim">371</span> <span class="error">-</span> let _legacy = scan_legacy(app);
-       <span class="dim">inspector_pane.rs</span>                   <span class="dim">│</span>    <span class="dim">372</span>       append_path_row(lines, app);
-                                         <span class="dim">│</span>    <span class="dim">373</span>   }
-  <span class="warning">  U</span>  scratch/probe.rs                   <span class="dim">│</span>
-                                         <span class="dim">│</span>    <span style="color: cyan;">@@ -608,3 +608,8 @@</span>
-  <span class="warning">  +5 untracked suppressed (cap 4)</span>      <span class="dim">│</span>    <span class="dim">608</span>   fn build_diff_display(snapshot: &amp;GitDiffSnapshot) -&gt; Option {
-                                         <span class="dim">│</span>    <span class="dim">609</span> <span class="success">+</span>     // refactored: pulled out of render</span></pre>
+                                         <span class="dim">│</span>          <span class="accent">💬 L366</span> <span class="dim">use a let-else with explicit error path</span>
+  <span class="success">  A</span>  crates/forge-tui/src/app/          <span class="dim">│</span>    <span class="dim">367</span> <span class="success">+</span> else {
+       <span class="dim">git_diff.rs</span>                       <span class="dim">│</span>    <span class="dim">368</span> <span class="success">+</span>     return;
+                                         <span class="dim">│</span>    <span class="dim">369</span> <span class="success">+</span> };
+  <span class="accent">  ▸</span>  crates/forge-tui/src/ui/           <span class="dim">│</span>    <span class="dim">370</span>       lines.push(header_row(banner));
+       <span class="dim">inspector_pane.rs</span>  <span class="accent">💬 2</span>            <span class="dim">│</span>    <span class="dim">371</span> <span class="error">-</span> let _legacy = scan_legacy(app);
+                                         <span class="dim">│</span>          <span class="accent">│ </span>worth a TODO with the cleanup deadline
+  <span class="warning">  U</span>  scratch/probe.rs                   <span class="dim">│</span>          <span class="accent">│ </span>(input editor — Enter saves, Esc cancels)
+                                         <span class="dim">│</span>    <span class="dim">372</span>       append_path_row(lines, app);
+  <span class="warning">  +5 untracked suppressed (cap 4)</span>      <span class="dim">│</span>    <span class="dim">373</span>   }
+                                         <span class="dim">│</span>
+                                         <span class="dim">│</span>  <span class="accent">3 comments</span> <span class="dim">pending  ·  click a diff line </span><span class="accent">to comment</span><span class="dim">   ·  Esc </span><span class="accent">submit &amp; close</span></pre>
+    </div>
+
+    <h5 style="margin-top: 18px;">Comment workflow</h5>
+    <p>Click on any diff line (added / removed / context — hunk headers are non-interactive) mounts a <code>tui_textarea::TextArea</code> inline below the clicked line. The editor renders with a <span class="accent">RUST_ORANGE</span> <code>│</code> left margin to visually anchor it to the diff; an empty editor shows a DIM "<code>(type your comment, Enter to save, Esc to cancel)</code>" placeholder so first-keystroke shape is obvious. Multi-line edits expand the editor inline; the body keeps scrolling smoothly around it via <code>body_scroll</code>.</p>
+
+    <ul style="color: var(--muted); font-size: 13px; line-height: 1.7; margin: 0 0 12px 18px;">
+      <li><kbd>Enter</kbd> saves the comment, closes the editor, and renders the chip "<code>💬 L&lt;line&gt; &lt;first-line summary&gt;</code>" in place. Save is idempotent — re-saving on the same anchor replaces the prior entry. Empty saves are treated as cancel so the chip never has blank text.</li>
+      <li><kbd>Esc</kbd> with an editor open cancels just the editor; the overlay stays. Without an editor open, <kbd>Esc</kbd> closes the overlay and (if comments are pending) bundles them into a single markdown user message and dispatches it through the same path a typed prompt takes. The bubble appears in chat immediately + the agent receives the bundle as a fresh prompt.</li>
+      <li>Click on an existing <code>💬</code> chip pulls the saved comment back into the editor for re-edit. Saving the edited text puts the chip back in place; cancelling leaves it gone (matches GitHub's edit-or-delete semantics).</li>
+      <li>Switching files via the FILES rail closes any open editor — the editor is anchored to a specific line, and orphaning it on a file switch would confuse the geometry. Saved comments survive file switches; only the in-progress editor drops.</li>
+      <li>Bracketed paste while an editor is open routes to the TextArea so SuperWhisper transcripts / clipboard / pasted code blocks all land as expected. Paste outside an open editor is a no-op (nothing for it to land on).</li>
+    </ul>
+
+    <p>The bundled markdown shape, grouped by file:</p>
+    <div class="term"><pre class="indent">
+## Diff review (target `HEAD`)
+
+Repo: `/Users/vedhavyas/Projects/forge`
+
+### `crates/forge-tui/src/ui/inspector_pane.rs`
+
+**Line 371**
+
+```diff
+- let _legacy = scan_legacy(app);
+```
+
+worth a TODO with the cleanup deadline
+
+**Line 380**
+
+```diff
++ if let Some(snapshot) = app.active_session() {
+```
+
+prefer let-else for early-return shape
+
+### `crates/forge-agent/src/env/git_diff.rs`
+
+**Line 366**
+
+```diff
++     .and_then(|s| s.git_diff_snapshot.as_ref())
+```
+
+use a let-else with explicit error path
+</pre></div>
+
+    <h5 style="margin-top: 18px;">Narrow tier (&lt;120 cols)</h5>
+    <p>The FILES rail collapses on narrow terminals; the overlay renders just the diff body with a one-row header carrying the current file's path and <code>◀ N/M ▶</code> cycle controls. The rest of the workflow stays the same — click a diff line to comment, <kbd>Esc</kbd> bundles &amp; submits. File switching uses the cycle arrows or keyboard (future).</p>
+
+    <div class="term">
+      <pre class="indent">
+  <span class="accent-bold">DIFF</span> <span class="dim">·</span> <span class="dim">crates/forge-tui/src/ui/inspector_pane.rs</span>  <span class="accent">◀</span> <span class="dim">3/6</span> <span class="accent">▶</span>  <span class="success">+340</span> <span class="error">-21</span>
+<span class="dim">─────────────────────────────────────────────────────────────────────</span>
+
+  <span style="color: cyan;">@@ -363,8 +363,15 @@</span>
+  <span class="dim">363</span>   fn render_git_section(app: &amp;mut App, lines: &amp;mut Vec&lt;Line&gt;) {
+  <span class="dim">364</span>       let banner = "GIT";
+  <span class="dim">365</span> <span class="success">+</span> let Some(snapshot) = app.active_session()
+  <span class="dim">366</span> <span class="success">+</span>     .and_then(|s| s.git_diff_snapshot.as_ref())
+  <span class="dim">367</span> <span class="success">+</span> else {
+  <span class="dim">368</span> <span class="success">+</span>     return;
+  <span class="dim">369</span> <span class="success">+</span> };
+  <span class="dim">370</span>       lines.push(header_row(banner));
+
+<span class="dim">  click a diff line </span><span class="accent">to comment</span><span class="dim">   ·  Esc </span><span class="accent">close</span></pre>
     </div>
 
     <p>Six distinct user-facing messages cover every failure / empty-state path so the user always knows what happened and what to do:</p>
@@ -1538,14 +1607,14 @@ chat continues here…
       <li>Inside the overlay: when the hunk scanner returns <code>scanner_ok = false</code> (Failed / Oversize on the underlying <code>git diff</code> calls), the right pane shows <code>"Scan failed for `&lt;target&gt;` — see tracing logs (target: agent.env_git). Press Esc to retry."</code> in red, embedding the diff target so a typo'd ref is visible at the failure site. Overrides the per-file empty-hunks fallback when files in the rail are partially populated (e.g. only <code>--no-ext-diff</code> failed).</li>
     </ul>
 
-    <p>The drain pump that lands scan results (<code>drain_events</code>) gates on three conditions before opening the overlay: (1) the scan's <code>seq</code> must match the latest <code>App.diff_scan_seq</code> (a rapid second <code>/diff</code> bumps the counter so the older scan's event drops silently as superseded); (2) <code>active_view == Chat</code> (user must still be in chat to receive the overlay — navigated-away case surfaces a system message naming the target ref so the user can re-run); (3) <code>event.cwd == active_session.cwd_raw</code> (session-switch mid-scan drops the stale result with a session-mismatch system message). Each skip path emits a DEBUG-level trace log under <code>APP_SESSION</code> for triage.</p>
+    <p>The drain pump that lands scan results (<code>drain_events</code>) gates on three conditions before opening the overlay: (1) the scan's <code>seq</code> must match the latest <code>App.diff_scan_seq</code> (a rapid second <code>/diff</code> bumps the counter so the older scan's event drops silently as superseded); (2) <code>active_view == Chat</code> (user must still be in chat to receive the overlay — navigated-away case drops silently with a DEBUG log); (3) <code>event.cwd == active_session.cwd_raw</code> (session-switch mid-scan drops the stale result silently with a DEBUG log). No chat-message noise on the navigated-away paths — the user explicitly switched view or session, so surfacing a later notice would be surprising. Each skip path emits a DEBUG-level trace log under <code>APP_SESSION</code> for triage.</p>
 
     <dl>
       <dt>code</dt><dd><code>crates/forge-tui/src/ui/diff_overlay.rs::render</code> (overlay scaffold) · <code>crates/forge-tui/src/app/diff_overlay.rs</code> (state + drain + key/mouse) · <code>/diff</code> slash handler at <code>crates/forge-tui/src/app/slash/executors.rs::handle_diff_submit</code> · Inspector <code>⤢</code> hit-test at <code>crates/forge-tui/src/ui/inspector_pane.rs::render_scrollable_body</code> stamping <code>PaneHitTarget::InspectorGitOpenDiff</code> · scanner at <code>crates/forge-agent/src/env/git_diff/hunks.rs::scan</code> running <code>git diff &lt;target&gt; --name-status</code> + <code>--no-ext-diff</code> + <code>ls-files --others</code>, returning a <code>ScanOutcome { files, scanner_ok, untracked_suppressed }</code> · workspace facade at <code>forge_workspace::Workspace::scan_git_diff_hunks(cwd, target)</code>.</dd>
       <dt>color</dt><dd>left banner (<code>FILES</code>) + right banner (<code>DIFF</code>): <code>RUST_ORANGE</code> bold · right banner <code>·</code> separator + current file path: <code>DIM</code> · banner rules + column separator (<code>│</code>): <code>DIM</code> · file-rail status glyphs: <code>M</code> / <code>R</code> / <code>C</code> / <code>T</code> <span class="accent">RUST_ORANGE</span>, <code>A</code> <span class="success">green</span>, <code>D</code> <span class="error">red</span>, <code>U</code> <span class="warning">yellow</span>, <code>!</code> (Unmerged) <span class="error">red</span> · file-rail currently-viewed marker (<code>▸</code>): <span class="accent">RUST_ORANGE</span> · file path in rail: default fg · "<code>+N untracked suppressed (cap M)</code>" line: <span class="warning">yellow</span> · diff body hunk headers (<code>@@</code>): <code>Color::Cyan</code> · added lines marker (<code>+</code>): <span class="success">green</span> · removed lines marker (<code>-</code>): <span class="error">red</span> · context-line marker (space) + gutter line numbers: <code>DIM</code> · context line text + added line text + removed line text: default fg (no background tint) · "Scan failed" body message: <span class="error">red</span> · "Terminal too short" warning when <code>pane_area.height &lt; 3</code>: <span class="warning">yellow</span>.</dd>
-      <dt>click</dt><dd>FILES rail row → switch right pane to that file, reset <code>body_scroll</code> to 0. <kbd>Esc</kbd> → close overlay, return to chat. Inspector pane's <code>⤢</code> glyph → enter overlay via <code>open_default</code> (auto-detected target). All other clicks consumed without effect (line-click for commenting is deferred).</dd>
-      <dt>data source</dt><dd><code>forge_agent::env::git_diff::hunks::scan(cwd, target)</code> runs three subprocess calls per invocation: <code>git diff &lt;target&gt; --name-status</code> (file list with M/A/D/R/C/T/U classification), <code>git diff &lt;target&gt; --no-ext-diff</code> (full unified diff content — <code>--no-ext-diff</code> defeats user-configured difftastic / delta so the parser sees standard format), and <code>git ls-files --others --exclude-standard</code> (untracked files, only when <code>target == "HEAD"</code>; capped at <code>MAX_UNTRACKED_FILES=4</code>, each read up to <code>MAX_UNTRACKED_FILE_SIZE=1024</code> bytes). Returns <code>ScanOutcome { files, scanner_ok, untracked_suppressed }</code> — <code>scanner_ok</code> is <code>false</code> when any subprocess hit Failed / Oversize so the renderer surfaces "Scan failed" instead of an ambiguous empty pane; <code>untracked_suppressed</code> carries the cap-overflow count for the rail's yellow notice. Unknown <code>--name-status</code> codes (X, B) and malformed <code>@@</code> headers fire WARN logs under <code>ENV_GIT</code> and drop the entry. Single-shot scan on overlay open — no polling.</dd>
-      <dt>scope</dt><dd>Wide tier (≥160): 40ch FILES rail (matches <a href="#projects-pane">Projects pane</a>'s Wide-tier width) + DIFF body fills the rest. Medium tier (120–159): 30ch FILES rail (matches Projects pane's Medium-tier width) + DIFF body fills the rest, file paths front-truncate as needed. Narrow tier (&lt;120): not yet implemented — the right pane renders a "Diff overlay narrow-tier rendering pending follow-up commit" placeholder; click any file in the FILES rail before resizing to Wide/Medium to interact. Persisted state: none — the overlay state is fully transient, doesn't survive a session restart. The line-click commenting flow (mounting <code>ChatInput</code> inline below a clicked line, <kbd>Esc</kbd> bundling comments into a one-shot chat submit) is deferred to a follow-up.</dd>
+      <dt>click</dt><dd>FILES rail row → switch right pane to that file, reset <code>body_scroll</code> to 0, close any open comment editor. Diff line → open a <code>tui_textarea::TextArea</code> inline below the clicked line; <kbd>Enter</kbd> saves, <kbd>Esc</kbd> cancels just the editor. Saved <code>💬</code> chip → reopens the saved comment for re-edit. Banner <code>✕</code> (rightmost cells of banner row) → equivalent to <kbd>Esc</kbd> (submits pending comments and closes). <kbd>Esc</kbd> with no editor open → close overlay; if comments are pending, bundle them into a markdown chat message and dispatch it as a fresh prompt to the agent (one bubble, one turn). Inspector pane's <code>⤢</code> glyph → enter overlay via <code>open_default</code> (auto-detected target). Mouse wheel over FILES rail advances <code>rail_scroll</code>; over the body advances <code>body_scroll</code>.</dd>
+      <dt>data source</dt><dd><code>forge_agent::env::git_diff::hunks::scan(cwd, target)</code> runs three subprocess calls per invocation: <code>git diff &lt;target&gt; --name-status</code> (file list with M/A/D/R/C/T/U classification), <code>git diff &lt;target&gt; --no-ext-diff</code> (full unified diff content — <code>--no-ext-diff</code> defeats user-configured difftastic / delta so the parser sees standard format), and <code>git ls-files --others --exclude-standard</code> (untracked files, only when <code>target == "HEAD"</code>; capped at <code>MAX_UNTRACKED_FILES=4</code>, each read up to <code>MAX_UNTRACKED_FILE_SIZE=1024</code> bytes). Returns <code>ScanOutcome { files, scanner_ok, untracked_suppressed }</code> — <code>scanner_ok</code> is <code>false</code> when any subprocess hit Failed / Oversize so the renderer surfaces "Scan failed" instead of an ambiguous empty pane; <code>untracked_suppressed</code> carries the cap-overflow count for the rail's yellow notice. Unknown <code>--name-status</code> codes (X, B) and malformed <code>@@</code> headers fire WARN logs under <code>agent.env_git</code> and drop the entry. Single-shot scan on overlay open — no polling.</dd>
+      <dt>scope</dt><dd>Wide tier (≥160): 40ch FILES rail (matches <a href="#projects-pane">Projects pane</a>'s Wide-tier width) + DIFF body fills the rest. Medium tier (120–159): 30ch FILES rail (matches Projects pane's Medium-tier width) + DIFF body fills the rest, file paths front-truncate as needed. Narrow tier (&lt;120): FILES rail collapses; the overlay renders the body only with a one-row header carrying <code>DIFF · &lt;path&gt;  ◀ N/M ▶  +N -M</code>. Persisted state: none — the overlay state is fully transient, doesn't survive a session restart. Comments survive the duration of a single open; <kbd>Esc</kbd> bundles them into chat and discards local state.</dd>
     </dl>
   </div>
 </div>
@@ -1732,7 +1801,9 @@ chat continues here…
     <tr><td class="glyph">◆</td><td class="codepoint">U+25C6</td><td>Projects pane lead-session marker</td><td>black diamond — marks the lead session within the active project's drilldown (DIM); always rendered on the first session row of that project</td></tr>
     <tr><td class="glyph">△</td><td class="codepoint">U+25B3</td><td>Projects pane Attention session-state glyph</td><td>white up-pointing triangle — session-row lifecycle glyph for a background session paused on a permission prompt (DIM)</td></tr>
     <tr><td class="glyph">▤</td><td class="codepoint">U+25A4</td><td>Narrow-tier Projects top-bar icon</td><td>square with horizontal fill — single-cell pane icon at the top of the chat area; toggles the Projects overlay on click (DIM when closed, RUST_ORANGE bold when open)</td></tr>
-    <tr><td class="glyph">✕</td><td class="codepoint">U+2715</td><td>Narrow-tier overlay close glyph</td><td>multiplication x — sits at the right edge of the overlay banner; click dismisses the overlay without switching session (DIM)</td></tr>
+    <tr><td class="glyph">✕</td><td class="codepoint">U+2715</td><td>Narrow-tier overlay close glyph · <a href="#diff">Diff overlay</a> banner close affordance</td><td>multiplication x — Projects pane: sits at the right edge of the overlay banner; click dismisses the overlay without switching session (DIM). Diff overlay: trailing glyph on the DIFF banner (DIM); click the rightmost cells of the banner row equates to <kbd>Esc</kbd> (bundle + submit pending comments, close).</td></tr>
+    <tr><td class="glyph">💬</td><td class="codepoint">U+1F4AC</td><td><a href="#diff">Diff overlay</a> comment chip + per-file badge</td><td>speech balloon — saved per-line comment chip (rendered after its anchor diff line as "<code>💬 L&lt;line&gt; &lt;summary&gt;</code>") and rail badge "<code>💬 N</code>" next to files that have N pending comments. Always RUST_ORANGE.</td></tr>
+    <tr><td class="glyph">◀ ▶</td><td class="codepoint">U+25C0 / U+25B6</td><td><a href="#diff">Diff overlay</a> narrow-tier file cycle controls</td><td>left/right-pointing triangles in RUST_ORANGE; wrap a DIM <code>N/M</code> file-position counter in the narrow-tier header to indicate the cycle controls.</td></tr>
     <tr><td class="glyph">?</td><td class="codepoint">U+003F</td><td>question-prompt header marker · help toggle key</td><td>RUST_ORANGE in question header; same key activates help</td></tr>
     <tr class="outlier"><td class="glyph">|</td><td class="codepoint">U+007C</td><td>question-prompt horizontal-options separator</td><td>ASCII pipe used between options in the horizontal question layout (<code>"  |  "</code>, DIM) — sits next to box-drawing <code>│</code>; flagged in #40 for replacement</td></tr>
     <tr><td class="glyph">[ ]</td><td class="codepoint">U+005B / U+005D</td><td>Projects-pane status panel mode badge · multi-select checkbox</td><td>ASCII brackets wrap the panel's <code>Mode</code> badge in the pane footer; the multi-select checkbox in question prompt uses <code>[x]</code> / <code>[ ]</code></td></tr>
