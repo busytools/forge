@@ -747,7 +747,7 @@ chat continues here…
       <span class="dim">────────────────────────────────────────────────────────</span>
         <span class="dim">Busytools</span>
         <span class="dim">├─</span> <span class="success-green">●</span>  <span class="bold">forge       </span> <span class="dim">(personal)        now</span>
-        <span class="dim">├─</span> <span class="rust-orange">⠹</span>  <span class="bold">hub-modules </span> <span class="dim">(personal)   spawning</span>
+        <span class="dim">├─</span> <span class="rust-orange">⠹</span>  <span class="dim">hub-modules    (personal)   spawning</span>
         <span class="dim">└─</span> <span class="dim">○</span>  trader-cc      <span class="dim">(personal)         2d</span>
 
         <span class="dim">Granite</span>
@@ -761,9 +761,15 @@ chat continues here…
     </div>
     <dl>
       <dt>code</dt><dd><code>crates/forge-tui/src/ui/launchpad.rs</code> (renderer) + <code>crates/forge-tui/src/app/launchpad.rs</code> (state + keyboard handler) · wordmark stored as <code>const FORGE_WORDMARK: [&amp;str; 6]</code> (43 cols × 6 rows ANSI Shadow figlet)</dd>
-      <dt>color</dt><dd>wordmark: <code>RUST_ORANGE</code> + BOLD · version lines / org headers / tree connectors / footer hint / account hints / pending glyphs (<code>○</code>) / picker rules: <code>DIM</code> · idle <code>●</code>: <code>RUST_ORANGE</code> · running / spawning spinner: <code>RUST_ORANGE</code> · failed <code>✗</code>: <code>STATUS_ERROR</code> · selected-row band: <code>White on RUST_ORANGE</code> + BOLD · update indicator (<code>↑ vX.Y.Z available</code>): <code>RUST_ORANGE</code></dd>
+      <dt>color</dt><dd>wordmark: <code>RUST_ORANGE</code> + BOLD · version lines / org headers / tree connectors / footer hint / account hints / pending glyphs (<code>○</code>) / picker rules: <code>DIM</code> · idle <code>●</code>: <code>RUST_ORANGE</code> · running / spawning spinner: <code>RUST_ORANGE</code> · failed <code>✗</code>: <code>STATUS_ERROR</code> · selected-row band: <code>White on RUST_ORANGE</code> + BOLD for clickable rows · <code>White on DIM</code> + BOLD ("waiting band") for the Spawning row · spawning row name: <code>DIM</code> (not BOLD) so the row reads as not-yet-interactive · update indicator (<code>↑ vX.Y.Z available</code>): <code>RUST_ORANGE</code></dd>
       <dt>data sources</dt><dd>Projects via <code>Workspace::list_projects()</code> grouped by org (alpha-sorted, alpha-sorted within each org) · per-row lifecycle from <code>UiSession::lifecycle_state</code> with fallback to <code>Sleeping</code> · last-activity from <code>ProjectView::sessions[0].last_activity</code> · account hint from <code>ProjectView::primary_account_hint()</code> (first item of the org's <code>accounts</code> list, lowercased) · forge version from <code>FORGE_VERSION_SHORT</code> · claude version + update flag from <code>app.cli_version_info</code> (async npm probe)</dd>
-      <dt>keys</dt><dd><kbd>↑</kbd> <kbd>↓</kbd> / <kbd>k</kbd> <kbd>j</kbd> navigate · <kbd>Enter</kbd> open selected · <kbd>r</kbd> retry (only when row is Failed) · <kbd>?</kbd> toggle help (≡ <code>/help</code>) · <kbd>Esc</kbd> no-op · <kbd>Ctrl+Q</kbd> quit (≡ <code>/quit</code>) · <kbd>Ctrl+B</kbd> <kbd>Ctrl+E</kbd> swallowed (no panes to toggle)</dd>
+      <dt>keys</dt><dd><kbd>↑</kbd> <kbd>↓</kbd> / <kbd>k</kbd> <kbd>j</kbd> navigate · <kbd>Enter</kbd> intent-aware (open / start / blocked / no-op — see "Click intent" below) · <kbd>r</kbd> retry (only when row is Failed) · <kbd>?</kbd> toggle help (≡ <code>/help</code>) · <kbd>Esc</kbd> no-op · <kbd>Ctrl+Q</kbd> quit (≡ <code>/quit</code>) · <kbd>Ctrl+B</kbd> <kbd>Ctrl+E</kbd> swallowed (no panes to toggle)</dd>
+      <dt>click intent</dt><dd>Enter behavior depends on the selected row's lifecycle. Footer hint reflects this label.<ul>
+        <li><strong>Idle / Running / Attention / AuthRequired / LoggedOut</strong> → "<code>enter  open</code>" → switch chat view to the session.</li>
+        <li><strong>Sleeping</strong> → "<code>enter  start</code>" → dispatch <code>Command::SpawnProject</code> and stay on the launchpad. The row transitions Sleeping → Spawning → Idle; a second Enter once it reaches Idle takes the user into chat. Avoids the chat-view "Connecting to Claude Code…" stub for cold projects.</li>
+        <li><strong>Spawning</strong> → "<code>enter  ⏳ spawning…</code>" → no-op. The row's dimmed name + muted selection band signal that the project isn't ready. User waits.</li>
+        <li><strong>Failed</strong> → "<code>r  retry</code>" → no-op on Enter; press <kbd>r</kbd> for the explicit retry path (drops failed bucket + dispatches fresh <code>SpawnProject</code>).</li>
+      </ul></dd>
       <dt>slash subset</dt><dd>The launchpad has no input area, so slash commands are reached through the corresponding keybindings: <code>/help</code> ≡ <kbd>?</kbd>, <code>/quit</code> ≡ <kbd>Ctrl+Q</kbd>. <code>/config</code> and <code>/plugins</code> live behind a picked project — open one with <kbd>Enter</kbd> first. The candidate-filter logic still recognises the four-command subset for any caller that queries it (kept in sync with the spec for forward compatibility).</dd>
       <dt>config</dt><dd><code>[ui] launchpad_spinner</code> (one of <code>braille</code> / <code>phase_of_moon</code> / <code>pulse</code> / <code>forge_dot</code> / <code>ember</code>, default <code>braille</code>) controls the per-row + cold-boot spinner glyph. <code>[ui] launchpad_autostart</code> (<code>always</code> / <code>wait_for_pick</code> / <code>never</code>, default <code>always</code>) controls whether <code>auto_start = true</code> projects warm up eagerly while the picker is shown.</dd>
     </dl>
@@ -779,16 +785,16 @@ chat continues here…
     <p>Each picker row's appearance depends on the session's lifecycle state. The glyph and the right-column label change in lockstep so the user can scan the picker for "who's live, who's spawning, who's idle, who failed."</p>
     <div class="term">
       <pre class="indent">
-        ├─ <span class="rust-orange">●</span>  <span class="bold">forge        </span><span class="dim">(personal)        now</span>   <span class="dim"># Connected (Idle): RUST_ORANGE bullet, bold name, relative-time</span>
-        ├─ <span class="rust-orange">⠹</span>  <span class="bold">hub-modules  </span><span class="dim">(personal)   spawning</span>   <span class="dim"># Spawning / Running: spinner frame in RUST_ORANGE, literal status in right column</span>
+        ├─ <span class="rust-orange">●</span>  <span class="bold">forge        </span><span class="dim">(personal)        now</span>   <span class="dim"># Connected (Idle): RUST_ORANGE bullet, bold name, relative-time — clickable</span>
+        ├─ <span class="rust-orange">⠹</span>  <span class="dim">hub-modules    (personal)   spawning</span>   <span class="dim"># Spawning: spinner frame in RUST_ORANGE, dim name (not bold) signals "not yet clickable"</span>
         ├─ <span class="dim">○  trader-cc    (personal)         2d</span>   <span class="dim"># Sleeping / AuthRequired / LoggedOut / Attention: dim circle, dim name</span>
         └─ <span style="color:#cf6171">✗</span>  <span class="bold">core-v1      </span><span class="dim">(granite)       failed</span>
               <span style="color:#cf6171">OAuth token expired; run /login to retry…</span></pre>
     </div>
     <dl>
       <dt>Failed row</dt><dd>The error description renders as a DIM-red sub-row directly beneath the project name column (indented 8 cells from row start), truncated to picker width with <code>…</code>. The raw message lives in <code>UiSession::last_connection_error</code> (populated by the connection-failed event handler, cleared on a successful reconnect).</dd>
-      <dt>Retry</dt><dd>Pressing <kbd>r</kbd> while a Failed row is highlighted drops the failed bucket and dispatches a fresh <code>Command::SpawnProject</code>. Footer hint grows a trailing <code>     r  retry</code> affordance whenever the selected row is in Failed lifecycle.</dd>
-      <dt>Selection band</dt><dd>White-on-RUST_ORANGE band on the highlighted row's entire content area. Org headers and tree connectors stay DIM regardless of which row is selected.</dd>
+      <dt>Retry</dt><dd>Pressing <kbd>r</kbd> while a Failed row is highlighted drops the failed bucket and dispatches a fresh <code>Command::SpawnProject</code>. Footer hint shows <code>r  retry</code> whenever the selected row is in Failed lifecycle (replaces the <code>enter  open</code> slot, since Enter is a no-op on Failed).</dd>
+      <dt>Selection band</dt><dd>White-on-RUST_ORANGE band on the highlighted row's entire content area for clickable rows. When the selected row is in the Spawning lifecycle, the band drops to White-on-DIM (gray) so the user can tell the focused row isn't actionable — Enter won't take them anywhere until the spawn completes. Org headers and tree connectors stay DIM regardless of which row is selected.</dd>
     </dl>
   </div>
 </div>
