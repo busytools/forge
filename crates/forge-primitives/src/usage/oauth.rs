@@ -73,7 +73,14 @@ pub enum OauthUsageError {
     /// API returned 401/403. Token may be stale or revoked.
     #[error("Claude OAuth usage request was rejected (HTTP {0})")]
     Unauthorized(u16),
-    /// API returned an unexpected non-success status.
+    /// API returned 429. `retry_after` is the parsed `Retry-After`
+    /// header value (in seconds) when present — Anthropic returns
+    /// per-account hold-down durations that the caller should honour
+    /// to avoid hammering the endpoint and keeping the limit hot.
+    #[error("Claude OAuth usage request was rate-limited (retry_after={retry_after:?})")]
+    RateLimited { retry_after: Option<std::time::Duration> },
+    /// API returned an unexpected non-success status (anything other
+    /// than 200 / 401 / 403 / 429).
     #[error("Claude OAuth usage request failed with HTTP {0}{1}")]
     HttpStatus(u16, String),
     /// Network error reaching the API.
@@ -93,5 +100,13 @@ impl OauthUsageError {
     #[must_use]
     pub fn should_fallback(&self) -> bool {
         matches!(self, Self::NoCredentials | Self::Expired | Self::Unauthorized(_))
+    }
+
+    /// True when this is a 429 rate-limit response. Used by callers
+    /// that schedule the next probe attempt against the
+    /// `Retry-After` value.
+    #[must_use]
+    pub fn is_rate_limited(&self) -> bool {
+        matches!(self, Self::RateLimited { .. })
     }
 }

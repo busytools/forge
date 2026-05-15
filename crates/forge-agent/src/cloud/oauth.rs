@@ -41,6 +41,14 @@ impl From<super::oauth_usage::OauthUsageError> for OauthFetchError {
             OauthUsageError::HttpStatus(status, suffix) => {
                 Self::Failed(format!("Claude OAuth usage request failed with HTTP {status}{suffix}"))
             }
+            OauthUsageError::RateLimited { retry_after } => {
+                let suffix = retry_after
+                    .map(|d| format!(" (retry_after={}s)", d.as_secs()))
+                    .unwrap_or_default();
+                Self::Failed(format!(
+                    "Claude OAuth usage request was rate-limited (HTTP 429){suffix}"
+                ))
+            }
             OauthUsageError::Network(message) => {
                 Self::Failed(format!("Claude OAuth network error: {message}"))
             }
