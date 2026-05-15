@@ -112,38 +112,41 @@ fn build_picker_rows(app: &App) -> Vec<PickerRow> {
     rows
 }
 
-/// Resolve the lifecycle state for a project's lead session, falling
-/// back to `Sleeping` when no live session bucket exists. Matches the
-/// Projects pane's two-step resolution: real session UUID first, then
-/// the `__spawn_<name>__` synthetic spawn key.
-fn resolve_lifecycle(app: &App, project: &ProjectView) -> SessionLifecycleState {
+/// Find the live `UiSession` bucket for `project`, if any. Three-step
+/// resolution mirrors the projects-pane lookup:
+///
+/// 1. `__spawn_<name>__` synthetic — the pre-Connected placeholder.
+/// 2. Catalog session UUIDs — the lead recorded on disk, if pooled.
+/// 3. `cwd_raw` match — covers the post-KeyRenamed window when the
+///    synthetic has migrated to the real session UUID but the
+///    catalog scan hasn't refreshed yet. Without this third step the
+///    launchpad rendered every auto_start project as `Sleeping`
+///    even after it had connected — the bucket was alive in
+///    `app.sessions`, just under a UUID neither the synthetic nor
+///    catalog lookups knew about.
+fn find_live_bucket<'app>(
+    app: &'app App,
+    project: &ProjectView,
+) -> Option<&'app crate::app::session::UiSession> {
     let spawn_synthetic = SessionKey::from_session_id(format!("__spawn_{}__", project.name));
     if let Some(session) = app.sessions.get(&spawn_synthetic) {
-        return session.lifecycle_state;
+        return Some(session);
     }
     for sess in &project.sessions {
         if let Some(bucket) = app.sessions.get(&sess.session) {
-            return bucket.lifecycle_state;
+            return Some(bucket);
         }
     }
-    SessionLifecycleState::Sleeping
+    let path_str = project.path.to_string_lossy();
+    app.sessions.values().find(|s| s.cwd_raw.as_str() == path_str.as_ref())
+}
+
+fn resolve_lifecycle(app: &App, project: &ProjectView) -> SessionLifecycleState {
+    find_live_bucket(app, project).map_or(SessionLifecycleState::Sleeping, |s| s.lifecycle_state)
 }
 
 fn resolve_error(app: &App, project: &ProjectView) -> Option<String> {
-    let spawn_synthetic = SessionKey::from_session_id(format!("__spawn_{}__", project.name));
-    if let Some(session) = app.sessions.get(&spawn_synthetic)
-        && let Some(err) = &session.last_connection_error
-    {
-        return Some(err.clone());
-    }
-    for sess in &project.sessions {
-        if let Some(bucket) = app.sessions.get(&sess.session)
-            && let Some(err) = &bucket.last_connection_error
-        {
-            return Some(err.clone());
-        }
-    }
-    None
+    find_live_bucket(app, project).and_then(|s| s.last_connection_error.clone())
 }
 
 fn format_activity(
@@ -592,8 +595,12 @@ fn switch_to_project_and_focus(app: &mut App, project_name: &str) {
     }
 
     // Cold spawn — dispatch and transition. The synthetic bucket
-    // will appear in `app.sessions` on the next event tick and the
-    // chat view will pick it up automatically.
+    // will appear in `app.sessions` on the next event tick (via the
+    // workspace's SessionTask emitting SessionUpdate::Connected /
+    // KeyRenamed) and the chat view will pick it up automatically.
+    // Until then the chat view renders against the pre-connect
+    // bucket, matching the existing mouse-click → spawn flow in
+    // `events/mouse.rs::switch_to_project_lead`.
     if let Some(workspace) = app.workspace.as_ref() {
         let launch_settings = crate::app::connect::session_launch_settings_for_startup(app);
         if let Err(err) = workspace.dispatch(forge_workspace::Command::SpawnProject {
