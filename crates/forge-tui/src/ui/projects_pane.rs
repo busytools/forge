@@ -846,32 +846,60 @@ fn push_usage_window_lines(
 
     // ETA — when a real reset window exists, show the duration only
     // (no "resets in " prose). When the window is missing, fall
-    // back to the last poll-attempt failure label (`rate-limited`,
-    // `expired`, …) so the user can tell an empty bar from an
+    // back to the last poll-attempt failure label (`⚠ expired`,
+    // `rate-limited`, …) so the user can tell an empty bar from an
     // upstream HTTP 429 / expired creds situation. With neither,
-    // collapse to `—` to keep the row count constant. DIM throughout
-    // and right-justified to `width - PANEL_RIGHT_GUTTER`.
-    let eta_text = window
+    // collapse to `—` to keep the row count constant.
+    //
+    // Color tier: success-path durations stay DIM. Probe-rate-limit
+    // / network / fetch-failed labels stay DIM (transient). The two
+    // statuses that need the user's attention to recover (Expired,
+    // Unauthorized — the account literally can't serve a request
+    // without /login) bump to STATUS_WARNING so the bottom-panel
+    // bar carries an obvious yellow `⚠` mark instead of blending
+    // into the rest of the DIM chrome.
+    let (eta_text, eta_style) = window
         .and_then(format_window_reset_duration_only)
-        .unwrap_or_else(|| usage_error.map_or_else(|| "—".to_owned(), usage_error_label));
+        .map_or_else(
+            || {
+                let style = usage_error.map_or(Style::default().fg(theme::DIM), |s| {
+                    if needs_user_recovery(s) {
+                        Style::default().fg(theme::STATUS_WARNING)
+                    } else {
+                        Style::default().fg(theme::DIM)
+                    }
+                });
+                let text = usage_error.map_or_else(|| "—".to_owned(), usage_error_label);
+                (text, style)
+            },
+            |duration| (duration, Style::default().fg(theme::DIM)),
+        );
     let eta_chars = eta_text.chars().count();
     let right_edge = usize::from(width).saturating_sub(PANEL_RIGHT_GUTTER);
     let pad = right_edge.saturating_sub(eta_chars);
-    lines.push(Line::from(vec![
-        Span::raw(" ".repeat(pad)),
-        Span::styled(eta_text, Style::default().fg(theme::DIM)),
-    ]));
+    lines.push(Line::from(vec![Span::raw(" ".repeat(pad)), Span::styled(eta_text, eta_style)]));
 }
 
-/// Short, DIM-friendly label for an upstream usage-fetch failure.
-/// Kept terse so it fits in the same right-justified ETA column the
-/// success-path "1h 23m" duration uses.
+/// `true` when this status means the account can't serve requests
+/// until the user takes recovery action (re-login). These labels
+/// render in STATUS_WARNING yellow with a `⚠` prefix so they
+/// visibly stand out from transient probe failures.
+fn needs_user_recovery(status: forge_workspace::UsageFetchStatus) -> bool {
+    use forge_workspace::UsageFetchStatus;
+    matches!(status, UsageFetchStatus::Expired | UsageFetchStatus::Unauthorized)
+}
+
+/// Short label for an upstream usage-fetch failure. Kept terse so
+/// it fits in the right-justified ETA column the success-path
+/// duration uses. Statuses that need user recovery (Expired,
+/// Unauthorized) carry a leading `⚠` so the meaning is obvious
+/// even when the user is glancing past the panel.
 fn usage_error_label(status: forge_workspace::UsageFetchStatus) -> String {
     use forge_workspace::UsageFetchStatus;
     match status {
         UsageFetchStatus::RateLimited => "rate-limited".to_owned(),
-        UsageFetchStatus::Expired => "expired".to_owned(),
-        UsageFetchStatus::Unauthorized => "unauthorized".to_owned(),
+        UsageFetchStatus::Expired => "⚠ expired — /login".to_owned(),
+        UsageFetchStatus::Unauthorized => "⚠ unauthorized — /login".to_owned(),
         UsageFetchStatus::NetworkFailed => "offline".to_owned(),
         UsageFetchStatus::Other => "fetch failed".to_owned(),
     }
