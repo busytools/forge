@@ -47,6 +47,45 @@ fn selection_style() -> Style {
     Style::default().fg(Color::White).bg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD)
 }
 
+/// Muted variant of [`selection_style`] for rows that aren't
+/// actionable yet (Spawning state). Same shape so the band aligns
+/// with the chrome, but the bg drops to `DIM` so the user sees at a
+/// glance that pressing Enter on this row won't take them anywhere.
+fn waiting_selection_style() -> Style {
+    Style::default().fg(Color::White).bg(theme::DIM).add_modifier(Modifier::BOLD)
+}
+
+/// What pressing Enter on this row does. Drives the click handlers
+/// and the footer hint, so the user always sees the next action that
+/// matches the row's current state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ClickIntent {
+    /// Row is ready to receive input — switch the chat view to it.
+    EnterChat,
+    /// Cold row — dispatch `SpawnProject` and stay on the launchpad
+    /// so the user sees the row transition through `Spawning` rather
+    /// than landing on the chat-view connecting stub.
+    SpawnAndWait,
+    /// Mid-spawn — block the click entirely. Footer explains why.
+    Block,
+    /// Failed — the `r` key is the explicit retry path. Enter is a
+    /// no-op so a stray Enter doesn't dispatch a half-cleaned retry
+    /// that races the failed bucket still sitting in `app.sessions`.
+    Retry,
+}
+
+fn click_intent(lifecycle: SessionLifecycleState) -> ClickIntent {
+    use SessionLifecycleState as L;
+    match lifecycle {
+        L::Idle | L::Running | L::Attention | L::AuthRequired | L::LoggedOut => {
+            ClickIntent::EnterChat
+        }
+        L::Sleeping => ClickIntent::SpawnAndWait,
+        L::Spawning => ClickIntent::Block,
+        L::Failed => ClickIntent::Retry,
+    }
+}
+
 /// One selectable row in the picker — the data the renderer needs
 /// to draw the row plus the metadata the keyboard handler needs to
 /// resolve a pick into a project + lifecycle.
@@ -365,12 +404,18 @@ fn push_project_row(
     let connector = if row.is_last_in_org { "└─" } else { "├─" };
     let (glyph, glyph_color) =
         glyph_for_row(row.lifecycle, app.launchpad.spinner_style, app.launchpad.opened_at);
-    let name_style = match row.lifecycle {
-        SessionLifecycleState::Failed
-        | SessionLifecycleState::Idle
-        | SessionLifecycleState::Running
-        | SessionLifecycleState::Spawning => Style::default().add_modifier(Modifier::BOLD),
-        _ => Style::default().fg(theme::DIM),
+    let intent = click_intent(row.lifecycle);
+    // Name styling tracks click intent so a glance at the picker
+    // tells the user which rows are interactive right now. BOLD =
+    // pressing Enter does something useful (enter chat or kick off a
+    // cold spawn). DIM = waiting (Spawning) or auth/logged-out
+    // states where Enter does take the user somewhere but the row
+    // itself isn't yet a "live session" they're jumping into.
+    let name_style = match intent {
+        ClickIntent::EnterChat | ClickIntent::SpawnAndWait | ClickIntent::Retry => {
+            Style::default().add_modifier(Modifier::BOLD)
+        }
+        ClickIntent::Block => Style::default().fg(theme::DIM),
     };
 
     let name_width: usize = 14;
@@ -391,7 +436,13 @@ fn push_project_row(
     let trailing_pad = usize::from(area_width).saturating_sub(content_width_estimate);
 
     if selected {
-        let band = selection_style();
+        // Non-clickable rows get a muted gray band so the user sees
+        // "yes, this row is focused, but Enter won't open it."
+        let band = if matches!(intent, ClickIntent::Block) {
+            waiting_selection_style()
+        } else {
+            selection_style()
+        };
         lines.push(Line::from(vec![
             Span::styled("  ".to_owned(), band),
             Span::styled(connector.to_owned(), band),
@@ -483,10 +534,16 @@ fn spinner_glyph(style: SpinnerStyle, opened_at: std::time::Instant) -> char {
 fn render_footer(frame: &mut Frame, area: Rect, app: &App, rows: &[PickerRow]) {
     let dim = Style::default().fg(theme::DIM);
     let selected_row = rows.get(app.launchpad.selected_index);
-    let mut hint = String::from(" ↑↓  navigate     enter  open     ?  help     ctrl+q  quit");
-    if selected_row.is_some_and(|r| r.lifecycle == SessionLifecycleState::Failed) {
-        hint.push_str("     r  retry");
-    }
+    // The Enter-action label tracks click intent so the hint always
+    // matches what would happen if the user pressed Enter on the
+    // currently-focused row.
+    let enter_label = match selected_row.map(|r| click_intent(r.lifecycle)) {
+        Some(ClickIntent::SpawnAndWait) => "enter  start",
+        Some(ClickIntent::Block) => "enter  ⏳ spawning…",
+        Some(ClickIntent::Retry) => "r  retry",
+        Some(ClickIntent::EnterChat) | None => "enter  open",
+    };
+    let hint = format!(" ↑↓  navigate     {enter_label}     ?  help     ctrl+q  quit");
     let line = Line::from(vec![Span::styled(hint, dim)]);
     frame.render_widget(Paragraph::new(line), area);
 }
@@ -524,13 +581,51 @@ fn resolve_selection(app: &App) -> Option<(String, SessionLifecycleState)> {
     rows.get(app.launchpad.selected_index).map(|r| (r.project_name.clone(), r.lifecycle))
 }
 
-/// Handle Enter on the launchpad: switch to the chat view, optionally
-/// dispatching a fresh spawn for the selected project.
+/// Handle Enter on the launchpad. Branches on the row's click
+/// intent:
+///
+/// - `EnterChat` → switch to the resumed/running session.
+/// - `SpawnAndWait` → dispatch `SpawnProject` and stay on the
+///   launchpad. The row transitions Sleeping → Spawning → Idle in
+///   the renderer; once it reaches a `EnterChat` state the user
+///   presses Enter again to jump in. Avoids the chat-view
+///   connecting stub for cold projects.
+/// - `Block` → no-op. The row is mid-spawn; visual hint already
+///   tells the user to wait.
+/// - `Retry` → no-op. The `r` key is the explicit retry path so a
+///   stray Enter on a failed row doesn't race a half-cleaned spawn.
 pub fn pick_selected_project(app: &mut App) {
-    let Some((project_name, _lifecycle)) = resolve_selection(app) else {
+    let Some((project_name, lifecycle)) = resolve_selection(app) else {
         return;
     };
-    switch_to_project_and_focus(app, &project_name);
+    match click_intent(lifecycle) {
+        ClickIntent::EnterChat => switch_to_project_and_focus(app, &project_name),
+        ClickIntent::SpawnAndWait => spawn_project_in_background(app, &project_name),
+        ClickIntent::Block | ClickIntent::Retry => {}
+    }
+}
+
+/// Dispatch `SpawnProject` for `project_name` without changing
+/// views. Used by the launchpad's `SpawnAndWait` click path: cold
+/// (Sleeping) rows become Spawning, the user waits on the
+/// launchpad, and a second Enter once the row is ready takes them
+/// into chat.
+fn spawn_project_in_background(app: &mut App, project_name: &str) {
+    let Some(workspace) = app.workspace.as_ref() else {
+        return;
+    };
+    let launch_settings = crate::app::connect::session_launch_settings_for_startup(app);
+    if let Err(err) = workspace.dispatch(forge_workspace::Command::SpawnProject {
+        project_name: project_name.to_owned(),
+        launch_settings,
+    }) {
+        tracing::warn!(
+            target: crate::logging::targets::APP_SESSION,
+            project = project_name,
+            error = %err,
+            "launchpad spawn-and-wait: SpawnProject dispatch failed",
+        );
+    }
 }
 
 /// Handle `r` on a Failed row — drop the failed bucket and dispatch
@@ -698,5 +793,25 @@ mod tests {
         assert_eq!(format_relative_time(now - Duration::from_secs(30), now), "now");
         assert_eq!(format_relative_time(now - Duration::from_secs(180), now), "3m");
         assert_eq!(format_relative_time(now - Duration::from_secs(7_200), now), "2h");
+    }
+
+    /// Per-project click-gate: Enter on a Spawning row is a no-op so
+    /// the user never lands on the chat-view connecting stub. Cold
+    /// rows (Sleeping / Failed) trigger a spawn-and-stay-on-launchpad
+    /// path; ready states (Idle / Running / etc.) hand off to
+    /// `switch_to_project_and_focus` which enters chat.
+    #[test]
+    fn click_intent_blocks_spawning_lifecycle() {
+        use SessionLifecycleState as L;
+        assert_eq!(click_intent(L::Spawning), ClickIntent::Block);
+        assert_eq!(click_intent(L::Sleeping), ClickIntent::SpawnAndWait);
+        assert_eq!(click_intent(L::Failed), ClickIntent::Retry);
+        for ready in [L::Idle, L::Running, L::Attention, L::AuthRequired, L::LoggedOut] {
+            assert_eq!(
+                click_intent(ready),
+                ClickIntent::EnterChat,
+                "{ready:?} should be clickable into chat",
+            );
+        }
     }
 }

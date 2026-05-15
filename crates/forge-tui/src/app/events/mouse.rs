@@ -651,9 +651,34 @@ fn switch_to_project_lead(app: &mut App, project_name: &str) {
         return;
     }
 
-    // Mid-spawn switch: spawn_synthetic is in app.sessions but the
-    // user is on a different session. Switch to the spawning bucket;
-    // KeyRenamed will migrate the active key when Connected lands.
+    // Mid-spawn block: if the resolved project's bucket is in the
+    // `Spawning` lifecycle state, clicking it would land the user on
+    // the connecting stub (no session_id yet, input renders
+    // "Connecting to Claude Code…"). Refuse the click so the user
+    // waits for the spawn to land instead. Same UX gate the
+    // launchpad applies via `click_intent`. Covers both the
+    // `__spawn_<name>__` synthetic and the real-UUID bucket that
+    // KeyRenamed has migrated to but hasn't yet received `Connected`.
+    let spawning_bucket = app
+        .sessions
+        .get(&spawn_synthetic)
+        .or_else(|| {
+            project_path.as_ref().and_then(|p| {
+                let path_str = p.to_string_lossy();
+                app.find_running_bucket_for_path(path_str.as_ref())
+                    .and_then(|k| app.sessions.get(&k))
+            })
+        })
+        .map(|s| s.lifecycle_state);
+    if spawning_bucket == Some(forge_primitives::SessionLifecycleState::Spawning) {
+        return;
+    }
+
+    // Mid-spawn switch (non-Spawning lifecycle): the spawn-synthetic
+    // bucket still exists but has already reached a ready state
+    // (e.g. `Idle` after Connected but before KeyRenamed migrates).
+    // Switch into it; KeyRenamed will migrate the active key when
+    // it lands.
     if app.sessions.contains_key(&spawn_synthetic) {
         app.switch_active_session(spawn_synthetic);
         return;
@@ -703,5 +728,68 @@ fn switch_to_project_lead(app: &mut App, project_name: &str) {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod tests {
+    use super::*;
+    use crate::app::session::{SessionLifecycleState, UiSession};
+
+    /// Per-project click-gate: clicking a sibling project in the
+    /// projects pane while its bucket is mid-spawn would land the
+    /// user on the chat-view connecting stub (no session_id yet,
+    /// input renders "Connecting to Claude Code…"). The gate refuses
+    /// the click so the user waits instead. This test seeds a
+    /// spawning bucket and asserts the active key doesn't move when
+    /// `switch_to_project_lead` is invoked for its project.
+    #[test]
+    fn switch_to_project_lead_blocks_on_spawning_bucket() {
+        let mut app = App::test_default();
+        // The test workspace stub doesn't carry projects, but the
+        // gate fires on the lifecycle of the bucket keyed by
+        // `__spawn_<name>__`, which we can seed directly. The
+        // project-name lookup falls into the
+        // "list_projects didn't find it → resolved_name =
+        // project_name" branch; the spawn-synthetic check then
+        // matches our seeded bucket.
+        let project_name = "forge";
+        let spawn_synth =
+            forge_workspace::SessionKey::from_session_id(format!("__spawn_{project_name}__"));
+        let mut bucket = UiSession::new(spawn_synth.clone());
+        bucket.lifecycle_state = SessionLifecycleState::Spawning;
+        app.sessions.insert(spawn_synth.clone(), bucket);
+
+        let initial_active = app.active_session_key.clone();
+        switch_to_project_lead(&mut app, project_name);
+        assert_eq!(
+            app.active_session_key, initial_active,
+            "spawning-bucket click must not change the active session",
+        );
+    }
+
+    /// Sanity: a non-Spawning spawn-synthetic bucket (already
+    /// reached `Idle` post-Connected but pre-KeyRenamed) IS
+    /// switchable — the gate is lifecycle-specific, not a blanket
+    /// "synthetic key is untouchable" rule. Without this, the
+    /// mid-Connected-mid-KeyRenamed window would leave the user
+    /// unable to click into their session.
+    #[test]
+    fn switch_to_project_lead_allows_idle_spawn_synthetic() {
+        let mut app = App::test_default();
+        let project_name = "forge";
+        let spawn_synth =
+            forge_workspace::SessionKey::from_session_id(format!("__spawn_{project_name}__"));
+        let mut bucket = UiSession::new(spawn_synth.clone());
+        bucket.lifecycle_state = SessionLifecycleState::Idle;
+        app.sessions.insert(spawn_synth.clone(), bucket);
+
+        switch_to_project_lead(&mut app, project_name);
+        assert_eq!(
+            app.active_session_key.as_ref(),
+            Some(&spawn_synth),
+            "non-spawning synthetic bucket should still be switchable",
+        );
     }
 }
