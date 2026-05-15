@@ -1110,6 +1110,41 @@ impl Workspace {
         forge_agent::env::git_diff::scan(cwd, prev).await
     }
 
+    /// Scan the project at `cwd` and return per-file hunks for the
+    /// `/diff` overlay. Delegates to
+    /// [`forge_agent::env::git_diff::hunks::scan`] — same workspace-
+    /// as-facade pattern as [`Self::scan_git_diff`] so the TUI never
+    /// depends on `forge-agent` directly.
+    ///
+    /// `target` is passed verbatim to `git diff <target>`,
+    /// comparing the named ref against the working tree: `"HEAD"`
+    /// for working-tree-vs-HEAD (uncommitted only), `"main"` for
+    /// everything since `main` (committed + uncommitted), any other
+    /// ref / SHA for that comparison. NOT a `..` or `...` range
+    /// syntax — passing those would let git parse them as ranges
+    /// which yields a different (commit-vs-commit) diff.
+    /// Untracked files round-trip only when `target == "HEAD"`.
+    ///
+    /// Single-shot — no polling, no caching. Each call runs a fresh
+    /// scan against the working tree at the moment of invocation.
+    ///
+    /// Returns a [`forge_agent::env::git_diff::hunks::ScanOutcome`]
+    /// — `files` carries one entry per changed file (empty when the
+    /// tree is genuinely clean OR when the scanner crashed),
+    /// `scanner_ok` is `false` when at least one underlying `git`
+    /// subprocess hit Failed / Oversize. Callers MUST check
+    /// `scanner_ok` and surface a "scan failed" message rather than
+    /// rendering an empty `files` as a clean tree; subprocess
+    /// failures still emit structured WARN logs under the
+    /// `ENV_GIT` target for operator diagnosis.
+    pub async fn scan_git_diff_hunks(
+        &self,
+        cwd: &std::path::Path,
+        target: &str,
+    ) -> forge_agent::env::git_diff::hunks::ScanOutcome {
+        forge_agent::env::git_diff::hunks::scan(cwd, target).await
+    }
+
     /// Probe the local `claude --version` and the latest published
     /// version on npm in parallel, returning both via
     /// [`forge_agent::env::cli_version::CliVersionInfo`]. Used by

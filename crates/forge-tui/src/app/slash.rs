@@ -79,7 +79,7 @@ fn normalize_slash_name(name: &str) -> String {
     if name.starts_with('/') { name.to_owned() } else { format!("/{name}") }
 }
 
-fn push_system_message(app: &mut App, text: impl Into<String>) {
+pub(super) fn push_system_message(app: &mut App, text: impl Into<String>) {
     let text = text.into();
     app.push_message_tracked(ChatMessage::new(
         MessageRole::System(None),

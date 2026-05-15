@@ -34,6 +34,7 @@ pub fn try_handle_submit(app: &mut App, text: &str) -> bool {
     match parsed.name {
         "/compact" => handle_compact_submit(app, &parsed.args),
         "/config" => handle_config_submit(app, &parsed.args),
+        "/diff" => handle_diff_submit(app, &parsed.args),
         "/launchpad" => handle_launchpad_submit(app, &parsed.args),
         "/mcp" => handle_mcp_submit(app, &parsed.args),
         "/plugins" => handle_plugins_submit(app, &parsed.args),
@@ -45,6 +46,37 @@ pub fn try_handle_submit(app: &mut App, text: &str) -> bool {
         "/resume" => handle_resume_submit(app, &parsed.args),
         _ => handle_unknown_submit(app, parsed.name),
     }
+}
+
+/// `/diff [target]` — open the full-screen diff overlay.
+///
+/// No arg → delegate to `diff_overlay::open_default`, which mirrors
+/// the Inspector GIT section's view auto-detect: `Worktree` ⇒
+/// `HEAD`, `BranchVsDefault` ⇒ the default branch, `CleanDefault` /
+/// `NoRepo` ⇒ system notice "No changes" with no overlay opened.
+/// One positional arg → passed verbatim as the two-dot `git diff
+/// <target>` ref (so `/diff main` shows committed + uncommitted on
+/// a feature branch in one view).
+///
+/// Async: the scan runs in a tokio local task that posts back via
+/// `app.diff_overlay_event_tx`; the drain pump consumes the event
+/// and transitions to `ActiveView::Diff`.
+fn handle_diff_submit(app: &mut App, args: &[&str]) -> bool {
+    if args.len() > 1 {
+        push_system_message(app, "Usage: /diff [target]");
+        return true;
+    }
+    let Some(arg) = args.first() else {
+        crate::app::diff_overlay::open_default(app);
+        return true;
+    };
+    let target = (*arg).trim().to_owned();
+    if target.is_empty() {
+        push_system_message(app, "Usage: /diff [target]");
+        return true;
+    }
+    crate::app::diff_overlay::open_with_target(app, target);
+    true
 }
 
 /// `/launchpad` — return to the project picker. Available from chat;
