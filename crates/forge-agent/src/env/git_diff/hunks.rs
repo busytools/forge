@@ -962,6 +962,39 @@ diff --git a/b.rs b/b.rs
     }
 
     #[test]
+    fn flush_section_warns_and_drops_when_path_unresolvable() {
+        // Section with `diff --git ` header but neither +++/--- nor
+        // rename markers AND a header that doesn't have ` b/` for
+        // the rsplit fallback to grab — the WARN path fires and
+        // the section drops out of the map. The header still tries
+        // to parse via rsplit_once(" b/") so we use a header
+        // pathological enough to fail every fallback: no ` b/` at
+        // all (truncated / corrupted).
+        let lines = vec![
+            "diff --git a-only-no-b-separator",
+            "some opaque body content",
+        ];
+        let mut map: HashMap<String, String> = HashMap::new();
+        flush_section(&lines, &mut map);
+        assert!(map.is_empty(), "section without resolvable path must not land in the map");
+    }
+
+    #[test]
+    fn flush_section_accepts_section_with_plus_header() {
+        let lines = vec![
+            "diff --git a/foo.rs b/foo.rs",
+            "--- a/foo.rs",
+            "+++ b/foo.rs",
+            "@@ -1,1 +1,2 @@",
+            " keep",
+            "+new",
+        ];
+        let mut map: HashMap<String, String> = HashMap::new();
+        flush_section(&lines, &mut map);
+        assert!(map.contains_key("foo.rs"));
+    }
+
+    #[test]
     fn merge_hunks_attaches_to_matching_file() {
         let mut files = vec![FileHunks {
             path: "x.rs".to_owned(),
