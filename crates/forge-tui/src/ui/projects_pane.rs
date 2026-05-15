@@ -718,12 +718,24 @@ fn build_account_panel_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     // Row 8: blank between Ctx and 5h.
     lines.push(Line::default());
 
+    // Surface the latest poll-attempt failure (if any) so empty
+    // bars carry a `rate-limited` / `expired` / … hint instead of
+    // looking like a forge bug. Lookup is by active account display
+    // name; the workspace returns `None` when the most recent poll
+    // succeeded.
+    let usage_error = app
+        .workspace
+        .as_ref()
+        .zip(app.active_account_display_name())
+        .and_then(|(ws, name)| ws.usage_error_for(&name));
+
     // Rows 9..=10: 5h bar + ETA row.
     push_usage_window_lines(
         &mut lines,
         "5h",
         app.usage().snapshot.as_ref().and_then(|s| s.five_hour.as_ref()),
         width,
+        usage_error,
     );
 
     // Row 11: blank between 5h and 7d.
@@ -735,6 +747,7 @@ fn build_account_panel_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         "7d",
         app.usage().snapshot.as_ref().and_then(|s| s.seven_day.as_ref()),
         width,
+        usage_error,
     );
 
     // Row 14: blank between usage and version rows.
@@ -811,6 +824,7 @@ fn push_usage_window_lines(
     label: &'static str,
     window: Option<&crate::app::UsageWindow>,
     width: u16,
+    usage_error: Option<forge_workspace::UsageFetchStatus>,
 ) {
     let bar_cells = bar_cells_for(width);
     let pct_value = window.map_or(0.0, |w| w.utilization);
@@ -823,11 +837,16 @@ fn push_usage_window_lines(
     row.push(Span::raw(pct_text));
     lines.push(Line::from(row));
 
-    // ETA — duration only (no "resets in " prose), DIM, right-justified
-    // to the content right edge (pane width minus the 2-col right
-    // gutter). Visually sits below the percent column of the bar row.
-    let eta_text =
-        window.and_then(format_window_reset_duration_only).unwrap_or_else(|| "—".to_owned());
+    // ETA — when a real reset window exists, show the duration only
+    // (no "resets in " prose). When the window is missing, fall
+    // back to the last poll-attempt failure label (`rate-limited`,
+    // `expired`, …) so the user can tell an empty bar from an
+    // upstream HTTP 429 / expired creds situation. With neither,
+    // collapse to `—` to keep the row count constant. DIM throughout
+    // and right-justified to `width - PANEL_RIGHT_GUTTER`.
+    let eta_text = window
+        .and_then(format_window_reset_duration_only)
+        .unwrap_or_else(|| usage_error.map_or_else(|| "—".to_owned(), usage_error_label));
     let eta_chars = eta_text.chars().count();
     let right_edge = usize::from(width).saturating_sub(PANEL_RIGHT_GUTTER);
     let pad = right_edge.saturating_sub(eta_chars);
@@ -835,6 +854,20 @@ fn push_usage_window_lines(
         Span::raw(" ".repeat(pad)),
         Span::styled(eta_text, Style::default().fg(theme::DIM)),
     ]));
+}
+
+/// Short, DIM-friendly label for an upstream usage-fetch failure.
+/// Kept terse so it fits in the same right-justified ETA column the
+/// success-path "1h 23m" duration uses.
+fn usage_error_label(status: forge_workspace::UsageFetchStatus) -> String {
+    use forge_workspace::UsageFetchStatus;
+    match status {
+        UsageFetchStatus::RateLimited => "rate-limited".to_owned(),
+        UsageFetchStatus::Expired => "expired".to_owned(),
+        UsageFetchStatus::Unauthorized => "unauthorized".to_owned(),
+        UsageFetchStatus::NetworkFailed => "offline".to_owned(),
+        UsageFetchStatus::Other => "fetch failed".to_owned(),
+    }
 }
 
 /// Strip the `"resets in "` prefix from

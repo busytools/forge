@@ -12,7 +12,7 @@ use forge_primitives::SDKSessionInfo;
 use parking_lot::Mutex;
 use tokio::sync::mpsc;
 
-use crate::account::{AccountKey, AccountStateMap};
+use crate::account::{self, AccountKey, AccountStateMap};
 use crate::config::{LoadedConfig, LoadedProject, load_from_dir};
 use crate::domain_session::DomainSession;
 use crate::error::WorkspaceError;
@@ -27,9 +27,16 @@ use crate::views::{ProjectView, SessionView};
 /// TUI's bottom panel + the spawn-path account picker both read
 /// from the cache this poll populates. Tighter than the historical
 /// per-session 120 s refresh because the picker benefits from
-/// fresher data — 30 s is the upper bound on how stale a "which
+/// fresher data — 60 s is the upper bound on how stale a "which
 /// account has more headroom" decision can be.
-const USAGE_POLL_INTERVAL: Duration = Duration::from_secs(30);
+///
+/// 2026-05-15: bumped 30 s → 60 s after a real-world run showed
+/// every account hitting HTTP 429 on Anthropic's OAuth usage
+/// endpoint under multi-instance polling. Combined with the
+/// per-account `last_error` tracking (see `account::AccountState`),
+/// transient 429s now back off naturally rather than spamming the
+/// endpoint every 30 s and getting throttled.
+const USAGE_POLL_INTERVAL: Duration = Duration::from_secs(60);
 
 /// Multi-session orchestrator. Owns the project catalog snapshot
 /// loaded from `<config_dir>/forge.toml` and the pool of currently
@@ -513,6 +520,9 @@ impl Workspace {
                         self.accounts.lock().set_usage(&key, snapshot);
                     }
                     Err(err) => {
+                        self.accounts
+                            .lock()
+                            .set_last_error(&key, crate::account::UsageFetchStatus::Other);
                         tracing::debug!(
                             target: "forge_workspace::account",
                             account = %key.0,
@@ -522,6 +532,8 @@ impl Workspace {
                     }
                 },
                 Err(err) => {
+                    let status = classify_oauth_usage_error(&err);
+                    self.accounts.lock().set_last_error(&key, status);
                     tracing::warn!(
                         target: "forge_workspace::account",
                         account = %key.0,
@@ -541,6 +553,18 @@ impl Workspace {
     #[must_use]
     pub fn usage_for(&self, display_name: &str) -> Option<forge_primitives::usage::UsageSnapshot> {
         self.accounts.lock().usage(&AccountKey(display_name.to_owned())).cloned()
+    }
+
+    /// Read the last poll-attempt failure for an account, if any.
+    /// `None` when the most recent poll succeeded (or no attempt
+    /// has been made yet). The TUI bottom panel renders a DIM hint
+    /// next to the `5h` / `7d` label when this is `Some` so the
+    /// user can tell an empty bar from an upstream failure (the
+    /// HTTP 429 case is especially common when multiple forge
+    /// instances poll the same Anthropic account).
+    #[must_use]
+    pub fn usage_error_for(&self, display_name: &str) -> Option<crate::account::UsageFetchStatus> {
+        self.accounts.lock().usage_error(&AccountKey(display_name.to_owned()))
     }
 
     /// Read the persisted Projects-pane visibility preference.
@@ -1262,6 +1286,27 @@ impl Workspace {
     }
 }
 
+/// Map an [`OauthUsageError`] to the renderer-facing
+/// [`account::UsageFetchStatus`] bucket. Separates HTTP 429 (the
+/// common multi-instance throttle case) from the auth-related
+/// failures (`Expired` / `NoCredentials` / `Unauthorized`) and
+/// transport failures (`Network`), so the TUI's bottom-panel hint
+/// can tell the user something specific rather than a generic
+/// "fetch error".
+fn classify_oauth_usage_error(
+    err: &forge_primitives::usage::oauth::OauthUsageError,
+) -> account::UsageFetchStatus {
+    use account::UsageFetchStatus;
+    use forge_primitives::usage::oauth::OauthUsageError;
+    match err {
+        OauthUsageError::HttpStatus(429, _) => UsageFetchStatus::RateLimited,
+        OauthUsageError::Unauthorized(_) => UsageFetchStatus::Unauthorized,
+        OauthUsageError::NoCredentials | OauthUsageError::Expired => UsageFetchStatus::Expired,
+        OauthUsageError::Network(_) => UsageFetchStatus::NetworkFailed,
+        OauthUsageError::HttpStatus(_, _) | OauthUsageError::Decode(_) => UsageFetchStatus::Other,
+    }
+}
+
 #[cfg(test)]
 impl Workspace {
     pub fn pool_len_for_test(&self) -> usize {
@@ -1950,5 +1995,49 @@ config_dir = "~/.claude-personal"
         assert!(!workspace.command_senders.lock().contains_key(&to));
         assert!(!workspace.pool.lock().contains_key(&to));
         assert!(workspace.domain_session_for(&to).is_none());
+    }
+
+    /// Regression pins for the 2026-05-15 multi-instance 429 bug: the
+    /// poller's failure-branch classifier must distinguish HTTP 429
+    /// from auth-related failures so the TUI's bottom-panel hint
+    /// reads `rate-limited` (the common case under multiple forge
+    /// instances) rather than collapsing every failure to a single
+    /// generic bucket.
+    #[test]
+    fn classify_oauth_usage_error_buckets_known_variants() {
+        use crate::account::UsageFetchStatus;
+        use forge_primitives::usage::oauth::OauthUsageError;
+
+        assert_eq!(
+            classify_oauth_usage_error(&OauthUsageError::HttpStatus(429, String::new())),
+            UsageFetchStatus::RateLimited,
+        );
+        assert_eq!(
+            classify_oauth_usage_error(&OauthUsageError::Unauthorized(401)),
+            UsageFetchStatus::Unauthorized,
+        );
+        assert_eq!(
+            classify_oauth_usage_error(&OauthUsageError::Expired),
+            UsageFetchStatus::Expired,
+        );
+        assert_eq!(
+            classify_oauth_usage_error(&OauthUsageError::NoCredentials),
+            UsageFetchStatus::Expired,
+        );
+        assert_eq!(
+            classify_oauth_usage_error(&OauthUsageError::Network("dns".to_owned())),
+            UsageFetchStatus::NetworkFailed,
+        );
+        // Non-429 HTTP errors and decode failures fall through to the
+        // generic `Other` bucket — renderers show "fetch failed" so
+        // the user can tell something's wrong without naming a cause.
+        assert_eq!(
+            classify_oauth_usage_error(&OauthUsageError::HttpStatus(500, String::new())),
+            UsageFetchStatus::Other,
+        );
+        assert_eq!(
+            classify_oauth_usage_error(&OauthUsageError::Decode("bad json".to_owned())),
+            UsageFetchStatus::Other,
+        );
     }
 }
