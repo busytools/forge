@@ -205,11 +205,11 @@ pub enum DefaultTarget {
 
 /// Resolve the default `/diff` target from the active session's
 /// Inspector GIT snapshot. Mirrors the auto-detect logic the `/diff`
-/// slash command uses; shared with the Inspector `⤢` click path.
+/// slash command uses; shared with the Inspector `🦉` click path.
 ///
 /// Known race: the snapshot can be up to ~10 s stale because the
 /// inspector's git-diff scanner polls on that cadence. If the user
-/// switches branches and clicks `⤢` within that window, the resolved
+/// switches branches and clicks `🦉` within that window, the resolved
 /// target may not match the live working tree. Mitigation: the scan
 /// itself ALWAYS runs fresh — only the *target ref* (e.g. `main` vs
 /// `master`) can be wrong. Worst-case the user sees "no changes" and
@@ -272,7 +272,7 @@ pub fn open_with_target(app: &mut App, target: String) {
 /// kick off a scan. Pushes a distinct system notice on each of the
 /// "nothing to open" cases so the user sees something actionable
 /// instead of a generic "no changes". Shared entry point for the
-/// `/diff` slash command (no arg) and the Inspector `⤢` click.
+/// `/diff` slash command (no arg) and the Inspector `🦉` click.
 pub fn open_default(app: &mut App) {
     match resolve_default_target(app) {
         DefaultTarget::Ref(target) => open_with_target(app, target),
@@ -583,7 +583,7 @@ impl DiffOverlayState {
 
 /// Install `state` on `app.diff_overlay` and transition the active
 /// view to [`ActiveView::Diff`]. Wired up by the `/diff` slash
-/// command's drain pump; the Inspector `⤢` click reuses the same
+/// command's drain pump; the Inspector `🦉` click reuses the same
 /// path in a follow-up commit.
 pub(crate) fn open(app: &mut App, state: DiffOverlayState) {
     app.diff_overlay = Some(state);

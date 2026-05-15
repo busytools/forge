@@ -1,7 +1,7 @@
 //! Renderer for [`crate::app::ActiveView::Diff`].
 //!
 //! Full-screen takeover triggered by `/diff` or the Inspector GIT
-//! `⤢` click. Two-pane layout with chrome mirroring the Projects
+//! `🦉` click. Two-pane layout with chrome mirroring the Projects
 //! pane: FILES rail on the left (banner + DIM rule + 2-col content
 //! indent), DIFF body on the right (sibling banner showing the
 //! currently-viewed file's path + per-file `+N -M` totals when

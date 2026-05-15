@@ -15,7 +15,7 @@ pub enum ActiveView {
     Launchpad,
     /// Full-screen diff overlay for reviewing changes with inline
     /// comments. Opened by `/diff [target]` or the Inspector GIT
-    /// section's `⤢` click. `Esc` closes (and, once wired,
+    /// section's `🦉` click. `Esc` closes (and, once wired,
     /// one-shot-submits any pending comments).
     Diff,
 }

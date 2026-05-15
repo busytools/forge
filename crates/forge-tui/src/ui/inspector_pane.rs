@@ -195,15 +195,17 @@ fn render_scrollable_body(frame: &mut Frame, body_area: Rect, app: &mut App) {
 
     frame.render_widget(Paragraph::new(body_lines).scroll((offset, 0)), body_area);
 
-    // Stamp the `⤢` open-diff hit target — GIT header is body
+    // Stamp the 🦉 open-review hit target — GIT header is body
     // line 0, so the glyph is visible exactly when `offset == 0`.
-    // The glyph sits 2 cells in from the right edge (matches the
-    // header's `… + " "` trailing pad in `append_git_section`),
-    // hit-test extends one cell left + right for forgiveness.
+    // The 🦉 owl is 2 cells wide and sits with 2 cells of trailing
+    // pad before the right edge (matches `append_git_section`'s
+    // layout). Hit-test covers both glyph cells + 1 cell left/right
+    // for forgiveness.
     if has_open_diff_glyph && offset == 0 {
-        let glyph_x = body_area.x.saturating_add(body_area.width).saturating_sub(2);
+        let right_edge = body_area.x.saturating_add(body_area.width);
+        let glyph_x = right_edge.saturating_sub(4);
         let x_start = glyph_x.saturating_sub(1);
-        let x_end = glyph_x.saturating_add(2);
+        let x_end = glyph_x.saturating_add(3);
         app.pane_hit_targets.push(PaneHitTarget::InspectorGitOpenDiff {
             y: body_area.y,
             height: 1,
@@ -386,7 +388,7 @@ fn push_section_rule(lines: &mut Vec<Line<'static>>, width: u16) {
 fn append_git_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
     // Section header — DIM bold, flush against the rule above
     // (mirrors `TASKS`). When the snapshot has a diff to surface
-    // (Worktree / BranchVsDefault), append the `⤢` glyph at the
+    // (Worktree / BranchVsDefault), append the `🦉` glyph at the
     // right edge as the open-diff affordance.
     let has_glyph = snapshot_has_diff(app);
     let mut header_spans = vec![Span::styled(
@@ -394,14 +396,14 @@ fn append_git_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
         Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD),
     )];
     if has_glyph {
-        // " GIT" is 4 cells; glyph + right padding takes 3 cells
-        // (`⤢  ` — glyph then 2 trailing spaces so the click target
-        // sits 2 columns in from the absolute right edge, matching
-        // the breathing room the diff overlay's banner gives its
-        // ✕ close affordance).
-        let pad = usize::from(width).saturating_sub(4 + 3);
+        // " GIT" is 4 cells; the 🦉 owl is 2 cells wide; trailing
+        // 2-cell pad keeps the affordance 2 columns clear of the
+        // pane's right edge (matches the diff overlay banner's ✕
+        // breathing room). Total reserved on the right: 4 cells
+        // (glyph + trailing pad).
+        let pad = usize::from(width).saturating_sub(4 + 4);
         header_spans.push(Span::raw(" ".repeat(pad)));
-        header_spans.push(Span::styled("\u{2922}".to_owned(), Style::default().fg(theme::DIM)));
+        header_spans.push(Span::styled("\u{1F989}".to_owned(), Style::default()));
         header_spans.push(Span::raw("  "));
     }
     lines.push(Line::from(header_spans));
@@ -426,7 +428,7 @@ fn append_git_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
         // view collapsed to NoRepo as a failsafe. Without this row
         // the section renders identically to a real non-repo
         // directory — the user has no visual cue that git itself
-        // is unhealthy. The `⤢` glyph still routes through the
+        // is unhealthy. The `🦉` glyph still routes through the
         // ScannerFailed path so a click surfaces the trace target.
         lines.push(Line::from(vec![
             Span::raw("  "),
@@ -498,7 +500,7 @@ fn append_git_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
     }
 }
 
-/// Whether the active session's snapshot warrants the `⤢` open-diff
+/// Whether the active session's snapshot warrants the `🦉` open-diff
 /// glyph in the GIT header. Two cases qualify:
 /// - `Worktree` / `BranchVsDefault` — the normal "there's a diff to
 ///   review" path.

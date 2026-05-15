@@ -132,7 +132,7 @@ pub enum PaneHitTarget {
         x_start: u16,
         x_end: u16,
     },
-    /// Click on the `⤢` glyph at the right edge of the Inspector
+    /// Click on the `🦉` glyph at the right edge of the Inspector
     /// pane's `GIT` section header → open the full-screen Diff
     /// overlay with auto-detected target. Only stamped when the
     /// snapshot has a diff to show (Worktree / BranchVsDefault)
