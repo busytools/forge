@@ -31,6 +31,34 @@ pub struct LineKey {
     pub line_idx: usize,
 }
 
+/// What a single rendered row in the right pane corresponds to.
+/// Built by the renderer alongside the `Vec<Line>` it returns, and
+/// stashed on `DiffOverlayState` so the mouse handler can resolve a
+/// click (`row, body_scroll`) → action without re-walking the diff.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BodyRowKey {
+    /// Banner row (`DIFF · <path>  +N -M`). Click does nothing in v1.
+    Banner,
+    /// The DIM `─` rule under the banner.
+    Rule,
+    /// A blank spacer line.
+    Blank,
+    /// Empty-state notice (scan failed / no file / binary / etc.).
+    EmptyState,
+    /// `@@ -A,B +C,D @@` hunk header — non-interactive in v1.
+    HunkHeader { file_idx: usize, hunk_idx: usize },
+    /// An actual diff line inside a hunk. Click → open a comment
+    /// input anchored at this key.
+    HunkLine(LineKey),
+    /// The single-line summary chip showing a saved comment ("💬
+    /// L<line>: ..."). Click → re-open the saved comment for edit.
+    CommentChip(LineKey),
+    /// Inline TextArea row for the currently-open comment editor.
+    /// Multiple consecutive rows when the comment spans more than
+    /// one visual line.
+    InputRow(LineKey),
+}
+
 /// A saved per-line comment. `path` / `line` / `hunk_context` are
 /// snapshotted at submit time so the markdown bundle stays stable
 /// even if the user scrolls or switches files before pressing Esc.
@@ -369,6 +397,25 @@ pub struct DiffOverlayState {
     /// or `None` when nothing's being edited. Keys flow to this
     /// editor while it's open; Enter saves, Esc cancels.
     pub active_input: Option<ActiveCommentInput>,
+    /// Parallel index to the renderer's body lines: for every row
+    /// the right pane drew, what does that row represent. The mouse
+    /// handler reads this to resolve a click into a [`BodyRowKey`].
+    /// Filled fresh on every render; consumers must NOT assume
+    /// stability across frames.
+    pub body_keys: Vec<BodyRowKey>,
+    /// Row offset of the right pane's first line in screen
+    /// coordinates (stashed at render time so the click handler can
+    /// translate `mouse.row` → index into [`Self::body_keys`]).
+    /// `0` until the first render; clicks before then miss safely.
+    pub pane_origin_row: u16,
+    /// Column at which the right pane starts on screen. The click
+    /// handler uses this to gate clicks that fall in the rail or
+    /// separator from the body hit-test path.
+    pub pane_origin_col: u16,
+    /// Width of the right pane (in columns) at last render. Used by
+    /// the renderer to wrap the TextArea and by the click handler
+    /// for column bound checks.
+    pub pane_width: u16,
 }
 
 impl DiffOverlayState {
@@ -392,6 +439,10 @@ impl DiffOverlayState {
             rail_scroll: 0,
             comments: Vec::new(),
             active_input: None,
+            body_keys: Vec::new(),
+            pane_origin_row: 0,
+            pane_origin_col: 0,
+            pane_width: 0,
         }
     }
 
@@ -410,6 +461,10 @@ impl DiffOverlayState {
             rail_scroll: 0,
             comments: Vec::new(),
             active_input: None,
+            body_keys: Vec::new(),
+            pane_origin_row: 0,
+            pane_origin_col: 0,
+            pane_width: 0,
         }
     }
 
