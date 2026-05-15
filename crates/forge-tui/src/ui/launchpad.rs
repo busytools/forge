@@ -443,10 +443,19 @@ fn glyph_for_row(
     opened_at: std::time::Instant,
 ) -> (String, Color) {
     match lifecycle {
-        SessionLifecycleState::Idle | SessionLifecycleState::Running => {
-            ("●".to_owned(), theme::SUCCESS_GREEN)
-        }
-        SessionLifecycleState::Spawning => {
+        // Idle = "alive, no turn in flight". `●` filled bullet in
+        // `RUST_ORANGE` — same accent as the Projects pane uses for
+        // its active-Idle glyph (see `glyph_for_lifecycle` over there).
+        // Sharing the colour keeps the two surfaces visually coherent.
+        SessionLifecycleState::Idle => ("●".to_owned(), theme::RUST_ORANGE),
+        // Spawning + Running both animate the spinner. Spawning is
+        // "subprocess starting up"; Running is "claude is mid-turn".
+        // Both are transient busy states the picker should signal to
+        // the user — picking a Running row should feel like jumping
+        // into a session that's actively thinking, not one that's
+        // already idle. Same `RUST_ORANGE` colour as the Projects
+        // pane uses for its spinner glyph.
+        SessionLifecycleState::Spawning | SessionLifecycleState::Running => {
             let glyph = spinner_glyph(style, opened_at).to_string();
             (glyph, theme::RUST_ORANGE)
         }
