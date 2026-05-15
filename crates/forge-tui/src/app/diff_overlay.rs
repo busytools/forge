@@ -143,7 +143,6 @@ pub struct DiffOverlayState {
 impl DiffOverlayState {
     /// Build a fresh state for a newly-opened overlay. Cursor starts
     /// on file 0, both scroll offsets at 0.
-    #[must_use]
     pub fn new(cwd: PathBuf, target: String, files: Vec<FileHunks>) -> Self {
         Self {
             cwd,
@@ -156,7 +155,6 @@ impl DiffOverlayState {
     }
 
     /// Currently-viewed file, or `None` when the diff is empty.
-    #[must_use]
     pub fn current_file(&self) -> Option<&FileHunks> {
         self.files.get(self.current_file_idx)
     }

@@ -75,14 +75,12 @@ pub struct Hunk {
 
 impl Hunk {
     /// Count of lines added in this hunk (`+` markers).
-    #[must_use]
     pub fn added_count(&self) -> u32 {
         u32::try_from(self.lines.iter().filter(|l| l.kind == DiffLineKind::Added).count())
             .unwrap_or(u32::MAX)
     }
 
     /// Count of lines removed in this hunk (`-` markers).
-    #[must_use]
     pub fn removed_count(&self) -> u32 {
         u32::try_from(self.lines.iter().filter(|l| l.kind == DiffLineKind::Removed).count())
             .unwrap_or(u32::MAX)
@@ -91,13 +89,11 @@ impl Hunk {
 
 impl FileHunks {
     /// Total additions across all hunks in this file.
-    #[must_use]
     pub fn added_count(&self) -> u32 {
         self.hunks.iter().map(Hunk::added_count).fold(0u32, u32::saturating_add)
     }
 
     /// Total removals across all hunks in this file.
-    #[must_use]
     pub fn removed_count(&self) -> u32 {
         self.hunks.iter().map(Hunk::removed_count).fold(0u32, u32::saturating_add)
     }
@@ -137,7 +133,6 @@ pub struct DiffLine {
 /// `git diff --name-status` reports them. Untracked files (when
 /// `target == "HEAD"`) come at the end as
 /// [`FileStatus::Untracked`].
-#[must_use]
 pub async fn scan(cwd: &Path, target: &str) -> Vec<FileHunks> {
     let name_status = match run_git(cwd, &["diff", target, "--name-status"]).await {
         GitOutput::Ok(s) => s,
