@@ -18,10 +18,11 @@
 //! of the view; refreshing mid-review would invalidate pending
 //! comments anchored to specific lines.
 //!
-//! Always returns a `Vec` (possibly empty). Subprocess failures,
-//! missing repos, oversize output, and timeouts all collapse to
-//! empty — callers should render a "no changes" empty state on a
-//! zero-length return.
+//! Always returns a [`ScanOutcome`] — `files` may be empty on a
+//! genuinely clean tree OR when one of the subprocess calls hit
+//! Failed / Oversize. The `scanner_ok` flag distinguishes the two
+//! so a downstream renderer can show "scan failed" rather than
+//! miscategorising the empty result as "no changes."
 
 use std::collections::HashMap;
 use std::path::Path;
