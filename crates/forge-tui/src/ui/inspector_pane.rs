@@ -496,8 +496,6 @@ fn append_git_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
     }
 }
 
-/// Resolve the branch row's `(label, color)` for the snapshot.
-/// `NoRepo` / `Unknown` collapse to `None` (no row).
 /// Whether the active session's snapshot warrants the `⤢` open-diff
 /// glyph in the GIT header. Two cases qualify:
 /// - `Worktree` / `BranchVsDefault` — the normal "there's a diff to
@@ -517,6 +515,8 @@ fn snapshot_has_diff(app: &App) -> bool {
     matches!(snapshot.view, GitDiffView::Worktree { .. } | GitDiffView::BranchVsDefault { .. })
 }
 
+/// Resolve the branch row's `(label, color)` for the snapshot.
+/// `NoRepo` / `Unknown` collapse to `None` (no row).
 fn branch_row_for(snapshot: &GitDiffSnapshot) -> Option<(String, Color)> {
     match &snapshot.branch {
         GitBranch::Named(name) => {
