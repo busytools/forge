@@ -266,17 +266,26 @@ fn parse_name_status(raw: &str) -> Vec<FileHunks> {
 /// that's the legitimate state for binary files (git emits
 /// `Binary files differ` instead of `@@` hunks), submodule entries,
 /// and merge-conflict entries that don't have a unified-diff
-/// body. A WARN fires when a section IS matched but produces zero
-/// hunks: the parser found content but couldn't extract anything,
-/// which signals either a quotePath / encoding mismatch on the
-/// path or a parser gap in `parse_hunks`. The renderer's "binary
-/// file or no diff content" message can then be cross-referenced
-/// against the log to distinguish "no body to parse" from
-/// "parser missed something."
+/// body. Two WARN paths fire on anomalies:
+///
+/// - Per-file: section IS matched but `parse_hunks` produced zero
+///   hunks AND the section text contained at least one `@@` line.
+///   Signals a parser gap (round-3 added this).
+/// - Batched: name-status-listed files that had no matching key in
+///   `split_per_file`'s map at all. After the round-4 path_from_section
+///   extensions (rename/mode/binary now resolve cleanly) this case
+///   should be extremely rare — only path-encoding drift between
+///   the two `git diff` subprocesses can produce it. The WARN
+///   names the unmatched paths so an operator hunting "I edited
+///   this file but it shows as no-diff" has the breadcrumb.
 fn merge_hunks(files: &mut [FileHunks], diff_content: &str) {
     let sections = split_per_file(diff_content);
+    let mut unmatched: Vec<String> = Vec::new();
     for file in files.iter_mut() {
-        let Some(section) = sections.get(file.path.as_str()) else { continue };
+        let Some(section) = sections.get(file.path.as_str()) else {
+            unmatched.push(file.path.clone());
+            continue;
+        };
         let hunks = parse_hunks(section);
         if hunks.is_empty() && contains_hunk_marker(section) {
             // The section had at least one `@@` line so the parser
@@ -294,6 +303,16 @@ fn merge_hunks(files: &mut [FileHunks], diff_content: &str) {
             );
         }
         file.hunks = hunks;
+    }
+    if !unmatched.is_empty() {
+        tracing::warn!(
+            target: crate::logging::targets::ENV_GIT,
+            event_name = "git_section_missing_for_file",
+            message = "files listed by --name-status had no matching section in --no-ext-diff; hunks remain empty",
+            outcome = "skipped",
+            unmatched_count = unmatched.len(),
+            unmatched_paths = ?unmatched,
+        );
     }
 }
 
