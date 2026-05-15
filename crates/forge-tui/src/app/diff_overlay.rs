@@ -14,6 +14,7 @@ use std::sync::mpsc as std_mpsc;
 
 use crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
 use forge_workspace::env::git_diff::hunks::FileHunks;
+use forge_workspace::env::git_diff::hunks::ScanOutcome;
 
 use super::App;
 use super::view::{ActiveView, set_active_view};
@@ -22,11 +23,14 @@ use super::view::{ActiveView, set_active_view};
 /// `cwd` and `target` are echoed back so the receiver can drop
 /// stale results when the user switched sessions or navigated away
 /// from chat while the scan was running (see [`drain_events`]).
+/// `scanner_ok` propagates from [`ScanOutcome::scanner_ok`] so the
+/// renderer can surface "scan failed" vs. "no changes" distinctly.
 #[derive(Debug)]
 pub struct DiffOverlayEvent {
     pub cwd: PathBuf,
     pub target: String,
     pub files: Vec<FileHunks>,
+    pub scanner_ok: bool,
 }
 
 /// Spawn a tokio local task that awaits
@@ -40,8 +44,9 @@ pub fn spawn_fetch(
     tx: std_mpsc::Sender<DiffOverlayEvent>,
 ) {
     tokio::task::spawn_local(async move {
-        let files = workspace.scan_git_diff_hunks(&cwd, &target).await;
-        let _ = tx.send(DiffOverlayEvent { cwd, target, files });
+        let ScanOutcome { files, scanner_ok } =
+            workspace.scan_git_diff_hunks(&cwd, &target).await;
+        let _ = tx.send(DiffOverlayEvent { cwd, target, files, scanner_ok });
     });
 }
 
@@ -191,7 +196,12 @@ pub fn drain_events(app: &mut App) {
             );
             continue;
         }
-        let state = DiffOverlayState::new(event.cwd, event.target, event.files);
+        let state = DiffOverlayState::new_with_status(
+            event.cwd,
+            event.target,
+            event.files,
+            event.scanner_ok,
+        );
         open(app, state);
     }
 }
@@ -212,6 +222,11 @@ pub struct DiffOverlayState {
     pub target: String,
     /// Files in the diff, in the order the scanner returned them.
     pub files: Vec<FileHunks>,
+    /// Whether the scanner finished cleanly. `false` when one of
+    /// the underlying `git` calls hit Failed / Oversize — the
+    /// renderer surfaces a distinct empty-state message so the
+    /// user knows to retry rather than concluding "no changes."
+    pub scanner_ok: bool,
     /// Index into [`Self::files`] for the currently-viewed file in
     /// the right pane. Bounds-checked by [`Self::current_file`].
     pub current_file_idx: usize,
@@ -225,15 +240,24 @@ pub struct DiffOverlayState {
 
 impl DiffOverlayState {
     /// Build a fresh state for a newly-opened overlay. Cursor starts
-    /// on file 0, both scroll offsets at 0.
+    /// on file 0, scroll at 0. `scanner_ok = true` is the
+    /// no-issues-known default; the spawn path sets it from
+    /// [`ScanOutcome::scanner_ok`].
     pub fn new(cwd: PathBuf, target: String, files: Vec<FileHunks>) -> Self {
-        Self {
-            cwd,
-            target,
-            files,
-            current_file_idx: 0,
-            body_scroll: 0,
-        }
+        Self::new_with_status(cwd, target, files, true)
+    }
+
+    /// Build state and explicitly record whether the scanner ran
+    /// cleanly. Used by the drain pump to thread the
+    /// [`DiffOverlayEvent::scanner_ok`] flag into the rendered
+    /// overlay.
+    pub fn new_with_status(
+        cwd: PathBuf,
+        target: String,
+        files: Vec<FileHunks>,
+        scanner_ok: bool,
+    ) -> Self {
+        Self { cwd, target, files, scanner_ok, current_file_idx: 0, body_scroll: 0 }
     }
 
     /// Currently-viewed file, or `None` when the diff is empty.

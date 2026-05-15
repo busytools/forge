@@ -120,6 +120,18 @@ fn build_pane_lines(overlay: &DiffOverlayState, area: Rect) -> Vec<Line<'static>
     lines.push(Line::default());
 
     match overlay.current_file() {
+        None if !overlay.scanner_ok => {
+            // Scanner hit Failed/Oversize on one of its subprocess
+            // calls. The user pressed `/diff` and asked the tool to
+            // work — saying "no file selected" would lie about why
+            // they're looking at an empty pane. Surface the actual
+            // state and point at the log target so the trace can be
+            // cross-referenced.
+            lines.push(Line::from(Span::styled(
+                "  Scan failed — see logs (target: ENV_GIT). Press Esc to retry.",
+                Style::default().fg(theme::STATUS_ERROR),
+            )));
+        }
         None => {
             lines.push(Line::from(Span::styled(
                 "  (no file selected)",

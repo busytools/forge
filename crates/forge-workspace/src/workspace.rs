@@ -1131,11 +1131,16 @@ impl Workspace {
     ///
     /// Single-shot — no polling, no caching. Each call runs a fresh
     /// scan against the working tree at the moment of invocation.
+    ///
+    /// Returns a [`forge_agent::env::git_diff::hunks::ScanOutcome`]
+    /// so callers can tell "scan ran fine, no diff" from "scan
+    /// failed" — both produced an identical empty `Vec` under the
+    /// previous shape.
     pub async fn scan_git_diff_hunks(
         &self,
         cwd: &std::path::Path,
         target: &str,
-    ) -> Vec<forge_agent::env::git_diff::hunks::FileHunks> {
+    ) -> forge_agent::env::git_diff::hunks::ScanOutcome {
         forge_agent::env::git_diff::hunks::scan(cwd, target).await
     }
 

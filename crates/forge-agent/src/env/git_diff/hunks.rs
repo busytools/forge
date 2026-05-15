@@ -136,6 +136,18 @@ pub struct DiffLine {
     pub new_line: Option<u32>,
 }
 
+/// Outcome of a single scan invocation. `files` carries whatever
+/// was parsed; `scanner_ok` is `false` when at least one of the
+/// underlying subprocess calls hit `Failed` or `Oversize` — the
+/// file list may be partial or empty, and a downstream renderer
+/// should distinguish that case from a genuine clean tree so the
+/// user knows whether to retry vs. accept "no changes."
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScanOutcome {
+    pub files: Vec<FileHunks>,
+    pub scanner_ok: bool,
+}
+
 /// Top-level scanner entry. `target` is passed verbatim to
 /// `git diff <target>`, comparing the named ref against the working
 /// tree — `"HEAD"` for working-tree-vs-HEAD (uncommitted only),
@@ -144,21 +156,34 @@ pub struct DiffLine {
 /// range syntax; the renderer-side language ("two-dot semantics")
 /// describes the result, not the input shape.
 ///
-/// Returns one [`FileHunks`] per changed file, in the order
-/// `git diff --name-status` reports them. Untracked files (when
-/// `target == "HEAD"`) come at the end as
-/// [`FileStatus::Untracked`].
-pub async fn scan(cwd: &Path, target: &str) -> Vec<FileHunks> {
+/// Returns a [`ScanOutcome`] — `files` carries one [`FileHunks`]
+/// per changed file in the order `git diff --name-status` reports
+/// them (untracked files when `target == "HEAD"` come at the end
+/// as [`FileStatus::Untracked`]), `scanner_ok` is `false` when any
+/// subprocess hit `Failed`/`Oversize` so the caller can surface
+/// "scan failed, check logs" rather than miscategorising the empty
+/// result as "no changes."
+pub async fn scan(cwd: &Path, target: &str) -> ScanOutcome {
+    let mut scanner_ok = true;
+
     let name_status = match run_git(cwd, &["diff", target, "--name-status"]).await {
         GitOutput::Ok(s) => s,
-        GitOutput::Empty | GitOutput::Failed | GitOutput::Oversize => String::new(),
+        GitOutput::Empty => String::new(),
+        GitOutput::Failed | GitOutput::Oversize => {
+            scanner_ok = false;
+            String::new()
+        }
     };
     let mut files = parse_name_status(&name_status);
 
     if !files.is_empty() {
         let diff_content = match run_git(cwd, &["diff", target, "--no-ext-diff"]).await {
             GitOutput::Ok(s) => s,
-            GitOutput::Empty | GitOutput::Failed | GitOutput::Oversize => String::new(),
+            GitOutput::Empty => String::new(),
+            GitOutput::Failed | GitOutput::Oversize => {
+                scanner_ok = false;
+                String::new()
+            }
         };
         merge_hunks(&mut files, &diff_content);
     }
@@ -171,7 +196,7 @@ pub async fn scan(cwd: &Path, target: &str) -> Vec<FileHunks> {
         files.extend(scan_untracked(cwd).await);
     }
 
-    files
+    ScanOutcome { files, scanner_ok }
 }
 
 /// Parse `git diff --name-status` output into a list of `FileHunks`
