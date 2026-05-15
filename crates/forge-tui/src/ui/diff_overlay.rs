@@ -111,19 +111,22 @@ fn build_pane_lines(overlay: &DiffOverlayState, area: Rect) -> Vec<Line<'static>
     lines.push(rule_row(area.width));
     lines.push(Line::default());
 
+    // Precedence is intentional: when the scanner failed we MUST
+    // show the failure regardless of whether any files came back.
+    // The partial-failure case is `name-status` ran fine (so we
+    // have file entries) but `--no-ext-diff` failed (so every
+    // file's `hunks` is empty). Without this guard the renderer
+    // would fall into `Some(file) if file.hunks.is_empty()` and
+    // print "(binary file or no diff content)" — a lie that
+    // trains the user to ignore a real subprocess crash.
+    if !overlay.scanner_ok {
+        lines.push(Line::from(Span::styled(
+            "  Scan failed — see logs (target: ENV_GIT). Press Esc to retry.",
+            Style::default().fg(theme::STATUS_ERROR),
+        )));
+        return lines;
+    }
     match overlay.current_file() {
-        None if !overlay.scanner_ok => {
-            // Scanner hit Failed/Oversize on one of its subprocess
-            // calls. The user pressed `/diff` and asked the tool to
-            // work — saying "no file selected" would lie about why
-            // they're looking at an empty pane. Surface the actual
-            // state and point at the log target so the trace can be
-            // cross-referenced.
-            lines.push(Line::from(Span::styled(
-                "  Scan failed — see logs (target: ENV_GIT). Press Esc to retry.",
-                Style::default().fg(theme::STATUS_ERROR),
-            )));
-        }
         None => {
             lines.push(Line::from(Span::styled(
                 "  (no file selected)",
