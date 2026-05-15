@@ -12,12 +12,10 @@
 //!   open ensures the picker doesn't visibly jump if the user
 //!   edits `~/.claude/forge.toml`'s `[ui]` block while the
 //!   launchpad is up.
-//! - The autostart policy at open time, for the same reason.
-
 use std::time::Instant;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use forge_workspace::{LaunchpadAutostart, SpinnerStyle};
+use forge_workspace::SpinnerStyle;
 
 use super::App;
 use super::view::{ActiveView, set_active_view};
@@ -39,9 +37,6 @@ pub struct LaunchpadState {
     /// `Workspace::ui_settings()` each frame would make the picker
     /// jump if the user edits `forge.toml` mid-session.
     pub spinner_style: SpinnerStyle,
-    /// Autostart policy snapshotted at open time. Drives the boot-
-    /// time dispatch loop in `start_connection_for_view`.
-    pub autostart: LaunchpadAutostart,
 }
 
 impl Default for LaunchpadState {
@@ -50,32 +45,24 @@ impl Default for LaunchpadState {
             selected_index: 0,
             opened_at: Instant::now(),
             spinner_style: SpinnerStyle::default(),
-            autostart: LaunchpadAutostart::default(),
         }
     }
 }
 
 /// Reset the launchpad state when entering the view. Reads the
-/// user's chosen spinner style + autostart policy from
-/// `Workspace::ui_settings()` and snapshots them. Selected index
-/// defaults to 0; the render path picks a smarter "most recently
-/// active" default the first time it has the project list.
+/// user's chosen spinner style from `Workspace::ui_settings()` and
+/// snapshots it. Selected index defaults to 0; the render path
+/// picks a smarter "most recently active" default the first time
+/// it has the project list.
 ///
 /// Wired into `/launchpad` slash command execution; the boot-time
 /// path builds the equivalent snapshot inline in `create_app` so
 /// the View transitions atomically with App construction.
 #[allow(dead_code)] // Wired up in the /launchpad slash command (next commit).
 pub(crate) fn open(app: &mut App) {
-    let (spinner_style, autostart) = app
-        .workspace
-        .as_ref()
-        .map(|w| {
-            let ui = w.ui_settings();
-            (ui.launchpad_spinner, ui.launchpad_autostart)
-        })
-        .unwrap_or_default();
-    app.launchpad =
-        LaunchpadState { selected_index: 0, opened_at: Instant::now(), spinner_style, autostart };
+    let spinner_style =
+        app.workspace.as_ref().map(|w| w.ui_settings().launchpad_spinner).unwrap_or_default();
+    app.launchpad = LaunchpadState { selected_index: 0, opened_at: Instant::now(), spinner_style };
     set_active_view(app, ActiveView::Launchpad);
     app.needs_redraw = true;
 }
@@ -159,11 +146,10 @@ mod tests {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
     #[test]
-    fn default_state_picks_braille_and_always() {
+    fn default_state_picks_braille() {
         let state = LaunchpadState::default();
         assert_eq!(state.selected_index, 0);
         assert_eq!(state.spinner_style, SpinnerStyle::Braille);
-        assert_eq!(state.autostart, LaunchpadAutostart::Always);
     }
 
     #[test]

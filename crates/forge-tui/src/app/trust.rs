@@ -50,10 +50,9 @@ pub fn initialize(app: &mut App) {
     // Launchpad has no specific project context — trust is per-project
     // and evaluated when the user picks a row. Force the connection
     // request on so `auto_start = true` projects can warm up while
-    // the picker is shown (subject to `launchpad_autostart` policy);
-    // each project's own trust gate fires at spawn time. Leave the
-    // launchpad view alone here; the picker handles its own per-
-    // project trust on Enter.
+    // the picker is shown; each project's own trust gate fires at
+    // spawn time. Leave the launchpad view alone here; the picker
+    // handles its own per-project trust on Enter.
     if app.active_view == ActiveView::Launchpad {
         app.startup_connection_requested = true;
         return;

@@ -167,10 +167,10 @@ pub fn create_app(cli: &Cli, workspace: Arc<forge_workspace::Workspace>) -> App 
     let projects_pane_visible = panes_visible_by_default;
     let inspector_pane_visible = panes_visible_by_default;
     // Boot view: `forge` (no argv) → launchpad picker; `forge <project>`
-    // → chat directly. Argv selection is final — no `focus = true`
-    // override, no remembered-last-pick. Snapshot launchpad state from
-    // `[ui]` settings up-front so the picker doesn't shift if the
-    // user edits forge.toml mid-session.
+    // → chat directly. Argv selection is final — no remembered-last-
+    // pick. Snapshot launchpad state from `[ui]` settings up-front so
+    // the picker doesn't shift if the user edits forge.toml mid-
+    // session.
     let active_view = if cli.project.is_none() { ActiveView::Launchpad } else { ActiveView::Chat };
     let initial_launchpad_state = {
         let ui = workspace.ui_settings();
@@ -178,7 +178,6 @@ pub fn create_app(cli: &Cli, workspace: Arc<forge_workspace::Workspace>) -> App 
             selected_index: 0,
             opened_at: std::time::Instant::now(),
             spinner_style: ui.launchpad_spinner,
-            autostart: ui.launchpad_autostart,
         }
     };
     let mut app = App {
@@ -299,15 +298,10 @@ pub fn start_connection(app: &mut App) {
     );
 
     // Launchpad branch: the user invoked `forge` without an argv, so
-    // no project is focused. The launchpad's autostart policy decides
-    // whether `auto_start = true` projects warm up while the picker
-    // is shown. `Always` (default) matches the pre-launchpad
-    // behaviour; `WaitForPick` / `Never` defer all spawns until the
-    // user presses Enter on a row.
+    // no project is focused. Every `auto_start = true` project warms
+    // up while the picker is shown — picking an already-spawned row
+    // is instant.
     if app.active_view == crate::app::ActiveView::Launchpad {
-        if !app.launchpad.autostart.spawns_at_boot() {
-            return;
-        }
         let auto_start = workspace.auto_start_project_names();
         for project_name in auto_start {
             // Every project goes through `SpawnProject` — no
@@ -321,7 +315,7 @@ pub fn start_connection(app: &mut App) {
             if let Err(err) = workspace.dispatch(cmd) {
                 tracing::error!(
                     target: crate::logging::targets::BRIDGE_LIFECYCLE,
-                    event_name = "launchpad_autostart_dispatch_failed",
+                    event_name = "launchpad_auto_start_dispatch_failed",
                     error = %err,
                     project = %project_name,
                     "launchpad auto_start dispatch failed",

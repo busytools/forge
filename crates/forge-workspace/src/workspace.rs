@@ -174,27 +174,12 @@ impl Workspace {
     }
 
     /// Return the names of all projects that should spawn at forge
-    /// launch (`auto_start = true` OR `focus = true`). The
-    /// `focus = true` project (if any) is returned FIRST so the
-    /// caller's dispatch loop can route it through `StartDefault`
-    /// (focused tab) and the rest through `SpawnProject` (silent
-    /// background spawn). Without focus, the order is declaration
-    /// order from forge.toml.
+    /// launch (`auto_start = true`). Order is declaration order from
+    /// forge.toml — the launchpad picker uses its own row sort, so
+    /// no further ordering is imposed here.
     #[must_use]
     pub fn auto_start_project_names(&self) -> Vec<String> {
-        let mut focused: Option<String> = None;
-        let mut rest: Vec<String> = Vec::new();
-        for project in self.config.auto_start_projects() {
-            if project.focus {
-                focused = Some(project.name.clone());
-            } else {
-                rest.push(project.name.clone());
-            }
-        }
-        match focused {
-            Some(name) => std::iter::once(name).chain(rest).collect(),
-            None => rest,
-        }
+        self.config.auto_start_projects().map(|p| p.name.clone()).collect()
     }
 
     /// the lead. Empty `sessions` means the project has nothing on disk
