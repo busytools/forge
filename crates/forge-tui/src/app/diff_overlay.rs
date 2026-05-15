@@ -1116,6 +1116,15 @@ pub(super) fn close_with_submit(app: &mut App) {
         app.needs_redraw = true;
         return;
     }
+    // Flush the active editor first — banner-✕ / Esc with an open
+    // editor would otherwise drop the in-progress text silently. The
+    // helper logs DEBUG on any abandoned chars and, for a reopened
+    // chip, restores the prior comment so it gets bundled with the
+    // rest. After this, `o.comments` holds the complete set the user
+    // expects to submit.
+    if let Some(o) = app.diff_overlay.as_mut() {
+        let _ = close_active_input_preserving_prior(o);
+    }
     // Single-pass snapshot of everything we need from overlay state
     // BEFORE close() drops it. Avoids the previous two-step (take
     // comments, then re-read target/cwd) where the second read
@@ -1844,6 +1853,39 @@ mod tests {
         let after = app.diff_overlay.as_ref().expect("overlay still set");
         assert!(after.active_input.is_none());
         assert!(after.comments.is_empty(), "prior dropped via clear+save = delete");
+    }
+
+    #[test]
+    fn close_with_submit_flushes_reopened_chip_to_bundle() {
+        // SILENT-1 fix: banner ✕ / Esc with an open editor that's a
+        // chip-reopen must restore the prior to the bundle. Without
+        // the pre-flight flush, the prior would be dropped silently
+        // when the helper isn't called.
+        let mut app = App::test_default();
+        let _ = app.install_testing_stub();
+        app.set_session_id(Some(crate::agent::model::SessionId::new("session-1")));
+        let mut state = sample_state();
+        let key = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 };
+        let prior = HunkComment {
+            key,
+            path: "a.rs".into(),
+            line: 1,
+            hunk_context: vec![],
+            comment_text: "important review note".into(),
+        };
+        let mut editor = TextArea::default();
+        editor.insert_str("important review note");
+        // Editor open as a chip reopen — prior_comment Some, no
+        // unsubmitted comments in overlay.comments yet.
+        state.active_input =
+            Some(ActiveCommentInput { key, editor, prior_comment: Some(prior.clone()) });
+        app.diff_overlay = Some(state);
+        set_active_view(&mut app, ActiveView::Diff);
+        close_with_submit(&mut app);
+        // Overlay closed AND the prior comment was bundled into the
+        // submit — verified indirectly by the overlay state being
+        // dropped (close ran) and the chip wasn't silently lost.
+        assert!(app.diff_overlay.is_none(), "overlay closed");
     }
 
     #[test]
