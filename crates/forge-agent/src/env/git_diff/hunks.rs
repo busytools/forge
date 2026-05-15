@@ -59,17 +59,73 @@ pub enum FileStatus {
     Untracked,
 }
 
-/// A single `@@`-delimited hunk inside one file's diff. `old_lines`
-/// / `new_lines` carry the context lines repeated on both sides; a
-/// pure-context hunk has the same vector on both fields.
+/// A single `@@`-delimited hunk inside one file's diff. `lines`
+/// preserves the original unified-diff ordering with each line
+/// tagged as context, added, or removed — the renderer iterates
+/// them directly to draw the `+ / - / ` markers and per-side line
+/// numbers without re-classifying anything.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Hunk {
     pub old_start: u32,
     pub old_count: u32,
     pub new_start: u32,
     pub new_count: u32,
-    pub old_lines: Vec<String>,
-    pub new_lines: Vec<String>,
+    pub lines: Vec<DiffLine>,
+}
+
+impl Hunk {
+    /// Count of lines added in this hunk (`+` markers).
+    #[must_use]
+    pub fn added_count(&self) -> u32 {
+        u32::try_from(self.lines.iter().filter(|l| l.kind == DiffLineKind::Added).count())
+            .unwrap_or(u32::MAX)
+    }
+
+    /// Count of lines removed in this hunk (`-` markers).
+    #[must_use]
+    pub fn removed_count(&self) -> u32 {
+        u32::try_from(self.lines.iter().filter(|l| l.kind == DiffLineKind::Removed).count())
+            .unwrap_or(u32::MAX)
+    }
+}
+
+impl FileHunks {
+    /// Total additions across all hunks in this file.
+    #[must_use]
+    pub fn added_count(&self) -> u32 {
+        self.hunks.iter().map(Hunk::added_count).fold(0u32, u32::saturating_add)
+    }
+
+    /// Total removals across all hunks in this file.
+    #[must_use]
+    pub fn removed_count(&self) -> u32 {
+        self.hunks.iter().map(Hunk::removed_count).fold(0u32, u32::saturating_add)
+    }
+}
+
+/// Per-line classification inside a hunk.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiffLineKind {
+    /// Line appears in both old and new — printed without a marker
+    /// (or with a leading space, depending on the renderer).
+    Context,
+    /// Line is in the new file only — rendered with `+` marker.
+    Added,
+    /// Line is in the old file only — rendered with `-` marker.
+    Removed,
+}
+
+/// One rendered diff line. Carries its kind, raw text (no leading
+/// marker), and per-side line numbers so the renderer can show a
+/// gutter without recomputing positions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiffLine {
+    pub kind: DiffLineKind,
+    pub text: String,
+    /// Line number in the old file. `None` for `Added` lines.
+    pub old_line: Option<u32>,
+    /// Line number in the new file. `None` for `Removed` lines.
+    pub new_line: Option<u32>,
 }
 
 /// Top-level scanner entry. `target` is passed verbatim to `git
@@ -223,21 +279,40 @@ fn parse_hunks(section: &str) -> Vec<Hunk> {
         else {
             continue;
         };
-        let mut old_lines = Vec::new();
-        let mut new_lines = Vec::new();
+        let mut diff_lines = Vec::new();
+        let mut old_cursor = old_start;
+        let mut new_cursor = new_start;
         for line in &lines[start + 1..end] {
             if let Some(rest) = line.strip_prefix('-') {
-                old_lines.push(rest.to_owned());
+                diff_lines.push(DiffLine {
+                    kind: DiffLineKind::Removed,
+                    text: rest.to_owned(),
+                    old_line: Some(old_cursor),
+                    new_line: None,
+                });
+                old_cursor = old_cursor.saturating_add(1);
             } else if let Some(rest) = line.strip_prefix('+') {
-                new_lines.push(rest.to_owned());
+                diff_lines.push(DiffLine {
+                    kind: DiffLineKind::Added,
+                    text: rest.to_owned(),
+                    old_line: None,
+                    new_line: Some(new_cursor),
+                });
+                new_cursor = new_cursor.saturating_add(1);
             } else if let Some(rest) = line.strip_prefix(' ') {
-                old_lines.push(rest.to_owned());
-                new_lines.push(rest.to_owned());
+                diff_lines.push(DiffLine {
+                    kind: DiffLineKind::Context,
+                    text: rest.to_owned(),
+                    old_line: Some(old_cursor),
+                    new_line: Some(new_cursor),
+                });
+                old_cursor = old_cursor.saturating_add(1);
+                new_cursor = new_cursor.saturating_add(1);
             }
             // `\ No newline at end of file` and any stray malformed
             // lines are intentionally dropped.
         }
-        hunks.push(Hunk { old_start, old_count, new_start, new_count, old_lines, new_lines });
+        hunks.push(Hunk { old_start, old_count, new_start, new_count, lines: diff_lines });
     }
     hunks
 }
@@ -287,16 +362,25 @@ async fn scan_untracked(cwd: &Path) -> Vec<FileHunks> {
             Ok(meta) if meta.is_file() && meta.len() <= MAX_UNTRACKED_FILE_SIZE => {
                 match tokio::fs::read_to_string(&file_path).await {
                     Ok(content) => {
-                        let new_lines: Vec<String> =
+                        let raw_lines: Vec<String> =
                             content.lines().map(str::to_owned).collect();
-                        let new_count = u32::try_from(new_lines.len()).unwrap_or(u32::MAX);
+                        let new_count = u32::try_from(raw_lines.len()).unwrap_or(u32::MAX);
+                        let diff_lines: Vec<DiffLine> = raw_lines
+                            .into_iter()
+                            .enumerate()
+                            .map(|(i, text)| DiffLine {
+                                kind: DiffLineKind::Added,
+                                text,
+                                old_line: None,
+                                new_line: u32::try_from(i + 1).ok(),
+                            })
+                            .collect();
                         vec![Hunk {
                             old_start: 0,
                             old_count: 0,
                             new_start: 1,
                             new_count,
-                            old_lines: Vec::new(),
-                            new_lines,
+                            lines: diff_lines,
                         }]
                     }
                     Err(_) => Vec::new(),
@@ -348,64 +432,132 @@ mod tests {
         assert!(parse_name_status("").is_empty());
     }
 
+    fn added(line: &DiffLine, expected: &str) -> bool {
+        line.kind == DiffLineKind::Added && line.text == expected
+    }
+
+    fn removed(line: &DiffLine, expected: &str) -> bool {
+        line.kind == DiffLineKind::Removed && line.text == expected
+    }
+
+    fn context(line: &DiffLine, expected: &str) -> bool {
+        line.kind == DiffLineKind::Context && line.text == expected
+    }
+
+    // Raw strings throughout — unified-diff context lines are
+    // single-space-prefixed, and Rust's `\<newline>` continuation
+    // strips that space when it eats the next line's leading
+    // whitespace. Raw strings preserve all whitespace verbatim.
+
     #[test]
     fn parse_hunks_single() {
-        let section = "diff --git a/x.rs b/x.rs\n\
-             index abc..def 100644\n\
-             --- a/x.rs\n\
-             +++ b/x.rs\n\
-             @@ -1,3 +1,4 @@\n\
-              line1\n\
-              line2\n\
-             +new line\n\
-              line3";
+        let section = "\
+diff --git a/x.rs b/x.rs
+index abc..def 100644
+--- a/x.rs
++++ b/x.rs
+@@ -1,3 +1,4 @@
+ line1
+ line2
++new line
+ line3";
         let hunks = parse_hunks(section);
         assert_eq!(hunks.len(), 1);
         assert_eq!(hunks[0].old_start, 1);
         assert_eq!(hunks[0].old_count, 3);
         assert_eq!(hunks[0].new_start, 1);
         assert_eq!(hunks[0].new_count, 4);
-        assert!(hunks[0].new_lines.contains(&"new line".to_owned()));
-        assert!(!hunks[0].old_lines.contains(&"new line".to_owned()));
+        assert_eq!(hunks[0].added_count(), 1);
+        assert_eq!(hunks[0].removed_count(), 0);
+        assert!(hunks[0].lines.iter().any(|l| added(l, "new line")));
+        // The added line carries its new-file line number; old_line
+        // is None so a gutter renderer leaves that side blank.
+        let inserted = hunks[0]
+            .lines
+            .iter()
+            .find(|l| added(l, "new line"))
+            .expect("added line present");
+        assert_eq!(inserted.new_line, Some(3));
+        assert_eq!(inserted.old_line, None);
     }
 
     #[test]
     fn parse_hunks_multiple() {
-        let section = "diff --git a/x.rs b/x.rs\n\
-             --- a/x.rs\n\
-             +++ b/x.rs\n\
-             @@ -1,3 +1,4 @@\n\
-              line1\n\
-             +added1\n\
-              line2\n\
-              line3\n\
-             @@ -10,3 +11,4 @@\n\
-              line10\n\
-             +added2\n\
-              line11\n\
-              line12";
+        let section = "\
+diff --git a/x.rs b/x.rs
+--- a/x.rs
++++ b/x.rs
+@@ -1,3 +1,4 @@
+ line1
++added1
+ line2
+ line3
+@@ -10,3 +11,4 @@
+ line10
++added2
+ line11
+ line12";
         let hunks = parse_hunks(section);
         assert_eq!(hunks.len(), 2);
         assert_eq!(hunks[0].old_start, 1);
         assert_eq!(hunks[1].old_start, 10);
-        assert!(hunks[0].new_lines.contains(&"added1".to_owned()));
-        assert!(hunks[1].new_lines.contains(&"added2".to_owned()));
+        assert!(hunks[0].lines.iter().any(|l| added(l, "added1")));
+        assert!(hunks[1].lines.iter().any(|l| added(l, "added2")));
     }
 
     #[test]
     fn parse_hunks_deletion() {
-        let section = "diff --git a/x.rs b/x.rs\n\
-             --- a/x.rs\n\
-             +++ b/x.rs\n\
-             @@ -1,4 +1,3 @@\n\
-              line1\n\
-             -deleted line\n\
-              line2\n\
-              line3";
+        let section = "\
+diff --git a/x.rs b/x.rs
+--- a/x.rs
++++ b/x.rs
+@@ -1,4 +1,3 @@
+ line1
+-deleted line
+ line2
+ line3";
         let hunks = parse_hunks(section);
         assert_eq!(hunks.len(), 1);
-        assert!(hunks[0].old_lines.contains(&"deleted line".to_owned()));
-        assert!(!hunks[0].new_lines.contains(&"deleted line".to_owned()));
+        assert_eq!(hunks[0].added_count(), 0);
+        assert_eq!(hunks[0].removed_count(), 1);
+        assert!(hunks[0].lines.iter().any(|l| removed(l, "deleted line")));
+        let context_lines: Vec<&DiffLine> = hunks[0]
+            .lines
+            .iter()
+            .filter(|l| l.kind == DiffLineKind::Context)
+            .collect();
+        assert_eq!(context_lines.len(), 3);
+        assert!(hunks[0].lines.iter().any(|l| context(l, "line1")));
+    }
+
+    #[test]
+    fn parse_hunks_line_numbers_track_through_changes() {
+        // Mixed hunk: 1 context, 1 remove, 1 add, 1 context.
+        // Old:  L1 line_a, L2 line_b, L3 line_d
+        // New:  L1 line_a, L2 line_c, L3 line_d
+        let section = "\
+diff --git a/x.rs b/x.rs
+--- a/x.rs
++++ b/x.rs
+@@ -1,3 +1,3 @@
+ line_a
+-line_b
++line_c
+ line_d";
+        let hunks = parse_hunks(section);
+        assert_eq!(hunks.len(), 1);
+        let lines = &hunks[0].lines;
+        assert_eq!(lines[0].old_line, Some(1));
+        assert_eq!(lines[0].new_line, Some(1));
+        assert_eq!(lines[1].kind, DiffLineKind::Removed);
+        assert_eq!(lines[1].old_line, Some(2));
+        assert_eq!(lines[1].new_line, None);
+        assert_eq!(lines[2].kind, DiffLineKind::Added);
+        assert_eq!(lines[2].old_line, None);
+        assert_eq!(lines[2].new_line, Some(2));
+        assert_eq!(lines[3].kind, DiffLineKind::Context);
+        assert_eq!(lines[3].old_line, Some(3));
+        assert_eq!(lines[3].new_line, Some(3));
     }
 
     #[test]
@@ -462,18 +614,19 @@ mod tests {
 
     #[test]
     fn split_per_file_two_files() {
-        let raw = "diff --git a/a.rs b/a.rs\n\
-             --- a/a.rs\n\
-             +++ b/a.rs\n\
-             @@ -1,1 +1,1 @@\n\
-             -old\n\
-             +new\n\
-             diff --git a/b.rs b/b.rs\n\
-             --- a/b.rs\n\
-             +++ b/b.rs\n\
-             @@ -1,1 +1,2 @@\n\
-              context\n\
-             +added";
+        let raw = "\
+diff --git a/a.rs b/a.rs
+--- a/a.rs
++++ b/a.rs
+@@ -1,1 +1,1 @@
+-old
++new
+diff --git a/b.rs b/b.rs
+--- a/b.rs
++++ b/b.rs
+@@ -1,1 +1,2 @@
+ context
++added";
         let map = split_per_file(raw);
         assert_eq!(map.len(), 2);
         assert!(map.contains_key("a.rs"));
@@ -487,14 +640,17 @@ mod tests {
             status: FileStatus::Modified,
             hunks: Vec::new(),
         }];
-        let raw = "diff --git a/x.rs b/x.rs\n\
-             --- a/x.rs\n\
-             +++ b/x.rs\n\
-             @@ -1,1 +1,2 @@\n\
-              keep\n\
-             +new";
+        let raw = "\
+diff --git a/x.rs b/x.rs
+--- a/x.rs
++++ b/x.rs
+@@ -1,1 +1,2 @@
+ keep
++new";
         merge_hunks(&mut files, raw);
         assert_eq!(files[0].hunks.len(), 1);
-        assert!(files[0].hunks[0].new_lines.contains(&"new".to_owned()));
+        assert!(files[0].hunks[0].lines.iter().any(|l| added(l, "new")));
+        assert_eq!(files[0].added_count(), 1);
+        assert_eq!(files[0].removed_count(), 0);
     }
 }
