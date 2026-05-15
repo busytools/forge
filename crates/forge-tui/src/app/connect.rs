@@ -240,6 +240,7 @@ pub fn create_app(cli: &Cli, workspace: Arc<forge_workspace::Workspace>) -> App 
         startup_recent_sessions_loaded: false,
         startup_session_picker_resolved: false,
         startup_project: cli.project.clone(),
+        replay_in_progress: false,
     };
 
     if let Err(err) = super::config::initialize_shared_state(&mut app) {

@@ -406,6 +406,18 @@ pub struct App {
     /// Forwarded to [`forge_workspace::SessionTarget::Named`] when the
     /// connection task spins up.
     pub startup_project: Option<String>,
+    /// True while `events::session_reset::load_resume_history` is
+    /// walking on-disk history through the shared SDK-message
+    /// dispatcher. Replay reuses the live walker so content blocks,
+    /// tool_use, todos, and plans land in the bucket via the same code
+    /// path — but the walker also has side effects that are wrong for
+    /// replay (most notably the lifecycle `Running` write in
+    /// `handle_assistant`, added so a mid-turn click flips the
+    /// Projects-pane spinner on). Replay messages are historical, not
+    /// live wire content, so the lifecycle write must be skipped while
+    /// this flag is true. Cleared at end of replay so subsequent live
+    /// messages on the same session behave normally.
+    pub replay_in_progress: bool,
 }
 
 impl App {
@@ -2338,6 +2350,7 @@ impl App {
             startup_recent_sessions_loaded: false,
             startup_session_picker_resolved: false,
             startup_project: None,
+            replay_in_progress: false,
         }
     }
 

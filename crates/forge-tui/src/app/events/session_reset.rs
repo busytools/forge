@@ -168,6 +168,12 @@ pub(super) fn load_resume_history(app: &mut App, history_messages: &[forge_primi
     }
     app.push_message_tracked(welcome);
     app.sync_welcome_snapshot();
+    // Replay marker: see `App.replay_in_progress` rustdoc + the
+    // `handle_assistant` gate in `events/sdk_message.rs`. The flag
+    // suppresses the lifecycle = Running write for historical
+    // assistant envelopes so a resumed auto_start project doesn't
+    // land in the Projects pane stuck on the spinner glyph.
+    app.replay_in_progress = true;
     for msg in history_messages {
         // The raw walker (`handle_sdk_message`) processes user
         // messages by walking tool_results only — live wire user
@@ -226,9 +232,74 @@ pub(super) fn load_resume_history(app: &mut App, history_messages: &[forge_primi
         }
         super::sdk_message::handle_sdk_message(app, msg.clone());
     }
+    app.replay_in_progress = false;
     app.finalize_turn_runtime_artifacts(model::ToolCallStatus::Failed);
     app.clear_active_turn_assistant();
     app.enforce_history_retention_tracked();
     *app.active_viewport_mut() = super::super::ChatViewport::new();
     app.active_viewport_mut().engage_auto_scroll();
+}
+
+#[cfg(test)]
+mod tests {
+    //! Regression coverage for the launchpad-spinner-stuck bug.
+    //! End-to-end: walking on-disk history through the shared SDK
+    //! dispatcher must NOT leave the bucket's lifecycle stuck on
+    //! `Running`. The unit-level gate lives in `events/sdk_message.rs`;
+    //! this test pins the integration behaviour.
+    use super::load_resume_history;
+    use crate::app::App;
+    use crate::app::session::SessionLifecycleState;
+    use forge_primitives::{AssistantEnvelope, ContentBlock, Message};
+
+    fn historical_assistant(text: &str) -> Message {
+        Message::Assistant {
+            message: AssistantEnvelope {
+                id: "msg_history".to_owned(),
+                role: "assistant".to_owned(),
+                model: "claude-test".to_owned(),
+                content: vec![ContentBlock::Text { text: text.to_owned() }],
+                stop_reason: None,
+                stop_sequence: None,
+                usage: None,
+            },
+            session_id: String::new(),
+            parent_tool_use_id: None,
+            error: None,
+            uuid: None,
+        }
+    }
+
+    #[test]
+    fn replay_walk_does_not_leave_lifecycle_on_running() {
+        let mut app = App::test_default();
+        // Model an Idle, freshly-Connected bucket — what
+        // `apply_session_update_connected`'s background path produces
+        // before kicking off `load_resume_history`.
+        let key = app.active_session_key.clone().expect("active key");
+        app.sessions.get_mut(&key).expect("bucket").lifecycle_state = SessionLifecycleState::Idle;
+
+        // A modest replay tail — multiple assistant messages, as a
+        // long-lived session would have. Pre-fix: each one flipped
+        // lifecycle to Running with no balancing Result, so the bucket
+        // ended on Running.
+        let history = vec![
+            historical_assistant("prior turn 1"),
+            historical_assistant("prior turn 2"),
+            historical_assistant("prior turn 3"),
+        ];
+        load_resume_history(&mut app, &history);
+
+        let bucket = app.sessions.get(&key).expect("bucket");
+        assert_eq!(
+            bucket.lifecycle_state,
+            SessionLifecycleState::Idle,
+            "post-replay lifecycle must still be Idle — Running here is what \
+             pinned the Projects pane spinner on after launchpad auto_start",
+        );
+        assert!(
+            !app.replay_in_progress,
+            "replay_in_progress must be cleared at end of load_resume_history",
+        );
+    }
 }
