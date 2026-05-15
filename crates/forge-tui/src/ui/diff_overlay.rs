@@ -3,14 +3,15 @@
 //! Full-screen takeover triggered by `/diff` or the Inspector GIT
 //! `⤢` click. Two-pane layout with chrome mirroring the Projects
 //! pane: FILES rail on the left (banner + DIM rule + 2-col content
-//! indent), DIFF body on the right (sibling banner with the
-//! currently-viewed file's path + `✕`, same rule pattern). The two
-//! rules sit at the same y-position so the `│` separator
-//! interrupts what visually reads as one continuous line.
+//! indent), DIFF body on the right (sibling banner showing the
+//! currently-viewed file's path + per-file `+N -M` totals when
+//! non-zero, same rule pattern). The two rules sit at the same
+//! y-position so the `│` separator interrupts what visually reads
+//! as one continuous line.
 //!
-//! This commit ships the scaffold (chrome + file rail + placeholder
-//! body); the per-line diff renderer, click-to-comment, and Esc
-//! one-shot submit land in follow-up commits.
+//! Click-to-comment (mounting `ChatInput` inline on a line) and
+//! the Esc one-shot review-bundling submit are deferred to a
+//! follow-up commit.
 
 use forge_workspace::env::git_diff::hunks::{DiffLine, DiffLineKind, FileHunks, FileStatus, Hunk};
 
