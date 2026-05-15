@@ -133,10 +133,12 @@ fn render_rail(frame: &mut Frame, area: Rect, overlay: &DiffOverlayState) {
     lines.push(Line::default());
     let start = usize::from(scroll);
     let end = (start + visible).min(overlay.files.len());
-    let comment_count_per_file = comment_counts_per_file(overlay);
+    // Pre-cached on overlay state; recomputed on save / cancel /
+    // reopen, not on render — keeps the hot path O(visible) instead
+    // of O(comments + visible) per frame.
     for idx in start..end {
         let file = &overlay.files[idx];
-        let comments = comment_count_per_file.get(idx).copied().unwrap_or(0);
+        let comments = overlay.comment_counts.get(idx).copied().unwrap_or(0);
         lines.push(file_rail_row(file, idx == overlay.current_file_idx, inner_width, comments));
     }
     if overlay.untracked_suppressed > 0 {
@@ -201,18 +203,6 @@ fn render_footer(frame: &mut Frame, area: Rect, overlay: &DiffOverlayState) {
         }
     }
     frame.render_widget(Paragraph::new(Line::from(spans)), footer_rect);
-}
-
-/// Count comments anchored at each file index. Used by the rail to
-/// render a `💬 N` badge next to file rows with pending comments.
-fn comment_counts_per_file(overlay: &DiffOverlayState) -> Vec<u32> {
-    let mut counts = vec![0u32; overlay.files.len()];
-    for c in &overlay.comments {
-        if let Some(slot) = counts.get_mut(c.key.file_idx) {
-            *slot = slot.saturating_add(1);
-        }
-    }
-    counts
 }
 
 /// Build the right pane's body lines (banner + rule + per-hunk
@@ -444,6 +434,15 @@ fn diff_line_row(line: &DiffLine, gutter_width: usize) -> Line<'static> {
         Some(n) => format!("{n:>gutter_width$}"),
         None => " ".repeat(gutter_width),
     };
+    // `line.text.clone()` is the per-frame cost flagged as Mi3 in
+    // review. Eliminating it requires either (a) a per-file cached
+    // `Vec<Line<'static>>` invalidated on file switch / comment
+    // mutation, or (b) lifetime-borrow lines from `overlay.files`
+    // which fights ratatui's `Paragraph::new(Vec<Line<'static>>)`
+    // signature. The current cost is bounded by file size (typical
+    // hunks are tens of lines, rendered viewports are hundreds);
+    // not worth the cache-invalidation surface for what's already
+    // sub-millisecond on real diffs.
     Line::from(vec![
         Span::raw("  "),
         Span::styled(gutter, Style::default().fg(theme::DIM)),

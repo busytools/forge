@@ -164,6 +164,16 @@ pub enum DefaultTarget {
 /// Resolve the default `/diff` target from the active session's
 /// Inspector GIT snapshot. Mirrors the auto-detect logic the `/diff`
 /// slash command uses; shared with the Inspector `⤢` click path.
+///
+/// Known race: the snapshot can be up to ~10 s stale because the
+/// inspector's git-diff scanner polls on that cadence. If the user
+/// switches branches and clicks `⤢` within that window, the resolved
+/// target may not match the live working tree. Mitigation: the scan
+/// itself ALWAYS runs fresh — only the *target ref* (e.g. `main` vs
+/// `master`) can be wrong. Worst-case the user sees "no changes" and
+/// reruns `/diff <ref>` explicitly. Not worth the synchronous
+/// refresh cost on the click hot-path. Issue tracking the gap:
+/// follow-up filed in project memory.
 pub fn resolve_default_target(app: &App) -> DefaultTarget {
     use forge_workspace::env::git_diff::GitDiffView;
     let Some(snapshot) = app.active_session().and_then(|s| s.git_diff_snapshot.as_ref()) else {
@@ -266,19 +276,22 @@ const EVENT_DRAIN_BUDGET: usize = 8;
 /// Drain pending scan results and install the overlay state. Called
 /// from the main loop alongside the other event-channel consumers.
 ///
-/// Events are dropped (rather than opening the overlay) when the
-/// user has navigated away since the scan started:
+/// Events are dropped (silently) when the user has navigated away
+/// since the scan started:
 /// - `app.active_view != ActiveView::Chat` — user opened config /
 ///   session picker / launchpad / another overlay while the scan
 ///   was running. Yanking them into the diff view would be
 ///   surprising.
 /// - `event.cwd` doesn't match the active session's `cwd_raw` —
 ///   user switched sessions mid-scan; the result is for a stale
-///   project.
+///   project, and crosstalking it into the new session would
+///   confuse.
 ///
 /// Both cases log at DEBUG so a future "why didn't /diff open?"
-/// triage can correlate the event without surfacing noise to the
-/// user.
+/// triage can correlate the event. No chat message is pushed —
+/// the user explicitly navigated away, so a notice arriving later
+/// would be noise. The user can rerun `/diff` if they want the
+/// scan they kicked off.
 pub fn drain_events(app: &mut App) {
     for _ in 0..EVENT_DRAIN_BUDGET {
         let event = match app.diff_overlay_event_rx.try_recv() {
@@ -302,6 +315,9 @@ pub fn drain_events(app: &mut App) {
             continue;
         }
         if app.active_view != ActiveView::Chat {
+            // Silent drop — the user explicitly navigated away, so
+            // a chat message would be surprising noise. DEBUG log
+            // remains for triage.
             tracing::debug!(
                 target: crate::logging::targets::APP_SESSION,
                 event_name = "diff_overlay_drain_skipped_view",
@@ -309,13 +325,6 @@ pub fn drain_events(app: &mut App) {
                 outcome = "skipped",
                 target_ref = %event.target,
                 active_view = ?app.active_view,
-            );
-            crate::app::slash::push_system_message(
-                app,
-                format!(
-                    "Diff scan for `{}` finished after you navigated away — run /diff again to view.",
-                    event.target
-                ),
             );
             continue;
         }
@@ -326,6 +335,10 @@ pub fn drain_events(app: &mut App) {
         // exact match when they refer to the same directory.
         let active_cwd = app.active_session().map(|s| PathBuf::from(&s.cwd_raw));
         if active_cwd.as_deref() != Some(event.cwd.as_path()) {
+            // Silent drop — pushing a chat message into the now-
+            // active (different) session about a scan for the OLD
+            // session would crosstalk. The user can rerun /diff
+            // explicitly if they meant the new session.
             tracing::debug!(
                 target: crate::logging::targets::APP_SESSION,
                 event_name = "diff_overlay_drain_skipped_cwd",
@@ -334,17 +347,6 @@ pub fn drain_events(app: &mut App) {
                 scan_cwd = %event.cwd.display(),
                 active_cwd = ?active_cwd,
             );
-            let notice = match active_cwd {
-                Some(_) => format!(
-                    "Diff scan for `{}` finished for a different session — run /diff again here.",
-                    event.target
-                ),
-                None => format!(
-                    "Diff scan for `{}` finished but the session closed — start a new session and re-run /diff.",
-                    event.target
-                ),
-            };
-            crate::app::slash::push_system_message(app, notice);
             continue;
         }
         let state = DiffOverlayState::new_with_event(event);
@@ -416,9 +418,30 @@ pub struct DiffOverlayState {
     /// the renderer to wrap the TextArea and by the click handler
     /// for column bound checks.
     pub pane_width: u16,
+    /// Cached comment count per file index, indexed by file position
+    /// in [`Self::files`]. Recomputed on every comment mutation via
+    /// [`Self::recompute_comment_counts`]. Renderer reads it directly
+    /// each frame so the hot path is O(1) per file row instead of
+    /// O(comments) per render.
+    pub comment_counts: Vec<u32>,
 }
 
 impl DiffOverlayState {
+    /// Refresh [`Self::comment_counts`] after mutating
+    /// [`Self::comments`]. Cheap (`O(comments)`) and only runs on
+    /// save / cancel / file switch, not on render. Resets the
+    /// per-file slot to zero before counting so removed comments
+    /// don't linger.
+    pub fn recompute_comment_counts(&mut self) {
+        self.comment_counts.clear();
+        self.comment_counts.resize(self.files.len(), 0);
+        for c in &self.comments {
+            if let Some(slot) = self.comment_counts.get_mut(c.key.file_idx) {
+                *slot = slot.saturating_add(1);
+            }
+        }
+    }
+
     /// Build a fresh state for a newly-opened overlay. Test-only —
     /// production uses [`Self::new_with_event`] so the scanner
     /// outcome flags (`scanner_ok`, `untracked_suppressed`) thread
@@ -428,6 +451,7 @@ impl DiffOverlayState {
     /// both signals.
     #[cfg(test)]
     pub fn new(cwd: PathBuf, target: String, files: Vec<FileHunks>) -> Self {
+        let file_count = files.len();
         Self {
             cwd,
             target,
@@ -443,6 +467,7 @@ impl DiffOverlayState {
             pane_origin_row: 0,
             pane_origin_col: 0,
             pane_width: 0,
+            comment_counts: vec![0; file_count],
         }
     }
 
@@ -450,6 +475,7 @@ impl DiffOverlayState {
     /// outcome flags through to the overlay so the renderer can
     /// surface partial-failure and cap-overflow conditions.
     fn new_with_event(event: DiffOverlayEvent) -> Self {
+        let file_count = event.files.len();
         Self {
             cwd: event.cwd,
             target: event.target,
@@ -465,6 +491,7 @@ impl DiffOverlayState {
             pane_origin_row: 0,
             pane_origin_col: 0,
             pane_width: 0,
+            comment_counts: vec![0; file_count],
         }
     }
 
@@ -599,6 +626,7 @@ fn save_active_input(app: &mut App) {
     // edited reopen).
     overlay.comments.retain(|c| c.key != key);
     overlay.comments.push(comment);
+    overlay.recompute_comment_counts();
     app.needs_redraw = true;
 }
 
@@ -823,6 +851,7 @@ fn reopen_comment_for_key(overlay: &mut DiffOverlayState, key: LineKey) -> Mouse
         return MouseEffect::default();
     };
     let comment = overlay.comments.remove(pos);
+    overlay.recompute_comment_counts();
     let mut editor = TextArea::default();
     // TextArea::insert_str respects newlines correctly so the
     // multi-line shape of the saved comment is preserved.
@@ -1139,6 +1168,50 @@ mod tests {
         let md = format_diff_comments("main", "", &[]);
         assert!(md.contains("## Diff review (target `main`)"));
         assert!(!md.contains("Repo: ``"), "blank cwd suppresses the Repo line");
+    }
+
+    #[test]
+    fn recompute_comment_counts_zeroes_then_tallies() {
+        let mut state = sample_state();
+        state.comments.push(HunkComment {
+            key: LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 },
+            path: "a.rs".into(),
+            line: 1,
+            hunk_context: vec![],
+            comment_text: "x".into(),
+        });
+        state.comments.push(HunkComment {
+            key: LineKey { file_idx: 0, hunk_idx: 1, line_idx: 0 },
+            path: "a.rs".into(),
+            line: 2,
+            hunk_context: vec![],
+            comment_text: "y".into(),
+        });
+        state.comments.push(HunkComment {
+            key: LineKey { file_idx: 1, hunk_idx: 0, line_idx: 0 },
+            path: "b.rs".into(),
+            line: 1,
+            hunk_context: vec![],
+            comment_text: "z".into(),
+        });
+        state.recompute_comment_counts();
+        assert_eq!(state.comment_counts, vec![2, 1]);
+    }
+
+    #[test]
+    fn recompute_comment_counts_handles_empty_comments() {
+        let mut state = sample_state();
+        state.recompute_comment_counts();
+        assert_eq!(state.comment_counts, vec![0, 0]);
+    }
+
+    #[test]
+    fn recompute_comment_counts_resizes_with_files() {
+        let mut state = sample_state();
+        // Stale comment_counts vec from a prior file set.
+        state.comment_counts = vec![5, 5, 5];
+        state.recompute_comment_counts();
+        assert_eq!(state.comment_counts.len(), state.files.len());
     }
 
     #[test]
