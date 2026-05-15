@@ -67,7 +67,7 @@ fn handle_diff_submit(app: &mut App, args: &[&str]) -> bool {
         return true;
     }
     let Some(arg) = args.first() else {
-        let _ = crate::app::diff_overlay::open_default(app);
+        crate::app::diff_overlay::open_default(app);
         return true;
     };
     let target = (*arg).trim().to_owned();
@@ -75,7 +75,7 @@ fn handle_diff_submit(app: &mut App, args: &[&str]) -> bool {
         push_system_message(app, "Usage: /diff [target]");
         return true;
     }
-    let _ = crate::app::diff_overlay::open_with_target(app, target);
+    crate::app::diff_overlay::open_with_target(app, target);
     true
 }
 

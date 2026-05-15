@@ -64,37 +64,38 @@ pub fn resolve_default_target(app: &App) -> Option<String> {
 }
 
 /// Kick off a diff scan against `target` and post the result
-/// through the overlay event channel. Returns `true` when a scan
-/// was spawned. Used by `/diff <target>` directly; `open_default`
-/// builds on top of it for the auto-detect path.
-pub fn open_with_target(app: &mut App, target: String) -> bool {
+/// through the overlay event channel. Pushes a system message
+/// (via `app::slash::push_system_message`) on every failure path —
+/// workspace not ready, no active session, empty cwd — so callers
+/// don't need to handle that themselves. Used by `/diff <target>`
+/// directly; `open_default` builds on top of it for the auto-detect
+/// path.
+pub fn open_with_target(app: &mut App, target: String) {
     let Some(workspace) = app.workspace.clone() else {
         crate::app::slash::push_system_message(app, "Cannot open diff: workspace not ready.");
-        return false;
+        return;
     };
     let Some(cwd_raw) = app.active_session().map(|s| s.cwd_raw.clone()) else {
         crate::app::slash::push_system_message(app, "Cannot open diff: no active session.");
-        return false;
+        return;
     };
     if cwd_raw.is_empty() {
         crate::app::slash::push_system_message(app, "Cannot open diff: active session has no cwd.");
-        return false;
+        return;
     }
     spawn_fetch(workspace, PathBuf::from(cwd_raw), target, app.diff_overlay_event_tx.clone());
-    true
 }
 
 /// Auto-detect the diff target from the Inspector GIT snapshot and
-/// kick off a scan. Pushes "No changes" system notice and returns
-/// `false` when the snapshot has nothing to surface. Shared entry
-/// point for the `/diff` slash command (no arg) and the Inspector
-/// `⤢` click.
-pub fn open_default(app: &mut App) -> bool {
+/// kick off a scan. Pushes "No changes" system notice when the
+/// snapshot has nothing to surface. Shared entry point for the
+/// `/diff` slash command (no arg) and the Inspector `⤢` click.
+pub fn open_default(app: &mut App) {
     let Some(target) = resolve_default_target(app) else {
         crate::app::slash::push_system_message(app, "No changes vs HEAD.");
-        return false;
+        return;
     };
-    open_with_target(app, target)
+    open_with_target(app, target);
 }
 
 /// Drain pending scan results and install the overlay state. Called

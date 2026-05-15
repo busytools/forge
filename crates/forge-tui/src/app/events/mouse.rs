@@ -486,7 +486,7 @@ fn handle_pane_click(app: &mut App, mouse: MouseEvent) -> bool {
                 return true;
             }
             PaneHitTarget::InspectorGitOpenDiff { .. } => {
-                let _ = crate::app::diff_overlay::open_default(app);
+                crate::app::diff_overlay::open_default(app);
                 app.needs_redraw = true;
                 return true;
             }
