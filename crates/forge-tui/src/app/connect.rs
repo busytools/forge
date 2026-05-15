@@ -237,6 +237,7 @@ pub fn create_app(cli: &Cli, workspace: Arc<forge_workspace::Workspace>) -> App 
         plugins: PluginsState::default(),
         session_picker: SessionPickerState::default(),
         launchpad: initial_launchpad_state,
+        diff_overlay: None,
         cached_frame_area: ratatui::layout::Rect::new(0, 0, 0, 0),
         scrollbar_drag: None,
         rendered_chat_lines: Vec::new(),

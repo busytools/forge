@@ -146,6 +146,10 @@ fn dispatch_key_by_view(app: &mut App, key: crossterm::event::KeyEvent) -> bool 
             true
         }
         ActiveView::Launchpad => super::keys::dispatch_key_by_focus(app, key),
+        ActiveView::Diff => {
+            super::diff_overlay::handle_key(app, key);
+            true
+        }
     }
 }
 
@@ -158,9 +162,12 @@ fn dispatch_mouse_by_view(app: &mut App, mouse: crossterm::event::MouseEvent) {
         ActiveView::Config
         | ActiveView::Trusted
         | ActiveView::SessionPicker
-        | ActiveView::Launchpad => {
-            // Mouse input is ignored on the launchpad in v1 — the
-            // picker is keyboard-only.
+        | ActiveView::Launchpad
+        | ActiveView::Diff => {
+            // Mouse input on the diff overlay (file rail clicks,
+            // body scroll, line clicks for commenting) lands in
+            // follow-up commits; launchpad / config / etc. stay
+            // keyboard-only.
             let _ = mouse;
         }
     }
@@ -181,7 +188,10 @@ fn dispatch_paste_by_view(app: &mut App, text: &str) -> bool {
             false
         }
         ActiveView::Config => super::config::handle_paste(app, text),
-        ActiveView::Trusted | ActiveView::SessionPicker | ActiveView::Launchpad => false,
+        ActiveView::Trusted
+        | ActiveView::SessionPicker
+        | ActiveView::Launchpad
+        | ActiveView::Diff => false,
     }
 }
 

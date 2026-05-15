@@ -347,6 +347,10 @@ pub struct App {
     /// When the active view is anything else this is unused but
     /// kept allocated so transitions are cheap.
     pub launchpad: crate::app::LaunchpadState,
+    /// Diff overlay state — `Some` while [`ActiveView::Diff`] is
+    /// up, `None` otherwise. Dropped on overlay close so a stale
+    /// snapshot can't leak into the next open.
+    pub diff_overlay: Option<crate::app::DiffOverlayState>,
     /// Last known frame area (for mouse selection mapping).
     pub cached_frame_area: ratatui::layout::Rect,
     /// Active scrollbar drag state while left mouse button is held on the rail.
@@ -2368,6 +2372,7 @@ impl App {
             plugins: PluginsState::default(),
             session_picker: SessionPickerState::default(),
             launchpad: crate::app::LaunchpadState::default(),
+            diff_overlay: None,
             cached_frame_area: ratatui::layout::Rect::default(),
             scrollbar_drag: None,
             rendered_chat_lines: Vec::new(),

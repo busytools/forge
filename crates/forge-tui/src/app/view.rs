@@ -13,6 +13,11 @@ pub enum ActiveView {
     /// it's up; the user picks a project (transitioning to `Chat`)
     /// or quits with `Ctrl+Q`.
     Launchpad,
+    /// Full-screen diff overlay for reviewing changes with inline
+    /// comments. Opened by `/diff [target]` or the Inspector GIT
+    /// section's `⤢` click. `Esc` closes (and, once wired,
+    /// one-shot-submits any pending comments).
+    Diff,
 }
 
 pub fn set_active_view(app: &mut App, next: ActiveView) {
@@ -44,6 +49,9 @@ fn clear_transient_view_state(app: &mut App) {
     *app.subagent_mut() = None;
     if app.active_view == ActiveView::Config {
         app.config.overlay = None;
+    }
+    if app.active_view == ActiveView::Diff {
+        app.diff_overlay = None;
     }
     app.release_focus_target(crate::app::FocusTarget::Help);
     app.release_focus_target(crate::app::FocusTarget::Mention);

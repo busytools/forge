@@ -3,6 +3,7 @@ mod chat;
 mod chat_view;
 mod config;
 mod diff;
+mod diff_overlay;
 mod document_table;
 pub(crate) mod help;
 mod highlight;
@@ -34,6 +35,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         ActiveView::Trusted => trusted::render(frame, app),
         ActiveView::SessionPicker => session_picker::render(frame, app),
         ActiveView::Launchpad => launchpad::render(frame, app),
+        ActiveView::Diff => diff_overlay::render(frame, app),
     }
 }
 
