@@ -180,19 +180,41 @@ pub fn drain_events(app: &mut App) {
                 target_ref = %event.target,
                 active_view = ?app.active_view,
             );
+            crate::app::slash::push_system_message(
+                app,
+                format!(
+                    "Diff scan for `{}` finished after you navigated away — run /diff again to view.",
+                    event.target
+                ),
+            );
             continue;
         }
-        let active_cwd = app.active_session().map(|s| s.cwd_raw.clone());
-        let scan_cwd = event.cwd.to_string_lossy().into_owned();
-        if active_cwd.as_deref() != Some(scan_cwd.as_str()) {
+        // PathBuf comparison normalises trailing separators and
+        // avoids the lossy String round-trip — `cwd_raw` is UTF-8
+        // by construction, `event.cwd` is whatever the scanner
+        // received, so converting `cwd_raw` to PathBuf gives an
+        // exact match when they refer to the same directory.
+        let active_cwd = app.active_session().map(|s| PathBuf::from(&s.cwd_raw));
+        if active_cwd.as_deref() != Some(event.cwd.as_path()) {
             tracing::debug!(
                 target: crate::logging::targets::APP_SESSION,
                 event_name = "diff_overlay_drain_skipped_cwd",
                 message = "diff scan completed but session cwd changed; dropping result",
                 outcome = "skipped",
-                scan_cwd = %scan_cwd,
+                scan_cwd = %event.cwd.display(),
                 active_cwd = ?active_cwd,
             );
+            let notice = match active_cwd {
+                Some(_) => format!(
+                    "Diff scan for `{}` finished for a different session — run /diff again here.",
+                    event.target
+                ),
+                None => format!(
+                    "Diff scan for `{}` finished but the session closed — start a new session and re-run /diff.",
+                    event.target
+                ),
+            };
+            crate::app::slash::push_system_message(app, notice);
             continue;
         }
         let state = DiffOverlayState::new_with_status(
