@@ -1981,7 +1981,14 @@ impl App {
 
     /// Update the welcome message with the latest session/account snapshot.
     pub fn sync_welcome_snapshot(&mut self) {
-        let version = env!("CARGO_PKG_VERSION");
+        // Carry the build-stamped version (with short SHA) through
+        // every sync, not the bare `CARGO_PKG_VERSION`. Otherwise the
+        // first sync after construction strips the SHA off the
+        // welcome banner — the launchpad version line still shows
+        // `+<sha>`, but the chat-view welcome reads as bare
+        // `0.15.1`, which makes screenshots ambiguous about which
+        // commit was running.
+        let version = crate::FORGE_VERSION;
         let (label, value) = self.welcome_account_display();
         let cwd = self.welcome_cwd_display().to_owned();
         let session_id = self.welcome_session_id_display();
