@@ -81,6 +81,21 @@ pub async fn oauth_usage(config_dir: &Path) -> Result<OauthUsage, OauthUsageErro
         .map_err(|error| OauthUsageError::Network(error.to_string()))?;
 
     let status = response.status().as_u16();
+    // Parse Retry-After BEFORE consuming the response body — once
+    // we call .bytes() the response object is moved. Anthropic
+    // returns 429 with a per-account hold-down value in seconds;
+    // honouring it prevents the poller from re-tripping the limit
+    // every cycle.
+    let retry_after = if status == 429 {
+        response
+            .headers()
+            .get(reqwest::header::RETRY_AFTER)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.trim().parse::<u64>().ok())
+            .map(Duration::from_secs)
+    } else {
+        None
+    };
     let body = response
         .bytes()
         .await
@@ -90,6 +105,7 @@ pub async fn oauth_usage(config_dir: &Path) -> Result<OauthUsage, OauthUsageErro
         200 => serde_json::from_slice::<OauthUsage>(&body)
             .map_err(|error| OauthUsageError::Decode(error.to_string())),
         401 | 403 => Err(OauthUsageError::Unauthorized(status)),
+        429 => Err(OauthUsageError::RateLimited { retry_after }),
         _ => Err(OauthUsageError::HttpStatus(status, truncated_body_suffix(&body))),
     }
 }

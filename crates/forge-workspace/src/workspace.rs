@@ -473,6 +473,12 @@ impl Workspace {
             accounts
                 .ordered_keys
                 .iter()
+                // Skip accounts inside an active backoff window — a
+                // recent probe failed and re-probing now would just
+                // re-trip the same rate limit. `should_probe_now`
+                // returns true for cold-cache accounts (no failure
+                // history) so first-run probes always go through.
+                .filter(|key| accounts.should_probe_now(key))
                 .filter_map(|key| accounts.config_dir(key).map(|dir| (key.clone(), dir.clone())))
                 .collect()
         };
@@ -494,9 +500,11 @@ impl Workspace {
                         self.accounts.lock().set_usage(&key, snapshot);
                     }
                     Err(err) => {
-                        self.accounts
-                            .lock()
-                            .set_last_error(&key, crate::account::UsageFetchStatus::Other);
+                        self.accounts.lock().set_last_error(
+                            &key,
+                            crate::account::UsageFetchStatus::Other,
+                            None,
+                        );
                         tracing::debug!(
                             target: "forge_workspace::account",
                             account = %key.0,
@@ -507,7 +515,17 @@ impl Workspace {
                 },
                 Err(err) => {
                     let status = classify_oauth_usage_error(&err);
-                    self.accounts.lock().set_last_error(&key, status);
+                    // Pull the server-provided Retry-After out of the
+                    // 429 variant so the next probe schedules against
+                    // Anthropic's actual reset time rather than our
+                    // local guess.
+                    let retry_after = match &err {
+                        forge_primitives::usage::oauth::OauthUsageError::RateLimited {
+                            retry_after,
+                        } => *retry_after,
+                        _ => None,
+                    };
+                    self.accounts.lock().set_last_error(&key, status, retry_after);
                     tracing::warn!(
                         target: "forge_workspace::account",
                         account = %key.0,
@@ -1246,6 +1264,7 @@ fn classify_oauth_usage_error(
     use account::UsageFetchStatus;
     use forge_primitives::usage::oauth::OauthUsageError;
     match err {
+        OauthUsageError::RateLimited { .. } => UsageFetchStatus::RateLimited,
         OauthUsageError::HttpStatus(429, _) => UsageFetchStatus::RateLimited,
         OauthUsageError::Unauthorized(_) => UsageFetchStatus::Unauthorized,
         OauthUsageError::NoCredentials | OauthUsageError::Expired => UsageFetchStatus::Expired,
@@ -1956,6 +1975,17 @@ config_dir = "~/.claude-personal"
 
         assert_eq!(
             classify_oauth_usage_error(&OauthUsageError::HttpStatus(429, String::new())),
+            UsageFetchStatus::RateLimited,
+        );
+        assert_eq!(
+            classify_oauth_usage_error(&OauthUsageError::RateLimited {
+                retry_after: Some(std::time::Duration::from_secs(60)),
+            }),
+            UsageFetchStatus::RateLimited,
+            "new dedicated 429 variant also maps to RateLimited",
+        );
+        assert_eq!(
+            classify_oauth_usage_error(&OauthUsageError::RateLimited { retry_after: None }),
             UsageFetchStatus::RateLimited,
         );
         assert_eq!(

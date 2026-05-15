@@ -858,22 +858,20 @@ fn push_usage_window_lines(
     // without /login) bump to STATUS_WARNING so the bottom-panel
     // bar carries an obvious yellow `⚠` mark instead of blending
     // into the rest of the DIM chrome.
-    let (eta_text, eta_style) = window
-        .and_then(format_window_reset_duration_only)
-        .map_or_else(
-            || {
-                let style = usage_error.map_or(Style::default().fg(theme::DIM), |s| {
-                    if needs_user_recovery(s) {
-                        Style::default().fg(theme::STATUS_WARNING)
-                    } else {
-                        Style::default().fg(theme::DIM)
-                    }
-                });
-                let text = usage_error.map_or_else(|| "—".to_owned(), usage_error_label);
-                (text, style)
-            },
-            |duration| (duration, Style::default().fg(theme::DIM)),
-        );
+    let (eta_text, eta_style) = window.and_then(format_window_reset_duration_only).map_or_else(
+        || {
+            let style = usage_error.map_or(Style::default().fg(theme::DIM), |s| {
+                if needs_user_recovery(s) {
+                    Style::default().fg(theme::STATUS_WARNING)
+                } else {
+                    Style::default().fg(theme::DIM)
+                }
+            });
+            let text = usage_error.map_or_else(|| "—".to_owned(), usage_error_label);
+            (text, style)
+        },
+        |duration| (duration, Style::default().fg(theme::DIM)),
+    );
     let eta_chars = eta_text.chars().count();
     let right_edge = usize::from(width).saturating_sub(PANEL_RIGHT_GUTTER);
     let pad = right_edge.saturating_sub(eta_chars);
@@ -894,14 +892,24 @@ fn needs_user_recovery(status: forge_workspace::UsageFetchStatus) -> bool {
 /// duration uses. Statuses that need user recovery (Expired,
 /// Unauthorized) carry a leading `⚠` so the meaning is obvious
 /// even when the user is glancing past the panel.
+///
+/// `RateLimited` here means the `/api/oauth/usage` PROBE endpoint
+/// returned 429, NOT that the user's account is rate-limited.
+/// Surfacing "rate-limited" in the bar's hint column was
+/// misleading — it read as "your account hit a limit" when really
+/// it's "forge's bookkeeping request got throttled by Anthropic's
+/// per-IP /usage rate." Show `—` (same as cold boot) instead so
+/// the transient internal hiccup doesn't alarm the user. Network
+/// hiccups likewise collapse to `—`; only real auth failures
+/// surface with their loud yellow recovery hint.
 fn usage_error_label(status: forge_workspace::UsageFetchStatus) -> String {
     use forge_workspace::UsageFetchStatus;
     match status {
-        UsageFetchStatus::RateLimited => "rate-limited".to_owned(),
         UsageFetchStatus::Expired => "⚠ expired — /login".to_owned(),
         UsageFetchStatus::Unauthorized => "⚠ unauthorized — /login".to_owned(),
-        UsageFetchStatus::NetworkFailed => "offline".to_owned(),
-        UsageFetchStatus::Other => "fetch failed".to_owned(),
+        UsageFetchStatus::RateLimited
+        | UsageFetchStatus::NetworkFailed
+        | UsageFetchStatus::Other => "—".to_owned(),
     }
 }
 

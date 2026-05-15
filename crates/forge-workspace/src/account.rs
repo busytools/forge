@@ -85,6 +85,19 @@ pub(crate) struct AccountState {
     /// data. Without it the empty bar reads like a forge bug rather
     /// than an upstream failure.
     pub last_error: Option<UsageFetchStatus>,
+    /// Earliest wall-clock time we're allowed to probe this account
+    /// again. The poller skips accounts whose `next_probe_at` is in
+    /// the future. Used for per-account exponential backoff when
+    /// Anthropic's `/api/oauth/usage` endpoint keeps returning 429
+    /// — without backoff every poll cycle re-trips the per-IP rate
+    /// limit and we never accumulate usage data. `None` means
+    /// "probe on the next tick" (default).
+    pub next_probe_at: Option<std::time::Instant>,
+    /// Consecutive probe failures since the last success. Drives
+    /// the backoff schedule: each consecutive failure doubles the
+    /// next-probe delay (capped at a sensible ceiling). Reset to
+    /// 0 on success.
+    pub consecutive_failures: u32,
 }
 
 #[derive(Debug)]
@@ -114,6 +127,8 @@ impl AccountStateMap {
                     config_dir: account.config_dir.clone(),
                     usage: None,
                     last_error: None,
+                    next_probe_at: None,
+                    consecutive_failures: 0,
                 },
             );
         }
@@ -129,25 +144,54 @@ impl AccountStateMap {
     }
 
     /// Replace the cached usage snapshot for `key` and clear any
-    /// stale `last_error`. Called from the background poller on a
-    /// successful fetch. Silent no-op when `key` isn't registered
+    /// stale `last_error`. Resets the consecutive-failure counter
+    /// and clears the next-probe gate so this account returns to
+    /// the default cadence. Silent no-op when `key` isn't registered
     /// (defensive — invariant says every poller key was inserted in
     /// `new()`).
     pub fn set_usage(&mut self, key: &AccountKey, snapshot: UsageSnapshot) {
         if let Some(state) = self.by_key.get_mut(key) {
             state.usage = Some(snapshot);
             state.last_error = None;
+            state.next_probe_at = None;
+            state.consecutive_failures = 0;
         }
     }
 
-    /// Record the latest poll-attempt failure for `key`. Called from
-    /// the background poller's error branch. The cached `usage`
-    /// snapshot is preserved so the panel keeps showing the last
-    /// known-good bars (a fresh 429 doesn't blank them out).
-    pub fn set_last_error(&mut self, key: &AccountKey, status: UsageFetchStatus) {
+    /// Record the latest poll-attempt failure for `key` and schedule
+    /// the next probe.
+    ///
+    /// `retry_after` (when `Some`) is the server-provided hold-down
+    /// duration — typically Anthropic's `Retry-After` header on 429.
+    /// We honour it verbatim because the server knows when its
+    /// per-account bucket will reset; guessing with our own backoff
+    /// either over- or under-shoots and keeps the limit hot. When
+    /// `None` (network failures, unknown HTTP status, server didn't
+    /// send Retry-After), fall back to a local exponential schedule.
+    ///
+    /// The cached `usage` snapshot is preserved so the panel keeps
+    /// showing the last known-good bars (a fresh 429 doesn't blank
+    /// them out).
+    pub fn set_last_error(
+        &mut self,
+        key: &AccountKey,
+        status: UsageFetchStatus,
+        retry_after: Option<std::time::Duration>,
+    ) {
         if let Some(state) = self.by_key.get_mut(key) {
             state.last_error = Some(status);
+            state.consecutive_failures = state.consecutive_failures.saturating_add(1);
+            let delay = retry_after.unwrap_or_else(|| backoff_delay(state.consecutive_failures));
+            state.next_probe_at = Some(std::time::Instant::now() + delay);
         }
+    }
+
+    /// `true` when the poller may probe `key` now. `false` when the
+    /// account is in an active backoff window from a recent failure.
+    /// Cold-cache accounts (no last_error) always return `true`.
+    pub fn should_probe_now(&self, key: &AccountKey) -> bool {
+        let Some(state) = self.by_key.get(key) else { return true };
+        state.next_probe_at.is_none_or(|t| t <= std::time::Instant::now())
     }
 
     /// Look up the cached usage snapshot for `key`. `None` when the
@@ -308,6 +352,29 @@ fn tier_of(usage: Option<&UsageSnapshot>, last_error: Option<UsageFetchStatus>) 
 /// fallback when every pinned account is rate-limited.
 fn is_rate_limited(snapshot: &UsageSnapshot) -> bool {
     five_hour_util(snapshot) >= 100.0 || seven_day_util(snapshot) >= 100.0
+}
+
+/// Per-account exponential backoff schedule for usage-probe
+/// failures. Doubles each consecutive failure, capped at 10
+/// minutes. The 60 s poll loop ticks ~once a minute; without
+/// backoff, a transient per-IP /usage 429 would persist across
+/// every cycle for as long as Anthropic kept rate-limiting,
+/// preventing any account from accumulating fresh usage data.
+///
+/// | consecutive | delay        |
+/// |-------------|--------------|
+/// | 1           | 30 s         |
+/// | 2           | 1 min        |
+/// | 3           | 2 min        |
+/// | 4           | 4 min        |
+/// | 5           | 8 min        |
+/// | 6+          | 10 min (cap) |
+fn backoff_delay(consecutive_failures: u32) -> std::time::Duration {
+    use std::time::Duration;
+    const CAP: Duration = Duration::from_secs(600); // 10 min
+    let exp = consecutive_failures.min(20); // shift saturates at 20; well under u64::MAX
+    let seconds = 30_u64.saturating_mul(1_u64 << exp.saturating_sub(1));
+    Duration::from_secs(seconds).min(CAP)
 }
 
 fn five_hour_util(snapshot: &UsageSnapshot) -> f64 {
@@ -506,7 +573,7 @@ mod tests {
         // limited) and Granite wins.
         let mut map = AccountStateMap::new(&[make_account("Granite"), make_account("Personal")]);
         map.set_usage(&AccountKey("Granite".to_owned()), snapshot(Some(30.0), Some(30.0)));
-        map.set_last_error(&AccountKey("Personal".to_owned()), UsageFetchStatus::RateLimited);
+        map.set_last_error(&AccountKey("Personal".to_owned()), UsageFetchStatus::RateLimited, None);
         let (picked, _) = map.pick_for_project(&["Granite".to_owned(), "Personal".to_owned()]);
         assert_eq!(picked.0, "Granite", "available account must beat probe-rate-limited one");
     }
@@ -518,7 +585,7 @@ mod tests {
         // limited (tier 2). Personal still wins because tier 2
         // ranks above tier 5 (Expired).
         let mut map = AccountStateMap::new(&[make_account("Granite1"), make_account("Personal")]);
-        map.set_last_error(&AccountKey("Granite1".to_owned()), UsageFetchStatus::Expired);
+        map.set_last_error(&AccountKey("Granite1".to_owned()), UsageFetchStatus::Expired, None);
         map.set_usage(&AccountKey("Personal".to_owned()), snapshot(Some(100.0), Some(100.0)));
         let (picked, _) = map.pick_for_project(&["Granite1".to_owned(), "Personal".to_owned()]);
         assert_eq!(picked.0, "Personal", "rate-limited-but-callable beats expired-can't-serve");
@@ -545,10 +612,70 @@ mod tests {
         // Personal wins — we'd rather pick an account whose state
         // we know than one whose state we don't.
         let mut map = AccountStateMap::new(&[make_account("Granite"), make_account("Personal")]);
-        map.set_last_error(&AccountKey("Granite".to_owned()), UsageFetchStatus::NetworkFailed);
+        map.set_last_error(
+            &AccountKey("Granite".to_owned()),
+            UsageFetchStatus::NetworkFailed,
+            None,
+        );
         map.set_usage(&AccountKey("Personal".to_owned()), snapshot(Some(50.0), Some(50.0)));
         let (picked, _) = map.pick_for_project(&["Granite".to_owned(), "Personal".to_owned()]);
         assert_eq!(picked.0, "Personal");
+    }
+
+    #[test]
+    fn backoff_delay_doubles_then_caps_at_10_minutes() {
+        use std::time::Duration;
+        assert_eq!(backoff_delay(1), Duration::from_secs(30));
+        assert_eq!(backoff_delay(2), Duration::from_secs(60));
+        assert_eq!(backoff_delay(3), Duration::from_secs(120));
+        assert_eq!(backoff_delay(4), Duration::from_secs(240));
+        assert_eq!(backoff_delay(5), Duration::from_secs(480));
+        assert_eq!(backoff_delay(6), Duration::from_secs(600), "capped at 10 min");
+        assert_eq!(backoff_delay(20), Duration::from_secs(600), "still capped");
+    }
+
+    #[test]
+    fn should_probe_now_true_for_cold_cache() {
+        let map = AccountStateMap::new(&[make_account("Granite")]);
+        assert!(map.should_probe_now(&AccountKey("Granite".to_owned())));
+    }
+
+    #[test]
+    fn set_last_error_schedules_next_probe_in_future() {
+        let mut map = AccountStateMap::new(&[make_account("Granite")]);
+        let key = AccountKey("Granite".to_owned());
+        map.set_last_error(&key, UsageFetchStatus::RateLimited, None);
+        assert!(!map.should_probe_now(&key), "first failure puts account in backoff");
+    }
+
+    #[test]
+    fn retry_after_overrides_exponential_backoff() {
+        // Anthropic returns Retry-After: 3048 (seconds) for a deeply
+        // rate-limited account. Our local exponential schedule would
+        // pick 30 s for the first failure — vastly under-shoot the
+        // actual reset and re-trip the limit. The server-provided
+        // retry_after must win.
+        use std::time::Duration;
+        let mut map = AccountStateMap::new(&[make_account("Granite1")]);
+        let key = AccountKey("Granite1".to_owned());
+        let t0 = std::time::Instant::now();
+        map.set_last_error(&key, UsageFetchStatus::RateLimited, Some(Duration::from_secs(3048)));
+        let next = map.by_key.get(&key).and_then(|s| s.next_probe_at).expect("scheduled");
+        let gap = next.saturating_duration_since(t0);
+        assert!(
+            gap >= Duration::from_secs(3047) && gap <= Duration::from_secs(3050),
+            "next_probe_at ≈ now + 3048s; got {gap:?}",
+        );
+    }
+
+    #[test]
+    fn set_usage_clears_backoff_so_account_probes_again() {
+        let mut map = AccountStateMap::new(&[make_account("Granite")]);
+        let key = AccountKey("Granite".to_owned());
+        map.set_last_error(&key, UsageFetchStatus::RateLimited, None);
+        assert!(!map.should_probe_now(&key));
+        map.set_usage(&key, snapshot(Some(10.0), Some(10.0)));
+        assert!(map.should_probe_now(&key), "successful probe clears the backoff gate");
     }
 
     #[test]
