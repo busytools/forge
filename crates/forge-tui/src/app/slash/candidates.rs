@@ -181,9 +181,31 @@ pub(super) fn is_variable_input_command(app: &App, command_name: &str) -> bool {
 pub(super) fn supported_command_candidates(app: &App) -> Vec<SlashCandidate> {
     use std::collections::BTreeMap;
 
+    // On the launchpad view we surface only commands that make sense
+    // without an active session. The chat-view registry below is the
+    // full set; everything else (`/mode`, `/compact`, `/usage`, …)
+    // gets filtered out because it requires a connected bucket.
+    if app.active_view == crate::app::ActiveView::Launchpad {
+        let entries: [(&str, &str); 4] = [
+            ("/config", "Open settings"),
+            ("/help", "Toggle help overlay"),
+            ("/plugins", "Open plugins"),
+            ("/quit", "Quit forge"),
+        ];
+        return entries
+            .into_iter()
+            .map(|(name, description)| SlashCandidate {
+                insert_value: name.to_owned(),
+                primary: name.to_owned(),
+                secondary: Some(description.to_owned()),
+            })
+            .collect();
+    }
+
     let mut by_name: BTreeMap<String, String> = BTreeMap::new();
     by_name.insert("/compact".into(), "Compact session context".into());
     by_name.insert("/config".into(), "Open settings".into());
+    by_name.insert("/launchpad".into(), "Return to project picker".into());
     by_name.insert("/mcp".into(), "Open MCP".into());
     by_name.insert("/mode".into(), "Set session mode".into());
     by_name.insert("/model".into(), "Set session model".into());
@@ -387,13 +409,51 @@ pub fn is_supported_command(app: &App, command_name: &str) -> bool {
         command_name,
         "/compact"
             | "/config"
+            | "/help"
+            | "/launchpad"
             | "/mcp"
             | "/mode"
             | "/model"
             | "/new"
+            | "/quit"
             | "/resume"
             | "/plugins"
             | "/status"
             | "/usage"
     ) || advertised_commands(app).iter().any(|c| c == command_name)
+}
+
+#[cfg(test)]
+mod launchpad_filter_tests {
+    use super::*;
+    use crate::app::ActiveView;
+
+    #[test]
+    fn launchpad_view_filters_candidates_to_subset() {
+        let mut app = App::test_default();
+        app.active_view = ActiveView::Launchpad;
+        let candidates = supported_command_candidates(&app);
+        let names: Vec<&str> = candidates.iter().map(|c| c.primary.as_str()).collect();
+        assert!(names.contains(&"/config"), "launchpad surfaces /config: {names:?}");
+        assert!(names.contains(&"/help"), "launchpad surfaces /help: {names:?}");
+        assert!(names.contains(&"/plugins"), "launchpad surfaces /plugins: {names:?}");
+        assert!(names.contains(&"/quit"), "launchpad surfaces /quit: {names:?}");
+        // Session-dependent commands are filtered out.
+        for hidden in
+            ["/mode", "/model", "/compact", "/usage", "/mcp", "/new", "/resume", "/launchpad"]
+        {
+            assert!(!names.contains(&hidden), "launchpad hides {hidden}: {names:?}");
+        }
+    }
+
+    #[test]
+    fn chat_view_surfaces_full_set_including_launchpad() {
+        let mut app = App::test_default();
+        app.active_view = ActiveView::Chat;
+        let candidates = supported_command_candidates(&app);
+        let names: Vec<&str> = candidates.iter().map(|c| c.primary.as_str()).collect();
+        assert!(names.contains(&"/launchpad"), "chat surfaces /launchpad: {names:?}");
+        assert!(names.contains(&"/mode"), "chat surfaces /mode: {names:?}");
+        assert!(names.contains(&"/usage"), "chat surfaces /usage: {names:?}");
+    }
 }

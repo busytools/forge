@@ -12,14 +12,13 @@ use forge_primitives::SDKSessionInfo;
 use parking_lot::Mutex;
 use tokio::sync::mpsc;
 
-use crate::account::{AccountKey, AccountStateMap};
+use crate::account::{self, AccountKey, AccountStateMap};
 use crate::config::{LoadedConfig, LoadedProject, load_from_dir};
 use crate::domain_session::DomainSession;
 use crate::error::WorkspaceError;
 use crate::protocol::{Command, DispatchError, PendingInteractionSlot, SessionUpdate};
 use crate::session_task::SessionTask;
 use crate::spawn;
-use crate::state::{self, PersistedState, PersistedUiState};
 use crate::target::{ProjectKey, SessionKey, SessionTarget};
 use crate::views::{ProjectView, SessionView};
 
@@ -27,9 +26,16 @@ use crate::views::{ProjectView, SessionView};
 /// TUI's bottom panel + the spawn-path account picker both read
 /// from the cache this poll populates. Tighter than the historical
 /// per-session 120 s refresh because the picker benefits from
-/// fresher data — 30 s is the upper bound on how stale a "which
+/// fresher data — 60 s is the upper bound on how stale a "which
 /// account has more headroom" decision can be.
-const USAGE_POLL_INTERVAL: Duration = Duration::from_secs(30);
+///
+/// 2026-05-15: bumped 30 s → 60 s after a real-world run showed
+/// every account hitting HTTP 429 on Anthropic's OAuth usage
+/// endpoint under multi-instance polling. Combined with the
+/// per-account `last_error` tracking (see `account::AccountState`),
+/// transient 429s now back off naturally rather than spamming the
+/// endpoint every 30 s and getting throttled.
+const USAGE_POLL_INTERVAL: Duration = Duration::from_secs(60);
 
 /// Multi-session orchestrator. Owns the project catalog snapshot
 /// loaded from `<config_dir>/forge.toml` and the pool of currently
@@ -58,15 +64,9 @@ pub struct Workspace {
     /// Live Agents keyed by session id. `parking_lot::Mutex` so the
     /// public methods can take `&self`.
     pool: Mutex<HashMap<SessionKey, PooledAgent>>,
-    /// Account picker state. Updated on every spawn; persisted to
-    /// `forge-state.toml` after each pick.
+    /// Account picker state. Updated on every spawn; refreshed by
+    /// the in-memory usage poller.
     accounts: Mutex<AccountStateMap>,
-    /// In-memory mirror of the `[ui]` section in `forge-state.toml`.
-    /// Mutated by [`Workspace::set_projects_pane_visible`] (called
-    /// from forge-tui when the user presses Ctrl+B); persisted via
-    /// the same `state::save` path the account picker uses, so
-    /// `[accounts]` / `[selection]` survive UI-only writes.
-    persisted_ui: Mutex<PersistedUiState>,
     /// Fan-in [`SessionUpdate`] sender. Cloned and handed to
     /// `bridge_lifecycle` via [`Self::update_sender`] so the existing
     /// AgentEvent translator can dual-emit `ClientEvent` + `SessionUpdate`
@@ -138,10 +138,6 @@ impl Workspace {
         // descending; the per-project Vec inherits that ordering thanks
         // to push order being preserved.
 
-        // Load persisted state (UI pane visibility only since selection
-        // is now usage-based and refreshed in-memory). Missing or
-        // malformed → defaults; never blocks startup.
-        let persisted = state::load_or_default(&config_dir);
         let accounts = AccountStateMap::new(&config.accounts);
 
         let (update_tx, update_rx) = mpsc::unbounded_channel::<SessionUpdate>();
@@ -151,7 +147,6 @@ impl Workspace {
             catalog: Mutex::new(catalog),
             pool: Mutex::new(HashMap::new()),
             accounts: Mutex::new(accounts),
-            persisted_ui: Mutex::new(persisted.ui),
             update_tx,
             update_rx_slot: Mutex::new(Some(update_rx)),
             command_senders: Mutex::new(HashMap::new()),
@@ -179,27 +174,12 @@ impl Workspace {
     }
 
     /// Return the names of all projects that should spawn at forge
-    /// launch (`auto_start = true` OR `focus = true`). The
-    /// `focus = true` project (if any) is returned FIRST so the
-    /// caller's dispatch loop can route it through `StartDefault`
-    /// (focused tab) and the rest through `SpawnProject` (silent
-    /// background spawn). Without focus, the order is declaration
-    /// order from forge.toml.
+    /// launch (`auto_start = true`). Order is declaration order from
+    /// forge.toml — the launchpad picker uses its own row sort, so
+    /// no further ordering is imposed here.
     #[must_use]
     pub fn auto_start_project_names(&self) -> Vec<String> {
-        let mut focused: Option<String> = None;
-        let mut rest: Vec<String> = Vec::new();
-        for project in self.config.auto_start_projects() {
-            if project.focus {
-                focused = Some(project.name.clone());
-            } else {
-                rest.push(project.name.clone());
-            }
-        }
-        match focused {
-            Some(name) => std::iter::once(name).chain(rest).collect(),
-            None => rest,
-        }
+        self.config.auto_start_projects().map(|p| p.name.clone()).collect()
     }
 
     /// the lead. Empty `sessions` means the project has nothing on disk
@@ -244,6 +224,7 @@ impl Workspace {
                 org: project.org.clone(),
                 path: project.path.clone(),
                 display_path: project.display_path.clone(),
+                accounts: project.accounts.clone(),
                 sessions,
             });
         }
@@ -265,11 +246,11 @@ impl Workspace {
     /// spawn; subsequent calls reuse the existing Agent and ignore the
     /// parameter.
     ///
-    /// Each fresh spawn consults the account picker (LRU or
-    /// round-robin per `forge.toml`) and exports
+    /// Each fresh spawn consults the account picker and exports
     /// `CLAUDE_CONFIG_DIR` to the spawned `claude` subprocess so it
-    /// reads/writes the picked account's config dir. Picker state is
-    /// persisted to `forge-state.toml` after every pick.
+    /// reads/writes the picked account's config dir. Picker state
+    /// lives in the in-memory usage cache; nothing about account
+    /// choice is persisted across forge launches.
     ///
     /// Workspace does not track which handle the caller is "using" —
     /// that's the caller's concern.
@@ -512,6 +493,9 @@ impl Workspace {
                         self.accounts.lock().set_usage(&key, snapshot);
                     }
                     Err(err) => {
+                        self.accounts
+                            .lock()
+                            .set_last_error(&key, crate::account::UsageFetchStatus::Other);
                         tracing::debug!(
                             target: "forge_workspace::account",
                             account = %key.0,
@@ -521,6 +505,8 @@ impl Workspace {
                     }
                 },
                 Err(err) => {
+                    let status = classify_oauth_usage_error(&err);
+                    self.accounts.lock().set_last_error(&key, status);
                     tracing::warn!(
                         target: "forge_workspace::account",
                         account = %key.0,
@@ -542,66 +528,16 @@ impl Workspace {
         self.accounts.lock().usage(&AccountKey(display_name.to_owned())).cloned()
     }
 
-    /// Read the persisted Projects-pane visibility preference.
-    /// Default `true` if `forge-state.toml` is missing, unparseable,
-    /// or omits the `[ui]` section.
+    /// Read the last poll-attempt failure for an account, if any.
+    /// `None` when the most recent poll succeeded (or no attempt
+    /// has been made yet). The TUI bottom panel renders a DIM hint
+    /// next to the `5h` / `7d` label when this is `Some` so the
+    /// user can tell an empty bar from an upstream failure (the
+    /// HTTP 429 case is especially common when multiple forge
+    /// instances poll the same Anthropic account).
     #[must_use]
-    pub fn projects_pane_visible(&self) -> bool {
-        self.persisted_ui.lock().projects_pane_visible
-    }
-
-    /// Update + atomically persist the Projects-pane visibility
-    /// preference. Writes `forge-state.toml` via the existing
-    /// `state::save` atomic-rename path, preserving the
-    /// `[accounts]` and `[selection]` sections from the live
-    /// `AccountStateMap`. Best-effort — on I/O failure the new
-    /// value stays in memory but won't survive restart.
-    pub fn set_projects_pane_visible(&self, visible: bool) {
-        {
-            let mut ui = self.persisted_ui.lock();
-            ui.projects_pane_visible = visible;
-        }
-        self.persist_state();
-    }
-
-    /// Read the persisted Inspector-pane visibility preference.
-    /// Default `true` if `forge-state.toml` is missing, unparseable,
-    /// or omits the field.
-    #[must_use]
-    pub fn inspector_pane_visible(&self) -> bool {
-        self.persisted_ui.lock().inspector_pane_visible
-    }
-
-    /// Update + atomically persist the Inspector-pane visibility
-    /// preference. Same persistence path as
-    /// [`Self::set_projects_pane_visible`].
-    pub fn set_inspector_pane_visible(&self, visible: bool) {
-        {
-            let mut ui = self.persisted_ui.lock();
-            ui.inspector_pane_visible = visible;
-        }
-        self.persist_state();
-    }
-
-    /// Snapshot the UI-visibility preferences into a
-    /// [`PersistedState`] and write it to `forge-state.toml`. Both
-    /// [`Self::set_projects_pane_visible`] and
-    /// [`Self::set_inspector_pane_visible`] flow through here.
-    /// Account selection state is no longer persisted — the picker
-    /// drives off the live in-memory usage cache. Best-effort —
-    /// `state::save` logs and returns on failure so a transient
-    /// write error never propagates back into the calling path.
-    fn persist_state(&self) {
-        let snapshot = {
-            let ui = self.persisted_ui.lock();
-            PersistedState {
-                ui: PersistedUiState {
-                    projects_pane_visible: ui.projects_pane_visible,
-                    inspector_pane_visible: ui.inspector_pane_visible,
-                },
-            }
-        };
-        state::save(&self.config_dir, &snapshot);
+    pub fn usage_error_for(&self, display_name: &str) -> Option<crate::account::UsageFetchStatus> {
+        self.accounts.lock().usage_error(&AccountKey(display_name.to_owned()))
     }
 
     /// Resolves a `SessionTarget` to the `SessionKey` used to look up
@@ -1261,6 +1197,27 @@ impl Workspace {
     }
 }
 
+/// Map an [`OauthUsageError`] to the renderer-facing
+/// [`account::UsageFetchStatus`] bucket. Separates HTTP 429 (the
+/// common multi-instance throttle case) from the auth-related
+/// failures (`Expired` / `NoCredentials` / `Unauthorized`) and
+/// transport failures (`Network`), so the TUI's bottom-panel hint
+/// can tell the user something specific rather than a generic
+/// "fetch error".
+fn classify_oauth_usage_error(
+    err: &forge_primitives::usage::oauth::OauthUsageError,
+) -> account::UsageFetchStatus {
+    use account::UsageFetchStatus;
+    use forge_primitives::usage::oauth::OauthUsageError;
+    match err {
+        OauthUsageError::HttpStatus(429, _) => UsageFetchStatus::RateLimited,
+        OauthUsageError::Unauthorized(_) => UsageFetchStatus::Unauthorized,
+        OauthUsageError::NoCredentials | OauthUsageError::Expired => UsageFetchStatus::Expired,
+        OauthUsageError::Network(_) => UsageFetchStatus::NetworkFailed,
+        OauthUsageError::HttpStatus(_, _) | OauthUsageError::Decode(_) => UsageFetchStatus::Other,
+    }
+}
+
 #[cfg(test)]
 impl Workspace {
     pub fn pool_len_for_test(&self) -> usize {
@@ -1429,7 +1386,6 @@ impl Workspace {
             catalog: Mutex::new(HashMap::new()),
             pool: Mutex::new(HashMap::new()),
             accounts: Mutex::new(AccountStateMap::empty_for_test()),
-            persisted_ui: Mutex::new(PersistedUiState::default()),
             update_tx,
             update_rx_slot: Mutex::new(None),
             command_senders: Mutex::new(HashMap::new()),
@@ -1949,5 +1905,49 @@ config_dir = "~/.claude-personal"
         assert!(!workspace.command_senders.lock().contains_key(&to));
         assert!(!workspace.pool.lock().contains_key(&to));
         assert!(workspace.domain_session_for(&to).is_none());
+    }
+
+    /// Regression pins for the 2026-05-15 multi-instance 429 bug: the
+    /// poller's failure-branch classifier must distinguish HTTP 429
+    /// from auth-related failures so the TUI's bottom-panel hint
+    /// reads `rate-limited` (the common case under multiple forge
+    /// instances) rather than collapsing every failure to a single
+    /// generic bucket.
+    #[test]
+    fn classify_oauth_usage_error_buckets_known_variants() {
+        use crate::account::UsageFetchStatus;
+        use forge_primitives::usage::oauth::OauthUsageError;
+
+        assert_eq!(
+            classify_oauth_usage_error(&OauthUsageError::HttpStatus(429, String::new())),
+            UsageFetchStatus::RateLimited,
+        );
+        assert_eq!(
+            classify_oauth_usage_error(&OauthUsageError::Unauthorized(401)),
+            UsageFetchStatus::Unauthorized,
+        );
+        assert_eq!(
+            classify_oauth_usage_error(&OauthUsageError::Expired),
+            UsageFetchStatus::Expired,
+        );
+        assert_eq!(
+            classify_oauth_usage_error(&OauthUsageError::NoCredentials),
+            UsageFetchStatus::Expired,
+        );
+        assert_eq!(
+            classify_oauth_usage_error(&OauthUsageError::Network("dns".to_owned())),
+            UsageFetchStatus::NetworkFailed,
+        );
+        // Non-429 HTTP errors and decode failures fall through to the
+        // generic `Other` bucket — renderers show "fetch failed" so
+        // the user can tell something's wrong without naming a cause.
+        assert_eq!(
+            classify_oauth_usage_error(&OauthUsageError::HttpStatus(500, String::new())),
+            UsageFetchStatus::Other,
+        );
+        assert_eq!(
+            classify_oauth_usage_error(&OauthUsageError::Decode("bad json".to_owned())),
+            UsageFetchStatus::Other,
+        );
     }
 }

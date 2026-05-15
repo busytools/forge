@@ -158,6 +158,53 @@ fn append_resume_user_message_chunk(app: &mut App, chunk: &model::ContentChunk) 
     ));
 }
 
+/// Count the leading prefix of `messages` that are synthesized
+/// queued_command-only User envelopes (one `ContentBlock::QueuedCommand`
+/// and nothing else). Returns `Some(n)` when at least 2 such
+/// envelopes sit adjacent; `None` otherwise so the normal
+/// per-message dispatch handles singletons through the usual
+/// `handle_queued_command_echo` path (which keeps the
+/// `<task-notification>` filter co-located).
+fn queued_only_user_run_len(messages: &[forge_primitives::Message]) -> Option<usize> {
+    let count = messages.iter().take_while(|m| is_queued_only_user_envelope(m)).count();
+    (count >= 2).then_some(count)
+}
+
+fn is_queued_only_user_envelope(msg: &forge_primitives::Message) -> bool {
+    let forge_primitives::Message::User { message: envelope, .. } = msg else {
+        return false;
+    };
+    envelope.content.len() == 1
+        && matches!(envelope.content[0], forge_primitives::ContentBlock::QueuedCommand { .. })
+}
+
+/// Render N (≥ 2) queued-command prompts that share a JSONL flush
+/// timestamp as a single user bubble. The first text block is a DIM
+/// header (`Queued during the previous turn · N messages`), followed
+/// by one `▸ <prompt>` text block per message. All blocks live
+/// inside one [`MessageRole::User`] [`ChatMessage`] so the existing
+/// `USER_MSG_BG` background stretches over the whole group — visually
+/// a single bordered area, which is what option B's mockup showed.
+fn push_queued_group(app: &mut App, prompts: &[String]) {
+    app.clear_active_turn_assistant();
+    let header = format!("Queued during the previous turn · {} messages", prompts.len());
+    let mut blocks: Vec<MessageBlock> = Vec::with_capacity(prompts.len() + 1);
+    blocks.push(MessageBlock::Text(TextBlock::from_complete(&header)));
+    for prompt in prompts {
+        let body = format!("▸ {prompt}");
+        blocks.push(MessageBlock::Text(TextBlock::from_complete(&body)));
+    }
+    app.push_message_tracked(ChatMessage::new(MessageRole::User, blocks, None));
+    app.enforce_history_retention_tracked();
+    tracing::debug!(
+        target: crate::logging::targets::APP_INPUT,
+        event_name = "queued_group_replayed",
+        message = "pushed grouped user bubble for replayed queued_command run",
+        outcome = "success",
+        message_count = prompts.len(),
+    );
+}
+
 pub(super) fn load_resume_history(app: &mut App, history_messages: &[forge_primitives::Message]) {
     let preserved_tip_seed = app.current_welcome_tip_seed();
     app.clear_messages_tracked();
@@ -168,7 +215,59 @@ pub(super) fn load_resume_history(app: &mut App, history_messages: &[forge_primi
     }
     app.push_message_tracked(welcome);
     app.sync_welcome_snapshot();
-    for msg in history_messages {
+    // Replay marker: see `App.replay_in_progress` rustdoc + the
+    // `handle_assistant` gate in `events/sdk_message.rs`. The flag
+    // suppresses the lifecycle = Running write for historical
+    // assistant envelopes so a resumed auto_start project doesn't
+    // land in the Projects pane stuck on the spinner glyph.
+    app.replay_in_progress = true;
+    let mut i = 0;
+    while i < history_messages.len() {
+        // Mid-turn queued messages (claude CLI's `queuedCommands`
+        // local buffer, flushed at the next user→model boundary)
+        // get persisted to JSONL as `type:attachment,
+        // attachment.type:queued_command` rows, one per submission.
+        // The catalog scanner hoists each row into a synthetic
+        // `{role:user, content:[{queued_command}]}` envelope — see
+        // `userdata::catalog::scan::synthesize_queued_command_message`.
+        //
+        // Live forge already renders each submission at the time
+        // the user typed it (via the input_submit path). Resume can
+        // only place them at their JSONL position, which is the
+        // flush time — every queued submission in a batch shares
+        // the same millisecond timestamp. Rendered as individual
+        // user bubbles, they cluster at the flush point and read
+        // like a wall of unrelated messages.
+        //
+        // Group them: walk a run of consecutive synthesized
+        // queued-only User envelopes, filter `<task-notification>`
+        // harness plumbing, and emit ONE user bubble containing
+        // all the surviving prompts. See GitHub issue #127.
+        if let Some(run_len) = queued_only_user_run_len(&history_messages[i..]) {
+            let prompts: Vec<String> = (i..i + run_len)
+                .filter_map(|j| match &history_messages[j] {
+                    forge_primitives::Message::User { message: envelope, .. } => {
+                        envelope.content.iter().find_map(|b| match b {
+                            forge_primitives::ContentBlock::QueuedCommand { prompt, .. } => {
+                                Some(super::sdk_message::extract_queued_command_text(prompt))
+                            }
+                            _ => None,
+                        })
+                    }
+                    _ => None,
+                })
+                .filter(|p| !p.trim_start().starts_with("<task-notification>"))
+                .collect();
+            i += run_len;
+            match prompts.len() {
+                0 => continue,
+                1 => super::sdk_message::handle_queued_command_echo(app, &prompts[0]),
+                _ => push_queued_group(app, &prompts),
+            }
+            continue;
+        }
+
+        let msg = &history_messages[i];
         // The raw walker (`handle_sdk_message`) processes user
         // messages by walking tool_results only — live wire user
         // text content blocks are echoes of the user's input that
@@ -225,10 +324,189 @@ pub(super) fn load_resume_history(app: &mut App, history_messages: &[forge_primi
             }
         }
         super::sdk_message::handle_sdk_message(app, msg.clone());
+        i += 1;
     }
+    app.replay_in_progress = false;
     app.finalize_turn_runtime_artifacts(model::ToolCallStatus::Failed);
     app.clear_active_turn_assistant();
     app.enforce_history_retention_tracked();
     *app.active_viewport_mut() = super::super::ChatViewport::new();
     app.active_viewport_mut().engage_auto_scroll();
+}
+
+#[cfg(test)]
+mod tests {
+    //! Regression coverage for the launchpad-spinner-stuck bug.
+    //! End-to-end: walking on-disk history through the shared SDK
+    //! dispatcher must NOT leave the bucket's lifecycle stuck on
+    //! `Running`. The unit-level gate lives in `events/sdk_message.rs`;
+    //! this test pins the integration behaviour.
+    use super::load_resume_history;
+    use crate::app::session::SessionLifecycleState;
+    use crate::app::{App, MessageBlock, MessageRole};
+    use forge_primitives::{AssistantEnvelope, ContentBlock, Message, UserEnvelope};
+    use serde_json::Value;
+
+    fn historical_assistant(text: &str) -> Message {
+        Message::Assistant {
+            message: AssistantEnvelope {
+                id: "msg_history".to_owned(),
+                role: "assistant".to_owned(),
+                model: "claude-test".to_owned(),
+                content: vec![ContentBlock::Text { text: text.to_owned() }],
+                stop_reason: None,
+                stop_sequence: None,
+                usage: None,
+            },
+            session_id: String::new(),
+            parent_tool_use_id: None,
+            error: None,
+            uuid: None,
+        }
+    }
+
+    fn synthesized_queued(prompt: &str) -> Message {
+        Message::User {
+            message: UserEnvelope {
+                role: "user".to_owned(),
+                content: vec![ContentBlock::QueuedCommand {
+                    prompt: Value::String(prompt.to_owned()),
+                    command_mode: None,
+                    source_uuid: None,
+                }],
+            },
+            session_id: String::new(),
+            parent_tool_use_id: None,
+            uuid: None,
+            tool_use_result: None,
+        }
+    }
+
+    #[test]
+    fn replay_walk_does_not_leave_lifecycle_on_running() {
+        let mut app = App::test_default();
+        // Model an Idle, freshly-Connected bucket — what
+        // `apply_session_update_connected`'s background path produces
+        // before kicking off `load_resume_history`.
+        let key = app.active_session_key.clone().expect("active key");
+        app.sessions.get_mut(&key).expect("bucket").lifecycle_state = SessionLifecycleState::Idle;
+
+        // A modest replay tail — multiple assistant messages, as a
+        // long-lived session would have. Pre-fix: each one flipped
+        // lifecycle to Running with no balancing Result, so the bucket
+        // ended on Running.
+        let history = vec![
+            historical_assistant("prior turn 1"),
+            historical_assistant("prior turn 2"),
+            historical_assistant("prior turn 3"),
+        ];
+        load_resume_history(&mut app, &history);
+
+        let bucket = app.sessions.get(&key).expect("bucket");
+        assert_eq!(
+            bucket.lifecycle_state,
+            SessionLifecycleState::Idle,
+            "post-replay lifecycle must still be Idle — Running here is what \
+             pinned the Projects pane spinner on after launchpad auto_start",
+        );
+        assert!(
+            !app.replay_in_progress,
+            "replay_in_progress must be cleared at end of load_resume_history",
+        );
+    }
+
+    /// Three consecutive queued_command attachments (the classic
+    /// mid-turn submit batch — claude CLI buffers them locally and
+    /// flushes at the next user→model boundary so the JSONL stamps
+    /// them with one millisecond timestamp) collapse into a single
+    /// user bubble whose blocks are `[header, ▸p1, ▸p2, ▸p3]`. The
+    /// per-message bubble cluster the live-vs-resume timing
+    /// mismatch produces is what the previous render had.
+    #[test]
+    fn run_of_queued_commands_collapses_into_one_user_bubble() {
+        let mut app = App::test_default();
+
+        let history = vec![
+            synthesized_queued("What is this launchpad auto stop?"),
+            synthesized_queued("start*"),
+            synthesized_queued("And why do you still carry focus equals to false?"),
+        ];
+        load_resume_history(&mut app, &history);
+
+        // Find the queued group — the only User message in the
+        // resulting chat that has 4 blocks (header + 3 items). The
+        // welcome message lives above it as a Welcome-role entry.
+        let group = app
+            .messages()
+            .iter()
+            .find(|m| matches!(m.role, MessageRole::User) && m.blocks.len() == 4)
+            .expect("queued group bubble");
+        let header_text = match &group.blocks[0] {
+            MessageBlock::Text(b) => b.text.clone(),
+            _ => panic!("first block should be the header text"),
+        };
+        assert!(
+            header_text.contains("Queued during the previous turn")
+                && header_text.contains("3 messages"),
+            "header should announce the count: {header_text:?}",
+        );
+        for (idx, expected) in [
+            "▸ What is this launchpad auto stop?",
+            "▸ start*",
+            "▸ And why do you still carry focus equals to false?",
+        ]
+        .iter()
+        .enumerate()
+        {
+            let block_idx = idx + 1; // skip header
+            match &group.blocks[block_idx] {
+                MessageBlock::Text(b) => assert_eq!(b.text, *expected),
+                _ => panic!("block {block_idx} should be a Text block"),
+            }
+        }
+    }
+
+    /// A solo queued_command (no run) falls through to the regular
+    /// single-bubble path so the live-rendering shape is preserved.
+    /// Without this carve-out, every mid-turn submit would render
+    /// as a "Queued during the previous turn · 1 messages" bubble
+    /// which is overkill for the common case.
+    #[test]
+    fn single_queued_command_renders_as_regular_user_bubble() {
+        let mut app = App::test_default();
+        let history = vec![synthesized_queued("solo mid-turn message")];
+        load_resume_history(&mut app, &history);
+
+        let user_msgs: Vec<&_> =
+            app.messages().iter().filter(|m| matches!(m.role, MessageRole::User)).collect();
+        assert_eq!(user_msgs.len(), 1, "exactly one user bubble for the solo queued message");
+        assert_eq!(user_msgs[0].blocks.len(), 1, "no group header for a singleton");
+        let MessageBlock::Text(text_block) = &user_msgs[0].blocks[0] else {
+            panic!("solo queued bubble should be a Text block");
+        };
+        assert_eq!(text_block.text, "solo mid-turn message");
+    }
+
+    /// Task-notification queued_commands (harness plumbing, not
+    /// user input) drop out of a group so the surviving prompts
+    /// stay clean. With one survivor, the group collapses back to
+    /// the singleton path.
+    #[test]
+    fn task_notifications_are_filtered_inside_a_run() {
+        let mut app = App::test_default();
+        let history = vec![
+            synthesized_queued("<task-notification>\n<task-id>abc</task-id>\n</task-notification>"),
+            synthesized_queued("real user prompt"),
+            synthesized_queued("<task-notification>\n<task-id>def</task-id>\n</task-notification>"),
+        ];
+        load_resume_history(&mut app, &history);
+
+        let user_msgs: Vec<&_> =
+            app.messages().iter().filter(|m| matches!(m.role, MessageRole::User)).collect();
+        assert_eq!(user_msgs.len(), 1, "two task-notifications drop, leaving one prompt");
+        let MessageBlock::Text(text_block) = &user_msgs[0].blocks[0] else {
+            panic!("should be a Text block");
+        };
+        assert_eq!(text_block.text, "real user prompt");
+    }
 }

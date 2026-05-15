@@ -21,6 +21,14 @@ use ratatui::widgets::{Paragraph, Widget, Wrap};
 const CULLING_MARGIN: usize = 0;
 const CULLING_OVERSCAN_ROWS: usize = 100;
 const SCROLLBAR_MIN_THUMB_HEIGHT: usize = 1;
+/// Visual cap for the chat scrollbar thumb so a short scrollback
+/// doesn't render a thumb that takes up most of the rail. The raw
+/// `viewport² / content` formula grows the thumb as content shrinks
+/// — fine in theory (proportional indicator), distracting in
+/// practice for a chat surface that briefly overflows by a handful
+/// of rows. Matches the Inspector pane's `INSPECTOR_THUMB_MAX_CELLS`
+/// cap so both surfaces read with the same visual weight.
+const SCROLLBAR_MAX_THUMB_HEIGHT: usize = 1;
 const SCROLLBAR_TOP_EASE: f32 = 0.35;
 const SCROLLBAR_SIZE_EASE: f32 = 0.2;
 const SCROLLBAR_EASE_EPSILON: f32 = 0.01;
@@ -603,6 +611,31 @@ fn ease_value(current: &mut f32, target: f32, factor: f32) {
     }
 }
 
+/// Clamp the raw `viewport² / content` thumb to a fixed maximum and
+/// rebuild `thumb_top` against the post-cap track length. Without
+/// this, a chat with content just barely overflowing the viewport
+/// renders a thumb that takes up half the rail — visually noisy and
+/// inconsistent with the Inspector pane's tiny indicator. Capping
+/// keeps the chat scrollbar a stable small dot regardless of how
+/// much (or little) of the scrollback overflows.
+fn cap_scrollbar_target(
+    raw: ScrollbarGeometry,
+    viewport_height: usize,
+    scroll_pos: f32,
+) -> ScrollbarGeometry {
+    let thumb_size = raw.thumb_size.clamp(SCROLLBAR_MIN_THUMB_HEIGHT, SCROLLBAR_MAX_THUMB_HEIGHT);
+    let track_space = viewport_height.saturating_sub(thumb_size);
+    let max_scroll = raw.max_scroll;
+    #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let thumb_top = if max_scroll == 0 || track_space == 0 {
+        0
+    } else {
+        ((scroll_pos.clamp(0.0, max_scroll as f32) / max_scroll as f32) * track_space as f32)
+            .round() as usize
+    };
+    ScrollbarGeometry { thumb_top, thumb_size, track_space, max_scroll }
+}
+
 fn smooth_scrollbar_geometry(
     viewport: &mut crate::app::ChatViewport,
     target: ScrollbarGeometry,
@@ -649,7 +682,7 @@ fn render_scrollbar_overlay(
     // alone is enough to indicate scroll position when content
     // overflows. When the content fits the whole right column is
     // empty.
-    let Some(target) = crate::app::compute_scrollbar_geometry(
+    let Some(raw_target) = crate::app::compute_scrollbar_geometry(
         content_height,
         viewport_height,
         viewport.scroll_pos,
@@ -658,6 +691,11 @@ fn render_scrollbar_overlay(
         viewport.scrollbar_thumb_size = 0.0;
         return;
     };
+    // Cap the thumb size and rebuild thumb_top against the
+    // post-cap track length so a short scrollback doesn't render a
+    // thumb that covers half the rail. Same pattern as the
+    // Inspector pane's `INSPECTOR_THUMB_MAX_CELLS` clamp.
+    let target = cap_scrollbar_target(raw_target, viewport_height, viewport.scroll_pos);
     let geometry = smooth_scrollbar_geometry(viewport, target, viewport_height, reduced_motion);
     let thumb_style = Style::default().fg(theme::ROLE_ASSISTANT);
     let rail_x = area.right().saturating_sub(1);

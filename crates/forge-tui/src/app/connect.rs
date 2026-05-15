@@ -156,12 +156,32 @@ pub fn create_app(cli: &Cli, workspace: Arc<forge_workspace::Workspace>) -> App 
     drop(pre_connect_domain);
     let mut sessions = std::collections::HashMap::new();
     sessions.insert(pre_connect_key.clone(), pre_connect_session);
-    // Snapshot the persisted side-pane visibility before moving
-    // `workspace` into the App struct below.
-    let projects_pane_visible = workspace.projects_pane_visible();
-    let inspector_pane_visible = workspace.inspector_pane_visible();
+    // Tier-based default for side panes: visible at Wide, hidden
+    // elsewhere. Both panes use the same threshold (Wide tier) so
+    // narrow / medium terminals start with a chat-only layout the
+    // user can grow via Ctrl+B / Ctrl+E if they want the chrome
+    // back. Nothing is persisted — each forge launch re-derives
+    // from the current terminal width.
+    let (initial_term_width, _) = crossterm::terminal::size().unwrap_or((0, 0));
+    let panes_visible_by_default = initial_term_width >= crate::ui::layout::WIDE_TIER_MIN_WIDTH;
+    let projects_pane_visible = panes_visible_by_default;
+    let inspector_pane_visible = panes_visible_by_default;
+    // Boot view: `forge` (no argv) → launchpad picker; `forge <project>`
+    // → chat directly. Argv selection is final — no remembered-last-
+    // pick. Snapshot launchpad state from `[ui]` settings up-front so
+    // the picker doesn't shift if the user edits forge.toml mid-
+    // session.
+    let active_view = if cli.project.is_none() { ActiveView::Launchpad } else { ActiveView::Chat };
+    let initial_launchpad_state = {
+        let ui = workspace.ui_settings();
+        crate::app::LaunchpadState {
+            selected_index: 0,
+            opened_at: std::time::Instant::now(),
+            spinner_style: ui.launchpad_spinner,
+        }
+    };
     let mut app = App {
-        active_view: ActiveView::Chat,
+        active_view,
         config: ConfigState::default(),
         trust: trust::TrustState::default(),
         settings_home_override: None,
@@ -202,6 +222,7 @@ pub fn create_app(cli: &Cli, workspace: Arc<forge_workspace::Workspace>) -> App 
         focus: FocusManager::default(),
         plugins: PluginsState::default(),
         session_picker: SessionPickerState::default(),
+        launchpad: initial_launchpad_state,
         cached_frame_area: ratatui::layout::Rect::new(0, 0, 0, 0),
         scrollbar_drag: None,
         rendered_chat_lines: Vec::new(),
@@ -224,6 +245,7 @@ pub fn create_app(cli: &Cli, workspace: Arc<forge_workspace::Workspace>) -> App 
         startup_recent_sessions_loaded: false,
         startup_session_picker_resolved: false,
         startup_project: cli.project.clone(),
+        replay_in_progress: false,
     };
 
     if let Err(err) = super::config::initialize_shared_state(&mut app) {
@@ -275,12 +297,41 @@ pub fn start_connection(app: &mut App) {
         session_start::SessionStartReason::Startup,
     );
 
-    // If the user passed `--project NAME`, that wins as the first
-    // (focused) startup spawn. Otherwise, every project with
-    // `auto_start = true` in forge.toml spawns; the alphabetically-
-    // first auto_start project becomes the focused tab. With no
-    // explicit project AND no auto_start opt-ins, fall through to
-    // the default project (alphabetically-first overall).
+    // Launchpad branch: the user invoked `forge` without an argv, so
+    // no project is focused. Every `auto_start = true` project warms
+    // up while the picker is shown — picking an already-spawned row
+    // is instant.
+    if app.active_view == crate::app::ActiveView::Launchpad {
+        let auto_start = workspace.auto_start_project_names();
+        for project_name in auto_start {
+            // Every project goes through `SpawnProject` — no
+            // `StartDefault`, since the launchpad doesn't pick a
+            // focused tab. The chat view never mounts until the
+            // user picks a row.
+            let cmd = forge_workspace::Command::SpawnProject {
+                project_name: project_name.clone(),
+                launch_settings: launch_settings.clone(),
+            };
+            if let Err(err) = workspace.dispatch(cmd) {
+                tracing::error!(
+                    target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                    event_name = "launchpad_auto_start_dispatch_failed",
+                    error = %err,
+                    project = %project_name,
+                    "launchpad auto_start dispatch failed",
+                );
+            }
+        }
+        return;
+    }
+
+    // Chat branch: argv supplied OR default-focus path. If the user
+    // passed `--project NAME`, that wins as the first (focused)
+    // startup spawn. Otherwise, every project with `auto_start = true`
+    // in forge.toml spawns; the alphabetically-first auto_start
+    // project becomes the focused tab. With no explicit project AND
+    // no auto_start opt-ins, fall through to the default project
+    // (alphabetically-first overall).
     let auto_start = workspace.auto_start_project_names();
     let dispatch_targets: Vec<Option<String>> = match (&app.startup_project, auto_start.as_slice())
     {
@@ -332,6 +383,21 @@ mod tests {
         .expect("write forge.toml");
     }
 
+    fn cli_with(project: Option<&str>) -> Cli {
+        Cli {
+            project: project.map(str::to_owned),
+            generate_completion: None,
+            enable_logs: false,
+            diagnostics_preset: None,
+            log_file: None,
+            log_filter: None,
+            log_append: false,
+            enable_perf: false,
+            perf_log: None,
+            perf_append: false,
+        }
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn create_app_wires_workspace_and_seeds_cwd_from_process() {
         // Workspace::new requires a forge.toml in the config dir. The
@@ -343,18 +409,7 @@ mod tests {
         let workspace =
             forge_workspace::Workspace::new(config_dir.path().to_owned()).await.expect("workspace");
 
-        let cli = Cli {
-            project: None,
-            generate_completion: None,
-            enable_logs: false,
-            diagnostics_preset: None,
-            log_file: None,
-            log_filter: None,
-            log_append: false,
-            enable_perf: false,
-            perf_log: None,
-            perf_append: false,
-        };
+        let cli = cli_with(None);
 
         let local = tokio::task::LocalSet::new();
         let app = local.run_until(async { super::create_app(&cli, Arc::new(workspace)) }).await;
@@ -363,5 +418,36 @@ mod tests {
         // overwrites it with the agent's reported value.
         assert!(!app.cwd_raw().is_empty(), "cwd_raw should be seeded from process cwd");
         assert!(app.workspace.is_some(), "workspace should be wired");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn create_app_boots_into_launchpad_when_no_argv() {
+        let config_dir = tempfile::tempdir().expect("tempdir");
+        let project_dir = tempfile::tempdir().expect("project tempdir");
+        write_default_forge_toml(config_dir.path(), project_dir.path());
+        let workspace =
+            forge_workspace::Workspace::new(config_dir.path().to_owned()).await.expect("workspace");
+        let cli = cli_with(None);
+        let local = tokio::task::LocalSet::new();
+        let app = local.run_until(async { super::create_app(&cli, Arc::new(workspace)) }).await;
+        assert_eq!(app.active_view, crate::app::ActiveView::Launchpad);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn create_app_boots_into_non_launchpad_view_when_argv_supplied() {
+        let config_dir = tempfile::tempdir().expect("tempdir");
+        let project_dir = tempfile::tempdir().expect("project tempdir");
+        write_default_forge_toml(config_dir.path(), project_dir.path());
+        let workspace =
+            forge_workspace::Workspace::new(config_dir.path().to_owned()).await.expect("workspace");
+        let cli = cli_with(Some("forge-test"));
+        let local = tokio::task::LocalSet::new();
+        let app = local.run_until(async { super::create_app(&cli, Arc::new(workspace)) }).await;
+        // With argv supplied the boot view is NOT Launchpad. In a
+        // pristine tempdir the cwd is untrusted so the trust gate
+        // routes to Trusted; once accepted the user lands in Chat.
+        // The invariant the launchpad change cares about is just
+        // "argv supplied ⇒ never the launchpad."
+        assert_ne!(app.active_view, crate::app::ActiveView::Launchpad);
     }
 }

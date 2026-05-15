@@ -8,6 +8,7 @@ pub(crate) mod help;
 mod highlight;
 mod input;
 pub mod inspector_pane;
+pub mod launchpad;
 pub(crate) mod layout;
 mod markdown;
 mod message;
@@ -32,6 +33,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         ActiveView::Config => config::render(frame, app),
         ActiveView::Trusted => trusted::render(frame, app),
         ActiveView::SessionPicker => session_picker::render(frame, app),
+        ActiveView::Launchpad => launchpad::render(frame, app),
     }
 }
 

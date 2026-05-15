@@ -64,10 +64,4 @@ pub enum WorkspaceError {
 
     #[error("no project named '{name}' in forge.toml at {}", path.display())]
     ProjectNotFound { name: String, path: PathBuf },
-
-    #[error(
-        "multiple projects marked `focus = true` in forge.toml at {} ({names}); at most one project may carry focus",
-        path.display()
-    )]
-    MultipleFocusProjects { path: PathBuf, names: String },
 }

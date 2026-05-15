@@ -34,14 +34,44 @@ use crate::config::LoadedAccount;
 #[derive(Clone, Debug, Hash, Eq, PartialEq)]
 pub(crate) struct AccountKey(pub String);
 
+/// Classification of the latest usage-poll attempt outcome for an
+/// account. Surfaced to the TUI's bottom panel so empty bars can
+/// distinguish "still warming the cache" from a real failure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UsageFetchStatus {
+    /// Anthropic returned HTTP 429 — too many concurrent polls
+    /// against the OAuth `/api/oauth/usage` endpoint (typical when
+    /// multiple forge instances poll from the same machine).
+    RateLimited,
+    /// OAuth credentials on disk are past their expires_at — needs
+    /// `/login` to refresh.
+    Expired,
+    /// API returned 401/403 — token rejected (may be revoked).
+    Unauthorized,
+    /// Network failure reaching the API (DNS, TLS, timeout, …).
+    NetworkFailed,
+    /// Decode / unknown-HTTP-status fallthrough. Distinct from the
+    /// above so renderers can show a generic "fetch error" when the
+    /// cause doesn't map to a known bucket.
+    Other,
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct AccountState {
     pub config_dir: PathBuf,
-    /// Latest usage snapshot fetched by the workspace's 30s
-    /// background poller. `None` until the first successful fetch.
-    /// Drives the picker's order; also surfaced to the TUI's
-    /// bottom panel via `Workspace::usage_for`.
+    /// Latest usage snapshot fetched by the workspace's background
+    /// poller. `None` until the first successful fetch. Drives the
+    /// picker's order; also surfaced to the TUI's bottom panel via
+    /// `Workspace::usage_for`.
     pub usage: Option<UsageSnapshot>,
+    /// Latest poll-attempt outcome when the fetch failed. Cleared
+    /// (set to `None`) on the next successful fetch. The TUI reads
+    /// this via `Workspace::usage_error_for` to render a DIM hint
+    /// (`rate-limited` / `expired` / …) next to a 5h/7d row whose
+    /// bar can't fill because the underlying request didn't return
+    /// data. Without it the empty bar reads like a forge bug rather
+    /// than an upstream failure.
+    pub last_error: Option<UsageFetchStatus>,
 }
 
 #[derive(Debug)]
@@ -65,8 +95,14 @@ impl AccountStateMap {
         for account in accounts {
             let key = AccountKey(account.display_name.clone());
             ordered_keys.push(key.clone());
-            by_key
-                .insert(key, AccountState { config_dir: account.config_dir.clone(), usage: None });
+            by_key.insert(
+                key,
+                AccountState {
+                    config_dir: account.config_dir.clone(),
+                    usage: None,
+                    last_error: None,
+                },
+            );
         }
         Self { ordered_keys, by_key }
     }
@@ -79,13 +115,25 @@ impl AccountStateMap {
         self.by_key.get(key).map(|s| &s.config_dir)
     }
 
-    /// Replace the cached usage snapshot for `key`. Called from the
-    /// background poller. Silent no-op when `key` isn't registered
+    /// Replace the cached usage snapshot for `key` and clear any
+    /// stale `last_error`. Called from the background poller on a
+    /// successful fetch. Silent no-op when `key` isn't registered
     /// (defensive — invariant says every poller key was inserted in
     /// `new()`).
     pub fn set_usage(&mut self, key: &AccountKey, snapshot: UsageSnapshot) {
         if let Some(state) = self.by_key.get_mut(key) {
             state.usage = Some(snapshot);
+            state.last_error = None;
+        }
+    }
+
+    /// Record the latest poll-attempt failure for `key`. Called from
+    /// the background poller's error branch. The cached `usage`
+    /// snapshot is preserved so the panel keeps showing the last
+    /// known-good bars (a fresh 429 doesn't blank them out).
+    pub fn set_last_error(&mut self, key: &AccountKey, status: UsageFetchStatus) {
+        if let Some(state) = self.by_key.get_mut(key) {
+            state.last_error = Some(status);
         }
     }
 
@@ -93,6 +141,13 @@ impl AccountStateMap {
     /// poller hasn't yet succeeded for this account.
     pub fn usage(&self, key: &AccountKey) -> Option<&UsageSnapshot> {
         self.by_key.get(key).and_then(|s| s.usage.as_ref())
+    }
+
+    /// Look up the latest poll-attempt failure for `key`. `None`
+    /// when the most recent attempt succeeded (or no attempt has
+    /// been made yet).
+    pub fn usage_error(&self, key: &AccountKey) -> Option<UsageFetchStatus> {
+        self.by_key.get(key).and_then(|s| s.last_error)
     }
 
     /// Pick the best account within the project's pinned `allowed`

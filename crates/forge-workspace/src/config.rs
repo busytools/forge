@@ -52,21 +52,10 @@ struct ProjectEntry {
     path: String,
     /// When `true`, the project's lead session spawns automatically
     /// at forge launch. Multiple projects can carry this; they all
-    /// spawn but none of them is the focused tab unless one also
-    /// carries `focus = true`. Defaults to `false`.
+    /// spawn in the background while the launchpad picker decides
+    /// which one becomes the focused tab. Defaults to `false`.
     #[serde(default)]
     auto_start: bool,
-    /// When `true`, this project becomes the focused tab on launch
-    /// (in addition to being auto-started). At most one project
-    /// across all orgs may carry this; load errors otherwise. If no
-    /// project carries `focus`, the focused tab falls back to the
-    /// alphabetically-first `auto_start` project, or the alpha-first
-    /// project overall when none has `auto_start` either.
-    /// `focus = true` implies `auto_start = true` — explicitly
-    /// setting both is fine (and arguably clearer); setting only
-    /// `focus` is also valid and still spawns the project.
-    #[serde(default)]
-    focus: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -85,10 +74,11 @@ pub(crate) struct LoadedAccount {
 pub(crate) struct LoadedConfig {
     pub orgs: Vec<LoadedOrg>,
     pub projects: Vec<LoadedProject>,
-    /// Index into `projects` for the focus-target at startup —
+    /// Index into `projects` for the default startup target —
     /// alphabetically-first project that carries `auto_start = true`,
     /// falling back to the alphabetically-first project overall
-    /// when no project opts in.
+    /// when no project opts in. Used by the `forge` (no argv) fixture
+    /// / smoke paths; the production launchpad picker overrides.
     pub default_index: usize,
     pub accounts: Vec<LoadedAccount>,
     /// `[ui]` section knobs. All fields have defaults; absent
@@ -123,9 +113,6 @@ pub(crate) struct LoadedProject {
     /// `true` when the project should spawn automatically at forge
     /// launch.
     pub auto_start: bool,
-    /// `true` when the project becomes the focused tab on launch.
-    /// Validated at most one project across all orgs carries this.
-    pub focus: bool,
 }
 
 impl LoadedConfig {
@@ -133,12 +120,10 @@ impl LoadedConfig {
         &self.projects[self.default_index]
     }
 
-    /// Iterate every project that should spawn at forge launch.
-    /// A project counts if it carries `auto_start = true` OR
-    /// `focus = true` (focus implies auto-start — you can't focus
-    /// a project that isn't spawned).
+    /// Iterate every project that should spawn at forge launch
+    /// (`auto_start = true`).
     pub(crate) fn auto_start_projects(&self) -> impl Iterator<Item = &LoadedProject> {
-        self.projects.iter().filter(|p| p.auto_start || p.focus)
+        self.projects.iter().filter(|p| p.auto_start)
     }
 
     /// Empty `LoadedConfig` for the `testing` feature's
@@ -236,7 +221,6 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
                 org: org_entry.name.clone(),
                 accounts: org_entry.accounts.clone(),
                 auto_start: project_entry.auto_start,
-                focus: project_entry.focus,
             });
         }
         orgs.push(LoadedOrg { name: org_entry.name, accounts: org_entry.accounts });
@@ -246,32 +230,16 @@ pub(crate) fn load_from_dir(config_dir: &Path) -> Result<LoadedConfig, Workspace
         return Err(WorkspaceError::NoProjectsConfigured { path });
     }
 
-    // At most one `focus = true` allowed across all orgs. The
-    // launchpad design (next session) will lift this constraint to
-    // "zero focus → show project picker," but for now zero is
-    // tolerated and triggers the alpha-first fallback below.
-    let focus_names: Vec<&str> =
-        projects.iter().filter(|p| p.focus).map(|p| p.name.as_str()).collect();
-    if focus_names.len() > 1 {
-        return Err(WorkspaceError::MultipleFocusProjects {
-            path,
-            names: focus_names.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>().join(", "),
-        });
-    }
-
-    // Default project resolution:
-    // 1. The project carrying `focus = true`, if any.
-    // 2. Else alphabetically-first `auto_start = true` project.
-    // 3. Else alphabetically-first project overall.
+    // Default project resolution (used by `forge` without argv when
+    // the launchpad picker isn't available — fixture tests, smoke
+    // tests, etc.; the production path lands on the launchpad
+    // picker first):
+    // 1. Alphabetically-first `auto_start = true` project.
+    // 2. Else alphabetically-first project overall.
     let default_index = {
         let mut alpha: Vec<usize> = (0..projects.len()).collect();
         alpha.sort_by(|a, b| projects[*a].name.cmp(&projects[*b].name));
-        alpha
-            .iter()
-            .copied()
-            .find(|&i| projects[i].focus)
-            .or_else(|| alpha.iter().copied().find(|&i| projects[i].auto_start))
-            .unwrap_or_else(|| alpha[0])
+        alpha.iter().copied().find(|&i| projects[i].auto_start).unwrap_or_else(|| alpha[0])
     };
 
     Ok(LoadedConfig { orgs, projects, default_index, accounts, ui: parsed.ui })
@@ -538,73 +506,6 @@ config_dir = "~/.claude-subspace"
         );
         let config = load_from_dir(dir.path()).expect("happy path");
         assert_eq!(config.default_project().name, "alpha");
-    }
-
-    #[test]
-    fn focus_project_wins_default_resolution_over_auto_start() {
-        // Even though `zebra` has `auto_start = true` and would be
-        // picked by the alpha-first auto_start rule, `alpha` carries
-        // `focus = true` and takes the focused slot.
-        let dir = tempdir().expect("tempdir");
-        write_config(
-            dir.path(),
-            r#"
-[[orgs]]
-name = "Personal"
-accounts = ["Subspace"]
-[[orgs.projects]]
-name = "zebra"
-path = "~/Projects/zebra"
-auto_start = true
-[[orgs.projects]]
-name = "alpha"
-path = "~/Projects/alpha"
-focus = true
-[[accounts]]
-display_name = "Subspace"
-config_dir = "~/.claude-subspace"
-"#,
-        );
-        let config = load_from_dir(dir.path()).expect("happy path");
-        assert_eq!(config.default_project().name, "alpha");
-        assert!(config.default_project().focus);
-        // `focus = true` implies the project also spawns on launch
-        // via `auto_start_projects`, even though it didn't set
-        // `auto_start = true` explicitly.
-        let starting: Vec<&str> = config.auto_start_projects().map(|p| p.name.as_str()).collect();
-        assert!(starting.contains(&"alpha"), "focus implies auto-start: {starting:?}");
-        assert!(starting.contains(&"zebra"));
-    }
-
-    #[test]
-    fn multiple_focus_projects_errors() {
-        let dir = tempdir().expect("tempdir");
-        write_config(
-            dir.path(),
-            r#"
-[[orgs]]
-name = "Personal"
-accounts = ["Subspace"]
-[[orgs.projects]]
-name = "one"
-path = "~/Projects/one"
-focus = true
-[[orgs.projects]]
-name = "two"
-path = "~/Projects/two"
-focus = true
-[[accounts]]
-display_name = "Subspace"
-config_dir = "~/.claude-subspace"
-"#,
-        );
-        let err = load_from_dir(dir.path()).expect_err("two focus projects should error");
-        match err {
-            WorkspaceError::MultipleFocusProjects { names, .. } => {
-                assert!(names.contains("one") && names.contains("two"));
-            }
-            other => panic!("expected MultipleFocusProjects, got {other:?}"),
-        }
     }
 
     #[test]
