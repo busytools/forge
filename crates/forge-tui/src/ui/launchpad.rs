@@ -581,13 +581,11 @@ fn switch_to_project_and_focus(app: &mut App, project_name: &str) {
 
     // Running bucket match by cwd — matches an auto_start project
     // whose session UUID has already arrived via KeyRenamed.
+    // `find_running_bucket_for_path` excludes the pre-connect
+    // sentinel so the lookup is deterministic when forge was
+    // launched from inside this project's directory.
     let path_str = project_path.to_string_lossy();
-    if let Some(key) = app
-        .sessions
-        .iter()
-        .find(|(_, s)| s.cwd_raw.as_str() == path_str.as_ref())
-        .map(|(k, _)| k.clone())
-    {
+    if let Some(key) = app.find_running_bucket_for_path(path_str.as_ref()) {
         app.switch_active_session(key);
         set_active_view(app, ActiveView::Chat);
         return;
