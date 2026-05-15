@@ -202,24 +202,28 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) {
 /// Inspector pane's `MOUSE_SCROLL_LINES` for consistency.
 const SCROLL_LINES_PER_NOTCH: u16 = 3;
 
-/// First file row in the FILES rail. Rows above this are:
-/// `0` banner (`  FILES`), `1` DIM rule, `2` blank. File index 0
-/// starts at `y == FIRST_FILE_ROW_Y`.
-const FIRST_FILE_ROW_Y: u16 = 3;
 
-/// Wide-tier FILES rail width (mirrors `ui::diff_overlay::RAIL_WIDTH_WIDE`).
-const RAIL_WIDTH_WIDE: u16 = 40;
+/// Wide-tier FILES rail width. Shared with the renderer.
+pub(crate) const RAIL_WIDTH_WIDE: u16 = 40;
 /// Medium-tier FILES rail width.
-const RAIL_WIDTH_MEDIUM: u16 = 30;
-/// Wide-tier terminal width threshold.
-const WIDE_MIN: u16 = 160;
-/// Medium-tier terminal width threshold.
-const MEDIUM_MIN: u16 = 120;
+pub(crate) const RAIL_WIDTH_MEDIUM: u16 = 30;
+/// Wide-tier terminal width threshold (≥ this → Wide).
+pub(crate) const WIDE_MIN: u16 = 160;
+/// Medium-tier terminal width threshold (≥ this → Medium).
+pub(crate) const MEDIUM_MIN: u16 = 120;
 
-/// Mirror of `ui::diff_overlay::rail_width_for` — duplicated here
-/// so the click handler doesn't need to import the renderer module.
-/// Same Wide/Medium/Narrow thresholds.
-fn rail_width_for(terminal_width: u16) -> u16 {
+/// First file row in the FILES rail. Rows above this are:
+/// `0` banner (`FILES`), `1` DIM rule, `2` blank. File index 0
+/// starts at `y == FIRST_FILE_ROW_Y`. The renderer at
+/// `ui::diff_overlay::render_rail` chose this geometry; the click
+/// handler uses it for the inverse mapping.
+pub(crate) const FIRST_FILE_ROW_Y: u16 = 3;
+
+/// Pick the FILES rail width for the current terminal width.
+/// Returns `0` at Narrow tier (rail hidden). Shared with the
+/// renderer at `crate::ui::diff_overlay::render` so the rail's
+/// width and the click-handler's column threshold never drift.
+pub(crate) fn rail_width_for(terminal_width: u16) -> u16 {
     if terminal_width >= WIDE_MIN {
         RAIL_WIDTH_WIDE
     } else if terminal_width >= MEDIUM_MIN {
@@ -401,5 +405,23 @@ mod tests {
         let changed = handle_left_click(&mut state, 5, 4, 100); // Narrow — no rail.
         assert!(!changed);
         assert_eq!(state.current_file_idx, 0);
+    }
+
+    #[test]
+    fn rail_width_picks_wide_at_160() {
+        assert_eq!(rail_width_for(160), RAIL_WIDTH_WIDE);
+        assert_eq!(rail_width_for(200), RAIL_WIDTH_WIDE);
+    }
+
+    #[test]
+    fn rail_width_picks_medium_between_120_and_160() {
+        assert_eq!(rail_width_for(120), RAIL_WIDTH_MEDIUM);
+        assert_eq!(rail_width_for(159), RAIL_WIDTH_MEDIUM);
+    }
+
+    #[test]
+    fn rail_width_collapses_at_narrow_tier() {
+        assert_eq!(rail_width_for(119), 0);
+        assert_eq!(rail_width_for(80), 0);
     }
 }

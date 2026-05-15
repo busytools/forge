@@ -13,6 +13,8 @@
 //! one-shot submit land in follow-up commits.
 
 use forge_workspace::env::git_diff::hunks::{DiffLine, DiffLineKind, FileHunks, FileStatus, Hunk};
+
+use crate::app::diff_overlay::rail_width_for;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -22,15 +24,6 @@ use ratatui::widgets::Paragraph;
 use crate::app::App;
 use crate::app::diff_overlay::DiffOverlayState;
 use crate::ui::theme;
-
-/// Wide-tier FILES rail width (matches the Projects pane).
-const RAIL_WIDTH_WIDE: u16 = 40;
-/// Medium-tier FILES rail width (matches the Projects pane).
-const RAIL_WIDTH_MEDIUM: u16 = 30;
-/// Wide tier starts at this terminal width.
-const WIDE_MIN: u16 = 160;
-/// Medium tier starts at this terminal width.
-const MEDIUM_MIN: u16 = 120;
 
 pub fn render(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
@@ -46,16 +39,6 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         render_narrow(frame, area, overlay);
     } else {
         render_two_pane(frame, area, overlay, rail_width);
-    }
-}
-
-fn rail_width_for(terminal_width: u16) -> u16 {
-    if terminal_width >= WIDE_MIN {
-        RAIL_WIDTH_WIDE
-    } else if terminal_width >= MEDIUM_MIN {
-        RAIL_WIDTH_MEDIUM
-    } else {
-        0
     }
 }
 
@@ -285,23 +268,9 @@ fn truncate_path_front(path: &str, max_width: usize) -> String {
 mod tests {
     use super::*;
 
-    #[test]
-    fn rail_width_picks_wide_at_160() {
-        assert_eq!(rail_width_for(160), RAIL_WIDTH_WIDE);
-        assert_eq!(rail_width_for(200), RAIL_WIDTH_WIDE);
-    }
-
-    #[test]
-    fn rail_width_picks_medium_between_120_and_160() {
-        assert_eq!(rail_width_for(120), RAIL_WIDTH_MEDIUM);
-        assert_eq!(rail_width_for(159), RAIL_WIDTH_MEDIUM);
-    }
-
-    #[test]
-    fn rail_width_collapses_at_narrow_tier() {
-        assert_eq!(rail_width_for(119), 0);
-        assert_eq!(rail_width_for(80), 0);
-    }
+    // `rail_width_for` tests live next to the function definition in
+    // `crate::app::diff_overlay::tests` — this module only tests the
+    // renderer-local helpers below.
 
     #[test]
     fn truncate_path_front_keeps_short_paths_intact() {
