@@ -584,8 +584,14 @@ fn build_pane_lines(
                     // chip is what the user sees as the saved-and-
                     // closed view.
                     if let Some(c) = comments_by_key.get(&line_key) {
-                        lines.push(comment_chip_row(c, gutter_width));
-                        keys.push(BodyRowKey::CommentChip(line_key));
+                        render_comment_chip(
+                            c,
+                            line_key,
+                            gutter_width,
+                            area.width,
+                            &mut lines,
+                            &mut keys,
+                        );
                     }
                     if let Some(input) = overlay.active_input.as_ref()
                         && input.key == line_key
@@ -628,33 +634,95 @@ fn index_comments_by_key(
     map
 }
 
-fn comment_chip_row(comment: &HunkComment, gutter_width: usize) -> Line<'static> {
-    let indent = " ".repeat(gutter_width + 4);
-    let summary = first_line_summary(&comment.comment_text);
-    Line::from(vec![
+/// Render a saved comment as a bordered mini-box, mirroring the
+/// active editor's dialog shape but smaller. Reading it as a box
+/// instantly signals "annotation" — the previous single-line chip
+/// (`💬 L<n> <text>`) blended into the surrounding diff context.
+/// Multi-line comment text wraps into multiple body rows. All
+/// emitted rows carry [`BodyRowKey::CommentChip`] so clicking
+/// anywhere on the box reopens the editor.
+///
+/// ```text
+///   ┌── 💬 Comment on line 371 ──────────┐
+///   │ worth a TODO with the cleanup       │
+///   │ deadline                            │
+///   └─────────────────────────────────────┘
+/// ```
+fn render_comment_chip(
+    comment: &HunkComment,
+    key: LineKey,
+    gutter_width: usize,
+    pane_width: u16,
+    lines: &mut Vec<Line<'static>>,
+    keys: &mut Vec<BodyRowKey>,
+) {
+    let indent_cols = gutter_width + 4;
+    let indent = " ".repeat(indent_cols);
+    let left_offset = 2 + indent_cols;
+    let right_pad = 2usize;
+    let box_width = usize::from(pane_width).saturating_sub(left_offset + right_pad).max(20);
+    let orange = Style::default().fg(theme::RUST_ORANGE);
+
+    // Top border with embedded title.
+    let title = format!(" 💬 Comment on line {} ", comment.line);
+    let title_chars = title.chars().count();
+    let dash_after = box_width.saturating_sub(1 + 2 + title_chars + 1);
+    let top = format!("┌──{title}{}┐", "─".repeat(dash_after));
+    lines.push(Line::from(vec![
         Span::raw("  "),
-        Span::raw(indent),
-        Span::styled("💬 ", Style::default().fg(theme::RUST_ORANGE)),
-        Span::styled(format!("L{} ", comment.line), Style::default().fg(theme::DIM)),
-        Span::raw(summary),
-    ])
+        Span::raw(indent.clone()),
+        Span::styled(top, orange),
+    ]));
+    keys.push(BodyRowKey::CommentChip(key));
+
+    // Body — wrap the comment_text into rows that fit the box's
+    // inner width (`│ … │` consumes 4 cells of chrome). Keep the
+    // wrap simple: break on the box width and on explicit newlines.
+    let inner_width = box_width.saturating_sub(4);
+    let wrapped = wrap_chip_body(&comment.comment_text, inner_width);
+    for row in &wrapped {
+        let row_chars = row.chars().count();
+        let pad = inner_width.saturating_sub(row_chars);
+        lines.push(Line::from(vec![
+            Span::raw("  "),
+            Span::raw(indent.clone()),
+            Span::styled("│ ", orange),
+            Span::raw(row.clone()),
+            Span::raw(" ".repeat(pad)),
+            Span::styled(" │", orange),
+        ]));
+        keys.push(BodyRowKey::CommentChip(key));
+    }
+
+    // Bottom border.
+    let bottom = format!("└{}┘", "─".repeat(box_width.saturating_sub(2)));
+    lines.push(Line::from(vec![Span::raw("  "), Span::raw(indent), Span::styled(bottom, orange)]));
+    keys.push(BodyRowKey::CommentChip(key));
 }
 
-/// Max characters the chip summary holds before truncation. Beyond
-/// this the chip would either wrap or push the rail too wide; 72
-/// matches GitHub's comment-collapsed preview length.
-const CHIP_SUMMARY_MAX: usize = 72;
-
-/// Trim multi-line comment text to a single-line summary for the
-/// chip. Keeps the chip rail one row tall regardless of edit length.
-fn first_line_summary(text: &str) -> String {
-    let line = text.lines().next().unwrap_or("");
-    if line.chars().count() <= CHIP_SUMMARY_MAX {
-        line.to_owned()
-    } else {
-        let truncated: String = line.chars().take(CHIP_SUMMARY_MAX.saturating_sub(1)).collect();
-        format!("{truncated}…")
+/// Wrap `text` into rows that fit within `max_chars`, respecting
+/// explicit newlines. A line longer than `max_chars` is chopped at
+/// the boundary (no word-aware soft-wrap in v1; the use case is
+/// short review notes where character-based wrap is fine).
+fn wrap_chip_body(text: &str, max_chars: usize) -> Vec<String> {
+    if max_chars == 0 {
+        return vec![String::new()];
     }
+    let mut out = Vec::new();
+    for source_line in text.lines() {
+        if source_line.is_empty() {
+            out.push(String::new());
+            continue;
+        }
+        let chars: Vec<char> = source_line.chars().collect();
+        for chunk in chars.chunks(max_chars) {
+            out.push(chunk.iter().collect::<String>());
+        }
+    }
+    if out.is_empty() {
+        out.push(String::new());
+    }
+    out
 }
 
 /// Render the active comment editor as a bordered box anchored
@@ -1114,20 +1182,30 @@ mod tests {
     }
 
     #[test]
-    fn first_line_summary_keeps_short_lines() {
-        assert_eq!(first_line_summary("hello"), "hello");
+    fn wrap_chip_body_keeps_short_text_intact() {
+        let rows = wrap_chip_body("hello", 40);
+        assert_eq!(rows, vec!["hello"]);
     }
 
     #[test]
-    fn first_line_summary_takes_first_line_only() {
-        assert_eq!(first_line_summary("line one\nline two"), "line one");
+    fn wrap_chip_body_respects_explicit_newlines() {
+        let rows = wrap_chip_body("line one\nline two", 40);
+        assert_eq!(rows, vec!["line one", "line two"]);
     }
 
     #[test]
-    fn first_line_summary_truncates_long_lines() {
-        let long = "x".repeat(200);
-        let s = first_line_summary(&long);
-        assert_eq!(s.chars().count(), 72);
-        assert!(s.ends_with('…'));
+    fn wrap_chip_body_chops_long_lines_at_max_chars() {
+        let long = "x".repeat(50);
+        let rows = wrap_chip_body(&long, 20);
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0].chars().count(), 20);
+        assert_eq!(rows[1].chars().count(), 20);
+        assert_eq!(rows[2].chars().count(), 10);
+    }
+
+    #[test]
+    fn wrap_chip_body_handles_empty_input() {
+        let rows = wrap_chip_body("", 40);
+        assert_eq!(rows, vec![String::new()]);
     }
 }
