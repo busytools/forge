@@ -1125,17 +1125,18 @@ impl Workspace {
     /// which yields a different (commit-vs-commit) diff.
     /// Untracked files round-trip only when `target == "HEAD"`.
     ///
-    /// Infallible: scanner failures collapse to an empty `Vec` with
-    /// structured WARN logs. Callers should render a "no changes"
-    /// empty state when the return is empty.
-    ///
     /// Single-shot — no polling, no caching. Each call runs a fresh
     /// scan against the working tree at the moment of invocation.
     ///
     /// Returns a [`forge_agent::env::git_diff::hunks::ScanOutcome`]
-    /// so callers can tell "scan ran fine, no diff" from "scan
-    /// failed" — both produced an identical empty `Vec` under the
-    /// previous shape.
+    /// — `files` carries one entry per changed file (empty when the
+    /// tree is genuinely clean OR when the scanner crashed),
+    /// `scanner_ok` is `false` when at least one underlying `git`
+    /// subprocess hit Failed / Oversize. Callers MUST check
+    /// `scanner_ok` and surface a "scan failed" message rather than
+    /// rendering an empty `files` as a clean tree; subprocess
+    /// failures still emit structured WARN logs under the
+    /// `ENV_GIT` target for operator diagnosis.
     pub async fn scan_git_diff_hunks(
         &self,
         cwd: &std::path::Path,
