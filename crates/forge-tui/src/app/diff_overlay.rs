@@ -41,6 +41,30 @@ pub struct LineKey {
     pub line_idx: usize,
 }
 
+/// What a single rendered row in the left FILES rail corresponds
+/// to. Built by `render_rail` and stashed on `DiffOverlayState` so
+/// the mouse handler resolves a click (`row + rail_scroll`) into a
+/// file index — or recognises the click as hitting non-interactive
+/// chrome / a directory header — without re-walking the file list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RailRowKey {
+    /// `FILES` banner. Non-clickable.
+    Banner,
+    /// DIM rule under the banner. Non-clickable.
+    Rule,
+    /// Blank spacer. Non-clickable.
+    Blank,
+    /// Directory header in the tree (e.g. `crates/`,
+    /// `forge-agent/src/env/`). Non-clickable in v1.
+    Directory,
+    /// File leaf — click switches the right pane to this file.
+    File { file_idx: usize },
+    /// `+N untracked suppressed (cap M)` notice row at the bottom
+    /// of the rail when the scanner hit its untracked cap. Non-
+    /// clickable.
+    UntrackedNotice,
+}
+
 /// What a single rendered row in the right pane corresponds to.
 /// Built by the renderer alongside the `Vec<Line>` it returns, and
 /// stashed on `DiffOverlayState` so the mouse handler can resolve a
@@ -441,6 +465,19 @@ pub struct DiffOverlayState {
     /// each frame so the hot path is O(1) per file row instead of
     /// O(comments) per render.
     pub comment_counts: Vec<u32>,
+    /// Parallel index for the left FILES rail: for every rendered
+    /// rail row, what does it represent. Click handler walks this
+    /// (offset by `rail_scroll`) to resolve `mouse.row` → an action.
+    /// Filled fresh on every render.
+    pub rail_keys: Vec<RailRowKey>,
+    /// Number of leading rows in `body_keys` that are pinned (not
+    /// scrolled with `body_scroll`). Wide-tier sets this to
+    /// `BODY_HEAD_ROWS` because the renderer keeps the banner +
+    /// rule + blank pinned above the scrolling tail. Narrow-tier
+    /// strips those rows out of `body_keys` and sets this to `0`.
+    /// The click handler reads it to decide whether `body_scroll`
+    /// should offset a given row.
+    pub body_head_rows: usize,
     /// Screen-row coordinate of the narrow-tier header line, set by
     /// the renderer at narrow-tier draw time. `None` when the last
     /// render was a wide/medium tier (rail is up, no narrow header).
@@ -504,6 +541,8 @@ impl DiffOverlayState {
             narrow_header_row_y: None,
             narrow_arrow_cols: None,
             banner_close_col_range: None,
+            rail_keys: Vec::new(),
+            body_head_rows: 0,
         }
     }
 
@@ -531,6 +570,8 @@ impl DiffOverlayState {
             narrow_header_row_y: None,
             narrow_arrow_cols: None,
             banner_close_col_range: None,
+            rail_keys: Vec::new(),
+            body_head_rows: 0,
         }
     }
 
@@ -763,11 +804,17 @@ fn save_active_input(app: &mut App) {
         DiffLineKind::Added | DiffLineKind::Context => diff_line.new_line,
     }
     .unwrap_or(0);
+    // Anchor on the single clicked line, not the whole hunk. A
+    // comment on a brand-new file would otherwise pull the entire
+    // file into the bundle (Added hunks span the file body); now
+    // the bundle stays compact and the agent gets precise
+    // per-line context. Matches GitHub's inline-review markdown
+    // (quote just the line under the `**Line N**` heading).
     let comment = HunkComment {
         key,
         path: file.path.clone(),
         line: line_no,
-        hunk_context: hunk.lines.clone(),
+        hunk_context: vec![diff_line.clone()],
         comment_text: text,
     };
     // Replace any existing comment at the same key (saving an
@@ -800,6 +847,12 @@ pub(crate) const MEDIUM_MIN: u16 = 120;
 /// `ui::diff_overlay::render_rail` chose this geometry; the click
 /// handler uses it for the inverse mapping.
 pub(crate) const FIRST_FILE_ROW_Y: u16 = 3;
+
+/// Number of head rows (banner + rule + blank) at the top of the
+/// DIFF body pane that DON'T scroll with `body_scroll`. The click
+/// handler uses this to map `mouse.row` into the right `body_keys`
+/// index without applying the scroll offset to head clicks.
+pub(crate) const BODY_HEAD_ROWS: usize = 3;
 
 /// Pick the FILES rail width for the current terminal width.
 /// Returns `0` at Narrow tier (rail hidden). Shared with the
@@ -915,21 +968,36 @@ fn handle_left_click(
 }
 
 fn handle_rail_click(overlay: &mut DiffOverlayState, row: u16) -> MouseEffect {
-    if row < FIRST_FILE_ROW_Y {
-        return MouseEffect::default();
-    }
-    let offset = usize::from(row - FIRST_FILE_ROW_Y);
-    let visible_idx = offset.checked_add(usize::from(overlay.rail_scroll));
-    let Some(idx) = visible_idx else {
+    // The tree rail mixes directory headers (non-clickable) with
+    // file leaves. We resolve the click by walking `rail_keys`
+    // (parallel to the rendered rows) at offset `rail_scroll`.
+    // The banner / rule / blank rows live at the head of the list
+    // and don't scroll — they're always at the absolute screen
+    // rows 0, 1, 2. The scrollable portion starts at row 3
+    // (== FIRST_FILE_ROW_Y).
+    let row_idx_in_keys = if row < FIRST_FILE_ROW_Y {
+        usize::from(row)
+    } else {
+        let scrollable_offset = usize::from(row - FIRST_FILE_ROW_Y);
+        usize::from(FIRST_FILE_ROW_Y)
+            .saturating_add(scrollable_offset)
+            .saturating_add(usize::from(overlay.rail_scroll))
+    };
+    let Some(key) = overlay.rail_keys.get(row_idx_in_keys).copied() else {
         return MouseEffect::default();
     };
-    if idx >= overlay.files.len() {
+    let RailRowKey::File { file_idx } = key else {
+        // Banner / rule / blank / directory / untracked-notice —
+        // non-clickable in v1.
+        return MouseEffect::default();
+    };
+    if file_idx >= overlay.files.len() {
         return MouseEffect::default();
     }
-    if overlay.current_file_idx == idx {
+    if overlay.current_file_idx == file_idx {
         return MouseEffect::default();
     }
-    overlay.current_file_idx = idx;
+    overlay.current_file_idx = file_idx;
     overlay.body_scroll = 0;
     // Close the active editor on file switch — the editor is
     // anchored to a specific line in the previous file, and the
@@ -997,8 +1065,18 @@ fn handle_body_click(overlay: &mut DiffOverlayState, column: u16, row: u16) -> M
     if row < overlay.pane_origin_row {
         return MouseEffect::default();
     }
-    let local_row = row - overlay.pane_origin_row;
-    let body_idx = usize::from(local_row).checked_add(usize::from(overlay.body_scroll));
+    let local_row = usize::from(row - overlay.pane_origin_row);
+    // The first `body_head_rows` rows are pinned and don't scroll.
+    // Wide tier sets this to BODY_HEAD_ROWS so a click in the
+    // banner/rule/blank zone maps directly to body_keys[local_row].
+    // Narrow tier sets it to 0 because the renderer already stripped
+    // the head rows from body_keys, so every body row is scrollable.
+    let head = overlay.body_head_rows;
+    let body_idx = if local_row < head {
+        Some(local_row)
+    } else {
+        local_row.checked_add(usize::from(overlay.body_scroll))
+    };
     let Some(idx) = body_idx else {
         return MouseEffect::default();
     };
@@ -1208,14 +1286,26 @@ mod tests {
     use forge_workspace::env::git_diff::hunks::FileStatus;
 
     fn sample_state() -> DiffOverlayState {
-        DiffOverlayState::new(
+        let mut state = DiffOverlayState::new(
             PathBuf::from("/tmp/repo"),
             "HEAD".to_owned(),
             vec![
                 FileHunks { path: "a.rs".into(), status: FileStatus::Modified, hunks: vec![] },
                 FileHunks { path: "b.rs".into(), status: FileStatus::Added, hunks: vec![] },
             ],
-        )
+        );
+        // Simulate what the renderer's tree pass would stash on
+        // overlay state for the rail click handler. The two files
+        // are top-level (no shared directory prefix) so the tree
+        // is flat: banner/rule/blank then two file leaves.
+        state.rail_keys = vec![
+            RailRowKey::Banner,
+            RailRowKey::Rule,
+            RailRowKey::Blank,
+            RailRowKey::File { file_idx: 0 },
+            RailRowKey::File { file_idx: 1 },
+        ];
+        state
     }
 
     #[test]

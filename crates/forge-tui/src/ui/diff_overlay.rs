@@ -18,7 +18,8 @@
 use forge_workspace::env::git_diff::hunks::{DiffLine, DiffLineKind, FileHunks, FileStatus, Hunk};
 
 use crate::app::diff_overlay::{
-    ActiveCommentInput, BodyRowKey, HunkComment, LineKey, rail_width_for,
+    ActiveCommentInput, BODY_HEAD_ROWS, BodyRowKey, HunkComment, LineKey, RailRowKey,
+    rail_width_for,
 };
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -48,10 +49,17 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         return;
     }
 
+    // Reserve the bottom row of the overlay for the footer (key
+    // hints + comment count). Without this, the body Paragraph
+    // would paint into that row first and the footer would draw
+    // on top, visually overwriting whatever diff content was the
+    // last visible line.
+    let usable_height = area.height.saturating_sub(1);
+    let usable_area = Rect { x: area.x, y: area.y, width: area.width, height: usable_height };
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Length(rail_width), Constraint::Length(1), Constraint::Min(0)])
-        .split(area);
+        .split(usable_area);
     let rail_area = chunks[0];
     let sep_area = chunks[1];
     let pane_area = chunks[2];
@@ -61,7 +69,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     // them is wasted work) and surface a "terminal too short"
     // notice so the user knows why the body is empty.
     if pane_area.height < 3 {
-        render_rail(frame, rail_area, overlay);
+        render_rail(frame, rail_area, app);
         render_separator(frame, sep_area);
         if pane_area.height >= 1 {
             frame.render_widget(
@@ -77,6 +85,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             o.pane_origin_col = pane_area.x;
             o.pane_width = pane_area.width;
             o.body_keys.clear();
+            o.body_head_rows = 0;
             o.banner_close_col_range = None;
             o.narrow_header_row_y = None;
             o.narrow_arrow_cols = None;
@@ -85,19 +94,23 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     }
 
     // Build the body line list up-front so we know its total
-    // height; clamp body_scroll against (total - visible) so a
-    // wheel-past-end leaves a useful one-screen-of-tail visible
-    // instead of a blank pane. Writeback to overlay state keeps
-    // the wheel handler in sync with whatever the renderer last
-    // saw, and stashes the parallel BodyRowKey list + pane geometry
-    // + banner close-col range for the mouse hit-tester.
+    // height; clamp body_scroll against (total - visible_tail) so
+    // a wheel-past-end leaves a useful one-screen-of-tail visible.
+    // Banner + rule + blank are PINNED — they don't scroll with the
+    // body, so the diff target / per-file totals / ✕ close
+    // affordance stay visible while the user pages through hunks.
     let (body_lines, body_keys, banner_close_range) = build_pane_lines(overlay, pane_area);
-    let max_offset = body_lines.len().saturating_sub(usize::from(pane_area.height));
+    let head_count = BODY_HEAD_ROWS.min(body_lines.len());
+    let tail_count = body_lines.len().saturating_sub(head_count);
+    let head_height = u16::try_from(head_count).unwrap_or(u16::MAX);
+    let tail_height = pane_area.height.saturating_sub(head_height);
+    let max_offset = tail_count.saturating_sub(usize::from(tail_height));
     let max_offset_u16 = u16::try_from(max_offset).unwrap_or(u16::MAX);
     let body_scroll = if let Some(overlay_mut) = app.diff_overlay.as_mut() {
         let clamped = overlay_mut.body_scroll.min(max_offset_u16);
         overlay_mut.body_scroll = clamped;
         overlay_mut.body_keys = body_keys;
+        overlay_mut.body_head_rows = BODY_HEAD_ROWS;
         overlay_mut.pane_origin_row = pane_area.y;
         overlay_mut.pane_origin_col = pane_area.x;
         overlay_mut.pane_width = pane_area.width;
@@ -112,10 +125,21 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         0
     };
 
-    let Some(overlay) = app.diff_overlay.as_ref() else { return };
-    render_rail(frame, rail_area, overlay);
+    render_rail(frame, rail_area, app);
     render_separator(frame, sep_area);
-    frame.render_widget(Paragraph::new(body_lines).scroll((body_scroll, 0)), pane_area);
+    let Some(overlay) = app.diff_overlay.as_ref() else { return };
+    // Split into pinned head + scrolling tail.
+    let (head, tail) = body_lines.split_at(head_count);
+    let head_rect =
+        Rect { x: pane_area.x, y: pane_area.y, width: pane_area.width, height: head_height };
+    let tail_rect = Rect {
+        x: pane_area.x,
+        y: pane_area.y.saturating_add(head_height),
+        width: pane_area.width,
+        height: tail_height,
+    };
+    frame.render_widget(Paragraph::new(head.to_vec()), head_rect);
+    frame.render_widget(Paragraph::new(tail.to_vec()).scroll((body_scroll, 0)), tail_rect);
     render_footer(frame, area, overlay);
 }
 
@@ -127,38 +151,42 @@ fn render_missing_state(frame: &mut Frame, area: Rect) {
     );
 }
 
-fn render_rail(frame: &mut Frame, area: Rect, overlay: &DiffOverlayState) {
+/// Render the FILES rail as a box-drawing tree (mirroring the
+/// Inspector GIT section's shape). Builds a tree from `overlay.files`,
+/// folds single-child directory chains, then walks the tree to
+/// emit one [`ratatui::text::Line`] per directory header and one per
+/// file leaf. Writes the parallel `rail_keys` index + clamped
+/// `rail_scroll` back to overlay state so the click handler can
+/// resolve `mouse.row` → action without re-walking.
+fn render_rail(frame: &mut Frame, area: Rect, app: &mut App) {
     if area.height < 3 {
         return;
     }
-    let inner_width = usize::from(area.width.saturating_sub(6));
-    // Banner + rule + blank consume 3 rows; the file list scrolls
-    // through whatever remains. `rail_scroll` advances the visible
-    // window; the click handler reads it for the inverse mapping.
-    let visible = usize::from(area.height.saturating_sub(3));
-    let max_offset = overlay.files.len().saturating_sub(visible);
-    let max_offset_u16 = u16::try_from(max_offset).unwrap_or(u16::MAX);
-    let scroll = overlay.rail_scroll.min(max_offset_u16);
-    let mut lines = Vec::with_capacity(visible + 5);
-    lines.push(banner_row("FILES"));
-    lines.push(rule_row(area.width));
-    lines.push(Line::default());
-    let start = usize::from(scroll);
-    let end = (start + visible).min(overlay.files.len());
-    // Pre-cached on overlay state; recomputed on save / cancel /
-    // reopen, not on render — keeps the hot path O(visible) instead
-    // of O(comments + visible) per frame.
-    for idx in start..end {
-        let file = &overlay.files[idx];
-        let comments = overlay.comment_counts.get(idx).copied().unwrap_or(0);
-        lines.push(file_rail_row(file, idx == overlay.current_file_idx, inner_width, comments));
-    }
+    let Some(overlay) = app.diff_overlay.as_ref() else { return };
+    let inner_width = usize::from(area.width.saturating_sub(4));
+
+    // Build the full row list (banner + rule + blank + tree rows +
+    // optional untracked notice). We materialise everything because
+    // rail_scroll clamps against the total row count, and we need
+    // the full Vec<Line> for ratatui's Paragraph anyway.
+    let mut all_lines: Vec<Line<'static>> = Vec::with_capacity(overlay.files.len() + 6);
+    let mut all_keys: Vec<RailRowKey> = Vec::with_capacity(overlay.files.len() + 6);
+    all_lines.push(banner_row("FILES"));
+    all_keys.push(RailRowKey::Banner);
+    all_lines.push(rule_row(area.width));
+    all_keys.push(RailRowKey::Rule);
+    all_lines.push(Line::default());
+    all_keys.push(RailRowKey::Blank);
+
+    let tree = build_rail_tree(&overlay.files);
+    walk_rail_tree(&tree, "", true, &mut all_lines, &mut all_keys, overlay, inner_width);
+
     if overlay.untracked_suppressed > 0 {
         // Surface the cap overflow so a fresh-repo state with many
         // untracked files doesn't render identically to a clean
         // tree. Yellow signals "suppressed work-product, not a
         // failure" — matches the Untracked status glyph colour.
-        lines.push(Line::from(Span::styled(
+        all_lines.push(Line::from(Span::styled(
             format!(
                 "  +{} untracked suppressed (cap {})",
                 overlay.untracked_suppressed,
@@ -166,8 +194,254 @@ fn render_rail(frame: &mut Frame, area: Rect, overlay: &DiffOverlayState) {
             ),
             Style::default().fg(theme::STATUS_WARNING),
         )));
+        all_keys.push(RailRowKey::UntrackedNotice);
     }
-    frame.render_widget(Paragraph::new(lines), area);
+
+    // The first 3 rows (banner / rule / blank) don't scroll. Whatever
+    // remains scrolls; clamp `rail_scroll` so wheel-past-end leaves
+    // the tail visible. The Paragraph's `scroll((y, 0))` works on
+    // the full Vec, so we pass it the offset directly.
+    let scrollable_rows = all_lines.len().saturating_sub(3);
+    let visible = usize::from(area.height.saturating_sub(3));
+    let max_offset = scrollable_rows.saturating_sub(visible);
+    let max_offset_u16 = u16::try_from(max_offset).unwrap_or(u16::MAX);
+    let scroll = if let Some(o) = app.diff_overlay.as_mut() {
+        let clamped = o.rail_scroll.min(max_offset_u16);
+        o.rail_scroll = clamped;
+        o.rail_keys = all_keys;
+        clamped
+    } else {
+        0
+    };
+
+    // Scroll-aware Paragraph: head (banner+rule+blank) stays pinned,
+    // the rest scrolls. ratatui's Paragraph.scroll((y, 0)) scrolls
+    // the WHOLE content, which would hide the banner. Instead, paint
+    // the head pinned at the top of `area`, then a scroll-aware
+    // sub-area for the remainder.
+    let head_rect = Rect { x: area.x, y: area.y, width: area.width, height: 3 };
+    let body_rect =
+        Rect { x: area.x, y: area.y + 3, width: area.width, height: area.height.saturating_sub(3) };
+    let (head, tail) = all_lines.split_at(3.min(all_lines.len()));
+    frame.render_widget(Paragraph::new(head.to_vec()), head_rect);
+    frame.render_widget(Paragraph::new(tail.to_vec()).scroll((scroll, 0)), body_rect);
+}
+
+/// Tree node for the diff overlay's FILES rail. Mirrors the
+/// Inspector GIT section's tree pattern: directories are inner
+/// nodes (no leaf data), files are leaves carrying their
+/// `file_idx` (so the click handler can resolve the row back to
+/// `overlay.files[idx]`) + status + comment count.
+#[derive(Debug)]
+struct RailNode {
+    label: String,
+    leaf: Option<RailLeaf>,
+    children: Vec<RailNode>,
+}
+
+#[derive(Debug)]
+struct RailLeaf {
+    file_idx: usize,
+    status: FileStatus,
+}
+
+impl RailNode {
+    fn is_dir(&self) -> bool {
+        self.leaf.is_none()
+    }
+}
+
+fn build_rail_tree(files: &[FileHunks]) -> RailNode {
+    let mut root = RailNode { label: String::new(), leaf: None, children: Vec::new() };
+    for (file_idx, file) in files.iter().enumerate() {
+        insert_rail_file(&mut root, &file.path, file_idx, file.status);
+    }
+    sort_rail_tree(&mut root);
+    fold_rail_chains(&mut root);
+    root
+}
+
+fn insert_rail_file(node: &mut RailNode, path: &str, file_idx: usize, status: FileStatus) {
+    let mut comps = path.split('/').filter(|c| !c.is_empty());
+    let Some(first) = comps.next() else { return };
+    let rest: Vec<&str> = comps.collect();
+    if rest.is_empty() {
+        node.children.push(RailNode {
+            label: first.to_owned(),
+            leaf: Some(RailLeaf { file_idx, status }),
+            children: Vec::new(),
+        });
+        return;
+    }
+    let dir_idx =
+        node.children.iter().position(|c| c.is_dir() && c.label == first).unwrap_or_else(|| {
+            node.children.push(RailNode {
+                label: first.to_owned(),
+                leaf: None,
+                children: Vec::new(),
+            });
+            node.children.len() - 1
+        });
+    let remainder = rest.join("/");
+    insert_rail_file(&mut node.children[dir_idx], &remainder, file_idx, status);
+}
+
+fn sort_rail_tree(node: &mut RailNode) {
+    node.children.sort_by(|a, b| match (a.is_dir(), b.is_dir()) {
+        (true, false) => std::cmp::Ordering::Less,
+        (false, true) => std::cmp::Ordering::Greater,
+        _ => a.label.cmp(&b.label),
+    });
+    for c in &mut node.children {
+        sort_rail_tree(c);
+    }
+}
+
+/// Collapse single-child directory chains so `crates/forge-tui/src/app/`
+/// renders as one label instead of four nested levels.
+fn fold_rail_chains(node: &mut RailNode) {
+    for c in &mut node.children {
+        fold_rail_chains(c);
+    }
+    for c in &mut node.children {
+        while c.is_dir() && c.children.len() == 1 && c.children[0].is_dir() {
+            let mut only = c.children.remove(0);
+            c.label.push('/');
+            c.label.push_str(&only.label);
+            c.children = std::mem::take(&mut only.children);
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn walk_rail_tree(
+    node: &RailNode,
+    prefix: &str,
+    is_top_level: bool,
+    lines: &mut Vec<Line<'static>>,
+    keys: &mut Vec<RailRowKey>,
+    overlay: &DiffOverlayState,
+    inner_width: usize,
+) {
+    let count = node.children.len();
+    for (idx, child) in node.children.iter().enumerate() {
+        let is_last = idx + 1 == count;
+        emit_rail_node(child, prefix, is_top_level, is_last, lines, keys, overlay, inner_width);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn emit_rail_node(
+    node: &RailNode,
+    prefix: &str,
+    is_top_level: bool,
+    is_last: bool,
+    lines: &mut Vec<Line<'static>>,
+    keys: &mut Vec<RailRowKey>,
+    overlay: &DiffOverlayState,
+    inner_width: usize,
+) {
+    let connector = if is_top_level {
+        ""
+    } else if is_last {
+        "\u{2514}\u{2500} "
+    } else {
+        "\u{251c}\u{2500} "
+    };
+    let line_prefix = format!("{prefix}{connector}");
+    match node.leaf.as_ref() {
+        None => {
+            // Directory — append trailing `/` so the eye reads it as
+            // a folder, not a file with no extension.
+            lines.push(rail_directory_row(&line_prefix, &node.label, inner_width));
+            keys.push(RailRowKey::Directory);
+        }
+        Some(leaf) => {
+            let is_current = overlay.current_file_idx == leaf.file_idx;
+            let comment_count = overlay.comment_counts.get(leaf.file_idx).copied().unwrap_or(0);
+            lines.push(rail_file_row(
+                &line_prefix,
+                &node.label,
+                leaf.status,
+                is_current,
+                comment_count,
+                inner_width,
+            ));
+            keys.push(RailRowKey::File { file_idx: leaf.file_idx });
+        }
+    }
+    if node.children.is_empty() {
+        return;
+    }
+    let continuation = if is_top_level {
+        String::new()
+    } else if is_last {
+        format!("{prefix}   ")
+    } else {
+        format!("{prefix}\u{2502}  ")
+    };
+    let count = node.children.len();
+    for (idx, child) in node.children.iter().enumerate() {
+        let child_is_last = idx + 1 == count;
+        emit_rail_node(
+            child,
+            &continuation,
+            false,
+            child_is_last,
+            lines,
+            keys,
+            overlay,
+            inner_width,
+        );
+    }
+}
+
+fn rail_directory_row(line_prefix: &str, label: &str, _inner_width: usize) -> Line<'static> {
+    let dim = Style::default().fg(theme::DIM);
+    Line::from(vec![
+        Span::raw("  "),
+        Span::styled(line_prefix.to_owned(), dim),
+        Span::styled(format!("{label}/"), dim),
+    ])
+}
+
+fn rail_file_row(
+    line_prefix: &str,
+    label: &str,
+    status: FileStatus,
+    is_current: bool,
+    comment_count: u32,
+    inner_width: usize,
+) -> Line<'static> {
+    let dim = Style::default().fg(theme::DIM);
+    let (status_glyph, status_color) = status_glyph(status);
+    let marker = if is_current { "▸" } else { " " };
+    let marker_color = if is_current { theme::RUST_ORANGE } else { theme::DIM };
+    let prefix_chars = line_prefix.chars().count();
+    // Layout: "  " + tree_prefix + marker + " " + status + "  " + label + " " + chip
+    // The chip lands at the right edge if it fits.
+    let chip_str = if comment_count > 0 { format!("💬 {comment_count}") } else { String::new() };
+    let chip_chars = if comment_count > 0 { chip_str.chars().count() + 2 } else { 0 };
+    let fixed_chars = 1 + 1 + 1 + 2; // marker + " " + status_glyph + "  "
+    let label_budget = inner_width
+        .saturating_sub(prefix_chars)
+        .saturating_sub(fixed_chars)
+        .saturating_sub(chip_chars);
+    let fitted = truncate_path_front(label, label_budget.max(1));
+    Line::from(vec![
+        Span::raw("  "),
+        Span::styled(line_prefix.to_owned(), dim),
+        Span::styled(marker.to_owned(), Style::default().fg(marker_color)),
+        Span::raw(" "),
+        Span::styled(status_glyph.to_owned(), Style::default().fg(status_color)),
+        Span::raw("  "),
+        Span::raw(fitted),
+        if comment_count > 0 {
+            Span::styled(format!("  {chip_str}"), Style::default().fg(theme::RUST_ORANGE))
+        } else {
+            Span::raw("")
+        },
+    ])
 }
 
 fn render_separator(frame: &mut Frame, area: Rect) {
@@ -433,11 +707,18 @@ fn hunk_header_row(hunk: &Hunk) -> Line<'static> {
     Line::from(Span::styled(text, Style::default().fg(Color::Cyan)))
 }
 
+/// Background tint for added lines — dark green matching GitHub's
+/// dark-mode added-line surface.
+const ADDED_BG: Color = Color::Rgb(3, 58, 22);
+/// Background tint for removed lines — dark red matching GitHub's
+/// dark-mode removed-line surface.
+const REMOVED_BG: Color = Color::Rgb(103, 6, 12);
+
 fn diff_line_row(line: &DiffLine, gutter_width: usize) -> Line<'static> {
-    let (marker, marker_color) = match line.kind {
-        DiffLineKind::Added => ("+", Color::Green),
-        DiffLineKind::Removed => ("-", Color::Red),
-        DiffLineKind::Context => (" ", theme::DIM),
+    let (marker, marker_color, line_bg) = match line.kind {
+        DiffLineKind::Added => ("+", Color::Green, Some(ADDED_BG)),
+        DiffLineKind::Removed => ("-", Color::Red, Some(REMOVED_BG)),
+        DiffLineKind::Context => (" ", theme::DIM, None),
     };
     let line_num = match line.kind {
         DiffLineKind::Added | DiffLineKind::Context => line.new_line,
@@ -447,22 +728,28 @@ fn diff_line_row(line: &DiffLine, gutter_width: usize) -> Line<'static> {
         Some(n) => format!("{n:>gutter_width$}"),
         None => " ".repeat(gutter_width),
     };
-    // `line.text.clone()` is a per-frame cost. Eliminating it
-    // requires either (a) a per-file cached `Vec<Line<'static>>`
-    // invalidated on file switch / comment mutation, or (b)
-    // lifetime-borrow lines from `overlay.files` which fights
-    // ratatui's `Paragraph::new(Vec<Line<'static>>)` signature.
-    // The current cost is bounded by file size (typical hunks are
-    // tens of lines, rendered viewports are hundreds); not worth
-    // the cache-invalidation surface for what's already
-    // sub-millisecond on real diffs.
+    // Per-line background tint mimics GitHub's added/removed surfaces.
+    // The whole text-side of the row carries the tint (including the
+    // marker and a trailing space); the leading indent + gutter stay
+    // on the default background so the eye sees the change boundary
+    // start exactly where the marker does.
+    // `line.text.clone()` is a per-frame cost flagged but acceptable
+    // — bounded by hunk size and dominated by per-frame layout cost.
+    let marker_style = match line_bg {
+        Some(bg) => Style::default().fg(marker_color).bg(bg),
+        None => Style::default().fg(marker_color),
+    };
+    let text_style = match line_bg {
+        Some(bg) => Style::default().bg(bg),
+        None => Style::default(),
+    };
     Line::from(vec![
         Span::raw("  "),
         Span::styled(gutter, Style::default().fg(theme::DIM)),
         Span::raw(" "),
-        Span::styled(marker, Style::default().fg(marker_color)),
-        Span::raw(" "),
-        Span::raw(line.text.clone()),
+        Span::styled(marker, marker_style),
+        Span::styled(" ", text_style),
+        Span::styled(line.text.clone(), text_style),
     ])
 }
 
@@ -533,6 +820,9 @@ fn render_narrow(frame: &mut Frame, area: Rect, app: &mut App) {
     // can't trigger close against stale wide-tier coords.
     if let Some(o) = app.diff_overlay.as_mut() {
         o.body_keys = body_keys;
+        // Narrow stripped the banner+rule+blank head rows from
+        // body_keys; every remaining row scrolls with body_scroll.
+        o.body_head_rows = 0;
         o.pane_origin_row = body_rect.y;
         o.pane_origin_col = body_rect.x;
         o.pane_width = body_rect.width;
@@ -594,6 +884,11 @@ fn narrow_header_row(
         if removed > 0 {
             spans.push(Span::raw(" "));
             spans.push(Span::styled(format!("-{removed}"), Style::default().fg(Color::Red)));
+        }
+        if added > 0 || removed > 0 {
+            // 1-cell trailing pad so totals don't touch the right
+            // edge — matches the Inspector GIT panel convention.
+            spans.push(Span::raw(" "));
         }
     }
     let arrow_cols = if total > 0 { Some((left_arrow_col, right_arrow_col)) } else { None };
@@ -660,9 +955,12 @@ fn pane_banner_row(
     // Always push the close spans — they may clip but the column
     // budget check below decides whether the click handler trusts
     // the glyph position. Keeping the spans means the user sees
-    // the ✕ when the terminal is wide enough.
+    // the ✕ when the terminal is wide enough. Trailing 1-cell pad
+    // matches the Inspector GIT panel convention so banner totals
+    // / close glyph don't touch the pane's right edge.
     spans.push(Span::raw("  "));
     spans.push(Span::styled("✕", Style::default().fg(theme::DIM)));
+    spans.push(Span::raw(" "));
     let visible_range =
         if close_end_col <= pane_end_col { Some((close_start_col, close_end_col)) } else { None };
     (Line::from(spans), visible_range)
@@ -682,34 +980,6 @@ fn count_digits(mut n: u32) -> usize {
 
 fn rule_row(width: u16) -> Line<'static> {
     Line::from(Span::styled("─".repeat(usize::from(width)), Style::default().fg(theme::DIM)))
-}
-
-fn file_rail_row(
-    file: &FileHunks,
-    current: bool,
-    max_path_width: usize,
-    comment_count: u32,
-) -> Line<'static> {
-    let (glyph_text, glyph_color) = status_glyph(file.status);
-    let marker_glyph: &str = if current { "▸" } else { glyph_text };
-    let marker_color = if current { theme::RUST_ORANGE } else { glyph_color };
-    let path_width =
-        if comment_count > 0 { max_path_width.saturating_sub(6) } else { max_path_width };
-    let path = truncate_path_front(&file.path, path_width);
-    let mut spans = vec![
-        Span::raw("  "),
-        Span::styled(marker_glyph.to_string(), Style::default().fg(marker_color)),
-        Span::raw("  "),
-        Span::raw(path),
-    ];
-    if comment_count > 0 {
-        spans.push(Span::raw("  "));
-        spans.push(Span::styled(
-            format!("💬 {comment_count}"),
-            Style::default().fg(theme::RUST_ORANGE),
-        ));
-    }
-    Line::from(spans)
 }
 
 fn status_glyph(status: FileStatus) -> (&'static str, Color) {
