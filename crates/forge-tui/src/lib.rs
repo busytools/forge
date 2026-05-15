@@ -9,15 +9,15 @@ use clap::{Parser, ValueEnum};
 
 /// Full version string for the welcome banner + status panel.
 ///
-/// On `main` (release-style builds) this is just `CARGO_PKG_VERSION`
-/// e.g. `"0.15.1"`. On any other branch the `build.rs` stamp adds
-/// ` · <short-sha> (<branch>)` so the running binary is self-identifying.
+/// Always carries the short SHA so a screenshot is enough to
+/// identify the running build. On `main` (and detached HEAD) the
+/// stamp adds ` · <sha>`; on any other branch the stamp adds
+/// ` · <sha> (<branch>)`.
 pub const FORGE_VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), env!("FORGE_BUILD_SUFFIX_FULL"));
 
-/// Short version string for tight slots (Projects pane bottom row).
-///
-/// On `main` this is just `CARGO_PKG_VERSION`; on a dev branch the
-/// stamp adds `+<short-sha>` (no branch name) so the row stays narrow.
+/// Short version string for tight slots (Projects pane bottom row,
+/// launchpad version line). Always carries the short SHA as
+/// `+<sha>` so the running build is identifiable from a screenshot.
 pub const FORGE_VERSION_SHORT: &str =
     concat!(env!("CARGO_PKG_VERSION"), env!("FORGE_BUILD_SUFFIX_SHORT"));
 

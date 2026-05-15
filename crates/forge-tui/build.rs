@@ -1,9 +1,11 @@
-//! Stamp the build with the current git commit + branch when this is
-//! a development build (i.e. branch != `main`). Release builds on
-//! `main` get empty suffixes so the welcome banner shows just
-//! `0.15.1`; dev builds get `0.15.1+sha` (short form, for the
-//! Projects pane bottom row) and `0.15.1 · sha (branch)` (full form,
-//! for the welcome banner + status panel).
+//! Stamp the build with the current git commit + branch.
+//!
+//! Emitted unconditionally — every binary surfaces its short SHA so a
+//! screenshot is enough to identify the running commit. Short form
+//! (Projects pane bottom row, launchpad version line) is
+//! `0.15.1+<sha>`; full form (welcome banner, status panel) is
+//! `0.15.1 · <sha>` on `main` and `0.15.1 · <sha> (<branch>)` off
+//! `main`. Detached HEAD elides the branch parenthetical.
 //!
 //! Tolerant of missing `.git` (e.g. `cargo install` from crates.io)
 //! and any other git failure — emits empty suffixes in that case.
@@ -45,20 +47,17 @@ fn compute_suffixes() -> (String, String) {
     let Some(branch) = run_git(&["rev-parse", "--abbrev-ref", "HEAD"]) else {
         return (String::new(), String::new());
     };
-    if branch == "main" {
-        // Release-style build on `main`. No suffix.
-        return (String::new(), String::new());
-    }
     let Some(sha) = run_git(&["rev-parse", "--short", "HEAD"]) else {
         return (String::new(), String::new());
     };
     let short = format!("+{sha}");
-    let full = if branch == "HEAD" {
-        // Detached HEAD (e.g. checked out a tag) — branch name is the
-        // sentinel string `"HEAD"`. Drop the parenthetical.
-        format!(" · {sha}")
-    } else {
-        format!(" · {sha} ({branch})")
+    let full = match branch.as_str() {
+        // On `main` (release-style) the branch parenthetical is
+        // redundant; the bare sha is enough to identify the build.
+        // Detached HEAD (e.g. tag checkout) reports the literal
+        // sentinel `"HEAD"` here — same treatment.
+        "main" | "HEAD" => format!(" · {sha}"),
+        _ => format!(" · {sha} ({branch})"),
     };
     (short, full)
 }
