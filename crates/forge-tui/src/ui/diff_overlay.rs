@@ -149,8 +149,15 @@ fn build_pane_lines(overlay: &DiffOverlayState, area: Rect) -> Vec<Line<'static>
     // print "(binary file or no diff content)" — a lie that
     // trains the user to ignore a real subprocess crash.
     if !overlay.scanner_ok {
+        // Include the target ref so a user who typoed (`/diff develpoment`)
+        // can spot the mistake without dismissing the overlay to scroll
+        // chat. "tracing target: ENV_GIT" spells out what kind of target
+        // it is so it doesn't read as a git ref.
         lines.push(Line::from(Span::styled(
-            "  Scan failed — see logs (target: ENV_GIT). Press Esc to retry.",
+            format!(
+                "  Scan failed for `{}` — see tracing logs under ENV_GIT. Press Esc to retry.",
+                overlay.target,
+            ),
             Style::default().fg(theme::STATUS_ERROR),
         )));
         return lines;

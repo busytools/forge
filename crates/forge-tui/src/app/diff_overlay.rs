@@ -172,7 +172,7 @@ pub fn open_default(app: &mut App) {
         DefaultTarget::ScannerFailed => {
             crate::app::slash::push_system_message(
                 app,
-                "Git scanner hit an error — see logs (target: ENV_GIT). Try /diff again in a moment.",
+                "Git scanner hit an error — see tracing logs under ENV_GIT. Try /diff again in a moment.",
             );
         }
         DefaultTarget::NoDefault => {
