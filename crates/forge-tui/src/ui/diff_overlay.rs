@@ -37,8 +37,46 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     let rail_width = rail_width_for(area.width);
     if rail_width == 0 {
         render_narrow(frame, area, overlay);
+        return;
+    }
+
+    let chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Length(rail_width),
+            Constraint::Length(1),
+            Constraint::Min(0),
+        ])
+        .split(area);
+    let rail_area = chunks[0];
+    let sep_area = chunks[1];
+    let pane_area = chunks[2];
+
+    // Build the body line list up-front so we know its total
+    // height; clamp body_scroll against (total - visible) so a
+    // wheel-past-end leaves a useful one-screen-of-tail visible
+    // instead of a blank pane. Writeback to overlay state keeps
+    // the wheel handler in sync with whatever the renderer last
+    // saw.
+    let body_lines = build_pane_lines(overlay, pane_area);
+    let max_offset = body_lines.len().saturating_sub(usize::from(pane_area.height));
+    let max_offset_u16 = u16::try_from(max_offset).unwrap_or(u16::MAX);
+    let body_scroll = if let Some(overlay_mut) = app.diff_overlay.as_mut() {
+        let clamped = overlay_mut.body_scroll.min(max_offset_u16);
+        overlay_mut.body_scroll = clamped;
+        clamped
     } else {
-        render_two_pane(frame, area, overlay, rail_width);
+        0
+    };
+
+    let Some(overlay) = app.diff_overlay.as_ref() else { return };
+    render_rail(frame, rail_area, overlay);
+    render_separator(frame, sep_area);
+    if pane_area.height >= 3 {
+        frame.render_widget(
+            Paragraph::new(body_lines).scroll((body_scroll, 0)),
+            pane_area,
+        );
     }
 }
 
@@ -48,21 +86,6 @@ fn render_missing_state(frame: &mut Frame, area: Rect) {
             .style(Style::default().fg(theme::STATUS_ERROR)),
         area,
     );
-}
-
-fn render_two_pane(frame: &mut Frame, area: Rect, overlay: &DiffOverlayState, rail_width: u16) {
-    let chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Length(rail_width),
-            Constraint::Length(1),
-            Constraint::Min(0),
-        ])
-        .split(area);
-
-    render_rail(frame, chunks[0], overlay);
-    render_separator(frame, chunks[1]);
-    render_pane(frame, chunks[2], overlay);
 }
 
 fn render_rail(frame: &mut Frame, area: Rect, overlay: &DiffOverlayState) {
@@ -87,10 +110,10 @@ fn render_separator(frame: &mut Frame, area: Rect) {
     frame.render_widget(Paragraph::new(lines), area);
 }
 
-fn render_pane(frame: &mut Frame, area: Rect, overlay: &DiffOverlayState) {
-    if area.height < 3 {
-        return;
-    }
+/// Build the right pane's body lines (banner + rule + per-hunk
+/// content). Lifted out of the renderer so the top-level `render`
+/// can compute total height and clamp `body_scroll` before drawing.
+fn build_pane_lines(overlay: &DiffOverlayState, area: Rect) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     lines.push(pane_banner_row(overlay));
     lines.push(rule_row(area.width));
@@ -123,8 +146,7 @@ fn render_pane(frame: &mut Frame, area: Rect, overlay: &DiffOverlayState) {
         }
     }
 
-    let scroll = (overlay.body_scroll, 0);
-    frame.render_widget(Paragraph::new(lines).scroll(scroll), area);
+    lines
 }
 
 fn gutter_width_for(file: &FileHunks) -> usize {
