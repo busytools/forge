@@ -648,6 +648,13 @@ fn index_comments_by_key(
 ///   │ deadline                            │
 ///   └─────────────────────────────────────┘
 /// ```
+/// Background tint for the comment-chip interior — very dark
+/// warm-brown so the box reads as a contained annotation block
+/// even when the right border slips off-screen. Picked to harmonize
+/// with `RUST_ORANGE` borders without competing with the diff lines'
+/// green/red tints.
+const CHIP_BG: Color = Color::Rgb(35, 23, 10);
+
 fn render_comment_chip(
     comment: &HunkComment,
     key: LineKey,
@@ -661,17 +668,27 @@ fn render_comment_chip(
     let left_offset = 2 + indent_cols;
     let right_pad = 2usize;
     let box_width = usize::from(pane_width).saturating_sub(left_offset + right_pad).max(20);
-    let orange = Style::default().fg(theme::RUST_ORANGE);
+    let border_style = Style::default().fg(theme::RUST_ORANGE).bg(CHIP_BG);
+    let body_style = Style::default().bg(CHIP_BG);
 
-    // Top border with embedded title.
+    // Top border with embedded title. Whole row carries CHIP_BG so
+    // the entire box surface is tinted — eye reads it as one block
+    // regardless of whether the rightmost cells (incl. `┐`) end up
+    // clipped on a narrow viewport.
+    //
+    // Width math: `💬` is a 2-cell glyph but `chars().count()`
+    // returns 1, so we adjust by +1 to get the title's true visual
+    // column width. Without this the top border would land 1 cell
+    // further right than the body's `│` border, making the box
+    // look stepped.
     let title = format!(" 💬 Comment on line {} ", comment.line);
-    let title_chars = title.chars().count();
-    let dash_after = box_width.saturating_sub(1 + 2 + title_chars + 1);
+    let title_visual = title.chars().count() + 1; // +1 for 💬's 2nd cell
+    let dash_after = box_width.saturating_sub(3 + title_visual + 1);
     let top = format!("┌──{title}{}┐", "─".repeat(dash_after));
     lines.push(Line::from(vec![
         Span::raw("  "),
         Span::raw(indent.clone()),
-        Span::styled(top, orange),
+        Span::styled(top, border_style),
     ]));
     keys.push(BodyRowKey::CommentChip(key));
 
@@ -686,17 +703,21 @@ fn render_comment_chip(
         lines.push(Line::from(vec![
             Span::raw("  "),
             Span::raw(indent.clone()),
-            Span::styled("│ ", orange),
-            Span::raw(row.clone()),
-            Span::raw(" ".repeat(pad)),
-            Span::styled(" │", orange),
+            Span::styled("│ ", border_style),
+            Span::styled(row.clone(), body_style),
+            Span::styled(" ".repeat(pad), body_style),
+            Span::styled(" │", border_style),
         ]));
         keys.push(BodyRowKey::CommentChip(key));
     }
 
     // Bottom border.
     let bottom = format!("└{}┘", "─".repeat(box_width.saturating_sub(2)));
-    lines.push(Line::from(vec![Span::raw("  "), Span::raw(indent), Span::styled(bottom, orange)]));
+    lines.push(Line::from(vec![
+        Span::raw("  "),
+        Span::raw(indent),
+        Span::styled(bottom, border_style),
+    ]));
     keys.push(BodyRowKey::CommentChip(key));
 }
 
