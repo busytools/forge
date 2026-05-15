@@ -89,6 +89,7 @@ pub fn create_app(cli: &Cli, workspace: Arc<forge_workspace::Workspace>) -> App 
     let (file_index_event_tx, file_index_event_rx) = std::sync::mpsc::channel();
     let (git_diff_event_tx, git_diff_event_rx) = std::sync::mpsc::channel();
     let (cli_version_event_tx, cli_version_event_rx) = std::sync::mpsc::channel();
+    let (diff_overlay_event_tx, diff_overlay_event_rx) = std::sync::mpsc::channel();
     let (process_scan_event_tx, process_scan_event_rx) = std::sync::mpsc::channel();
     crate::app::git_diff::spawn_periodic_timer(git_diff_event_tx.clone());
     crate::app::cli_version::spawn_fetch(Arc::clone(&workspace), cli_version_event_tx.clone());
@@ -220,6 +221,8 @@ pub fn create_app(cli: &Cli, workspace: Arc<forge_workspace::Workspace>) -> App 
         git_diff_event_rx,
         cli_version_event_tx,
         cli_version_event_rx,
+        diff_overlay_event_tx,
+        diff_overlay_event_rx,
         cli_version_info: None,
         process_scan_event_tx,
         process_scan_event_rx,

@@ -186,6 +186,7 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
         git_diff::drain_events(app);
         cli_version::drain_events(app);
         process_scanner::drain_events(app);
+        diff_overlay::drain_events(app);
 
         // If a prior turn ended in Error state because of a rate-limit
         // rejection, drop the input lock once the rate-limit window

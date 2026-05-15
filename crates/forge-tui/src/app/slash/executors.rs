@@ -34,6 +34,7 @@ pub fn try_handle_submit(app: &mut App, text: &str) -> bool {
     match parsed.name {
         "/compact" => handle_compact_submit(app, &parsed.args),
         "/config" => handle_config_submit(app, &parsed.args),
+        "/diff" => handle_diff_submit(app, &parsed.args),
         "/launchpad" => handle_launchpad_submit(app, &parsed.args),
         "/mcp" => handle_mcp_submit(app, &parsed.args),
         "/plugins" => handle_plugins_submit(app, &parsed.args),
@@ -45,6 +46,65 @@ pub fn try_handle_submit(app: &mut App, text: &str) -> bool {
         "/resume" => handle_resume_submit(app, &parsed.args),
         _ => handle_unknown_submit(app, parsed.name),
     }
+}
+
+/// `/diff [target]` — open the full-screen diff overlay.
+///
+/// No arg → mirror the Inspector GIT section's view auto-detect:
+/// `Worktree` ⇒ `HEAD`, `BranchVsDefault` ⇒ the default branch,
+/// `CleanDefault` / `NoRepo` ⇒ system notice "No changes" with no
+/// overlay opened. One positional arg → passed verbatim as the
+/// two-dot `git diff <target>` ref (so `/diff main` shows
+/// committed + uncommitted on a feature branch in one view).
+///
+/// Async: the scan runs in a tokio local task that posts back via
+/// `app.diff_overlay_event_tx`; the drain pump consumes the
+/// event and transitions to `ActiveView::Diff`.
+fn handle_diff_submit(app: &mut App, args: &[&str]) -> bool {
+    use forge_workspace::env::git_diff::GitDiffView;
+    use std::path::PathBuf;
+
+    if args.len() > 1 {
+        push_system_message(app, "Usage: /diff [target]");
+        return true;
+    }
+
+    let Some(workspace) = app.workspace.clone() else {
+        push_system_message(app, "Cannot open diff: workspace not ready.");
+        return true;
+    };
+    let Some(cwd_raw) = app.active_session().map(|s| s.cwd_raw.clone()) else {
+        push_system_message(app, "Cannot open diff: no active session.");
+        return true;
+    };
+    if cwd_raw.is_empty() {
+        push_system_message(app, "Cannot open diff: active session has no cwd.");
+        return true;
+    }
+    let cwd = PathBuf::from(cwd_raw);
+
+    let target = if let Some(arg) = args.first() {
+        (*arg).trim().to_owned()
+    } else {
+        // Auto-detect from the Inspector's GIT snapshot.
+        let snapshot = app.active_session().and_then(|s| s.git_diff_snapshot.as_ref());
+        match snapshot.map(|s| (&s.view, s.default_branch.as_deref())) {
+            Some((GitDiffView::Worktree { .. }, _)) => "HEAD".to_owned(),
+            Some((GitDiffView::BranchVsDefault { .. }, Some(default))) => default.to_owned(),
+            _ => {
+                push_system_message(app, "No changes vs HEAD.");
+                return true;
+            }
+        }
+    };
+
+    crate::app::diff_overlay::spawn_fetch(
+        workspace,
+        cwd,
+        target,
+        app.diff_overlay_event_tx.clone(),
+    );
+    true
 }
 
 /// `/launchpad` — return to the project picker. Available from chat;

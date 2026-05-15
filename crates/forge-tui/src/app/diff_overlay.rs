@@ -9,12 +9,58 @@
 //! commit).
 
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::mpsc as std_mpsc;
 
 use crossterm::event::{KeyCode, KeyEvent};
 use forge_workspace::env::git_diff::hunks::FileHunks;
 
 use super::App;
 use super::view::{ActiveView, set_active_view};
+
+/// Event shuttled from the spawned scan task back to the main loop.
+/// `cwd` and `target` are echoed back so the receiver doesn't have
+/// to track outstanding requests — when the user switches away
+/// before the scan completes, `drain_events` simply skips the open
+/// (active view changed).
+#[derive(Debug)]
+pub struct DiffOverlayEvent {
+    pub cwd: PathBuf,
+    pub target: String,
+    pub files: Vec<FileHunks>,
+}
+
+/// Spawn a tokio local task that awaits
+/// [`forge_workspace::Workspace::scan_git_diff_hunks`] and posts a
+/// [`DiffOverlayEvent`] when the scan completes. Best-effort send —
+/// receiver going away (app shutdown) just drops the result.
+pub fn spawn_fetch(
+    workspace: Arc<forge_workspace::Workspace>,
+    cwd: PathBuf,
+    target: String,
+    tx: std_mpsc::Sender<DiffOverlayEvent>,
+) {
+    tokio::task::spawn_local(async move {
+        let files = workspace.scan_git_diff_hunks(&cwd, &target).await;
+        let _ = tx.send(DiffOverlayEvent { cwd, target, files });
+    });
+}
+
+/// Drain pending scan results and install the overlay state. Called
+/// from the main loop alongside the other event-channel consumers.
+/// At most one scan is typically in flight per `/diff` invocation;
+/// the drain loop stays bounded for symmetry with the other
+/// consumers.
+pub fn drain_events(app: &mut App) {
+    loop {
+        let event = match app.diff_overlay_event_rx.try_recv() {
+            Ok(event) => event,
+            Err(std_mpsc::TryRecvError::Empty | std_mpsc::TryRecvError::Disconnected) => return,
+        };
+        let state = DiffOverlayState::new(event.cwd, event.target, event.files);
+        open(app, state);
+    }
+}
 
 /// All state the diff overlay view needs. Lives on
 /// `App.diff_overlay` (`Option<Self>`) — `Some` while the view is
@@ -66,11 +112,9 @@ impl DiffOverlayState {
 }
 
 /// Install `state` on `app.diff_overlay` and transition the active
-/// view to [`ActiveView::Diff`]. Marked `#[allow(dead_code)]` because
-/// the entry points (`/diff` slash command + Inspector `⤢` click)
-/// land in subsequent commits — once those are wired, this attribute
-/// goes away.
-#[allow(dead_code)]
+/// view to [`ActiveView::Diff`]. Wired up by the `/diff` slash
+/// command's drain pump; the Inspector `⤢` click reuses the same
+/// path in a follow-up commit.
 pub(crate) fn open(app: &mut App, state: DiffOverlayState) {
     app.diff_overlay = Some(state);
     set_active_view(app, ActiveView::Diff);
