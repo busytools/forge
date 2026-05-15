@@ -630,18 +630,50 @@ pub(crate) fn handle_paste(app: &mut App, text: &str) -> bool {
     true
 }
 
+/// Close the active comment editor (if any), restoring its
+/// `prior_comment` when the editor was opened by re-clicking a saved
+/// chip. Called everywhere `active_input` is dropped or replaced:
+/// Esc-cancel, clicking a different diff line, clicking a different
+/// chip, switching files via the rail, narrow-tier arrow clicks.
+/// Without this centralization, every dismissal path that bypasses
+/// Esc would silently destroy the saved comment — the exact bug
+/// `prior_comment` was added to prevent.
+///
+/// Returns the count of abandoned in-progress chars (`text.len()` of
+/// the editor's content for a fresh editor; `0` for a reopen since
+/// the prior was preserved). Caller can use this for telemetry.
+fn close_active_input_preserving_prior(overlay: &mut DiffOverlayState) -> usize {
+    let Some(input) = overlay.active_input.take() else { return 0 };
+    let abandoned = if input.prior_comment.is_some() {
+        0
+    } else {
+        input.editor.lines().join("\n").chars().count()
+    };
+    if let Some(prior) = input.prior_comment {
+        overlay.comments.push(prior);
+        overlay.recompute_comment_counts();
+    }
+    abandoned
+}
+
 /// Discard the active comment editor without saving. If the editor
 /// was opened by re-clicking a saved 💬 chip, restore the original
 /// comment so the chip reappears — the user clicked to view/edit,
 /// not to destroy. Fresh line-click editors have no prior to
-/// restore; their in-progress text is correctly discarded.
+/// restore; their in-progress text is correctly discarded but
+/// logged at DEBUG with a char count so a "where did my draft go"
+/// triage can correlate.
 fn cancel_active_input(app: &mut App) {
     if let Some(overlay) = app.diff_overlay.as_mut() {
-        if let Some(input) = overlay.active_input.take()
-            && let Some(prior) = input.prior_comment
-        {
-            overlay.comments.push(prior);
-            overlay.recompute_comment_counts();
+        let abandoned = close_active_input_preserving_prior(overlay);
+        if abandoned > 0 {
+            tracing::debug!(
+                target: crate::logging::targets::APP_SESSION,
+                event_name = "diff_overlay_cancel_dropped_in_progress",
+                message = "Esc cancelled active comment editor with unsaved text",
+                outcome = "dropped",
+                abandoned_chars = abandoned,
+            );
         }
         app.needs_redraw = true;
     }
@@ -887,10 +919,10 @@ fn handle_rail_click(overlay: &mut DiffOverlayState, row: u16) -> MouseEffect {
     }
     overlay.current_file_idx = idx;
     overlay.body_scroll = 0;
-    // Closing the active input on file switch keeps the inline
-    // editor's geometry from anchoring to a row that's no longer
-    // in the rendered body (the input belongs to a specific file).
-    overlay.active_input = None;
+    // Close the active editor on file switch — the editor is
+    // anchored to a specific line in the previous file, and the
+    // helper preserves prior_comment if it was a chip-reopen.
+    close_active_input_preserving_prior(overlay);
     MouseEffect { redraw: true, close: false }
 }
 
@@ -923,7 +955,7 @@ fn handle_narrow_arrow_click(overlay: &mut DiffOverlayState, column: u16, row: u
         }
         overlay.current_file_idx = next;
         overlay.body_scroll = 0;
-        overlay.active_input = None;
+        close_active_input_preserving_prior(overlay);
         return MouseEffect { redraw: true, close: false };
     }
     if column == right_col {
@@ -937,7 +969,7 @@ fn handle_narrow_arrow_click(overlay: &mut DiffOverlayState, column: u16, row: u
         }
         overlay.current_file_idx = next;
         overlay.body_scroll = 0;
-        overlay.active_input = None;
+        close_active_input_preserving_prior(overlay);
         return MouseEffect { redraw: true, close: false };
     }
     MouseEffect::default()
@@ -953,14 +985,6 @@ fn handle_body_click(overlay: &mut DiffOverlayState, column: u16, row: u16) -> M
     if row < overlay.pane_origin_row {
         return MouseEffect::default();
     }
-    // Banner ✕ glyph: the renderer paints it on the banner row
-    // (overlay.pane_origin_row) near the right edge after the file
-    // path + +N -M totals. Geometry isn't exact (depends on path
-    // length and totals), so we accept any banner-row click in the
-    // final few columns as a close intent. This is a UI-stable
-    // approximation: the close glyph is the only thing on the
-    // banner that responds to clicks, so a far-right banner click
-    // means "close" with no ambiguity.
     let local_row = row - overlay.pane_origin_row;
     let body_idx = usize::from(local_row).checked_add(usize::from(overlay.body_scroll));
     let Some(idx) = body_idx else {
@@ -1011,6 +1035,9 @@ fn open_input_for_key(overlay: &mut DiffOverlayState, key: LineKey) -> MouseEffe
     {
         return MouseEffect::default();
     }
+    // Close any existing editor (different line) before opening the
+    // new one — preserves its prior_comment if it was a reopen.
+    close_active_input_preserving_prior(overlay);
     let editor = TextArea::default();
     overlay.active_input = Some(ActiveCommentInput { key, editor, prior_comment: None });
     MouseEffect { redraw: true, close: false }
@@ -1028,6 +1055,10 @@ fn reopen_comment_for_key(overlay: &mut DiffOverlayState, key: LineKey) -> Mouse
     };
     let comment = overlay.comments.remove(pos);
     overlay.recompute_comment_counts();
+    // Close any pre-existing editor on a different line so its
+    // prior_comment survives (without this, A's prior would be
+    // silently dropped when B's reopen runs).
+    close_active_input_preserving_prior(overlay);
     let mut editor = TextArea::default();
     // TextArea::insert_str respects newlines correctly so the
     // multi-line shape of the saved comment is preserved.
@@ -1331,6 +1362,7 @@ mod tests {
         state.banner_close_col_range = Some((155, 156));
         let effect = handle_left_click(&mut state, 60, 0, 160);
         assert!(!effect.close);
+        assert!(!effect.redraw, "no redraw on miss");
     }
 
     #[test]
@@ -1574,6 +1606,169 @@ mod tests {
         assert!(after.active_input.is_none(), "editor closed");
         assert_eq!(after.comments.len(), 1, "saved comment restored");
         assert_eq!(after.comments[0].comment_text, "I want to keep this");
+    }
+
+    #[test]
+    fn reopen_then_click_other_line_preserves_prior() {
+        // F7: opening editor B via line click while editor A (a
+        // chip reopen) is open must preserve A's prior_comment.
+        let mut state = sample_state();
+        let key_a = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 };
+        state.comments.push(HunkComment {
+            key: key_a,
+            path: "a.rs".into(),
+            line: 1,
+            hunk_context: vec![],
+            comment_text: "saved".into(),
+        });
+        state.recompute_comment_counts();
+        // Body geometry: chip row at idx 0, hunk header at idx 1,
+        // hunk line at idx 2.
+        let key_b = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 1 };
+        state.body_keys = vec![
+            BodyRowKey::CommentChip(key_a),
+            BodyRowKey::HunkHeader { file_idx: 0, hunk_idx: 0 },
+            BodyRowKey::HunkLine(key_b),
+        ];
+        state.pane_origin_row = 0;
+        state.pane_origin_col = 41;
+        state.pane_width = 119;
+        // Click chip → editor opens with prior Some.
+        let _ = handle_left_click(&mut state, 60, 0, 160);
+        assert!(state.active_input.as_ref().unwrap().prior_comment.is_some());
+        assert_eq!(state.comments.len(), 0, "comment moved into prior");
+        // Click a different diff line → editor B opens; A's prior
+        // must have been restored to overlay.comments.
+        let _ = handle_left_click(&mut state, 60, 2, 160);
+        assert_eq!(state.active_input.as_ref().unwrap().key, key_b);
+        assert_eq!(state.comments.len(), 1, "A's prior restored before B opens");
+        assert_eq!(state.comments[0].comment_text, "saved");
+    }
+
+    #[test]
+    fn reopen_chip_then_click_other_chip_preserves_both() {
+        let mut state = sample_state();
+        let key_a = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 };
+        let key_b = LineKey { file_idx: 0, hunk_idx: 1, line_idx: 0 };
+        state.comments.push(HunkComment {
+            key: key_a,
+            path: "a.rs".into(),
+            line: 1,
+            hunk_context: vec![],
+            comment_text: "A".into(),
+        });
+        state.comments.push(HunkComment {
+            key: key_b,
+            path: "a.rs".into(),
+            line: 5,
+            hunk_context: vec![],
+            comment_text: "B".into(),
+        });
+        state.recompute_comment_counts();
+        state.body_keys = vec![BodyRowKey::CommentChip(key_a), BodyRowKey::CommentChip(key_b)];
+        state.pane_origin_row = 0;
+        state.pane_origin_col = 41;
+        state.pane_width = 119;
+        let _ = handle_left_click(&mut state, 60, 0, 160);
+        let _ = handle_left_click(&mut state, 60, 1, 160);
+        // Now editor is open on B with B as prior; A should be back
+        // in overlay.comments.
+        assert_eq!(state.active_input.as_ref().unwrap().key, key_b);
+        assert_eq!(state.comments.len(), 1, "A restored, B in prior");
+        assert_eq!(state.comments[0].key, key_a);
+    }
+
+    #[test]
+    fn rail_switch_preserves_prior_comment() {
+        let mut state = sample_state();
+        let key_a = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 };
+        state.comments.push(HunkComment {
+            key: key_a,
+            path: "a.rs".into(),
+            line: 1,
+            hunk_context: vec![],
+            comment_text: "A".into(),
+        });
+        state.recompute_comment_counts();
+        state.body_keys = vec![BodyRowKey::CommentChip(key_a)];
+        state.pane_origin_row = 0;
+        state.pane_origin_col = 41;
+        state.pane_width = 119;
+        // Reopen chip A.
+        let _ = handle_left_click(&mut state, 60, 0, 160);
+        assert!(state.active_input.as_ref().unwrap().prior_comment.is_some());
+        // Click file 1 in the rail (row 4 in sample geometry).
+        let _ = handle_left_click(&mut state, 5, 4, 160);
+        // Editor closed, A restored.
+        assert!(state.active_input.is_none());
+        assert_eq!(state.comments.len(), 1);
+        assert_eq!(state.comments[0].key, key_a);
+    }
+
+    #[test]
+    fn narrow_arrow_switch_preserves_prior_comment() {
+        let mut state = sample_state();
+        let key_a = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 };
+        state.comments.push(HunkComment {
+            key: key_a,
+            path: "a.rs".into(),
+            line: 1,
+            hunk_context: vec![],
+            comment_text: "A".into(),
+        });
+        state.recompute_comment_counts();
+        // Reopen via direct call (saves test setup).
+        let _ = reopen_comment_for_key(&mut state, key_a);
+        assert!(state.active_input.as_ref().unwrap().prior_comment.is_some());
+        // Trigger narrow-arrow advance (file_idx 0 → 1).
+        state.narrow_header_row_y = Some(0);
+        state.narrow_arrow_cols = Some((10, 20));
+        let _ = handle_left_click(&mut state, 20, 0, 100);
+        assert!(state.active_input.is_none(), "editor closed on file cycle");
+        assert_eq!(state.comments.len(), 1, "A restored");
+        assert_eq!(state.current_file_idx, 1);
+    }
+
+    #[test]
+    fn save_empty_fresh_editor_creates_no_chip() {
+        // F8: fresh editor (prior None) + Enter on blank text →
+        // no chip, no comment.
+        let mut app = App::test_default();
+        let mut state = sample_state();
+        let key = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 };
+        state.active_input =
+            Some(ActiveCommentInput { key, editor: TextArea::default(), prior_comment: None });
+        app.diff_overlay = Some(state);
+        save_active_input(&mut app);
+        let after = app.diff_overlay.as_ref().expect("overlay still set");
+        assert!(after.active_input.is_none(), "editor closed");
+        assert!(after.comments.is_empty(), "no blank chip created");
+    }
+
+    #[test]
+    fn save_empty_reopened_chip_deletes_saved_comment() {
+        // F8: reopen chip (prior Some) + clear text + Enter →
+        // saved comment deleted.
+        let mut app = App::test_default();
+        let mut state = sample_state();
+        let key = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 };
+        let prior = HunkComment {
+            key,
+            path: "a.rs".into(),
+            line: 1,
+            hunk_context: vec![],
+            comment_text: "soon-to-be-deleted".into(),
+        };
+        state.active_input = Some(ActiveCommentInput {
+            key,
+            editor: TextArea::default(), // empty editor
+            prior_comment: Some(prior),
+        });
+        app.diff_overlay = Some(state);
+        save_active_input(&mut app);
+        let after = app.diff_overlay.as_ref().expect("overlay still set");
+        assert!(after.active_input.is_none());
+        assert!(after.comments.is_empty(), "prior dropped via clear+save = delete");
     }
 
     #[test]

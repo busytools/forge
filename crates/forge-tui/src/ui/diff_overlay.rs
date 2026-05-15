@@ -493,6 +493,12 @@ fn render_narrow(frame: &mut Frame, area: Rect, app: &mut App) {
             o.pane_origin_row = area.y;
             o.pane_origin_col = area.x;
             o.pane_width = area.width;
+            // Clear all geometry-stamped fields so a click at the
+            // prior arrow / banner / chip coordinates can't advance
+            // state against a "Terminal too small" notice.
+            o.narrow_header_row_y = None;
+            o.narrow_arrow_cols = None;
+            o.banner_close_col_range = None;
         }
         return;
     }
