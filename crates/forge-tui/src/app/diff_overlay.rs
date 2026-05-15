@@ -12,7 +12,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::mpsc as std_mpsc;
 
-use crossterm::event::{KeyCode, KeyEvent, MouseEvent, MouseEventKind};
+use crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
 use forge_workspace::env::git_diff::hunks::FileHunks;
 
 use super::App;
@@ -149,13 +149,44 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) {
 /// Inspector pane's `MOUSE_SCROLL_LINES` for consistency.
 const SCROLL_LINES_PER_NOTCH: u16 = 3;
 
+/// First file row in the FILES rail. Rows above this are:
+/// `0` banner (`  FILES`), `1` DIM rule, `2` blank. File index 0
+/// starts at `y == FIRST_FILE_ROW_Y`.
+const FIRST_FILE_ROW_Y: u16 = 3;
+
+/// Wide-tier FILES rail width (mirrors `ui::diff_overlay::RAIL_WIDTH_WIDE`).
+const RAIL_WIDTH_WIDE: u16 = 40;
+/// Medium-tier FILES rail width.
+const RAIL_WIDTH_MEDIUM: u16 = 30;
+/// Wide-tier terminal width threshold.
+const WIDE_MIN: u16 = 160;
+/// Medium-tier terminal width threshold.
+const MEDIUM_MIN: u16 = 120;
+
+/// Mirror of `ui::diff_overlay::rail_width_for` — duplicated here
+/// so the click handler doesn't need to import the renderer module.
+/// Same Wide/Medium/Narrow thresholds.
+fn rail_width_for(terminal_width: u16) -> u16 {
+    if terminal_width >= WIDE_MIN {
+        RAIL_WIDTH_WIDE
+    } else if terminal_width >= MEDIUM_MIN {
+        RAIL_WIDTH_MEDIUM
+    } else {
+        0
+    }
+}
+
 /// Handle a mouse event while the diff overlay is active.
 ///
-/// v1 only consumes scroll wheel — both directions advance the
-/// right pane's `body_scroll` by [`SCROLL_LINES_PER_NOTCH`]. File
-/// rail clicks and line clicks for commenting land in follow-up
-/// commits.
+/// Bindings (v1):
+/// - Scroll wheel up / down → advance `body_scroll` by
+///   [`SCROLL_LINES_PER_NOTCH`].
+/// - Left click on a file row in the FILES rail → switch the right
+///   pane to that file; resets `body_scroll` to 0.
+///
+/// Line clicks (commenting) land in a follow-up commit.
 pub(crate) fn handle_mouse(app: &mut App, mouse: MouseEvent) {
+    let terminal_width = app.cached_frame_area.width;
     let changed = if let Some(overlay) = app.diff_overlay.as_mut() {
         match mouse.kind {
             MouseEventKind::ScrollUp => {
@@ -168,6 +199,9 @@ pub(crate) fn handle_mouse(app: &mut App, mouse: MouseEvent) {
                     overlay.body_scroll.saturating_add(SCROLL_LINES_PER_NOTCH);
                 true
             }
+            MouseEventKind::Down(MouseButton::Left) => {
+                handle_left_click(overlay, mouse.column, mouse.row, terminal_width)
+            }
             _ => false,
         }
     } else {
@@ -176,6 +210,41 @@ pub(crate) fn handle_mouse(app: &mut App, mouse: MouseEvent) {
     if changed {
         app.needs_redraw = true;
     }
+}
+
+/// Resolve a left-click to a file-rail action. Returns `true` when
+/// the click hit a file row and the overlay state changed.
+///
+/// Hit geometry: rail occupies columns `0..rail_width`, file rows
+/// start at row [`FIRST_FILE_ROW_Y`] (after banner + DIM rule +
+/// blank). One row per file, no overflow handling yet (a long file
+/// list extends below the visible area; clicks below it miss).
+fn handle_left_click(
+    overlay: &mut DiffOverlayState,
+    column: u16,
+    row: u16,
+    terminal_width: u16,
+) -> bool {
+    let rail_width = rail_width_for(terminal_width);
+    if rail_width == 0 {
+        return false; // Narrow tier — rail is hidden.
+    }
+    if column >= rail_width {
+        return false; // Click is in the separator or right pane.
+    }
+    if row < FIRST_FILE_ROW_Y {
+        return false; // Banner / rule / blank.
+    }
+    let idx = usize::from(row - FIRST_FILE_ROW_Y);
+    if idx >= overlay.files.len() {
+        return false;
+    }
+    if overlay.current_file_idx == idx {
+        return false; // No-op click.
+    }
+    overlay.current_file_idx = idx;
+    overlay.body_scroll = 0;
+    true
 }
 
 #[cfg(test)]
@@ -221,5 +290,64 @@ mod tests {
     fn current_file_is_none_on_empty_diff() {
         let state = DiffOverlayState::new(PathBuf::from("/tmp"), "HEAD".into(), vec![]);
         assert!(state.current_file().is_none());
+    }
+
+    #[test]
+    fn rail_click_switches_current_file_at_wide_tier() {
+        let mut state = sample_state();
+        // Column inside rail (<40), row 4 = file index 1.
+        let changed = handle_left_click(&mut state, 5, 4, 160);
+        assert!(changed);
+        assert_eq!(state.current_file_idx, 1);
+        assert_eq!(state.body_scroll, 0);
+    }
+
+    #[test]
+    fn rail_click_resets_body_scroll() {
+        let mut state = sample_state();
+        state.body_scroll = 12;
+        let changed = handle_left_click(&mut state, 5, 4, 160);
+        assert!(changed);
+        assert_eq!(state.body_scroll, 0);
+    }
+
+    #[test]
+    fn rail_click_outside_rail_returns_false() {
+        let mut state = sample_state();
+        let changed = handle_left_click(&mut state, 50, 4, 160); // Past Wide rail.
+        assert!(!changed);
+        assert_eq!(state.current_file_idx, 0);
+    }
+
+    #[test]
+    fn rail_click_on_banner_returns_false() {
+        let mut state = sample_state();
+        let changed = handle_left_click(&mut state, 5, 0, 160); // Banner row.
+        assert!(!changed);
+        assert_eq!(state.current_file_idx, 0);
+    }
+
+    #[test]
+    fn rail_click_beyond_file_list_returns_false() {
+        let mut state = sample_state();
+        let changed = handle_left_click(&mut state, 5, 99, 160); // No file at this row.
+        assert!(!changed);
+        assert_eq!(state.current_file_idx, 0);
+    }
+
+    #[test]
+    fn rail_click_same_file_returns_false() {
+        let mut state = sample_state();
+        let changed = handle_left_click(&mut state, 5, 3, 160); // Already on file 0.
+        assert!(!changed);
+        assert_eq!(state.current_file_idx, 0);
+    }
+
+    #[test]
+    fn rail_click_at_narrow_tier_returns_false() {
+        let mut state = sample_state();
+        let changed = handle_left_click(&mut state, 5, 4, 100); // Narrow — no rail.
+        assert!(!changed);
+        assert_eq!(state.current_file_idx, 0);
     }
 }
