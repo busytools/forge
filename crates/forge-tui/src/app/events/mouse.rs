@@ -668,14 +668,12 @@ fn switch_to_project_lead(app: &mut App, project_name: &str) {
     // matches the project's path. Cheap (typically <10 buckets) and
     // robust to the disk-catalog refresh delay that caused
     // "first-click spawns a duplicate" before this guard landed.
+    // `find_running_bucket_for_path` excludes the pre-connect
+    // sentinel so the lookup is deterministic when forge was
+    // launched from inside this project's directory.
     if let Some(path) = project_path.as_ref() {
         let path_str = path.to_string_lossy();
-        let matching_running = app
-            .sessions
-            .iter()
-            .find(|(_, sess)| sess.cwd_raw.as_str() == path_str.as_ref())
-            .map(|(k, _)| k.clone());
-        if let Some(key) = matching_running {
+        if let Some(key) = app.find_running_bucket_for_path(path_str.as_ref()) {
             app.switch_active_session(key);
             return;
         }
