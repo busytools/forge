@@ -34,7 +34,11 @@ use super::{GitOutput, run_git};
 /// into the overlay. The Inspector GIT section is unaffected; only
 /// the `/diff` overlay's untracked surface is suppressed (no `U`
 /// rows render in the rail when the cap is exceeded).
-pub(crate) const MAX_UNTRACKED_FILES: usize = 4;
+///
+/// Public so the TUI rail renderer can surface the cap in the
+/// "+N untracked suppressed (cap M)" notice — the number lives
+/// here as the source of truth.
+pub const MAX_UNTRACKED_FILES: usize = 4;
 
 /// Per-file size ceiling for untracked content surfaced in the diff
 /// body. Above this we keep the rail entry but skip reading bytes.
@@ -142,10 +146,18 @@ pub struct DiffLine {
 /// file list may be partial or empty, and a downstream renderer
 /// should distinguish that case from a genuine clean tree so the
 /// user knows whether to retry vs. accept "no changes."
+///
+/// `untracked_suppressed` carries the count of untracked files
+/// that DIDN'T make it into `files` because the working tree had
+/// more than `MAX_UNTRACKED_FILES` untracked entries. The renderer
+/// surfaces this so the user knows the rail is incomplete; without
+/// it, a fresh-repo state with 5+ untracked files looks identical
+/// to a tree with zero.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScanOutcome {
     pub files: Vec<FileHunks>,
     pub scanner_ok: bool,
+    pub untracked_suppressed: usize,
 }
 
 /// Top-level scanner entry. `target` is passed verbatim to
@@ -165,6 +177,7 @@ pub struct ScanOutcome {
 /// result as "no changes."
 pub async fn scan(cwd: &Path, target: &str) -> ScanOutcome {
     let mut scanner_ok = true;
+    let mut untracked_suppressed: usize = 0;
 
     let name_status = match run_git(cwd, &["diff", target, "--name-status"]).await {
         GitOutput::Ok(s) => s,
@@ -193,12 +206,13 @@ pub async fn scan(cwd: &Path, target: &str) -> ScanOutcome {
     // committed-since-main + uncommitted via the ref-vs-worktree
     // compare; untracked files don't belong to that comparison.
     if target == "HEAD" {
-        let (untracked, untracked_ok) = scan_untracked(cwd).await;
+        let (untracked, untracked_ok, suppressed) = scan_untracked(cwd).await;
         files.extend(untracked);
         scanner_ok = scanner_ok && untracked_ok;
+        untracked_suppressed = suppressed;
     }
 
-    ScanOutcome { files, scanner_ok }
+    ScanOutcome { files, scanner_ok, untracked_suppressed }
 }
 
 /// Parse `git diff --name-status` output into a list of `FileHunks`
@@ -445,20 +459,24 @@ fn parse_pair(s: &str) -> Option<(u32, u32)> {
 /// empty `Vec` so a fresh-repo state doesn't dump hundreds of files
 /// into the overlay.
 ///
-/// Returns `(files, ok)` — `ok = false` only when the underlying
-/// `ls-files` subprocess hit `Failed` / `Oversize`. The cap-exceeded
-/// path keeps `ok = true` because git ran fine; the caller can
-/// distinguish "you have lots of untracked files, scan suppressed
-/// them" from "the scanner crashed" via the bool.
-async fn scan_untracked(cwd: &Path) -> (Vec<FileHunks>, bool) {
+/// Returns `(files, ok, suppressed)`:
+/// - `ok = false` only when the underlying `ls-files` subprocess
+///   hit `Failed` / `Oversize`. The cap-exceeded path keeps
+///   `ok = true` because git ran fine.
+/// - `suppressed` is the count of untracked files that didn't make
+///   it into `files` due to `MAX_UNTRACKED_FILES`. Zero when the
+///   tree was under the cap (or empty); positive when the cap
+///   kicked in so the renderer can surface the truncation count.
+async fn scan_untracked(cwd: &Path) -> (Vec<FileHunks>, bool, usize) {
     let raw = match run_git(cwd, &["ls-files", "--others", "--exclude-standard"]).await {
         GitOutput::Ok(s) => s,
         GitOutput::Empty => String::new(),
-        GitOutput::Failed | GitOutput::Oversize => return (Vec::new(), false),
+        GitOutput::Failed | GitOutput::Oversize => return (Vec::new(), false, 0),
     };
     let untracked: Vec<&str> = raw.lines().filter(|l| !l.is_empty()).collect();
     if untracked.len() > MAX_UNTRACKED_FILES {
-        return (Vec::new(), true);
+        let suppressed = untracked.len();
+        return (Vec::new(), true, suppressed);
     }
     let mut out = Vec::with_capacity(untracked.len());
     for path in untracked {
@@ -533,7 +551,7 @@ async fn scan_untracked(cwd: &Path) -> (Vec<FileHunks>, bool) {
         };
         out.push(FileHunks { path: path.to_owned(), status: FileStatus::Untracked, hunks });
     }
-    (out, true)
+    (out, true, 0)
 }
 
 #[cfg(test)]

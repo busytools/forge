@@ -25,12 +25,15 @@ use super::view::{ActiveView, set_active_view};
 /// from chat while the scan was running (see [`drain_events`]).
 /// `scanner_ok` propagates from `ScanOutcome::scanner_ok` so the
 /// renderer can surface "scan failed" vs. "no changes" distinctly.
+/// `untracked_suppressed` carries the cap-overflow count so the
+/// rail can show a "+N untracked suppressed" notice.
 #[derive(Debug)]
 pub struct DiffOverlayEvent {
     pub cwd: PathBuf,
     pub target: String,
     pub files: Vec<FileHunks>,
     pub scanner_ok: bool,
+    pub untracked_suppressed: usize,
 }
 
 /// Spawn a tokio local task that awaits
@@ -44,8 +47,15 @@ pub fn spawn_fetch(
     tx: std_mpsc::Sender<DiffOverlayEvent>,
 ) {
     tokio::task::spawn_local(async move {
-        let ScanOutcome { files, scanner_ok } = workspace.scan_git_diff_hunks(&cwd, &target).await;
-        let _ = tx.send(DiffOverlayEvent { cwd, target, files, scanner_ok });
+        let ScanOutcome { files, scanner_ok, untracked_suppressed } =
+            workspace.scan_git_diff_hunks(&cwd, &target).await;
+        let _ = tx.send(DiffOverlayEvent {
+            cwd,
+            target,
+            files,
+            scanner_ok,
+            untracked_suppressed,
+        });
     });
 }
 
@@ -232,12 +242,7 @@ pub fn drain_events(app: &mut App) {
             crate::app::slash::push_system_message(app, notice);
             continue;
         }
-        let state = DiffOverlayState::new_with_status(
-            event.cwd,
-            event.target,
-            event.files,
-            event.scanner_ok,
-        );
+        let state = DiffOverlayState::new_with_event(event);
         open(app, state);
     }
 }
@@ -263,6 +268,12 @@ pub struct DiffOverlayState {
     /// renderer surfaces a distinct empty-state message so the
     /// user knows to retry rather than concluding "no changes."
     pub scanner_ok: bool,
+    /// Count of untracked files that were suppressed because the
+    /// working tree exceeded `MAX_UNTRACKED_FILES` in the scanner.
+    /// Zero when the tree was under the cap. Surfaced in the rail
+    /// as a "+N untracked suppressed" row so a fresh-repo state
+    /// doesn't render identically to a clean tree.
+    pub untracked_suppressed: usize,
     /// Index into [`Self::files`] for the currently-viewed file in
     /// the right pane. Bounds-checked by [`Self::current_file`].
     pub current_file_idx: usize,
@@ -276,24 +287,35 @@ pub struct DiffOverlayState {
 
 impl DiffOverlayState {
     /// Build a fresh state for a newly-opened overlay. Cursor starts
-    /// on file 0, scroll at 0. `scanner_ok = true` is the
-    /// no-issues-known default; the spawn path sets it from
-    /// `ScanOutcome::scanner_ok`.
+    /// on file 0, scroll at 0. `scanner_ok = true` and
+    /// `untracked_suppressed = 0` are the no-issues-known defaults;
+    /// the spawn path uses [`Self::new_with_event`] to thread the
+    /// real values from `ScanOutcome`.
     pub fn new(cwd: PathBuf, target: String, files: Vec<FileHunks>) -> Self {
-        Self::new_with_status(cwd, target, files, true)
+        Self {
+            cwd,
+            target,
+            files,
+            scanner_ok: true,
+            untracked_suppressed: 0,
+            current_file_idx: 0,
+            body_scroll: 0,
+        }
     }
 
-    /// Build state and explicitly record whether the scanner ran
-    /// cleanly. Used by the drain pump to thread the
-    /// `DiffOverlayEvent::scanner_ok` flag into the rendered
-    /// overlay.
-    pub fn new_with_status(
-        cwd: PathBuf,
-        target: String,
-        files: Vec<FileHunks>,
-        scanner_ok: bool,
-    ) -> Self {
-        Self { cwd, target, files, scanner_ok, current_file_idx: 0, body_scroll: 0 }
+    /// Build state from a completed scan event, threading scanner
+    /// outcome flags through to the overlay so the renderer can
+    /// surface partial-failure and cap-overflow conditions.
+    fn new_with_event(event: DiffOverlayEvent) -> Self {
+        Self {
+            cwd: event.cwd,
+            target: event.target,
+            files: event.files,
+            scanner_ok: event.scanner_ok,
+            untracked_suppressed: event.untracked_suppressed,
+            current_file_idx: 0,
+            body_scroll: 0,
+        }
     }
 
     /// Currently-viewed file, or `None` when the diff is empty.

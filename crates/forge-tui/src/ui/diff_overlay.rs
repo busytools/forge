@@ -101,12 +101,26 @@ fn render_rail(frame: &mut Frame, area: Rect, overlay: &DiffOverlayState) {
         return;
     }
     let inner_width = usize::from(area.width.saturating_sub(6));
-    let mut lines = Vec::with_capacity(overlay.files.len() + 4);
+    let mut lines = Vec::with_capacity(overlay.files.len() + 5);
     lines.push(banner_row("FILES"));
     lines.push(rule_row(area.width));
     lines.push(Line::default());
     for (idx, file) in overlay.files.iter().enumerate() {
         lines.push(file_rail_row(file, idx == overlay.current_file_idx, inner_width));
+    }
+    if overlay.untracked_suppressed > 0 {
+        // Surface the cap overflow so a fresh-repo state with many
+        // untracked files doesn't render identically to a clean
+        // tree. Yellow signals "suppressed work-product, not a
+        // failure" — matches the Untracked status glyph colour.
+        lines.push(Line::from(Span::styled(
+            format!(
+                "  +{} untracked suppressed (cap {})",
+                overlay.untracked_suppressed,
+                forge_workspace::env::git_diff::hunks::MAX_UNTRACKED_FILES,
+            ),
+            Style::default().fg(theme::STATUS_WARNING),
+        )));
     }
     frame.render_widget(Paragraph::new(lines), area);
 }
