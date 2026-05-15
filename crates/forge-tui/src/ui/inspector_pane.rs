@@ -178,6 +178,7 @@ fn render_scrollable_body(frame: &mut Frame, body_area: Rect, app: &mut App) {
 
     let mut body_lines: Vec<Line<'static>> = Vec::new();
     append_body(&mut body_lines, app, body_area.width);
+    let has_open_diff_glyph = snapshot_has_diff(app);
     let total = body_lines.len();
     let visible = usize::from(body_area.height);
     let max_offset = total.saturating_sub(visible);
@@ -193,6 +194,23 @@ fn render_scrollable_body(frame: &mut Frame, body_area: Rect, app: &mut App) {
     };
 
     frame.render_widget(Paragraph::new(body_lines).scroll((offset, 0)), body_area);
+
+    // Stamp the `⤢` open-diff hit target — GIT header is body
+    // line 0, so the glyph is visible exactly when `offset == 0`.
+    // The glyph sits 2 cells in from the right edge (matches the
+    // header's `… + " "` trailing pad in `append_git_section`),
+    // hit-test extends one cell left + right for forgiveness.
+    if has_open_diff_glyph && offset == 0 {
+        let glyph_x = body_area.x.saturating_add(body_area.width).saturating_sub(2);
+        let x_start = glyph_x.saturating_sub(1);
+        let x_end = glyph_x.saturating_add(2);
+        app.pane_hit_targets.push(PaneHitTarget::InspectorGitOpenDiff {
+            y: body_area.y,
+            height: 1,
+            x_start,
+            x_end,
+        });
+    }
 
     // Scrollbar — thumb-only, no rail, painted as a block cell in
     // `ROLE_ASSISTANT` colour. Animated when work is in flight so
@@ -367,11 +385,22 @@ fn push_section_rule(lines: &mut Vec<Line<'static>>, width: u16) {
 /// row.
 fn append_git_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
     // Section header — DIM bold, flush against the rule above
-    // (mirrors `TASKS`).
-    lines.push(Line::from(Span::styled(
-        " GIT".to_owned(),
-        Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD),
-    )));
+    // (mirrors `TASKS`). When the snapshot has a diff to surface
+    // (Worktree / BranchVsDefault), append the `⤢` glyph at the
+    // right edge as the open-diff affordance.
+    let has_glyph = snapshot_has_diff(app);
+    let mut header_spans =
+        vec![Span::styled(" GIT".to_owned(), Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD))];
+    if has_glyph {
+        // " GIT" is 4 cells; glyph + right padding takes 2 cells
+        // (`⤢ ` — glyph then a single trailing space so the click
+        // target sits one column in from the absolute right edge).
+        let pad = usize::from(width).saturating_sub(4 + 2);
+        header_spans.push(Span::raw(" ".repeat(pad)));
+        header_spans.push(Span::styled("\u{2922}".to_owned(), Style::default().fg(theme::DIM)));
+        header_spans.push(Span::raw(" "));
+    }
+    lines.push(Line::from(header_spans));
     // Blank between header and content.
     lines.push(Line::default());
 
@@ -452,6 +481,16 @@ fn append_git_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
 
 /// Resolve the branch row's `(label, color)` for the snapshot.
 /// `NoRepo` / `Unknown` collapse to `None` (no row).
+/// Whether the active session's snapshot has a non-empty diff (used
+/// to gate the GIT header's `⤢` open-diff glyph + its hit target).
+fn snapshot_has_diff(app: &App) -> bool {
+    let Some(snapshot) = app.active_session().and_then(|s| s.git_diff_snapshot.as_ref())
+    else {
+        return false;
+    };
+    matches!(snapshot.view, GitDiffView::Worktree { .. } | GitDiffView::BranchVsDefault { .. })
+}
+
 fn branch_row_for(snapshot: &GitDiffSnapshot) -> Option<(String, Color)> {
     match &snapshot.branch {
         GitBranch::Named(name) => {

@@ -46,6 +46,57 @@ pub fn spawn_fetch(
     });
 }
 
+/// Resolve the default `/diff` target from the active session's
+/// Inspector GIT snapshot. Mirrors the auto-detect logic the `/diff`
+/// slash command uses; shared with the Inspector `⤢` click path.
+///
+/// Returns `None` when there's nothing to diff (no snapshot, no
+/// repo, clean default branch). Callers render a "No changes"
+/// notice and skip opening the overlay in that case.
+pub fn resolve_default_target(app: &App) -> Option<String> {
+    use forge_workspace::env::git_diff::GitDiffView;
+    let snapshot = app.active_session().and_then(|s| s.git_diff_snapshot.as_ref())?;
+    match (&snapshot.view, snapshot.default_branch.as_deref()) {
+        (GitDiffView::Worktree { .. }, _) => Some("HEAD".to_owned()),
+        (GitDiffView::BranchVsDefault { .. }, Some(default)) => Some(default.to_owned()),
+        _ => None,
+    }
+}
+
+/// Kick off a diff scan against `target` and post the result
+/// through the overlay event channel. Returns `true` when a scan
+/// was spawned. Used by `/diff <target>` directly; `open_default`
+/// builds on top of it for the auto-detect path.
+pub fn open_with_target(app: &mut App, target: String) -> bool {
+    let Some(workspace) = app.workspace.clone() else {
+        crate::app::slash::push_system_message(app, "Cannot open diff: workspace not ready.");
+        return false;
+    };
+    let Some(cwd_raw) = app.active_session().map(|s| s.cwd_raw.clone()) else {
+        crate::app::slash::push_system_message(app, "Cannot open diff: no active session.");
+        return false;
+    };
+    if cwd_raw.is_empty() {
+        crate::app::slash::push_system_message(app, "Cannot open diff: active session has no cwd.");
+        return false;
+    }
+    spawn_fetch(workspace, PathBuf::from(cwd_raw), target, app.diff_overlay_event_tx.clone());
+    true
+}
+
+/// Auto-detect the diff target from the Inspector GIT snapshot and
+/// kick off a scan. Pushes "No changes" system notice and returns
+/// `false` when the snapshot has nothing to surface. Shared entry
+/// point for the `/diff` slash command (no arg) and the Inspector
+/// `⤢` click.
+pub fn open_default(app: &mut App) -> bool {
+    let Some(target) = resolve_default_target(app) else {
+        crate::app::slash::push_system_message(app, "No changes vs HEAD.");
+        return false;
+    };
+    open_with_target(app, target)
+}
+
 /// Drain pending scan results and install the overlay state. Called
 /// from the main loop alongside the other event-channel consumers.
 /// At most one scan is typically in flight per `/diff` invocation;

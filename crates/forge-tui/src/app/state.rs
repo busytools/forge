@@ -132,6 +132,13 @@ pub enum PaneHitTarget {
         x_start: u16,
         x_end: u16,
     },
+    /// Click on the `⤢` glyph at the right edge of the Inspector
+    /// pane's `GIT` section header → open the full-screen Diff
+    /// overlay with auto-detected target. Only stamped when the
+    /// snapshot has a diff to show (Worktree / BranchVsDefault)
+    /// AND the inspector scroll offset is 0 (otherwise the header
+    /// is off-screen).
+    InspectorGitOpenDiff { y: u16, height: u16, x_start: u16, x_end: u16 },
 }
 
 impl PaneHitTarget {
@@ -149,7 +156,8 @@ impl PaneHitTarget {
             | Self::TopBarIcon { y, height, .. }
             | Self::InspectorTopBarIcon { y, height, .. }
             | Self::OverlayClose { y, height, .. }
-            | Self::CloseSession { y, height, .. } => (*y, *height),
+            | Self::CloseSession { y, height, .. }
+            | Self::InspectorGitOpenDiff { y, height, .. } => (*y, *height),
         };
         (start..start.saturating_add(height)).contains(&y)
     }
@@ -168,7 +176,10 @@ impl PaneHitTarget {
             Self::TopBarIcon { x_start, x_end, .. }
             | Self::InspectorTopBarIcon { x_start, x_end, .. }
             | Self::OverlayClose { x_start, x_end, .. }
-            | Self::CloseSession { x_start, x_end, .. } => (*x_start..*x_end).contains(&x),
+            | Self::CloseSession { x_start, x_end, .. }
+            | Self::InspectorGitOpenDiff { x_start, x_end, .. } => {
+                (*x_start..*x_end).contains(&x)
+            }
         }
     }
 }
