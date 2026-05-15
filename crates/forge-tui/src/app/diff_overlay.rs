@@ -864,7 +864,27 @@ fn reopen_comment_for_key(overlay: &mut DiffOverlayState, key: LineKey) -> Mouse
 /// into a markdown user message and dispatch it as a prompt before
 /// closing. Used by the banner ✕ click and by `handle_key`'s Esc
 /// path.
+///
+/// Pre-flight: if comments are pending AND the agent isn't ready
+/// to receive a prompt (no active session, pre-Connect), the close
+/// is REFUSED — a system message tells the user to retry once the
+/// session connects. Without this, `dispatch_prompt`'s silent
+/// no-agent path would drop the bundle on the floor and the user
+/// would lose their review notes.
 pub(super) fn close_with_submit(app: &mut App) {
+    let pending = app.diff_overlay.as_ref().is_some_and(|o| !o.comments.is_empty());
+    if pending && (!app.has_active_agent() || app.session_id().is_none()) {
+        crate::app::slash::push_system_message(
+            app,
+            "Diff overlay close held: agent not ready. Wait for the session to connect, then press Esc again to submit your comments.",
+        );
+        // Leave the overlay open so the user can retry. The user's
+        // comments stay intact on `overlay.comments`. They can also
+        // abandon by clearing chips one by one (click chip + Esc-
+        // cancel-input), though that's a long path.
+        app.needs_redraw = true;
+        return;
+    }
     let comments: Vec<HunkComment> =
         app.diff_overlay.as_mut().map(|o| std::mem::take(&mut o.comments)).unwrap_or_default();
     if !comments.is_empty() {
@@ -1212,6 +1232,46 @@ mod tests {
         state.comment_counts = vec![5, 5, 5];
         state.recompute_comment_counts();
         assert_eq!(state.comment_counts.len(), state.files.len());
+    }
+
+    #[test]
+    fn close_with_submit_refuses_when_agent_not_ready() {
+        // No active agent in the test default — close_with_submit
+        // with pending comments must keep the overlay open + push
+        // a system message rather than silently dropping comments.
+        let mut app = App::test_default();
+        let mut state = sample_state();
+        state.comments.push(HunkComment {
+            key: LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 },
+            path: "a.rs".into(),
+            line: 1,
+            hunk_context: vec![],
+            comment_text: "needs unwrap fix".into(),
+        });
+        app.diff_overlay = Some(state);
+        set_active_view(&mut app, ActiveView::Diff);
+        close_with_submit(&mut app);
+        // Overlay still open + comment still alive — user can retry.
+        assert!(app.diff_overlay.is_some(), "overlay stays open when dispatch would silently fail");
+        assert_eq!(
+            app.diff_overlay.as_ref().map(|o| o.comments.len()),
+            Some(1),
+            "comments preserved on hold"
+        );
+        assert_eq!(app.active_view, ActiveView::Diff, "view stays on Diff");
+    }
+
+    #[test]
+    fn close_with_submit_no_comments_closes_cleanly_even_without_agent() {
+        // Empty comments path skips the dispatch entirely, so the
+        // no-agent state shouldn't block closing — the user just
+        // wants to dismiss the overlay.
+        let mut app = App::test_default();
+        app.diff_overlay = Some(sample_state());
+        set_active_view(&mut app, ActiveView::Diff);
+        close_with_submit(&mut app);
+        assert!(app.diff_overlay.is_none(), "empty-comments close still drops state");
+        assert_eq!(app.active_view, ActiveView::Chat, "view returns to chat");
     }
 
     #[test]
