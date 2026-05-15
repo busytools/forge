@@ -327,23 +327,35 @@ fn handle_global_shortcuts(app: &mut App, key: KeyEvent) -> bool {
         // arrow-based bindings avoid both conflicts. Word-nav lives
         // on Alt+Arrow on every platform now (see WORD_NAV_MOD) so
         // Ctrl+Arrow is free on non-macOS.
+        //
+        // Use the permissive `is_cmd_shortcut` / `is_ctrl_shortcut`
+        // predicates rather than `m == SUPER` / `m == CONTROL`.
+        // Kitty-keyboard-protocol terminals (Ghostty et al.) can
+        // attach extra modifier bits (HYPER, META, NUM_LOCK,
+        // CAPS_LOCK) to arrow events; a strict equality match drops
+        // those events on the floor. Cmd+Left without Cmd+Char
+        // suffered from this because the strict match required
+        // `KeyModifiers::SUPER` exactly. The looser predicates just
+        // require the platform modifier to be set and ALT (the
+        // word-nav modifier) to be unset, so the binding survives
+        // protocol-level bit drift.
         #[cfg(target_os = "macos")]
-        (KeyCode::Left, m) if m == KeyModifiers::SUPER => {
+        (KeyCode::Left, m) if is_cmd_shortcut(m) => {
             toggle_projects_pane(app);
             true
         }
         #[cfg(target_os = "macos")]
-        (KeyCode::Right, m) if m == KeyModifiers::SUPER => {
+        (KeyCode::Right, m) if is_cmd_shortcut(m) => {
             toggle_inspector_pane(app);
             true
         }
         #[cfg(not(target_os = "macos"))]
-        (KeyCode::Left, m) if m == KeyModifiers::CONTROL => {
+        (KeyCode::Left, m) if is_ctrl_shortcut(m) => {
             toggle_projects_pane(app);
             true
         }
         #[cfg(not(target_os = "macos"))]
-        (KeyCode::Right, m) if m == KeyModifiers::CONTROL => {
+        (KeyCode::Right, m) if is_ctrl_shortcut(m) => {
             toggle_inspector_pane(app);
             true
         }
