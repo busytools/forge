@@ -61,8 +61,8 @@ use crate::app::processes::{
 };
 
 /// Horizontal padding inside the pane (matches the left
-/// `projects_pane`'s 2-col indent).
-const PANE_PAD: u16 = 2;
+/// `projects_pane`'s 1-col indent).
+const PANE_PAD: u16 = 1;
 
 /// Minimum gap (cols) between the path column and the stats column
 /// in a per-file diff row. Reserves visual breathing room so the
@@ -147,13 +147,13 @@ fn split_banner_body(area: Rect) -> (Rect, Rect) {
     (banner_area, body_area)
 }
 
-/// Build the inline-pane's banner: `  INSPECTOR` heading + dim rule
+/// Build the inline-pane's banner: ` INSPECTOR` heading + dim rule
 /// under it. Two lines total, mirroring the projects pane's banner.
 fn build_inline_banner(width: u16) -> Vec<Line<'static>> {
     let rule_width = usize::from(width.saturating_sub(2));
     vec![
         Line::from(Span::styled(
-            "  INSPECTOR".to_owned(),
+            " INSPECTOR".to_owned(),
             Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
         )),
         Line::from(vec![
@@ -369,7 +369,7 @@ fn append_git_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
     // Section header — DIM bold, flush against the rule above
     // (mirrors `TASKS`).
     lines.push(Line::from(Span::styled(
-        "  GIT".to_owned(),
+        " GIT".to_owned(),
         Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD),
     )));
     // Blank between header and content.
@@ -380,7 +380,7 @@ fn append_git_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
     let path_budget = usize::from(width).saturating_sub(usize::from(PANE_PAD));
     let path_value = fit_path_head_truncated(app.cwd(), path_budget);
     lines.push(Line::from(vec![
-        Span::raw("  "),
+        Span::raw(" "),
         Span::styled(path_value, Style::default().fg(theme::DIM)),
     ]));
 
@@ -441,7 +441,7 @@ fn append_git_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
     if total_files > files_slice.len() {
         let more = total_files - files_slice.len();
         lines.push(Line::from(vec![
-            Span::raw("  "),
+            Span::raw(" "),
             Span::styled(
                 format!("+{more} more"),
                 Style::default().fg(theme::DIM).add_modifier(Modifier::ITALIC),
@@ -601,7 +601,7 @@ fn diff_subtitle_line(width: u16, label: &str, totals: (u32, u32)) -> Line<'stat
         Span::styled(added_str, Style::default().fg(Color::Green)),
         Span::raw(" "),
         Span::styled(removed_str, Style::default().fg(Color::Red)),
-        Span::raw("  "),
+        Span::raw(" "),
     ])
 }
 
@@ -814,10 +814,8 @@ fn tree_row(
     file_stats: Option<(u32, u32)>,
 ) -> Line<'static> {
     let prefix_chars = tree_prefix.chars().count();
-    let mut spans = vec![
-        Span::raw("  "),
-        Span::styled(tree_prefix.to_owned(), Style::default().fg(theme::DIM)),
-    ];
+    let mut spans =
+        vec![Span::raw(" "), Span::styled(tree_prefix.to_owned(), Style::default().fg(theme::DIM))];
 
     let Some((added, removed)) = file_stats else {
         // Directory row — just the label, no stats. Truncate the
@@ -858,7 +856,7 @@ fn tree_row(
     spans.push(Span::styled(added_str, Style::default().fg(Color::Green)));
     spans.push(Span::raw(" "));
     spans.push(Span::styled(removed_str, Style::default().fg(Color::Red)));
-    spans.push(Span::raw("  "));
+    spans.push(Span::raw(" "));
     Line::from(spans)
 }
 
@@ -909,7 +907,7 @@ fn append_tasks_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
     // header when the flag is set. Dim-yellow one-liner.
     if app.todo_verification_nudge() {
         lines.push(Line::from(vec![
-            Span::raw("  "),
+            Span::raw(" "),
             Span::styled(
                 "\u{26a0} verify before declaring complete".to_owned(),
                 Style::default().fg(theme::STATUS_WARNING),
@@ -934,7 +932,7 @@ fn append_tasks_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
     // the rest of the inspector (GIT subtitle, PROCESSES suffixes).
     lines.push(Line::from(vec![
         Span::styled(
-            "  TASKS".to_owned(),
+            " TASKS".to_owned(),
             Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD),
         ),
         Span::styled(format!(" \u{00B7} {done}/{total}"), Style::default().fg(theme::DIM)),
@@ -1027,7 +1025,7 @@ fn append_tasks_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
             let mut iter = wrapped.into_iter();
             if let Some(first) = iter.next() {
                 lines.push(Line::from(vec![
-                    Span::raw("  "),
+                    Span::raw(" "),
                     Span::styled(glyph.clone(), Style::default().fg(glyph_color)),
                     Span::raw(" "),
                     Span::styled(first, text_style),
@@ -1036,7 +1034,7 @@ fn append_tasks_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
                 // Empty `display_text` — still render the glyph row
                 // so the pane shape stays consistent.
                 lines.push(Line::from(vec![
-                    Span::raw("  "),
+                    Span::raw(" "),
                     Span::styled(glyph.clone(), Style::default().fg(glyph_color)),
                 ]));
             }
@@ -1050,7 +1048,7 @@ fn append_tasks_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
             // Truncate with `…` at the right edge.
             let truncated = truncate_with_ellipsis(&display_text, text_budget);
             lines.push(Line::from(vec![
-                Span::raw("  "),
+                Span::raw(" "),
                 Span::styled(glyph.clone(), Style::default().fg(glyph_color)),
                 Span::raw(" "),
                 Span::styled(truncated, text_style),
@@ -1066,7 +1064,7 @@ fn append_tasks_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
 
     if hidden > 0 {
         lines.push(Line::from(vec![
-            Span::raw("  "),
+            Span::raw(" "),
             Span::styled(
                 format!("+{hidden} more"),
                 Style::default().fg(theme::DIM).add_modifier(Modifier::ITALIC),
@@ -1113,7 +1111,7 @@ fn append_processes_section(
     spinner_frame: usize,
 ) {
     lines.push(Line::from(Span::styled(
-        "  PROCESSES".to_owned(),
+        " PROCESSES".to_owned(),
         Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD),
     )));
     lines.push(Line::default());
@@ -1760,11 +1758,11 @@ mod tests {
         assert_eq!(lines.len(), 3, "expected 3 rendered lines, got {}", lines.len());
 
         let header = line_text(&lines[0]);
-        assert_eq!(header, "  PROCESSES");
+        assert_eq!(header, " PROCESSES");
         let row_text = line_text(&lines[2]);
         // Wire-matched (Bash) → spinner glyph instead of static `▸`.
         // Frame 0 picks `⠋` (the first braille spinner frame).
-        assert!(row_text.starts_with("  \u{280B} Run unit tests"), "headline: {row_text:?}");
+        assert!(row_text.starts_with(" \u{280B} Run unit tests"), "headline: {row_text:?}");
         assert!(row_text.contains("8 MB"), "memory suffix: {row_text:?}");
         // No `Bash · running` text — that's the regression check.
         assert!(!row_text.contains("running"), "kind/running text must be dropped: {row_text:?}");
@@ -1788,7 +1786,7 @@ mod tests {
 
         let row_text = line_text(&lines[2]);
         // Monitor is wire-matched → spinner glyph (frame 0 = `⠋`).
-        assert!(row_text.starts_with("  \u{280B} PR #120 CI watch"), "headline: {row_text:?}");
+        assert!(row_text.starts_with(" \u{280B} PR #120 CI watch"), "headline: {row_text:?}");
         assert!(row_text.contains("4 MB"), "memory suffix wins: {row_text:?}");
     }
 
@@ -1812,7 +1810,7 @@ mod tests {
         let row_text = line_text(&lines[2]);
         // ✓ is the completed-status glyph; the cron clock ⏰ only
         // fires for the (rare) InProgress case.
-        assert!(row_text.starts_with("  \u{2713} */5 * * * *"), "got {row_text:?}");
+        assert!(row_text.starts_with(" \u{2713} */5 * * * *"), "got {row_text:?}");
         assert!(row_text.contains("recurring"), "metadata suffix present: {row_text:?}");
     }
 
@@ -1829,7 +1827,7 @@ mod tests {
         append_processes_section(&mut lines, &collection(vec![row]), 40, 0);
 
         let row_text = line_text(&lines[2]);
-        assert!(row_text.starts_with("  \u{23F0} daily 9am"), "got {row_text:?}");
+        assert!(row_text.starts_with(" \u{23F0} daily 9am"), "got {row_text:?}");
     }
 
     #[test]
@@ -1847,7 +1845,7 @@ mod tests {
         append_processes_section(&mut lines, &collection(rows), 40, 0);
 
         let row_text = line_text(&lines[2]);
-        assert!(row_text.starts_with("  \u{2717} Run integration tests"), "got {row_text:?}");
+        assert!(row_text.starts_with(" \u{2717} Run integration tests"), "got {row_text:?}");
     }
 
     #[test]
@@ -1898,7 +1896,7 @@ mod tests {
         let row_text = line_text(&lines[2]);
         assert!(row_text.contains('\u{2026}'), "expected ellipsis: {row_text:?}");
         let visible_chars = row_text.chars().count();
-        assert!(visible_chars <= 38, "row overflows 40-col pane: {visible_chars} cols");
+        assert!(visible_chars <= 39, "row overflows 40-col pane: {visible_chars} cols");
     }
 
     /// Helper for tests that need a row with explicit memory bytes
@@ -1976,7 +1974,7 @@ mod tests {
         // (frame 0 = `⠋`) but in DIM — the colour difference vs
         // RUST_ORANGE matched rows is the "is this tracked or not"
         // signal.
-        assert!(headline.starts_with("  \u{280B} cargo"), "expected spinner glyph: {headline:?}");
+        assert!(headline.starts_with(" \u{280B} cargo"), "expected spinner glyph: {headline:?}");
         // Style assertion: pull the glyph span and check its colour.
         let glyph_span = &lines[2].spans[1];
         assert_eq!(glyph_span.style.fg, Some(theme::DIM));
