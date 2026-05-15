@@ -419,7 +419,22 @@ fn append_git_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
         // Pre-first-scan window: only the path is known.
         return;
     };
-
+    if !snapshot.scanner_ok {
+        // Scanner crashed (rev-parse Failed / Oversize) and the
+        // view collapsed to NoRepo as a failsafe. Without this row
+        // the section renders identically to a real non-repo
+        // directory — the user has no visual cue that git itself
+        // is unhealthy. The `⤢` glyph still routes through the
+        // ScannerFailed path so a click surfaces the trace target.
+        lines.push(Line::from(vec![
+            Span::raw("  "),
+            Span::styled(
+                "git scanner unhealthy — see logs (ENV_GIT)",
+                Style::default().fg(theme::STATUS_WARNING),
+            ),
+        ]));
+        return;
+    }
     // Pull the diff display info out of the snapshot. `None` for
     // `CleanDefault` / `NoRepo` — no subtitle, no totals, no files.
     let diff = build_diff_display(snapshot);
@@ -483,12 +498,22 @@ fn append_git_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
 
 /// Resolve the branch row's `(label, color)` for the snapshot.
 /// `NoRepo` / `Unknown` collapse to `None` (no row).
-/// Whether the active session's snapshot has a non-empty diff (used
-/// to gate the GIT header's `⤢` open-diff glyph + its hit target).
+/// Whether the active session's snapshot warrants the `⤢` open-diff
+/// glyph in the GIT header. Two cases qualify:
+/// - `Worktree` / `BranchVsDefault` — the normal "there's a diff to
+///   review" path.
+/// - `scanner_ok == false` — the Inspector scanner crashed and the
+///   view collapsed to NoRepo as a failsafe. The user needs a way
+///   to escalate; clicking the glyph routes through
+///   `open_default → DefaultTarget::ScannerFailed`, surfacing the
+///   trace-target hint they need to triage.
 fn snapshot_has_diff(app: &App) -> bool {
     let Some(snapshot) = app.active_session().and_then(|s| s.git_diff_snapshot.as_ref()) else {
         return false;
     };
+    if !snapshot.scanner_ok {
+        return true;
+    }
     matches!(snapshot.view, GitDiffView::Worktree { .. } | GitDiffView::BranchVsDefault { .. })
 }
 
