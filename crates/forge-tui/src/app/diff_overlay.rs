@@ -19,10 +19,9 @@ use super::App;
 use super::view::{ActiveView, set_active_view};
 
 /// Event shuttled from the spawned scan task back to the main loop.
-/// `cwd` and `target` are echoed back so the receiver doesn't have
-/// to track outstanding requests — when the user switches away
-/// before the scan completes, `drain_events` simply skips the open
-/// (active view changed).
+/// `cwd` and `target` are echoed back so the receiver can drop
+/// stale results when the user switched sessions or navigated away
+/// from chat while the scan was running (see [`drain_events`]).
 #[derive(Debug)]
 pub struct DiffOverlayEvent {
     pub cwd: PathBuf,
@@ -107,12 +106,50 @@ const EVENT_DRAIN_BUDGET: usize = 8;
 
 /// Drain pending scan results and install the overlay state. Called
 /// from the main loop alongside the other event-channel consumers.
+///
+/// Events are dropped (rather than opening the overlay) when the
+/// user has navigated away since the scan started:
+/// - `app.active_view != ActiveView::Chat` — user opened config /
+///   session picker / launchpad / another overlay while the scan
+///   was running. Yanking them into the diff view would be
+///   surprising.
+/// - `event.cwd` doesn't match the active session's `cwd_raw` —
+///   user switched sessions mid-scan; the result is for a stale
+///   project.
+///
+/// Both cases log at DEBUG so a future "why didn't /diff open?"
+/// triage can correlate the event without surfacing noise to the
+/// user.
 pub fn drain_events(app: &mut App) {
     for _ in 0..EVENT_DRAIN_BUDGET {
         let event = match app.diff_overlay_event_rx.try_recv() {
             Ok(event) => event,
             Err(std_mpsc::TryRecvError::Empty | std_mpsc::TryRecvError::Disconnected) => return,
         };
+        if app.active_view != ActiveView::Chat {
+            tracing::debug!(
+                target: crate::logging::targets::APP_SESSION,
+                event_name = "diff_overlay_drain_skipped_view",
+                message = "diff scan completed but active view changed; dropping result",
+                outcome = "skipped",
+                target_ref = %event.target,
+                active_view = ?app.active_view,
+            );
+            continue;
+        }
+        let active_cwd = app.active_session().map(|s| s.cwd_raw.clone());
+        let scan_cwd = event.cwd.to_string_lossy().into_owned();
+        if active_cwd.as_deref() != Some(scan_cwd.as_str()) {
+            tracing::debug!(
+                target: crate::logging::targets::APP_SESSION,
+                event_name = "diff_overlay_drain_skipped_cwd",
+                message = "diff scan completed but session cwd changed; dropping result",
+                outcome = "skipped",
+                scan_cwd = %scan_cwd,
+                active_cwd = ?active_cwd,
+            );
+            continue;
+        }
         let state = DiffOverlayState::new(event.cwd, event.target, event.files);
         open(app, state);
     }
