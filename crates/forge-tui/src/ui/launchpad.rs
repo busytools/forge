@@ -603,7 +603,16 @@ pub fn pick_selected_project(app: &mut App) {
     let Some((project_name, lifecycle)) = resolve_selection(app) else {
         return;
     };
-    match click_intent(lifecycle) {
+    let intent = click_intent(lifecycle);
+    tracing::info!(
+        target: crate::logging::targets::APP_SESSION,
+        event_name = "launchpad_pick_dispatched",
+        project = project_name.as_str(),
+        lifecycle = ?lifecycle,
+        intent = ?intent,
+        "launchpad Enter dispatched",
+    );
+    match intent {
         ClickIntent::EnterChat => switch_to_project_and_focus(app, &project_name),
         ClickIntent::SpawnAndWait => spawn_project_in_background(app, &project_name),
         ClickIntent::Block | ClickIntent::Retry => {}
@@ -670,10 +679,38 @@ fn switch_to_project_and_focus(app: &mut App, project_name: &str) {
         return;
     };
     let spawn_synthetic = SessionKey::from_session_id(format!("__spawn_{resolved_name}__"));
+    let bucket_keys: Vec<String> = app.sessions.keys().map(|k| k.as_str().to_owned()).collect();
+    let buckets_with_matching_cwd: Vec<String> = app
+        .sessions
+        .iter()
+        .filter(|(_, s)| s.cwd_raw.as_str() == project_path.to_string_lossy().as_ref())
+        .map(|(k, _)| k.as_str().to_owned())
+        .collect();
+    tracing::info!(
+        target: crate::logging::targets::APP_SESSION,
+        event_name = "launchpad_switch_to_project_entry",
+        project = resolved_name.as_str(),
+        spawn_synthetic = spawn_synthetic.as_str(),
+        path = %project_path.to_string_lossy(),
+        active_key = ?app.active_session_key.as_ref().map(forge_workspace::SessionKey::as_str),
+        bucket_count = bucket_keys.len(),
+        buckets = ?bucket_keys,
+        buckets_with_matching_cwd = ?buckets_with_matching_cwd,
+        "launchpad switch_to_project_and_focus entered",
+    );
 
     // Already-spawning bucket: switch to it; KeyRenamed migrates on
     // Connected.
     if app.sessions.contains_key(&spawn_synthetic) {
+        let lifecycle = app.sessions.get(&spawn_synthetic).map(|s| s.lifecycle_state);
+        tracing::info!(
+            target: crate::logging::targets::APP_SESSION,
+            event_name = "launchpad_switch_step1_synthetic_match",
+            project = resolved_name.as_str(),
+            synthetic = spawn_synthetic.as_str(),
+            lifecycle = ?lifecycle,
+            "step 1 matched __spawn_<name>__ synthetic; switching",
+        );
         app.switch_active_session(spawn_synthetic);
         set_active_view(app, ActiveView::Chat);
         return;
@@ -686,6 +723,15 @@ fn switch_to_project_and_focus(app: &mut App, project_name: &str) {
     // launched from inside this project's directory.
     let path_str = project_path.to_string_lossy();
     if let Some(key) = app.find_running_bucket_for_path(path_str.as_ref()) {
+        let lifecycle = app.sessions.get(&key).map(|s| s.lifecycle_state);
+        tracing::info!(
+            target: crate::logging::targets::APP_SESSION,
+            event_name = "launchpad_switch_step2_cwd_match",
+            project = resolved_name.as_str(),
+            matched_key = key.as_str(),
+            lifecycle = ?lifecycle,
+            "step 2 matched cwd_raw filter; switching",
+        );
         app.switch_active_session(key);
         set_active_view(app, ActiveView::Chat);
         return;
@@ -696,10 +742,25 @@ fn switch_to_project_and_focus(app: &mut App, project_name: &str) {
     if let Some(key) = lead_key
         && app.sessions.contains_key(&key)
     {
+        let lifecycle = app.sessions.get(&key).map(|s| s.lifecycle_state);
+        tracing::info!(
+            target: crate::logging::targets::APP_SESSION,
+            event_name = "launchpad_switch_step3_catalog_lead_match",
+            project = resolved_name.as_str(),
+            matched_key = key.as_str(),
+            lifecycle = ?lifecycle,
+            "step 3 matched catalog lead; switching",
+        );
         app.switch_active_session(key);
         set_active_view(app, ActiveView::Chat);
         return;
     }
+    tracing::info!(
+        target: crate::logging::targets::APP_SESSION,
+        event_name = "launchpad_switch_fallthrough_to_cold_spawn",
+        project = resolved_name.as_str(),
+        "steps 1-3 missed; falling through to step 4 (cold spawn + Chat view)",
+    );
 
     // Cold spawn — dispatch and transition. The synthetic bucket
     // will appear in `app.sessions` on the next event tick (via the
