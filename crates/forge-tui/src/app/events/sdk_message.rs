@@ -397,6 +397,18 @@ fn extract_queued_command_text(prompt: &Value) -> String {
 /// `input_submit::dispatch_prompt` — and never reach this code.)
 fn handle_queued_command_echo(app: &mut App, prompt_text: &str) {
     use crate::app::{ChatMessage, MessageBlock, MessageRole, TextBlock};
+    // Harness-injected `<task-notification>` blobs (background-task
+    // completion events) get queued through the same path as
+    // user-typed input. They're plumbing, not a user message — render
+    // them as user bubbles is misleading on resume (the bottom of the
+    // chat fills up with notification chatter that looks like the user
+    // typed it). Skip them at the echo path so they don't reach the
+    // chat buffer at all. Mirrors the `<local-command-caveat>` /
+    // `<command-name>` filter in `events::session_reset` for the
+    // user-text path.
+    if prompt_text.trim_start().starts_with("<task-notification>") {
+        return;
+    }
     let blocks = vec![MessageBlock::Text(TextBlock::from_complete(prompt_text))];
     app.push_message_tracked(ChatMessage::new(MessageRole::User, blocks, None));
     app.enforce_history_retention_tracked();
