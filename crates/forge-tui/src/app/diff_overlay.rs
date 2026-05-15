@@ -50,9 +50,10 @@ pub fn spawn_fetch(
 }
 
 /// Outcome of resolving the default `/diff` target from the active
-/// session's Inspector GIT snapshot. Distinguishes the three
-/// "nothing to open" cases so the caller can surface a specific
-/// system-message rather than a generic "no changes" line.
+/// session's Inspector GIT snapshot. Distinguishes every "nothing
+/// to open" case so the caller can surface a specific system-
+/// message rather than collapsing distinct failures onto a single
+/// "no changes" line.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DefaultTarget {
     /// Resolved a concrete ref to diff against (`"HEAD"` for the
@@ -65,9 +66,17 @@ pub enum DefaultTarget {
     NoSnapshot,
     /// Active session's cwd isn't inside a git repository.
     NotARepo,
+    /// Snapshot view is `BranchVsDefault` (so the scanner sees
+    /// committed changes vs SOME default) but the default branch
+    /// itself couldn't be resolved — no `origin/HEAD`, no local
+    /// `main`, no local `master`. Distinct from `Clean` because
+    /// there ARE changes; we just don't know which ref to compare
+    /// against. User needs to pass an explicit `/diff <ref>`.
+    NoDefault,
     /// Working tree is clean against the resolved default branch.
-    /// Genuine "no changes" — distinct from the other two None
-    /// cases so the system notice can name the default branch.
+    /// Genuine "no changes". Branch name is surfaced in the
+    /// system notice when known so the user knows what they're
+    /// (not) diffing against.
     Clean { default_branch: Option<String> },
 }
 
@@ -84,11 +93,11 @@ pub fn resolve_default_target(app: &App) -> DefaultTarget {
         (GitDiffView::BranchVsDefault { .. }, Some(default)) => {
             DefaultTarget::Ref(default.to_owned())
         }
+        (GitDiffView::BranchVsDefault { .. }, None) => DefaultTarget::NoDefault,
         (GitDiffView::NoRepo, _) => DefaultTarget::NotARepo,
-        // CleanDefault — or BranchVsDefault with no default branch
-        // known (origin/HEAD missing + no main + no master). Same
-        // user-facing message either way: nothing to compare against.
-        _ => DefaultTarget::Clean { default_branch: snapshot.default_branch.clone() },
+        (GitDiffView::CleanDefault, _) => {
+            DefaultTarget::Clean { default_branch: snapshot.default_branch.clone() }
+        }
     }
 }
 
@@ -131,6 +140,12 @@ pub fn open_default(app: &mut App) {
         }
         DefaultTarget::NotARepo => {
             crate::app::slash::push_system_message(app, "Not a git repository.");
+        }
+        DefaultTarget::NoDefault => {
+            crate::app::slash::push_system_message(
+                app,
+                "Branch has changes but the default ref couldn't be resolved (no origin/HEAD, no main, no master). Run /diff <ref> with an explicit target.",
+            );
         }
         DefaultTarget::Clean { default_branch } => {
             let message = match default_branch {
