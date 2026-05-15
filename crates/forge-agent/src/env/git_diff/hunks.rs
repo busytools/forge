@@ -318,10 +318,7 @@ fn split_per_file(raw: &str) -> HashMap<String, String> {
     for line in raw.lines() {
         if line.starts_with("diff --git ") {
             if in_section {
-                let path = path_from_section(&current_lines);
-                if let Some(path) = path {
-                    map.insert(path, current_lines.join("\n"));
-                }
+                flush_section(&current_lines, &mut map);
             }
             current_lines.clear();
             current_lines.push(line);
@@ -330,10 +327,32 @@ fn split_per_file(raw: &str) -> HashMap<String, String> {
             current_lines.push(line);
         }
     }
-    if in_section && let Some(path) = path_from_section(&current_lines) {
-        map.insert(path, current_lines.join("\n"));
+    if in_section {
+        flush_section(&current_lines, &mut map);
     }
     map
+}
+
+/// Drop a per-file section into `map` if the path can be derived,
+/// otherwise WARN with the offending header so an operator hunting
+/// "why didn't my file's diff show" has a trail. The drop case is
+/// rare (every healthy git output produces a `+++ b/` or `+++
+/// /dev/null` line) but the silent skip used to mask custom
+/// pretty-format leakage and unusual rename / copy header shapes.
+fn flush_section(lines: &[&str], map: &mut HashMap<String, String>) {
+    if let Some(path) = path_from_section(lines) {
+        map.insert(path, lines.join("\n"));
+        return;
+    }
+    let header = lines.first().copied().unwrap_or("<empty>");
+    let truncated: String = header.chars().take(120).collect();
+    tracing::warn!(
+        target: crate::logging::targets::ENV_GIT,
+        event_name = "git_section_path_missing",
+        message = "diff section had no resolvable +++/--- path; section dropped",
+        outcome = "skipped",
+        header = %truncated,
+    );
 }
 
 /// Derive the canonical (new-side) path for a per-file diff section
