@@ -28,10 +28,12 @@ use std::path::Path;
 
 use super::{GitOutput, run_git};
 
-/// Skip the untracked-file inline-content scan when the working
-/// tree has more than this many untracked entries. The TUI still
-/// surfaces them in the file rail as `U` rows; the body just shows
-/// the file list without expanded content.
+/// Skip the untracked-file scan entirely when the working tree
+/// has more than this many untracked entries. A fresh-repo state
+/// with hundreds of untracked files would otherwise dump everything
+/// into the overlay. The Inspector GIT section is unaffected; only
+/// the `/diff` overlay's untracked surface is suppressed (no `U`
+/// rows render in the rail when the cap is exceeded).
 pub(crate) const MAX_UNTRACKED_FILES: usize = 4;
 
 /// Per-file size ceiling for untracked content surfaced in the diff
