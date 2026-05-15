@@ -11,7 +11,7 @@
 //!
 //! Click-to-comment lands here: `body_keys` is the parallel
 //! per-rendered-row index the click handler reads to resolve
-//! `mouse.row` → `BodyRowKey`. Comment chips (💬 L<line>) render
+//! `mouse.row` → `BodyRowKey`. Comment chips (💬 `L<line>`) render
 //! one row each after their anchor line; the active editor's
 //! TextArea expands inline below its anchor.
 

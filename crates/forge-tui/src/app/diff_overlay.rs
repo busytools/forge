@@ -399,7 +399,7 @@ pub struct DiffOverlayState {
     pub active_input: Option<ActiveCommentInput>,
     /// Parallel index to the renderer's body lines: for every row
     /// the right pane drew, what does that row represent. The mouse
-    /// handler reads this to resolve a click into a [`BodyRowKey`].
+    /// handler reads this to resolve a click into a `BodyRowKey`.
     /// Filled fresh on every render; consumers must NOT assume
     /// stability across frames.
     pub body_keys: Vec<BodyRowKey>,
