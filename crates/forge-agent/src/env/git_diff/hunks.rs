@@ -193,7 +193,9 @@ pub async fn scan(cwd: &Path, target: &str) -> ScanOutcome {
     // committed-since-main + uncommitted via the ref-vs-worktree
     // compare; untracked files don't belong to that comparison.
     if target == "HEAD" {
-        files.extend(scan_untracked(cwd).await);
+        let (untracked, untracked_ok) = scan_untracked(cwd).await;
+        files.extend(untracked);
+        scanner_ok = scanner_ok && untracked_ok;
     }
 
     ScanOutcome { files, scanner_ok }
@@ -438,18 +440,25 @@ fn parse_pair(s: &str) -> Option<(u32, u32)> {
 /// Read untracked files from `git ls-files --others
 /// --exclude-standard` and synthesise a [`FileHunks`] for each one
 /// (status [`Untracked`](FileStatus::Untracked), single all-added
-/// hunk). Caps total count at [`MAX_UNTRACKED_FILES`] — when the
+/// hunk). Caps total count at `MAX_UNTRACKED_FILES` — when the
 /// working tree has more untracked entries than that, returns an
 /// empty `Vec` so a fresh-repo state doesn't dump hundreds of files
 /// into the overlay.
-async fn scan_untracked(cwd: &Path) -> Vec<FileHunks> {
+///
+/// Returns `(files, ok)` — `ok = false` only when the underlying
+/// `ls-files` subprocess hit `Failed` / `Oversize`. The cap-exceeded
+/// path keeps `ok = true` because git ran fine; the caller can
+/// distinguish "you have lots of untracked files, scan suppressed
+/// them" from "the scanner crashed" via the bool.
+async fn scan_untracked(cwd: &Path) -> (Vec<FileHunks>, bool) {
     let raw = match run_git(cwd, &["ls-files", "--others", "--exclude-standard"]).await {
         GitOutput::Ok(s) => s,
-        GitOutput::Empty | GitOutput::Failed | GitOutput::Oversize => return Vec::new(),
+        GitOutput::Empty => String::new(),
+        GitOutput::Failed | GitOutput::Oversize => return (Vec::new(), false),
     };
     let untracked: Vec<&str> = raw.lines().filter(|l| !l.is_empty()).collect();
     if untracked.len() > MAX_UNTRACKED_FILES {
-        return Vec::new();
+        return (Vec::new(), true);
     }
     let mut out = Vec::with_capacity(untracked.len());
     for path in untracked {
@@ -524,7 +533,7 @@ async fn scan_untracked(cwd: &Path) -> Vec<FileHunks> {
         };
         out.push(FileHunks { path: path.to_owned(), status: FileStatus::Untracked, hunks });
     }
-    out
+    (out, true)
 }
 
 #[cfg(test)]
