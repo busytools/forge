@@ -17,7 +17,9 @@
 
 use forge_workspace::env::git_diff::hunks::{DiffLine, DiffLineKind, FileHunks, FileStatus, Hunk};
 
-use crate::app::diff_overlay::{ActiveCommentInput, BodyRowKey, HunkComment, LineKey, rail_width_for};
+use crate::app::diff_overlay::{
+    ActiveCommentInput, BodyRowKey, HunkComment, LineKey, rail_width_for,
+};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -135,12 +137,7 @@ fn render_rail(frame: &mut Frame, area: Rect, overlay: &DiffOverlayState) {
     for idx in start..end {
         let file = &overlay.files[idx];
         let comments = comment_count_per_file.get(idx).copied().unwrap_or(0);
-        lines.push(file_rail_row(
-            file,
-            idx == overlay.current_file_idx,
-            inner_width,
-            comments,
-        ));
+        lines.push(file_rail_row(file, idx == overlay.current_file_idx, inner_width, comments));
     }
     if overlay.untracked_suppressed > 0 {
         // Surface the cap overflow so a fresh-repo state with many
@@ -174,12 +171,7 @@ fn render_footer(frame: &mut Frame, area: Rect, overlay: &DiffOverlayState) {
     if area.height < 2 {
         return;
     }
-    let footer_rect = Rect {
-        x: area.x,
-        y: area.y + area.height - 1,
-        width: area.width,
-        height: 1,
-    };
+    let footer_rect = Rect { x: area.x, y: area.y + area.height - 1, width: area.width, height: 1 };
     let count = overlay.comments.len();
     let dim = Style::default().fg(theme::DIM);
     let mut spans = vec![Span::raw("  ")];
@@ -318,10 +310,10 @@ fn build_pane_lines(
                         lines.push(comment_chip_row(c, gutter_width));
                         keys.push(BodyRowKey::CommentChip(line_key));
                     }
-                    if let Some(input) = overlay.active_input.as_ref() {
-                        if input.key == line_key {
-                            render_active_input(input, gutter_width, &mut lines, &mut keys);
-                        }
+                    if let Some(input) = overlay.active_input.as_ref()
+                        && input.key == line_key
+                    {
+                        render_active_input(input, gutter_width, &mut lines, &mut keys);
                     }
                 }
             }
@@ -358,15 +350,19 @@ fn comment_chip_row(comment: &HunkComment, gutter_width: usize) -> Line<'static>
     ])
 }
 
+/// Max characters the chip summary holds before truncation. Beyond
+/// this the chip would either wrap or push the rail too wide; 72
+/// matches GitHub's comment-collapsed preview length.
+const CHIP_SUMMARY_MAX: usize = 72;
+
 /// Trim multi-line comment text to a single-line summary for the
 /// chip. Keeps the chip rail one row tall regardless of edit length.
 fn first_line_summary(text: &str) -> String {
     let line = text.lines().next().unwrap_or("");
-    const MAX: usize = 72;
-    if line.chars().count() <= MAX {
+    if line.chars().count() <= CHIP_SUMMARY_MAX {
         line.to_owned()
     } else {
-        let truncated: String = line.chars().take(MAX.saturating_sub(1)).collect();
+        let truncated: String = line.chars().take(CHIP_SUMMARY_MAX.saturating_sub(1)).collect();
         format!("{truncated}…")
     }
 }
@@ -476,12 +472,8 @@ fn render_narrow(frame: &mut Frame, area: Rect, overlay: &DiffOverlayState) {
     }
     let header_rect = Rect { x: area.x, y: area.y, width: area.width, height: 1 };
     let rule_rect = Rect { x: area.x, y: area.y + 1, width: area.width, height: 1 };
-    let body_rect = Rect {
-        x: area.x,
-        y: area.y + 2,
-        width: area.width,
-        height: area.height.saturating_sub(3),
-    };
+    let body_rect =
+        Rect { x: area.x, y: area.y + 2, width: area.width, height: area.height.saturating_sub(3) };
 
     frame.render_widget(Paragraph::new(narrow_header_row(overlay)), header_rect);
     frame.render_widget(Paragraph::new(rule_row(area.width)), rule_rect);
@@ -505,9 +497,7 @@ fn narrow_header_row(overlay: &DiffOverlayState) -> Line<'static> {
     let dim = Style::default().fg(theme::DIM);
     let total = overlay.files.len();
     let current = if total == 0 { 0 } else { overlay.current_file_idx + 1 };
-    let path = overlay
-        .current_file()
-        .map_or_else(|| "(no file)".to_owned(), |f| f.path.clone());
+    let path = overlay.current_file().map_or_else(|| "(no file)".to_owned(), |f| f.path.clone());
     let mut spans = vec![
         Span::raw("  "),
         Span::styled("DIFF", Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD)),

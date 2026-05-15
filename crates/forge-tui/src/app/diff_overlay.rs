@@ -13,8 +13,8 @@ use std::sync::Arc;
 use std::sync::mpsc as std_mpsc;
 
 use crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
-use forge_workspace::env::git_diff::hunks::{DiffLine, DiffLineKind, FileHunks};
 use forge_workspace::env::git_diff::hunks::ScanOutcome;
+use forge_workspace::env::git_diff::hunks::{DiffLine, DiffLineKind, FileHunks};
 use tui_textarea::TextArea;
 
 use super::App;
@@ -517,11 +517,11 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) {
                 save_active_input(app);
             }
             _ => {
-                if let Some(overlay) = app.diff_overlay.as_mut() {
-                    if let Some(input) = overlay.active_input.as_mut() {
-                        input.editor.input(key);
-                        app.needs_redraw = true;
-                    }
+                if let Some(overlay) = app.diff_overlay.as_mut()
+                    && let Some(input) = overlay.active_input.as_mut()
+                {
+                    input.editor.input(key);
+                    app.needs_redraw = true;
                 }
             }
         }
@@ -803,10 +803,10 @@ fn open_input_for_key(overlay: &mut DiffOverlayState, key: LineKey) -> MouseEffe
     // click doesn't reset its in-progress text. If at a different
     // key, abandon the in-progress edit (UI matches what GitHub does
     // — clicking elsewhere closes the open editor without saving).
-    if let Some(existing) = overlay.active_input.as_ref() {
-        if existing.key == key {
-            return MouseEffect::default();
-        }
+    if let Some(existing) = overlay.active_input.as_ref()
+        && existing.key == key
+    {
+        return MouseEffect::default();
     }
     let editor = TextArea::default();
     overlay.active_input = Some(ActiveCommentInput { key, editor });
@@ -836,11 +836,8 @@ fn reopen_comment_for_key(overlay: &mut DiffOverlayState, key: LineKey) -> Mouse
 /// closing. Used by the banner ✕ click and by `handle_key`'s Esc
 /// path.
 pub(super) fn close_with_submit(app: &mut App) {
-    let comments: Vec<HunkComment> = app
-        .diff_overlay
-        .as_mut()
-        .map(|o| std::mem::take(&mut o.comments))
-        .unwrap_or_default();
+    let comments: Vec<HunkComment> =
+        app.diff_overlay.as_mut().map(|o| std::mem::take(&mut o.comments)).unwrap_or_default();
     if !comments.is_empty() {
         // Snapshot target + cwd from the overlay so we can build the
         // markdown header even after `close` drops the state.
@@ -865,10 +862,10 @@ pub(crate) fn format_diff_comments(
     use std::fmt::Write as _;
     let mut out = String::new();
     let _ = writeln!(out, "## Diff review (target `{target}`)");
-    let _ = writeln!(out, "");
+    out.push('\n');
     if !cwd_display.is_empty() {
         let _ = writeln!(out, "Repo: `{cwd_display}`");
-        let _ = writeln!(out, "");
+        out.push('\n');
     }
     // Group comments by file path while preserving the order the
     // user added them (first appearance of a path wins for ordering).
@@ -883,11 +880,11 @@ pub(crate) fn format_diff_comments(
     }
     for path in &order {
         let _ = writeln!(out, "### `{path}`");
-        let _ = writeln!(out, "");
+        out.push('\n');
         for c in by_file.get(path).into_iter().flatten() {
             let _ = writeln!(out, "**Line {}**", c.line);
-            let _ = writeln!(out, "");
-            let _ = writeln!(out, "```diff");
+            out.push('\n');
+            out.push_str("```diff\n");
             for line in &c.hunk_context {
                 let marker = match line.kind {
                     DiffLineKind::Added => '+',
@@ -896,10 +893,9 @@ pub(crate) fn format_diff_comments(
                 };
                 let _ = writeln!(out, "{marker}{}", line.text);
             }
-            let _ = writeln!(out, "```");
-            let _ = writeln!(out, "");
+            out.push_str("```\n\n");
             let _ = writeln!(out, "{}", c.comment_text.trim_end());
-            let _ = writeln!(out, "");
+            out.push('\n');
         }
     }
     out
@@ -1048,8 +1044,12 @@ mod tests {
             hunk_context: vec![],
             comment_text: "needs unwrap fix".into(),
         });
-        state.body_keys =
-            vec![BodyRowKey::Banner, BodyRowKey::Rule, BodyRowKey::Blank, BodyRowKey::CommentChip(key)];
+        state.body_keys = vec![
+            BodyRowKey::Banner,
+            BodyRowKey::Rule,
+            BodyRowKey::Blank,
+            BodyRowKey::CommentChip(key),
+        ];
         state.pane_origin_row = 0;
         state.pane_origin_col = 41;
         state.pane_width = 119;
