@@ -76,6 +76,12 @@ pub enum DefaultTarget {
     NoSnapshot,
     /// Active session's cwd isn't inside a git repository.
     NotARepo,
+    /// The Inspector scanner itself failed (subprocess crash,
+    /// timeout, oversize output). Distinct from `NotARepo` because
+    /// the user IS in a repo; git just couldn't run. The snapshot
+    /// collapses to `view = NoRepo` as a render failsafe but
+    /// `scanner_ok=false` signals the real story.
+    ScannerFailed,
     /// Snapshot view is `BranchVsDefault` (so the scanner sees
     /// committed changes vs SOME default) but the default branch
     /// itself couldn't be resolved — no `origin/HEAD`, no local
@@ -98,6 +104,12 @@ pub fn resolve_default_target(app: &App) -> DefaultTarget {
     let Some(snapshot) = app.active_session().and_then(|s| s.git_diff_snapshot.as_ref()) else {
         return DefaultTarget::NoSnapshot;
     };
+    // Inspector scanner crashed — distinct from "not a repo".
+    // Check before matching view so the failsafe NoRepo doesn't
+    // mask a real subprocess failure.
+    if !snapshot.scanner_ok {
+        return DefaultTarget::ScannerFailed;
+    }
     match (&snapshot.view, snapshot.default_branch.as_deref()) {
         (GitDiffView::Worktree { .. }, _) => DefaultTarget::Ref("HEAD".to_owned()),
         (GitDiffView::BranchVsDefault { .. }, Some(default)) => {
@@ -150,6 +162,12 @@ pub fn open_default(app: &mut App) {
         }
         DefaultTarget::NotARepo => {
             crate::app::slash::push_system_message(app, "Not a git repository.");
+        }
+        DefaultTarget::ScannerFailed => {
+            crate::app::slash::push_system_message(
+                app,
+                "Git scanner hit an error — see logs (target: ENV_GIT). Try /diff again in a moment.",
+            );
         }
         DefaultTarget::NoDefault => {
             crate::app::slash::push_system_message(

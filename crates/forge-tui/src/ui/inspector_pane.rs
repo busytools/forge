@@ -1524,6 +1524,7 @@ mod tests {
             view,
             pr: None,
             closes: Vec::new(),
+            scanner_ok: true,
         }
     }
 
