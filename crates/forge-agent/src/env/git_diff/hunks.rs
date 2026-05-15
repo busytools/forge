@@ -221,15 +221,47 @@ fn parse_name_status(raw: &str) -> Vec<FileHunks> {
 
 /// Attach hunks parsed from the full unified-diff content to each
 /// file in `files` whose path matches a section in the diff. Files
-/// without a matching section (binary files, etc.) keep their empty
-/// hunks vector.
+/// without a matching section keep their empty `hunks` vector —
+/// that's the legitimate state for binary files (git emits
+/// `Binary files differ` instead of `@@` hunks), submodule entries,
+/// and merge-conflict entries that don't have a unified-diff
+/// body. A WARN fires when a section IS matched but produces zero
+/// hunks: the parser found content but couldn't extract anything,
+/// which signals either a quotePath / encoding mismatch on the
+/// path or a parser gap in `parse_hunks`. The renderer's "binary
+/// file or no diff content" message can then be cross-referenced
+/// against the log to distinguish "no body to parse" from
+/// "parser missed something."
 fn merge_hunks(files: &mut [FileHunks], diff_content: &str) {
     let sections = split_per_file(diff_content);
     for file in files.iter_mut() {
-        if let Some(section) = sections.get(file.path.as_str()) {
-            file.hunks = parse_hunks(section);
+        let Some(section) = sections.get(file.path.as_str()) else { continue };
+        let hunks = parse_hunks(section);
+        if hunks.is_empty() && contains_hunk_marker(section) {
+            // The section had at least one `@@` line so the parser
+            // SHOULD have produced something. parse_hunks logs the
+            // malformed-header case per hunk; we add this rollup
+            // log so the file→section linkage failure is also
+            // visible.
+            tracing::warn!(
+                target: crate::logging::targets::ENV_GIT,
+                event_name = "git_hunks_parse_empty",
+                message = "diff section had @@ markers but produced zero hunks",
+                outcome = "failure",
+                path = %file.path,
+                section_bytes = section.len(),
+            );
         }
+        file.hunks = hunks;
     }
+}
+
+/// True when `section` contains at least one `@@` line — used to
+/// distinguish "no body to parse" (binary / submodule, no log)
+/// from "parser couldn't extract hunks despite headers being
+/// present" (WARN-worthy).
+fn contains_hunk_marker(section: &str) -> bool {
+    section.lines().any(|line| line.starts_with("@@"))
 }
 
 /// Split the full unified-diff output into per-file sections keyed
