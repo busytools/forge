@@ -41,19 +41,12 @@ const FORGE_WORDMARK: [&str; 6] = [
 /// terminal widths.
 const PICKER_WIDTH: u16 = 56;
 
-/// White-on-RUST_ORANGE selection band per the spec — matches the
-/// `session_picker.rs` treatment.
-fn selection_style() -> Style {
-    Style::default().fg(Color::White).bg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD)
-}
-
-/// Muted variant of [`selection_style`] for rows that aren't
-/// actionable yet (Spawning state). Same shape so the band aligns
-/// with the chrome, but the bg drops to `DIM` so the user sees at a
-/// glance that pressing Enter on this row won't take them anywhere.
-fn waiting_selection_style() -> Style {
-    Style::default().fg(Color::White).bg(theme::DIM).add_modifier(Modifier::BOLD)
-}
+/// Width (in cells) of the left-edge selection indicator column.
+/// Reserved on every row so unselected rows align with the selected
+/// row's arrow + space. The arrow itself is `▶` rendered in
+/// `RUST_ORANGE` for clickable selections and `DIM` for Block
+/// (Spawning) selections; unselected rows render two spaces.
+const SELECTION_PREFIX_WIDTH: usize = 2;
 
 /// What pressing Enter on this row does. Drives the click handlers
 /// and the footer hint, so the user always sees the next action that
@@ -398,18 +391,18 @@ fn push_project_row(
     row: &PickerRow,
     selected: bool,
     app: &App,
-    area_width: u16,
+    _area_width: u16,
 ) {
     let connector = if row.is_last_in_org { "└─" } else { "├─" };
     let (glyph, glyph_color) =
         glyph_for_row(row.lifecycle, app.launchpad.spinner_style, app.launchpad.opened_at);
     let intent = click_intent(row.lifecycle);
-    // Name styling tracks click intent so a glance at the picker
-    // tells the user which rows are interactive right now. BOLD =
-    // pressing Enter does something useful (enter chat or kick off a
-    // cold spawn). DIM = waiting (Spawning) or auth/logged-out
-    // states where Enter does take the user somewhere but the row
-    // itself isn't yet a "live session" they're jumping into.
+    // Base name style — BOLD when the row is interactive (Idle /
+    // Running / Sleeping / Failed), DIM when not (Spawning waits for
+    // its subprocess). Selection on a clickable row layers on its
+    // own emphasis (the arrow + the row staying BOLD); selection on
+    // a Block row keeps the DIM name so the "not yet clickable"
+    // signal isn't lost.
     let name_style = match intent {
         ClickIntent::EnterChat | ClickIntent::SpawnAndWait | ClickIntent::Retry => {
             Style::default().add_modifier(Modifier::BOLD)
@@ -428,53 +421,38 @@ fn push_project_row(
     let hint_pad = hint_width.saturating_sub(hint_label.chars().count());
     let right_label = truncate_to(&row.last_activity_label, right_width);
 
-    // The row content starts at col 4 (2 indent + 2 connector). Pad
-    // any leftover area width with spaces so the selection band
-    // covers the whole row.
-    let content_width_estimate = 4 + 1 + 1 + 1 + name_width + 1 + hint_width + 2 + right_width;
-    let trailing_pad = usize::from(area_width).saturating_sub(content_width_estimate);
-
-    if selected {
-        // Non-clickable rows get a muted gray band so the user sees
-        // "yes, this row is focused, but Enter won't open it."
-        let band = if matches!(intent, ClickIntent::Block) {
-            waiting_selection_style()
-        } else {
-            selection_style()
-        };
-        lines.push(Line::from(vec![
-            Span::styled("  ".to_owned(), band),
-            Span::styled(connector.to_owned(), band),
-            Span::styled(" ".to_owned(), band),
-            Span::styled(glyph, band.fg(glyph_color)),
-            Span::styled(" ".to_owned(), band),
-            Span::styled(name_label, band),
-            Span::styled(" ".repeat(name_pad), band),
-            Span::styled(" ".to_owned(), band),
-            Span::styled(hint_label, band),
-            Span::styled(" ".repeat(hint_pad), band),
-            Span::styled("  ".to_owned(), band),
-            Span::styled(format!("{right_label:>right_width$}"), band),
-            Span::styled(" ".repeat(trailing_pad), band),
-        ]));
+    let dim = Style::default().fg(theme::DIM);
+    let prefix_span = if selected {
+        // Selection indicator: `▶` followed by a space. Color matches
+        // the row's click intent so the picker telegraphs both
+        // "this row is focused" and "Enter does / does not do
+        // anything here" in one glyph.
+        let prefix_color =
+            if matches!(intent, ClickIntent::Block) { theme::DIM } else { theme::RUST_ORANGE };
+        Span::styled(
+            "▶ ".to_owned(),
+            Style::default().fg(prefix_color).add_modifier(Modifier::BOLD),
+        )
     } else {
-        let dim = Style::default().fg(theme::DIM);
-        lines.push(Line::from(vec![
-            Span::raw("  ".to_owned()),
-            Span::styled(connector.to_owned(), dim),
-            Span::raw(" ".to_owned()),
-            Span::styled(glyph, Style::default().fg(glyph_color)),
-            Span::raw(" ".to_owned()),
-            Span::styled(name_label, name_style),
-            Span::raw(" ".repeat(name_pad)),
-            Span::raw(" ".to_owned()),
-            Span::styled(hint_label, dim),
-            Span::raw(" ".repeat(hint_pad)),
-            Span::raw("  ".to_owned()),
-            Span::styled(format!("{right_label:>right_width$}"), dim),
-            Span::raw(" ".repeat(trailing_pad)),
-        ]));
-    }
+        // Reserve the same width so unselected rows align with the
+        // arrow column on the selected row.
+        Span::raw(" ".repeat(SELECTION_PREFIX_WIDTH))
+    };
+
+    lines.push(Line::from(vec![
+        prefix_span,
+        Span::styled(connector.to_owned(), dim),
+        Span::raw(" ".to_owned()),
+        Span::styled(glyph, Style::default().fg(glyph_color)),
+        Span::raw(" ".to_owned()),
+        Span::styled(name_label, name_style),
+        Span::raw(" ".repeat(name_pad)),
+        Span::raw(" ".to_owned()),
+        Span::styled(hint_label, dim),
+        Span::raw(" ".repeat(hint_pad)),
+        Span::raw("  ".to_owned()),
+        Span::styled(format!("{right_label:>right_width$}"), dim),
+    ]));
 }
 
 fn push_error_row(lines: &mut Vec<Line<'static>>, error: &str, area_width: u16) {
