@@ -476,17 +476,18 @@ impl Workspace {
                 .filter_map(|key| accounts.config_dir(key).map(|dir| (key.clone(), dir.clone())))
                 .collect()
         };
-        let mut tasks = Vec::with_capacity(entries.len());
+        // Sequential probes. Anthropic's `/api/oauth/usage` endpoint
+        // has a per-IP burst limit; firing all accounts in parallel
+        // (the previous behaviour, via `tokio::spawn` per entry) trips
+        // that limit and the slower replies come back as HTTP 429
+        // even though the user is nowhere near their own quota.
+        // Serializing the awaits naturally staggers requests by the
+        // per-probe latency (~hundreds of ms), which is well within
+        // the 60 s poll interval — no perf cost — and eliminates the
+        // boot-burst 429 cascade that left every account stuck at
+        // tier 0 (Unknown) until the next clean cycle.
         for (key, dir) in entries {
-            tasks.push(tokio::spawn(async move {
-                let result = forge_agent::cloud::oauth_usage::oauth_usage(&dir).await;
-                (key, dir, result)
-            }));
-        }
-        for task in tasks {
-            let Ok((key, dir, fetch_result)) = task.await else {
-                continue; // Task join error — skip.
-            };
+            let fetch_result = forge_agent::cloud::oauth_usage::oauth_usage(&dir).await;
             match fetch_result {
                 Ok(payload) => match forge_agent::cloud::oauth::snapshot_from_payload(payload) {
                     Ok(snapshot) => {
