@@ -4,21 +4,34 @@
 //! every spawn; the chosen `AccountKey` becomes the spawned Agent's
 //! `CLAUDE_CONFIG_DIR` override.
 //!
-//! **Policy — tiered, rate-limit aware:**
+//! **Policy — tiered, rate-limit + probe-failure aware:**
 //!
-//! 1. **Unknown-usage accounts** (no snapshot yet) sort first, in
-//!    forge.toml definition order. Picking them warms the cache.
-//! 2. **Available accounts** (5h util < 100% AND 7d util < 100%)
-//!    sort next. Within this tier:
+//! 1. **Unknown-fresh** (no usage snapshot AND no probe failure
+//!    recorded). Sorted first in forge.toml definition order so a
+//!    just-launched forge warms unprobed accounts before falling
+//!    back to budget-based selection.
+//! 2. **Available** (5h util < 100% AND 7d util < 100%). Within
+//!    this tier:
 //!    - Lowest 5h utilisation wins (most immediate headroom).
 //!    - Tie-break on lowest 7d utilisation.
 //!    - Final tie-break on forge.toml definition order.
-//! 3. **Rate-limited accounts** (either 5h or 7d at 100%) sort last.
-//!    Definition order within this tier — picker still returns
-//!    something so the spawn doesn't fail, but the spawned session
-//!    will trip the rate limit immediately and surface that to the
-//!    user. If the user's pin contains any non-rate-limited account
-//!    it will always be preferred over this tier.
+//! 3. **Rate-limited with data** (5h or 7d at 100%). Definition
+//!    order within the tier.
+//! 4. **Probe rate-limited** (`/api/oauth/usage` returned 429).
+//!    Account state is opaque — almost certainly hot. Demoted
+//!    below known-rate-limited because we'd rather pick the
+//!    devil-we-know.
+//! 5. **Probe failed transiently** (network / unknown HTTP).
+//!    Demoted below probe-rate-limited but above expired creds.
+//! 6. **Credentials broken** (Expired / Unauthorized). The
+//!    account literally cannot serve a request — last-resort
+//!    only, so the spawn at least returns something rather than
+//!    blocking on an empty pool.
+//!
+//! Without the probe-failure consideration (originally tier 0
+//! collapsed ALL `usage = None` accounts) a perpetually-failing
+//! probe pinned that account at top-of-sort forever and the
+//! picker kept choosing the most-broken account in the pool.
 //!
 //! No LRU, no round-robin, no fallback outside the project's pin.
 //! Rate-limited accounts are visible in the panel bars so the user
@@ -72,6 +85,19 @@ pub(crate) struct AccountState {
     /// data. Without it the empty bar reads like a forge bug rather
     /// than an upstream failure.
     pub last_error: Option<UsageFetchStatus>,
+    /// Earliest wall-clock time we're allowed to probe this account
+    /// again. The poller skips accounts whose `next_probe_at` is in
+    /// the future. Used for per-account exponential backoff when
+    /// Anthropic's `/api/oauth/usage` endpoint keeps returning 429
+    /// — without backoff every poll cycle re-trips the per-IP rate
+    /// limit and we never accumulate usage data. `None` means
+    /// "probe on the next tick" (default).
+    pub next_probe_at: Option<std::time::Instant>,
+    /// Consecutive probe failures since the last success. Drives
+    /// the backoff schedule: each consecutive failure doubles the
+    /// next-probe delay (capped at a sensible ceiling). Reset to
+    /// 0 on success.
+    pub consecutive_failures: u32,
 }
 
 #[derive(Debug)]
@@ -101,6 +127,8 @@ impl AccountStateMap {
                     config_dir: account.config_dir.clone(),
                     usage: None,
                     last_error: None,
+                    next_probe_at: None,
+                    consecutive_failures: 0,
                 },
             );
         }
@@ -116,25 +144,54 @@ impl AccountStateMap {
     }
 
     /// Replace the cached usage snapshot for `key` and clear any
-    /// stale `last_error`. Called from the background poller on a
-    /// successful fetch. Silent no-op when `key` isn't registered
+    /// stale `last_error`. Resets the consecutive-failure counter
+    /// and clears the next-probe gate so this account returns to
+    /// the default cadence. Silent no-op when `key` isn't registered
     /// (defensive — invariant says every poller key was inserted in
     /// `new()`).
     pub fn set_usage(&mut self, key: &AccountKey, snapshot: UsageSnapshot) {
         if let Some(state) = self.by_key.get_mut(key) {
             state.usage = Some(snapshot);
             state.last_error = None;
+            state.next_probe_at = None;
+            state.consecutive_failures = 0;
         }
     }
 
-    /// Record the latest poll-attempt failure for `key`. Called from
-    /// the background poller's error branch. The cached `usage`
-    /// snapshot is preserved so the panel keeps showing the last
-    /// known-good bars (a fresh 429 doesn't blank them out).
-    pub fn set_last_error(&mut self, key: &AccountKey, status: UsageFetchStatus) {
+    /// Record the latest poll-attempt failure for `key` and schedule
+    /// the next probe.
+    ///
+    /// `retry_after` (when `Some`) is the server-provided hold-down
+    /// duration — typically Anthropic's `Retry-After` header on 429.
+    /// We honour it verbatim because the server knows when its
+    /// per-account bucket will reset; guessing with our own backoff
+    /// either over- or under-shoots and keeps the limit hot. When
+    /// `None` (network failures, unknown HTTP status, server didn't
+    /// send Retry-After), fall back to a local exponential schedule.
+    ///
+    /// The cached `usage` snapshot is preserved so the panel keeps
+    /// showing the last known-good bars (a fresh 429 doesn't blank
+    /// them out).
+    pub fn set_last_error(
+        &mut self,
+        key: &AccountKey,
+        status: UsageFetchStatus,
+        retry_after: Option<std::time::Duration>,
+    ) {
         if let Some(state) = self.by_key.get_mut(key) {
             state.last_error = Some(status);
+            state.consecutive_failures = state.consecutive_failures.saturating_add(1);
+            let delay = retry_after.unwrap_or_else(|| backoff_delay(state.consecutive_failures));
+            state.next_probe_at = Some(std::time::Instant::now() + delay);
         }
+    }
+
+    /// `true` when the poller may probe `key` now. `false` when the
+    /// account is in an active backoff window from a recent failure.
+    /// Cold-cache accounts (no last_error) always return `true`.
+    pub fn should_probe_now(&self, key: &AccountKey) -> bool {
+        let Some(state) = self.by_key.get(key) else { return true };
+        state.next_probe_at.is_none_or(|t| t <= std::time::Instant::now())
     }
 
     /// Look up the cached usage snapshot for `key`. `None` when the
@@ -163,24 +220,32 @@ impl AccountStateMap {
     /// out of an unreachable `panic!` form.
     pub fn pick_for_project(&self, allowed: &[String]) -> (AccountKey, PathBuf) {
         debug_assert!(!allowed.is_empty(), "pick_for_project requires a non-empty allow list");
-        let mut candidates: Vec<(usize, &AccountKey, Option<&UsageSnapshot>)> = allowed
+        // Carry (def_order_idx, key, usage, last_error) per
+        // candidate so the tier sort can see probe failures (not
+        // just usage data). Without the last_error consult, an
+        // account whose probe perpetually 429s or has expired
+        // OAuth credentials stays at tier 0 (Unknown) forever and
+        // dominates the sort over accounts with healthy probes.
+        let mut candidates: Vec<(
+            usize,
+            &AccountKey,
+            Option<&UsageSnapshot>,
+            Option<UsageFetchStatus>,
+        )> = allowed
             .iter()
             .enumerate()
             .filter_map(|(idx, name)| {
-                // `find` rather than constructing an AccountKey then
-                // looking up by reference — the keys vector is short
-                // (one entry per [[accounts]]) so linear scan is fine
-                // AND we get back a reference into `ordered_keys` for
-                // stable lifetime.
                 self.ordered_keys.iter().find(|k| k.0 == *name).map(|k| {
-                    let usage = self.by_key.get(k).and_then(|s| s.usage.as_ref());
-                    (idx, k, usage)
+                    let state = self.by_key.get(k);
+                    let usage = state.and_then(|s| s.usage.as_ref());
+                    let last_error = state.and_then(|s| s.last_error);
+                    (idx, k, usage, last_error)
                 })
             })
             .collect();
         candidates.sort_by(|a, b| {
-            let tier_a = tier_of(a.2);
-            let tier_b = tier_of(b.2);
+            let tier_a = tier_of(a.2, a.3);
+            let tier_b = tier_of(b.2, b.3);
             tier_a.cmp(&tier_b).then_with(|| {
                 // Within the same tier: known-vs-known sorts by 5h
                 // util ascending then 7d util ascending then
@@ -201,6 +266,22 @@ impl AccountStateMap {
                 }
             })
         });
+        // Diagnostic log — one line per pick decision listing the
+        // tier and probe state of every candidate so a future
+        // "why was account X picked?" triage can correlate from
+        // logs without re-running with extra instrumentation.
+        let decision_summary: Vec<String> = candidates
+            .iter()
+            .map(|(_, k, u, e)| {
+                let tier = tier_of(*u, *e);
+                let usage_state = match u {
+                    None => "no-snapshot".to_owned(),
+                    Some(s) => format!("5h={:.0}%/7d={:.0}%", five_hour_util(s), seven_day_util(s)),
+                };
+                let err_state = e.map_or("none".to_owned(), |e| format!("{e:?}"));
+                format!("{}=tier{}({usage_state},err={err_state})", k.0, tier)
+            })
+            .collect();
         // Invariant: candidates is non-empty because allowed is
         // non-empty and config-load validated every name exists.
         // Fallback path is structurally unreachable but never
@@ -213,22 +294,55 @@ impl AccountStateMap {
                 );
                 self.ordered_keys.first().cloned().unwrap_or(AccountKey(String::new()))
             },
-            |(_, k, _)| (*k).clone(),
+            |(_, k, _, _)| (*k).clone(),
+        );
+        tracing::debug!(
+            target: "forge_workspace::account",
+            event_name = "account_picked",
+            message = "account picker decision",
+            outcome = "picked",
+            picked = %picked.0,
+            allowed = ?allowed,
+            candidates = ?decision_summary,
         );
         let dir = self.by_key.get(&picked).map_or_else(PathBuf::new, |s| s.config_dir.clone());
         (picked, dir)
     }
 }
 
-/// Tier classification driving the sort: 0 = unknown (warm cache),
-/// 1 = available (under both windows), 2 = rate-limited (hit at
-/// least one limit). Sorted ascending so unknown sorts before
-/// available sorts before rate-limited.
-fn tier_of(usage: Option<&UsageSnapshot>) -> u8 {
-    match usage {
-        None => 0,
-        Some(snapshot) if is_rate_limited(snapshot) => 2,
-        Some(_) => 1,
+/// Tier classification driving the sort. Lower = preferred.
+///
+/// - **0** Unknown-fresh: no usage snapshot yet AND no probe error
+///   recorded — picking warms the cache.
+/// - **1** Available: usage known, under 100% on both windows.
+/// - **2** Rate-limited (data-known): usage poll succeeded, account
+///   has hit 100% on at least one window.
+/// - **3** Probe rate-limited: the `/api/oauth/usage` endpoint
+///   itself returned 429. We can't see the usage, but a persistent
+///   probe-429 is a strong signal the account is hot — don't prefer
+///   it over accounts with healthy probes.
+/// - **4** Probe failed transiently (network / unknown HTTP): treat
+///   as unknown-fresh equivalent BUT demoted below available so a
+///   healthy-but-unprobed-account doesn't outrank a known-available
+///   one.
+/// - **5** Credentials broken (expired / unauthorized): the account
+///   literally cannot serve a request without re-login. Last-resort
+///   only.
+///
+/// Without the last_error consultation, accounts whose probe
+/// perpetually fails sit at tier 0 forever and dominate the sort —
+/// the picker keeps choosing them despite having no idea if they're
+/// actually usable.
+fn tier_of(usage: Option<&UsageSnapshot>, last_error: Option<UsageFetchStatus>) -> u8 {
+    match (usage, last_error) {
+        (Some(snapshot), _) if is_rate_limited(snapshot) => 2,
+        (Some(_), _) => 1,
+        // No usage yet — distinguish "still warming" from "probe
+        // failed". The error variant determines how badly we demote.
+        (None, None) => 0,
+        (None, Some(UsageFetchStatus::RateLimited)) => 3,
+        (None, Some(UsageFetchStatus::NetworkFailed | UsageFetchStatus::Other)) => 4,
+        (None, Some(UsageFetchStatus::Expired | UsageFetchStatus::Unauthorized)) => 5,
     }
 }
 
@@ -238,6 +352,29 @@ fn tier_of(usage: Option<&UsageSnapshot>) -> u8 {
 /// fallback when every pinned account is rate-limited.
 fn is_rate_limited(snapshot: &UsageSnapshot) -> bool {
     five_hour_util(snapshot) >= 100.0 || seven_day_util(snapshot) >= 100.0
+}
+
+/// Per-account exponential backoff schedule for usage-probe
+/// failures. Doubles each consecutive failure, capped at 10
+/// minutes. The 60 s poll loop ticks ~once a minute; without
+/// backoff, a transient per-IP /usage 429 would persist across
+/// every cycle for as long as Anthropic kept rate-limiting,
+/// preventing any account from accumulating fresh usage data.
+///
+/// | consecutive | delay        |
+/// |-------------|--------------|
+/// | 1           | 30 s         |
+/// | 2           | 1 min        |
+/// | 3           | 2 min        |
+/// | 4           | 4 min        |
+/// | 5           | 8 min        |
+/// | 6+          | 10 min (cap) |
+fn backoff_delay(consecutive_failures: u32) -> std::time::Duration {
+    use std::time::Duration;
+    const CAP: Duration = Duration::from_secs(600); // 10 min
+    let exp = consecutive_failures.min(20); // shift saturates at 20; well under u64::MAX
+    let seconds = 30_u64.saturating_mul(1_u64 << exp.saturating_sub(1));
+    Duration::from_secs(seconds).min(CAP)
 }
 
 fn five_hour_util(snapshot: &UsageSnapshot) -> f64 {
@@ -424,6 +561,121 @@ mod tests {
         map.set_usage(&AccountKey("Gateway".to_owned()), snapshot(Some(50.0), Some(50.0)));
         let (picked, _) = map.pick_for_project(&["Stargate".to_owned(), "Gateway".to_owned()]);
         assert_eq!(picked.0, "Stargate");
+    }
+
+    #[test]
+    fn known_available_account_beats_probe_failed_account() {
+        // The bug this fixes: Gateway has a fresh successful probe
+        // (tier 1 available, 30% used), Personal's probe keeps
+        // returning 429 (last_error = RateLimited, usage still None).
+        // Previously Personal stayed in tier 0 (Unknown) and won the
+        // sort. With the fix, Personal lands in tier 3 (Probe rate-
+        // limited) and Gateway wins.
+        let mut map = AccountStateMap::new(&[make_account("Gateway"), make_account("Personal")]);
+        map.set_usage(&AccountKey("Gateway".to_owned()), snapshot(Some(30.0), Some(30.0)));
+        map.set_last_error(&AccountKey("Personal".to_owned()), UsageFetchStatus::RateLimited, None);
+        let (picked, _) = map.pick_for_project(&["Gateway".to_owned(), "Personal".to_owned()]);
+        assert_eq!(picked.0, "Gateway", "available account must beat probe-rate-limited one");
+    }
+
+    #[test]
+    fn expired_credentials_demote_to_last_resort() {
+        // Gateway1 has expired OAuth (literally can't serve a
+        // request); Personal has working probe but is fully rate-
+        // limited (tier 2). Personal still wins because tier 2
+        // ranks above tier 5 (Expired).
+        let mut map = AccountStateMap::new(&[make_account("Gateway1"), make_account("Personal")]);
+        map.set_last_error(&AccountKey("Gateway1".to_owned()), UsageFetchStatus::Expired, None);
+        map.set_usage(&AccountKey("Personal".to_owned()), snapshot(Some(100.0), Some(100.0)));
+        let (picked, _) = map.pick_for_project(&["Gateway1".to_owned(), "Personal".to_owned()]);
+        assert_eq!(picked.0, "Personal", "rate-limited-but-callable beats expired-can't-serve");
+    }
+
+    #[test]
+    fn fresh_unknown_still_wins_over_known_available() {
+        // True cold-cache case: no last_error, no usage. Gateway
+        // has no probe attempt yet → tier 0 → preferred over
+        // Personal which has known-available usage (tier 1).
+        // Confirms the original "warm the cache" behaviour survives
+        // for accounts that haven't been polled yet.
+        let mut map = AccountStateMap::new(&[make_account("Gateway"), make_account("Personal")]);
+        map.set_usage(&AccountKey("Personal".to_owned()), snapshot(Some(30.0), Some(30.0)));
+        // Gateway has no usage AND no last_error → tier 0.
+        let (picked, _) = map.pick_for_project(&["Gateway".to_owned(), "Personal".to_owned()]);
+        assert_eq!(picked.0, "Gateway");
+    }
+
+    #[test]
+    fn network_failure_demotes_below_available() {
+        // Gateway probe failed with a network error (tier 4); Personal
+        // has a healthy probe at moderate utilisation (tier 1).
+        // Personal wins — we'd rather pick an account whose state
+        // we know than one whose state we don't.
+        let mut map = AccountStateMap::new(&[make_account("Gateway"), make_account("Personal")]);
+        map.set_last_error(
+            &AccountKey("Gateway".to_owned()),
+            UsageFetchStatus::NetworkFailed,
+            None,
+        );
+        map.set_usage(&AccountKey("Personal".to_owned()), snapshot(Some(50.0), Some(50.0)));
+        let (picked, _) = map.pick_for_project(&["Gateway".to_owned(), "Personal".to_owned()]);
+        assert_eq!(picked.0, "Personal");
+    }
+
+    #[test]
+    fn backoff_delay_doubles_then_caps_at_10_minutes() {
+        use std::time::Duration;
+        assert_eq!(backoff_delay(1), Duration::from_secs(30));
+        assert_eq!(backoff_delay(2), Duration::from_secs(60));
+        assert_eq!(backoff_delay(3), Duration::from_secs(120));
+        assert_eq!(backoff_delay(4), Duration::from_secs(240));
+        assert_eq!(backoff_delay(5), Duration::from_secs(480));
+        assert_eq!(backoff_delay(6), Duration::from_secs(600), "capped at 10 min");
+        assert_eq!(backoff_delay(20), Duration::from_secs(600), "still capped");
+    }
+
+    #[test]
+    fn should_probe_now_true_for_cold_cache() {
+        let map = AccountStateMap::new(&[make_account("Gateway")]);
+        assert!(map.should_probe_now(&AccountKey("Gateway".to_owned())));
+    }
+
+    #[test]
+    fn set_last_error_schedules_next_probe_in_future() {
+        let mut map = AccountStateMap::new(&[make_account("Gateway")]);
+        let key = AccountKey("Gateway".to_owned());
+        map.set_last_error(&key, UsageFetchStatus::RateLimited, None);
+        assert!(!map.should_probe_now(&key), "first failure puts account in backoff");
+    }
+
+    #[test]
+    fn retry_after_overrides_exponential_backoff() {
+        // Anthropic returns Retry-After: 3048 (seconds) for a deeply
+        // rate-limited account. Our local exponential schedule would
+        // pick 30 s for the first failure — vastly under-shoot the
+        // actual reset and re-trip the limit. The server-provided
+        // retry_after must win.
+        use std::time::Duration;
+        let mut map = AccountStateMap::new(&[make_account("Gateway1")]);
+        let key = AccountKey("Gateway1".to_owned());
+        let t0 = std::time::Instant::now();
+        map.set_last_error(&key, UsageFetchStatus::RateLimited, Some(Duration::from_secs(3048)));
+        let next = map.by_key.get(&key).and_then(|s| s.next_probe_at).expect("scheduled");
+        let gap = next.saturating_duration_since(t0);
+        assert!(
+            gap >= Duration::from_secs(3047) && gap <= Duration::from_secs(3050),
+            "next_probe_at ≈ now + 3048s; got {gap:?}",
+        );
+    }
+
+    #[test]
+    fn set_usage_clears_backoff_so_account_probes_again() {
+        let mut map = AccountStateMap::new(&[make_account("Gateway")]);
+        let key = AccountKey("Gateway".to_owned());
+        map.set_last_error(&key, UsageFetchStatus::RateLimited, None);
+        assert!(!map.should_probe_now(&key));
+        map.set_usage(&key, snapshot(Some(10.0), Some(10.0)));
+        assert!(map.should_probe_now(&key), "successful probe clears the backoff gate");
     }
 
     #[test]

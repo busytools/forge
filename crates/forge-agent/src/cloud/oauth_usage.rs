@@ -49,10 +49,24 @@ const OAUTH_TIMEOUT: Duration = Duration::from_secs(8);
 pub async fn oauth_usage(config_dir: &Path) -> Result<OauthUsage, OauthUsageError> {
     let credentials = load_oauth_credentials(config_dir).ok_or(OauthUsageError::NoCredentials)?;
 
-    if credentials.expires_at.is_some_and(|expires_at| expires_at <= std::time::SystemTime::now()) {
-        return Err(OauthUsageError::Expired);
-    }
-
+    // We deliberately DO NOT short-circuit on
+    // `credentials.expires_at <= now`. The on-disk access_token is a
+    // short-lived cache (~1 hour); the `claude` CLI transparently
+    // refreshes it via the refresh_token before each request,
+    // writing the new value back to `.credentials.json`. Forge's
+    // probe runs out-of-band from the CLI and doesn't perform the
+    // refresh dance — but the underlying claude.ai session is still
+    // valid. Treating a stale-clock token as "Expired" produced a
+    // false yellow `⚠ expired — /login` warning on the bottom panel
+    // for accounts whose CLI simply hadn't run recently (verified
+    // empirically: `claude_<account> auth status` reports
+    // loggedIn=true while forge flagged the same account as
+    // expired). The right signal of authentication state is what
+    // the API itself returns: a 401/403 → Unauthorized, anything
+    // else → trust the response. If the stale token genuinely
+    // doesn't work the upstream 401 fires that path correctly,
+    // and we never invent an "Expired" label that contradicts the
+    // CLI's source of truth.
     let headers = oauth_headers(&credentials.access_token)?;
     let client = reqwest::Client::builder()
         .timeout(OAUTH_TIMEOUT)
@@ -67,6 +81,21 @@ pub async fn oauth_usage(config_dir: &Path) -> Result<OauthUsage, OauthUsageErro
         .map_err(|error| OauthUsageError::Network(error.to_string()))?;
 
     let status = response.status().as_u16();
+    // Parse Retry-After BEFORE consuming the response body — once
+    // we call .bytes() the response object is moved. Anthropic
+    // returns 429 with a per-account hold-down value in seconds;
+    // honouring it prevents the poller from re-tripping the limit
+    // every cycle.
+    let retry_after = if status == 429 {
+        response
+            .headers()
+            .get(reqwest::header::RETRY_AFTER)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.trim().parse::<u64>().ok())
+            .map(Duration::from_secs)
+    } else {
+        None
+    };
     let body = response
         .bytes()
         .await
@@ -76,6 +105,7 @@ pub async fn oauth_usage(config_dir: &Path) -> Result<OauthUsage, OauthUsageErro
         200 => serde_json::from_slice::<OauthUsage>(&body)
             .map_err(|error| OauthUsageError::Decode(error.to_string())),
         401 | 403 => Err(OauthUsageError::Unauthorized(status)),
+        429 => Err(OauthUsageError::RateLimited { retry_after }),
         _ => Err(OauthUsageError::HttpStatus(status, truncated_body_suffix(&body))),
     }
 }
