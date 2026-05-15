@@ -544,25 +544,29 @@ impl App {
         crate::app::file_index::ensure_started(self);
         // No explicit git-diff refresh on session switch — the 10s
         // timer (which fires its first tick immediately) catches any
-        // stale snapshot on the next pump cycle. Keeping the switch
-        // path lean.
+        // stale snapshot on the next pump cycle.
         //
-        // Refresh status / oauth / context-usage / 5h+7d usage for
-        // the now-active bucket. On the launchpad path, Connected
-        // fires for each auto_start project with the pre-Connect
-        // bucket still active — the post-Connected refresh calls in
-        // `events/client.rs` early-exit because they're gated on the
-        // active session_id / account name. Nothing else fires when
-        // the user finally picks a project, so the bottom panel's
-        // bars (Ctx + 5h + 7d) sit empty even though the workspace's
-        // usage poller has the data cached. Triggering the refresh
-        // chain here closes that gap and keeps it closed for any
-        // future cross-session switch (mouse click in Projects pane,
-        // `/resume` autocomplete picks, etc.).
+        // Activation parity with the chat-direct path
+        // (`forge <project>`). That path lands the user in a fully
+        // wired session via `apply_connected_presentation`'s active
+        // branch — file index restart, chat focus rebuild, runtime
+        // tabs refresh, post-Connected per-session refreshes. The
+        // launchpad-pick path spawns the project in the BACKGROUND
+        // branch (because `__conn_pending__` is still active at
+        // Connected time) and then relies on `switch_active_session`
+        // to bring the bucket up to the same activation level.
+        // Without these calls clicking forge from the launchpad
+        // leaves the chat input unfocused, the runtime tabs stale,
+        // and the bottom panel bars empty even though the bucket
+        // itself carries the data.
+        crate::app::file_index::restart(self);
+        self.rebuild_chat_focus_from_state();
+        crate::app::config::refresh_runtime_tabs_for_session_change(self);
         crate::app::session_runtime::request_status_snapshot_refresh(self);
         crate::app::session_runtime::request_oauth_credentials_snapshot_refresh(self);
         crate::app::session_runtime::request_context_usage_refresh(self);
         crate::app::usage::request_refresh_if_needed(self);
+        self.sync_welcome_snapshot();
         self.force_redraw = true;
         self.needs_redraw = true;
     }
