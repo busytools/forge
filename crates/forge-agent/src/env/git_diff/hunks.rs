@@ -303,9 +303,22 @@ fn parse_hunks(section: &str) -> Vec<Hunk> {
     let mut hunks = Vec::with_capacity(hunk_starts.len());
     for (idx, &start) in hunk_starts.iter().enumerate() {
         let end = hunk_starts.get(idx + 1).copied().unwrap_or(lines.len());
+        let header_line = lines[start];
         let Some((old_start, old_count, new_start, new_count)) =
-            parse_hunk_header(lines[start])
+            parse_hunk_header(header_line)
         else {
+            // Malformed @@ header — never expected on healthy git
+            // output, but if it does fire (corrupt diff, custom
+            // pretty-format leaking through) the operator needs to
+            // see which line broke the parse.
+            let truncated = header_line.chars().take(120).collect::<String>();
+            tracing::warn!(
+                target: crate::logging::targets::ENV_GIT,
+                event_name = "git_hunk_header_malformed",
+                message = "hunk header didn't parse; hunk dropped",
+                outcome = "skipped",
+                header = %truncated,
+            );
             continue;
         };
         let mut diff_lines = Vec::new();
@@ -412,10 +425,49 @@ async fn scan_untracked(cwd: &Path) -> Vec<FileHunks> {
                             lines: diff_lines,
                         }]
                     }
-                    Err(_) => Vec::new(),
+                    Err(err) => {
+                        // File showed up in `ls-files --others` and
+                        // its metadata read OK, but the content
+                        // read failed (permissions flipped between
+                        // calls, broken symlink target, decoding
+                        // error). Keep the rail entry but log so
+                        // an operator can correlate "U row with no
+                        // content" to the IO error.
+                        tracing::warn!(
+                            target: crate::logging::targets::ENV_GIT,
+                            event_name = "untracked_read_failed",
+                            message = "untracked file content read failed; rail entry kept with empty hunks",
+                            outcome = "failure",
+                            path = %file_path.display(),
+                            error = %err,
+                        );
+                        Vec::new()
+                    }
                 }
             }
-            _ => Vec::new(),
+            Ok(meta) if !meta.is_file() => {
+                // ls-files --others normally returns regular files
+                // only, but submodules / sockets / fifos can sneak
+                // in on exotic setups. Drop them silently — the
+                // rail entry remains with empty hunks.
+                Vec::new()
+            }
+            Ok(_) => {
+                // File exists but exceeds MAX_UNTRACKED_FILE_SIZE.
+                // No log — this is the documented cap behavior.
+                Vec::new()
+            }
+            Err(err) => {
+                tracing::warn!(
+                    target: crate::logging::targets::ENV_GIT,
+                    event_name = "untracked_metadata_failed",
+                    message = "untracked file metadata read failed; rail entry kept with empty hunks",
+                    outcome = "failure",
+                    path = %file_path.display(),
+                    error = %err,
+                );
+                Vec::new()
+            }
         };
         out.push(FileHunks {
             path: path.to_owned(),
