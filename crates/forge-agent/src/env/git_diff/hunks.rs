@@ -906,11 +906,7 @@ diff --git a/x.rs b/x.rs
     fn path_from_section_mode_only_uses_diff_header() {
         // Mode change only — no `+++ b/`, no rename markers; the
         // path is implicit in the diff --git header.
-        let lines = vec![
-            "diff --git a/build.sh b/build.sh",
-            "old mode 100644",
-            "new mode 100755",
-        ];
+        let lines = vec!["diff --git a/build.sh b/build.sh", "old mode 100644", "new mode 100755"];
         assert_eq!(path_from_section(&lines), Some("build.sh".into()));
     }
 
@@ -970,10 +966,7 @@ diff --git a/b.rs b/b.rs
         // to parse via rsplit_once(" b/") so we use a header
         // pathological enough to fail every fallback: no ` b/` at
         // all (truncated / corrupted).
-        let lines = vec![
-            "diff --git a-only-no-b-separator",
-            "some opaque body content",
-        ];
+        let lines = vec!["diff --git a-only-no-b-separator", "some opaque body content"];
         let mut map: HashMap<String, String> = HashMap::new();
         flush_section(&lines, &mut map);
         assert!(map.is_empty(), "section without resolvable path must not land in the map");
