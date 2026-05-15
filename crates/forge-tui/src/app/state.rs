@@ -546,6 +546,23 @@ impl App {
         // timer (which fires its first tick immediately) catches any
         // stale snapshot on the next pump cycle. Keeping the switch
         // path lean.
+        //
+        // Refresh status / oauth / context-usage / 5h+7d usage for
+        // the now-active bucket. On the launchpad path, Connected
+        // fires for each auto_start project with the pre-Connect
+        // bucket still active — the post-Connected refresh calls in
+        // `events/client.rs` early-exit because they're gated on the
+        // active session_id / account name. Nothing else fires when
+        // the user finally picks a project, so the bottom panel's
+        // bars (Ctx + 5h + 7d) sit empty even though the workspace's
+        // usage poller has the data cached. Triggering the refresh
+        // chain here closes that gap and keeps it closed for any
+        // future cross-session switch (mouse click in Projects pane,
+        // `/resume` autocomplete picks, etc.).
+        crate::app::session_runtime::request_status_snapshot_refresh(self);
+        crate::app::session_runtime::request_oauth_credentials_snapshot_refresh(self);
+        crate::app::session_runtime::request_context_usage_refresh(self);
+        crate::app::usage::request_refresh_if_needed(self);
         self.force_redraw = true;
         self.needs_redraw = true;
     }
@@ -2666,6 +2683,71 @@ mod tests {
         assert_eq!(app.active_session().and_then(|s| s.key.as_ref()), Some(&key));
         assert!(app.try_active_bucket_mut().is_some());
         assert!(app.session_mut(&key).is_some());
+    }
+
+    /// Regression: clicking a launchpad-auto_started project must
+    /// trigger the per-session refresh chain (status / oauth /
+    /// context-usage / 5h+7d) so the bottom panel's bars populate.
+    /// Pre-fix, `switch_active_session` only flipped the active key —
+    /// nothing fired when the user picked a project, and the
+    /// post-Connected refreshes in `events/client.rs` had already
+    /// early-exited because they're gated on the (then pre-Connect)
+    /// active session_id.
+    ///
+    /// `request_context_usage_refresh` flips
+    /// `session_usage.context_usage_in_flight = true` when it
+    /// successfully proceeds (it needs workspace + active key +
+    /// session_id, all of which the destination bucket has post-switch).
+    /// Observing the flag flip on the destination bucket proves
+    /// `switch_active_session` invoked the refresh chain.
+    #[test]
+    fn switch_active_session_triggers_context_usage_refresh_on_destination() {
+        let mut app = App::test_default();
+        let _pre_connect_outbox = app.install_testing_stub();
+        // Seed a second bucket and stamp it with a session_id so the
+        // refresh fns clear their session_id gate after the switch.
+        let dest_key = forge_workspace::SessionKey::from_str_for_test("destination-session");
+        let mut dest_bucket = crate::app::session::UiSession::new(dest_key.clone());
+        dest_bucket.session_id =
+            Some(forge_primitives::SessionId::new(dest_key.as_str().to_owned()));
+        app.sessions.insert(dest_key.clone(), dest_bucket);
+        // Hold the destination's command receiver alive at test scope —
+        // dropping it before `switch_active_session` runs makes the
+        // workspace's stub-handle send fail, which routes through the
+        // error arm in `request_context_usage_refresh` and resets the
+        // in_flight flag we're trying to observe.
+        let _dest_outbox = if let Some(workspace) = app.workspace.as_ref() {
+            let (handle, outbox) = forge_workspace::Workspace::testing_stub_handle();
+            let domain = workspace
+                .register_domain_session_for_test(dest_key.clone(), std::sync::Arc::new(handle));
+            domain.lock().session_id =
+                Some(forge_primitives::SessionId::new(dest_key.as_str().to_owned()));
+            Some(outbox)
+        } else {
+            None
+        };
+        // Sanity baseline: destination bucket's context-usage is idle.
+        assert!(
+            !app.sessions
+                .get(&dest_key)
+                .expect("dest bucket")
+                .session_usage
+                .context_usage_in_flight,
+            "destination bucket should start with context_usage idle",
+        );
+
+        app.switch_active_session(dest_key.clone());
+
+        assert_eq!(
+            app.active_session_key.as_ref(),
+            Some(&dest_key),
+            "switch must promote destination to active",
+        );
+        assert!(
+            app.sessions.get(&dest_key).expect("dest bucket").session_usage.context_usage_in_flight,
+            "switch_active_session must call request_context_usage_refresh on the new active \
+             (otherwise the launchpad-click bottom-panel bars sit empty)",
+        );
     }
 
     // BlockCache
