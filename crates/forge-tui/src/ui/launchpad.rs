@@ -158,15 +158,10 @@ fn build_picker_rows(app: &App) -> Vec<PickerRow> {
 /// 2. Catalog session UUIDs — the lead recorded on disk, if pooled.
 /// 3. `cwd_raw` match — covers the post-KeyRenamed window when the
 ///    synthetic has migrated to the real session UUID but the
-///    catalog scan hasn't refreshed yet. Without this third step the
-///    launchpad rendered every auto_start project as `Sleeping`
-///    even after it had connected — the bucket was alive in
-///    `app.sessions`, just under a UUID neither the synthetic nor
-///    catalog lookups knew about. The `cwd_raw` walk filters the
-///    pre-connect sentinel via [`App::find_running_bucket_for_path`]
-///    so a project whose path matches `current_dir()` (the typical
-///    "forge launched from inside that project's dir" case) doesn't
-///    resolve to the boot stub.
+///    catalog scan hasn't refreshed yet. The pre-connect bucket
+///    cannot collide here: its `cwd_raw` is sourced from
+///    `forge.toml` (or empty in launchpad mode), not
+///    `std::env::current_dir()` — see `connect::create_app`.
 fn find_live_bucket<'app>(
     app: &'app App,
     project: &ProjectView,
@@ -181,8 +176,7 @@ fn find_live_bucket<'app>(
         }
     }
     let path_str = project.path.to_string_lossy();
-    let key = app.find_running_bucket_for_path(path_str.as_ref())?;
-    app.sessions.get(&key)
+    app.sessions.values().find(|s| s.cwd_raw.as_str() == path_str.as_ref())
 }
 
 fn resolve_lifecycle(app: &App, project: &ProjectView) -> SessionLifecycleState {

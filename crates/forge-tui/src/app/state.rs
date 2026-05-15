@@ -453,29 +453,16 @@ impl App {
         self.sessions.get_mut(key)
     }
 
-    /// Find a session bucket whose `cwd_raw` matches `path`, skipping
-    /// the pre-connect sentinel bucket (`__conn_pending__`).
+    /// Find a session bucket whose `cwd_raw` matches `path`.
     ///
     /// Used by the launchpad-click and projects-pane-click handlers
     /// to land the user on the resumed bucket for a project. The
-    /// pre-connect bucket carries the user's invocation directory as
-    /// `cwd_raw` (set by `App::new_for_connect`), so when forge is
-    /// launched without an argv project from inside a known project
-    /// dir, that bucket's `cwd_raw` collides with the real session's
-    /// `cwd_raw` once the auto-start spawn completes. Walking
-    /// `HashMap` in iteration order would non-deterministically pick
-    /// either bucket — and picking the pre-connect one strands the
-    /// user on the boot stub (chat reads "Connecting to Claude
-    /// Code…", input + history empty) while the fully-resumed bucket
-    /// sits behind it. Filtering the sentinel out here makes the
-    /// match deterministic.
+    /// pre-connect bucket cannot collide because its `cwd_raw` is
+    /// sourced from `forge.toml` (or empty in launchpad mode), not
+    /// from `std::env::current_dir()` — see `connect::create_app`.
     #[must_use]
     pub fn find_running_bucket_for_path(&self, path: &str) -> Option<forge_workspace::SessionKey> {
-        self.sessions
-            .iter()
-            .filter(|(k, _)| k.as_str() != Self::PRE_CONNECT_KEY)
-            .find(|(_, s)| s.cwd_raw.as_str() == path)
-            .map(|(k, _)| k.clone())
+        self.sessions.iter().find(|(_, s)| s.cwd_raw.as_str() == path).map(|(k, _)| k.clone())
     }
 
     /// Read access to the active session's input editor. Lifted from
@@ -2807,62 +2794,62 @@ mod tests {
     /// Regression: when forge boots without an argv project from
     /// inside a project directory, the pre-connect bucket's `cwd_raw`
     /// collides with the auto_started project's running bucket
-    /// `cwd_raw` once KeyRenamed migrates the synthetic key onto the
-    /// real session UUID. `HashMap::iter()` order is
-    /// non-deterministic, so a naive `find` over the bucket map would
-    /// sometimes return the pre-connect sentinel — which in turn
-    /// would land the user on the boot stub instead of the resumed
-    /// session. `find_running_bucket_for_path` filters the sentinel
-    /// explicitly so the lookup is deterministic.
+    /// Regression: the bug that started this whole saga was the
+    /// pre-connect bucket's `cwd_raw` being seeded from
+    /// `std::env::current_dir()`, which collided with the
+    /// matching project's `path` from `forge.toml` whenever forge
+    /// was launched from inside that project's directory. The
+    /// architectural fix is to NOT seed `cwd_raw` from env at all —
+    /// `forge.toml` is the source of truth. In launchpad mode (no
+    /// argv project picked), the pre-connect bucket's `cwd_raw`
+    /// stays empty, so it cannot collide with any project lookup.
+    /// This test pins that invariant for `test_default`'s pre-connect
+    /// bucket (which mirrors the production pre-connect seed shape).
     #[test]
-    fn find_running_bucket_for_path_skips_pre_connect_sentinel() {
+    fn test_default_pre_connect_bucket_does_not_collide_with_project_paths() {
+        let app = App::test_default();
+        let pre_connect_key = forge_workspace::SessionKey::from_session_id(App::PRE_CONNECT_KEY);
+        let pre_bucket = app.sessions.get(&pre_connect_key).expect("pre-connect bucket");
+        // `test_default` seeds `/test` for stable rendering; production
+        // launchpad-mode pre-connect uses an empty `cwd_raw`. Either
+        // way, the invariant the production fix relies on is that no
+        // real project's `path` ever ends up matching the pre-connect
+        // bucket's `cwd_raw` — there is no way to construct a forge
+        // project named `/test` and pre-connect cannot equal a real
+        // project's `path` accidentally because nothing reads from
+        // `current_dir()` to seed it anymore.
+        assert!(
+            pre_bucket.cwd_raw == "/test" || pre_bucket.cwd_raw.is_empty(),
+            "pre-connect bucket should hold a sentinel cwd, got {:?}",
+            pre_bucket.cwd_raw,
+        );
+    }
+
+    /// `find_running_bucket_for_path` returns the unique bucket
+    /// matching `path` when one exists. The pre-connect bucket
+    /// never participates because its `cwd_raw` is sourced from
+    /// `forge.toml`-or-empty, not from `current_dir()` — so it
+    /// cannot accidentally match a real project's `path`.
+    #[test]
+    fn find_running_bucket_for_path_returns_matching_real_bucket() {
         let mut app = App::test_default();
         let project_path = "/Users/vedhavyas/Projects/forge";
-
-        // Pre-connect bucket: seeded by `test_default`, mutate its
-        // `cwd_raw` to simulate forge launched from inside the
-        // project directory.
-        let pre_connect_key = forge_workspace::SessionKey::from_session_id(App::PRE_CONNECT_KEY);
-        let pre_bucket = app.sessions.get_mut(&pre_connect_key).expect("pre-connect bucket");
-        pre_bucket.cwd_raw = project_path.to_owned();
-
-        // Real resumed bucket: same `cwd_raw`, real UUID-shaped key.
         let real_key =
             forge_workspace::SessionKey::from_str_for_test("11111111-2222-3333-4444-555555555555");
         let mut real_bucket = crate::app::session::UiSession::new(real_key.clone());
         real_bucket.cwd_raw = project_path.to_owned();
         app.sessions.insert(real_key.clone(), real_bucket);
 
-        // 100 iterations cover the HashMap-order randomization
-        // surface deterministically: any failure mode that depended
-        // on iter() order would surface here.
-        for _ in 0..100 {
-            let picked =
-                app.find_running_bucket_for_path(project_path).expect("a bucket should match");
-            assert_eq!(
-                picked, real_key,
-                "find_running_bucket_for_path must skip the pre-connect sentinel \
-                 even when its cwd_raw collides with a real session's",
-            );
-        }
+        let picked = app.find_running_bucket_for_path(project_path).expect("a bucket should match");
+        assert_eq!(picked, real_key);
     }
 
-    /// Companion to the regression above: when no real bucket exists
-    /// (cold-spawn case), the lookup returns `None` — even though the
-    /// pre-connect bucket's `cwd_raw` matches — so the caller falls
-    /// through to the catalog-lookup / `SpawnProject` paths.
+    /// No bucket matches → `None`. Used by the click handler to
+    /// fall through to the catalog / cold-spawn paths.
     #[test]
-    fn find_running_bucket_for_path_returns_none_when_only_pre_connect_matches() {
-        let mut app = App::test_default();
-        let project_path = "/Users/vedhavyas/Projects/forge";
-        let pre_connect_key = forge_workspace::SessionKey::from_session_id(App::PRE_CONNECT_KEY);
-        let pre_bucket = app.sessions.get_mut(&pre_connect_key).expect("pre-connect bucket");
-        pre_bucket.cwd_raw = project_path.to_owned();
-
-        assert!(
-            app.find_running_bucket_for_path(project_path).is_none(),
-            "pre-connect bucket alone must not satisfy the lookup",
-        );
+    fn find_running_bucket_for_path_returns_none_when_no_match() {
+        let app = App::test_default();
+        assert!(app.find_running_bucket_for_path("/Users/vedhavyas/Projects/forge").is_none());
     }
 
     // BlockCache
