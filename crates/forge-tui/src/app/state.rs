@@ -177,9 +177,7 @@ impl PaneHitTarget {
             | Self::InspectorTopBarIcon { x_start, x_end, .. }
             | Self::OverlayClose { x_start, x_end, .. }
             | Self::CloseSession { x_start, x_end, .. }
-            | Self::InspectorGitOpenDiff { x_start, x_end, .. } => {
-                (*x_start..*x_end).contains(&x)
-            }
+            | Self::InspectorGitOpenDiff { x_start, x_end, .. } => (*x_start..*x_end).contains(&x),
         }
     }
 }

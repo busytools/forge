@@ -389,8 +389,10 @@ fn append_git_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
     // (Worktree / BranchVsDefault), append the `⤢` glyph at the
     // right edge as the open-diff affordance.
     let has_glyph = snapshot_has_diff(app);
-    let mut header_spans =
-        vec![Span::styled(" GIT".to_owned(), Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD))];
+    let mut header_spans = vec![Span::styled(
+        " GIT".to_owned(),
+        Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD),
+    )];
     if has_glyph {
         // " GIT" is 4 cells; glyph + right padding takes 2 cells
         // (`⤢ ` — glyph then a single trailing space so the click
@@ -484,8 +486,7 @@ fn append_git_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
 /// Whether the active session's snapshot has a non-empty diff (used
 /// to gate the GIT header's `⤢` open-diff glyph + its hit target).
 fn snapshot_has_diff(app: &App) -> bool {
-    let Some(snapshot) = app.active_session().and_then(|s| s.git_diff_snapshot.as_ref())
-    else {
+    let Some(snapshot) = app.active_session().and_then(|s| s.git_diff_snapshot.as_ref()) else {
         return false;
     };
     matches!(snapshot.view, GitDiffView::Worktree { .. } | GitDiffView::BranchVsDefault { .. })

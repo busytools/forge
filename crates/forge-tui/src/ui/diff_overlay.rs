@@ -42,11 +42,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Length(rail_width),
-            Constraint::Length(1),
-            Constraint::Min(0),
-        ])
+        .constraints([Constraint::Length(rail_width), Constraint::Length(1), Constraint::Min(0)])
         .split(area);
     let rail_area = chunks[0];
     let sep_area = chunks[1];
@@ -73,10 +69,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     render_rail(frame, rail_area, overlay);
     render_separator(frame, sep_area);
     if pane_area.height >= 3 {
-        frame.render_widget(
-            Paragraph::new(body_lines).scroll((body_scroll, 0)),
-            pane_area,
-        );
+        frame.render_widget(Paragraph::new(body_lines).scroll((body_scroll, 0)), pane_area);
     }
 }
 
@@ -105,8 +98,7 @@ fn render_rail(frame: &mut Frame, area: Rect, overlay: &DiffOverlayState) {
 
 fn render_separator(frame: &mut Frame, area: Rect) {
     let style = Style::default().fg(theme::DIM);
-    let lines: Vec<Line> =
-        (0..area.height).map(|_| Line::from(Span::styled("│", style))).collect();
+    let lines: Vec<Line> = (0..area.height).map(|_| Line::from(Span::styled("│", style))).collect();
     frame.render_widget(Paragraph::new(lines), area);
 }
 
@@ -228,12 +220,10 @@ fn banner_row(label: &'static str) -> Line<'static> {
 
 fn pane_banner_row(overlay: &DiffOverlayState) -> Line<'static> {
     let dim = Style::default().fg(theme::DIM);
-    let (title, added, removed) = overlay
-        .current_file()
-        .map_or_else(
-            || ("(no file)".to_owned(), 0u32, 0u32),
-            |f| (f.path.clone(), f.added_count(), f.removed_count()),
-        );
+    let (title, added, removed) = overlay.current_file().map_or_else(
+        || ("(no file)".to_owned(), 0u32, 0u32),
+        |f| (f.path.clone(), f.added_count(), f.removed_count()),
+    );
     let mut spans = vec![
         Span::raw("  "),
         Span::styled("DIFF", Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD)),
@@ -252,10 +242,7 @@ fn pane_banner_row(overlay: &DiffOverlayState) -> Line<'static> {
 }
 
 fn rule_row(width: u16) -> Line<'static> {
-    Line::from(Span::styled(
-        "─".repeat(usize::from(width)),
-        Style::default().fg(theme::DIM),
-    ))
+    Line::from(Span::styled("─".repeat(usize::from(width)), Style::default().fg(theme::DIM)))
 }
 
 fn file_rail_row(file: &FileHunks, current: bool, max_path_width: usize) -> Line<'static> {

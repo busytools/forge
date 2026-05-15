@@ -23,7 +23,7 @@ use super::view::{ActiveView, set_active_view};
 /// `cwd` and `target` are echoed back so the receiver can drop
 /// stale results when the user switched sessions or navigated away
 /// from chat while the scan was running (see [`drain_events`]).
-/// `scanner_ok` propagates from [`ScanOutcome::scanner_ok`] so the
+/// `scanner_ok` propagates from `ScanOutcome::scanner_ok` so the
 /// renderer can surface "scan failed" vs. "no changes" distinctly.
 #[derive(Debug)]
 pub struct DiffOverlayEvent {
@@ -44,8 +44,7 @@ pub fn spawn_fetch(
     tx: std_mpsc::Sender<DiffOverlayEvent>,
 ) {
     tokio::task::spawn_local(async move {
-        let ScanOutcome { files, scanner_ok } =
-            workspace.scan_git_diff_hunks(&cwd, &target).await;
+        let ScanOutcome { files, scanner_ok } = workspace.scan_git_diff_hunks(&cwd, &target).await;
         let _ = tx.send(DiffOverlayEvent { cwd, target, files, scanner_ok });
     });
 }
@@ -242,14 +241,14 @@ impl DiffOverlayState {
     /// Build a fresh state for a newly-opened overlay. Cursor starts
     /// on file 0, scroll at 0. `scanner_ok = true` is the
     /// no-issues-known default; the spawn path sets it from
-    /// [`ScanOutcome::scanner_ok`].
+    /// `ScanOutcome::scanner_ok`.
     pub fn new(cwd: PathBuf, target: String, files: Vec<FileHunks>) -> Self {
         Self::new_with_status(cwd, target, files, true)
     }
 
     /// Build state and explicitly record whether the scanner ran
     /// cleanly. Used by the drain pump to thread the
-    /// [`DiffOverlayEvent::scanner_ok`] flag into the rendered
+    /// `DiffOverlayEvent::scanner_ok` flag into the rendered
     /// overlay.
     pub fn new_with_status(
         cwd: PathBuf,
@@ -304,7 +303,6 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) {
 /// Inspector pane's `MOUSE_SCROLL_LINES` for consistency.
 const SCROLL_LINES_PER_NOTCH: u16 = 3;
 
-
 /// Wide-tier FILES rail width. Shared with the renderer.
 pub(crate) const RAIL_WIDTH_WIDE: u16 = 40;
 /// Medium-tier FILES rail width.
@@ -349,13 +347,11 @@ pub(crate) fn handle_mouse(app: &mut App, mouse: MouseEvent) {
     let changed = if let Some(overlay) = app.diff_overlay.as_mut() {
         match mouse.kind {
             MouseEventKind::ScrollUp => {
-                overlay.body_scroll =
-                    overlay.body_scroll.saturating_sub(SCROLL_LINES_PER_NOTCH);
+                overlay.body_scroll = overlay.body_scroll.saturating_sub(SCROLL_LINES_PER_NOTCH);
                 true
             }
             MouseEventKind::ScrollDown => {
-                overlay.body_scroll =
-                    overlay.body_scroll.saturating_add(SCROLL_LINES_PER_NOTCH);
+                overlay.body_scroll = overlay.body_scroll.saturating_add(SCROLL_LINES_PER_NOTCH);
                 true
             }
             MouseEventKind::Down(MouseButton::Left) => {

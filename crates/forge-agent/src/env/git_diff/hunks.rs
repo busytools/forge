@@ -10,8 +10,8 @@
 //!    The flag defeats user-configured difftastic / delta so the
 //!    parser sees standard unified-diff format.
 //! 3. `git ls-files --others --exclude-standard` — untracked files
-//!    (only when `target == "HEAD"`, capped at [`MAX_UNTRACKED_FILES`]
-//!    entries, each read up to [`MAX_UNTRACKED_FILE_SIZE`] bytes).
+//!    (only when `target == "HEAD"`, capped at `MAX_UNTRACKED_FILES`
+//!    entries, each read up to `MAX_UNTRACKED_FILE_SIZE` bytes).
 //!
 //! Single-shot — never polled. The `/diff` overlay calls [`scan`] on
 //! open and renders the resulting `Vec<FileHunks>` for the duration
@@ -314,9 +314,7 @@ fn split_per_file(raw: &str) -> HashMap<String, String> {
             current_lines.push(line);
         }
     }
-    if in_section
-        && let Some(path) = path_from_section(&current_lines)
-    {
+    if in_section && let Some(path) = path_from_section(&current_lines) {
         map.insert(path, current_lines.join("\n"));
     }
     map
@@ -361,8 +359,7 @@ fn parse_hunks(section: &str) -> Vec<Hunk> {
     for (idx, &start) in hunk_starts.iter().enumerate() {
         let end = hunk_starts.get(idx + 1).copied().unwrap_or(lines.len());
         let header_line = lines[start];
-        let Some((old_start, old_count, new_start, new_count)) =
-            parse_hunk_header(header_line)
+        let Some((old_start, old_count, new_start, new_count)) = parse_hunk_header(header_line)
         else {
             // Malformed @@ header — never expected on healthy git
             // output, but if it does fire (corrupt diff, custom
@@ -461,8 +458,7 @@ async fn scan_untracked(cwd: &Path) -> Vec<FileHunks> {
             Ok(meta) if meta.is_file() && meta.len() <= MAX_UNTRACKED_FILE_SIZE => {
                 match tokio::fs::read_to_string(&file_path).await {
                     Ok(content) => {
-                        let raw_lines: Vec<String> =
-                            content.lines().map(str::to_owned).collect();
+                        let raw_lines: Vec<String> = content.lines().map(str::to_owned).collect();
                         let new_count = u32::try_from(raw_lines.len()).unwrap_or(u32::MAX);
                         let diff_lines: Vec<DiffLine> = raw_lines
                             .into_iter()
@@ -526,11 +522,7 @@ async fn scan_untracked(cwd: &Path) -> Vec<FileHunks> {
                 Vec::new()
             }
         };
-        out.push(FileHunks {
-            path: path.to_owned(),
-            status: FileStatus::Untracked,
-            hunks,
-        });
+        out.push(FileHunks { path: path.to_owned(), status: FileStatus::Untracked, hunks });
     }
     out
 }
@@ -631,11 +623,8 @@ index abc..def 100644
         assert!(hunks[0].lines.iter().any(|l| added(l, "new line")));
         // The added line carries its new-file line number; old_line
         // is None so a gutter renderer leaves that side blank.
-        let inserted = hunks[0]
-            .lines
-            .iter()
-            .find(|l| added(l, "new line"))
-            .expect("added line present");
+        let inserted =
+            hunks[0].lines.iter().find(|l| added(l, "new line")).expect("added line present");
         assert_eq!(inserted.new_line, Some(3));
         assert_eq!(inserted.old_line, None);
     }
@@ -680,11 +669,8 @@ diff --git a/x.rs b/x.rs
         assert_eq!(hunks[0].added_count(), 0);
         assert_eq!(hunks[0].removed_count(), 1);
         assert!(hunks[0].lines.iter().any(|l| removed(l, "deleted line")));
-        let context_lines: Vec<&DiffLine> = hunks[0]
-            .lines
-            .iter()
-            .filter(|l| l.kind == DiffLineKind::Context)
-            .collect();
+        let context_lines: Vec<&DiffLine> =
+            hunks[0].lines.iter().filter(|l| l.kind == DiffLineKind::Context).collect();
         assert_eq!(context_lines.len(), 3);
         assert!(hunks[0].lines.iter().any(|l| context(l, "line1")));
     }
@@ -736,8 +722,7 @@ diff --git a/x.rs b/x.rs
     fn parse_hunk_header_with_trailing_context() {
         // Real git output appends the enclosing function name after
         // the second @@. Parser must ignore it.
-        let (o_s, _, n_s, _) =
-            parse_hunk_header("@@ -10,2 +10,3 @@ fn foo() {").unwrap();
+        let (o_s, _, n_s, _) = parse_hunk_header("@@ -10,2 +10,3 @@ fn foo() {").unwrap();
         assert_eq!((o_s, n_s), (10, 10));
     }
 
