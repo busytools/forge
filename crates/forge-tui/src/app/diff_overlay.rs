@@ -45,20 +45,46 @@ pub fn spawn_fetch(
     });
 }
 
+/// Outcome of resolving the default `/diff` target from the active
+/// session's Inspector GIT snapshot. Distinguishes the three
+/// "nothing to open" cases so the caller can surface a specific
+/// system-message rather than a generic "no changes" line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DefaultTarget {
+    /// Resolved a concrete ref to diff against (`"HEAD"` for the
+    /// worktree case, the default branch name for the clean
+    /// feature-branch case).
+    Ref(String),
+    /// Inspector GIT scanner hasn't produced a snapshot yet. The
+    /// poll fires ~10s after session start; a fresh-launch user
+    /// who hits `/diff` immediately can land here.
+    NoSnapshot,
+    /// Active session's cwd isn't inside a git repository.
+    NotARepo,
+    /// Working tree is clean against the resolved default branch.
+    /// Genuine "no changes" — distinct from the other two None
+    /// cases so the system notice can name the default branch.
+    Clean { default_branch: Option<String> },
+}
+
 /// Resolve the default `/diff` target from the active session's
 /// Inspector GIT snapshot. Mirrors the auto-detect logic the `/diff`
 /// slash command uses; shared with the Inspector `⤢` click path.
-///
-/// Returns `None` when there's nothing to diff (no snapshot, no
-/// repo, clean default branch). Callers render a "No changes"
-/// notice and skip opening the overlay in that case.
-pub fn resolve_default_target(app: &App) -> Option<String> {
+pub fn resolve_default_target(app: &App) -> DefaultTarget {
     use forge_workspace::env::git_diff::GitDiffView;
-    let snapshot = app.active_session().and_then(|s| s.git_diff_snapshot.as_ref())?;
+    let Some(snapshot) = app.active_session().and_then(|s| s.git_diff_snapshot.as_ref()) else {
+        return DefaultTarget::NoSnapshot;
+    };
     match (&snapshot.view, snapshot.default_branch.as_deref()) {
-        (GitDiffView::Worktree { .. }, _) => Some("HEAD".to_owned()),
-        (GitDiffView::BranchVsDefault { .. }, Some(default)) => Some(default.to_owned()),
-        _ => None,
+        (GitDiffView::Worktree { .. }, _) => DefaultTarget::Ref("HEAD".to_owned()),
+        (GitDiffView::BranchVsDefault { .. }, Some(default)) => {
+            DefaultTarget::Ref(default.to_owned())
+        }
+        (GitDiffView::NoRepo, _) => DefaultTarget::NotARepo,
+        // CleanDefault — or BranchVsDefault with no default branch
+        // known (origin/HEAD missing + no main + no master). Same
+        // user-facing message either way: nothing to compare against.
+        _ => DefaultTarget::Clean { default_branch: snapshot.default_branch.clone() },
     }
 }
 
@@ -86,15 +112,30 @@ pub fn open_with_target(app: &mut App, target: String) {
 }
 
 /// Auto-detect the diff target from the Inspector GIT snapshot and
-/// kick off a scan. Pushes "No changes" system notice when the
-/// snapshot has nothing to surface. Shared entry point for the
+/// kick off a scan. Pushes a distinct system notice on each of the
+/// "nothing to open" cases so the user sees something actionable
+/// instead of a generic "no changes". Shared entry point for the
 /// `/diff` slash command (no arg) and the Inspector `⤢` click.
 pub fn open_default(app: &mut App) {
-    let Some(target) = resolve_default_target(app) else {
-        crate::app::slash::push_system_message(app, "No changes vs HEAD.");
-        return;
-    };
-    open_with_target(app, target);
+    match resolve_default_target(app) {
+        DefaultTarget::Ref(target) => open_with_target(app, target),
+        DefaultTarget::NoSnapshot => {
+            crate::app::slash::push_system_message(
+                app,
+                "Git scanner hasn't run yet — try /diff again in a moment.",
+            );
+        }
+        DefaultTarget::NotARepo => {
+            crate::app::slash::push_system_message(app, "Not a git repository.");
+        }
+        DefaultTarget::Clean { default_branch } => {
+            let message = match default_branch {
+                Some(name) => format!("No changes vs {name}."),
+                None => "No changes vs HEAD.".to_owned(),
+            };
+            crate::app::slash::push_system_message(app, message);
+        }
+    }
 }
 
 /// Max events drained per main-loop tick. At most one scan is in
