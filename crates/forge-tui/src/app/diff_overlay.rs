@@ -286,11 +286,14 @@ pub struct DiffOverlayState {
 }
 
 impl DiffOverlayState {
-    /// Build a fresh state for a newly-opened overlay. Cursor starts
-    /// on file 0, scroll at 0. `scanner_ok = true` and
-    /// `untracked_suppressed = 0` are the no-issues-known defaults;
-    /// the spawn path uses [`Self::new_with_event`] to thread the
-    /// real values from `ScanOutcome`.
+    /// Build a fresh state for a newly-opened overlay. Test-only —
+    /// production uses [`Self::new_with_event`] so the scanner
+    /// outcome flags (`scanner_ok`, `untracked_suppressed`) thread
+    /// through from the underlying `ScanOutcome` and the renderer's
+    /// failure / cap-overflow surfaces fire correctly. A non-test
+    /// caller reaching for this constructor would silently lose
+    /// both signals.
+    #[cfg(test)]
     pub fn new(cwd: PathBuf, target: String, files: Vec<FileHunks>) -> Self {
         Self {
             cwd,
