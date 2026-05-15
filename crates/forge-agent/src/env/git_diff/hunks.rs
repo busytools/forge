@@ -51,6 +51,11 @@ pub struct FileHunks {
 /// File-level change classification from `git diff --name-status`,
 /// plus a synthetic [`Untracked`](FileStatus::Untracked) variant for
 /// files surfaced from `git ls-files --others`.
+///
+/// Covers every status code git emits: M/A/D/R/C/T/U. Unknown
+/// codes (`X` — internal error indicator, `B` — broken pairing)
+/// fire a WARN log and skip the entry rather than collapsing to
+/// `Modified`; legitimate user-visible types stay distinct.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FileStatus {
     Modified,
@@ -58,6 +63,11 @@ pub enum FileStatus {
     Deleted,
     Renamed,
     Copied,
+    /// File mode changed (regular ↔ symlink, file ↔ submodule).
+    Typechange,
+    /// Unmerged — caught mid-merge-conflict. Common when the user
+    /// runs `/diff` while resolving a merge.
+    Unmerged,
     Untracked,
 }
 
@@ -166,6 +176,12 @@ pub async fn scan(cwd: &Path, target: &str) -> Vec<FileHunks> {
 
 /// Parse `git diff --name-status` output into a list of `FileHunks`
 /// stubs. Hunks are filled in by a subsequent `merge_hunks` pass.
+///
+/// Status codes covered: M (modified), A (added), D (deleted),
+/// R (renamed), C (copied), T (typechange — symlink/submodule),
+/// U (unmerged — mid-merge-conflict). Unknown codes (X, B, or
+/// anything else git might emit in future) fire a WARN log and
+/// drop the entry so an operator can spot the gap.
 fn parse_name_status(raw: &str) -> Vec<FileHunks> {
     raw.lines()
         .filter_map(|line| {
@@ -177,13 +193,26 @@ fn parse_name_status(raw: &str) -> Vec<FileHunks> {
             // DoubleEndedIterator-aware way to grab the tail without
             // walking the whole split.
             let path = parts.next_back()?;
-            let status = match status_code.chars().next()? {
+            let leading = status_code.chars().next()?;
+            let status = match leading {
                 'M' => FileStatus::Modified,
                 'A' => FileStatus::Added,
                 'D' => FileStatus::Deleted,
                 'R' => FileStatus::Renamed,
                 'C' => FileStatus::Copied,
-                _ => return None,
+                'T' => FileStatus::Typechange,
+                'U' => FileStatus::Unmerged,
+                other => {
+                    tracing::warn!(
+                        target: crate::logging::targets::ENV_GIT,
+                        event_name = "git_name_status_unknown_code",
+                        message = "git diff --name-status emitted an unhandled status code; entry dropped",
+                        outcome = "skipped",
+                        status_code = ?other,
+                        path = %path,
+                    );
+                    return None;
+                }
             };
             Some(FileHunks { path: path.to_owned(), status, hunks: Vec::new() })
         })
@@ -412,7 +441,14 @@ mod tests {
 
     #[test]
     fn parse_name_status_all_codes() {
-        let raw = "M\ta.rs\nA\tb.rs\nD\tc.rs\nR100\told.rs\tnew.rs\nC75\tsrc.rs\tdst.rs";
+        let raw = "\
+M\ta.rs
+A\tb.rs
+D\tc.rs
+R100\told.rs\tnew.rs
+C75\tsrc.rs\tdst.rs
+T\tsymlink.rs
+U\tconflicted.rs";
         let files = parse_name_status(raw);
         let statuses: Vec<_> = files.iter().map(|f| (f.path.clone(), f.status)).collect();
         assert_eq!(
@@ -423,8 +459,22 @@ mod tests {
                 ("c.rs".into(), FileStatus::Deleted),
                 ("new.rs".into(), FileStatus::Renamed),
                 ("dst.rs".into(), FileStatus::Copied),
+                ("symlink.rs".into(), FileStatus::Typechange),
+                ("conflicted.rs".into(), FileStatus::Unmerged),
             ]
         );
+    }
+
+    #[test]
+    fn parse_name_status_drops_unknown_codes() {
+        // X (internal error) and B (broken pairing) shouldn't
+        // appear in normal git output but are reserved codes; the
+        // parser drops them rather than miscategorising. A WARN
+        // log fires per drop but tests don't capture tracing.
+        let raw = "M\tkeep.rs\nX\tweird.rs\nB\tbroken.rs\nA\talso_keep.rs";
+        let files = parse_name_status(raw);
+        let paths: Vec<&str> = files.iter().map(|f| f.path.as_str()).collect();
+        assert_eq!(paths, vec!["keep.rs", "also_keep.rs"]);
     }
 
     #[test]

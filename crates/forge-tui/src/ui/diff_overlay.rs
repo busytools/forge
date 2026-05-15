@@ -266,6 +266,8 @@ fn status_glyph(status: FileStatus) -> (&'static str, Color) {
         FileStatus::Deleted => ("D", theme::STATUS_ERROR),
         FileStatus::Renamed => ("R", theme::RUST_ORANGE),
         FileStatus::Copied => ("C", theme::RUST_ORANGE),
+        FileStatus::Typechange => ("T", theme::RUST_ORANGE),
+        FileStatus::Unmerged => ("!", theme::STATUS_ERROR),
         FileStatus::Untracked => ("U", theme::STATUS_WARNING),
     }
 }
