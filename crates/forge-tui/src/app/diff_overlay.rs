@@ -12,7 +12,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::mpsc as std_mpsc;
 
-use crossterm::event::{KeyCode, KeyEvent};
+use crossterm::event::{KeyCode, KeyEvent, MouseEvent, MouseEventKind};
 use forge_workspace::env::git_diff::hunks::FileHunks;
 
 use super::App;
@@ -142,6 +142,39 @@ pub(crate) fn close(app: &mut App) {
 pub(crate) fn handle_key(app: &mut App, key: KeyEvent) {
     if matches!(key.code, KeyCode::Esc) {
         close(app);
+    }
+}
+
+/// Lines scrolled per wheel notch in the diff body. Matches the
+/// Inspector pane's `MOUSE_SCROLL_LINES` for consistency.
+const SCROLL_LINES_PER_NOTCH: u16 = 3;
+
+/// Handle a mouse event while the diff overlay is active.
+///
+/// v1 only consumes scroll wheel — both directions advance the
+/// right pane's `body_scroll` by [`SCROLL_LINES_PER_NOTCH`]. File
+/// rail clicks and line clicks for commenting land in follow-up
+/// commits.
+pub(crate) fn handle_mouse(app: &mut App, mouse: MouseEvent) {
+    let changed = if let Some(overlay) = app.diff_overlay.as_mut() {
+        match mouse.kind {
+            MouseEventKind::ScrollUp => {
+                overlay.body_scroll =
+                    overlay.body_scroll.saturating_sub(SCROLL_LINES_PER_NOTCH);
+                true
+            }
+            MouseEventKind::ScrollDown => {
+                overlay.body_scroll =
+                    overlay.body_scroll.saturating_add(SCROLL_LINES_PER_NOTCH);
+                true
+            }
+            _ => false,
+        }
+    } else {
+        false
+    };
+    if changed {
+        app.needs_redraw = true;
     }
 }
 
