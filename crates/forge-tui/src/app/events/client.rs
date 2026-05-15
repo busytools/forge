@@ -912,21 +912,6 @@ fn apply_runtime_reload_failed_presentation(app: &mut App, session_id: &str, mes
 /// hijack the user's deliberate session pick).
 fn apply_session_update_key_renamed(app: &mut App, from: &SessionKey, to: SessionKey) {
     let already_under_to = app.sessions.contains_key(&to);
-    let from_lifecycle = app.sessions.get(from).map(|s| s.lifecycle_state);
-    let to_lifecycle_before = app.sessions.get(&to).map(|s| s.lifecycle_state);
-    let was_active_from = app.active_session_key.as_ref() == Some(from);
-    tracing::info!(
-        target: crate::logging::targets::APP_SESSION,
-        event_name = "key_renamed_entry",
-        from = from.as_str(),
-        to = to.as_str(),
-        active_key = ?app.active_session_key.as_ref().map(forge_workspace::SessionKey::as_str),
-        from_lifecycle = ?from_lifecycle,
-        to_lifecycle_before = ?to_lifecycle_before,
-        already_under_to = already_under_to,
-        was_active_from = was_active_from,
-        "key_renamed reducer entered",
-    );
     if let Some(mut bucket) = app.sessions.remove(from) {
         if already_under_to {
             // `to` already exists (e.g. a Connected for the same
