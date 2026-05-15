@@ -205,7 +205,7 @@ pub(super) fn supported_command_candidates(app: &App) -> Vec<SlashCandidate> {
     let mut by_name: BTreeMap<String, String> = BTreeMap::new();
     by_name.insert("/compact".into(), "Compact session context".into());
     by_name.insert("/config".into(), "Open settings".into());
-    by_name.insert("/diff".into(), "Review changes with inline comments".into());
+    by_name.insert("/diff".into(), "Review changes in a full-screen diff overlay".into());
     by_name.insert("/launchpad".into(), "Return to project picker".into());
     by_name.insert("/mcp".into(), "Open MCP".into());
     by_name.insert("/mode".into(), "Set session mode".into());
