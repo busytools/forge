@@ -490,9 +490,25 @@ fn parse_hunks(section: &str) -> Vec<Hunk> {
                 });
                 old_cursor = old_cursor.saturating_add(1);
                 new_cursor = new_cursor.saturating_add(1);
+            } else if line.starts_with('\\') {
+                // `\ No newline at end of file` — legitimate diff
+                // marker, intentionally dropped.
+            } else if !line.is_empty() {
+                // Hunk-body line with an unexpected leading byte.
+                // Healthy unified-diff output never produces this;
+                // if it fires we want a breadcrumb (custom pretty-
+                // format leakage, corruption, encoding mishap).
+                let truncated: String = line.chars().take(120).collect();
+                tracing::warn!(
+                    target: crate::logging::targets::ENV_GIT,
+                    event_name = "git_hunk_body_stray_line",
+                    message = "hunk body line doesn't start with -/+/ /\\; line dropped",
+                    outcome = "skipped",
+                    line = %truncated,
+                );
             }
-            // `\ No newline at end of file` and any stray malformed
-            // lines are intentionally dropped.
+            // Truly empty lines fall through silently — they
+            // bracket the final hunk in some `git diff` outputs.
         }
         hunks.push(Hunk { old_start, old_count, new_start, new_count, lines: diff_lines });
     }
