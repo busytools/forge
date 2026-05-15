@@ -137,11 +137,11 @@ pub struct DiffOverlayState {
     /// Index into [`Self::files`] for the currently-viewed file in
     /// the right pane. Bounds-checked by [`Self::current_file`].
     pub current_file_idx: usize,
-    /// Scroll offset (in lines) for the left rail. Independent of
-    /// the right pane.
-    pub rail_scroll: u16,
     /// Scroll offset (in lines) for the right pane's diff body.
-    /// Resets to 0 when the user switches files.
+    /// Resets to 0 when the user switches files. The FILES rail
+    /// doesn't scroll yet — long file lists clip at the bottom of
+    /// the rail; rail scrolling will be wired alongside body
+    /// scrolling for the FILES side in a follow-up.
     pub body_scroll: u16,
 }
 
@@ -154,7 +154,6 @@ impl DiffOverlayState {
             target,
             files,
             current_file_idx: 0,
-            rail_scroll: 0,
             body_scroll: 0,
         }
     }
@@ -321,7 +320,6 @@ mod tests {
     fn new_sets_cursor_and_scrolls_to_zero() {
         let state = sample_state();
         assert_eq!(state.current_file_idx, 0);
-        assert_eq!(state.rail_scroll, 0);
         assert_eq!(state.body_scroll, 0);
     }
 
