@@ -41,7 +41,10 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
     let rail_width = rail_width_for(area.width);
     if rail_width == 0 {
-        render_narrow(frame, area, overlay);
+        // Need a mut borrow for the narrow-tier writeback (pane
+        // geometry + body_keys). Re-borrow via app.diff_overlay
+        // after the immutable peek above.
+        render_narrow(frame, area, app);
         return;
     }
 
@@ -74,6 +77,9 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             o.pane_origin_col = pane_area.x;
             o.pane_width = pane_area.width;
             o.body_keys.clear();
+            o.banner_close_col_range = None;
+            o.narrow_header_row_y = None;
+            o.narrow_arrow_cols = None;
         }
         return;
     }
@@ -84,8 +90,8 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     // instead of a blank pane. Writeback to overlay state keeps
     // the wheel handler in sync with whatever the renderer last
     // saw, and stashes the parallel BodyRowKey list + pane geometry
-    // for the mouse hit-tester.
-    let (body_lines, body_keys) = build_pane_lines(overlay, pane_area);
+    // + banner close-col range for the mouse hit-tester.
+    let (body_lines, body_keys, banner_close_range) = build_pane_lines(overlay, pane_area);
     let max_offset = body_lines.len().saturating_sub(usize::from(pane_area.height));
     let max_offset_u16 = u16::try_from(max_offset).unwrap_or(u16::MAX);
     let body_scroll = if let Some(overlay_mut) = app.diff_overlay.as_mut() {
@@ -95,6 +101,12 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         overlay_mut.pane_origin_row = pane_area.y;
         overlay_mut.pane_origin_col = pane_area.x;
         overlay_mut.pane_width = pane_area.width;
+        overlay_mut.banner_close_col_range = banner_close_range;
+        // Wide tier is mutually exclusive with narrow tier; clear
+        // narrow-tier-only fields so a click on the wide layout
+        // can't hit-test against stale narrow header coords.
+        overlay_mut.narrow_header_row_y = None;
+        overlay_mut.narrow_arrow_cols = None;
         clamped
     } else {
         0
@@ -214,10 +226,11 @@ fn render_footer(frame: &mut Frame, area: Rect, overlay: &DiffOverlayState) {
 fn build_pane_lines(
     overlay: &DiffOverlayState,
     area: Rect,
-) -> (Vec<Line<'static>>, Vec<BodyRowKey>) {
+) -> (Vec<Line<'static>>, Vec<BodyRowKey>, Option<(u16, u16)>) {
     let mut lines: Vec<Line<'static>> = Vec::new();
     let mut keys: Vec<BodyRowKey> = Vec::new();
-    lines.push(pane_banner_row(overlay));
+    let (banner_line, banner_close_range) = pane_banner_row(overlay, area.x, area.width);
+    lines.push(banner_line);
     keys.push(BodyRowKey::Banner);
     lines.push(rule_row(area.width));
     keys.push(BodyRowKey::Rule);
@@ -247,7 +260,7 @@ fn build_pane_lines(
             Style::default().fg(theme::STATUS_ERROR),
         )));
         keys.push(BodyRowKey::EmptyState);
-        return (lines, keys);
+        return (lines, keys, banner_close_range);
     }
     match overlay.current_file() {
         None => {
@@ -310,7 +323,7 @@ fn build_pane_lines(
         }
     }
 
-    (lines, keys)
+    (lines, keys, banner_close_range)
 }
 
 /// Index `comments` by `LineKey` for O(1) chip lookup during row
@@ -434,14 +447,14 @@ fn diff_line_row(line: &DiffLine, gutter_width: usize) -> Line<'static> {
         Some(n) => format!("{n:>gutter_width$}"),
         None => " ".repeat(gutter_width),
     };
-    // `line.text.clone()` is the per-frame cost flagged as Mi3 in
-    // review. Eliminating it requires either (a) a per-file cached
-    // `Vec<Line<'static>>` invalidated on file switch / comment
-    // mutation, or (b) lifetime-borrow lines from `overlay.files`
-    // which fights ratatui's `Paragraph::new(Vec<Line<'static>>)`
-    // signature. The current cost is bounded by file size (typical
-    // hunks are tens of lines, rendered viewports are hundreds);
-    // not worth the cache-invalidation surface for what's already
+    // `line.text.clone()` is a per-frame cost. Eliminating it
+    // requires either (a) a per-file cached `Vec<Line<'static>>`
+    // invalidated on file switch / comment mutation, or (b)
+    // lifetime-borrow lines from `overlay.files` which fights
+    // ratatui's `Paragraph::new(Vec<Line<'static>>)` signature.
+    // The current cost is bounded by file size (typical hunks are
+    // tens of lines, rendered viewports are hundreds); not worth
+    // the cache-invalidation surface for what's already
     // sub-millisecond on real diffs.
     Line::from(vec![
         Span::raw("  "),
@@ -455,18 +468,32 @@ fn diff_line_row(line: &DiffLine, gutter_width: usize) -> Line<'static> {
 
 /// Narrow-tier renderer (terminal width < 120): drops the rail and
 /// renders just the body, with a one-line header carrying the
-/// current file's path + `◀ N/M ▶` cycle controls. Mouse-click on
-/// the controls advances `current_file_idx`; key handlers can also
-/// drive it. Footer keys mirror the wide-tier layout.
-fn render_narrow(frame: &mut Frame, area: Rect, overlay: &DiffOverlayState) {
+/// current file's path + `◀ N/M ▶` cycle controls. Clicks on the
+/// arrows advance / retreat `current_file_idx`; clicks on body
+/// lines open the comment editor as in the wide tier. The mouse
+/// handler at `app::diff_overlay::handle_narrow_arrow_click` reads
+/// the arrow positions stashed during this render.
+///
+/// Takes `&mut App` so the renderer can write the pane geometry
+/// (`pane_origin_*`, `pane_width`) and the parallel `body_keys`
+/// index back to overlay state — without this writeback, the
+/// click hit-tester finds an empty `body_keys` and silently no-ops.
+fn render_narrow(frame: &mut Frame, area: Rect, app: &mut App) {
     if area.height < 3 {
         // Too small even for the narrow header; render a notice and
-        // bail.
+        // bail. Clear body_keys + geometry so a click during this
+        // state can't hit-test against stale wide-tier values.
         frame.render_widget(
             Paragraph::new("Terminal too small — resize and re-open /diff.")
                 .style(Style::default().fg(theme::STATUS_WARNING)),
             area,
         );
+        if let Some(o) = app.diff_overlay.as_mut() {
+            o.body_keys.clear();
+            o.pane_origin_row = area.y;
+            o.pane_origin_col = area.x;
+            o.pane_width = area.width;
+        }
         return;
     }
     let header_rect = Rect { x: area.x, y: area.y, width: area.width, height: 1 };
@@ -474,29 +501,73 @@ fn render_narrow(frame: &mut Frame, area: Rect, overlay: &DiffOverlayState) {
     let body_rect =
         Rect { x: area.x, y: area.y + 2, width: area.width, height: area.height.saturating_sub(3) };
 
-    frame.render_widget(Paragraph::new(narrow_header_row(overlay)), header_rect);
-    frame.render_widget(Paragraph::new(rule_row(area.width)), rule_rect);
+    // Build the header and stash arrow column positions so the
+    // click handler can hit-test them. Done before any other
+    // rendering because the writeback needs the same `&mut App`.
+    let Some(overlay_ref) = app.diff_overlay.as_ref() else { return };
+    let (header_line, arrow_cols) = narrow_header_row(overlay_ref, area.x);
+    // Narrow tier has no wide-style banner ✕, so build_pane_lines'
+    // banner_close_range is unused — the narrow header has its own
+    // close affordance (none in v1; users press Esc).
+    let (mut body_lines, mut body_keys, _) = build_pane_lines(overlay_ref, body_rect);
 
-    let (body_lines, body_keys) = build_pane_lines(overlay, body_rect);
     // Strip the banner + rule + blank rows (the first 3 entries) so
     // the narrow body doesn't re-paint headers the narrow_header
-    // already covered.
-    let mut body_lines = body_lines;
-    let mut body_keys = body_keys;
+    // already covered. Body keys must drop in lockstep. `drain` is
+    // O(1) shift compared to repeated `remove(0)` which is O(n)
+    // per call.
     let skip = body_lines.len().min(3);
-    for _ in 0..skip {
-        body_lines.remove(0);
-        body_keys.remove(0);
+    body_lines.drain(0..skip);
+    body_keys.drain(0..skip);
+
+    // Writeback geometry + body_keys + arrow positions. Body origin
+    // is body_rect (not area) so click rows align with the body
+    // line index after the stripped header. Clear wide-tier-only
+    // `banner_close_col_range` so a click on the narrow layout
+    // can't trigger close against stale wide-tier coords.
+    if let Some(o) = app.diff_overlay.as_mut() {
+        o.body_keys = body_keys;
+        o.pane_origin_row = body_rect.y;
+        o.pane_origin_col = body_rect.x;
+        o.pane_width = body_rect.width;
+        o.narrow_header_row_y = Some(header_rect.y);
+        o.narrow_arrow_cols = arrow_cols;
+        o.banner_close_col_range = None;
     }
+
+    frame.render_widget(Paragraph::new(header_line), header_rect);
+    frame.render_widget(Paragraph::new(rule_row(area.width)), rule_rect);
     frame.render_widget(Paragraph::new(body_lines), body_rect);
-    render_footer(frame, area, overlay);
+    let Some(overlay_after) = app.diff_overlay.as_ref() else { return };
+    render_footer(frame, area, overlay_after);
 }
 
-fn narrow_header_row(overlay: &DiffOverlayState) -> Line<'static> {
+/// Build the narrow-tier header line and return the screen-column
+/// positions of the `◀` and `▶` glyphs so the mouse handler can
+/// hit-test clicks on them. Columns are absolute screen coordinates
+/// (taking `area.x` into account). Returns `None` when no files
+/// exist; the arrows still render but are no-op so positions aren't
+/// exposed.
+fn narrow_header_row(
+    overlay: &DiffOverlayState,
+    origin_col: u16,
+) -> (Line<'static>, Option<(u16, u16)>) {
     let dim = Style::default().fg(theme::DIM);
     let total = overlay.files.len();
     let current = if total == 0 { 0 } else { overlay.current_file_idx + 1 };
     let path = overlay.current_file().map_or_else(|| "(no file)".to_owned(), |f| f.path.clone());
+    // Track running column width so we know where ◀ and ▶ land.
+    let prefix = "  DIFF · ";
+    let prefix_width = u16::try_from(prefix.chars().count()).unwrap_or(u16::MAX);
+    let path_width = u16::try_from(path.chars().count()).unwrap_or(u16::MAX);
+    let gap_width: u16 = 2; // "  " between path and arrows
+    let left_arrow_col = origin_col
+        .saturating_add(prefix_width)
+        .saturating_add(path_width)
+        .saturating_add(gap_width);
+    let counter = format!(" {current}/{total} ");
+    let counter_width = u16::try_from(counter.chars().count()).unwrap_or(u16::MAX);
+    let right_arrow_col = left_arrow_col.saturating_add(1).saturating_add(counter_width);
     let mut spans = vec![
         Span::raw("  "),
         Span::styled("DIFF", Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD)),
@@ -504,7 +575,7 @@ fn narrow_header_row(overlay: &DiffOverlayState) -> Line<'static> {
         Span::styled(path, dim),
         Span::raw("  "),
         Span::styled("◀", Style::default().fg(theme::RUST_ORANGE)),
-        Span::styled(format!(" {current}/{total} "), dim),
+        Span::styled(counter, dim),
         Span::styled("▶", Style::default().fg(theme::RUST_ORANGE)),
     ];
     if let Some(f) = overlay.current_file() {
@@ -519,7 +590,8 @@ fn narrow_header_row(overlay: &DiffOverlayState) -> Line<'static> {
             spans.push(Span::styled(format!("-{removed}"), Style::default().fg(Color::Red)));
         }
     }
-    Line::from(spans)
+    let arrow_cols = if total > 0 { Some((left_arrow_col, right_arrow_col)) } else { None };
+    (Line::from(spans), arrow_cols)
 }
 
 fn banner_row(label: &'static str) -> Line<'static> {
@@ -529,7 +601,21 @@ fn banner_row(label: &'static str) -> Line<'static> {
     ])
 }
 
-fn pane_banner_row(overlay: &DiffOverlayState) -> Line<'static> {
+/// Build the wide-tier pane banner line + return the column range
+/// where the trailing `✕` glyph sits relative to the pane's left
+/// edge. The mouse handler reads this range to gate banner-close
+/// clicks: if the banner clipped past `pane_width` (long path +
+/// totals consumed the budget), returns `None` and the click
+/// handler refuses banner-row clicks rather than treating
+/// arbitrary clipped path text as close intent.
+///
+/// `pane_origin_col` is the absolute screen column where the pane
+/// starts; returned range is in absolute screen coordinates.
+fn pane_banner_row(
+    overlay: &DiffOverlayState,
+    pane_origin_col: u16,
+    pane_width: u16,
+) -> (Line<'static>, Option<(u16, u16)>) {
     let dim = Style::default().fg(theme::DIM);
     let (title, added, removed) = overlay.current_file().map_or_else(
         || ("(no file)".to_owned(), 0u32, 0u32),
@@ -539,7 +625,7 @@ fn pane_banner_row(overlay: &DiffOverlayState) -> Line<'static> {
         Span::raw("  "),
         Span::styled("DIFF", Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD)),
         Span::styled(" · ", dim),
-        Span::styled(title, dim),
+        Span::styled(title.clone(), dim),
     ];
     if added > 0 {
         spans.push(Span::raw("  "));
@@ -549,11 +635,43 @@ fn pane_banner_row(overlay: &DiffOverlayState) -> Line<'static> {
         spans.push(Span::raw(" "));
         spans.push(Span::styled(format!("-{removed}"), Style::default().fg(Color::Red)));
     }
-    // Trailing close glyph — clicking it is the mouse equivalent of
-    // Esc (submit + close on pending comments, plain close otherwise).
+    // Compute where ✕ would land: "  DIFF · <path>" prefix +
+    // "  +N" + " -M" when present. Done before pushing the close
+    // spans so the geometry math doesn't have to walk Span widths.
+    let prefix_chars = 2 + 4 + 3; // "  " + "DIFF" + " · "
+    let path_chars = title.chars().count();
+    let plus_chars = if added > 0 { 2 + 1 + count_digits(added) } else { 0 }; // "  " + "+" + digits
+    let minus_chars = if removed > 0 { 1 + 1 + count_digits(removed) } else { 0 }; // " " + "-" + digits
+    let close_pad_chars = 2; // "  " before ✕
+    let close_glyph_chars = 1; // ✕
+    let consumed_before_close =
+        prefix_chars + path_chars + plus_chars + minus_chars + close_pad_chars;
+    let close_start_col =
+        pane_origin_col.saturating_add(u16::try_from(consumed_before_close).unwrap_or(u16::MAX));
+    let close_end_col =
+        close_start_col.saturating_add(u16::try_from(close_glyph_chars).unwrap_or(1));
+    let pane_end_col = pane_origin_col.saturating_add(pane_width);
+    // Always push the close spans — they may clip but the column
+    // budget check below decides whether the click handler trusts
+    // the glyph position. Keeping the spans means the user sees
+    // the ✕ when the terminal is wide enough.
     spans.push(Span::raw("  "));
     spans.push(Span::styled("✕", Style::default().fg(theme::DIM)));
-    Line::from(spans)
+    let visible_range =
+        if close_end_col <= pane_end_col { Some((close_start_col, close_end_col)) } else { None };
+    (Line::from(spans), visible_range)
+}
+
+fn count_digits(mut n: u32) -> usize {
+    if n == 0 {
+        return 1;
+    }
+    let mut digits = 0;
+    while n > 0 {
+        digits += 1;
+        n /= 10;
+    }
+    digits
 }
 
 fn rule_row(width: u16) -> Line<'static> {
