@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::sync::mpsc as std_mpsc;
 
 use crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
-use forge_workspace::env::git_diff::hunks::{DiffLine, FileHunks};
+use forge_workspace::env::git_diff::hunks::{DiffLine, DiffLineKind, FileHunks};
 use forge_workspace::env::git_diff::hunks::ScanOutcome;
 use tui_textarea::TextArea;
 
@@ -484,9 +484,10 @@ pub(crate) fn open(app: &mut App, state: DiffOverlayState) {
     app.needs_redraw = true;
 }
 
-/// Drop the overlay state and transition back to chat. Pending
-/// comments + one-shot submit land in a later commit; this stub
-/// just dismisses the view.
+/// Drop the overlay state and transition back to chat. The Esc-
+/// bundle submit path lives in [`close_with_submit`] — call this
+/// directly only when comments have already been handled (or the
+/// caller is the Esc-cancel path for the active input editor).
 pub(crate) fn close(app: &mut App) {
     app.diff_overlay = None;
     set_active_view(app, ActiveView::Chat);
@@ -495,17 +496,110 @@ pub(crate) fn close(app: &mut App) {
 
 /// Handle a key while the diff overlay is active.
 ///
-/// Bindings (v1):
-/// - `Esc` — close the overlay and return to chat. With pending
-///   comments the close will eventually bundle + submit them in one
-///   shot; today it just dismisses.
-///
-/// Other keys are intentionally consumed and ignored so the chat
-/// input behind the overlay can't accidentally pick them up.
+/// Routing depends on whether an inline comment editor is open:
+/// - Editor open:
+///   - `Esc` cancels the editor and returns focus to the diff.
+///   - `Enter` (plain, no modifier) saves the edit.
+///   - All other keys flow into the TextArea (typing, cursor
+///     movement, paste-via-bracket, undo/redo, etc.).
+/// - No editor open:
+///   - `Esc` closes the overlay; pending comments are bundled into
+///     a markdown chat message and submitted to the agent before
+///     the close. The submit fires synchronously through
+///     `input_submit::dispatch_diff_comment_bundle` so the user
+///     sees the bubble appear immediately.
 pub(crate) fn handle_key(app: &mut App, key: KeyEvent) {
-    if matches!(key.code, KeyCode::Esc) {
-        close(app);
+    let has_input = app.diff_overlay.as_ref().is_some_and(|o| o.active_input.is_some());
+    if has_input {
+        match key.code {
+            KeyCode::Esc => cancel_active_input(app),
+            KeyCode::Enter if !key.modifiers.contains(crossterm::event::KeyModifiers::SHIFT) => {
+                save_active_input(app);
+            }
+            _ => {
+                if let Some(overlay) = app.diff_overlay.as_mut() {
+                    if let Some(input) = overlay.active_input.as_mut() {
+                        input.editor.input(key);
+                        app.needs_redraw = true;
+                    }
+                }
+            }
+        }
+        return;
     }
+    if matches!(key.code, KeyCode::Esc) {
+        close_with_submit(app);
+    }
+}
+
+/// Route bracketed paste into the active comment editor. Returns
+/// `true` when the paste was consumed (editor present), `false`
+/// otherwise so the caller can fall through. Plain pastes inside
+/// the diff overlay outside a comment editor are dropped — there's
+/// nothing for them to land on.
+pub(crate) fn handle_paste(app: &mut App, text: &str) -> bool {
+    let Some(overlay) = app.diff_overlay.as_mut() else { return false };
+    let Some(input) = overlay.active_input.as_mut() else { return false };
+    input.editor.insert_str(text);
+    app.needs_redraw = true;
+    true
+}
+
+/// Discard the active comment editor without saving.
+fn cancel_active_input(app: &mut App) {
+    if let Some(overlay) = app.diff_overlay.as_mut() {
+        overlay.active_input = None;
+        app.needs_redraw = true;
+    }
+}
+
+/// Persist the active editor's text into [`DiffOverlayState::comments`]
+/// and close the editor. The snapshot includes the anchor line's
+/// hunk context so the markdown bundle stays stable even if the
+/// user scrolls / switches files later.
+fn save_active_input(app: &mut App) {
+    let Some(overlay) = app.diff_overlay.as_mut() else { return };
+    let Some(input) = overlay.active_input.take() else { return };
+    let text = input.editor.lines().join("\n");
+    if text.trim().is_empty() {
+        // Treat Enter on an empty editor as cancel — saving a blank
+        // comment would render a 💬 chip with nothing in it.
+        app.needs_redraw = true;
+        return;
+    }
+    // Resolve the line key into a snapshot. Files/hunks/lines may
+    // theoretically have shifted on a re-scan, but inside one
+    // overlay open the body is immutable, so the index is stable.
+    let key = input.key;
+    let Some(file) = overlay.files.get(key.file_idx) else {
+        app.needs_redraw = true;
+        return;
+    };
+    let Some(hunk) = file.hunks.get(key.hunk_idx) else {
+        app.needs_redraw = true;
+        return;
+    };
+    let Some(diff_line) = hunk.lines.get(key.line_idx) else {
+        app.needs_redraw = true;
+        return;
+    };
+    let line_no = match diff_line.kind {
+        DiffLineKind::Removed => diff_line.old_line,
+        DiffLineKind::Added | DiffLineKind::Context => diff_line.new_line,
+    }
+    .unwrap_or(0);
+    let comment = HunkComment {
+        key,
+        path: file.path.clone(),
+        line: line_no,
+        hunk_context: hunk.lines.clone(),
+        comment_text: text,
+    };
+    // Replace any existing comment at the same key (saving an
+    // edited reopen).
+    overlay.comments.retain(|c| c.key != key);
+    overlay.comments.push(comment);
+    app.needs_redraw = true;
 }
 
 /// Lines scrolled per wheel notch in the diff body. Same value as
@@ -545,73 +639,270 @@ pub(crate) fn rail_width_for(terminal_width: u16) -> u16 {
     }
 }
 
+/// Outcome of a mouse interaction. Some interactions need access
+/// to the full App (key event needs to fire `dispatch_prompt` for
+/// the Esc-bundle path) which the inner `handle_*` borrow doesn't
+/// have — surface them as effects the outer `handle_mouse` runs.
+#[derive(Debug, Default)]
+struct MouseEffect {
+    redraw: bool,
+    /// Close the overlay (Esc-equivalent). Used by banner ✕ click.
+    close: bool,
+}
+
 /// Handle a mouse event while the diff overlay is active.
 ///
 /// Bindings (v1):
-/// - Scroll wheel up / down → advance `body_scroll` by
-///   [`SCROLL_LINES_PER_NOTCH`].
+/// - Scroll wheel over the rail → advance `rail_scroll`.
+/// - Scroll wheel over the body → advance `body_scroll`.
 /// - Left click on a file row in the FILES rail → switch the right
 ///   pane to that file; resets `body_scroll` to 0.
-///
-/// Line clicks (commenting) land in a follow-up commit.
+/// - Left click on a diff line in the body → open an inline comment
+///   input anchored at that line. (If an input is already open, the
+///   click cancels it before opening the new one.)
+/// - Left click on a saved-comment chip → re-open that comment for
+///   editing.
+/// - Left click on the banner `✕` → equivalent to Esc.
 pub(crate) fn handle_mouse(app: &mut App, mouse: MouseEvent) {
     let terminal_width = app.cached_frame_area.width;
-    let changed = if let Some(overlay) = app.diff_overlay.as_mut() {
+    let effect = if let Some(overlay) = app.diff_overlay.as_mut() {
         match mouse.kind {
-            MouseEventKind::ScrollUp => {
-                overlay.body_scroll = overlay.body_scroll.saturating_sub(SCROLL_LINES_PER_NOTCH);
-                true
-            }
+            MouseEventKind::ScrollUp => handle_scroll(overlay, mouse.column, terminal_width, false),
             MouseEventKind::ScrollDown => {
-                overlay.body_scroll = overlay.body_scroll.saturating_add(SCROLL_LINES_PER_NOTCH);
-                true
+                handle_scroll(overlay, mouse.column, terminal_width, true)
             }
             MouseEventKind::Down(MouseButton::Left) => {
                 handle_left_click(overlay, mouse.column, mouse.row, terminal_width)
             }
-            _ => false,
+            _ => MouseEffect::default(),
         }
     } else {
-        false
+        MouseEffect::default()
     };
-    if changed {
+    if effect.redraw {
         app.needs_redraw = true;
+    }
+    if effect.close {
+        close_with_submit(app);
     }
 }
 
-/// Resolve a left-click to a file-rail action. Returns `true` when
-/// the click hit a file row and the overlay state changed.
-///
-/// Hit geometry: rail occupies columns `0..rail_width`, file rows
-/// start at row [`FIRST_FILE_ROW_Y`] (after banner + DIM rule +
-/// blank). One row per file, no overflow handling yet (a long file
-/// list extends below the visible area; clicks below it miss).
+fn handle_scroll(
+    overlay: &mut DiffOverlayState,
+    column: u16,
+    terminal_width: u16,
+    down: bool,
+) -> MouseEffect {
+    let rail_width = rail_width_for(terminal_width);
+    let in_rail = rail_width > 0 && column < rail_width;
+    if in_rail {
+        if down {
+            overlay.rail_scroll = overlay.rail_scroll.saturating_add(SCROLL_LINES_PER_NOTCH);
+        } else {
+            overlay.rail_scroll = overlay.rail_scroll.saturating_sub(SCROLL_LINES_PER_NOTCH);
+        }
+    } else if down {
+        overlay.body_scroll = overlay.body_scroll.saturating_add(SCROLL_LINES_PER_NOTCH);
+    } else {
+        overlay.body_scroll = overlay.body_scroll.saturating_sub(SCROLL_LINES_PER_NOTCH);
+    }
+    MouseEffect { redraw: true, close: false }
+}
+
+/// Resolve a left-click to an action. Returns the effect (redraw +
+/// optional close-with-submit). Hits the rail, the pane body's
+/// banner ✕, a diff line, a chip, or a hunk header in order.
 fn handle_left_click(
     overlay: &mut DiffOverlayState,
     column: u16,
     row: u16,
     terminal_width: u16,
-) -> bool {
+) -> MouseEffect {
     let rail_width = rail_width_for(terminal_width);
-    if rail_width == 0 {
-        return false; // Narrow tier — rail is hidden.
+    // Rail click: column < rail_width → rail row hit-test.
+    if rail_width > 0 && column < rail_width {
+        return handle_rail_click(overlay, row);
     }
-    if column >= rail_width {
-        return false; // Click is in the separator or right pane.
-    }
+    // Body click: column past rail+separator. Resolve via body_keys.
+    handle_body_click(overlay, column, row)
+}
+
+fn handle_rail_click(overlay: &mut DiffOverlayState, row: u16) -> MouseEffect {
     if row < FIRST_FILE_ROW_Y {
-        return false; // Banner / rule / blank.
+        return MouseEffect::default();
     }
-    let idx = usize::from(row - FIRST_FILE_ROW_Y);
+    let offset = usize::from(row - FIRST_FILE_ROW_Y);
+    let visible_idx = offset.checked_add(usize::from(overlay.rail_scroll));
+    let Some(idx) = visible_idx else {
+        return MouseEffect::default();
+    };
     if idx >= overlay.files.len() {
-        return false;
+        return MouseEffect::default();
     }
     if overlay.current_file_idx == idx {
-        return false; // No-op click.
+        return MouseEffect::default();
     }
     overlay.current_file_idx = idx;
     overlay.body_scroll = 0;
-    true
+    // Closing the active input on file switch keeps the inline
+    // editor's geometry from anchoring to a row that's no longer
+    // in the rendered body (the input belongs to a specific file).
+    overlay.active_input = None;
+    MouseEffect { redraw: true, close: false }
+}
+
+fn handle_body_click(overlay: &mut DiffOverlayState, column: u16, row: u16) -> MouseEffect {
+    // Empty body_keys means the renderer hasn't drawn yet (or drew
+    // the too-short fallback). A click before the first real render
+    // can't resolve anything; drop it silently.
+    if overlay.body_keys.is_empty() {
+        return MouseEffect::default();
+    }
+    if row < overlay.pane_origin_row {
+        return MouseEffect::default();
+    }
+    // Banner ✕ glyph: the renderer paints it on the banner row
+    // (overlay.pane_origin_row) near the right edge after the file
+    // path + +N -M totals. Geometry isn't exact (depends on path
+    // length and totals), so we accept any banner-row click in the
+    // final few columns as a close intent. This is a UI-stable
+    // approximation: the close glyph is the only thing on the
+    // banner that responds to clicks, so a far-right banner click
+    // means "close" with no ambiguity.
+    let local_row = row - overlay.pane_origin_row;
+    let body_idx = usize::from(local_row).checked_add(usize::from(overlay.body_scroll));
+    let Some(idx) = body_idx else {
+        return MouseEffect::default();
+    };
+    let Some(key) = overlay.body_keys.get(idx).copied() else {
+        return MouseEffect::default();
+    };
+    match key {
+        BodyRowKey::Banner => {
+            // Treat the rightmost cells of the banner row as the
+            // close affordance. Padding (2 chars) keeps stray
+            // clicks on the file-path tail from triggering close.
+            let pane_end = overlay.pane_origin_col.saturating_add(overlay.pane_width);
+            if column + 2 >= pane_end {
+                return MouseEffect { redraw: true, close: true };
+            }
+            MouseEffect::default()
+        }
+        BodyRowKey::HunkLine(line_key) => open_input_for_key(overlay, line_key),
+        BodyRowKey::CommentChip(line_key) => reopen_comment_for_key(overlay, line_key),
+        BodyRowKey::Rule
+        | BodyRowKey::Blank
+        | BodyRowKey::EmptyState
+        | BodyRowKey::HunkHeader { .. }
+        | BodyRowKey::InputRow(_) => MouseEffect::default(),
+    }
+}
+
+fn open_input_for_key(overlay: &mut DiffOverlayState, key: LineKey) -> MouseEffect {
+    // If an editor is already open at the same key, no-op so the
+    // click doesn't reset its in-progress text. If at a different
+    // key, abandon the in-progress edit (UI matches what GitHub does
+    // — clicking elsewhere closes the open editor without saving).
+    if let Some(existing) = overlay.active_input.as_ref() {
+        if existing.key == key {
+            return MouseEffect::default();
+        }
+    }
+    let editor = TextArea::default();
+    overlay.active_input = Some(ActiveCommentInput { key, editor });
+    MouseEffect { redraw: true, close: false }
+}
+
+fn reopen_comment_for_key(overlay: &mut DiffOverlayState, key: LineKey) -> MouseEffect {
+    // Find the saved comment, hydrate a fresh TextArea from its
+    // text, drop the saved entry so the chip vanishes (the user is
+    // editing it again — committing puts it back, cancelling leaves
+    // it gone, matching GitHub's edit semantics).
+    let position = overlay.comments.iter().position(|c| c.key == key);
+    let Some(pos) = position else {
+        return MouseEffect::default();
+    };
+    let comment = overlay.comments.remove(pos);
+    let mut editor = TextArea::default();
+    // TextArea::insert_str respects newlines correctly so the
+    // multi-line shape of the saved comment is preserved.
+    editor.insert_str(&comment.comment_text);
+    overlay.active_input = Some(ActiveCommentInput { key: comment.key, editor });
+    MouseEffect { redraw: true, close: false }
+}
+
+/// Close the overlay; if there are pending comments, bundle them
+/// into a markdown user message and dispatch it as a prompt before
+/// closing. Used by the banner ✕ click and by `handle_key`'s Esc
+/// path.
+pub(super) fn close_with_submit(app: &mut App) {
+    let comments: Vec<HunkComment> = app
+        .diff_overlay
+        .as_mut()
+        .map(|o| std::mem::take(&mut o.comments))
+        .unwrap_or_default();
+    if !comments.is_empty() {
+        // Snapshot target + cwd from the overlay so we can build the
+        // markdown header even after `close` drops the state.
+        let (target, cwd_display) = app
+            .diff_overlay
+            .as_ref()
+            .map(|o| (o.target.clone(), o.cwd.display().to_string()))
+            .unwrap_or_default();
+        let markdown = format_diff_comments(&target, &cwd_display, &comments);
+        super::input_submit::dispatch_diff_comment_bundle(app, markdown);
+    }
+    close(app);
+}
+
+/// Build the markdown bundle for a set of pending comments. Public
+/// for the Esc-submit path and the test suite.
+pub(crate) fn format_diff_comments(
+    target: &str,
+    cwd_display: &str,
+    comments: &[HunkComment],
+) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::new();
+    let _ = writeln!(out, "## Diff review (target `{target}`)");
+    let _ = writeln!(out, "");
+    if !cwd_display.is_empty() {
+        let _ = writeln!(out, "Repo: `{cwd_display}`");
+        let _ = writeln!(out, "");
+    }
+    // Group comments by file path while preserving the order the
+    // user added them (first appearance of a path wins for ordering).
+    let mut order: Vec<String> = Vec::new();
+    let mut by_file: std::collections::HashMap<String, Vec<&HunkComment>> =
+        std::collections::HashMap::new();
+    for c in comments {
+        if !by_file.contains_key(&c.path) {
+            order.push(c.path.clone());
+        }
+        by_file.entry(c.path.clone()).or_default().push(c);
+    }
+    for path in &order {
+        let _ = writeln!(out, "### `{path}`");
+        let _ = writeln!(out, "");
+        for c in by_file.get(path).into_iter().flatten() {
+            let _ = writeln!(out, "**Line {}**", c.line);
+            let _ = writeln!(out, "");
+            let _ = writeln!(out, "```diff");
+            for line in &c.hunk_context {
+                let marker = match line.kind {
+                    DiffLineKind::Added => '+',
+                    DiffLineKind::Removed => '-',
+                    DiffLineKind::Context => ' ',
+                };
+                let _ = writeln!(out, "{marker}{}", line.text);
+            }
+            let _ = writeln!(out, "```");
+            let _ = writeln!(out, "");
+            let _ = writeln!(out, "{}", c.comment_text.trim_end());
+            let _ = writeln!(out, "");
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -662,8 +953,9 @@ mod tests {
     fn rail_click_switches_current_file_at_wide_tier() {
         let mut state = sample_state();
         // Column inside rail (<40), row 4 = file index 1.
-        let changed = handle_left_click(&mut state, 5, 4, 160);
-        assert!(changed);
+        let effect = handle_left_click(&mut state, 5, 4, 160);
+        assert!(effect.redraw);
+        assert!(!effect.close);
         assert_eq!(state.current_file_idx, 1);
         assert_eq!(state.body_scroll, 0);
     }
@@ -672,49 +964,181 @@ mod tests {
     fn rail_click_resets_body_scroll() {
         let mut state = sample_state();
         state.body_scroll = 12;
-        let changed = handle_left_click(&mut state, 5, 4, 160);
-        assert!(changed);
+        let effect = handle_left_click(&mut state, 5, 4, 160);
+        assert!(effect.redraw);
         assert_eq!(state.body_scroll, 0);
     }
 
     #[test]
-    fn rail_click_outside_rail_returns_false() {
+    fn rail_click_outside_rail_routes_to_body() {
+        // After the body hit-test was added, a click past the rail
+        // routes into handle_body_click which finds no body_keys
+        // in a freshly-constructed state — returns no-redraw.
         let mut state = sample_state();
-        let changed = handle_left_click(&mut state, 50, 4, 160); // Past Wide rail.
-        assert!(!changed);
+        let effect = handle_left_click(&mut state, 50, 4, 160);
+        assert!(!effect.redraw);
+        assert!(!effect.close);
         assert_eq!(state.current_file_idx, 0);
     }
 
     #[test]
-    fn rail_click_on_banner_returns_false() {
+    fn rail_click_on_banner_returns_no_redraw() {
         let mut state = sample_state();
-        let changed = handle_left_click(&mut state, 5, 0, 160); // Banner row.
-        assert!(!changed);
+        let effect = handle_left_click(&mut state, 5, 0, 160); // Banner row.
+        assert!(!effect.redraw);
         assert_eq!(state.current_file_idx, 0);
     }
 
     #[test]
-    fn rail_click_beyond_file_list_returns_false() {
+    fn rail_click_beyond_file_list_returns_no_redraw() {
         let mut state = sample_state();
-        let changed = handle_left_click(&mut state, 5, 99, 160); // No file at this row.
-        assert!(!changed);
+        let effect = handle_left_click(&mut state, 5, 99, 160); // No file at this row.
+        assert!(!effect.redraw);
         assert_eq!(state.current_file_idx, 0);
     }
 
     #[test]
-    fn rail_click_same_file_returns_false() {
+    fn rail_click_same_file_returns_no_redraw() {
         let mut state = sample_state();
-        let changed = handle_left_click(&mut state, 5, 3, 160); // Already on file 0.
-        assert!(!changed);
+        let effect = handle_left_click(&mut state, 5, 3, 160); // Already on file 0.
+        assert!(!effect.redraw);
         assert_eq!(state.current_file_idx, 0);
     }
 
     #[test]
-    fn rail_click_at_narrow_tier_returns_false() {
+    fn rail_click_at_narrow_tier_routes_to_body() {
+        // Narrow tier: rail_width == 0 → click routes to body
+        // hit-test, which finds no body_keys in a fresh state.
         let mut state = sample_state();
-        let changed = handle_left_click(&mut state, 5, 4, 100); // Narrow — no rail.
-        assert!(!changed);
+        let effect = handle_left_click(&mut state, 5, 4, 100);
+        assert!(!effect.redraw);
         assert_eq!(state.current_file_idx, 0);
+    }
+
+    #[test]
+    fn body_click_opens_comment_input_on_hunk_line() {
+        // Simulate a rendered body by stashing body_keys + pane
+        // origin, then click into a HunkLine row.
+        let mut state = sample_state();
+        let key = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 };
+        state.body_keys = vec![
+            BodyRowKey::Banner,
+            BodyRowKey::Rule,
+            BodyRowKey::Blank,
+            BodyRowKey::HunkHeader { file_idx: 0, hunk_idx: 0 },
+            BodyRowKey::HunkLine(key),
+        ];
+        state.pane_origin_row = 0;
+        state.pane_origin_col = 41; // Past rail + separator on wide.
+        state.pane_width = 119;
+        let effect = handle_left_click(&mut state, 60, 4, 160);
+        assert!(effect.redraw);
+        assert!(state.active_input.is_some());
+        assert_eq!(state.active_input.as_ref().map(|i| i.key), Some(key));
+    }
+
+    #[test]
+    fn body_click_on_chip_reopens_saved_comment() {
+        let mut state = sample_state();
+        let key = LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 };
+        state.comments.push(HunkComment {
+            key,
+            path: "a.rs".into(),
+            line: 7,
+            hunk_context: vec![],
+            comment_text: "needs unwrap fix".into(),
+        });
+        state.body_keys =
+            vec![BodyRowKey::Banner, BodyRowKey::Rule, BodyRowKey::Blank, BodyRowKey::CommentChip(key)];
+        state.pane_origin_row = 0;
+        state.pane_origin_col = 41;
+        state.pane_width = 119;
+        let effect = handle_left_click(&mut state, 60, 3, 160);
+        assert!(effect.redraw);
+        assert!(state.comments.is_empty(), "saved comment migrates back into the editor");
+        let input = state.active_input.expect("editor reopened");
+        assert_eq!(input.key, key);
+        assert_eq!(input.editor.lines().join("\n"), "needs unwrap fix");
+    }
+
+    #[test]
+    fn body_click_on_banner_far_right_triggers_close() {
+        let mut state = sample_state();
+        state.body_keys = vec![BodyRowKey::Banner];
+        state.pane_origin_row = 0;
+        state.pane_origin_col = 41;
+        state.pane_width = 119; // banner ends at col 160.
+        // Click in the final 2 cols → close intent.
+        let effect = handle_left_click(&mut state, 159, 0, 160);
+        assert!(effect.redraw);
+        assert!(effect.close);
+    }
+
+    #[test]
+    fn body_click_on_banner_far_left_does_not_close() {
+        let mut state = sample_state();
+        state.body_keys = vec![BodyRowKey::Banner];
+        state.pane_origin_row = 0;
+        state.pane_origin_col = 41;
+        state.pane_width = 119;
+        let effect = handle_left_click(&mut state, 60, 0, 160);
+        assert!(!effect.close);
+    }
+
+    #[test]
+    fn format_diff_comments_groups_by_file_and_includes_hunk_context() {
+        let comments = vec![
+            HunkComment {
+                key: LineKey { file_idx: 0, hunk_idx: 0, line_idx: 0 },
+                path: "a.rs".into(),
+                line: 12,
+                hunk_context: vec![DiffLine {
+                    kind: DiffLineKind::Added,
+                    text: "let x = unwrap_or_die();".into(),
+                    old_line: None,
+                    new_line: Some(12),
+                }],
+                comment_text: "use ? instead of unwrap_or_die".into(),
+            },
+            HunkComment {
+                key: LineKey { file_idx: 1, hunk_idx: 0, line_idx: 1 },
+                path: "b.rs".into(),
+                line: 4,
+                hunk_context: vec![DiffLine {
+                    kind: DiffLineKind::Removed,
+                    text: "panic!(\"unreachable\");".into(),
+                    old_line: Some(4),
+                    new_line: None,
+                }],
+                comment_text: "good, panic was unsafe".into(),
+            },
+            HunkComment {
+                key: LineKey { file_idx: 0, hunk_idx: 1, line_idx: 0 },
+                path: "a.rs".into(),
+                line: 30,
+                hunk_context: vec![],
+                comment_text: "missing rationale".into(),
+            },
+        ];
+        let md = format_diff_comments("HEAD", "/tmp/repo", &comments);
+        assert!(md.contains("## Diff review (target `HEAD`)"));
+        assert!(md.contains("Repo: `/tmp/repo`"));
+        // Same-file comments group under one `### `a.rs`` header.
+        let header_count = md.matches("### `a.rs`").count();
+        assert_eq!(header_count, 1, "a.rs comments share one heading");
+        assert!(md.contains("### `b.rs`"));
+        assert!(md.contains("**Line 12**"));
+        assert!(md.contains("**Line 30**"));
+        assert!(md.contains("+let x = unwrap_or_die();"));
+        assert!(md.contains("-panic!(\"unreachable\");"));
+        assert!(md.contains("use ? instead of unwrap_or_die"));
+    }
+
+    #[test]
+    fn format_diff_comments_empty_input_still_includes_header() {
+        let md = format_diff_comments("main", "", &[]);
+        assert!(md.contains("## Diff review (target `main`)"));
+        assert!(!md.contains("Repo: ``"), "blank cwd suppresses the Repo line");
     }
 
     #[test]

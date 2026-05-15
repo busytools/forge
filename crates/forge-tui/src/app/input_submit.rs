@@ -69,6 +69,23 @@ pub(super) fn submit_input(app: &mut App) {
     dispatch_prompt(app, text);
 }
 
+/// Submit a pre-built diff-review markdown bundle as if the user
+/// typed it into the chat input. Used by the diff overlay's Esc
+/// path (and banner ✕ click) to deliver pending comments to claude
+/// in one shot.
+///
+/// This is a thin wrapper around `dispatch_prompt` — the bundle is
+/// already formatted markdown, so we skip the slash-command try
+/// path and go straight to the agent dispatch. A real chat-input
+/// path would have to handle slash commands; here we know the text
+/// is a review bundle and never a slash command.
+pub(super) fn dispatch_diff_comment_bundle(app: &mut App, text: String) {
+    if text.trim().is_empty() {
+        return;
+    }
+    dispatch_prompt(app, text);
+}
+
 /// True when a turn is currently in flight against claude. Used to
 /// decide whether `dispatch_prompt` should also push the assistant
 /// placeholder + flip the lifecycle to Running (idle path), or just

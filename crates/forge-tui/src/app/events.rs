@@ -188,10 +188,8 @@ fn dispatch_paste_by_view(app: &mut App, text: &str) -> bool {
             false
         }
         ActiveView::Config => super::config::handle_paste(app, text),
-        ActiveView::Trusted
-        | ActiveView::SessionPicker
-        | ActiveView::Launchpad
-        | ActiveView::Diff => false,
+        ActiveView::Diff => super::diff_overlay::handle_paste(app, text),
+        ActiveView::Trusted | ActiveView::SessionPicker | ActiveView::Launchpad => false,
     }
 }
 
