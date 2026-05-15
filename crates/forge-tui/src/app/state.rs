@@ -511,14 +511,7 @@ impl App {
                 | L::LoggedOut => AppStatus::Ready,
             }
         }
-        let prior_active = self.active_session_key.clone();
         if self.active_session_key.as_ref() == Some(&key) {
-            tracing::info!(
-                target: crate::logging::targets::APP_SESSION,
-                event_name = "switch_active_session_noop_target_eq_active",
-                target_key = key.as_str(),
-                "switch_active_session no-op: target equals current active",
-            );
             return;
         }
         if !self.sessions.contains_key(&key) {
@@ -542,19 +535,8 @@ impl App {
             .sessions
             .get(&key)
             .map_or(crate::app::session::SessionLifecycleState::Idle, |s| s.lifecycle_state);
-        let new_status = status_for_lifecycle(incoming_lifecycle);
-        tracing::info!(
-            target: crate::logging::targets::APP_SESSION,
-            event_name = "switch_active_session_applied",
-            target_key = key.as_str(),
-            prior_active = ?prior_active.as_ref().map(forge_workspace::SessionKey::as_str),
-            incoming_lifecycle = ?incoming_lifecycle,
-            new_status = ?new_status,
-            bucket_has_session_id = self.sessions.get(&key).is_some_and(|s| s.session_id.is_some()),
-            "switch_active_session applied",
-        );
         self.active_session_key = Some(key);
-        self.status = new_status;
+        self.status = status_for_lifecycle(incoming_lifecycle);
         // Update terminal/tab title immediately on switch so the host
         // terminal reflects the project the user just selected. The
         // render-loop's tab-title call (in `app::run`) only fires
