@@ -354,7 +354,7 @@ fn walk_user_tool_results(app: &mut App, content: &[forge_primitives::ContentBlo
 /// This is invoked twice — once for the user-content walker (live
 /// mid-turn / replay), once for the assistant-content walker (edge
 /// case).
-fn extract_queued_command_text(prompt: &Value) -> String {
+pub(super) fn extract_queued_command_text(prompt: &Value) -> String {
     if let Some(s) = prompt.as_str() {
         return s.to_owned();
     }
@@ -395,7 +395,7 @@ fn extract_queued_command_text(prompt: &Value) -> String {
 /// Action: push a regular user bubble. (Live mid-turn submits
 /// already pushed their own bubble at submit time — see
 /// `input_submit::dispatch_prompt` — and never reach this code.)
-fn handle_queued_command_echo(app: &mut App, prompt_text: &str) {
+pub(super) fn handle_queued_command_echo(app: &mut App, prompt_text: &str) {
     use crate::app::{ChatMessage, MessageBlock, MessageRole, TextBlock};
     // Harness-injected `<task-notification>` blobs (background-task
     // completion events) get queued through the same path as
