@@ -4,21 +4,34 @@
 //! every spawn; the chosen `AccountKey` becomes the spawned Agent's
 //! `CLAUDE_CONFIG_DIR` override.
 //!
-//! **Policy — tiered, rate-limit aware:**
+//! **Policy — tiered, rate-limit + probe-failure aware:**
 //!
-//! 1. **Unknown-usage accounts** (no snapshot yet) sort first, in
-//!    forge.toml definition order. Picking them warms the cache.
-//! 2. **Available accounts** (5h util < 100% AND 7d util < 100%)
-//!    sort next. Within this tier:
+//! 1. **Unknown-fresh** (no usage snapshot AND no probe failure
+//!    recorded). Sorted first in forge.toml definition order so a
+//!    just-launched forge warms unprobed accounts before falling
+//!    back to budget-based selection.
+//! 2. **Available** (5h util < 100% AND 7d util < 100%). Within
+//!    this tier:
 //!    - Lowest 5h utilisation wins (most immediate headroom).
 //!    - Tie-break on lowest 7d utilisation.
 //!    - Final tie-break on forge.toml definition order.
-//! 3. **Rate-limited accounts** (either 5h or 7d at 100%) sort last.
-//!    Definition order within this tier — picker still returns
-//!    something so the spawn doesn't fail, but the spawned session
-//!    will trip the rate limit immediately and surface that to the
-//!    user. If the user's pin contains any non-rate-limited account
-//!    it will always be preferred over this tier.
+//! 3. **Rate-limited with data** (5h or 7d at 100%). Definition
+//!    order within the tier.
+//! 4. **Probe rate-limited** (`/api/oauth/usage` returned 429).
+//!    Account state is opaque — almost certainly hot. Demoted
+//!    below known-rate-limited because we'd rather pick the
+//!    devil-we-know.
+//! 5. **Probe failed transiently** (network / unknown HTTP).
+//!    Demoted below probe-rate-limited but above expired creds.
+//! 6. **Credentials broken** (Expired / Unauthorized). The
+//!    account literally cannot serve a request — last-resort
+//!    only, so the spawn at least returns something rather than
+//!    blocking on an empty pool.
+//!
+//! Without the probe-failure consideration (originally tier 0
+//! collapsed ALL `usage = None` accounts) a perpetually-failing
+//! probe pinned that account at top-of-sort forever and the
+//! picker kept choosing the most-broken account in the pool.
 //!
 //! No LRU, no round-robin, no fallback outside the project's pin.
 //! Rate-limited accounts are visible in the panel bars so the user
@@ -163,24 +176,32 @@ impl AccountStateMap {
     /// out of an unreachable `panic!` form.
     pub fn pick_for_project(&self, allowed: &[String]) -> (AccountKey, PathBuf) {
         debug_assert!(!allowed.is_empty(), "pick_for_project requires a non-empty allow list");
-        let mut candidates: Vec<(usize, &AccountKey, Option<&UsageSnapshot>)> = allowed
+        // Carry (def_order_idx, key, usage, last_error) per
+        // candidate so the tier sort can see probe failures (not
+        // just usage data). Without the last_error consult, an
+        // account whose probe perpetually 429s or has expired
+        // OAuth credentials stays at tier 0 (Unknown) forever and
+        // dominates the sort over accounts with healthy probes.
+        let mut candidates: Vec<(
+            usize,
+            &AccountKey,
+            Option<&UsageSnapshot>,
+            Option<UsageFetchStatus>,
+        )> = allowed
             .iter()
             .enumerate()
             .filter_map(|(idx, name)| {
-                // `find` rather than constructing an AccountKey then
-                // looking up by reference — the keys vector is short
-                // (one entry per [[accounts]]) so linear scan is fine
-                // AND we get back a reference into `ordered_keys` for
-                // stable lifetime.
                 self.ordered_keys.iter().find(|k| k.0 == *name).map(|k| {
-                    let usage = self.by_key.get(k).and_then(|s| s.usage.as_ref());
-                    (idx, k, usage)
+                    let state = self.by_key.get(k);
+                    let usage = state.and_then(|s| s.usage.as_ref());
+                    let last_error = state.and_then(|s| s.last_error);
+                    (idx, k, usage, last_error)
                 })
             })
             .collect();
         candidates.sort_by(|a, b| {
-            let tier_a = tier_of(a.2);
-            let tier_b = tier_of(b.2);
+            let tier_a = tier_of(a.2, a.3);
+            let tier_b = tier_of(b.2, b.3);
             tier_a.cmp(&tier_b).then_with(|| {
                 // Within the same tier: known-vs-known sorts by 5h
                 // util ascending then 7d util ascending then
@@ -201,6 +222,22 @@ impl AccountStateMap {
                 }
             })
         });
+        // Diagnostic log — one line per pick decision listing the
+        // tier and probe state of every candidate so a future
+        // "why was account X picked?" triage can correlate from
+        // logs without re-running with extra instrumentation.
+        let decision_summary: Vec<String> = candidates
+            .iter()
+            .map(|(_, k, u, e)| {
+                let tier = tier_of(*u, *e);
+                let usage_state = match u {
+                    None => "no-snapshot".to_owned(),
+                    Some(s) => format!("5h={:.0}%/7d={:.0}%", five_hour_util(s), seven_day_util(s)),
+                };
+                let err_state = e.map_or("none".to_owned(), |e| format!("{e:?}"));
+                format!("{}=tier{}({usage_state},err={err_state})", k.0, tier)
+            })
+            .collect();
         // Invariant: candidates is non-empty because allowed is
         // non-empty and config-load validated every name exists.
         // Fallback path is structurally unreachable but never
@@ -213,22 +250,55 @@ impl AccountStateMap {
                 );
                 self.ordered_keys.first().cloned().unwrap_or(AccountKey(String::new()))
             },
-            |(_, k, _)| (*k).clone(),
+            |(_, k, _, _)| (*k).clone(),
+        );
+        tracing::debug!(
+            target: "forge_workspace::account",
+            event_name = "account_picked",
+            message = "account picker decision",
+            outcome = "picked",
+            picked = %picked.0,
+            allowed = ?allowed,
+            candidates = ?decision_summary,
         );
         let dir = self.by_key.get(&picked).map_or_else(PathBuf::new, |s| s.config_dir.clone());
         (picked, dir)
     }
 }
 
-/// Tier classification driving the sort: 0 = unknown (warm cache),
-/// 1 = available (under both windows), 2 = rate-limited (hit at
-/// least one limit). Sorted ascending so unknown sorts before
-/// available sorts before rate-limited.
-fn tier_of(usage: Option<&UsageSnapshot>) -> u8 {
-    match usage {
-        None => 0,
-        Some(snapshot) if is_rate_limited(snapshot) => 2,
-        Some(_) => 1,
+/// Tier classification driving the sort. Lower = preferred.
+///
+/// - **0** Unknown-fresh: no usage snapshot yet AND no probe error
+///   recorded — picking warms the cache.
+/// - **1** Available: usage known, under 100% on both windows.
+/// - **2** Rate-limited (data-known): usage poll succeeded, account
+///   has hit 100% on at least one window.
+/// - **3** Probe rate-limited: the `/api/oauth/usage` endpoint
+///   itself returned 429. We can't see the usage, but a persistent
+///   probe-429 is a strong signal the account is hot — don't prefer
+///   it over accounts with healthy probes.
+/// - **4** Probe failed transiently (network / unknown HTTP): treat
+///   as unknown-fresh equivalent BUT demoted below available so a
+///   healthy-but-unprobed-account doesn't outrank a known-available
+///   one.
+/// - **5** Credentials broken (expired / unauthorized): the account
+///   literally cannot serve a request without re-login. Last-resort
+///   only.
+///
+/// Without the last_error consultation, accounts whose probe
+/// perpetually fails sit at tier 0 forever and dominate the sort —
+/// the picker keeps choosing them despite having no idea if they're
+/// actually usable.
+fn tier_of(usage: Option<&UsageSnapshot>, last_error: Option<UsageFetchStatus>) -> u8 {
+    match (usage, last_error) {
+        (Some(snapshot), _) if is_rate_limited(snapshot) => 2,
+        (Some(_), _) => 1,
+        // No usage yet — distinguish "still warming" from "probe
+        // failed". The error variant determines how badly we demote.
+        (None, None) => 0,
+        (None, Some(UsageFetchStatus::RateLimited)) => 3,
+        (None, Some(UsageFetchStatus::NetworkFailed | UsageFetchStatus::Other)) => 4,
+        (None, Some(UsageFetchStatus::Expired | UsageFetchStatus::Unauthorized)) => 5,
     }
 }
 
@@ -424,6 +494,61 @@ mod tests {
         map.set_usage(&AccountKey("Granite".to_owned()), snapshot(Some(50.0), Some(50.0)));
         let (picked, _) = map.pick_for_project(&["Subspace".to_owned(), "Granite".to_owned()]);
         assert_eq!(picked.0, "Subspace");
+    }
+
+    #[test]
+    fn known_available_account_beats_probe_failed_account() {
+        // The bug this fixes: Granite has a fresh successful probe
+        // (tier 1 available, 30% used), Personal's probe keeps
+        // returning 429 (last_error = RateLimited, usage still None).
+        // Previously Personal stayed in tier 0 (Unknown) and won the
+        // sort. With the fix, Personal lands in tier 3 (Probe rate-
+        // limited) and Granite wins.
+        let mut map = AccountStateMap::new(&[make_account("Granite"), make_account("Personal")]);
+        map.set_usage(&AccountKey("Granite".to_owned()), snapshot(Some(30.0), Some(30.0)));
+        map.set_last_error(&AccountKey("Personal".to_owned()), UsageFetchStatus::RateLimited);
+        let (picked, _) = map.pick_for_project(&["Granite".to_owned(), "Personal".to_owned()]);
+        assert_eq!(picked.0, "Granite", "available account must beat probe-rate-limited one");
+    }
+
+    #[test]
+    fn expired_credentials_demote_to_last_resort() {
+        // Granite1 has expired OAuth (literally can't serve a
+        // request); Personal has working probe but is fully rate-
+        // limited (tier 2). Personal still wins because tier 2
+        // ranks above tier 5 (Expired).
+        let mut map = AccountStateMap::new(&[make_account("Granite1"), make_account("Personal")]);
+        map.set_last_error(&AccountKey("Granite1".to_owned()), UsageFetchStatus::Expired);
+        map.set_usage(&AccountKey("Personal".to_owned()), snapshot(Some(100.0), Some(100.0)));
+        let (picked, _) = map.pick_for_project(&["Granite1".to_owned(), "Personal".to_owned()]);
+        assert_eq!(picked.0, "Personal", "rate-limited-but-callable beats expired-can't-serve");
+    }
+
+    #[test]
+    fn fresh_unknown_still_wins_over_known_available() {
+        // True cold-cache case: no last_error, no usage. Granite
+        // has no probe attempt yet → tier 0 → preferred over
+        // Personal which has known-available usage (tier 1).
+        // Confirms the original "warm the cache" behaviour survives
+        // for accounts that haven't been polled yet.
+        let mut map = AccountStateMap::new(&[make_account("Granite"), make_account("Personal")]);
+        map.set_usage(&AccountKey("Personal".to_owned()), snapshot(Some(30.0), Some(30.0)));
+        // Granite has no usage AND no last_error → tier 0.
+        let (picked, _) = map.pick_for_project(&["Granite".to_owned(), "Personal".to_owned()]);
+        assert_eq!(picked.0, "Granite");
+    }
+
+    #[test]
+    fn network_failure_demotes_below_available() {
+        // Granite probe failed with a network error (tier 4); Personal
+        // has a healthy probe at moderate utilisation (tier 1).
+        // Personal wins — we'd rather pick an account whose state
+        // we know than one whose state we don't.
+        let mut map = AccountStateMap::new(&[make_account("Granite"), make_account("Personal")]);
+        map.set_last_error(&AccountKey("Granite".to_owned()), UsageFetchStatus::NetworkFailed);
+        map.set_usage(&AccountKey("Personal".to_owned()), snapshot(Some(50.0), Some(50.0)));
+        let (picked, _) = map.pick_for_project(&["Granite".to_owned(), "Personal".to_owned()]);
+        assert_eq!(picked.0, "Personal");
     }
 
     #[test]
