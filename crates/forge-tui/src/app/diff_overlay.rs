@@ -13,11 +13,48 @@ use std::sync::Arc;
 use std::sync::mpsc as std_mpsc;
 
 use crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
-use forge_workspace::env::git_diff::hunks::FileHunks;
+use forge_workspace::env::git_diff::hunks::{DiffLine, FileHunks};
 use forge_workspace::env::git_diff::hunks::ScanOutcome;
+use tui_textarea::TextArea;
 
 use super::App;
 use super::view::{ActiveView, set_active_view};
+
+/// Identifies a single rendered diff line — `(file_idx, hunk_idx,
+/// line_idx_in_hunk)`. Comments attach to a `LineKey`; the body
+/// hit-test resolves a mouse y-coordinate to a key by walking the
+/// rendered body line list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct LineKey {
+    pub file_idx: usize,
+    pub hunk_idx: usize,
+    pub line_idx: usize,
+}
+
+/// A saved per-line comment. `path` / `line` / `hunk_context` are
+/// snapshotted at submit time so the markdown bundle stays stable
+/// even if the user scrolls or switches files before pressing Esc.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HunkComment {
+    pub key: LineKey,
+    pub path: String,
+    /// Line number from the relevant side of the diff (new-file
+    /// line for context / added, old-file line for removed).
+    pub line: u32,
+    /// Full hunk the comment is anchored on — included verbatim in
+    /// the markdown bundle so the agent sees the local context.
+    pub hunk_context: Vec<DiffLine>,
+    pub comment_text: String,
+}
+
+/// Currently-active comment input. Mounts inline below the clicked
+/// line. The editor is `tui_textarea::TextArea` so paste / cursor /
+/// multi-line work without re-implementing input plumbing.
+#[derive(Debug, Clone)]
+pub struct ActiveCommentInput {
+    pub key: LineKey,
+    pub editor: TextArea<'static>,
+}
 
 /// Event shuttled from the spawned scan task back to the main loop.
 /// `cwd` and `target` are echoed back so the receiver can drop
@@ -318,11 +355,20 @@ pub struct DiffOverlayState {
     /// the right pane. Bounds-checked by [`Self::current_file`].
     pub current_file_idx: usize,
     /// Scroll offset (in lines) for the right pane's diff body.
-    /// Resets to 0 when the user switches files. The FILES rail
-    /// doesn't scroll yet — long file lists clip at the bottom of
-    /// the rail; rail scrolling will be wired alongside body
-    /// scrolling for the FILES side in a follow-up.
+    /// Resets to 0 when the user switches files.
     pub body_scroll: u16,
+    /// Scroll offset (in lines) for the left FILES rail. Wheel
+    /// events with the cursor over the rail advance this; the
+    /// renderer clamps it against `max(0, file_count - visible)`.
+    pub rail_scroll: u16,
+    /// Saved comments, indexed by the order the user submitted
+    /// them. Bundle-on-Esc walks this list to produce the markdown
+    /// chat message.
+    pub comments: Vec<HunkComment>,
+    /// Active comment editor mounted inline below the clicked line,
+    /// or `None` when nothing's being edited. Keys flow to this
+    /// editor while it's open; Enter saves, Esc cancels.
+    pub active_input: Option<ActiveCommentInput>,
 }
 
 impl DiffOverlayState {
@@ -343,6 +389,9 @@ impl DiffOverlayState {
             untracked_suppressed: 0,
             current_file_idx: 0,
             body_scroll: 0,
+            rail_scroll: 0,
+            comments: Vec::new(),
+            active_input: None,
         }
     }
 
@@ -358,6 +407,9 @@ impl DiffOverlayState {
             untracked_suppressed: event.untracked_suppressed,
             current_file_idx: 0,
             body_scroll: 0,
+            rail_scroll: 0,
+            comments: Vec::new(),
+            active_input: None,
         }
     }
 
