@@ -1110,6 +1110,32 @@ impl Workspace {
         forge_agent::env::git_diff::scan(cwd, prev).await
     }
 
+    /// Scan the project at `cwd` and return per-file hunks for the
+    /// `/diff` overlay. Delegates to
+    /// [`forge_agent::env::git_diff::hunks::scan`] — same workspace-
+    /// as-facade pattern as [`Self::scan_git_diff`] so the TUI never
+    /// depends on `forge-agent` directly.
+    ///
+    /// `target` is passed verbatim to `git diff` as a two-dot
+    /// target: `"HEAD"` for working-tree-vs-HEAD (uncommitted
+    /// changes), `"main"` for everything since `main` (committed +
+    /// uncommitted), any other ref / SHA for that comparison.
+    /// Untracked files round-trip only when `target == "HEAD"`.
+    ///
+    /// Infallible: scanner failures collapse to an empty `Vec` with
+    /// structured WARN logs. Callers should render a "no changes"
+    /// empty state when the return is empty.
+    ///
+    /// Single-shot — no polling, no caching. Each call runs a fresh
+    /// scan against the working tree at the moment of invocation.
+    pub async fn scan_git_diff_hunks(
+        &self,
+        cwd: &std::path::Path,
+        target: &str,
+    ) -> Vec<forge_agent::env::git_diff::hunks::FileHunks> {
+        forge_agent::env::git_diff::hunks::scan(cwd, target).await
+    }
+
     /// Probe the local `claude --version` and the latest published
     /// version on npm in parallel, returning both via
     /// [`forge_agent::env::cli_version::CliVersionInfo`]. Used by
