@@ -336,8 +336,11 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) {
     }
 }
 
-/// Lines scrolled per wheel notch in the diff body. Matches the
-/// Inspector pane's `MOUSE_SCROLL_LINES` for consistency.
+/// Lines scrolled per wheel notch in the diff body. Same value as
+/// `crate::app::events::mouse::MOUSE_SCROLL_LINES` (which is
+/// `usize` because it feeds `Viewport::scroll_up/down`) — kept as
+/// `u16` here because `body_scroll` is `u16` for ratatui's
+/// `Paragraph::scroll`.
 const SCROLL_LINES_PER_NOTCH: u16 = 3;
 
 /// Wide-tier FILES rail width. Shared with the renderer.
