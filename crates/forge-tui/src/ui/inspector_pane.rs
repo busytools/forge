@@ -178,6 +178,7 @@ fn render_scrollable_body(frame: &mut Frame, body_area: Rect, app: &mut App) {
 
     let mut body_lines: Vec<Line<'static>> = Vec::new();
     append_body(&mut body_lines, app, body_area.width);
+    let has_open_diff_glyph = snapshot_has_diff(app);
     let total = body_lines.len();
     let visible = usize::from(body_area.height);
     let max_offset = total.saturating_sub(visible);
@@ -193,6 +194,25 @@ fn render_scrollable_body(frame: &mut Frame, body_area: Rect, app: &mut App) {
     };
 
     frame.render_widget(Paragraph::new(body_lines).scroll((offset, 0)), body_area);
+
+    // Stamp the 🦉 open-review hit target — GIT header is body
+    // line 0, so the glyph is visible exactly when `offset == 0`.
+    // The 🦉 owl is 2 cells wide and sits with 2 cells of trailing
+    // pad before the right edge (matches `append_git_section`'s
+    // layout). Hit-test covers both glyph cells + 1 cell left/right
+    // for forgiveness.
+    if has_open_diff_glyph && offset == 0 {
+        let right_edge = body_area.x.saturating_add(body_area.width);
+        let glyph_x = right_edge.saturating_sub(4);
+        let x_start = glyph_x.saturating_sub(1);
+        let x_end = glyph_x.saturating_add(3);
+        app.pane_hit_targets.push(PaneHitTarget::InspectorGitOpenDiff {
+            y: body_area.y,
+            height: 1,
+            x_start,
+            x_end,
+        });
+    }
 
     // Scrollbar — thumb-only, no rail, painted as a block cell in
     // `ROLE_ASSISTANT` colour. Animated when work is in flight so
@@ -367,11 +387,26 @@ fn push_section_rule(lines: &mut Vec<Line<'static>>, width: u16) {
 /// row.
 fn append_git_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
     // Section header — DIM bold, flush against the rule above
-    // (mirrors `TASKS`).
-    lines.push(Line::from(Span::styled(
+    // (mirrors `TASKS`). When the snapshot has a diff to surface
+    // (Worktree / BranchVsDefault), append the `🦉` glyph at the
+    // right edge as the open-diff affordance.
+    let has_glyph = snapshot_has_diff(app);
+    let mut header_spans = vec![Span::styled(
         " GIT".to_owned(),
         Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD),
-    )));
+    )];
+    if has_glyph {
+        // " GIT" is 4 cells; the 🦉 owl is 2 cells wide; trailing
+        // 2-cell pad keeps the affordance 2 columns clear of the
+        // pane's right edge (matches the diff overlay banner's ✕
+        // breathing room). Total reserved on the right: 4 cells
+        // (glyph + trailing pad).
+        let pad = usize::from(width).saturating_sub(4 + 4);
+        header_spans.push(Span::raw(" ".repeat(pad)));
+        header_spans.push(Span::styled("\u{1F989}".to_owned(), Style::default()));
+        header_spans.push(Span::raw("  "));
+    }
+    lines.push(Line::from(header_spans));
     // Blank between header and content.
     lines.push(Line::default());
 
@@ -388,7 +423,22 @@ fn append_git_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
         // Pre-first-scan window: only the path is known.
         return;
     };
-
+    if !snapshot.scanner_ok {
+        // Scanner crashed (rev-parse Failed / Oversize) and the
+        // view collapsed to NoRepo as a failsafe. Without this row
+        // the section renders identically to a real non-repo
+        // directory — the user has no visual cue that git itself
+        // is unhealthy. The `🦉` glyph still routes through the
+        // ScannerFailed path so a click surfaces the trace target.
+        lines.push(Line::from(vec![
+            Span::raw("  "),
+            Span::styled(
+                "git scanner unhealthy — see logs (target: agent.env_git)",
+                Style::default().fg(theme::STATUS_WARNING),
+            ),
+        ]));
+        return;
+    }
     // Pull the diff display info out of the snapshot. `None` for
     // `CleanDefault` / `NoRepo` — no subtitle, no totals, no files.
     let diff = build_diff_display(snapshot);
@@ -448,6 +498,25 @@ fn append_git_section(lines: &mut Vec<Line<'static>>, app: &App, width: u16) {
             ),
         ]));
     }
+}
+
+/// Whether the active session's snapshot warrants the `🦉` open-diff
+/// glyph in the GIT header. Two cases qualify:
+/// - `Worktree` / `BranchVsDefault` — the normal "there's a diff to
+///   review" path.
+/// - `scanner_ok == false` — the Inspector scanner crashed and the
+///   view collapsed to NoRepo as a failsafe. The user needs a way
+///   to escalate; clicking the glyph routes through
+///   `open_default → DefaultTarget::ScannerFailed`, surfacing the
+///   trace-target hint they need to triage.
+fn snapshot_has_diff(app: &App) -> bool {
+    let Some(snapshot) = app.active_session().and_then(|s| s.git_diff_snapshot.as_ref()) else {
+        return false;
+    };
+    if !snapshot.scanner_ok {
+        return true;
+    }
+    matches!(snapshot.view, GitDiffView::Worktree { .. } | GitDiffView::BranchVsDefault { .. })
 }
 
 /// Resolve the branch row's `(label, color)` for the snapshot.
@@ -578,7 +647,13 @@ fn count_digits(mut n: u64) -> usize {
 /// every other stats column in the section.
 fn diff_subtitle_line(width: u16, label: &str, totals: (u32, u32)) -> Line<'static> {
     let (added, removed) = totals;
-    let indent_chrome = usize::from(PANE_PAD) + 2; // "    " (4 cols)
+    // Indent is `"    "` painted below at the start of the line —
+    // 4 cells: PANE_PAD (1) + glyph (1) + 2-cell content gap. Keep
+    // this in sync with the literal indent on the Span::raw row
+    // below; an off-by-one here makes the line render 1 cell too
+    // wide, which clips the trailing-pad space and the `-M` ends up
+    // touching the right edge of the pane.
+    let indent_chrome = usize::from(PANE_PAD) + 3;
     let added_str = format!("+{added}");
     let removed_str = format!("-{removed}");
     let stats_width = added_str.chars().count() + 1 + removed_str.chars().count();
@@ -1484,6 +1559,7 @@ mod tests {
             view,
             pr: None,
             closes: Vec::new(),
+            scanner_ok: true,
         }
     }
 

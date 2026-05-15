@@ -24,6 +24,8 @@ use serde::Deserialize;
 use tokio::process::Command;
 use tokio::time::timeout;
 
+pub mod hunks;
+
 /// Max bytes accepted from `git diff --numstat`. A 1 MiB output is
 /// already deep in pathological territory (~10k+ files); past that
 /// we bail rather than allocate.
@@ -65,6 +67,13 @@ pub struct GitDiffSnapshot {
     /// `closingIssuesReferences`). Empty when there's no PR or the
     /// PR doesn't reference any issues. Cached alongside `pr`.
     pub closes: Vec<GitIssueRef>,
+    /// `false` when the underlying scan hit a subprocess failure
+    /// (Failed / Oversize / timeout) and the snapshot collapsed to
+    /// `view = NoRepo` as the failsafe. Lets consumers distinguish
+    /// "cwd isn't a git repo" (legitimate `NoRepo`) from "git
+    /// crashed mid-scan" (failsafe `NoRepo`) — the user-facing
+    /// message they need to surface differs sharply.
+    pub scanner_ok: bool,
 }
 
 /// What flavour of diff the snapshot represents.
@@ -117,13 +126,32 @@ pub struct GitDiffFile {
 pub async fn scan(cwd: &Path, prev: Option<&GitDiffSnapshot>) -> GitDiffSnapshot {
     let raw_branch = match run_git(cwd, &["rev-parse", "--abbrev-ref", "HEAD"]).await {
         GitOutput::Ok(s) => s.trim().to_owned(),
-        GitOutput::Empty | GitOutput::Failed | GitOutput::Oversize => {
+        GitOutput::Empty => {
+            // Empty output from rev-parse means "cwd genuinely
+            // isn't a git repo" — scanner_ok=true since git itself
+            // ran fine and reported the state correctly.
             return GitDiffSnapshot {
                 branch: GitBranch::NoRepo,
                 default_branch: None,
                 view: GitDiffView::NoRepo,
                 pr: None,
                 closes: Vec::new(),
+                scanner_ok: true,
+            };
+        }
+        GitOutput::Failed | GitOutput::Oversize => {
+            // Subprocess crash, timeout, or unreadable output.
+            // View still collapses to NoRepo as the failsafe so
+            // existing render paths don't crash, but scanner_ok=false
+            // tells consumers to surface "scan failed" rather than
+            // "not a git repository."
+            return GitDiffSnapshot {
+                branch: GitBranch::NoRepo,
+                default_branch: None,
+                view: GitDiffView::NoRepo,
+                pr: None,
+                closes: Vec::new(),
+                scanner_ok: false,
             };
         }
     };
@@ -191,7 +219,13 @@ pub async fn scan(cwd: &Path, prev: Option<&GitDiffSnapshot>) -> GitDiffSnapshot
         _ => (None, Vec::new()),
     };
 
-    GitDiffSnapshot { branch, default_branch, view, pr, closes }
+    // scanner_ok=true here — we've passed the rev-parse gate and
+    // every downstream subprocess (default-branch resolution,
+    // numstat, gh pr) is best-effort; failures collapse to safe
+    // defaults but don't poison the overall snapshot. The
+    // scanner_ok=false case is only the rev-parse-failed return at
+    // the top of this function.
+    GitDiffSnapshot { branch, default_branch, view, pr, closes, scanner_ok: true }
 }
 
 /// Per-scan aggregate the renderer needs. `files` is the top-N
@@ -401,7 +435,7 @@ struct GhIssueEntry {
 /// operator might need; `Empty` is a legitimate "ran fine, no
 /// output" signal (the common case for `status --porcelain` on a
 /// clean tree).
-enum GitOutput {
+pub(super) enum GitOutput {
     Ok(String),
     /// Exit 0, empty stdout (legitimate "no output to report" case).
     Empty,
@@ -422,7 +456,7 @@ const STDERR_LOG_CAP: usize = 1024;
 /// timeout, return classified output. Non-zero exits log WARN with
 /// the captured stderr so operators can distinguish "clean tree"
 /// from "corrupt index / permissions / fatal: …" without re-running.
-async fn run_git(cwd: &Path, args: &[&str]) -> GitOutput {
+pub(super) async fn run_git(cwd: &Path, args: &[&str]) -> GitOutput {
     let mut command = Command::new("git");
     command.arg("-C").arg(cwd).args(args).kill_on_drop(true);
     let fut = command.output();
@@ -867,6 +901,7 @@ mod tests {
             view: GitDiffView::CleanDefault,
             pr: Some(pr.clone()),
             closes: closes.clone(),
+            scanner_ok: true,
         };
 
         let (got_pr, got_closes) = pr_for_branch(dir.path(), "feat/x", Some(&prev)).await;
@@ -887,6 +922,7 @@ mod tests {
             view: GitDiffView::CleanDefault,
             pr: Some(GitPrInfo { number: 42, url: "https://example/pull/42".into() }),
             closes: Vec::new(),
+            scanner_ok: true,
         };
 
         let (got_pr, got_closes) = pr_for_branch(dir.path(), "feat/y", Some(&prev)).await;
@@ -907,6 +943,7 @@ mod tests {
             view: GitDiffView::CleanDefault,
             pr: Some(GitPrInfo { number: 42, url: "url".into() }),
             closes: Vec::new(),
+            scanner_ok: true,
         };
 
         let (got_pr, _got_closes) = pr_for_branch(dir.path(), "feat/x", Some(&prev)).await;
@@ -941,6 +978,7 @@ mod tests {
             view: GitDiffView::CleanDefault,
             pr: Some(synthetic_pr.clone()),
             closes: synthetic_closes.clone(),
+            scanner_ok: true,
         };
 
         let snap = scan(dir.path(), Some(&prev)).await;
@@ -965,6 +1003,7 @@ mod tests {
             view: GitDiffView::CleanDefault,
             pr: Some(GitPrInfo { number: 1, url: "url".into() }),
             closes: Vec::new(),
+            scanner_ok: true,
         };
         // Even with a cache-hit-shaped prev, the default-branch gate
         // wins and the PR field clears.

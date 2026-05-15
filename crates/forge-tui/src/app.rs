@@ -5,6 +5,7 @@ pub(crate) mod clipboard_image;
 pub(crate) mod config;
 pub(crate) mod connect;
 mod dialog;
+pub(crate) mod diff_overlay;
 pub(crate) mod events;
 pub(crate) mod file_index;
 mod focus;
@@ -45,6 +46,7 @@ pub use cache_policy::{
 };
 pub use config::{ConfigState, ConfigTab};
 pub use connect::{create_app, start_connection};
+pub use diff_overlay::DiffOverlayState;
 pub use events::{apply_session_update, handle_terminal_event};
 #[cfg(feature = "testing")]
 pub use events::{handle_permission_request_event, handle_question_request_event};
@@ -184,6 +186,7 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
         git_diff::drain_events(app);
         cli_version::drain_events(app);
         process_scanner::drain_events(app);
+        diff_overlay::drain_events(app);
 
         // If a prior turn ended in Error state because of a rate-limit
         // rejection, drop the input lock once the rate-limit window

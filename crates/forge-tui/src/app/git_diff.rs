@@ -285,6 +285,7 @@ mod tests {
             view: GitDiffView::CleanDefault,
             pr: None,
             closes: Vec::new(),
+            scanner_ok: true,
         }
     }
 

@@ -450,6 +450,7 @@ fn handle_pane_click(app: &mut App, mouse: MouseEvent) -> bool {
                     | PaneHitTarget::InspectorTopBarIcon { .. }
                     | PaneHitTarget::OverlayClose { .. }
                     | PaneHitTarget::CloseSession { .. }
+                    | PaneHitTarget::InspectorGitOpenDiff { .. }
             ) && t.contains(mouse.column, mouse.row)
         })
         .cloned();
@@ -481,6 +482,11 @@ fn handle_pane_click(app: &mut App, mouse: MouseEvent) -> bool {
             }
             PaneHitTarget::CloseSession { session_key, .. } => {
                 close_session(app, &session_key);
+                app.needs_redraw = true;
+                return true;
+            }
+            PaneHitTarget::InspectorGitOpenDiff { .. } => {
+                crate::app::diff_overlay::open_default(app);
                 app.needs_redraw = true;
                 return true;
             }
@@ -520,7 +526,8 @@ fn handle_pane_click(app: &mut App, mouse: MouseEvent) -> bool {
             PaneHitTarget::TopBarIcon { .. }
             | PaneHitTarget::InspectorTopBarIcon { .. }
             | PaneHitTarget::OverlayClose { .. }
-            | PaneHitTarget::CloseSession { .. } => true,
+            | PaneHitTarget::CloseSession { .. }
+            | PaneHitTarget::InspectorGitOpenDiff { .. } => true,
         };
     }
 
@@ -553,7 +560,8 @@ fn handle_pane_click(app: &mut App, mouse: MouseEvent) -> bool {
         PaneHitTarget::TopBarIcon { .. }
         | PaneHitTarget::InspectorTopBarIcon { .. }
         | PaneHitTarget::OverlayClose { .. }
-        | PaneHitTarget::CloseSession { .. } => true,
+        | PaneHitTarget::CloseSession { .. }
+        | PaneHitTarget::InspectorGitOpenDiff { .. } => true,
     }
 }
 

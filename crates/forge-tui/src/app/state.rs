@@ -132,6 +132,13 @@ pub enum PaneHitTarget {
         x_start: u16,
         x_end: u16,
     },
+    /// Click on the `🦉` glyph at the right edge of the Inspector
+    /// pane's `GIT` section header → open the full-screen Diff
+    /// overlay with auto-detected target. Only stamped when the
+    /// snapshot has a diff to show (Worktree / BranchVsDefault)
+    /// AND the inspector scroll offset is 0 (otherwise the header
+    /// is off-screen).
+    InspectorGitOpenDiff { y: u16, height: u16, x_start: u16, x_end: u16 },
 }
 
 impl PaneHitTarget {
@@ -149,7 +156,8 @@ impl PaneHitTarget {
             | Self::TopBarIcon { y, height, .. }
             | Self::InspectorTopBarIcon { y, height, .. }
             | Self::OverlayClose { y, height, .. }
-            | Self::CloseSession { y, height, .. } => (*y, *height),
+            | Self::CloseSession { y, height, .. }
+            | Self::InspectorGitOpenDiff { y, height, .. } => (*y, *height),
         };
         (start..start.saturating_add(height)).contains(&y)
     }
@@ -168,7 +176,8 @@ impl PaneHitTarget {
             Self::TopBarIcon { x_start, x_end, .. }
             | Self::InspectorTopBarIcon { x_start, x_end, .. }
             | Self::OverlayClose { x_start, x_end, .. }
-            | Self::CloseSession { x_start, x_end, .. } => (*x_start..*x_end).contains(&x),
+            | Self::CloseSession { x_start, x_end, .. }
+            | Self::InspectorGitOpenDiff { x_start, x_end, .. } => (*x_start..*x_end).contains(&x),
         }
     }
 }
@@ -280,6 +289,14 @@ pub struct App {
     /// re-fetch is added later.
     pub cli_version_event_tx: std_mpsc::Sender<crate::app::cli_version::CliVersionEvent>,
     pub cli_version_event_rx: std_mpsc::Receiver<crate::app::cli_version::CliVersionEvent>,
+    pub diff_overlay_event_tx: std_mpsc::Sender<crate::app::diff_overlay::DiffOverlayEvent>,
+    pub diff_overlay_event_rx: std_mpsc::Receiver<crate::app::diff_overlay::DiffOverlayEvent>,
+    /// Monotonic counter bumped by every `/diff` invocation. Events
+    /// arriving on `diff_overlay_event_rx` carry the seq they were
+    /// spawned under; the drain pump only opens the overlay for
+    /// the latest seq, so a rapid second `/diff` correctly
+    /// supersedes the first instead of replaying the older result.
+    pub diff_scan_seq: u64,
     /// Latest installed-vs-published claude CLI version snapshot.
     /// `None` until the startup fetch task lands. Rendered by the
     /// bottom-left account panel; missing values render as DIM `—`
@@ -347,6 +364,10 @@ pub struct App {
     /// When the active view is anything else this is unused but
     /// kept allocated so transitions are cheap.
     pub launchpad: crate::app::LaunchpadState,
+    /// Diff overlay state — `Some` while [`ActiveView::Diff`] is
+    /// up, `None` otherwise. Dropped on overlay close so a stale
+    /// snapshot can't leak into the next open.
+    pub diff_overlay: Option<crate::app::DiffOverlayState>,
     /// Last known frame area (for mouse selection mapping).
     pub cached_frame_area: ratatui::layout::Rect,
     /// Active scrollbar drag state while left mouse button is held on the rail.
@@ -2299,6 +2320,7 @@ impl App {
         let (git_diff_tx, git_diff_rx) = std_mpsc::channel();
         let (process_scan_tx, process_scan_rx) = std_mpsc::channel();
         let (cli_version_tx, cli_version_rx) = std_mpsc::channel();
+        let (diff_overlay_tx, diff_overlay_rx) = std_mpsc::channel();
         let pending_key = forge_workspace::SessionKey::from_session_id(Self::PRE_CONNECT_KEY);
         let mut pending_session = super::session::UiSession::new(pending_key.clone());
         // Seed a synthetic `current_model` so tests that depend on
@@ -2353,6 +2375,9 @@ impl App {
             process_scan_event_rx: process_scan_rx,
             cli_version_event_tx: cli_version_tx,
             cli_version_event_rx: cli_version_rx,
+            diff_overlay_event_tx: diff_overlay_tx,
+            diff_overlay_event_rx: diff_overlay_rx,
+            diff_scan_seq: 0,
             cli_version_info: None,
             spinner_frame: 0,
             spinner_last_advance_at: None,
@@ -2368,6 +2393,7 @@ impl App {
             plugins: PluginsState::default(),
             session_picker: SessionPickerState::default(),
             launchpad: crate::app::LaunchpadState::default(),
+            diff_overlay: None,
             cached_frame_area: ratatui::layout::Rect::default(),
             scrollbar_drag: None,
             rendered_chat_lines: Vec::new(),
