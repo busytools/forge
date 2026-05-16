@@ -557,6 +557,10 @@ async fn drain_stderr(stderr: ChildStderr, callback: Option<Arc<dyn Fn(String) +
         }
         if let Some(cb) = callback.as_ref() {
             cb(buf.clone());
+        } else if buf.starts_with("ERROR") || buf.starts_with("Error") {
+            tracing::warn!(target: "forge_sdk::stderr", line = %buf, "claude stderr");
+        } else {
+            tracing::info!(target: "forge_sdk::stderr", line = %buf, "claude stderr");
         }
     }
 }
