@@ -701,11 +701,18 @@ fn warn_no_session(key: &SessionKey, command: &'static str) {
 /// account info) lives on the TUI's `UiSession`, populated via the
 /// `SessionUpdate` envelopes the task emits.
 pub(crate) fn apply_event_to_domain(domain: &mut DomainSession, event: &AgentEvent) {
+    // Both Connected and SessionReplaced authoritatively carry the
+    // current session_id. The earlier `is_none()` guard on Connected
+    // skipped the second-and-later Connecteds — but the bridge always
+    // emits `AgentEvent::Connected` (it doesn't synthesize
+    // SessionReplaced), so /new / /login / /logout would leave
+    // domain.session_id pointing at the OLD uuid while the bridge's
+    // session_id_slot moved to the NEW one. Subsequent user
+    // dispatches routed to OLD and got silently dropped by
+    // `check_session_id`. Always overwrite.
     match event {
-        AgentEvent::Connected { session_id, .. } if domain.session_id.is_none() => {
-            domain.session_id = Some(SessionId::new(session_id.clone()));
-        }
-        AgentEvent::SessionReplaced { session_id, .. } => {
+        AgentEvent::Connected { session_id, .. }
+        | AgentEvent::SessionReplaced { session_id, .. } => {
             domain.session_id = Some(SessionId::new(session_id.clone()));
         }
         _ => {}
@@ -896,6 +903,48 @@ mod tests {
         assert_eq!(
             domain.session_id.as_ref().map(std::string::ToString::to_string),
             Some("new-uuid".to_owned())
+        );
+    }
+
+    /// Regression: a second `Connected` (the bridge emits these on
+    /// /new / /login / /logout, NOT SessionReplaced) must overwrite
+    /// the session_id mirror. Before the fix, the `is_none()` guard
+    /// kept the OLD uuid in `domain.session_id` while the bridge's
+    /// slot moved to the NEW uuid — every subsequent user command
+    /// routed to OLD and was silently dropped by `check_session_id`.
+    #[test]
+    fn translate_second_connected_overwrites_session_id() {
+        let mut domain = empty_domain();
+        domain.session_id = Some(SessionId::new("old-uuid"));
+
+        apply_event_to_domain(
+            &mut domain,
+            &AgentEvent::Connected {
+                session_id: "new-uuid".to_owned(),
+                cwd: "/proj".to_owned(),
+                current_model: forge_primitives::CurrentModel {
+                    resolved_id: "claude".to_owned(),
+                    display_name_short: "claude".to_owned(),
+                    display_name_long: "claude".to_owned(),
+                    requested_id: None,
+                    catalog_id: None,
+                    supports_effort: false,
+                    supported_effort_levels: Vec::new(),
+                    supports_fast_mode: None,
+                    supports_auto_mode: None,
+                    supports_adaptive_thinking: None,
+                    is_authoritative: true,
+                },
+                available_models: Vec::new(),
+                mode: None,
+                history_updates: None,
+            },
+        );
+
+        assert_eq!(
+            domain.session_id.as_ref().map(std::string::ToString::to_string),
+            Some("new-uuid".to_owned()),
+            "second Connected must overwrite session_id mirror",
         );
     }
 
