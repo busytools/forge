@@ -77,6 +77,9 @@ pub struct Workspace {
     /// [`Self::store_pending_interaction`] writes under the same lock
     /// the `SessionTask` actor uses to read+remove.
     domain_handles: Mutex<HashMap<SessionKey, Arc<Mutex<DomainSession>>>>,
+    /// Set the first time [`Self::start_usage_poller`] runs. Subsequent
+    /// calls early-return to avoid spawning duplicate poller tasks.
+    usage_poller_started: std::sync::atomic::AtomicBool,
 }
 
 /// Pool entry wrapping the live `Arc<AgentHandle>`. Tests assert
@@ -139,6 +142,7 @@ impl Workspace {
             update_rx_slot: Mutex::new(Some(update_rx)),
             command_senders: Mutex::new(HashMap::new()),
             domain_handles: Mutex::new(HashMap::new()),
+            usage_poller_started: std::sync::atomic::AtomicBool::new(false),
         })
     }
 
@@ -420,12 +424,21 @@ impl Workspace {
     /// The TUI's bottom panel + the spawn-path picker both read
     /// from that cache.
     ///
-    /// Call once at construction. Multiple calls spawn independent
-    /// poller tasks and multiply the actual poll rate, which is
-    /// almost never what you want — the App's `create_app` is the
-    /// only production caller. Tests either skip this or call it
-    /// explicitly when they need a cache-warm path.
+    /// Call once at construction. A `usage_poller_started` flag
+    /// guards against duplicate spawns — second and later calls
+    /// return without spawning so a forge-tui programming error
+    /// can't multiply the poll rate.
     pub fn start_usage_poller(self: &Arc<Self>) {
+        if self
+            .usage_poller_started
+            .swap(true, std::sync::atomic::Ordering::AcqRel)
+        {
+            tracing::debug!(
+                target: "forge_workspace::workspace",
+                "start_usage_poller called more than once; ignoring",
+            );
+            return;
+        }
         let weak = Arc::downgrade(self);
         let span = tracing::info_span!("usage_poller");
         tokio::spawn(async move {
@@ -1445,6 +1458,7 @@ impl Workspace {
             update_rx_slot: Mutex::new(None),
             command_senders: Mutex::new(HashMap::new()),
             domain_handles: Mutex::new(HashMap::new()),
+            usage_poller_started: std::sync::atomic::AtomicBool::new(false),
         };
         (Arc::new(workspace), update_rx)
     }
