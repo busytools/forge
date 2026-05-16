@@ -735,12 +735,18 @@ pub(crate) fn deliver_permission_response(
         );
         return;
     };
+    // Deny-on-unknown: only option_ids that explicitly start with
+    // "allow" are treated as allow. Anything else (including future
+    // CLI deny variants like `deny_session` / `deny_repo`, or
+    // unparseable / drifted ids) maps to deny. Previous shape was
+    // permissive-on-unknown — a CLI option-id rename could have
+    // silently elevated denied tool calls to allowed.
     let decision = match outcome {
         forge_primitives::PermissionOutcome::Selected { option_id } => {
-            if option_id.eq_ignore_ascii_case("deny") || option_id.eq_ignore_ascii_case("reject") {
-                PermissionDecision::deny(format!("user denied: {option_id}"))
-            } else {
+            if option_id.to_ascii_lowercase().starts_with("allow") {
                 PermissionDecision::allow()
+            } else {
+                PermissionDecision::deny(format!("user selected: {option_id}"))
             }
         }
         forge_primitives::PermissionOutcome::Cancelled => {
