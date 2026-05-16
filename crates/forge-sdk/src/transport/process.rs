@@ -169,7 +169,6 @@ impl Subprocess {
     /// - [`Error::CliNotFound`] when the binary isn't on PATH or the given path
     ///   doesn't exist.
     /// - [`Error::Io`] for other spawn failures.
-    #[allow(clippy::unused_async)] // kept async for API symmetry + future runtime hooks
     pub async fn spawn(options: &Options) -> Result<Self, Error> {
         // Optional CLI-version guard. Runs `<binary> --version` once.
         // The caller asked for a floor — if the probe fails, surface it
