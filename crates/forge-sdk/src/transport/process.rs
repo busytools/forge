@@ -176,9 +176,17 @@ impl Subprocess {
         // rather than silently skipping (they won't know the check was
         // bypassed otherwise).
         if let Some(min) = &options.minimum_cli_version {
-            let reported = query_cli_version(&options.binary).map_err(|e| Error::Connection {
-                reason: format!("minimum_cli_version set but --version probe failed: {e}"),
-            })?;
+            // `claude --version` is a fork+exec; wrap in spawn_blocking
+            // so the tokio worker thread isn't parked during the probe.
+            let binary = options.binary.clone();
+            let reported = tokio::task::spawn_blocking(move || query_cli_version(&binary))
+                .await
+                .map_err(|e| Error::Connection {
+                    reason: format!("version probe join failed: {e}"),
+                })?
+                .map_err(|e| Error::Connection {
+                    reason: format!("minimum_cli_version set but --version probe failed: {e}"),
+                })?;
             check_cli_version(&reported, min)?;
         }
         let mut cmd = Command::new(&options.binary);

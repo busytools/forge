@@ -379,10 +379,21 @@ impl ForgeSdkBridge {
         let config_dir = self.inner.config_dir.clone();
         let display_name = self.inner.display_name.clone();
         self.dispatch("get_status_snapshot", move |client| async move {
-            let account = client
-                .account_info_from_init()
-                .or_else(|| crate::cloud::auth_status::account_info_from_shell(&config_dir))
-                .unwrap_or_default();
+            // account_info_from_shell shells out to `claude auth
+            // status`; wrap in spawn_blocking so this dispatched task
+            // doesn't park its tokio worker for the ~50ms probe.
+            let account = if let Some(account) = client.account_info_from_init() {
+                account
+            } else {
+                let cd = config_dir.clone();
+                tokio::task::spawn_blocking(move || {
+                    crate::cloud::auth_status::account_info_from_shell(&cd)
+                })
+                .await
+                .ok()
+                .flatten()
+                .unwrap_or_default()
+            };
             let forge_account = display_name.map(forge_primitives::ForgeAccountIdentity::new);
             let _ =
                 event_tx.send(AgentEvent::StatusSnapshot { session_id, account, forge_account });
@@ -394,7 +405,16 @@ impl ForgeSdkBridge {
         let event_tx = self.inner.event_tx.clone();
         let config_dir = self.inner.config_dir.clone();
         self.dispatch("get_oauth_credentials_snapshot", move |_client| async move {
-            let credentials = crate::cloud::oauth_credentials::load_oauth_credentials(&config_dir);
+            // load_oauth_credentials shells out to macOS `security
+            // find-generic-password`; wrap in spawn_blocking so the
+            // 30s usage-poller doesn't park N tokio workers per
+            // account during keychain access.
+            let credentials = tokio::task::spawn_blocking(move || {
+                crate::cloud::oauth_credentials::load_oauth_credentials(&config_dir)
+            })
+            .await
+            .ok()
+            .flatten();
             let _ = event_tx.send(AgentEvent::OauthCredentialsSnapshot { session_id, credentials });
             Ok(())
         })

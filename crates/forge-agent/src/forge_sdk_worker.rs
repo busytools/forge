@@ -222,10 +222,22 @@ async fn emit_connected(
         );
     }
 
-    if let Some(account) = client
-        .account_info_from_init()
-        .or_else(|| crate::cloud::auth_status::account_info_from_shell(config_dir))
-    {
+    // account_info_from_shell shells out to `claude auth status` (~50ms
+    // blocking per the docstring) — wrap in spawn_blocking so the
+    // async worker doesn't park a tokio worker thread for the
+    // duration. account_info_from_init is in-memory, no I/O.
+    let account = if let Some(account) = client.account_info_from_init() {
+        Some(account)
+    } else {
+        let config_dir_owned = config_dir.to_owned();
+        tokio::task::spawn_blocking(move || {
+            crate::cloud::auth_status::account_info_from_shell(&config_dir_owned)
+        })
+        .await
+        .ok()
+        .flatten()
+    };
+    if let Some(account) = account {
         let forge_account =
             display_name.map(|d| forge_primitives::ForgeAccountIdentity::new(d.to_owned()));
         if event_tx
