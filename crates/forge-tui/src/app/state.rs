@@ -852,7 +852,7 @@ impl App {
     /// Install a fresh testing stub agent against the active
     /// session's [`forge_workspace::DomainSession`], auto-creating a
     /// pre-Connect bucket when no active session exists yet. Returns
-    /// the matching `forge_primitives::Command` receiver so tests can
+    /// the matching `forge_primitives::AgentCommand` receiver so tests can
     /// assert on the commands the workspace routes through the stub.
     ///
     /// Test-only entry point: production flows register handles via
@@ -861,7 +861,7 @@ impl App {
     #[allow(clippy::expect_used, clippy::missing_panics_doc)]
     pub fn install_testing_stub(
         &mut self,
-    ) -> tokio::sync::mpsc::UnboundedReceiver<forge_primitives::Command> {
+    ) -> tokio::sync::mpsc::UnboundedReceiver<forge_primitives::AgentCommand> {
         if self.active_session_key.is_none() {
             let key = forge_workspace::SessionKey::from_session_id(Self::PRE_CONNECT_KEY);
             self.sessions

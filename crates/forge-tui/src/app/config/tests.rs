@@ -35,7 +35,7 @@ fn select_setting(app: &mut App, setting_id: SettingId) {
 }
 
 fn app_with_status_connection()
--> (App, tokio::sync::mpsc::UnboundedReceiver<forge_primitives::Command>) {
+-> (App, tokio::sync::mpsc::UnboundedReceiver<forge_primitives::AgentCommand>) {
     let mut app = App::test_default();
     let rx = app.install_testing_stub();
     app.set_session_id(Some(crate::agent::model::SessionId::new("session-1")));
@@ -625,7 +625,7 @@ fn status_tab_rename_confirm_sends_bridge_command() {
     let envelope = rx.try_recv().expect("rename command");
     assert_eq!(
         envelope,
-        forge_primitives::Command::RenameSession {
+        forge_primitives::AgentCommand::RenameSession {
             session_id: forge_primitives::SessionId::new("session-1".to_owned()),
             title: "Renamed session".to_owned(),
         }
@@ -659,7 +659,7 @@ fn status_tab_rename_empty_confirm_clears_custom_title() {
     let envelope = rx.try_recv().expect("rename command");
     assert_eq!(
         envelope,
-        forge_primitives::Command::RenameSession {
+        forge_primitives::AgentCommand::RenameSession {
             session_id: forge_primitives::SessionId::new("session-1".to_owned()),
             title: String::new()
         }
@@ -697,7 +697,7 @@ fn status_tab_g_generates_session_title_from_current_title_fallback() {
     let envelope = rx.try_recv().expect("generate command");
     assert_eq!(
         envelope,
-        forge_primitives::Command::GenerateSessionTitle {
+        forge_primitives::AgentCommand::GenerateSessionTitle {
             session_id: forge_primitives::SessionId::new("session-1".to_owned()),
             description: "Current custom title".to_owned(),
         }
@@ -1330,14 +1330,14 @@ fn mcp_tab_refresh_key_requests_snapshot() {
     let envelope = rx.try_recv().expect("runtime reload command");
     assert_eq!(
         envelope,
-        forge_primitives::Command::ReloadPlugins {
+        forge_primitives::AgentCommand::ReloadPlugins {
             session_id: forge_primitives::SessionId::new("session-1".to_owned())
         }
     );
     let envelope = rx.try_recv().expect("mcp snapshot command");
     assert_eq!(
         envelope,
-        forge_primitives::Command::GetMcpSnapshot {
+        forge_primitives::AgentCommand::GetMcpSnapshot {
             session_id: forge_primitives::SessionId::new("session-1".to_owned())
         }
     );
@@ -1357,7 +1357,7 @@ fn request_mcp_snapshot_sends_outside_mcp_tab() {
     let envelope = rx.try_recv().expect("mcp snapshot command");
     assert_eq!(
         envelope,
-        forge_primitives::Command::GetMcpSnapshot {
+        forge_primitives::AgentCommand::GetMcpSnapshot {
             session_id: forge_primitives::SessionId::new("session-1".to_owned())
         }
     );
@@ -1386,7 +1386,7 @@ fn refresh_mcp_snapshot_clears_existing_servers_before_request() {
     let envelope = rx.try_recv().expect("mcp snapshot command");
     assert_eq!(
         envelope,
-        forge_primitives::Command::GetMcpSnapshot {
+        forge_primitives::AgentCommand::GetMcpSnapshot {
             session_id: forge_primitives::SessionId::new("session-1".to_owned())
         }
     );

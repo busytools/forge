@@ -262,7 +262,7 @@ mod tests {
     use crate::app::ActiveView;
 
     fn app_with_connection()
-    -> (App, tokio::sync::mpsc::UnboundedReceiver<forge_primitives::Command>) {
+    -> (App, tokio::sync::mpsc::UnboundedReceiver<forge_primitives::AgentCommand>) {
         let mut app = App::test_default();
         let rx = app.install_testing_stub();
         app.set_session_id(Some(model::SessionId::new("session-1")));
@@ -284,7 +284,7 @@ mod tests {
         let prompt = rx.try_recv().expect("prompt command should be sent");
         assert!(matches!(
             prompt,
-            forge_primitives::Command::PromptWithImages { session_id, .. } if session_id == "session-1"
+            forge_primitives::AgentCommand::PromptWithImages { session_id, .. } if session_id == "session-1"
         ));
     }
 
@@ -322,7 +322,7 @@ mod tests {
         let prompt = rx.try_recv().expect("prompt dispatched immediately");
         assert!(matches!(
             prompt,
-            forge_primitives::Command::PromptWithImages { session_id, text, .. }
+            forge_primitives::AgentCommand::PromptWithImages { session_id, text, .. }
                 if session_id == "session-1" && text == "mid-turn prompt"
         ));
     }
@@ -419,7 +419,7 @@ mod tests {
         let envelope = rx.try_recv().expect("single cancel command should be sent");
         assert!(matches!(
             envelope,
-            forge_primitives::Command::Cancel { session_id } if session_id == "session-1"
+            forge_primitives::AgentCommand::Cancel { session_id } if session_id == "session-1"
         ));
         assert!(rx.try_recv().is_err(), "second cancel should not re-dispatch");
     }

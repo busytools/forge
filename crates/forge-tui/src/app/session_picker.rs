@@ -162,7 +162,7 @@ mod tests {
         let cmd = rx.try_recv().expect("resume command");
         assert!(matches!(
             cmd,
-            forge_primitives::Command::ResumeSession { session_id, .. }
+            forge_primitives::AgentCommand::ResumeSession { session_id, .. }
                 if session_id == "session-1"
         ));
     }

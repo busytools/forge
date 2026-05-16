@@ -2,7 +2,7 @@
 //!
 //! `Agent::spawn` constructs a `ForgeSdkBridge` under the hood and
 //! spawns one background task: the **command dispatcher**, which
-//! drains `mpsc::UnboundedReceiver<Command>` and calls the matching
+//! drains `mpsc::UnboundedReceiver<AgentCommand>` and calls the matching
 //! inherent method on the bridge. The bridge's `AgentEvent`
 //! receiver is handed back to consumers via `take_events()`.
 //!
@@ -13,7 +13,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use forge_primitives::Command;
+use forge_primitives::AgentCommand;
 use parking_lot::Mutex;
 use tokio::sync::mpsc;
 
@@ -24,9 +24,9 @@ use crate::forge_sdk_bridge::ForgeSdkBridge;
 pub struct AgentHandle {
     /// UI → agent commands. Used internally by the inherent
     /// command-shorthand methods (`prompt_text`, `cancel`, etc.). Public
-    /// so callers can `send(Command::...)` directly when richer flows
+    /// so callers can `send(AgentCommand::...)` directly when richer flows
     /// are needed.
-    pub commands: mpsc::UnboundedSender<Command>,
+    pub commands: mpsc::UnboundedSender<AgentCommand>,
     /// Bridge's raw `AgentEvent` receiver. Single-take via
     /// [`AgentHandle::take_events`] — forge-tui's translator consumes
     /// this and converts to its `ClientEvent` shape.
@@ -94,15 +94,15 @@ impl AgentHandle {
         self.bridge.display_name()
     }
 
-    // ---- Fire-and-forget Command shorthands ----
+    // ---- Fire-and-forget AgentCommand shorthands ----
     //
-    // Each method builds the matching `Command` variant and pushes it
+    // Each method builds the matching `AgentCommand` variant and pushes it
     // onto `commands`. Returns `Err` only if the dispatcher task has
     // shut down (channel closed) or `launch_settings` serialisation
     // fails. Errors from the underlying forge_sdk::Client surface
     // asynchronously via the events stream.
 
-    fn send(&self, cmd: Command) -> Result<(), AgentError> {
+    fn send(&self, cmd: AgentCommand) -> Result<(), AgentError> {
         self.commands.send(cmd).map_err(|_| AgentError::DispatcherShutDown)
     }
 
@@ -116,7 +116,7 @@ impl AgentHandle {
         // to default settings, losing the user's configured model /
         // permission_mode / effort with no breadcrumb).
         let launch_settings = serde_json::to_value(launch_settings)?;
-        self.send(Command::NewSession { cwd, launch_settings })
+        self.send(AgentCommand::NewSession { cwd, launch_settings })
     }
 
     pub fn resume_session(
@@ -126,7 +126,7 @@ impl AgentHandle {
         launch_settings: crate::client::SessionLaunchSettings,
     ) -> Result<(), AgentError> {
         let launch_settings = serde_json::to_value(launch_settings)?;
-        self.send(Command::ResumeSession { session_id: session_id.into(), cwd, launch_settings })
+        self.send(AgentCommand::ResumeSession { session_id: session_id.into(), cwd, launch_settings })
     }
 
     /// Resume the recorded `session_id`; if resume fails (stale
@@ -140,7 +140,7 @@ impl AgentHandle {
         launch_settings: crate::client::SessionLaunchSettings,
     ) -> Result<(), AgentError> {
         let launch_settings = serde_json::to_value(launch_settings)?;
-        self.send(Command::ResumeOrNewSession {
+        self.send(AgentCommand::ResumeOrNewSession {
             session_id: session_id.into(),
             cwd,
             launch_settings,
@@ -148,7 +148,7 @@ impl AgentHandle {
     }
 
     pub fn prompt_text(&self, session_id: String, text: String) -> Result<(), AgentError> {
-        self.send(Command::Prompt { session_id: session_id.into(), text })
+        self.send(AgentCommand::Prompt { session_id: session_id.into(), text })
     }
 
     pub fn prompt_with_images(
@@ -157,19 +157,19 @@ impl AgentHandle {
         text: String,
         images: Vec<forge_primitives::ImageAttachment>,
     ) -> Result<(), AgentError> {
-        self.send(Command::PromptWithImages { session_id: session_id.into(), text, images })
+        self.send(AgentCommand::PromptWithImages { session_id: session_id.into(), text, images })
     }
 
     pub fn cancel(&self, session_id: String) -> Result<(), AgentError> {
-        self.send(Command::Cancel { session_id: session_id.into() })
+        self.send(AgentCommand::Cancel { session_id: session_id.into() })
     }
 
     pub fn set_mode(&self, session_id: String, mode: String) -> Result<(), AgentError> {
-        self.send(Command::SetMode { session_id: session_id.into(), mode })
+        self.send(AgentCommand::SetMode { session_id: session_id.into(), mode })
     }
 
     pub fn set_model(&self, session_id: String, model: String) -> Result<(), AgentError> {
-        self.send(Command::SetModel { session_id: session_id.into(), model })
+        self.send(AgentCommand::SetModel { session_id: session_id.into(), model })
     }
 
     pub fn generate_session_title(
@@ -177,31 +177,31 @@ impl AgentHandle {
         session_id: String,
         description: String,
     ) -> Result<(), AgentError> {
-        self.send(Command::GenerateSessionTitle { session_id: session_id.into(), description })
+        self.send(AgentCommand::GenerateSessionTitle { session_id: session_id.into(), description })
     }
 
     pub fn rename_session(&self, session_id: String, title: String) -> Result<(), AgentError> {
-        self.send(Command::RenameSession { session_id: session_id.into(), title })
+        self.send(AgentCommand::RenameSession { session_id: session_id.into(), title })
     }
 
     pub fn get_status_snapshot(&self, session_id: String) -> Result<(), AgentError> {
-        self.send(Command::GetStatusSnapshot { session_id: session_id.into() })
+        self.send(AgentCommand::GetStatusSnapshot { session_id: session_id.into() })
     }
 
     pub fn get_oauth_credentials_snapshot(&self, session_id: String) -> Result<(), AgentError> {
-        self.send(Command::GetOauthCredentialsSnapshot { session_id: session_id.into() })
+        self.send(AgentCommand::GetOauthCredentialsSnapshot { session_id: session_id.into() })
     }
 
     pub fn get_context_usage(&self, session_id: String) -> Result<(), AgentError> {
-        self.send(Command::GetContextUsage { session_id: session_id.into() })
+        self.send(AgentCommand::GetContextUsage { session_id: session_id.into() })
     }
 
     pub fn reload_plugins(&self, session_id: String) -> Result<(), AgentError> {
-        self.send(Command::ReloadPlugins { session_id: session_id.into() })
+        self.send(AgentCommand::ReloadPlugins { session_id: session_id.into() })
     }
 
     pub fn get_mcp_snapshot(&self, session_id: String) -> Result<(), AgentError> {
-        self.send(Command::GetMcpSnapshot { session_id: session_id.into() })
+        self.send(AgentCommand::GetMcpSnapshot { session_id: session_id.into() })
     }
 
     pub fn respond_to_elicitation(
@@ -211,7 +211,7 @@ impl AgentHandle {
         action: forge_primitives::ElicitationAction,
         content: Option<serde_json::Value>,
     ) -> Result<(), AgentError> {
-        self.send(Command::RespondToElicitation {
+        self.send(AgentCommand::RespondToElicitation {
             session_id: session_id.into(),
             elicitation_request_id,
             action,
@@ -224,7 +224,7 @@ impl AgentHandle {
         session_id: String,
         server_name: String,
     ) -> Result<(), AgentError> {
-        self.send(Command::ReconnectMcpServer { session_id: session_id.into(), server_name })
+        self.send(AgentCommand::ReconnectMcpServer { session_id: session_id.into(), server_name })
     }
 
     pub fn toggle_mcp_server(
@@ -233,7 +233,7 @@ impl AgentHandle {
         server_name: String,
         enabled: bool,
     ) -> Result<(), AgentError> {
-        self.send(Command::ToggleMcpServer { session_id: session_id.into(), server_name, enabled })
+        self.send(AgentCommand::ToggleMcpServer { session_id: session_id.into(), server_name, enabled })
     }
 
     pub fn set_mcp_servers(
@@ -241,7 +241,7 @@ impl AgentHandle {
         session_id: String,
         servers: std::collections::BTreeMap<String, forge_primitives::McpServerConfig>,
     ) -> Result<(), AgentError> {
-        self.send(Command::SetMcpServers { session_id: session_id.into(), servers })
+        self.send(AgentCommand::SetMcpServers { session_id: session_id.into(), servers })
     }
 
     pub fn authenticate_mcp_server(
@@ -249,11 +249,11 @@ impl AgentHandle {
         session_id: String,
         server_name: String,
     ) -> Result<(), AgentError> {
-        self.send(Command::AuthenticateMcpServer { session_id: session_id.into(), server_name })
+        self.send(AgentCommand::AuthenticateMcpServer { session_id: session_id.into(), server_name })
     }
 
     pub fn clear_mcp_auth(&self, session_id: String, server_name: String) -> Result<(), AgentError> {
-        self.send(Command::ClearMcpAuth { session_id: session_id.into(), server_name })
+        self.send(AgentCommand::ClearMcpAuth { session_id: session_id.into(), server_name })
     }
 
     pub fn submit_mcp_oauth_callback_url(
@@ -262,7 +262,7 @@ impl AgentHandle {
         server_name: String,
         callback_url: String,
     ) -> Result<(), AgentError> {
-        self.send(Command::SubmitMcpOauthCallbackUrl {
+        self.send(AgentCommand::SubmitMcpOauthCallbackUrl {
             session_id: session_id.into(),
             server_name,
             callback_url,
@@ -275,7 +275,7 @@ impl AgentHandle {
         tool_call_id: String,
         outcome: forge_primitives::PermissionOutcome,
     ) -> Result<(), AgentError> {
-        self.send(Command::PermissionResponse {
+        self.send(AgentCommand::PermissionResponse {
             session_id: session_id.into(),
             tool_call_id: tool_call_id.into(),
             outcome,
@@ -288,7 +288,7 @@ impl AgentHandle {
         tool_call_id: String,
         outcome: forge_primitives::QuestionOutcome,
     ) -> Result<(), AgentError> {
-        self.send(Command::QuestionResponse {
+        self.send(AgentCommand::QuestionResponse {
             session_id: session_id.into(),
             tool_call_id: tool_call_id.into(),
             outcome,
@@ -318,7 +318,7 @@ pub struct Agent;
 impl Agent {
     /// Construct a test stub: `AgentHandle` backed by a fresh
     /// ForgeSdkBridge that's never actually driven (no `new_session`
-    /// call). Returns the handle plus a `Receiver<Command>` that
+    /// call). Returns the handle plus a `Receiver<AgentCommand>` that
     /// drains every command the test exercises.
     ///
     /// Safe to call outside a Tokio runtime — no tasks are spawned.
@@ -327,13 +327,13 @@ impl Agent {
     /// bound to a synthetic `/tmp/forge-testing-stub` config_dir;
     /// since no session is driven, no I/O hits this path.
     #[cfg(any(test, feature = "testing"))]
-    pub fn testing_stub() -> (AgentHandle, mpsc::UnboundedReceiver<Command>) {
+    pub fn testing_stub() -> (AgentHandle, mpsc::UnboundedReceiver<AgentCommand>) {
         let bridge = ForgeSdkBridge::default();
         // Drop the bridge's events receiver immediately — tests don't
         // run a real session so nothing is producing.
         let _ = bridge.take_events();
 
-        let (commands_tx, commands_rx) = mpsc::unbounded_channel::<Command>();
+        let (commands_tx, commands_rx) = mpsc::unbounded_channel::<AgentCommand>();
         // Hand a fresh empty channel as the agent_events receiver so
         // the AgentHandle shape matches production. Nothing will ever
         // push to it; `take_events()` returns the dead receiver and
@@ -362,9 +362,9 @@ impl Agent {
         let bridge = ForgeSdkBridge::new(config_dir, display_name);
         let agent_event_rx = bridge.take_events().unwrap_or_else(|| mpsc::unbounded_channel().1);
 
-        let (commands_tx, commands_rx) = mpsc::unbounded_channel::<Command>();
+        let (commands_tx, commands_rx) = mpsc::unbounded_channel::<AgentCommand>();
 
-        // Command dispatcher task.
+        // AgentCommand dispatcher task.
         let dispatch_bridge = Arc::new(bridge);
         tokio::spawn(dispatch_commands(commands_rx, Arc::clone(&dispatch_bridge)));
 
@@ -377,7 +377,7 @@ impl Agent {
 }
 
 async fn dispatch_commands(
-    mut commands_rx: mpsc::UnboundedReceiver<Command>,
+    mut commands_rx: mpsc::UnboundedReceiver<AgentCommand>,
     bridge: Arc<ForgeSdkBridge>,
 ) {
     while let Some(cmd) = commands_rx.recv().await {
@@ -391,13 +391,13 @@ async fn dispatch_commands(
     }
 }
 
-/// Dispatch one `Command` to the matching `ForgeSdkBridge` method.
+/// Dispatch one `AgentCommand` to the matching `ForgeSdkBridge` method.
 /// Internal — kept on `anyhow` because the bridge surface itself
 /// returns `anyhow::Result` and the dispatcher task only logs the
 /// error before continuing. The public AgentHandle surface above
 /// uses the typed `AgentError`.
-fn dispatch(cmd: Command, bridge: &ForgeSdkBridge) -> anyhow::Result<()> {
-    use forge_primitives::Command as C;
+fn dispatch(cmd: AgentCommand, bridge: &ForgeSdkBridge) -> anyhow::Result<()> {
+    use forge_primitives::AgentCommand as C;
 
     match cmd {
         C::NewSession { cwd, launch_settings } => {

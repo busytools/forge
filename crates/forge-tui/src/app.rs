@@ -592,7 +592,7 @@ mod tests {
     use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 
     fn app_with_connection()
-    -> (App, tokio::sync::mpsc::UnboundedReceiver<forge_primitives::Command>) {
+    -> (App, tokio::sync::mpsc::UnboundedReceiver<forge_primitives::AgentCommand>) {
         let mut app = App::test_default();
         let rx = app.install_testing_stub();
         app.set_session_id(Some(model::SessionId::new("session-1")));
@@ -772,7 +772,7 @@ mod tests {
         let envelope = rx.try_recv().expect("prompt command should be sent");
         assert!(matches!(
             envelope,
-            forge_primitives::Command::PromptWithImages { session_id, .. } if session_id == "session-1"
+            forge_primitives::AgentCommand::PromptWithImages { session_id, .. } if session_id == "session-1"
         ));
     }
 
@@ -801,7 +801,7 @@ mod tests {
         let envelope = rx.try_recv().expect("prompt command should be sent");
         assert!(matches!(
             envelope,
-            forge_primitives::Command::PromptWithImages { session_id, .. } if session_id == "session-1"
+            forge_primitives::AgentCommand::PromptWithImages { session_id, .. } if session_id == "session-1"
         ));
     }
 
@@ -835,7 +835,7 @@ mod tests {
         let envelope = rx.try_recv().expect("prompt command should be sent");
         assert!(matches!(
             envelope,
-            forge_primitives::Command::PromptWithImages { session_id, .. } if session_id == "session-1"
+            forge_primitives::AgentCommand::PromptWithImages { session_id, .. } if session_id == "session-1"
         ));
     }
 

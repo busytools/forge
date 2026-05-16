@@ -5,7 +5,7 @@
 //! ## Dual Command shape (deliberate)
 //!
 //! Two `Command` enums exist in the workspace: this one, keyed by
-//! [`SessionKey`], and [`forge_primitives::Command`], keyed by
+//! [`SessionKey`], and [`forge_primitives::AgentCommand`], keyed by
 //! `session_id: String`. They overlap on variant names (Prompt,
 //! Cancel, SetMode, …) but serve different boundary layers:
 //!
@@ -13,7 +13,7 @@
 //!   envelope. SessionKey routing, App-level variants
 //!   (SpawnProject / SpawnSession / StartDefault), the
 //!   workspace-internal Respond* + MCP cluster.
-//! - **`forge_primitives::Command`** is the workspace ↔ agent
+//! - **`forge_primitives::AgentCommand`** is the workspace ↔ agent
 //!   envelope. session_id-keyed, raw shapes the AgentHandle
 //!   dispatcher recognises.
 //!

@@ -13,9 +13,14 @@ use crate::image::ImageAttachment;
 use crate::{ElicitationAction, McpServerConfig, PermissionOutcome, QuestionOutcome};
 
 /// UI → agent channel envelope. Each variant maps to one inherent
-/// method on `forge_agent::ForgeSdkBridge`.
+/// method on `forge_agent::ForgeSdkBridge`. Named `AgentCommand`
+/// to disambiguate from the higher-level
+/// `forge_workspace::protocol::Command` (UI → workspace) — the two
+/// envelopes are deliberately different shapes with overlapping
+/// names, and disambiguating the agent-side enum makes which one
+/// is meant obvious at every call site.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub enum Command {
+pub enum AgentCommand {
     // --- Session lifecycle ---
     NewSession {
         cwd: String,

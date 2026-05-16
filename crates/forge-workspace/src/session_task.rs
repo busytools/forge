@@ -966,7 +966,7 @@ mod tests {
     /// Common harness for the `execute_command_via_handle` tests
     /// below: build a fresh stub handle + drain channel, return both.
     fn stub_handle_with_rx()
-    -> (Arc<AgentHandle>, tokio::sync::mpsc::UnboundedReceiver<forge_primitives::Command>) {
+    -> (Arc<AgentHandle>, tokio::sync::mpsc::UnboundedReceiver<forge_primitives::AgentCommand>) {
         let (handle, rx) = Agent::testing_stub();
         (Arc::new(handle), rx)
     }
@@ -987,7 +987,7 @@ mod tests {
         let cmd = rx.try_recv().expect("command queued");
         assert!(matches!(
             cmd,
-            forge_primitives::Command::PromptWithImages { session_id, .. }
+            forge_primitives::AgentCommand::PromptWithImages { session_id, .. }
                 if session_id == "sess-1"
         ));
     }
@@ -1007,7 +1007,7 @@ mod tests {
         let cmd = rx.try_recv().expect("command queued");
         assert!(matches!(
             cmd,
-            forge_primitives::Command::Cancel { session_id } if session_id == "sess-1"
+            forge_primitives::AgentCommand::Cancel { session_id } if session_id == "sess-1"
         ));
     }
 
@@ -1027,7 +1027,7 @@ mod tests {
         .expect("dispatch succeeds");
         let cmd = rx.try_recv().expect("command queued");
         match cmd {
-            forge_primitives::Command::SetMode { session_id, mode } => {
+            forge_primitives::AgentCommand::SetMode { session_id, mode } => {
                 assert_eq!(session_id.as_str(), "sess-1");
                 assert_eq!(mode, "plan");
             }
@@ -1049,7 +1049,7 @@ mod tests {
         .expect("dispatch succeeds");
         let cmd = rx.try_recv().expect("command queued");
         match cmd {
-            forge_primitives::Command::GenerateSessionTitle { session_id, description } => {
+            forge_primitives::AgentCommand::GenerateSessionTitle { session_id, description } => {
                 assert_eq!(session_id.as_str(), "sess-1");
                 assert_eq!(description, "first turn");
             }
@@ -1072,7 +1072,7 @@ mod tests {
         .expect("dispatch succeeds");
         let cmd = rx.try_recv().expect("command queued");
         match cmd {
-            forge_primitives::Command::ReconnectMcpServer { server_name, .. } => {
+            forge_primitives::AgentCommand::ReconnectMcpServer { server_name, .. } => {
                 assert_eq!(server_name, "fs");
             }
             other => panic!("expected ReconnectMcpServer, got {other:?}"),
@@ -1098,7 +1098,7 @@ mod tests {
         .expect("dispatch succeeds");
         let cmd = rx.try_recv().expect("command queued");
         match cmd {
-            forge_primitives::Command::SubmitMcpOauthCallbackUrl { callback_url, .. } => {
+            forge_primitives::AgentCommand::SubmitMcpOauthCallbackUrl { callback_url, .. } => {
                 assert_eq!(callback_url, "https://example.com/cb?code=abc");
             }
             other => panic!("expected SubmitMcpOauthCallbackUrl, got {other:?}"),
@@ -1127,7 +1127,7 @@ mod tests {
         let cmd = rx.try_recv().expect("command queued");
         assert!(matches!(
             cmd,
-            forge_primitives::Command::RespondToElicitation { content: Some(_), .. }
+            forge_primitives::AgentCommand::RespondToElicitation { content: Some(_), .. }
         ));
     }
 

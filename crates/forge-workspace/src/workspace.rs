@@ -804,7 +804,7 @@ impl Workspace {
     /// `Workspace::testing_stub` path), the command runs
     /// synchronously against that handle. This keeps `#[test]`-flavor
     /// unit tests (no tokio runtime) able to observe the
-    /// `forge_primitives::Command` emitted on the stub's channel
+    /// `forge_primitives::AgentCommand` emitted on the stub's channel
     /// without spinning up an async actor.
     ///
     /// # Errors
@@ -1405,26 +1405,26 @@ impl Workspace {
 #[cfg(feature = "testing")]
 impl Workspace {
     /// Construct a stub `AgentHandle` plus the matching
-    /// `Receiver<forge_primitives::Command>` that drains every command
+    /// `Receiver<forge_primitives::AgentCommand>` that drains every command
     /// dispatched to it. Tests use this to wire `App.set_active_conn`
     /// without spinning up a real subprocess; the bridge underneath is
     /// `forge_agent::Agent::testing_stub` — same shape as before, now
     /// reachable from forge-tui via `forge_workspace::Workspace::*`
     /// so the TUI crate no longer needs a direct `forge-agent` dep.
     ///
-    /// The returned `Receiver` carries `forge_primitives::Command`
+    /// The returned `Receiver` carries `forge_primitives::AgentCommand`
     /// because that's what the bridge's dispatcher accepts; this is
     /// distinct from [`crate::protocol::Command`] (the workspace's
     /// outer envelope) that wraps these primitives under a
     /// `SessionKey`.
     pub fn testing_stub_handle()
-    -> (forge_agent::AgentHandle, mpsc::UnboundedReceiver<forge_primitives::Command>) {
+    -> (forge_agent::AgentHandle, mpsc::UnboundedReceiver<forge_primitives::AgentCommand>) {
         forge_agent::Agent::testing_stub()
     }
 
     /// Register a fresh testing-stub agent against `key`'s
     /// `DomainSession`. Returns the matching
-    /// `forge_primitives::Command` receiver so tests can assert on
+    /// `forge_primitives::AgentCommand` receiver so tests can assert on
     /// the commands the workspace routes through it (the same shape
     /// as `testing_stub_handle()`, but with the handle installed in
     /// one step so TUI test code doesn't have to touch
@@ -1436,7 +1436,7 @@ impl Workspace {
     pub fn install_testing_stub(
         &self,
         key: &SessionKey,
-    ) -> mpsc::UnboundedReceiver<forge_primitives::Command> {
+    ) -> mpsc::UnboundedReceiver<forge_primitives::AgentCommand> {
         let (handle, rx) = forge_agent::Agent::testing_stub();
         let arc = Arc::new(handle);
         let domain = self
@@ -1776,7 +1776,7 @@ config_dir = "~/.claude-personal"
     /// stub. Returns the workspace, the matching primitives command
     /// receiver, and the registered key.
     fn ws_with_stub_session()
-    -> (Arc<Workspace>, mpsc::UnboundedReceiver<forge_primitives::Command>, SessionKey) {
+    -> (Arc<Workspace>, mpsc::UnboundedReceiver<forge_primitives::AgentCommand>, SessionKey) {
         let (workspace, _update_rx) = Workspace::testing_stub();
         let key = SessionKey::from_str_for_test("refresh-test");
         let rx = workspace.install_testing_stub(&key);
@@ -1794,7 +1794,7 @@ config_dir = "~/.claude-personal"
         let (workspace, mut rx, key) = ws_with_stub_session();
         workspace.refresh_status_snapshot(&key).expect("dispatch");
         let cmd = rx.try_recv().expect("queued");
-        assert!(matches!(cmd, forge_primitives::Command::GetStatusSnapshot { .. }));
+        assert!(matches!(cmd, forge_primitives::AgentCommand::GetStatusSnapshot { .. }));
     }
 
     #[test]
@@ -1802,7 +1802,7 @@ config_dir = "~/.claude-personal"
         let (workspace, mut rx, key) = ws_with_stub_session();
         workspace.refresh_context_usage(&key).expect("dispatch");
         let cmd = rx.try_recv().expect("queued");
-        assert!(matches!(cmd, forge_primitives::Command::GetContextUsage { .. }));
+        assert!(matches!(cmd, forge_primitives::AgentCommand::GetContextUsage { .. }));
     }
 
     #[test]
@@ -1810,7 +1810,7 @@ config_dir = "~/.claude-personal"
         let (workspace, mut rx, key) = ws_with_stub_session();
         workspace.refresh_oauth_credentials_snapshot(&key).expect("dispatch");
         let cmd = rx.try_recv().expect("queued");
-        assert!(matches!(cmd, forge_primitives::Command::GetOauthCredentialsSnapshot { .. }));
+        assert!(matches!(cmd, forge_primitives::AgentCommand::GetOauthCredentialsSnapshot { .. }));
     }
 
     #[test]
@@ -1818,7 +1818,7 @@ config_dir = "~/.claude-personal"
         let (workspace, mut rx, key) = ws_with_stub_session();
         workspace.reload_plugins(&key).expect("dispatch");
         let cmd = rx.try_recv().expect("queued");
-        assert!(matches!(cmd, forge_primitives::Command::ReloadPlugins { .. }));
+        assert!(matches!(cmd, forge_primitives::AgentCommand::ReloadPlugins { .. }));
     }
 
     #[test]
@@ -1826,7 +1826,7 @@ config_dir = "~/.claude-personal"
         let (workspace, mut rx, key) = ws_with_stub_session();
         workspace.refresh_mcp_snapshot(&key).expect("dispatch");
         let cmd = rx.try_recv().expect("queued");
-        assert!(matches!(cmd, forge_primitives::Command::GetMcpSnapshot { .. }));
+        assert!(matches!(cmd, forge_primitives::AgentCommand::GetMcpSnapshot { .. }));
     }
 
     #[test]
@@ -1847,7 +1847,7 @@ config_dir = "~/.claude-personal"
         let (workspace, mut rx, key) = ws_with_stub_session();
         workspace.dispatch(Command::Cancel { key }).expect("dispatch");
         let cmd = rx.try_recv().expect("queued");
-        assert!(matches!(cmd, forge_primitives::Command::Cancel { .. }));
+        assert!(matches!(cmd, forge_primitives::AgentCommand::Cancel { .. }));
     }
 
     // ---- Session-task rekey tests ----

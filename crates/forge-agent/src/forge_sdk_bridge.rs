@@ -726,7 +726,7 @@ impl ForgeSdkBridge {
     /// by project-rooted spawns (Default / Named) where the catalog's
     /// recorded lead may be stale (e.g. cross-account scan, deleted
     /// file, schema drift). See
-    /// [`forge_primitives::Command::ResumeOrNewSession`] for the
+    /// [`forge_primitives::AgentCommand::ResumeOrNewSession`] for the
     /// motivation.
     ///
     /// `cwd` is also passed to the resume attempt, not just the

@@ -72,7 +72,7 @@ pub mod subagents;
 pub mod turn_error;
 pub mod usage;
 
-pub use command::Command;
+pub use command::AgentCommand;
 pub use content::ContentBlock;
 pub use elicitation::{
     ElicitationAction, ElicitationMode, ElicitationRequest, ElicitationResponse,

@@ -901,7 +901,7 @@ mod tests {
     }
 
     fn app_with_bridge_connection()
-    -> (App, tokio::sync::mpsc::UnboundedReceiver<forge_primitives::Command>) {
+    -> (App, tokio::sync::mpsc::UnboundedReceiver<forge_primitives::AgentCommand>) {
         let mut app = make_test_app();
         let rx = app.install_testing_stub();
         (app, rx)
@@ -1562,7 +1562,7 @@ mod tests {
         let envelope = rx.try_recv().expect("mcp snapshot command");
         assert_eq!(
             envelope,
-            forge_primitives::Command::GetMcpSnapshot {
+            forge_primitives::AgentCommand::GetMcpSnapshot {
                 session_id: forge_primitives::SessionId::new("test-session".to_owned()),
             }
         );
@@ -1951,7 +1951,7 @@ mod tests {
         let envelope = rx.try_recv().expect("mcp snapshot command");
         assert_eq!(
             envelope,
-            forge_primitives::Command::GetMcpSnapshot {
+            forge_primitives::AgentCommand::GetMcpSnapshot {
                 session_id: forge_primitives::SessionId::new("replacement".to_owned()),
             }
         );
@@ -1968,14 +1968,14 @@ mod tests {
         let mcp = rx.try_recv().expect("mcp snapshot command");
         assert_eq!(
             mcp,
-            forge_primitives::Command::GetMcpSnapshot {
+            forge_primitives::AgentCommand::GetMcpSnapshot {
                 session_id: forge_primitives::SessionId::new("test-session".to_owned()),
             }
         );
         let status = rx.try_recv().expect("status snapshot command");
         assert_eq!(
             status,
-            forge_primitives::Command::GetStatusSnapshot {
+            forge_primitives::AgentCommand::GetStatusSnapshot {
                 session_id: forge_primitives::SessionId::new("test-session".to_owned()),
             }
         );
@@ -4527,7 +4527,7 @@ mod tests {
         let envelope = rx.try_recv().expect("second Esc should send turn cancel");
         assert!(matches!(
             envelope,
-            forge_primitives::Command::Cancel { session_id }
+            forge_primitives::AgentCommand::Cancel { session_id }
                 if session_id == "session-1"
         ));
     }

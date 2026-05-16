@@ -1984,7 +1984,7 @@ mod tests {
         // receiver picked up.
         let dispatched = rx.try_recv().expect("a prompt was dispatched");
         match dispatched {
-            forge_primitives::Command::PromptWithImages { text, .. } => {
+            forge_primitives::AgentCommand::PromptWithImages { text, .. } => {
                 assert!(
                     text.contains("important review note"),
                     "bundle markdown contains the prior comment text, got: {text}",
