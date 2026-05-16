@@ -415,11 +415,43 @@ fn empty_object() -> Value {
 }
 
 fn read_json_or_empty(path: &Path) -> Value {
-    std::fs::read_to_string(path)
-        .ok()
-        .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
-        .filter(Value::is_object)
-        .unwrap_or_else(empty_object)
+    // NotFound is the normal case for fresh user/project settings —
+    // return empty silently. Other I/O errors (perm denied, broken
+    // FS) and JSON parse errors are surfaced as warn so the user
+    // gets a triage signal instead of an empty-config mystery.
+    let raw = match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return empty_object(),
+        Err(e) => {
+            tracing::warn!(
+                target: "forge_tui::config",
+                path = %path.display(),
+                error = %e,
+                "failed to read settings/preferences file"
+            );
+            return empty_object();
+        }
+    };
+    match serde_json::from_str::<Value>(&raw) {
+        Ok(v) if v.is_object() => v,
+        Ok(_) => {
+            tracing::warn!(
+                target: "forge_tui::config",
+                path = %path.display(),
+                "settings/preferences file is not a JSON object; ignoring"
+            );
+            empty_object()
+        }
+        Err(e) => {
+            tracing::warn!(
+                target: "forge_tui::config",
+                path = %path.display(),
+                error = %e,
+                "failed to parse settings/preferences file as JSON"
+            );
+            empty_object()
+        }
+    }
 }
 
 fn unique_temp_path(parent: &Path, filename_hint: Option<&str>) -> PathBuf {
