@@ -5,8 +5,8 @@
 //! fan-in channel. Mutates [`DomainSession`] inline before each
 //! emit so workspace-side projections stay current.
 //!
-//! Phase 4 made `SessionTask::run` the sole consumer of the
-//! AgentHandle event stream; `bridge_lifecycle` is gone.
+//! `SessionTask::run` is the sole consumer of the AgentHandle event
+//! stream.
 
 use std::sync::Arc;
 

@@ -43,9 +43,8 @@ pub enum SessionTarget {
     /// string in `forge.toml`. Errors with `ProjectNotFound` if no
     /// such name exists.
     Named(String),
-    /// A specific session by id. forge-tui doesn't construct this
-    /// in 1a (no resume CLI); it exists for the dual-session test
-    /// suite and Phase 2's click-to-switch flow.
+    /// A specific session by id. Used by the click-to-resume flow
+    /// in the Projects pane and by `Workspace::spawn_session`.
     Session(SessionKey),
 }
 

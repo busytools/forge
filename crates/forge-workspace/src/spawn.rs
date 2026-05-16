@@ -307,10 +307,8 @@ config_dir = "~/.claude-subspace"
 
     /// `handle_start_default` is the startup spawn path; on failure
     /// it must emit `SessionUpdate::ConnectionFailed { fatal: true }`
-    /// followed by `SessionUpdate::FatalError`. C1 regression target:
-    /// pre-Phase-4 the failure always killed forge-tui regardless of
-    /// path; Phase 4 splits the fatal/non-fatal contract — startup
-    /// is fatal, sleeping-session-spawn is not.
+    /// followed by `SessionUpdate::FatalError`. Startup failures are
+    /// fatal; sleeping-session-spawn failures are not.
     ///
     /// Drives the failure path by passing a non-existent project
     /// name (`SessionTarget::Named` resolves via `find_project_by_name`
@@ -348,10 +346,8 @@ config_dir = "~/.claude-subspace"
 
     /// `handle_spawn_session` failure path emits
     /// `ConnectionFailed { fatal: false }` — a sleeping-session
-    /// spawn failure must NOT kill the app. C1 regression: pre-fix
-    /// the unconditional `FatalError` send in the legacy
-    /// bridge_lifecycle path killed the app on any spawn failure;
-    /// Phase 4's spawn-route distinguishes the contract.
+    /// spawn failure must NOT kill the app. Distinguished from
+    /// `handle_start_default`'s fatal contract by route.
     ///
     /// Drives the failure by passing a session id that doesn't
     /// appear in any project catalog. `find_project_for_session`

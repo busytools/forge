@@ -111,8 +111,7 @@ pub struct SessionView {
     pub session: SessionKey,
     /// Display label for the session — the title set via the
     /// session-rename flow if any, otherwise a derivation from the
-    /// session id or first message. Phase 2 surfaces this in the
-    /// Projects pane.
+    /// session id or first message. Rendered in the Projects pane.
     pub label: String,
     /// `true` when an Agent for this session is currently in the
     /// workspace pool.

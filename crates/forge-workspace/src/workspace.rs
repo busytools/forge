@@ -25,17 +25,12 @@ use crate::views::{ProjectView, SessionView};
 
 /// How often the background poller refreshes account usage. The
 /// TUI's bottom panel + the spawn-path account picker both read
-/// from the cache this poll populates. Tighter than the historical
-/// per-session 120 s refresh because the picker benefits from
-/// fresher data — 60 s is the upper bound on how stale a "which
-/// account has more headroom" decision can be.
-///
-/// 2026-05-15: bumped 30 s → 60 s after a real-world run showed
-/// every account hitting HTTP 429 on Anthropic's OAuth usage
-/// endpoint under multi-instance polling. Combined with the
-/// per-account `last_error` tracking (see `account::AccountState`),
-/// transient 429s now back off naturally rather than spamming the
-/// endpoint every 30 s and getting throttled.
+/// from the cache this poll populates. 60 s upper-bounds how stale
+/// the "which account has more headroom" decision can be while
+/// staying clear of the OAuth usage endpoint's 429 throttle under
+/// multi-instance polling — combined with per-account `last_error`
+/// backoff (see `account::AccountState`), transient 429s recover
+/// naturally.
 const USAGE_POLL_INTERVAL: Duration = Duration::from_secs(60);
 
 /// Multi-session orchestrator. Owns the project catalog snapshot
@@ -44,13 +39,11 @@ const USAGE_POLL_INTERVAL: Duration = Duration::from_secs(60);
 ///
 /// Construct via [`Workspace::new`]; consume via
 /// [`Workspace::get_agent_handle`]; drain on exit via
-/// [`Workspace::shutdown`]. See spec at
-/// `~/.claude-subspace/plans/2026-05-09-forge-tui-phase-1a-workspace-design.md`
-/// for the full contract.
+/// [`Workspace::shutdown`].
 pub struct Workspace {
     /// Retained so error messages can reference the `forge.toml`
-    /// path the workspace was constructed from, and so Phase 1b's
-    /// per-account config-dir binding can re-resolve from here.
+    /// path the workspace was constructed from, and so the per-account
+    /// config-dir binding can re-resolve from here.
     config_dir: PathBuf,
     config: LoadedConfig,
     /// Catalog of sessions per project. Seeded from
@@ -68,11 +61,10 @@ pub struct Workspace {
     /// Account picker state. Updated on every spawn; refreshed by
     /// the in-memory usage poller.
     accounts: Mutex<AccountStateMap>,
-    /// Fan-in [`SessionUpdate`] sender. Cloned and handed to
-    /// `bridge_lifecycle` via [`Self::update_sender`] so the existing
-    /// AgentEvent translator can dual-emit `ClientEvent` + `SessionUpdate`
-    /// during Phases 1-3. Phase 4 retires the dual-emit pattern when
-    /// `SessionTask` owns the AgentHandle event drain.
+    /// Fan-in [`SessionUpdate`] sender. Cloned and handed to TUI-side
+    /// modules (slash executors, plugin install, service-status check)
+    /// via [`Self::update_sender`] so they can emit presentation
+    /// events on the same channel TUI subscribes to.
     update_tx: mpsc::UnboundedSender<SessionUpdate>,
     /// Single-take slot holding the matching receiver. [`Self::subscribe`]
     /// pops it on first call; subsequent calls return `None`.
@@ -107,10 +99,9 @@ impl Workspace {
         let config = load_from_dir(&config_dir)?;
 
         // Catalog scan reads against the workspace's canonical
-        // `config_dir` (where forge.toml lives). Phase 1b binds each
-        // spawn to its own account `config_dir`, but the catalog
-        // listing isn't UI-consumed yet — multi-account catalog
-        // merge is deferred to a later phase.
+        // `config_dir` (where forge.toml lives). Each spawn binds to
+        // its own account `config_dir` separately; multi-account
+        // catalog merge is a separate concern.
         let catalog_entries = forge_agent::userdata::catalog::scan::list_sessions(
             &config_dir,
             None, // every project in the catalog
@@ -364,11 +355,11 @@ impl Workspace {
             );
         }
 
-        // Phase 1: spawn the per-session `SessionTask` actor. Idempotent
-        // — a second `get_agent_handle` call for the same key reuses the
-        // existing task. Insert under the command_senders lock so a
-        // concurrent caller that lost the pool race also loses this
-        // race (and drops its `cmd_tx` at end-of-scope).
+        // Spawn the per-session `SessionTask` actor. Idempotent —
+        // a second `get_agent_handle` call for the same key reuses
+        // the existing task. Insert under the command_senders lock
+        // so a concurrent caller that lost the pool race also loses
+        // this race (and drops its `cmd_tx` at end-of-scope).
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel::<Command>();
         let needs_spawn = {
             let mut senders = self.command_senders.lock();
@@ -742,8 +733,8 @@ impl Workspace {
     /// second-subscriber programming error doesn't disappear into
     /// silent data loss). forge-tui's main event loop owns the
     /// returned `mpsc::UnboundedReceiver` and reads `SessionUpdate`
-    /// envelopes directly (Phase 4 retired the legacy `ClientEvent`
-    /// channel; this is now the only event source the App consumes).
+    /// envelopes directly — this is the sole event source the App
+    /// consumes.
     pub fn subscribe(&self) -> Option<mpsc::UnboundedReceiver<SessionUpdate>> {
         if let Some(rx) = self.update_rx_slot.lock().take() {
             Some(rx)
@@ -1537,8 +1528,7 @@ config_dir = "~/.claude-subspace"
         // Pool has one entry going in.
         assert_eq!(workspace.pool.lock().len(), 1);
         // Workspace pool + spawned `SessionTask.handle` +
-        // `DomainSession.conn` (Phase 2 owned by the workspace's
-        // `domain_handles` map) + this test all hold the Arc →
+        // `DomainSession.conn` + this test all hold the Arc →
         // strong_count == 4.
         assert_eq!(Arc::strong_count(&handle), 4);
 

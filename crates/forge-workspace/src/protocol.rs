@@ -76,9 +76,7 @@ impl std::fmt::Debug for PendingInteractionSlot {
 ///
 /// Every variant carries a `SessionKey` identifying the target
 /// session task. `Workspace::dispatch` fans the variant into the
-/// matching task's command receiver. Phase 1 implements
-/// `Respond*` end-to-end; other variants log + drop until Phase 2
-/// wires them to `AgentHandle` methods.
+/// matching task's command receiver.
 #[derive(Debug)]
 pub enum Command {
     Prompt {
@@ -242,10 +240,10 @@ impl Command {
 
 /// Update envelope: forge-workspace -> forge-tui.
 ///
-/// FINAL variant shapes as of Phase 1. Permission/Question/Elicitation
-/// variants do NOT carry response oneshots — responses flow back via
-/// `Command::Respond*`. The workspace stores the oneshot in
-/// `DomainSession.pending_interactions` when emitting these variants.
+/// Permission/Question/Elicitation variants do NOT carry response
+/// oneshots — responses flow back via `Command::Respond*`. The
+/// workspace stores the oneshot in `DomainSession.pending_interactions`
+/// when emitting these variants.
 pub enum SessionUpdate {
     /// Workspace has synthesized a spawning state for a project /
     /// session wake (in response to `Command::SpawnProject` /

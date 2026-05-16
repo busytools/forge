@@ -299,10 +299,10 @@ pub struct App {
     /// Toggled by Ctrl+X and applied at render/layout time.
     pub tools_collapsed: bool,
     /// Whether the Wide-tier Projects pane is currently visible.
-    /// Toggled by Ctrl+B at Wide / Medium tiers; persisted to
-    /// `forge-state.toml`. Default `true`. Has no effect at Narrow
-    /// tier — that tier renders the top bar unconditionally and
-    /// uses [`Self::projects_pane_overlay_open`] for the on-demand
+    /// Toggled by Ctrl+B at Wide / Medium tiers. In-memory only —
+    /// each launch starts visible. Has no effect at Narrow tier —
+    /// that tier renders the top bar unconditionally and uses
+    /// [`Self::projects_pane_overlay_open`] for the on-demand
     /// overlay.
     pub projects_pane_visible: bool,
     /// Whether the Narrow-tier Projects overlay is currently open.
@@ -313,8 +313,8 @@ pub struct App {
     pub projects_pane_overlay_open: bool,
     /// Whether the Wide/Medium-tier Inspector pane is currently
     /// visible (right side, mirror of [`Self::projects_pane_visible`]).
-    /// Toggled by Ctrl+E; persisted to `forge-state.toml`. Default
-    /// `true`. Has no effect at Narrow tier — that tier uses
+    /// Toggled by Ctrl+E. In-memory only — each launch starts visible.
+    /// Has no effect at Narrow tier — that tier uses
     /// [`Self::inspector_pane_overlay_open`] for the on-demand
     /// overlay.
     pub inspector_pane_visible: bool,
@@ -1344,10 +1344,6 @@ impl App {
     pub fn pending_command_ack_mut(&mut self) -> &mut Option<PendingCommandAck> {
         &mut self.active_bucket_mut().pending_command_ack
     }
-
-    // `pending_auto_submit_after_cancel` getter/setter removed
-    // 2026-05-13 along with the underlying field — submit dispatches
-    // immediately now. See `UiSession::pending_echo_bubbles`.
 
     pub fn selection(&self) -> Option<&SelectionState> {
         self.active_session().and_then(|s| s.selection.as_ref())
@@ -2649,20 +2645,12 @@ mod tests {
         );
     }
 
-    /// Regression: when forge boots without an argv project from
-    /// inside a project directory, the pre-connect bucket's `cwd_raw`
-    /// collides with the auto_started project's running bucket
-    /// Regression: the bug that started this whole saga was the
-    /// pre-connect bucket's `cwd_raw` being seeded from
-    /// `std::env::current_dir()`, which collided with the
-    /// matching project's `path` from `forge.toml` whenever forge
-    /// was launched from inside that project's directory. The
-    /// architectural fix is to NOT seed `cwd_raw` from env at all —
-    /// `forge.toml` is the source of truth. In launchpad mode (no
-    /// argv project picked), the pre-connect bucket's `cwd_raw`
-    /// stays empty, so it cannot collide with any project lookup.
-    /// This test pins that invariant for `test_default`'s pre-connect
-    /// bucket (which mirrors the production pre-connect seed shape).
+    /// Regression: the pre-connect bucket's `cwd_raw` must not be
+    /// seeded from `std::env::current_dir()` — forge.toml is the
+    /// source of truth (Hard Rule #15). In launchpad mode (no argv
+    /// project), the pre-connect bucket's `cwd_raw` stays empty so
+    /// it cannot collide with any project lookup. This test pins
+    /// that invariant for `test_default`'s pre-connect bucket.
     #[test]
     fn test_default_pre_connect_bucket_does_not_collide_with_project_paths() {
         let app = App::test_default();
