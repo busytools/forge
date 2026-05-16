@@ -428,15 +428,6 @@ pub(super) fn convert_tool_status(status: &str) -> model::ToolCallStatus {
     }
 }
 
-pub(crate) fn convert_plan_entry(entry: types::PlanEntry) -> model::PlanEntry {
-    let status = match entry.status.as_str() {
-        "in_progress" => model::PlanEntryStatus::InProgress,
-        "completed" => model::PlanEntryStatus::Completed,
-        _ => model::PlanEntryStatus::Pending,
-    };
-    model::PlanEntry::new(entry.content, model::PlanEntryPriority::Medium, status)
-}
-
 pub(crate) fn convert_mode_state(mode: types::ModeState) -> ModeState {
     let available_modes: Vec<ModeInfo> =
         mode.available_modes.into_iter().map(|m| ModeInfo { id: m.id, name: m.name }).collect();

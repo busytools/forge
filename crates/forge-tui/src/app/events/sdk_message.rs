@@ -238,38 +238,21 @@ fn walk_assistant_content(
 }
 
 /// When the assistant invokes the TodoWrite tool with a `todos`
-/// array, apply the plan via the existing `apply_plan_todos` handler.
+/// array, parse the wire JSON into `TodoItem`s and apply them.
+/// Uses the same parser as the `parse_todos_if_present` path so
+/// `activeForm` is preserved (previously dropped via a model::Plan
+/// detour that had no `active_form` field).
 fn apply_plan_if_todo_write(app: &mut App, name: &str, input: &Value) {
-    use crate::agent::model;
-    use crate::app::connect::type_converters::convert_plan_entry;
-    use forge_primitives as types;
-
     if name != "TodoWrite" {
         return;
     }
-    let Some(todos) = input.as_object().and_then(|r| r.get("todos")).and_then(Value::as_array)
-    else {
+    let Some(todos) = crate::app::todos::parse_todos_if_present(input) else {
         return;
     };
-    let wire_entries: Vec<types::PlanEntry> = todos
-        .iter()
-        .filter_map(|todo| {
-            let r = todo.as_object()?;
-            let content = r.get("content").and_then(Value::as_str)?.to_owned();
-            if content.is_empty() {
-                return None;
-            }
-            let status = r.get("status").and_then(Value::as_str).unwrap_or("pending").to_owned();
-            let active_form = status.clone();
-            Some(types::PlanEntry { content, status, active_form })
-        })
-        .collect();
-    if wire_entries.is_empty() {
+    if todos.is_empty() {
         return;
     }
-    let entries: Vec<model::PlanEntry> = wire_entries.into_iter().map(convert_plan_entry).collect();
-    let plan = model::Plan::new(entries);
-    crate::app::todos::apply_plan_todos(app, &plan);
+    crate::app::todos::set_todos(app, todos);
 }
 
 fn handle_user(app: &mut App, msg: Message) {

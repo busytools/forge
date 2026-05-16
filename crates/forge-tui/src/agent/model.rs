@@ -376,50 +376,6 @@ pub use forge_primitives::session_update::{
     BashOutputMetadata, TaskMetadata, ToolOutputMetadata, TodoWriteOutputMetadata,
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum PlanEntryPriority {
-    High,
-    Medium,
-    Low,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum PlanEntryStatus {
-    Pending,
-    InProgress,
-    Completed,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PlanEntry {
-    pub content: String,
-    pub priority: PlanEntryPriority,
-    pub status: PlanEntryStatus,
-}
-
-impl PlanEntry {
-    pub fn new(
-        content: impl Into<String>,
-        priority: PlanEntryPriority,
-        status: PlanEntryStatus,
-    ) -> Self {
-        Self { content: content.into(), priority, status }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Plan {
-    pub entries: Vec<PlanEntry>,
-}
-
-impl Plan {
-    pub fn new(entries: Vec<PlanEntry>) -> Self {
-        Self { entries }
-    }
-}
-
 pub use forge_primitives::runtime::AvailableCommand;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
