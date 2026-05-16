@@ -146,8 +146,6 @@ impl Workspace {
         })
     }
 
-    /// Every project listed in `forge.toml`, each carrying its catalog
-    /// sessions sorted by last-activity descending — `sessions[0]` is
     /// Return the names of all orgs in declaration order, paired
     /// with their pinned account list. The Projects pane uses this
     /// to drive the org-grouped tree render.
@@ -171,8 +169,10 @@ impl Workspace {
         self.config.auto_start_projects().map(|p| p.name.clone()).collect()
     }
 
-    /// the lead. Empty `sessions` means the project has nothing on disk
-    /// yet; the project still surfaces in the returned Vec.
+    /// Every project listed in `forge.toml`, each carrying its catalog
+    /// sessions sorted by last-activity descending — `sessions[0]` is
+    /// the lead. Empty `sessions` means the project has nothing on
+    /// disk yet; the project still surfaces in the returned Vec.
     pub fn list_projects(&self) -> Vec<ProjectView> {
         let open_sessions: std::collections::HashSet<SessionKey> =
             self.pool.lock().keys().cloned().collect();

@@ -1006,6 +1006,63 @@ mod tests {
         );
     }
 
+    /// `SessionTask::translate_event` on `AgentEvent::SessionReplaced`
+    /// (the explicit `/resume`/`/login` path) drains
+    /// `pending_interactions` symmetrically with the
+    /// second-`Connected` case.
+    #[test]
+    fn translate_session_replaced_drains_pending_interactions() {
+        use tokio::sync::oneshot;
+
+        let (handle, _commands_rx) = Agent::testing_stub();
+        let (_cmd_tx, command_rx) = tokio::sync::mpsc::unbounded_channel::<crate::protocol::Command>();
+        let (update_tx, _update_rx) = tokio::sync::mpsc::unbounded_channel::<SessionUpdate>();
+        let domain = Arc::new(parking_lot::Mutex::new(empty_domain()));
+        {
+            let (response_tx, _response_rx) = oneshot::channel::<forge_primitives::PermissionOutcome>();
+            domain
+                .lock()
+                .pending_interactions
+                .insert("stale_tool_id".to_owned(), PendingInteractionSlot::Permission(response_tx));
+        }
+        let mut task = SessionTask {
+            key: SessionKey::from_str_for_test("old-uuid"),
+            handle: Arc::new(handle),
+            command_rx,
+            domain: Arc::clone(&domain),
+            update_tx,
+            spawn_key: None,
+            connected_once: true,
+            workspace: std::sync::Weak::new(),
+        };
+
+        task.translate_event(AgentEvent::SessionReplaced {
+            session_id: "new-uuid".to_owned(),
+            cwd: "/proj".to_owned(),
+            current_model: forge_primitives::CurrentModel {
+                resolved_id: "claude".to_owned(),
+                display_name_short: "claude".to_owned(),
+                display_name_long: "claude".to_owned(),
+                requested_id: None,
+                catalog_id: None,
+                supports_effort: false,
+                supported_effort_levels: Vec::new(),
+                supports_fast_mode: None,
+                supports_auto_mode: None,
+                supports_adaptive_thinking: None,
+                is_authoritative: true,
+            },
+            available_models: Vec::new(),
+            mode: None,
+            history_updates: None,
+        });
+
+        assert!(
+            domain.lock().pending_interactions.is_empty(),
+            "SessionReplaced must clear stale pending_interactions",
+        );
+    }
+
     /// Common harness for the `execute_command_via_handle` tests
     /// below: build a fresh stub handle + drain channel, return both.
     fn stub_handle_with_rx()
