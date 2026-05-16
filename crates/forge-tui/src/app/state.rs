@@ -2492,15 +2492,19 @@ impl App {
     }
 
     fn focus_context(&self) -> FocusContext {
-        FocusContext::new(
-            // Todo list focus is gone — the bottom todo panel was
-            // replaced by the Inspector pane (right side), which is
-            // mouse-only / read-only and never claims keyboard focus.
-            false,
-            self.autocomplete_focus_available(),
-            !self.pending_interaction_ids().is_empty(),
-        )
-        .with_help(self.is_help_active())
+        let mut ctx = FocusContext::empty();
+        // TodoList focus is intentionally never enabled — the bottom
+        // todo panel was replaced by the read-only Inspector pane.
+        if self.autocomplete_focus_available() {
+            ctx = ctx.with(FocusTarget::Mention);
+        }
+        if !self.pending_interaction_ids().is_empty() {
+            ctx = ctx.with(FocusTarget::Permission);
+        }
+        if self.is_help_active() {
+            ctx = ctx.with(FocusTarget::Help);
+        }
+        ctx
     }
 }
 
