@@ -372,96 +372,9 @@ impl ToolCallUpdate {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub struct TodoWriteOutputMetadata {
-    pub verification_nudge_needed: Option<bool>,
-}
-
-impl TodoWriteOutputMetadata {
-    pub fn new() -> Self {
-        Self { verification_nudge_needed: None }
-    }
-
-    pub fn verification_nudge_needed(mut self, verification_nudge_needed: Option<bool>) -> Self {
-        self.verification_nudge_needed = verification_nudge_needed;
-        self
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub struct BashOutputMetadata {
-    pub assistant_auto_backgrounded: Option<bool>,
-}
-
-impl BashOutputMetadata {
-    pub fn new() -> Self {
-        Self { assistant_auto_backgrounded: None }
-    }
-
-    pub fn assistant_auto_backgrounded(
-        mut self,
-        assistant_auto_backgrounded: Option<bool>,
-    ) -> Self {
-        self.assistant_auto_backgrounded = assistant_auto_backgrounded;
-        self
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub struct ToolOutputMetadata {
-    pub bash: Option<BashOutputMetadata>,
-    pub todo_write: Option<TodoWriteOutputMetadata>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub struct TaskMetadata {
-    pub end_time: Option<u64>,
-    pub total_paused_ms: Option<u64>,
-    pub error: Option<String>,
-    pub is_backgrounded: Option<bool>,
-}
-
-impl TaskMetadata {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn end_time(mut self, end_time: Option<u64>) -> Self {
-        self.end_time = end_time;
-        self
-    }
-
-    pub fn total_paused_ms(mut self, total_paused_ms: Option<u64>) -> Self {
-        self.total_paused_ms = total_paused_ms;
-        self
-    }
-
-    pub fn error(mut self, error: Option<String>) -> Self {
-        self.error = error;
-        self
-    }
-
-    pub fn backgrounded(mut self, is_backgrounded: Option<bool>) -> Self {
-        self.is_backgrounded = is_backgrounded;
-        self
-    }
-}
-
-impl ToolOutputMetadata {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn bash(mut self, bash: Option<BashOutputMetadata>) -> Self {
-        self.bash = bash;
-        self
-    }
-
-    pub fn todo_write(mut self, todo_write: Option<TodoWriteOutputMetadata>) -> Self {
-        self.todo_write = todo_write;
-        self
-    }
-}
+pub use forge_primitives::session_update::{
+    BashOutputMetadata, TaskMetadata, ToolOutputMetadata, TodoWriteOutputMetadata,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
