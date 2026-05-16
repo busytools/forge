@@ -55,7 +55,7 @@ config_dir = "/tmp/forge-test-granite"
         .await
         .expect("first spawn");
     assert_eq!(
-        h1.config_dir_for_test(),
+        h1.config_dir(),
         PathBuf::from("/tmp/forge-test-subspace"),
         "first spawn binds to Subspace's config_dir (first in pin)",
     );
@@ -68,7 +68,7 @@ config_dir = "/tmp/forge-test-granite"
         .await
         .expect("second spawn");
     assert_eq!(
-        h2.config_dir_for_test(),
+        h2.config_dir(),
         PathBuf::from("/tmp/forge-test-subspace"),
         "second spawn also binds to Subspace's config_dir under cold cache",
     );

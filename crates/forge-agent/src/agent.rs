@@ -43,7 +43,9 @@ impl AgentHandle {
         self.agent_events.lock().take()
     }
 
-    /// Direct-accessor passthrough — delegates to `ForgeSdkBridge::config_dir`.
+    // Direct-accessor passthroughs to the bridge. Each method
+    // simply forwards arguments — no transform.
+
     pub fn config_dir(&self) -> PathBuf {
         self.bridge.config_dir()
     }
@@ -55,22 +57,18 @@ impl AgentHandle {
         self.bridge.claude_pid()
     }
 
-    /// Direct-accessor passthrough.
     pub fn project_memory_path(&self, cwd: &Path) -> PathBuf {
         self.bridge.project_memory_path(cwd)
     }
 
-    /// Direct-accessor passthrough.
     pub fn oauth_credentials(&self) -> Option<crate::cloud::oauth_credentials::OauthCredentials> {
         self.bridge.oauth_credentials()
     }
 
-    /// Direct-accessor passthrough.
     pub fn settings_documents(&self, cwd: &Path) -> crate::userdata::settings::SettingsDocuments {
         self.bridge.settings_documents(cwd)
     }
 
-    /// Direct-accessor passthrough.
     pub fn write_settings_document(
         &self,
         target: &crate::userdata::settings::SettingsTarget,
@@ -79,24 +77,11 @@ impl AgentHandle {
         self.bridge.write_settings_document(target, document)
     }
 
-    /// Direct-accessor passthrough.
     pub async fn oauth_usage(
         &self,
     ) -> Result<crate::cloud::oauth_usage::OauthUsage, crate::cloud::oauth_usage::OauthUsageError>
     {
         self.bridge.oauth_usage().await
-    }
-
-    /// Test-only accessor returning a clone of the bridge's bound
-    /// `config_dir`. Hidden from public docs; production code reads
-    /// the path via the spawn path or via [`AgentHandle::config_dir`].
-    /// `#[doc(hidden)] pub` rather than `#[cfg(test)]` so integration
-    /// tests in sibling crates' `tests/` directories can reach it
-    /// (Rust's `#[cfg(test)]` items aren't visible across crate
-    /// boundaries).
-    #[doc(hidden)]
-    pub fn config_dir_for_test(&self) -> PathBuf {
-        self.bridge.config_dir()
     }
 
     /// Returns a clone of the bridge's bound forge-account
