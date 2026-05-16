@@ -265,8 +265,6 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
 /// session is focused (the StartDefault target after `forge.toml`'s
 /// `focus = true` project's Connected fires), subsequent
 /// auto_start projects' `Spawning` events must NOT steal focus.
-/// This is what made multi-project auto_start drift to whichever
-/// project spawned last before the fix.
 ///
 /// Existing buckets (user clicked a stale row to re-wake) still
 /// switch focus — that's an explicit user action, not a passive

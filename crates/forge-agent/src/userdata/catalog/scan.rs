@@ -14,8 +14,6 @@
 //! recurse into nested subdirectories (e.g. `workflows/<run_id>/`)
 //! to match the CLI's on-disk layout.
 
-#![allow(clippy::needless_pass_by_value)]
-
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
@@ -99,12 +97,12 @@ fn canonicalize_path(path: &str) -> String {
 pub fn list_subagents(
     config_dir: &Path,
     session_id: &str,
-    directory: Option<String>,
+    directory: Option<&str>,
 ) -> Vec<String> {
     if !is_valid_uuid(session_id) {
         return Vec::new();
     }
-    let Some(subagents_dir) = resolve_subagents_dir(config_dir, session_id, directory.as_deref())
+    let Some(subagents_dir) = resolve_subagents_dir(config_dir, session_id, directory)
     else {
         return Vec::new();
     };
@@ -124,14 +122,14 @@ pub fn get_subagent_messages(
     config_dir: &Path,
     session_id: &str,
     agent_id: &str,
-    directory: Option<String>,
+    directory: Option<&str>,
     limit: Option<usize>,
     offset: usize,
 ) -> Vec<SessionMessage> {
     if !is_valid_uuid(session_id) || agent_id.is_empty() {
         return Vec::new();
     }
-    let Some(subagents_dir) = resolve_subagents_dir(config_dir, session_id, directory.as_deref())
+    let Some(subagents_dir) = resolve_subagents_dir(config_dir, session_id, directory)
     else {
         return Vec::new();
     };
@@ -356,12 +354,12 @@ const LIST_SESSIONS_MAX_CONCURRENT: usize = 16;
 /// Never — filesystem errors fall through and produce an empty Vec.
 pub async fn list_sessions(
     config_dir: &Path,
-    directory: Option<String>,
+    directory: Option<&str>,
     limit: Option<usize>,
     offset: usize,
 ) -> Vec<SDKSessionInfo> {
     let search_dirs: Vec<PathBuf> = if let Some(dir) = directory {
-        vec![project_dir_for(config_dir, &dir)]
+        vec![project_dir_for(config_dir, dir)]
     } else {
         try_read_dir(&projects_dir_for(config_dir))
             .map(|iter| {
@@ -423,14 +421,14 @@ pub async fn list_sessions(
 pub fn get_session_info(
     config_dir: &Path,
     session_id: &str,
-    directory: Option<String>,
+    directory: Option<&str>,
 ) -> Option<SDKSessionInfo> {
     if !is_valid_uuid(session_id) {
         return None;
     }
     let file_name = format!("{session_id}.jsonl");
     if let Some(dir) = directory {
-        return read_session_info(&project_dir_for(config_dir, &dir).join(&file_name));
+        return read_session_info(&project_dir_for(config_dir, dir).join(&file_name));
     }
     let projects = projects_dir_for(config_dir);
     let iter = try_read_dir(&projects)?;
@@ -448,14 +446,14 @@ pub fn get_session_info(
 pub fn get_session_messages(
     config_dir: &Path,
     session_id: &str,
-    directory: Option<String>,
+    directory: Option<&str>,
 ) -> Vec<SessionMessage> {
     if !is_valid_uuid(session_id) {
         return Vec::new();
     }
     let file_name = format!("{session_id}.jsonl");
     let candidate = if let Some(dir) = directory {
-        Some(project_dir_for(config_dir, &dir).join(&file_name))
+        Some(project_dir_for(config_dir, dir).join(&file_name))
     } else {
         try_read_dir(&projects_dir_for(config_dir)).and_then(|iter| {
             iter.flatten().map(|e| e.path().join(&file_name)).find(|p| p.is_file())

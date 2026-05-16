@@ -11,10 +11,9 @@
 //! mpsc serialises onto stdin in arrival order, and each
 //! `request_id` gets its own oneshot waiter.
 //!
-//! Session forking lives elsewhere: the spawn-time
-//! [`Options::fork_session`](crate::Options) flag (surfaced via
-//! `--fork-session`) and the offline `fork_session` free function in
-//! `forge_agent::userdata::catalog::mutations`.
+//! Session forking lives in the offline `fork_session` free function
+//! in `forge_agent::userdata::catalog::mutations` — there's no runtime
+//! `control_request` subtype for it.
 
 use crate::Error;
 use crate::client::Client;

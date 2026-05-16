@@ -3699,9 +3699,10 @@ mod tests {
         assert!(app.active_task_ids().is_empty());
     }
 
-    /// `clear_tool_scope_tracking` must also clear `active_task_ids`.
-    /// Regression test: before the fix, a leaked task ID from a cancelled turn
-    /// caused main-agent tools on the next turn to be misclassified as Subagent scope.
+    /// `clear_tool_scope_tracking` must also clear `active_task_ids`;
+    /// a leaked task ID from a cancelled turn would otherwise cause
+    /// main-agent tools on the next turn to be misclassified as
+    /// Subagent scope.
     #[test]
     fn clear_tool_scope_tracking_also_clears_active_task_ids() {
         let mut app = make_test_app();

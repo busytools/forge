@@ -286,7 +286,7 @@ fn load_history_messages(
     cwd: &str,
     session_id: &str,
 ) -> Vec<forge_primitives::Message> {
-    let dir = if cwd.is_empty() { None } else { Some(cwd.to_owned()) };
+    let dir = if cwd.is_empty() { None } else { Some(cwd) };
     let messages =
         crate::userdata::catalog::scan::get_session_messages(config_dir, prev_session_id, dir);
     let raw: Vec<serde_json::Value> = messages
@@ -324,7 +324,7 @@ async fn list_recent_sessions(
 ) -> Vec<forge_primitives::SessionListEntry> {
     use forge_primitives::SessionListEntry;
     const MAX_RECENT: usize = 50;
-    let dir = if cwd.is_empty() { None } else { Some(cwd.to_owned()) };
+    let dir = if cwd.is_empty() { None } else { Some(cwd) };
     crate::userdata::catalog::scan::list_sessions(config_dir, dir, Some(MAX_RECENT), 0)
         .await
         .into_iter()

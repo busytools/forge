@@ -113,12 +113,11 @@ pub(super) fn request_cancel(app: &mut App) -> Result<(), String> {
 /// `active_turn_assistant_idx` onto a fresh assistant placeholder
 /// at the tail. Claude's continuing wire tokens then land in that
 /// new placeholder, below the user's new bubble — append-only
-/// geometry
-/// regardless of whether a turn is already in flight. Claude's
-/// internal `gO6` queue folds the mid-turn prompt into the next
+/// geometry regardless of whether a turn is already in flight. The
+/// CLI queues the mid-turn prompt and folds it into the next
 /// user→model envelope (typically the tool_result cycle), so the
-/// response to the queued prompt naturally streams into the new
-/// asst bubble alongside whatever turn-1 continuation arrives.
+/// response to the queued prompt streams into the new asst bubble
+/// alongside whatever turn-1 continuation arrives.
 ///
 /// Pure-text turns with no tool cycle leave a small artifact: any
 /// turn-1 tokens that arrive between the submit and `result` land

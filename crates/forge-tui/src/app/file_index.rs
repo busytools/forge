@@ -124,7 +124,6 @@ pub fn ensure_started(app: &mut App) {
     let current_root = PathBuf::from(app.cwd_raw());
     let needs_restart = app.file_index_mut().root.as_ref() != Some(&current_root)
         || app.file_index_mut().respect_gitignore != respect_gitignore
-        || (app.file_index_mut().root.is_none())
         || (!app.file_index_mut().scan_finished && app.file_index_mut().scan.is_none());
     if needs_restart {
         restart(app);

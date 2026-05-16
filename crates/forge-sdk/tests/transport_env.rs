@@ -5,8 +5,6 @@
 //! - `CLAUDE_CODE_ENTRYPOINT=sdk-rs` (forge-sdk's own attribution —
 //!   upstream Python SDK stamps `sdk-py` here; we identify as Rust).
 //! - `CLAUDE_AGENT_SDK_VERSION=<crate version>`
-//! - `CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING=true` (when
-//!   `Options::enable_file_checkpointing`).
 //! - `PWD=<cwd>` (when `Options::cwd`).
 //!
 //! Filtering of `CLAUDECODE` (upstream #573) is not covered by a

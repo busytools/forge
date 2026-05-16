@@ -1147,10 +1147,9 @@ pub(super) fn toggle_all_tool_calls(app: &mut App) {
 /// Tier-aware Ctrl+B handler.
 ///
 /// At Wide / Medium tiers (terminal width ≥ `MEDIUM_TIER_MIN_WIDTH`)
-/// this toggles the inline pane's persisted visibility — same
-/// behaviour as Phases 2b-α / 2b-β. At Narrow tier it toggles the
-/// transient `projects_pane_overlay_open` flag, opening or closing
-/// the full-screen overlay rendered by
+/// this toggles the inline pane's persisted visibility. At Narrow
+/// tier it toggles the transient `projects_pane_overlay_open` flag,
+/// opening or closing the full-screen overlay rendered by
 /// [`crate::ui::projects_pane::render_overlay`].
 ///
 /// Both the inline-pane visibility and the overlay flag are
