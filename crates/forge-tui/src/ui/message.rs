@@ -1198,7 +1198,6 @@ fn preprocess_markdown(text: &str) -> String {
 /// 1. `BlockCache` (full block) -- hit for completed messages (no changes).
 /// 2. `IncrementalMarkdown` (per-paragraph) -- only tail paragraph re-parsed during streaming.
 pub(super) fn render_text_cached(
-    text: &str,
     cache: &mut BlockCache,
     incr: &mut IncrementalMarkdown,
     width: u16,
@@ -1231,7 +1230,6 @@ pub(super) fn render_text_cached(
     let render_key = MarkdownRenderKey { width, bg, preserve_newlines };
 
     // Ensure any previously invalidated paragraph caches are re-rendered
-    let _ = text;
     incr.ensure_rendered(render_key, &render_fn);
 
     // Render: cached paragraphs + fresh tail
@@ -1258,15 +1256,7 @@ fn render_text_block_cached(
     preserve_newlines: bool,
     out: &mut Vec<Line<'static>>,
 ) {
-    render_text_cached(
-        &block.text,
-        &mut block.cache,
-        &mut block.markdown,
-        width,
-        bg,
-        preserve_newlines,
-        out,
-    );
+    render_text_cached(&mut block.cache, &mut block.markdown, width, bg, preserve_newlines, out);
 }
 
 /// Convert single line breaks into hard breaks so user-entered newlines persist.

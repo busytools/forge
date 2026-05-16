@@ -26,7 +26,6 @@ struct TableRenderPolicy {
     preferred_spacing: usize,
     min_spacing: usize,
     min_column_width: usize,
-    allow_stacked_fallback: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -82,7 +81,6 @@ impl DocumentTable {
             preferred_spacing: 3,
             min_spacing: 1,
             min_column_width: 4,
-            allow_stacked_fallback: true,
         };
         let layout = resolve_layout(self, usize::from(width), policy);
         match layout.mode {
@@ -375,7 +373,6 @@ fn resolve_layout(
         return layout;
     }
 
-    let _ = policy.allow_stacked_fallback;
     ResolvedTableLayout { mode: TableLayoutMode::Stacked, column_widths: Vec::new(), spacing: 0 }
 }
 

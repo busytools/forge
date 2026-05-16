@@ -271,14 +271,14 @@ fn parse_name_status(raw: &str) -> Vec<FileHunks> {
 ///
 /// - Per-file: section IS matched but `parse_hunks` produced zero
 ///   hunks AND the section text contained at least one `@@` line.
-///   Signals a parser gap (round-3 added this).
+///   Signals a parser gap.
 /// - Batched: name-status-listed files that had no matching key in
-///   `split_per_file`'s map at all. After the round-4 path_from_section
-///   extensions (rename/mode/binary now resolve cleanly) this case
-///   should be extremely rare — only path-encoding drift between
-///   the two `git diff` subprocesses can produce it. The WARN
-///   names the unmatched paths so an operator hunting "I edited
-///   this file but it shows as no-diff" has the breadcrumb.
+///   `split_per_file`'s map at all. `path_from_section` resolves
+///   rename / mode / binary entries cleanly, so this case is rare
+///   — only path-encoding drift between the two `git diff`
+///   subprocesses can produce it. The WARN names the unmatched
+///   paths so an operator hunting "I edited this file but it
+///   shows as no-diff" has the breadcrumb.
 fn merge_hunks(files: &mut [FileHunks], diff_content: &str) {
     let sections = split_per_file(diff_content);
     let mut unmatched: Vec<String> = Vec::new();

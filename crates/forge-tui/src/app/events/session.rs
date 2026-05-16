@@ -253,10 +253,8 @@ pub(super) fn handle_auth_required_event(
         super::turn::finalize_background_tool_calls(session, model::ToolCallStatus::Failed);
         session.active_turn_assistant_message_idx = None;
         session.turn_notice_refs.clear();
-        // Flip the bucket's lifecycle state so the Projects pane glyph
-        // reflects the auth-blocked condition. Pre-Phase-5 the workspace
-        // wrote this; with operational state back on UiSession the
-        // reducer owns it directly.
+        // Flip the bucket's lifecycle state so the Projects pane
+        // glyph reflects the auth-blocked condition.
         session.lifecycle_state = crate::app::session::SessionLifecycleState::AuthRequired;
         let _ = session;
         // Mirror session_id reset onto the workspace's DomainSession
