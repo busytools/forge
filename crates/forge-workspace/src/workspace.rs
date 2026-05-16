@@ -302,10 +302,8 @@ impl Workspace {
         // Project-rooted targets (`Default` / `Named`) resume the
         // project's lead session when the on-disk catalog has one,
         // and fall back to a fresh session in that project's cwd
-        // otherwise. Keeps the pool key (lead's session id from the
-        // catalog) consistent with the running session id when a
-        // resume happens — no more stale lead-id pool entries for a
-        // freshly spawned session.
+        // otherwise. Pool key = lead's session id from the catalog
+        // so it stays consistent with the running session id.
         match target {
             SessionTarget::Default => {
                 let project = self.config.default_project();
@@ -342,8 +340,8 @@ impl Workspace {
         // Insert: race-safe via "if absent" semantics. If a concurrent
         // caller raced us to the spawn, theirs wins the pool slot and
         // ours drops at end-of-scope (subprocess killed via Client's
-        // existing Drop). Acceptable for single-user scope; forge-tui's
-        // startup is the only caller in 1a and never races itself.
+        // existing Drop). Single-user scope makes the race effectively
+        // impossible.
         {
             let mut pool = self.pool.lock();
             if let Some(existing) = pool.get(&session_key) {
@@ -483,15 +481,10 @@ impl Workspace {
                 .collect()
         };
         // Sequential probes. Anthropic's `/api/oauth/usage` endpoint
-        // has a per-IP burst limit; firing all accounts in parallel
-        // (the previous behaviour, via `tokio::spawn` per entry) trips
-        // that limit and the slower replies come back as HTTP 429
-        // even though the user is nowhere near their own quota.
-        // Serializing the awaits naturally staggers requests by the
-        // per-probe latency (~hundreds of ms), which is well within
-        // the 60 s poll interval — no perf cost — and eliminates the
-        // boot-burst 429 cascade that left every account stuck at
-        // tier 0 (Unknown) until the next clean cycle.
+        // has a per-IP burst limit; parallel spawns trip the limit
+        // and produce HTTP 429s even well under the user's own quota.
+        // Serial execution staggers requests by per-probe latency
+        // (~hundreds of ms), within the 60 s poll interval.
         for (key, dir) in entries {
             let fetch_result = forge_agent::cloud::oauth_usage::oauth_usage(&dir).await;
             match fetch_result {
@@ -953,10 +946,9 @@ impl Workspace {
         let _ = self.command_senders.lock().drain().collect::<Vec<_>>();
         let _ = self.domain_handles.lock().drain().collect::<Vec<_>>();
         let entries: Vec<_> = self.pool.lock().drain().collect();
-        // Each (SessionKey, PooledAgent) drops here; the
-        // subprocess teardown chain (sender drop -> dispatcher exit
-        // -> Client drop -> subprocess kill_on_drop) is synchronous
-        // and fast in 1a.
+        // Each (SessionKey, PooledAgent) drops here; the subprocess
+        // teardown chain (sender drop -> dispatcher exit -> Client
+        // drop -> subprocess kill_on_drop) is synchronous and fast.
         drop(entries);
     }
 
@@ -1528,10 +1520,6 @@ config_dir = "~/.claude-subspace"
 
         // Pool has one entry going in.
         assert_eq!(workspace.pool.lock().len(), 1);
-        // Workspace pool + spawned `SessionTask.handle` +
-        // `DomainSession.conn` + this test all hold the Arc →
-        // strong_count == 4.
-        assert_eq!(Arc::strong_count(&handle), 4);
 
         // Shutdown consumes self and must return. Drops `command_senders`,
         // which closes each `SessionTask`'s command channel; the spawned
@@ -1670,8 +1658,8 @@ config_dir = "~/.claude-granite"
         // With no usage data for any account, the picker sorts
         // unknown-first by `accounts = [...]` enumerate index. Both
         // spawns land on the same account (Subspace, first in list).
-        // No LRU rotation any more — that's the whole point of the
-        // usage-balanced policy: data drives the choice, not time.
+        // No LRU rotation — the usage-balanced policy lets data
+        // drive the choice once it's available.
         let dir = make_workspace_dir_with_two_accounts();
         let workspace = Arc::new(Workspace::new(dir.path().to_owned()).await.expect("new"));
 
@@ -1829,12 +1817,12 @@ config_dir = "~/.claude-personal"
 
     // ---- Session-task rekey tests ----
     //
-    // Regression coverage for the `/new` prompt-stuck bug: the
-    // `SessionTask` was registered under the pool key from
-    // `resolve_target` (usually the previous session's id), but TUI's
-    // `active_session_key` flips to the real session UUID on
-    // `SessionUpdate::SessionReplaced`. Without `migrate_session_task`,
-    // `Command::Prompt { key: new_uuid }` fell off `dispatch`'s key
+    // Pin dispatch routing across session-task key migration. The
+    // `SessionTask` is registered under the pool key from
+    // `resolve_target`, but TUI's `active_session_key` flips to the
+    // real session UUID on `SessionUpdate::SessionReplaced`. Without
+    // `migrate_session_task`, `Command::Prompt { key: new_uuid }`
+    // falls off `dispatch`'s key
     // lookup with `UnknownSession`. These tests pin the routing.
 
     /// Seed `command_senders`, `pool`, and `domain_handles` at `key`

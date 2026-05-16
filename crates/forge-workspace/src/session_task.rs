@@ -798,11 +798,11 @@ mod tests {
         DomainSession::new(SessionKey::from_str_for_test("test"), Some(Arc::new(handle)))
     }
 
-    /// `apply_event_to_domain` on `AgentEvent::Connected` stamps
-    /// `session_id` so the workspace can route subsequent
-    /// `AgentHandle` calls. The first-Connect path leaves any
-    /// existing session_id alone — the bridge can re-fire this on
-    /// snapshot rebuilds.
+    /// `apply_event_to_domain` on `AgentEvent::Connected` stamps (or
+    /// overwrites) `session_id` so subsequent `AgentHandle` calls
+    /// route to the live identity. See
+    /// `translate_second_connected_overwrites_session_id` for the
+    /// `/new`-flow overwrite case.
     #[test]
     fn translate_connected_stamps_session_id() {
         let mut domain = empty_domain();
