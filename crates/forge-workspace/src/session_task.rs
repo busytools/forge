@@ -27,7 +27,7 @@ pub(crate) struct SessionTask {
     pub(crate) command_rx: mpsc::UnboundedReceiver<Command>,
     pub(crate) domain: Arc<Mutex<DomainSession>>,
     pub(crate) update_tx: mpsc::UnboundedSender<SessionUpdate>,
-    /// Synthetic key tagged by `Workspace::attach_spawn_key` so the
+    /// Synthetic key tagged by `Workspace::get_agent_handle_with_spawn_key` so the
     /// task can emit `SessionUpdate::KeyRenamed { from: spawn_key,
     /// to: real_key }` ahead of the first `Connected` emit. Cleared
     /// after the first migration.

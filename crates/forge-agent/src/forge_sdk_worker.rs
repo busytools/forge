@@ -85,7 +85,7 @@ pub(crate) async fn spawn_session(
     // passes the forge.toml-derived project path; in-session
     // /resume sources the cwd from the session's transcript. An
     // empty cwd is a caller-side bug; log it and pass through. No
-    // `current_dir()` fallback (per Hard Rule #15).
+    // `current_dir()` fallback.
     if cwd.is_empty() {
         tracing::warn!(
             target: crate::logging::targets::BRIDGE_LIFECYCLE,
@@ -391,11 +391,8 @@ pub(crate) async fn send_prompt(
     chunks: Vec<forge_primitives::PromptChunk>,
 ) -> anyhow::Result<()> {
     if chunks.iter().all(|c| c.kind == "text") {
-        let prompt: String = chunks
-            .iter()
-            .map(|c| c.value.as_str().unwrap_or(""))
-            .collect::<Vec<_>>()
-            .join("\n");
+        let prompt: String =
+            chunks.iter().filter_map(|c| c.value.as_str()).collect::<Vec<_>>().join("\n");
         client.send_user_message(&prompt).await?;
     } else {
         let content: Vec<serde_json::Value> = chunks
