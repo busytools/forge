@@ -57,7 +57,10 @@ fn run() -> anyhow::Result<()> {
         // Phase 0: build the workspace orchestrator. Surface its
         // load errors to stderr (TUI hasn't started yet, no tty
         // restoration needed) and exit non-zero.
-        let config_dir = resolve_config_dir();
+        let config_dir = match resolve_config_dir() {
+            Ok(p) => p,
+            Err(err) => return Err(anyhow::anyhow!("forge: {err}")),
+        };
         let workspace = match forge_workspace::Workspace::new(config_dir).await {
             Ok(w) => Arc::new(w),
             Err(err) => return Err(anyhow::anyhow!("forge: {err}")),
@@ -116,14 +119,20 @@ fn run() -> anyhow::Result<()> {
 /// forge-sdk exposes `claude_config_dir_from_env() -> Option<PathBuf>`
 /// for the env-only branch; the host-default fallback lives here so
 /// the SDK stays opinion-free about "what to do when env is unset".
-fn resolve_config_dir() -> PathBuf {
+///
+/// Per hard rule #15 — no cwd-derived fallbacks. When `$CLAUDE_CONFIG_DIR`
+/// is unset/empty AND `dirs::home_dir()` returns None, refuse to launch
+/// rather than substituting `./.claude`.
+fn resolve_config_dir() -> anyhow::Result<PathBuf> {
     if let Ok(value) = std::env::var("CLAUDE_CONFIG_DIR") {
         let trimmed = value.trim_end_matches('/');
         if !trimmed.is_empty() {
-            return PathBuf::from(trimmed);
+            return Ok(PathBuf::from(trimmed));
         }
     }
-    dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")).join(".claude")
+    dirs::home_dir()
+        .map(|h| h.join(".claude"))
+        .ok_or_else(|| anyhow::anyhow!("$CLAUDE_CONFIG_DIR unset and could not resolve home directory"))
 }
 
 fn extract_app_error(err: &anyhow::Error) -> Option<AppError> {
