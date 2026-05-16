@@ -59,13 +59,6 @@ pub struct SessionPickerState {
     pub scroll_offset: usize,
 }
 
-// `QueuedMessage` + `PendingEchoBubble` removed 2026-05-13. Forge
-// no longer maintains any local queue or dim/un-dim state for
-// mid-turn submits — claude's CLI handles in-flight buffering
-// internally, and the chat just appends a regular user bubble per
-// submit. Session resume reconstructs queued messages from the
-// JSONL `type:"attachment"` rows via `forge_agent::userdata::catalog::scan`.
-
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct MessageUsage {
     pub input_tokens: Option<u64>,

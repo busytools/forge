@@ -28,10 +28,9 @@
 //!    only, so the spawn at least returns something rather than
 //!    blocking on an empty pool.
 //!
-//! Without the probe-failure consideration (originally tier 0
-//! collapsed ALL `usage = None` accounts) a perpetually-failing
-//! probe pinned that account at top-of-sort forever and the
-//! picker kept choosing the most-broken account in the pool.
+//! Tier 0 splits truly-cold (no probe yet) from perpetually-failing
+//! (probe failed) so a broken account doesn't pin at top-of-sort
+//! and starve the picker.
 //!
 //! No LRU, no round-robin, no fallback outside the project's pin.
 //! Rate-limited accounts are visible in the panel bars so the user

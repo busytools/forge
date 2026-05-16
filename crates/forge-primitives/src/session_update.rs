@@ -1,10 +1,5 @@
 //! Wire-side support types for streaming session events: content
 //! chunks, tool-call envelopes, tool-output metadata, plan entries.
-//!
-//! The legacy `SessionUpdate` enum that wrapped these types lived
-//! here too; it was deleted when the dispatcher-collapse refactor
-//! (issue #67) routed disk replay through the same raw walker as
-//! live messages, eliminating the typed dispatcher.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;

@@ -478,9 +478,8 @@ fn glyph_for_lifecycle(
 // (cells 1–3 green, 4–6 yellow, 7–9 orange, 10–12 red) so the
 // rightmost filled cell tells you which zone the bar is in.
 //
-// The `📁 cwd` and `⎇ branch` rows that used to live here moved to
-// the right-hand Inspector pane's `GIT` section in the 2026-05-13
-// pane work — see `crate::ui::inspector_pane`.
+// Cwd + branch rows live in the Inspector pane's `GIT` section —
+// see `crate::ui::inspector_pane`.
 // ---------------------------------------------------------------
 
 /// Rows the account panel reserves from the bottom of the pane.

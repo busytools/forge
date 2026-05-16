@@ -2261,11 +2261,10 @@ mod tests {
 
     #[test]
     fn usage_refresh_result_for_unknown_session_key_is_dropped() {
-        // Replaces the old scope-epoch guard. After moving `usage`
-        // onto `UiSession` (per-session bucket), the routing key is
-        // the bucket's `SessionKey`. A result targeting a key that
-        // no longer exists in `app.sessions` (session closed before
-        // the fetch landed) drops silently — no slot to write to.
+        // `usage` lives on `UiSession`, keyed by `SessionKey`. A
+        // result targeting a key that no longer exists in
+        // `app.sessions` (session closed before the fetch landed)
+        // drops silently — no slot to write to.
         let mut app = make_test_app();
         app.set_session_id(Some(model::SessionId::new("active-session")));
 

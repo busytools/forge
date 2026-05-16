@@ -1969,10 +1969,9 @@ config_dir = "~/.claude-personal"
         assert!(workspace.domain_session_for(&to).is_none());
     }
 
-    /// Regression pins for the 2026-05-15 multi-instance 429 bug: the
-    /// poller's failure-branch classifier must distinguish HTTP 429
-    /// from auth-related failures so the TUI's bottom-panel hint
-    /// reads `rate-limited` (the common case under multiple forge
+    /// `classify_oauth_usage_error` must distinguish HTTP 429 from
+    /// auth-related failures so the TUI's bottom-panel hint reads
+    /// `rate-limited` (the common case under multiple forge
     /// instances) rather than collapsing every failure to a single
     /// generic bucket.
     #[test]

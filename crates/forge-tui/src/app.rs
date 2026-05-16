@@ -136,11 +136,9 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
     let mut events = EventStream::new();
     // 4ms tick → ~250 Hz nominal sleep ceiling; practical FPS during
     // animation tops out around 120-150 once render overhead (~3ms
-    // per frame) is included. The previous 8ms tick capped practical
-    // FPS at ~90 because 8ms wait + 3ms render = 11ms ≈ 91 Hz.
-    // Idle state still costs nothing because the render loop skips
-    // when `needs_redraw == false`; only the wakeup cadence increases
-    // (negligible on modern hardware).
+    // per frame) is included. Idle state costs nothing because the
+    // render loop skips when `needs_redraw == false`; only the
+    // wakeup cadence increases (negligible on modern hardware).
     let tick_duration = Duration::from_millis(4);
     let mut last_render = Instant::now();
 
@@ -293,11 +291,10 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
             if let Some(ref mut perf) = app.perf {
                 perf.next_frame();
             }
-            // FPS is computed unconditionally now — the on-screen
-            // overlay is always-on (see `chat_view::render_perf_fps_overlay`),
-            // not gated on the `perf` Cargo feature. Calling
-            // `mark_frame_presented` always keeps the EMA fresh so
-            // the overlay shows real numbers in any build.
+            // FPS overlay is always-on (see
+            // `chat_view::render_perf_fps_overlay`), not gated on the `perf`
+            // Cargo feature. `mark_frame_presented` keeps the EMA fresh so the
+            // overlay shows real numbers in any build.
             app.mark_frame_presented(Instant::now());
             // `Timer` is `Drop`-implementing under `feature = "perf"` and a
             // unit struct otherwise. Explicit `drop()` enforces the desired

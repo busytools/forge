@@ -147,11 +147,10 @@ fn update_visual_heights(
         return stats;
     }
 
-    // Snapshot loop-invariant fields once. `mode_id` was previously
-    // cloned per-iteration; `layout_generation` and `tools_collapsed`
-    // are stable across the remeasure loops below — bumping
-    // `layout_generation` requires a full `sync_message_count` /
-    // resize, which already ran above.
+    // Snapshot loop-invariant fields once. `layout_generation` and
+    // `tools_collapsed` are stable across the remeasure loops below
+    // — bumping `layout_generation` requires a full
+    // `sync_message_count` / resize, which already ran above.
     let mode_id_owned = app.mode().map(|mode| mode.current_mode_id.clone());
     let mode_id = mode_id_owned.as_deref();
     let layout_generation = app.viewport().layout_generation;
@@ -741,10 +740,8 @@ fn render_culled_messages(
     let mut local_scroll = 0usize;
     let mut rendered_rows = 0usize;
     let mut last_rendered_idx = None;
-    // Loop-invariant snapshots — `mode_id` was previously cloned per
-    // iteration, `layout_generation` and `tools_collapsed` re-read on
-    // every pass. Hoisting avoids N String allocations on
-    // remeasure-heavy frames.
+    // Snapshot loop-invariant fields once — hoisting avoids N
+    // String allocations on remeasure-heavy frames.
     let mode_id_owned = app.mode().map(|mode| mode.current_mode_id.clone());
     let mode_id = mode_id_owned.as_deref();
     let layout_generation = app.viewport().layout_generation;

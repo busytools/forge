@@ -53,11 +53,10 @@ impl LoggingRuntime {
         let directives = build_filter_directives(cli);
         let filter = tracing_subscriber::EnvFilter::try_new(directives.as_str())
             .map_err(|e| anyhow::anyhow!("invalid tracing filter `{directives}`: {e}"))?;
-        // Always append: a forge restart immediately after a bug
-        // means the launchpad-mode events that produced the bug were
-        // previously overwritten by the chat-direct restart, making
-        // post-hoc diagnosis impossible. With rotation capped at
-        // 10 MB × 5 files (~50 MB total), the on-disk cost is bounded.
+        // Always append so a restart immediately after a bug
+        // doesn't overwrite the events that produced it. Rotation
+        // capped at 10 MB × 5 files (~50 MB total) bounds the
+        // on-disk cost.
         let writer = RollingFileWriter::new(
             &log_path.path,
             true,

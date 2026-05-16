@@ -109,10 +109,11 @@ pub(super) fn request_cancel(app: &mut App) -> Result<(), String> {
 /// Push a fresh user bubble + an empty assistant placeholder and
 /// dispatch `Command::Prompt`. Always pushes both — idle or mid-turn.
 ///
-/// The mid-turn shape (post 2026-05-14): every submit reparents
-/// `active_turn_assistant_idx` onto a fresh assistant placeholder at
-/// the tail. Claude's continuing wire tokens then land in that new
-/// placeholder, below the user's new bubble — append-only geometry
+/// Mid-turn shape: every submit reparents
+/// `active_turn_assistant_idx` onto a fresh assistant placeholder
+/// at the tail. Claude's continuing wire tokens then land in that
+/// new placeholder, below the user's new bubble — append-only
+/// geometry
 /// regardless of whether a turn is already in flight. Claude's
 /// internal `gO6` queue folds the mid-turn prompt into the next
 /// user→model envelope (typically the tool_result cycle), so the
@@ -158,9 +159,7 @@ fn dispatch_prompt(app: &mut App, text: String) {
     // previous submit pushed that claude never had a chance to
     // fill), drop it before appending. Without this, rapid mid-turn
     // submits accumulate visible empty asst bubbles between user
-    // messages — exactly the artifact the screenshot from 2026-05-14
-    // showed: `restarted lets test`, empty asst, `1`, empty asst,
-    // `2`, …
+    // messages.
     if let Some(tail_idx) = app.messages().len().checked_sub(1) {
         let tail_is_empty_asst = app
             .messages()
@@ -263,9 +262,9 @@ mod tests {
 
     #[test]
     fn submit_input_while_running_appends_bubble_and_reparents_active_idx() {
-        // Mid-turn submit (post 2026-05-14): user bubble appears
-        // immediately AND a fresh empty assistant placeholder is
-        // pushed right after it, with `active_turn_assistant_idx`
+        // Mid-turn submit: user bubble appears immediately AND a
+        // fresh empty assistant placeholder is pushed right after
+        // it, with `active_turn_assistant_idx`
         // reparented onto the new placeholder. Status flips back to
         // Thinking so the spinner attaches to the new placeholder
         // while claude's continuing tokens stream into it. The prompt

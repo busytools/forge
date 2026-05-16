@@ -73,11 +73,9 @@ impl TraceLog {
 /// Install inbound + outbound wire-tee callbacks on a builder so the
 /// resulting [`forge_sdk::Options`] captures every stream-json line
 /// the SDK exchanges with the `claude` subprocess. Returns the
-/// configured builder + a shared handle to the trace log.
-///
-/// Replaces the old `RecordingTransport` wrapper — the SDK no longer
-/// has a public `Transport` trait, and capturing wire bytes is now a
-/// spawn-time configuration concern, not a transport-injection one.
+/// configured builder + a shared handle to the trace log. Wire
+/// capture is a spawn-time configuration concern, not a
+/// transport-injection one.
 pub fn attach_recording(builder: OptionsBuilder) -> (OptionsBuilder, Arc<Mutex<TraceLog>>) {
     let log = Arc::new(Mutex::new(TraceLog::default()));
     let log_in = log.clone();

@@ -274,9 +274,8 @@ pub fn create_app(cli: &Cli, workspace: Arc<forge_workspace::Workspace>) -> App 
 }
 
 /// Kick off the startup connection via the workspace command bus.
-/// Replaces the legacy `bridge_lifecycle::run_connection_task` path
-/// with a single `Command::StartDefault` dispatch — workspace owns
-/// the spawn from there.
+/// Dispatches `Command::StartDefault`; the workspace owns the
+/// spawn from there.
 pub fn start_connection(app: &mut App) {
     if !app.startup_connection_requested || app.connection_started {
         return;
