@@ -169,7 +169,7 @@ pub struct UiSession {
     pub mode: Option<ModeState>,
     /// Hook-observed permission mode. Higher fidelity than [`Self::mode`]
     /// when the CLI changes mode without re-emitting status (#88).
-    pub observed_permission_mode: Option<crate::agent::state::PermissionMode>,
+    pub observed_permission_mode: Option<forge_workspace::PermissionMode>,
     /// Hook-observed effort level. Same pattern as
     /// [`Self::observed_permission_mode`].
     pub observed_effort: Option<model::EffortLevel>,

@@ -20,7 +20,7 @@
 use forge_primitives::Message;
 use serde_json::Value;
 
-use crate::agent::state_parsing::{
+use forge_workspace::translate::state_parsing::{
     build_api_retry_update, build_rate_limit_update, normalize_settings_parse_errors,
     parse_runtime_session_state,
 };
@@ -73,7 +73,7 @@ fn apply_fast_mode_state(app: &mut App, wire_state: forge_primitives::FastModeSt
 /// or doesn't deserialize to a known variant.
 fn apply_fast_mode_state_from_value(app: &mut App, data: &Value) {
     let Some(wire_state) =
-        crate::agent::state_parsing::parse_fast_mode_state(data.get("fast_mode_state"))
+        forge_workspace::translate::state_parsing::parse_fast_mode_state(data.get("fast_mode_state"))
     else {
         return;
     };
@@ -204,7 +204,7 @@ fn walk_assistant_content(
                 );
             }
             ContentBlock::Unknown { type_str, raw }
-                if crate::agent::tooling::is_tool_result_block_type(type_str) =>
+                if forge_workspace::tooling::is_tool_result_block_type(type_str) =>
             {
                 // Wire-side tool-result variants the typed enum
                 // doesn't enumerate: `mcp_tool_result`,
@@ -284,7 +284,7 @@ fn handle_user(app: &mut App, msg: Message) {
         && let Some(tool_use_id) = parent_tool_use_id.as_deref()
         && !tool_use_id.is_empty()
     {
-        let parsed = crate::agent::tooling::unwrap_tool_use_result(result);
+        let parsed = forge_workspace::tooling::unwrap_tool_use_result(result);
         apply_tool_result_block(
             app,
             tool_use_id,
@@ -316,7 +316,7 @@ fn walk_user_tool_results(app: &mut App, content: &[forge_primitives::ContentBlo
                 );
             }
             ContentBlock::Unknown { type_str, raw }
-                if crate::agent::tooling::is_tool_result_block_type(type_str) =>
+                if forge_workspace::tooling::is_tool_result_block_type(type_str) =>
             {
                 // Same fallback as `walk_assistant_content` — wire
                 // tool-result variants outside the typed enum.
@@ -439,7 +439,7 @@ fn apply_tool_use_block(
     input: &Value,
     parent_tool_use_id: Option<&str>,
 ) {
-    use crate::agent::tooling::create_tool_call;
+    use forge_workspace::tooling::create_tool_call;
     use crate::app::connect::type_converters::convert_tool_call;
     use forge_primitives::ToolCallUpdateFields;
 
@@ -486,7 +486,7 @@ fn apply_tool_result_block(
     raw_content: Option<&Value>,
     raw_block: Option<&Value>,
 ) {
-    use crate::agent::tooling::build_tool_result_fields;
+    use forge_workspace::tooling::build_tool_result_fields;
 
     let base = app.with_turn_state(|ts| ts.tool_calls.get(tool_use_id).cloned());
     let fields = build_tool_result_fields(is_error, raw_content, base.as_ref(), raw_block);
@@ -602,8 +602,8 @@ fn handle_system(app: &mut App, msg: Message) {
                     app,
                     &crate::agent::model::CurrentModeUpdate::new(mode_str),
                 );
-                if let Some(parsed) = crate::agent::state::PermissionMode::from_wire(mode_str) {
-                    use crate::agent::commands::supported_mode_ids_filtered;
+                if let Some(parsed) = forge_workspace::PermissionMode::from_wire(mode_str) {
+                    use forge_workspace::commands::supported_mode_ids_filtered;
                     let _: () = app.with_turn_state_mut(|ts| ts.mode = Some(parsed));
                     let supports_auto_mode =
                         app.current_model().is_some_and(|m| m.supports_auto_mode == Some(true));
@@ -741,7 +741,7 @@ fn apply_available_agents_from_init(app: &mut App, data: &Value) {
         return;
     }
     let Some(agents_value) = record.get("agents") else { return };
-    let agents = crate::agent::agents::map_available_agents_from_names(Some(agents_value));
+    let agents = forge_workspace::translate::agents::map_available_agents_from_names(Some(agents_value));
     let signature = serde_json::to_string(&agents).unwrap_or_default();
     let _: () = app.with_turn_state_mut(|ts| ts.last_agents_signature = Some(signature));
     let model_update = crate::app::connect::type_converters::map_available_agents_update(agents);
@@ -761,7 +761,7 @@ fn apply_available_agents_from_init(app: &mut App, data: &Value) {
 /// the footer's effort chip and adaptive-thinking flags after the
 /// first turn lands.
 fn apply_current_model_from_init(app: &mut App, data: &Value) {
-    use crate::agent::session_lifecycle::resolve_current_model_from_inputs;
+    use forge_workspace::session_lifecycle::resolve_current_model_from_inputs;
     use crate::app::connect::type_converters::convert_current_model;
     use forge_primitives as wire;
 
@@ -822,8 +822,8 @@ fn apply_current_model_from_init(app: &mut App, data: &Value) {
 /// `supported_mode_ids` (using the App's current_model auto-mode
 /// support + the bypass flag), then builds a `ModeState` and applies.
 fn apply_mode_state_from_init(app: &mut App, data: &Value) {
-    use crate::agent::commands::{build_mode_state_from_supported, supported_mode_ids_filtered};
-    use crate::agent::state::PermissionMode;
+    use forge_workspace::commands::{build_mode_state_from_supported, supported_mode_ids_filtered};
+    use forge_workspace::PermissionMode;
     use crate::app::connect::type_converters::convert_mode_state;
 
     let Some(record) = data.as_object() else { return };
@@ -1246,8 +1246,8 @@ fn classify_turn_error_kind(
     subtype: &str,
     errors: &[String],
     assistant_error: Option<&str>,
-) -> crate::agent::error_handling::TurnErrorClass {
-    use crate::agent::error_handling::TurnErrorClass;
+) -> forge_workspace::translate::error_handling::TurnErrorClass {
+    use forge_workspace::translate::error_handling::TurnErrorClass;
     let plan_limit_signals =
         ["error_max_turns", "error_max_budget_usd", "billing_error", "rate_limit"];
     if plan_limit_signals.iter().any(|s| subtype.contains(s)) {
@@ -1260,7 +1260,7 @@ fn classify_turn_error_kind(
         return TurnErrorClass::AuthRequired;
     }
     if errors.iter().any(|e| {
-        crate::agent::error_handling::looks_like_auth_required_error_lower(&e.to_ascii_lowercase())
+        forge_workspace::translate::error_handling::looks_like_auth_required_error_lower(&e.to_ascii_lowercase())
     }) {
         return TurnErrorClass::AuthRequired;
     }

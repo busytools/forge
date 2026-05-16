@@ -33,8 +33,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use forge_tui::agent::{AgentEvent, SessionLaunchSettings};
-use forge_workspace::Agent;
+use forge_workspace::{Agent, AgentEvent, SessionLaunchSettings};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 

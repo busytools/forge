@@ -773,7 +773,7 @@ fn apply_hook_observation_presentation(
     agent_type: Option<&str>,
 ) {
     use crate::agent::model::EffortLevel;
-    use crate::agent::state::PermissionMode;
+    use forge_workspace::PermissionMode;
 
     let session_key = SessionKey::from_session_id(session_id.to_owned());
     let is_active = app.active_session_key.as_ref() == Some(&session_key);

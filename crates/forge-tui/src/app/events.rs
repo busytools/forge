@@ -5436,7 +5436,7 @@ mod tests {
 
     #[test]
     fn internal_error_detection_accepts_xml_payload() {
-        use crate::agent::error_handling::looks_like_internal_error;
+        use forge_workspace::translate::error_handling::looks_like_internal_error;
         let payload =
             "<error><code>-32603</code><message>Adapter process crashed</message></error>";
         assert!(looks_like_internal_error(payload));
@@ -5444,14 +5444,14 @@ mod tests {
 
     #[test]
     fn internal_error_detection_rejects_plain_bash_failure() {
-        use crate::agent::error_handling::looks_like_internal_error;
+        use forge_workspace::translate::error_handling::looks_like_internal_error;
         let payload = "bash: unknown_command: command not found";
         assert!(!looks_like_internal_error(payload));
     }
 
     #[test]
     fn summarize_internal_error_prefers_xml_message() {
-        use crate::agent::error_handling::summarize_internal_error;
+        use forge_workspace::translate::error_handling::summarize_internal_error;
         let payload =
             "<error><code>-32603</code><message>Adapter process crashed</message></error>";
         assert_eq!(summarize_internal_error(payload), "Adapter process crashed");
@@ -5459,21 +5459,21 @@ mod tests {
 
     #[test]
     fn summarize_internal_error_reads_json_rpc_message() {
-        use crate::agent::error_handling::summarize_internal_error;
+        use forge_workspace::translate::error_handling::summarize_internal_error;
         let payload = r#"{"jsonrpc":"2.0","error":{"code":-32603,"message":"internal rpc fault"}}"#;
         assert_eq!(summarize_internal_error(payload), "internal rpc fault");
     }
 
     #[test]
     fn internal_error_detection_accepts_permission_zod_payload() {
-        use crate::agent::error_handling::looks_like_internal_error;
+        use forge_workspace::translate::error_handling::looks_like_internal_error;
         let payload = "Tool permission request failed: ZodError: [{\"message\":\"Invalid input\"}]";
         assert!(looks_like_internal_error(payload));
     }
 
     #[test]
     fn summarize_internal_error_prefers_permission_failure_summary() {
-        use crate::agent::error_handling::summarize_internal_error;
+        use forge_workspace::translate::error_handling::summarize_internal_error;
         let payload = "Tool permission request failed: ZodError: [{\"message\":\"Invalid input: expected record, received undefined\"}]";
         assert_eq!(
             summarize_internal_error(payload),

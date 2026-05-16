@@ -1180,14 +1180,14 @@ impl App {
     }
 
     /// Active session's hook-observed permission mode.
-    pub fn observed_permission_mode(&self) -> Option<crate::agent::state::PermissionMode> {
+    pub fn observed_permission_mode(&self) -> Option<forge_workspace::PermissionMode> {
         self.active_session().and_then(|s| s.observed_permission_mode)
     }
 
     /// Set the active session's hook-observed permission mode.
     pub fn set_observed_permission_mode(
         &mut self,
-        value: Option<crate::agent::state::PermissionMode>,
+        value: Option<forge_workspace::PermissionMode>,
     ) {
         self.active_bucket_mut().observed_permission_mode = value;
     }

@@ -4,7 +4,7 @@ use super::super::{
 };
 use super::clear_compaction_state;
 use super::rate_limit::{format_rate_limit_summary, rate_limit_notice_key};
-use crate::agent::error_handling::{TurnErrorClass, classify_turn_error, summarize_internal_error};
+use forge_workspace::translate::error_handling::{TurnErrorClass, classify_turn_error, summarize_internal_error};
 use crate::agent::model;
 use forge_workspace::SessionKey;
 use std::collections::BTreeSet;
