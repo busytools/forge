@@ -326,8 +326,7 @@ fn handle_model_submit(app: &mut App, args: &[&str]) -> bool {
 fn apply_optimistic_model_change(app: &mut App, model_name: &str) {
     use forge_workspace::commands::{build_mode_state_from_supported, supported_mode_ids_filtered};
     use forge_workspace::session_lifecycle::resolve_current_model_from_inputs;
-    use crate::app::connect::type_converters::{convert_current_model};
-
+    
     let _: () = app.with_turn_state_mut(|ts| ts.requested_model_id = Some(model_name.to_owned()));
     let (model_id, resolved_runtime) =
         app.with_turn_state(|ts| (ts.model_id.clone(), ts.resolved_runtime_model_id.clone()));
@@ -337,7 +336,7 @@ fn apply_optimistic_model_change(app: &mut App, model_name: &str) {
         resolved_runtime.as_deref(),
         &[],
     );
-    let next_model = convert_current_model(next_wire);
+    let next_model = next_wire;
     crate::app::events::apply_current_model_update(app, next_model);
 
     let mode_opt = app.with_turn_state(|ts| ts.mode);

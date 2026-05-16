@@ -12,19 +12,6 @@
 use crate::agent::model;
 use forge_primitives as types;
 
-// model::RateLimitStatus and model::RateLimitUpdate now alias the
-// primitives types directly — no conversion needed. Kept as an
-// inline pass-through so the call sites read uniformly with the
-// other map_* helpers.
-pub(crate) fn map_rate_limit_update(update: types::RateLimitUpdate) -> model::RateLimitUpdate {
-    update
-}
-
-// model::ApiRetryError == primitives::ApiRetryError — identity pass-through.
-pub(crate) fn map_api_retry_error(error: types::ApiRetryError) -> model::ApiRetryError {
-    error
-}
-
 pub(crate) fn map_available_commands_update(
     commands: Vec<types::AvailableCommand>,
 ) -> model::AvailableCommandsUpdate {
@@ -75,11 +62,6 @@ pub(crate) fn map_available_models(
             m
         })
         .collect()
-}
-
-// model::CurrentModel == primitives::CurrentModel. Identity transform.
-pub(crate) fn convert_current_model(current_model: types::CurrentModel) -> model::CurrentModel {
-    current_model
 }
 
 pub(crate) fn map_permission_request(

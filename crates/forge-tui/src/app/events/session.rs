@@ -940,7 +940,7 @@ pub(super) fn apply_session_update_connected(
     history: Vec<forge_primitives::Message>,
 ) {
     use super::super::connect::type_converters::{
-        convert_current_model, map_available_models,
+        map_available_models,
     };
     // Defensive synthetic→real migration: in production, the
     // `SessionTask` emits `SessionUpdate::KeyRenamed` ahead of
@@ -999,7 +999,7 @@ pub(super) fn apply_session_update_connected(
         key,
         model::SessionId::new(session_id.into_string()),
         cwd,
-        convert_current_model(current_model),
+        current_model,
         map_available_models(available_models),
         mode,
         &history,
@@ -1028,13 +1028,13 @@ pub(super) fn apply_session_update_session_replaced(
     history: Vec<forge_primitives::Message>,
 ) {
     use super::super::connect::type_converters::{
-        convert_current_model, map_available_models,
+        map_available_models,
     };
     handle_session_replaced_event(
         app,
         model::SessionId::new(session_id.into_string()),
         cwd,
-        convert_current_model(current_model),
+        current_model,
         map_available_models(available_models),
         mode,
         &history,

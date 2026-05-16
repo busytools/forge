@@ -745,8 +745,7 @@ fn apply_available_agents_from_init(app: &mut App, data: &Value) {
 /// first turn lands.
 fn apply_current_model_from_init(app: &mut App, data: &Value) {
     use forge_workspace::session_lifecycle::resolve_current_model_from_inputs;
-    use crate::app::connect::type_converters::convert_current_model;
-    use forge_primitives as wire;
+        use forge_primitives as wire;
 
     let Some(record) = data.as_object() else { return };
     let model_id = record.get("model").and_then(Value::as_str).unwrap_or("");
@@ -790,7 +789,7 @@ fn apply_current_model_from_init(app: &mut App, data: &Value) {
 
     let next_wire =
         resolve_current_model_from_inputs(model_id, requested, resolved_runtime, &available_models);
-    let next_model = convert_current_model(next_wire);
+    let next_model = next_wire;
     if app.current_model() == Some(&next_model) {
         return;
     }
@@ -924,7 +923,7 @@ fn apply_api_retry_update(app: &mut App, data: &Value) {
     else {
         return;
     };
-    let model_error = crate::app::connect::type_converters::map_api_retry_error(error);
+    let model_error = error;
     super::api_retry::handle_api_retry_update(
         app,
         attempt,
@@ -1158,7 +1157,7 @@ fn handle_rate_limit_event(app: &mut App, msg: Message) {
     };
     // Convert wire-side types::RateLimitUpdate → model::RateLimitUpdate
     // via the existing converter, then call the App-side handler.
-    let update = crate::app::connect::type_converters::map_rate_limit_update(wire);
+    let update = wire;
     super::rate_limit::handle_rate_limit_update(app, &update);
 }
 
