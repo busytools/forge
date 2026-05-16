@@ -65,6 +65,7 @@ pub mod plugins;
 pub mod public_types;
 pub mod question;
 pub mod runtime;
+pub mod session_key;
 pub mod session_meta;
 pub mod session_update;
 pub mod subagents;
@@ -86,6 +87,7 @@ pub use hooks::{
     UserPromptSubmitHookSpecificOutput, UserPromptSubmitInput,
 };
 pub use ids::{MessageId, SessionId, ToolUseId};
+pub use session_key::SessionKey;
 pub use image::{
     ImageAttachment, SUPPORTED_IMAGE_MIME_TYPES, is_supported_image_type, is_valid_base64,
     validate_image,

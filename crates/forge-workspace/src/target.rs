@@ -1,19 +1,10 @@
 //! Identifiers + the `SessionTarget` enum used to address sessions.
 
-/// Newtype around the SDK's session id (a UUID string).
-#[derive(Clone, Debug, Hash, Eq, PartialEq)]
-pub struct SessionKey(pub(crate) String);
-
-impl SessionKey {
-    pub(crate) fn new(id: impl Into<String>) -> Self {
-        Self(id.into())
-    }
-
-    /// Borrow the inner id as a `&str`.
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
+// `SessionKey` lives in forge-primitives so the same routing key
+// flows through the TUI → workspace → agent layers without each crate
+// growing its own near-identical newtype. Re-exported here so call
+// sites continue to import via `forge_workspace::SessionKey`.
+pub use forge_primitives::SessionKey;
 
 /// Project root path key — the canonicalised, sanitised string form
 /// produced by
@@ -58,22 +49,3 @@ pub enum SessionTarget {
     Session(SessionKey),
 }
 
-impl SessionKey {
-    /// Construct a `SessionKey` from a literal string. Test-only;
-    /// `#[doc(hidden)] pub` rather than `#[cfg(test)]` so integration
-    /// tests in sibling crates' `tests/` directories can reach it
-    /// (Rust's `#[cfg(test)]` items aren't visible across crate
-    /// boundaries).
-    #[doc(hidden)]
-    pub fn from_str_for_test(s: &str) -> Self {
-        Self(s.to_owned())
-    }
-
-    /// Construct a `SessionKey` from a claude-issued session UUID.
-    /// Production-side constructor used by forge-tui's event
-    /// multiplexer to tag incoming events with the bound session's
-    /// key.
-    pub fn from_session_id(id: impl Into<String>) -> Self {
-        Self(id.into())
-    }
-}

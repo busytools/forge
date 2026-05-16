@@ -195,7 +195,7 @@ impl Workspace {
                     entries
                         .iter()
                         .map(|info| {
-                            let session = SessionKey::new(info.session_id.clone());
+                            let session = SessionKey::from_session_id(info.session_id.clone());
                             SessionView {
                                 session: session.clone(),
                                 label: info.summary.clone(),
@@ -627,7 +627,7 @@ impl Workspace {
                 &project.path.to_string_lossy(),
             )));
         self.try_lead_session_id_for(project)
-            .unwrap_or_else(|| SessionKey::new(format!("__fresh__:{}", project_key.as_str())))
+            .unwrap_or_else(|| SessionKey::from_session_id(format!("__fresh__:{}", project_key.as_str())))
     }
 
     /// Return the project's lead (most-recent) session id when the
@@ -642,7 +642,7 @@ impl Workspace {
         let catalog = self.catalog.lock();
         let entries = catalog.get(&key)?;
         let lead = entries.first()?;
-        Some(SessionKey::new(lead.session_id.clone()))
+        Some(SessionKey::from_session_id(lead.session_id.clone()))
     }
 
     /// Locate a `ProjectView`-like (`LoadedProject`) by `name` from

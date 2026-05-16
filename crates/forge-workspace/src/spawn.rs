@@ -89,7 +89,7 @@ pub(crate) async fn handle_spawn_session(
     let synth_key = SessionKey::from_session_id(format!("__resume_{session_id}__"));
 
     // Locate parent project so we can seed Spawning with the cwd.
-    let session_key = SessionKey::new(session_id.clone());
+    let session_key = SessionKey::from_session_id(session_id.clone());
     let Some(parent) = workspace.find_project_for_session(&session_key) else {
         tracing::warn!(
             target: "forge_workspace::spawn",
