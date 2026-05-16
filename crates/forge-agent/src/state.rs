@@ -1,9 +1,7 @@
-//! Permission-mode enum used across the agent stack.
-//!
-//! The canonical type lives at `forge_primitives::permission::PermissionMode`
-//! (Phase 0 of the MVVM refactor unified two previously-divergent
-//! definitions). This module re-exports it so existing
-//! `forge_agent::state::PermissionMode` imports keep resolving.
+//! Permission-mode enum used across the agent stack. The canonical
+//! type lives at `forge_primitives::permission::PermissionMode`;
+//! this module re-exports it so the
+//! `forge_agent::state::PermissionMode` import path resolves.
 
 pub use forge_primitives::permission::PermissionMode;
 

@@ -649,6 +649,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "perf")]
     fn resolve_perf_path_uses_default_when_no_perf_log() {
         let cli = Cli {
             project: None,
@@ -662,6 +663,22 @@ mod tests {
         let resolved = resolve_perf_path(&cli).expect("resolve succeeds").expect("path exists");
         let path = resolved.to_string_lossy().replace('\\', "/");
         assert!(path.ends_with("forge-tui/logs/forge-perf.log"));
+    }
+
+    #[test]
+    #[cfg(not(feature = "perf"))]
+    fn resolve_perf_path_returns_none_without_perf_feature() {
+        let cli = Cli {
+            project: None,
+            generate_completion: None,
+            diagnostics_preset: None,
+            log_file: None,
+            log_filter: None,
+            perf_log: None,
+        };
+
+        let resolved = resolve_perf_path(&cli).expect("resolve succeeds");
+        assert!(resolved.is_none(), "perf feature off → no default perf path");
     }
 
     #[test]

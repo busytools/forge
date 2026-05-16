@@ -82,12 +82,11 @@ pub(crate) async fn spawn_session(
     };
     bridge.session_id_slot_arc().lock().clone_from(&session_id);
 
-    // Source of truth for the session's cwd is the caller. Phase 1a
-    // workspace flow always passes the forge.toml-derived project
-    // path; the in-session /resume flow (out of scope for 1a) needs
-    // to source the cwd from the session's transcript before calling
-    // here. An empty cwd is a caller-side bug; log it and pass through
-    // — no `current_dir()` fallback, because that would mask the bug.
+    // The caller owns the session's cwd source — workspace flow
+    // passes the forge.toml-derived project path; in-session
+    // /resume sources the cwd from the session's transcript. An
+    // empty cwd is a caller-side bug; log it and pass through. No
+    // `current_dir()` fallback (per Hard Rule #15).
     if cwd.is_empty() {
         tracing::warn!(
             target: crate::logging::targets::BRIDGE_LIFECYCLE,
