@@ -64,8 +64,8 @@ pub enum SettingsTarget {
 /// `config_dir` is the user-scope config directory the caller has
 /// bound this read to (typically the per-spawn account binding).
 /// `cwd` is the project root used to locate
-/// `<cwd>/.claude/settings.local.json`. Pass `std::env::current_dir()`
-/// to match the CLI's default behaviour for the project-local path.
+/// `<cwd>/.claude/settings.local.json` — sourced from `forge.toml` or
+/// the agent's reported cwd, never `std::env::current_dir()`.
 pub fn settings_documents(config_dir: &Path, cwd: &Path) -> SettingsDocuments {
     SettingsDocuments {
         user: read_json_file(&config_dir.join("settings.json")),

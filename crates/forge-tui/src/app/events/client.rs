@@ -197,10 +197,10 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
             apply_session_update_runtime_reload_failed(app, session_id, message);
         }
         SessionUpdate::PermissionRequest { key, tool_id, request } => {
-            turn::apply_session_update_permission_request(app, key, tool_id, request);
+            turn::apply_session_update_permission_request(app, &key, &tool_id, request);
         }
         SessionUpdate::QuestionRequest { key, tool_id, request } => {
-            turn::apply_session_update_question_request(app, key, tool_id, request);
+            turn::apply_session_update_question_request(app, &key, &tool_id, request);
         }
         SessionUpdate::McpAuthRedirect { redirect, .. } => {
             if is_active_or_global {
@@ -213,13 +213,13 @@ pub fn apply_session_update(app: &mut App, update: SessionUpdate) {
             }
         }
         SessionUpdate::TurnComplete { key, terminal_reason } => {
-            turn::apply_session_update_turn_complete(app, key, terminal_reason);
+            turn::apply_session_update_turn_complete(app, &key, terminal_reason);
         }
         SessionUpdate::TurnCancelled { key } => {
             turn::apply_session_update_turn_cancelled(app, &key);
         }
         SessionUpdate::TurnError { key, message, class, terminal_reason } => {
-            turn::apply_session_update_turn_error(app, key, message, class, terminal_reason);
+            turn::apply_session_update_turn_error(app, &key, &message, class, terminal_reason);
         }
         SessionUpdate::UsageRefreshStarted { key } => {
             crate::app::usage::apply_refresh_started_for(app, &key);

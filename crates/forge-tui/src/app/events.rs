@@ -3804,8 +3804,8 @@ mod tests {
         let session_key = app.active_session_key.clone().expect("active key");
         turn::handle_permission_request_event(
             &mut app,
-            session_key,
-            tool_id.to_owned(),
+            &session_key,
+            tool_id,
             model::RequestPermissionRequest::new(
                 "session-1",
                 model::ToolCallUpdate::new(tool_id, model::ToolCallUpdateFields::new()),
@@ -3840,8 +3840,8 @@ mod tests {
         let session_key = app.active_session_key.clone().expect("active key");
         turn::handle_question_request_event(
             &mut app,
-            session_key,
-            tool_id.to_owned(),
+            &session_key,
+            tool_id,
             model::RequestQuestionRequest::new(
                 "session-1",
                 model::ToolCallUpdate::new(tool_id, model::ToolCallUpdateFields::new()),
@@ -3876,8 +3876,8 @@ mod tests {
         let mut response_rx = TestPermissionRxLocal { tool_id: tool_id.to_owned() };
         turn::handle_permission_request_event(
             &mut app,
-            session_key,
-            tool_id.to_owned(),
+            &session_key,
+            tool_id,
             model::RequestPermissionRequest::new(
                 "session-1",
                 model::ToolCallUpdate::new(tool_id, model::ToolCallUpdateFields::new()),

@@ -1,5 +1,3 @@
-#![allow(clippy::needless_pass_by_value)]
-
 use super::super::{
     App, AppStatus, ChatMessage, FocusTarget, InlinePermission, InlineQuestion,
     InvalidationLevel, MessageBlock, MessageRole, NoticeStage, SystemSeverity, TextBlock,
@@ -35,11 +33,11 @@ struct TurnExitState {
 #[cfg(feature = "testing")]
 pub fn handle_permission_request_event(
     app: &mut App,
-    session_key: SessionKey,
-    tool_id: String,
+    session_key: &SessionKey,
+    tool_id: &str,
     request: model::RequestPermissionRequest,
 ) {
-    apply_permission_request_presentation(app, &session_key, &tool_id, request);
+    apply_permission_request_presentation(app, session_key, tool_id, request);
 }
 
 /// `SessionUpdate::PermissionRequest` reducer. Converts
@@ -48,14 +46,14 @@ pub fn handle_permission_request_event(
 /// shared presentation helper.
 pub(super) fn apply_session_update_permission_request(
     app: &mut App,
-    key: SessionKey,
-    tool_id: String,
+    key: &SessionKey,
+    tool_id: &str,
     request: forge_primitives::permission_ui::PermissionRequest,
 ) {
     let session_id = key.as_str().to_owned();
     let (model_request, _converted_tool_id) =
         crate::app::connect::type_converters::map_permission_request(&session_id, request);
-    apply_permission_request_presentation(app, &key, &tool_id, model_request);
+    apply_permission_request_presentation(app, key, tool_id, model_request);
 }
 
 /// Look up the target bucket by `key` and apply the permission
@@ -310,11 +308,11 @@ fn apply_permission_request_to_background_bucket(
 #[cfg(feature = "testing")]
 pub fn handle_question_request_event(
     app: &mut App,
-    session_key: SessionKey,
-    tool_id: String,
+    session_key: &SessionKey,
+    tool_id: &str,
     request: model::RequestQuestionRequest,
 ) {
-    apply_question_request_presentation(app, &session_key, &tool_id, request);
+    apply_question_request_presentation(app, session_key, tool_id, request);
 }
 
 /// `SessionUpdate::QuestionRequest` reducer. Converts the
@@ -323,14 +321,14 @@ pub fn handle_question_request_event(
 /// helper.
 pub(super) fn apply_session_update_question_request(
     app: &mut App,
-    key: SessionKey,
-    tool_id: String,
+    key: &SessionKey,
+    tool_id: &str,
     request: forge_primitives::question::QuestionRequest,
 ) {
     let session_id = key.as_str().to_owned();
     let (model_request, _converted_tool_id) =
         crate::app::connect::type_converters::map_question_request(&session_id, request);
-    apply_question_request_presentation(app, &key, &tool_id, model_request);
+    apply_question_request_presentation(app, key, tool_id, model_request);
 }
 
 /// Look up the target bucket by `key` and apply the question
@@ -947,10 +945,10 @@ pub(super) fn handle_turn_complete_event(
 /// hook.)
 pub(super) fn apply_session_update_turn_complete(
     app: &mut App,
-    key: SessionKey,
+    key: &SessionKey,
     terminal_reason: Option<forge_primitives::TerminalReason>,
 ) {
-    apply_turn_complete_presentation(app, &key, terminal_reason);
+    apply_turn_complete_presentation(app, key, terminal_reason);
 }
 
 fn apply_turn_complete_presentation(
@@ -1136,13 +1134,13 @@ pub(super) fn handle_turn_error_event(
 /// it has consumed since before the protocol layer existed.
 pub(super) fn apply_session_update_turn_error(
     app: &mut App,
-    key: SessionKey,
-    message: String,
+    key: &SessionKey,
+    message: &str,
     class: Option<forge_workspace::TurnErrorClass>,
     terminal_reason: Option<forge_primitives::TerminalReason>,
 ) {
     let local_class = class.map(map_workspace_turn_error_class);
-    apply_turn_error_presentation(app, &key, &message, local_class, terminal_reason);
+    apply_turn_error_presentation(app, key, message, local_class, terminal_reason);
 }
 
 fn map_workspace_turn_error_class(class: forge_workspace::TurnErrorClass) -> TurnErrorClass {
@@ -1449,7 +1447,7 @@ mod tests {
         app.active_messages_mut().push(empty_assistant_message());
 
         let key = active_session_key(&app);
-        apply_session_update_turn_complete(&mut app, key, None);
+        apply_session_update_turn_complete(&mut app, &key, None);
 
         assert_eq!(app.messages().len(), 1);
         assert!(matches!(app.messages()[0].role, MessageRole::User));
@@ -1464,7 +1462,7 @@ mod tests {
         app.active_messages_mut().push(empty_assistant_message());
 
         let key = active_session_key(&app);
-        apply_session_update_turn_error(&mut app, key, "cancelled".to_owned(), None, None);
+        apply_session_update_turn_error(&mut app, &key, "cancelled", None, None);
 
         assert_eq!(app.messages().len(), 2);
         assert!(matches!(app.messages()[0].role, MessageRole::User));
@@ -1479,7 +1477,7 @@ mod tests {
         app.active_messages_mut().push(empty_assistant_message());
 
         let key = active_session_key(&app);
-        apply_session_update_turn_error(&mut app, key, "boom".to_owned(), None, None);
+        apply_session_update_turn_error(&mut app, &key, "boom", None, None);
 
         assert_eq!(app.messages().len(), 2);
         assert!(matches!(app.messages()[0].role, MessageRole::User));
@@ -1501,7 +1499,7 @@ mod tests {
         bg_session.messages.push(empty_assistant_message());
         app.sessions.insert(bg_key.clone(), bg_session);
 
-        apply_session_update_turn_complete(&mut app, bg_key.clone(), None);
+        apply_session_update_turn_complete(&mut app, &bg_key, None);
 
         // Active session messages untouched.
         assert_eq!(app.messages().len(), active_messages_before);
@@ -1547,8 +1545,8 @@ mod tests {
         // must not.
         apply_session_update_turn_error(
             &mut app,
-            bg_key.clone(),
-            "auth required".to_owned(),
+            &bg_key,
+            "auth required",
             Some(forge_workspace::TurnErrorClass::AuthRequired),
             None,
         );

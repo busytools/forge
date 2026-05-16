@@ -33,7 +33,7 @@ fn setup_permission(
         model::ToolCallUpdate::new(tool_id.to_owned(), model::ToolCallUpdateFields::new());
     let request =
         model::RequestPermissionRequest::new("test-session", tool_call_update, options, None);
-    forge_tui::app::handle_permission_request_event(app, session_key, tool_id.to_owned(), request);
+    forge_tui::app::handle_permission_request_event(app, &session_key, tool_id, request);
 }
 
 fn allow_deny_options() -> Vec<model::PermissionOption> {
@@ -89,8 +89,8 @@ async fn permission_for_unknown_tool_call_auto_rejects() {
         model::RequestPermissionRequest::new("test-session", tool_call_update, options, None);
     forge_tui::app::handle_permission_request_event(
         &mut app,
-        session_key,
-        tool_id.clone(),
+        &session_key,
+        &tool_id,
         request,
     );
 
@@ -149,8 +149,8 @@ async fn duplicate_permission_request_is_rejected_without_duplicate_queue_entry(
     );
     forge_tui::app::handle_permission_request_event(
         &mut app,
-        session_key,
-        "tc-dup".to_owned(),
+        &session_key,
+        "tc-dup",
         request,
     );
 

@@ -30,12 +30,12 @@ fn bump_bucket_session_scope_epoch(app: &mut App, key: &SessionKey) {
     }
 }
 
-/// Post-migration apply chain for `Connected` events.
-///
-/// Runs the welcome/file-index/runtime-tabs/trust/tab-title work that
-/// follows the synthetic-key → real-key migration. The migration
+/// Apply chain for `Connected` events that runs after the
+/// synthetic-key → real-key migration completes. The migration
 /// itself runs via `SessionUpdate::KeyRenamed` (emitted by
 /// `SessionTask::translate_event` ahead of the matching `Connected`).
+/// This chain handles the welcome / file-index / runtime-tabs / trust
+/// / tab-title work that follows.
 ///
 /// `was_active` indicates whether the user is watching this session
 /// (active path: full apply chain) or whether it completed in the
