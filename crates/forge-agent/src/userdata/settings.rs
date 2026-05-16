@@ -205,8 +205,31 @@ fn home_dir() -> PathBuf {
 }
 
 fn read_json_file(path: &Path) -> Option<Value> {
-    let contents = std::fs::read_to_string(path).ok()?;
-    serde_json::from_str(&contents).ok()
+    let contents = match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(e) => {
+            tracing::warn!(
+                target: "forge_agent::userdata::settings",
+                path = %path.display(),
+                error = %e,
+                "failed to read settings file"
+            );
+            return None;
+        }
+    };
+    match serde_json::from_str(&contents) {
+        Ok(v) => Some(v),
+        Err(e) => {
+            tracing::warn!(
+                target: "forge_agent::userdata::settings",
+                path = %path.display(),
+                error = %e,
+                "failed to parse settings file as JSON"
+            );
+            None
+        }
+    }
 }
 
 #[cfg(test)]
